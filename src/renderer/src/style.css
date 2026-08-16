@@ -28,8 +28,29 @@ body {
   background: var(--popup-bg);
   border: 1px solid var(--popup-border);
   border-radius: 12px;
-  padding: 14px 16px;
+  padding: 6px 16px 14px;
   box-shadow: 0 12px 44px var(--popup-shadow);
+}
+
+.drag-handle {
+  width: 100%;
+  min-height: 20px;
+  flex: 0 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  -webkit-app-region: drag;
+}
+
+.drag-handle::before {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--divider);
+  content: '';
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .header {
@@ -38,7 +59,6 @@ body {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
-  -webkit-app-region: drag;
 }
 
 .language-picker,

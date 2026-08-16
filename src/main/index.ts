@@ -8,7 +8,8 @@ import {
   clipboard,
   shell,
   BrowserWindow,
-  safeStorage
+  safeStorage,
+  type NativeImage
 } from 'electron'
 import { join } from 'node:path'
 import { loadSettings, saveSettings, getSettings } from './settings'
@@ -724,14 +725,27 @@ function registerIpc(): void {
 // ---- 托盘 ----
 
 /**
+ * 加载适配当前操作系统的翻译主题托盘图标。
+ * @returns 已加载的托盘图标。
+ * @author zhenghq
+ */
+function loadTrayIcon(): NativeImage {
+  const filename = isMac ? 'trayTemplate.png' : 'tray.png'
+  const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build', filename))
+  if (icon.isEmpty()) {
+    throw new Error(`无法加载托盘图标: ${filename}`)
+  }
+  if (isMac) icon.setTemplateImage(true)
+  return icon
+}
+
+/**
  * 创建菜单栏托盘图标。
  * @returns 无返回值。
  * @author zhenghq
  */
 function createTray(): void {
-  const icon = nativeImage.createEmpty()
-  tray = new Tray(icon)
-  tray.setTitle('译')
+  tray = new Tray(loadTrayIcon())
   tray.setToolTip('划词翻译')
   tray.setContextMenu(buildTrayMenu())
 }

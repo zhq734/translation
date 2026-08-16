@@ -16,7 +16,8 @@
     "test": "node scripts/run-tests.mjs",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64",
     "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --arm64",
-    "release:checksums": "node scripts/generate-checksums.mjs"
+    "release:checksums": "node scripts/generate-checksums.mjs",
+    "icons:generate": "node scripts/generate-icons.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
@@ -35,7 +36,8 @@
     },
     "files": [
       "out/**/*",
-      "node_modules/uiohook-napi/**/*"
+      "node_modules/uiohook-napi/**/*",
+      "build/tray*.png"
     ],
     "asarUnpack": [
       "node_modules/uiohook-napi/**/*"
@@ -47,7 +49,8 @@
       ],
       "category": "public.app-category.utilities",
       "identity": null,
-      "artifactName": "SelectionTranslator-${version}-mac-${arch}.${ext}"
+      "artifactName": "SelectionTranslator-${version}-mac-${arch}.${ext}",
+      "icon": "build/icon.icns"
     },
     "dmg": {
       "title": "划词翻译"
@@ -61,7 +64,8 @@
             "arm64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -86,8 +90,10 @@
         }
       ],
       "category": "Utility",
-      "artifactName": "SelectionTranslator-${version}-linux-${arch}.${ext}"
-    }
+      "artifactName": "SelectionTranslator-${version}-linux-${arch}.${ext}",
+      "icon": "build/icon.png"
+    },
+    "icon": "build/icon.png"
   },
   "dependencies": {
     "uiohook-napi": "^1.5.5"

@@ -17,6 +17,7 @@
 
 - [Overview](#overview)
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [How It Works](#how-it-works)
 - [Download and Install](#download-and-install)
 - [Development Requirements](#development-requirements)
@@ -70,6 +71,28 @@ Typical use cases include:
 - **Self-hosted DeepLX integration** with endpoint health checks and a generated Docker command.
 - **Light and dark appearance** following the operating system color scheme.
 - **Menu-bar controls** for languages, settings, and quitting the application.
+
+## Screenshots
+
+The following screenshots show the selection translation workflow, the translation result popup, and the settings page.
+
+### Selection translation
+
+<p align="center">
+  <img src="./docs/images/截图1.png" alt="Selection translation workflow" width="100%">
+</p>
+
+### Translation result
+
+<p align="center">
+  <img src="./docs/images/截图2.png" alt="Translation result popup" width="100%">
+</p>
+
+### Settings page
+
+<p align="center">
+  <img src="./docs/images/截图3.png" alt="Settings page" width="480">
+</p>
 
 ## How It Works
 
