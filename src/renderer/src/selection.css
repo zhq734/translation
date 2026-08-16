@@ -1,0 +1,46 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+}
+
+#translate {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--selection-button-border);
+  border-radius: 9px;
+  background: var(--selection-button-bg);
+  box-shadow: 0 4px 14px var(--selection-button-shadow);
+  color: var(--button-bg);
+  cursor: pointer;
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 30px;
+  padding: 0;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+#translate:hover {
+  box-shadow: 0 6px 18px var(--selection-button-shadow);
+  transform: scale(1.06);
+}
+
+#translate:active {
+  transform: scale(0.96);
+}

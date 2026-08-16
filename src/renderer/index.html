@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>划词翻译</title>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="popup">
+      <div class="header">
+        <div class="language-picker" aria-label="翻译语言">
+          <select id="source-lang" title="源语言"></select>
+          <span class="language-arrow" aria-hidden="true">→</span>
+          <select id="target-lang" title="目标语言"></select>
+        </div>
+        <div class="header-actions">
+          <button id="pin" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
+            <svg class="pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M16 9V4h1V2H7v2h1v5c0 1.1-.9 2-2 2v2h5v7h2v-7h5v-2c-1.1 0-2-.9-2-2Z" />
+            </svg>
+          </button>
+          <button id="open-settings" title="打开设置" aria-label="打开设置">⚙</button>
+          <button id="close" title="关闭" aria-label="关闭">×</button>
+        </div>
+      </div>
+      <div id="result" class="result"></div>
+      <div id="original" class="original"></div>
+      <div class="footer">
+        <span id="status"></span>
+        <button id="copy">复制</button>
+      </div>
+    </div>
+    <script type="module" src="./src/popup.ts"></script>
+  </body>
+</html>

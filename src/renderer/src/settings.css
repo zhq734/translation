@@ -1,0 +1,279 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  color: var(--text-primary);
+  background: var(--page-bg);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.container {
+  width: min(100%, 620px);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(18px, 4vw, 28px) clamp(16px, 4vw, 24px) 48px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+h1 {
+  font-size: clamp(19px, 4vw, 22px);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.page-header p {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.version {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 5px 9px;
+}
+
+section {
+  margin-bottom: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  padding: clamp(14px, 3vw, 18px);
+  box-shadow: 0 1px 2px var(--panel-shadow);
+}
+
+h2 {
+  margin-bottom: 13px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(90px, 112px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.row:last-child {
+  margin-bottom: 0;
+}
+
+.row label {
+  color: var(--text-secondary);
+}
+
+select,
+input[type='text'],
+input[type='password'],
+textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+  outline: none;
+}
+
+select,
+input[type='text'],
+input[type='password'] {
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+textarea {
+  resize: vertical;
+  padding: 10px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+select:focus,
+input[type='text']:focus,
+input[type='password']:focus,
+textarea:focus {
+  border-color: var(--button-bg);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+select:disabled,
+input[type='text']:disabled,
+input[type='password']:disabled {
+  background: var(--control-disabled-bg);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.field-hint,
+.hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-hint {
+  margin: -5px 0 12px calc(112px + 12px);
+}
+
+.hint {
+  margin-bottom: 10px;
+}
+
+.channels {
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.status-row {
+  grid-template-columns: minmax(90px, 1fr) auto;
+}
+
+.checkbox-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+.checkbox-control input {
+  accent-color: var(--button-bg);
+}
+
+.dingtalk-secret-status.configured {
+  color: var(--status-success);
+}
+
+.dingtalk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dingtalk-status {
+  min-height: 20px;
+  margin-top: 10px;
+  text-align: right;
+}
+
+.status {
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.status.online {
+  color: var(--status-success);
+}
+
+.status.offline {
+  color: var(--status-error);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn {
+  min-height: 34px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--button-secondary-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 13px;
+}
+
+.btn:hover {
+  background: var(--button-secondary-hover);
+}
+
+.btn.primary {
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
+}
+
+.btn.primary:hover {
+  background: var(--button-bg-hover);
+}
+
+.saved {
+  position: sticky;
+  bottom: 14px;
+  min-height: 18px;
+  color: var(--status-success);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+@media (max-width: 480px) {
+  .row,
+  .status-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .field-hint {
+    margin-left: 0;
+  }
+
+  .status-row .btn {
+    justify-self: start;
+  }
+
+  .dingtalk-actions {
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .dingtalk-actions .btn {
+    flex: 1 1 100%;
+  }
+
+  .dingtalk-status {
+    text-align: left;
+  }
+}

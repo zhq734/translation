@@ -1,0 +1,57 @@
+:root {
+  color-scheme: light dark;
+  --page-bg: #f5f5f7;
+  --panel-bg: #ffffff;
+  --panel-shadow: rgba(0, 0, 0, 0.04);
+  --bg-secondary: #f2f2f7;
+  --control-bg: #ffffff;
+  --control-disabled-bg: #ededf2;
+  --border-default: #e5e5ea;
+  --border-control: #d1d1d6;
+  --focus-ring: rgba(59, 130, 246, 0.16);
+  --button-secondary-bg: #f2f2f7;
+  --button-secondary-hover: #e5e5ea;
+  --popup-bg: rgba(255, 255, 255, 0.96);
+  --popup-border: rgba(0, 0, 0, 0.1);
+  --text-primary: #1c1c1e;
+  --text-secondary: #4b4b50;
+  --text-muted: #8e8e93;
+  --divider: rgba(0, 0, 0, 0.08);
+  --button-bg: #3b82f6;
+  --button-bg-hover: #2f6fd0;
+  --button-text: #ffffff;
+  --selection-button-bg: rgba(255, 255, 255, 0.98);
+  --selection-button-border: rgba(0, 0, 0, 0.12);
+  --selection-button-shadow: rgba(0, 0, 0, 0.24);
+  --popup-shadow: rgba(0, 0, 0, 0.26);
+  --status-success: #248a3d;
+  --status-error: #d70015;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-bg: #17171a;
+    --panel-bg: #232327;
+    --panel-shadow: rgba(0, 0, 0, 0.22);
+    --bg-secondary: #303035;
+    --control-bg: #29292e;
+    --control-disabled-bg: #202024;
+    --border-default: #3a3a40;
+    --border-control: #4a4a52;
+    --focus-ring: rgba(59, 130, 246, 0.28);
+    --button-secondary-bg: #303036;
+    --button-secondary-hover: #3b3b42;
+    --popup-bg: rgba(30, 30, 34, 0.97);
+    --popup-border: rgba(255, 255, 255, 0.08);
+    --text-primary: #e8e8ea;
+    --text-secondary: #c6c6cc;
+    --text-muted: #9a9aa2;
+    --divider: rgba(255, 255, 255, 0.08);
+    --selection-button-bg: rgba(45, 45, 50, 0.98);
+    --selection-button-border: rgba(255, 255, 255, 0.14);
+    --selection-button-shadow: rgba(0, 0, 0, 0.45);
+    --popup-shadow: rgba(0, 0, 0, 0.4);
+    --status-success: #34c759;
+    --status-error: #ff6961;
+  }
+}

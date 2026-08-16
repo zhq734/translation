@@ -1,0 +1,78 @@
+{
+  "name": "selection-translator",
+  "version": "0.1.0",
+  "description": "划词翻译 - macOS 与 Windows 桌面全局划词翻译工具（选区按钮与常驻弹窗）",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:dmg": "electron-vite build && electron-builder --mac dmg",
+    "test": "node scripts/run-tests.mjs",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "build": {
+    "appId": "com.selection.translator",
+    "productName": "划词翻译",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "node_modules/uiohook-napi/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "dmg": {
+      "title": "划词翻译"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "划词翻译",
+      "artifactName": "SelectionTranslator-${version}-Setup-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  }
+}

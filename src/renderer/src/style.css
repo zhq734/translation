@@ -1,0 +1,198 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+#popup {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 44px var(--popup-shadow);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  -webkit-app-region: drag;
+}
+
+.language-picker,
+.header-actions,
+#pin,
+#open-settings,
+#close {
+  -webkit-app-region: no-drag;
+}
+
+.language-picker {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.language-picker select {
+  max-width: 150px;
+  min-width: 78px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  outline: none;
+  padding: 4px 6px;
+}
+
+.language-picker select:focus {
+  border-color: var(--button-bg);
+}
+
+.language-arrow {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+#pin,
+#open-settings,
+#close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+#pin {
+  opacity: 0.72;
+}
+
+#pin .pin-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  pointer-events: none;
+}
+
+#open-settings {
+  font-size: 16px;
+}
+
+#close {
+  font-size: 20px;
+}
+
+#pin:hover,
+#open-settings:hover,
+#close:hover,
+#pin[aria-pressed='true'] {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+#pin[aria-pressed='true'] {
+  color: var(--button-bg);
+  opacity: 1;
+}
+
+.result {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  color: var(--text-primary);
+  font-size: 17px;
+  line-height: 1.55;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.result.loading {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.original {
+  max-height: 76px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--divider);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-y: auto;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.original:empty {
+  display: none;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+#status {
+  color: var(--status-success);
+  font-size: 12px;
+}
+
+#copy {
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 6px;
+  background: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 5px 14px;
+}
+
+#copy:hover {
+  background: var(--button-bg-hover);
+}
