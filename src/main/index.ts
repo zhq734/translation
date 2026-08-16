@@ -9,6 +9,7 @@ import {
   shell,
   BrowserWindow,
   safeStorage,
+  screen,
   type NativeImage
 } from 'electron'
 import { join } from 'node:path'
@@ -60,6 +61,7 @@ import { DingTalkConfigurationService } from './dingtalkConfig'
 const isMac = process.platform === 'darwin'
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
+const SELECTION_SETTLE_DELAY_MS = 80
 
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
@@ -183,6 +185,30 @@ function onHotkey(): void {
 }
 
 /**
+ * 安排一次选区捕获动作，等待前台应用完成鼠标划词或快捷键全选后再取词。
+ * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleSelectionAction(anchor: { x: number; y: number }): void {
+  const gestureId = ++latestSelectionGesture
+  selectionCapture.invalidate()
+  hideSelectionButton()
+  lastSelectionAnchor = anchor
+  const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
+  if (action === 'ignore') return
+
+  setTimeout(() => {
+    if (gestureId !== latestSelectionGesture) return
+    if (action === 'translate') {
+      queueSelectionTranslation(anchor)
+    } else {
+      void prepareSelectionButton(anchor, gestureId)
+    }
+  }, SELECTION_SETTLE_DELAY_MS)
+}
+
+/**
  * 响应一次全局划词动作，决定显示图标还是直接自动翻译。
  * 按钮模式会先捕获选中文字，再显示“译”按钮，防止点击按钮导致原选区失效。
  * @param gesture 划词拖拽及选区锚点信息。
@@ -197,22 +223,17 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
     return
   }
 
-  const gestureId = ++latestSelectionGesture
-  selectionCapture.invalidate()
-  hideSelectionButton()
-  lastSelectionAnchor = gesture.anchor
-  const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
-  if (action === 'ignore') return
+  scheduleSelectionAction(gesture.anchor)
+}
 
-  // 松开鼠标后稍等，确保前台应用的选中状态已经稳定。
-  setTimeout(() => {
-    if (gestureId !== latestSelectionGesture) return
-    if (action === 'translate') {
-      queueSelectionTranslation(gesture.anchor)
-    } else {
-      void prepareSelectionButton(gesture.anchor, gestureId)
-    }
-  }, 80)
+/**
+ * 响应 Ctrl+A 或 Command+A 全选快捷键，在前台外部应用完成全选后触发选区处理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleSelectAllShortcut(): void {
+  if (BrowserWindow.getFocusedWindow()) return
+  scheduleSelectionAction(screen.getCursorScreenPoint())
 }
 
 /**
@@ -444,7 +465,12 @@ function applySelectionListener(): void {
   stopAutoTrigger()
   hideSelectionButton()
   if (getSettings().triggerMode !== 'hotkey') {
-    startAutoTrigger(handleSelectionGesture, handleSelectionPointerDown, handlePasteShortcut)
+    startAutoTrigger(
+      handleSelectionGesture,
+      handleSelectionPointerDown,
+      handlePasteShortcut,
+      handleSelectAllShortcut
+    )
   }
 }
 

@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import type { TranslatePayload } from '../shared/types'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
+import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -32,6 +33,7 @@ export function createPopup(preloadPath: string): BrowserWindow {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
+    acceptFirstMouse: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
@@ -51,13 +53,24 @@ export function createPopup(preloadPath: string): BrowserWindow {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // 默认点击弹窗外部时关闭；钉住后忽略失焦事件。
-  win.on('blur', () => {
-    if (!win?.isVisible()) return
-    if (shouldDismissPopupOnBlur(pinned)) hidePopup()
-  })
+  // 默认点击弹窗外部时关闭；顶部原生拖拽与钉住状态均忽略失焦事件。
+  win.on('blur', handlePopupBlur)
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   return win
+}
+
+/**
+ * 处理弹窗失焦；未固定弹窗在顶部原生拖拽期间不会被误关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupBlur(): void {
+  if (!win?.isVisible()) return
+  const cursorInsideDragRegion = isPointInPopupDragRegion(
+    screen.getCursorScreenPoint(),
+    win.getBounds()
+  )
+  if (!cursorInsideDragRegion && shouldDismissPopupOnBlur(pinned)) hidePopup()
 }
 
 /**
@@ -107,12 +120,11 @@ export function showPopup(
   const alreadyVisible = win.isVisible()
   win.webContents.send('translate:result', payload)
   win.webContents.send('popup:pinned', pinned)
+  // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
     positionNearAnchor(anchor)
     // 首次显示时获取焦点，确保用户点击其他应用时能够触发 blur 关闭。
     win.show()
-  } else {
-    win.showInactive()
   }
   scheduleHide(autoHideMs)
 }

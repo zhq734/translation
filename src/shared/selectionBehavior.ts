@@ -31,6 +31,32 @@ export interface SelectionGesture {
 
 import type { TriggerMode } from './types'
 
+/** 全局键盘事件中用于判断选区快捷键的字段。 */
+export interface SelectionShortcutSample {
+  keycode: number
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+}
+
+/**
+ * 判断当前键盘事件是否为未叠加其他修饰键的 Ctrl+A 或 Command+A。
+ * @param event 全局键盘事件的修饰键和键码信息。
+ * @param selectAllKeycode 当前平台 A 键对应的 uiohook 键码。
+ * @returns 是否应触发全选后的选区处理。
+ * @author zhenghq
+ */
+export function isSelectAllShortcut(
+  event: SelectionShortcutSample,
+  selectAllKeycode: number
+): boolean {
+  return event.keycode === selectAllKeycode &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey
+}
+
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
 

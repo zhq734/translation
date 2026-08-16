@@ -1,3 +1,5 @@
+import { normalizeSelectedText } from './selectionText'
+
 /** 选区按钮或快捷键翻译时使用的屏幕锚点。 */
 export interface SelectionAnchor {
   x: number
@@ -107,7 +109,7 @@ export class SelectionCaptureCoordinator {
         let text = ''
         let error: Error | undefined
         try {
-          text = String(await this.captureSelection(controller.signal)).trim()
+          text = normalizeSelectedText(await this.captureSelection(controller.signal))
         } catch (cause) {
           error = cause instanceof Error ? cause : new Error(String(cause))
         } finally {

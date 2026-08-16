@@ -5,6 +5,7 @@ import {
   createObservedPointerSample,
   decideSelectionAction,
   getSelectionGesture,
+  isSelectAllShortcut,
   resolveLanguagePair,
   shouldTriggerSelectionGesture
 } from '../src/shared/selectionBehavior.ts'
@@ -63,6 +64,47 @@ test('普通单击不应触发选区处理，常规划词拖拽仍应触发', ()
 
   assert.equal(shouldTriggerSelectionGesture(click, 1, options), false)
   assert.equal(shouldTriggerSelectionGesture(drag, 1, options), true)
+})
+
+
+/**
+ * 校验 Windows/Linux 的 Ctrl+A 与 macOS 的 Command+A 都会被识别为全选快捷键。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Ctrl+A 和 Command+A 应被识别为全选翻译触发', () => {
+  const selectAllKeycode = 30
+  const baseEvent = {
+    keycode: selectAllKeycode,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false
+  }
+
+  assert.equal(isSelectAllShortcut({ ...baseEvent, ctrlKey: true }, selectAllKeycode), true)
+  assert.equal(isSelectAllShortcut({ ...baseEvent, metaKey: true }, selectAllKeycode), true)
+})
+
+/**
+ * 校验带其他修饰键、无主修饰键或按下其他按键时不会误触发全选翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('非标准全选组合不应触发翻译', () => {
+  const selectAllKeycode = 30
+  const baseEvent = {
+    keycode: selectAllKeycode,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false
+  }
+
+  assert.equal(isSelectAllShortcut({ ...baseEvent, altKey: true }, selectAllKeycode), false)
+  assert.equal(isSelectAllShortcut({ ...baseEvent, shiftKey: true }, selectAllKeycode), false)
+  assert.equal(isSelectAllShortcut({ ...baseEvent, ctrlKey: false }, selectAllKeycode), false)
+  assert.equal(isSelectAllShortcut({ ...baseEvent, keycode: 31 }, selectAllKeycode), false)
 })
 
 test('系统复制组合不能被识别为翻译快捷键', () => {
@@ -230,7 +272,7 @@ test('主进程应只为有效文字显示按钮，并在外部按下鼠标时�
   assert.match(source, /if\s*\(!result\.text\s*\|\|\s*result\.error\)\s*\{[\s\S]*?hideSelectionButton\(\)/u)
   assert.match(
     source,
-    /startAutoTrigger\(handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut\)/u
+    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
   )
 })
 
@@ -242,6 +284,8 @@ test('全局监听应传递双击次数，并监听用户复制和粘贴快捷�
   assert.match(source, /copyShortcutGuard\.observeCopyShortcut\(\)/u)
   assert.match(source, /e\.keycode\s*===\s*UiohookKey\.V/u)
   assert.match(source, /pasteShortcutCallback\?\.\(\)/u)
+  assert.match(source, /isSelectAllShortcut\(e,\s*UiohookKey\.A\)/u)
+  assert.match(source, /selectAllShortcutCallback\?\.\(\)/u)
 })
 
 test('主进程不得注册系统复制快捷键，选区按钮也不得抢占输入焦点', () => {
@@ -271,7 +315,7 @@ test('用户粘贴时主进程应立即取消待处理或正在进行的选区�
 
   assert.match(
     source,
-    /startAutoTrigger\(handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut\)/u
+    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
   )
   assert.match(
     source,
