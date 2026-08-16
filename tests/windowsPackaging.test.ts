@@ -28,8 +28,11 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJ
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows 打包脚本应生成 x64 NSIS 安装程序', () => {
-  assert.equal(packageJson.scripts?.['dist:win'], 'npm run build && electron-builder --win nsis --x64')
+test('Windows 打包脚本应生成 x64 与 arm64 NSIS 安装程序', () => {
+  assert.equal(
+    packageJson.scripts?.['dist:win'],
+    'npm run build && electron-builder --win nsis --x64 --arm64'
+  )
 })
 
 /**
@@ -39,7 +42,7 @@ test('Windows 打包脚本应生成 x64 NSIS 安装程序', () => {
  */
 test('Windows NSIS 配置应支持自定义安装目录和快捷方式', () => {
   const winTarget = packageJson.build?.win?.target
-  assert.deepEqual(winTarget, [{ target: 'nsis', arch: ['x64'] }])
+  assert.deepEqual(winTarget, [{ target: 'nsis', arch: ['x64', 'arm64'] }])
   assert.equal(packageJson.build?.nsis?.oneClick, false)
   assert.equal(packageJson.build?.nsis?.perMachine, false)
   assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, true)

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -36,8 +37,9 @@ function readRepositoryFile(path: string): string {
 test('Linux 与 macOS 一键安装脚本应检测平台架构并校验 SHA-256', () => {
   const script = readRepositoryFile('scripts/install.sh')
 
-  assert.match(script, /GreyGunG\/translation/u)
+  assert.match(script, /zhq734\/translation/u)
   assert.match(script, /SELECTION_TRANSLATOR_VERSION/u)
+  assert.match(script, /GROKBUILD_VERSION/u)
   assert.match(script, /uname -s/u)
   assert.match(script, /uname -m/u)
   assert.match(script, /SHA256SUMS/u)
@@ -48,11 +50,82 @@ test('Linux 与 macOS 一键安装脚本应检测平台架构并校验 SHA-256',
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr)
 })
 
+
+test('Linux 一键安装脚本应完成下载校验、用户目录安装和默认配置生成', () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'selection-translator-installer-'))
+  try {
+    const fakeBinaryDirectory = join(temporaryDirectory, 'fake-bin')
+    const homeDirectory = join(temporaryDirectory, 'home')
+    const temporaryDownloadDirectory = join(temporaryDirectory, 'downloads')
+    mkdirSync(fakeBinaryDirectory, { recursive: true })
+    mkdirSync(homeDirectory, { recursive: true })
+    mkdirSync(temporaryDownloadDirectory, { recursive: true })
+
+    const assetName = 'SelectionTranslator-0.2.0-linux-x64.AppImage'
+    const assetContent = 'fake-app-image'
+    const assetHash = createHash('sha256').update(assetContent).digest('hex')
+    const fakeUnamePath = join(fakeBinaryDirectory, 'uname')
+    const fakeCurlPath = join(fakeBinaryDirectory, 'curl')
+    writeFileSync(fakeUnamePath, `#!/bin/sh\nif [ "$1" = "-s" ]; then echo Linux; else echo x86_64; fi\n`)
+    writeFileSync(fakeCurlPath, `#!/bin/sh
+output=''
+url=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then
+    output="$2"
+    shift 2
+    continue
+  fi
+  case "$1" in
+    http*) url="$1" ;;
+  esac
+  shift
+done
+case "$url" in
+  *SHA256SUMS) printf '%s  %s\\n' '${assetHash}' '${assetName}' > "$output" ;;
+  *) printf '%s' '${assetContent}' > "$output" ;;
+esac
+`)
+    chmodSync(fakeUnamePath, 0o755)
+    chmodSync(fakeCurlPath, 0o755)
+
+    const result = spawnSync('sh', ['scripts/install.sh'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fakeBinaryDirectory}:${process.env.PATH ?? ''}`,
+        HOME: homeDirectory,
+        TMPDIR: temporaryDownloadDirectory,
+        XDG_BIN_HOME: join(homeDirectory, '.local/bin'),
+        XDG_DATA_HOME: join(homeDirectory, '.local/share'),
+        XDG_CONFIG_HOME: join(homeDirectory, '.config'),
+        SELECTION_TRANSLATOR_VERSION: 'v0.2.0',
+        SELECTION_TRANSLATOR_REPOSITORY: 'example/translation'
+      }
+    })
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(`${result.stdout}\n${result.stderr}`, /SHA-256 校验通过/u)
+    assert.equal(
+      readFileSync(join(homeDirectory, '.local/bin/selection-translator'), 'utf8'),
+      assetContent
+    )
+    assert.equal(
+      existsSync(join(homeDirectory, '.local/share/applications/selection-translator.desktop')),
+      true
+    )
+    assert.equal(existsSync(join(homeDirectory, '.config/划词翻译/settings.json')), true)
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true })
+  }
+})
+
 test('Windows 一键安装脚本应检测架构并校验 SHA-256', () => {
   const script = readRepositoryFile('scripts/install.ps1')
 
-  assert.match(script, /GreyGunG\/translation/u)
+  assert.match(script, /zhq734\/translation/u)
   assert.match(script, /SELECTION_TRANSLATOR_VERSION/u)
+  assert.match(script, /GROKBUILD_VERSION/u)
   assert.match(script, /OSArchitecture/u)
   assert.match(script, /SHA256SUMS/u)
   assert.match(script, /Get-FileHash/u)
@@ -108,17 +181,32 @@ test('校验和生成脚本应只为可发布安装包生成 SHA256SUMS', () => 
   }
 })
 
-test('README 应提供一键安装命令和固定版本示例', () => {
-  const readme = readRepositoryFile('README.md')
+test('README 应默认使用英文并提供独立的简体中文文档', () => {
+  const englishReadme = readRepositoryFile('README.md')
+  const chineseReadme = readRepositoryFile('README.zh-CN.md')
 
-  assert.match(
-    readme,
-    /https:\/\/raw\.githubusercontent\.com\/GreyGunG\/translation\/main\/scripts\/install\.sh/u
-  )
-  assert.match(
-    readme,
-    /https:\/\/raw\.githubusercontent\.com\/GreyGunG\/translation\/main\/scripts\/install\.ps1/u
-  )
-  assert.match(readme, /SELECTION_TRANSLATOR_VERSION=v0\.2\.0/u)
-  assert.match(readme, /SHA-256/u)
+  assert.match(englishReadme, /^# Selection Translator$/mu)
+  assert.match(englishReadme, /\[简体中文\]\(\.\/README\.zh-CN\.md\)/u)
+  assert.doesNotMatch(englishReadme, /^## 中文文档$/mu)
+  assert.match(chineseReadme, /^# 划词翻译 · Selection Translator$/mu)
+  assert.match(chineseReadme, /\[English\]\(\.\/README\.md\)/u)
+  assert.doesNotMatch(chineseReadme, /^## English Documentation$/mu)
+})
+
+test('中英文 README 都应提供一键安装命令和固定版本示例', () => {
+  const readmes = [readRepositoryFile('README.md'), readRepositoryFile('README.zh-CN.md')]
+
+  for (const readme of readmes) {
+    assert.match(
+      readme,
+      /https:\/\/raw\.githubusercontent\.com\/zhq734\/translation\/master\/scripts\/install\.sh/u
+    )
+    assert.match(
+      readme,
+      /https:\/\/raw\.githubusercontent\.com\/zhq734\/translation\/master\/scripts\/install\.ps1/u
+    )
+    assert.match(readme, /SELECTION_TRANSLATOR_VERSION=v0\.2\.0/u)
+    assert.match(readme, /GROKBUILD_VERSION=v0\.2\.0/u)
+    assert.match(readme, /SHA-256/u)
+  }
 })

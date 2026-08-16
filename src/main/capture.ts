@@ -6,10 +6,21 @@ import {
   shouldRestoreClipboard
 } from '../shared/copyShortcutBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
+import { resolveSelectionCaptureStrategy } from '../shared/platformCapture'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
+
+// 使用 Windows user32.dll 向当前前台窗口发送 Ctrl+C，不抢占前台焦点。
+const WINDOWS_COPY = [
+  "$signature = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);';",
+  "Add-Type -MemberDefinition $signature -Name NativeKeyboard -Namespace SelectionTranslator;",
+  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero);",
+  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x43, 0, 0, [UIntPtr]::Zero);",
+  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x43, 0, 2, [UIntPtr]::Zero);",
+  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero);"
+].join(' ')
 
 export class PermissionError extends Error {}
 
@@ -19,15 +30,11 @@ export class PermissionError extends Error {}
  * @author zhenghq
  */
 export async function checkAccessibilityPermission(): Promise<boolean> {
-  if (process.platform === 'darwin') {
+  const strategy = resolveSelectionCaptureStrategy(process.platform)
+  if (strategy === 'macos-command-copy') {
     return systemPreferences.isTrustedAccessibilityClient(true)
   }
-  try {
-    await execFileP('osascript', ['-l', 'JavaScript', '-e', JXA_PROBE])
-    return true
-  } catch {
-    return false
-  }
+  return strategy !== 'unsupported'
 }
 
 // 用 CGEvent 发送 Cmd+C（keycode 8 = C 键，Command 修饰键）
@@ -42,25 +49,30 @@ const JXA_COPY = [
   '$.CGEventPost($.kCGHIDEventTap,u);'
 ].join('')
 
-// 无副作用的探测：发送一个空按键的 down+up（不会输入任何字符）
-const JXA_PROBE = [
-  "ObjC.import('CoreGraphics');",
-  'var s=$.CGEventSourceCreate($.kCGEventSourceStateCombinedSessionState);',
-  'var d=$.CGEventCreateKeyboardEvent(s,0,true);',
-  '$.CGEventPost($.kCGHIDEventTap,d);',
-  'var u=$.CGEventCreateKeyboardEvent(s,0,false);',
-  '$.CGEventPost($.kCGHIDEventTap,u);'
-].join('')
-
 /**
- * 通过 CGEvent 注入系统级 Cmd+C，复制当前前台应用的选中文字。
- * 需要「辅助功能」权限（Accessibility）。
+ * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用 user32.dll 注入 Ctrl+C。
+ * macOS 需要「辅助功能」权限（Accessibility）。
  * @returns 模拟复制完成后的 Promise。
  * @author zhenghq
  */
 export async function simulateCopy(): Promise<void> {
+  const strategy = resolveSelectionCaptureStrategy(process.platform)
+  if (strategy === 'linux-primary-selection') return
+  if (strategy === 'unsupported') throw new Error(`暂不支持当前平台：${process.platform}`)
+
   try {
-    await execFileP('osascript', ['-l', 'JavaScript', '-e', JXA_COPY])
+    if (strategy === 'macos-command-copy') {
+      await execFileP('osascript', ['-l', 'JavaScript', '-e', JXA_COPY])
+    } else {
+      await execFileP('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        WINDOWS_COPY
+      ])
+    }
   } catch (e) {
     const err = e as Error & { stderr?: string }
     const msg = String(err?.stderr ?? err?.message ?? err)
@@ -107,6 +119,9 @@ export async function captureSelection(
   }
 
   if (signal?.aborted) return ''
+  if (resolveSelectionCaptureStrategy(process.platform) === 'linux-primary-selection') {
+    return clipboard.readText('selection')
+  }
   signal?.addEventListener('abort', handleAbort, { once: true })
 
   const sentinel = `__SELECTION_TRANSLATOR_SENTINEL_${Date.now()}__`
