@@ -34,6 +34,7 @@
 - [Known Limitations](#known-limitations)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
+- [Friendly Links](#friendly-links)
 - [License](#license)
 
 ## Overview
@@ -522,6 +523,10 @@ Recommended workflow:
 6. Describe the change, test results, and compatibility considerations in the pull request.
 
 The project convention is to write code comments in Simplified Chinese and mark new or modified comment authors as `zhenghq`.
+
+## Friendly Links
+
+- [LINUX DO](https://linux.do/) — This project is shared in the community.
 
 ## License
 
