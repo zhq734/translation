@@ -81,6 +81,18 @@
         >
           高级
         </button>
+        <button
+          id="settings-tab-about"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-about"
+          data-tab="about"
+          tabindex="-1"
+        >
+          关于
+        </button>
       </nav>
 
       <div class="tab-panels">
@@ -294,6 +306,54 @@
               <p class="hint">停止后托盘图标和划词翻译功能都会退出，需要使用时请重新启动应用。</p>
               <button id="stop-service" class="btn danger">关闭并停止服务</button>
             </div>
+          </section>
+        </div>
+
+        <div
+          id="settings-panel-about"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-about"
+          data-tab-panel="about"
+          tabindex="0"
+          hidden
+        >
+          <section class="update-card">
+            <h2>版本与更新</h2>
+            <div class="update-summary">
+              <div>
+                <span class="update-label">当前版本</span>
+                <strong id="current-version">读取中…</strong>
+              </div>
+              <div>
+                <span class="update-label">最新版本</span>
+                <strong id="latest-version">尚未检查</strong>
+              </div>
+            </div>
+            <div id="update-progress" class="update-progress" hidden>
+              <progress id="update-progress-bar" max="100" value="0"></progress>
+              <span id="update-progress-text">0%</span>
+            </div>
+            <p id="update-status" class="status update-status" role="status" aria-live="polite">
+              正在读取更新状态…
+            </p>
+            <div class="update-actions">
+              <button id="check-update" class="btn" type="button">检查更新</button>
+              <button id="open-release" class="btn" type="button">打开发布页</button>
+              <button id="update-action" class="btn primary" type="button" hidden>
+                下载并安装
+              </button>
+            </div>
+            <p id="update-install-hint" class="hint update-install-hint">
+              正式打包版本会在启动后静默检查一次更新，不会在后台自动下载。
+            </p>
+          </section>
+
+          <section>
+            <h2>项目</h2>
+            <p class="hint">
+              划词翻译是一个支持 macOS、Windows 与 Linux 的桌面翻译工具。更新包来自项目公开的 GitHub Release。
+            </p>
           </section>
         </div>
       </div>

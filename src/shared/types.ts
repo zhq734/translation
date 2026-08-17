@@ -4,6 +4,48 @@ export type TriggerMode = 'auto' | 'button' | 'hotkey'
 /** 翻译请求使用的代理方式。 */
 export type ProxyMode = 'system' | 'direct' | 'custom'
 
+/** 自动更新当前所处阶段。 */
+export type UpdatePhase =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+/** 新版本采用的安装方式。 */
+export type UpdateInstallMode = 'automatic' | 'manual' | 'disabled'
+
+export interface UpdateProgress {
+  /** 下载完成百分比。 */
+  percent: number
+  /** 已下载字节数。 */
+  transferred: number
+  /** 更新包总字节数。 */
+  total: number
+  /** 当前每秒下载字节数。 */
+  bytesPerSecond: number
+}
+
+export interface UpdateStatus {
+  /** 自动更新当前阶段。 */
+  phase: UpdatePhase
+  /** 当前安装版本。 */
+  currentVersion: string
+  /** 检测到的最新版本。 */
+  latestVersion?: string
+  /** 当前平台采用的安装方式。 */
+  installMode: UpdateInstallMode
+  /** 面向用户的状态说明。 */
+  message: string
+  /** 下载进度，仅下载阶段存在。 */
+  progress?: UpdateProgress
+  /** 手动下载和错误降级使用的 GitHub Release 地址。 */
+  releaseUrl: string
+}
+
 export interface TranslatePayload {
   ok: boolean
   loading?: boolean
@@ -134,4 +176,43 @@ export interface Api {
   checkMicrosoft(): Promise<MicrosoftCheckStatus>
   getDockerCommand(port: number): Promise<string>
   openDeployDoc(): void
+
+  // 自动更新
+  /**
+   * 获取当前自动更新状态。
+   * @returns 当前自动更新状态。
+   * @author zhenghq
+   */
+  getUpdateStatus(): Promise<UpdateStatus>
+  /**
+   * 主动检查 GitHub Release 最新版本。
+   * @returns 检查请求发出后的自动更新状态。
+   * @author zhenghq
+   */
+  checkForUpdates(): Promise<UpdateStatus>
+  /**
+   * 下载更新；手动模式下打开 GitHub Release。
+   * @returns 操作完成后的自动更新状态。
+   * @author zhenghq
+   */
+  downloadUpdate(): Promise<UpdateStatus>
+  /**
+   * 安装已下载更新并重新启动应用。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  installUpdate(): void
+  /**
+   * 打开 GitHub Release 页面。
+   * @returns 页面打开完成后的 Promise。
+   * @author zhenghq
+   */
+  openUpdatePage(): Promise<void>
+  /**
+   * 订阅自动更新状态变化。
+   * @param cb 自动更新状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onUpdateStatusChanged(cb: (status: UpdateStatus) => void): () => void
 }

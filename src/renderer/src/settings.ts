@@ -4,7 +4,8 @@ import type {
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
   Settings,
-  TriggerMode
+  TriggerMode,
+  UpdateStatus
 } from '../../shared/types'
 
 const targetLang = document.getElementById('target-lang') as HTMLSelectElement
@@ -35,10 +36,20 @@ const dockerCmd = document.getElementById('docker-cmd') as HTMLTextAreaElement
 const dockerCopy = document.getElementById('docker-copy') as HTMLButtonElement
 const openDoc = document.getElementById('open-doc') as HTMLButtonElement
 const stopServiceButton = document.getElementById('stop-service') as HTMLButtonElement
+const currentVersion = document.getElementById('current-version') as HTMLElement
+const latestVersion = document.getElementById('latest-version') as HTMLElement
+const updateProgress = document.getElementById('update-progress') as HTMLElement
+const updateProgressBar = document.getElementById('update-progress-bar') as HTMLProgressElement
+const updateProgressText = document.getElementById('update-progress-text') as HTMLElement
+const updateStatus = document.getElementById('update-status') as HTMLElement
+const updateInstallHint = document.getElementById('update-install-hint') as HTMLElement
+const checkUpdateButton = document.getElementById('check-update') as HTMLButtonElement
+const updateActionButton = document.getElementById('update-action') as HTMLButtonElement
+const openReleaseButton = document.getElementById('open-release') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
-type SettingsTabId = 'general' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced'
+type SettingsTabId = 'general' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
@@ -46,7 +57,8 @@ const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'dingtalk',
   'microsoft',
   'deeplx',
-  'advanced'
+  'advanced',
+  'about'
 ]
 const SETTINGS_TAB_STORAGE_KEY = 'selection-translator.settings.active-tab'
 const settingsTabButtons = [
@@ -57,6 +69,7 @@ const settingsTabPanels = [
 ]
 
 let flashTimer: ReturnType<typeof setTimeout> | null = null
+let latestUpdateStatus: UpdateStatus | null = null
 
 /**
  * 判断字符串是否为受支持的设置页 Tab 标识。
@@ -328,6 +341,115 @@ async function initialize(): Promise<void> {
 
   renderSettings(await window.api.getSettings())
   dockerCmd.value = await window.api.getDockerCommand(1189)
+  renderUpdateStatus(await window.api.getUpdateStatus())
+}
+
+/**
+ * 将字节数格式化为适合更新进度显示的文本。
+ * @param bytes 字节数。
+ * @returns 自动选择 B、KB、MB 或 GB 后的文本。
+ * @author zhenghq
+ */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / 1024 ** unitIndex
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+/**
+ * 将主进程自动更新状态渲染为版本、进度和可执行操作。
+ * @param status 当前自动更新状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderUpdateStatus(status: UpdateStatus): void {
+  latestUpdateStatus = status
+  currentVersion.textContent = `v${status.currentVersion}`
+  latestVersion.textContent = status.latestVersion ? `v${status.latestVersion}` : '尚未检查'
+  updateStatus.textContent = status.message
+  updateStatus.className = status.phase === 'error'
+    ? 'status update-status offline'
+    : status.phase === 'not-available' || status.phase === 'downloaded'
+      ? 'status update-status online'
+      : 'status update-status'
+
+  const busy = status.phase === 'checking' || status.phase === 'downloading'
+  checkUpdateButton.disabled = busy || status.phase === 'disabled'
+  updateActionButton.disabled = busy
+  updateActionButton.hidden = status.phase !== 'available' && status.phase !== 'downloaded'
+  if (status.phase === 'downloaded') {
+    updateActionButton.textContent = '立即重启升级'
+  } else if (status.installMode === 'manual') {
+    updateActionButton.textContent = '打开下载页'
+  } else {
+    updateActionButton.textContent = '下载并安装'
+  }
+
+  const progress = status.progress
+  updateProgress.hidden = !progress || (status.phase !== 'downloading' && status.phase !== 'downloaded')
+  if (progress) {
+    const percent = Math.max(0, Math.min(100, progress.percent))
+    updateProgressBar.value = percent
+    updateProgressText.textContent = progress.total > 0
+      ? `${percent.toFixed(1)}% · ${formatBytes(progress.transferred)} / ${formatBytes(progress.total)} · ${formatBytes(progress.bytesPerSecond)}/s`
+      : `${percent.toFixed(1)}%`
+  }
+
+  if (status.phase === 'disabled') {
+    updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
+  } else if (status.installMode === 'manual') {
+    updateInstallHint.textContent = '当前系统不满足自动安装条件，检测到新版本后会打开 GitHub Release 手动安装。'
+  } else {
+    updateInstallHint.textContent = '检测到新版本后由你确认下载；下载完成后可立即重启并完成升级。'
+  }
+}
+
+/**
+ * 主动检查 GitHub Release 最新版本并刷新页面状态。
+ * @returns 检查完成后的 Promise。
+ * @author zhenghq
+ */
+async function checkApplicationUpdate(): Promise<void> {
+  try {
+    renderUpdateStatus(await window.api.checkForUpdates())
+  } catch (error) {
+    updateStatus.textContent = `检查更新失败：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  }
+}
+
+/**
+ * 根据当前状态下载更新、打开手动下载页或重启安装。
+ * @returns 操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function runUpdateAction(): Promise<void> {
+  if (latestUpdateStatus?.phase === 'downloaded') {
+    window.api.installUpdate()
+    return
+  }
+  try {
+    renderUpdateStatus(await window.api.downloadUpdate())
+  } catch (error) {
+    updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  }
+}
+
+/**
+ * 在系统默认浏览器中打开项目 GitHub Release 页面。
+ * @returns 页面打开完成后的 Promise。
+ * @author zhenghq
+ */
+async function openApplicationRelease(): Promise<void> {
+  try {
+    await window.api.openUpdatePage()
+  } catch (error) {
+    updateStatus.textContent = `无法打开发布页：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  }
 }
 
 /**
@@ -656,6 +778,10 @@ deeplxCheck.addEventListener('click', () => void checkDeepLxStatus())
 dockerCopy.addEventListener('click', () => void copyDockerCommand())
 openDoc.addEventListener('click', openDeployDocument)
 stopServiceButton.addEventListener('click', requestStopService)
+checkUpdateButton.addEventListener('click', () => void checkApplicationUpdate())
+updateActionButton.addEventListener('click', () => void runUpdateAction())
+openReleaseButton.addEventListener('click', () => void openApplicationRelease())
 window.api.onSettingsChanged(renderSettings)
+window.api.onUpdateStatusChanged(renderUpdateStatus)
 
 void initialize()

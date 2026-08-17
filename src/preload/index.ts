@@ -4,7 +4,8 @@ import type {
   TranslatePayload,
   Settings,
   DeepLxStatus,
-  DingTalkConfigPatch
+  DingTalkConfigPatch,
+  UpdateStatus
 } from '../shared/types'
 
 const api: Api = {
@@ -160,7 +161,48 @@ const api: Api = {
    * @returns 无返回值。
    * @author zhenghq
    */
-  openDeployDoc: () => ipcRenderer.send('deeplx:open-doc')
+  openDeployDoc: () => ipcRenderer.send('deeplx:open-doc'),
+  /**
+   * 获取当前自动更新状态。
+   * @returns 当前自动更新状态。
+   * @author zhenghq
+   */
+  getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:get-status'),
+  /**
+   * 主动检查 GitHub Release 最新版本。
+   * @returns 检查请求发出后的自动更新状态。
+   * @author zhenghq
+   */
+  checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:check'),
+  /**
+   * 下载新版本；手动模式下打开 GitHub Release。
+   * @returns 操作完成后的自动更新状态。
+   * @author zhenghq
+   */
+  downloadUpdate: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:download'),
+  /**
+   * 安装已下载更新并重新启动应用。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  installUpdate: () => ipcRenderer.send('updater:install'),
+  /**
+   * 打开 GitHub Release 页面。
+   * @returns 页面打开完成后的 Promise。
+   * @author zhenghq
+   */
+  openUpdatePage: (): Promise<void> => ipcRenderer.invoke('updater:open-release'),
+  /**
+   * 订阅自动更新状态变化。
+   * @param callback 自动更新状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onUpdateStatusChanged(callback: (status: UpdateStatus) => void) {
+    const listener = (_event: unknown, status: UpdateStatus): void => callback(status)
+    ipcRenderer.on('updater:status', listener)
+    return () => ipcRenderer.removeListener('updater:status', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

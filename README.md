@@ -189,6 +189,16 @@ For manual installation, download the matching asset from GitHub [Releases](../.
 
 Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` and `arm64` are supported; see [Development, Testing, and Packaging](#development-testing-and-packaging).
 
+### In-app update checks and upgrades
+
+- Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
+- Open **Settings → About** to view the current version, check manually, monitor download progress, and restart into a downloaded update;
+- Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
+- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. The current unsigned builds safely fall back to opening GitHub Releases for manual installation;
+- Source development mode does not access the update service. The Release-page fallback remains available after check or download failures.
+
+> The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
+
 ### Option 3: Run from Source
 
 ```bash
@@ -495,6 +505,7 @@ npm run release:checksums
 - `npm run dist:mac` creates macOS x64/arm64 `dmg` and `zip` packages;
 - `npm run dist:linux` creates Linux x64/arm64 AppImage packages; the x64 artifact uses `x86_64` in its file name;
 - `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers;
+- Every platform package creates a `latest*.yml` update manifest. macOS and Windows also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data;
 - `npm run release:checksums` creates `SHA256SUMS` for `.AppImage`, `.dmg`, `.zip`, and `.exe` files; upload it alongside all installers in the same Release;
 - All packaged files are written to `dist/`;
 - Platform packaging commands explicitly use `--publish never`, so electron-builder only creates local artifacts and cannot implicitly publish during a tag build;
@@ -509,13 +520,13 @@ The workflow runs unit tests and type checking first, then builds x64/arm64 inst
 1. Synchronize the package version from the tag;
 2. Collect installers from all three platforms;
 3. Generate `SHA256SUMS`;
-4. Create or update the matching GitHub Release and upload all installers and checksums.
+4. Create or update the matching GitHub Release and upload installers, `latest*.yml`, `.blockmap`, and checksums.
 
-For example, to publish `V1.0.3`:
+Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
 ```bash
-git tag V1.0.3
-git push origin V1.0.3
+git tag v1.0.4
+git push origin v1.0.4
 ```
 
 ### Testing
@@ -585,7 +596,7 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - Current packages are unsigned: macOS notarization and Windows code signing are not configured;
-- No account system, cloud sync, or automatic update is included yet; packages are currently unsigned and may require a manual security confirmation on first launch.
+- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; unsigned macOS builds and non-AppImage Linux builds fall back to manual installation.
 
 ## Roadmap
 
@@ -594,7 +605,7 @@ Potential future directions include:
 - English and additional in-app UI localizations;
 - More configurable providers and richer provider health status;
 - Better capture support through the macOS Accessibility API;
-- Signed/notarized releases, update checks, and a more complete distribution pipeline;
+- Improve signing, notarization, differential-update validation, and release monitoring;
 - Improve Windows and Linux runtime validation, code signing, and automated releases.
 
 ## Contributing

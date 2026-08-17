@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const TAB_IDS = ['general', 'dingtalk', 'microsoft', 'deeplx', 'advanced'] as const
+const TAB_IDS = ['general', 'dingtalk', 'microsoft', 'deeplx', 'advanced', 'about'] as const
 
 /**
  * 获取指定元素的开始标签，便于校验无框架设置页的可访问性属性。
@@ -17,7 +17,7 @@ function getOpeningTag(html: string, id: string): string {
   return match[0]
 }
 
-test('设置页应按五个配置类别展示可访问的 Tab 与对应面板', () => {
+test('设置页应按六个配置类别展示可访问的 Tab 与对应面板', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /role="tablist"[^>]+aria-label="设置分类"/u)
 
@@ -46,12 +46,14 @@ test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板'
   const microsoftIndex = html.indexOf('id="settings-panel-microsoft"')
   const deepLxIndex = html.indexOf('id="settings-panel-deeplx"')
   const advancedIndex = html.indexOf('id="settings-panel-advanced"')
+  const aboutIndex = html.indexOf('id="settings-panel-about"')
 
   assert.ok(generalIndex >= 0)
   assert.ok(dingTalkIndex > generalIndex)
   assert.ok(microsoftIndex > dingTalkIndex)
   assert.ok(deepLxIndex > microsoftIndex)
   assert.ok(advancedIndex > deepLxIndex)
+  assert.ok(aboutIndex > advancedIndex)
 
   assert.ok(html.indexOf('<h2>翻译语言</h2>') > generalIndex)
   assert.ok(html.indexOf('<h2>触发与弹窗</h2>') > generalIndex)
@@ -61,6 +63,7 @@ test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板'
   assert.ok(html.indexOf('<h2>自建 DeepLX</h2>') > deepLxIndex)
   assert.ok(html.indexOf('<h2>网络代理</h2>') > advancedIndex)
   assert.ok(html.indexOf('<h2>服务控制</h2>') > advancedIndex)
+  assert.ok(html.indexOf('<h2>版本与更新</h2>') > aboutIndex)
 })
 
 test('Tab 交互应支持点击、键盘导航、URL 查询参数和本地缓存恢复', () => {

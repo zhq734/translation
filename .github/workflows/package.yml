@@ -56,16 +56,24 @@ jobs:
             artifact_path: |
               dist/SelectionTranslator-*-mac-*.dmg
               dist/SelectionTranslator-*-mac-*.zip
+              dist/latest*.yml
+              dist/*.blockmap
           - name: Windows
             os: windows-2025
             command: dist:win
             artifact_name: packages-windows
-            artifact_path: dist/SelectionTranslator-*-Setup-*.exe
+            artifact_path: |
+              dist/SelectionTranslator-*-Setup-*.exe
+              dist/latest*.yml
+              dist/*.blockmap
           - name: Linux
             os: ubuntu-24.04
             command: dist:linux
             artifact_name: packages-linux
-            artifact_path: dist/SelectionTranslator-*-linux-*.AppImage
+            artifact_path: |
+              dist/SelectionTranslator-*-linux-*.AppImage
+              dist/latest*.yml
+              dist/*.blockmap
     runs-on: ${{ matrix.os }}
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'

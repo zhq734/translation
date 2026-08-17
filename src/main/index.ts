@@ -57,7 +57,8 @@ import type {
   DingTalkConfigPatch,
   MicrosoftCheckStatus,
   Settings,
-  DeepLxStatus
+  DeepLxStatus,
+  UpdateStatus
 } from '../shared/types'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
@@ -65,15 +66,19 @@ import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
 } from './appLifecycle'
+import { createApplicationUpdateManager } from './updater'
+import type { UpdateManager } from './updateManager'
 
 const isMac = process.platform === 'darwin'
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
 const SELECTION_SETTLE_DELAY_MS = 80
+const UPDATE_CHECK_DELAY_MS = 5000
 
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
+let updateManager: UpdateManager | null = null
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 const selectionCapture = new SelectionCaptureCoordinator(captureSelection)
@@ -88,6 +93,16 @@ let lastSelectionAnchor: { x: number; y: number } | undefined
 function getDingTalkConfiguration(): DingTalkConfigurationService {
   if (!dingTalkConfiguration) throw new Error('钉钉配置服务尚未初始化')
   return dingTalkConfiguration
+}
+
+/**
+ * 返回已初始化的自动更新管理器。
+ * @returns 自动更新管理器。
+ * @author zhenghq
+ */
+function getUpdateManager(): UpdateManager {
+  if (!updateManager) throw new Error('自动更新服务尚未初始化')
+  return updateManager
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -186,6 +201,9 @@ async function onReady(): Promise<boolean> {
   dingTalkConfiguration.initialize()
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
+  updateManager = await createApplicationUpdateManager((status) => {
+    broadcast('updater:status', status)
+  })
   console.log(
     '[main] 启动完成 autoTrigger =',
     getSettings().triggerMode === 'auto',
@@ -202,6 +220,9 @@ async function onReady(): Promise<boolean> {
   applySelectionListener()
   registerIpc()
   if (shouldOpenSettingsOnInitialLaunch(process.platform)) openSettings()
+
+  // 避免自动更新网络请求与应用首次启动初始化争用资源。
+  setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
 
   // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
   setTimeout(() => void warnIfNoAccessibility(), 1500)
@@ -702,6 +723,44 @@ function openDeployDoc(): void {
   })
 }
 
+// ---- 自动更新 ----
+
+/**
+ * 静默检查 GitHub Release 最新版本，并让状态事件负责界面更新。
+ * @returns 检查完成后的自动更新状态。
+ * @author zhenghq
+ */
+async function checkForApplicationUpdates(): Promise<UpdateStatus> {
+  return getUpdateManager().checkForUpdates()
+}
+
+/**
+ * 下载新版本；手动安装模式下打开 GitHub Release 页面。
+ * @returns 操作完成后的自动更新状态。
+ * @author zhenghq
+ */
+async function downloadApplicationUpdate(): Promise<UpdateStatus> {
+  return getUpdateManager().downloadUpdate()
+}
+
+/**
+ * 安装已经下载完成的更新并重新启动应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function installApplicationUpdate(): void {
+  getUpdateManager().installUpdate()
+}
+
+/**
+ * 使用系统默认浏览器打开 GitHub Release 页面。
+ * @returns 页面打开完成后的 Promise。
+ * @author zhenghq
+ */
+async function openApplicationReleasePage(): Promise<void> {
+  await getUpdateManager().openReleasePage()
+}
+
 /**
  * 保存钉钉公开配置和可选 ClientSecret，并在成功后广播脱敏设置。
  * @param patch 钉钉配置补丁。
@@ -842,6 +901,11 @@ function registerIpc(): void {
   ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
   ipcMain.on('deeplx:open-doc', () => openDeployDoc())
+  ipcMain.handle('updater:get-status', () => getUpdateManager().getStatus())
+  ipcMain.handle('updater:check', () => checkForApplicationUpdates())
+  ipcMain.handle('updater:download', () => downloadApplicationUpdate())
+  ipcMain.on('updater:install', () => installApplicationUpdate())
+  ipcMain.handle('updater:open-release', () => openApplicationReleasePage())
 }
 
 // ---- 托盘 ----

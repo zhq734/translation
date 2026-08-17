@@ -61,6 +61,8 @@ test('GitHub Actions 应上传各平台安装包产物', () => {
   assert.match(workflow, /dist\/SelectionTranslator-\*-mac-\*\.zip/u)
   assert.match(workflow, /dist\/SelectionTranslator-\*-Setup-\*\.exe/u)
   assert.match(workflow, /dist\/SelectionTranslator-\*-linux-\*\.AppImage/u)
+  assert.match(workflow, /dist\/latest\*\.yml/u)
+  assert.match(workflow, /dist\/\*\.blockmap/u)
   assert.match(workflow, /if-no-files-found:\s*error/u)
 })
 
@@ -82,4 +84,25 @@ test('GitHub Actions 应在标签构建后发布 Release 与 SHA256SUMS', () => 
   assert.match(workflow, /scripts\/generate-checksums\.mjs/u)
   assert.match(workflow, /gh release create/u)
   assert.match(workflow, /gh release upload/u)
+})
+
+/**
+ * 校验 electron-builder 使用公开 GitHub Release 作为更新源。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('打包配置应生成 GitHub 自动更新元数据', () => {
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies?: Record<string, string>
+    build?: { publish?: Array<Record<string, string>> }
+  }
+
+  assert.ok(packageJson.dependencies?.['electron-updater'])
+  assert.deepEqual(packageJson.build?.publish, [
+    {
+      provider: 'github',
+      owner: 'zhq734',
+      repo: 'translation'
+    }
+  ])
 })
