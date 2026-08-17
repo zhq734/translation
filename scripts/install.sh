@@ -5,6 +5,9 @@ REPOSITORY="${SELECTION_TRANSLATOR_REPOSITORY:-zhq734/translation}"
 REQUESTED_VERSION="${SELECTION_TRANSLATOR_VERSION:-${GROKBUILD_VERSION:-latest}}"
 PRODUCT_NAME="划词翻译"
 COMMAND_NAME="selection-translator"
+MACOS_BUNDLE_ID="com.selection.translator"
+MACOS_STOP_TIMEOUT_SECONDS="${SELECTION_TRANSLATOR_STOP_TIMEOUT_SECONDS:-8}"
+MACOS_FORCE_STOP_TIMEOUT_SECONDS="${SELECTION_TRANSLATOR_FORCE_STOP_TIMEOUT_SECONDS:-3}"
 TEMPORARY_DIRECTORY=""
 
 # 输出安装进度。
@@ -157,12 +160,190 @@ JSON
   log "已生成默认配置：$config_path"
 }
 
+# 通过 AppKit 按 Bundle ID 查询或终止 macOS 应用实例。
+# @param $1 操作名称，支持 list、terminate 或 forceTerminate。
+# @return list 操作在标准输出打印主进程 PID，其它操作无输出。
+# @author zhenghq
+run_macos_application_action() {
+  action="$1"
+  osascript -l JavaScript - "$action" "$MACOS_BUNDLE_ID" <<'JXA'
+/**
+ * 按操作名称查询或终止指定 Bundle ID 的 macOS 应用。
+ * @param {string[]} argv 操作名称和 Bundle ID。
+ * @returns 查询操作返回按行分隔的进程 PID，其它操作返回空字符串。
+ * @author zhenghq
+ */
+function run(argv) {
+  ObjC.import('AppKit')
+  const action = String(argv[0])
+  const bundleIdentifier = String(argv[1])
+  const applications = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleIdentifier)
+  const processIdentifiers = []
+
+  for (let index = 0; index < applications.count; index += 1) {
+    const application = applications.objectAtIndex(index)
+    if (action === 'list') {
+      processIdentifiers.push(String(application.processIdentifier))
+    } else if (action === 'terminate') {
+      application.terminate
+    } else if (action === 'forceTerminate') {
+      application.forceTerminate
+    } else {
+      throw new Error(`不支持的应用操作：${action}`)
+    }
+  }
+
+  return processIdentifiers.join('\n')
+}
+JXA
+}
+
+# 查询指定 Bundle ID 对应的 macOS 应用主进程。
+# @return 在标准输出按行打印主进程 PID，没有运行实例时输出为空。
+# @author zhenghq
+list_macos_application_pids() {
+  run_macos_application_action list
+}
+
+# 收集应用主进程及其全部后代进程，确保 Electron Helper 一并纳入等待范围。
+# @param $1 以空白分隔的应用主进程 PID。
+# @return 在标准输出按行打印去重后的进程树 PID。
+# @author zhenghq
+collect_macos_process_tree_pids() {
+  pending_pids="$1"
+  collected_pids=""
+
+  while [ -n "$pending_pids" ]; do
+    next_pids=""
+    for process_id in $pending_pids; do
+      case " $collected_pids " in
+        *" $process_id "*) continue ;;
+      esac
+      collected_pids="${collected_pids}${collected_pids:+ }${process_id}"
+      child_pids="$(pgrep -P "$process_id" 2>/dev/null || true)"
+      if [ -n "$child_pids" ]; then
+        next_pids="${next_pids}${next_pids:+ }${child_pids}"
+      fi
+    done
+    pending_pids="$next_pids"
+  done
+
+  for process_id in $collected_pids; do
+    printf '%s\n' "$process_id"
+  done
+}
+
+# 判断给定进程列表中是否仍有进程存活。
+# @param $1 以空白分隔的进程 PID。
+# @return 任一进程存活时返回 0，否则返回 1。
+# @author zhenghq
+has_running_macos_processes() {
+  for process_id in $1; do
+    if kill -0 "$process_id" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 校验 macOS 应用退出等待时间是否为非负整数。
+# @param $1 待校验的等待秒数。
+# @return 格式合法时正常返回，否则终止安装。
+# @author zhenghq
+validate_macos_exit_timeout() {
+  case "$1" in
+    ''|*[!0-9]*) fail 'macOS 应用退出等待时间必须是非负整数。' ;;
+  esac
+}
+
+# 在限定时间内等待 macOS 应用主进程及 Electron 子进程退出。
+# @param $1 以空白分隔的进程树 PID。
+# @param $2 最长等待秒数。
+# @return 全部退出时返回 0，超时时返回 1。
+# @author zhenghq
+wait_for_macos_application_exit() {
+  process_pids="$1"
+  remaining_seconds="$2"
+
+  while :; do
+    if ! has_running_macos_processes "$process_pids"; then
+      if ! running_application_pids="$(list_macos_application_pids)"; then
+        return 2
+      fi
+      [ -n "$running_application_pids" ] || return 0
+    fi
+    [ "$remaining_seconds" -gt 0 ] || return 1
+    sleep 1
+    remaining_seconds=$((remaining_seconds - 1))
+  done
+}
+
+# 强制终止仍存活的 macOS 应用主进程及 Electron 子进程。
+# @param $1 以空白分隔的进程树 PID。
+# @return 无返回值。
+# @author zhenghq
+force_terminate_macos_processes() {
+  run_macos_application_action forceTerminate >/dev/null
+  for process_id in $1; do
+    if kill -0 "$process_id" 2>/dev/null; then
+      kill -9 "$process_id" 2>/dev/null || true
+    fi
+  done
+}
+
+# 在覆盖应用文件前停止相同 Bundle ID 的所有 macOS 旧实例。
+# @return 全部旧实例退出时正常返回，否则终止安装。
+# @author zhenghq
+stop_macos_application_instances() {
+  validate_macos_exit_timeout "$MACOS_STOP_TIMEOUT_SECONDS"
+  validate_macos_exit_timeout "$MACOS_FORCE_STOP_TIMEOUT_SECONDS"
+
+  if ! application_pids="$(list_macos_application_pids)"; then
+    fail "无法按 Bundle ID ${MACOS_BUNDLE_ID} 查询旧实例。"
+  fi
+  [ -n "$application_pids" ] || return
+
+  process_tree_pids="$(collect_macos_process_tree_pids "$application_pids")"
+  log "检测到正在运行的旧实例（PID：$(printf '%s' "$application_pids" | tr '\n' ' ')），正在请求退出..."
+  run_macos_application_action terminate >/dev/null || fail '无法请求旧实例正常退出。'
+
+  if wait_for_macos_application_exit "$process_tree_pids" "$MACOS_STOP_TIMEOUT_SECONDS"; then
+    log '旧实例及其子进程已退出。'
+    return
+  else
+    wait_status="$?"
+    [ "$wait_status" -eq 1 ] || fail "无法按 Bundle ID ${MACOS_BUNDLE_ID} 确认旧实例退出状态。"
+  fi
+
+  log "旧实例未在 ${MACOS_STOP_TIMEOUT_SECONDS} 秒内退出，正在强制终止..."
+  if ! remaining_application_pids="$(list_macos_application_pids)"; then
+    fail "无法按 Bundle ID ${MACOS_BUNDLE_ID} 查询待强制终止的旧实例。"
+  fi
+  if [ -n "$remaining_application_pids" ]; then
+    remaining_process_tree_pids="$(collect_macos_process_tree_pids "$remaining_application_pids")"
+    process_tree_pids="${process_tree_pids}${process_tree_pids:+ }${remaining_process_tree_pids}"
+  fi
+  force_terminate_macos_processes "$process_tree_pids"
+  if wait_for_macos_application_exit "$process_tree_pids" "$MACOS_FORCE_STOP_TIMEOUT_SECONDS"; then
+    log '旧实例及其子进程已强制终止。'
+    return
+  else
+    wait_status="$?"
+    [ "$wait_status" -eq 1 ] || fail "无法按 Bundle ID ${MACOS_BUNDLE_ID} 确认强制终止结果。"
+  fi
+
+  fail '旧实例或其子进程仍未退出，已停止安装以避免覆盖正在使用的应用文件。'
+}
+
 # 将 macOS ZIP 中的应用安装到当前用户的 Applications 目录。
 # @param $1 已下载的 ZIP 路径。
 # @return 无返回值。
 # @author zhenghq
 install_macos_application() {
   require_command unzip
+  require_command osascript
+  require_command pgrep
+  require_command open
   extract_directory="$TEMPORARY_DIRECTORY/macos"
   mkdir -p "$extract_directory"
   unzip -q "$1" -d "$extract_directory"
@@ -172,6 +353,7 @@ install_macos_application() {
   install_directory="${SELECTION_TRANSLATOR_INSTALL_DIR:-$HOME/Applications}"
   destination="$install_directory/$(basename "$application_path")"
   mkdir -p "$install_directory"
+  stop_macos_application_instances
   if [ -e "$destination" ]; then
     rm -rf "$destination"
   fi
@@ -179,6 +361,8 @@ install_macos_application() {
   write_default_config "$HOME/Library/Application Support/$PRODUCT_NAME/settings.json"
   log "安装完成：$destination"
   log '首次启动后请在“系统设置 → 隐私与安全性 → 辅助功能”中授权。'
+  open "$destination"
+  log "已启动新安装的应用：$destination"
 }
 
 # 将 Linux AppImage 安装到当前用户目录并创建桌面入口。

@@ -91,6 +91,8 @@ export interface Api {
   hide(): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 停止后台翻译服务并退出应用。 */
+  stopService(): void
   /** 设置翻译弹窗是否固定。 */
   setPinned(pinned: boolean): void
   /** 订阅翻译弹窗固定状态变化。 */

@@ -26,6 +26,7 @@ const deeplxCheck = document.getElementById('deeplx-check') as HTMLButtonElement
 const dockerCmd = document.getElementById('docker-cmd') as HTMLTextAreaElement
 const dockerCopy = document.getElementById('docker-copy') as HTMLButtonElement
 const openDoc = document.getElementById('open-doc') as HTMLButtonElement
+const stopServiceButton = document.getElementById('stop-service') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
@@ -363,6 +364,19 @@ function openDeployDocument(): void {
   window.api.openDeployDoc()
 }
 
+/**
+ * 确认后关闭设置窗口并停止后台翻译服务。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function requestStopService(): void {
+  const confirmed = window.confirm(
+    '停止服务后，托盘图标和划词翻译功能都会退出。需要使用时请重新启动应用。确定停止吗？'
+  )
+  if (!confirmed) return
+  window.api.stopService()
+}
+
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
@@ -378,6 +392,7 @@ deeplxUrl.addEventListener('change', saveDeepLxUrl)
 deeplxCheck.addEventListener('click', () => void checkDeepLxStatus())
 dockerCopy.addEventListener('click', () => void copyDockerCommand())
 openDoc.addEventListener('click', openDeployDocument)
+stopServiceButton.addEventListener('click', requestStopService)
 window.api.onSettingsChanged(renderSettings)
 
 void initialize()

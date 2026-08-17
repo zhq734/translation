@@ -239,6 +239,34 @@ input[type='password']:disabled {
   background: var(--button-bg-hover);
 }
 
+.btn.danger {
+  border-color: var(--status-error);
+  background: var(--button-secondary-bg);
+  color: var(--status-error);
+}
+
+.btn.danger:hover {
+  background: var(--status-error);
+  color: var(--button-text);
+}
+
+.service-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.service-control-row .hint {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.service-control-row .btn {
+  flex: 0 0 auto;
+}
+
 .saved {
   position: sticky;
   bottom: 14px;
@@ -275,5 +303,14 @@ input[type='password']:disabled {
 
   .dingtalk-status {
     text-align: left;
+  }
+
+  .service-control-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-control-row .btn {
+    width: 100%;
   }
 }

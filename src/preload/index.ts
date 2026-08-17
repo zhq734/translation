@@ -39,6 +39,14 @@ const api: Api = {
     ipcRenderer.send('settings:open')
   },
   /**
+   * 停止后台翻译服务并退出应用。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  stopService() {
+    ipcRenderer.send('settings:stop-service')
+  },
+  /**
    * 设置翻译弹窗是否固定。
    * @param pinned 是否固定弹窗。
    * @returns 无返回值。
