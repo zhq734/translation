@@ -513,6 +513,24 @@ npm run release:checksums
 - 发布时必须把所有安装包与 `SHA256SUMS` 上传到同一个 GitHub Release，一键安装脚本才能完成下载与校验；
 - 建议在各目标平台完成安装验证；跨平台打包时需要联网下载目标平台 Electron、NSIS 或 AppImage 工具链。
 
+### GitHub Actions 多平台打包
+
+仓库内置 `.github/workflows/package.yml`，可在 GitHub 的 **Actions → 多平台打包 → Run workflow** 中手动执行。手动执行时可以填写版本号，例如 `V1.0.3`；留空则使用 `package.json` 中的版本。
+
+工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建 x64/arm64 安装包，并把各平台产物上传到本次 Actions 运行记录中。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
+
+1. 使用标签中的版本号同步安装包版本；
+2. 汇总三个平台的安装包；
+3. 生成 `SHA256SUMS`；
+4. 创建或更新同名 GitHub Release，并上传所有安装包与校验和。
+
+例如发布 `V1.0.3`：
+
+```bash
+git tag V1.0.3
+git push origin V1.0.3
+```
+
 ### 测试说明
 
 项目使用 Node.js 内置测试运行器，`scripts/run-tests.mjs` 会先用 esbuild 将 TypeScript 测试临时打包，再执行测试。测试覆盖：

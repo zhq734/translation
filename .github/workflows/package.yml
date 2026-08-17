@@ -1,0 +1,148 @@
+name: 多平台打包
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 可选版本号，例如 V1.0.3；留空时使用 package.json 中的版本
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+      - 'V*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 测试与类型检查
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 运行单元测试
+        run: npm test
+
+      - name: 运行类型检查
+        run: npm run typecheck
+
+  package:
+    name: 打包 ${{ matrix.name }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-15-intel
+            command: dist:mac
+            artifact_name: packages-macos
+            artifact_path: |
+              dist/SelectionTranslator-*-mac-*.dmg
+              dist/SelectionTranslator-*-mac-*.zip
+          - name: Windows
+            os: windows-2025
+            command: dist:win
+            artifact_name: packages-windows
+            artifact_path: dist/SelectionTranslator-*-Setup-*.exe
+          - name: Linux
+            os: ubuntu-24.04
+            command: dist:linux
+            artifact_name: packages-linux
+            artifact_path: dist/SelectionTranslator-*-linux-*.AppImage
+    runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 同步发布版本
+        if: startsWith(github.ref, 'refs/tags/') || inputs.version != ''
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="$REQUESTED_VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="$GITHUB_REF_NAME"
+          fi
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION#V}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: 构建安装包
+        run: npm run ${{ matrix.command }}
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: 发布 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: 下载全部安装包
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: 生成 SHA-256 校验和
+        run: node scripts/generate-checksums.mjs --directory release-assets
+
+      - name: 创建或更新 GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber

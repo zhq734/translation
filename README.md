@@ -499,6 +499,24 @@ npm run release:checksums
 - All packaged files are written to `dist/`;
 - Install-test each target package on a matching real device before release. Cross-building may download target Electron, NSIS, or AppImage toolchains.
 
+### GitHub Actions Multi-Platform Packaging
+
+The repository includes `.github/workflows/package.yml`. Run it manually from **Actions → Multi-Platform Packaging → Run workflow**. An optional version such as `V1.0.3` can be supplied; otherwise, the version from `package.json` is used.
+
+The workflow runs unit tests and type checking first, then builds x64/arm64 installers on native macOS, Windows, and Linux runners and uploads the platform artifacts to the workflow run. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
+
+1. Synchronize the package version from the tag;
+2. Collect installers from all three platforms;
+3. Generate `SHA256SUMS`;
+4. Create or update the matching GitHub Release and upload all installers and checksums.
+
+For example, to publish `V1.0.3`:
+
+```bash
+git tag V1.0.3
+git push origin V1.0.3
+```
+
 ### Testing
 
 The project uses Node.js's built-in test runner. `scripts/run-tests.mjs` bundles TypeScript test entries with esbuild into a temporary directory and then executes them. Tests cover selection gestures, trigger modes, shortcut protection, clipboard text/image preservation, language resolution, settings migration, proxy handling, DingTalk authentication and encrypted credential storage, Bing page-parameter parsing and Microsoft fallback behavior, and provider settings UI contracts.
