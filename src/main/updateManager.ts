@@ -120,6 +120,7 @@ export interface UpdateManagerOptions {
  * @param packaged 当前应用是否为正式打包版本。
  * @param linuxAppImage Linux 是否从 AppImage 运行。
  * @param macSigned macOS 应用是否通过代码签名校验。
+ * @param macDiskImage macOS 应用是否仍从已挂载的 DMG 中运行。
  * @returns 自动安装、手动安装或禁用模式。
  * @author zhenghq
  */
@@ -127,10 +128,11 @@ export function resolveUpdateInstallMode(
   platform: NodeJS.Platform,
   packaged: boolean,
   linuxAppImage: boolean,
-  macSigned: boolean
+  macSigned: boolean,
+  macDiskImage = false
 ): UpdateInstallMode {
   if (!packaged) return 'disabled'
-  if (platform === 'darwin') return macSigned ? 'automatic' : 'manual'
+  if (platform === 'darwin') return macSigned && !macDiskImage ? 'automatic' : 'manual'
   if (platform === 'linux') return linuxAppImage ? 'automatic' : 'manual'
   return platform === 'win32' ? 'automatic' : 'manual'
 }
@@ -146,6 +148,26 @@ export function resolveMacOSAppBundlePath(executablePath: string): string | null
   const markerIndex = executablePath.indexOf(marker)
   if (markerIndex < 0) return null
   return executablePath.slice(0, markerIndex + '.app'.length)
+}
+
+/**
+ * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
+ * @param error 自动更新异常。
+ * @returns 适合直接展示在设置页的错误信息。
+ * @author zhenghq
+ */
+function formatUpdateErrorMessage(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
+  if (metadataMatch && /\b404\b/u.test(rawMessage)) {
+    return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
+  }
+
+  const firstLine = rawMessage.split(/\r?\n/u, 1)[0].replace(/\s+/gu, ' ').trim()
+  const conciseMessage = firstLine.length > 240
+    ? `${firstLine.slice(0, 239)}…`
+    : firstLine
+  return `更新失败：${conciseMessage || '未知错误'}`
 }
 
 /**
@@ -329,13 +351,12 @@ export class UpdateManager {
    * 将底层异常转换为设置页可展示的错误状态。
    * @param error 自动更新异常。
    * @returns 无返回值。
-   * @author zhenghq
-   */
+  * @author zhenghq
+  */
   private handleError(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error)
     this.setStatus({
       phase: 'error',
-      message: `更新失败：${message || '未知错误'}`,
+      message: formatUpdateErrorMessage(error),
       progress: undefined
     })
   }

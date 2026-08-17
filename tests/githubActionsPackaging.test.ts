@@ -87,6 +87,23 @@ test('GitHub Actions 应在标签构建后发布 Release 与 SHA256SUMS', () => 
 })
 
 /**
+ * 校验新 Release 在全部安装包和更新清单上传完成后才公开，避免客户端读取到不完整资产。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('GitHub Actions 应先使用草稿 Release 上传全部资产再正式发布', () => {
+  const workflow = readPackagingWorkflow()
+  const createIndex = workflow.indexOf('gh release create "$GITHUB_REF_NAME"')
+  const uploadIndex = workflow.indexOf('gh release upload "$GITHUB_REF_NAME"')
+  const publishIndex = workflow.indexOf('gh release edit "$GITHUB_REF_NAME" --draft=false')
+
+  assert.ok(createIndex >= 0)
+  assert.match(workflow.slice(createIndex, uploadIndex), /--draft/u)
+  assert.ok(uploadIndex > createIndex)
+  assert.ok(publishIndex > uploadIndex)
+})
+
+/**
  * 校验 electron-builder 使用公开 GitHub Release 作为更新源。
  * @returns 无返回值。
  * @author zhenghq

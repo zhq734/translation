@@ -8,6 +8,7 @@ import {
   type UpdateInfo
 } from 'electron-updater'
 import type { UpdateStatus } from '../shared/types'
+import { isMacOSDiskImageExecution } from './appLifecycle'
 import {
   UpdateManager,
   resolveMacOSAppBundlePath,
@@ -104,7 +105,8 @@ export async function createApplicationUpdateManager(
     process.platform,
     app.isPackaged,
     Boolean(process.env['APPIMAGE']),
-    macSigned
+    macSigned,
+    isMacOSDiskImageExecution(process.platform, process.execPath)
   )
 
   return new UpdateManager({

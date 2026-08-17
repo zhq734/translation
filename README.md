@@ -520,7 +520,7 @@ The workflow runs unit tests and type checking first, then builds x64/arm64 inst
 1. Synchronize the package version from the tag;
 2. Collect installers from all three platforms;
 3. Generate `SHA256SUMS`;
-4. Create or update the matching GitHub Release and upload installers, `latest*.yml`, `.blockmap`, and checksums.
+4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 

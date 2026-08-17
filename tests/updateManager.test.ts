@@ -90,6 +90,7 @@ test('更新安装模式应根据打包状态、平台、签名和 AppImage 环�
   assert.equal(resolveUpdateInstallMode('win32', false, false, false), 'disabled')
   assert.equal(resolveUpdateInstallMode('win32', true, false, false), 'automatic')
   assert.equal(resolveUpdateInstallMode('darwin', true, false, true), 'automatic')
+  assert.equal(resolveUpdateInstallMode('darwin', true, false, true, true), 'manual')
   assert.equal(resolveUpdateInstallMode('darwin', true, false, false), 'manual')
   assert.equal(resolveUpdateInstallMode('linux', true, true, false), 'automatic')
   assert.equal(resolveUpdateInstallMode('linux', true, false, false), 'manual')
@@ -168,4 +169,19 @@ test('驱动异常应转为可展示的错误状态并保留手动下载入口',
 
   await manager.openReleasePage()
   assert.equal(openedUrls.length, 1)
+})
+
+test('Release 缺少更新清单时应显示简短中文提示而不是底层调用栈', () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.error(new Error(
+    'Cannot find latest-mac.yml in the latest release artifacts: HttpError: 404\n' +
+    'at createHttpError (/app/node_modules/builder-util-runtime/out/httpExecutor.js:53:12)'
+  ))
+
+  assert.equal(
+    manager.getStatus().message,
+    '当前 GitHub Release 缺少自动更新清单 latest-mac.yml，请稍后重新检查或打开发布页手动安装'
+  )
+  assert.doesNotMatch(manager.getStatus().message, /createHttpError|node_modules/u)
 })

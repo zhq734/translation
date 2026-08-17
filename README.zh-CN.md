@@ -534,7 +534,7 @@ npm run release:checksums
 1. 使用标签中的版本号同步安装包版本；
 2. 汇总三个平台的安装包；
 3. 生成 `SHA256SUMS`；
-4. 创建或更新同名 GitHub Release，并上传所有安装包、`latest*.yml`、`.blockmap` 与校验和。
+4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
 建议统一使用小写版本标签，例如发布 `v1.0.4`：
 
