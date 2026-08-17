@@ -72,6 +72,40 @@
       </section>
 
       <section>
+        <h2>微软翻译</h2>
+        <p class="hint">
+          使用 Azure AI Translator Text v3。订阅密钥仅在本机安全保存；区域资源或多服务资源请填写 Region，全局单服务资源可留空。
+        </p>
+        <div class="row">
+          <label for="microsoft-enabled">启用通道</label>
+          <label class="checkbox-control" for="microsoft-enabled">
+            <input id="microsoft-enabled" type="checkbox" />
+            <span>在免费通道前使用微软翻译</span>
+          </label>
+        </div>
+        <div class="row">
+          <label for="microsoft-region">Region</label>
+          <input id="microsoft-region" type="text" autocomplete="off" placeholder="如 eastasia；全局资源可留空" />
+        </div>
+        <div class="row">
+          <label for="microsoft-subscription-key">订阅密钥</label>
+          <input
+            id="microsoft-subscription-key"
+            type="password"
+            autocomplete="new-password"
+            placeholder="留空可保留已配置的订阅密钥"
+          />
+        </div>
+        <p id="microsoft-key-status" class="field-hint microsoft-key-status">订阅密钥未配置</p>
+        <div class="provider-actions microsoft-actions">
+          <button id="microsoft-save" class="btn primary">保存微软配置</button>
+          <button id="microsoft-clear-key" class="btn">清除密钥</button>
+          <button id="microsoft-check" class="btn">检测配置</button>
+        </div>
+        <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite">未检测</p>
+      </section>
+
+      <section>
         <h2>触发与弹窗</h2>
         <div class="row">
           <label for="trigger-mode">触发方式</label>
@@ -125,6 +159,7 @@
         <p class="hint">按优先级依次尝试，失败自动切换下一个；悬浮窗底部会显示实际使用的通道。</p>
         <ol class="channels">
           <li><b>钉钉翻译</b> — 启用且配置完整时优先使用</li>
+          <li><b>微软翻译</b> — 启用且配置完整时，在免费通道前使用</li>
           <li><b>自建 DeepLX</b> — 可配置，最稳定（推荐）</li>
           <li><b>公共 DeepLX</b> — 免费，可能限流</li>
           <li><b>Google</b> — 免费，部分网络需配置代理</li>

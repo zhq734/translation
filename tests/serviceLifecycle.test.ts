@@ -68,6 +68,19 @@ test('首次启动应采用平台策略，托盘菜单和第二实例应按需�
   )
 })
 
+test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快捷键触发模式', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const toggleLabel = "label: '划词后自动显示“译”按钮'"
+  const toggleIndex = mainSource.indexOf(toggleLabel)
+  const targetLanguageIndex = mainSource.indexOf("label: '目标语言'", toggleIndex)
+
+  assert.ok(toggleIndex >= 0 && toggleIndex < targetLanguageIndex)
+  assert.match(
+    mainSource,
+    /label:\s*'划词后自动显示“译”按钮',[\s\S]*?type:\s*'checkbox',[\s\S]*?checked:\s*settings\.triggerMode\s*===\s*'button',[\s\S]*?click:\s*\(menuItem\)\s*=>[\s\S]*?triggerMode:\s*menuItem\.checked\s*\?\s*'button'\s*:\s*'hotkey'/u
+  )
+})
+
 test('初始化失败和显式退出应关闭应用并清理全部全局资源', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
 

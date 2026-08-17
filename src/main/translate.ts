@@ -1,14 +1,19 @@
-import type { DingTalkCheckStatus, Settings } from '../shared/types'
+import type { DingTalkCheckStatus, MicrosoftCheckStatus, Settings } from '../shared/types'
 import type { DingTalkCredentials } from './dingtalkConfig'
 import { DingTalkError, toDingTalkCheckStatus } from './dingtalkErrors'
 import { resolveDingTalkLanguagePair } from './dingtalkLanguage'
 import { DingTalkTokenManager, type DingTalkFetch } from './dingtalkTokenManager'
 import { DingTalkTranslationClient } from './dingtalkTranslation'
+import type { MicrosoftCredentials } from './microsoftConfig'
+import { MicrosoftError, toMicrosoftCheckStatus } from './microsoftErrors'
+import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
+import { MicrosoftTranslationClient } from './microsoftTranslation'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
 const GOOGLE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
 const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get'
 const DINGTALK_CHANNEL = '钉钉翻译'
+const MICROSOFT_CHANNEL = '微软翻译'
 
 const MAX_CHARS = 5000
 const GOOGLE_MAX_CHARS = 2000
@@ -49,7 +54,7 @@ interface TranslationChannel {
 }
 
 /**
- * 封装翻译结果缓存、通道熔断、钉钉 Token 和多通道自动降级编排。
+ * 封装翻译结果缓存、通道熔断、钉钉 Token、微软 Translator 和多通道自动降级编排。
  * @param options 网络和时钟依赖。
  * @returns 可独立测试和重置的翻译运行时实例。
  * @author zhenghq
@@ -59,6 +64,7 @@ export class TranslationRuntime {
   private readonly breaker = new Map<string, number>()
   private readonly now: () => number
   private readonly dingTalkClient: DingTalkTranslationClient
+  private readonly microsoftClient: MicrosoftTranslationClient
 
   constructor(private readonly options: TranslationRuntimeOptions) {
     this.now = options.now ?? Date.now
@@ -67,27 +73,35 @@ export class TranslationRuntime {
       fetch: options.fetch,
       tokenManager
     })
+    this.microsoftClient = new MicrosoftTranslationClient({ fetch: options.fetch })
   }
 
   /**
-   * 按钉钉、自建 DeepLX、公共 DeepLX、Google、MyMemory 顺序执行翻译并自动降级。
+   * 按钉钉、微软、自建 DeepLX、公共 DeepLX、Google、MyMemory 顺序执行翻译并自动降级。
    * @param text 待翻译文本。
    * @param settings 当前公开设置快照。
    * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+   * @param microsoftCredentials 主进程解密后的微软凭证快照。
    * @returns 首个成功通道的统一翻译结果。
    * @author zhenghq
    */
   async translate(
     text: string,
     settings: Settings,
-    dingTalkCredentials: DingTalkCredentials | null = null
+    dingTalkCredentials: DingTalkCredentials | null = null,
+    microsoftCredentials: MicrosoftCredentials | null = null
   ): Promise<TranslateOutput> {
     const input = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text
     const key = this.cacheKey(input, settings.sourceLang, settings.targetLang)
     const hit = this.cache.get(key)
     if (hit) return { translation: hit, channel: '缓存' }
 
-    const channels = this.createChannels(input, settings, dingTalkCredentials)
+    const channels = this.createChannels(
+      input,
+      settings,
+      dingTalkCredentials,
+      microsoftCredentials
+    )
     let lastError = '所有翻译通道均失败'
     for (const channel of channels) {
       if (this.isTripped(channel.name)) {
@@ -134,6 +148,38 @@ export class TranslationRuntime {
   }
 
   /**
+   * 不经过普通翻译缓存检测微软订阅密钥和文本翻译链路。
+   * @param credentials 当前主进程微软凭证快照。
+   * @returns 设置页可展示的结构化脱敏状态。
+   * @author zhenghq
+   */
+  async checkMicrosoft(credentials: MicrosoftCredentials | null): Promise<MicrosoftCheckStatus> {
+    if (!credentials) {
+      return toMicrosoftCheckStatus(new MicrosoftError('configuration', '微软翻译配置不完整'))
+    }
+    try {
+      await this.microsoftClient.translate('你好', {
+        supported: true,
+        sourceLanguage: 'zh-Hans',
+        targetLanguage: 'en'
+      }, credentials)
+      return { ok: true, code: 'available', message: '微软翻译在线且可用' }
+    } catch (error) {
+      return toMicrosoftCheckStatus(error)
+    }
+  }
+
+  /**
+   * 在微软配置变化后清理全部结果缓存和微软熔断状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resetMicrosoftRuntime(): void {
+    this.cache.clear()
+    this.resetBreaker(MICROSOFT_CHANNEL)
+  }
+
+  /**
    * 在钉钉配置变化后清理全部结果缓存、Token/Promise 和钉钉熔断状态。
    * @returns 无返回值。
    * @author zhenghq
@@ -148,27 +194,42 @@ export class TranslationRuntime {
    * 根据配置和语言对构建本次翻译通道列表。
    * @param text 已截断的待翻译文本。
    * @param settings 当前公开设置。
-   * @param credentials 当前主进程钉钉凭证快照。
+   * @param dingTalkCredentials 当前主进程钉钉凭证快照。
+   * @param microsoftCredentials 当前主进程微软凭证快照。
    * @returns 按优先级排列的翻译通道。
    * @author zhenghq
    */
   private createChannels(
     text: string,
     settings: Settings,
-    credentials: DingTalkCredentials | null
+    dingTalkCredentials: DingTalkCredentials | null,
+    microsoftCredentials: MicrosoftCredentials | null
   ): TranslationChannel[] {
     const channels: TranslationChannel[] = []
     if (settings.dingTalkEnabled &&
         settings.dingTalkCorpId &&
         settings.dingTalkClientId &&
         settings.dingTalkSecretConfigured &&
-        credentials) {
+        dingTalkCredentials) {
       const pair = resolveDingTalkLanguagePair(text, settings.sourceLang, settings.targetLang)
       if (pair.supported) {
         channels.push({
           name: DINGTALK_CHANNEL,
           cooldownMs: 60_000,
-          run: () => this.dingTalkClient.translate(text, pair, credentials)
+          run: () => this.dingTalkClient.translate(text, pair, dingTalkCredentials)
+        })
+      }
+    }
+
+    if (settings.microsoftEnabled &&
+        settings.microsoftSubscriptionKeyConfigured &&
+        microsoftCredentials) {
+      const pair = resolveMicrosoftLanguagePair(settings.sourceLang, settings.targetLang)
+      if (pair.supported) {
+        channels.push({
+          name: MICROSOFT_CHANNEL,
+          cooldownMs: 60_000,
+          run: () => this.microsoftClient.translate(text, pair, microsoftCredentials)
         })
       }
     }
@@ -386,15 +447,17 @@ export function configureTranslationFetch(fetch: DingTalkFetch): void {
  * @param text 待翻译文本。
  * @param settings 当前公开设置快照。
  * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+ * @param microsoftCredentials 主进程解密后的微软凭证快照。
  * @returns 翻译结果。
  * @author zhenghq
  */
 export function translate(
   text: string,
   settings: Settings,
-  dingTalkCredentials: DingTalkCredentials | null = null
+  dingTalkCredentials: DingTalkCredentials | null = null,
+  microsoftCredentials: MicrosoftCredentials | null = null
 ): Promise<TranslateOutput> {
-  return defaultRuntime.translate(text, settings, dingTalkCredentials)
+  return defaultRuntime.translate(text, settings, dingTalkCredentials, microsoftCredentials)
 }
 
 /**
@@ -414,4 +477,25 @@ export function checkDingTalk(credentials: DingTalkCredentials | null): Promise<
  */
 export function resetDingTalkTranslationRuntime(): void {
   defaultRuntime.resetDingTalkRuntime()
+}
+
+/**
+ * 使用默认运行时执行不污染普通翻译缓存的微软配置检测。
+ * @param credentials 当前主进程微软凭证快照。
+ * @returns 结构化脱敏检测状态。
+ * @author zhenghq
+ */
+export function checkMicrosoft(
+  credentials: MicrosoftCredentials | null
+): Promise<MicrosoftCheckStatus> {
+  return defaultRuntime.checkMicrosoft(credentials)
+}
+
+/**
+ * 清理默认翻译运行时中的结果缓存和微软熔断状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetMicrosoftTranslationRuntime(): void {
+  defaultRuntime.resetMicrosoftRuntime()
 }

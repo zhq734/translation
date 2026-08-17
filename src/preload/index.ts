@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, TranslatePayload, Settings, DeepLxStatus, DingTalkConfigPatch } from '../shared/types'
+import type {
+  Api,
+  TranslatePayload,
+  Settings,
+  DeepLxStatus,
+  DingTalkConfigPatch,
+  MicrosoftConfigPatch
+} from '../shared/types'
 
 const api: Api = {
   /**
@@ -135,6 +142,27 @@ const api: Api = {
    * @author zhenghq
    */
   checkDingTalk: () => ipcRenderer.invoke('dingtalk:check'),
+  /**
+   * 保存微软公开配置和可选订阅密钥。
+   * @param patch 微软翻译配置补丁。
+   * @returns 保存后的脱敏设置。
+   * @author zhenghq
+   */
+  setMicrosoftConfig: (patch: MicrosoftConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('microsoft:configure', patch),
+  /**
+   * 显式清除微软 Translator 订阅密钥。
+   * @returns 清除后的脱敏设置。
+   * @author zhenghq
+   */
+  clearMicrosoftSubscriptionKey: (): Promise<Settings> =>
+    ipcRenderer.invoke('microsoft:clear-key'),
+  /**
+   * 检测微软 Translator 文本翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkMicrosoft: () => ipcRenderer.invoke('microsoft:check'),
   /**
    * 生成 DeepLX Docker 命令。
    * @param port 本机映射端口。

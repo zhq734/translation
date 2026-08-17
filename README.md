@@ -28,6 +28,7 @@
 - [Translation Providers and Fallback](#translation-providers-and-fallback)
 - [Configure Self-hosted DeepLX](#configure-self-hosted-deeplx)
 - [Configure DingTalk Enterprise Translation](#configure-dingtalk-enterprise-translation)
+- [Configure Microsoft Translator](#configure-microsoft-translator)
 - [Privacy and Security](#privacy-and-security)
 - [Project Structure](#project-structure)
 - [Development, Testing, and Packaging](#development-testing-and-packaging)
@@ -49,7 +50,7 @@ Typical use cases include:
 - Reading English websites, technical documentation, papers, and PDFs;
 - Looking up words or short phrases in an IDE, terminal, Office app, or chat client;
 - Reviewing translations repeatedly without leaving the current workflow;
-- Using a self-hosted DeepLX service or an enterprise DingTalk translation application.
+- Using Microsoft Translator, a self-hosted DeepLX service, or an enterprise DingTalk translation application.
 
 ## Features
 
@@ -63,11 +64,12 @@ Typical use cases include:
 - **Configurable auto-hide**: disabled, 3, 5, 8, or 15 seconds.
 - **Automatic Chinese/English direction**: Chinese text defaults to English; other text defaults to Chinese when the target language is set to automatic mode.
 - **Manual source and target language selection** with a built-in list of 29 languages.
-- **Provider fallback** across DingTalk, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
+- **Provider fallback** across DingTalk, Microsoft Translator, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
 - **Translation cache and circuit breaker** to reuse successful results and temporarily skip failing providers.
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
+- **Microsoft Translator integration** with configuration checks, optional Azure region, and encrypted subscription-key storage.
 - **Self-hosted DeepLX integration** with endpoint health checks and a generated Docker command.
 - **Light and dark appearance** following the operating system color scheme.
 - **Menu-bar controls** for languages, settings, and quitting the application.
@@ -106,15 +108,17 @@ flowchart LR
     D --> E[Resolve language pair]
     E --> F{Provider priority}
     F --> G[DingTalk]
-    G -->|Unavailable or failed| H[Self-hosted DeepLX]
-    H -->|Failed| I[Public DeepLX]
-    I -->|Failed| J[Google]
-    J -->|Failed| K[MyMemory]
-    G --> L[Show result in popup]
-    H --> L
-    I --> L
-    J --> L
-    K --> L
+    G -->|Unavailable or failed| H[Microsoft Translator]
+    H -->|Unavailable or failed| I[Self-hosted DeepLX]
+    I -->|Failed| J[Public DeepLX]
+    J -->|Failed| K[Google]
+    K -->|Failed| L[MyMemory]
+    G --> M[Show result in popup]
+    H --> M
+    I --> M
+    J --> M
+    K --> M
+    L --> M
 ```
 
 ## Download and Install
@@ -273,6 +277,7 @@ Settings are saved automatically and take effect immediately.
 | Proxy mode | System proxy, direct connection, or custom proxy | System proxy |
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
+| Microsoft Translator | Azure subscription key and optional resource region | Disabled |
 
 ### Configuration files
 
@@ -286,10 +291,11 @@ Public settings are stored in Electron's `userData` directory. The directory is 
 ~/Library/Application Support/划词翻译/settings.json
 ```
 
-The DingTalk `ClientSecret` is stored separately as `credentials.json` in the same `userData` directory:
+The DingTalk `ClientSecret` and Microsoft subscription key are stored separately in the same `userData` directory:
 
 ```text
 ~/Library/Application Support/<userData>/credentials.json
+~/Library/Application Support/<userData>/microsoft-credentials.json
 ```
 
 Settings are migrated between versions using `schemaVersion`. Quit the application and back up the original file before editing settings manually.
@@ -301,10 +307,11 @@ Translation requests are attempted in this order:
 | Priority | Provider | Enabled when | Notes |
 | ---: | --- | --- | --- |
 | 1 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
-| 2 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
-| 3 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
-| 4 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
-| 5 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
+| 2 | Microsoft Translator | Enabled, a subscription key is configured, and the language pair is supported | Azure AI Translator Text v3; region is optional for global single-service resources |
+| 3 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
+| 4 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
+| 5 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
+| 6 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
 
 The runtime also caches results by text and language pair, displays the active provider in the popup, and temporarily trips failing providers before retrying them after a cooldown. A single request processes at most 5,000 characters; Google and MyMemory are truncated further according to their own limits.
 
@@ -362,6 +369,27 @@ Security behavior:
 - Use **清除 Secret** to explicitly remove it;
 - Incomplete configuration, unsupported language pairs, permission errors, rate limits, and network failures automatically fall back to other providers.
 
+## Configure Microsoft Translator
+
+Microsoft translation uses the Azure AI Translator Text v3 REST API.
+
+1. Create or select an Azure Translator resource;
+2. Copy a subscription key from the resource's **Keys and Endpoint** page;
+3. Open **划词翻译 → 设置…** and enable **微软翻译**;
+4. Enter the subscription key;
+5. Enter the resource region for a regional or multi-service resource. Leave it empty for a global single-service Translator resource;
+6. Click **保存微软配置**, then click **检测配置** to verify authentication and text translation.
+
+Security behavior:
+
+- The subscription key is sent from the settings page to the Electron main process only;
+- Electron `safeStorage` encrypts it before it is written to `microsoft-credentials.json`;
+- `settings.json`, renderer settings snapshots, status messages, and translation errors never include the plaintext key;
+- Leaving the key field empty preserves the existing credential;
+- Use **清除密钥** to explicitly remove it;
+- Configuration changes clear Microsoft-related cached results and circuit-breaker state;
+- Authentication, permission, rate-limit, parameter, service, and network failures are sanitized and automatically fall back to later providers.
+
 ## Privacy and Security
 
 The data flow is:
@@ -369,12 +397,12 @@ The data flow is:
 1. On macOS the app uses Accessibility and a controlled `Command+C`; on Windows it uses a controlled `Ctrl+C`; on Linux it reads the primary selection;
 2. The selected text is sent to the provider selected by the fallback chain;
 3. When self-hosted DeepLX is configured, the request can stay on your machine, LAN, or private server;
-4. If the self-hosted provider is unavailable, the app may continue with public DeepLX, Google, or MyMemory;
+4. If an earlier provider is unavailable, the app may continue with Microsoft Translator, self-hosted/public DeepLX, Google, or MyMemory according to the configured priority;
 5. The translation is shown locally in the popup and is copied only when the user chooses to copy it.
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
 
-This project does not provide a cloud account system. DingTalk credentials are used only when the DingTalk provider is enabled and configured. Public settings contain CorpId, ClientId, and a boolean indicating whether the Secret is configured; the plaintext ClientSecret is not stored there.
+This project does not provide a cloud account system. DingTalk and Microsoft credentials are used only when their providers are enabled and configured. Public settings contain only non-secret provider fields plus booleans indicating whether credentials are configured; plaintext secrets are stored only in separate `safeStorage`-encrypted credential files.
 
 ## Project Structure
 
@@ -395,7 +423,12 @@ This project does not provide a cloud account system. DingTalk credentials are u
 │   │   ├── dingtalkConfig.ts         # DingTalk configuration orchestration
 │   │   ├── dingtalkCredentials.ts    # Encrypted safeStorage credentials
 │   │   ├── dingtalkTokenManager.ts   # DingTalk OAuth token management
-│   │   └── dingtalkTranslation.ts    # DingTalk translation adapter
+│   │   ├── dingtalkTranslation.ts    # DingTalk translation adapter
+│   │   ├── microsoftConfig.ts        # Microsoft public configuration orchestration
+│   │   ├── microsoftCredentials.ts   # Encrypted Microsoft subscription-key storage
+│   │   ├── microsoftErrors.ts        # Sanitized Microsoft error classification
+│   │   ├── microsoftLanguage.ts      # Microsoft language-code adaptation
+│   │   └── microsoftTranslation.ts   # Microsoft Translator Text v3 adapter
 │   ├── preload/                      # Secure contextBridge IPC bridge
 │   ├── renderer/                     # Popup, selection button, and settings UI
 │   └── shared/                       # Types, languages, proxy and interaction rules
@@ -458,7 +491,7 @@ npm run release:checksums
 
 ### Testing
 
-The project uses Node.js's built-in test runner. `scripts/run-tests.mjs` bundles TypeScript test entries with esbuild into a temporary directory and then executes them. Tests cover selection gestures, trigger modes, shortcut protection, clipboard text/image preservation, language resolution, settings migration, proxy handling, DingTalk authentication and fallback behavior, encrypted credential storage, and the DingTalk settings UI contract.
+The project uses Node.js's built-in test runner. `scripts/run-tests.mjs` bundles TypeScript test entries with esbuild into a temporary directory and then executes them. Tests cover selection gestures, trigger modes, shortcut protection, clipboard text/image preservation, language resolution, settings migration, proxy handling, DingTalk and Microsoft authentication/fallback behavior, encrypted credential storage, and provider settings UI contracts.
 
 Before submitting a change, run:
 
@@ -507,12 +540,19 @@ The current packaging configuration does not include code signing or notarizatio
 
 When Electron `safeStorage` is unavailable, the app refuses to write a plaintext credential. Check that the system keychain/security storage is available, relaunch the app, and configure the Secret again. Never put the Secret into `settings.json` manually.
 
+### Microsoft subscription key cannot be saved or validated
+
+- Check that the system keychain/security storage is available;
+- Verify the subscription key and, when required, the Azure resource region;
+- Leave Region empty only for a global single-service Translator resource;
+- Never place the subscription key in `settings.json`; use the dedicated Microsoft settings controls.
+
 ## Known Limitations
 
 - macOS remains the primary runtime validation platform. Linux AppImage and Windows NSIS packaging are available, but global selection, permissions, and shortcuts should be verified on real target hardware before release;
 - The in-app UI is currently Simplified Chinese; English `README.md` and Simplified Chinese `README.zh-CN.md` are maintained separately;
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
-- Translation depends on network access and third-party providers;
+- Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - Current packages are unsigned: macOS notarization and Windows code signing are not configured;
 - No account system, cloud sync, or automatic update is included yet; packages are currently unsigned and may require a manual security confirmation on first launch.

@@ -174,11 +174,13 @@ input[type='password']:disabled {
   accent-color: var(--button-bg);
 }
 
-.dingtalk-secret-status.configured {
+.dingtalk-secret-status.configured,
+.microsoft-key-status.configured {
   color: var(--status-success);
 }
 
-.dingtalk-actions {
+.dingtalk-actions,
+.provider-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -186,7 +188,8 @@ input[type='password']:disabled {
   margin-top: 4px;
 }
 
-.dingtalk-status {
+.dingtalk-status,
+.microsoft-status {
   min-height: 20px;
   margin-top: 10px;
   text-align: right;
@@ -292,16 +295,19 @@ input[type='password']:disabled {
     justify-self: start;
   }
 
-  .dingtalk-actions {
+  .dingtalk-actions,
+  .provider-actions {
     align-items: stretch;
     justify-content: flex-start;
   }
 
-  .dingtalk-actions .btn {
+  .dingtalk-actions .btn,
+  .provider-actions .btn {
     flex: 1 1 100%;
   }
 
-  .dingtalk-status {
+  .dingtalk-status,
+  .microsoft-status {
     text-align: left;
   }
 

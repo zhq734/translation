@@ -1,6 +1,11 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
-import type { DingTalkCheckStatus, Settings, TriggerMode } from '../../shared/types'
+import type {
+  DingTalkCheckStatus,
+  MicrosoftCheckStatus,
+  Settings,
+  TriggerMode
+} from '../../shared/types'
 
 const targetLang = document.getElementById('target-lang') as HTMLSelectElement
 const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
@@ -20,6 +25,16 @@ const dingTalkSave = document.getElementById('dingtalk-save') as HTMLButtonEleme
 const dingTalkClearSecret = document.getElementById('dingtalk-clear-secret') as HTMLButtonElement
 const dingTalkCheck = document.getElementById('dingtalk-check') as HTMLButtonElement
 const dingTalkStatus = document.getElementById('dingtalk-status') as HTMLElement
+const microsoftEnabled = document.getElementById('microsoft-enabled') as HTMLInputElement
+const microsoftRegion = document.getElementById('microsoft-region') as HTMLInputElement
+const microsoftSubscriptionKey = document.getElementById(
+  'microsoft-subscription-key'
+) as HTMLInputElement
+const microsoftKeyStatus = document.getElementById('microsoft-key-status') as HTMLElement
+const microsoftSave = document.getElementById('microsoft-save') as HTMLButtonElement
+const microsoftClearKey = document.getElementById('microsoft-clear-key') as HTMLButtonElement
+const microsoftCheck = document.getElementById('microsoft-check') as HTMLButtonElement
+const microsoftStatus = document.getElementById('microsoft-status') as HTMLElement
 const deeplxUrl = document.getElementById('deeplx-url') as HTMLInputElement
 const deeplxStatus = document.getElementById('deeplx-status') as HTMLElement
 const deeplxCheck = document.getElementById('deeplx-check') as HTMLButtonElement
@@ -114,6 +129,16 @@ function renderSettings(settings: Settings): void {
     ? 'field-hint dingtalk-secret-status configured'
     : 'field-hint dingtalk-secret-status'
   dingTalkClearSecret.disabled = !settings.dingTalkSecretConfigured
+  microsoftEnabled.checked = settings.microsoftEnabled
+  microsoftRegion.value = settings.microsoftRegion
+  microsoftSubscriptionKey.value = ''
+  microsoftKeyStatus.textContent = settings.microsoftSubscriptionKeyConfigured
+    ? '订阅密钥已安全配置；留空保存将保留原值'
+    : '订阅密钥未配置'
+  microsoftKeyStatus.className = settings.microsoftSubscriptionKeyConfigured
+    ? 'field-hint microsoft-key-status configured'
+    : 'field-hint microsoft-key-status'
+  microsoftClearKey.disabled = !settings.microsoftSubscriptionKeyConfigured
   schemaVersion.textContent = `配置 v${settings.schemaVersion}`
 
   if (![...autohide.options].some((option) => option.value === String(settings.autoHideMs))) {
@@ -319,6 +344,100 @@ async function checkDingTalkConfig(): Promise<void> {
 }
 
 /**
+ * 设置微软翻译操作按钮的忙碌状态，避免重复保存、清除或检测。
+ * @param busy 是否正在执行异步操作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setMicrosoftBusy(busy: boolean): void {
+  microsoftSave.disabled = busy
+  microsoftCheck.disabled = busy
+  microsoftClearKey.disabled = busy || !microsoftKeyStatus.classList.contains('configured')
+}
+
+/**
+ * 将微软翻译检测结果展示为结构化状态提示。
+ * @param status 主进程返回的脱敏检测状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderMicrosoftStatus(status: MicrosoftCheckStatus): void {
+  microsoftStatus.textContent = status.ok ? `✓ ${status.message}` : `✗ ${status.message}`
+  microsoftStatus.className = status.ok
+    ? 'status microsoft-status online'
+    : 'status microsoft-status offline'
+  microsoftStatus.dataset.code = status.code
+}
+
+/**
+ * 保存微软翻译启用状态、资源区域和可选的新订阅密钥。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveMicrosoftConfig(): Promise<void> {
+  setMicrosoftBusy(true)
+  try {
+    const settings = await window.api.setMicrosoftConfig({
+      enabled: microsoftEnabled.checked,
+      region: microsoftRegion.value,
+      subscriptionKey: microsoftSubscriptionKey.value
+    })
+    renderSettings(settings)
+    flash('微软翻译配置已保存并生效')
+  } catch (error) {
+    flash(`微软翻译配置保存失败：${(error as Error).message || '未知错误'}`)
+  } finally {
+    setMicrosoftBusy(false)
+  }
+}
+
+/**
+ * 确认后显式清除主进程安全保存的微软 Translator 订阅密钥。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearMicrosoftKey(): Promise<void> {
+  if (!window.confirm('确定清除已保存的微软翻译订阅密钥吗？清除后微软翻译将暂停使用。')) return
+
+  setMicrosoftBusy(true)
+  try {
+    const settings = await window.api.clearMicrosoftSubscriptionKey()
+    renderSettings(settings)
+    microsoftStatus.textContent = '订阅密钥已清除，请重新配置后检测'
+    microsoftStatus.className = 'status microsoft-status'
+    delete microsoftStatus.dataset.code
+    flash('微软翻译订阅密钥已清除')
+  } catch (error) {
+    flash(`清除失败：${(error as Error).message || '未知错误'}`)
+  } finally {
+    setMicrosoftBusy(false)
+  }
+}
+
+/**
+ * 检测已保存的微软凭证、鉴权和文本翻译链路。
+ * @returns 检测完成后的 Promise。
+ * @author zhenghq
+ */
+async function checkMicrosoftConfig(): Promise<void> {
+  setMicrosoftBusy(true)
+  microsoftStatus.textContent = '检测中…'
+  microsoftStatus.className = 'status microsoft-status'
+  delete microsoftStatus.dataset.code
+  try {
+    renderMicrosoftStatus(await window.api.checkMicrosoft())
+  } catch (error) {
+    renderMicrosoftStatus({
+      ok: false,
+      code: 'service',
+      message: (error as Error).message || '检测失败，请稍后重试'
+    })
+  } finally {
+    setMicrosoftBusy(false)
+  }
+}
+
+/**
  * 保存自建 DeepLX 地址。
  * @returns 无返回值。
  * @author zhenghq
@@ -388,6 +507,9 @@ proxyBypassRules.addEventListener('change', saveProxyBypassRules)
 dingTalkSave.addEventListener('click', () => void saveDingTalkConfig())
 dingTalkClearSecret.addEventListener('click', () => void clearDingTalkClientSecret())
 dingTalkCheck.addEventListener('click', () => void checkDingTalkConfig())
+microsoftSave.addEventListener('click', () => void saveMicrosoftConfig())
+microsoftClearKey.addEventListener('click', () => void clearMicrosoftKey())
+microsoftCheck.addEventListener('click', () => void checkMicrosoftConfig())
 deeplxUrl.addEventListener('change', saveDeepLxUrl)
 deeplxCheck.addEventListener('click', () => void checkDeepLxStatus())
 dockerCopy.addEventListener('click', () => void copyDockerCommand())

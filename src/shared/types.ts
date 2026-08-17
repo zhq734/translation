@@ -45,6 +45,12 @@ export interface Settings {
   dingTalkClientId: string
   /** 是否已经安全保存 ClientSecret。 */
   dingTalkSecretConfigured: boolean
+  /** 是否启用微软 Translator 翻译通道。 */
+  microsoftEnabled: boolean
+  /** Azure Translator 资源区域；全局单服务资源可留空。 */
+  microsoftRegion: string
+  /** 是否已经安全保存微软 Translator 订阅密钥。 */
+  microsoftSubscriptionKeyConfigured: boolean
 }
 
 export interface DingTalkConfigPatch {
@@ -56,6 +62,15 @@ export interface DingTalkConfigPatch {
   clientId?: string
   /** 新 ClientSecret；空字符串表示保留原值。 */
   clientSecret?: string
+}
+
+export interface MicrosoftConfigPatch {
+  /** 是否启用微软 Translator 翻译。 */
+  enabled?: boolean
+  /** Azure Translator 资源区域；全局单服务资源可留空。 */
+  region?: string
+  /** 新订阅密钥；空字符串表示保留原值。 */
+  subscriptionKey?: string
 }
 
 export type DingTalkCheckCode =
@@ -74,6 +89,17 @@ export interface DingTalkCheckStatus {
   ok: boolean
   /** 脱敏后的状态分类。 */
   code: DingTalkCheckCode
+  /** 面向用户的提示。 */
+  message: string
+}
+
+export type MicrosoftCheckCode = DingTalkCheckCode
+
+export interface MicrosoftCheckStatus {
+  /** 检测是否通过。 */
+  ok: boolean
+  /** 脱敏后的状态分类。 */
+  code: MicrosoftCheckCode
   /** 面向用户的提示。 */
   message: string
 }
@@ -113,6 +139,25 @@ export interface Api {
   clearDingTalkSecret(): Promise<Settings>
   /** 检测钉钉 Token 和文本翻译链路。 */
   checkDingTalk(): Promise<DingTalkCheckStatus>
+  /**
+   * 保存微软公开配置和可选订阅密钥。
+   * @param patch 微软翻译配置补丁。
+   * @returns 保存后的脱敏设置。
+   * @author zhenghq
+   */
+  setMicrosoftConfig(patch: MicrosoftConfigPatch): Promise<Settings>
+  /**
+   * 显式清除已保存的微软订阅密钥。
+   * @returns 清除后的脱敏设置。
+   * @author zhenghq
+   */
+  clearMicrosoftSubscriptionKey(): Promise<Settings>
+  /**
+   * 检测微软 Translator 文本翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkMicrosoft(): Promise<MicrosoftCheckStatus>
   getDockerCommand(port: number): Promise<string>
   openDeployDoc(): void
 }
