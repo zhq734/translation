@@ -40,12 +40,14 @@ type KeyboardSample = {
 
 type SelectionCallback = (gesture: SelectionGesture) => void
 type PointerDownCallback = (point: { x: number; y: number }) => void
+type CopyShortcutCallback = () => void
 type PasteShortcutCallback = () => void
 type SelectAllShortcutCallback = () => void
 
 let running = false
 let callback: SelectionCallback | null = null
 let pointerDownCallback: PointerDownCallback | null = null
+let copyShortcutCallback: CopyShortcutCallback | null = null
 let pasteShortcutCallback: PasteShortcutCallback | null = null
 let selectAllShortcutCallback: SelectAllShortcutCallback | null = null
 
@@ -106,7 +108,7 @@ function onKeyDown(e: KeyboardSample): void {
   const hasPrimaryModifier = e.ctrlKey || e.metaKey
   if (!hasPrimaryModifier || e.altKey || e.shiftKey) return
   if (e.keycode === UiohookKey.C) {
-    copyShortcutGuard.observeCopyShortcut()
+    if (copyShortcutGuard.observeCopyShortcut()) copyShortcutCallback?.()
     return
   }
   if (e.keycode === UiohookKey.V) {
@@ -132,6 +134,7 @@ function onKeyUp(e: KeyboardSample): void {
  * 启动全局鼠标监听，用于发现跨应用的划词动作。
  * @param cb 发现有效划词后的回调。
  * @param onPointerDown 发现鼠标按下时的回调，用于立即使旧选区状态失效。
+ * @param onCopyShortcut 发现用户复制快捷键时的回调，用于中止剪贴板取词。
  * @param onPasteShortcut 发现用户粘贴快捷键时的回调，用于中止剪贴板取词。
  * @param onSelectAllShortcut 发现用户全选快捷键时的回调，用于触发当前选区翻译。
  * @returns 无返回值。
@@ -140,12 +143,14 @@ function onKeyUp(e: KeyboardSample): void {
 export function startAutoTrigger(
   cb: SelectionCallback,
   onPointerDown?: PointerDownCallback,
+  onCopyShortcut?: CopyShortcutCallback,
   onPasteShortcut?: PasteShortcutCallback,
   onSelectAllShortcut?: SelectAllShortcutCallback
 ): void {
   stopAutoTrigger()
   callback = cb
   pointerDownCallback = onPointerDown ?? null
+  copyShortcutCallback = onCopyShortcut ?? null
   pasteShortcutCallback = onPasteShortcut ?? null
   selectAllShortcutCallback = onSelectAllShortcut ?? null
   uIOhook.on('mousedown', onMouseDown)
@@ -181,6 +186,7 @@ export function stopAutoTrigger(): void {
   running = false
   callback = null
   pointerDownCallback = null
+  copyShortcutCallback = null
   pasteShortcutCallback = null
   selectAllShortcutCallback = null
   downAt = null

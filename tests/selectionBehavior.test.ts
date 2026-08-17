@@ -128,11 +128,11 @@ test('内部模拟复制事件不应误判为用户复制，用户复制应阻�
   const version = guard.getExternalCopyVersion()
   const expectation = guard.expectSyntheticCopyShortcut()
 
-  guard.observeCopyShortcut()
+  assert.equal(guard.observeCopyShortcut(), false)
   await expectation.finish()
   assert.equal(guard.hasExternalCopySince(version), false)
 
-  guard.observeCopyShortcut()
+  assert.equal(guard.observeCopyShortcut(), true)
   assert.equal(guard.hasExternalCopySince(version), true)
   assert.equal(shouldRestoreClipboard(true, '用户刚复制的文字', '__sentinel__'), false)
   assert.equal(shouldRestoreClipboard(true, '__sentinel__', '__sentinel__'), true)
@@ -272,7 +272,7 @@ test('主进程应只为有效文字显示按钮，并在外部按下鼠标时�
   assert.match(source, /if\s*\(!result\.text\s*\|\|\s*result\.error\)\s*\{[\s\S]*?hideSelectionButton\(\)/u)
   assert.match(
     source,
-    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
+    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
   )
 })
 
@@ -281,7 +281,10 @@ test('全局监听应传递双击次数，并监听用户复制和粘贴快捷�
 
   assert.match(source, /shouldTriggerSelectionGesture\(gesture,\s*e\.clicks/u)
   assert.match(source, /uIOhook\.on\('keydown',\s*onKeyDown\)/u)
-  assert.match(source, /copyShortcutGuard\.observeCopyShortcut\(\)/u)
+  assert.match(
+    source,
+    /if\s*\(copyShortcutGuard\.observeCopyShortcut\(\)\)\s*copyShortcutCallback\?\.\(\)/u
+  )
   assert.match(source, /e\.keycode\s*===\s*UiohookKey\.V/u)
   assert.match(source, /pasteShortcutCallback\?\.\(\)/u)
   assert.match(source, /isSelectAllShortcut\(e,\s*UiohookKey\.A\)/u)
@@ -308,14 +311,22 @@ test('内部取词应同时等待文字或图片写入，并避免恢复旧图�
   assert.match(source, /shouldRestoreClipboard\([^)]*currentHasImage,\s*text/su)
   assert.match(source, /signal\?\.addEventListener\('abort'/u)
   assert.match(source, /if\s*\(signal\?\.aborted\)/u)
+  assert.match(
+    source,
+    /if\s*\(signal\?\.aborted\)\s*\{\s*if\s*\(!copyShortcutGuard\.hasExternalCopySince\(externalCopyVersion\)\)\s*\{?\s*restoreOriginalClipboard\(\)/u
+  )
 })
 
-test('用户粘贴时主进程应立即取消待处理或正在进行的选区捕获', () => {
+test('用户复制或粘贴时主进程应立即取消待处理或正在进行的选区捕获', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
   assert.match(
     source,
-    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
+    /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut,\s*handleSelectAllShortcut\s*\)/u
+  )
+  assert.match(
+    source,
+    /function handleCopyShortcut\(\): void \{[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
   assert.match(
     source,

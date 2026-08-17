@@ -37,16 +37,29 @@ export async function checkAccessibilityPermission(): Promise<boolean> {
   return strategy !== 'unsupported'
 }
 
-// 用 CGEvent 发送 Cmd+C（keycode 8 = C 键，Command 修饰键）
+// 用 CGEvent 发送 Cmd+C（keycode 55 = Command 键，keycode 8 = C 键）。
+// 用户未按住 Command 时显式发送其按下和释放，避免部分前台应用把 C 事件当成普通字符。
+// 用户已按住左、右任一 Command 时只发送带修饰键标志的 C，避免误释放物理按键。
 const JXA_COPY = [
   "ObjC.import('CoreGraphics');",
   'var s=$.CGEventSourceCreate($.kCGEventSourceStateCombinedSessionState);',
+  'var commandWasDown=$.CGEventSourceKeyState($.kCGEventSourceStateHIDSystemState,55)||$.CGEventSourceKeyState($.kCGEventSourceStateHIDSystemState,54);',
+  'if(!commandWasDown){',
+  'var commandDown=$.CGEventCreateKeyboardEvent(s,55,true);',
+  '$.CGEventSetFlags(commandDown,$.kCGEventFlagMaskCommand);',
+  '$.CGEventPost($.kCGHIDEventTap,commandDown);',
+  '}',
   'var d=$.CGEventCreateKeyboardEvent(s,8,true);',
   '$.CGEventSetFlags(d,$.kCGEventFlagMaskCommand);',
   '$.CGEventPost($.kCGHIDEventTap,d);',
   'var u=$.CGEventCreateKeyboardEvent(s,8,false);',
   '$.CGEventSetFlags(u,$.kCGEventFlagMaskCommand);',
-  '$.CGEventPost($.kCGHIDEventTap,u);'
+  '$.CGEventPost($.kCGHIDEventTap,u);',
+  'if(!commandWasDown){',
+  'var commandUp=$.CGEventCreateKeyboardEvent(s,55,false);',
+  '$.CGEventSetFlags(commandUp,0);',
+  '$.CGEventPost($.kCGHIDEventTap,commandUp);',
+  '}'
 ].join('')
 
 /**
@@ -155,7 +168,9 @@ export async function captureSelection(
       }
 
       if (signal?.aborted) {
-        restoreOriginalClipboard()
+        if (!copyShortcutGuard.hasExternalCopySince(externalCopyVersion)) {
+          restoreOriginalClipboard()
+        }
       } else {
         const externalCopyObserved = copyShortcutGuard.hasExternalCopySince(externalCopyVersion)
         const currentText = clipboard.readText()

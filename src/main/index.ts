@@ -320,6 +320,17 @@ function handleSelectionPointerDown(point: { x: number; y: number }): void {
 }
 
 /**
+ * 响应用户复制快捷键，立即取消待处理或正在进行的自动取词，避免覆盖用户剪贴板。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleCopyShortcut(): void {
+  latestSelectionGesture += 1
+  selectionCapture.invalidate()
+  hideSelectionButton()
+}
+
+/**
  * 响应用户粘贴快捷键，立即取消待处理或正在进行的选区取词。
  * @returns 无返回值。
  * @author zhenghq
@@ -537,6 +548,7 @@ function applySelectionListener(): void {
     startAutoTrigger(
       handleSelectionGesture,
       handleSelectionPointerDown,
+      handleCopyShortcut,
       handlePasteShortcut,
       handleSelectAllShortcut
     )
