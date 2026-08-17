@@ -4,8 +4,7 @@ import type {
   TranslatePayload,
   Settings,
   DeepLxStatus,
-  DingTalkConfigPatch,
-  MicrosoftConfigPatch
+  DingTalkConfigPatch
 } from '../shared/types'
 
 const api: Api = {
@@ -143,22 +142,7 @@ const api: Api = {
    */
   checkDingTalk: () => ipcRenderer.invoke('dingtalk:check'),
   /**
-   * 保存微软公开配置和可选订阅密钥。
-   * @param patch 微软翻译配置补丁。
-   * @returns 保存后的脱敏设置。
-   * @author zhenghq
-   */
-  setMicrosoftConfig: (patch: MicrosoftConfigPatch): Promise<Settings> =>
-    ipcRenderer.invoke('microsoft:configure', patch),
-  /**
-   * 显式清除微软 Translator 订阅密钥。
-   * @returns 清除后的脱敏设置。
-   * @author zhenghq
-   */
-  clearMicrosoftSubscriptionKey: (): Promise<Settings> =>
-    ipcRenderer.invoke('microsoft:clear-key'),
-  /**
-   * 检测微软 Translator 文本翻译链路。
+   * 检测免订阅微软 Bing 在线翻译链路。
    * @returns 结构化脱敏检测状态。
    * @author zhenghq
    */

@@ -1,6 +1,6 @@
 import type { ProxyMode, Settings, TriggerMode } from './types'
 
-export const SETTINGS_SCHEMA_VERSION = 6
+export const SETTINGS_SCHEMA_VERSION = 7
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -17,9 +17,7 @@ export const DEFAULT_SETTINGS: Settings = {
   dingTalkCorpId: '',
   dingTalkClientId: '',
   dingTalkSecretConfigured: false,
-  microsoftEnabled: false,
-  microsoftRegion: '',
-  microsoftSubscriptionKeyConfigured: false
+  microsoftEnabled: false
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -80,8 +78,6 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     dingTalkCorpId: String(merged.dingTalkCorpId || '').trim(),
     dingTalkClientId: String(merged.dingTalkClientId || '').trim(),
     dingTalkSecretConfigured: rawSettings.dingTalkSecretConfigured === true,
-    microsoftEnabled: rawSettings.microsoftEnabled === true,
-    microsoftRegion: String(merged.microsoftRegion || '').trim(),
-    microsoftSubscriptionKeyConfigured: rawSettings.microsoftSubscriptionKeyConfigured === true
+    microsoftEnabled: rawSettings.microsoftEnabled === true
   }
 }

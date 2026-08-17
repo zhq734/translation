@@ -2,40 +2,43 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-test('preload 应暴露微软配置保存、显式清除和配置检测接口', () => {
+test('preload 应只暴露免配置微软可用性检测接口', () => {
   const preload = readFileSync('src/preload/index.ts', 'utf8')
-  assert.match(preload, /setMicrosoftConfig[\s\S]*microsoft:configure/u)
-  assert.match(preload, /clearMicrosoftSubscriptionKey[\s\S]*microsoft:clear-key/u)
+  assert.doesNotMatch(preload, /setMicrosoftConfig|microsoft:configure/u)
+  assert.doesNotMatch(preload, /clearMicrosoftSubscriptionKey|microsoft:clear-key/u)
   assert.match(preload, /checkMicrosoft[\s\S]*microsoft:check/u)
 })
 
-test('普通设置 IPC 不得绕过微软专用配置接口修改受保护字段', () => {
+test('普通设置 IPC 应允许保存微软启用状态且不再处理 Azure 字段', () => {
   const main = readFileSync('src/main/index.ts', 'utf8')
-  assert.match(main, /delete safePatch\.microsoftEnabled/u)
-  assert.match(main, /delete safePatch\.microsoftRegion/u)
-  assert.match(main, /delete safePatch\.microsoftSubscriptionKeyConfigured/u)
+  assert.doesNotMatch(main, /delete safePatch\.microsoftEnabled/u)
+  assert.doesNotMatch(main, /microsoftRegion|microsoftSubscriptionKeyConfigured/u)
+  assert.doesNotMatch(main, /microsoft:configure|microsoft:clear-key/u)
+  assert.match(main, /resetMicrosoftTranslationRuntime/u)
 })
 
-test('设置页应包含微软翻译配置区域和密码类型订阅密钥输入框', () => {
+test('设置页应包含免订阅微软翻译开关、检测按钮和稳定性提示', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /<h2>微软翻译<\/h2>/u)
   assert.match(html, /id="microsoft-enabled"/u)
-  assert.match(html, /id="microsoft-region"/u)
-  assert.match(html, /id="microsoft-subscription-key"[^>]+type="password"/u)
-  assert.match(html, /id="microsoft-key-status"/u)
-  assert.match(html, /id="microsoft-save"/u)
-  assert.match(html, /id="microsoft-clear-key"/u)
+  assert.match(html, /无需(?:配置|订阅密钥)|免订阅/u)
+  assert.match(html, /Bing 在线翻译/u)
+  assert.match(html, /接口[^<]*可能[^<]*失效|服务调整[^<]*不可用/u)
   assert.match(html, /id="microsoft-check"/u)
   assert.match(html, /id="microsoft-status"/u)
+  assert.doesNotMatch(html, /id="microsoft-region"/u)
+  assert.doesNotMatch(html, /id="microsoft-subscription-key"/u)
+  assert.doesNotMatch(html, /id="microsoft-key-status"/u)
+  assert.doesNotMatch(html, /id="microsoft-save"/u)
+  assert.doesNotMatch(html, /id="microsoft-clear-key"/u)
 })
 
-test('微软设置交互应留空保留密钥并通过独立 IPC 显式清除', () => {
+test('微软设置交互应通过普通设置保存开关并保留独立可用性检测', () => {
   const source = readFileSync('src/renderer/src/settings.ts', 'utf8')
-  assert.match(source, /window\.api\.setMicrosoftConfig/u)
-  assert.match(source, /subscriptionKey:\s*microsoftSubscriptionKey\.value/u)
-  assert.match(source, /microsoftSubscriptionKey\.value\s*=\s*''/u)
-  assert.match(source, /window\.api\.clearMicrosoftSubscriptionKey/u)
+  assert.match(source, /microsoftEnabled[\s\S]*window\.api\.setSettings\(\{\s*microsoftEnabled:/u)
   assert.match(source, /window\.api\.checkMicrosoft/u)
+  assert.doesNotMatch(source, /setMicrosoftConfig|clearMicrosoftSubscriptionKey/u)
+  assert.doesNotMatch(source, /microsoftRegion|microsoftSubscriptionKey|microsoftKeyStatus/u)
 })
 
 test('微软翻译应出现在钉钉之后、自建 DeepLX 之前的通道优先级说明中', () => {

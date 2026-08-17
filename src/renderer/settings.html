@@ -21,182 +21,282 @@
         <span id="schema-version" class="version" title="配置结构版本"></span>
       </header>
 
-      <section>
-        <h2>翻译语言</h2>
-        <div class="row">
-          <label for="target-lang">目标语言</label>
-          <select id="target-lang"></select>
-        </div>
-        <div class="row">
-          <label for="source-lang">源语言</label>
-          <select id="source-lang"></select>
-        </div>
-      </section>
+      <nav class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="horizontal">
+        <button
+          id="settings-tab-general"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="settings-panel-general"
+          data-tab="general"
+        >
+          常规
+        </button>
+        <button
+          id="settings-tab-dingtalk"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-dingtalk"
+          data-tab="dingtalk"
+          tabindex="-1"
+        >
+          钉钉
+        </button>
+        <button
+          id="settings-tab-microsoft"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-microsoft"
+          data-tab="microsoft"
+          tabindex="-1"
+        >
+          微软
+        </button>
+        <button
+          id="settings-tab-deeplx"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-deeplx"
+          data-tab="deeplx"
+          tabindex="-1"
+        >
+          DeepLX
+        </button>
+        <button
+          id="settings-tab-advanced"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-advanced"
+          data-tab="advanced"
+          tabindex="-1"
+        >
+          高级
+        </button>
+      </nav>
 
-      <section>
-        <h2>钉钉翻译</h2>
-        <p class="hint">
-          适用于已创建企业内部应用并开通 AI 文本翻译权限的账号。ClientSecret 仅在本机安全保存，页面不会回显。
-        </p>
-        <div class="row">
-          <label for="dingtalk-enabled">启用通道</label>
-          <label class="checkbox-control" for="dingtalk-enabled">
-            <input id="dingtalk-enabled" type="checkbox" />
-            <span>优先使用钉钉翻译</span>
-          </label>
-        </div>
-        <div class="row">
-          <label for="dingtalk-corp-id">CorpId</label>
-          <input id="dingtalk-corp-id" type="text" autocomplete="off" placeholder="请输入企业 CorpId" />
-        </div>
-        <div class="row">
-          <label for="dingtalk-client-id">ClientId</label>
-          <input id="dingtalk-client-id" type="text" autocomplete="off" placeholder="请输入应用 ClientId" />
-        </div>
-        <div class="row">
-          <label for="dingtalk-client-secret">ClientSecret</label>
-          <input
-            id="dingtalk-client-secret"
-            type="password"
-            autocomplete="new-password"
-            placeholder="留空可保留已配置的 Secret"
-          />
-        </div>
-        <p id="dingtalk-secret-status" class="field-hint dingtalk-secret-status">Secret 未配置</p>
-        <div class="dingtalk-actions">
-          <button id="dingtalk-save" class="btn primary">保存钉钉配置</button>
-          <button id="dingtalk-clear-secret" class="btn">清除 Secret</button>
-          <button id="dingtalk-check" class="btn">检测配置</button>
-        </div>
-        <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite">未检测</p>
-      </section>
+      <div class="tab-panels">
+        <div
+          id="settings-panel-general"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-general"
+          data-tab-panel="general"
+          tabindex="0"
+        >
+          <section>
+            <h2>翻译语言</h2>
+            <div class="row">
+              <label for="target-lang">目标语言</label>
+              <select id="target-lang"></select>
+            </div>
+            <div class="row">
+              <label for="source-lang">源语言</label>
+              <select id="source-lang"></select>
+            </div>
+          </section>
 
-      <section>
-        <h2>微软翻译</h2>
-        <p class="hint">
-          使用 Azure AI Translator Text v3。订阅密钥仅在本机安全保存；区域资源或多服务资源请填写 Region，全局单服务资源可留空。
-        </p>
-        <div class="row">
-          <label for="microsoft-enabled">启用通道</label>
-          <label class="checkbox-control" for="microsoft-enabled">
-            <input id="microsoft-enabled" type="checkbox" />
-            <span>在免费通道前使用微软翻译</span>
-          </label>
+          <section>
+            <h2>触发与弹窗</h2>
+            <div class="row">
+              <label for="trigger-mode">触发方式</label>
+              <select id="trigger-mode">
+                <option value="auto">划词后自动打开并翻译</option>
+                <option value="button">划词后显示“译”按钮</option>
+                <option value="hotkey">仅使用快捷键打开</option>
+              </select>
+            </div>
+            <p id="trigger-hint" class="field-hint"></p>
+            <div class="row">
+              <label for="hotkey">全局快捷键</label>
+              <input id="hotkey" type="text" placeholder="如 Alt+T / Cmd+Shift+Y" />
+            </div>
+            <div class="row">
+              <label for="autohide">结果自动隐藏</label>
+              <select id="autohide">
+                <option value="0">不自动隐藏（默认）</option>
+                <option value="3000">3 秒</option>
+                <option value="5000">5 秒</option>
+                <option value="8000">8 秒</option>
+                <option value="15000">15 秒</option>
+              </select>
+            </div>
+          </section>
         </div>
-        <div class="row">
-          <label for="microsoft-region">Region</label>
-          <input id="microsoft-region" type="text" autocomplete="off" placeholder="如 eastasia；全局资源可留空" />
-        </div>
-        <div class="row">
-          <label for="microsoft-subscription-key">订阅密钥</label>
-          <input
-            id="microsoft-subscription-key"
-            type="password"
-            autocomplete="new-password"
-            placeholder="留空可保留已配置的订阅密钥"
-          />
-        </div>
-        <p id="microsoft-key-status" class="field-hint microsoft-key-status">订阅密钥未配置</p>
-        <div class="provider-actions microsoft-actions">
-          <button id="microsoft-save" class="btn primary">保存微软配置</button>
-          <button id="microsoft-clear-key" class="btn">清除密钥</button>
-          <button id="microsoft-check" class="btn">检测配置</button>
-        </div>
-        <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite">未检测</p>
-      </section>
 
-      <section>
-        <h2>触发与弹窗</h2>
-        <div class="row">
-          <label for="trigger-mode">触发方式</label>
-          <select id="trigger-mode">
-            <option value="auto">划词后自动打开并翻译</option>
-            <option value="button">划词后显示“译”按钮</option>
-            <option value="hotkey">仅使用快捷键打开</option>
-          </select>
+        <div
+          id="settings-panel-dingtalk"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-dingtalk"
+          data-tab-panel="dingtalk"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>钉钉翻译</h2>
+            <p class="hint">
+              适用于已创建企业内部应用并开通 AI 文本翻译权限的账号。ClientSecret 仅在本机安全保存，页面不会回显。
+            </p>
+            <div class="row">
+              <label for="dingtalk-enabled">启用通道</label>
+              <label class="checkbox-control" for="dingtalk-enabled">
+                <input id="dingtalk-enabled" type="checkbox" />
+                <span>优先使用钉钉翻译</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="dingtalk-corp-id">CorpId</label>
+              <input id="dingtalk-corp-id" type="text" autocomplete="off" placeholder="请输入企业 CorpId" />
+            </div>
+            <div class="row">
+              <label for="dingtalk-client-id">ClientId</label>
+              <input id="dingtalk-client-id" type="text" autocomplete="off" placeholder="请输入应用 ClientId" />
+            </div>
+            <div class="row">
+              <label for="dingtalk-client-secret">ClientSecret</label>
+              <input
+                id="dingtalk-client-secret"
+                type="password"
+                autocomplete="new-password"
+                placeholder="留空可保留已配置的 Secret"
+              />
+            </div>
+            <p id="dingtalk-secret-status" class="field-hint dingtalk-secret-status">Secret 未配置</p>
+            <div class="dingtalk-actions">
+              <button id="dingtalk-save" class="btn primary">保存钉钉配置</button>
+              <button id="dingtalk-clear-secret" class="btn">清除 Secret</button>
+              <button id="dingtalk-check" class="btn">检测配置</button>
+            </div>
+            <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite">未检测</p>
+          </section>
         </div>
-        <p id="trigger-hint" class="field-hint"></p>
-        <div class="row">
-          <label for="hotkey">全局快捷键</label>
-          <input id="hotkey" type="text" placeholder="如 Alt+T / Cmd+Shift+Y" />
-        </div>
-        <div class="row">
-          <label for="autohide">结果自动隐藏</label>
-          <select id="autohide">
-            <option value="0">不自动隐藏（默认）</option>
-            <option value="3000">3 秒</option>
-            <option value="5000">5 秒</option>
-            <option value="8000">8 秒</option>
-            <option value="15000">15 秒</option>
-          </select>
-        </div>
-      </section>
 
-      <section>
-        <h2>网络代理</h2>
-        <div class="row">
-          <label for="proxy-mode">代理模式</label>
-          <select id="proxy-mode">
-            <option value="system">跟随系统代理</option>
-            <option value="direct">直连（不使用代理）</option>
-            <option value="custom">自定义代理</option>
-          </select>
+        <div
+          id="settings-panel-microsoft"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-microsoft"
+          data-tab-panel="microsoft"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>微软翻译</h2>
+            <p class="hint">
+              使用微软 Bing 在线翻译，无需配置 Azure 账号、订阅密钥或 Region，启用后即可参与自动翻译降级链路。
+            </p>
+            <div class="row">
+              <label for="microsoft-enabled">启用通道</label>
+              <label class="checkbox-control" for="microsoft-enabled">
+                <input id="microsoft-enabled" type="checkbox" />
+                <span>在 DeepLX 等免费通道前使用微软翻译</span>
+              </label>
+            </div>
+            <p class="field-hint">
+              此通道依赖 Bing 网页翻译的临时参数，并非微软承诺稳定的公开开发者 API；接口可能因服务调整而失效，失败时应用会自动切换到后续通道。
+            </p>
+            <div class="provider-actions microsoft-actions">
+              <button id="microsoft-check" class="btn">检测可用性</button>
+            </div>
+            <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite">未检测</p>
+          </section>
         </div>
-        <div class="row">
-          <label for="proxy-rules">代理地址</label>
-          <input id="proxy-rules" type="text" placeholder="http://127.0.0.1:7890" />
-        </div>
-        <p class="field-hint">支持 HTTP、HTTPS、SOCKS4、SOCKS5，例如 socks5://127.0.0.1:7890。</p>
-        <div class="row">
-          <label for="proxy-bypass-rules">绕过规则</label>
-          <input id="proxy-bypass-rules" type="text" placeholder="<local>;localhost;127.0.0.1" />
-        </div>
-        <p class="field-hint">多个规则使用分号分隔；本机 DeepLX 建议保留 &lt;local&gt; 和 localhost。</p>
-      </section>
 
-      <section>
-        <h2>翻译通道</h2>
-        <p class="hint">按优先级依次尝试，失败自动切换下一个；悬浮窗底部会显示实际使用的通道。</p>
-        <ol class="channels">
-          <li><b>钉钉翻译</b> — 启用且配置完整时优先使用</li>
-          <li><b>微软翻译</b> — 启用且配置完整时，在免费通道前使用</li>
-          <li><b>自建 DeepLX</b> — 可配置，最稳定（推荐）</li>
-          <li><b>公共 DeepLX</b> — 免费，可能限流</li>
-          <li><b>Google</b> — 免费，部分网络需配置代理</li>
-          <li><b>MyMemory</b> — 免注册兜底，有免费额度限制</li>
-        </ol>
-      </section>
+        <div
+          id="settings-panel-deeplx"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-deeplx"
+          data-tab-panel="deeplx"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>翻译通道</h2>
+            <p class="hint">按优先级依次尝试，失败自动切换下一个；悬浮窗底部会显示实际使用的通道。</p>
+            <ol class="channels">
+              <li><b>钉钉翻译</b> — 启用且配置完整时优先使用</li>
+              <li><b>微软翻译</b> — 免订阅配置，启用后在 DeepLX 等免费通道前使用</li>
+              <li><b>自建 DeepLX</b> — 可配置，最稳定（推荐）</li>
+              <li><b>公共 DeepLX</b> — 免费，可能限流</li>
+              <li><b>Google</b> — 免费，部分网络需配置代理</li>
+              <li><b>MyMemory</b> — 免注册兜底，有免费额度限制</li>
+            </ol>
+          </section>
 
-      <section>
-        <h2>自建 DeepLX</h2>
-        <div class="row">
-          <label for="deeplx-url">服务地址</label>
-          <input id="deeplx-url" type="text" placeholder="http://127.0.0.1:1189/translate" />
+          <section>
+            <h2>自建 DeepLX</h2>
+            <div class="row">
+              <label for="deeplx-url">服务地址</label>
+              <input id="deeplx-url" type="text" placeholder="http://127.0.0.1:1189/translate" />
+            </div>
+            <div class="row status-row">
+              <span id="deeplx-status" class="status unknown">未检测</span>
+              <button id="deeplx-check" class="btn">检测是否在线</button>
+            </div>
+            <div class="deploy">
+              <p class="hint">
+                用 Docker 一键部署：把命令里的「你的dl_session值」替换为 DeepL
+                登录后的 dl_session Cookie，然后在终端执行。
+              </p>
+              <textarea id="docker-cmd" readonly rows="6" spellcheck="false"></textarea>
+              <div class="btn-row">
+                <button id="docker-copy" class="btn primary">复制命令</button>
+                <button id="open-doc" class="btn">打开部署文档</button>
+              </div>
+            </div>
+          </section>
         </div>
-        <div class="row status-row">
-          <span id="deeplx-status" class="status unknown">未检测</span>
-          <button id="deeplx-check" class="btn">检测是否在线</button>
-        </div>
-        <div class="deploy">
-          <p class="hint">
-            用 Docker 一键部署：把命令里的「你的dl_session值」替换为 DeepL
-            登录后的 dl_session Cookie，然后在终端执行。
-          </p>
-          <textarea id="docker-cmd" readonly rows="6" spellcheck="false"></textarea>
-          <div class="btn-row">
-            <button id="docker-copy" class="btn primary">复制命令</button>
-            <button id="open-doc" class="btn">打开部署文档</button>
-          </div>
-        </div>
-      </section>
 
-      <section class="service-control">
-        <h2>服务控制</h2>
-        <div class="service-control-row">
-          <p class="hint">停止后托盘图标和划词翻译功能都会退出，需要使用时请重新启动应用。</p>
-          <button id="stop-service" class="btn danger">关闭并停止服务</button>
+        <div
+          id="settings-panel-advanced"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-advanced"
+          data-tab-panel="advanced"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>网络代理</h2>
+            <div class="row">
+              <label for="proxy-mode">代理模式</label>
+              <select id="proxy-mode">
+                <option value="system">跟随系统代理</option>
+                <option value="direct">直连（不使用代理）</option>
+                <option value="custom">自定义代理</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="proxy-rules">代理地址</label>
+              <input id="proxy-rules" type="text" placeholder="http://127.0.0.1:7890" />
+            </div>
+            <p class="field-hint">支持 HTTP、HTTPS、SOCKS4、SOCKS5，例如 socks5://127.0.0.1:7890。</p>
+            <div class="row">
+              <label for="proxy-bypass-rules">绕过规则</label>
+              <input id="proxy-bypass-rules" type="text" placeholder="<local>;localhost;127.0.0.1" />
+            </div>
+            <p class="field-hint">多个规则使用分号分隔；本机 DeepLX 建议保留 &lt;local&gt; 和 localhost。</p>
+          </section>
+
+          <section class="service-control">
+            <h2>服务控制</h2>
+            <div class="service-control-row">
+              <p class="hint">停止后托盘图标和划词翻译功能都会退出，需要使用时请重新启动应用。</p>
+              <button id="stop-service" class="btn danger">关闭并停止服务</button>
+            </div>
+          </section>
         </div>
-      </section>
+      </div>
 
       <p id="saved" class="saved" role="status" aria-live="polite"></p>
     </main>

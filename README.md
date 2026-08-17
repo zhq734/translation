@@ -69,14 +69,14 @@ Typical use cases include:
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
-- **Microsoft Translator integration** with configuration checks, optional Azure region, and encrypted subscription-key storage.
+- **Microsoft Translator integration** through the Bing web translator flow, with no Azure account, subscription key, or region required.
 - **Self-hosted DeepLX integration** with endpoint health checks and a generated Docker command.
 - **Light and dark appearance** following the operating system color scheme.
 - **Menu-bar controls** for languages, settings, and quitting the application.
 
 ## Screenshots
 
-The following screenshots show the selection translation workflow, the translation result popup, and the settings page.
+The following screenshots show the selection translation workflow, the translation result popup, the tabbed settings interface, Microsoft Translator configuration, and the menu-bar/tray controls.
 
 ### Selection translation
 
@@ -90,10 +90,22 @@ The following screenshots show the selection translation workflow, the translati
   <img src="./docs/images/截图2.png" alt="Translation result popup" width="100%">
 </p>
 
-### Settings page
+### General settings
 
 <p align="center">
-  <img src="./docs/images/截图3.png" alt="Settings page" width="480">
+  <img src="./docs/images/截图3.png" alt="General settings tab" width="480">
+</p>
+
+### Microsoft Translator settings
+
+<p align="center">
+  <img src="./docs/images/截图4.png" alt="Microsoft Translator settings tab" width="480">
+</p>
+
+### Menu-bar/tray menu
+
+<p align="center">
+  <img src="./docs/images/截图5.png" alt="Menu-bar and tray controls" width="360">
 </p>
 
 ## How It Works
@@ -277,7 +289,7 @@ Settings are saved automatically and take effect immediately.
 | Proxy mode | System proxy, direct connection, or custom proxy | System proxy |
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
-| Microsoft Translator | Azure subscription key and optional resource region | Disabled |
+| Microsoft Translator | Key-free Bing web translator channel | Disabled |
 
 ### Configuration files
 
@@ -291,12 +303,13 @@ Public settings are stored in Electron's `userData` directory. The directory is 
 ~/Library/Application Support/划词翻译/settings.json
 ```
 
-The DingTalk `ClientSecret` and Microsoft subscription key are stored separately in the same `userData` directory:
+The DingTalk `ClientSecret` is stored separately in the same `userData` directory:
 
 ```text
 ~/Library/Application Support/<userData>/credentials.json
-~/Library/Application Support/<userData>/microsoft-credentials.json
 ```
+
+Microsoft translation does not store a subscription credential because the Bing web translator flow does not require an Azure key or region.
 
 Settings are migrated between versions using `schemaVersion`. Quit the application and back up the original file before editing settings manually.
 
@@ -307,15 +320,15 @@ Translation requests are attempted in this order:
 | Priority | Provider | Enabled when | Notes |
 | ---: | --- | --- | --- |
 | 1 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
-| 2 | Microsoft Translator | Enabled, a subscription key is configured, and the language pair is supported | Azure AI Translator Text v3; region is optional for global single-service resources |
+| 2 | Microsoft Translator | Enabled and the language pair is supported | Uses temporary parameters obtained from the Bing translator page; no Azure key or region is required |
 | 3 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
 | 4 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
 | 5 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
 | 6 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
 
-The runtime also caches results by text and language pair, displays the active provider in the popup, and temporarily trips failing providers before retrying them after a cooldown. A single request processes at most 5,000 characters; Google and MyMemory are truncated further according to their own limits.
+The runtime also caches results by text and language pair, displays the active provider in the popup, and temporarily trips failing providers before retrying them after a cooldown. A single request processes at most 5,000 characters; Microsoft splits it into chunks of up to 1,000 characters, while Google and MyMemory are truncated further according to their own limits.
 
-Availability, rate limits, quotas, and terms of public translation services can change. For more predictable personal use, configure a self-hosted DeepLX instance.
+Availability, rate limits, quotas, and terms of public translation services can change. The Microsoft channel depends on an unofficial Bing web interface and automatically falls back when that interface is unavailable. For more predictable personal use, configure a self-hosted DeepLX instance.
 
 ## Configure Self-hosted DeepLX
 
@@ -371,24 +384,23 @@ Security behavior:
 
 ## Configure Microsoft Translator
 
-Microsoft translation uses the Azure AI Translator Text v3 REST API.
+Microsoft translation uses the Bing web translator flow and requires no Azure account, subscription key, or region.
 
-1. Create or select an Azure Translator resource;
-2. Copy a subscription key from the resource's **Keys and Endpoint** page;
-3. Open **划词翻译 → 设置…** and enable **微软翻译**;
-4. Enter the subscription key;
-5. Enter the resource region for a regional or multi-service resource. Leave it empty for a global single-service Translator resource;
-6. Click **保存微软配置**, then click **检测配置** to verify authentication and text translation.
+1. Open **划词翻译 → 设置…**;
+2. Select **微软翻译**;
+3. Enable the channel;
+4. Click **检测可用性** to verify that the current network can access Bing translation.
 
-Security behavior:
+Runtime behavior:
 
-- The subscription key is sent from the settings page to the Electron main process only;
-- Electron `safeStorage` encrypts it before it is written to `microsoft-credentials.json`;
-- `settings.json`, renderer settings snapshots, status messages, and translation errors never include the plaintext key;
-- Leaving the key field empty preserves the existing credential;
-- Use **清除密钥** to explicitly remove it;
-- Configuration changes clear Microsoft-related cached results and circuit-breaker state;
-- Authentication, permission, rate-limit, parameter, service, and network failures are sanitized and automatically fall back to later providers.
+- The app first loads the Bing translator page and extracts its short-lived anti-abuse parameters;
+- Translation requests are then sent to the Bing web translator endpoint through the app's configured network session;
+- Short-lived parameters are cached only in memory, refreshed automatically, and never written to a credential file;
+- Expired web sessions are cleared and retried once;
+- Enabling or disabling the channel clears Microsoft-related cached results, short-lived authentication state, and circuit-breaker state;
+- Authentication, rate-limit, parameter, service, and network failures are sanitized and automatically fall back to later providers.
+
+> This is an unofficial web interface, not a Microsoft-supported public developer API. Bing page structure or anti-abuse changes may break it without notice. Keep fallback providers enabled, and use Azure Translator or another official API in applications that require a service-level stability commitment.
 
 ## Privacy and Security
 
@@ -402,7 +414,7 @@ The data flow is:
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
 
-This project does not provide a cloud account system. DingTalk and Microsoft credentials are used only when their providers are enabled and configured. Public settings contain only non-secret provider fields plus booleans indicating whether credentials are configured; plaintext secrets are stored only in separate `safeStorage`-encrypted credential files.
+This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials.
 
 ## Project Structure
 
@@ -424,11 +436,9 @@ This project does not provide a cloud account system. DingTalk and Microsoft cre
 │   │   ├── dingtalkCredentials.ts    # Encrypted safeStorage credentials
 │   │   ├── dingtalkTokenManager.ts   # DingTalk OAuth token management
 │   │   ├── dingtalkTranslation.ts    # DingTalk translation adapter
-│   │   ├── microsoftConfig.ts        # Microsoft public configuration orchestration
-│   │   ├── microsoftCredentials.ts   # Encrypted Microsoft subscription-key storage
 │   │   ├── microsoftErrors.ts        # Sanitized Microsoft error classification
 │   │   ├── microsoftLanguage.ts      # Microsoft language-code adaptation
-│   │   └── microsoftTranslation.ts   # Microsoft Translator Text v3 adapter
+│   │   └── microsoftTranslation.ts   # Key-free Bing web translator adapter
 │   ├── preload/                      # Secure contextBridge IPC bridge
 │   ├── renderer/                     # Popup, selection button, and settings UI
 │   └── shared/                       # Types, languages, proxy and interaction rules
@@ -491,7 +501,7 @@ npm run release:checksums
 
 ### Testing
 
-The project uses Node.js's built-in test runner. `scripts/run-tests.mjs` bundles TypeScript test entries with esbuild into a temporary directory and then executes them. Tests cover selection gestures, trigger modes, shortcut protection, clipboard text/image preservation, language resolution, settings migration, proxy handling, DingTalk and Microsoft authentication/fallback behavior, encrypted credential storage, and provider settings UI contracts.
+The project uses Node.js's built-in test runner. `scripts/run-tests.mjs` bundles TypeScript test entries with esbuild into a temporary directory and then executes them. Tests cover selection gestures, trigger modes, shortcut protection, clipboard text/image preservation, language resolution, settings migration, proxy handling, DingTalk authentication and encrypted credential storage, Bing page-parameter parsing and Microsoft fallback behavior, and provider settings UI contracts.
 
 Before submitting a change, run:
 
@@ -540,19 +550,20 @@ The current packaging configuration does not include code signing or notarizatio
 
 When Electron `safeStorage` is unavailable, the app refuses to write a plaintext credential. Check that the system keychain/security storage is available, relaunch the app, and configure the Secret again. Never put the Secret into `settings.json` manually.
 
-### Microsoft subscription key cannot be saved or validated
+### Microsoft availability check fails
 
-- Check that the system keychain/security storage is available;
-- Verify the subscription key and, when required, the Azure resource region;
-- Leave Region empty only for a global single-service Translator resource;
-- Never place the subscription key in `settings.json`; use the dedicated Microsoft settings controls.
+- No Azure subscription key or region is required; do not create or paste one for this channel;
+- Verify that the current network and proxy can access `www.bing.com`;
+- Retry later if Bing rejects the temporary web session or rate-limits requests;
+- Keep DeepLX, Google, or MyMemory available so the runtime can fall back automatically;
+- If Bing changes its page or anti-abuse behavior, this unofficial integration may require an application update.
 
 ## Known Limitations
 
 - macOS remains the primary runtime validation platform. Linux AppImage and Windows NSIS packaging are available, but global selection, permissions, and shortcuts should be verified on real target hardware before release;
 - The in-app UI is currently Simplified Chinese; English `README.md` and Simplified Chinese `README.zh-CN.md` are maintained separately;
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
-- Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory;
+- Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - Current packages are unsigned: macOS notarization and Windows code signing are not configured;
 - No account system, cloud sync, or automatic update is included yet; packages are currently unsigned and may require a manual security confirmation on first launch.

@@ -56,14 +56,11 @@ import type {
   DingTalkCheckStatus,
   DingTalkConfigPatch,
   MicrosoftCheckStatus,
-  MicrosoftConfigPatch,
   Settings,
   DeepLxStatus
 } from '../shared/types'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
-import { MicrosoftCredentialStore } from './microsoftCredentials'
-import { MicrosoftConfigurationService } from './microsoftConfig'
 import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
@@ -77,7 +74,6 @@ const SELECTION_SETTLE_DELAY_MS = 80
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
-let microsoftConfiguration: MicrosoftConfigurationService | null = null
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 const selectionCapture = new SelectionCaptureCoordinator(captureSelection)
@@ -92,16 +88,6 @@ let lastSelectionAnchor: { x: number; y: number } | undefined
 function getDingTalkConfiguration(): DingTalkConfigurationService {
   if (!dingTalkConfiguration) throw new Error('钉钉配置服务尚未初始化')
   return dingTalkConfiguration
-}
-
-/**
- * 返回已初始化的微软翻译配置服务。
- * @returns 主进程微软翻译配置服务。
- * @author zhenghq
- */
-function getMicrosoftConfiguration(): MicrosoftConfigurationService {
-  if (!microsoftConfiguration) throw new Error('微软翻译配置服务尚未初始化')
-  return microsoftConfiguration
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -198,20 +184,6 @@ async function onReady(): Promise<boolean> {
     resetTranslationRuntime: resetDingTalkTranslationRuntime
   })
   dingTalkConfiguration.initialize()
-  microsoftConfiguration = new MicrosoftConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new MicrosoftCredentialStore(
-      join(app.getPath('userData'), 'microsoft-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      tray?.setContextMenu(buildTrayMenu())
-      broadcast('settings:changed', settings)
-    },
-    resetTranslationRuntime: resetMicrosoftTranslationRuntime
-  })
-  microsoftConfiguration.initialize()
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
   console.log(
@@ -485,15 +457,7 @@ async function translateText(
     const dingTalkCredentials = settings.dingTalkEnabled
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
-    const microsoftCredentials = settings.microsoftEnabled
-      ? getMicrosoftConfiguration().getCredentialsSnapshot()
-      : null
-    const output = await translate(
-      text,
-      requestSettings,
-      dingTalkCredentials,
-      microsoftCredentials
-    )
+    const output = await translate(text, requestSettings, dingTalkCredentials)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showPopup(
       {
@@ -763,39 +727,12 @@ function checkDingTalk(): Promise<DingTalkCheckStatus> {
 }
 
 /**
- * 保存微软公开配置和可选订阅密钥，并在成功后广播脱敏设置。
- * @param patch 微软翻译配置补丁。
- * @returns 保存后的脱敏设置。
- * @author zhenghq
- */
-function applyMicrosoftConfig(patch: MicrosoftConfigPatch): Settings {
-  return getMicrosoftConfiguration().applyPatch(patch)
-}
-
-/**
- * 显式清除微软订阅密钥，并在成功后广播脱敏设置。
- * @returns 清除后的脱敏设置。
- * @author zhenghq
- */
-function clearMicrosoftSubscriptionKey(): Settings {
-  return getMicrosoftConfiguration().clearKey()
-}
-
-/**
- * 检测微软安全存储、凭证和文本翻译链路。
+ * 检测免订阅微软 Bing 在线翻译链路。
  * @returns 结构化脱敏检测状态。
  * @author zhenghq
  */
 function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
-  const configuration = getMicrosoftConfiguration()
-  if (configuration.getCredentialError()) {
-    return Promise.resolve({
-      ok: false,
-      code: 'storage-unavailable',
-      message: '微软翻译凭证无法安全读取，请重新配置'
-    })
-  }
-  return checkMicrosoftTranslation(configuration.getCredentialsSnapshot(false))
+  return checkMicrosoftTranslation()
 }
 
 // ---- IPC ----
@@ -830,9 +767,6 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   delete safePatch.dingTalkCorpId
   delete safePatch.dingTalkClientId
   delete safePatch.dingTalkSecretConfigured
-  delete safePatch.microsoftEnabled
-  delete safePatch.microsoftRegion
-  delete safePatch.microsoftSubscriptionKeyConfigured
   const settings = saveSettings(safePatch)
   if (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) {
     registerShortcut(settings.hotkey)
@@ -845,6 +779,10 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.proxyRules !== undefined ||
       patch.proxyBypassRules !== undefined) {
     await applyTranslationProxy(settings)
+  }
+  if (patch.microsoftEnabled !== undefined &&
+      settings.microsoftEnabled !== previous.microsoftEnabled) {
+    resetMicrosoftTranslationRuntime()
   }
   tray?.setContextMenu(buildTrayMenu())
   broadcast('settings:changed', settings)
@@ -887,10 +825,6 @@ function registerIpc(): void {
   )
   ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
   ipcMain.handle('dingtalk:check', () => checkDingTalk())
-  ipcMain.handle('microsoft:configure', (_event, patch: MicrosoftConfigPatch) =>
-    applyMicrosoftConfig(patch)
-  )
-  ipcMain.handle('microsoft:clear-key', () => clearMicrosoftSubscriptionKey())
   ipcMain.handle('microsoft:check', () => checkMicrosoft())
 
   ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))

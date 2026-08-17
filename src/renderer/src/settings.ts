@@ -26,13 +26,6 @@ const dingTalkClearSecret = document.getElementById('dingtalk-clear-secret') as 
 const dingTalkCheck = document.getElementById('dingtalk-check') as HTMLButtonElement
 const dingTalkStatus = document.getElementById('dingtalk-status') as HTMLElement
 const microsoftEnabled = document.getElementById('microsoft-enabled') as HTMLInputElement
-const microsoftRegion = document.getElementById('microsoft-region') as HTMLInputElement
-const microsoftSubscriptionKey = document.getElementById(
-  'microsoft-subscription-key'
-) as HTMLInputElement
-const microsoftKeyStatus = document.getElementById('microsoft-key-status') as HTMLElement
-const microsoftSave = document.getElementById('microsoft-save') as HTMLButtonElement
-const microsoftClearKey = document.getElementById('microsoft-clear-key') as HTMLButtonElement
 const microsoftCheck = document.getElementById('microsoft-check') as HTMLButtonElement
 const microsoftStatus = document.getElementById('microsoft-status') as HTMLElement
 const deeplxUrl = document.getElementById('deeplx-url') as HTMLInputElement
@@ -45,7 +38,187 @@ const stopServiceButton = document.getElementById('stop-service') as HTMLButtonE
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
+type SettingsTabId = 'general' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced'
+type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
+
+const SETTINGS_TAB_IDS: SettingsTabId[] = [
+  'general',
+  'dingtalk',
+  'microsoft',
+  'deeplx',
+  'advanced'
+]
+const SETTINGS_TAB_STORAGE_KEY = 'selection-translator.settings.active-tab'
+const settingsTabButtons = [
+  ...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+]
+const settingsTabPanels = [
+  ...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')
+]
+
 let flashTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 判断字符串是否为受支持的设置页 Tab 标识。
+ * @param value 待校验的 Tab 标识。
+ * @returns 是合法 Tab 标识时返回 true。
+ * @author zhenghq
+ */
+function isSettingsTabId(value: string | null): value is SettingsTabId {
+  return value !== null && SETTINGS_TAB_IDS.some((tabId) => tabId === value)
+}
+
+/**
+ * 从当前 URL 查询参数读取设置页 Tab。
+ * @returns 查询参数中的合法 Tab；不存在或不合法时返回 null。
+ * @author zhenghq
+ */
+function readSettingsTabFromQuery(): SettingsTabId | null {
+  const tabId = new URLSearchParams(window.location.search).get('tab')
+  return isSettingsTabId(tabId) ? tabId : null
+}
+
+/**
+ * 从本地缓存读取上次打开的设置页 Tab。
+ * @returns 缓存中的合法 Tab；缓存不可用或内容不合法时返回 null。
+ * @author zhenghq
+ */
+function readStoredSettingsTab(): SettingsTabId | null {
+  try {
+    const tabId = window.localStorage.getItem(SETTINGS_TAB_STORAGE_KEY)
+    return isSettingsTabId(tabId) ? tabId : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 将当前设置页 Tab 写入本地缓存。
+ * @param tabId 当前激活的 Tab 标识。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function storeSettingsTab(tabId: SettingsTabId): void {
+  try {
+    window.localStorage.setItem(SETTINGS_TAB_STORAGE_KEY, tabId)
+  } catch {
+    // 本地缓存不可用时仍允许用户正常切换 Tab。
+  }
+}
+
+/**
+ * 将当前设置页 Tab 同步到 URL，以支持前进后退恢复页面状态。
+ * @param tabId 当前激活的 Tab 标识。
+ * @param historyMode 历史记录更新方式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncSettingsTabToHistory(
+  tabId: SettingsTabId,
+  historyMode: SettingsTabHistoryMode
+): void {
+  if (historyMode === 'none') return
+
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', tabId)
+    if (historyMode === 'push') {
+      window.history.pushState({ settingsTab: tabId }, '', url)
+      return
+    }
+    window.history.replaceState({ settingsTab: tabId }, '', url)
+  } catch {
+    // 某些文件协议环境不支持 History API 时保持 Tab 切换可用。
+  }
+}
+
+/**
+ * 激活指定设置页 Tab，并同步按钮、面板、缓存及 URL 状态。
+ * @param tabId 需要激活的 Tab 标识。
+ * @param focusTab 是否将键盘焦点移动到激活的 Tab。
+ * @param historyMode 历史记录更新方式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function activateSettingsTab(
+  tabId: SettingsTabId,
+  focusTab: boolean,
+  historyMode: SettingsTabHistoryMode
+): void {
+  let activeButton: HTMLButtonElement | undefined
+  for (const button of settingsTabButtons) {
+    const active = button.dataset.tab === tabId
+    button.ariaSelected = String(active)
+    button.tabIndex = active ? 0 : -1
+    if (active) activeButton = button
+  }
+
+  for (const panel of settingsTabPanels) {
+    panel.hidden = panel.dataset.tabPanel !== tabId
+  }
+
+  storeSettingsTab(tabId)
+  syncSettingsTabToHistory(tabId, historyMode)
+  if (focusTab) activeButton?.focus()
+}
+
+/**
+ * 处理设置页 Tab 点击切换。
+ * @param event 鼠标点击事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleSettingsTabClick(event: MouseEvent): void {
+  const tabId = (event.currentTarget as HTMLButtonElement).dataset.tab ?? null
+  if (!isSettingsTabId(tabId)) return
+  activateSettingsTab(tabId, false, 'push')
+}
+
+/**
+ * 处理设置页 Tab 的方向键、Home 和 End 键盘导航。
+ * @param event 键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleSettingsTabKeydown(event: KeyboardEvent): void {
+  const currentTabId = (event.currentTarget as HTMLButtonElement).dataset.tab ?? null
+  if (!isSettingsTabId(currentTabId)) return
+
+  const currentIndex = SETTINGS_TAB_IDS.indexOf(currentTabId)
+  let nextIndex: number | null = null
+  if (event.key === 'ArrowLeft') {
+    nextIndex = (currentIndex - 1 + SETTINGS_TAB_IDS.length) % SETTINGS_TAB_IDS.length
+  } else if (event.key === 'ArrowRight') {
+    nextIndex = (currentIndex + 1) % SETTINGS_TAB_IDS.length
+  } else if (event.key === 'Home') {
+    nextIndex = 0
+  } else if (event.key === 'End') {
+    nextIndex = SETTINGS_TAB_IDS.length - 1
+  }
+
+  if (nextIndex === null) return
+  event.preventDefault()
+  activateSettingsTab(SETTINGS_TAB_IDS[nextIndex], true, 'push')
+}
+
+/**
+ * 初始化设置页 Tab、状态恢复和浏览器历史导航监听。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function initializeSettingsTabs(): void {
+  const initialTab = readSettingsTabFromQuery() ?? readStoredSettingsTab() ?? 'general'
+  activateSettingsTab(initialTab, false, 'replace')
+
+  for (const button of settingsTabButtons) {
+    button.addEventListener('click', handleSettingsTabClick)
+    button.addEventListener('keydown', handleSettingsTabKeydown)
+  }
+
+  window.addEventListener('popstate', () => {
+    activateSettingsTab(readSettingsTabFromQuery() ?? 'general', false, 'none')
+  })
+}
 
 /**
  * 短暂显示设置保存结果。
@@ -130,15 +303,6 @@ function renderSettings(settings: Settings): void {
     : 'field-hint dingtalk-secret-status'
   dingTalkClearSecret.disabled = !settings.dingTalkSecretConfigured
   microsoftEnabled.checked = settings.microsoftEnabled
-  microsoftRegion.value = settings.microsoftRegion
-  microsoftSubscriptionKey.value = ''
-  microsoftKeyStatus.textContent = settings.microsoftSubscriptionKeyConfigured
-    ? '订阅密钥已安全配置；留空保存将保留原值'
-    : '订阅密钥未配置'
-  microsoftKeyStatus.className = settings.microsoftSubscriptionKeyConfigured
-    ? 'field-hint microsoft-key-status configured'
-    : 'field-hint microsoft-key-status'
-  microsoftClearKey.disabled = !settings.microsoftSubscriptionKeyConfigured
   schemaVersion.textContent = `配置 v${settings.schemaVersion}`
 
   if (![...autohide.options].some((option) => option.value === String(settings.autoHideMs))) {
@@ -344,15 +508,14 @@ async function checkDingTalkConfig(): Promise<void> {
 }
 
 /**
- * 设置微软翻译操作按钮的忙碌状态，避免重复保存、清除或检测。
+ * 设置微软翻译控件的忙碌状态，避免重复保存或检测。
  * @param busy 是否正在执行异步操作。
  * @returns 无返回值。
  * @author zhenghq
  */
 function setMicrosoftBusy(busy: boolean): void {
-  microsoftSave.disabled = busy
+  microsoftEnabled.disabled = busy
   microsoftCheck.disabled = busy
-  microsoftClearKey.disabled = busy || !microsoftKeyStatus.classList.contains('configured')
 }
 
 /**
@@ -370,52 +533,29 @@ function renderMicrosoftStatus(status: MicrosoftCheckStatus): void {
 }
 
 /**
- * 保存微软翻译启用状态、资源区域和可选的新订阅密钥。
+ * 通过普通设置接口保存免订阅微软翻译启用状态。
  * @returns 保存完成后的 Promise。
  * @author zhenghq
  */
-async function saveMicrosoftConfig(): Promise<void> {
+async function saveMicrosoftEnabled(): Promise<void> {
   setMicrosoftBusy(true)
   try {
-    const settings = await window.api.setMicrosoftConfig({
-      enabled: microsoftEnabled.checked,
-      region: microsoftRegion.value,
-      subscriptionKey: microsoftSubscriptionKey.value
-    })
+    const settings = await window.api.setSettings({ microsoftEnabled: microsoftEnabled.checked })
     renderSettings(settings)
-    flash('微软翻译配置已保存并生效')
-  } catch (error) {
-    flash(`微软翻译配置保存失败：${(error as Error).message || '未知错误'}`)
-  } finally {
-    setMicrosoftBusy(false)
-  }
-}
-
-/**
- * 确认后显式清除主进程安全保存的微软 Translator 订阅密钥。
- * @returns 清除完成后的 Promise。
- * @author zhenghq
- */
-async function clearMicrosoftKey(): Promise<void> {
-  if (!window.confirm('确定清除已保存的微软翻译订阅密钥吗？清除后微软翻译将暂停使用。')) return
-
-  setMicrosoftBusy(true)
-  try {
-    const settings = await window.api.clearMicrosoftSubscriptionKey()
-    renderSettings(settings)
-    microsoftStatus.textContent = '订阅密钥已清除，请重新配置后检测'
+    microsoftStatus.textContent = settings.microsoftEnabled ? '已启用，建议检测当前可用性' : '通道已关闭'
     microsoftStatus.className = 'status microsoft-status'
     delete microsoftStatus.dataset.code
-    flash('微软翻译订阅密钥已清除')
+    flash('微软翻译启用状态已保存并生效')
   } catch (error) {
-    flash(`清除失败：${(error as Error).message || '未知错误'}`)
+    renderSettings(await window.api.getSettings())
+    flash(`微软翻译启用状态保存失败：${(error as Error).message || '未知错误'}`)
   } finally {
     setMicrosoftBusy(false)
   }
 }
 
 /**
- * 检测已保存的微软凭证、鉴权和文本翻译链路。
+ * 检测免订阅微软 Bing 网页鉴权和文本翻译链路。
  * @returns 检测完成后的 Promise。
  * @author zhenghq
  */
@@ -496,6 +636,8 @@ function requestStopService(): void {
   window.api.stopService()
 }
 
+initializeSettingsTabs()
+
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
@@ -507,8 +649,7 @@ proxyBypassRules.addEventListener('change', saveProxyBypassRules)
 dingTalkSave.addEventListener('click', () => void saveDingTalkConfig())
 dingTalkClearSecret.addEventListener('click', () => void clearDingTalkClientSecret())
 dingTalkCheck.addEventListener('click', () => void checkDingTalkConfig())
-microsoftSave.addEventListener('click', () => void saveMicrosoftConfig())
-microsoftClearKey.addEventListener('click', () => void clearMicrosoftKey())
+microsoftEnabled.addEventListener('change', () => void saveMicrosoftEnabled())
 microsoftCheck.addEventListener('click', () => void checkMicrosoftConfig())
 deeplxUrl.addEventListener('change', saveDeepLxUrl)
 deeplxCheck.addEventListener('click', () => void checkDeepLxStatus())
