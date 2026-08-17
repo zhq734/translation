@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   hasClipboardCaptureCompleted,
+  shouldRestoreClipboardAfterAbort,
   shouldRestoreClipboard
 } from '../shared/copyShortcutBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
@@ -123,12 +124,16 @@ export async function captureSelection(
   }
 
   /**
-   * 在取词被取消时立即恢复剪贴板，确保紧接着的粘贴读取原内容。
+   * 在取词被取消时按取消原因决定是否恢复剪贴板，避免覆盖用户刚复制的新内容。
    * @returns 无返回值。
    * @author zhenghq
    */
   const handleAbort = (): void => {
-    restoreOriginalClipboard()
+    if (shouldRestoreClipboardAfterAbort(
+      copyShortcutGuard.hasExternalCopySince(externalCopyVersion)
+    )) {
+      restoreOriginalClipboard()
+    }
   }
 
   if (signal?.aborted) return ''
@@ -168,7 +173,9 @@ export async function captureSelection(
       }
 
       if (signal?.aborted) {
-        if (!copyShortcutGuard.hasExternalCopySince(externalCopyVersion)) {
+        if (shouldRestoreClipboardAfterAbort(
+          copyShortcutGuard.hasExternalCopySince(externalCopyVersion)
+        )) {
           restoreOriginalClipboard()
         }
       } else {
