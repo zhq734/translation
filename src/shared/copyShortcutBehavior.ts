@@ -141,10 +141,10 @@ export class CopyShortcutGuard {
 
   /**
    * 记录一次全局复制快捷键；优先消费内部模拟事件，否则记为用户主动复制。
-   * @returns 无返回值。
+   * @returns 用户主动复制返回 true，内部模拟复制返回 false。
    * @author zhenghq
    */
-  observeCopyShortcut(): void {
+  observeCopyShortcut(): boolean {
     const syntheticEntry = [...this.pendingSyntheticCopies.entries()]
       .find(([, pending]) => !pending.observed)
     if (syntheticEntry) {
@@ -155,9 +155,10 @@ export class CopyShortcutGuard {
         this.pendingSyntheticCopies.delete(expectationId)
         pending.resolveFinish()
       }
-      return
+      return false
     }
     this.externalCopyVersion += 1
+    return true
   }
 
   /**
