@@ -184,7 +184,7 @@ Linux installs an AppImage at `~/.local/bin/selection-translator` and creates a 
 For manual installation, download the matching asset from GitHub [Releases](../../releases):
 
 - **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`;
-- **Linux**: `SelectionTranslator-<version>-linux-<arch>.AppImage`;
+- **Linux**: use `SelectionTranslator-<version>-linux-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-linux-arm64.AppImage` for ARM64;
 - **Windows**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
 
 Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` and `arm64` are supported; see [Development, Testing, and Packaging](#development-testing-and-packaging).
@@ -493,10 +493,11 @@ npm run release:checksums
 
 - `npm run build` generates main, preload, and renderer outputs in `out/`;
 - `npm run dist:mac` creates macOS x64/arm64 `dmg` and `zip` packages;
-- `npm run dist:linux` creates Linux x64/arm64 AppImage packages;
+- `npm run dist:linux` creates Linux x64/arm64 AppImage packages; the x64 artifact uses `x86_64` in its file name;
 - `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers;
 - `npm run release:checksums` creates `SHA256SUMS` for `.AppImage`, `.dmg`, `.zip`, and `.exe` files; upload it alongside all installers in the same Release;
 - All packaged files are written to `dist/`;
+- Platform packaging commands explicitly use `--publish never`, so electron-builder only creates local artifacts and cannot implicitly publish during a tag build;
 - Install-test each target package on a matching real device before release. Cross-building may download target Electron, NSIS, or AppImage toolchains.
 
 ### GitHub Actions Multi-Platform Packaging

@@ -96,7 +96,13 @@ resolve_version() {
 resolve_asset_name() {
   case "$1" in
     darwin) printf 'SelectionTranslator-%s-mac-%s.zip\n' "$3" "$2" ;;
-    linux) printf 'SelectionTranslator-%s-linux-%s.AppImage\n' "$3" "$2" ;;
+    linux)
+      release_architecture="$2"
+      if [ "$release_architecture" = 'x64' ]; then
+        release_architecture='x86_64'
+      fi
+      printf 'SelectionTranslator-%s-linux-%s.AppImage\n' "$3" "$release_architecture"
+      ;;
     *) fail "无法为平台 $1 选择安装包。" ;;
   esac
 }

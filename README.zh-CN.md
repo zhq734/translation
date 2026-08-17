@@ -181,7 +181,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 如果需要手动安装，可在 GitHub 的 [Releases](../../releases) 页面下载对应系统的文件：
 
 - **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，打开后将“划词翻译”拖入 `Applications`；
-- **Linux**：下载 `SelectionTranslator-<版本>-linux-<架构>.AppImage`，添加执行权限后运行；
+- **Linux**：x64 下载 `SelectionTranslator-<版本>-linux-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-linux-arm64.AppImage`，添加执行权限后运行；
 - **Windows**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
 
 所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。当前支持 `x64` 与 `arm64`，详见[开发、测试与打包](#开发测试与打包)。
@@ -505,11 +505,12 @@ npm run release:checksums
 
 - `npm run build`：生成 Electron 主进程、preload 和 renderer 产物到 `out/`；
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
-- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage；
+- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；
 - `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；
 - 打包输出目录统一为 `dist/`；
+- 各平台打包命令显式使用 `--publish never`，只生成本地安装包，避免标签构建时由 electron-builder 隐式发布；
 - 发布时必须把所有安装包与 `SHA256SUMS` 上传到同一个 GitHub Release，一键安装脚本才能完成下载与校验；
 - 建议在各目标平台完成安装验证；跨平台打包时需要联网下载目标平台 Electron、NSIS 或 AppImage 工具链。
 

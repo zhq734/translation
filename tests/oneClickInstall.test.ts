@@ -249,7 +249,7 @@ test('Linux 一键安装脚本应完成下载校验、用户目录安装和默�
     mkdirSync(homeDirectory, { recursive: true })
     mkdirSync(temporaryDownloadDirectory, { recursive: true })
 
-    const assetName = 'SelectionTranslator-0.2.0-linux-x64.AppImage'
+    const assetName = 'SelectionTranslator-0.2.0-linux-x86_64.AppImage'
     const assetContent = 'fake-app-image'
     const assetHash = createHash('sha256').update(assetContent).digest('hex')
     const fakeUnamePath = join(fakeBinaryDirectory, 'uname')
@@ -323,12 +323,20 @@ test('Windows 一键安装脚本应检测架构并校验 SHA-256', () => {
 
 test('桌面发行配置应为一键安装脚本生成稳定的跨平台文件名', () => {
   assert.equal(
+    packageJson.scripts?.['dist:mac'],
+    'npm run build && electron-builder --mac --x64 --arm64 --publish never'
+  )
+  assert.equal(
+    packageJson.scripts?.['dist:dmg'],
+    'npm run build && electron-builder --mac dmg --x64 --arm64 --publish never'
+  )
+  assert.equal(
     packageJson.scripts?.['dist:linux'],
-    'npm run build && electron-builder --linux AppImage --x64 --arm64'
+    'npm run build && electron-builder --linux AppImage --x64 --arm64 --publish never'
   )
   assert.equal(
     packageJson.scripts?.['dist:win'],
-    'npm run build && electron-builder --win nsis --x64 --arm64'
+    'npm run build && electron-builder --win nsis --x64 --arm64 --publish never'
   )
   assert.equal(packageJson.scripts?.['release:checksums'], 'node scripts/generate-checksums.mjs')
   assert.equal(
@@ -346,7 +354,7 @@ test('桌面发行配置应为一键安装脚本生成稳定的跨平台文件�
 test('校验和生成脚本应只为可发布安装包生成 SHA256SUMS', () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'selection-translator-checksums-'))
   try {
-    writeFileSync(join(temporaryDirectory, 'SelectionTranslator-0.2.0-linux-x64.AppImage'), 'linux')
+    writeFileSync(join(temporaryDirectory, 'SelectionTranslator-0.2.0-linux-x86_64.AppImage'), 'linux')
     writeFileSync(join(temporaryDirectory, 'SelectionTranslator-0.2.0-mac-arm64.zip'), 'mac')
     writeFileSync(join(temporaryDirectory, 'SelectionTranslator-0.2.0-Setup-x64.exe'), 'windows')
     writeFileSync(join(temporaryDirectory, 'builder-debug.yml'), 'ignore')
@@ -360,7 +368,7 @@ test('校验和生成脚本应只为可发布安装包生成 SHA256SUMS', () => 
 
     assert.equal(result.status, 0, result.stderr)
     const checksums = readFileSync(outputPath, 'utf8')
-    assert.match(checksums, /  SelectionTranslator-0\.2\.0-linux-x64\.AppImage/u)
+    assert.match(checksums, /  SelectionTranslator-0\.2\.0-linux-x86_64\.AppImage/u)
     assert.match(checksums, /  SelectionTranslator-0\.2\.0-mac-arm64\.zip/u)
     assert.match(checksums, /  SelectionTranslator-0\.2\.0-Setup-x64\.exe/u)
     assert.doesNotMatch(checksums, /builder-debug\.yml/u)
