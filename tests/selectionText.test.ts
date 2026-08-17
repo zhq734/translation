@@ -28,6 +28,18 @@ test('连续软换行和 Windows 换行应合并且不产生重复空格', () =>
 })
 
 /**
+ * 校验 Windows 剪贴板只用单个 CRLF 分隔完整段落时不会被误判为视觉软换行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 单个换行分隔的完整段落应保留段落边界', () => {
+  assert.equal(
+    normalizeSelectedText('First paragraph ends here.\r\nSecond paragraph starts here.'),
+    'First paragraph ends here.\nSecond paragraph starts here.'
+  )
+})
+
+/**
  * 校验中文视觉换行合并时不会在汉字之间引入多余空格。
  * @returns 无返回值。
  * @author zhenghq

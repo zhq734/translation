@@ -7,7 +7,9 @@
 html,
 body {
   width: 100%;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 body {
@@ -20,18 +22,22 @@ body {
 }
 
 .container {
-  width: min(100%, 620px);
-  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 760px);
+  height: 100vh;
+  min-height: 0;
   margin: 0 auto;
-  padding: clamp(18px, 4vw, 28px) clamp(16px, 4vw, 24px) 48px;
+  padding: clamp(16px, 3vw, 24px) clamp(16px, 4vw, 24px) 12px;
 }
 
 .page-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 h1 {
@@ -56,6 +62,71 @@ h1 {
   padding: 5px 9px;
 }
 
+.settings-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 5px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.settings-tab {
+  flex: 1 0 max-content;
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  white-space: nowrap;
+}
+
+.settings-tab:hover {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.settings-tab[aria-selected='true'] {
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
+  box-shadow: 0 1px 2px var(--panel-shadow);
+}
+
+.settings-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.tab-panels {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tab-panel {
+  height: 100%;
+  min-height: 0;
+  padding: 1px 4px 24px 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
 section {
   margin-bottom: 16px;
   border: 1px solid var(--border-default);
@@ -63,6 +134,10 @@ section {
   background: var(--panel-bg);
   padding: clamp(14px, 3vw, 18px);
   box-shadow: 0 1px 2px var(--panel-shadow);
+}
+
+section:last-child {
+  margin-bottom: 0;
 }
 
 h2 {
@@ -178,7 +253,8 @@ input[type='password']:disabled {
   color: var(--status-success);
 }
 
-.dingtalk-actions {
+.dingtalk-actions,
+.provider-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -186,7 +262,8 @@ input[type='password']:disabled {
   margin-top: 4px;
 }
 
-.dingtalk-status {
+.dingtalk-status,
+.microsoft-status {
   min-height: 20px;
   margin-top: 10px;
   text-align: right;
@@ -239,17 +316,58 @@ input[type='password']:disabled {
   background: var(--button-bg-hover);
 }
 
+.btn.danger {
+  border-color: var(--status-error);
+  background: var(--button-secondary-bg);
+  color: var(--status-error);
+}
+
+.btn.danger:hover {
+  background: var(--status-error);
+  color: var(--button-text);
+}
+
+.service-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.service-control-row .hint {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.service-control-row .btn {
+  flex: 0 0 auto;
+}
+
 .saved {
-  position: sticky;
-  bottom: 14px;
+  flex: 0 0 18px;
   min-height: 18px;
   color: var(--status-success);
   font-size: 13px;
+  line-height: 18px;
   text-align: center;
   pointer-events: none;
 }
 
 @media (max-width: 480px) {
+  .container {
+    padding-top: 14px;
+  }
+
+  .settings-tabs {
+    margin-right: -4px;
+  }
+
+  .settings-tab {
+    flex-grow: 0;
+    padding-inline: 16px;
+  }
+
   .row,
   .status-row {
     grid-template-columns: 1fr;
@@ -264,16 +382,28 @@ input[type='password']:disabled {
     justify-self: start;
   }
 
-  .dingtalk-actions {
+  .dingtalk-actions,
+  .provider-actions {
     align-items: stretch;
     justify-content: flex-start;
   }
 
-  .dingtalk-actions .btn {
+  .dingtalk-actions .btn,
+  .provider-actions .btn {
     flex: 1 1 100%;
   }
 
-  .dingtalk-status {
+  .dingtalk-status,
+  .microsoft-status {
     text-align: left;
+  }
+
+  .service-control-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-control-row .btn {
+    width: 100%;
   }
 }

@@ -22,15 +22,11 @@ test('设置页应包含完整的钉钉配置区域和密码类型 Secret 输入
   assert.match(html, /id="dingtalk-status"/u)
 })
 
-test('钉钉配置区域应位于翻译语言之后且在触发设置之前，确保打开页面即可发现', () => {
+test('钉钉配置区域应具有独立 Tab，确保配置入口清晰可发现', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
-  const languageIndex = html.indexOf('<h2>翻译语言</h2>')
-  const dingTalkIndex = html.indexOf('<h2>钉钉翻译</h2>')
-  const triggerIndex = html.indexOf('<h2>触发与弹窗</h2>')
-
-  assert.ok(languageIndex >= 0)
-  assert.ok(dingTalkIndex > languageIndex)
-  assert.ok(triggerIndex > dingTalkIndex)
+  assert.match(html, /id="settings-tab-dingtalk"[^>]+aria-controls="settings-panel-dingtalk"/u)
+  assert.match(html, /id="settings-panel-dingtalk"[^>]+aria-labelledby="settings-tab-dingtalk"/u)
+  assert.ok(html.indexOf('<h2>钉钉翻译</h2>') > html.indexOf('id="settings-panel-dingtalk"'))
 })
 
 test('设置页交互应使用独立接口、留空保留 Secret 并显式清除', () => {

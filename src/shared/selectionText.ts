@@ -6,6 +6,7 @@ const INDENTED_CODE_PATTERN = /^(?:\t| {4,})\S/u
 const CJK_CHARACTER_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff]/u
 const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—]$/u
 const NO_SPACE_BEFORE_PATTERN = /^[,.;:!?，。！？；：、)\]}”’]/u
+const SENTENCE_END_PATTERN = /[.!?。！？]["'”’）)\]}]*$/u
 
 /**
  * 判断捕获文本中的一行属于普通段落、列表还是需要独立保留的块级内容。
@@ -38,6 +39,16 @@ function resolveSoftLineSeparator(leftLine: string, rightLine: string): string {
     return ''
   }
   return ' '
+}
+
+/**
+ * 判断普通文本行是否已经形成完整句子，可作为 Windows 单个换行表示的段落边界。
+ * @param line 换行前已经清理首尾空格的文本行。
+ * @returns 行尾为完整句子结束标点时返回 true。
+ * @author zhenghq
+ */
+function endsCompleteSentence(line: string): boolean {
+  return SENTENCE_END_PATTERN.test(line)
 }
 
 /**
@@ -74,7 +85,9 @@ export function normalizeSelectedText(text: string): string {
     } else {
       const previousKind = classifySelectedLine(previousRawLine)
       const currentKind = classifySelectedLine(rawLine)
-      const preserveLineBreak = currentKind !== 'prose' || previousKind === 'block'
+      const preserveLineBreak = currentKind !== 'prose'
+        || previousKind === 'block'
+        || (previousKind === 'prose' && endsCompleteSentence(previousRawLine.trim()))
       result += preserveLineBreak
         ? `\n${line}`
         : `${resolveSoftLineSeparator(previousRawLine.trim(), line)}${line}`

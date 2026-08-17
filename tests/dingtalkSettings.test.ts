@@ -43,7 +43,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
     proxyBypassRules: '<local>;localhost'
   })
 
-  assert.equal(settings.schemaVersion, 5)
+  assert.equal(settings.schemaVersion, 7)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')
@@ -60,7 +60,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
 test('更早版本升级后也应初始化脱敏的钉钉公开字段', () => {
   const settings = normalizeSettings({ schemaVersion: 2, autoTrigger: true })
 
-  assert.equal(settings.schemaVersion, 5)
+  assert.equal(settings.schemaVersion, 7)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')

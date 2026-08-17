@@ -10,6 +10,7 @@ import {
   BrowserWindow,
   safeStorage,
   screen,
+  dialog,
   type NativeImage
 } from 'electron'
 import { join } from 'node:path'
@@ -17,8 +18,10 @@ import { loadSettings, saveSettings, getSettings } from './settings'
 import { captureSelection, PermissionError, checkAccessibilityPermission } from './capture'
 import {
   checkDingTalk as checkDingTalkTranslation,
+  checkMicrosoft as checkMicrosoftTranslation,
   configureTranslationFetch,
   resetDingTalkTranslationRuntime,
+  resetMicrosoftTranslationRuntime,
   translate
 } from './translate'
 import { applyTranslationProxy, translationFetch } from './network'
@@ -52,11 +55,16 @@ import {
 import type {
   DingTalkCheckStatus,
   DingTalkConfigPatch,
+  MicrosoftCheckStatus,
   Settings,
   DeepLxStatus
 } from '../shared/types'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
+import {
+  isMacOSDiskImageExecution,
+  shouldOpenSettingsOnInitialLaunch
+} from './appLifecycle'
 
 const isMac = process.platform === 'darwin'
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
@@ -86,22 +94,82 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {})
-  app.whenReady().then(() => void onReady())
+  const initialization = app.whenReady()
+    .then(() => onReady())
+    .catch(handleApplicationInitializationFailure)
+  app.on('second-instance', () => {
+    void initialization.then((initialized) => {
+      if (!initialized) return
+      if (isMac) {
+        showTrayMenu()
+      } else {
+        openSettings()
+      }
+    })
+  })
+}
+
+/**
+ * 统一处理应用启动初始化异常，避免应用在无 Dock、无菜单栏入口的状态下继续驻留。
+ * @param error 启动初始化过程中抛出的异常。
+ * @returns 固定返回 false，表示应用未完成初始化。
+ * @author zhenghq
+ */
+function handleApplicationInitializationFailure(error: unknown): false {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('[main] 应用初始化失败:', error)
+  dialog.showErrorBox('划词翻译启动失败', `应用无法完成启动：${message}`)
+  app.quit()
+  return false
+}
+
+/**
+ * 将 macOS 应用配置为仅显示菜单栏图标的辅助应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function configureMacOSMenuBarApplication(): void {
+  if (!isMac) return
+  app.setActivationPolicy('accessory')
+  app.dock?.hide()
+  Menu.setApplicationMenu(null)
+}
+
+/**
+ * 提示从 macOS 磁盘镜像启动的用户先完成应用安装。
+ * @returns 用户明确选择继续运行时返回 true，选择退出或非磁盘镜像启动时返回相应结果。
+ * @author zhenghq
+ */
+async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
+  if (!isMacOSDiskImageExecution(process.platform, process.execPath)) return true
+
+  const result = await dialog.showMessageBox({
+    type: 'warning',
+    title: '请先安装划词翻译',
+    message: '当前应用正在从磁盘镜像运行',
+    detail: '请先将“划词翻译”复制到“应用程序”文件夹，再从“应用程序”启动，避免重装后旧实例持续运行。',
+    buttons: ['退出应用', '仍然运行'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  })
+  return result.response === 1
 }
 
 /**
  * 初始化主进程窗口、全局监听、托盘和 IPC。
- * @returns 无返回值。
+ * @returns 初始化完成时返回 true；用户选择退出磁盘镜像实例时返回 false。
  * @author zhenghq
  */
-async function onReady(): Promise<void> {
-  if (isMac) {
-    app.setActivationPolicy('accessory')
-    app.dock?.hide()
+async function onReady(): Promise<boolean> {
+  configureMacOSMenuBarApplication()
+  if (!(await confirmMacOSInstalledApplicationLaunch())) {
+    app.quit()
+    return false
   }
 
   loadSettings()
+  createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
     getSettings,
     saveSettings,
@@ -132,11 +200,12 @@ async function onReady(): Promise<void> {
   createSelectionButton(PRELOAD_PATH)
   registerShortcut(getSettings().hotkey)
   applySelectionListener()
-  createTray()
   registerIpc()
+  if (shouldOpenSettingsOnInitialLaunch(process.platform)) openSettings()
 
   // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
   setTimeout(() => void warnIfNoAccessibility(), 1500)
+  return true
 }
 
 /**
@@ -657,6 +726,15 @@ function checkDingTalk(): Promise<DingTalkCheckStatus> {
   return checkDingTalkTranslation(configuration.getCredentialsSnapshot(false))
 }
 
+/**
+ * 检测免订阅微软 Bing 在线翻译链路。
+ * @returns 结构化脱敏检测状态。
+ * @author zhenghq
+ */
+function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
+  return checkMicrosoftTranslation()
+}
+
 // ---- IPC ----
 
 /**
@@ -702,6 +780,10 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.proxyBypassRules !== undefined) {
     await applyTranslationProxy(settings)
   }
+  if (patch.microsoftEnabled !== undefined &&
+      settings.microsoftEnabled !== previous.microsoftEnabled) {
+    resetMicrosoftTranslationRuntime()
+  }
   tray?.setContextMenu(buildTrayMenu())
   broadcast('settings:changed', settings)
   return settings
@@ -721,6 +803,7 @@ function registerIpc(): void {
     setPopupPinned(Boolean(pinned))
   })
   ipcMain.on('settings:open', () => openSettings())
+  ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {
     translatePreparedSelection()
   })
@@ -742,6 +825,7 @@ function registerIpc(): void {
   )
   ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
   ipcMain.handle('dingtalk:check', () => checkDingTalk())
+  ipcMain.handle('microsoft:check', () => checkMicrosoft())
 
   ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
@@ -749,6 +833,24 @@ function registerIpc(): void {
 }
 
 // ---- 托盘 ----
+
+/**
+ * 停止划词翻译后台服务并退出应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function stopApplicationService(): void {
+  app.quit()
+}
+
+/**
+ * 弹出状态栏图标对应的功能菜单，供 macOS 第二实例复用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showTrayMenu(): void {
+  tray?.popUpContextMenu()
+}
 
 /**
  * 加载适配当前操作系统的翻译主题托盘图标。
@@ -766,7 +868,7 @@ function loadTrayIcon(): NativeImage {
 }
 
 /**
- * 创建菜单栏托盘图标。
+ * 创建仅显示模板图标的菜单栏状态项，减少 macOS 菜单栏占用宽度。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -777,7 +879,7 @@ function createTray(): void {
 }
 
 /**
- * 构建包含自动中英互译和手动语言选项的托盘菜单。
+ * 构建包含触发方式开关、自动中英互译和手动语言选项的托盘菜单。
  * @returns Electron 托盘菜单。
  * @author zhenghq
  */
@@ -803,21 +905,32 @@ function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     { label: `划词翻译   ${settings.hotkey}`, enabled: false },
     { type: 'separator' },
+    {
+      label: '划词后自动显示“译”按钮',
+      type: 'checkbox',
+      checked: settings.triggerMode === 'button',
+      click: (menuItem) =>
+        void applySettingsPatch({ triggerMode: menuItem.checked ? 'button' : 'hotkey' })
+    },
+    { type: 'separator' },
     { label: '目标语言', submenu: targetSubmenu },
     { label: '源语言', submenu: sourceSubmenu },
     { type: 'separator' },
-    { label: '设置…', click: () => openSettings() },
-    { label: '退出', role: 'quit' }
+    { label: '设置', click: () => openSettings() },
+    { label: '退出', click: () => stopApplicationService() }
   ])
 }
 
 /**
- * 应用退出前停止全局监听，释放原生鼠标钩子。
+ * 应用退出前停止全局监听、注销快捷键并移除托盘图标。
  * @returns 无返回值。
  * @author zhenghq
  */
 function cleanupBeforeQuit(): void {
   stopAutoTrigger()
+  globalShortcut.unregisterAll()
+  tray?.destroy()
+  tray = null
 }
 
 app.on('before-quit', cleanupBeforeQuit)

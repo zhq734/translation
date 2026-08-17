@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, TranslatePayload, Settings, DeepLxStatus, DingTalkConfigPatch } from '../shared/types'
+import type {
+  Api,
+  TranslatePayload,
+  Settings,
+  DeepLxStatus,
+  DingTalkConfigPatch
+} from '../shared/types'
 
 const api: Api = {
   /**
@@ -37,6 +43,14 @@ const api: Api = {
    */
   openSettings() {
     ipcRenderer.send('settings:open')
+  },
+  /**
+   * 停止后台翻译服务并退出应用。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  stopService() {
+    ipcRenderer.send('settings:stop-service')
   },
   /**
    * 设置翻译弹窗是否固定。
@@ -127,6 +141,12 @@ const api: Api = {
    * @author zhenghq
    */
   checkDingTalk: () => ipcRenderer.invoke('dingtalk:check'),
+  /**
+   * 检测免订阅微软 Bing 在线翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkMicrosoft: () => ipcRenderer.invoke('microsoft:check'),
   /**
    * 生成 DeepLX Docker 命令。
    * @param port 本机映射端口。

@@ -45,6 +45,8 @@ export interface Settings {
   dingTalkClientId: string
   /** 是否已经安全保存 ClientSecret。 */
   dingTalkSecretConfigured: boolean
+  /** 是否启用免订阅的微软 Bing 在线翻译通道。 */
+  microsoftEnabled: boolean
 }
 
 export interface DingTalkConfigPatch {
@@ -78,6 +80,17 @@ export interface DingTalkCheckStatus {
   message: string
 }
 
+export type MicrosoftCheckCode = DingTalkCheckCode
+
+export interface MicrosoftCheckStatus {
+  /** 检测是否通过。 */
+  ok: boolean
+  /** 脱敏后的状态分类。 */
+  code: MicrosoftCheckCode
+  /** 面向用户的提示。 */
+  message: string
+}
+
 export interface DeepLxStatus {
   url: string
   online: boolean
@@ -91,6 +104,8 @@ export interface Api {
   hide(): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 停止后台翻译服务并退出应用。 */
+  stopService(): void
   /** 设置翻译弹窗是否固定。 */
   setPinned(pinned: boolean): void
   /** 订阅翻译弹窗固定状态变化。 */
@@ -111,6 +126,12 @@ export interface Api {
   clearDingTalkSecret(): Promise<Settings>
   /** 检测钉钉 Token 和文本翻译链路。 */
   checkDingTalk(): Promise<DingTalkCheckStatus>
+  /**
+   * 检测免订阅微软 Bing 在线翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkMicrosoft(): Promise<MicrosoftCheckStatus>
   getDockerCommand(port: number): Promise<string>
   openDeployDoc(): void
 }
