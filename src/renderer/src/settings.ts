@@ -373,26 +373,43 @@ function renderUpdateStatus(status: UpdateStatus): void {
   updateStatus.textContent = status.message
   updateStatus.className = status.phase === 'error'
     ? 'status update-status offline'
-    : status.phase === 'not-available' || status.phase === 'downloaded'
+    : status.phase === 'not-available' ||
+      status.phase === 'downloaded' ||
+      status.phase === 'manual-downloaded'
       ? 'status update-status online'
       : 'status update-status'
 
   const busy = status.phase === 'checking' || status.phase === 'downloading'
+  const hasManualDownload = status.installMode === 'manual' &&
+    status.manualDownloadAvailable === true
+  const manualDownloadReady = hasManualDownload &&
+    status.phase === 'manual-downloaded'
+  const manualDownloadActionAvailable = hasManualDownload && (
+    status.phase === 'available' ||
+    status.phase === 'error' ||
+    manualDownloadReady
+  )
   checkUpdateButton.disabled = busy || status.phase === 'disabled'
   updateActionButton.disabled = busy
   removeQuarantineButton.disabled = busy
-  updateActionButton.hidden = status.phase !== 'available' && status.phase !== 'downloaded'
-  removeQuarantineButton.hidden = status.installMode !== 'manual'
+  updateActionButton.hidden = status.phase !== 'available' &&
+    status.phase !== 'downloaded' &&
+    !manualDownloadActionAvailable
+  removeQuarantineButton.hidden = !manualDownloadReady
   if (status.phase === 'downloaded') {
     updateActionButton.textContent = '立即重启升级'
-  } else if (status.installMode === 'manual') {
-    updateActionButton.textContent = '打开下载页'
+  } else if (hasManualDownload) {
+    updateActionButton.textContent = manualDownloadReady ? '重新下载 DMG' : '下载并打开 DMG'
   } else {
     updateActionButton.textContent = '下载并安装'
   }
 
   const progress = status.progress
-  updateProgress.hidden = !progress || (status.phase !== 'downloading' && status.phase !== 'downloaded')
+  updateProgress.hidden = !progress || (
+    status.phase !== 'downloading' &&
+    status.phase !== 'downloaded' &&
+    status.phase !== 'manual-downloaded'
+  )
   if (progress) {
     const percent = Math.max(0, Math.min(100, progress.percent))
     updateProgressBar.value = percent
@@ -403,8 +420,10 @@ function renderUpdateStatus(status: UpdateStatus): void {
 
   if (status.phase === 'disabled') {
     updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
-  } else if (status.installMode === 'manual') {
-    updateInstallHint.textContent = '当前 macOS 包需手动安装：点击升级打开 GitHub Release，下载 DMG 并覆盖应用后，确认弹窗即可自动执行解除隔离属性。'
+  } else if (hasManualDownload) {
+    updateInstallHint.textContent = manualDownloadReady
+      ? '更新包已下载到“下载”文件夹并打开 DMG；请手动拖入“应用程序”覆盖旧版本，再点击“解除 macOS 隔离属性”。'
+      : '点击升级后，更新包会下载到“下载”文件夹并自动打开 DMG。'
   } else {
     updateInstallHint.textContent = '检测到新版本后由你确认下载；下载完成后可立即重启并完成升级。'
   }
@@ -425,19 +444,19 @@ async function checkApplicationUpdate(): Promise<void> {
 }
 
 /**
- * 根据当前状态下载更新、打开手动下载页或重启安装。
+ * 根据当前状态下载更新、打开手动 DMG 或重启安装。
  * @returns 操作完成后的 Promise。
  * @author zhenghq
  */
 async function runUpdateAction(): Promise<void> {
-  if (latestUpdateStatus?.phase === 'downloaded') {
+  if (latestUpdateStatus?.phase === 'downloaded' &&
+      latestUpdateStatus.installMode === 'automatic') {
     window.api.installUpdate()
     return
   }
   try {
     const status = await window.api.downloadUpdate()
     renderUpdateStatus(status)
-    if (status.installMode === 'manual') await removeMacOSQuarantine()
   } catch (error) {
     updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
     updateStatus.className = 'status update-status offline'

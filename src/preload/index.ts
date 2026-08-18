@@ -176,7 +176,7 @@ const api: Api = {
    */
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:check'),
   /**
-   * 下载新版本；手动模式下打开 GitHub Release。
+   * 下载新版本；手动 macOS 模式下保存并打开 DMG。
    * @returns 操作完成后的自动更新状态。
    * @author zhenghq
    */

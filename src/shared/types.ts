@@ -25,6 +25,7 @@ export type UpdatePhase =
   | 'not-available'
   | 'downloading'
   | 'downloaded'
+  | 'manual-downloaded'
   | 'error'
 
 /** 新版本采用的安装方式。 */
@@ -56,6 +57,10 @@ export interface UpdateStatus {
   progress?: UpdateProgress
   /** 手动下载和错误降级使用的 GitHub Release 地址。 */
   releaseUrl: string
+  /** 手动安装模式下载到本地的 DMG 路径。 */
+  manualDownloadPath?: string
+  /** 当前更新是否提供可直接下载的 macOS DMG。 */
+  manualDownloadAvailable?: boolean
 }
 
 /** macOS 应用隔离属性处理结果。 */
@@ -215,7 +220,7 @@ export interface Api {
    */
   checkForUpdates(): Promise<UpdateStatus>
   /**
-   * 下载更新；手动模式下打开 GitHub Release。
+   * 下载更新；手动 macOS 模式下保存并打开 DMG。
    * @returns 操作完成后的自动更新状态。
    * @author zhenghq
    */

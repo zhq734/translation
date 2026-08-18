@@ -5,6 +5,7 @@ import {
   isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
   resolveUpdateInstallMode,
+  type ManualMacUpdateService,
   type UpdateDriver,
   type UpdateDriverListeners
 } from '../src/main/updateManager.ts'
@@ -54,6 +55,32 @@ class FakeUpdateDriver implements UpdateDriver {
   }
 }
 
+class FakeManualMacUpdateService implements ManualMacUpdateService {
+  calls: Array<{ url: string; version: string }> = []
+  progressCallbacks = 0
+
+  /**
+   * 记录手动 macOS 更新包下载和打开请求，并模拟下载进度。
+   * @param url DMG 下载地址。
+   * @param version 更新版本号。
+   * @param onProgress 下载进度回调。
+   * @returns 模拟下载文件路径的 Promise。
+   * @author zhenghq
+   */
+  async downloadAndOpen(
+    url: string,
+    version: string,
+    onProgress?: (progress: UpdateStatus['progress']) => void
+  ): Promise<{ path: string }> {
+    this.calls.push({ url, version })
+    if (onProgress) {
+      this.progressCallbacks += 1
+      onProgress({ percent: 100, transferred: 10, total: 10, bytesPerSecond: 10 })
+    }
+    return { path: `/Users/mac/Downloads/SelectionTranslator-${version}.dmg` }
+  }
+}
+
 /**
  * 创建用于测试的自动更新管理器及其依赖记录器。
  * @param installMode 更新安装模式。
@@ -67,10 +94,12 @@ function createManager(
 ): {
   manager: UpdateManager
   driver: FakeUpdateDriver
+  manualUpdate: FakeManualMacUpdateService
   openedUrls: string[]
   statuses: UpdateStatus[]
 } {
   const driver = new FakeUpdateDriver()
+  const manualUpdate = new FakeManualMacUpdateService()
   const openedUrls: string[] = []
   const statuses: UpdateStatus[] = []
   const manager = new UpdateManager({
@@ -79,12 +108,13 @@ function createManager(
     enabled,
     installMode,
     releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+    manualUpdate,
     openExternal: async (url) => {
       openedUrls.push(url)
     },
     onStatusChanged: (status) => statuses.push(status)
   })
-  return { manager, driver, openedUrls, statuses }
+  return { manager, driver, manualUpdate, openedUrls, statuses }
 }
 
 test('更新安装模式应根据打包状态、平台、签名和 AppImage 环境决定', () => {
@@ -189,15 +219,26 @@ test('自动更新应依次广播检查、发现、下载进度和已下载状�
   assert.ok(statuses.length >= 5)
 })
 
-test('手动安装模式应检查版本但点击更新时打开 GitHub Release', async () => {
-  const { manager, driver, openedUrls } = createManager('manual')
+test('手动安装模式应下载 DMG 到本地并打开安装界面', async () => {
+  const { manager, driver, manualUpdate, openedUrls } = createManager('manual')
 
-  driver.listeners?.available({ version: '1.0.4' })
+  driver.listeners?.available({
+    version: '1.0.4',
+    manualDownloadUrl: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg'
+  })
   await manager.downloadUpdate()
 
   assert.equal(driver.downloadCount, 0)
-  assert.deepEqual(openedUrls, ['https://github.com/zhq734/translation/releases/latest'])
-  assert.match(manager.getStatus().message, /已打开 GitHub Release/u)
+  assert.deepEqual(openedUrls, [])
+  assert.deepEqual(manualUpdate.calls, [{
+    url: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg',
+    version: '1.0.4'
+  }])
+  assert.equal(manualUpdate.progressCallbacks, 1)
+  assert.equal(manager.getStatus().phase, 'manual-downloaded')
+  assert.equal(manager.getStatus().manualDownloadAvailable, true)
+  assert.match(manager.getStatus().message, /已下载到“下载”文件夹/u)
+  assert.match(manager.getStatus().message, /拖入“应用程序”覆盖旧版本/u)
 })
 
 test('驱动异常应转为可展示的错误状态并保留手动下载入口', async () => {
@@ -232,7 +273,12 @@ test('Release 缺少更新清单时应显示简短中文提示而不是底层调
  * @author zhenghq
  */
 test('macOS 更新包签名不匹配时应切换为手动安装模式', async () => {
-  const { manager, driver, openedUrls } = createManager()
+  const { manager, driver, manualUpdate, openedUrls } = createManager()
+
+  driver.listeners?.available({
+    version: '1.0.4',
+    manualDownloadUrl: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg'
+  })
 
   driver.listeners?.error(new Error(
     'Code signature at URL file:///tmp/划词翻译.app/ did not pass validation: ' +
@@ -243,10 +289,11 @@ test('macOS 更新包签名不匹配时应切换为手动安装模式', async ()
   assert.equal(manager.getStatus().installMode, 'manual')
   assert.equal(
     manager.getStatus().message,
-    '更新包签名与当前应用不兼容，已改用手动安装；请打开 GitHub Release 下载 DMG，拖入“应用程序”并覆盖旧版本'
+    '更新包签名与当前应用不兼容，已改用手动安装；请下载 DMG，拖入“应用程序”并覆盖旧版本'
   )
 
   await manager.downloadUpdate()
   assert.equal(driver.downloadCount, 0)
-  assert.deepEqual(openedUrls, ['https://github.com/zhq734/translation/releases/latest'])
+  assert.deepEqual(openedUrls, [])
+  assert.equal(manualUpdate.calls.length, 1)
 })

@@ -10,6 +10,10 @@ import {
 import type { UpdateStatus } from '../shared/types'
 import { isMacOSDiskImageExecution } from './appLifecycle'
 import {
+  createManualMacUpdateService,
+  resolveManualMacDmgUrl
+} from './manualMacUpdate'
+import {
   UpdateManager,
   isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
@@ -19,6 +23,7 @@ import {
 } from './updateManager'
 
 const RELEASE_URL = 'https://github.com/zhq734/translation/releases/latest'
+const RELEASE_DOWNLOAD_BASE_URL = `${RELEASE_URL}/download/`
 const execFileAsync = promisify(execFile)
 
 /**
@@ -38,7 +43,10 @@ class ElectronUpdateDriver implements UpdateDriver {
     autoUpdater.allowPrerelease = false
     autoUpdater.fullChangelog = false
     autoUpdater.on('checking-for-update', listeners.checking)
-    autoUpdater.on('update-available', (info: UpdateInfo) => listeners.available(info))
+    autoUpdater.on('update-available', (info: UpdateInfo) => listeners.available({
+      version: info.version,
+      manualDownloadUrl: resolveMacOSManualDmgUrl(info)
+    }))
     autoUpdater.on('update-not-available', (info: UpdateInfo) => listeners.notAvailable(info))
     autoUpdater.on('download-progress', (progress: ProgressInfo) => listeners.progress(progress))
     autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => listeners.downloaded(info))
@@ -71,6 +79,17 @@ class ElectronUpdateDriver implements UpdateDriver {
   installUpdate(): void {
     autoUpdater.quitAndInstall(false, true)
   }
+}
+
+/**
+ * 从 electron-updater 更新清单中选择当前 macOS 架构对应的 DMG。
+ * @param info electron-updater 返回的更新信息。
+ * @returns 当前架构优先的 HTTPS DMG 地址；没有匹配文件时返回 undefined。
+ * @author zhenghq
+ */
+function resolveMacOSManualDmgUrl(info: UpdateInfo): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  return resolveManualMacDmgUrl(info.files, process.arch, RELEASE_DOWNLOAD_BASE_URL)
 }
 
 /**
@@ -120,6 +139,12 @@ export async function createApplicationUpdateManager(
     enabled: app.isPackaged,
     installMode,
     releaseUrl: RELEASE_URL,
+    manualUpdate: process.platform === 'darwin'
+      ? createManualMacUpdateService({
+        downloadsDirectory: app.getPath('downloads'),
+        openPath: (path) => shell.openPath(path)
+      })
+      : undefined,
     openExternal: async (url) => {
       await shell.openExternal(url)
     },

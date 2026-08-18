@@ -734,7 +734,7 @@ async function checkForApplicationUpdates(): Promise<UpdateStatus> {
 }
 
 /**
- * 下载新版本；手动安装模式下打开 GitHub Release 页面。
+ * 下载新版本；手动 macOS 安装模式下保存并打开 DMG。
  * @returns 操作完成后的自动更新状态。
  * @author zhenghq
  */

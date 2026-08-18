@@ -192,10 +192,10 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 ### In-app update checks and upgrades
 
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
-- Open **Settings → About** to view the current version, check manually, monitor download progress, and restart into a downloaded update;
+- Open **Settings → About** to view the current version, check manually, and monitor download progress. Platforms that support automatic installation can restart into a downloaded update;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
-- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. Official GitHub Actions artifacts are Developer ID signed and Apple-notarized; local builds without release credentials safely fall back to opening GitHub Releases for manual installation;
-- Source development mode does not access the update service. The Release-page fallback remains available after check or download failures.
+- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. In manual mode, clicking update downloads the DMG for the current architecture into Downloads and opens it. After dragging Selection Translator into Applications and replacing the old copy, return to Settings and click **Remove macOS quarantine attribute**;
+- If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
 > The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
 
@@ -545,7 +545,7 @@ Convert the `.p12` to a single-line Base64 value with:
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-Unsigned mode explicitly disables certificate auto-discovery and notarization, then applies an ad-hoc signature that requires no Apple certificate so Apple Silicon bundles do not retain an invalid signature. This mode needs neither a developer certificate nor an Apple account. Its artifacts may be published to GitHub Releases, but Gatekeeper may block them and they cannot use in-app automatic installation. When the app detects a new version it opens the GitHub Release instead; download the DMG for the correct architecture, mount it, drag Selection Translator into Applications, and choose Replace.
+Unsigned mode explicitly disables certificate auto-discovery and notarization, then applies an ad-hoc signature that requires no Apple certificate so Apple Silicon bundles do not retain an invalid signature. This mode needs neither a developer certificate nor an Apple account. Its artifacts may be published to GitHub Releases, but Gatekeeper may block them and they cannot use in-app automatic installation. When the app detects a new version, clicking update in Settings downloads the DMG for the current architecture into Downloads and opens it. GitHub Releases is opened only as a fallback when the update metadata does not provide a directly resolvable DMG.
 
 If an older release used `Apple Development`, another signature, or no signature, the native macOS updater may reject the replacement because its signing requirement changed. Do not keep retrying the in-app installer: download the DMG from GitHub Releases and manually replace the old app. In-app automatic installation is enabled only when releases consistently use the same team's `Developer ID Application` signature.
 
@@ -553,22 +553,17 @@ If an older release used `Apple Development`, another signature, or no signature
 
 Use the following steps only when the package came from this repository's trusted GitHub Actions run or Release and you have verified its origin:
 
-1. Mount the DMG and drag Selection Translator into Applications; choose Replace when an older version already exists;
-2. Open Terminal and remove the download quarantine attribute;
-3. Launch the application again.
+1. In **Settings → About**, click **Download and open DMG** and wait for the app to save the update in Downloads and open the installer. If automatic resolution fails, use **Open release page** to download it manually;
+2. Drag Selection Translator into Applications and choose Replace when an older version already exists;
+3. Return to Settings, click **Remove macOS quarantine attribute**, and confirm that replacement is complete;
+4. Launch the application again. You can also run the fixed command below manually in Terminal.
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-If macOS reports a permission error, use the following only for an application whose origin you trust:
-
-```bash
-sudo xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
-```
-
-This command must run after the downloaded application has replaced the old copy. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. The manual update flow in Settings now opens the download page and asks for confirmation; after the user confirms that replacement is complete, the app runs the command only for `/Applications/划词翻译.app`. It never invokes `sudo`, and a failure still shows the manual command. Configuring all Apple credentials avoids most Gatekeeper work and restores in-app automatic installation, but it is not required to generate Release installers.
+This command must run after the downloaded application has replaced the old copy. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. The Settings page shows **Remove macOS quarantine attribute** only after the DMG has downloaded successfully and opened. After the user completes the drag-and-replace step and explicitly clicks the button, the app asks for confirmation and runs the command only for `/Applications/划词翻译.app`. It never invokes `sudo`, and a failure still shows the manual command. Configuring all Apple credentials avoids most Gatekeeper work and restores in-app automatic installation, but it is not required to generate Release installers.
 
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
@@ -641,7 +636,7 @@ spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 
 GitHub Actions and local development packages created without Apple release credentials may still be blocked by Gatekeeper and are not Apple-verified releases. They can be installed manually after their origin has been verified.
 
-If the in-app updater reports `Code signature ... did not pass validation` or says the code did not satisfy its designated requirement, the installed app and update package use incompatible signing requirements. Click update in Settings, download the DMG for the correct architecture, mount it, drag Selection Translator into Applications, replace the old version, and then return to the confirmation dialog to run `xattr`. The “Remove macOS quarantine attribute” action can retry the same fixed-path operation. This only removes Gatekeeper's download quarantine attribute; it does not repair a signing-requirement mismatch, so the updater still uses the manual replacement flow.
+If the in-app updater reports `Code signature ... did not pass validation` or says the code did not satisfy its designated requirement, the installed app and update package use incompatible signing requirements. Click update in Settings; the app downloads the DMG for the current architecture into Downloads and opens it. Drag Selection Translator into Applications, replace the old version, return to Settings, and click **Remove macOS quarantine attribute**. This only removes Gatekeeper's download quarantine attribute; it does not repair a signing-requirement mismatch, so the updater still uses the manual replacement flow. Use **Open release page** if the DMG cannot be resolved automatically.
 
 ### DingTalk Secret cannot be saved
 
