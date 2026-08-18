@@ -1,6 +1,7 @@
 import type { ProxyMode, Settings, TriggerMode } from './types'
+import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 7
+export const SETTINGS_SCHEMA_VERSION = 8
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -17,7 +18,8 @@ export const DEFAULT_SETTINGS: Settings = {
   dingTalkCorpId: '',
   dingTalkClientId: '',
   dingTalkSecretConfigured: false,
-  microsoftEnabled: false
+  microsoftEnabled: false,
+  preferredTranslationProvider: 'auto'
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -78,6 +80,11 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     dingTalkCorpId: String(merged.dingTalkCorpId || '').trim(),
     dingTalkClientId: String(merged.dingTalkClientId || '').trim(),
     dingTalkSecretConfigured: rawSettings.dingTalkSecretConfigured === true,
-    microsoftEnabled: rawSettings.microsoftEnabled === true
+    microsoftEnabled: rawSettings.microsoftEnabled === true,
+    preferredTranslationProvider: isTranslationProviderPreference(
+      rawSettings.preferredTranslationProvider
+    )
+      ? rawSettings.preferredTranslationProvider
+      : 'auto'
   }
 }

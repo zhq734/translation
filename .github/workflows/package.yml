@@ -51,7 +51,7 @@ jobs:
         include:
           - name: macOS
             os: macos-15-intel
-            command: dist:mac
+            command: dist:mac:ci
             artifact_name: packages-macos
             artifact_path: |
               dist/SelectionTranslator-*-mac-*.dmg
@@ -75,8 +75,6 @@ jobs:
               dist/latest*.yml
               dist/*.blockmap
     runs-on: ${{ matrix.os }}
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
@@ -104,8 +102,71 @@ jobs:
           VERSION="${VERSION#V}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
-      - name: 构建安装包
+      - name: 校验并准备 macOS 签名与公证凭据
+        if: matrix.name == 'macOS'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for variable in \
+            MACOS_CERTIFICATE_BASE64 \
+            MACOS_CERTIFICATE_PASSWORD \
+            APPLE_API_KEY_P8 \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER; do
+            if [[ -z "${!variable:-}" ]]; then
+              missing+=("$variable")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf '缺少 macOS 发布凭据: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+      - name: 构建 macOS 安装包
+        if: matrix.name == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run ${{ matrix.command }}
+
+      - name: 构建非 macOS 安装包
+        if: matrix.name != 'macOS'
+        run: npm run ${{ matrix.command }}
+
+      - name: 验证 macOS 签名、公证与 Gatekeeper 状态
+        if: matrix.name == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(dist/mac*/划词翻译.app)
+          if (( ${#apps[@]} == 0 )); then
+            echo '未找到待验证的 macOS 应用包' >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            if ! grep -q '^Authority=Developer ID Application:' <<< "$signature_details"; then
+              echo "macOS 应用未使用 Developer ID Application 签名: $app" >&2
+              printf '%s\n' "$signature_details" >&2
+              exit 1
+            fi
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+          done
 
       - name: 上传安装包
         uses: actions/upload-artifact@v7

@@ -20,19 +20,29 @@
           <select id="target-lang" title="目标语言"></select>
         </div>
         <div class="header-actions">
-          <button id="pin" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
-            <svg class="pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M16 9V4h1V2H7v2h1v5c0 1.1-.9 2-2 2v2h5v7h2v-7h5v-2c-1.1 0-2-.9-2-2Z" />
+          <button id="pin" class="header-action-button" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
+            <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 17v5" />
+              <path d="M5 17h14" />
+              <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
             </svg>
           </button>
-          <button id="open-settings" title="打开设置" aria-label="打开设置">⚙</button>
+          <button id="open-settings" class="header-action-button" type="button" title="打开设置" aria-label="打开设置">
+            <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
+            </svg>
+          </button>
           <button id="close" title="关闭" aria-label="关闭">×</button>
         </div>
       </div>
       <div id="result" class="result"></div>
       <div id="original" class="original"></div>
       <div class="footer">
-        <span id="status"></span>
+        <div class="footer-meta">
+          <span id="status"></span>
+          <select id="translation-provider" aria-label="翻译 API" title="选择首选翻译 API"></select>
+        </div>
         <button id="copy">复制</button>
       </div>
     </div>

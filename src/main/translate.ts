@@ -1,4 +1,9 @@
-import type { DingTalkCheckStatus, MicrosoftCheckStatus, Settings } from '../shared/types'
+import type {
+  DingTalkCheckStatus,
+  MicrosoftCheckStatus,
+  Settings,
+  TranslationProviderId
+} from '../shared/types'
 import type { DingTalkCredentials } from './dingtalkConfig'
 import { DingTalkError, toDingTalkCheckStatus } from './dingtalkErrors'
 import { resolveDingTalkLanguagePair } from './dingtalkLanguage'
@@ -21,6 +26,7 @@ const MYMEMORY_MAX_CHARS = 500
 export interface TranslateOutput {
   translation: string
   detectedLang?: string
+  provider?: TranslationProviderId
   channel?: string
 }
 
@@ -47,9 +53,15 @@ interface MyMemoryResponse {
 }
 
 interface TranslationChannel {
+  id: TranslationProviderId
   name: string
   cooldownMs: number
   run: () => Promise<TranslateOutput>
+}
+
+interface CachedTranslation extends TranslateOutput {
+  provider: TranslationProviderId
+  channel: string
 }
 
 /**
@@ -59,7 +71,7 @@ interface TranslationChannel {
  * @author zhenghq
  */
 export class TranslationRuntime {
-  private readonly cache = new Map<string, string>()
+  private readonly cache = new Map<string, CachedTranslation>()
   private readonly breaker = new Map<string, number>()
   private readonly now: () => number
   private readonly dingTalkClient: DingTalkTranslationClient
@@ -76,7 +88,7 @@ export class TranslationRuntime {
   }
 
   /**
-   * 按钉钉、微软、自建 DeepLX、公共 DeepLX、Google、MyMemory 顺序执行翻译并自动降级。
+   * 按用户首选 API、默认顺序执行翻译并自动降级。
    * @param text 待翻译文本。
    * @param settings 当前公开设置快照。
    * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
@@ -89,9 +101,14 @@ export class TranslationRuntime {
     dingTalkCredentials: DingTalkCredentials | null = null
   ): Promise<TranslateOutput> {
     const input = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text
-    const key = this.cacheKey(input, settings.sourceLang, settings.targetLang)
+    const key = this.cacheKey(
+      input,
+      settings.sourceLang,
+      settings.targetLang,
+      settings.preferredTranslationProvider
+    )
     const hit = this.cache.get(key)
-    if (hit) return { translation: hit, channel: '缓存' }
+    if (hit) return { ...hit, channel: '缓存' }
 
     const channels = this.createChannels(input, settings, dingTalkCredentials)
     let lastError = '所有翻译通道均失败'
@@ -103,10 +120,17 @@ export class TranslationRuntime {
       try {
         const output = await channel.run()
         this.resetBreaker(channel.name)
-        this.cache.set(key, output.translation)
-        output.channel = channel.name
+        const successful: CachedTranslation = {
+          ...output,
+          channel: channel.name,
+          provider: channel.id
+        }
+        if (settings.preferredTranslationProvider === 'auto' ||
+            settings.preferredTranslationProvider === channel.id) {
+          this.cache.set(key, successful)
+        }
         console.log(`[translate] 成功，通道 = ${channel.name}`)
-        return output
+        return successful
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
         lastError = `${channel.name}: ${message}`
@@ -201,6 +225,7 @@ export class TranslationRuntime {
       const pair = resolveDingTalkLanguagePair(text, settings.sourceLang, settings.targetLang)
       if (pair.supported) {
         channels.push({
+          id: 'dingtalk',
           name: DINGTALK_CHANNEL,
           cooldownMs: 60_000,
           run: () => this.dingTalkClient.translate(text, pair, dingTalkCredentials)
@@ -212,6 +237,7 @@ export class TranslationRuntime {
       const pair = resolveMicrosoftLanguagePair(settings.sourceLang, settings.targetLang)
       if (pair.supported) {
         channels.push({
+          id: 'microsoft',
           name: MICROSOFT_CHANNEL,
           cooldownMs: 60_000,
           run: () => this.microsoftClient.translate(text, pair)
@@ -222,26 +248,36 @@ export class TranslationRuntime {
     const selfHost = settings.deepLxUrl.trim()
     if (selfHost) {
       channels.push({
+        id: 'deeplx-self',
         name: '自建 DeepLX',
         cooldownMs: 15_000,
         run: () => this.deepLxChannel(selfHost, text, settings, 2500)
       })
     }
     channels.push({
+      id: 'deeplx-public',
       name: '公共 DeepLX',
       cooldownMs: 120_000,
       run: () => this.deepLxChannel(PUBLIC_DEEPLX, text, settings, 3000)
     })
     channels.push({
+      id: 'google',
       name: 'Google',
       cooldownMs: 60_000,
       run: () => this.googleChannel(text, settings)
     })
     channels.push({
+      id: 'mymemory',
       name: 'MyMemory',
       cooldownMs: 60_000,
       run: () => this.myMemoryChannel(text, settings)
     })
+    const preferred = settings.preferredTranslationProvider
+    if (preferred === 'auto') return channels
+    const preferredIndex = channels.findIndex((channel) => channel.id === preferred)
+    if (preferredIndex <= 0) return channels
+    const [preferredChannel] = channels.splice(preferredIndex, 1)
+    channels.unshift(preferredChannel)
     return channels
   }
 
@@ -350,11 +386,17 @@ export class TranslationRuntime {
    * @param text 待翻译文本。
    * @param source 源语言。
    * @param target 目标语言。
+   * @param preferredProvider 用户选择的首选翻译 API。
    * @returns 缓存键。
    * @author zhenghq
    */
-  private cacheKey(text: string, source: string, target: string): string {
-    return `${source}|${target}|${text}`
+  private cacheKey(
+    text: string,
+    source: string,
+    target: string,
+    preferredProvider: Settings['preferredTranslationProvider']
+  ): string {
+    return `${preferredProvider}|${source}|${target}|${text}`
   }
 
   /**

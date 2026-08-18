@@ -191,7 +191,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
 - 可在 **设置 → 关于** 查看当前版本、手动检查更新、观察下载进度，并在下载完成后点击“立即重启升级”；
 - Windows NSIS 安装包支持应用内下载与重启安装；Linux 仅在从 AppImage 运行时支持自动替换，其他 Linux 安装方式会打开 GitHub Release；
-- macOS 只有通过代码签名校验的 `.app` 才启用自动安装。当前默认未签名构建会安全降级为打开 GitHub Release，由用户手动安装；
+- macOS 只有通过代码签名校验的 `.app` 才启用自动安装。GitHub Actions 正式产物会执行 Developer ID 签名和 Apple 公证；未提供发布凭据的本地构建会安全降级为打开 GitHub Release，由用户手动安装；
 - 源码开发模式不会访问更新服务。检查或下载发生异常时，设置页仍保留“打开发布页”入口。
 
 > 已经发布的 `V1.0.3` 不包含自动更新代码和 `latest*.yml` / `.blockmap` 元数据，因此该版本用户需要先手动安装一次包含本功能的新版本。之后发布新版本时，必须把安装包、更新元数据、差分文件和 `SHA256SUMS` 上传到同一个 Release。建议后续标签统一使用小写形式，例如 `v1.0.4`。
@@ -536,6 +536,24 @@ npm run release:checksums
 3. 生成 `SHA256SUMS`；
 4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
+macOS 流水线采用失败关闭策略：必须先在仓库 **Settings → Secrets and variables → Actions** 中配置以下 Repository secrets，否则 macOS 打包会直接失败，不会再上传可能被 Gatekeeper 判定为“已损坏”的未签名应用：
+
+| Secret | 内容 |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | 包含私钥的 `Developer ID Application` `.p12` 证书 Base64 单行文本 |
+| `MACOS_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `APPLE_API_KEY_P8` | App Store Connect API Key 的 `.p8` 完整文本（包含首尾标记） |
+| `APPLE_API_KEY_ID` | App Store Connect API Key 的 Key ID |
+| `APPLE_API_ISSUER` | App Store Connect API Key 的 Issuer ID |
+
+可使用以下命令把 `.p12` 转为单行 Base64，再将输出完整写入 `MACOS_CERTIFICATE_BASE64`：
+
+```bash
+base64 < DeveloperIDApplication.p12 | tr -d '\n'
+```
+
+CI 使用 `npm run dist:mac:ci` 强制要求签名，并在上传产物前依次执行 `codesign`、`stapler` 和 `spctl` 验证。普通的 `npm run dist:mac` 仍可用于本地开发打包；只有提供相同签名与公证环境变量时，本地产物才适合直接对外分发。
+
 建议统一使用小写版本标签，例如发布 `v1.0.4`：
 
 ```bash
@@ -596,9 +614,19 @@ npm test && npm run typecheck && npm run build
 - 代理模式为“系统代理”或“自定义代理”时，确认绕过规则保留 `localhost`、`127.0.0.1` 和 `<local>`；
 - 在终端中用 `curl` 直接请求端点，排除应用之外的网络问题。
 
-### 5. macOS 阻止打开未签名应用
+### 5. macOS 提示“应用已损坏，无法打开”
 
-当前打包配置未配置签名和公证。首次打开时可在 Finder 中右键应用并选择“打开”，或到 **系统设置 → 隐私与安全性** 中允许打开。未签名 macOS 构建只检查新版本并打开 GitHub Release，不执行应用内自动替换；正式对外分发前，建议配置 Apple Developer 签名和公证。
+先确认安装包来自配置好上述五个 Secrets 后重新执行的 GitHub Actions。新流水线会强制完成 Developer ID 签名、Apple 公证与 Gatekeeper 检查；缺少凭据或任一验证失败时，macOS 任务会停止且不上传安装包。此前生成的未签名产物不会自动修复，需要删除旧产物并重新打包。
+
+如果需要排查已解压的应用，可运行：
+
+```bash
+codesign --verify --deep --strict --verbose=2 "/Applications/划词翻译.app"
+xcrun stapler validate "/Applications/划词翻译.app"
+spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
+```
+
+本地未配置 Apple 发布凭据时生成的开发包仍可能被 Gatekeeper 阻止，只应在开发机上测试，不应作为公开 Release 发布。
 
 ### 6. 钉钉 Secret 保存失败
 
@@ -619,8 +647,8 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 取词依赖系统复制能力，不保证兼容所有自绘文本控件、远程桌面或受限应用；
 - 翻译请求依赖网络和第三方服务，钉钉、微软翻译、自建/公共 DeepLX、Google 和 MyMemory 均可能受上游变更影响；其中微软通道使用非官方 Bing 网页接口，可能在没有通知的情况下变化或停止工作；
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
-- 当前打包产物默认未签名；macOS 未公证，Windows 未配置代码签名，系统可能显示安全警告；
-- 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
+- GitHub Actions 的 macOS 产物要求签名和公证；本地未提供 Apple 发布凭据的开发包以及尚未签名的 Windows 安装包仍可能显示系统安全警告；
+- 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，本地未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
 
 ## 后续方向
 

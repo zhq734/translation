@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 
 type PackageJson = {
@@ -8,6 +8,7 @@ type PackageJson = {
     electronDist?: string
     win?: {
       target?: Array<string | { target: string; arch?: string[] }>
+      extraResources?: Array<{ from: string; to: string }>
     }
     nsis?: {
       oneClick?: boolean
@@ -17,6 +18,7 @@ type PackageJson = {
       createStartMenuShortcut?: boolean
       runAfterFinish?: boolean
       artifactName?: string
+      include?: string
     }
   }
 }
@@ -50,6 +52,30 @@ test('Windows NSIS 配置应支持自定义安装目录和快捷方式', () => {
   assert.equal(packageJson.build?.nsis?.createStartMenuShortcut, true)
   assert.equal(packageJson.build?.nsis?.runAfterFinish, true)
   assert.equal(packageJson.build?.nsis?.artifactName, 'SelectionTranslator-${version}-Setup-${arch}.${ext}')
+})
+
+/**
+ * 校验 Windows 快捷方式显式引用随应用安装的 ICO 文件，避免资源管理器显示空白图标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用图标', () => {
+  assert.deepEqual(packageJson.build?.win?.extraResources, [
+    { from: 'build/icon.ico', to: 'app-icon.ico' }
+  ])
+  assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh')
+  assert.equal(existsSync('build/installer.nsh'), true)
+
+  const installerScript = readFileSync('build/installer.nsh', 'utf8')
+  assert.match(
+    installerScript,
+    /CreateShortCut "\$newDesktopLink" "\$appExe" "" "\$INSTDIR\\resources\\app-icon\.ico"/u
+  )
+  assert.match(
+    installerScript,
+    /CreateShortCut "\$newStartMenuLink" "\$appExe" "" "\$INSTDIR\\resources\\app-icon\.ico"/u
+  )
+  assert.match(installerScript, /Shell32::SHChangeNotify/u)
 })
 
 /**

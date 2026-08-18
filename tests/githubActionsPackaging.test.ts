@@ -37,7 +37,7 @@ test('GitHub Actions 应覆盖 macOS、Windows 与 Linux 打包任务', () => {
   const workflow = readPackagingWorkflow()
 
   assert.match(workflow, /os:\s*macos-[\w-]+/u)
-  assert.match(workflow, /command:\s*dist:mac/u)
+  assert.match(workflow, /command:\s*dist:mac:ci/u)
   assert.match(workflow, /os:\s*windows-[\w-]+/u)
   assert.match(workflow, /command:\s*dist:win/u)
   assert.match(workflow, /os:\s*ubuntu-[\d.]+/u)
@@ -46,6 +46,29 @@ test('GitHub Actions 应覆盖 macOS、Windows 与 Linux 打包任务', () => {
   assert.match(workflow, /npm test/u)
   assert.match(workflow, /npm run typecheck/u)
   assert.match(workflow, /npm run \$\{\{ matrix\.command \}\}/u)
+})
+
+/**
+ * 校验 macOS 流水线必须使用 Developer ID 签名并提交 Apple 公证，避免下载后被 Gatekeeper 判定为损坏。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('GitHub Actions 的 macOS 安装包应完成签名、公证与 Gatekeeper 验证', () => {
+  const workflow = readPackagingWorkflow()
+
+  assert.match(workflow, /secrets\.MACOS_CERTIFICATE_BASE64/u)
+  assert.match(workflow, /secrets\.MACOS_CERTIFICATE_PASSWORD/u)
+  assert.match(workflow, /secrets\.APPLE_API_KEY_P8/u)
+  assert.match(workflow, /secrets\.APPLE_API_KEY_ID/u)
+  assert.match(workflow, /secrets\.APPLE_API_ISSUER/u)
+  assert.match(workflow, /CSC_LINK:\s*\$\{\{ secrets\.MACOS_CERTIFICATE_BASE64 \}\}/u)
+  assert.match(workflow, /APPLE_API_KEY:\s*\$\{\{ runner\.temp \}\}\/AuthKey_\$\{\{ secrets\.APPLE_API_KEY_ID \}\}\.p8/u)
+  assert.match(workflow, /shopt -s nullglob/u)
+  assert.match(workflow, /codesign --verify --deep --strict/u)
+  assert.match(workflow, /Authority=Developer ID Application:/u)
+  assert.match(workflow, /xcrun stapler validate/u)
+  assert.match(workflow, /spctl --assess --type execute/u)
+  assert.doesNotMatch(workflow, /CSC_IDENTITY_AUTO_DISCOVERY:\s*['"]false['"]/u)
 })
 
 /**
@@ -110,8 +133,16 @@ test('GitHub Actions 应先使用草稿 Release 上传全部资产再正式发�
  */
 test('打包配置应生成 GitHub 自动更新元数据', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    scripts?: Record<string, string>
     dependencies?: Record<string, string>
-    build?: { publish?: Array<Record<string, string>> }
+    build?: {
+      publish?: Array<Record<string, string>>
+      mac?: {
+        identity?: string | null
+        hardenedRuntime?: boolean
+        notarize?: boolean
+      }
+    }
   }
 
   assert.ok(packageJson.dependencies?.['electron-updater'])
@@ -122,4 +153,11 @@ test('打包配置应生成 GitHub 自动更新元数据', () => {
       repo: 'translation'
     }
   ])
+  assert.equal(
+    packageJson.scripts?.['dist:mac:ci'],
+    'npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=true'
+  )
+  assert.notEqual(packageJson.build?.mac?.identity, null)
+  assert.equal(packageJson.build?.mac?.hardenedRuntime, true)
+  assert.equal(packageJson.build?.mac?.notarize, true)
 })

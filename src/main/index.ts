@@ -38,6 +38,7 @@ import {
   createSelectionButton,
   showSelectionButton,
   hideSelectionButton,
+  isSelectionButtonVisible,
   isPointInsideSelectionButton
 } from './selectionButton'
 import { startAutoTrigger, stopAutoTrigger } from './autoTrigger'
@@ -275,7 +276,7 @@ function onHotkey(): void {
 }
 
 /**
- * 安排一次选区捕获动作，等待前台应用完成鼠标划词后再取词。
+ * 安排一次选区捕获动作；按钮模式立即显示图标，系统取词仍等待前台应用完成鼠标划词。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -288,19 +289,21 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
   if (action === 'ignore') return
 
+  if (action === 'show-button') {
+    showSelectionButton(anchor)
+    void prepareSelectionButton(anchor, gestureId)
+    return
+  }
+
   setTimeout(() => {
     if (gestureId !== latestSelectionGesture) return
-    if (action === 'translate') {
-      queueSelectionTranslation(anchor)
-    } else {
-      void prepareSelectionButton(anchor, gestureId)
-    }
+    queueSelectionTranslation(anchor)
   }, SELECTION_SETTLE_DELAY_MS)
 }
 
 /**
  * 响应一次全局划词动作，决定显示图标还是直接自动翻译。
- * 按钮模式会先捕获选中文字，再显示“译”按钮，防止点击按钮导致原选区失效。
+ * 按钮模式会立即显示“译”按钮并后台预取选中文字，防止点击按钮导致原选区失效。
  * @param gesture 划词拖拽及选区锚点信息。
  * @returns 无返回值。
  * @author zhenghq
@@ -320,14 +323,18 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
  * 响应全局鼠标按下事件，使已失效的选区缓存和“译”按钮立即消失。
  * 点击“译”按钮本身时保留窗口，确保按钮仍能收到点击事件。
  * @param point 鼠标按下时的屏幕坐标。
- * @returns 无返回值。
+ * @returns 鼠标事件是否已被“译”按钮消费。
  * @author zhenghq
  */
-function handleSelectionPointerDown(point: { x: number; y: number }): void {
-  if (isPointInsideSelectionButton(point)) return
+function handleSelectionPointerDown(point: { x: number; y: number }): boolean {
+  if (isPointInsideSelectionButton(point)) {
+    if (process.platform === 'win32') void translatePreparedSelection()
+    return true
+  }
   latestSelectionGesture += 1
   selectionCapture.invalidate()
   hideSelectionButton()
+  return false
 }
 
 /**
@@ -353,7 +360,7 @@ function handlePasteShortcut(): void {
 }
 
 /**
- * 在显示“译”按钮之前预取选中文字，避免点击按钮后原应用选区被清除。
+ * 在显示“译”按钮后后台预取选中文字，避免点击按钮后原应用选区被清除。
  * @param anchor 本次选区右上角锚点。
  * @param gestureId 本次划词动作序号。
  * @returns 预取流程完成后的 Promise。
@@ -364,15 +371,14 @@ async function prepareSelectionButton(
   gestureId: number
 ): Promise<void> {
   if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  const result = await selectionCapture.prepare(anchor)
+  const result = await selectionCapture.prepare(anchor, SELECTION_SETTLE_DELAY_MS)
   if (!result || gestureId !== latestSelectionGesture) return
-  if (!result.text || result.error) {
+  if (result.error) {
     hideSelectionButton()
-    if (result.error) handleSelectionCaptureResult(result)
+    handleSelectionCaptureResult(result)
     return
   }
-  if (getSettings().triggerMode !== 'button') return
-  showSelectionButton(anchor)
+  if (getSettings().triggerMode !== 'button') hideSelectionButton()
 }
 
 /**
@@ -388,19 +394,21 @@ function queueSelectionTranslation(anchor?: { x: number; y: number }): void {
 }
 
 /**
- * 消费划词时预取的文字并开始翻译，不在按钮点击后重新模拟复制。
- * @returns 无返回值。
+ * 消费划词时预取的文字并开始翻译；预取仍在执行时等待完成，避免 Windows 快速点击使原选区失效。
+ * @returns 翻译触发流程完成后的 Promise。
  * @author zhenghq
  */
-function translatePreparedSelection(): void {
-  const result = selectionCapture.consumePrepared()
+async function translatePreparedSelection(): Promise<void> {
+  if (!isSelectionButtonVisible()) return
   latestSelectionGesture += 1
-  selectionCapture.invalidate()
   hideSelectionButton()
-  handleSelectionCaptureResult(result ?? {
-    text: '',
-    anchor: lastSelectionAnchor
-  })
+  const result = await selectionCapture.consumePreparedOrWait()
+  selectionCapture.invalidate()
+  if (result) {
+    handleSelectionCaptureResult(result)
+  } else {
+    queueSelectionTranslation(lastSelectionAnchor)
+  }
 }
 
 /**
@@ -491,6 +499,7 @@ async function translateText(
         targetLang: pair.targetLang,
         sourcePreference,
         targetPreference,
+        provider: output.provider,
         channel: output.channel
       },
       settings.autoHideMs,
@@ -629,6 +638,7 @@ function createSettingsWindow(): BrowserWindow {
     }
   })
 
+  if (process.platform === 'win32') settingsWin.removeMenu()
   loadRendererHtml(settingsWin, 'settings.html')
   settingsWin.on('closed', () => {
     settingsWin = null
@@ -865,7 +875,7 @@ function registerIpc(): void {
   ipcMain.on('settings:open', () => openSettings())
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {
-    translatePreparedSelection()
+    void translatePreparedSelection()
   })
   ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string) => {
     const sourcePreference = sourceLang || 'auto'

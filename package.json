@@ -12,6 +12,7 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
+    "dist:mac:ci": "npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=true",
     "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
     "test": "node scripts/run-tests.mjs",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64 --publish never",
@@ -55,7 +56,8 @@
         "zip"
       ],
       "category": "public.app-category.utilities",
-      "identity": null,
+      "hardenedRuntime": true,
+      "notarize": true,
       "artifactName": "SelectionTranslator-${version}-mac-${arch}.${ext}",
       "icon": "build/icon.icns",
       "extendInfo": {
@@ -75,6 +77,12 @@
           ]
         }
       ],
+      "extraResources": [
+        {
+          "from": "build/icon.ico",
+          "to": "app-icon.ico"
+        }
+      ],
       "icon": "build/icon.ico"
     },
     "nsis": {
@@ -87,6 +95,7 @@
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
       "shortcutName": "划词翻译",
+      "include": "build/installer.nsh",
       "artifactName": "SelectionTranslator-${version}-Setup-${arch}.${ext}"
     },
     "linux": {
