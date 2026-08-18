@@ -5,6 +5,7 @@ import test from 'node:test'
 const workflowPath = '.github/workflows/package.yml'
 const gitignorePath = '.gitignore'
 const chineseReadmePath = 'README.zh-CN.md'
+const englishReadmePath = 'README.md'
 
 /**
  * 读取多平台打包工作流内容。
@@ -34,6 +35,16 @@ function readGitignore(): string {
 function readChineseReadme(): string {
   assert.equal(existsSync(chineseReadmePath), true, `缺少项目说明文档：${chineseReadmePath}`)
   return readFileSync(chineseReadmePath, 'utf8')
+}
+
+/**
+ * 读取英文项目说明文档。
+ * @returns README.md 的 UTF-8 文本。
+ * @author zhenghq
+ */
+function readEnglishReadme(): string {
+  assert.equal(existsSync(englishReadmePath), true, `缺少项目说明文档：${englishReadmePath}`)
+  return readFileSync(englishReadmePath, 'utf8')
 }
 
 /**
@@ -86,11 +97,11 @@ test('GitHub Actions 应覆盖 macOS、Windows 与 Linux 打包任务', () => {
 })
 
 /**
- * 校验 macOS 流水线在凭据完整时签名公证，在没有凭据时仍生成未签名测试包。
+ * 校验 macOS 流水线在凭据完整时签名公证，在没有凭据时仍生成可发布的未签名安装包。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('GitHub Actions 的 macOS 安装包应支持签名构建与未签名测试构建', () => {
+test('GitHub Actions 的 macOS 安装包应支持签名构建与未签名发布构建', () => {
   const workflow = readPackagingWorkflow()
 
   assert.match(workflow, /id: macos_signing/u)
@@ -115,6 +126,25 @@ test('GitHub Actions 的 macOS 安装包应支持签名构建与未签名测试�
 })
 
 /**
+ * 校验正式版本标签在没有 Apple 凭据时仍会构建未签名 macOS 安装包。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('GitHub Actions 正式发布应允许未签名 macOS 安装包', () => {
+  const workflow = readPackagingWorkflow()
+
+  assert.match(
+    workflow,
+    /if: matrix\.name == 'macOS' && steps\.macos_signing\.outputs\.enabled == 'false'\s+[\s\S]*run: npm run dist:mac:unsigned/u
+  )
+  assert.doesNotMatch(workflow, /版本标签发布必须配置完整的 macOS 签名与公证凭据/u)
+  assert.doesNotMatch(
+    workflow,
+    /steps\.macos_signing\.outputs\.enabled == 'false' && !startsWith\(github\.ref, 'refs\/tags\/'\)/u
+  )
+})
+
+/**
  * 校验中文文档说明未签名 macOS 测试包的 Gatekeeper 处理方式，并明确正式发布仍需签名公证。
  * @returns 无返回值。
  * @author zhenghq
@@ -126,6 +156,24 @@ test('README 应包含未签名 macOS 测试包的安装说明', () => {
   assert.match(readme, /未签名/u)
   assert.match(readme, /Developer ID/u)
   assert.match(readme, /公证/u)
+})
+
+/**
+ * 校验中英文文档明确未签名发布方式和 macOS 手动安装要求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('README 应说明 macOS 未签名发布与手动安装方式', () => {
+  const chineseReadme = readChineseReadme()
+  const englishReadme = readEnglishReadme()
+
+  assert.match(chineseReadme, /版本标签[\s\S]*没有[\s\S]*Apple[\s\S]*未签名[\s\S]*Release/u)
+  assert.match(chineseReadme, /未签名[\s\S]*不能[\s\S]*应用内自动安装[\s\S]*GitHub Release[\s\S]*DMG/u)
+  assert.match(chineseReadme, /拖入[“"]应用程序[”"][\s\S]*覆盖/u)
+
+  assert.match(englishReadme, /version tag[\s\S]*without[\s\S]*Apple[\s\S]*unsigned[\s\S]*Release/iu)
+  assert.match(englishReadme, /unsigned[\s\S]*cannot[\s\S]*in-app automatic installation[\s\S]*GitHub Release[\s\S]*DMG/iu)
+  assert.match(englishReadme, /drag[\s\S]*Applications[\s\S]*replace/iu)
 })
 
 /**
@@ -216,7 +264,7 @@ test('打包配置应生成 GitHub 自动更新元数据', () => {
   )
   assert.equal(
     packageJson.scripts?.['dist:mac:unsigned'],
-    'npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=false --config.mac.notarize=false'
+    'npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=false --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false'
   )
   assert.notEqual(packageJson.build?.mac?.identity, null)
   assert.equal(packageJson.build?.mac?.hardenedRuntime, true)

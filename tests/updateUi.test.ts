@@ -13,6 +13,7 @@ test('共享类型和预加载层应只暴露受限的自动更新接口', () =>
   assert.match(typesSource, /downloadUpdate\(\): Promise<UpdateStatus>/u)
   assert.match(typesSource, /installUpdate\(\): void/u)
   assert.match(typesSource, /openUpdatePage\(\): Promise<void>/u)
+  assert.match(typesSource, /removeMacOSQuarantine\(\): Promise<MacOSQuarantineResult>/u)
   assert.match(typesSource, /onUpdateStatusChanged/u)
 
   assert.match(preloadSource, /ipcRenderer\.invoke\('updater:get-status'\)/u)
@@ -20,6 +21,7 @@ test('共享类型和预加载层应只暴露受限的自动更新接口', () =>
   assert.match(preloadSource, /ipcRenderer\.invoke\('updater:download'\)/u)
   assert.match(preloadSource, /ipcRenderer\.send\('updater:install'\)/u)
   assert.match(preloadSource, /ipcRenderer\.invoke\('updater:open-release'\)/u)
+  assert.match(preloadSource, /ipcRenderer\.invoke\('updater:remove-quarantine'\)/u)
   assert.match(preloadSource, /ipcRenderer\.on\('updater:status'/u)
 })
 
@@ -34,6 +36,11 @@ test('主进程应初始化自动更新、静默检查并注册完整 IPC', () =
   assert.match(mainSource, /ipcMain\.handle\('updater:download'/u)
   assert.match(mainSource, /ipcMain\.on\('updater:install'/u)
   assert.match(mainSource, /ipcMain\.handle\('updater:open-release'/u)
+  assert.match(mainSource, /ipcMain\.handle\('updater:remove-quarantine'/u)
+  assert.match(
+    mainSource,
+    /async function removeApplicationQuarantine\(\)[\s\S]*?dialog\.showMessageBox\([\s\S]*?result\.response !== 1[\s\S]*?removeMacOSApplicationQuarantine\(\)/u
+  )
 })
 
 test('设置页应提供自适应且支持主题的版本检查、进度和安装操作', () => {
@@ -50,6 +57,7 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
   assert.match(html, /id="check-update"/u)
   assert.match(html, /id="update-action"/u)
   assert.match(html, /id="open-release"/u)
+  assert.match(html, /id="remove-quarantine"/u)
 
   assert.match(source, /function renderUpdateStatus\(status: UpdateStatus\)/u)
   assert.match(source, /window\.api\.getUpdateStatus\(\)/u)
@@ -57,6 +65,8 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
   assert.match(source, /window\.api\.checkForUpdates\(\)/u)
   assert.match(source, /window\.api\.downloadUpdate\(\)/u)
   assert.match(source, /window\.api\.installUpdate\(\)/u)
+  assert.match(source, /window\.api\.removeMacOSQuarantine\(\)/u)
+  assert.match(source, /status\.installMode === 'manual'\) await removeMacOSQuarantine\(\)/u)
 
   assert.match(css, /\.update-actions\s*\{[\s\S]*display:\s*flex/u)
   assert.match(css, /\.update-progress/u)

@@ -113,7 +113,8 @@ function onMouseUp(e: MouseSample): void {
 
   const gesture = getSelectionGesture(
     start,
-    createObservedPointerSample(resolveMousePoint(e), Date.now())
+    createObservedPointerSample(resolveMousePoint(e), Date.now()),
+    e.clicks ?? 1
   )
   if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) return
 

@@ -52,6 +52,8 @@ export interface SelectionGesture {
   end: PointerSample
   distance: number
   durationMs: number
+  /** 当前鼠标事件的连续点击次数。 */
+  clicks: number
   /** 用于放置“译”按钮的选区右上角近似坐标。 */
   anchor: { x: number; y: number }
 }
@@ -61,14 +63,22 @@ import type { TriggerMode } from './types'
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
 
+/** 不发送复制快捷键时检查到的系统选区状态。 */
+export type SelectionPresence = 'present' | 'empty' | 'unknown'
+
 /**
  * 根据拖拽起点和终点生成划词几何信息。
  * @param start 鼠标按下位置。
  * @param end 鼠标松开位置。
+ * @param clicks 当前鼠标事件的连续点击次数。
  * @returns 拖拽距离、持续时间及选区右上角锚点。
  * @author zhenghq
  */
-export function getSelectionGesture(start: PointerSample, end: PointerSample): SelectionGesture {
+export function getSelectionGesture(
+  start: PointerSample,
+  end: PointerSample,
+  clicks = 1
+): SelectionGesture {
   const dx = end.x - start.x
   const dy = end.y - start.y
   return {
@@ -76,6 +86,7 @@ export function getSelectionGesture(start: PointerSample, end: PointerSample): S
     end,
     distance: Math.sqrt(dx * dx + dy * dy),
     durationMs: Math.max(0, end.time - start.time),
+    clicks: Math.max(1, clicks),
     anchor: {
       x: Math.max(start.x, end.x),
       y: Math.min(start.y, end.y)
@@ -109,6 +120,38 @@ export function shouldTriggerSelectionGesture(
   if (clicks >= 2) return true
   if (gesture.distance < options.minDragDistance) return false
   return gesture.durationMs >= options.minHoldMs && gesture.durationMs <= options.maxHoldMs
+}
+
+/**
+ * 将系统选区检查命令的输出转换为统一状态，无法识别时返回 unknown。
+ * @param output 系统命令输出的选区状态标记。
+ * @returns 规范化后的选区状态。
+ * @author zhenghq
+ */
+export function parseSelectionPresenceOutput(output: unknown): SelectionPresence {
+  const lines = String(output ?? '').trim().split(/\r?\n/u).reverse()
+  for (const line of lines) {
+    const marker = line.trim().toUpperCase()
+    if (marker === 'PRESENT') return 'present'
+    if (marker === 'EMPTY') return 'empty'
+    if (marker === 'UNKNOWN') return 'unknown'
+  }
+  return 'unknown'
+}
+
+/**
+ * 根据点击次数与无复制选区检查结果决定是否显示“译”按钮。
+ * 双击明确确认为空时不显示；无法确认时保留兼容行为，避免影响不支持系统选区接口的应用。
+ * @param clicks 当前鼠标事件的连续点击次数。
+ * @param presence 无复制选区检查得到的状态。
+ * @returns 是否应显示“译”按钮。
+ * @author zhenghq
+ */
+export function shouldShowSelectionButtonAfterInspection(
+  clicks: number,
+  presence: SelectionPresence
+): boolean {
+  return clicks < 2 || presence !== 'empty'
 }
 
 /**

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   UpdateManager,
+  isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
   resolveUpdateInstallMode,
   type UpdateDriver,
@@ -104,6 +105,45 @@ test('macOS 应从可执行文件路径解析应用包根目录', () => {
   assert.equal(resolveMacOSAppBundlePath('/usr/local/bin/selection-translator'), null)
 })
 
+/**
+ * 校验 macOS 自动更新只信任面向外部分发的 Developer ID Application 签名。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 自动更新只应接受 Developer ID Application 正式签名', () => {
+  assert.equal(
+    isMacOSDeveloperIdApplicationSignature(
+      'Authority=Developer ID Application: Example Developer (499QMYBXLR)\n' +
+      'TeamIdentifier=499QMYBXLR'
+    ),
+    true
+  )
+  assert.equal(
+    isMacOSDeveloperIdApplicationSignature(
+      'Authority=Apple Development: developer@example.com (ABCDE12345)\n' +
+      'TeamIdentifier=499QMYBXLR'
+    ),
+    false
+  )
+  assert.equal(
+    isMacOSDeveloperIdApplicationSignature(
+      'Authority=Developer ID Application: Other Developer (ABCDE12345)\n' +
+      'TeamIdentifier=ABCDE12345'
+    ),
+    false
+  )
+  assert.equal(
+    isMacOSDeveloperIdApplicationSignature(
+      'Authority=Developer ID Application: Missing Team Identifier (499QMYBXLR)'
+    ),
+    false
+  )
+  assert.equal(
+    isMacOSDeveloperIdApplicationSignature('Signature=adhoc\nTeamIdentifier=not set'),
+    false
+  )
+})
+
 test('开发环境应返回禁用状态且不得请求远程更新', async () => {
   const { manager, driver } = createManager('disabled', false)
 
@@ -184,4 +224,29 @@ test('Release 缺少更新清单时应显示简短中文提示而不是底层调
     '当前 GitHub Release 缺少自动更新清单 latest-mac.yml，请稍后重新检查或打开发布页手动安装'
   )
   assert.doesNotMatch(manager.getStatus().message, /createHttpError|node_modules/u)
+})
+
+/**
+ * 校验 ShipIt 拒绝更新包签名时会停止自动安装并提供手动恢复入口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 更新包签名不匹配时应切换为手动安装模式', async () => {
+  const { manager, driver, openedUrls } = createManager()
+
+  driver.listeners?.error(new Error(
+    'Code signature at URL file:///tmp/划词翻译.app/ did not pass validation: ' +
+    '代码未能满足指定的代码要求'
+  ))
+
+  assert.equal(manager.getStatus().phase, 'error')
+  assert.equal(manager.getStatus().installMode, 'manual')
+  assert.equal(
+    manager.getStatus().message,
+    '更新包签名与当前应用不兼容，已改用手动安装；请打开 GitHub Release 下载 DMG，拖入“应用程序”并覆盖旧版本'
+  )
+
+  await manager.downloadUpdate()
+  assert.equal(driver.downloadCount, 0)
+  assert.deepEqual(openedUrls, ['https://github.com/zhq734/translation/releases/latest'])
 })

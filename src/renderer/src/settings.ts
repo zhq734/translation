@@ -5,6 +5,7 @@ import type {
   MicrosoftCheckStatus,
   Settings,
   TriggerMode,
+  MacOSQuarantineResult,
   UpdateStatus
 } from '../../shared/types'
 
@@ -46,6 +47,7 @@ const updateInstallHint = document.getElementById('update-install-hint') as HTML
 const checkUpdateButton = document.getElementById('check-update') as HTMLButtonElement
 const updateActionButton = document.getElementById('update-action') as HTMLButtonElement
 const openReleaseButton = document.getElementById('open-release') as HTMLButtonElement
+const removeQuarantineButton = document.getElementById('remove-quarantine') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
@@ -378,7 +380,9 @@ function renderUpdateStatus(status: UpdateStatus): void {
   const busy = status.phase === 'checking' || status.phase === 'downloading'
   checkUpdateButton.disabled = busy || status.phase === 'disabled'
   updateActionButton.disabled = busy
+  removeQuarantineButton.disabled = busy
   updateActionButton.hidden = status.phase !== 'available' && status.phase !== 'downloaded'
+  removeQuarantineButton.hidden = status.installMode !== 'manual'
   if (status.phase === 'downloaded') {
     updateActionButton.textContent = '立即重启升级'
   } else if (status.installMode === 'manual') {
@@ -400,7 +404,7 @@ function renderUpdateStatus(status: UpdateStatus): void {
   if (status.phase === 'disabled') {
     updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
   } else if (status.installMode === 'manual') {
-    updateInstallHint.textContent = '当前系统不满足自动安装条件，检测到新版本后会打开 GitHub Release 手动安装。'
+    updateInstallHint.textContent = '当前 macOS 包需手动安装：点击升级打开 GitHub Release，下载 DMG 并覆盖应用后，确认弹窗即可自动执行解除隔离属性。'
   } else {
     updateInstallHint.textContent = '检测到新版本后由你确认下载；下载完成后可立即重启并完成升级。'
   }
@@ -431,10 +435,37 @@ async function runUpdateAction(): Promise<void> {
     return
   }
   try {
-    renderUpdateStatus(await window.api.downloadUpdate())
+    const status = await window.api.downloadUpdate()
+    renderUpdateStatus(status)
+    if (status.installMode === 'manual') await removeMacOSQuarantine()
   } catch (error) {
     updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
     updateStatus.className = 'status update-status offline'
+  }
+}
+
+/**
+ * 请求主进程在用户确认后解除 macOS 应用隔离属性并展示结果。
+ * @returns 解除操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function removeMacOSQuarantine(): Promise<void> {
+  removeQuarantineButton.disabled = true
+  try {
+    const result: MacOSQuarantineResult = await window.api.removeMacOSQuarantine()
+    updateStatus.textContent = result.message
+    updateStatus.className = result.ok
+      ? 'status update-status online'
+      : 'status update-status offline'
+  } catch (error) {
+    updateStatus.textContent = `解除隔离属性失败：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  } finally {
+    const status = latestUpdateStatus
+    removeQuarantineButton.disabled = !status ||
+      status.installMode !== 'manual' ||
+      status.phase === 'checking' ||
+      status.phase === 'downloading'
   }
 }
 
@@ -781,6 +812,7 @@ stopServiceButton.addEventListener('click', requestStopService)
 checkUpdateButton.addEventListener('click', () => void checkApplicationUpdate())
 updateActionButton.addEventListener('click', () => void runUpdateAction())
 openReleaseButton.addEventListener('click', () => void openApplicationRelease())
+removeQuarantineButton.addEventListener('click', () => void removeMacOSQuarantine())
 window.api.onSettingsChanged(renderSettings)
 window.api.onUpdateStatusChanged(renderUpdateStatus)
 

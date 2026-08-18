@@ -29,13 +29,13 @@ test('macOS 磁盘镜像路径判断应只识别 Volumes 根目录下的可执�
   )
 })
 
-test('首次启动设置窗口策略应仅在 Windows 和 Linux 打开设置', () => {
-  assert.equal(shouldOpenSettingsOnInitialLaunch('darwin'), false)
+test('首次启动设置窗口策略应在 macOS、Windows 和 Linux 打开设置', () => {
+  assert.equal(shouldOpenSettingsOnInitialLaunch('darwin'), true)
   assert.equal(shouldOpenSettingsOnInitialLaunch('win32'), true)
   assert.equal(shouldOpenSettingsOnInitialLaunch('linux'), true)
 })
 
-test('主进程应在初始化全局监听前提示 DMG 启动风险，并由 macOS 第二实例弹出状态栏菜单', () => {
+test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第二实例打开设置窗口', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const warningIndex = source.indexOf('await confirmMacOSInstalledApplicationLaunch()')
   const triggerIndex = source.indexOf('startAutoTrigger(')
@@ -45,8 +45,9 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由 ma
   assert.match(source, /请先将“划词翻译”复制到“应用程序”文件夹/u)
   assert.ok(warningIndex >= 0 && warningIndex < triggerIndex)
   assert.ok(initializationIndex >= 0)
+  assert.doesNotMatch(source, /function showTrayMenu\(\): void/u)
   assert.match(
     source,
-    /app\.on\('second-instance',[\s\S]*?initialization\.then\([\s\S]*?if \(isMac\) \{[\s\S]*?showTrayMenu\(\)[\s\S]*?\} else \{[\s\S]*?openSettings\(\)[\s\S]*?\}/u
+    /app\.on\('second-instance',[\s\S]*?initialization\.then\([\s\S]*?if \(!initialized\) return[\s\S]*?openSettings\(\)/u
   )
 })

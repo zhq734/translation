@@ -58,6 +58,14 @@ export interface UpdateStatus {
   releaseUrl: string
 }
 
+/** macOS 应用隔离属性处理结果。 */
+export interface MacOSQuarantineResult {
+  /** 命令是否执行成功，或应用本来就没有隔离属性。 */
+  ok: boolean
+  /** 面向用户展示的处理结果。 */
+  message: string
+}
+
 export interface TranslatePayload {
   ok: boolean
   loading?: boolean
@@ -224,6 +232,12 @@ export interface Api {
    * @author zhenghq
    */
   openUpdatePage(): Promise<void>
+  /**
+   * 在用户确认后解除固定 macOS 应用的隔离属性。
+   * @returns 解除操作的结构化结果。
+   * @author zhenghq
+   */
+  removeMacOSQuarantine(): Promise<MacOSQuarantineResult>
   /**
    * 订阅自动更新状态变化。
    * @param cb 自动更新状态回调。

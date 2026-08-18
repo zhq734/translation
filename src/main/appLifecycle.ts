@@ -16,9 +16,9 @@ export function isMacOSDiskImageExecution(
 /**
  * 判断应用首次启动时是否应主动打开设置窗口。
  * @param platform 当前 Node.js 平台标识。
- * @returns Windows 和 Linux 返回 true，macOS 返回 false。
+ * @returns macOS、Windows 和 Linux 返回 true，其他平台返回 false。
  * @author zhenghq
  */
 export function shouldOpenSettingsOnInitialLaunch(platform: NodeJS.Platform): boolean {
-  return platform !== 'darwin'
+  return platform === 'darwin' || platform === 'win32' || platform === 'linux'
 }

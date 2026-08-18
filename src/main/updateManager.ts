@@ -151,6 +151,28 @@ export function resolveMacOSAppBundlePath(executablePath: string): string | null
 }
 
 /**
+ * 判断 codesign 详情是否表明应用使用预期团队的 Developer ID Application 正式分发签名。
+ * @param signatureDetails `codesign -dv --verbose=4` 输出的签名详情。
+ * @returns 使用 TeamIdentifier=499QMYBXLR 的 Developer ID Application 签名时返回 true。
+ * @author zhenghq
+ */
+export function isMacOSDeveloperIdApplicationSignature(signatureDetails: string): boolean {
+  return /^Authority=Developer ID Application:/mu.test(signatureDetails) &&
+    /^TeamIdentifier=499QMYBXLR$/mu.test(signatureDetails)
+}
+
+/**
+ * 判断底层更新异常是否为 macOS ShipIt 代码签名要求不匹配。
+ * @param rawMessage 底层更新器返回的原始错误文本。
+ * @returns 属于代码签名校验失败时返回 true。
+ * @author zhenghq
+ */
+function isMacOSCodeSignatureValidationError(rawMessage: string): boolean {
+  return /Code signature at URL[\s\S]*did not pass validation/iu.test(rawMessage) ||
+    /代码未能满足指定的代码要求/u.test(rawMessage)
+}
+
+/**
  * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
  * @param error 自动更新异常。
  * @returns 适合直接展示在设置页的错误信息。
@@ -158,6 +180,9 @@ export function resolveMacOSAppBundlePath(executablePath: string): string | null
  */
 function formatUpdateErrorMessage(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : String(error)
+  if (isMacOSCodeSignatureValidationError(rawMessage)) {
+    return '更新包签名与当前应用不兼容，已改用手动安装；请打开 GitHub Release 下载 DMG，拖入“应用程序”并覆盖旧版本'
+  }
   const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
   if (metadataMatch && /\b404\b/u.test(rawMessage)) {
     return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
@@ -354,8 +379,11 @@ export class UpdateManager {
   * @author zhenghq
   */
   private handleError(error: unknown): void {
+    const rawMessage = error instanceof Error ? error.message : String(error)
+    const signatureValidationFailed = isMacOSCodeSignatureValidationError(rawMessage)
     this.setStatus({
       phase: 'error',
+      installMode: signatureValidationFailed ? 'manual' : this.status.installMode,
       message: formatUpdateErrorMessage(error),
       progress: undefined
     })

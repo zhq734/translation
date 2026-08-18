@@ -5,8 +5,10 @@ import {
   createObservedPointerSample,
   decideSelectionAction,
   getSelectionGesture,
+  parseSelectionPresenceOutput,
   resolveLanguagePair,
   resolveWindowsPointerPoint,
+  shouldShowSelectionButtonAfterInspection,
   shouldTriggerSelectionGesture
 } from '../src/shared/selectionBehavior.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
@@ -74,9 +76,11 @@ test('Windows 划词坐标应转换为 Electron 使用的 DIP 坐标并容忍原
 test('双击选中文字时即使鼠标没有明显移动也应触发选区处理', () => {
   const gesture = getSelectionGesture(
     { x: 180, y: 220, time: 1000 },
-    { x: 181, y: 220, time: 1010 }
+    { x: 181, y: 220, time: 1010 },
+    2
   )
 
+  assert.equal(gesture.clicks, 2)
   assert.equal(shouldTriggerSelectionGesture(gesture, 2, {
     minDragDistance: 4,
     minHoldMs: 20,
@@ -97,6 +101,21 @@ test('普通单击不应触发选区处理，常规划词拖拽仍应触发', ()
 
   assert.equal(shouldTriggerSelectionGesture(click, 1, options), false)
   assert.equal(shouldTriggerSelectionGesture(drag, 1, options), true)
+})
+
+/**
+ * 校验双击空白区域确认没有选中文字时隐藏“译”按钮，无法确认时保持兼容行为。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('双击没有选中文字时不应显示“译”按钮', () => {
+  assert.equal(parseSelectionPresenceOutput('PRESENT\n'), 'present')
+  assert.equal(parseSelectionPresenceOutput('EMPTY\r\n'), 'empty')
+  assert.equal(parseSelectionPresenceOutput('无法读取'), 'unknown')
+  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'empty'), false)
+  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'present'), true)
+  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'unknown'), true)
+  assert.equal(shouldShowSelectionButtonAfterInspection(1, 'empty'), true)
 })
 test('系统复制组合不能被识别为翻译快捷键', () => {
   for (const shortcut of [
@@ -325,21 +344,30 @@ test('预取结果为空时点击“译”按钮仍应消费结果以展示明�
   assert.equal(await coordinator.consumePreparedOrWait(), null)
 })
 
-test('主进程应先显示按钮并在点击时等待预取结果', () => {
+/**
+ * 校验按钮模式只负责显示按钮，不会在用户确认前触发系统复制。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮模式不得在划词阶段预取选中文字，点击“译”按钮后才启动捕获', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
+  const scheduleStart = source.indexOf('function scheduleSelectionAction')
+  const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
+  const scheduleSource = source.slice(scheduleStart, scheduleEnd)
+  const translateStart = source.indexOf('async function translateSelectionButton')
+  const translateEnd = source.indexOf('/**\n * 处理取词结果', translateStart)
+  const translateSource = source.slice(translateStart, translateEnd)
 
   assert.match(
-    source,
-    /showSelectionButton\(anchor\)[\s\S]*?void prepareSelectionButton\(anchor, gestureId\)/u
+    scheduleSource,
+    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?return/u
   )
+  assert.doesNotMatch(scheduleSource, /prepareSelectionButton|selectionCapture\.prepare/u)
   assert.match(
-    source,
-    /await selectionCapture\.prepare\(anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u
+    translateSource,
+    /await selectionCapture\.capture\(lastSelectionAnchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
-  assert.match(
-    source,
-    /await selectionCapture\.consumePreparedOrWait\(\)[\s\S]*?selectionCapture\.invalidate\(\)/u
-  )
+  assert.doesNotMatch(translateSource, /consumePreparedOrWait|selectionCapture\.prepare/u)
   assert.match(
     source,
     /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut\s*\)/u
@@ -347,11 +375,11 @@ test('主进程应先显示按钮并在点击时等待预取结果', () => {
 })
 
 /**
- * 校验选区稳定等待只作用于后台取词，不再阻塞 Windows “译”图标展示。
+ * 校验按钮显示期间不会创建任何后台选区捕获请求，避免无选区时持续发送 Ctrl+C。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('按钮模式应立即显示“译”图标并仅延迟后台预取', () => {
+test('显示“译”按钮期间不得启动后台选区捕获', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
@@ -359,29 +387,52 @@ test('按钮模式应立即显示“译”图标并仅延迟后台预取', () =>
 
   assert.ok(scheduleStart >= 0)
   assert.ok(scheduleEnd > scheduleStart)
-  assert.match(
-    scheduleSource,
-    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?prepareSelectionButton\(anchor, gestureId\)[\s\S]*?return/u
-  )
-  assert.match(
-    source,
-    /selectionCapture\.prepare\(anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u
-  )
+  assert.doesNotMatch(scheduleSource, /captureSelection|selectionCapture\.(prepare|capture)/u)
+  assert.doesNotMatch(source, /function prepareSelectionButton/u)
 })
 
 /**
- * 校验 Windows 不依赖非激活悬浮窗口的 DOM click，能够从全局鼠标按下事件直接触发翻译。
+ * 校验按钮模式双击时使用无复制的系统选区检查，确认空选区后不显示“译”按钮。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows 点击“译”按钮应由主进程直接激活并阻止鼠标事件继续进入划词判定', () => {
+test('按钮模式双击应先无复制检查选区并过滤空选区', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const captureSource = readFileSync('src/main/capture.ts', 'utf8')
+  const doubleClickStart = mainSource.indexOf('async function scheduleDoubleClickSelectionButton')
+  const doubleClickEnd = mainSource.indexOf('/**', doubleClickStart)
+  const doubleClickSource = mainSource.slice(doubleClickStart, doubleClickEnd)
+
+  assert.ok(doubleClickStart >= 0)
+  assert.ok(doubleClickEnd > doubleClickStart)
+  assert.match(doubleClickSource, /await inspectSelectedTextPresence\(\)/u)
+  assert.match(
+    doubleClickSource,
+    /shouldShowSelectionButtonAfterInspection\(gesture\.clicks,\s*presence\)[\s\S]*?showSelectionButton\(gesture\.anchor\)/u
+  )
+  assert.doesNotMatch(doubleClickSource, /selectionCapture\.capture|simulateCopy/u)
+  assert.match(captureSource, /clipboard\.readText\('selection'\)/u)
+  assert.match(captureSource, /AXSelectedText/u)
+  assert.match(captureSource, /System\.Windows\.Automation\.TextPattern/u)
+})
+
+/**
+ * 校验所有桌面平台都在悬浮按钮的全局鼠标按下阶段直接触发翻译，避免源应用先清除选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('点击“译”按钮应在全局鼠标按下阶段直接激活并阻止鼠标事件继续进入划词判定', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
+  const pointerDownStart = mainSource.indexOf('function handleSelectionPointerDown')
+  const pointerDownEnd = mainSource.indexOf('/**', pointerDownStart)
+  const pointerDownSource = mainSource.slice(pointerDownStart, pointerDownEnd)
 
   assert.match(
-    mainSource,
-    /if\s*\(isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?process\.platform\s*===\s*'win32'[\s\S]*?translatePreparedSelection\(\)[\s\S]*?return true/u
+    pointerDownSource,
+    /if\s*\(isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?return true/u
   )
+  assert.doesNotMatch(pointerDownSource, /process\.platform\s*===\s*'win32'/u)
   assert.match(
     autoTriggerSource,
     /const pointerHandled = pointerDownCallback\?\.\(point\)\s*\?\?\s*false[\s\S]*?if\s*\(pointerHandled\)\s*\{[\s\S]*?downAt\s*=\s*null[\s\S]*?return/u

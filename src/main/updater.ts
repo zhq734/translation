@@ -11,6 +11,7 @@ import type { UpdateStatus } from '../shared/types'
 import { isMacOSDiskImageExecution } from './appLifecycle'
 import {
   UpdateManager,
+  isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
   resolveUpdateInstallMode,
   type UpdateDriver,
@@ -73,9 +74,9 @@ class ElectronUpdateDriver implements UpdateDriver {
 }
 
 /**
- * 检查当前 macOS `.app` 是否具有可验证的代码签名。
+ * 检查当前 macOS `.app` 是否具有可验证的 Developer ID Application 正式签名。
  * @param executablePath 当前应用可执行文件路径。
- * @returns 代码签名校验通过时返回 true。
+ * @returns 代码签名有效且适合自动更新时返回 true。
  * @author zhenghq
  */
 async function isMacOSApplicationSigned(executablePath: string): Promise<boolean> {
@@ -83,7 +84,11 @@ async function isMacOSApplicationSigned(executablePath: string): Promise<boolean
   if (!appBundlePath) return false
   try {
     await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appBundlePath])
-    return true
+    const { stderr } = await execFileAsync(
+      '/usr/bin/codesign',
+      ['-dv', '--verbose=4', appBundlePath]
+    )
+    return isMacOSDeveloperIdApplicationSignature(stderr)
   } catch {
     return false
   }

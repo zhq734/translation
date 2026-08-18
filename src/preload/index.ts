@@ -5,6 +5,7 @@ import type {
   Settings,
   DeepLxStatus,
   DingTalkConfigPatch,
+  MacOSQuarantineResult,
   UpdateStatus
 } from '../shared/types'
 
@@ -192,6 +193,13 @@ const api: Api = {
    * @author zhenghq
    */
   openUpdatePage: (): Promise<void> => ipcRenderer.invoke('updater:open-release'),
+  /**
+   * 请求主进程在用户确认后解除固定 macOS 应用的隔离属性。
+   * @returns 解除操作的结构化结果。
+   * @author zhenghq
+   */
+  removeMacOSQuarantine: (): Promise<MacOSQuarantineResult> =>
+    ipcRenderer.invoke('updater:remove-quarantine'),
   /**
    * 订阅自动更新状态变化。
    * @param callback 自动更新状态回调。
