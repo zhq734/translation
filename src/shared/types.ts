@@ -4,6 +4,18 @@ export type TriggerMode = 'auto' | 'button' | 'hotkey'
 /** 翻译请求使用的代理方式。 */
 export type ProxyMode = 'system' | 'direct' | 'custom'
 
+/** 可供用户指定为首选项的翻译 API。 */
+export type TranslationProviderId =
+  | 'dingtalk'
+  | 'microsoft'
+  | 'deeplx-self'
+  | 'deeplx-public'
+  | 'google'
+  | 'mymemory'
+
+/** 翻译 API 选择偏好，auto 表示沿用默认降级顺序。 */
+export type TranslationProviderPreference = 'auto' | TranslationProviderId
+
 /** 自动更新当前所处阶段。 */
 export type UpdatePhase =
   | 'disabled'
@@ -58,6 +70,8 @@ export interface TranslatePayload {
   sourcePreference?: string
   /** 用户选择的目标语言偏好，auto 表示自动中英互译。 */
   targetPreference?: string
+  /** 实际完成本次翻译的 API，用于弹窗展示降级结果。 */
+  provider?: TranslationProviderId
   channel?: string
   error?: string
 }
@@ -89,6 +103,8 @@ export interface Settings {
   dingTalkSecretConfigured: boolean
   /** 是否启用免订阅的微软 Bing 在线翻译通道。 */
   microsoftEnabled: boolean
+  /** 用户在弹窗底部选择的首选翻译 API。 */
+  preferredTranslationProvider: TranslationProviderPreference
 }
 
 export interface DingTalkConfigPatch {

@@ -6,6 +6,7 @@ import {
   decideSelectionAction,
   getSelectionGesture,
   resolveLanguagePair,
+  resolveWindowsPointerPoint,
   shouldTriggerSelectionGesture
 } from '../src/shared/selectionBehavior.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
@@ -36,6 +37,38 @@ test('划词结束后应使用拖拽区域右上角作为“译”按钮锚点',
   assert.deepEqual(gesture.anchor, { x: 360, y: 220 })
   assert.equal(Math.round(gesture.distance), 243)
   assert.equal(gesture.durationMs, 300)
+})
+
+/**
+ * 校验 Windows 高 DPI 与多显示器场景能识别原生坐标是否已经是 DIP，并在坐标异常时回退到当前光标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 划词坐标应转换为 Electron 使用的 DIP 坐标并容忍原生坐标异常', () => {
+  assert.deepEqual(
+    resolveWindowsPointerPoint(
+      { x: 1800, y: 900 },
+      { x: 1200, y: 600 },
+      { x: 1201, y: 600 }
+    ),
+    { x: 1200, y: 600 }
+  )
+  assert.deepEqual(
+    resolveWindowsPointerPoint(
+      { x: 100, y: 100 },
+      { x: 80, y: 80 },
+      { x: 100, y: 100 }
+    ),
+    { x: 100, y: 100 }
+  )
+  assert.deepEqual(
+    resolveWindowsPointerPoint(
+      { x: -21000, y: 480 },
+      { x: -16800, y: 384 },
+      { x: 980, y: 480 }
+    ),
+    { x: 980, y: 480 }
+  )
 })
 
 test('双击选中文字时即使鼠标没有明显移动也应触发选区处理', () => {
@@ -193,6 +226,61 @@ test('选区按钮应在划词阶段预取文字，并在点击时直接消费�
   assert.equal(coordinator.consumePrepared(), null)
 })
 
+/**
+ * 校验 Windows 用户快速点击按钮时会等待尚未完成的预取，而不是中止后重新从已失效的选区取词。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('点击“译”按钮时应等待正在进行的选区预取并且只消费一次', async () => {
+  let captureCount = 0
+  let notifyStarted: (() => void) | undefined
+  let finishCapture: ((text: string) => void) | undefined
+  const started = new Promise<void>((resolve) => {
+    notifyStarted = resolve
+  })
+  const coordinator = new SelectionCaptureCoordinator(async () => {
+    captureCount += 1
+    notifyStarted?.()
+    return await new Promise<string>((resolve) => {
+      finishCapture = resolve
+    })
+  })
+  const anchor = { x: 420, y: 260 }
+
+  const preparing = coordinator.prepare(anchor)
+  await started
+  const clicked = coordinator.consumePreparedOrWait()
+  const duplicateClick = coordinator.consumePreparedOrWait()
+  finishCapture?.('Windows cached selection')
+
+  assert.deepEqual(await preparing, { text: 'Windows cached selection', anchor })
+  assert.deepEqual(await clicked, { text: 'Windows cached selection', anchor })
+  assert.equal(await duplicateClick, null)
+  assert.equal(captureCount, 1)
+})
+
+/**
+ * 校验图标可以先展示，而后台取词仍等待前台应用完成选区更新。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('选区按钮预取应支持延迟执行且快速点击仍可等待结果', async () => {
+  let captureCount = 0
+  const coordinator = new SelectionCaptureCoordinator(async () => {
+    captureCount += 1
+    return 'delayed Windows selection'
+  })
+  const anchor = { x: 520, y: 320 }
+
+  const preparing = coordinator.prepare(anchor, 30)
+  const clicked = coordinator.consumePreparedOrWait()
+
+  assert.equal(captureCount, 0)
+  assert.deepEqual(await preparing, { text: 'delayed Windows selection', anchor })
+  assert.deepEqual(await clicked, { text: 'delayed Windows selection', anchor })
+  assert.equal(captureCount, 1)
+})
+
 test('新的划词准备开始后应使旧的选中文字缓存失效', async () => {
   const coordinator = new SelectionCaptureCoordinator(async () => 'first selection')
 
@@ -226,22 +314,77 @@ test('粘贴或外部点击使选区失效时应中止正在进行的剪贴板�
   assert.equal(coordinator.consumePrepared(), null)
 })
 
-test('预取结果为空时不应保留可供“译”按钮消费的选区', async () => {
+test('预取结果为空时点击“译”按钮仍应消费结果以展示明确提示', async () => {
   const coordinator = new SelectionCaptureCoordinator(async () => '   ')
+  const anchor = { x: 100, y: 100 }
 
-  const prepared = await coordinator.prepare({ x: 100, y: 100 })
+  const prepared = await coordinator.prepare(anchor)
 
-  assert.deepEqual(prepared, { text: '', anchor: { x: 100, y: 100 } })
-  assert.equal(coordinator.consumePrepared(), null)
+  assert.deepEqual(prepared, { text: '', anchor })
+  assert.deepEqual(await coordinator.consumePreparedOrWait(), { text: '', anchor })
+  assert.equal(await coordinator.consumePreparedOrWait(), null)
 })
 
-test('主进程应只为有效文字显示按钮，并在外部按下鼠标时隐藏旧按钮', () => {
+test('主进程应先显示按钮并在点击时等待预取结果', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
-  assert.match(source, /if\s*\(!result\.text\s*\|\|\s*result\.error\)\s*\{[\s\S]*?hideSelectionButton\(\)/u)
+  assert.match(
+    source,
+    /showSelectionButton\(anchor\)[\s\S]*?void prepareSelectionButton\(anchor, gestureId\)/u
+  )
+  assert.match(
+    source,
+    /await selectionCapture\.prepare\(anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u
+  )
+  assert.match(
+    source,
+    /await selectionCapture\.consumePreparedOrWait\(\)[\s\S]*?selectionCapture\.invalidate\(\)/u
+  )
   assert.match(
     source,
     /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut\s*\)/u
+  )
+})
+
+/**
+ * 校验选区稳定等待只作用于后台取词，不再阻塞 Windows “译”图标展示。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮模式应立即显示“译”图标并仅延迟后台预取', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const scheduleStart = source.indexOf('function scheduleSelectionAction')
+  const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
+  const scheduleSource = source.slice(scheduleStart, scheduleEnd)
+
+  assert.ok(scheduleStart >= 0)
+  assert.ok(scheduleEnd > scheduleStart)
+  assert.match(
+    scheduleSource,
+    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?prepareSelectionButton\(anchor, gestureId\)[\s\S]*?return/u
+  )
+  assert.match(
+    source,
+    /selectionCapture\.prepare\(anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u
+  )
+})
+
+/**
+ * 校验 Windows 不依赖非激活悬浮窗口的 DOM click，能够从全局鼠标按下事件直接触发翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 点击“译”按钮应由主进程直接激活并阻止鼠标事件继续进入划词判定', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
+
+  assert.match(
+    mainSource,
+    /if\s*\(isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?process\.platform\s*===\s*'win32'[\s\S]*?translatePreparedSelection\(\)[\s\S]*?return true/u
+  )
+  assert.match(
+    autoTriggerSource,
+    /const pointerHandled = pointerDownCallback\?\.\(point\)\s*\?\?\s*false[\s\S]*?if\s*\(pointerHandled\)\s*\{[\s\S]*?downAt\s*=\s*null[\s\S]*?return/u
   )
 })
 
@@ -249,6 +392,8 @@ test('全局监听应传递双击次数，并监听用户复制和粘贴快捷�
   const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
 
   assert.match(source, /shouldTriggerSelectionGesture\(gesture,\s*e\.clicks/u)
+  assert.match(source, /screen\.screenToDipPoint\(/u)
+  assert.match(source, /screen\.getCursorScreenPoint\(\)/u)
   assert.match(source, /uIOhook\.on\('keydown',\s*onKeyDown\)/u)
   assert.match(
     source,
@@ -275,6 +420,7 @@ test('主进程不得注册系统复制快捷键，选区按钮也不得抢占�
 
   assert.match(mainSource, /if\s*\(isCopyShortcut\(accelerator\)\)\s*\{/u)
   assert.match(buttonSource, /focusable:\s*false/u)
+  assert.match(buttonSource, /webContents\.once\('did-finish-load'/u)
   assert.match(buttonSource, /win\.showInactive\(\)/u)
 })
 
@@ -317,11 +463,31 @@ test('未钉住时点击弹窗外部应关闭，钉住后不应关闭', () => {
   assert.equal(shouldDismissPopupOnBlur(true), false)
 })
 
-test('翻译弹窗应包含可见的图钉按钮图标', () => {
+/**
+ * 校验图钉与设置操作使用相同尺寸、相同线条风格的 SVG 图标和按钮外观。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('翻译弹窗的图钉和设置操作应使用统一尺寸的线性 SVG 图标', () => {
   const popupHtml = readFileSync('src/renderer/index.html', 'utf8')
+  const popupStyles = readFileSync('src/renderer/src/style.css', 'utf8')
+
   assert.match(
     popupHtml,
-    /<button[^>]+id="pin"[^>]*>[\s\S]*<svg[^>]+class="pin-icon"/u
+    /<button[^>]+id="pin"[^>]+class="header-action-button"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon pin-icon"/u
+  )
+  assert.match(
+    popupHtml,
+    /<button[^>]+id="open-settings"[^>]+class="header-action-button"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon settings-icon"/u
+  )
+  assert.doesNotMatch(popupHtml, />\s*⚙\s*<\/button>/u)
+  assert.match(
+    popupStyles,
+    /\.header-action-button\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*border-radius:\s*9px;[^}]*transition:/su
+  )
+  assert.match(
+    popupStyles,
+    /\.header-action-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*fill:\s*none;[^}]*stroke:\s*currentColor;[^}]*stroke-width:\s*1\.8;/su
   )
 })
 
@@ -367,7 +533,7 @@ test('旧版设置升级后应默认启用选词按钮、自动中英互译、�
     autoTrigger: true
   })
 
-  assert.equal(settings.schemaVersion, 7)
+  assert.equal(settings.schemaVersion, 8)
   assert.equal(settings.targetLang, 'auto')
   assert.equal(settings.autoHideMs, 0)
   assert.equal(settings.triggerMode, 'button')
@@ -401,7 +567,7 @@ test('第三版自动模式配置升级后应回到按钮模式', () => {
     triggerMode: 'auto'
   })
 
-  assert.equal(settings.schemaVersion, 7)
+  assert.equal(settings.schemaVersion, 8)
   assert.equal(settings.triggerMode, 'button')
 })
 

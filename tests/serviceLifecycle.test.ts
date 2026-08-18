@@ -68,6 +68,19 @@ test('首次启动应采用平台策略，托盘菜单和第二实例应按需�
   )
 })
 
+test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const settingsWindowBlock = mainSource.match(
+    /function createSettingsWindow\(\): BrowserWindow \{([\s\S]*?)\n\}/u
+  )
+
+  assert.ok(settingsWindowBlock)
+  assert.match(
+    settingsWindowBlock[1],
+    /if \(process\.platform === 'win32'\) settingsWin\.removeMenu\(\)/u
+  )
+})
+
 test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快捷键触发模式', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const toggleLabel = "label: '划词后自动显示“译”按钮'"

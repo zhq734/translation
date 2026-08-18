@@ -18,7 +18,7 @@ test('schema v6 设置升级后应默认关闭免订阅微软翻译并保留既�
     microsoftSubscriptionKeyConfigured: boolean
   })
 
-  assert.equal(settings.schemaVersion, 7)
+  assert.equal(settings.schemaVersion, 8)
   assert.equal(settings.microsoftEnabled, false)
   assert.equal('microsoftRegion' in settings, false)
   assert.equal('microsoftSubscriptionKeyConfigured' in settings, false)

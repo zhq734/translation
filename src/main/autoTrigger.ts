@@ -1,7 +1,9 @@
 import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { screen } from 'electron'
 import {
   createObservedPointerSample,
   getSelectionGesture,
+  resolveWindowsPointerPoint,
   shouldTriggerSelectionGesture,
   type SelectionGesture
 } from '../shared/selectionBehavior'
@@ -38,7 +40,7 @@ type KeyboardSample = {
 }
 
 type SelectionCallback = (gesture: SelectionGesture) => void
-type PointerDownCallback = (point: { x: number; y: number }) => void
+type PointerDownCallback = (point: { x: number; y: number }) => boolean
 type CopyShortcutCallback = () => void
 type PasteShortcutCallback = () => void
 
@@ -52,13 +54,37 @@ let downAt: MouseSample | null = null
 let modifiersHeld = false
 
 /**
+ * 将全局钩子的鼠标坐标转换为 Electron 窗口定位使用的 DIP 坐标。
+ * Windows 原生钩子返回物理像素且底层使用 16 位坐标，多屏或缩放场景异常时使用当前光标兜底。
+ * @param e 全局鼠标事件坐标。
+ * @returns 与 Electron screen、BrowserWindow 一致的坐标。
+ * @author zhenghq
+ */
+function resolveMousePoint(e: MouseSample): { x: number; y: number } {
+  const point = { x: e.x, y: e.y }
+  if (process.platform !== 'win32') return point
+
+  return resolveWindowsPointerPoint(
+    point,
+    screen.screenToDipPoint(point),
+    screen.getCursorScreenPoint()
+  )
+}
+
+/**
  * 通知主进程鼠标已按下，记录起点并过滤带修饰键的拖拽操作。
  * @param e 全局鼠标按下事件。
  * @returns 无返回值。
  * @author zhenghq
  */
 function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaKey: boolean }): void {
-  pointerDownCallback?.({ x: e.x, y: e.y })
+  const point = resolveMousePoint(e)
+  const pointerHandled = pointerDownCallback?.(point) ?? false
+  if (pointerHandled) {
+    modifiersHeld = false
+    downAt = null
+    return
+  }
 
   // 带修饰键的拖拽通常属于复制、窗口操作或快捷操作，不作为普通划词。
   if (e.ctrlKey || e.altKey || e.metaKey) {
@@ -67,7 +93,7 @@ function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaK
     return
   }
   modifiersHeld = false
-  downAt = createObservedPointerSample(e, Date.now())
+  downAt = createObservedPointerSample(point, Date.now())
 }
 
 /**
@@ -85,7 +111,10 @@ function onMouseUp(e: MouseSample): void {
   }
   modifiersHeld = false
 
-  const gesture = getSelectionGesture(start, createObservedPointerSample(e, Date.now()))
+  const gesture = getSelectionGesture(
+    start,
+    createObservedPointerSample(resolveMousePoint(e), Date.now())
+  )
   if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) return
 
   console.log(
@@ -116,7 +145,7 @@ function onKeyDown(e: KeyboardSample): void {
 /**
  * 启动全局鼠标监听，用于发现跨应用的划词动作。
  * @param cb 发现有效划词后的回调。
- * @param onPointerDown 发现鼠标按下时的回调，用于立即使旧选区状态失效。
+ * @param onPointerDown 发现鼠标按下时的回调，返回 true 表示事件已被悬浮按钮消费。
  * @param onCopyShortcut 发现用户复制快捷键时的回调，用于中止剪贴板取词。
  * @param onPasteShortcut 发现用户粘贴快捷键时的回调，用于中止剪贴板取词。
  * @returns 无返回值。

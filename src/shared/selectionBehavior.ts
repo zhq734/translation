@@ -19,6 +19,33 @@ export function createObservedPointerSample(
   return { x: point.x, y: point.y, time: observedAt }
 }
 
+const WINDOWS_POINTER_DRIFT_TOLERANCE = 24
+
+/**
+ * 在 Windows 上从原始坐标和转换后的 DIP 坐标中选择最接近当前光标的坐标，异常时回退到当前光标。
+ * @param rawPoint 全局钩子返回的原始鼠标坐标。
+ * @param convertedPoint 通过 Electron 转换得到的 DIP 坐标。
+ * @param cursorPoint Electron 当前返回的光标 DIP 坐标。
+ * @returns 可供 Electron 窗口定位使用的稳定 DIP 坐标。
+ * @author zhenghq
+ */
+export function resolveWindowsPointerPoint(
+  rawPoint: { x: number; y: number },
+  convertedPoint: { x: number; y: number },
+  cursorPoint: { x: number; y: number }
+): { x: number; y: number } {
+  const rawDx = rawPoint.x - cursorPoint.x
+  const rawDy = rawPoint.y - cursorPoint.y
+  const rawDrift = Math.sqrt(rawDx * rawDx + rawDy * rawDy)
+  const convertedDx = convertedPoint.x - cursorPoint.x
+  const convertedDy = convertedPoint.y - cursorPoint.y
+  const convertedDrift = Math.sqrt(convertedDx * convertedDx + convertedDy * convertedDy)
+  const candidate = rawDrift <= convertedDrift
+    ? { point: rawPoint, drift: rawDrift }
+    : { point: convertedPoint, drift: convertedDrift }
+  return candidate.drift <= WINDOWS_POINTER_DRIFT_TOLERANCE ? candidate.point : cursorPoint
+}
+
 /** 一次划词拖拽的几何信息。 */
 export interface SelectionGesture {
   start: PointerSample

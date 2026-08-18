@@ -134,6 +134,7 @@ test('配置完整且语言对受支持时应优先使用钉钉且不调用后�
   assert.deepEqual(result, {
     translation: 'DingTalk result',
     detectedLang: 'ZH',
+    provider: 'dingtalk',
     channel: '钉钉翻译'
   })
   assert.equal(calls.length, 2)

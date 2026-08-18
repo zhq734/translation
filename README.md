@@ -194,7 +194,7 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
 - Open **Settings → About** to view the current version, check manually, monitor download progress, and restart into a downloaded update;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
-- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. The current unsigned builds safely fall back to opening GitHub Releases for manual installation;
+- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. Official GitHub Actions artifacts are Developer ID signed and Apple-notarized; local builds without release credentials safely fall back to opening GitHub Releases for manual installation;
 - Source development mode does not access the update service. The Release-page fallback remains available after check or download failures.
 
 > The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
@@ -522,6 +522,24 @@ The workflow runs unit tests and type checking first, then builds x64/arm64 inst
 3. Generate `SHA256SUMS`;
 4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
+The macOS job fails closed. Configure the following repository secrets under **Settings → Secrets and variables → Actions** before running it; otherwise it stops instead of uploading an unsigned application that Gatekeeper may report as damaged:
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | Single-line Base64 for a password-protected `Developer ID Application` `.p12` containing its private key |
+| `MACOS_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` |
+| `APPLE_API_KEY_P8` | Complete App Store Connect API key `.p8` text, including its header and footer |
+| `APPLE_API_KEY_ID` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | App Store Connect API issuer ID |
+
+Convert the `.p12` to a single-line Base64 value with:
+
+```bash
+base64 < DeveloperIDApplication.p12 | tr -d '\n'
+```
+
+CI uses `npm run dist:mac:ci` to require code signing, then runs `codesign`, `stapler`, and `spctl` before uploading artifacts. `npm run dist:mac` remains available for local development builds; such artifacts are suitable for public distribution only when the same signing and notarization environment variables are supplied.
+
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
 ```bash
@@ -572,9 +590,19 @@ Public DeepLX may be rate-limited and Google may be blocked by the current netwo
 - When using a proxy, bypass `localhost`, `127.0.0.1`, and `<local>` for a local DeepLX instance;
 - Call the endpoint with `curl` directly to separate app issues from service/network issues.
 
-### macOS blocks the unsigned app
+### macOS reports that the app is damaged
 
-The current packaging configuration does not include code signing or notarization. On first launch, right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**. For public distribution, configure Apple Developer signing and notarization.
+Confirm that the installer was rebuilt by GitHub Actions after configuring all five secrets above. The workflow now requires Developer ID signing, Apple notarization, and Gatekeeper validation; it stops without uploading a macOS artifact if credentials are missing or validation fails. Previously generated unsigned artifacts are not repaired automatically and must be replaced with a new build.
+
+To diagnose an extracted application, run:
+
+```bash
+codesign --verify --deep --strict --verbose=2 "/Applications/划词翻译.app"
+xcrun stapler validate "/Applications/划词翻译.app"
+spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
+```
+
+Local development packages created without Apple release credentials may still be blocked by Gatekeeper and should not be published as Release assets.
 
 ### DingTalk Secret cannot be saved
 
@@ -595,8 +623,8 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
 - Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
-- Current packages are unsigned: macOS notarization and Windows code signing are not configured;
-- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; unsigned macOS builds and non-AppImage Linux builds fall back to manual installation.
+- GitHub Actions macOS artifacts require signing and notarization; local development builds without Apple release credentials and the currently unsigned Windows installers may still show system security warnings;
+- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; locally unsigned macOS builds and non-AppImage Linux builds fall back to manual installation.
 
 ## Roadmap
 
