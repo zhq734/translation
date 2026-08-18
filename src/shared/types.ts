@@ -25,6 +25,7 @@ export type UpdatePhase =
   | 'not-available'
   | 'downloading'
   | 'downloaded'
+  | 'manual-downloaded'
   | 'error'
 
 /** 新版本采用的安装方式。 */
@@ -56,6 +57,18 @@ export interface UpdateStatus {
   progress?: UpdateProgress
   /** 手动下载和错误降级使用的 GitHub Release 地址。 */
   releaseUrl: string
+  /** 手动安装模式下载到本地的 DMG 路径。 */
+  manualDownloadPath?: string
+  /** 当前更新是否提供可直接下载的 macOS DMG。 */
+  manualDownloadAvailable?: boolean
+}
+
+/** macOS 应用隔离属性处理结果。 */
+export interface MacOSQuarantineResult {
+  /** 命令是否执行成功，或应用本来就没有隔离属性。 */
+  ok: boolean
+  /** 面向用户展示的处理结果。 */
+  message: string
 }
 
 export interface TranslatePayload {
@@ -207,7 +220,7 @@ export interface Api {
    */
   checkForUpdates(): Promise<UpdateStatus>
   /**
-   * 下载更新；手动模式下打开 GitHub Release。
+   * 下载更新；手动 macOS 模式下保存并打开 DMG。
    * @returns 操作完成后的自动更新状态。
    * @author zhenghq
    */
@@ -224,6 +237,12 @@ export interface Api {
    * @author zhenghq
    */
   openUpdatePage(): Promise<void>
+  /**
+   * 在用户确认后解除固定 macOS 应用的隔离属性。
+   * @returns 解除操作的结构化结果。
+   * @author zhenghq
+   */
+  removeMacOSQuarantine(): Promise<MacOSQuarantineResult>
   /**
    * 订阅自动更新状态变化。
    * @param cb 自动更新状态回调。

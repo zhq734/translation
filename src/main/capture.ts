@@ -6,12 +6,46 @@ import {
   shouldRestoreClipboardAfterAbort,
   shouldRestoreClipboard
 } from '../shared/copyShortcutBehavior'
+import {
+  parseSelectionPresenceOutput,
+  type SelectionPresence
+} from '../shared/selectionBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
 import { resolveSelectionCaptureStrategy } from '../shared/platformCapture'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
+const SELECTION_INSPECTION_TIMEOUT_MS = 1500
+
+// macOS 通过辅助功能读取前台控件的选中文字，只返回状态标记，不读取或修改剪贴板。
+const MACOS_SELECTION_PRESENCE = [
+  'tell application "System Events"',
+  'try',
+  'set frontProcess to first application process whose frontmost is true',
+  'set focusedElement to value of attribute "AXFocusedUIElement" of frontProcess',
+  'set selectedText to value of attribute "AXSelectedText" of focusedElement',
+  'if selectedText is missing value then return "UNKNOWN"',
+  'if (selectedText as text) is "" then return "EMPTY"',
+  'return "PRESENT"',
+  'on error',
+  'return "UNKNOWN"',
+  'end try',
+  'end tell'
+].join('\n')
+
+// Windows 通过 UI Automation TextPattern 检查焦点控件是否存在非空选区，不发送 Ctrl+C。
+const WINDOWS_SELECTION_PRESENCE = [
+  'Add-Type -AssemblyName UIAutomationClient;',
+  '$element = [System.Windows.Automation.AutomationElement]::FocusedElement;',
+  "if ($null -eq $element) { Write-Output 'UNKNOWN'; exit }",
+  '$pattern = $null;',
+  "if (-not $element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) { Write-Output 'UNKNOWN'; exit }",
+  '$ranges = ([System.Windows.Automation.TextPattern]$pattern).GetSelection();',
+  "if ($null -eq $ranges -or $ranges.Count -eq 0) { Write-Output 'EMPTY'; exit }",
+  "$text = ($ranges | ForEach-Object { $_.GetText(-1) }) -join '';",
+  "if ([string]::IsNullOrWhiteSpace($text)) { Write-Output 'EMPTY' } else { Write-Output 'PRESENT' }"
+].join(' ')
 
 // 使用 Windows user32.dll 向当前前台窗口发送 Ctrl+C，不抢占前台焦点。
 const WINDOWS_COPY = [
@@ -24,6 +58,48 @@ const WINDOWS_COPY = [
 ].join(' ')
 
 export class PermissionError extends Error {}
+
+/**
+ * 在不模拟复制快捷键的前提下检查前台应用当前是否存在选中文字。
+ * Linux 读取主选区，macOS 使用辅助功能属性，Windows 使用 UI Automation；无法确认时返回 unknown。
+ * @returns 当前系统选区状态。
+ * @author zhenghq
+ */
+export async function inspectSelectedTextPresence(): Promise<SelectionPresence> {
+  try {
+    if (process.platform === 'linux') {
+      return clipboard.readText('selection').trim() ? 'present' : 'empty'
+    }
+
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileP(
+        'osascript',
+        ['-e', MACOS_SELECTION_PRESENCE],
+        { timeout: SELECTION_INSPECTION_TIMEOUT_MS }
+      )
+      return parseSelectionPresenceOutput(stdout)
+    }
+
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileP('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        WINDOWS_SELECTION_PRESENCE
+      ], {
+        timeout: SELECTION_INSPECTION_TIMEOUT_MS,
+        windowsHide: true
+      })
+      return parseSelectionPresenceOutput(stdout)
+    }
+  } catch {
+    return 'unknown'
+  }
+
+  return 'unknown'
+}
 
 /**
  * 检测当前应用是否已获得「辅助功能」权限，并在 macOS 未授权时触发系统授权提示。

@@ -15,7 +15,12 @@ import {
 } from 'electron'
 import { join } from 'node:path'
 import { loadSettings, saveSettings, getSettings } from './settings'
-import { captureSelection, PermissionError, checkAccessibilityPermission } from './capture'
+import {
+  captureSelection,
+  inspectSelectedTextPresence,
+  PermissionError,
+  checkAccessibilityPermission
+} from './capture'
 import {
   checkDingTalk as checkDingTalkTranslation,
   checkMicrosoft as checkMicrosoftTranslation,
@@ -47,6 +52,7 @@ import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
   decideSelectionAction,
   resolveLanguagePair,
+  shouldShowSelectionButtonAfterInspection,
   type SelectionGesture
 } from '../shared/selectionBehavior'
 import {
@@ -59,6 +65,7 @@ import type {
   MicrosoftCheckStatus,
   Settings,
   DeepLxStatus,
+  MacOSQuarantineResult,
   UpdateStatus
 } from '../shared/types'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
@@ -69,6 +76,7 @@ import {
 } from './appLifecycle'
 import { createApplicationUpdateManager } from './updater'
 import type { UpdateManager } from './updateManager'
+import { removeMacOSApplicationQuarantine } from './macQuarantine'
 
 const isMac = process.platform === 'darwin'
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
@@ -116,11 +124,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     void initialization.then((initialized) => {
       if (!initialized) return
-      if (isMac) {
-        showTrayMenu()
-      } else {
-        openSettings()
-      }
+      openSettings()
     })
   })
 }
@@ -276,7 +280,7 @@ function onHotkey(): void {
 }
 
 /**
- * 安排一次选区捕获动作；按钮模式立即显示图标，系统取词仍等待前台应用完成鼠标划词。
+ * 安排一次选区处理动作；按钮模式只显示图标，系统取词必须等用户点击确认。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -291,7 +295,6 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 
   if (action === 'show-button') {
     showSelectionButton(anchor)
-    void prepareSelectionButton(anchor, gestureId)
     return
   }
 
@@ -302,8 +305,26 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
+ * 处理按钮模式的双击选词，在不发送复制快捷键的前提下确认选区非空后再显示“译”按钮。
+ * @param gesture 当前双击选词手势及按钮锚点。
+ * @returns 选区检查完成后的 Promise。
+ * @author zhenghq
+ */
+async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Promise<void> {
+  const gestureId = ++latestSelectionGesture
+  selectionCapture.invalidate()
+  hideSelectionButton()
+  lastSelectionAnchor = gesture.anchor
+
+  const presence = await inspectSelectedTextPresence()
+  if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
+  if (!shouldShowSelectionButtonAfterInspection(gesture.clicks, presence)) return
+  showSelectionButton(gesture.anchor)
+}
+
+/**
  * 响应一次全局划词动作，决定显示图标还是直接自动翻译。
- * 按钮模式会立即显示“译”按钮并后台预取选中文字，防止点击按钮导致原选区失效。
+ * 按钮模式的双击先无复制检查选区，常规拖拽只显示“译”按钮，不在用户确认前模拟系统复制。
  * @param gesture 划词拖拽及选区锚点信息。
  * @returns 无返回值。
  * @author zhenghq
@@ -316,19 +337,24 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
     return
   }
 
+  if (gesture.clicks >= 2 && getSettings().triggerMode === 'button') {
+    void scheduleDoubleClickSelectionButton(gesture)
+    return
+  }
+
   scheduleSelectionAction(gesture.anchor)
 }
 
 /**
- * 响应全局鼠标按下事件，使已失效的选区缓存和“译”按钮立即消失。
- * 点击“译”按钮本身时保留窗口，确保按钮仍能收到点击事件。
+ * 响应全局鼠标按下事件，在“译”按钮被按下时立即捕获选中文字，避免源应用先清除选区。
+ * 其他位置的鼠标按下会使已失效的选区缓存和“译”按钮立即消失。
  * @param point 鼠标按下时的屏幕坐标。
  * @returns 鼠标事件是否已被“译”按钮消费。
  * @author zhenghq
  */
 function handleSelectionPointerDown(point: { x: number; y: number }): boolean {
   if (isPointInsideSelectionButton(point)) {
-    if (process.platform === 'win32') void translatePreparedSelection()
+    void translateSelectionButton()
     return true
   }
   latestSelectionGesture += 1
@@ -360,28 +386,6 @@ function handlePasteShortcut(): void {
 }
 
 /**
- * 在显示“译”按钮后后台预取选中文字，避免点击按钮后原应用选区被清除。
- * @param anchor 本次选区右上角锚点。
- * @param gestureId 本次划词动作序号。
- * @returns 预取流程完成后的 Promise。
- * @author zhenghq
- */
-async function prepareSelectionButton(
-  anchor: { x: number; y: number },
-  gestureId: number
-): Promise<void> {
-  if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  const result = await selectionCapture.prepare(anchor, SELECTION_SETTLE_DELAY_MS)
-  if (!result || gestureId !== latestSelectionGesture) return
-  if (result.error) {
-    hideSelectionButton()
-    handleSelectionCaptureResult(result)
-    return
-  }
-  if (getSettings().triggerMode !== 'button') hideSelectionButton()
-}
-
-/**
  * 捕获当前选中文字，并在取词完成后执行翻译。
  * @param anchor 本次选区右上角锚点。
  * @returns 无返回值。
@@ -394,21 +398,17 @@ function queueSelectionTranslation(anchor?: { x: number; y: number }): void {
 }
 
 /**
- * 消费划词时预取的文字并开始翻译；预取仍在执行时等待完成，避免 Windows 快速点击使原选区失效。
+ * 响应“译”按钮点击，随后才向当前前台应用发送一次复制快捷键并开始翻译。
  * @returns 翻译触发流程完成后的 Promise。
  * @author zhenghq
  */
-async function translatePreparedSelection(): Promise<void> {
+async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
   latestSelectionGesture += 1
   hideSelectionButton()
-  const result = await selectionCapture.consumePreparedOrWait()
+  const result = await selectionCapture.capture(lastSelectionAnchor)
   selectionCapture.invalidate()
-  if (result) {
-    handleSelectionCaptureResult(result)
-  } else {
-    queueSelectionTranslation(lastSelectionAnchor)
-  }
+  if (result) handleSelectionCaptureResult(result)
 }
 
 /**
@@ -734,7 +734,7 @@ async function checkForApplicationUpdates(): Promise<UpdateStatus> {
 }
 
 /**
- * 下载新版本；手动安装模式下打开 GitHub Release 页面。
+ * 下载新版本；手动 macOS 安装模式下保存并打开 DMG。
  * @returns 操作完成后的自动更新状态。
  * @author zhenghq
  */
@@ -758,6 +758,30 @@ function installApplicationUpdate(): void {
  */
 async function openApplicationReleasePage(): Promise<void> {
   await getUpdateManager().openReleasePage()
+}
+
+/**
+ * 在用户确认已完成手动覆盖安装后，解除固定 macOS 应用的隔离属性。
+ * @returns 解除隔离属性的结构化结果。
+ * @author zhenghq
+ */
+async function removeApplicationQuarantine(): Promise<MacOSQuarantineResult> {
+  if (!isMac) return removeMacOSApplicationQuarantine()
+
+  const result = await dialog.showMessageBox({
+    type: 'warning',
+    title: '确认解除 macOS 隔离属性',
+    message: '请先下载 DMG 并将“划词翻译”拖入“应用程序”覆盖旧版本',
+    detail: '确认已完成覆盖安装后继续。此操作只处理 /Applications/划词翻译.app，不会调用 sudo，也不能修复代码签名不匹配。',
+    buttons: ['取消', '已完成安装，继续'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  })
+  if (result.response !== 1) {
+    return { ok: false, message: '已取消解除 macOS 隔离属性' }
+  }
+  return removeMacOSApplicationQuarantine()
 }
 
 /**
@@ -875,7 +899,7 @@ function registerIpc(): void {
   ipcMain.on('settings:open', () => openSettings())
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {
-    void translatePreparedSelection()
+    void translateSelectionButton()
   })
   ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string) => {
     const sourcePreference = sourceLang || 'auto'
@@ -905,6 +929,7 @@ function registerIpc(): void {
   ipcMain.handle('updater:download', () => downloadApplicationUpdate())
   ipcMain.on('updater:install', () => installApplicationUpdate())
   ipcMain.handle('updater:open-release', () => openApplicationReleasePage())
+  ipcMain.handle('updater:remove-quarantine', () => removeApplicationQuarantine())
 }
 
 // ---- 托盘 ----
@@ -916,15 +941,6 @@ function registerIpc(): void {
  */
 function stopApplicationService(): void {
   app.quit()
-}
-
-/**
- * 弹出状态栏图标对应的功能菜单，供 macOS 第二实例复用。
- * @returns 无返回值。
- * @author zhenghq
- */
-function showTrayMenu(): void {
-  tray?.popUpContextMenu()
 }
 
 /**

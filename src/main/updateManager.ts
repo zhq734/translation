@@ -3,11 +3,16 @@ import type {
   UpdateProgress,
   UpdateStatus
 } from '../shared/types'
+import type { ManualMacUpdateService } from './manualMacUpdate'
+
+export type { ManualMacUpdateService } from './manualMacUpdate'
 
 /** electron-updater 返回的最小版本信息。 */
 export interface UpdateDriverInfo {
   /** 可用或已下载版本号。 */
   version: string
+  /** 手动安装模式可直接下载的 macOS DMG 地址。 */
+  manualDownloadUrl?: string
 }
 
 /** electron-updater 返回的最小下载进度信息。 */
@@ -98,6 +103,8 @@ export interface UpdateManagerOptions {
   installMode: UpdateInstallMode
   /** GitHub Release 页面地址。 */
   releaseUrl: string
+  /** 下载并打开手动 macOS 更新包的受限服务。 */
+  manualUpdate?: ManualMacUpdateService
   /**
    * 使用系统默认浏览器打开外部页面。
    * @param url 需要打开的页面地址。
@@ -151,6 +158,28 @@ export function resolveMacOSAppBundlePath(executablePath: string): string | null
 }
 
 /**
+ * 判断 codesign 详情是否表明应用使用预期团队的 Developer ID Application 正式分发签名。
+ * @param signatureDetails `codesign -dv --verbose=4` 输出的签名详情。
+ * @returns 使用 TeamIdentifier=499QMYBXLR 的 Developer ID Application 签名时返回 true。
+ * @author zhenghq
+ */
+export function isMacOSDeveloperIdApplicationSignature(signatureDetails: string): boolean {
+  return /^Authority=Developer ID Application:/mu.test(signatureDetails) &&
+    /^TeamIdentifier=499QMYBXLR$/mu.test(signatureDetails)
+}
+
+/**
+ * 判断底层更新异常是否为 macOS ShipIt 代码签名要求不匹配。
+ * @param rawMessage 底层更新器返回的原始错误文本。
+ * @returns 属于代码签名校验失败时返回 true。
+ * @author zhenghq
+ */
+function isMacOSCodeSignatureValidationError(rawMessage: string): boolean {
+  return /Code signature at URL[\s\S]*did not pass validation/iu.test(rawMessage) ||
+    /代码未能满足指定的代码要求/u.test(rawMessage)
+}
+
+/**
  * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
  * @param error 自动更新异常。
  * @returns 适合直接展示在设置页的错误信息。
@@ -158,6 +187,9 @@ export function resolveMacOSAppBundlePath(executablePath: string): string | null
  */
 function formatUpdateErrorMessage(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : String(error)
+  if (isMacOSCodeSignatureValidationError(rawMessage)) {
+    return '更新包签名与当前应用不兼容，已改用手动安装；请下载 DMG，拖入“应用程序”并覆盖旧版本'
+  }
   const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
   if (metadataMatch && /\b404\b/u.test(rawMessage)) {
     return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
@@ -176,6 +208,7 @@ function formatUpdateErrorMessage(error: unknown): string {
  */
 export class UpdateManager {
   private status: UpdateStatus
+  private manualDownloadUrl: string | undefined
 
   /**
    * 创建自动更新管理器并连接底层驱动事件。
@@ -237,15 +270,13 @@ export class UpdateManager {
   }
 
   /**
-   * 下载新版本；手动安装模式下改为打开 GitHub Release 页面。
+   * 下载新版本；手动安装模式下把 DMG 保存到 Downloads 并打开安装界面。
    * @returns 操作完成后的当前状态。
    * @author zhenghq
    */
   async downloadUpdate(): Promise<UpdateStatus> {
     if (this.status.installMode === 'manual') {
-      await this.openReleasePage()
-      this.setStatus({ message: '已打开 GitHub Release，请下载并安装最新版本' })
-      return this.getStatus()
+      return this.downloadManualMacUpdate()
     }
     if (this.status.installMode !== 'automatic' || this.status.phase !== 'available') {
       return this.getStatus()
@@ -290,6 +321,7 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleAvailable(info: UpdateDriverInfo): void {
+    this.manualDownloadUrl = info.manualDownloadUrl
     const message = this.status.installMode === 'automatic'
       ? `发现新版本 ${info.version}，可以下载并安装`
       : `发现新版本 ${info.version}，当前环境需要手动安装`
@@ -297,7 +329,10 @@ export class UpdateManager {
       phase: 'available',
       latestVersion: info.version,
       message,
-      progress: undefined
+      progress: undefined,
+      manualDownloadAvailable: this.options.manualUpdate && info.manualDownloadUrl
+        ? true
+        : undefined
     })
   }
 
@@ -308,11 +343,13 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleNotAvailable(info: UpdateDriverInfo): void {
+    this.manualDownloadUrl = undefined
     this.setStatus({
       phase: 'not-available',
       latestVersion: info.version || this.status.currentVersion,
       message: '当前已经是最新版本',
-      progress: undefined
+      progress: undefined,
+      manualDownloadAvailable: undefined
     })
   }
 
@@ -348,16 +385,68 @@ export class UpdateManager {
   }
 
   /**
+   * 下载并打开手动 macOS 更新包；缺少 DMG 地址时回退到 GitHub Release。
+   * @returns 操作完成后的当前状态。
+   * @author zhenghq
+   */
+  private async downloadManualMacUpdate(): Promise<UpdateStatus> {
+    if (this.status.phase === 'checking' || this.status.phase === 'downloading') {
+      return this.getStatus()
+    }
+
+    const version = this.status.latestVersion
+    if (!version || !this.manualDownloadUrl || !this.options.manualUpdate) {
+      await this.openReleasePage()
+      this.setStatus({
+        message: '当前更新清单没有可直接下载的 DMG，已打开 GitHub Release，请手动下载安装'
+      })
+      return this.getStatus()
+    }
+
+    this.setStatus({
+      phase: 'downloading',
+      message: '正在下载 macOS DMG 更新包…',
+      progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 },
+      manualDownloadPath: undefined
+    })
+    try {
+      const result = await this.options.manualUpdate.downloadAndOpen(
+        this.manualDownloadUrl,
+        version,
+        (progress) => this.handleProgress(progress)
+      )
+      this.setStatus({
+        phase: 'manual-downloaded',
+        message: '更新包已下载到“下载”文件夹并打开 DMG；请把“划词翻译”拖入“应用程序”覆盖旧版本，然后点击“解除 macOS 隔离属性”',
+        progress: this.status.progress
+          ? { ...this.status.progress, percent: 100 }
+          : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 },
+        manualDownloadPath: result.path
+      })
+    } catch (error) {
+      this.handleError(error)
+    }
+    return this.getStatus()
+  }
+
+  /**
    * 将底层异常转换为设置页可展示的错误状态。
    * @param error 自动更新异常。
    * @returns 无返回值。
-  * @author zhenghq
+   * @author zhenghq
   */
   private handleError(error: unknown): void {
+    const rawMessage = error instanceof Error ? error.message : String(error)
+    const signatureValidationFailed = isMacOSCodeSignatureValidationError(rawMessage)
     this.setStatus({
       phase: 'error',
+      installMode: signatureValidationFailed ? 'manual' : this.status.installMode,
       message: formatUpdateErrorMessage(error),
-      progress: undefined
+      progress: undefined,
+      manualDownloadAvailable: signatureValidationFailed && this.options.manualUpdate &&
+        this.manualDownloadUrl
+        ? true
+        : this.status.manualDownloadAvailable
     })
   }
 

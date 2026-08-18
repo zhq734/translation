@@ -133,16 +133,16 @@ jobs:
             echo 'macOS 发布凭据完整，将执行 Developer ID 签名、Apple 公证和 Gatekeeper 验证。'
           elif (( ${#missing[@]} == 5 )); then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo '未配置 macOS 发布凭据，将继续生成未签名测试包。'
+            echo '未配置 macOS 发布凭据，将继续生成未签名安装包。'
             {
-              echo '### ⚠️ macOS 未签名测试包'
+              echo '### ⚠️ macOS 未签名安装包'
               echo
-              echo '本次运行未配置 Apple 发布凭据，macOS 产物仅用于测试。'
-              echo '首次打开前请参考 README，手动确认来源并处理 Gatekeeper 隔离属性。'
+              echo '本次运行未配置 Apple 发布凭据，macOS 产物不支持应用内自动安装。'
+              echo '请从 Release 下载 DMG、拖入“应用程序”并覆盖旧版本；首次打开前请按 README 处理 Gatekeeper 隔离属性。'
             } >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'macOS 发布凭据配置不完整，缺少: %s\n' "${missing[*]}" >&2
-            echo '请补齐全部五个 Secret，或删除已配置的部分 Secret 以生成未签名测试包。' >&2
+            echo '请补齐全部五个 Secret，或删除已配置的部分 Secret 以生成未签名安装包。' >&2
             exit 1
           fi
 
@@ -156,7 +156,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run ${{ matrix.command }}
 
-      - name: 构建未签名 macOS 测试包
+      - name: 构建未签名 macOS 安装包
         if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'false'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -182,6 +182,11 @@ jobs:
             signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
             if ! grep -q '^Authority=Developer ID Application:' <<< "$signature_details"; then
               echo "macOS 应用未使用 Developer ID Application 签名: $app" >&2
+              printf '%s\n' "$signature_details" >&2
+              exit 1
+            fi
+            if ! grep -q '^TeamIdentifier=499QMYBXLR$' <<< "$signature_details"; then
+              echo "macOS 应用签名团队不是预期的 TeamIdentifier=499QMYBXLR: $app" >&2
               printf '%s\n' "$signature_details" >&2
               exit 1
             fi

@@ -192,10 +192,10 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 ### In-app update checks and upgrades
 
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
-- Open **Settings → About** to view the current version, check manually, monitor download progress, and restart into a downloaded update;
+- Open **Settings → About** to view the current version, check manually, and monitor download progress. Platforms that support automatic installation can restart into a downloaded update;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
-- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. Official GitHub Actions artifacts are Developer ID signed and Apple-notarized; local builds without release credentials safely fall back to opening GitHub Releases for manual installation;
-- Source development mode does not access the update service. The Release-page fallback remains available after check or download failures.
+- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. In manual mode, clicking update downloads the DMG for the current architecture into Downloads and opens it. After dragging Selection Translator into Applications and replacing the old copy, return to Settings and click **Remove macOS quarantine attribute**;
+- If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
 > The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
 
@@ -522,10 +522,10 @@ The workflow runs unit tests and type checking first, then builds x64/arm64 inst
 3. Generate `SHA256SUMS`;
 4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
-The macOS job supports both signed release builds and unsigned test builds:
+The macOS job supports both signed and unsigned release builds:
 
-- When all five Apple release secrets are configured, CI runs `npm run dist:mac:ci` and requires Developer ID signing, Apple notarization, and `codesign`, `stapler`, and `spctl` validation;
-- When none of the five secrets are configured, CI falls back to `npm run dist:mac:unsigned` and still uploads x64/arm64 DMG and ZIP test packages;
+- When all five Apple release secrets are configured, CI runs `npm run dist:mac:ci` and requires Developer ID signing, Apple notarization, and `codesign`, `stapler`, and `spctl` validation. The certificate must be a `Developer ID Application` certificate owned by the fixed team `TeamIdentifier=499QMYBXLR`;
+- When a `workflow_dispatch` run or version tag is created without any Apple release secrets, CI falls back to `npm run dist:mac:unsigned` and generates unsigned x64/arm64 DMG and ZIP files. A version-tag build uploads those files to the GitHub Release;
 - When only some secrets are configured, CI reports the missing names and stops to avoid treating a broken signing configuration as a signed release;
 - Arbitrary names such as `LOCAL` are not read by the workflow. Use the exact names below.
 
@@ -545,28 +545,25 @@ Convert the `.p12` to a single-line Base64 value with:
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-Unsigned mode explicitly disables certificate auto-discovery and notarization. It only guarantees that GitHub Actions can create test installers. Unsigned artifacts may be blocked by Gatekeeper, are not suitable for public distribution, and cannot use automatic update installation.
+Unsigned mode explicitly disables certificate auto-discovery and notarization, then applies an ad-hoc signature that requires no Apple certificate so Apple Silicon bundles do not retain an invalid signature. This mode needs neither a developer certificate nor an Apple account. Its artifacts may be published to GitHub Releases, but Gatekeeper may block them and they cannot use in-app automatic installation. When the app detects a new version, clicking update in Settings downloads the DMG for the current architecture into Downloads and opens it. GitHub Releases is opened only as a fallback when the update metadata does not provide a directly resolvable DMG.
 
-#### Install an unsigned macOS test package
+If an older release used `Apple Development`, another signature, or no signature, the native macOS updater may reject the replacement because its signing requirement changed. Do not keep retrying the in-app installer: download the DMG from GitHub Releases and manually replace the old app. In-app automatic installation is enabled only when releases consistently use the same team's `Developer ID Application` signature.
 
-Use the following temporary workaround only when the package came from this repository's trusted GitHub Actions run or Release and you have verified its origin:
+#### Install an unsigned macOS package
 
-1. Mount the DMG and drag Selection Translator into Applications;
-2. Open Terminal and remove the download quarantine attribute;
-3. Launch the application again.
+Use the following steps only when the package came from this repository's trusted GitHub Actions run or Release and you have verified its origin:
+
+1. In **Settings → About**, click **Download and open DMG** and wait for the app to save the update in Downloads and open the installer. If automatic resolution fails, use **Open release page** to download it manually;
+2. Drag Selection Translator into Applications and choose Replace when an older version already exists;
+3. Return to Settings, click **Remove macOS quarantine attribute**, and confirm that replacement is complete;
+4. Launch the application again. You can also run the fixed command below manually in Terminal.
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-If macOS reports a permission error, use the following only for an application whose origin you trust:
-
-```bash
-sudo xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
-```
-
-This command must be run manually on the Mac after download. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. Production releases should still configure all Apple credentials so CI creates a Developer ID-signed and Apple-notarized installer.
+This command must run after the downloaded application has replaced the old copy. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. The Settings page shows **Remove macOS quarantine attribute** only after the DMG has downloaded successfully and opened. After the user completes the drag-and-replace step and explicitly clicks the button, the app asks for confirmation and runs the command only for `/Applications/划词翻译.app`. It never invokes `sudo`, and a failure still shows the manual command. Configuring all Apple credentials avoids most Gatekeeper work and restores in-app automatic installation, but it is not required to generate Release installers.
 
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
@@ -620,14 +617,14 @@ Public DeepLX may be rate-limited and Google may be blocked by the current netwo
 
 ### macOS reports that the app is damaged
 
-Check the macOS build mode reported by GitHub Actions. A run with all five secrets creates a signed and notarized package; a run with none of the secrets creates an unsigned test package. For an unsigned test package from a trusted source, run:
+Check the macOS build mode reported by GitHub Actions. A run with all five secrets creates a signed and notarized package; a run with none of the secrets creates an unsigned installer. For an unsigned installer from a trusted source, run:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-Previously generated unsigned artifacts do not become signed automatically. Configure all five secrets and rebuild before publishing to other users.
+Previously generated unsigned artifacts do not become signed automatically. They can still be published and installed manually; configure all five secrets and rebuild only if you want fewer Gatekeeper prompts and in-app automatic installation.
 
 To diagnose an extracted application, run:
 
@@ -637,7 +634,9 @@ xcrun stapler validate "/Applications/划词翻译.app"
 spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 ```
 
-GitHub Actions and local development packages created without Apple release credentials may still be blocked by Gatekeeper. Treat them as test packages rather than Apple-verified production releases.
+GitHub Actions and local development packages created without Apple release credentials may still be blocked by Gatekeeper and are not Apple-verified releases. They can be installed manually after their origin has been verified.
+
+If the in-app updater reports `Code signature ... did not pass validation` or says the code did not satisfy its designated requirement, the installed app and update package use incompatible signing requirements. Click update in Settings; the app downloads the DMG for the current architecture into Downloads and opens it. Drag Selection Translator into Applications, replace the old version, return to Settings, and click **Remove macOS quarantine attribute**. This only removes Gatekeeper's download quarantine attribute; it does not repair a signing-requirement mismatch, so the updater still uses the manual replacement flow. Use **Open release page** if the DMG cannot be resolved automatically.
 
 ### DingTalk Secret cannot be saved
 

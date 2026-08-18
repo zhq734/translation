@@ -10,7 +10,12 @@ import {
 import type { UpdateStatus } from '../shared/types'
 import { isMacOSDiskImageExecution } from './appLifecycle'
 import {
+  createManualMacUpdateService,
+  resolveManualMacDmgUrl
+} from './manualMacUpdate'
+import {
   UpdateManager,
+  isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
   resolveUpdateInstallMode,
   type UpdateDriver,
@@ -18,6 +23,7 @@ import {
 } from './updateManager'
 
 const RELEASE_URL = 'https://github.com/zhq734/translation/releases/latest'
+const RELEASE_DOWNLOAD_BASE_URL = `${RELEASE_URL}/download/`
 const execFileAsync = promisify(execFile)
 
 /**
@@ -37,7 +43,10 @@ class ElectronUpdateDriver implements UpdateDriver {
     autoUpdater.allowPrerelease = false
     autoUpdater.fullChangelog = false
     autoUpdater.on('checking-for-update', listeners.checking)
-    autoUpdater.on('update-available', (info: UpdateInfo) => listeners.available(info))
+    autoUpdater.on('update-available', (info: UpdateInfo) => listeners.available({
+      version: info.version,
+      manualDownloadUrl: resolveMacOSManualDmgUrl(info)
+    }))
     autoUpdater.on('update-not-available', (info: UpdateInfo) => listeners.notAvailable(info))
     autoUpdater.on('download-progress', (progress: ProgressInfo) => listeners.progress(progress))
     autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => listeners.downloaded(info))
@@ -73,9 +82,20 @@ class ElectronUpdateDriver implements UpdateDriver {
 }
 
 /**
- * 检查当前 macOS `.app` 是否具有可验证的代码签名。
+ * 从 electron-updater 更新清单中选择当前 macOS 架构对应的 DMG。
+ * @param info electron-updater 返回的更新信息。
+ * @returns 当前架构优先的 HTTPS DMG 地址；没有匹配文件时返回 undefined。
+ * @author zhenghq
+ */
+function resolveMacOSManualDmgUrl(info: UpdateInfo): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  return resolveManualMacDmgUrl(info.files, process.arch, RELEASE_DOWNLOAD_BASE_URL)
+}
+
+/**
+ * 检查当前 macOS `.app` 是否具有可验证的 Developer ID Application 正式签名。
  * @param executablePath 当前应用可执行文件路径。
- * @returns 代码签名校验通过时返回 true。
+ * @returns 代码签名有效且适合自动更新时返回 true。
  * @author zhenghq
  */
 async function isMacOSApplicationSigned(executablePath: string): Promise<boolean> {
@@ -83,7 +103,11 @@ async function isMacOSApplicationSigned(executablePath: string): Promise<boolean
   if (!appBundlePath) return false
   try {
     await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appBundlePath])
-    return true
+    const { stderr } = await execFileAsync(
+      '/usr/bin/codesign',
+      ['-dv', '--verbose=4', appBundlePath]
+    )
+    return isMacOSDeveloperIdApplicationSignature(stderr)
   } catch {
     return false
   }
@@ -115,6 +139,12 @@ export async function createApplicationUpdateManager(
     enabled: app.isPackaged,
     installMode,
     releaseUrl: RELEASE_URL,
+    manualUpdate: process.platform === 'darwin'
+      ? createManualMacUpdateService({
+        downloadsDirectory: app.getPath('downloads'),
+        openPath: (path) => shell.openPath(path)
+      })
+      : undefined,
     openExternal: async (url) => {
       await shell.openExternal(url)
     },

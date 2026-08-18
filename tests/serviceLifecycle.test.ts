@@ -40,7 +40,7 @@ test('macOS 打包和启动阶段都应保持仅图标菜单栏应用模式，�
   assert.match(mainSource, /app\.whenReady\(\)[\s\S]*?\.catch\(handleApplicationInitializationFailure\)/u)
 })
 
-test('首次启动应采用平台策略，托盘菜单和第二实例应按需打开设置', () => {
+test('首次启动和第二实例都应打开设置窗口', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const ipcIndex = mainSource.indexOf('\n  registerIpc()\n')
   const platformSettingsIndex = mainSource.indexOf(
@@ -58,13 +58,10 @@ test('首次启动应采用平台策略，托盘菜单和第二实例应按需�
     /label:\s*'退出',[\s\S]*?click:\s*\(\)\s*=>\s*stopApplicationService\(\)/u
   )
   assert.ok(ipcIndex >= 0 && platformSettingsIndex > ipcIndex)
+  assert.doesNotMatch(mainSource, /function showTrayMenu\(\): void/u)
   assert.match(
     mainSource,
-    /function showTrayMenu\(\): void \{[\s\S]*?tray\?\.popUpContextMenu\(\)/u
-  )
-  assert.match(
-    mainSource,
-    /app\.on\('second-instance',[\s\S]*?if \(isMac\) \{[\s\S]*?showTrayMenu\(\)[\s\S]*?\} else \{[\s\S]*?openSettings\(\)/u
+    /app\.on\('second-instance',[\s\S]*?if \(!initialized\) return[\s\S]*?openSettings\(\)/u
   )
 })
 

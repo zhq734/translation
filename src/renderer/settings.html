@@ -341,11 +341,14 @@
               <button id="check-update" class="btn" type="button">检查更新</button>
               <button id="open-release" class="btn" type="button">打开发布页</button>
               <button id="update-action" class="btn primary" type="button" hidden>
-                下载并安装
+                下载并打开 DMG
+              </button>
+              <button id="remove-quarantine" class="btn" type="button" hidden>
+                解除 macOS 隔离属性
               </button>
             </div>
             <p id="update-install-hint" class="hint update-install-hint">
-              正式打包版本会在启动后静默检查一次更新，不会在后台自动下载。
+              macOS 手动升级会下载并打开 DMG，仍由用户确认拖入“应用程序”。
             </p>
           </section>
 
