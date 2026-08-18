@@ -536,7 +536,14 @@ npm run release:checksums
 3. 生成 `SHA256SUMS`；
 4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
-macOS 流水线采用失败关闭策略：必须先在仓库 **Settings → Secrets and variables → Actions** 中配置以下 Repository secrets，否则 macOS 打包会直接失败，不会再上传可能被 Gatekeeper 判定为“已损坏”的未签名应用：
+macOS 流水线支持签名发布和未签名测试两种模式：
+
+- 五个 Apple 发布 Secret 全部配置时，CI 使用 `npm run dist:mac:ci` 强制完成 Developer ID 签名、Apple 公证，以及 `codesign`、`stapler`、`spctl` 验证；
+- 五个 Secret 全部未配置时，CI 自动改用 `npm run dist:mac:unsigned`，仍会生成并上传 x64/arm64 的 DMG 与 ZIP 测试包，不再因为缺少发布凭据直接失败；
+- 只配置了部分 Secret 时，CI 会列出缺少的名称并停止，避免把错误配置误判为已签名发布；
+- 任意自定义名称（例如 `LOCAL`）不会被工作流读取，必须使用下表中的准确名称。
+
+如需正式发布，请在仓库 **Settings → Secrets and variables → Actions** 中配置以下 Repository secrets：
 
 | Secret | 内容 |
 | --- | --- |
@@ -552,7 +559,28 @@ macOS 流水线采用失败关闭策略：必须先在仓库 **Settings → Secr
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-CI 使用 `npm run dist:mac:ci` 强制要求签名，并在上传产物前依次执行 `codesign`、`stapler` 和 `spctl` 验证。普通的 `npm run dist:mac` 仍可用于本地开发打包；只有提供相同签名与公证环境变量时，本地产物才适合直接对外分发。
+未签名模式会显式关闭证书自动发现与公证，只保证 GitHub Actions 能生成测试安装包。未签名产物可能被 Gatekeeper 阻止，不适合直接对外分发，也不能进行自动更新安装。
+
+#### 安装未签名的 macOS 测试包
+
+仅当安装包来自本仓库可信的 GitHub Actions 或 Release，并且你确认文件来源无误时，才使用下面的临时处理方式：
+
+1. 挂载 DMG，并把“划词翻译”拖入“应用程序”；
+2. 打开终端，删除该应用的下载隔离属性；
+3. 再启动应用。
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+open "/Applications/划词翻译.app"
+```
+
+如果提示没有权限，可只对确认可信的应用使用：
+
+```bash
+sudo xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+```
+
+该命令只能由用户在下载后的 Mac 上手动执行，无法在 GitHub Actions 打包阶段预先永久移除隔离属性。正式发布仍应配置完整 Apple 凭据，让 CI 生成 Developer ID 签名并经过 Apple 公证的安装包。
 
 建议统一使用小写版本标签，例如发布 `v1.0.4`：
 
@@ -616,7 +644,14 @@ npm test && npm run typecheck && npm run build
 
 ### 5. macOS 提示“应用已损坏，无法打开”
 
-先确认安装包来自配置好上述五个 Secrets 后重新执行的 GitHub Actions。新流水线会强制完成 Developer ID 签名、Apple 公证与 Gatekeeper 检查；缺少凭据或任一验证失败时，macOS 任务会停止且不上传安装包。此前生成的未签名产物不会自动修复，需要删除旧产物并重新打包。
+先确认本次 GitHub Actions 的 macOS 构建模式：五个 Secrets 完整时会生成签名公证包；五个 Secrets 全部缺失时会生成未签名测试包。未签名测试包首次打开时，可在确认来源可信后执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+open "/Applications/划词翻译.app"
+```
+
+此前生成的未签名产物不会自动变成已签名包。要面向其他用户正式发布，仍需配置全部五个 Secrets 后重新构建。
 
 如果需要排查已解压的应用，可运行：
 
@@ -626,7 +661,7 @@ xcrun stapler validate "/Applications/划词翻译.app"
 spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 ```
 
-本地未配置 Apple 发布凭据时生成的开发包仍可能被 Gatekeeper 阻止，只应在开发机上测试，不应作为公开 Release 发布。
+未配置 Apple 发布凭据时生成的 GitHub Actions 和本地开发包仍可能被 Gatekeeper 阻止，只应作为测试包使用，不应视为经过 Apple 验证的正式发行包。
 
 ### 6. 钉钉 Secret 保存失败
 
@@ -647,7 +682,7 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 取词依赖系统复制能力，不保证兼容所有自绘文本控件、远程桌面或受限应用；
 - 翻译请求依赖网络和第三方服务，钉钉、微软翻译、自建/公共 DeepLX、Google 和 MyMemory 均可能受上游变更影响；其中微软通道使用非官方 Bing 网页接口，可能在没有通知的情况下变化或停止工作；
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
-- GitHub Actions 的 macOS 产物要求签名和公证；本地未提供 Apple 发布凭据的开发包以及尚未签名的 Windows 安装包仍可能显示系统安全警告；
+- GitHub Actions 在缺少全部 Apple 发布凭据时会生成未签名 macOS 测试包；该产物以及尚未签名的 Windows 安装包仍可能显示系统安全警告，正式 macOS 发布仍要求签名和公证；
 - 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，本地未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
 
 ## 后续方向
