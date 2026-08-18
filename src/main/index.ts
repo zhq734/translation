@@ -127,6 +127,15 @@ if (!gotLock) {
       openSettings()
     })
   })
+  if (isMac) {
+    // macOS 通过 Finder 重新打开运行中的应用时通常只激活已有进程，不会创建第二实例。
+    app.on('activate', () => {
+      void initialization.then((initialized) => {
+        if (!initialized) return
+        openSettings()
+      })
+    })
+  }
 }
 
 /**
