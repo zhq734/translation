@@ -51,3 +51,12 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第
     /app\.on\('second-instance',[\s\S]*?initialization\.then\([\s\S]*?if \(!initialized\) return[\s\S]*?openSettings\(\)/u
   )
 })
+
+test('macOS 从 Finder 再次打开运行中的应用时应通过 activate 事件打开设置窗口', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+
+  assert.match(
+    source,
+    /if \(isMac\) \{[\s\S]*?app\.on\('activate',[\s\S]*?initialization\.then\([\s\S]*?if \(!initialized\) return[\s\S]*?openSettings\(\)/u
+  )
+})
