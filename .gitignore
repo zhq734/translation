@@ -5,3 +5,11 @@ out/
 dist/
 .DS_Store
 *.log
+
+# Apple 代码签名与公证私密文件
+*.key
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision

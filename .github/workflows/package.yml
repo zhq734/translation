@@ -102,8 +102,9 @@ jobs:
           VERSION="${VERSION#V}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
-      - name: 校验并准备 macOS 签名与公证凭据
+      - name: 检查并准备 macOS 签名与公证凭据
         if: matrix.name == 'macOS'
+        id: macos_signing
         shell: bash
         env:
           MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
@@ -124,15 +125,29 @@ jobs:
               missing+=("$variable")
             fi
           done
-          if (( ${#missing[@]} > 0 )); then
-            printf '缺少 macOS 发布凭据: %s\n' "${missing[*]}" >&2
+
+          if (( ${#missing[@]} == 0 )); then
+            printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            chmod 600 "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo 'macOS 发布凭据完整，将执行 Developer ID 签名、Apple 公证和 Gatekeeper 验证。'
+          elif (( ${#missing[@]} == 5 )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo '未配置 macOS 发布凭据，将继续生成未签名测试包。'
+            {
+              echo '### ⚠️ macOS 未签名测试包'
+              echo
+              echo '本次运行未配置 Apple 发布凭据，macOS 产物仅用于测试。'
+              echo '首次打开前请参考 README，手动确认来源并处理 Gatekeeper 隔离属性。'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'macOS 发布凭据配置不完整，缺少: %s\n' "${missing[*]}" >&2
+            echo '请补齐全部五个 Secret，或删除已配置的部分 Secret 以生成未签名测试包。' >&2
             exit 1
           fi
-          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          chmod 600 "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
 
-      - name: 构建 macOS 安装包
-        if: matrix.name == 'macOS'
+      - name: 构建已签名 macOS 安装包
+        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'true'
         env:
           CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -141,12 +156,18 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run ${{ matrix.command }}
 
+      - name: 构建未签名 macOS 测试包
+        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'false'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:mac:unsigned
+
       - name: 构建非 macOS 安装包
         if: matrix.name != 'macOS'
         run: npm run ${{ matrix.command }}
 
       - name: 验证 macOS 签名、公证与 Gatekeeper 状态
-        if: matrix.name == 'macOS'
+        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail

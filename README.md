@@ -522,7 +522,14 @@ The workflow runs unit tests and type checking first, then builds x64/arm64 inst
 3. Generate `SHA256SUMS`;
 4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
-The macOS job fails closed. Configure the following repository secrets under **Settings → Secrets and variables → Actions** before running it; otherwise it stops instead of uploading an unsigned application that Gatekeeper may report as damaged:
+The macOS job supports both signed release builds and unsigned test builds:
+
+- When all five Apple release secrets are configured, CI runs `npm run dist:mac:ci` and requires Developer ID signing, Apple notarization, and `codesign`, `stapler`, and `spctl` validation;
+- When none of the five secrets are configured, CI falls back to `npm run dist:mac:unsigned` and still uploads x64/arm64 DMG and ZIP test packages;
+- When only some secrets are configured, CI reports the missing names and stops to avoid treating a broken signing configuration as a signed release;
+- Arbitrary names such as `LOCAL` are not read by the workflow. Use the exact names below.
+
+For a production release, configure these repository secrets under **Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
 | --- | --- |
@@ -538,7 +545,28 @@ Convert the `.p12` to a single-line Base64 value with:
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-CI uses `npm run dist:mac:ci` to require code signing, then runs `codesign`, `stapler`, and `spctl` before uploading artifacts. `npm run dist:mac` remains available for local development builds; such artifacts are suitable for public distribution only when the same signing and notarization environment variables are supplied.
+Unsigned mode explicitly disables certificate auto-discovery and notarization. It only guarantees that GitHub Actions can create test installers. Unsigned artifacts may be blocked by Gatekeeper, are not suitable for public distribution, and cannot use automatic update installation.
+
+#### Install an unsigned macOS test package
+
+Use the following temporary workaround only when the package came from this repository's trusted GitHub Actions run or Release and you have verified its origin:
+
+1. Mount the DMG and drag Selection Translator into Applications;
+2. Open Terminal and remove the download quarantine attribute;
+3. Launch the application again.
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+open "/Applications/划词翻译.app"
+```
+
+If macOS reports a permission error, use the following only for an application whose origin you trust:
+
+```bash
+sudo xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+```
+
+This command must be run manually on the Mac after download. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. Production releases should still configure all Apple credentials so CI creates a Developer ID-signed and Apple-notarized installer.
 
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
@@ -592,7 +620,14 @@ Public DeepLX may be rate-limited and Google may be blocked by the current netwo
 
 ### macOS reports that the app is damaged
 
-Confirm that the installer was rebuilt by GitHub Actions after configuring all five secrets above. The workflow now requires Developer ID signing, Apple notarization, and Gatekeeper validation; it stops without uploading a macOS artifact if credentials are missing or validation fails. Previously generated unsigned artifacts are not repaired automatically and must be replaced with a new build.
+Check the macOS build mode reported by GitHub Actions. A run with all five secrets creates a signed and notarized package; a run with none of the secrets creates an unsigned test package. For an unsigned test package from a trusted source, run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
+open "/Applications/划词翻译.app"
+```
+
+Previously generated unsigned artifacts do not become signed automatically. Configure all five secrets and rebuild before publishing to other users.
 
 To diagnose an extracted application, run:
 
@@ -602,7 +637,7 @@ xcrun stapler validate "/Applications/划词翻译.app"
 spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 ```
 
-Local development packages created without Apple release credentials may still be blocked by Gatekeeper and should not be published as Release assets.
+GitHub Actions and local development packages created without Apple release credentials may still be blocked by Gatekeeper. Treat them as test packages rather than Apple-verified production releases.
 
 ### DingTalk Secret cannot be saved
 
@@ -623,7 +658,7 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
 - Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
-- GitHub Actions macOS artifacts require signing and notarization; local development builds without Apple release credentials and the currently unsigned Windows installers may still show system security warnings;
+- GitHub Actions creates unsigned macOS test packages when all Apple release credentials are absent. Those packages and the currently unsigned Windows installers may still show system security warnings; production macOS releases still require signing and notarization;
 - No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; locally unsigned macOS builds and non-AppImage Linux builds fall back to manual installation.
 
 ## Roadmap
