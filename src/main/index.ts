@@ -254,7 +254,7 @@ function onHotkey(): void {
 }
 
 /**
- * 安排一次选区捕获动作，等待前台应用完成鼠标划词或快捷键全选后再取词。
+ * 安排一次选区捕获动作，等待前台应用完成鼠标划词后再取词。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -293,16 +293,6 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
   }
 
   scheduleSelectionAction(gesture.anchor)
-}
-
-/**
- * 响应 Ctrl+A 或 Command+A 全选快捷键，在前台外部应用完成全选后触发选区处理。
- * @returns 无返回值。
- * @author zhenghq
- */
-function handleSelectAllShortcut(): void {
-  if (BrowserWindow.getFocusedWindow()) return
-  scheduleSelectionAction(screen.getCursorScreenPoint())
 }
 
 /**
@@ -549,8 +539,7 @@ function applySelectionListener(): void {
       handleSelectionGesture,
       handleSelectionPointerDown,
       handleCopyShortcut,
-      handlePasteShortcut,
-      handleSelectAllShortcut
+      handlePasteShortcut
     )
   }
 }
