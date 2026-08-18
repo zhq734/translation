@@ -31,7 +31,7 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJ
 test('Windows 打包脚本应生成 x64 与 arm64 NSIS 安装程序', () => {
   assert.equal(
     packageJson.scripts?.['dist:win'],
-    'npm run build && electron-builder --win nsis --x64 --arm64'
+    'npm run build && electron-builder --win nsis --x64 --arm64 --publish never'
   )
 })
 

@@ -1,0 +1,382 @@
+import type {
+  UpdateInstallMode,
+  UpdateProgress,
+  UpdateStatus
+} from '../shared/types'
+
+/** electron-updater 返回的最小版本信息。 */
+export interface UpdateDriverInfo {
+  /** 可用或已下载版本号。 */
+  version: string
+}
+
+/** electron-updater 返回的最小下载进度信息。 */
+export interface UpdateDriverProgress extends UpdateProgress {}
+
+/** 自动更新驱动向状态管理器上报的事件集合。 */
+export interface UpdateDriverListeners {
+  /**
+   * 通知状态管理器开始检查更新。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  checking(): void
+  /**
+   * 通知状态管理器检测到新版本。
+   * @param info 新版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  available(info: UpdateDriverInfo): void
+  /**
+   * 通知状态管理器当前已是最新版本。
+   * @param info 远程版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  notAvailable(info: UpdateDriverInfo): void
+  /**
+   * 通知状态管理器更新下载进度发生变化。
+   * @param progress 当前下载进度。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  progress(progress: UpdateDriverProgress): void
+  /**
+   * 通知状态管理器更新已经下载完成。
+   * @param info 已下载版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  downloaded(info: UpdateDriverInfo): void
+  /**
+   * 通知状态管理器更新流程发生错误。
+   * @param error 自动更新异常。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  error(error: Error): void
+}
+
+/** 隔离 electron-updater 的最小驱动接口，便于单元测试。 */
+export interface UpdateDriver {
+  /**
+   * 初始化底层更新器并注册事件监听器。
+   * @param listeners 自动更新事件监听器。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  initialize(listeners: UpdateDriverListeners): void
+  /**
+   * 请求检查远程版本。
+   * @returns 检查请求完成后的 Promise。
+   * @author zhenghq
+   */
+  checkForUpdates(): Promise<void>
+  /**
+   * 下载已经发现的更新。
+   * @returns 下载请求完成后的 Promise。
+   * @author zhenghq
+   */
+  downloadUpdate(): Promise<void>
+  /**
+   * 退出应用并安装已经下载的更新。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  installUpdate(): void
+}
+
+export interface UpdateManagerOptions {
+  /** 自动更新底层驱动。 */
+  driver: UpdateDriver
+  /** 当前应用版本。 */
+  currentVersion: string
+  /** 当前运行环境是否允许检查更新。 */
+  enabled: boolean
+  /** 当前平台采用的安装模式。 */
+  installMode: UpdateInstallMode
+  /** GitHub Release 页面地址。 */
+  releaseUrl: string
+  /**
+   * 使用系统默认浏览器打开外部页面。
+   * @param url 需要打开的页面地址。
+   * @returns 页面打开完成后的 Promise。
+   * @author zhenghq
+   */
+  openExternal(url: string): Promise<void>
+  /**
+   * 接收自动更新状态变化并通知应用窗口。
+   * @param status 最新自动更新状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  onStatusChanged(status: UpdateStatus): void
+}
+
+/**
+ * 根据运行环境决定自动更新安装模式。
+ * @param platform 当前 Node.js 平台标识。
+ * @param packaged 当前应用是否为正式打包版本。
+ * @param linuxAppImage Linux 是否从 AppImage 运行。
+ * @param macSigned macOS 应用是否通过代码签名校验。
+ * @param macDiskImage macOS 应用是否仍从已挂载的 DMG 中运行。
+ * @returns 自动安装、手动安装或禁用模式。
+ * @author zhenghq
+ */
+export function resolveUpdateInstallMode(
+  platform: NodeJS.Platform,
+  packaged: boolean,
+  linuxAppImage: boolean,
+  macSigned: boolean,
+  macDiskImage = false
+): UpdateInstallMode {
+  if (!packaged) return 'disabled'
+  if (platform === 'darwin') return macSigned && !macDiskImage ? 'automatic' : 'manual'
+  if (platform === 'linux') return linuxAppImage ? 'automatic' : 'manual'
+  return platform === 'win32' ? 'automatic' : 'manual'
+}
+
+/**
+ * 从 macOS 可执行文件路径解析 `.app` 应用包根目录。
+ * @param executablePath 当前应用可执行文件路径。
+ * @returns 应用包根目录；路径不属于 `.app` 时返回 null。
+ * @author zhenghq
+ */
+export function resolveMacOSAppBundlePath(executablePath: string): string | null {
+  const marker = '.app/Contents/MacOS/'
+  const markerIndex = executablePath.indexOf(marker)
+  if (markerIndex < 0) return null
+  return executablePath.slice(0, markerIndex + '.app'.length)
+}
+
+/**
+ * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
+ * @param error 自动更新异常。
+ * @returns 适合直接展示在设置页的错误信息。
+ * @author zhenghq
+ */
+function formatUpdateErrorMessage(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
+  if (metadataMatch && /\b404\b/u.test(rawMessage)) {
+    return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
+  }
+
+  const firstLine = rawMessage.split(/\r?\n/u, 1)[0].replace(/\s+/gu, ' ').trim()
+  const conciseMessage = firstLine.length > 240
+    ? `${firstLine.slice(0, 239)}…`
+    : firstLine
+  return `更新失败：${conciseMessage || '未知错误'}`
+}
+
+/**
+ * 管理自动更新状态、用户操作和平台降级策略。
+ * @author zhenghq
+ */
+export class UpdateManager {
+  private status: UpdateStatus
+
+  /**
+   * 创建自动更新管理器并连接底层驱动事件。
+   * @param options 自动更新依赖和运行环境选项。
+   * @author zhenghq
+   */
+  constructor(private readonly options: UpdateManagerOptions) {
+    const disabled = !options.enabled || options.installMode === 'disabled'
+    this.status = {
+      phase: disabled ? 'disabled' : 'idle',
+      currentVersion: options.currentVersion,
+      installMode: disabled ? 'disabled' : options.installMode,
+      releaseUrl: options.releaseUrl,
+      message: disabled ? '开发环境不会检查更新' : '尚未检查更新'
+    }
+    options.driver.initialize({
+      checking: () => this.setStatus({ phase: 'checking', message: '正在检查更新…' }),
+      available: (info) => this.handleAvailable(info),
+      notAvailable: (info) => this.handleNotAvailable(info),
+      progress: (progress) => this.handleProgress(progress),
+      downloaded: (info) => this.handleDownloaded(info),
+      error: (error) => this.handleError(error)
+    })
+  }
+
+  /**
+   * 获取当前自动更新状态的只读副本。
+   * @returns 当前自动更新状态。
+   * @author zhenghq
+   */
+  getStatus(): UpdateStatus {
+    const status = { ...this.status }
+    if (this.status.progress) {
+      status.progress = { ...this.status.progress }
+    } else {
+      delete status.progress
+    }
+    return status
+  }
+
+  /**
+   * 主动检查 GitHub Release 中的最新版本。
+   * @returns 检查请求发出后的当前状态。
+   * @author zhenghq
+   */
+  async checkForUpdates(): Promise<UpdateStatus> {
+    if (this.status.phase === 'disabled' || this.status.phase === 'downloading') {
+      return this.getStatus()
+    }
+    if (this.status.phase === 'checking') return this.getStatus()
+
+    this.setStatus({ phase: 'checking', message: '正在检查更新…', progress: undefined })
+    try {
+      await this.options.driver.checkForUpdates()
+    } catch (error) {
+      this.handleError(error)
+    }
+    return this.getStatus()
+  }
+
+  /**
+   * 下载新版本；手动安装模式下改为打开 GitHub Release 页面。
+   * @returns 操作完成后的当前状态。
+   * @author zhenghq
+   */
+  async downloadUpdate(): Promise<UpdateStatus> {
+    if (this.status.installMode === 'manual') {
+      await this.openReleasePage()
+      this.setStatus({ message: '已打开 GitHub Release，请下载并安装最新版本' })
+      return this.getStatus()
+    }
+    if (this.status.installMode !== 'automatic' || this.status.phase !== 'available') {
+      return this.getStatus()
+    }
+
+    this.setStatus({
+      phase: 'downloading',
+      message: '正在下载更新…',
+      progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 }
+    })
+    try {
+      await this.options.driver.downloadUpdate()
+    } catch (error) {
+      this.handleError(error)
+    }
+    return this.getStatus()
+  }
+
+  /**
+   * 安装已下载的新版本并重新启动应用。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  installUpdate(): void {
+    if (this.status.installMode !== 'automatic' || this.status.phase !== 'downloaded') return
+    this.options.driver.installUpdate()
+  }
+
+  /**
+   * 在系统默认浏览器中打开 GitHub Release 页面。
+   * @returns 页面打开完成后的 Promise。
+   * @author zhenghq
+   */
+  async openReleasePage(): Promise<void> {
+    await this.options.openExternal(this.options.releaseUrl)
+  }
+
+  /**
+   * 处理检测到新版本事件。
+   * @param info 新版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private handleAvailable(info: UpdateDriverInfo): void {
+    const message = this.status.installMode === 'automatic'
+      ? `发现新版本 ${info.version}，可以下载并安装`
+      : `发现新版本 ${info.version}，当前环境需要手动安装`
+    this.setStatus({
+      phase: 'available',
+      latestVersion: info.version,
+      message,
+      progress: undefined
+    })
+  }
+
+  /**
+   * 处理当前已经是最新版本事件。
+   * @param info 当前远程版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private handleNotAvailable(info: UpdateDriverInfo): void {
+    this.setStatus({
+      phase: 'not-available',
+      latestVersion: info.version || this.status.currentVersion,
+      message: '当前已经是最新版本',
+      progress: undefined
+    })
+  }
+
+  /**
+   * 处理更新包下载进度事件。
+   * @param progress 当前下载进度。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private handleProgress(progress: UpdateDriverProgress): void {
+    this.setStatus({
+      phase: 'downloading',
+      message: `正在下载更新… ${Math.max(0, Math.min(100, progress.percent)).toFixed(1)}%`,
+      progress: { ...progress }
+    })
+  }
+
+  /**
+   * 处理更新包下载完成事件。
+   * @param info 已下载版本信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private handleDownloaded(info: UpdateDriverInfo): void {
+    this.setStatus({
+      phase: 'downloaded',
+      latestVersion: info.version,
+      message: `版本 ${info.version} 已下载，重启后完成升级`,
+      progress: this.status.progress
+        ? { ...this.status.progress, percent: 100 }
+        : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 }
+    })
+  }
+
+  /**
+   * 将底层异常转换为设置页可展示的错误状态。
+   * @param error 自动更新异常。
+   * @returns 无返回值。
+  * @author zhenghq
+  */
+  private handleError(error: unknown): void {
+    this.setStatus({
+      phase: 'error',
+      message: formatUpdateErrorMessage(error),
+      progress: undefined
+    })
+  }
+
+  /**
+   * 合并状态补丁、复制可变数据并通知所有窗口。
+   * @param patch 自动更新状态补丁。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private setStatus(patch: Partial<UpdateStatus>): void {
+    this.status = {
+      ...this.status,
+      ...patch,
+      progress: patch.progress
+        ? { ...patch.progress }
+        : patch.progress === undefined && 'progress' in patch
+          ? undefined
+          : this.status.progress
+    }
+    this.options.onStatusChanged(this.getStatus())
+  }
+}

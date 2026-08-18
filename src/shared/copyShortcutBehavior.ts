@@ -90,6 +90,17 @@ export function shouldRestoreClipboard(
 }
 
 /**
+ * 判断内部取词被中止时是否应恢复旧剪贴板。
+ * 用户主动复制会先递增复制版本，此时必须保留前台应用即将写入或已经写入的新内容。
+ * @param externalCopyObserved 取词期间是否观测到用户复制快捷键。
+ * @returns 未发生用户复制时返回 true，否则返回 false。
+ * @author zhenghq
+ */
+export function shouldRestoreClipboardAfterAbort(externalCopyObserved: boolean): boolean {
+  return !externalCopyObserved
+}
+
+/**
  * 区分内部模拟复制与用户主动复制，避免内部取词覆盖用户刚复制的内容。
  * @author zhenghq
  */

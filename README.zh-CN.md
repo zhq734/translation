@@ -181,10 +181,20 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 如果需要手动安装，可在 GitHub 的 [Releases](../../releases) 页面下载对应系统的文件：
 
 - **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，打开后将“划词翻译”拖入 `Applications`；
-- **Linux**：下载 `SelectionTranslator-<版本>-linux-<架构>.AppImage`，添加执行权限后运行；
+- **Linux**：x64 下载 `SelectionTranslator-<版本>-linux-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-linux-arm64.AppImage`，添加执行权限后运行；
 - **Windows**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
 
 所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。当前支持 `x64` 与 `arm64`，详见[开发、测试与打包](#开发测试与打包)。
+
+### 应用内检查与升级
+
+- 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
+- 可在 **设置 → 关于** 查看当前版本、手动检查更新、观察下载进度，并在下载完成后点击“立即重启升级”；
+- Windows NSIS 安装包支持应用内下载与重启安装；Linux 仅在从 AppImage 运行时支持自动替换，其他 Linux 安装方式会打开 GitHub Release；
+- macOS 只有通过代码签名校验的 `.app` 才启用自动安装。当前默认未签名构建会安全降级为打开 GitHub Release，由用户手动安装；
+- 源码开发模式不会访问更新服务。检查或下载发生异常时，设置页仍保留“打开发布页”入口。
+
+> 已经发布的 `V1.0.3` 不包含自动更新代码和 `latest*.yml` / `.blockmap` 元数据，因此该版本用户需要先手动安装一次包含本功能的新版本。之后发布新版本时，必须把安装包、更新元数据、差分文件和 `SHA256SUMS` 上传到同一个 Release。建议后续标签统一使用小写形式，例如 `v1.0.4`。
 
 ### 方式三：从源码运行
 
@@ -505,11 +515,13 @@ npm run release:checksums
 
 - `npm run build`：生成 Electron 主进程、preload 和 renderer 产物到 `out/`；
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
-- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage；
+- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；
 - `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；
+- 各平台打包会生成 `latest*.yml` 更新清单；macOS/Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；
 - 打包输出目录统一为 `dist/`；
+- 各平台打包命令显式使用 `--publish never`，只生成本地安装包，避免标签构建时由 electron-builder 隐式发布；
 - 发布时必须把所有安装包与 `SHA256SUMS` 上传到同一个 GitHub Release，一键安装脚本才能完成下载与校验；
 - 建议在各目标平台完成安装验证；跨平台打包时需要联网下载目标平台 Electron、NSIS 或 AppImage 工具链。
 
@@ -522,13 +534,13 @@ npm run release:checksums
 1. 使用标签中的版本号同步安装包版本；
 2. 汇总三个平台的安装包；
 3. 生成 `SHA256SUMS`；
-4. 创建或更新同名 GitHub Release，并上传所有安装包与校验和。
+4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
-例如发布 `V1.0.3`：
+建议统一使用小写版本标签，例如发布 `v1.0.4`：
 
 ```bash
-git tag V1.0.3
-git push origin V1.0.3
+git tag v1.0.4
+git push origin v1.0.4
 ```
 
 ### 测试说明
@@ -586,7 +598,7 @@ npm test && npm run typecheck && npm run build
 
 ### 5. macOS 阻止打开未签名应用
 
-当前打包配置未配置签名和公证。首次打开时可在 Finder 中右键应用并选择“打开”，或到 **系统设置 → 隐私与安全性** 中允许打开。正式对外分发前，建议配置 Apple Developer 签名、公证和自动更新策略。
+当前打包配置未配置签名和公证。首次打开时可在 Finder 中右键应用并选择“打开”，或到 **系统设置 → 隐私与安全性** 中允许打开。未签名 macOS 构建只检查新版本并打开 GitHub Release，不执行应用内自动替换；正式对外分发前，建议配置 Apple Developer 签名和公证。
 
 ### 6. 钉钉 Secret 保存失败
 
@@ -608,7 +620,7 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 翻译请求依赖网络和第三方服务，钉钉、微软翻译、自建/公共 DeepLX、Google 和 MyMemory 均可能受上游变更影响；其中微软通道使用非官方 Bing 网页接口，可能在没有通知的情况下变化或停止工作；
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
 - 当前打包产物默认未签名；macOS 未公证，Windows 未配置代码签名，系统可能显示安全警告；
-- 项目暂未提供账号体系、云端同步和自动更新；安装包当前未签名，首次启动可能需要手动确认系统安全提示。
+- 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
 
 ## 后续方向
 
@@ -617,7 +629,7 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 增加英文及更多语言的应用内界面；
 - 接入更多可配置的翻译服务，并完善通道状态管理；
 - 使用 macOS Accessibility API 增强对不支持复制控件的取词能力；
-- 增加更新检查、签名公证和更完整的发行流程；
+- 完善签名、公证、增量更新验证和发行监控；
 - 完善 Windows/Linux 真机兼容性、代码签名和自动化发布。
 
 ## 参与贡献

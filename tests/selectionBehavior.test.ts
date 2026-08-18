@@ -16,6 +16,7 @@ import {
   CopyShortcutGuard,
   hasClipboardCaptureCompleted,
   isCopyShortcut,
+  shouldRestoreClipboardAfterAbort,
   shouldRestoreClipboard
 } from '../src/shared/copyShortcutBehavior.ts'
 
@@ -134,6 +135,17 @@ test('剪贴板已变为非内部捕获文本时不得恢复旧内容', () => {
   assert.equal(
     shouldRestoreClipboard(false, '内部捕获文本', sentinel, false, '内部捕获文本'),
     true
+  )
+})
+
+test('用户复制导致内部取词中止时不得把旧剪贴板写回', () => {
+  assert.equal(shouldRestoreClipboardAfterAbort(true), false)
+  assert.equal(shouldRestoreClipboardAfterAbort(false), true)
+
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  assert.match(
+    source,
+    /const handleAbort = \(\): void => \{\s*if \(shouldRestoreClipboardAfterAbort\(\s*copyShortcutGuard\.hasExternalCopySince\(externalCopyVersion\)\s*\)\) \{\s*restoreOriginalClipboard\(\)/u
   )
 })
 
@@ -279,7 +291,7 @@ test('内部取词应同时等待文字或图片写入，并避免恢复旧图�
   assert.match(source, /if\s*\(signal\?\.aborted\)/u)
   assert.match(
     source,
-    /if\s*\(signal\?\.aborted\)\s*\{\s*if\s*\(!copyShortcutGuard\.hasExternalCopySince\(externalCopyVersion\)\)\s*\{?\s*restoreOriginalClipboard\(\)/u
+    /if\s*\(signal\?\.aborted\)\s*\{\s*if\s*\(shouldRestoreClipboardAfterAbort\(\s*copyShortcutGuard\.hasExternalCopySince\(externalCopyVersion\)\s*\)\)\s*\{\s*restoreOriginalClipboard\(\)/u
   )
 })
 

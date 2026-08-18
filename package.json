@@ -11,11 +11,11 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "dist:mac": "npm run build && electron-builder --mac --x64 --arm64",
-    "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64",
+    "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
+    "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
     "test": "node scripts/run-tests.mjs",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64",
-    "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --arm64",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64 --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --arm64 --publish never",
     "release:checksums": "node scripts/generate-checksums.mjs",
     "icons:generate": "node scripts/generate-icons.mjs"
   },
@@ -34,6 +34,13 @@
     "directories": {
       "output": "dist"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "zhq734",
+        "repo": "translation"
+      }
+    ],
     "files": [
       "out/**/*",
       "node_modules/uiohook-napi/**/*",
@@ -99,6 +106,7 @@
     "icon": "build/icon.png"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "uiohook-napi": "^1.5.5"
   }
 }

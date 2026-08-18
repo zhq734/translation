@@ -344,6 +344,75 @@ input[type='password']:disabled {
   flex: 0 0 auto;
 }
 
+.update-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.update-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  background: var(--control-bg);
+  padding: 11px 12px;
+}
+
+.update-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.update-summary strong {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.update-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.update-progress[hidden] {
+  display: none;
+}
+
+.update-progress progress {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--status-success);
+}
+
+.update-progress span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.update-status {
+  min-height: 20px;
+  margin-bottom: 10px;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.update-install-hint {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
 .saved {
   flex: 0 0 18px;
   min-height: 18px;
@@ -405,5 +474,18 @@ input[type='password']:disabled {
 
   .service-control-row .btn {
     width: 100%;
+  }
+
+  .update-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .update-actions {
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .update-actions .btn {
+    flex: 1 1 100%;
   }
 }
