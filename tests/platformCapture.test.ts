@@ -80,9 +80,9 @@ test('原生直读脚本应输出带文本的规范化结果，供取词管线�
  */
 test('取词管线应原生直读优先并在失败时回退复制兜底', () => {
   const source = readFileSync('src/main/capture.ts', 'utf8')
-  const pipelineStart = source.indexOf('export async function captureSelection')
+  const pipelineStart = source.indexOf('export async function captureSelection(')
   const pipelineSource = source.slice(pipelineStart)
-  const nativeReadCall = pipelineSource.indexOf('readSelectionByNative()')
+  const nativeReadCall = pipelineSource.indexOf('readSelectionByNative(signal)')
   const copyFallbackCall = pipelineSource.indexOf('captureByCopy(signal')
 
   assert.ok(nativeReadCall >= 0, 'captureSelection 应先调用原生直读')
@@ -142,9 +142,39 @@ test('只读预取应仅使用原生直读且不注入复制键或写剪贴板',
   const prefetchSource = source.slice(prefetchStart, prefetchEnd)
 
   assert.ok(prefetchStart >= 0, '应导出 captureSelectionByNativeOnly 只读预取函数')
-  assert.match(prefetchSource, /readSelectionByNative\(\)/u)
+  assert.match(prefetchSource, /readSelectionByNativeWithRetry\(signal\)/u)
   assert.match(prefetchSource, /native\.status === 'present'/u)
   assert.doesNotMatch(prefetchSource, /captureByCopy|simulateCopy|keybd_event|CGEvent/u)
   assert.doesNotMatch(prefetchSource, /clipboard\.write/u)
   assert.match(prefetchSource, /reason: native\.status === 'empty' \? 'empty' : 'unsupported'/u)
+})
+
+/**
+ * 校验双击后的原生选区读取允许短暂重试，但始终只读原生选区，不进入复制兜底。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('双击只读预取应在选区稳定期间短暂重试原生读取', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const prefetchStart = source.indexOf('export async function captureSelectionByNativeOnly')
+  const prefetchEnd = source.indexOf('export async function captureSelection(', prefetchStart)
+  const prefetchSource = source.slice(prefetchStart, prefetchEnd)
+
+  assert.match(source, /NATIVE_SELECTION_RETRY_COUNT/u)
+  assert.match(source, /NATIVE_SELECTION_RETRY_DELAY_MS/u)
+  assert.match(prefetchSource, /readSelectionByNativeWithRetry/u)
+  assert.doesNotMatch(prefetchSource, /captureByCopy|simulateCopy|keybd_event|CGEvent/u)
+})
+
+/**
+ * 校验失效的旧预取可以中止原生命令，避免阻塞后续双击读取。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('原生直读应接收取消信号以避免旧预取阻塞新请求', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+
+  assert.match(source, /readSelectionByNative\(signal\)/u)
+  assert.match(source, /timeout: SELECTION_INSPECTION_TIMEOUT_MS,\s*signal/u)
+  assert.match(source, /readSelectionByNativeWithRetry\(signal\)/u)
 })

@@ -5,6 +5,7 @@ import {
   createObservedPointerSample,
   decideSelectionAction,
   getSelectionGesture,
+  hasConfirmedSelectionText,
   parseNativeSelectionReadOutput,
   parseSelectionPresenceOutput,
   resolveSelectionCaptureFailureMessage,
@@ -106,7 +107,7 @@ test('普通单击不应触发选区处理，常规划词拖拽仍应触发', ()
 })
 
 /**
- * 校验双击空白区域确认没有选中文字时隐藏“译”按钮，无法确认时保持兼容行为。
+ * 校验按钮模式双击只有明确确认存在选中文字时才显示“译”按钮。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -116,8 +117,24 @@ test('双击没有选中文字时不应显示“译”按钮', () => {
   assert.equal(parseSelectionPresenceOutput('无法读取'), 'unknown')
   assert.equal(shouldShowSelectionButtonAfterInspection(2, 'empty'), false)
   assert.equal(shouldShowSelectionButtonAfterInspection(2, 'present'), true)
-  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'unknown'), true)
+  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'unknown'), false)
   assert.equal(shouldShowSelectionButtonAfterInspection(1, 'empty'), true)
+})
+
+/**
+ * 校验双击预取结果必须包含无错误的非空文字，才能确认显示“译”按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('双击预取只有确认非空文字时才允许显示“译”按钮', () => {
+  assert.equal(hasConfirmedSelectionText(null), false)
+  assert.equal(hasConfirmedSelectionText({ text: '' }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '   \n  ' }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'empty' }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'unsupported' }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'unknown' }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '已选文字', error: new Error('读取失败') }), false)
+  assert.equal(hasConfirmedSelectionText({ text: '  已选文字  ' }), true)
 })
 
 /**
@@ -614,11 +631,14 @@ test('按钮模式双击应使用只读预取确认选区并缓存文本', () =>
 
   assert.ok(doubleClickStart >= 0)
   assert.ok(doubleClickEnd > doubleClickStart)
-  assert.match(doubleClickSource, /await selectionCapture\.prepare\(gesture\.anchor\)/u)
-  // 预取明确为空（双击空白处）时不显示“译”按钮，无法确认时保留按钮由完整管线兜底。
-  assert.match(doubleClickSource, /prepared\.reason === 'empty'/u)
+  // 只有预取到非空文字才显示“译”按钮，无法确认时也必须保持隐藏。
+  assert.match(doubleClickSource, /hasConfirmedSelectionText\(prepared\)/u)
+  assert.doesNotMatch(doubleClickSource, /prepared\.reason === 'empty'/u)
   assert.match(doubleClickSource, /showSelectionButton\(gesture\.anchor\)/u)
   assert.doesNotMatch(doubleClickSource, /selectionCapture\.capture|simulateCopy/u)
+  assert.match(doubleClickSource, /selectionCapture\.prepare\(gesture\.anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u)
+  assert.match(doubleClickSource, /gestureId !== latestSelectionGesture/u)
+  assert.match(doubleClickSource, /getSettings\(\)\.triggerMode !== 'button'/u)
   assert.match(captureSource, /clipboard\.readText\('selection'\)/u)
   assert.match(captureSource, /AXSelectedText/u)
   assert.match(captureSource, /System\.Windows\.Automation\.TextPattern/u)

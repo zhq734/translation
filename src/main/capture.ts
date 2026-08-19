@@ -23,6 +23,8 @@ const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
 const SELECTION_INSPECTION_TIMEOUT_MS = 1500
+const NATIVE_SELECTION_RETRY_COUNT = 2
+const NATIVE_SELECTION_RETRY_DELAY_MS = 40
 
 // macOS 通过辅助功能读取前台控件的选中文字；PRESENT 时同时输出选中文本，不读取或修改剪贴板。
 const MACOS_SELECTION_PRESENCE = [
@@ -110,11 +112,16 @@ export async function inspectSelectedTextPresence(): Promise<SelectionPresence> 
 /**
  * 在不模拟复制快捷键的前提下原生直读当前前台应用的选中文字。
  * macOS 使用辅助功能属性，Windows 使用 UI Automation，Linux 读取主选区；均不触碰剪贴板。
+ * @param signal 用于在请求失效后中止原生命令的取消信号。
  * @returns 直读结果，包含状态、选中文本与可能的失败原因。
  * @author zhenghq
  */
-export async function readSelectionByNative(): Promise<NativeSelectionReadResult> {
+export async function readSelectionByNative(
+  signal?: AbortSignal
+): Promise<NativeSelectionReadResult> {
   try {
+    if (signal?.aborted) return { status: 'unknown', text: '', reason: 'unknown' }
+
     if (process.platform === 'linux') {
       const text = clipboard.readText('selection')
       return text.trim() ? { status: 'present', text } : { status: 'empty', text: '' }
@@ -124,7 +131,7 @@ export async function readSelectionByNative(): Promise<NativeSelectionReadResult
       const { stdout } = await execFileP(
         'osascript',
         ['-e', MACOS_SELECTION_PRESENCE],
-        { timeout: SELECTION_INSPECTION_TIMEOUT_MS }
+        { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
       )
       return parseNativeSelectionReadOutput(stdout)
     }
@@ -139,6 +146,7 @@ export async function readSelectionByNative(): Promise<NativeSelectionReadResult
         WINDOWS_SELECTION_PRESENCE
       ], {
         timeout: SELECTION_INSPECTION_TIMEOUT_MS,
+        signal,
         windowsHide: true
       })
       return parseNativeSelectionReadOutput(stdout)
@@ -148,6 +156,26 @@ export async function readSelectionByNative(): Promise<NativeSelectionReadResult
   }
 
   return { status: 'unknown', text: '', reason: 'unknown' }
+}
+
+/**
+ * 在选区刚建立时短暂重试原生直读，覆盖 AX/UIA 首次读取尚未同步完成的情况。
+ * 全部尝试均只读取原生选区，不发送复制快捷键、不读取或修改系统剪贴板。
+ * @param signal 用于在请求失效后停止后续重试的取消信号。
+ * @returns 最后一次原生直读结果；仅实际读到非空文本时为 present。
+ * @author zhenghq
+ */
+async function readSelectionByNativeWithRetry(
+  signal?: AbortSignal
+): Promise<NativeSelectionReadResult> {
+  let result = await readSelectionByNative(signal)
+  for (let attempt = 1; attempt < NATIVE_SELECTION_RETRY_COUNT; attempt += 1) {
+    if (signal?.aborted || (result.status === 'present' && result.text.trim())) return result
+    await sleep(NATIVE_SELECTION_RETRY_DELAY_MS)
+    if (signal?.aborted) return result
+    result = await readSelectionByNative(signal)
+  }
+  return result
 }
 
 /**
@@ -346,7 +374,7 @@ export async function captureSelectionByNativeOnly(
 
   // “译”按钮显示期间的后台预取：只做原生直读，不注入复制键、不写剪贴板，
   // 避免在用户尚未点击按钮时干扰前台应用或占用剪贴板。
-  const native = await readSelectionByNative()
+  const native = await readSelectionByNativeWithRetry(signal)
   if (native.status === 'present' && native.text.trim()) {
     return { text: native.text }
   }
@@ -366,7 +394,7 @@ export async function captureSelection(
 
   // 第一级：平台原生直读，不触碰剪贴板。
   if (plan.supportsNativeRead) {
-    const native = await readSelectionByNative()
+    const native = await readSelectionByNative(signal)
     if (native.status === 'present' && native.text.trim()) {
       return { text: native.text }
     }

@@ -60,7 +60,10 @@ export interface SelectionGesture {
 
 import type { TriggerMode } from './types'
 import type { NativeSelectionReadResult } from './platformCapture'
-import type { SelectionFailureReason } from './selectionCaptureCoordinator'
+import type {
+  SelectionCaptureResult,
+  SelectionFailureReason
+} from './selectionCaptureCoordinator'
 
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
@@ -194,7 +197,7 @@ export function parseNativeSelectionReadOutput(output: unknown): NativeSelection
 
 /**
  * 根据点击次数与无复制选区检查结果决定是否显示“译”按钮。
- * 双击明确确认为空时不显示；无法确认时保留兼容行为，避免影响不支持系统选区接口的应用。
+ * 双击采用严格确认策略，仅明确检测到非空选区时显示；普通拖拽保持现有兼容行为。
  * @param clicks 当前鼠标事件的连续点击次数。
  * @param presence 无复制选区检查得到的状态。
  * @returns 是否应显示“译”按钮。
@@ -204,7 +207,20 @@ export function shouldShowSelectionButtonAfterInspection(
   clicks: number,
   presence: SelectionPresence
 ): boolean {
-  return clicks < 2 || presence !== 'empty'
+  return clicks < 2 || presence === 'present'
+}
+
+/**
+ * 判断双击选区预取结果是否已明确包含可翻译文字。
+ * 双击按钮显示采用严格确认策略，空文本、未知状态及读取错误均不得显示按钮。
+ * @param result 双击选区预取结果；尚未完成或已失效时传入 null。
+ * @returns 预取结果包含无错误非空文字时返回 true，否则返回 false。
+ * @author zhenghq
+ */
+export function hasConfirmedSelectionText(
+  result: Pick<SelectionCaptureResult, 'text' | 'error'> | null
+): boolean {
+  return Boolean(result && !result.error && result.text.trim())
 }
 
 /**

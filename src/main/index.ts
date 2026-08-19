@@ -53,6 +53,7 @@ import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
   decideSelectionAction,
+  hasConfirmedSelectionText,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   type SelectionGesture
@@ -392,13 +393,11 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
   hideSelectionButton()
   lastSelectionAnchor = gesture.anchor
 
-  // 双击场景：按钮显示期间用只读直读预取选中文字，一次系统调用既确认选区非空又缓存文本；
-  // 文本在双击刚结束时就被取走，点击“译”按钮不再依赖点击瞬间选区是否仍然存活。
-  const prepared = await selectionCapture.prepare(gesture.anchor)
+  // 双击场景：先等待系统提交选区，再用只读直读预取选中文字；不发送复制快捷键、不写剪贴板。
+  const prepared = await selectionCapture.prepare(gesture.anchor, SELECTION_SETTLE_DELAY_MS)
   if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  // 预取明确为空（如双击空白处）时不显示按钮；无法确认（unsupported/unknown）时保留按钮，
-  // 点击后由完整取词管线（直读 + 复制兜底）兜底；读取返回值不影响缓存，点击仍可消费。
-  if (prepared && !prepared.text && prepared.reason === 'empty') return
+  // 双击只有明确预取到非空文字时才显示按钮；无法确认时保持隐藏，避免空白双击误弹提示。
+  if (!hasConfirmedSelectionText(prepared)) return
   showSelectionButton(gesture.anchor)
 }
 
