@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const TAB_IDS = ['general', 'dingtalk', 'microsoft', 'deeplx', 'advanced', 'about'] as const
+const TAB_IDS = ['general', 'ai', 'dingtalk', 'microsoft', 'deeplx', 'advanced', 'about'] as const
 
 /**
  * 获取指定元素的开始标签，便于校验无框架设置页的可访问性属性。
@@ -17,7 +17,7 @@ function getOpeningTag(html: string, id: string): string {
   return match[0]
 }
 
-test('设置页应按六个配置类别展示可访问的 Tab 与对应面板', () => {
+test('设置页应按七个配置类别展示可访问的 Tab 与对应面板', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /role="tablist"[^>]+aria-label="设置分类"/u)
 
@@ -42,6 +42,7 @@ test('设置页应按六个配置类别展示可访问的 Tab 与对应面板', 
 test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const generalIndex = html.indexOf('id="settings-panel-general"')
+  const aiIndex = html.indexOf('id="settings-panel-ai"')
   const dingTalkIndex = html.indexOf('id="settings-panel-dingtalk"')
   const microsoftIndex = html.indexOf('id="settings-panel-microsoft"')
   const deepLxIndex = html.indexOf('id="settings-panel-deeplx"')
@@ -49,7 +50,8 @@ test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板'
   const aboutIndex = html.indexOf('id="settings-panel-about"')
 
   assert.ok(generalIndex >= 0)
-  assert.ok(dingTalkIndex > generalIndex)
+  assert.ok(aiIndex > generalIndex)
+  assert.ok(dingTalkIndex > aiIndex)
   assert.ok(microsoftIndex > dingTalkIndex)
   assert.ok(deepLxIndex > microsoftIndex)
   assert.ok(advancedIndex > deepLxIndex)
@@ -57,6 +59,7 @@ test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板'
 
   assert.ok(html.indexOf('<h2>翻译语言</h2>') > generalIndex)
   assert.ok(html.indexOf('<h2>触发与弹窗</h2>') > generalIndex)
+  assert.ok(html.indexOf('<h2>AI 翻译</h2>') > aiIndex)
   assert.ok(html.indexOf('<h2>钉钉翻译</h2>') > dingTalkIndex)
   assert.ok(html.indexOf('<h2>微软翻译</h2>') > microsoftIndex)
   assert.ok(html.indexOf('<h2>翻译通道</h2>') > deepLxIndex)

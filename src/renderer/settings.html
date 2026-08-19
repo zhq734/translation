@@ -34,6 +34,18 @@
           常规
         </button>
         <button
+          id="settings-tab-ai"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-ai"
+          data-tab="ai"
+          tabindex="-1"
+        >
+          AI 翻译
+        </button>
+        <button
           id="settings-tab-dingtalk"
           class="settings-tab"
           type="button"
@@ -142,8 +154,78 @@
               </select>
             </div>
           </section>
+
+          <section>
+            <h2>应用外观</h2>
+            <div class="row">
+              <label for="show-dock-icon">Dock 栏</label>
+              <label class="checkbox-control">
+                <input id="show-dock-icon" type="checkbox" />
+                显示 Dock 栏图标
+              </label>
+            </div>
+            <p class="field-hint">仅 macOS 生效；点击 Dock 栏图标会直接进入设置页面。</p>
+          </section>
         </div>
 
+        <div
+          id="settings-panel-ai"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-ai"
+          data-tab-panel="ai"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>AI 翻译</h2>
+            <p class="hint">
+              使用本地或云端大语言模型进行划词翻译，支持 Ollama、OpenAI 兼容和 Claude Code（Anthropic）兼容 HTTP 协议。API Key 仅在本机安全保存，页面不会回显。
+            </p>
+            <div class="row">
+              <label for="ai-enabled">启用通道</label>
+              <label class="checkbox-control" for="ai-enabled">
+                <input id="ai-enabled" type="checkbox" />
+                <span>优先使用 AI 翻译</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="ai-protocol">协议</label>
+              <select id="ai-protocol" aria-label="AI 协议">
+                <option value="ollama">Ollama</option>
+                <option value="openai">OpenAI 兼容</option>
+                <option value="claude-code">Claude Code 兼容</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="ai-base-url">Base URL</label>
+              <input id="ai-base-url" type="text" autocomplete="off" placeholder="例如 http://127.0.0.1:11434" />
+            </div>
+            <div class="row">
+              <label for="ai-api-key">API Key</label>
+              <input
+                id="ai-api-key"
+                type="password"
+                autocomplete="new-password"
+                placeholder="留空可保留已配置的 Key"
+              />
+            </div>
+            <p id="ai-api-key-status" class="field-hint ai-api-key-status">API Key 未配置</p>
+            <div class="row">
+              <label for="ai-model">模型</label>
+              <input id="ai-model" type="text" list="ai-model-list" autocomplete="off" placeholder="选择或手动输入模型名称" />
+              <datalist id="ai-model-list"></datalist>
+            </div>
+            <div class="ai-actions">
+              <button id="ai-save" class="btn primary">保存 AI 配置</button>
+              <button id="ai-refresh-models" class="btn">刷新模型列表</button>
+              <button id="ai-check" class="btn">检测配置</button>
+              <button id="ai-clear-key" class="btn">清除 API Key</button>
+            </div>
+            <p id="ai-model-status" class="status ai-model-status" role="status" aria-live="polite">未加载模型列表</p>
+            <p id="ai-status" class="status ai-status" role="status" aria-live="polite">未检测</p>
+          </section>
+        </div>
         <div
           id="settings-panel-dingtalk"
           class="tab-panel"

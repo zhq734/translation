@@ -13,6 +13,7 @@ export interface TranslationProviderDefinition {
 
 /** 弹窗中可供选择的翻译 API，顺序与默认降级顺序一致。 */
 export const TRANSLATION_PROVIDERS: readonly TranslationProviderDefinition[] = [
+  { id: 'ai', label: 'AI 翻译' },
   { id: 'dingtalk', label: '钉钉翻译' },
   { id: 'microsoft', label: '微软翻译' },
   { id: 'deeplx-self', label: '自建 DeepLX' },
@@ -62,6 +63,11 @@ export function isTranslationProviderAvailable(
       Boolean(settings.dingTalkCorpId) &&
       Boolean(settings.dingTalkClientId) &&
       settings.dingTalkSecretConfigured
+  }
+  if (providerId === 'ai') {
+    return settings.aiEnabled &&
+      Boolean(settings.aiBaseUrl.trim()) &&
+      Boolean(settings.aiModel.trim())
   }
   if (providerId === 'microsoft') return settings.microsoftEnabled
   if (providerId === 'deeplx-self') return Boolean(settings.deepLxUrl.trim())

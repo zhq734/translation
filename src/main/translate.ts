@@ -12,12 +12,15 @@ import { DingTalkTranslationClient } from './dingtalkTranslation'
 import { toMicrosoftCheckStatus } from './microsoftErrors'
 import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
+import { AiTranslationClient } from './aiTranslationClient'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
 const GOOGLE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
 const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get'
 const DINGTALK_CHANNEL = '钉钉翻译'
 const MICROSOFT_CHANNEL = '微软翻译'
+const AI_CHANNEL = 'AI 翻译'
+const AI_CHECK_TEXT = 'hello'
 
 const MAX_CHARS = 5000
 const GOOGLE_MAX_CHARS = 2000
@@ -76,6 +79,7 @@ export class TranslationRuntime {
   private readonly now: () => number
   private readonly dingTalkClient: DingTalkTranslationClient
   private readonly microsoftClient: MicrosoftTranslationClient
+  private readonly aiClient: AiTranslationClient
 
   constructor(private readonly options: TranslationRuntimeOptions) {
     this.now = options.now ?? Date.now
@@ -85,6 +89,7 @@ export class TranslationRuntime {
       tokenManager
     })
     this.microsoftClient = new MicrosoftTranslationClient({ fetch: options.fetch, now: this.now })
+    this.aiClient = new AiTranslationClient({ fetch: options.fetch })
   }
 
   /**
@@ -98,19 +103,24 @@ export class TranslationRuntime {
   async translate(
     text: string,
     settings: Settings,
-    dingTalkCredentials: DingTalkCredentials | null = null
+    dingTalkCredentials: DingTalkCredentials | null = null,
+    aiApiKey: string | null = null
   ): Promise<TranslateOutput> {
     const input = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text
     const key = this.cacheKey(
       input,
       settings.sourceLang,
       settings.targetLang,
-      settings.preferredTranslationProvider
+      settings.preferredTranslationProvider,
+      settings.aiEnabled,
+      settings.aiProtocol,
+      settings.aiBaseUrl,
+      settings.aiModel
     )
     const hit = this.cache.get(key)
     if (hit) return { ...hit, channel: '缓存' }
 
-    const channels = this.createChannels(input, settings, dingTalkCredentials)
+    const channels = this.createChannels(input, settings, dingTalkCredentials, aiApiKey)
     let lastError = '所有翻译通道均失败'
     for (const channel of channels) {
       if (this.isTripped(channel.name)) {
@@ -214,9 +224,20 @@ export class TranslationRuntime {
   private createChannels(
     text: string,
     settings: Settings,
-    dingTalkCredentials: DingTalkCredentials | null
+    dingTalkCredentials: DingTalkCredentials | null,
+    aiApiKey: string | null
   ): TranslationChannel[] {
     const channels: TranslationChannel[] = []
+    if (settings.aiEnabled &&
+        settings.aiBaseUrl.trim() &&
+        settings.aiModel.trim()) {
+      channels.push({
+        id: 'ai',
+        name: AI_CHANNEL,
+        cooldownMs: 60_000,
+        run: () => this.aiChannel(text, settings, aiApiKey)
+      })
+    }
     if (settings.dingTalkEnabled &&
         settings.dingTalkCorpId &&
         settings.dingTalkClientId &&
@@ -279,6 +300,37 @@ export class TranslationRuntime {
     const [preferredChannel] = channels.splice(preferredIndex, 1)
     channels.unshift(preferredChannel)
     return channels
+  }
+
+  /**
+   * 执行 AI 翻译请求，主进程从安全存储读取 API Key。
+ * @param text 待翻译文本。
+ * @param settings 当前公开设置。
+ * @param apiKey 主进程解密后的 AI API Key。
+ * @returns AI 翻译结果。
+ * @author zhenghq
+   */
+  private async aiChannel(text: string, settings: Settings, apiKey: string | null): Promise<TranslateOutput> {
+    const translation = await this.aiClient.translate({
+      protocol: settings.aiProtocol,
+      baseUrl: settings.aiBaseUrl,
+      model: settings.aiModel,
+      apiKey,
+      text,
+      sourceLang: settings.sourceLang,
+      targetLang: settings.targetLang
+    })
+    return { translation, provider: 'ai' }
+  }
+
+  /**
+   * 在 AI 配置变化后清理全部结果缓存、AI 模型缓存和 AI 熔断状态。
+ * @returns 无返回值。
+ * @author zhenghq
+   */
+  resetAiRuntime(): void {
+    this.cache.clear()
+    this.resetBreaker(AI_CHANNEL)
   }
 
   /**
@@ -394,9 +446,13 @@ export class TranslationRuntime {
     text: string,
     source: string,
     target: string,
-    preferredProvider: Settings['preferredTranslationProvider']
+    preferredProvider: Settings['preferredTranslationProvider'],
+    aiEnabled: boolean,
+    aiProtocol: Settings['aiProtocol'],
+    aiBaseUrl: string,
+    aiModel: string
   ): string {
-    return `${preferredProvider}|${source}|${target}|${text}`
+    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${text}`
   }
 
   /**
@@ -480,9 +536,10 @@ export function configureTranslationFetch(fetch: DingTalkFetch): void {
 export function translate(
   text: string,
   settings: Settings,
-  dingTalkCredentials: DingTalkCredentials | null = null
+  dingTalkCredentials: DingTalkCredentials | null = null,
+  aiApiKey: string | null = null
 ): Promise<TranslateOutput> {
-  return defaultRuntime.translate(text, settings, dingTalkCredentials)
+  return defaultRuntime.translate(text, settings, dingTalkCredentials, aiApiKey)
 }
 
 /**
@@ -520,4 +577,13 @@ export function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
  */
 export function resetMicrosoftTranslationRuntime(): void {
   defaultRuntime.resetMicrosoftRuntime()
+}
+
+/**
+ * 清理默认翻译运行时中的结果缓存和 AI 熔断状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetAiTranslationRuntime(): void {
+  defaultRuntime.resetAiRuntime()
 }

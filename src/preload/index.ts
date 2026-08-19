@@ -5,6 +5,9 @@ import type {
   Settings,
   DeepLxStatus,
   DingTalkConfigPatch,
+  AiConfigPatch,
+  AiCheckStatus,
+  AiModelListResult,
   MacOSQuarantineResult,
   UpdateStatus
 } from '../shared/types'
@@ -149,6 +152,31 @@ const api: Api = {
    * @author zhenghq
    */
   checkMicrosoft: () => ipcRenderer.invoke('microsoft:check'),
+  /**
+   * 保存 AI 公共配置及可选新 API Key。
+   * @param patch AI 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setAiConfig: (patch: AiConfigPatch): Promise<Settings> => ipcRenderer.invoke('ai:configure', patch),
+  /**
+   * 显式清除已保存的 AI API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearAiApiKey: (): Promise<Settings> => ipcRenderer.invoke('ai:clear-key'),
+  /**
+   * 根据当前 AI 配置加载模型列表。
+   * @returns 结构化脱敏模型列表结果。
+   * @author zhenghq
+   */
+  listAiModels: (): Promise<AiModelListResult> => ipcRenderer.invoke('ai:list-models'),
+  /**
+   * 检测 AI 配置能否完成一次最小翻译请求。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkAi: (): Promise<AiCheckStatus> => ipcRenderer.invoke('ai:check'),
   /**
    * 生成 DeepLX Docker 命令。
    * @param port 本机映射端口。

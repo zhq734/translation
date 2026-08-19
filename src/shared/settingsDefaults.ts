@@ -1,7 +1,8 @@
-import type { ProxyMode, Settings, TriggerMode } from './types'
+import type { AiProtocol, ProxyMode, Settings, TriggerMode } from './types'
+import { DEFAULT_AI_BASE_URL, isAiProtocol } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 8
+export const SETTINGS_SCHEMA_VERSION = 10
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -11,6 +12,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
+  showDockIcon: false,
   proxyMode: 'system',
   proxyRules: '',
   proxyBypassRules: '<local>;localhost;127.0.0.1',
@@ -19,6 +21,11 @@ export const DEFAULT_SETTINGS: Settings = {
   dingTalkClientId: '',
   dingTalkSecretConfigured: false,
   microsoftEnabled: false,
+  aiEnabled: false,
+  aiProtocol: 'ollama',
+  aiBaseUrl: DEFAULT_AI_BASE_URL,
+  aiModel: '',
+  aiApiKeyConfigured: false,
   preferredTranslationProvider: 'auto'
 }
 
@@ -48,6 +55,16 @@ function isProxyMode(value: unknown): value is ProxyMode {
 }
 
 /**
+ * 规范化 AI Base URL：去除首尾空白和末尾斜杠。
+ * @param baseUrl 原始 Base URL。
+ * @returns 规范化后的 Base URL。
+ * @author zhenghq
+ */
+function normalizeAiBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/u, "")
+}
+
+/**
  * 将磁盘中的设置规范化为当前版本，并兼容旧版 autoTrigger 配置。
  * @param rawSettings 磁盘读取到的未知版本设置。
  * @returns 当前版本的完整设置。
@@ -73,6 +90,7 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),
     triggerMode,
+    showDockIcon: rawSettings.showDockIcon === true,
     proxyMode: isProxyMode(rawSettings.proxyMode) ? rawSettings.proxyMode : 'system',
     proxyRules: String(merged.proxyRules || '').trim(),
     proxyBypassRules: String(merged.proxyBypassRules || '').trim(),
@@ -85,6 +103,11 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       rawSettings.preferredTranslationProvider
     )
       ? rawSettings.preferredTranslationProvider
-      : 'auto'
+      : 'auto',
+    aiEnabled: rawSettings.aiEnabled === true,
+    aiProtocol: isAiProtocol(rawSettings.aiProtocol) ? rawSettings.aiProtocol : 'ollama',
+    aiBaseUrl: normalizeAiBaseUrl(rawSettings.aiBaseUrl === undefined ? DEFAULT_AI_BASE_URL : String(merged.aiBaseUrl || "").trim()),
+    aiModel: String(merged.aiModel || '').trim(),
+    aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true
   }
 }

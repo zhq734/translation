@@ -8,6 +8,9 @@ export type ProxyMode = 'system' | 'direct' | 'custom'
 export type TranslationProviderId =
   | 'dingtalk'
   | 'microsoft'
+  | 'ai'
+  | 'dingtalk'
+  | 'microsoft'
   | 'deeplx-self'
   | 'deeplx-public'
   | 'google'
@@ -15,6 +18,58 @@ export type TranslationProviderId =
 
 /** 翻译 API 选择偏好，auto 表示沿用默认降级顺序。 */
 export type TranslationProviderPreference = 'auto' | TranslationProviderId
+
+/** AI 翻译支持的协议类型。 */
+export type AiProtocol = 'ollama' | 'openai' | 'claude-code'
+
+/** 默认 Ollama 本地服务地址。 */
+export const DEFAULT_AI_BASE_URL = 'http://127.0.0.1:11434'
+
+/**
+ * 判断未知值是否为支持的 AI 协议。
+ * @param value 待校验的协议值。
+ * @returns 是否为合法 AI 协议。
+ * @author zhenghq
+ */
+export function isAiProtocol(value: unknown): value is AiProtocol {
+  return value === 'ollama' || value === 'openai' || value === 'claude-code'
+}
+
+/** AI 配置检测状态分类，与钉钉/微软保持兼容。 */
+export type AiCheckCode =
+  | 'available'
+  | 'incomplete'
+  | 'storage-unavailable'
+  | 'authentication'
+  | 'permission'
+  | 'rate-limit'
+  | 'not-found'
+  | 'network'
+  | 'timeout'
+  | 'service'
+
+/** AI 配置检测结果。 */
+export interface AiCheckStatus {
+  /** 检测是否通过。 */
+  ok: boolean
+  /** 脱敏后的状态分类。 */
+  code: AiCheckCode
+  /** 面向用户的提示。 */
+  message: string
+}
+
+/** AI 模型列表加载状态。 */
+export type AiModelListState = 'loading' | 'success' | 'error' | 'unsupported'
+
+/** AI 模型列表加载结果。 */
+export interface AiModelListResult {
+  /** 当前加载状态。 */
+  state: AiModelListState
+  /** 已发现的模型名称列表。 */
+  models: string[]
+  /** 失败或不支持时的脱敏提示。 */
+  message?: string
+}
 
 /** 自动更新当前所处阶段。 */
 export type UpdatePhase =
@@ -100,6 +155,8 @@ export interface Settings {
   deepLxUrl: string
   /** 划词后的触发方式。 */
   triggerMode: TriggerMode
+  /** 是否在 macOS Dock 栏显示应用图标。 */
+  showDockIcon: boolean
   /** 翻译网络代理模式。 */
   proxyMode: ProxyMode
   /** Electron 自定义代理规则，例如 http://127.0.0.1:7890。 */
@@ -116,6 +173,16 @@ export interface Settings {
   dingTalkSecretConfigured: boolean
   /** 是否启用免订阅的微软 Bing 在线翻译通道。 */
   microsoftEnabled: boolean
+  /** 是否启用 AI 翻译通道。 */
+  aiEnabled: boolean
+  /** AI 翻译协议类型。 */
+  aiProtocol: AiProtocol
+  /** AI 服务 Base URL。 */
+  aiBaseUrl: string
+  /** AI 模型名称，允许手动输入。 */
+  aiModel: string
+  /** 是否已安全保存 AI API Key。 */
+  aiApiKeyConfigured: boolean
   /** 用户在弹窗底部选择的首选翻译 API。 */
   preferredTranslationProvider: TranslationProviderPreference
 }
@@ -129,6 +196,20 @@ export interface DingTalkConfigPatch {
   clientId?: string
   /** 新 ClientSecret；空字符串表示保留原值。 */
   clientSecret?: string
+}
+
+/** AI 配置补丁，用于通过专用 IPC 保存公共字段及可选新 API Key。 */
+export interface AiConfigPatch {
+  /** 是否启用 AI 翻译通道。 */
+  enabled?: boolean
+  /** AI 翻译协议类型。 */
+  protocol?: AiProtocol
+  /** AI 服务 Base URL。 */
+  baseUrl?: string
+  /** AI 模型名称。 */
+  model?: string
+  /** 新 API Key；空字符串表示保留旧值。 */
+  apiKey?: string
 }
 
 export type DingTalkCheckCode =
@@ -203,6 +284,31 @@ export interface Api {
    * @author zhenghq
    */
   checkMicrosoft(): Promise<MicrosoftCheckStatus>
+  /**
+   * 保存 AI 公共配置及可选新 API Key。
+   * @param patch AI 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setAiConfig(patch: AiConfigPatch): Promise<Settings>
+  /**
+   * 显式清除已保存的 AI API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearAiApiKey(): Promise<Settings>
+  /**
+   * 根据当前 AI 配置加载模型列表。
+   * @returns 结构化脱敏模型列表结果。
+   * @author zhenghq
+   */
+  listAiModels(): Promise<AiModelListResult>
+  /**
+   * 检测 AI 配置能否完成一次最小翻译请求。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkAi(): Promise<AiCheckStatus>
   getDockerCommand(port: number): Promise<string>
   openDeployDoc(): void
 

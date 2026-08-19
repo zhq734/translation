@@ -13,10 +13,10 @@ type PackageJson = {
   }
 }
 
-test('macOS 打包和启动阶段都应保持仅图标菜单栏应用模式，不在 Dock 中驻留', () => {
+test('macOS 打包保持菜单栏应用模式，并在启动阶段按设置控制 Dock 图标', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJson
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
-  const menuBarIndex = mainSource.indexOf('configureMacOSMenuBarApplication()')
+  const menuBarIndex = mainSource.indexOf('configureMacOSMenuBarApplication(false)')
   const warningIndex = mainSource.indexOf('await confirmMacOSInstalledApplicationLaunch()')
   const trayIndex = mainSource.indexOf('\n  createTray()\n')
   const proxyIndex = mainSource.indexOf('await applyTranslationProxy(')
@@ -25,9 +25,11 @@ test('macOS 打包和启动阶段都应保持仅图标菜单栏应用模式，�
   assert.ok(packageJson.build?.files?.includes('build/tray*.png'))
   assert.equal(existsSync('build/trayTemplate.png'), true)
   assert.equal(existsSync('build/trayTemplate@2x.png'), true)
-  assert.match(mainSource, /app\.setActivationPolicy\('accessory'\)/u)
+  assert.match(mainSource, /app\.setActivationPolicy\(showDockIcon \? 'regular' : 'accessory'\)/u)
+  assert.match(mainSource, /app\.dock\?\.show\(\)/u)
   assert.match(mainSource, /app\.dock\?\.hide\(\)/u)
   assert.match(mainSource, /Menu\.setApplicationMenu\(null\)/u)
+  assert.match(mainSource, /configureMacOSMenuBarApplication\(getSettings\(\)\.showDockIcon\)/u)
   assert.ok(menuBarIndex >= 0 && menuBarIndex < warningIndex)
   assert.ok(trayIndex >= 0 && trayIndex < proxyIndex)
   assert.match(mainSource, /let tray: Tray \| null = null/u)

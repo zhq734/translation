@@ -27,6 +27,7 @@
 - [Configuration](#configuration)
 - [Translation Providers and Fallback](#translation-providers-and-fallback)
 - [Configure Self-hosted DeepLX](#configure-self-hosted-deeplx)
+- [Configure AI Translation](#configure-ai-translation)
 - [Configure DingTalk Enterprise Translation](#configure-dingtalk-enterprise-translation)
 - [Configure Microsoft Translator](#configure-microsoft-translator)
 - [Privacy and Security](#privacy-and-security)
@@ -329,12 +330,13 @@ Translation requests are attempted in this order:
 
 | Priority | Provider | Enabled when | Notes |
 | ---: | --- | --- | --- |
-| 1 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
-| 2 | Microsoft Translator | Enabled and the language pair is supported | Uses temporary parameters obtained from the Bing translator page; no Azure key or region is required |
-| 3 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
-| 4 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
-| 5 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
-| 6 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
+| 1 | AI Translation | Enabled, protocol/base URL/model configured, and API Key is set when required | Supports Ollama, OpenAI-compatible, and Claude Code (Anthropic)-compatible HTTP protocols; falls back automatically on failure |
+| 2 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
+| 3 | Microsoft Translator | Enabled and the language pair is supported | Uses temporary parameters obtained from the Bing translator page; no Azure key or region is required |
+| 4 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
+| 5 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
+| 6 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
+| 7 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
 
 The runtime also caches results by text and language pair, displays the active provider in the popup, and temporarily trips failing providers before retrying them after a cooldown. A single request processes at most 5,000 characters; Microsoft splits it into chunks of up to 1,000 characters, while Google and MyMemory are truncated further according to their own limits.
 
@@ -370,6 +372,33 @@ http://127.0.0.1:1189/translate
 ```
 
 > Treat `dl_session` as a sensitive credential. Never commit it to Git or expose it in screenshots or public chats. DeepLX depends on an upstream web service and may temporarily break after upstream changes; follow the official DeepLX project for current instructions.
+
+## Configure AI Translation
+
+AI Translation lets you use a local or cloud-hosted large language model for selection translation. It supports three HTTP protocols:
+
+- **Ollama** — Local inference server (default Base URL `http://127.0.0.1:11434`). No API Key required.
+- **OpenAI-compatible** — Any endpoint that implements the OpenAI chat completions API (e.g. vLLM, LM Studio, or a cloud gateway). Bearer token authentication is used.
+- **Claude Code (Anthropic)-compatible** — Any endpoint that implements the Anthropic Messages API. The `x-api-key` header and `anthropic-version: 2023-06-01` are used.
+
+Setup:
+
+1. Open **划词翻译 → 设置…** and switch to the **AI 翻译** tab;
+2. Enable the channel and select the protocol;
+3. Enter the Base URL (Ollama defaults to `http://127.0.0.1:11434`);
+4. Enter the API Key if the protocol requires authentication (leave empty for Ollama);
+5. Enter or select the model name — click **刷新模型列表** to auto-discover available models, or type a name manually;
+6. Click **保存 AI 配置**;
+7. Click **检测配置** to verify the translation flow.
+
+Security behavior:
+
+- The API Key is sent from the settings page to the Electron main process only;
+- Electron `safeStorage` encrypts it before it is written to disk;
+- `settings.json`, renderer settings snapshots, and logs do not store or display the plaintext API Key;
+- Leaving the API Key field empty preserves the existing credential;
+- Use **清除 API Key** to explicitly remove it;
+- Incomplete configuration, model errors, rate limits, and network failures automatically fall back to other providers.
 
 ## Configure DingTalk Enterprise Translation
 
@@ -424,7 +453,7 @@ The data flow is:
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
 
-This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials.
+This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 
 ## Project Structure
 
@@ -442,6 +471,13 @@ This project does not provide a cloud account system. DingTalk credentials are u
 │   │   ├── selectionButton.ts        # Floating selection button
 │   │   ├── popup.ts                  # Translation popup window
 │   │   ├── settings.ts               # Settings persistence and normalization
+│   │   ├── aiCheck.ts                # AI configuration check service
+│   │   ├── aiConfig.ts               # AI configuration orchestration
+│   │   ├── aiCredentials.ts          # Encrypted safeStorage AI API Key
+│   │   ├── aiErrors.ts               # AI error classification and redaction
+│   │   ├── aiModelDiscovery.ts       # AI model list discovery service
+│   │   ├── aiProtocol.ts             # AI protocol request/response adapters
+│   │   ├── aiTranslationClient.ts    # Unified AI translation client
 │   │   ├── dingtalkConfig.ts         # DingTalk configuration orchestration
 │   │   ├── dingtalkCredentials.ts    # Encrypted safeStorage credentials
 │   │   ├── dingtalkTokenManager.ts   # DingTalk OAuth token management

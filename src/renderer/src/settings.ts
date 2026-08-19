@@ -1,6 +1,9 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
 import type {
+  AiCheckStatus,
+  AiModelListResult,
+  AiProtocol,
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
   Settings,
@@ -15,6 +18,7 @@ const triggerMode = document.getElementById('trigger-mode') as HTMLSelectElement
 const triggerHint = document.getElementById('trigger-hint') as HTMLElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
+const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
 const proxyMode = document.getElementById('proxy-mode') as HTMLSelectElement
 const proxyRules = document.getElementById('proxy-rules') as HTMLInputElement
 const proxyBypassRules = document.getElementById('proxy-bypass-rules') as HTMLInputElement
@@ -27,6 +31,20 @@ const dingTalkSave = document.getElementById('dingtalk-save') as HTMLButtonEleme
 const dingTalkClearSecret = document.getElementById('dingtalk-clear-secret') as HTMLButtonElement
 const dingTalkCheck = document.getElementById('dingtalk-check') as HTMLButtonElement
 const dingTalkStatus = document.getElementById('dingtalk-status') as HTMLElement
+// AI 翻译配置控件
+const aiEnabled = document.getElementById('ai-enabled') as HTMLInputElement
+const aiProtocol = document.getElementById('ai-protocol') as HTMLSelectElement
+const aiBaseUrl = document.getElementById('ai-base-url') as HTMLInputElement
+const aiApiKey = document.getElementById('ai-api-key') as HTMLInputElement
+const aiApiKeyStatus = document.getElementById('ai-api-key-status') as HTMLElement
+const aiModel = document.getElementById('ai-model') as HTMLInputElement
+const aiModelList = document.getElementById('ai-model-list') as HTMLDataListElement
+const aiSave = document.getElementById('ai-save') as HTMLButtonElement
+const aiRefreshModels = document.getElementById('ai-refresh-models') as HTMLButtonElement
+const aiCheck = document.getElementById('ai-check') as HTMLButtonElement
+const aiClearKey = document.getElementById('ai-clear-key') as HTMLButtonElement
+const aiModelStatus = document.getElementById('ai-model-status') as HTMLElement
+const aiStatus = document.getElementById('ai-status') as HTMLElement
 const microsoftEnabled = document.getElementById('microsoft-enabled') as HTMLInputElement
 const microsoftCheck = document.getElementById('microsoft-check') as HTMLButtonElement
 const microsoftStatus = document.getElementById('microsoft-status') as HTMLElement
@@ -51,11 +69,12 @@ const removeQuarantineButton = document.getElementById('remove-quarantine') as H
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
-type SettingsTabId = 'general' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'general',
+  'ai',
   'dingtalk',
   'microsoft',
   'deeplx',
@@ -302,6 +321,7 @@ function renderSettings(settings: Settings): void {
   sourceLang.value = settings.sourceLang
   triggerMode.value = settings.triggerMode
   hotkey.value = settings.hotkey
+  showDockIcon.checked = settings.showDockIcon
   deeplxUrl.value = settings.deepLxUrl
   proxyMode.value = settings.proxyMode
   proxyRules.value = settings.proxyRules
@@ -317,6 +337,18 @@ function renderSettings(settings: Settings): void {
     ? 'field-hint dingtalk-secret-status configured'
     : 'field-hint dingtalk-secret-status'
   dingTalkClearSecret.disabled = !settings.dingTalkSecretConfigured
+  aiEnabled.checked = settings.aiEnabled
+  aiProtocol.value = settings.aiProtocol
+  aiBaseUrl.value = settings.aiBaseUrl
+  aiModel.value = settings.aiModel
+  aiApiKey.value = ''
+  aiApiKeyStatus.textContent = settings.aiApiKeyConfigured
+    ? 'API Key 已安全配置；留空保存将保留原值'
+    : 'API Key 未配置'
+  aiApiKeyStatus.className = settings.aiApiKeyConfigured
+    ? 'field-hint ai-api-key-status configured'
+    : 'field-hint ai-api-key-status'
+  aiClearKey.disabled = !settings.aiApiKeyConfigured
   microsoftEnabled.checked = settings.microsoftEnabled
   schemaVersion.textContent = `配置 v${settings.schemaVersion}`
 
@@ -557,6 +589,15 @@ function saveAutoHide(): void {
 }
 
 /**
+ * 保存 macOS Dock 栏图标显示状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDockIconVisibility(): void {
+  void save({ showDockIcon: showDockIcon.checked })
+}
+
+/**
  * 保存代理模式并更新自定义输入框状态。
  * @returns 无返回值。
  * @author zhenghq
@@ -582,6 +623,181 @@ function saveProxyRules(): void {
  */
 function saveProxyBypassRules(): void {
   void save({ proxyBypassRules: proxyBypassRules.value.trim() })
+}
+
+/**
+ * 设置 AI 操作按钮的忙碌状态，避免用户重复提交请求。
+ * @param busy 是否正在执行异步操作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setAiBusy(busy: boolean): void {
+  aiSave.disabled = busy
+  aiCheck.disabled = busy
+  aiClearKey.disabled = busy || !aiApiKeyStatus.classList.contains('configured')
+  aiRefreshModels.disabled = busy
+}
+
+/**
+ * 将 AI 检测结果展示为结构化状态提示。
+ * @param status 主进程返回的脱敏检测状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderAiStatus(status: AiCheckStatus): void {
+  aiStatus.textContent = status.ok ? `✓ ${status.message}` : `✗ ${status.message}`
+  aiStatus.className = status.ok
+    ? 'status ai-status online'
+    : 'status ai-status offline'
+  aiStatus.dataset.code = status.code
+}
+
+/**
+ * 将模型列表加载结果展示为结构化状态提示。
+ * @param result 主进程返回的模型列表结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderAiModelListResult(result: AiModelListResult): void {
+  aiModelList.innerHTML = ''
+  for (const model of result.models) {
+    const option = document.createElement('option')
+    option.value = model
+    aiModelList.appendChild(option)
+  }
+  if (result.state === 'success') {
+    aiModelStatus.textContent = result.models.length > 0
+      ? `已加载 ${result.models.length} 个模型`
+      : '服务端未返回模型，请手动输入'
+    aiModelStatus.className = 'status ai-model-status online'
+  } else if (result.state === 'unsupported') {
+    aiModelStatus.textContent = result.message || '当前协议不支持模型列表'
+    aiModelStatus.className = 'status ai-model-status'
+  } else {
+    aiModelStatus.textContent = result.message || '模型列表加载失败'
+    aiModelStatus.className = 'status ai-model-status offline'
+  }
+  aiModelStatus.dataset.state = result.state
+}
+
+/**
+ * 保存 AI 启用状态、协议、Base URL、模型和可选的新 API Key。
+ * 保存成功后自动加载模型列表。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveAiConfig(): Promise<void> {
+  setAiBusy(true)
+  try {
+    const settings = await window.api.setAiConfig({
+      enabled: aiEnabled.checked,
+      protocol: aiProtocol.value as AiProtocol,
+      baseUrl: aiBaseUrl.value.trim(),
+      model: aiModel.value.trim(),
+      apiKey: aiApiKey.value
+    })
+    renderSettings(settings)
+    flash('AI 配置已保存并生效')
+    await listAiModels()
+  } catch (error) {
+    flash(`AI 配置保存失败：${(error as Error).message || '未知错误'}`)
+  } finally {
+    setAiBusy(false)
+  }
+}
+
+/**
+ * 确认后显式清除主进程安全保存的 AI API Key。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearAiApiKey(): Promise<void> {
+  if (!window.confirm('确定清除已保存的 AI API Key 吗？清除后需要鉴权的协议将无法使用。')) return
+
+  setAiBusy(true)
+  try {
+    const settings = await window.api.clearAiApiKey()
+    renderSettings(settings)
+    aiStatus.textContent = 'API Key 已清除，请重新配置后检测'
+    aiStatus.className = 'status ai-status'
+    delete aiStatus.dataset.code
+    flash('AI API Key 已清除')
+  } catch (error) {
+    flash(`清除失败：${(error as Error).message || '未知错误'}`)
+  } finally {
+    setAiBusy(false)
+  }
+}
+
+/**
+ * 刷新模型列表：先保存当前页面配置再加载，确保使用最新 Base URL、协议和 API Key。
+ * @returns 刷新完成后的 Promise。
+ * @author zhenghq
+ */
+async function refreshAiModels(): Promise<void> {
+  await saveAiConfig()
+}
+
+/**
+ * 根据当前 AI 配置加载可用模型列表。
+ * @returns 加载完成后的 Promise。
+ * @author zhenghq
+ */
+async function listAiModels(): Promise<void> {
+  aiModelStatus.textContent = '加载模型列表中…'
+  aiModelStatus.className = 'status ai-model-status'
+  delete aiModelStatus.dataset.state
+  try {
+    const result = await window.api.listAiModels()
+    renderAiModelListResult(result)
+    // 若当前模型不在列表中且列表非空，保留用户手动输入的值
+    const currentModel = aiModel.value.trim()
+    if (currentModel && result.models.length > 0 && !result.models.includes(currentModel)) {
+      // 不替换用户手动输入的模型名称
+    }
+  } catch (error) {
+    renderAiModelListResult({
+      state: 'error',
+      models: [],
+      message: (error as Error).message || '模型列表加载失败，可手动输入'
+    })
+  }
+}
+
+/**
+ * 检测 AI 配置能否完成一次最小翻译请求。
+ * @returns 检测完成后的 Promise。
+ * @author zhenghq
+ */
+async function checkAi(): Promise<void> {
+  setAiBusy(true)
+  // 先保存当前页面配置，确保主进程使用最新的协议、Base URL 和 API Key
+  try {
+    const settings = await window.api.setAiConfig({
+      enabled: aiEnabled.checked,
+      protocol: aiProtocol.value as AiProtocol,
+      baseUrl: aiBaseUrl.value.trim(),
+      model: aiModel.value.trim(),
+      apiKey: aiApiKey.value
+    })
+    renderSettings(settings)
+  } catch {
+    // 保存失败时仍允许尝试检测
+  }
+  aiStatus.textContent = '检测中…'
+  aiStatus.className = 'status ai-status'
+  delete aiStatus.dataset.code
+  try {
+    renderAiStatus(await window.api.checkAi())
+  } catch (error) {
+    renderAiStatus({
+      ok: false,
+      code: 'service',
+      message: (error as Error).message || '检测失败，请稍后重试'
+    })
+  } finally {
+    setAiBusy(false)
+  }
 }
 
 /**
@@ -815,12 +1031,17 @@ sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
 hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
+showDockIcon.addEventListener('change', saveDockIconVisibility)
 proxyMode.addEventListener('change', saveProxyMode)
 proxyRules.addEventListener('change', saveProxyRules)
 proxyBypassRules.addEventListener('change', saveProxyBypassRules)
 dingTalkSave.addEventListener('click', () => void saveDingTalkConfig())
 dingTalkClearSecret.addEventListener('click', () => void clearDingTalkClientSecret())
 dingTalkCheck.addEventListener('click', () => void checkDingTalkConfig())
+aiSave.addEventListener('click', () => void saveAiConfig())
+aiRefreshModels.addEventListener('click', () => void refreshAiModels())
+aiCheck.addEventListener('click', () => void checkAi())
+aiClearKey.addEventListener('click', () => void clearAiApiKey())
 microsoftEnabled.addEventListener('change', () => void saveMicrosoftEnabled())
 microsoftCheck.addEventListener('click', () => void checkMicrosoftConfig())
 deeplxUrl.addEventListener('change', saveDeepLxUrl)

@@ -27,6 +27,7 @@ import {
   configureTranslationFetch,
   resetDingTalkTranslationRuntime,
   resetMicrosoftTranslationRuntime,
+  resetAiTranslationRuntime,
   translate
 } from './translate'
 import { applyTranslationProxy, translationFetch } from './network'
@@ -63,6 +64,9 @@ import type {
   DingTalkCheckStatus,
   DingTalkConfigPatch,
   MicrosoftCheckStatus,
+  AiConfigPatch,
+  AiCheckStatus,
+  AiModelListResult,
   Settings,
   DeepLxStatus,
   MacOSQuarantineResult,
@@ -70,6 +74,10 @@ import type {
 } from '../shared/types'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
+import { AiCredentialStore } from './aiCredentials'
+import { AiConfigurationService } from './aiConfig'
+import { AiModelDiscoveryService } from './aiModelDiscovery'
+import { AiCheckService } from './aiCheck'
 import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
@@ -87,6 +95,9 @@ const UPDATE_CHECK_DELAY_MS = 5000
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
+let aiConfiguration: AiConfigurationService | null = null
+let aiModelDiscovery: AiModelDiscoveryService | null = null
+let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
@@ -102,6 +113,16 @@ let lastSelectionAnchor: { x: number; y: number } | undefined
 function getDingTalkConfiguration(): DingTalkConfigurationService {
   if (!dingTalkConfiguration) throw new Error('钉钉配置服务尚未初始化')
   return dingTalkConfiguration
+}
+
+/**
+ * 获取已初始化的 AI 配置服务实例。
+ * @returns AI 配置服务实例。
+ * @author zhenghq
+ */
+function getAiConfiguration(): AiConfigurationService {
+  if (!aiConfiguration) throw new Error('AI 配置服务尚未初始化')
+  return aiConfiguration
 }
 
 /**
@@ -153,14 +174,30 @@ function handleApplicationInitializationFailure(error: unknown): false {
 }
 
 /**
- * 将 macOS 应用配置为仅显示菜单栏图标的辅助应用。
+ * 根据设置切换 macOS Dock 栏图标和应用激活策略。
+ * @param showDockIcon 是否显示 Dock 栏图标。
  * @returns 无返回值。
  * @author zhenghq
  */
-function configureMacOSMenuBarApplication(): void {
+function applyMacOSDockVisibility(showDockIcon: boolean): void {
   if (!isMac) return
-  app.setActivationPolicy('accessory')
+  app.setActivationPolicy(showDockIcon ? 'regular' : 'accessory')
+  if (showDockIcon) {
+    void app.dock?.show()
+    return
+  }
   app.dock?.hide()
+}
+
+/**
+ * 将 macOS 应用配置为菜单栏应用，并按用户设置控制 Dock 栏图标。
+ * @param showDockIcon 是否显示 Dock 栏图标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function configureMacOSMenuBarApplication(showDockIcon: boolean): void {
+  if (!isMac) return
+  applyMacOSDockVisibility(showDockIcon)
   Menu.setApplicationMenu(null)
 }
 
@@ -191,13 +228,14 @@ async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
  * @author zhenghq
  */
 async function onReady(): Promise<boolean> {
-  configureMacOSMenuBarApplication()
+  configureMacOSMenuBarApplication(false)
   if (!(await confirmMacOSInstalledApplicationLaunch())) {
     app.quit()
     return false
   }
 
   loadSettings()
+  configureMacOSMenuBarApplication(getSettings().showDockIcon)
   createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
     getSettings,
@@ -213,6 +251,22 @@ async function onReady(): Promise<boolean> {
     resetTranslationRuntime: resetDingTalkTranslationRuntime
   })
   dingTalkConfiguration.initialize()
+  aiConfiguration = new AiConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new AiCredentialStore(
+      join(app.getPath('userData'), 'ai-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      tray?.setContextMenu(buildTrayMenu())
+      broadcast('settings:changed', settings)
+    },
+    resetTranslationRuntime: resetAiTranslationRuntime
+  })
+  aiConfiguration.initialize()
+  aiModelDiscovery = new AiModelDiscoveryService({ fetch: translationFetch })
+  aiCheckService = new AiCheckService({ fetch: translationFetch })
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
   updateManager = await createApplicationUpdateManager((status) => {
@@ -496,7 +550,8 @@ async function translateText(
     const dingTalkCredentials = settings.dingTalkEnabled
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
-    const output = await translate(text, requestSettings, dingTalkCredentials)
+    const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+    const output = await translate(text, requestSettings, dingTalkCredentials, aiApiKey)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showPopup(
       {
@@ -838,6 +893,53 @@ function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
   return checkMicrosoftTranslation()
 }
 
+/**
+ * 保存 AI 公共配置及可选新 API Key，并在成功后广播脱敏设置。
+ * @param patch AI 配置补丁。
+ * @returns 保存后的脱敏设置。
+ * @author zhenghq
+ */
+function applyAiConfig(patch: AiConfigPatch): Settings {
+  return getAiConfiguration().applyPatch(patch)
+}
+
+/**
+ * 显式清除 AI API Key，并在成功后广播脱敏设置。
+ * @returns 清除后的脱敏设置。
+ * @author zhenghq
+ */
+function clearAiApiKey(): Settings {
+  return getAiConfiguration().clearApiKey()
+}
+
+/**
+ * 根据当前 AI 配置加载模型列表。
+ * @returns 结构化脱敏模型列表结果。
+ * @author zhenghq
+ */
+async function listAiModels(): Promise<AiModelListResult> {
+  if (!aiModelDiscovery) throw new Error('AI 模型发现服务尚未初始化')
+  const settings = getSettings()
+  return aiModelDiscovery.listModels({
+    protocol: settings.aiProtocol,
+    baseUrl: settings.aiBaseUrl,
+    apiKey: getAiConfiguration().getApiKey()
+  })
+}
+
+/**
+ * 检测 AI 配置能否完成一次最小翻译请求。
+ * @returns 结构化脱敏检测状态。
+ * @author zhenghq
+ */
+function checkAi(): Promise<AiCheckStatus> {
+  if (!aiCheckService) throw new Error('AI 检测服务尚未初始化')
+  return aiCheckService.check({
+    settings: getSettings(),
+    apiKey: getAiConfiguration().getApiKey()
+  })
+}
+
 // ---- IPC ----
 
 /**
@@ -870,6 +972,14 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   delete safePatch.dingTalkCorpId
   delete safePatch.dingTalkClientId
   delete safePatch.dingTalkSecretConfigured
+  // 普通 settings:set 不接受 AI 敏感字段，API Key 与 aiApiKeyConfigured 由专用 IPC 管理。
+  delete (safePatch as Record<string, unknown>).aiApiKey
+  delete (safePatch as Record<string, unknown>).aiApiKeyConfigured
+  const aiFieldChanged =
+    (patch.aiEnabled !== undefined && patch.aiEnabled !== previous.aiEnabled) ||
+    (patch.aiProtocol !== undefined && patch.aiProtocol !== previous.aiProtocol) ||
+    (patch.aiBaseUrl !== undefined && patch.aiBaseUrl !== previous.aiBaseUrl) ||
+    (patch.aiModel !== undefined && patch.aiModel !== previous.aiModel)
   const settings = saveSettings(safePatch)
   if (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) {
     registerShortcut(settings.hotkey)
@@ -877,6 +987,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.triggerMode !== undefined && settings.triggerMode !== previous.triggerMode) {
     applySelectionListener()
     if (settings.triggerMode === 'auto') void warnIfNoAccessibility()
+  }
+  if (patch.showDockIcon !== undefined && settings.showDockIcon !== previous.showDockIcon) {
+    applyMacOSDockVisibility(settings.showDockIcon)
   }
   if (patch.proxyMode !== undefined ||
       patch.proxyRules !== undefined ||
@@ -886,6 +999,10 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.microsoftEnabled !== undefined &&
       settings.microsoftEnabled !== previous.microsoftEnabled) {
     resetMicrosoftTranslationRuntime()
+  }
+  if (aiFieldChanged) {
+    resetAiTranslationRuntime()
+    aiModelDiscovery?.clearCache()
   }
   tray?.setContextMenu(buildTrayMenu())
   broadcast('settings:changed', settings)
@@ -929,6 +1046,10 @@ function registerIpc(): void {
   ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
   ipcMain.handle('dingtalk:check', () => checkDingTalk())
   ipcMain.handle('microsoft:check', () => checkMicrosoft())
+  ipcMain.handle('ai:configure', (_event, patch: AiConfigPatch) => applyAiConfig(patch))
+  ipcMain.handle('ai:clear-key', () => clearAiApiKey())
+  ipcMain.handle('ai:list-models', () => listAiModels())
+  ipcMain.handle('ai:check', () => checkAi())
 
   ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
