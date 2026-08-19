@@ -59,12 +59,40 @@ export interface SelectionGesture {
 }
 
 import type { TriggerMode } from './types'
+import type { NativeSelectionReadResult } from './platformCapture'
+import type { SelectionFailureReason } from './selectionCaptureCoordinator'
 
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
 
 /** 不发送复制快捷键时检查到的系统选区状态。 */
 export type SelectionPresence = 'present' | 'empty' | 'unknown'
+
+/**
+ * 根据取词失败原因与图片选区标志生成用户可见的提示文案。
+ * 图片选区优先提示图片不可翻译；空选区沿用既有文案，超时与不支持分别给出新文案。
+ * @param reason 取词失败原因（empty/timeout/unsupported/permission）。
+ * @param hasImage 是否捕获到图片选区（仅图片、无可翻译文本）。
+ * @returns 对应的提示文案。
+ * @author zhenghq
+ */
+export function resolveSelectionCaptureFailureMessage(
+  reason: SelectionFailureReason | undefined,
+  hasImage = false
+): string {
+  if (hasImage) return '已识别到图片选区，暂不支持图片翻译'
+  switch (reason) {
+    case 'timeout':
+      return '取词超时，请重试或确认所选内容可复制'
+    case 'unsupported':
+      return '当前应用不支持划词取词，请确认所选内容可复制'
+    case 'permission':
+      return '需要「辅助功能」权限才能读取选中文字，请授权后重试'
+    case 'empty':
+    default:
+      return '未检测到选中文字，请重新划词后点击“译”按钮'
+  }
+}
 
 /**
  * 根据拖拽起点和终点生成划词几何信息。
@@ -124,19 +152,44 @@ export function shouldTriggerSelectionGesture(
 
 /**
  * 将系统选区检查命令的输出转换为统一状态，无法识别时返回 unknown。
+ * 直读脚本以首行作为状态标记、其余行作为选中文本；因此只解析首行，
+ * 避免多行选中文本中出现 EMPTY/UNKNOWN 字样时把非空选区误判为空。
  * @param output 系统命令输出的选区状态标记。
  * @returns 规范化后的选区状态。
  * @author zhenghq
  */
 export function parseSelectionPresenceOutput(output: unknown): SelectionPresence {
-  const lines = String(output ?? '').trim().split(/\r?\n/u).reverse()
-  for (const line of lines) {
-    const marker = line.trim().toUpperCase()
-    if (marker === 'PRESENT') return 'present'
-    if (marker === 'EMPTY') return 'empty'
-    if (marker === 'UNKNOWN') return 'unknown'
-  }
+  const raw = String(output ?? '').trim()
+  if (!raw) return 'unknown'
+  const marker = raw.split(/\r?\n/u)[0].trim().toUpperCase()
+  if (marker === 'PRESENT') return 'present'
+  if (marker === 'EMPTY') return 'empty'
+  if (marker === 'UNKNOWN') return 'unknown'
   return 'unknown'
+}
+
+/**
+ * 解析原生直读选区命令的输出，取首行状态标记，其余行作为选中文本。
+ * 与 parseSelectionPresenceOutput 不同，本函数将多行文本视为内容而非状态行，
+ * 供取词管线直接消费直读文本。
+ * @param output 系统命令输出。
+ * @returns 规范化后的直读结果，包含状态与文本。
+ * @author zhenghq
+ */
+export function parseNativeSelectionReadOutput(output: unknown): NativeSelectionReadResult {
+  const raw = String(output ?? '')
+  const normalized = raw.replace(/\r\n?/gu, '\n').trim()
+  if (!normalized) return { status: 'unknown', text: '' }
+
+  const lines = normalized.split('\n')
+  const status = (lines[0] ?? '').trim().toUpperCase()
+  const text = lines.slice(1).join('\n').trim()
+  if (status === 'PRESENT') {
+    return text ? { status: 'present', text } : { status: 'empty', text: '' }
+  }
+  if (status === 'EMPTY') return { status: 'empty', text: '' }
+  if (status === 'UNKNOWN') return { status: 'unknown', text: '' }
+  return { status: 'unknown', text: '' }
 }
 
 /**

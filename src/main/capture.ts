@@ -7,18 +7,24 @@ import {
   shouldRestoreClipboard
 } from '../shared/copyShortcutBehavior'
 import {
+  parseNativeSelectionReadOutput,
   parseSelectionPresenceOutput,
   type SelectionPresence
 } from '../shared/selectionBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
-import { resolveSelectionCaptureStrategy } from '../shared/platformCapture'
+import {
+  getSelectionCapturePlan,
+  resolveSelectionCaptureStrategy,
+  type NativeSelectionReadResult
+} from '../shared/platformCapture'
+import type { SelectionCaptureOutcome } from '../shared/selectionCaptureCoordinator'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
 const SELECTION_INSPECTION_TIMEOUT_MS = 1500
 
-// macOS 通过辅助功能读取前台控件的选中文字，只返回状态标记，不读取或修改剪贴板。
+// macOS 通过辅助功能读取前台控件的选中文字；PRESENT 时同时输出选中文本，不读取或修改剪贴板。
 const MACOS_SELECTION_PRESENCE = [
   'tell application "System Events"',
   'try',
@@ -27,14 +33,14 @@ const MACOS_SELECTION_PRESENCE = [
   'set selectedText to value of attribute "AXSelectedText" of focusedElement',
   'if selectedText is missing value then return "UNKNOWN"',
   'if (selectedText as text) is "" then return "EMPTY"',
-  'return "PRESENT"',
+  'return "PRESENT\n" & (selectedText as text)',
   'on error',
   'return "UNKNOWN"',
   'end try',
   'end tell'
 ].join('\n')
 
-// Windows 通过 UI Automation TextPattern 检查焦点控件是否存在非空选区，不发送 Ctrl+C。
+// Windows 通过 UI Automation TextPattern 检查焦点控件是否存在非空选区；PRESENT 时同时输出文本，不发送 Ctrl+C。
 const WINDOWS_SELECTION_PRESENCE = [
   'Add-Type -AssemblyName UIAutomationClient;',
   '$element = [System.Windows.Automation.AutomationElement]::FocusedElement;',
@@ -44,7 +50,7 @@ const WINDOWS_SELECTION_PRESENCE = [
   '$ranges = ([System.Windows.Automation.TextPattern]$pattern).GetSelection();',
   "if ($null -eq $ranges -or $ranges.Count -eq 0) { Write-Output 'EMPTY'; exit }",
   "$text = ($ranges | ForEach-Object { $_.GetText(-1) }) -join '';",
-  "if ([string]::IsNullOrWhiteSpace($text)) { Write-Output 'EMPTY' } else { Write-Output 'PRESENT' }"
+  "if ([string]::IsNullOrWhiteSpace($text)) { Write-Output 'EMPTY' } else { Write-Output ('PRESENT' + [char]10 + $text) }"
 ].join(' ')
 
 // 使用 Windows user32.dll 向当前前台窗口发送 Ctrl+C，不抢占前台焦点。
@@ -99,6 +105,49 @@ export async function inspectSelectedTextPresence(): Promise<SelectionPresence> 
   }
 
   return 'unknown'
+}
+
+/**
+ * 在不模拟复制快捷键的前提下原生直读当前前台应用的选中文字。
+ * macOS 使用辅助功能属性，Windows 使用 UI Automation，Linux 读取主选区；均不触碰剪贴板。
+ * @returns 直读结果，包含状态、选中文本与可能的失败原因。
+ * @author zhenghq
+ */
+export async function readSelectionByNative(): Promise<NativeSelectionReadResult> {
+  try {
+    if (process.platform === 'linux') {
+      const text = clipboard.readText('selection')
+      return text.trim() ? { status: 'present', text } : { status: 'empty', text: '' }
+    }
+
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileP(
+        'osascript',
+        ['-e', MACOS_SELECTION_PRESENCE],
+        { timeout: SELECTION_INSPECTION_TIMEOUT_MS }
+      )
+      return parseNativeSelectionReadOutput(stdout)
+    }
+
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileP('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        WINDOWS_SELECTION_PRESENCE
+      ], {
+        timeout: SELECTION_INSPECTION_TIMEOUT_MS,
+        windowsHide: true
+      })
+      return parseNativeSelectionReadOutput(stdout)
+    }
+  } catch {
+    return { status: 'unknown', text: '', reason: 'unknown' }
+  }
+
+  return { status: 'unknown', text: '', reason: 'unknown' }
 }
 
 /**
@@ -174,16 +223,16 @@ export async function simulateCopy(): Promise<void> {
 }
 
 /**
- * 捕获当前选中文字，并在用户未主动复制时恢复取词前的剪贴板内容。
+ * 通过模拟复制快捷键从剪贴板读取当前选中文字，并在用户未主动复制时恢复取词前的剪贴板内容。
  * @param signal 用于在用户粘贴或点击其他位置时中止取词。
  * @param timeoutMs 等待前台应用写入剪贴板的最长时间。
- * @returns 当前前台应用的选中文字，没有有效选区时返回空字符串。
+ * @returns 结构化取词结果：成功时携带文本；超时或无可复制内容时携带失败原因。
  * @author zhenghq
  */
-export async function captureSelection(
+async function captureByCopy(
   signal?: AbortSignal,
   timeoutMs = 800
-): Promise<string> {
+): Promise<SelectionCaptureOutcome> {
   const originalImage = clipboard.readImage()
   const hadImage = !originalImage.isEmpty()
   const originalText = clipboard.readText()
@@ -212,9 +261,10 @@ export async function captureSelection(
     }
   }
 
-  if (signal?.aborted) return ''
+  if (signal?.aborted) return { text: '' }
   if (resolveSelectionCaptureStrategy(process.platform) === 'linux-primary-selection') {
-    return clipboard.readText('selection')
+    const text = clipboard.readText('selection')
+    return text.trim() ? { text } : { text: '', reason: 'empty' }
   }
   signal?.addEventListener('abort', handleAbort, { once: true })
 
@@ -223,6 +273,7 @@ export async function captureSelection(
   clipboard.writeText(sentinel)
 
   let text = ''
+  let hasImage = false
   try {
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
@@ -234,7 +285,7 @@ export async function captureSelection(
     const start = Date.now()
     while (!signal?.aborted && Date.now() - start < timeoutMs) {
       text = clipboard.readText()
-      const hasImage = !clipboard.readImage().isEmpty()
+      hasImage = !clipboard.readImage().isEmpty()
       if (hasClipboardCaptureCompleted(text, hasImage, sentinel)) break
       await sleep(40)
     }
@@ -273,6 +324,68 @@ export async function captureSelection(
     }
   }
 
-  if (signal?.aborted || !text || text === sentinel) return ''
-  return text
+  if (signal?.aborted) return { text: '' }
+  if (hasImage) return { text: '', hasImage: true }
+  if (!text || text === sentinel) return { text: '', reason: 'timeout' }
+  return { text }
+}
+
+/**
+ * 捕获当前选中文字：优先原生直读，直读不可用或为空时回退到模拟复制，并按原因返回失败结果。
+ * Linux 读取主选区，macOS 使用辅助功能属性，Windows 使用 UI Automation；
+ * 直读无法覆盖的应用（如不支持 AX/UIA）自动回退到复制兜底。
+ * @param signal 用于在用户粘贴或点击其他位置时中止取词。
+ * @param timeoutMs 复制兜底等待前台应用写入剪贴板的最长时间。
+ * @returns 结构化取词结果：成功时携带文本，失败时携带图片标志或失败原因。
+ * @author zhenghq
+ */
+export async function captureSelectionByNativeOnly(
+  signal?: AbortSignal
+): Promise<SelectionCaptureOutcome> {
+  if (signal?.aborted) return { text: '' }
+
+  // “译”按钮显示期间的后台预取：只做原生直读，不注入复制键、不写剪贴板，
+  // 避免在用户尚未点击按钮时干扰前台应用或占用剪贴板。
+  const native = await readSelectionByNative()
+  if (native.status === 'present' && native.text.trim()) {
+    return { text: native.text }
+  }
+  return {
+    text: '',
+    reason: native.status === 'empty' ? 'empty' : 'unsupported'
+  }
+}
+
+export async function captureSelection(
+  signal?: AbortSignal,
+  timeoutMs = 800
+): Promise<SelectionCaptureOutcome> {
+  if (signal?.aborted) return { text: '' }
+
+  const plan = getSelectionCapturePlan(process.platform)
+
+  // 第一级：平台原生直读，不触碰剪贴板。
+  if (plan.supportsNativeRead) {
+    const native = await readSelectionByNative()
+    if (native.status === 'present' && native.text.trim()) {
+      return { text: native.text }
+    }
+
+    // 第二级：复制兜底（macOS/Windows 注入复制键）。
+    if (plan.copyFallback) {
+      return captureByCopy(signal, timeoutMs)
+    }
+
+    // 无复制兜底（Linux）：直接按直读状态返回。
+    return {
+      text: '',
+      reason: native.status === 'empty' ? 'empty' : 'unsupported'
+    }
+  }
+
+  // 不支持原生直读的平台：仅尝试复制兜底。
+  if (plan.copyFallback) {
+    return captureByCopy(signal, timeoutMs)
+  }
+  return { text: '', reason: 'unsupported' }
 }

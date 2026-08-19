@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import {
   captureSelection,
-  inspectSelectedTextPresence,
+  captureSelectionByNativeOnly,
   PermissionError,
   checkAccessibilityPermission
 } from './capture'
@@ -38,7 +38,8 @@ import {
   isPopupVisible,
   isPointInsidePopup,
   getPopupCloseVersion,
-  setPopupPinned
+  setPopupPinned,
+  showManualTranslationPopup
 } from './popup'
 import {
   createSelectionButton,
@@ -52,8 +53,8 @@ import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
   decideSelectionAction,
+  resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
-  shouldShowSelectionButtonAfterInspection,
   type SelectionGesture
 } from '../shared/selectionBehavior'
 import {
@@ -70,8 +71,11 @@ import type {
   Settings,
   DeepLxStatus,
   MacOSQuarantineResult,
-  UpdateStatus
+  UpdateStatus,
+  ManualTranslateRequest,
+  TranslationOrigin
 } from '../shared/types'
+import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
 import { AiCredentialStore } from './aiCredentials'
@@ -101,7 +105,12 @@ let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
-const selectionCapture = new SelectionCaptureCoordinator(captureSelection)
+// 按钮显示期间用只读直读做后台预取，点击按钮时优先消费缓存；
+// 只有预取未取到文本时才走完整取词管线（直读 + 复制兜底）。
+const selectionCapture = new SelectionCaptureCoordinator(
+  captureSelection,
+  captureSelectionByNativeOnly
+)
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
 
@@ -343,7 +352,7 @@ function onHotkey(): void {
 }
 
 /**
- * 安排一次选区处理动作；按钮模式只显示图标，系统取词必须等用户点击确认。
+ * 安排一次选区处理动作；按钮模式显示图标并后台只读预取文本，完整取词等用户点击确认。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -358,6 +367,9 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 
   if (action === 'show-button') {
     showSelectionButton(anchor)
+    // 按钮显示期间后台只读直读预取文本：不注入复制键、不写剪贴板，
+    // 避免用户把鼠标移到“译”按钮期间选区失效，导致点击后复制兜底超时。
+    void selectionCapture.prepare(anchor)
     return
   }
 
@@ -368,7 +380,8 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
- * 处理按钮模式的双击选词，在不发送复制快捷键的前提下确认选区非空后再显示“译”按钮。
+ * 处理按钮模式的双击选词，用只读直读预取选中文字：既能确认选区非空，又能缓存文本。
+ * 全程不发送复制快捷键、不写剪贴板；预取结果供点击“译”按钮时直接消费。
  * @param gesture 当前双击选词手势及按钮锚点。
  * @returns 选区检查完成后的 Promise。
  * @author zhenghq
@@ -379,9 +392,13 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
   hideSelectionButton()
   lastSelectionAnchor = gesture.anchor
 
-  const presence = await inspectSelectedTextPresence()
+  // 双击场景：按钮显示期间用只读直读预取选中文字，一次系统调用既确认选区非空又缓存文本；
+  // 文本在双击刚结束时就被取走，点击“译”按钮不再依赖点击瞬间选区是否仍然存活。
+  const prepared = await selectionCapture.prepare(gesture.anchor)
   if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  if (!shouldShowSelectionButtonAfterInspection(gesture.clicks, presence)) return
+  // 预取明确为空（如双击空白处）时不显示按钮；无法确认（unsupported/unknown）时保留按钮，
+  // 点击后由完整取词管线（直读 + 复制兜底）兜底；读取返回值不影响缓存，点击仍可消费。
+  if (prepared && !prepared.text && prepared.reason === 'empty') return
   showSelectionButton(gesture.anchor)
 }
 
@@ -469,7 +486,12 @@ async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
   latestSelectionGesture += 1
   hideSelectionButton()
-  const result = await selectionCapture.capture(lastSelectionAnchor)
+  // 优先消费按钮显示期间预取的缓存文本，避免点击瞬间原生选区已失效导致复制兜底超时；
+  // 预取未取到文本或从未预取时，再走完整取词管线（直读 + 复制兜底）。
+  const prepared = await selectionCapture.consumePreparedOrWait()
+  const result = prepared?.text
+    ? prepared
+    : await selectionCapture.capture(lastSelectionAnchor)
   selectionCapture.invalidate()
   if (result) handleSelectionCaptureResult(result)
 }
@@ -490,7 +512,7 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult): void {
     showPopup(
       {
         ok: false,
-        error: '未检测到选中文字，请重新划词后点击“译”按钮',
+        error: resolveSelectionCaptureFailureMessage(result.reason, result.hasImage),
         sourcePreference: settings.sourceLang,
         targetPreference: settings.targetLang,
         targetLang: settings.targetLang
@@ -508,14 +530,16 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult): void {
  * 翻译指定文本，并使用请求序号和关闭版本阻止旧结果覆盖新结果或重新打开已关闭弹窗。
  * @param text 待翻译文本。
  * @param anchor 首次展示弹窗时使用的选区锚点。
- * @param preferences 可选的手动语言偏好。
+ * @param preferences 可选的语言偏好。
+ * @param origin 翻译来源。
  * @returns 翻译流程完成后的 Promise。
  * @author zhenghq
  */
 async function translateText(
   text: string,
   anchor?: { x: number; y: number },
-  preferences?: { sourceLang: string; targetLang: string }
+  preferences?: { sourceLang: string; targetLang: string },
+  origin: TranslationOrigin = 'selection'
 ): Promise<void> {
   const settings = getSettings()
   const sourcePreference = preferences?.sourceLang ?? settings.sourceLang
@@ -529,12 +553,16 @@ async function translateText(
   const requestId = ++latestTranslationRequest
   const closeVersion = getPopupCloseVersion()
 
-  lastSelectedText = text
-  if (anchor) lastSelectionAnchor = anchor
+  if (origin === 'selection') {
+    lastSelectedText = text
+    if (anchor) lastSelectionAnchor = anchor
+  }
 
   showPopup(
     {
       ok: true,
+      origin,
+      requestId,
       loading: true,
       original: text,
       sourceLang: pair.sourceLang,
@@ -556,6 +584,8 @@ async function translateText(
     showPopup(
       {
         ok: true,
+        origin,
+        requestId,
         original: text,
         translation: output.translation,
         detectedLang: output.detectedLang,
@@ -571,10 +601,13 @@ async function translateText(
     )
   } catch (e) {
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
-    handleTranslateError(e as Error, requestSettings, anchor, {
-      sourceLang: sourcePreference,
-      targetLang: targetPreference
-    })
+    handleTranslateError(
+      e as Error,
+      requestSettings,
+      anchor,
+      { sourceLang: sourcePreference, targetLang: targetPreference },
+      { origin, requestId, original: text }
+    )
   }
 }
 
@@ -584,6 +617,7 @@ async function translateText(
  * @param settings 当前翻译设置。
  * @param anchor 弹窗定位锚点。
  * @param preferences 弹窗中需要回显的语言偏好。
+ * @param context 翻译来源、请求序号和原文上下文。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -591,9 +625,13 @@ function handleTranslateError(
   err: Error,
   settings: Settings,
   anchor?: { x: number; y: number },
-  preferences?: { sourceLang: string; targetLang: string }
+  preferences?: { sourceLang: string; targetLang: string },
+  context?: { origin: TranslationOrigin; requestId: number; original: string }
 ): void {
   const common = {
+    origin: context?.origin ?? 'selection',
+    requestId: context?.requestId,
+    original: context?.original,
     sourcePreference: preferences?.sourceLang ?? settings.sourceLang,
     targetPreference: preferences?.targetLang ?? settings.targetLang,
     targetLang: settings.targetLang
@@ -616,6 +654,54 @@ function handleTranslateError(
       anchor
     )
   }
+}
+
+/**
+ * 显示并固定手动翻译模式，取消自动隐藏并通知 Renderer 聚焦原文输入框。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openManualTranslation(): void {
+  setPopupPinned(true)
+  showManualTranslationPopup()
+}
+
+/**
+ * 校验并提交手动翻译请求，非法输入只返回脱敏错误且不调用翻译运行时。
+ * @param request Renderer 传入的未知请求负载。
+ * @returns 翻译流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function translateManualRequest(request: unknown): Promise<void> {
+  const raw = request && typeof request === 'object'
+    ? request as Partial<ManualTranslateRequest>
+    : {}
+  const text = raw.text
+  const validationError = validateManualTranslationText(text)
+  const settings = getSettings()
+  const sourceLang = typeof raw.sourceLang === 'string' && raw.sourceLang
+    ? raw.sourceLang
+    : settings.sourceLang
+  const targetLang = typeof raw.targetLang === 'string' && raw.targetLang
+    ? raw.targetLang
+    : settings.targetLang
+
+  if (validationError) {
+    const requestId = ++latestTranslationRequest
+    showPopup({
+      ok: false,
+      origin: 'manual',
+      requestId,
+      original: typeof text === 'string' ? text : '',
+      sourcePreference: sourceLang,
+      targetPreference: targetLang,
+      targetLang,
+      error: validationError
+    }, 0)
+    return
+  }
+
+  await translateText(text as string, undefined, { sourceLang, targetLang }, 'manual')
 }
 
 /**
@@ -1027,6 +1113,10 @@ function registerIpc(): void {
   ipcMain.on('selection:translate', () => {
     void translateSelectionButton()
   })
+  ipcMain.on('manual-translate:open-request', () => openManualTranslation())
+  ipcMain.handle('manual-translate:submit', (_event, request: unknown) =>
+    translateManualRequest(request)
+  )
   ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string) => {
     const sourcePreference = sourceLang || 'auto'
     const targetPreference = targetLang || 'auto'
@@ -1125,6 +1215,8 @@ function buildTrayMenu(): Menu {
 
   return Menu.buildFromTemplate([
     { label: `划词翻译   ${settings.hotkey}`, enabled: false },
+    { type: 'separator' },
+    { label: '手动翻译…', click: () => openManualTranslation() },
     { type: 'separator' },
     {
       label: '划词后自动显示“译”按钮',

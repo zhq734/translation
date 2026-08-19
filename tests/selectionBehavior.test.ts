@@ -5,7 +5,9 @@ import {
   createObservedPointerSample,
   decideSelectionAction,
   getSelectionGesture,
+  parseNativeSelectionReadOutput,
   parseSelectionPresenceOutput,
+  resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   resolveWindowsPointerPoint,
   shouldShowSelectionButtonAfterInspection,
@@ -117,6 +119,119 @@ test('双击没有选中文字时不应显示“译”按钮', () => {
   assert.equal(shouldShowSelectionButtonAfterInspection(2, 'unknown'), true)
   assert.equal(shouldShowSelectionButtonAfterInspection(1, 'empty'), true)
 })
+
+/**
+ * 校验状态检查只读取首行状态标记，多行选中文本中即使出现 EMPTY/UNKNOWN 字样也不会误判为空选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('多行选中文本不应把正文中的 EMPTY 字样误判为空选区', () => {
+  assert.equal(parseSelectionPresenceOutput('PRESENT\n第一行\nEMPTY'), 'present')
+  assert.equal(parseSelectionPresenceOutput('PRESENT\nUNKNOWN 文字'), 'present')
+  assert.equal(parseSelectionPresenceOutput('EMPTY\n附带说明'), 'empty')
+  assert.equal(parseSelectionPresenceOutput('UNKNOWN\n附带说明'), 'unknown')
+})
+
+/**
+ * 校验原生直读解析只取首行状态标记，其余行视为多行选中文本，避免把正文误判为状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('原生直读应解析首行状态并把其余行作为选中文本', () => {
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('PRESENT\n选中文字'),
+    { status: 'present', text: '选中文字' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('PRESENT\n第一行\n第二行'),
+    { status: 'present', text: '第一行\n第二行' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('EMPTY\n'),
+    { status: 'empty', text: '' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('UNKNOWN'),
+    { status: 'unknown', text: '' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('无法识别'),
+    { status: 'unknown', text: '' }
+  )
+})
+
+/**
+ * 校验 Windows PowerShell 输出的 CRLF 换行能被规范化，多行文本不会丢内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('原生直读应兼容 Windows CRLF 输出与仅空白的 PRESENT', () => {
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('PRESENT\r\nWindows 文本'),
+    { status: 'present', text: 'Windows 文本' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('PRESENT\r\n第一行\r\n第二行'),
+    { status: 'present', text: '第一行\n第二行' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput('PRESENT\n   '),
+    { status: 'empty', text: '' }
+  )
+  assert.deepEqual(
+    parseNativeSelectionReadOutput(''),
+    { status: 'unknown', text: '' }
+  )
+})
+
+/**
+ * 校验取词失败提示按原因细分：空选区沿用既有文案，超时与不支持分别给出新文案。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取词失败提示应按原因细分：空选区、超时与应用不支持', () => {
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('empty'),
+    '未检测到选中文字，请重新划词后点击“译”按钮'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage(undefined),
+    '未检测到选中文字，请重新划词后点击“译”按钮'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('timeout'),
+    '取词超时，请重试或确认所选内容可复制'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('unsupported'),
+    '当前应用不支持划词取词，请确认所选内容可复制'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('permission'),
+    '需要「辅助功能」权限才能读取选中文字，请授权后重试'
+  )
+})
+
+/**
+ * 校验只选中图片时不把图片选区误报为“未检测到选中文字”。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('图片选区失败提示应优先于空选区文案', () => {
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('empty', true),
+    '已识别到图片选区，暂不支持图片翻译'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('timeout', true),
+    '已识别到图片选区，暂不支持图片翻译'
+  )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage(undefined, true),
+    '已识别到图片选区，暂不支持图片翻译'
+  )
+})
+
 test('系统复制组合不能被识别为翻译快捷键', () => {
   for (const shortcut of [
     'Ctrl+C',
@@ -345,11 +460,103 @@ test('预取结果为空时点击“译”按钮仍应消费结果以展示明�
 })
 
 /**
- * 校验按钮模式只负责显示按钮，不会在用户确认前触发系统复制。
+ * 校验协调器结果携带底层取词返回的失败原因与图片标志，供上层细分提示文案。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('取词结果应携带失败原因与图片标志', async () => {
+  const coordinator = new SelectionCaptureCoordinator(async () => ({
+    text: '',
+    reason: 'timeout'
+  }))
+  const anchor = { x: 100, y: 100 }
+
+  assert.deepEqual(await coordinator.capture(anchor), {
+    text: '',
+    reason: 'timeout',
+    anchor
+  })
+
+  const imageCoordinator = new SelectionCaptureCoordinator(async () => ({
+    text: '',
+    hasImage: true
+  }))
+  assert.deepEqual(await imageCoordinator.capture(anchor), {
+    text: '',
+    hasImage: true,
+    anchor
+  })
+})
+
+/**
+ * 校验预取使用传入的只读取词函数，而 capture 使用完整取词管线，二者互不混用。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('预取应使用只读函数，点击消费后 capture 才使用完整取词管线', async () => {
+  let prefetchCount = 0
+  let captureCount = 0
+  const coordinator = new SelectionCaptureCoordinator(
+    async () => {
+      captureCount += 1
+      return '完整管线取到的文字'
+    },
+    async () => {
+      prefetchCount += 1
+      return '只读预取到的文字'
+    }
+  )
+  const anchor = { x: 640, y: 420 }
+
+  const prepared = await coordinator.prepare(anchor)
+  assert.deepEqual(prepared, { text: '只读预取到的文字', anchor })
+  assert.equal(prefetchCount, 1)
+  assert.equal(captureCount, 0)
+
+  const clicked = await coordinator.consumePreparedOrWait()
+  assert.deepEqual(clicked, { text: '只读预取到的文字', anchor })
+  assert.equal(captureCount, 0)
+
+  const full = await coordinator.capture(anchor)
+  assert.deepEqual(full, { text: '完整管线取到的文字', anchor })
+  assert.equal(captureCount, 1)
+})
+
+/**
+ * 校验只读预取未取到文本时，点击仍可回退到完整取词管线拿到文字。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('只读预取为空时点击“译”按钮应回退到完整取词管线', async () => {
+  let captureCount = 0
+  const coordinator = new SelectionCaptureCoordinator(
+    async () => {
+      captureCount += 1
+      return '复制兜底拿到的文字'
+    },
+    async () => ({ text: '', reason: 'empty' })
+  )
+  const anchor = { x: 80, y: 80 }
+
+  const prepared = await coordinator.prepare(anchor)
+  assert.deepEqual(prepared, { text: '', reason: 'empty', anchor })
+
+  // 预取为空时 consumed 结果不含文本，主进程据此回退到 capture 完整管线。
+  const consumed = await coordinator.consumePreparedOrWait()
+  assert.equal(consumed?.text, '')
+  assert.equal(captureCount, 0)
+
+  const full = await coordinator.capture(anchor)
+  assert.deepEqual(full, { text: '复制兜底拿到的文字', anchor })
+  assert.equal(captureCount, 1)
+})
+
+/**
+ * 校验按钮模式在划词阶段只做只读直读预取，完整取词（复制兜底）必须等用户点击“译”按钮。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('按钮模式不得在划词阶段预取选中文字，点击“译”按钮后才启动捕获', () => {
+test('按钮模式应在划词阶段只读预取文字，点击“译”按钮后优先消费缓存再兜底完整取词', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
@@ -360,14 +567,15 @@ test('按钮模式不得在划词阶段预取选中文字，点击“译”按�
 
   assert.match(
     scheduleSource,
-    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?return/u
+    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?selectionCapture\.prepare\(anchor\)[\s\S]*?return/u
   )
-  assert.doesNotMatch(scheduleSource, /prepareSelectionButton|selectionCapture\.prepare/u)
+  // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
+  assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
+  assert.match(translateSource, /await selectionCapture\.consumePreparedOrWait\(\)/u)
   assert.match(
     translateSource,
-    /await selectionCapture\.capture\(lastSelectionAnchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
+    /prepared\?\s*\.\s*text[\s\S]*?selectionCapture\.capture\(lastSelectionAnchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
-  assert.doesNotMatch(translateSource, /consumePreparedOrWait|selectionCapture\.prepare/u)
   assert.match(
     source,
     /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut\s*\)/u
@@ -375,11 +583,11 @@ test('按钮模式不得在划词阶段预取选中文字，点击“译”按�
 })
 
 /**
- * 校验按钮显示期间不会创建任何后台选区捕获请求，避免无选区时持续发送 Ctrl+C。
+ * 校验按钮显示期间只做只读直读预取，不得启动完整取词（复制兜底），避免无选区时持续发送 Ctrl+C。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('显示“译”按钮期间不得启动后台选区捕获', () => {
+test('显示“译”按钮期间只允许只读预取，不得启动完整选区捕获', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
@@ -387,16 +595,17 @@ test('显示“译”按钮期间不得启动后台选区捕获', () => {
 
   assert.ok(scheduleStart >= 0)
   assert.ok(scheduleEnd > scheduleStart)
-  assert.doesNotMatch(scheduleSource, /captureSelection|selectionCapture\.(prepare|capture)/u)
+  assert.match(scheduleSource, /selectionCapture\.prepare\(anchor\)/u)
+  assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
   assert.doesNotMatch(source, /function prepareSelectionButton/u)
 })
 
 /**
- * 校验按钮模式双击时使用无复制的系统选区检查，确认空选区后不显示“译”按钮。
+ * 校验按钮模式双击时用只读直读预取选中文字：既确认选区非空又缓存文本，不发送复制快捷键。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('按钮模式双击应先无复制检查选区并过滤空选区', () => {
+test('按钮模式双击应使用只读预取确认选区并缓存文本', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
   const doubleClickStart = mainSource.indexOf('async function scheduleDoubleClickSelectionButton')
@@ -405,11 +614,10 @@ test('按钮模式双击应先无复制检查选区并过滤空选区', () => {
 
   assert.ok(doubleClickStart >= 0)
   assert.ok(doubleClickEnd > doubleClickStart)
-  assert.match(doubleClickSource, /await inspectSelectedTextPresence\(\)/u)
-  assert.match(
-    doubleClickSource,
-    /shouldShowSelectionButtonAfterInspection\(gesture\.clicks,\s*presence\)[\s\S]*?showSelectionButton\(gesture\.anchor\)/u
-  )
+  assert.match(doubleClickSource, /await selectionCapture\.prepare\(gesture\.anchor\)/u)
+  // 预取明确为空（双击空白处）时不显示“译”按钮，无法确认时保留按钮由完整管线兜底。
+  assert.match(doubleClickSource, /prepared\.reason === 'empty'/u)
+  assert.match(doubleClickSource, /showSelectionButton\(gesture\.anchor\)/u)
   assert.doesNotMatch(doubleClickSource, /selectionCapture\.capture|simulateCopy/u)
   assert.match(captureSource, /clipboard\.readText\('selection'\)/u)
   assert.match(captureSource, /AXSelectedText/u)

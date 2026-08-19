@@ -20,6 +20,9 @@
           <select id="target-lang" title="目标语言"></select>
         </div>
         <div class="header-actions">
+          <button id="manual-mode" class="header-action-button mode-button" type="button" title="切换手动翻译" aria-label="切换手动翻译" aria-pressed="false">
+            手动
+          </button>
           <button id="pin" class="header-action-button" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
             <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M12 17v5" />
@@ -36,14 +39,36 @@
           <button id="close" title="关闭" aria-label="关闭">×</button>
         </div>
       </div>
-      <div id="result" class="result"></div>
-      <div id="original" class="original"></div>
+      <section id="selection-view" class="selection-view" aria-label="划词翻译结果">
+        <div id="result" class="result" aria-live="polite"></div>
+        <div id="original" class="original"></div>
+      </section>
+      <section id="manual-view" class="manual-view" aria-label="手动翻译" hidden>
+        <div class="manual-source-header">
+          <label for="manual-source">翻译原文</label>
+          <button id="manual-clear" class="text-action" type="button" aria-label="清空手动翻译原文">清空</button>
+        </div>
+        <textarea id="manual-source" maxlength="5000" placeholder="输入或粘贴要翻译的内容" aria-describedby="manual-count manual-hint"></textarea>
+        <div class="manual-source-footer">
+          <span id="manual-hint">⌘/Ctrl + Enter 翻译</span>
+          <span id="manual-count" aria-live="polite">0 / 5000</span>
+          <button id="manual-submit" type="button">翻译</button>
+        </div>
+        <div class="manual-result-section">
+          <div class="manual-result-header">
+            <span>翻译结果</span>
+            <span id="manual-stale" class="manual-stale" hidden>原文或设置已变化，请重新翻译</span>
+          </div>
+          <div id="manual-result" class="manual-result" aria-live="polite"></div>
+        </div>
+      </section>
       <div class="footer">
         <div class="footer-meta">
           <span id="status"></span>
           <select id="translation-provider" aria-label="翻译 API" title="选择首选翻译 API"></select>
         </div>
-        <button id="copy">复制</button>
+        <button id="copy" type="button">复制</button>
+        <button id="manual-copy" type="button" hidden disabled>复制译文</button>
       </div>
     </div>
     <script type="module" src="./src/popup.ts"></script>

@@ -130,6 +130,32 @@ export function showPopup(
 }
 
 /**
+ * 显示手动翻译界面，并在页面就绪后通知 Renderer 切换模式和聚焦输入框。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function showManualTranslationPopup(): void {
+  if (!win) return
+  currentAutoHideMs = 0
+  clearHide()
+  const alreadyVisible = win.isVisible()
+  if (!alreadyVisible) {
+    positionNearAnchor()
+    win.show()
+  } else {
+    win.focus()
+  }
+  win.webContents.send('popup:pinned', pinned)
+  if (win.webContents.isLoadingMainFrame()) {
+    win.webContents.once('did-finish-load', () => {
+      win?.webContents.send('manual-translate:open')
+    })
+  } else {
+    win.webContents.send('manual-translate:open')
+  }
+}
+
+/**
  * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
  * @returns 无返回值。
  * @author zhenghq

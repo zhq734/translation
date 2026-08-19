@@ -6,14 +6,36 @@ export interface SelectionAnchor {
   y: number
 }
 
-/** 一次取词操作的结果，包含文字、锚点及可能发生的错误。 */
+/** 取词失败的具体原因，用于上层区分空选区、超时、应用不支持与权限错误。 */
+export type SelectionFailureReason =
+  | 'empty'
+  | 'timeout'
+  | 'unsupported'
+  | 'permission'
+  | 'unknown'
+
+/** 底层取词函数返回的结构化结果，包含文本、失败原因与图片选区标志。 */
+export interface SelectionCaptureOutcome {
+  /** 取到的选中文字，未取到时为空字符串。 */
+  text: string
+  /** 未取到文字时的失败原因。 */
+  reason?: SelectionFailureReason
+  /** 是否通过复制捕获到图片选区（仅图片、无可翻译文本）。 */
+  hasImage?: boolean
+}
+
+/** 一次取词操作的结果，包含文字、锚点、失败原因、图片标志及可能发生的错误。 */
 export interface SelectionCaptureResult {
   text: string
   anchor?: SelectionAnchor
   error?: Error
+  /** 未取到文字时的失败原因，供上层选择对应提示。 */
+  reason?: SelectionFailureReason
+  /** 是否通过复制捕获到图片选区（仅图片、无可翻译文本）。 */
+  hasImage?: boolean
 }
 
-type CaptureSelection = (signal: AbortSignal) => Promise<string>
+type CaptureSelection = (signal: AbortSignal) => Promise<SelectionCaptureOutcome>
 
 /**
  * 在不阻塞主线程的前提下等待选区稳定，并支持请求失效时立即结束等待。
@@ -61,9 +83,13 @@ export class SelectionCaptureCoordinator {
   /**
    * 创建选中文字捕获协调器。
    * @param captureSelection 实际执行系统取词的异步函数。
+   * @param prefetchSelection 按钮显示期间执行只读预取的异步函数；不注入复制键、不写剪贴板。
    * @author zhenghq
    */
-  constructor(private readonly captureSelection: CaptureSelection) {}
+  constructor(
+    private readonly captureSelection: CaptureSelection,
+    private readonly prefetchSelection?: CaptureSelection
+  ) {}
 
   /**
    * 在显示“译”按钮后后台捕获当前选中文字，并缓存结果供按钮点击时消费。
@@ -74,7 +100,7 @@ export class SelectionCaptureCoordinator {
    */
   prepare(anchor: SelectionAnchor, delayMs = 0): Promise<SelectionCaptureResult | null> {
     this.preparedSelection = null
-    const pending = this.enqueue(anchor, true, delayMs)
+    const pending = this.enqueue(anchor, true, delayMs, true)
     this.pendingPreparation = pending
     void pending.then(() => {
       if (this.pendingPreparation === pending) this.pendingPreparation = null
@@ -151,7 +177,8 @@ export class SelectionCaptureCoordinator {
   private enqueue(
     anchor: SelectionAnchor | undefined,
     prepare: boolean,
-    delayMs: number
+    delayMs: number,
+    usePrefetch = false
   ): Promise<SelectionCaptureResult | null> {
     const requestId = ++this.latestRequestId
     this.abortActiveCapture()
@@ -162,12 +189,25 @@ export class SelectionCaptureCoordinator {
 
         const controller = new AbortController()
         this.activeCaptureController = controller
-        let text = ''
+        let outcome: SelectionCaptureOutcome = { text: '' }
         let error: Error | undefined
         try {
           await waitForCaptureDelay(delayMs, controller.signal)
           if (controller.signal.aborted || requestId !== this.latestRequestId) return null
-          text = normalizeSelectedText(await this.captureSelection(controller.signal))
+          const capture = usePrefetch && this.prefetchSelection
+            ? this.prefetchSelection
+            : this.captureSelection
+          const raw = await capture(controller.signal)
+          // 兼容返回纯字符串的底层实现，同时支持携带失败原因的结构化结果。
+          if (typeof raw === 'string') {
+            outcome = { text: normalizeSelectedText(raw) }
+          } else {
+            outcome = {
+              text: normalizeSelectedText(raw?.text ?? ''),
+              reason: raw?.reason,
+              hasImage: Boolean(raw?.hasImage)
+            }
+          }
         } catch (cause) {
           error = cause instanceof Error ? cause : new Error(String(cause))
         } finally {
@@ -177,7 +217,9 @@ export class SelectionCaptureCoordinator {
         }
 
         if (requestId !== this.latestRequestId || controller.signal.aborted) return null
-        const result: SelectionCaptureResult = { text }
+        const result: SelectionCaptureResult = { text: outcome.text }
+        if (outcome.reason) result.reason = outcome.reason
+        if (outcome.hasImage) result.hasImage = true
         if (anchor) result.anchor = anchor
         if (error) result.error = error
         if (prepare) this.preparedSelection = result

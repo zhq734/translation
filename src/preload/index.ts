@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Api,
   TranslatePayload,
+  ManualTranslateRequest,
   Settings,
   DeepLxStatus,
   DingTalkConfigPatch,
@@ -23,6 +24,25 @@ const api: Api = {
     const listener = (_event: unknown, payload: TranslatePayload): void => callback(payload)
     ipcRenderer.on('translate:result', listener)
     return () => ipcRenderer.removeListener('translate:result', listener)
+  },
+  /**
+   * 订阅主进程打开手动翻译模式的通知。
+   * @param callback 手动翻译打开回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onManualTranslateOpen(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('manual-translate:open', listener)
+    return () => ipcRenderer.removeListener('manual-translate:open', listener)
+  },
+  /**
+   * 请求主进程显示并固定手动翻译模式。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  openManualTranslate() {
+    ipcRenderer.send('manual-translate:open-request')
   },
   /**
    * 复制文本到系统剪贴板。
@@ -94,6 +114,14 @@ const api: Api = {
    */
   retranslate: (sourceLang: string, targetLang: string) =>
     ipcRenderer.invoke('popup:retranslate', sourceLang, targetLang),
+  /**
+   * 提交手动翻译请求。
+   * @param request 手动原文和语言偏好。
+   * @returns 翻译流程完成后的 Promise。
+   * @author zhenghq
+   */
+  translateManual: (request: ManualTranslateRequest): Promise<void> =>
+    ipcRenderer.invoke('manual-translate:submit', request),
 
   /**
    * 获取完整设置。

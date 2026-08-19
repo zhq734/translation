@@ -1,6 +1,22 @@
 /** 划词后的弹窗触发方式。 */
 export type TriggerMode = 'auto' | 'button' | 'hotkey'
 
+/** 翻译请求的来源，用于隔离划词与手动输入状态。 */
+export type TranslationOrigin = 'selection' | 'manual'
+
+/** 手动翻译允许提交的最大字符数。 */
+export const MANUAL_TRANSLATION_MAX_CHARS = 5000
+
+/** 手动翻译请求负载。 */
+export interface ManualTranslateRequest {
+  /** 待翻译的原文。 */
+  text: string
+  /** 源语言偏好。 */
+  sourceLang: string
+  /** 目标语言偏好。 */
+  targetLang: string
+}
+
 /** 翻译请求使用的代理方式。 */
 export type ProxyMode = 'system' | 'direct' | 'custom'
 
@@ -128,6 +144,10 @@ export interface MacOSQuarantineResult {
 
 export interface TranslatePayload {
   ok: boolean
+  /** 本次结果属于划词还是手动翻译。 */
+  origin?: TranslationOrigin
+  /** 当前请求序号，用于 Renderer 丢弃过期结果。 */
+  requestId?: number
   loading?: boolean
   original?: string
   translation?: string
@@ -252,6 +272,10 @@ export interface DeepLxStatus {
 export interface Api {
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
+  /** 订阅主进程打开手动翻译模式的通知。 */
+  onManualTranslateOpen(cb: () => void): () => void
+  /** 请求主进程显示并固定手动翻译模式。 */
+  openManualTranslate(): void
   copy(text: string): void
   hide(): void
   /** 从翻译弹窗打开设置页面。 */
@@ -266,6 +290,8 @@ export interface Api {
   translateSelection(): void
   /** 使用弹窗中的语言偏好重新翻译当前文本。 */
   retranslate(sourceLang: string, targetLang: string): Promise<void>
+  /** 提交一条手动翻译请求。 */
+  translateManual(request: ManualTranslateRequest): Promise<void>
 
   // 设置
   getSettings(): Promise<Settings>

@@ -245,7 +245,7 @@ The app does not open a conventional main window. After startup, it stays in the
 
 ## Grant Accessibility Permission
 
-Selection capture requires macOS Accessibility permission. The app uses a controlled system-level `Command+C` simulation to read selected text from the frontmost application.
+Selection capture requires macOS Accessibility permission. The app reads the selected text from the frontmost application through the Accessibility API (`AXSelectedText`) first, and only falls back to a controlled system-level `Command+C` simulation when direct reading is unavailable or empty.
 
 1. Open **System Settings → Privacy & Security → Accessibility**;
 2. Add and enable `划词翻译`;
@@ -254,6 +254,18 @@ Selection capture requires macOS Accessibility permission. The app uses a contro
 5. Select text again to verify the setup.
 
 Without this permission, the app cannot reliably read selected text from other applications. Automatic mode and manual triggers will show a permission hint and try to open the relevant macOS settings page.
+
+## How Selection Capture Works
+
+The app captures selected text with a native-read-first pipeline on every platform, and only touches the clipboard when direct reading cannot satisfy the request:
+
+- **macOS**: reads `AXSelectedText` from the frontmost app through Accessibility. If the app does not expose the text (for example password fields or apps without accessibility support), it falls back to a controlled `Command+C` and reads the clipboard.
+- **Windows**: reads the focused control's selection through UI Automation (`TextPattern.GetText`). If the app does not support `TextPattern` (for example some legacy Win32 controls or PDF readers), it falls back to a controlled `Ctrl+C` and reads the clipboard.
+- **Linux**: reads the X11 primary selection directly and never injects copy keys. On Wayland the primary selection may not be readable, so keep an XWayland-capable environment or verify behavior on the target compositor.
+
+When both direct reading and the copy fallback fail, the app distinguishes the failure and shows a targeted message for empty selection, capture timeout, unsupported app, or missing permission, instead of a generic prompt.
+
+Platform support note: direct reading is verified on macOS as the primary platform. Windows UI Automation coverage depends on the target application exposing a `TextPattern` selection, and should be verified against Chrome/Edge/Office/legacy Win32 applications on real Windows hardware before release; unsupported apps still work through the copy fallback.
 
 ## Quick Start
 
@@ -445,7 +457,7 @@ Runtime behavior:
 
 The data flow is:
 
-1. On macOS the app uses Accessibility and a controlled `Command+C`; on Windows it uses a controlled `Ctrl+C`; on Linux it reads the primary selection;
+1. The app prefers native selection reads without touching the clipboard: macOS reads `AXSelectedText` through Accessibility, Windows reads `TextPattern` through UI Automation, and Linux reads the X11 primary selection; only when direct reading is unavailable or empty does it fall back to a controlled `Command+C`/`Ctrl+C` copy;
 2. The selected text is sent to the provider selected by the fallback chain;
 3. When self-hosted DeepLX is configured, the request can stay on your machine, LAN, or private server;
 4. If an earlier provider is unavailable, the app may continue with Microsoft Translator, self-hosted/public DeepLX, Google, or MyMemory according to the configured priority;
