@@ -107,11 +107,11 @@ test('普通单击不应触发选区处理，常规划词拖拽仍应触发', ()
 })
 
 /**
- * 校验按钮模式双击只有明确确认存在选中文字时才显示“译”按钮。
+ * 校验选区状态解析辅助函数仍能识别空选区，但按钮显示不依赖该异步检查结果。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('双击没有选中文字时不应显示“译”按钮', () => {
+test('双击选区状态辅助解析应区分空选区与已选文字', () => {
   assert.equal(parseSelectionPresenceOutput('PRESENT\n'), 'present')
   assert.equal(parseSelectionPresenceOutput('EMPTY\r\n'), 'empty')
   assert.equal(parseSelectionPresenceOutput('无法读取'), 'unknown')
@@ -122,11 +122,12 @@ test('双击没有选中文字时不应显示“译”按钮', () => {
 })
 
 /**
- * 校验双击预取结果必须包含无错误的非空文字，才能确认显示“译”按钮。
+ * 校验预取结果判断辅助函数仍能区分可缓存文字与无效结果。
+ * 双击按钮本身会立即显示，预取结果只用于后续点击时消费。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('双击预取只有确认非空文字时才允许显示“译”按钮', () => {
+test('双击预取结果判断应区分可缓存文字与无效结果', () => {
   assert.equal(hasConfirmedSelectionText(null), false)
   assert.equal(hasConfirmedSelectionText({ text: '' }), false)
   assert.equal(hasConfirmedSelectionText({ text: '   \n  ' }), false)
@@ -618,23 +619,25 @@ test('显示“译”按钮期间只允许只读预取，不得启动完整选�
 })
 
 /**
- * 校验按钮模式双击时用只读直读预取选中文字：既确认选区非空又缓存文本，不发送复制快捷键。
+ * 校验按钮模式双击应先显示“译”按钮，再用只读直读后台预取选中文字，不发送复制快捷键。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('按钮模式双击应使用只读预取确认选区并缓存文本', () => {
+test('按钮模式双击应立即显示按钮并后台预取选区文字', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
-  const doubleClickStart = mainSource.indexOf('async function scheduleDoubleClickSelectionButton')
+  const doubleClickStart = mainSource.indexOf('function scheduleDoubleClickSelectionButton')
   const doubleClickEnd = mainSource.indexOf('/**', doubleClickStart)
   const doubleClickSource = mainSource.slice(doubleClickStart, doubleClickEnd)
 
   assert.ok(doubleClickStart >= 0)
   assert.ok(doubleClickEnd > doubleClickStart)
-  // 只有预取到非空文字才显示“译”按钮，无法确认时也必须保持隐藏。
-  assert.match(doubleClickSource, /hasConfirmedSelectionText\(prepared\)/u)
-  assert.doesNotMatch(doubleClickSource, /prepared\.reason === 'empty'/u)
-  assert.match(doubleClickSource, /showSelectionButton\(gesture\.anchor\)/u)
+  // 预取结果只用于缓存，不能阻塞按钮显示，否则系统直读失败时用户永远看不到按钮。
+  assert.doesNotMatch(doubleClickSource, /hasConfirmedSelectionText\(prepared\)/u)
+  assert.match(
+    doubleClickSource,
+    /lastSelectionAnchor\s*=\s*gesture\.anchor[\s\S]*?showSelectionButton\(gesture\.anchor\)[\s\S]*?await selectionCapture\.prepare/u
+  )
   assert.doesNotMatch(doubleClickSource, /selectionCapture\.capture|simulateCopy/u)
   assert.match(doubleClickSource, /selectionCapture\.prepare\(gesture\.anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u)
   assert.match(doubleClickSource, /gestureId !== latestSelectionGesture/u)

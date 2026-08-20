@@ -61,6 +61,7 @@ Typical use cases include:
   - **Show a floating button** and translate only after clicking `译`;
   - **Shortcut only**, without reacting to mouse selections.
 - **Floating translation popup** with the original text, translation, language direction, and the provider actually used.
+- **Local text-to-speech playback** from the popup speaker button, with click-to-stop behavior and no automatic playback. It uses voices installed by the operating system, requires no cloud TTS API or API key, and adds no service cost. Each language uses one stable preferred system voice instead of dynamically switching between ordinary, enhanced, male, or female voices. Chinese prefers the more natural `Xiaoxiao`, then the Mandarin voice `Meijia` on macOS, and only then falls back to `Tingting`; English avoids known novelty voices that can sound distorted or unusually quiet. Actual quality still depends on the voices installed in the operating system.
 - **Pinning support** so the popup stays open when clicking outside or when auto-hide is enabled.
 - **Configurable auto-hide**: disabled, 3, 5, 8, or 15 seconds.
 - **Automatic Chinese/English direction**: Chinese text defaults to English; other text defaults to Chinese when the target language is set to automatic mode.
@@ -292,6 +293,8 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 
 ### Popup controls
 
+- **Manual translation**: use the document icon to switch between selection translation and manual text input;
+- **Read translation aloud**: use the speaker icon to play the current translation with an installed system voice, then click it again to stop; playback never starts automatically;
 - **Pin**: pin or unpin the popup;
 - **Copy**: copy the current translation to the system clipboard;
 - **Language selectors**: change the source/target preference and translate again;

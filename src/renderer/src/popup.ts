@@ -16,6 +16,12 @@ import {
 } from '../../shared/manualTranslationBehavior'
 import type { Settings, TranslatePayload } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
+import {
+  createSpeechController,
+  type SpeechController,
+  type SpeechSynthesisLike,
+  type SpeechUtteranceLike
+} from './speech'
 
 const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement
@@ -28,6 +34,9 @@ const translationProviderEl = document.getElementById('translation-provider') as
 const copyBtn = document.getElementById('copy') as HTMLButtonElement
 const manualCopyBtn = document.getElementById('manual-copy') as HTMLButtonElement
 const manualModeBtn = document.getElementById('manual-mode') as HTMLButtonElement
+const speakBtn = document.getElementById('speak') as HTMLButtonElement
+const speakPlayIcon = speakBtn.querySelector('.speak-play-icon') as SVGElement
+const speakStopIcon = speakBtn.querySelector('.speak-stop-icon') as SVGElement
 const manualSourceEl = document.getElementById('manual-source') as HTMLTextAreaElement
 const manualClearBtn = document.getElementById('manual-clear') as HTMLButtonElement
 const manualCountEl = document.getElementById('manual-count') as HTMLElement
@@ -49,6 +58,21 @@ let pinned = false
 let currentSettings: Settings | null = null
 let mode: 'selection' | 'manual' = 'selection'
 let manualState: ManualTranslationState = createManualTranslationState()
+let selectionSpeechLanguage = ''
+let manualSpeechLanguage = ''
+
+const speechSynthesisApi: SpeechSynthesisLike | null = 'speechSynthesis' in window
+  ? window.speechSynthesis as unknown as SpeechSynthesisLike
+  : null
+const speechController: SpeechController = createSpeechController({
+  synthesis: speechSynthesisApi,
+  createUtterance(text: string): SpeechUtteranceLike {
+    return new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike
+  },
+  onSpeakingChange: () => syncSpeechButton(),
+  onComplete: () => flashStatus('朗读完成'),
+  onError: (message: string) => flashStatus(message)
+})
 
 /**
  * 初始化语言选择器、翻译 API 选择器和当前设置。
@@ -127,9 +151,96 @@ function flashStatus(message: string): void {
   statusEl.textContent = message
   if (statusTimer) clearTimeout(statusTimer)
   statusTimer = setTimeout(() => {
-    statusEl.textContent = ''
+    statusEl.textContent = mode === 'manual' ? manualStatus : selectionStatus
     statusTimer = null
   }, 1400)
+}
+
+/**
+ * 获取当前模式下可以朗读的有效译文。
+ * @returns 有效译文；当前没有可朗读内容时返回空字符串。
+ * @author zhenghq
+ */
+function getCurrentTranslation(): string {
+  if (mode === 'manual') {
+    if (
+      !manualState.translation
+      || manualState.loading
+      || Boolean(manualState.error)
+      || manualState.stale
+    ) return ''
+    return manualState.translation
+  }
+  return lastTranslation
+}
+
+/**
+ * 获取当前译文对应的实际目标语言。
+ * @returns 用于语音匹配的项目语言代码或语音语言代码。
+ * @author zhenghq
+ */
+function getCurrentSpeechLanguage(): string {
+  return mode === 'manual'
+    ? manualSpeechLanguage || targetLangEl.value
+    : selectionSpeechLanguage || targetLangEl.value
+}
+
+/**
+ * 同步朗读按钮的禁用、按下、图标和无障碍状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncSpeechButton(): void {
+  const translation = getCurrentTranslation()
+  const speaking = speechController.isSpeaking()
+  const disabled = !translation
+  speakBtn.disabled = disabled
+  speakBtn.setAttribute('aria-pressed', String(speaking))
+  const label = speaking
+    ? '停止朗读'
+    : disabled
+      ? '暂无可朗读的译文'
+      : speechController.canSpeak(getCurrentSpeechLanguage())
+        ? '朗读译文'
+        : '朗读译文（需要系统语音）'
+  speakBtn.title = label
+  speakBtn.setAttribute('aria-label', label)
+  speakPlayIcon.toggleAttribute('hidden', speaking)
+  speakStopIcon.toggleAttribute('hidden', !speaking)
+}
+
+/**
+ * 停止当前语音会话并立即刷新朗读按钮状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function stopSpeech(): void {
+  if (!speechController.isSpeaking()) {
+    syncSpeechButton()
+    return
+  }
+  speechController.stop()
+  syncSpeechButton()
+}
+
+/**
+ * 处理朗读按钮点击，在开始和停止之间切换当前语音会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function toggleSpeech(): void {
+  if (speechController.isSpeaking()) {
+    stopSpeech()
+    flashStatus('已停止朗读')
+    return
+  }
+  const translation = getCurrentTranslation()
+  if (!translation) {
+    syncSpeechButton()
+    return
+  }
+  speechController.start(translation, getCurrentSpeechLanguage())
+  syncSpeechButton()
 }
 
 /**
@@ -154,7 +265,9 @@ function renderSelection(payload: TranslatePayload): void {
   if (visible) syncLanguageSelectors(payload)
   if (payload.original !== undefined) lastOriginal = payload.original
   if (payload.loading) {
+    stopSpeech()
     lastTranslation = ''
+    selectionSpeechLanguage = ''
     selectionProvider = undefined
     selectionStatus = payload.targetLang
       ? `正在翻译为${langLabel(payload.targetLang)}…`
@@ -165,11 +278,14 @@ function renderSelection(payload: TranslatePayload): void {
     originalEl.textContent = payload.original ?? lastOriginal
     copyBtn.hidden = true
     if (visible) statusEl.textContent = selectionStatus
+    syncSpeechButton()
     return
   }
   resultEl.classList.remove('loading')
   if (!payload.ok) {
+    stopSpeech()
     lastTranslation = ''
+    selectionSpeechLanguage = ''
     selectionProvider = undefined
     selectionStatus = '翻译失败'
     if (visible) renderTranslationProviderResult()
@@ -177,8 +293,10 @@ function renderSelection(payload: TranslatePayload): void {
     originalEl.textContent = lastOriginal
     copyBtn.hidden = true
     if (visible) statusEl.textContent = selectionStatus
+    syncSpeechButton()
     return
   }
+  stopSpeech()
   const sourceName = payload.detectedLang
     ? langLabel(payload.detectedLang)
     : payload.sourceLang === 'auto' ? '自动检测' : langLabel(payload.sourceLang ?? '')
@@ -187,10 +305,12 @@ function renderSelection(payload: TranslatePayload): void {
   selectionStatus = `${sourceName} → ${targetName}`
   if (visible) renderTranslationProviderResult(selectionProvider)
   lastTranslation = payload.translation ?? ''
+  selectionSpeechLanguage = payload.targetLang ?? targetLangEl.value
   resultEl.textContent = lastTranslation
   originalEl.textContent = payload.original ?? lastOriginal
   copyBtn.hidden = !visible || !lastTranslation
   if (visible) statusEl.textContent = selectionStatus
+  syncSpeechButton()
 }
 
 /**
@@ -199,6 +319,13 @@ function renderSelection(payload: TranslatePayload): void {
  * @author zhenghq
  */
 function renderManualState(): void {
+  const manualTranslationValid = Boolean(
+    manualState.translation
+    && !manualState.loading
+    && !manualState.error
+    && !manualState.stale
+  )
+  if (mode === 'manual' && !manualTranslationValid) stopSpeech()
   if (manualSourceEl.value !== manualState.draft) manualSourceEl.value = manualState.draft
   manualCountEl.textContent = `${manualState.draft.length} / ${MANUAL_TRANSLATION_MAX_CHARS}`
   manualClearBtn.disabled = !manualState.draft && !manualState.translation && !manualState.error
@@ -224,6 +351,7 @@ function renderManualState(): void {
     || Boolean(manualState.error)
     || manualState.stale
   manualCopyBtn.disabled = manualCopyBtn.hidden
+  syncSpeechButton()
 }
 
 /**
@@ -244,6 +372,7 @@ function renderMode(): void {
   statusEl.textContent = manual ? manualStatus : selectionStatus
   renderTranslationProviderResult(manual ? manualProvider : selectionProvider)
   renderManualState()
+  syncSpeechButton()
 }
 
 /**
@@ -252,6 +381,7 @@ function renderMode(): void {
  * @author zhenghq
  */
 function enterManualMode(): void {
+  stopSpeech()
   mode = 'manual'
   renderMode()
   window.api.openManualTranslate()
@@ -263,6 +393,7 @@ function enterManualMode(): void {
  * @author zhenghq
  */
 function leaveManualMode(): void {
+  stopSpeech()
   mode = 'selection'
   renderMode()
 }
@@ -273,6 +404,7 @@ function leaveManualMode(): void {
  * @author zhenghq
  */
 function handleManualOpen(): void {
+  stopSpeech()
   mode = 'manual'
   renderMode()
   manualSourceEl.focus()
@@ -292,6 +424,8 @@ async function submitManualTranslation(): Promise<void> {
     return
   }
   if (!canSubmitManualTranslation(manualState)) return
+  stopSpeech()
+  manualSpeechLanguage = ''
   manualState = beginManualTranslation(manualState)
   renderManualState()
   try {
@@ -312,6 +446,7 @@ async function submitManualTranslation(): Promise<void> {
  * @author zhenghq
  */
 async function retranslateWithCurrentLanguages(): Promise<void> {
+  stopSpeech()
   if (mode === 'manual') {
     sourceLangEl.disabled = true
     targetLangEl.disabled = true
@@ -321,6 +456,7 @@ async function retranslateWithCurrentLanguages(): Promise<void> {
         targetLang: targetLangEl.value
       })
       if (manualState.translation) manualState = { ...manualState, stale: true }
+      manualSpeechLanguage = ''
       renderManualState()
     } catch {
       flashStatus('语言设置保存失败')
@@ -349,6 +485,7 @@ async function retranslateWithCurrentLanguages(): Promise<void> {
  * @author zhenghq
  */
 async function changeTranslationProvider(): Promise<void> {
+  stopSpeech()
   const previousProvider = currentSettings?.preferredTranslationProvider ?? 'auto'
   translationProviderEl.disabled = true
   try {
@@ -358,6 +495,7 @@ async function changeTranslationProvider(): Promise<void> {
     renderTranslationProviderOptions(currentSettings)
     if (mode === 'manual') {
       if (manualState.translation) manualState = { ...manualState, stale: true }
+      manualSpeechLanguage = ''
       renderManualState()
     } else if (lastOriginal) {
       await retranslateWithCurrentLanguages()
@@ -379,11 +517,15 @@ async function changeTranslationProvider(): Promise<void> {
  * @author zhenghq
  */
 function syncSettings(settings: Settings): void {
+  stopSpeech()
   currentSettings = settings
   sourceLangEl.value = settings.sourceLang
   targetLangEl.value = settings.targetLang
   renderTranslationProviderOptions(settings)
-  if (mode === 'manual' && manualState.translation) manualState = { ...manualState, stale: true }
+  if (mode === 'manual' && manualState.translation) {
+    manualState = { ...manualState, stale: true }
+    manualSpeechLanguage = ''
+  }
   renderMode()
 }
 
@@ -438,7 +580,10 @@ function openSettings(): void { window.api.openSettings() }
  * @returns 无返回值。
  * @author zhenghq
  */
-function closePopup(): void { window.api.hide() }
+function closePopup(): void {
+  stopSpeech()
+  window.api.hide()
+}
 
 /**
  * 处理 Escape 关闭和手动模式 Command/Ctrl+Enter 提交。
@@ -462,6 +607,8 @@ window.api.onResult((payload) => {
     const manualVisible = mode === 'manual'
     if (payload.original !== undefined && payload.loading && payload.original !== manualState.submittedText) return
     if (payload.loading) {
+      stopSpeech()
+      manualSpeechLanguage = ''
       manualState = {
         ...manualState,
         loading: true,
@@ -476,6 +623,8 @@ window.api.onResult((payload) => {
     } else if (!payload.ok) {
       // 校验错误可能没有经过“加载中”负载；只要原文仍对应当前提交，就接受主进程返回的请求序号。
       if (payload.original !== undefined && payload.original !== manualState.submittedText) return
+      stopSpeech()
+      manualSpeechLanguage = ''
       if (payload.requestId !== undefined) manualState = { ...manualState, requestId: payload.requestId }
       manualState = failManualTranslation(manualState, manualState.requestId, payload.error ?? '翻译失败')
       manualProvider = undefined
@@ -483,6 +632,7 @@ window.api.onResult((payload) => {
       if (manualVisible) statusEl.textContent = '翻译失败'
     } else {
       if (payload.requestId !== undefined && payload.requestId !== manualState.requestId) return
+      stopSpeech()
       manualState = {
         ...manualState,
         loading: false,
@@ -490,6 +640,7 @@ window.api.onResult((payload) => {
         translation: payload.translation ?? '',
         stale: manualState.stale || manualState.draft !== manualState.submittedText
       }
+      manualSpeechLanguage = payload.targetLang ?? targetLangEl.value
       manualProvider = payload.provider
       if (manualVisible) renderTranslationProviderResult(payload.provider)
       const sourceName = payload.detectedLang
@@ -508,11 +659,14 @@ sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguag
 targetLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
 translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
 manualModeBtn.addEventListener('click', () => mode === 'manual' ? leaveManualMode() : enterManualMode())
+speakBtn.addEventListener('click', toggleSpeech)
 manualSourceEl.addEventListener('input', () => {
   manualState = updateManualDraft(manualState, manualSourceEl.value)
   renderManualState()
 })
 manualClearBtn.addEventListener('click', () => {
+  stopSpeech()
+  manualSpeechLanguage = ''
   manualState = clearManualTranslation(manualState)
   renderManualState()
   manualSourceEl.focus()
@@ -527,6 +681,10 @@ document.addEventListener('keydown', handleKeydown)
 window.api.onManualTranslateOpen(handleManualOpen)
 window.api.onPinnedChanged(renderPinnedState)
 window.api.onSettingsChanged(syncSettings)
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.addEventListener('voiceschanged', syncSpeechButton)
+}
 renderPinnedState(false)
 renderMode()
+syncSpeechButton()
 void initializeSelectors()

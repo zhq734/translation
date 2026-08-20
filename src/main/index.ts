@@ -53,7 +53,6 @@ import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
   decideSelectionAction,
-  hasConfirmedSelectionText,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   type SelectionGesture
@@ -381,8 +380,8 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
- * 处理按钮模式的双击选词，用只读直读预取选中文字：既能确认选区非空，又能缓存文本。
- * 全程不发送复制快捷键、不写剪贴板；预取结果供点击“译”按钮时直接消费。
+ * 处理按钮模式的双击选词：立即显示“译”按钮，再用只读直读后台预取选中文字。
+ * 全程不发送复制快捷键、不写剪贴板；预取成功时供点击按钮直接消费，失败时由完整取词兜底。
  * @param gesture 当前双击选词手势及按钮锚点。
  * @returns 选区检查完成后的 Promise。
  * @author zhenghq
@@ -393,12 +392,15 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
   hideSelectionButton()
   lastSelectionAnchor = gesture.anchor
 
-  // 双击场景：先等待系统提交选区，再用只读直读预取选中文字；不发送复制快捷键、不写剪贴板。
+  // 双击场景先显示按钮，避免系统辅助功能直读失败时用户完全看不到入口。
+  showSelectionButton(gesture.anchor)
+
+  // 按钮显示后再等待系统提交选区并做只读预取；不发送复制快捷键、不写剪贴板。
+  // 预取结果只用于点击时消费，失败时由点击流程继续走完整取词兜底。
   const prepared = await selectionCapture.prepare(gesture.anchor, SELECTION_SETTLE_DELAY_MS)
   if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  // 双击只有明确预取到非空文字时才显示按钮；无法确认时保持隐藏，避免空白双击误弹提示。
-  if (!hasConfirmedSelectionText(prepared)) return
-  showSelectionButton(gesture.anchor)
+  // 预取结果只用于缓存，按钮已经显示；点击时会优先消费缓存，空结果则继续完整取词。
+  void prepared
 }
 
 /**

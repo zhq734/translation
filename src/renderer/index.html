@@ -20,8 +20,20 @@
           <select id="target-lang" title="目标语言"></select>
         </div>
         <div class="header-actions">
-          <button id="manual-mode" class="header-action-button mode-button" type="button" title="切换手动翻译" aria-label="切换手动翻译" aria-pressed="false">
-            手动
+          <button id="manual-mode" class="header-action-button" type="button" title="切换手动翻译" aria-label="切换手动翻译" aria-pressed="false">
+            <svg class="header-action-icon manual-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+              <path d="M14 3v6h6" />
+              <path d="M8 13h8M8 17h5" />
+            </svg>
+          </button>
+          <button id="speak" class="header-action-button" type="button" title="暂无可朗读的译文" aria-label="暂无可朗读的译文" aria-pressed="false" disabled>
+            <svg class="header-action-icon speak-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path class="speak-play-icon" d="M4 9v6h4l5 4V5L8 9H4Z" />
+              <path class="speak-play-icon" d="M16 9.5a4 4 0 0 1 0 5" />
+              <path class="speak-play-icon" d="M18.5 7a7.5 7.5 0 0 1 0 10" />
+              <path class="speak-stop-icon" d="M7 7h10v10H7z" hidden />
+            </svg>
           </button>
           <button id="pin" class="header-action-button" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
             <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
