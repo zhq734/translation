@@ -30,10 +30,10 @@ function legacyWithoutAi(schemaVersion: number): Record<string, unknown> {
   }
 }
 
-test('schema 8 及更早版本应升级到 schema 9 并补齐 AI 默认值', () => {
+test('schema 8 及更早版本应升级到当前版本并补齐 AI 默认值', () => {
   for (const version of [1, 4, 7, 8]) {
     const settings = normalizeSettings(legacyWithoutAi(version) as never)
-    assert.equal(settings.schemaVersion, 10, `schema ${version} 应升级到 10`)
+    assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION, `schema ${version} 应升级到当前版本`)
     assert.equal(settings.aiEnabled, false)
     assert.equal(settings.aiProtocol, 'ollama')
     assert.equal(settings.aiBaseUrl, DEFAULT_AI_BASE_URL)
@@ -43,12 +43,28 @@ test('schema 8 及更早版本应升级到 schema 9 并补齐 AI 默认值', () 
 })
 
 test('默认设置应包含关闭的 AI 通道和本地 Ollama 地址', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 10)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 11)
   assert.equal(DEFAULT_SETTINGS.aiEnabled, false)
   assert.equal(DEFAULT_SETTINGS.aiProtocol, 'ollama')
   assert.equal(DEFAULT_SETTINGS.aiBaseUrl, DEFAULT_AI_BASE_URL)
   assert.equal(DEFAULT_SETTINGS.aiModel, '')
   assert.equal(DEFAULT_SETTINGS.aiApiKeyConfigured, false)
+  assert.equal(DEFAULT_SETTINGS.speechProvider, 'system')
+})
+
+test('语音引擎默认使用系统内置语音', () => {
+  assert.equal(normalizeSettings({ schemaVersion: 10 } as never).speechProvider, 'system')
+})
+
+test('旧设置缺少语音引擎字段时应迁移为系统内置语音', () => {
+  const settings = normalizeSettings(legacyWithoutAi(10) as never)
+  assert.equal(settings.speechProvider, 'system')
+  assert.equal(settings.schemaVersion, 11)
+})
+
+test('Edge 语音引擎设置应保留，非法值应回退系统内置语音', () => {
+  assert.equal(normalizeSettings({ schemaVersion: 10, speechProvider: 'edge' } as never).speechProvider, 'edge')
+  assert.equal(normalizeSettings({ schemaVersion: 10, speechProvider: 'invalid' } as never).speechProvider, 'system')
 })
 
 test('未知协议应回退为默认协议且不写入规范化设置', () => {

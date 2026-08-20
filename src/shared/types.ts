@@ -20,6 +20,9 @@ export interface ManualTranslateRequest {
 /** 翻译请求使用的代理方式。 */
 export type ProxyMode = 'system' | 'direct' | 'custom'
 
+/** 译文朗读使用的语音引擎。 */
+export type SpeechProvider = 'system' | 'edge'
+
 /** 可供用户指定为首选项的翻译 API。 */
 export type TranslationProviderId =
   | 'dingtalk'
@@ -205,6 +208,20 @@ export interface Settings {
   aiApiKeyConfigured: boolean
   /** 用户在弹窗底部选择的首选翻译 API。 */
   preferredTranslationProvider: TranslationProviderPreference
+  /** 译文朗读使用的语音引擎，默认使用系统内置语音。 */
+  speechProvider: SpeechProvider
+}
+
+/** Edge 在线语音合成结果。 */
+export interface EdgeSpeechResult {
+  /** 是否成功生成音频。 */
+  ok: boolean
+  /** 临时音频数据，成功时存在。 */
+  audio?: Uint8Array
+  /** 音频 MIME 类型。 */
+  mimeType?: string
+  /** 脱敏后的失败原因。 */
+  error?: string
 }
 
 export interface DingTalkConfigPatch {
@@ -292,6 +309,28 @@ export interface Api {
   retranslate(sourceLang: string, targetLang: string): Promise<void>
   /** 提交一条手动翻译请求。 */
   translateManual(request: ManualTranslateRequest): Promise<void>
+
+  /**
+   * 请求主进程使用 Edge 在线服务合成一段临时音频。
+   * @param text 待朗读译文。
+   * @param language 目标语言代码。
+   * @param requestId 可选的请求标识，由 Renderer 生成并用于取消。
+   * @returns 临时音频或脱敏错误。
+   * @author zhenghq
+   */
+  synthesizeEdgeSpeech(
+    text: string,
+    language: string,
+    requestId?: string
+  ): Promise<EdgeSpeechResult>
+
+  /**
+   * 取消主进程中指定的 Edge 在线语音请求。
+   * @param requestId Renderer 生成的请求标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelEdgeSpeech(requestId: string): void
 
   // 设置
   getSettings(): Promise<Settings>

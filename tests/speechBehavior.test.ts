@@ -154,7 +154,7 @@ test('播放会话应支持停止、完成和旧回调失效', () => {
   assert.equal(cancelCount, 2)
 })
 
-test('创建语音片段时应显式使用满音量、标准音调和舒缓语速', () => {
+test('创建语音片段时应显式使用满音量、标准音调和正常一倍语速', () => {
   const utterances: SpeechUtteranceLike[] = []
   const controller = createSpeechController({
     synthesis: {
@@ -172,7 +172,7 @@ test('创建语音片段时应显式使用满音量、标准音调和舒缓语�
   assert.equal(controller.start('A clear sentence.', 'EN').ok, true)
   assert.equal(utterances[0]?.volume, 1)
   assert.equal(utterances[0]?.pitch, 1)
-  assert.equal(utterances[0]?.rate, 0.9)
+  assert.equal(utterances[0]?.rate, 1)
 })
 
 test('替换播放时同步触发的旧错误回调不应覆盖新会话', () => {

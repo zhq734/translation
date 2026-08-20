@@ -22,6 +22,11 @@ import {
   type SpeechSynthesisLike,
   type SpeechUtteranceLike
 } from './speech'
+import {
+  createEdgePlaybackController,
+  type EdgeAudioLike,
+  type EdgePlaybackController
+} from './edgeSpeechPlayback'
 
 const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement
@@ -60,11 +65,12 @@ let mode: 'selection' | 'manual' = 'selection'
 let manualState: ManualTranslationState = createManualTranslationState()
 let selectionSpeechLanguage = ''
 let manualSpeechLanguage = ''
+let speechOperationId = 0
 
 const speechSynthesisApi: SpeechSynthesisLike | null = 'speechSynthesis' in window
   ? window.speechSynthesis as unknown as SpeechSynthesisLike
   : null
-const speechController: SpeechController = createSpeechController({
+const systemSpeechController: SpeechController = createSpeechController({
   synthesis: speechSynthesisApi,
   createUtterance(text: string): SpeechUtteranceLike {
     return new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike
@@ -73,6 +79,56 @@ const speechController: SpeechController = createSpeechController({
   onComplete: () => flashStatus('朗读完成'),
   onError: (message: string) => flashStatus(message)
 })
+const edgeSpeechController: EdgePlaybackController = createEdgePlaybackController({
+  synthesize: (text, language, signal) => {
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    let aborted = signal?.aborted === true
+
+    /**
+     * 将 Renderer 内的取消信号转换为可跨 contextBridge 传递的请求标识。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    const abort = (): void => {
+      aborted = true
+      window.api.cancelEdgeSpeech(requestId)
+    }
+
+    signal?.addEventListener('abort', abort, { once: true })
+    if (aborted) return Promise.resolve({ ok: false, error: 'Edge 语音请求已取消' })
+    return window.api
+      .synthesizeEdgeSpeech(text, language, requestId)
+      .then((result) => aborted
+        ? { ok: false, error: 'Edge 语音请求已取消' }
+        : result)
+      .finally(() => signal?.removeEventListener('abort', abort))
+  },
+  createAudio(url: string): EdgeAudioLike {
+    const audio = document.createElement('audio')
+    audio.preload = 'auto'
+    audio.volume = 1
+    audio.muted = false
+    audio.src = url
+    document.body.append(audio)
+    return audio as unknown as EdgeAudioLike
+  },
+  createObjectUrl: (blob) => URL.createObjectURL(blob),
+  revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+  onSynthesisStart: () => flashStatus('正在请求 Edge 语音…', 20_000),
+  onAudioReady: (byteLength) => flashStatus(`已收到 Edge 音频（${byteLength} 字节）`, 5000),
+  onPlaybackStart: () => flashStatus('正在播放 Edge 语音…', 5000),
+  onSpeakingChange: () => syncSpeechButton(),
+  onComplete: () => flashStatus('朗读完成')
+})
+
+/**
+ * 判断系统或 Edge 语音控制器是否存在有效会话。
+ * @returns 正在合成或播放时返回 true。
+ * @author zhenghq
+ */
+function isSpeechPlaying(): boolean {
+  return systemSpeechController.isSpeaking() || edgeSpeechController.isSpeaking()
+}
 
 /**
  * 初始化语言选择器、翻译 API 选择器和当前设置。
@@ -147,13 +203,13 @@ function renderTranslationProviderResult(actualProvider?: TranslatePayload['prov
  * @returns 无返回值。
  * @author zhenghq
  */
-function flashStatus(message: string): void {
+function flashStatus(message: string, durationMs = 1400): void {
   statusEl.textContent = message
   if (statusTimer) clearTimeout(statusTimer)
   statusTimer = setTimeout(() => {
     statusEl.textContent = mode === 'manual' ? manualStatus : selectionStatus
     statusTimer = null
-  }, 1400)
+  }, durationMs)
 }
 
 /**
@@ -192,7 +248,7 @@ function getCurrentSpeechLanguage(): string {
  */
 function syncSpeechButton(): void {
   const translation = getCurrentTranslation()
-  const speaking = speechController.isSpeaking()
+  const speaking = isSpeechPlaying()
   const disabled = !translation
   speakBtn.disabled = disabled
   speakBtn.setAttribute('aria-pressed', String(speaking))
@@ -200,7 +256,9 @@ function syncSpeechButton(): void {
     ? '停止朗读'
     : disabled
       ? '暂无可朗读的译文'
-      : speechController.canSpeak(getCurrentSpeechLanguage())
+      : currentSettings?.speechProvider === 'edge'
+        ? '使用 Edge 在线语音朗读译文'
+        : systemSpeechController.canSpeak(getCurrentSpeechLanguage())
         ? '朗读译文'
         : '朗读译文（需要系统语音）'
   speakBtn.title = label
@@ -215,11 +273,13 @@ function syncSpeechButton(): void {
  * @author zhenghq
  */
 function stopSpeech(): void {
-  if (!speechController.isSpeaking()) {
+  speechOperationId += 1
+  if (!isSpeechPlaying()) {
     syncSpeechButton()
     return
   }
-  speechController.stop()
+  systemSpeechController.stop()
+  edgeSpeechController.stop()
   syncSpeechButton()
 }
 
@@ -228,8 +288,8 @@ function stopSpeech(): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function toggleSpeech(): void {
-  if (speechController.isSpeaking()) {
+async function toggleSpeech(): Promise<void> {
+  if (isSpeechPlaying()) {
     stopSpeech()
     flashStatus('已停止朗读')
     return
@@ -239,7 +299,17 @@ function toggleSpeech(): void {
     syncSpeechButton()
     return
   }
-  speechController.start(translation, getCurrentSpeechLanguage())
+  const language = getCurrentSpeechLanguage()
+  const operationId = ++speechOperationId
+  if (currentSettings?.speechProvider === 'edge') {
+    const result = await edgeSpeechController.start(translation, language)
+    if (operationId === speechOperationId && !result.ok && result.error !== 'Edge 语音请求已取消') {
+      flashStatus(`Edge 在线语音暂不可用：${result.error ?? '未知错误'}，已切换到系统语音`, 8000)
+      systemSpeechController.start(translation, language)
+    }
+  } else {
+    systemSpeechController.start(translation, language)
+  }
   syncSpeechButton()
 }
 
@@ -517,12 +587,18 @@ async function changeTranslationProvider(): Promise<void> {
  * @author zhenghq
  */
 function syncSettings(settings: Settings): void {
-  stopSpeech()
+  const previousSettings = currentSettings
+  const speechProviderChanged = currentSettings?.speechProvider !== settings.speechProvider
+  if (speechProviderChanged) stopSpeech()
   currentSettings = settings
   sourceLangEl.value = settings.sourceLang
   targetLangEl.value = settings.targetLang
   renderTranslationProviderOptions(settings)
-  if (mode === 'manual' && manualState.translation) {
+  const translationSettingsChanged = !previousSettings
+    || previousSettings.sourceLang !== settings.sourceLang
+    || previousSettings.targetLang !== settings.targetLang
+    || previousSettings.preferredTranslationProvider !== settings.preferredTranslationProvider
+  if (translationSettingsChanged && mode === 'manual' && manualState.translation) {
     manualState = { ...manualState, stale: true }
     manualSpeechLanguage = ''
   }
@@ -659,7 +735,7 @@ sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguag
 targetLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
 translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
 manualModeBtn.addEventListener('click', () => mode === 'manual' ? leaveManualMode() : enterManualMode())
-speakBtn.addEventListener('click', toggleSpeech)
+speakBtn.addEventListener('click', () => void toggleSpeech())
 manualSourceEl.addEventListener('input', () => {
   manualState = updateManualDraft(manualState, manualSourceEl.value)
   renderManualState()

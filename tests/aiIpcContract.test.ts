@@ -41,6 +41,16 @@ test('preload 应暴露 setAiConfig、clearAiApiKey、listAiModels 和 checkAi �
   assert.match(source, /checkAi: \(\): Promise<AiCheckStatus> => ipcRenderer\.invoke\('ai:check'\)/u)
 })
 
+test('主进程与 preload 应暴露受限 Edge 语音合成 IPC', () => {
+  const main = readFileSync('src/main/index.ts', 'utf8')
+  const preload = readFileSync('src/preload/index.ts', 'utf8')
+  assert.match(main, /ipcMain\.handle\('speech:edge-synthesize'/u)
+  assert.match(preload, /synthesizeEdgeSpeech:[\s\S]*?\.invoke\(\s*'speech:edge-synthesize'/u)
+  assert.match(preload, /synthesizeEdgeSpeech: \(text: string, language: string, requestId\?: string\)/u)
+  assert.match(preload, /cancelEdgeSpeech: \(requestId: string\): void => ipcRenderer\.send\('speech:edge-cancel'/u)
+  assert.doesNotMatch(preload, /signal\?\.addEventListener/u)
+})
+
 test('配置保存成功后广播的设置不应包含 API Key 明文', async () => {
   const { AiConfigurationService } = await import('../src/main/aiConfig.ts')
   const { normalizeSettings } = await import('../src/shared/settingsDefaults.ts')

@@ -61,7 +61,7 @@ Typical use cases include:
   - **Show a floating button** and translate only after clicking `译`;
   - **Shortcut only**, without reacting to mouse selections.
 - **Floating translation popup** with the original text, translation, language direction, and the provider actually used.
-- **Local text-to-speech playback** from the popup speaker button, with click-to-stop behavior and no automatic playback. It uses voices installed by the operating system, requires no cloud TTS API or API key, and adds no service cost. Each language uses one stable preferred system voice instead of dynamically switching between ordinary, enhanced, male, or female voices. Chinese prefers the more natural `Xiaoxiao`, then the Mandarin voice `Meijia` on macOS, and only then falls back to `Tingting`; English avoids known novelty voices that can sound distorted or unusually quiet. Actual quality still depends on the voices installed in the operating system.
+- **Selectable text-to-speech playback** from the popup speaker button, with click-to-stop behavior and no automatic playback. The default is the free, offline-first system voice engine and requires no API key. Users can optionally enable the free Edge online neural voice engine to improve languages whose installed system voices sound mechanical. Edge uses stable preferred voices, requires no Azure credential, and automatically falls back to the system engine when synthesis or playback fails.
 - **Pinning support** so the popup stays open when clicking outside or when auto-hide is enabled.
 - **Configurable auto-hide**: disabled, 3, 5, 8, or 15 seconds.
 - **Automatic Chinese/English direction**: Chinese text defaults to English; other text defaults to Chinese when the target language is set to automatic mode.
@@ -294,7 +294,7 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 ### Popup controls
 
 - **Manual translation**: use the document icon to switch between selection translation and manual text input;
-- **Read translation aloud**: use the speaker icon to play the current translation with an installed system voice, then click it again to stop; playback never starts automatically;
+- **Read translation aloud**: use the speaker icon to play the current translation with the configured speech engine, then click it again to stop; playback never starts automatically, and Edge failures automatically fall back to a system voice;
 - **Pin**: pin or unpin the popup;
 - **Copy**: copy the current translation to the system clipboard;
 - **Language selectors**: change the source/target preference and translate again;
@@ -312,10 +312,18 @@ Settings are saved automatically and take effect immediately.
 | Trigger mode | Automatic, selection button, or shortcut only | Selection button |
 | Global shortcut | Electron accelerator such as `Alt+T` or `Cmd+Shift+Y` | `Alt+T` |
 | Auto-hide | 0, 3, 5, 8, or 15 seconds | Disabled |
+| Speech engine | Installed system voices or the free Edge online neural voice engine | System voices |
 | Proxy mode | System proxy, direct connection, or custom proxy | System proxy |
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
 | Microsoft Translator | Key-free Bing web translator channel | Disabled |
+
+### Speech engines
+
+- **System voices (default)** use the operating system's Web Speech voices. Reading a translation does not add an application-side network request and requires no account, API key, or additional fee. The app selects a stable preferred voice per language: Chinese follows `Xiaoxiao → Meijia → Tingting`, while English avoids known novelty voices that can sound distorted or unusually quiet. Voice quality and language availability still depend on the operating system.
+- **Edge online neural voices** are opt-in and generate temporary audio through the Microsoft Edge read-aloud service without an Azure account, subscription key, or region. Chinese uses `zh-CN-XiaoxiaoNeural`, English uses `en-US-JennyNeural`, and fixed voices are also provided for Japanese, Korean, French, German, and Spanish. Playback uses a slightly slower, more relaxed speaking rate.
+- Edge mode requires network access and sends the translation being read to Microsoft's online service. Requests reuse the proxy resolution from the translation network session. HTTP/HTTPS proxies are supported; Edge WebSocket connections through SOCKS proxies are currently unsupported, so unsupported proxies, timeouts, empty audio, network failures, or playback errors automatically fall back to the system engine.
+- The free Edge read-aloud endpoint is unofficial and can change or stop working without notice. The app does not log the text being read or persist generated audio; temporary audio is released after playback or cancellation.
 
 ### Configuration files
 
@@ -464,11 +472,12 @@ The data flow is:
 2. The selected text is sent to the provider selected by the fallback chain;
 3. When self-hosted DeepLX is configured, the request can stay on your machine, LAN, or private server;
 4. If an earlier provider is unavailable, the app may continue with Microsoft Translator, self-hosted/public DeepLX, Google, or MyMemory according to the configured priority;
-5. The translation is shown locally in the popup and is copied only when the user chooses to copy it.
+5. The translation is shown locally in the popup and is copied only when the user chooses to copy it;
+6. Keeping the default **System voices** option adds no application-side network request for speech. Only after the user explicitly selects **Edge online neural voices** and starts playback is the current translation sent to Microsoft's online read-aloud service to generate temporary audio.
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
 
-This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
+This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. Edge online speech also requires no user credential: only the selected engine is stored, while read-aloud text is not logged and generated audio is not persisted. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 
 ## Project Structure
 

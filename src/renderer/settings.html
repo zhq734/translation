@@ -166,6 +166,18 @@
             </div>
             <p class="field-hint">仅 macOS 生效；点击 Dock 栏图标会直接进入设置页面。</p>
           </section>
+
+          <section>
+            <h2>语音朗读</h2>
+            <div class="row">
+              <label for="speech-provider">语音引擎</label>
+              <select id="speech-provider" aria-describedby="speech-provider-hint">
+                <option value="system">系统内置语音（默认）</option>
+                <option value="edge">Edge 在线神经网络语音</option>
+              </select>
+            </div>
+            <p id="speech-provider-hint" class="field-hint"></p>
+          </section>
         </div>
 
         <div

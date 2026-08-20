@@ -1,8 +1,8 @@
-import type { AiProtocol, ProxyMode, Settings, TriggerMode } from './types'
+import type { AiProtocol, ProxyMode, Settings, SpeechProvider, TriggerMode } from './types'
 import { DEFAULT_AI_BASE_URL, isAiProtocol } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 10
+export const SETTINGS_SCHEMA_VERSION = 11
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -26,7 +26,8 @@ export const DEFAULT_SETTINGS: Settings = {
   aiBaseUrl: DEFAULT_AI_BASE_URL,
   aiModel: '',
   aiApiKeyConfigured: false,
-  preferredTranslationProvider: 'auto'
+  preferredTranslationProvider: 'auto',
+  speechProvider: 'system'
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -52,6 +53,16 @@ function isTriggerMode(value: unknown): value is TriggerMode {
  */
 function isProxyMode(value: unknown): value is ProxyMode {
   return value === 'system' || value === 'direct' || value === 'custom'
+}
+
+/**
+ * 判断语音引擎是否为当前版本支持的值。
+ * @param value 待校验的语音引擎。
+ * @returns 是否为合法语音引擎。
+ * @author zhenghq
+ */
+function isSpeechProvider(value: unknown): value is SpeechProvider {
+  return value === 'system' || value === 'edge'
 }
 
 /**
@@ -108,6 +119,9 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     aiProtocol: isAiProtocol(rawSettings.aiProtocol) ? rawSettings.aiProtocol : 'ollama',
     aiBaseUrl: normalizeAiBaseUrl(rawSettings.aiBaseUrl === undefined ? DEFAULT_AI_BASE_URL : String(merged.aiBaseUrl || "").trim()),
     aiModel: String(merged.aiModel || '').trim(),
-    aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true
+    aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true,
+    speechProvider: isSpeechProvider(rawSettings.speechProvider)
+      ? rawSettings.speechProvider
+      : 'system'
   }
 }

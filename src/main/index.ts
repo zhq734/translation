@@ -30,7 +30,8 @@ import {
   resetAiTranslationRuntime,
   translate
 } from './translate'
-import { applyTranslationProxy, translationFetch } from './network'
+import { applyTranslationProxy, createTranslationWebSocket, translationFetch } from './network'
+import { createEdgeSpeechClient } from './edgeSpeech'
 import {
   createPopup,
   showPopup,
@@ -75,6 +76,7 @@ import type {
   ManualTranslateRequest,
   TranslationOrigin
 } from '../shared/types'
+import type { EdgeSpeechResult } from '../shared/types'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
@@ -103,6 +105,8 @@ let aiConfiguration: AiConfigurationService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
 let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
+const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
+const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 // 按钮显示期间用只读直读做后台预取，点击按钮时优先消费缓存；
@@ -142,6 +146,56 @@ function getAiConfiguration(): AiConfigurationService {
 function getUpdateManager(): UpdateManager {
   if (!updateManager) throw new Error('自动更新服务尚未初始化')
   return updateManager
+}
+
+/**
+ * 通过主进程请求 Edge 在线语音并隔离请求取消状态。
+ * @param requestId Renderer 请求标识。
+ * @param text 待朗读译文。
+ * @param language 目标语言代码。
+ * @returns 临时音频或脱敏错误。
+ * @author zhenghq
+ */
+async function synthesizeEdgeSpeech(
+  requestId: string,
+  text: string,
+  language: string
+): Promise<EdgeSpeechResult> {
+  const normalizedText = String(text ?? '').trim()
+  if (!normalizedText) return { ok: false, error: '朗读文本为空' }
+  console.log('[edge-speech] IPC 请求开始', {
+    requestId,
+    language,
+    textLength: normalizedText.length
+  })
+  const controller = new AbortController()
+  edgeSpeechRequests.set(requestId, controller)
+  try {
+    const result = await edgeSpeechClient.synthesize(normalizedText, String(language ?? ''), controller.signal)
+    console.log('[edge-speech] IPC 请求完成', {
+      requestId,
+      ok: result.ok,
+      audioBytes: result.audio?.byteLength ?? 0,
+      error: result.error
+    })
+    return result
+  } catch {
+    console.error('[edge-speech] IPC 请求异常', { requestId })
+    return { ok: false, error: 'Edge 语音服务暂不可用' }
+  } finally {
+    edgeSpeechRequests.delete(requestId)
+  }
+}
+
+/**
+ * 取消主进程中尚未完成的 Edge 语音请求。
+ * @param requestId Renderer 请求标识。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function cancelEdgeSpeech(requestId: string): void {
+  edgeSpeechRequests.get(String(requestId))?.abort()
+  edgeSpeechRequests.delete(String(requestId))
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -1117,6 +1171,12 @@ function registerIpc(): void {
   ipcMain.on('manual-translate:open-request', () => openManualTranslation())
   ipcMain.handle('manual-translate:submit', (_event, request: unknown) =>
     translateManualRequest(request)
+  )
+  ipcMain.on('speech:edge-cancel', (_event, requestId: unknown) => {
+    cancelEdgeSpeech(String(requestId ?? ''))
+  })
+  ipcMain.handle('speech:edge-synthesize', (_event, requestId: unknown, text: unknown, language: unknown) =>
+    synthesizeEdgeSpeech(String(requestId ?? ''), String(text ?? ''), String(language ?? ''))
   )
   ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string) => {
     const sourcePreference = sourceLang || 'auto'

@@ -7,6 +7,7 @@ import type {
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
   Settings,
+  SpeechProvider,
   TriggerMode,
   MacOSQuarantineResult,
   UpdateStatus
@@ -19,6 +20,8 @@ const triggerHint = document.getElementById('trigger-hint') as HTMLElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
+const speechProvider = document.getElementById('speech-provider') as HTMLSelectElement
+const speechProviderHint = document.getElementById('speech-provider-hint') as HTMLElement
 const proxyMode = document.getElementById('proxy-mode') as HTMLSelectElement
 const proxyRules = document.getElementById('proxy-rules') as HTMLInputElement
 const proxyBypassRules = document.getElementById('proxy-bypass-rules') as HTMLInputElement
@@ -311,6 +314,18 @@ function updateProxyFields(mode: string): void {
 }
 
 /**
+ * 根据语音引擎更新离线能力、隐私和失败回退说明。
+ * @param provider 当前语音引擎。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateSpeechProviderHint(provider: SpeechProvider): void {
+  speechProviderHint.textContent = provider === 'edge'
+    ? '需要网络，朗读文本会发送到微软在线服务；该免费非官方接口可能随服务调整失效，失败时会自动回退系统语音。'
+    : '免费、无需网络，音质取决于操作系统已安装的语音；不会将朗读文本发送到在线服务。'
+}
+
+/**
  * 将完整设置同步到页面控件。
  * @param settings 当前完整设置。
  * @returns 无返回值。
@@ -322,6 +337,7 @@ function renderSettings(settings: Settings): void {
   triggerMode.value = settings.triggerMode
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
+  speechProvider.value = settings.speechProvider
   deeplxUrl.value = settings.deepLxUrl
   proxyMode.value = settings.proxyMode
   proxyRules.value = settings.proxyRules
@@ -357,6 +373,7 @@ function renderSettings(settings: Settings): void {
   }
   autohide.value = String(settings.autoHideMs)
   updateTriggerHint(settings.triggerMode)
+  updateSpeechProviderHint(settings.speechProvider)
   updateProxyFields(settings.proxyMode)
 }
 
@@ -595,6 +612,17 @@ function saveAutoHide(): void {
  */
 function saveDockIconVisibility(): void {
   void save({ showDockIcon: showDockIcon.checked })
+}
+
+/**
+ * 保存译文朗读使用的语音引擎并更新隐私说明。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveSpeechProvider(): void {
+  const provider = speechProvider.value as SpeechProvider
+  updateSpeechProviderHint(provider)
+  void save({ speechProvider: provider })
 }
 
 /**
@@ -1032,6 +1060,7 @@ triggerMode.addEventListener('change', saveTriggerMode)
 hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
+speechProvider.addEventListener('change', saveSpeechProvider)
 proxyMode.addEventListener('change', saveProxyMode)
 proxyRules.addEventListener('change', saveProxyRules)
 proxyBypassRules.addEventListener('change', saveProxyBypassRules)

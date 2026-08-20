@@ -49,7 +49,7 @@ const LOW_FIDELITY_ENGLISH_VOICE_NAMES = new Set([
 
 const DEFAULT_SPEECH_VOLUME = 1
 const DEFAULT_SPEECH_PITCH = 1
-const DEFAULT_SPEECH_RATE = 0.9
+const DEFAULT_SPEECH_RATE = 1
 
 const SPEECH_LANGUAGE_CODES: Readonly<Record<string, string>> = {
   AR: 'ar-SA',

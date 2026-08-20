@@ -10,7 +10,8 @@ import type {
   AiCheckStatus,
   AiModelListResult,
   MacOSQuarantineResult,
-  UpdateStatus
+  UpdateStatus,
+  EdgeSpeechResult
 } from '../shared/types'
 
 const api: Api = {
@@ -122,6 +123,30 @@ const api: Api = {
    */
   translateManual: (request: ManualTranslateRequest): Promise<void> =>
     ipcRenderer.invoke('manual-translate:submit', request),
+
+  /**
+   * 请求主进程生成 Edge 在线语音临时音频。
+   * @param text 待朗读译文。
+   * @param language 目标语言代码。
+   * @param requestId 可选请求标识，由 Renderer 生成并用于取消。
+   * @returns 临时音频或脱敏错误。
+   * @author zhenghq
+   */
+  synthesizeEdgeSpeech: (text: string, language: string, requestId?: string): Promise<EdgeSpeechResult> =>
+    ipcRenderer.invoke(
+      'speech:edge-synthesize',
+      requestId || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      text,
+      language
+    ),
+
+  /**
+   * 取消主进程中指定的 Edge 在线语音请求。
+   * @param requestId Renderer 生成的请求标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelEdgeSpeech: (requestId: string): void => ipcRenderer.send('speech:edge-cancel', requestId),
 
   /**
    * 获取完整设置。

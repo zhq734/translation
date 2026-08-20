@@ -59,6 +59,7 @@ test('设置项应分配到常规、翻译服务、DeepLX 和高级配置面板'
 
   assert.ok(html.indexOf('<h2>翻译语言</h2>') > generalIndex)
   assert.ok(html.indexOf('<h2>触发与弹窗</h2>') > generalIndex)
+  assert.ok(html.indexOf('<h2>语音朗读</h2>') > generalIndex)
   assert.ok(html.indexOf('<h2>AI 翻译</h2>') > aiIndex)
   assert.ok(html.indexOf('<h2>钉钉翻译</h2>') > dingTalkIndex)
   assert.ok(html.indexOf('<h2>微软翻译</h2>') > microsoftIndex)

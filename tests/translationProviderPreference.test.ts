@@ -29,7 +29,7 @@ test('旧设置升级后应默认自动选择翻译 API，并仅保留合法首�
     preferredTranslationProvider: 'unknown-api' as 'google'
   })
 
-  assert.equal(legacy.schemaVersion, 10)
+  assert.equal(legacy.schemaVersion, 11)
   assert.equal(legacy.preferredTranslationProvider, 'auto')
   assert.equal(preferred.preferredTranslationProvider, 'google')
   assert.equal(invalid.preferredTranslationProvider, 'auto')
