@@ -17,6 +17,7 @@ const targetLang = document.getElementById('target-lang') as HTMLSelectElement
 const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
 const triggerMode = document.getElementById('trigger-mode') as HTMLSelectElement
 const triggerHint = document.getElementById('trigger-hint') as HTMLElement
+const autoShowSelectionButton = document.getElementById('auto-show-selection-button') as HTMLInputElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
@@ -335,6 +336,7 @@ function renderSettings(settings: Settings): void {
   targetLang.value = settings.targetLang
   sourceLang.value = settings.sourceLang
   triggerMode.value = settings.triggerMode
+  autoShowSelectionButton.checked = settings.triggerMode === 'button'
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
   speechProvider.value = settings.speechProvider
@@ -576,8 +578,21 @@ function saveSourceLanguage(): void {
  */
 function saveTriggerMode(): void {
   const value = triggerMode.value as TriggerMode
+  autoShowSelectionButton.checked = value === 'button'
   updateTriggerHint(value)
   void save({ triggerMode: value })
+}
+
+/**
+ * 保存划词后是否自动显示“译”按钮，并与触发方式保持一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveAutoShowSelectionButton(): void {
+  const value: TriggerMode = autoShowSelectionButton.checked ? 'button' : 'hotkey'
+  triggerMode.value = value
+  updateTriggerHint(value)
+  void save({ triggerMode: autoShowSelectionButton.checked ? 'button' : 'hotkey' })
 }
 
 /**
@@ -1057,6 +1072,7 @@ initializeSettingsTabs()
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
+autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
 hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
