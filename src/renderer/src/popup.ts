@@ -121,6 +121,13 @@ const edgeSpeechController: EdgePlaybackController = createEdgePlaybackControlle
   },
   createObjectUrl: (blob) => URL.createObjectURL(blob),
   revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+  createAudioContext: () => {
+    try {
+      return typeof AudioContext === 'function' ? new AudioContext() : null
+    } catch {
+      return null
+    }
+  },
   onSynthesisStart: () => flashStatus('正在请求 Edge 语音…', 20_000),
   onAudioReady: (byteLength) => flashStatus(`已收到 Edge 音频（${byteLength} 字节）`, 5000),
   onPlaybackStart: () => flashStatus('正在播放 Edge 语音…', 5000),
