@@ -77,6 +77,28 @@ test('手动界面样式应使用自适应布局和主题变量', () => {
   assert.doesNotMatch(styles, /\.manual-[^{]*\{[^}]*(?:#[0-9a-fA-F]{3,8}|rgb\()/su)
 })
 
+test('OCR 翻译结果应在弹窗展示 OCR 内容、引擎来源并复用复制和朗读能力', () => {
+  assert.match(html, /id="ocr-source"[^>]*hidden/u)
+  assert.doesNotMatch(html, /id="ocr-source-tabs"/u)
+  assert.doesNotMatch(html, /id="ocr-source-tab-/u)
+  assert.match(html, /id="ocr-source-label"[\s\S]*?OCR 内容/u)
+  assert.match(html, /id="ocr-source-text"[^>]*aria-live=/u)
+  assert.match(html, /id="ocr-engine-badge"[^>]*aria-label="OCR 引擎"/u)
+  assert.match(html, /id="ocr-copy"[\s\S]*?复制 OCR 内容/u)
+  assert.match(renderer, /function renderOcrSource\(payload: TranslatePayload\): void/u)
+  assert.match(renderer, /payload\.ocrRawText \?\? payload\.ocrText/u)
+  assert.match(renderer, /const ocrText = getOcrRawText\(payload\)/u)
+  assert.match(renderer, /ocrSourceTextEl\.textContent = ocrText/u)
+  assert.doesNotMatch(renderer, /renderOcrSourceTabs/u)
+  assert.match(renderer, /ocrEngineBadgeEl\.textContent = ocrEngineLabel\(payload\.ocrEngine\)/u)
+  assert.match(renderer, /const text = ocrSourceTextEl\.textContent \?\? ''[\s\S]*?if \(text\) window\.api\.copy\(text\)/u)
+  assert.match(renderer, /syncSpeechButton\(\)/u)
+  assert.match(styles, /\.ocr-source\s*\{[^}]*border-top:\s*1px solid var\(--divider\)[^}]*min-height:\s*0;/su)
+  assert.match(styles, /\.ocr-source\[hidden\]\s*\{[^}]*display:\s*none/u)
+  assert.match(styles, /\.ocr-source-text\s*\{[^}]*max-height:[^;]+;[^}]*overflow-y:\s*auto;/su)
+  assert.doesNotMatch(styles, /\.ocr-source-tabs/u)
+})
+
 test('关闭、取消固定和模式切换应沿用明确的固定状态语义', () => {
   assert.match(popup, /export function hidePopup\(\)[\s\S]*?pinned = false/u)
   assert.match(renderer, /function leaveManualMode\(\)[\s\S]*?mode = 'selection'/u)

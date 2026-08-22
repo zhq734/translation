@@ -478,3 +478,74 @@ body {
     flex-wrap: wrap;
   }
 }
+
+/* ========== OCR 内容区域 ========== */
+.ocr-source {
+  border-top: 1px solid var(--divider);
+  padding: 8px 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.ocr-source[hidden] {
+  display: none;
+}
+
+.ocr-source-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ocr-source-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.ocr-engine-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.ocr-source-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  min-height: 18px;
+  max-height: min(140px, 32vh);
+  overflow-y: auto;
+}
+
+.ocr-source-text.ocr-error {
+  color: var(--status-error);
+  font-style: italic;
+}
+
+#ocr-copy {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+#ocr-copy:hover {
+  color: var(--text-primary);
+}

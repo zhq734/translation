@@ -18,6 +18,7 @@ function discoverTestEntries() {
 
 /**
  * 将 TypeScript 测试临时打包后交给 Node.js 内置测试运行器执行，兼容项目声明的 Node.js 18+。
+ * 可选原生模块（未安装时不报错）通过 external 排除在 bundle 外，测试中用依赖注入替代。
  * @returns 测试进程退出码。
  * @author zhenghq
  */
@@ -33,7 +34,14 @@ async function runTests() {
       target: 'node18',
       outdir: temporaryDirectory,
       outExtension: { '.js': '.mjs' },
-      logLevel: 'silent'
+      logLevel: 'silent',
+      // 排除 Electron 环境模块与可选原生依赖，单元测试通过依赖注入替代
+      external: [
+        'electron',
+        'uiohook-napi',
+        '@gutenye/ocr-node',
+        'tesseract.js'
+      ]
     })
     const outputFiles = entryPoints.map((entry) =>
       join(temporaryDirectory, entry.replace(/^tests\//u, '').replace(/\.ts$/u, '.mjs'))

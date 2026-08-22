@@ -6,12 +6,30 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; style-src 'self' 'unsafe-inline'"
     />
-    <title>翻译选中文字</title>
+    <title>翻译选中文字 / OCR 框选</title>
     <link rel="stylesheet" href="./src/theme.css" />
     <link rel="stylesheet" href="./src/selection.css" />
   </head>
   <body>
     <button id="translate" title="翻译选中文字" aria-label="翻译选中文字">译</button>
+    <main id="ocr-overlay" class="ocr-overlay" aria-label="OCR 截图框选" hidden>
+      <img id="ocr-snapshot" class="ocr-snapshot" alt="" draggable="false" />
+      <div class="ocr-tip">拖拽选择区域，可移动或拉伸，点击识别开始 OCR，按 Esc 取消</div>
+      <div id="ocr-selection-box" class="ocr-selection-box" hidden>
+        <span class="ocr-resize-handle" data-handle="nw" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="n" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="ne" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="e" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="se" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="s" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="sw" aria-hidden="true"></span>
+        <span class="ocr-resize-handle" data-handle="w" aria-hidden="true"></span>
+      </div>
+      <div id="ocr-toolbar" class="ocr-toolbar" hidden>
+        <button id="ocr-recognize" type="button">识别</button>
+        <button id="ocr-cancel" type="button">取消</button>
+      </div>
+    </main>
     <script type="module" src="./src/selection.ts"></script>
   </body>
 </html>

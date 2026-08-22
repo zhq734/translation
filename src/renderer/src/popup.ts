@@ -48,14 +48,21 @@ const manualCountEl = document.getElementById('manual-count') as HTMLElement
 const manualSubmitBtn = document.getElementById('manual-submit') as HTMLButtonElement
 const manualResultEl = document.getElementById('manual-result') as HTMLElement
 const manualStaleEl = document.getElementById('manual-stale') as HTMLElement
+const ocrSourceEl = document.getElementById('ocr-source') as HTMLElement
+const ocrSourceLabelEl = document.getElementById('ocr-source-label') as HTMLElement
+const ocrSourceTextEl = document.getElementById('ocr-source-text') as HTMLElement
+const ocrEngineBadgeEl = document.getElementById('ocr-engine-badge') as HTMLElement
+const ocrCopyBtn = document.getElementById('ocr-copy') as HTMLButtonElement
 const pinBtn = document.getElementById('pin') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
 const closeBtn = document.getElementById('close') as HTMLButtonElement
 
 let lastTranslation = ''
 let lastOriginal = ''
+let lastOcrText = ''
 let selectionStatus = ''
 let selectionProvider: TranslatePayload['provider'] | undefined
+let currentSelectionOrigin: TranslatePayload['origin'] = 'selection'
 let manualStatus = ''
 let manualProvider: TranslatePayload['provider'] | undefined
 let statusTimer: ReturnType<typeof setTimeout> | null = null
@@ -330,10 +337,125 @@ function syncLanguageSelectors(payload: TranslatePayload): void {
  * @returns 无返回值。
  * @author zhenghq
  */
+
+/**
+ * 返回 OCR 引擎的中文显示名称。
+ * @param engine OCR 引擎标识。
+ * @returns 中文名称。
+ * @author zhenghq
+ */
+function ocrEngineLabel(engine: string | undefined): string {
+  if (engine === 'system') return '系统 OCR'
+  if (engine === 'paddle') return 'PaddleOCR'
+  if (engine === 'tesseract') return 'Tesseract'
+  return 'OCR'
+}
+
+/**
+ * 返回 OCR 原始识别文本；没有原始文本时回退清洗后的 OCR 文本。
+ * @param payload 翻译结果负载。
+ * @returns OCR 原始文本。
+ * @author zhenghq
+ */
+function getOcrRawText(payload: TranslatePayload): string {
+  return payload.ocrRawText ?? payload.ocrText ?? ''
+}
+
+/**
+ * 重置 OCR 内容区域的辅助状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetOcrSourceState(): void {
+  ocrSourceLabelEl.hidden = false
+  ocrSourceTextEl.removeAttribute('role')
+  ocrSourceTextEl.removeAttribute('aria-labelledby')
+}
+
+/**
+ * 渲染 OCR 内容区域：有 OCR 文本或错误时展示，无时隐藏。
+ * @param payload 翻译结果负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderOcrSource(payload: TranslatePayload): void {
+  resetOcrSourceState()
+  const hasOcr = Boolean(payload.ocrText || payload.ocrRawText || payload.ocrEngine || payload.ocrCode)
+  if (!hasOcr) {
+    ocrSourceEl.hidden = true
+    ocrSourceTextEl.textContent = ''
+    ocrEngineBadgeEl.hidden = true
+    ocrEngineBadgeEl.textContent = ''
+    ocrCopyBtn.hidden = true
+    return
+  }
+  ocrSourceEl.hidden = false
+  if (payload.ocrCode === 'empty') {
+    ocrSourceTextEl.textContent = '未识别到文字'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-empty'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrCode === 'noise') {
+    ocrSourceTextEl.textContent = '识别文字质量过低（噪声）'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-noise'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrCode === 'permission') {
+    ocrSourceTextEl.textContent = '缺少屏幕录制权限，请在系统设置中授权'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-error'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrCode === 'no-clipboard-image') {
+    ocrSourceTextEl.textContent = '剪贴板中没有图片'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-error'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrCode === 'timeout') {
+    ocrSourceTextEl.textContent = 'OCR 识别超时'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-error'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrCode === 'engine-unavailable') {
+    ocrSourceTextEl.textContent = 'OCR 引擎不可用'
+    ocrSourceTextEl.className = 'ocr-source-text ocr-error'
+    ocrCopyBtn.hidden = true
+  } else if (payload.ocrText || payload.ocrRawText) {
+    const ocrText = getOcrRawText(payload)
+    ocrSourceTextEl.textContent = ocrText
+    ocrSourceTextEl.className = 'ocr-source-text'
+    ocrCopyBtn.hidden = !ocrText
+  } else {
+    ocrSourceEl.hidden = true
+    return
+  }
+  if (payload.ocrEngine) {
+    ocrEngineBadgeEl.textContent = ocrEngineLabel(payload.ocrEngine)
+    ocrEngineBadgeEl.hidden = false
+  } else {
+    ocrEngineBadgeEl.hidden = true
+  }
+}
+
+/**
+ * 渲染 OCR 识别中的状态，确保截图后立即展示可见反馈。
+ * @param payload OCR loading 负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderOcrLoading(payload: TranslatePayload): void {
+  resetOcrSourceState()
+  ocrSourceEl.hidden = false
+  ocrSourceTextEl.textContent = payload.original ?? '正在识别图片文字…'
+  ocrSourceTextEl.className = 'ocr-source-text ocr-loading'
+  ocrEngineBadgeEl.textContent = 'OCR'
+  ocrEngineBadgeEl.hidden = false
+  ocrCopyBtn.hidden = true
+}
+
 function renderSelection(payload: TranslatePayload): void {
   const visible = mode === 'selection'
   if (visible) syncLanguageSelectors(payload)
-  if (payload.original !== undefined) lastOriginal = payload.original
+  currentSelectionOrigin = payload.origin ?? 'selection'
+  if (payload.origin !== 'ocr' && payload.original !== undefined) lastOriginal = payload.original
+  if (payload.origin === 'ocr') {
+    const ocrText = payload.ocrText ?? payload.ocrRawText
+    if (ocrText) lastOcrText = ocrText
+  }
   if (payload.loading) {
     stopSpeech()
     lastTranslation = ''
@@ -343,10 +465,17 @@ function renderSelection(payload: TranslatePayload): void {
       ? `正在翻译为${langLabel(payload.targetLang)}…`
       : '正在翻译…'
     if (visible) renderTranslationProviderResult()
-    resultEl.textContent = '正在翻译…'
+    resultEl.textContent = payload.origin === 'ocr'
+      ? (payload.original ?? '正在识别图片文字…')
+      : '正在翻译…'
     resultEl.classList.add('loading')
-    originalEl.textContent = payload.original ?? lastOriginal
+    originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
     copyBtn.hidden = true
+    if (payload.origin === 'ocr') {
+      renderOcrLoading(payload)
+    } else {
+      renderOcrSource({} as TranslatePayload)
+    }
     if (visible) statusEl.textContent = selectionStatus
     syncSpeechButton()
     return
@@ -360,8 +489,13 @@ function renderSelection(payload: TranslatePayload): void {
     selectionStatus = '翻译失败'
     if (visible) renderTranslationProviderResult()
     resultEl.textContent = payload.error ?? '未知错误'
-    originalEl.textContent = lastOriginal
+    originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
     copyBtn.hidden = true
+    if (payload.origin === 'ocr') {
+      renderOcrSource(payload)
+    } else {
+      renderOcrSource({} as TranslatePayload)
+    }
     if (visible) statusEl.textContent = selectionStatus
     syncSpeechButton()
     return
@@ -377,9 +511,14 @@ function renderSelection(payload: TranslatePayload): void {
   lastTranslation = payload.translation ?? ''
   selectionSpeechLanguage = payload.targetLang ?? targetLangEl.value
   resultEl.textContent = lastTranslation
-  originalEl.textContent = payload.original ?? lastOriginal
+  originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
   copyBtn.hidden = !visible || !lastTranslation
   if (visible) statusEl.textContent = selectionStatus
+  if (payload.origin === 'ocr') {
+    renderOcrSource(payload)
+  } else {
+    renderOcrSource({} as TranslatePayload)
+  }
   syncSpeechButton()
 }
 
@@ -536,11 +675,12 @@ async function retranslateWithCurrentLanguages(): Promise<void> {
     }
     return
   }
-  if (!lastOriginal) return
+  const currentText = currentSelectionOrigin === 'ocr' ? lastOcrText : lastOriginal
+  if (!currentText) return
   sourceLangEl.disabled = true
   targetLangEl.disabled = true
   try {
-    await window.api.retranslate(sourceLangEl.value, targetLangEl.value)
+    await window.api.retranslate(sourceLangEl.value, targetLangEl.value, currentSelectionOrigin)
   } catch {
     flashStatus('重新翻译失败')
   } finally {
@@ -728,7 +868,9 @@ window.api.onResult((payload) => {
     renderManualState()
     return
   }
-  if (payload.origin === 'selection' || payload.origin === undefined) renderSelection(payload)
+  if (payload.origin === 'selection' || payload.origin === 'ocr' || payload.origin === undefined) {
+    renderSelection(payload)
+  }
 })
 
 sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
@@ -750,6 +892,11 @@ manualClearBtn.addEventListener('click', () => {
 manualSubmitBtn.addEventListener('click', () => void submitManualTranslation())
 copyBtn.addEventListener('click', copyTranslation)
 manualCopyBtn.addEventListener('click', copyTranslation)
+ocrCopyBtn.addEventListener('click', () => {
+  const text = ocrSourceTextEl.textContent ?? ''
+  if (text) window.api.copy(text)
+  if (text) flashStatus('已复制 OCR 内容')
+})
 pinBtn.addEventListener('click', togglePinned)
 settingsBtn.addEventListener('click', openSettings)
 closeBtn.addEventListener('click', closePopup)

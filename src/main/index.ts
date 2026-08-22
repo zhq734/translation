@@ -8,12 +8,20 @@ import {
   clipboard,
   shell,
   BrowserWindow,
+  desktopCapturer,
   safeStorage,
   screen,
   dialog,
-  type NativeImage
+  type NativeImage,
+  type SourcesOptions
 } from 'electron'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFile, unlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
+import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import {
   captureSelection,
@@ -74,7 +82,8 @@ import type {
   MacOSQuarantineResult,
   UpdateStatus,
   ManualTranslateRequest,
-  TranslationOrigin
+  TranslationOrigin,
+  TranslatePayload
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
@@ -91,15 +100,36 @@ import {
 import { createApplicationUpdateManager } from './updater'
 import type { UpdateManager } from './updateManager'
 import { removeMacOSApplicationQuarantine } from './macQuarantine'
+import {
+  captureRegionAsPng,
+  computeCropRect,
+  ScreenCaptureError,
+  type CaptureBounds
+} from './screenCapture'
+import { decodePng, encodePng } from './pngCodec'
+import { OcrDispatcher } from './ocrDispatcher'
+import { createSystemOcrEngine } from './systemOcr'
+import { PaddleOcrEngine } from './paddleOcr'
+import { resolveBundledOcrModelAssets } from './ocrModelAssets'
+import { TesseractOcrEngine } from './tesseractOcr'
+import { preprocessOcrImageBytes } from './ocrImagePreprocess'
+import { translateOcrResult } from './ocrTranslate'
+import { readClipboardImage } from './clipboardImage'
+import { OcrEngineError } from '../shared/ocrEngine'
+import type { OcrErrorCode, OcrSelectionBounds, OcrStatus } from '../shared/types'
 
 const isMac = process.platform === 'darwin'
+const execFileP = promisify(execFile)
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
 const SELECTION_SETTLE_DELAY_MS = 80
 const UPDATE_CHECK_DELAY_MS = 5000
+const MIN_OCR_SELECTION_SIZE = 8
+const OCR_TIMEOUT_MS = 30000
 
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
+let ocrSelectionWin: BrowserWindow | null = null
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
@@ -109,6 +139,7 @@ const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslati
 const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
+let latestOcrSnapshot: { png: Buffer; bounds: CaptureBounds; source: string } | null = null
 // 按钮显示期间用只读直读做后台预取，点击按钮时优先消费缓存；
 // 只有预取未取到文本时才走完整取词管线（直读 + 复制兜底）。
 const selectionCapture = new SelectionCaptureCoordinator(
@@ -117,6 +148,9 @@ const selectionCapture = new SelectionCaptureCoordinator(
 )
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
+let lastOcrText = ''
+let lastOcrAnchor: { x: number; y: number } | undefined
+let lastOcrEngine: TranslatePayload['ocrEngine'] | undefined
 
 /**
  * 返回已初始化的钉钉配置服务。
@@ -347,7 +381,7 @@ async function onReady(): Promise<boolean> {
   )
   createPopup(PRELOAD_PATH)
   createSelectionButton(PRELOAD_PATH)
-  registerShortcut(getSettings().hotkey)
+  registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
   if (shouldOpenSettingsOnInitialLaunch(process.platform)) openSettings()
@@ -376,13 +410,24 @@ function loadRendererHtml(win: BrowserWindow, html: string): void {
 }
 
 /**
- * 注册全局翻译快捷键。
+ * 注册全局翻译与 OCR 快捷键。
+ * @param settings 当前设置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function registerGlobalShortcuts(settings: Settings): void {
+  globalShortcut.unregisterAll()
+  registerShortcut(settings.hotkey)
+  registerOcrShortcut(settings.ocrHotkey)
+}
+
+/**
+ * 注册全局划词翻译快捷键。
  * @param accelerator Electron 快捷键描述。
  * @returns 无返回值。
  * @author zhenghq
  */
 function registerShortcut(accelerator: string): void {
-  globalShortcut.unregisterAll()
   if (!accelerator) return
   if (isCopyShortcut(accelerator)) {
     console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为翻译快捷键')
@@ -395,6 +440,24 @@ function registerShortcut(accelerator: string): void {
 }
 
 /**
+ * 注册全局 OCR 截图快捷键。
+ * @param accelerator Electron 快捷键描述。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function registerOcrShortcut(accelerator: string): void {
+  if (!accelerator) return
+  if (isCopyShortcut(accelerator)) {
+    console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为 OCR 快捷键')
+    return
+  }
+  const ok = globalShortcut.register(accelerator, onOcrHotkey)
+  if (!ok) {
+    console.warn(`[selection-translator] OCR 快捷键注册失败: ${accelerator}`)
+  }
+}
+
+/**
  * 响应全局快捷键并翻译当前选中文字。
  * @returns 无返回值。
  * @author zhenghq
@@ -403,6 +466,17 @@ function onHotkey(): void {
   latestSelectionGesture += 1
   hideSelectionButton()
   queueSelectionTranslation()
+}
+
+/**
+ * 响应全局 OCR 快捷键并打开截图框选窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function onOcrHotkey(): void {
+  latestSelectionGesture += 1
+  hideSelectionButton()
+  void openOcrSelection()
 }
 
 /**
@@ -465,7 +539,8 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
  * @author zhenghq
  */
 function handleSelectionGesture(gesture: SelectionGesture): void {
-  if (isPointInsidePopup(gesture.start) ||
+  if (isOcrSelectionVisible() ||
+      isPointInsidePopup(gesture.start) ||
       isPointInsidePopup(gesture.end) ||
       isPointInsideSelectionButton(gesture.start) ||
       isPointInsideSelectionButton(gesture.end)) {
@@ -488,6 +563,7 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
  * @author zhenghq
  */
 function handleSelectionPointerDown(point: { x: number; y: number }): boolean {
+  if (isOcrSelectionVisible()) return true
   if (isPointInsideSelectionButton(point)) {
     void translateSelectionButton()
     return true
@@ -623,7 +699,10 @@ async function translateText(
       sourceLang: pair.sourceLang,
       targetLang: pair.targetLang,
       sourcePreference,
-      targetPreference
+      targetPreference,
+      ocrText: origin === 'ocr' ? text : undefined,
+      ocrRawText: origin === 'ocr' ? text : undefined,
+      ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
     },
     0,
     anchor
@@ -649,7 +728,10 @@ async function translateText(
         sourcePreference,
         targetPreference,
         provider: output.provider,
-        channel: output.channel
+        channel: output.channel,
+        ocrText: origin === 'ocr' ? text : undefined,
+        ocrRawText: origin === 'ocr' ? text : undefined,
+        ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
       },
       settings.autoHideMs,
       anchor
@@ -689,7 +771,10 @@ function handleTranslateError(
     original: context?.original,
     sourcePreference: preferences?.sourceLang ?? settings.sourceLang,
     targetPreference: preferences?.targetLang ?? settings.targetLang,
-    targetLang: settings.targetLang
+    targetLang: settings.targetLang,
+    ocrText: context?.origin === 'ocr' ? context.original : undefined,
+    ocrRawText: context?.origin === 'ocr' ? context.original : undefined,
+    ocrEngine: context?.origin === 'ocr' ? lastOcrEngine : undefined
   }
   if (err instanceof PermissionError) {
     showPopup(
@@ -719,6 +804,570 @@ function handleTranslateError(
 function openManualTranslation(): void {
   setPopupPinned(true)
   showManualTranslationPopup()
+}
+
+/**
+ * 计算覆盖所有显示器的 OCR 框选窗口边界。
+ * @returns 覆盖全部显示器的矩形。
+ * @author zhenghq
+ */
+function getOcrSelectionWindowBounds(): CaptureBounds {
+  const displays = screen.getAllDisplays()
+  return displays.reduce((area, display) => {
+    const bounds = display.bounds
+    const x1 = Math.min(area.x, bounds.x)
+    const y1 = Math.min(area.y, bounds.y)
+    const x2 = Math.max(area.x + area.width, bounds.x + bounds.width)
+    const y2 = Math.max(area.y + area.height, bounds.y + bounds.height)
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+  }, { ...screen.getPrimaryDisplay().bounds })
+}
+
+/**
+ * 创建或返回 OCR 框选透明覆盖窗口。
+ * @returns OCR 框选窗口。
+ * @author zhenghq
+ */
+function getOcrSelectionWindow(): BrowserWindow {
+  if (ocrSelectionWin && !ocrSelectionWin.isDestroyed()) return ocrSelectionWin
+  ocrSelectionWin = new BrowserWindow({
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  ocrSelectionWin.setAlwaysOnTop(true, 'screen-saver')
+  ocrSelectionWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  ocrSelectionWin.on('closed', () => {
+    ocrSelectionWin = null
+  })
+  ocrSelectionWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    ocrSelectionWin.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/selection.html`)
+  } else {
+    ocrSelectionWin.loadFile(join(__dirname, '../renderer/selection.html'))
+  }
+  return ocrSelectionWin
+}
+
+/**
+ * 判断 OCR 框选窗口当前是否可见，用于屏蔽普通划词监听。
+ * @returns OCR 框选窗口是否正在显示。
+ * @author zhenghq
+ */
+function isOcrSelectionVisible(): boolean {
+  return Boolean(ocrSelectionWin && !ocrSelectionWin.isDestroyed() && ocrSelectionWin.isVisible())
+}
+
+/**
+ * OCR 框选结束后恢复普通划词监听。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreSelectionListenerAfterOcr(): void {
+  applySelectionListener()
+}
+
+/**
+ * 隐藏 OCR 框选窗口，并返回隐藏前是否可见。
+ * @returns 隐藏前 OCR 框选窗口是否可见。
+ * @author zhenghq
+ */
+function hideOcrSelectionWindow(): boolean {
+  const wasVisible = isOcrSelectionVisible()
+  ocrSelectionWin?.hide()
+  return wasVisible
+}
+
+/**
+ * 打开 OCR 框选窗口：先采集鼠标所在显示器快照，再把快照交给 Renderer 调整选区。
+ * @returns 打开流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function openOcrSelection(): Promise<void> {
+  latestSelectionGesture += 1
+  selectionCapture.invalidate()
+  stopAutoTrigger()
+  hideSelectionButton()
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const anchor = screen.getCursorScreenPoint()
+  try {
+    const snapshot = await captureOcrPreviewSnapshot(display.bounds)
+    latestOcrSnapshot = snapshot
+    const payload = {
+      imageDataUrl: `data:image/png;base64,${snapshot.png.toString('base64')}`,
+      bounds: snapshot.bounds
+    }
+    const win = getOcrSelectionWindow()
+    win.setBounds(display.bounds)
+    win.show()
+    win.focus()
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send('ocr-selection:start', payload)
+    })
+    if (!win.webContents.isLoading()) win.webContents.send('ocr-selection:start', payload)
+  } catch (error) {
+    restoreSelectionListenerAfterOcr()
+    const settings = getSettings()
+    const code = resolveOcrErrorCode(error)
+    const message = error instanceof Error ? error.message : '无法获取屏幕截图'
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      original: '',
+      error: message,
+      ocrCode: code,
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, code === 'permission' ? 8000 : 5000, anchor)
+    if (code === 'permission') {
+      void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+    }
+  }
+}
+
+/**
+ * 取消 OCR 框选并隐藏覆盖窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function cancelOcrSelection(): void {
+  const wasVisible = hideOcrSelectionWindow()
+  latestOcrSnapshot = null
+  if (wasVisible) restoreSelectionListenerAfterOcr()
+}
+
+/**
+ * 校验 Renderer 提交的 OCR 框选区域，并转换为全局屏幕坐标。
+ * @param value Renderer 提交的未知选区。
+ * @returns 全局屏幕坐标下的有效选区。
+ * @author zhenghq
+ */
+function normalizeOcrSelectionBounds(value: unknown): CaptureBounds | null {
+  if (!value || typeof value !== 'object') return null
+  const bounds = value as Partial<OcrSelectionBounds>
+  const x = Number(bounds.x)
+  const y = Number(bounds.y)
+  const width = Number(bounds.width)
+  const height = Number(bounds.height)
+  if (![x, y, width, height].every(Number.isFinite)) return null
+  if (width < MIN_OCR_SELECTION_SIZE || height < MIN_OCR_SELECTION_SIZE) return null
+  const windowBounds = ocrSelectionWin?.getBounds() ?? { x: 0, y: 0, width: 0, height: 0 }
+  return {
+    x: Math.round(windowBounds.x + x),
+    y: Math.round(windowBounds.y + y),
+    width: Math.round(width),
+    height: Math.round(height)
+  }
+}
+
+/**
+ * 将 OCR 异常转换为弹窗可展示的细分错误码。
+ * @param error 待分类的异常。
+ * @returns OCR 错误码。
+ * @author zhenghq
+ */
+function resolveOcrErrorCode(error: unknown): OcrErrorCode {
+  if (error instanceof ScreenCaptureError && error.code === 'permission') return 'permission'
+  if (error instanceof OcrEngineError) return error.code
+  return 'engine-unavailable'
+}
+
+/**
+ * 创建本次 OCR 调度器，按设置决定是否启用 Tesseract 兜底。
+ * @param settings 当前设置。
+ * @returns OCR 调度器。
+ * @author zhenghq
+ */
+function createOcrDispatcher(settings: Settings): OcrDispatcher {
+  const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
+  return new OcrDispatcher({
+    platform: process.platform,
+    engines: {
+      system: createSystemOcrEngine(),
+      paddle: paddleModelAssets.ready
+        ? new PaddleOcrEngine({ models: paddleModelAssets.models })
+        : null,
+      tesseract: settings.ocrTesseractEnabled
+        ? new TesseractOcrEngine({ tessDataPath: join(app.getPath('userData'), 'tessdata') })
+        : null
+    }
+  })
+}
+
+/**
+ * 返回 OCR 引擎与模型资产状态，供设置页展示当前可用性和许可。
+ * @returns OCR 状态。
+ * @author zhenghq
+ */
+async function getOcrStatus(): Promise<OcrStatus> {
+  const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
+  const systemEngine = createSystemOcrEngine()
+  const paddleEngine = paddleModelAssets.ready
+    ? new PaddleOcrEngine({ models: paddleModelAssets.models })
+    : null
+  const tesseractEngine = new TesseractOcrEngine({
+    tessDataPath: join(app.getPath('userData'), 'tessdata')
+  })
+  const [systemAvailable, paddleAvailable, tesseractAvailable] = await Promise.all([
+    Promise.resolve(systemEngine?.isAvailable() ?? false).catch(() => false),
+    Promise.resolve(paddleEngine?.isAvailable() ?? false).catch(() => false),
+    Promise.resolve(tesseractEngine.isAvailable()).catch(() => false)
+  ])
+  return {
+    systemAvailable,
+    paddleAvailable,
+    tesseractAvailable,
+    modelName: paddleModelAssets.metadata.name,
+    modelVersion: paddleModelAssets.metadata.version,
+    license: paddleModelAssets.metadata.license,
+    distribution: paddleModelAssets.ready ? 'bundled' : 'unavailable',
+    message: paddleModelAssets.ready
+      ? (paddleAvailable
+          ? `${paddleModelAssets.metadata.name} 兼容模型资产已就绪，PaddleOCR 主链路可用`
+          : `${paddleModelAssets.metadata.name} 兼容模型资产已就绪，但 PaddleOCR runtime 暂不可用`)
+      : `${paddleModelAssets.message}，将优先使用系统 OCR 或 Tesseract 兜底`
+  }
+}
+
+/**
+ * 根据 OCR 翻译结果更新弹窗。
+ * @param result OCR 翻译结果。
+ * @param settings 当前设置。
+ * @param requestId 请求序号。
+ * @param anchor 弹窗锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showOcrTranslationResult(
+  result: Awaited<ReturnType<typeof translateOcrResult>>,
+  settings: Settings,
+  requestId: number,
+  anchor: { x: number; y: number }
+): void {
+  const sourcePreference = settings.sourceLang
+  const targetPreference = settings.targetLang
+  const code = result.ocrCode === 'cancelled' ? 'timeout' : result.ocrCode
+  lastOcrEngine = result.ocrEngine
+  if (result.ocrText) {
+    lastOcrText = result.ocrText
+    lastOcrAnchor = anchor
+  }
+  if (code || result.error) {
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      requestId,
+      original: result.ocrText,
+      error: result.error ?? '未识别到可翻译文字',
+      ocrText: result.ocrText,
+      ocrRawText: result.ocrRawText,
+      ocrEngine: result.ocrEngine,
+      ocrCode: code,
+      sourcePreference,
+      targetPreference,
+      targetLang: settings.targetLang
+    }, 5000, anchor)
+    return
+  }
+  const pair = resolveLanguagePair(result.ocrText, sourcePreference, targetPreference)
+  showPopup({
+    ok: true,
+    origin: 'ocr',
+    requestId,
+    original: result.ocrText,
+    translation: result.translation,
+    detectedLang: result.detectedLang,
+    sourceLang: pair.sourceLang,
+    targetLang: pair.targetLang,
+    sourcePreference,
+    targetPreference,
+    provider: result.provider as never,
+    channel: result.channel,
+    ocrText: result.ocrText,
+    ocrRawText: result.ocrRawText,
+    ocrEngine: result.ocrEngine
+  }, settings.autoHideMs, anchor)
+}
+
+/**
+ * 对 PNG 图片字节执行 OCR 识别与翻译，并复用现有多通道翻译管道。
+ * @param imageBytes PNG 图片字节。
+ * @param settings 当前设置。
+ * @returns OCR 翻译结果。
+ * @author zhenghq
+ */
+async function processOcrImageBytes(
+  imageBytes: Buffer,
+  settings: Settings
+): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
+  const dispatcher = createOcrDispatcher(settings)
+  const preparedImageBytes = preprocessOcrImageBytes(imageBytes, settings.ocrScale)
+  const ocr = await dispatcher.recognize({
+    imageBytes: preparedImageBytes,
+    language: settings.ocrLang,
+    timeoutMs: OCR_TIMEOUT_MS
+  }, settings.ocrEnginePreference)
+  return translateOcrResult(ocr, settings, {
+    translate: async (text, requestSettings) => {
+      const dingTalkCredentials = settings.dingTalkEnabled
+        ? getDingTalkConfiguration().getCredentialsSnapshot()
+        : null
+      const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+      return translate(text, requestSettings ?? settings, dingTalkCredentials, aiApiKey)
+    }
+  })
+}
+
+/**
+ * 记录 OCR 输入图片诊断信息，但不把截图图片持久化到本地。
+ * @param imageBytes 实际送入 OCR 的 PNG 字节。
+ * @param bounds 框选区域。
+ * @param source 截图来源。
+ * @returns 诊断记录完成后的 Promise。
+ * @author zhenghq
+ */
+async function logOcrCaptureDiagnostic(imageBytes: Buffer, bounds: CaptureBounds, source: string): Promise<void> {
+  const sha1 = createHash('sha1').update(imageBytes).digest('hex').slice(0, 12)
+  console.log('[ocr] 截图完成', {
+    source,
+    bytes: imageBytes.length,
+    sha1,
+    bounds
+  })
+}
+
+/**
+ * 使用 macOS 原生 screencapture 采集框选区域，避免 Electron desktopCapturer 截到自身遮罩缓存。
+ * @param bounds 全局屏幕坐标下的框选区域。
+ * @returns PNG 图片字节。
+ * @author zhenghq
+ */
+async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
+  const path = join(
+    tmpdir(),
+    `selection-translator-ocr-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.png`
+  )
+  const rect = [
+    Math.round(bounds.x),
+    Math.round(bounds.y),
+    Math.max(1, Math.round(bounds.width)),
+    Math.max(1, Math.round(bounds.height))
+  ].join(',')
+  try {
+    await execFileP('screencapture', ['-x', '-R', rect, path], { timeout: 5000 })
+    return await readFile(path)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/permission|privacy|denied|not authorized/i.test(message)) {
+      throw new ScreenCaptureError('permission', '需要屏幕录制权限')
+    }
+    throw new ScreenCaptureError('no-source', `无法获取屏幕截图: ${message}`)
+  } finally {
+    await unlink(path).catch(() => undefined)
+  }
+}
+
+/**
+ * 打开 OCR 选择器前采集一张屏幕快照，后续用户只在这张快照上调整区域。
+ * @param bounds 需要快照的显示器区域。
+ * @returns 快照 PNG、对应屏幕区域和采集来源。
+ * @author zhenghq
+ */
+async function captureOcrPreviewSnapshot(
+  bounds: CaptureBounds
+): Promise<{ png: Buffer; bounds: CaptureBounds; source: string }> {
+  if (process.platform === 'darwin') {
+    const png = await captureMacRegionAsPng(bounds)
+    return { png, bounds, source: 'macos-screencapture-preview' }
+  }
+  const image = await captureRegionAsPng(bounds, { ocrScale: 1 }, {
+    getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
+    getDisplayNearestPoint: (point) => screen.getDisplayNearestPoint(point),
+    getPrimaryDisplay: () => screen.getPrimaryDisplay(),
+    platform: process.platform
+  })
+  return { png: image.png, bounds, source: 'electron-desktopCapturer-preview' }
+}
+
+/**
+ * 采集 OCR 框选区域 PNG。macOS 优先使用系统 screencapture，其余平台使用 Electron desktopCapturer。
+ * @param bounds 全局屏幕坐标下的框选区域。
+ * @param settings 当前设置。
+ * @returns PNG 图片字节。
+ * @author zhenghq
+ */
+async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings): Promise<Buffer> {
+  if (process.platform === 'darwin') {
+    const png = await captureMacRegionAsPng(bounds)
+    await logOcrCaptureDiagnostic(png, bounds, 'macos-screencapture')
+    return png
+  }
+  const image = await captureRegionAsPng(bounds, { ocrScale: settings.ocrScale }, {
+    getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
+    getDisplayNearestPoint: (point) => screen.getDisplayNearestPoint(point),
+    getPrimaryDisplay: () => screen.getPrimaryDisplay(),
+    platform: process.platform
+  })
+  await logOcrCaptureDiagnostic(image.png, bounds, 'electron-desktopCapturer')
+  return image.png
+}
+
+/**
+ * 从已采集的 OCR 屏幕快照中裁剪用户确认的区域，并按 OCR 倍率放大。
+ * @param bounds 用户确认的全局屏幕坐标区域。
+ * @param settings 当前设置。
+ * @returns 裁剪并预处理后的 PNG 图片字节。
+ * @author zhenghq
+ */
+async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Settings): Promise<Buffer> {
+  const snapshot = latestOcrSnapshot
+  if (!snapshot) {
+    throw new ScreenCaptureError('no-source', '截图已失效，请重新截图')
+  }
+  const fullImage = decodePng(snapshot.png)
+  const cropRect = computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+  const cropped = cropRgba(fullImage, cropRect)
+  const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
+  const png = encodePng(scaled)
+  await logOcrCaptureDiagnostic(png, bounds, `${snapshot.source}-crop`)
+  latestOcrSnapshot = null
+  return png
+}
+
+/**
+ * 处理 OCR 框选提交：截图、识别、翻译并展示弹窗。
+ * @param value Renderer 提交的选区。
+ * @returns 翻译流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function submitOcrSelection(value: unknown): Promise<void> {
+  const bounds = normalizeOcrSelectionBounds(value)
+  const ocrSelectionWasVisible = hideOcrSelectionWindow()
+  let selectionListenerRestored = false
+  const restoreSelectionListener = (): void => {
+    if (!ocrSelectionWasVisible || selectionListenerRestored) return
+    restoreSelectionListenerAfterOcr()
+    selectionListenerRestored = true
+  }
+  if (!bounds) {
+    latestOcrSnapshot = null
+    restoreSelectionListener()
+    return
+  }
+  const settings = getSettings()
+  const requestId = ++latestTranslationRequest
+  const anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+  const closeVersion = getPopupCloseVersion()
+  try {
+    const imageBytes = await cropOcrSnapshotSelection(bounds, settings)
+    restoreSelectionListener()
+    showPopup({
+      ok: true,
+      origin: 'ocr',
+      requestId,
+      loading: true,
+      original: '正在识别屏幕区域…',
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, 0, anchor)
+    const result = await processOcrImageBytes(imageBytes, settings)
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    showOcrTranslationResult(result, settings, requestId, anchor)
+  } catch (error) {
+    latestOcrSnapshot = null
+    restoreSelectionListener()
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    const code = resolveOcrErrorCode(error)
+    const message = error instanceof Error ? error.message : 'OCR 识别失败'
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      requestId,
+      original: '',
+      error: message,
+      ocrCode: code,
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, code === 'permission' ? 8000 : 5000, anchor)
+    if (code === 'permission') {
+      void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+    }
+  }
+}
+
+/**
+ * 读取剪贴板图片并执行 OCR 翻译；无图片时给出专用提示。
+ * @returns 翻译流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function translateClipboardImage(): Promise<void> {
+  const settings = getSettings()
+  const anchor = screen.getCursorScreenPoint()
+  const requestId = ++latestTranslationRequest
+  const closeVersion = getPopupCloseVersion()
+  const clipboardImage = readClipboardImage(clipboard)
+  if (clipboardImage.kind !== 'image' || !clipboardImage.png) {
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      requestId,
+      original: '',
+      error: '剪贴板中没有图片',
+      ocrCode: 'no-clipboard-image',
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, 5000, anchor)
+    return
+  }
+
+  showPopup({
+    ok: true,
+    origin: 'ocr',
+    requestId,
+    loading: true,
+    original: '正在识别剪贴板图片…',
+    sourcePreference: settings.sourceLang,
+    targetPreference: settings.targetLang,
+    targetLang: settings.targetLang
+  }, 0, anchor)
+
+  try {
+    const result = await processOcrImageBytes(clipboardImage.png, settings)
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    showOcrTranslationResult(result, settings, requestId, anchor)
+  } catch (error) {
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    const code = resolveOcrErrorCode(error)
+    const message = error instanceof Error ? error.message : 'OCR 识别失败'
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      requestId,
+      original: '',
+      error: message,
+      ocrCode: code,
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, 5000, anchor)
+  }
 }
 
 /**
@@ -1106,6 +1755,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.hotkey !== undefined && isCopyShortcut(String(patch.hotkey))) {
     throw new Error('Ctrl+C / Command+C 是系统复制快捷键，不能设为翻译快捷键')
   }
+  if (patch.ocrHotkey !== undefined && isCopyShortcut(String(patch.ocrHotkey))) {
+    throw new Error('Ctrl+C / Command+C 是系统复制快捷键，不能设为 OCR 快捷键')
+  }
 
   const previous = getSettings()
   const safePatch = { ...patch }
@@ -1122,8 +1774,11 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     (patch.aiBaseUrl !== undefined && patch.aiBaseUrl !== previous.aiBaseUrl) ||
     (patch.aiModel !== undefined && patch.aiModel !== previous.aiModel)
   const settings = saveSettings(safePatch)
-  if (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) {
-    registerShortcut(settings.hotkey)
+  if (
+    (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) ||
+    (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey)
+  ) {
+    registerGlobalShortcuts(settings)
   }
   if (patch.triggerMode !== undefined && settings.triggerMode !== previous.triggerMode) {
     applySelectionListener()
@@ -1168,6 +1823,16 @@ function registerIpc(): void {
   ipcMain.on('selection:translate', () => {
     void translateSelectionButton()
   })
+  ipcMain.on('ocr-selection:open', () => {
+    void openOcrSelection()
+  })
+  ipcMain.on('ocr-selection:cancel', () => cancelOcrSelection())
+  ipcMain.on('ocr-selection:submit', (_event, bounds: unknown) => {
+    void submitOcrSelection(bounds)
+  })
+  ipcMain.on('ocr-clipboard:translate', () => {
+    void translateClipboardImage()
+  })
   ipcMain.on('manual-translate:open-request', () => openManualTranslation())
   ipcMain.handle('manual-translate:submit', (_event, request: unknown) =>
     translateManualRequest(request)
@@ -1178,15 +1843,17 @@ function registerIpc(): void {
   ipcMain.handle('speech:edge-synthesize', (_event, requestId: unknown, text: unknown, language: unknown) =>
     synthesizeEdgeSpeech(String(requestId ?? ''), String(text ?? ''), String(language ?? ''))
   )
-  ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string) => {
+  ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string, origin?: TranslationOrigin) => {
     const sourcePreference = sourceLang || 'auto'
     const targetPreference = targetLang || 'auto'
     await applySettingsPatch({ sourceLang: sourcePreference, targetLang: targetPreference })
-    if (!lastSelectedText) return
-    await translateText(lastSelectedText, lastSelectionAnchor, {
+    const text = origin === 'ocr' ? lastOcrText : lastSelectedText
+    const anchor = origin === 'ocr' ? lastOcrAnchor : lastSelectionAnchor
+    if (!text) return
+    await translateText(text, anchor, {
       sourceLang: sourcePreference,
       targetLang: targetPreference
-    })
+    }, origin === 'ocr' ? 'ocr' : 'selection')
   })
 
   ipcMain.handle('settings:get', () => getSettings())
@@ -1201,6 +1868,7 @@ function registerIpc(): void {
   ipcMain.handle('ai:clear-key', () => clearAiApiKey())
   ipcMain.handle('ai:list-models', () => listAiModels())
   ipcMain.handle('ai:check', () => checkAi())
+  ipcMain.handle('ocr:get-status', () => getOcrStatus())
 
   ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
@@ -1278,6 +1946,8 @@ function buildTrayMenu(): Menu {
     { label: `划词翻译   ${settings.hotkey}`, enabled: false },
     { type: 'separator' },
     { label: '手动翻译…', click: () => openManualTranslation() },
+    { label: '截图 OCR 翻译…', click: () => openOcrSelection() },
+    { label: '剪贴板图片 OCR 翻译…', click: () => void translateClipboardImage() },
     { type: 'separator' },
     {
       label: '划词后自动显示“译”按钮',

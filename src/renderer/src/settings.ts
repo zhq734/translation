@@ -6,6 +6,8 @@ import type {
   AiProtocol,
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
+  OcrEnginePreference,
+  OcrStatus,
   Settings,
   SpeechProvider,
   TriggerMode,
@@ -49,6 +51,15 @@ const aiCheck = document.getElementById('ai-check') as HTMLButtonElement
 const aiClearKey = document.getElementById('ai-clear-key') as HTMLButtonElement
 const aiModelStatus = document.getElementById('ai-model-status') as HTMLElement
 const aiStatus = document.getElementById('ai-status') as HTMLElement
+const ocrEnginePreference = document.getElementById('ocr-engine-preference') as HTMLSelectElement
+const ocrHotkey = document.getElementById('ocr-hotkey') as HTMLInputElement
+const ocrLang = document.getElementById('ocr-lang') as HTMLSelectElement
+const ocrScale = document.getElementById('ocr-scale') as HTMLSelectElement
+const ocrTesseractEnabled = document.getElementById('ocr-tesseract-enabled') as HTMLInputElement
+const ocrModelName = document.getElementById('ocr-model-name') as HTMLElement
+const ocrModelVersion = document.getElementById('ocr-model-version') as HTMLElement
+const ocrModelLicense = document.getElementById('ocr-model-license') as HTMLElement
+const ocrModelStatus = document.getElementById('ocr-model-status') as HTMLElement
 const microsoftEnabled = document.getElementById('microsoft-enabled') as HTMLInputElement
 const microsoftCheck = document.getElementById('microsoft-check') as HTMLButtonElement
 const microsoftStatus = document.getElementById('microsoft-status') as HTMLElement
@@ -73,12 +84,13 @@ const removeQuarantineButton = document.getElementById('remove-quarantine') as H
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
-type SettingsTabId = 'general' | 'ai' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'general',
   'ai',
+  'ocr',
   'dingtalk',
   'microsoft',
   'deeplx',
@@ -368,6 +380,14 @@ function renderSettings(settings: Settings): void {
     : 'field-hint ai-api-key-status'
   aiClearKey.disabled = !settings.aiApiKeyConfigured
   microsoftEnabled.checked = settings.microsoftEnabled
+  ocrEnginePreference.value = settings.ocrEnginePreference
+  ocrHotkey.value = settings.ocrHotkey
+  ocrLang.value = settings.ocrLang
+  if (![...ocrScale.options].some((option) => option.value === String(settings.ocrScale))) {
+    ocrScale.add(new Option(`${settings.ocrScale}×`, String(settings.ocrScale)))
+  }
+  ocrScale.value = String(settings.ocrScale)
+  ocrTesseractEnabled.checked = settings.ocrTesseractEnabled
   schemaVersion.textContent = `配置 v${settings.schemaVersion}`
 
   if (![...autohide.options].some((option) => option.value === String(settings.autoHideMs))) {
@@ -391,10 +411,35 @@ async function initialize(): Promise<void> {
   for (const language of [{ code: 'auto', label: '自动检测' }, ...LANGUAGES]) {
     sourceLang.add(new Option(language.label, language.code))
   }
+  for (const language of LANGUAGES) {
+    ocrLang.add(new Option(language.label, language.code))
+  }
 
   renderSettings(await window.api.getSettings())
+  renderOcrStatus(await window.api.getOcrStatus())
   dockerCmd.value = await window.api.getDockerCommand(1189)
   renderUpdateStatus(await window.api.getUpdateStatus())
+}
+
+/**
+ * 将 OCR 引擎与模型资产状态渲染到设置页。
+ * @param status 主进程返回的 OCR 状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderOcrStatus(status: OcrStatus): void {
+  ocrModelName.textContent = status.modelName
+  ocrModelVersion.textContent = status.modelVersion
+  ocrModelLicense.textContent = status.license
+  const enabledEngines = [
+    status.systemAvailable ? '系统 OCR' : '',
+    status.paddleAvailable ? 'PaddleOCR' : '',
+    status.tesseractAvailable ? 'Tesseract' : ''
+  ].filter(Boolean)
+  ocrModelStatus.textContent = `${status.message}；可用引擎：${enabledEngines.join('、') || '暂无'}`
+  ocrModelStatus.className = status.paddleAvailable || status.systemAvailable || status.tesseractAvailable
+    ? 'status ocr-model-status online'
+    : 'status ocr-model-status offline'
 }
 
 /**
@@ -638,6 +683,28 @@ function saveSpeechProvider(): void {
   const provider = speechProvider.value as SpeechProvider
   updateSpeechProviderHint(provider)
   void save({ speechProvider: provider })
+}
+
+/**
+ * 保存 OCR 引擎偏好、快捷键、语言、放大倍率和兜底开关。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveOcrSettings(): void {
+  const accelerator = ocrHotkey.value.trim()
+  if (isCopyShortcut(accelerator)) {
+    flash('Ctrl+C / Command+C 保留给系统复制，请换一个 OCR 快捷键')
+    ocrHotkey.focus()
+    ocrHotkey.select()
+    return
+  }
+  void save({
+    ocrEnginePreference: ocrEnginePreference.value as OcrEnginePreference,
+    ocrHotkey: accelerator,
+    ocrLang: ocrLang.value,
+    ocrScale: Number(ocrScale.value),
+    ocrTesseractEnabled: ocrTesseractEnabled.checked
+  })
 }
 
 /**
@@ -1077,6 +1144,11 @@ hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 speechProvider.addEventListener('change', saveSpeechProvider)
+ocrEnginePreference.addEventListener('change', saveOcrSettings)
+ocrHotkey.addEventListener('change', saveOcrSettings)
+ocrLang.addEventListener('change', saveOcrSettings)
+ocrScale.addEventListener('change', saveOcrSettings)
+ocrTesseractEnabled.addEventListener('change', saveOcrSettings)
 proxyMode.addEventListener('change', saveProxyMode)
 proxyRules.addEventListener('change', saveProxyRules)
 proxyBypassRules.addEventListener('change', saveProxyBypassRules)

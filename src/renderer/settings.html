@@ -46,6 +46,18 @@
           AI 翻译
         </button>
         <button
+          id="settings-tab-ocr"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-ocr"
+          data-tab="ocr"
+          tabindex="-1"
+        >
+          OCR
+        </button>
+        <button
           id="settings-tab-dingtalk"
           class="settings-tab"
           type="button"
@@ -246,6 +258,71 @@
             <p id="ai-status" class="status ai-status" role="status" aria-live="polite">未检测</p>
           </section>
         </div>
+
+        <div
+          id="settings-panel-ocr"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-ocr"
+          data-tab-panel="ocr"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2>OCR 翻译</h2>
+            <div class="row">
+              <label for="ocr-engine-preference">引擎偏好</label>
+              <select id="ocr-engine-preference">
+                <option value="auto">自动选择</option>
+                <option value="system">仅系统 OCR</option>
+                <option value="paddle">仅 PaddleOCR</option>
+                <option value="tesseract">仅 Tesseract</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="ocr-hotkey">截图快捷键</label>
+              <input id="ocr-hotkey" type="text" placeholder="如 Alt+O / Cmd+Shift+O" />
+            </div>
+            <div class="row">
+              <label for="ocr-lang">识别语言</label>
+              <select id="ocr-lang">
+                <option value="auto">自动</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="ocr-scale">放大倍率</label>
+              <select id="ocr-scale">
+                <option value="1">1.0×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="2">2.0×</option>
+                <option value="3">3.0×</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="ocr-tesseract-enabled">Tesseract</label>
+              <label class="checkbox-control" for="ocr-tesseract-enabled">
+                <input id="ocr-tesseract-enabled" type="checkbox" />
+                <span>启用兜底识别</span>
+              </label>
+            </div>
+            <p class="field-hint">截图和剪贴板图片只在主动触发时识别；本地 OCR 引擎不会上传图片。</p>
+          </section>
+
+          <section>
+            <h2>模型资产</h2>
+            <div class="ocr-model-grid">
+              <span>模型</span>
+              <strong id="ocr-model-name">读取中…</strong>
+              <span>版本</span>
+              <strong id="ocr-model-version">读取中…</strong>
+              <span>许可</span>
+              <strong id="ocr-model-license">读取中…</strong>
+            </div>
+            <p id="ocr-model-status" class="status ocr-model-status" role="status" aria-live="polite">正在读取 OCR 状态…</p>
+          </section>
+        </div>
+
         <div
           id="settings-panel-dingtalk"
           class="tab-panel"

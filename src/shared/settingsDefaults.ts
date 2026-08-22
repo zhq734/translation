@@ -1,8 +1,8 @@
-import type { AiProtocol, ProxyMode, Settings, SpeechProvider, TriggerMode } from './types'
-import { DEFAULT_AI_BASE_URL, isAiProtocol } from './types'
+import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvider, TriggerMode } from './types'
+import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 11
+export const SETTINGS_SCHEMA_VERSION = 12
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -27,7 +27,12 @@ export const DEFAULT_SETTINGS: Settings = {
   aiModel: '',
   aiApiKeyConfigured: false,
   preferredTranslationProvider: 'auto',
-  speechProvider: 'system'
+  speechProvider: 'system',
+  ocrEnginePreference: 'auto',
+  ocrHotkey: 'Alt+O',
+  ocrLang: 'auto',
+  ocrScale: 1.25,
+  ocrTesseractEnabled: true
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -122,6 +127,13 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true,
     speechProvider: isSpeechProvider(rawSettings.speechProvider)
       ? rawSettings.speechProvider
-      : 'system'
+      : 'system',
+    ocrEnginePreference: isOcrEnginePreference(merged.ocrEnginePreference)
+      ? merged.ocrEnginePreference
+      : 'auto',
+    ocrHotkey: String(merged.ocrHotkey || '').trim(),
+    ocrLang: String(merged.ocrLang || 'auto').trim(),
+    ocrScale: normalizeOcrScale(merged.ocrScale),
+    ocrTesseractEnabled: merged.ocrTesseractEnabled !== false
   }
 }

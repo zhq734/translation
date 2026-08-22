@@ -11,7 +11,10 @@ import type {
   AiModelListResult,
   MacOSQuarantineResult,
   UpdateStatus,
-  EdgeSpeechResult
+  EdgeSpeechResult,
+  OcrSelectionBounds,
+  OcrSelectionStartPayload,
+  OcrStatus
 } from '../shared/types'
 
 const api: Api = {
@@ -107,14 +110,59 @@ const api: Api = {
     ipcRenderer.send('selection:translate')
   },
   /**
+   * 请求主进程打开 OCR 框选窗口。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  openOcrSelection() {
+    ipcRenderer.send('ocr-selection:open')
+  },
+  /**
+   * 请求主进程读取剪贴板图片并进行 OCR 翻译。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  translateClipboardImage() {
+    ipcRenderer.send('ocr-clipboard:translate')
+  },
+  /**
+   * 订阅 OCR 框选模式启动通知。
+   * @param callback 框选启动回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onOcrSelectionStart(callback: (payload: OcrSelectionStartPayload) => void) {
+    const listener = (_event: unknown, payload: OcrSelectionStartPayload): void => callback(payload)
+    ipcRenderer.on('ocr-selection:start', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:start', listener)
+  },
+  /**
+   * 提交 OCR 框选截图区域。
+   * @param bounds 框选区域。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  submitOcrSelection(bounds: OcrSelectionBounds) {
+    ipcRenderer.send('ocr-selection:submit', bounds)
+  },
+  /**
+   * 取消 OCR 框选。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelOcrSelection() {
+    ipcRenderer.send('ocr-selection:cancel')
+  },
+  /**
    * 使用手动语言偏好重新翻译当前文本。
    * @param sourceLang 源语言偏好。
    * @param targetLang 目标语言偏好。
+   * @param origin 当前翻译来源。
    * @returns 重新翻译完成后的 Promise。
    * @author zhenghq
    */
-  retranslate: (sourceLang: string, targetLang: string) =>
-    ipcRenderer.invoke('popup:retranslate', sourceLang, targetLang),
+  retranslate: (sourceLang: string, targetLang: string, origin?: TranslatePayload['origin']) =>
+    ipcRenderer.invoke('popup:retranslate', sourceLang, targetLang, origin),
   /**
    * 提交手动翻译请求。
    * @param request 手动原文和语言偏好。
@@ -172,6 +220,12 @@ const api: Api = {
     ipcRenderer.on('settings:changed', listener)
     return () => ipcRenderer.removeListener('settings:changed', listener)
   },
+  /**
+   * 获取 OCR 引擎与模型资产状态。
+   * @returns OCR 状态。
+   * @author zhenghq
+   */
+  getOcrStatus: (): Promise<OcrStatus> => ipcRenderer.invoke('ocr:get-status'),
   /**
    * 检测 DeepLX 服务状态。
    * @param url DeepLX 服务地址。

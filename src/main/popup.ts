@@ -12,6 +12,7 @@ let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
 let pinned = false
 let currentAutoHideMs = 0
+const pendingPayloads: TranslatePayload[] = []
 
 /**
  * 创建翻译弹窗。
@@ -106,6 +107,30 @@ function positionNearAnchor(anchor?: { x: number; y: number }): void {
 }
 
 /**
+ * 向弹窗 Renderer 投递翻译负载；页面尚未加载完成时排队，避免首次打开丢消息。
+ * @param payload 翻译状态或结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function deliverPopupPayload(payload: TranslatePayload): void {
+  if (!win) return
+  if (win.webContents.isLoadingMainFrame()) {
+    pendingPayloads.push(payload)
+    if (pendingPayloads.length === 1) {
+      win.webContents.once('did-finish-load', () => {
+        if (!win) return
+        const queued = pendingPayloads.splice(0)
+        for (const item of queued) win.webContents.send('translate:result', item)
+        win.webContents.send('popup:pinned', pinned)
+      })
+    }
+    return
+  }
+  win.webContents.send('translate:result', payload)
+  win.webContents.send('popup:pinned', pinned)
+}
+
+/**
  * 显示或更新翻译弹窗；弹窗已打开时保持原位置不跳动。
  * @param payload 翻译状态或结果。
  * @param autoHideMs 自动隐藏毫秒数，0 表示不自动关闭。
@@ -121,8 +146,7 @@ export function showPopup(
   if (!win) return
   currentAutoHideMs = Math.max(0, autoHideMs)
   const alreadyVisible = win.isVisible()
-  win.webContents.send('translate:result', payload)
-  win.webContents.send('popup:pinned', pinned)
+  deliverPopupPayload(payload)
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
     positionNearAnchor(anchor)

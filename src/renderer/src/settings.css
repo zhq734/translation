@@ -232,6 +232,26 @@ input[type='password']:disabled {
   line-height: 1.9;
 }
 
+.ocr-model-grid {
+  display: grid;
+  grid-template-columns: minmax(72px, 96px) minmax(0, 1fr);
+  gap: 8px 12px;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ocr-model-grid strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ocr-model-status {
+  margin-top: 8px;
+}
+
 .status-row {
   grid-template-columns: minmax(90px, 1fr) auto;
 }

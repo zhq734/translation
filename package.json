@@ -7,8 +7,8 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node scripts/build-macos-vision-ocr.mjs && electron-vite dev",
+    "build": "node scripts/build-macos-vision-ocr.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
@@ -45,10 +45,24 @@
     ],
     "files": [
       "out/**/*",
+      "assets/ocr/**/*",
+      "node_modules/@gutenye/**/*",
+      "node_modules/@techstark/**/*",
+      "node_modules/@img/**/*",
+      "node_modules/onnxruntime-common/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/tesseract.js/**/*",
+      "node_modules/tesseract.js-core/**/*",
       "node_modules/uiohook-napi/**/*",
       "build/tray*.png"
     ],
     "asarUnpack": [
+      "assets/ocr/**/*",
+      "node_modules/@gutenye/ocr-models/assets/**/*",
+      "node_modules/@img/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*",
       "node_modules/uiohook-napi/**/*"
     ],
     "mac": {
@@ -63,7 +77,13 @@
       "icon": "build/icon.icns",
       "extendInfo": {
         "LSUIElement": true
-      }
+      },
+      "extraResources": [
+        {
+          "from": "build/macos-vision-ocr",
+          "to": "macos-vision-ocr"
+        }
+      ]
     },
     "dmg": {
       "title": "划词翻译"
@@ -116,7 +136,9 @@
     "icon": "build/icon.png"
   },
   "dependencies": {
+    "@gutenye/ocr-node": "^1.4.8",
     "electron-updater": "^6.8.9",
+    "tesseract.js": "^7.0.0",
     "uiohook-napi": "^1.5.5",
     "undici": "^6.28.0"
   }

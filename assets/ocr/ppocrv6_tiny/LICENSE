@@ -1,0 +1,8 @@
+SPDX-License-Identifier: Apache-2.0
+
+PP-OCRv6_tiny ONNX detection and recognition models are distributed by PaddlePaddle
+under the Apache-2.0 license.
+
+Sources:
+- https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_det_onnx
+- https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx

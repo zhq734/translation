@@ -54,6 +54,14 @@
       <section id="selection-view" class="selection-view" aria-label="划词翻译结果">
         <div id="result" class="result" aria-live="polite"></div>
         <div id="original" class="original"></div>
+        <div id="ocr-source" class="ocr-source" hidden>
+          <div class="ocr-source-header">
+            <span class="ocr-source-label" id="ocr-source-label">OCR 内容</span>
+            <span class="ocr-engine-badge" id="ocr-engine-badge" aria-label="OCR 引擎" hidden></span>
+            <button id="ocr-copy" class="text-action" type="button" aria-label="复制 OCR 内容" hidden>复制 OCR 内容</button>
+          </div>
+          <div id="ocr-source-text" class="ocr-source-text" aria-live="polite"></div>
+        </div>
       </section>
       <section id="manual-view" class="manual-view" aria-label="手动翻译" hidden>
         <div class="manual-source-header">
