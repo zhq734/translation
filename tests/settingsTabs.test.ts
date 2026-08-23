@@ -107,3 +107,17 @@ test('设置页数字输入框应与下拉框使用统一控件高度和主题�
   assert.match(css, /select:focus,[\s\S]*input\[type=['"]number['"]\]:focus/u)
   assert.match(css, /select:disabled,[\s\S]*input\[type=['"]number['"]\]:disabled/u)
 })
+
+test('关于页项目卡片应在右下角展示作者署名', () => {
+  const html = readFileSync('src/renderer/settings.html', 'utf8')
+  const aboutIndex = html.indexOf('id="settings-panel-about"')
+  const projectIndex = html.indexOf('<h2>项目</h2>', aboutIndex)
+  const nextPanelIndex = html.indexOf('id="settings-panel-', projectIndex + 1)
+  const projectSection = html.slice(projectIndex, nextPanelIndex > -1 ? nextPanelIndex : undefined)
+
+  assert.match(projectSection, /class="project-author"[\s\S]*>作者：zhenghq</u)
+
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /\.project-author\s*\{[\s\S]*text-align:\s*right/u)
+  assert.match(css, /\.project-author\s*\{[\s\S]*color:\s*var\(--text-muted\)/u)
+})

@@ -229,6 +229,13 @@ input[type='number']:disabled {
   margin-bottom: 10px;
 }
 
+.project-author {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
 .channels {
   padding-left: 20px;
   color: var(--text-secondary);
