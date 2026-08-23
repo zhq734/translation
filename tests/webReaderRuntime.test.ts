@@ -40,6 +40,14 @@ test('注入提取脚本只读当前主文档可见 DOM 且不包含网络请求
   assert.match(script, /shadowRoot/u)
 })
 
+test('提取脚本不应因 display contents 包装节点没有布局矩形而丢弃其可见子树', () => {
+  const extraction = buildWebTextExtractionScript()
+  const incremental = buildWebIncrementalCollectorStartScript(300)
+
+  assert.match(extraction, /style\.display === 'contents'/u)
+  assert.match(incremental, /style\.display === 'contents'/u)
+})
+
 test('提取脚本应覆盖开放 Shadow DOM 的相对时间和表单语义提示，并支持受控写回', () => {
   const extraction = buildWebTextExtractionScript()
   const incremental = buildWebIncrementalCollectorStartScript(300)
@@ -127,6 +135,7 @@ test('增量收集器应扫描当前根节点并对受影响子树防抖去重',
   assert.match(start, /contentEditable|isContentEditable/u)
   assert.doesNotMatch(start, /fetch\s*\(|XMLHttpRequest|\.value\b/u)
   assert.match(start, /shadowRoot/u)
+  assert.match(start, /record\.addedNodes[\s\S]*?observeShadowRoots\(node\)/u)
   assert.match(drain, /pending/u)
   assert.match(drain, /splice/u)
   assert.match(stop, /disconnect/u)

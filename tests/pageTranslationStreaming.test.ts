@@ -99,6 +99,24 @@ test('流式任务应去重、遵守容量上限，并等待输入关闭和队�
   assert.equal(result.progress.total, 2)
 })
 
+test('流式任务去重键应区分 Shadow DOM 路径和同一元素的不同语义属性', async () => {
+  const coordinator = new PageTranslationCoordinator({
+    translate: async (text) => ({ translation: text })
+  })
+  const base = unit('shared', 'Same text')
+  const stream = coordinator.createStream(job())
+  const result = stream.enqueue([
+    { ...base, id: 'shadow-one', anchor: { ...base.anchor, shadowPath: [0, 1] } },
+    { ...base, id: 'shadow-two', anchor: { ...base.anchor, shadowPath: [0, 2] } },
+    { ...base, id: 'placeholder', anchor: { ...base.anchor, semanticAttribute: 'placeholder' } },
+    { ...base, id: 'aria-label', anchor: { ...base.anchor, semanticAttribute: 'aria-label' } }
+  ])
+  stream.closeInput()
+  await stream.result
+
+  assert.deepEqual(result, { accepted: 4, duplicate: 0, truncated: 0 })
+})
+
 test('流式任务取消后不得处理后续输入或提交迟到结果', async () => {
   let release: (() => void) | undefined
   const controller = new AbortController()

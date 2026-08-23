@@ -4,6 +4,7 @@ import type {
   ExtractedWebTextUnit,
   WebTranslationScope
 } from '../shared/webPageTranslation'
+import { createWebTextUnitKey } from '../shared/webPageTranslation'
 
 /** 可注入的单段翻译函数。 */
 export type PageTranslator = (text: string, sourceLang: string, targetLang: string) => Promise<{ translation: string; detectedLang?: string; provider?: string; channel?: string }>
@@ -357,7 +358,7 @@ export class PageTranslationCoordinator {
         if (inputClosed || isStale()) return stats
         for (const unit of units) {
           if (job.scope === 'body' && unit.category !== 'body') continue
-          const unitKey = `${unit.anchor.parentSelector}|${unit.anchor.textNodeIndex}|${unit.anchor.sourceFingerprint}|${unit.sourceText}`
+          const unitKey = createWebTextUnitKey(unit)
           if (seenUnits.has(unitKey)) {
             stats.duplicate += 1
             continue

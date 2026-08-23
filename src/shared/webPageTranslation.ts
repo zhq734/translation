@@ -145,6 +145,23 @@ export interface ExtractedWebTextUnit {
   language?: string
 }
 
+/**
+ * 生成网页文本单元的稳定去重键，区分 Shadow DOM 路径和语义属性。
+ * @param unit 待生成去重键的网页文本单元或最小字段集合。
+ * @returns 可用于流式队列和增量快照去重的稳定键。
+ * @author zhenghq
+ */
+export function createWebTextUnitKey(unit: Pick<ExtractedWebTextUnit, 'sourceText' | 'anchor'>): string {
+  return JSON.stringify([
+    unit.anchor.parentSelector,
+    unit.anchor.textNodeIndex,
+    unit.anchor.shadowPath ?? [],
+    unit.anchor.semanticAttribute ?? '',
+    unit.anchor.sourceFingerprint,
+    unit.sourceText
+  ])
+}
+
 /** 网页元数据。 */
 export interface WebPageMeta {
   /** 当前页面 URL。 */

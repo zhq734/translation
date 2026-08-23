@@ -19,6 +19,7 @@ import type {
   WebViewBounds
 } from '../shared/types'
 import {
+  createWebTextUnitKey,
   extractWebTextBlocks,
   type ExtractedWebTextUnit
 } from '../shared/webPageTranslation'
@@ -35,6 +36,7 @@ import {
 } from './webPageTranslationCache'
 import { normalizeWebReaderUrl, isAllowedWebReaderUrl, sanitizeWebViewBounds } from './webReaderSecurity'
 import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
+import { sendToAliveWebContents } from './webContentsMessaging'
 import {
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
@@ -466,7 +468,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private unitKey(unit: ExtractedWebTextUnit): string {
-    return `${unit.anchor.parentSelector}|${unit.anchor.textNodeIndex}|${unit.anchor.sourceFingerprint}|${unit.sourceText}`
+    return createWebTextUnitKey(unit)
   }
 
   /**
@@ -502,7 +504,7 @@ export class WebReaderManager {
     this.incrementalPollTimer = setInterval(poll, WEB_INCREMENTAL_DEBOUNCE_MS)
     poll()
     this.incrementalDeadlineTimer = setTimeout(() => {
-      void this.finishIncrementalWindow(revision)
+      void this.finishIncrementalWindow(revision, true)
     }, WEB_INCREMENTAL_WINDOW_MAX_MS)
     if (!this.state.loading) this.scheduleIncrementalQuietStop(revision)
   }
@@ -527,11 +529,12 @@ export class WebReaderManager {
       }
       if (this.incrementalWindowRevision !== revision || this.pageRevision !== revision) return
       if (!batch.active) {
-        void this.finishIncrementalWindow(revision)
+        void this.finishIncrementalWindow(revision, true)
         return
       }
       const newUnits: ExtractedWebTextUnit[] = []
-      for (const snapshot of batch.snapshots ?? []) {
+      const snapshots = batch.snapshots ?? []
+      for (const snapshot of snapshots) {
         const extracted = extractWebTextBlocks(snapshot, batch.pageMeta)
         for (const unit of extracted.units) {
           const key = this.unitKey(unit)
@@ -545,6 +548,7 @@ export class WebReaderManager {
           })
         }
       }
+      if (snapshots.length > 0) this.scheduleIncrementalQuietStop(revision)
       if (newUnits.length === 0) return
       this.extractedUnits.push(...newUnits)
       this.state = {
@@ -567,24 +571,35 @@ export class WebReaderManager {
   private scheduleIncrementalQuietStop(revision: number): void {
     if (this.incrementalQuietTimer) clearTimeout(this.incrementalQuietTimer)
     this.incrementalQuietTimer = setTimeout(() => {
-      void this.finishIncrementalWindow(revision)
+      this.incrementalQuietTimer = null
+      void this.drainIncrementalUnits(revision)
+        .catch(() => undefined)
+        .then(() => {
+          if (this.incrementalWindowRevision !== revision || this.pageRevision !== revision) return
+          // 排空期间若又发现页面变化，drain 会重新安排静默期，此时不能提前关闭输入窗口。
+          if (this.incrementalQuietTimer) return
+          void this.finishIncrementalWindow(revision)
+        })
     }, WEB_INCREMENTAL_STOP_QUIET_MS)
   }
 
   /**
    * 结束增量收集器并关闭翻译流输入，之后只保留页面变化提示。
    * @param revision 当前页面代次。
+   * @param force 是否忽略静默期续期并立即结束，最长窗口到期时使用。
    * @returns 停止操作完成后的 Promise。
    * @author zhenghq
    */
-  private async finishIncrementalWindow(revision: number): Promise<void> {
+  private async finishIncrementalWindow(revision: number, force = false): Promise<void> {
     if (this.incrementalWindowRevision !== revision) return
     if (this.incrementalFinishPromise) return this.incrementalFinishPromise
     const generation = this.incrementalGeneration
-    this.stopIncrementalTimers()
     const finish = (async () => {
       await this.drainIncrementalUnits(revision)
       if (generation !== this.incrementalGeneration || this.incrementalWindowRevision !== revision) return
+      // 最终排空期间发现了新内容时，保留轮询与最长窗口计时，等待新的静默期结束。
+      if (!force && this.incrementalQuietTimer) return
+      this.stopIncrementalTimers()
       const stream = this.activeStream
       this.incrementalWindowRevision = null
       this.incrementalUnitHandler = null
@@ -871,7 +886,7 @@ export class WebReaderManager {
     if (this.state.pageUpdated) return
     this.state = { ...this.state, pageUpdated: true }
     this.emitState()
-    this.window?.webContents.send('web-translate:page-updated', true)
+    this.sendToRenderer('web-translate:page-updated', true)
   }
 
   /**
@@ -891,7 +906,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private emitState(): void {
-    this.window?.webContents.send('web-reader:state', this.getState())
+    this.sendToRenderer('web-reader:state', this.getState())
   }
 
   /**
@@ -901,7 +916,25 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private emitProgress(progress: WebTranslationProgressPayload): void {
-    this.window?.webContents.send('web-translate:progress', progress)
+    this.sendToRenderer('web-translate:progress', progress)
+  }
+
+  /**
+   * 向网页阅读器壳窗口发送消息，并安全处理窗口关闭期间的生命周期竞争。
+   * @param channel IPC 通道名称。
+   * @param payload 要发送的消息载荷。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private sendToRenderer(channel: string, payload: unknown): void {
+    const window = this.window
+    if (!window) return
+    try {
+      if (window.isDestroyed()) return
+      sendToAliveWebContents(window.webContents, channel, payload)
+    } catch (error) {
+      if (!isDisposedWebFrameError(error)) throw error
+    }
   }
 
   /**
@@ -913,10 +946,12 @@ export class WebReaderManager {
    */
   private disposeWindow(window: BrowserWindow, view: WebContentsView): void {
     if (this.window !== window) return
+    // BrowserWindow 的 closed 事件触发时其 WebContents 已进入销毁流程，先断开引用，
+    // 避免取消增量任务时 emitState 继续向已销毁的壳窗口发送消息。
+    this.window = null
     this.invalidateActiveJob(true)
     this.stopPageChangePolling()
     if (!view.webContents.isDestroyed()) view.webContents.close()
-    this.window = null
     this.view = null
     this.extractedUnits = []
     this.translatedUnits = []

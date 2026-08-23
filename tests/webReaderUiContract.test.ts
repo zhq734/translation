@@ -100,6 +100,14 @@ test('网页翻译增量写回应串行执行，并基于最新结果快照聚�
 test('网页翻译应管理有限增量窗口并允许首批文本为空', () => {
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const runMethod = manager.slice(manager.indexOf('async run('), manager.indexOf('/** 取消当前任务'))
+  const drainMethod = manager.slice(
+    manager.indexOf('private drainIncrementalUnits('),
+    manager.indexOf('/**\n   * 页面停止加载后安排静默期结束增量窗口。')
+  )
+  const quietStopMethod = manager.slice(
+    manager.indexOf('private scheduleIncrementalQuietStop('),
+    manager.indexOf('/**\n   * 结束增量收集器并关闭翻译流输入')
+  )
   assert.match(manager, /WEB_INCREMENTAL_STOP_QUIET_MS\s*=\s*1500/u)
   assert.match(manager, /WEB_INCREMENTAL_WINDOW_MAX_MS\s*=\s*30_000/u)
   assert.match(manager, /hasExtractedSnapshot/u)
@@ -108,6 +116,13 @@ test('网页翻译应管理有限增量窗口并允许首批文本为空', () =>
   assert.match(manager, /buildWebIncrementalCollectorStopScript/u)
   assert.match(manager, /startIncrementalWindow/u)
   assert.match(manager, /finishIncrementalWindow/u)
+  assert.match(drainMethod, /batch\.snapshots[\s\S]*?scheduleIncrementalQuietStop\(revision\)/u)
+  assert.match(quietStopMethod, /this\.drainIncrementalUnits\(revision\)/u)
+  assert.ok(
+    quietStopMethod.indexOf('this.drainIncrementalUnits(revision)') <
+      quietStopMethod.indexOf('this.finishIncrementalWindow(revision)'),
+    '静默期到期后应先排空最后一批增量内容，再决定是否结束窗口'
+  )
 })
 
 test('网页阅读器界面应展示动态发现进度、窗口状态和缓存命中', () => {
@@ -136,6 +151,36 @@ test('远程 frame 导航销毁时增量写回应安全跳过', () => {
   assert.match(applyMethod, /isDisposedWebFrameError/u)
   assert.match(applyMethod, /catch \(error\)/u)
   assert.match(applyMethod, /skipped: operations\.length/u)
+})
+
+test('关闭网页阅读器时所有壳窗口消息都应安全跳过已销毁的 WebContents', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const emitStateMethod = manager.slice(
+    manager.indexOf('private emitState()'),
+    manager.indexOf('/**\n   * 广播网页翻译进度。')
+  )
+  const emitProgressMethod = manager.slice(
+    manager.indexOf('private emitProgress('),
+    manager.indexOf('/**\n   * 清理已关闭窗口的引用与任务。')
+  )
+  const sendToRendererMethod = manager.slice(
+    manager.indexOf('private sendToRenderer('),
+    manager.indexOf('/**\n   * 清理已关闭窗口的引用与任务。')
+  )
+  const disposeMethod = manager.slice(
+    manager.indexOf('private disposeWindow('),
+    manager.indexOf('/**\n   * 要求远程网页已经加载。')
+  )
+
+  assert.match(manager, /private sendToRenderer\(/u)
+  assert.match(emitStateMethod, /this\.sendToRenderer\('web-reader:state'/u)
+  assert.match(emitProgressMethod, /this\.sendToRenderer\('web-translate:progress'/u)
+  assert.match(manager, /this\.sendToRenderer\('web-translate:page-updated'/u)
+  assert.match(sendToRendererMethod, /sendToAliveWebContents/u)
+  assert.ok(
+    disposeMethod.indexOf('this.window = null') < disposeMethod.indexOf('this.invalidateActiveJob(true)'),
+    '窗口关闭回调中应先断开壳窗口引用，再取消任务，避免取消流程继续向已销毁窗口发送状态'
+  )
 })
 
 test('单个文本节点失配不应中断整页翻译或显示全部重译提示', () => {

@@ -94,7 +94,8 @@ export function buildWebTextExtractionScript(): string {
       if (!element || ignored.has(element.tagName) || element.isContentEditable || element.contentEditable === 'true') return false;
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
+        (style.display === 'contents' || (rect.width > 0 && rect.height > 0));
     };
     const shadowLocationOf = (node) => {
       const root = node?.nodeType === Node.DOCUMENT_FRAGMENT_NODE ? node : node?.getRootNode?.();
@@ -199,7 +200,8 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
       if (!element || ignored.has(element.tagName) || element.isContentEditable || element.contentEditable === 'true') return false;
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
+        (style.display === 'contents' || (rect.width > 0 && rect.height > 0));
     };
     const rectOf = (element) => {
       const rect = element.getBoundingClientRect();
@@ -294,20 +296,27 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
       state.pageUpdated = true;
       for (const record of records) {
         state.roots.add(semanticRoot(record.target));
-        if (record.type === 'childList') for (const node of record.addedNodes) state.roots.add(semanticRoot(node));
+        if (record.type === 'childList') {
+          for (const node of record.addedNodes) {
+            state.roots.add(semanticRoot(node));
+            observeShadowRoots(node);
+          }
+        }
       }
       if (state.timer) clearTimeout(state.timer);
       state.timer = setTimeout(() => { state.timer = null; state.flush(); }, ${safeDebounce});
     });
     const observedRoots = new Set();
     const observeShadowRoots = (node) => {
-      if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
-      const element = node;
-      if (element.shadowRoot && !observedRoots.has(element.shadowRoot)) {
-        observedRoots.add(element.shadowRoot);
-        observer.observe(element.shadowRoot, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['placeholder','aria-label','title'] });
+      if (!node) return;
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const element = node;
+        if (element.shadowRoot && !observedRoots.has(element.shadowRoot)) {
+          observedRoots.add(element.shadowRoot);
+          observer.observe(element.shadowRoot, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['placeholder','aria-label','title'] });
+        }
       }
-      for (const child of element.children) observeShadowRoots(child);
+      for (const child of node.childNodes || []) observeShadowRoots(child);
     };
     if (root) {
       observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['placeholder','aria-label','title'] });
