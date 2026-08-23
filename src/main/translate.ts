@@ -13,6 +13,7 @@ import { toMicrosoftCheckStatus } from './microsoftErrors'
 import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
+import { BoundedLruCache } from './boundedLruCache'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
 const GOOGLE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
@@ -59,6 +60,7 @@ interface TranslationChannel {
   id: TranslationProviderId
   name: string
   cooldownMs: number
+  maxChars: number
   run: () => Promise<TranslateOutput>
 }
 
@@ -68,13 +70,28 @@ interface CachedTranslation extends TranslateOutput {
 }
 
 /**
+ * 估算普通翻译结果缓存条目的 UTF-16 内存占用。
+ * @param key 翻译上下文缓存键。
+ * @param value 成功翻译结果。
+ * @returns 用于 LRU 容量保护的近似字节数。
+ * @author zhenghq
+ */
+function estimateCachedTranslationBytes(key: string, value: CachedTranslation): number {
+  return (key.length + value.translation.length + (value.detectedLang?.length ?? 0) + value.provider.length + value.channel.length) * 2
+}
+
+/**
  * 封装翻译结果缓存、通道熔断、钉钉 Token、免订阅微软翻译和多通道自动降级编排。
  * @param options 网络和时钟依赖。
  * @returns 可独立测试和重置的翻译运行时实例。
  * @author zhenghq
  */
 export class TranslationRuntime {
-  private readonly cache = new Map<string, CachedTranslation>()
+  private readonly cache = new BoundedLruCache<string, CachedTranslation>({
+    maxEntries: 50_000,
+    maxBytes: 50 * 1024 * 1024,
+    sizeOf: estimateCachedTranslationBytes
+  })
   private readonly breaker = new Map<string, number>()
   private readonly now: () => number
   private readonly dingTalkClient: DingTalkTranslationClient
@@ -106,7 +123,10 @@ export class TranslationRuntime {
     dingTalkCredentials: DingTalkCredentials | null = null,
     aiApiKey: string | null = null
   ): Promise<TranslateOutput> {
-    const input = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text
+    if (text.length > MAX_CHARS) {
+      throw new Error(`单次翻译最多支持 ${MAX_CHARS} 个字符，请先分段`)
+    }
+    const input = text
     const key = this.cacheKey(
       input,
       settings.sourceLang,
@@ -123,6 +143,10 @@ export class TranslationRuntime {
     const channels = this.createChannels(input, settings, dingTalkCredentials, aiApiKey)
     let lastError = '所有翻译通道均失败'
     for (const channel of channels) {
+      if (input.length > channel.maxChars) {
+        console.warn(`[translate] 跳过 ${channel.name}（输入超过 ${channel.maxChars} 字符）`)
+        continue
+      }
       if (this.isTripped(channel.name)) {
         console.warn(`[translate] 跳过 ${channel.name}（熔断中）`)
         continue
@@ -235,6 +259,7 @@ export class TranslationRuntime {
         id: 'ai',
         name: AI_CHANNEL,
         cooldownMs: 60_000,
+        maxChars: MAX_CHARS,
         run: () => this.aiChannel(text, settings, aiApiKey)
       })
     }
@@ -249,6 +274,7 @@ export class TranslationRuntime {
           id: 'dingtalk',
           name: DINGTALK_CHANNEL,
           cooldownMs: 60_000,
+          maxChars: MAX_CHARS,
           run: () => this.dingTalkClient.translate(text, pair, dingTalkCredentials)
         })
       }
@@ -261,6 +287,7 @@ export class TranslationRuntime {
           id: 'microsoft',
           name: MICROSOFT_CHANNEL,
           cooldownMs: 60_000,
+          maxChars: MAX_CHARS,
           run: () => this.microsoftClient.translate(text, pair)
         })
       }
@@ -272,6 +299,7 @@ export class TranslationRuntime {
         id: 'deeplx-self',
         name: '自建 DeepLX',
         cooldownMs: 15_000,
+        maxChars: MAX_CHARS,
         run: () => this.deepLxChannel(selfHost, text, settings, 2500)
       })
     }
@@ -279,18 +307,21 @@ export class TranslationRuntime {
       id: 'deeplx-public',
       name: '公共 DeepLX',
       cooldownMs: 120_000,
+      maxChars: MAX_CHARS,
       run: () => this.deepLxChannel(PUBLIC_DEEPLX, text, settings, 3000)
     })
     channels.push({
       id: 'google',
       name: 'Google',
       cooldownMs: 60_000,
+      maxChars: GOOGLE_MAX_CHARS,
       run: () => this.googleChannel(text, settings)
     })
     channels.push({
       id: 'mymemory',
       name: 'MyMemory',
       cooldownMs: 60_000,
+      maxChars: MYMEMORY_MAX_CHARS,
       run: () => this.myMemoryChannel(text, settings)
     })
     const preferred = settings.preferredTranslationProvider
@@ -389,8 +420,7 @@ export class TranslationRuntime {
   private async googleChannel(text: string, settings: Settings): Promise<TranslateOutput> {
     const target = this.toIsoLang(settings.targetLang)
     const source = settings.sourceLang === 'auto' ? 'auto' : this.toIsoLang(settings.sourceLang)
-    const query = text.length > GOOGLE_MAX_CHARS ? text.slice(0, GOOGLE_MAX_CHARS) : text
-    const url = `${GOOGLE_ENDPOINT}?client=gtx&sl=${source}&tl=${target}&dt=t&q=${encodeURIComponent(query)}`
+    const url = `${GOOGLE_ENDPOINT}?client=gtx&sl=${source}&tl=${target}&dt=t&q=${encodeURIComponent(text)}`
     const response = await this.fetchWithTimeout(url, { method: 'GET' }, 3500)
     const contentType = response.headers.get('content-type') || ''
     if (!contentType.includes('json')) throw new Error('被拦截（非 JSON 响应）')
@@ -416,8 +446,7 @@ export class TranslationRuntime {
   private async myMemoryChannel(text: string, settings: Settings): Promise<TranslateOutput> {
     const target = this.toIsoLang(settings.targetLang)
     const source = settings.sourceLang === 'auto' ? 'Autodetect' : this.toIsoLang(settings.sourceLang)
-    const query = text.length > MYMEMORY_MAX_CHARS ? text.slice(0, MYMEMORY_MAX_CHARS) : text
-    const url = `${MYMEMORY_ENDPOINT}?q=${encodeURIComponent(query)}&langpair=${encodeURIComponent(
+    const url = `${MYMEMORY_ENDPOINT}?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(
       `${source}|${target}`
     )}&mt=1`
     const response = await this.fetchWithTimeout(url, { method: 'GET' }, 6000)

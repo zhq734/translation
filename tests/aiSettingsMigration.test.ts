@@ -43,7 +43,7 @@ test('schema 8 及更早版本应升级到当前版本并补齐 AI 默认值', (
 })
 
 test('默认设置应包含关闭的 AI 通道和本地 Ollama 地址', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 12)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 15)
   assert.equal(DEFAULT_SETTINGS.aiEnabled, false)
   assert.equal(DEFAULT_SETTINGS.aiProtocol, 'ollama')
   assert.equal(DEFAULT_SETTINGS.aiBaseUrl, DEFAULT_AI_BASE_URL)
@@ -59,7 +59,7 @@ test('语音引擎默认使用系统内置语音', () => {
 test('旧设置缺少语音引擎字段时应迁移为系统内置语音', () => {
   const settings = normalizeSettings(legacyWithoutAi(10) as never)
   assert.equal(settings.speechProvider, 'system')
-  assert.equal(settings.schemaVersion, 12)
+  assert.equal(settings.schemaVersion, 15)
 })
 
 test('Edge 语音引擎设置应保留，非法值应回退系统内置语音', () => {

@@ -166,6 +166,7 @@ h2 {
 select,
 input[type='text'],
 input[type='password'],
+input[type='number'],
 textarea {
   width: 100%;
   min-width: 0;
@@ -179,7 +180,8 @@ textarea {
 
 select,
 input[type='text'],
-input[type='password'] {
+input[type='password'],
+input[type='number'] {
   min-height: 36px;
   padding: 7px 10px;
 }
@@ -196,6 +198,7 @@ textarea {
 select:focus,
 input[type='text']:focus,
 input[type='password']:focus,
+input[type='number']:focus,
 textarea:focus {
   border-color: var(--button-bg);
   box-shadow: 0 0 0 3px var(--focus-ring);
@@ -203,7 +206,8 @@ textarea:focus {
 
 select:disabled,
 input[type='text']:disabled,
-input[type='password']:disabled {
+input[type='password']:disabled,
+input[type='number']:disabled {
   background: var(--control-disabled-bg);
   color: var(--text-muted);
   cursor: not-allowed;

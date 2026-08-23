@@ -116,7 +116,15 @@ import { preprocessOcrImageBytes } from './ocrImagePreprocess'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
 import { OcrEngineError } from '../shared/ocrEngine'
-import type { OcrErrorCode, OcrSelectionBounds, OcrStatus } from '../shared/types'
+import type {
+  OcrErrorCode,
+  OcrSelectionBounds,
+  OcrStatus,
+  WebTranslationMode,
+  WebTranslationRunRequest,
+  WebViewBounds
+} from '../shared/types'
+import { WebReaderManager } from './webReaderWindow'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
@@ -135,6 +143,7 @@ let aiConfiguration: AiConfigurationService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
 let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
+let webReader: WebReaderManager | null = null
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
 const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
@@ -180,6 +189,16 @@ function getAiConfiguration(): AiConfigurationService {
 function getUpdateManager(): UpdateManager {
   if (!updateManager) throw new Error('自动更新服务尚未初始化')
   return updateManager
+}
+
+/**
+ * 返回已初始化的网页阅读器管理器。
+ * @returns 网页阅读器管理器。
+ * @author zhenghq
+ */
+function getWebReader(): WebReaderManager {
+  if (!webReader) throw new Error('网页阅读器尚未初始化')
+  return webReader
 }
 
 /**
@@ -366,6 +385,20 @@ async function onReady(): Promise<boolean> {
   aiCheckService = new AiCheckService({ fetch: translationFetch })
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
+  webReader = new WebReaderManager({
+    preloadPath: PRELOAD_PATH,
+    loadRenderer: loadRendererHtml,
+    getSettings,
+    translate: async (text, sourceLang, targetLang) => {
+      const settings = { ...getSettings(), sourceLang, targetLang }
+      const dingTalkCredentials = settings.dingTalkEnabled
+        ? getDingTalkConfiguration().getCredentialsSnapshot()
+        : null
+      const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+      const output = await translate(text, settings, dingTalkCredentials, aiApiKey)
+      return { translation: output.translation, provider: output.provider, channel: output.channel }
+    }
+  })
   updateManager = await createApplicationUpdateManager((status) => {
     broadcast('updater:status', status)
   })
@@ -1746,6 +1779,44 @@ function broadcast(channel: string, payload: unknown): void {
 }
 
 /**
+ * 校验来自 Renderer 的原生 View 矩形。
+ * @param value 未信任的 IPC 负载。
+ * @returns 负载合法时返回 true。
+ * @author zhenghq
+ */
+function isWebViewBounds(value: unknown): value is WebViewBounds {
+  if (!value || typeof value !== 'object') return false
+  const bounds = value as Record<string, unknown>
+  return ['x', 'y', 'width', 'height'].every((key) => typeof bounds[key] === 'number' && Number.isFinite(bounds[key]))
+}
+
+/**
+ * 校验来自 Renderer 的网页翻译范围参数。
+ * @param value 未信任的 IPC 负载。
+ * @returns 负载合法时返回 true。
+ * @author zhenghq
+ */
+function isWebTranslationRunRequest(value: unknown): value is WebTranslationRunRequest {
+  if (value === undefined || value === null) return true
+  if (typeof value !== 'object') return false
+  const request = value as Record<string, unknown>
+  const validScope = request.scope === undefined || request.scope === 'body' || request.scope === 'all'
+  const validSource = request.sourceLang === undefined || typeof request.sourceLang === 'string'
+  const validTarget = request.targetLang === undefined || typeof request.targetLang === 'string'
+  return validScope && validSource && validTarget
+}
+
+/**
+ * 校验来自 Renderer 的网页显示模式。
+ * @param value 未信任的 IPC 负载。
+ * @returns 模式合法时返回 true。
+ * @author zhenghq
+ */
+function isWebTranslationMode(value: unknown): value is WebTranslationMode {
+  return value === 'source' || value === 'target'
+}
+
+/**
  * 保存设置补丁并同步快捷键、托盘及所有渲染窗口。
  * @param patch 设置补丁。
  * @returns 保存后的完整设置。
@@ -1791,6 +1862,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.proxyRules !== undefined ||
       patch.proxyBypassRules !== undefined) {
     await applyTranslationProxy(settings)
+    await webReader?.applyProxy(settings)
   }
   if (patch.microsoftEnabled !== undefined &&
       settings.microsoftEnabled !== previous.microsoftEnabled) {
@@ -1819,6 +1891,34 @@ function registerIpc(): void {
     setPopupPinned(Boolean(pinned))
   })
   ipcMain.on('settings:open', () => openSettings())
+  ipcMain.on('webview:open', (_event, url: unknown) => {
+    void getWebReader()
+      .open(typeof url === 'string' && url.trim() ? url : undefined)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : '无法打开网页阅读器'
+        dialog.showErrorBox('网页翻译', message)
+      })
+  })
+  ipcMain.on('webview:close', () => getWebReader().close())
+  ipcMain.handle('webview:navigate', (_event, url: unknown) => {
+    if (typeof url !== 'string' || !url.trim()) throw new Error('请输入有效的网页地址')
+    return getWebReader().navigate(url)
+  })
+  ipcMain.on('webview:back', () => getWebReader().back())
+  ipcMain.on('webview:forward', () => getWebReader().forward())
+  ipcMain.on('webview:reload', () => getWebReader().reload())
+  ipcMain.on('webview:set-bounds', (_event, bounds: unknown) => {
+    if (isWebViewBounds(bounds)) getWebReader().setBounds(bounds)
+  })
+  ipcMain.handle('web-translate:extract', () => getWebReader().extract())
+  ipcMain.handle('web-translate:run', (_event, request: unknown) =>
+    getWebReader().run(isWebTranslationRunRequest(request) ? request : {})
+  )
+  ipcMain.on('web-translate:cancel', () => getWebReader().cancel())
+  ipcMain.handle('web-translate:set-mode', (_event, mode: unknown) => {
+    if (!isWebTranslationMode(mode)) throw new Error('网页展示模式无效')
+    return getWebReader().setMode(mode)
+  })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {
     void translateSelectionButton()
@@ -1946,6 +2046,12 @@ function buildTrayMenu(): Menu {
     { label: `划词翻译   ${settings.hotkey}`, enabled: false },
     { type: 'separator' },
     { label: '手动翻译…', click: () => openManualTranslation() },
+    { label: '打开网页翻译…', enabled: settings.webTranslationEnabled, click: () => {
+      void getWebReader().open().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : '无法打开网页阅读器'
+        dialog.showErrorBox('网页翻译', message)
+      })
+    } },
     { label: '截图 OCR 翻译…', click: () => openOcrSelection() },
     { label: '剪贴板图片 OCR 翻译…', click: () => void translateClipboardImage() },
     { type: 'separator' },
@@ -1971,6 +2077,8 @@ function buildTrayMenu(): Menu {
  * @author zhenghq
  */
 function cleanupBeforeQuit(): void {
+  webReader?.close()
+  webReader = null
   stopAutoTrigger()
   globalShortcut.unregisterAll()
   tray?.destroy()

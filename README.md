@@ -24,6 +24,7 @@
 - [Run Locally](#run-locally)
 - [Grant Accessibility Permission](#grant-accessibility-permission)
 - [Quick Start](#quick-start)
+- [Web Page Translation](#web-page-translation)
 - [Configuration](#configuration)
 - [Translation Providers and Fallback](#translation-providers-and-fallback)
 - [Configure Self-hosted DeepLX](#configure-self-hosted-deeplx)
@@ -72,6 +73,7 @@ Typical use cases include:
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
 - **Microsoft Translator integration** through the Bing web translator flow, with no Azure account, subscription key, or region required.
+- **Full-page web translation** in a built-in Electron reader, with explicit extraction, bounded batch translation, in-place text replacement, source/target language switching, and instant source-text restoration.
 - **Self-hosted DeepLX integration** with endpoint health checks and a generated Docker command.
 - **Light and dark appearance** following the operating system color scheme.
 - **Menu-bar controls** for languages, settings, and quitting the application.
@@ -301,6 +303,38 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 - **Settings**: open the settings window;
 - **Close**: close the popup with `×` or `Esc`.
 
+## Web Page Translation
+
+The built-in web reader loads HTTP or HTTPS pages in an isolated Electron `WebContentsView`. Open it from **Open web translation…** in the tray/menu-bar menu or from the translation popup, then follow this flow:
+
+1. Enter a web address and click **Translate page** when the page root is available; the reader does not wait for every image, advertisement, analytics request, or long-lived connection to finish;
+2. Choose the source language (automatic detection by default) and target language, then click **Translate page** to explicitly read the current page and start a bounded initial loading window;
+3. The translated text replaces the matching source text nodes in place, without creating a sidebar or rebuilding the page structure;
+4. Follow discovered, queued, completed, failed, cancelled, cache-hit, and partial progress in the top status area while the page is still loading;
+5. Switch between **Translation** and **Source** without reloading the page; switching back reuses the current translated result;
+6. Change the source or target language to cancel the previous job, restore the source text, and retranslate the same snapshot without refreshing the page;
+7. During the initial window, newly rendered safe text is discovered after a 300 ms debounce and translated in batches. After loading stops, the reader waits for 1,500 ms of quiet time, or at most 30 seconds overall, then prompts you to explicitly translate later SPA/lazy-loaded content instead of automatically uploading it.
+
+The web translation settings provide:
+
+| Setting | Behavior | Default |
+| --- | --- | --- |
+| Enable web translation | Enables or disables the popup and tray entry | Enabled |
+| Translation scope | Translate body content only, or all visible extracted text | Body only |
+| Maximum blocks | Stops queuing new blocks after the configured count | 1,000 |
+| Maximum characters | Stops queuing content after the configured total | 500,000 |
+| Default display | Translation or source | Translation |
+
+Long paragraphs are split at sentence boundaries and then by safe character boundaries when necessary. Provider requests are never silently truncated. If the page exceeds the block or character limits, or if individual text units fail, the top status area clearly reports that only part of the page was translated. Completed page translations are reused through bounded in-memory LRU caches: up to 30 page entries with up to 3 language directions per page, plus a shared translation-result cache bounded at 50,000 entries or approximately 50 MB. These caches are memory-only and are not written to disk. Cancelling, navigating, re-extracting, changing languages, or closing the reader invalidates the previous job so late provider responses cannot overwrite the current page. In-place updates only assign matching `TextNode.nodeValue` values, preserving DOM structure, links, buttons, event handlers, scroll position, and surrounding whitespace. Anchor mismatches are skipped and reported as a page update.
+
+Privacy and extraction boundaries:
+
+- The app does not inspect pages open in Chrome, Edge, Safari, Firefox, or another system browser;
+- Opening the reader alone does not collect page text. Extraction starts only after the user explicitly clicks **Translate page**;
+- Extraction reads only the currently rendered and visible DOM in the main document. It does not cross into iframes, traverse Shadow DOM, read CSS pseudo-elements, or scroll the page to trigger lazy loading;
+- Extraction is read-only. The separate controlled apply script only changes matching text-node values and does not initiate network requests;
+- Extracted text is sent only through the translation providers currently enabled by the user. Review those providers' privacy and data-retention terms before translating sensitive pages.
+
 ## Configuration
 
 Settings are saved automatically and take effect immediately.
@@ -317,6 +351,10 @@ Settings are saved automatically and take effect immediately.
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
 | Microsoft Translator | Key-free Bing web translator channel | Disabled |
+| Web translation | Built-in reader and full-page translation entry | Enabled |
+| Web translation scope | Body content only or all visible extracted text | Body only |
+| Web translation limits | Maximum translated blocks and total characters | 1,000 blocks / 500,000 characters |
+| Web default display | Translation or source | Translation |
 
 ### Speech engines
 
@@ -476,6 +514,8 @@ The data flow is:
 6. Keeping the default **System voices** option adds no application-side network request for speech. Only after the user explicitly selects **Edge online neural voices** and starts playback is the current translation sent to Microsoft's online read-aloud service to generate temporary audio.
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
+
+Full-page web translation follows an additional explicit-consent boundary: the app cannot read tabs from the system browser, does not extract content merely because the built-in reader is open, and reads only the visible main-document DOM after **Translate page** is clicked. The reader uses a dedicated persistent session isolated from the translation API session. Dynamic page changes only produce a local “translate again” prompt and are not automatically extracted or uploaded. Page text selected for translation is still sent to the providers enabled in your settings.
 
 This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. Edge online speech also requires no user credential: only the selected engine is stored, while read-aloud text is not logged and generated audio is not persisted. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 

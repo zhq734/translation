@@ -198,6 +198,42 @@
             </div>
             <p id="speech-provider-hint" class="field-hint"></p>
           </section>
+
+          <section>
+            <h2>网页全文翻译</h2>
+            <div class="row">
+              <label for="web-translation-enabled">启用网页翻译</label>
+              <label class="checkbox-control">
+                <input id="web-translation-enabled" type="checkbox" />
+                <span>允许打开内置网页翻译阅读器</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="web-translation-scope">翻译范围</label>
+              <select id="web-translation-scope">
+                <option value="body">仅正文</option>
+                <option value="all">全部可见文本</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="web-translation-max-blocks">最大文本块数</label>
+              <input id="web-translation-max-blocks" type="number" min="1" max="5000" />
+            </div>
+            <div class="row">
+              <label for="web-translation-max-chars">最大总字数</label>
+              <input id="web-translation-max-chars" type="number" min="1" max="2000000" />
+            </div>
+            <div class="row">
+              <label for="web-translation-default-mode">默认显示</label>
+              <select id="web-translation-default-mode">
+                <option value="target">译文</option>
+                <option value="source">原文</option>
+              </select>
+            </div>
+            <p class="field-hint">
+              只有打开内置阅读器并显式点击提取/翻译后，应用才会读取当前页面文本。不会读取系统浏览器已打开的页面。
+            </p>
+          </section>
         </div>
 
         <div

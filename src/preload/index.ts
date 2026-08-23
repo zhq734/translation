@@ -14,7 +14,14 @@ import type {
   EdgeSpeechResult,
   OcrSelectionBounds,
   OcrSelectionStartPayload,
-  OcrStatus
+  OcrStatus,
+  WebReaderState,
+  WebTranslationExtractionPayload,
+  WebTranslationMode,
+  WebTranslationProgressPayload,
+  WebTranslationRunPayload,
+  WebTranslationRunRequest,
+  WebViewBounds
 } from '../shared/types'
 
 const api: Api = {
@@ -72,6 +79,90 @@ const api: Api = {
    */
   openSettings() {
     ipcRenderer.send('settings:open')
+  },
+  /**
+   * 打开内置网页翻译阅读器。
+   * @param url 可选初始 URL。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  openWebReader(url?: string) {
+    ipcRenderer.send('webview:open', url)
+  },
+  /**
+   * 关闭内置网页翻译阅读器。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  closeWebReader() {
+    ipcRenderer.send('webview:close')
+  },
+  /**
+   * 导航到地址栏提交的网页。
+   * @param url 用户输入的 URL。
+   * @returns 导航状态。
+   * @author zhenghq
+   */
+  navigateWebReader: (url: string): Promise<WebReaderState> => ipcRenderer.invoke('webview:navigate', url),
+  /** 阅读器后退。 */
+  webViewBack: (): void => ipcRenderer.send('webview:back'),
+  /** 阅读器前进。 */
+  webViewForward: (): void => ipcRenderer.send('webview:forward'),
+  /** 刷新当前网页。 */
+  webViewReload: (): void => ipcRenderer.send('webview:reload'),
+  /**
+   * 同步原生 WebContentsView 矩形。
+   * @param bounds Renderer 占位区矩形。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  webViewSetBounds: (bounds: WebViewBounds): void => ipcRenderer.send('webview:set-bounds', bounds),
+  /** 显式提取当前网页。 */
+  webTranslateExtract: (): Promise<WebTranslationExtractionPayload> => ipcRenderer.invoke('web-translate:extract'),
+  /**
+   * 启动网页批量翻译。
+   * @param request 可选翻译范围。
+   * @returns 批量翻译结果。
+   * @author zhenghq
+   */
+  webTranslateRun: (request?: WebTranslationRunRequest): Promise<WebTranslationRunPayload> =>
+    ipcRenderer.invoke('web-translate:run', request),
+  /** 取消网页批量翻译。 */
+  webTranslateCancel: (): void => ipcRenderer.send('web-translate:cancel'),
+  /**
+   * 设置网页原文或译文展示模式。
+   * @param mode 原文或译文模式。
+   * @returns 写回统计。
+   * @author zhenghq
+   */
+  webTranslateSetMode: (mode: WebTranslationMode) => ipcRenderer.invoke('web-translate:set-mode', mode),
+  /**
+   * 订阅阅读器导航状态。
+   * @param callback 状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onWebReaderState(callback: (state: WebReaderState) => void) {
+    const listener = (_event: unknown, state: WebReaderState): void => callback(state)
+    ipcRenderer.on('web-reader:state', listener)
+    return () => ipcRenderer.removeListener('web-reader:state', listener)
+  },
+  /**
+   * 订阅网页翻译进度。
+   * @param callback 进度回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onWebTranslateProgress(callback: (progress: WebTranslationProgressPayload) => void) {
+    const listener = (_event: unknown, progress: WebTranslationProgressPayload): void => callback(progress)
+    ipcRenderer.on('web-translate:progress', listener)
+    return () => ipcRenderer.removeListener('web-translate:progress', listener)
+  },
+  /** 订阅页面内容更新提示。 */
+  onWebTranslatePageUpdated(callback: (updated: boolean) => void) {
+    const listener = (_event: unknown, updated: boolean): void => callback(updated)
+    ipcRenderer.on('web-translate:page-updated', listener)
+    return () => ipcRenderer.removeListener('web-translate:page-updated', listener)
   },
   /**
    * 停止后台翻译服务并退出应用。

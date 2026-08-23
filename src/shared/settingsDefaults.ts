@@ -1,8 +1,8 @@
-import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvider, TriggerMode } from './types'
+import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvider, TriggerMode, WebTranslationMode, WebTranslationScope } from './types'
 import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 12
+export const SETTINGS_SCHEMA_VERSION = 15
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -32,7 +32,12 @@ export const DEFAULT_SETTINGS: Settings = {
   ocrHotkey: 'Alt+O',
   ocrLang: 'auto',
   ocrScale: 1.25,
-  ocrTesseractEnabled: true
+  ocrTesseractEnabled: true,
+  webTranslationEnabled: true,
+  webTranslationScope: 'all',
+  webTranslationMaxBlocks: 1000,
+  webTranslationMaxChars: 500000,
+  webTranslationDefaultMode: 'target'
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -71,6 +76,40 @@ function isSpeechProvider(value: unknown): value is SpeechProvider {
 }
 
 /**
+ * 判断网页翻译范围是否合法。
+ * @param value 待校验的值。
+ * @returns 是否为合法网页翻译范围。
+ * @author zhenghq
+ */
+function isWebTranslationScope(value: unknown): value is WebTranslationScope {
+  return value === 'body' || value === 'all'
+}
+
+/**
+ * 判断网页默认显示模式是否合法。
+ * @param value 待校验的值。
+ * @returns 是否为合法网页显示模式。
+ * @author zhenghq
+ */
+function isWebTranslationMode(value: unknown): value is WebTranslationMode {
+  return value === 'source' || value === 'target'
+}
+
+/**
+ * 规范化网页翻译数值上限。
+ * @param value 待规范化的值。
+ * @param fallback 非有限数值的默认值。
+ * @param maximum 允许的最大值。
+ * @returns 处于一到最大值之间的整数。
+ * @author zhenghq
+ */
+function normalizeWebLimit(value: unknown, fallback: number, maximum: number): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(maximum, Math.max(1, Math.floor(numeric)))
+}
+
+/**
  * 规范化 AI Base URL：去除首尾空白和末尾斜杠。
  * @param baseUrl 原始 Base URL。
  * @returns 规范化后的 Base URL。
@@ -97,6 +136,16 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
 
   // 第四版统一把第三版及更早配置迁移到按钮模式，后续版本升级保留用户选择。
   if (schemaVersion < 4) triggerMode = 'button'
+
+  // 第十五版扩大网页翻译默认容量；仅迁移缺失字段和可确认的旧默认值，保留用户自定义限制。
+  const webTranslationMaxBlocks = schemaVersion < 15 &&
+    (rawSettings.webTranslationMaxBlocks === undefined || Number(rawSettings.webTranslationMaxBlocks) === 300)
+    ? DEFAULT_SETTINGS.webTranslationMaxBlocks
+    : normalizeWebLimit(merged.webTranslationMaxBlocks, DEFAULT_SETTINGS.webTranslationMaxBlocks, 5000)
+  const webTranslationMaxChars = schemaVersion < 15 &&
+    (rawSettings.webTranslationMaxChars === undefined || Number(rawSettings.webTranslationMaxChars) === 200000)
+    ? DEFAULT_SETTINGS.webTranslationMaxChars
+    : normalizeWebLimit(merged.webTranslationMaxChars, DEFAULT_SETTINGS.webTranslationMaxChars, 2000000)
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -134,6 +183,16 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     ocrHotkey: String(merged.ocrHotkey || '').trim(),
     ocrLang: String(merged.ocrLang || 'auto').trim(),
     ocrScale: normalizeOcrScale(merged.ocrScale),
-    ocrTesseractEnabled: merged.ocrTesseractEnabled !== false
+    ocrTesseractEnabled: merged.ocrTesseractEnabled !== false,
+    webTranslationEnabled: merged.webTranslationEnabled !== false,
+    // 第十四版将网页翻译默认范围扩展为全部可见文本，修复导航、按钮和标签遗漏。
+    webTranslationScope: schemaVersion < 14
+      ? 'all'
+      : isWebTranslationScope(merged.webTranslationScope) ? merged.webTranslationScope : 'all',
+    webTranslationMaxBlocks,
+    webTranslationMaxChars,
+    webTranslationDefaultMode: String(merged.webTranslationDefaultMode) === 'bilingual'
+      ? 'target'
+      : isWebTranslationMode(merged.webTranslationDefaultMode) ? merged.webTranslationDefaultMode : 'target'
   }
 }

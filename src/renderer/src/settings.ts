@@ -25,6 +25,11 @@ const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
 const speechProvider = document.getElementById('speech-provider') as HTMLSelectElement
 const speechProviderHint = document.getElementById('speech-provider-hint') as HTMLElement
+const webTranslationEnabled = document.getElementById('web-translation-enabled') as HTMLInputElement
+const webTranslationScope = document.getElementById('web-translation-scope') as HTMLSelectElement
+const webTranslationMaxBlocks = document.getElementById('web-translation-max-blocks') as HTMLInputElement
+const webTranslationMaxChars = document.getElementById('web-translation-max-chars') as HTMLInputElement
+const webTranslationDefaultMode = document.getElementById('web-translation-default-mode') as HTMLSelectElement
 const proxyMode = document.getElementById('proxy-mode') as HTMLSelectElement
 const proxyRules = document.getElementById('proxy-rules') as HTMLInputElement
 const proxyBypassRules = document.getElementById('proxy-bypass-rules') as HTMLInputElement
@@ -352,6 +357,11 @@ function renderSettings(settings: Settings): void {
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
   speechProvider.value = settings.speechProvider
+  webTranslationEnabled.checked = settings.webTranslationEnabled
+  webTranslationScope.value = settings.webTranslationScope
+  webTranslationMaxBlocks.value = String(settings.webTranslationMaxBlocks)
+  webTranslationMaxChars.value = String(settings.webTranslationMaxChars)
+  webTranslationDefaultMode.value = settings.webTranslationDefaultMode
   deeplxUrl.value = settings.deepLxUrl
   proxyMode.value = settings.proxyMode
   proxyRules.value = settings.proxyRules
@@ -683,6 +693,21 @@ function saveSpeechProvider(): void {
   const provider = speechProvider.value as SpeechProvider
   updateSpeechProviderHint(provider)
   void save({ speechProvider: provider })
+}
+
+/**
+ * 保存网页全文翻译开关、范围、上限和默认显示模式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveWebTranslationSettings(): void {
+  void save({
+    webTranslationEnabled: webTranslationEnabled.checked,
+    webTranslationScope: webTranslationScope.value as Settings['webTranslationScope'],
+    webTranslationMaxBlocks: Number(webTranslationMaxBlocks.value),
+    webTranslationMaxChars: Number(webTranslationMaxChars.value),
+    webTranslationDefaultMode: webTranslationDefaultMode.value as Settings['webTranslationDefaultMode']
+  })
 }
 
 /**
@@ -1144,6 +1169,11 @@ hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 speechProvider.addEventListener('change', saveSpeechProvider)
+webTranslationEnabled.addEventListener('change', saveWebTranslationSettings)
+webTranslationScope.addEventListener('change', saveWebTranslationSettings)
+webTranslationMaxBlocks.addEventListener('change', saveWebTranslationSettings)
+webTranslationMaxChars.addEventListener('change', saveWebTranslationSettings)
+webTranslationDefaultMode.addEventListener('change', saveWebTranslationSettings)
 ocrEnginePreference.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('change', saveOcrSettings)
 ocrLang.addEventListener('change', saveOcrSettings)

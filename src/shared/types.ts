@@ -1,3 +1,12 @@
+import type {
+  ExtractedWebTextUnit,
+  WebTextExtractionResult,
+  WebTranslationMode,
+  WebTranslationScope
+} from './webPageTranslation'
+
+export type { ExtractedWebTextUnit, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
+
 /** 划词后的弹窗触发方式。 */
 export type TriggerMode = 'auto' | 'button' | 'hotkey'
 
@@ -330,6 +339,168 @@ export interface Settings {
   ocrScale: number
   /** 是否启用 Tesseract 兜底层。 */
   ocrTesseractEnabled: boolean
+  /** 是否启用内置网页全文翻译。 */
+  webTranslationEnabled: boolean
+  /** 网页翻译范围。 */
+  webTranslationScope: WebTranslationScope
+  /** 网页翻译最大块数。 */
+  webTranslationMaxBlocks: number
+  /** 网页翻译最大总字符数。 */
+  webTranslationMaxChars: number
+  /** 网页默认显示模式。 */
+  webTranslationDefaultMode: WebTranslationMode
+}
+
+/** Renderer 上报给原生 WebContentsView 的窗口内容区矩形。 */
+export interface WebViewBounds {
+  /** 横坐标。 */
+  x: number
+  /** 纵坐标。 */
+  y: number
+  /** 宽度。 */
+  width: number
+  /** 高度。 */
+  height: number
+}
+
+/** 内置网页阅读器导航和加载状态。 */
+export interface WebReaderState {
+  /** 阅读器实例标识。 */
+  readerId: string
+  /** 当前页面代次。 */
+  pageRevision: number
+  /** 当前 URL。 */
+  url: string
+  /** 当前标题。 */
+  title: string
+  /** 页面是否正在加载。 */
+  loading: boolean
+  /** 是否可后退。 */
+  canGoBack: boolean
+  /** 是否可前进。 */
+  canGoForward: boolean
+  /** 细分错误提示。 */
+  error?: string
+  /** 页面正文是否在快照后发生变化。 */
+  pageUpdated?: boolean
+  /** 初始加载增量翻译窗口是否仍在收集文本。 */
+  translationWindowActive?: boolean
+  /** 当前任务已发现的翻译分段数量。 */
+  translationDiscovered?: number
+  /** 当前任务已完成的翻译分段数量。 */
+  translationDone?: number
+  /** 当前任务页面缓存命中数量。 */
+  translationCacheHits?: number
+}
+
+/** 携带任务代次的网页文本提取结果。 */
+export interface WebTranslationExtractionPayload extends WebTextExtractionResult {
+  /** 阅读器实例标识。 */
+  readerId: string
+  /** 页面代次。 */
+  pageRevision: number
+}
+
+/** 网页翻译启动参数。 */
+export interface WebTranslationRunRequest {
+  /** 翻译范围；省略时使用设置。 */
+  scope?: WebTranslationScope
+  /** 本次任务源语言，auto 表示自动检测。 */
+  sourceLang?: string
+  /** 本次任务目标语言。 */
+  targetLang?: string
+}
+
+/** 单个网页分段翻译结果。 */
+export interface WebTranslationSegmentResult {
+  /** 来源文本块标识。 */
+  blockId: string
+  /** 来源文本单元标识。 */
+  unitId: string
+  /** 分段标识。 */
+  segmentId: string
+  /** 分段原文。 */
+  text: string
+  /** 译文。 */
+  translation?: string
+  /** 失败原因。 */
+  error?: string
+}
+
+/** 网页批量翻译进度。 */
+export interface WebTranslationProgressPayload {
+  /** 阅读器实例标识。 */
+  readerId: string
+  /** 页面代次。 */
+  pageRevision: number
+  /** 任务标识。 */
+  jobId: string
+  /** 已完成分段数。 */
+  done: number
+  /** 当前已经发现并接受的分段数。 */
+  discovered: number
+  /** 当前仍在队列中等待的分段数。 */
+  queued: number
+  /** 总分段数。 */
+  total: number
+  /** 失败分段数。 */
+  failed: number
+  /** 是否取消。 */
+  cancelled: boolean
+  /** 是否只完成部分网页。 */
+  partial: boolean
+  /** 增量输入窗口是否已经关闭。 */
+  inputClosed: boolean
+  /** 页面级缓存命中的文本单元数量。 */
+  cacheHits?: number
+  /** 本次任务源语言。 */
+  sourceLang?: string
+  /** 本次任务目标语言。 */
+  targetLang?: string
+}
+
+/** 已聚合的文本单元翻译结果。 */
+export interface WebTranslationUnitResult extends ExtractedWebTextUnit {
+  /** 完整译文。 */
+  translation?: string
+  /** 单元失败原因。 */
+  error?: string
+}
+
+/** 原位写回统计。 */
+export interface WebTranslationApplyPayload {
+  /** 成功处理数量。 */
+  applied: number
+  /** 锚点失配数量。 */
+  mismatched: number
+  /** 无译文等跳过数量。 */
+  skipped: number
+}
+
+/** 网页批量翻译最终结果。 */
+export interface WebTranslationRunPayload {
+  /** 阅读器实例标识。 */
+  readerId: string
+  /** 页面代次。 */
+  pageRevision: number
+  /** 任务标识。 */
+  jobId: string
+  /** 完成或失败的分段。 */
+  results: WebTranslationSegmentResult[]
+  /** 最终进度。 */
+  progress: WebTranslationProgressPayload
+  /** 是否只完成部分网页。 */
+  partial: boolean
+  /** 聚合后的文本单元结果。 */
+  units: WebTranslationUnitResult[]
+  /** 原位写回统计。 */
+  apply: WebTranslationApplyPayload
+  /** 本次任务源语言。 */
+  sourceLang: string
+  /** 本次任务目标语言。 */
+  targetLang: string
+  /** 页面级缓存命中的文本单元数量。 */
+  cacheHits?: number
 }
 
 /** Edge 在线语音合成结果。 */
@@ -417,6 +588,34 @@ export interface Api {
   hide(): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 打开内置网页翻译阅读器。 */
+  openWebReader(url?: string): void
+  /** 关闭内置网页翻译阅读器。 */
+  closeWebReader(): void
+  /** 导航到地址栏 URL。 */
+  navigateWebReader(url: string): Promise<WebReaderState>
+  /** 阅读器后退。 */
+  webViewBack(): void
+  /** 阅读器前进。 */
+  webViewForward(): void
+  /** 阅读器刷新。 */
+  webViewReload(): void
+  /** 同步原生 View 矩形。 */
+  webViewSetBounds(bounds: WebViewBounds): void
+  /** 显式提取当前网页可见文本。 */
+  webTranslateExtract(): Promise<WebTranslationExtractionPayload>
+  /** 启动当前网页批量翻译。 */
+  webTranslateRun(request?: WebTranslationRunRequest): Promise<WebTranslationRunPayload>
+  /** 取消当前网页翻译任务。 */
+  webTranslateCancel(): void
+  /** 切换远程网页的原文或译文。 */
+  webTranslateSetMode(mode: WebTranslationMode): Promise<WebTranslationApplyPayload>
+  /** 订阅网页阅读器状态。 */
+  onWebReaderState(cb: (state: WebReaderState) => void): () => void
+  /** 订阅网页翻译进度。 */
+  onWebTranslateProgress(cb: (progress: WebTranslationProgressPayload) => void): () => void
+  /** 订阅页面正文更新提示。 */
+  onWebTranslatePageUpdated(cb: (updated: boolean) => void): () => void
   /** 停止后台翻译服务并退出应用。 */
   stopService(): void
   /** 设置翻译弹窗是否固定。 */

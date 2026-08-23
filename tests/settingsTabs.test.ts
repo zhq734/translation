@@ -98,3 +98,12 @@ test('Tab 布局应自适应宽度，并让当前面板独立滚动且兼容主�
   assert.match(css, /\.settings-tab\[aria-selected='true'\][\s\S]*var\(--button-bg\)/u)
   assert.match(css, /@media\s*\(max-width:\s*480px\)/u)
 })
+
+test('设置页数字输入框应与下拉框使用统一控件高度和主题样式', () => {
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /select,[\s\S]*input\[type=['"]number['"]\]/u)
+  assert.match(css, /select,[\s\S]*input\[type=['"]number['"]\][\s\S]*min-height:\s*36px/u)
+  assert.match(css, /select,[\s\S]*input\[type=['"]number['"]\][\s\S]*padding:\s*7px\s+10px/u)
+  assert.match(css, /select:focus,[\s\S]*input\[type=['"]number['"]\]:focus/u)
+  assert.match(css, /select:disabled,[\s\S]*input\[type=['"]number['"]\]:disabled/u)
+})

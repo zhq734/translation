@@ -14,7 +14,8 @@ export default defineConfig({
         input: {
           index: resolve('src/renderer/index.html'),
           selection: resolve('src/renderer/selection.html'),
-          settings: resolve('src/renderer/settings.html')
+          settings: resolve('src/renderer/settings.html'),
+          'web-reader': resolve('src/renderer/web-reader.html')
         }
       }
     }

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>网页翻译</title>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/webReader.css" />
+  </head>
+  <body>
+    <main class="web-reader-shell">
+      <header class="web-toolbar" aria-label="网页翻译工具栏">
+        <div class="web-navigation-actions">
+          <button id="web-back" class="icon-button" type="button" title="后退" disabled aria-label="后退">←</button>
+          <button id="web-forward" class="icon-button" type="button" title="前进" disabled aria-label="前进">→</button>
+          <button id="web-reload" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
+        </div>
+        <form id="web-address-form" class="web-address-form">
+          <input id="web-address" type="text" inputmode="url" autocomplete="url" spellcheck="false" aria-label="网页地址" placeholder="输入网页地址，例如 example.com" />
+        </form>
+        <label class="web-language-control">源语言
+          <select id="web-source-lang" aria-label="源语言"></select>
+        </label>
+        <span class="language-arrow" aria-hidden="true">→</span>
+        <label class="web-language-control">目标语言
+          <select id="web-target-lang" aria-label="目标语言"></select>
+        </label>
+        <button id="web-translate" class="primary-button" type="button">翻译此页</button>
+        <button id="web-cancel" class="secondary-button" type="button" disabled>取消</button>
+        <label class="web-mode-control">显示
+          <select id="web-mode" aria-label="网页显示模式">
+            <option value="target">译文</option>
+            <option value="source">原文</option>
+          </select>
+        </label>
+      </header>
+      <div id="web-status" class="web-status" role="status" aria-live="polite">请输入网页地址</div>
+      <section id="web-view-slot" class="web-view-slot" aria-label="网页内容区域"></section>
+    </main>
+    <script type="module" src="./src/webReader.ts"></script>
+  </body>
+</html>

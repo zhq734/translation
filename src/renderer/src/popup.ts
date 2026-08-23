@@ -54,6 +54,7 @@ const ocrSourceTextEl = document.getElementById('ocr-source-text') as HTMLElemen
 const ocrEngineBadgeEl = document.getElementById('ocr-engine-badge') as HTMLElement
 const ocrCopyBtn = document.getElementById('ocr-copy') as HTMLButtonElement
 const pinBtn = document.getElementById('pin') as HTMLButtonElement
+const webReaderBtn = document.getElementById('open-web-reader') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
 const closeBtn = document.getElementById('close') as HTMLButtonElement
 
@@ -799,6 +800,13 @@ function togglePinned(): void {
 function openSettings(): void { window.api.openSettings() }
 
 /**
+ * 打开内置网页全文翻译阅读器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openWebReader(): void { window.api.openWebReader() }
+
+/**
  * 关闭翻译弹窗。
  * @returns 无返回值。
  * @author zhenghq
@@ -905,6 +913,7 @@ ocrCopyBtn.addEventListener('click', () => {
   if (text) flashStatus('已复制 OCR 内容')
 })
 pinBtn.addEventListener('click', togglePinned)
+webReaderBtn.addEventListener('click', openWebReader)
 settingsBtn.addEventListener('click', openSettings)
 closeBtn.addEventListener('click', closePopup)
 document.addEventListener('keydown', handleKeydown)
