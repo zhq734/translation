@@ -124,6 +124,19 @@ export class WebReaderManager {
     if (url) await this.navigate(url)
   }
 
+  /**
+   * 激活仍然存在的网页阅读器窗口。
+   * @returns 已成功激活时返回 true；窗口不存在或已销毁时返回 false。
+   * @author zhenghq
+   */
+  focusExistingWindow(): boolean {
+    if (!this.window || this.window.isDestroyed()) return false
+    if (this.window.isMinimized()) this.window.restore()
+    this.window.show()
+    this.window.focus()
+    return true
+  }
+
   /** 关闭阅读器并取消任务。
    * @returns 无返回值。
    * @author zhenghq

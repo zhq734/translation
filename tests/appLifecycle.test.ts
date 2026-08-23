@@ -52,11 +52,15 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第
   )
 })
 
-test('macOS 从 Finder 再次打开运行中的应用时应通过 activate 事件打开设置窗口', () => {
+test('macOS 点击 Dock 图标时应优先恢复网页阅读器，没有可恢复页面才打开设置', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
   assert.match(
     source,
-    /if \(isMac\) \{[\s\S]*?app\.on\('activate',[\s\S]*?initialization\.then\([\s\S]*?if \(!initialized\) return[\s\S]*?openSettings\(\)/u
+    /function activateExistingPageOrOpenSettings\(\): void \{[\s\S]*?webReader\?\.focusExistingWindow\(\)[\s\S]*?openSettings\(\)/u
+  )
+  assert.match(
+    source,
+    /if \(isMac\) \{[\s\S]*?app\.on\('activate',[\s\S]*?initialization\.then\([\s\S]*?if \(!initialized\) return[\s\S]*?activateExistingPageOrOpenSettings\(\)/u
   )
 })

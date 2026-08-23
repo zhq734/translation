@@ -251,6 +251,16 @@ function cancelEdgeSpeech(requestId: string): void {
   edgeSpeechRequests.delete(String(requestId))
 }
 
+/**
+ * 激活已有网页阅读器页面；没有尚未关闭的页面时打开设置窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function activateExistingPageOrOpenSettings(): void {
+  if (webReader?.focusExistingWindow()) return
+  openSettings()
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -269,7 +279,7 @@ if (!gotLock) {
     app.on('activate', () => {
       void initialization.then((initialized) => {
         if (!initialized) return
-        openSettings()
+        activateExistingPageOrOpenSettings()
       })
     })
   }

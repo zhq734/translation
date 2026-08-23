@@ -55,6 +55,20 @@ test('网页翻译 IPC、preload 与托盘入口应完整且受限', () => {
   assert.match(main, /打开网页翻译/u)
 })
 
+test('网页阅读器应支持恢复并聚焦尚未关闭的窗口', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const focusMethod = manager.slice(
+    manager.indexOf('focusExistingWindow(): boolean'),
+    manager.indexOf('/** 关闭阅读器并取消任务。')
+  )
+
+  assert.match(focusMethod, /if \(!this\.window \|\| this\.window\.isDestroyed\(\)\) return false/u)
+  assert.match(focusMethod, /if \(this\.window\.isMinimized\(\)\) this\.window\.restore\(\)/u)
+  assert.match(focusMethod, /this\.window\.show\(\)/u)
+  assert.match(focusMethod, /this\.window\.focus\(\)/u)
+  assert.match(focusMethod, /return true/u)
+})
+
 test('网页提取应等待主文档可交互，而不是被全局 loading 状态误拦截', () => {
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const extractMethod = manager.slice(manager.indexOf('async extract('), manager.indexOf('/** 按语言方向翻译'))
