@@ -11,8 +11,10 @@ import type { UpdateStatus } from '../shared/types'
 import { isMacOSDiskImageExecution } from './appLifecycle'
 import {
   createManualMacUpdateService,
-  resolveManualMacDmgUrl
+  resolveManualMacDmgTarget
 } from './manualMacUpdate'
+import type { ManualMacUpdateTarget } from './manualMacUpdate'
+import { translationFetch } from './network'
 import {
   UpdateManager,
   isMacOSDeveloperIdApplicationSignature,
@@ -43,10 +45,15 @@ class ElectronUpdateDriver implements UpdateDriver {
     autoUpdater.allowPrerelease = false
     autoUpdater.fullChangelog = false
     autoUpdater.on('checking-for-update', listeners.checking)
-    autoUpdater.on('update-available', (info: UpdateInfo) => listeners.available({
-      version: info.version,
-      manualDownloadUrl: resolveMacOSManualDmgUrl(info)
-    }))
+    autoUpdater.on('update-available', (info: UpdateInfo) => {
+      const manualTarget = resolveMacOSManualDmgTarget(info)
+      listeners.available({
+        version: info.version,
+        manualDownloadUrl: manualTarget?.url,
+        manualDownloadSha512: manualTarget?.sha512,
+        manualDownloadSize: manualTarget?.size
+      })
+    })
     autoUpdater.on('update-not-available', (info: UpdateInfo) => listeners.notAvailable(info))
     autoUpdater.on('download-progress', (progress: ProgressInfo) => listeners.progress(progress))
     autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => listeners.downloaded(info))
@@ -82,14 +89,14 @@ class ElectronUpdateDriver implements UpdateDriver {
 }
 
 /**
- * 从 electron-updater 更新清单中选择当前 macOS 架构对应的 DMG。
+ * 从 electron-updater 更新清单中选择当前 macOS 架构对应的 DMG 下载目标。
  * @param info electron-updater 返回的更新信息。
- * @returns 当前架构优先的 HTTPS DMG 地址；没有匹配文件时返回 undefined。
+ * @returns 当前架构优先的下载目标（含可用的 sha512 与 size）；没有匹配文件时返回 undefined。
  * @author zhenghq
  */
-function resolveMacOSManualDmgUrl(info: UpdateInfo): string | undefined {
+function resolveMacOSManualDmgTarget(info: UpdateInfo): ManualMacUpdateTarget | undefined {
   if (process.platform !== 'darwin') return undefined
-  return resolveManualMacDmgUrl(info.files, process.arch, RELEASE_DOWNLOAD_BASE_URL)
+  return resolveManualMacDmgTarget(info.files, process.arch, RELEASE_DOWNLOAD_BASE_URL)
 }
 
 /**
@@ -142,6 +149,7 @@ export async function createApplicationUpdateManager(
     manualUpdate: process.platform === 'darwin'
       ? createManualMacUpdateService({
         downloadsDirectory: app.getPath('downloads'),
+        fetch: translationFetch,
         openPath: (path) => shell.openPath(path)
       })
       : undefined,

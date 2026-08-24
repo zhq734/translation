@@ -1,8 +1,10 @@
 import { session, type Session } from 'electron'
 import { buildProxyConfig } from '../shared/proxySettings'
 import type { Settings } from '../shared/types'
+import { applyProxyToSessions } from './proxySessionApply'
 
 let translationSession: Session | null = null
+let updateDownloadSession: Session | null = null
 
 /**
  * 获取翻译请求专用的 Electron 网络会话。
@@ -17,15 +19,29 @@ function getTranslationSession(): Session {
 }
 
 /**
- * 将当前代理设置应用到翻译网络会话，并关闭旧代理遗留的连接池。
+ * 获取 electron-updater 下载专用的 Electron 网络会话。
+ * electron-updater 内部固定使用 `electron-updater` 具名分区，这里取到同一实例以便应用代理。
+ * @returns 更新下载网络会话。
+ * @author zhenghq
+ */
+function getUpdateDownloadSession(): Session {
+  if (!updateDownloadSession) {
+    updateDownloadSession = session.fromPartition('electron-updater')
+  }
+  return updateDownloadSession
+}
+
+/**
+ * 将当前代理设置应用到翻译与更新下载网络会话，并关闭旧代理遗留的连接池。
  * @param settings 当前完整设置。
  * @returns 代理应用完成后的 Promise。
  * @author zhenghq
  */
 export async function applyTranslationProxy(settings: Settings): Promise<void> {
-  const currentSession = getTranslationSession()
-  await currentSession.setProxy(buildProxyConfig(settings))
-  await currentSession.closeAllConnections()
+  await applyProxyToSessions(
+    [getTranslationSession(), getUpdateDownloadSession()],
+    buildProxyConfig(settings)
+  )
   console.log('[network] 代理模式已应用:', settings.proxyMode)
 }
 
