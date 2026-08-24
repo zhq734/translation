@@ -44,7 +44,7 @@ test('主进程应初始化自动更新、静默检查并注册完整 IPC', () =
   assert.match(updaterSource, /const RELEASE_DOWNLOAD_BASE_URL = `\$\{RELEASE_URL\}\/download\/`/u)
   assert.match(
     updaterSource,
-    /resolveManualMacDmgUrl\(info\.files, process\.arch, RELEASE_DOWNLOAD_BASE_URL\)/u
+    /resolveManualMacDmgTarget\(info\.files, process\.arch, RELEASE_DOWNLOAD_BASE_URL\)/u
   )
   assert.match(updaterSource, /downloadsDirectory:\s*app\.getPath\('downloads'\)/u)
   assert.match(updaterSource, /openPath:\s*\(path\) => shell\.openPath\(path\)/u)
