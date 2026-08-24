@@ -125,6 +125,7 @@ import type {
   WebViewBounds
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
+import { shouldShowMacOSDockIcon } from './dockVisibility'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
@@ -138,6 +139,8 @@ const OCR_TIMEOUT_MS = 30000
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let ocrSelectionWin: BrowserWindow | null = null
+let dockIconEnabled = false
+let webReaderWindowOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
@@ -307,12 +310,28 @@ function handleApplicationInitializationFailure(error: unknown): false {
  */
 function applyMacOSDockVisibility(showDockIcon: boolean): void {
   if (!isMac) return
-  app.setActivationPolicy(showDockIcon ? 'regular' : 'accessory')
-  if (showDockIcon) {
+  dockIconEnabled = showDockIcon
+  const shouldShow = shouldShowMacOSDockIcon({
+    showDockIcon,
+    settingsOpen: Boolean(settingsWin && !settingsWin.isDestroyed()),
+    webReaderOpen: webReaderWindowOpen
+  })
+  if (shouldShow) {
+    app.setActivationPolicy('regular')
     void app.dock?.show()
     return
   }
+  app.setActivationPolicy('accessory')
   app.dock?.hide()
+}
+
+/**
+ * 根据当前设置页和网页翻译页状态刷新 macOS Dock 图标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function refreshMacOSDockVisibility(): void {
+  applyMacOSDockVisibility(dockIconEnabled)
 }
 
 /**
@@ -399,6 +418,10 @@ async function onReady(): Promise<boolean> {
     preloadPath: PRELOAD_PATH,
     loadRenderer: loadRendererHtml,
     getSettings,
+    onWindowStateChanged: (open) => {
+      webReaderWindowOpen = open
+      refreshMacOSDockVisibility()
+    },
     translate: async (text, sourceLang, targetLang) => {
       const settings = { ...getSettings(), sourceLang, targetLang }
       const dingTalkCredentials = settings.dingTalkEnabled
@@ -1515,6 +1538,7 @@ function createSettingsWindow(): BrowserWindow {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show()
     settingsWin.focus()
+    refreshMacOSDockVisibility()
     return settingsWin
   }
 
@@ -1539,7 +1563,9 @@ function createSettingsWindow(): BrowserWindow {
   loadRendererHtml(settingsWin, 'settings.html')
   settingsWin.on('closed', () => {
     settingsWin = null
+    refreshMacOSDockVisibility()
   })
+  refreshMacOSDockVisibility()
   return settingsWin
 }
 

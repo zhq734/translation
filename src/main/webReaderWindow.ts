@@ -68,6 +68,8 @@ export interface WebReaderManagerOptions {
   getSettings(): Settings
   /** 调用现有 TranslationRuntime 翻译单段文本。 */
   translate(text: string, sourceLang: string, targetLang: string): Promise<{ translation: string; provider?: string; channel?: string }>
+  /** 阅读器窗口打开或关闭时通知主进程。 */
+  onWindowStateChanged?: (open: boolean) => void
 }
 
 /** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
@@ -740,6 +742,7 @@ export class WebReaderManager {
     window.contentView.addChildView(view)
     this.window = window
     this.view = view
+    this.options.onWindowStateChanged?.(true)
     this.bindRemoteEvents(view)
     window.on('closed', () => this.disposeWindow(window, view))
     window.webContents.once('did-finish-load', () => this.emitState())
@@ -949,6 +952,7 @@ export class WebReaderManager {
     // BrowserWindow 的 closed 事件触发时其 WebContents 已进入销毁流程，先断开引用，
     // 避免取消增量任务时 emitState 继续向已销毁的壳窗口发送消息。
     this.window = null
+    this.options.onWindowStateChanged?.(false)
     this.invalidateActiveJob(true)
     this.stopPageChangePolling()
     if (!view.webContents.isDestroyed()) view.webContents.close()
