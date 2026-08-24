@@ -13,6 +13,10 @@ export interface UpdateDriverInfo {
   version: string
   /** 手动安装模式可直接下载的 macOS DMG 地址。 */
   manualDownloadUrl?: string
+  /** 该 DMG 在更新清单中的 base64 sha512 校验值。 */
+  manualDownloadSha512?: string
+  /** 该 DMG 在更新清单中的字节长度。 */
+  manualDownloadSize?: number
 }
 
 /** electron-updater 返回的最小下载进度信息。 */
@@ -209,6 +213,7 @@ function formatUpdateErrorMessage(error: unknown): string {
 export class UpdateManager {
   private status: UpdateStatus
   private manualDownloadUrl: string | undefined
+  private manualDownloadIntegrity: { sha512?: string; size?: number } | undefined
 
   /**
    * 创建自动更新管理器并连接底层驱动事件。
@@ -322,6 +327,12 @@ export class UpdateManager {
    */
   private handleAvailable(info: UpdateDriverInfo): void {
     this.manualDownloadUrl = info.manualDownloadUrl
+    this.manualDownloadIntegrity = info.manualDownloadSha512 || info.manualDownloadSize
+      ? {
+        ...(info.manualDownloadSha512 ? { sha512: info.manualDownloadSha512 } : {}),
+        ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
+      }
+      : undefined
     const message = this.status.installMode === 'automatic'
       ? `发现新版本 ${info.version}，可以下载并安装`
       : `发现新版本 ${info.version}，当前环境需要手动安装`
@@ -344,6 +355,7 @@ export class UpdateManager {
    */
   private handleNotAvailable(info: UpdateDriverInfo): void {
     this.manualDownloadUrl = undefined
+    this.manualDownloadIntegrity = undefined
     this.setStatus({
       phase: 'not-available',
       latestVersion: info.version || this.status.currentVersion,
@@ -413,11 +425,16 @@ export class UpdateManager {
       const result = await this.options.manualUpdate.downloadAndOpen(
         this.manualDownloadUrl,
         version,
-        (progress) => this.handleProgress(progress)
+        (progress) => this.handleProgress(progress),
+        this.manualDownloadIntegrity
       )
+      const integrityNotice = result.verified
+        ? ''
+        : '；本次更新清单未提供该 DMG 的校验值，安装包未经完整性校验'
       this.setStatus({
         phase: 'manual-downloaded',
-        message: '更新包已下载到“下载”文件夹并打开 DMG；请把“划词翻译”拖入“应用程序”覆盖旧版本，然后点击“解除 macOS 隔离属性”',
+        message: '更新包已下载到“下载”文件夹并打开 DMG；请把“划词翻译”拖入“应用程序”覆盖旧版本，然后点击“解除 macOS 隔离属性”' +
+          integrityNotice,
         progress: this.status.progress
           ? { ...this.status.progress, percent: 100 }
           : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 },

@@ -196,6 +196,10 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 - Open **Settings → About** to view the current version, check manually, and monitor download progress. Platforms that support automatic installation can restart into a downloaded update;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
 - On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. In manual mode, clicking update downloads the DMG for the current architecture into Downloads and opens it. After dragging Selection Translator into Applications and replacing the old copy, return to Settings and click **Remove macOS quarantine attribute**;
+- Update checks and package downloads share the app's proxy session, using the same proxy configuration as translation requests;
+- Downloads probe the source for HTTP Range support: when supported, the package is fetched with up to 4 concurrent segments; otherwise the download falls back to a single connection;
+- Interrupted downloads resume from the completed bytes on retry, restarting only when the version, package size, or checksum changes;
+- Manual macOS updates verify the DMG's sha512 before opening it. A mismatch deletes the file and reports the failure; when the update manifest has no matching checksum, the status explicitly states the package was not integrity-checked;
 - If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
 > The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
