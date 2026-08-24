@@ -1,5 +1,6 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
+import { formatUpdateProgressText } from '../../shared/updateProgressFormat'
 import type {
   AiCheckStatus,
   AiModelListResult,
@@ -398,20 +399,6 @@ async function initialize(): Promise<void> {
 }
 
 /**
- * 将字节数格式化为适合更新进度显示的文本。
- * @param bytes 字节数。
- * @returns 自动选择 B、KB、MB 或 GB 后的文本。
- * @author zhenghq
- */
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** unitIndex
-  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
-}
-
-/**
  * 将主进程自动更新状态渲染为版本、进度和可执行操作。
  * @param status 当前自动更新状态。
  * @returns 无返回值。
@@ -464,9 +451,7 @@ function renderUpdateStatus(status: UpdateStatus): void {
   if (progress) {
     const percent = Math.max(0, Math.min(100, progress.percent))
     updateProgressBar.value = percent
-    updateProgressText.textContent = progress.total > 0
-      ? `${percent.toFixed(1)}% · ${formatBytes(progress.transferred)} / ${formatBytes(progress.total)} · ${formatBytes(progress.bytesPerSecond)}/s`
-      : `${percent.toFixed(1)}%`
+    updateProgressText.textContent = formatUpdateProgressText(progress)
   }
 
   if (status.phase === 'disabled') {
