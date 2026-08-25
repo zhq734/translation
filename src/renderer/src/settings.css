@@ -229,11 +229,31 @@ input[type='number']:disabled {
   margin-bottom: 10px;
 }
 
-.project-author {
+/* 项目信息（作者 / 邮箱）：标签与值按列对齐，整体靠右显示 */
+.project-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto);
+  justify-content: end;
+  gap: 4px 8px;
   margin: 12px 0 0;
   color: var(--text-muted);
   font-size: 12px;
-  text-align: right;
+  line-height: 1.6;
+}
+
+.project-meta dt {
+  text-align: left;
+}
+
+.project-meta dt::after {
+  content: '：';
+}
+
+.project-meta dd {
+  margin: 0;
+  text-align: left;
+  word-break: break-all;
+  user-select: text;
 }
 
 .channels {
