@@ -281,8 +281,28 @@
             <p id="ai-api-key-status" class="field-hint ai-api-key-status">API Key 未配置</p>
             <div class="row">
               <label for="ai-model">模型</label>
-              <input id="ai-model" type="text" list="ai-model-list" autocomplete="off" placeholder="选择或手动输入模型名称" />
-              <datalist id="ai-model-list"></datalist>
+              <div class="model-combobox">
+                <input
+                  id="ai-model"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="选择或手动输入模型名称"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="ai-model-options"
+                />
+                <button
+                  id="ai-model-toggle"
+                  class="model-combobox-toggle"
+                  type="button"
+                  tabindex="-1"
+                  aria-expanded="false"
+                  aria-controls="ai-model-options"
+                  aria-label="展开模型列表"
+                ></button>
+                <ul id="ai-model-options" class="model-combobox-options" role="listbox" aria-label="可用模型" hidden></ul>
+              </div>
             </div>
             <div class="ai-actions">
               <button id="ai-save" class="btn primary">保存 AI 配置</button>

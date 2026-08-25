@@ -50,7 +50,8 @@ const aiBaseUrl = document.getElementById('ai-base-url') as HTMLInputElement
 const aiApiKey = document.getElementById('ai-api-key') as HTMLInputElement
 const aiApiKeyStatus = document.getElementById('ai-api-key-status') as HTMLElement
 const aiModel = document.getElementById('ai-model') as HTMLInputElement
-const aiModelList = document.getElementById('ai-model-list') as HTMLDataListElement
+const aiModelToggle = document.getElementById('ai-model-toggle') as HTMLButtonElement
+const aiModelOptions = document.getElementById('ai-model-options') as HTMLUListElement
 const aiSave = document.getElementById('ai-save') as HTMLButtonElement
 const aiRefreshModels = document.getElementById('ai-refresh-models') as HTMLButtonElement
 const aiCheck = document.getElementById('ai-check') as HTMLButtonElement
@@ -758,6 +759,200 @@ function setAiBusy(busy: boolean): void {
   aiRefreshModels.disabled = busy
 }
 
+// 模型组合框状态：候选模型全量列表、当前展示列表与键盘高亮下标
+let aiModelCandidates: string[] = []
+let aiModelVisibleOptions: string[] = []
+let aiModelActiveIndex = -1
+
+/**
+ * 更新模型组合框的候选列表，并同步已展开的下拉内容。
+ * @param models 主进程返回的可用模型名称列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setAiModelCandidates(models: string[]): void {
+  aiModelCandidates = models
+  if (!aiModelOptions.hidden) renderAiModelOptions()
+}
+
+/**
+ * 判断模型下拉是否处于展开状态。
+ * @returns 展开返回 true，收起返回 false。
+ * @author zhenghq
+ */
+function isAiModelOpen(): boolean {
+  return !aiModelOptions.hidden
+}
+
+/**
+ * 按当前输入值过滤候选模型并渲染可滚动的下拉选项。
+ * 输入为空或与某个候选完全一致时展示全部候选，方便继续切换模型。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderAiModelOptions(): void {
+  const keyword = aiModel.value.trim().toLowerCase()
+  const showAll = keyword === '' || aiModelCandidates.some((model) => model.toLowerCase() === keyword)
+  aiModelVisibleOptions = showAll
+    ? [...aiModelCandidates]
+    : aiModelCandidates.filter((model) => model.toLowerCase().includes(keyword))
+
+  aiModelOptions.innerHTML = ''
+  if (aiModelVisibleOptions.length === 0) {
+    const empty = document.createElement('li')
+    empty.className = 'model-combobox-empty'
+    empty.textContent = aiModelCandidates.length === 0 ? '暂无模型，请刷新或手动输入' : '无匹配模型，可直接手动输入'
+    aiModelOptions.appendChild(empty)
+    aiModelActiveIndex = -1
+    return
+  }
+
+  const currentModel = aiModel.value.trim()
+  aiModelVisibleOptions.forEach((model, index) => {
+    const option = document.createElement('li')
+    option.className = 'model-combobox-option'
+    option.id = `ai-model-option-${index}`
+    option.setAttribute('role', 'option')
+    option.setAttribute('aria-selected', model === currentModel ? 'true' : 'false')
+    option.textContent = model
+    // 使用 pointerdown 抢在 input 失焦之前处理，避免下拉先被收起
+    option.addEventListener('pointerdown', (event) => {
+      event.preventDefault()
+      commitAiModelOption(index)
+    })
+    aiModelOptions.appendChild(option)
+  })
+
+  const selectedIndex = aiModelVisibleOptions.indexOf(currentModel)
+  setAiModelActiveIndex(selectedIndex)
+}
+
+/**
+ * 设置键盘高亮项，并滚动到可见区域。
+ * @param index 高亮项在当前展示列表中的下标，-1 表示不高亮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setAiModelActiveIndex(index: number): void {
+  aiModelActiveIndex = index
+  const options = Array.from(aiModelOptions.querySelectorAll<HTMLLIElement>('.model-combobox-option'))
+  options.forEach((option, optionIndex) => {
+    option.classList.toggle('active', optionIndex === index)
+  })
+  if (index < 0 || index >= options.length) {
+    aiModel.removeAttribute('aria-activedescendant')
+    return
+  }
+  aiModel.setAttribute('aria-activedescendant', options[index].id)
+  options[index].scrollIntoView({ block: 'nearest' })
+}
+
+/**
+ * 根据输入框在可视区域内的位置调整下拉方向与最大高度。
+ * 下方剩余空间不足时向上展开，保证列表始终可见且可滚动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateAiModelOptionsPlacement(): void {
+  const anchor = aiModel.getBoundingClientRect()
+  const spaceBelow = window.innerHeight - anchor.bottom - 12
+  const spaceAbove = anchor.top - 12
+  const openAbove = spaceBelow < 140 && spaceAbove > spaceBelow
+  aiModelOptions.classList.toggle('above', openAbove)
+  const available = Math.max(96, Math.floor(openAbove ? spaceAbove : spaceBelow))
+  aiModelOptions.style.maxHeight = `${Math.min(220, available)}px`
+}
+
+/**
+ * 展开模型下拉列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openAiModelOptions(): void {
+  renderAiModelOptions()
+  aiModelOptions.hidden = false
+  updateAiModelOptionsPlacement()
+  aiModel.setAttribute('aria-expanded', 'true')
+  aiModelToggle.setAttribute('aria-expanded', 'true')
+}
+
+/**
+ * 收起模型下拉列表并清理高亮状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closeAiModelOptions(): void {
+  aiModelOptions.hidden = true
+  aiModel.setAttribute('aria-expanded', 'false')
+  aiModelToggle.setAttribute('aria-expanded', 'false')
+  aiModel.removeAttribute('aria-activedescendant')
+  aiModelActiveIndex = -1
+}
+
+/**
+ * 选中指定下标的候选模型，写回输入框并收起下拉。
+ * @param index 候选模型在当前展示列表中的下标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function commitAiModelOption(index: number): void {
+  const model = aiModelVisibleOptions[index]
+  if (!model) return
+  aiModel.value = model
+  closeAiModelOptions()
+  aiModel.focus()
+}
+
+/**
+ * 处理模型输入框的键盘导航：上下移动高亮、回车确认、Esc 收起。
+ * @param event 键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAiModelKeydown(event: KeyboardEvent): void {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (!isAiModelOpen()) {
+      openAiModelOptions()
+      if (aiModelVisibleOptions.length > 0 && aiModelActiveIndex < 0) {
+        setAiModelActiveIndex(event.key === 'ArrowDown' ? 0 : aiModelVisibleOptions.length - 1)
+      }
+      return
+    }
+    if (aiModelVisibleOptions.length === 0) return
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    const total = aiModelVisibleOptions.length
+    const nextIndex = aiModelActiveIndex < 0
+      ? (step === 1 ? 0 : total - 1)
+      : (aiModelActiveIndex + step + total) % total
+    setAiModelActiveIndex(nextIndex)
+    return
+  }
+  if (event.key === 'Enter' && isAiModelOpen() && aiModelActiveIndex >= 0) {
+    event.preventDefault()
+    commitAiModelOption(aiModelActiveIndex)
+    return
+  }
+  if (event.key === 'Escape' && isAiModelOpen()) {
+    event.preventDefault()
+    closeAiModelOptions()
+  }
+}
+
+/**
+ * 切换模型下拉的展开与收起状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function toggleAiModelOptions(): void {
+  if (isAiModelOpen()) {
+    closeAiModelOptions()
+    return
+  }
+  openAiModelOptions()
+  aiModel.focus()
+}
+
 /**
  * 将 AI 检测结果展示为结构化状态提示。
  * @param status 主进程返回的脱敏检测状态。
@@ -779,12 +974,7 @@ function renderAiStatus(status: AiCheckStatus): void {
  * @author zhenghq
  */
 function renderAiModelListResult(result: AiModelListResult): void {
-  aiModelList.innerHTML = ''
-  for (const model of result.models) {
-    const option = document.createElement('option')
-    option.value = model
-    aiModelList.appendChild(option)
-  }
+  setAiModelCandidates(result.models)
   if (result.state === 'success') {
     aiModelStatus.textContent = result.models.length > 0
       ? `已加载 ${result.models.length} 个模型`
@@ -1174,6 +1364,35 @@ aiSave.addEventListener('click', () => void saveAiConfig())
 aiRefreshModels.addEventListener('click', () => void refreshAiModels())
 aiCheck.addEventListener('click', () => void checkAi())
 aiClearKey.addEventListener('click', () => void clearAiApiKey())
+// 模型组合框交互：点击箭头展开、输入实时过滤、键盘导航、点击外部收起
+aiModelToggle.addEventListener('click', toggleAiModelOptions)
+aiModel.addEventListener('input', () => {
+  if (!isAiModelOpen()) return
+  renderAiModelOptions()
+  updateAiModelOptionsPlacement()
+})
+aiModel.addEventListener('focus', () => openAiModelOptions())
+aiModel.addEventListener('click', () => {
+  // Esc 收起后再次点击输入框应能重新展开
+  if (!isAiModelOpen()) openAiModelOptions()
+})
+aiModel.addEventListener('keydown', handleAiModelKeydown)
+document.addEventListener('pointerdown', (event) => {
+  const target = event.target as Node | null
+  if (target && aiModel.parentElement?.contains(target)) return
+  closeAiModelOptions()
+})
+// 面板滚动或窗口尺寸变化时重新计算下拉方向与高度
+document.addEventListener(
+  'scroll',
+  () => {
+    if (isAiModelOpen()) updateAiModelOptionsPlacement()
+  },
+  true
+)
+window.addEventListener('resize', () => {
+  if (isAiModelOpen()) updateAiModelOptionsPlacement()
+})
 microsoftEnabled.addEventListener('change', () => void saveMicrosoftEnabled())
 microsoftCheck.addEventListener('click', () => void checkMicrosoftConfig())
 deeplxUrl.addEventListener('change', saveDeepLxUrl)

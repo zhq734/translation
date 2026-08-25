@@ -42,10 +42,11 @@ test('AI Tab 应包含协议选择、Base URL、API Key、模型输入与操作�
   const apiKeyInput = getOpeningTag(html, 'ai-api-key')
   assert.match(apiKeyInput, /type="password"/u)
 
-  // 模型输入配合 datalist
+  // 模型输入为可编辑组合框，配合自定义可滚动列表
   const modelInput = getOpeningTag(html, 'ai-model')
-  assert.match(modelInput, /list="ai-model-list"/u)
-  assert.ok(html.includes('<datalist id="ai-model-list">'))
+  assert.match(modelInput, /role="combobox"/u)
+  assert.match(modelInput, /aria-controls="ai-model-options"/u)
+  assert.ok(html.includes('id="ai-model-options"'))
 
   // 操作按钮
   assert.ok(html.includes('id="ai-save"'))
@@ -135,4 +136,49 @@ test('刷新模型列表应先保存当前配置再加载，确保使用页面�
 
 test('检测配置应先保存当前配置再检测，确保使用页面最新值', () => {
   assert.match(ts, /checkAi[\s\S]*window\.api\.setAiConfig/u)
+})
+
+test('模型下拉应使用自定义可滚动列表替代原生 datalist', () => {
+  // 原生 datalist 弹层在 Chromium 中不响应滚轮，必须移除
+  assert.ok(!html.includes('<datalist'), '不应再使用原生 datalist')
+  assert.ok(!ts.includes('HTMLDataListElement'), 'Renderer 不应再引用 datalist 元素')
+
+  // 组合框容器、展开按钮与 listbox 结构
+  assert.ok(html.includes('class="model-combobox"'))
+  const toggle = getOpeningTag(html, 'ai-model-toggle')
+  assert.match(toggle, /type="button"/u)
+  assert.match(toggle, /aria-expanded="false"/u)
+  const options = getOpeningTag(html, 'ai-model-options')
+  assert.match(options, /role="listbox"/u)
+  assert.match(options, /hidden/u)
+})
+
+test('模型下拉列表样式应限制高度并允许纵向滚动', () => {
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /\.model-combobox\s*\{[\s\S]*position:\s*relative/u)
+  assert.match(css, /\.model-combobox-options\s*\{[\s\S]*max-height:/u)
+  assert.match(css, /\.model-combobox-options\s*\{[\s\S]*overflow-y:\s*auto/u)
+  assert.match(css, /\.model-combobox-options\s*\{[\s\S]*overscroll-behavior:\s*contain/u)
+  assert.match(css, /\.model-combobox-options\s*\{[\s\S]*background:\s*var\(--/u)
+})
+
+test('模型下拉应支持点击选择、键盘导航与失焦收起', () => {
+  assert.match(ts, /aiModelToggle\.addEventListener\('click'/u)
+  assert.match(ts, /aiModel\.addEventListener\('keydown'/u)
+  assert.match(ts, /ArrowDown/u)
+  assert.match(ts, /ArrowUp/u)
+  assert.match(ts, /Escape/u)
+  assert.match(ts, /role',\s*'option'|role\s*=\s*'option'/u)
+  assert.match(ts, /scrollIntoView/u)
+  assert.match(ts, /document\.addEventListener\('pointerdown'/u)
+})
+
+test('模型下拉应根据可视空间自适应高度并在空间不足时向上展开', () => {
+  // 下拉位于可滚动的 tab-panel 内，需按剩余空间限制高度，避免被裁剪
+  assert.match(ts, /getBoundingClientRect/u)
+  assert.match(ts, /maxHeight/u)
+  assert.match(ts, /classList\.toggle\('above'/u)
+
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /\.model-combobox-options\.above\s*\{[\s\S]*bottom:\s*calc\(100% \+ 4px\)/u)
 })
