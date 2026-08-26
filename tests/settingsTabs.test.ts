@@ -108,16 +108,19 @@ test('设置页数字输入框应与下拉框使用统一控件高度和主题�
   assert.match(css, /select:disabled,[\s\S]*input\[type=['"]number['"]\]:disabled/u)
 })
 
-test('关于页项目卡片应在右下角展示作者署名', () => {
+test('关于页项目卡片应在右下角对齐展示作者与邮箱', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const aboutIndex = html.indexOf('id="settings-panel-about"')
   const projectIndex = html.indexOf('<h2>项目</h2>', aboutIndex)
   const nextPanelIndex = html.indexOf('id="settings-panel-', projectIndex + 1)
   const projectSection = html.slice(projectIndex, nextPanelIndex > -1 ? nextPanelIndex : undefined)
 
-  assert.match(projectSection, /class="project-author"[\s\S]*>作者：zhenghq</u)
+  assert.match(projectSection, /class="project-meta"/u)
+  assert.match(projectSection, /<dt>作者<\/dt>\s*<dd>zhenghq<\/dd>/u)
+  assert.match(projectSection, /<dt>邮箱<\/dt>\s*<dd>734652567@qq\.com<\/dd>/u)
 
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
-  assert.match(css, /\.project-author\s*\{[\s\S]*text-align:\s*right/u)
-  assert.match(css, /\.project-author\s*\{[\s\S]*color:\s*var\(--text-muted\)/u)
+  assert.match(css, /\.project-meta\s*\{[\s\S]*display:\s*grid/u)
+  assert.match(css, /\.project-meta\s*\{[\s\S]*justify-content:\s*end/u)
+  assert.match(css, /\.project-meta\s*\{[\s\S]*color:\s*var\(--text-muted\)/u)
 })

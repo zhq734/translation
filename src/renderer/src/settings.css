@@ -229,11 +229,31 @@ input[type='number']:disabled {
   margin-bottom: 10px;
 }
 
-.project-author {
+/* 项目信息（作者 / 邮箱）：标签与值按列对齐，整体靠右显示 */
+.project-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto);
+  justify-content: end;
+  gap: 4px 8px;
   margin: 12px 0 0;
   color: var(--text-muted);
   font-size: 12px;
-  text-align: right;
+  line-height: 1.6;
+}
+
+.project-meta dt {
+  text-align: left;
+}
+
+.project-meta dt::after {
+  content: '：';
+}
+
+.project-meta dd {
+  margin: 0;
+  text-align: left;
+  word-break: break-all;
+  user-select: text;
 }
 
 .channels {
@@ -328,6 +348,98 @@ input[type='number']:disabled {
 
 .ai-model-status[data-state='unsupported'] {
   color: var(--text-muted);
+}
+
+/* 模型组合框：原生 datalist 弹层不响应滚轮，改用可滚动的自定义 listbox */
+.model-combobox {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.model-combobox input[type='text'] {
+  padding-right: 30px;
+}
+
+.model-combobox-toggle {
+  position: absolute;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.model-combobox-toggle::after {
+  content: '';
+  display: block;
+  width: 7px;
+  height: 7px;
+  margin: 0 auto;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.model-combobox-toggle[aria-expanded='true']::after {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+.model-combobox-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--control-bg);
+  box-shadow: 0 6px 18px var(--panel-shadow);
+  list-style: none;
+}
+
+.model-combobox-options[hidden] {
+  display: none;
+}
+
+/* 下方空间不足时向上展开，避免被可滚动面板裁剪 */
+.model-combobox-options.above {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+.model-combobox-option {
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.model-combobox-option:hover,
+.model-combobox-option.active {
+  background: var(--button-secondary-hover);
+}
+
+.model-combobox-option[aria-selected='true'] {
+  color: var(--button-bg);
+  font-weight: 600;
+}
+
+.model-combobox-empty {
+  padding: 7px 10px;
+  color: var(--text-muted);
+  cursor: default;
+  font-size: 12px;
 }
 
 .status.online {
