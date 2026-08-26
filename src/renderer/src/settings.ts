@@ -24,6 +24,7 @@ const autoShowSelectionButton = document.getElementById('auto-show-selection-but
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
+const autoLaunch = document.getElementById('auto-launch') as HTMLInputElement
 const speechProvider = document.getElementById('speech-provider') as HTMLSelectElement
 const speechProviderHint = document.getElementById('speech-provider-hint') as HTMLElement
 const webTranslationEnabled = document.getElementById('web-translation-enabled') as HTMLInputElement
@@ -358,6 +359,7 @@ function renderSettings(settings: Settings): void {
   autoShowSelectionButton.checked = settings.triggerMode === 'button'
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
+  autoLaunch.checked = settings.autoLaunch
   speechProvider.value = settings.speechProvider
   webTranslationEnabled.checked = settings.webTranslationEnabled
   webTranslationScope.value = settings.webTranslationScope
@@ -668,6 +670,15 @@ function saveAutoHide(): void {
  */
 function saveDockIconVisibility(): void {
   void save({ showDockIcon: showDockIcon.checked })
+}
+
+/**
+ * 保存开机自启动开关。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveAutoLaunch(): void {
+  void save({ autoLaunch: autoLaunch.checked })
 }
 
 /**
@@ -1343,6 +1354,7 @@ autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
 hotkey.addEventListener('change', saveHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
+autoLaunch.addEventListener('change', saveAutoLaunch)
 speechProvider.addEventListener('change', saveSpeechProvider)
 webTranslationEnabled.addEventListener('change', saveWebTranslationSettings)
 webTranslationScope.addEventListener('change', saveWebTranslationSettings)

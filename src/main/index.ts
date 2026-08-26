@@ -17,9 +17,10 @@ import {
 } from 'electron'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
@@ -141,10 +142,18 @@ import type {
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
 import { shouldShowMacOSDockIcon } from './dockVisibility'
+import {
+  buildLinuxAutostartEntry,
+  buildLoginItemSettings,
+  resolveAutoLaunchStrategy,
+  resolveLinuxAutostartEntryPath
+} from './autoLaunch'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
+/** 应用唯一标识，与 electron-builder 的 appId 保持一致，用于 Linux 自启动桌面入口命名。 */
+const APP_ID = 'com.selection.translator'
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
 const SELECTION_SETTLE_DELAY_MS = 80
 const UPDATE_CHECK_DELAY_MS = 5000
@@ -403,6 +412,49 @@ function applyMacOSDockVisibility(showDockIcon: boolean): void {
 }
 
 /**
+ * 根据设置同步系统开机自启动状态。
+ * macOS/Windows 写入系统登录项，Linux 写入 XDG 自启动桌面入口，开发模式与其他平台跳过。
+ * @param enabled 是否开启开机自启动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function applyAutoLaunch(enabled: boolean): void {
+  const strategy = resolveAutoLaunchStrategy({
+    platform: process.platform,
+    packaged: app.isPackaged
+  })
+  if (strategy === 'skipped' || strategy === 'unsupported') {
+    console.log(`[autoLaunch] 当前环境不写入自启动配置: ${strategy}`)
+    return
+  }
+  try {
+    if (strategy === 'login-item') {
+      app.setLoginItemSettings(
+        buildLoginItemSettings({
+          platform: process.platform,
+          enabled,
+          execPath: process.execPath
+        })
+      )
+      return
+    }
+    const entryPath = resolveLinuxAutostartEntryPath(homedir(), APP_ID)
+    if (!enabled) {
+      rmSync(entryPath, { force: true })
+      return
+    }
+    mkdirSync(dirname(entryPath), { recursive: true })
+    writeFileSync(
+      entryPath,
+      buildLinuxAutostartEntry({ appName: app.getName(), execPath: process.execPath }),
+      { mode: 0o644 }
+    )
+  } catch (error) {
+    console.error('[autoLaunch] 同步开机自启动失败:', (error as Error).message)
+  }
+}
+
+/**
  * 根据当前设置页和网页翻译页状态刷新 macOS Dock 图标。
  * @returns 无返回值。
  * @author zhenghq
@@ -458,6 +510,7 @@ async function onReady(): Promise<boolean> {
 
   loadSettings()
   configureMacOSMenuBarApplication(getSettings().showDockIcon)
+  applyAutoLaunch(getSettings().autoLaunch)
   createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
     getSettings,
@@ -2108,6 +2161,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   }
   if (patch.showDockIcon !== undefined && settings.showDockIcon !== previous.showDockIcon) {
     applyMacOSDockVisibility(settings.showDockIcon)
+  }
+  if (patch.autoLaunch !== undefined && settings.autoLaunch !== previous.autoLaunch) {
+    applyAutoLaunch(settings.autoLaunch)
   }
   if (patch.proxyMode !== undefined ||
       patch.proxyRules !== undefined ||
