@@ -16,6 +16,11 @@ import {
 import type { ManualMacUpdateTarget } from './manualMacUpdate'
 import { translationFetch } from './network'
 import {
+  validateReleaseChecksums,
+  type ReleaseAssetDigest,
+  type ReleaseChecksumStatus
+} from './releaseChecksums'
+import {
   UpdateManager,
   isMacOSDeveloperIdApplicationSignature,
   resolveMacOSAppBundlePath,
@@ -26,6 +31,8 @@ import {
 
 const RELEASE_URL = 'https://github.com/zhq734/translation/releases/latest'
 const RELEASE_DOWNLOAD_BASE_URL = `${RELEASE_URL}/download/`
+const RELEASE_CHECKSUMS_URL = `${RELEASE_DOWNLOAD_BASE_URL}SHA256SUMS`
+const RELEASE_API_URL = 'https://api.github.com/repos/zhq734/translation/releases/latest'
 const execFileAsync = promisify(execFile)
 
 /**
@@ -33,6 +40,8 @@ const execFileAsync = promisify(execFile)
  * @author zhenghq
  */
 class ElectronUpdateDriver implements UpdateDriver {
+  private checksumValidation: Promise<void> = Promise.resolve()
+
   /**
    * 配置下载策略并转发 electron-updater 生命周期事件。
    * @param listeners 自动更新事件监听器。
@@ -47,14 +56,24 @@ class ElectronUpdateDriver implements UpdateDriver {
     autoUpdater.on('checking-for-update', listeners.checking)
     autoUpdater.on('update-available', (info: UpdateInfo) => {
       const manualTarget = resolveMacOSManualDmgTarget(info)
-      listeners.available({
+      this.checksumValidation = this.withChecksum(info).then((checksumStatus) => listeners.available({
         version: info.version,
         manualDownloadUrl: manualTarget?.url,
         manualDownloadSha512: manualTarget?.sha512,
-        manualDownloadSize: manualTarget?.size
-      })
+        manualDownloadSize: manualTarget?.size,
+        checksumStatus
+      }))
     })
-    autoUpdater.on('update-not-available', (info: UpdateInfo) => listeners.notAvailable(info))
+    autoUpdater.on('update-not-available', (info: UpdateInfo) => {
+      const manualTarget = resolveMacOSManualDmgTarget(info)
+      this.checksumValidation = this.withChecksum(info).then((checksumStatus) => listeners.notAvailable({
+        version: info.version,
+        manualDownloadUrl: manualTarget?.url,
+        manualDownloadSha512: manualTarget?.sha512,
+        manualDownloadSize: manualTarget?.size,
+        checksumStatus
+      }))
+    })
     autoUpdater.on('download-progress', (progress: ProgressInfo) => listeners.progress(progress))
     autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => listeners.downloaded(info))
     autoUpdater.on('error', (error: Error) => listeners.error(error))
@@ -67,6 +86,33 @@ class ElectronUpdateDriver implements UpdateDriver {
    */
   async checkForUpdates(): Promise<void> {
     await autoUpdater.checkForUpdates()
+    await this.checksumValidation
+  }
+
+  /**
+   * 下载并校验当前 Release 的 SHA256SUMS 与 GitHub 资产摘要。
+   * @param info electron-updater 返回的更新信息。
+   * @returns 校验状态。
+   * @author zhenghq
+   */
+  private async withChecksum(info: UpdateInfo): Promise<ReleaseChecksumStatus> {
+    const assetNames = info.files.map((file) => file.url)
+    try {
+      const assetsResponse = await translationFetch(RELEASE_API_URL, {
+        headers: { accept: 'application/vnd.github+json' }
+      })
+      if (!assetsResponse.ok) return 'unreachable'
+      const assets = (await assetsResponse.json() as { assets?: ReleaseAssetDigest[] }).assets
+      if (!Array.isArray(assets)) return 'unreachable'
+      return await validateReleaseChecksums({
+        manifestUrl: RELEASE_CHECKSUMS_URL,
+        assetNames,
+        assets,
+        fetch: async (url) => translationFetch(url)
+      }).then((result) => result.status)
+    } catch {
+      return 'unreachable'
+    }
   }
 
   /**

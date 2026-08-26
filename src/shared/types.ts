@@ -144,6 +144,8 @@ export interface UpdateStatus {
   manualDownloadPath?: string
   /** 当前更新是否提供可直接下载的 macOS DMG。 */
   manualDownloadAvailable?: boolean
+  /** 最新安装包在 SHA256SUMS 中的校验状态。 */
+  checksumStatus?: 'verified' | 'missing' | 'mismatch' | 'unreachable'
 }
 
 /** macOS 应用隔离属性处理结果。 */

@@ -16,6 +16,7 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
   }
 }
 const packagingDoc = readFileSync('docs/ocr-packaging-verification.md', 'utf8')
+const packageWorkflow = readFileSync('.github/workflows/package.yml', 'utf8')
 
 /**
  * 校验 OCR 模型和 native runtime 已进入 Electron 三平台打包配置。
@@ -26,6 +27,10 @@ test('OCR 模型资产与 native runtime 应纳入打包并解包', () => {
   assert.ok(packageJson.build.files.includes('assets/ocr/**/*'))
   assert.ok(packageJson.build.files.includes('node_modules/onnxruntime-node/**/*'))
   assert.ok(packageJson.build.files.includes('node_modules/sharp/**/*'))
+  assert.ok(
+    packageJson.build.asarUnpack.includes('node_modules/@gutenye/**/*'),
+    '@gutenye OCR runtime 必须与 onnxruntime native 模块位于同一解包目录'
+  )
   assert.ok(packageJson.build.asarUnpack.includes('assets/ocr/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/onnxruntime-node/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/sharp/**/*'))
@@ -74,4 +79,25 @@ test('三平台打包脚本应覆盖 macOS Windows Linux', () => {
   assert.match(packageJson.scripts['dist:linux'], /--linux AppImage --x64 --arm64/u)
   assert.deepEqual(packageJson.build.win.target, [{ target: 'nsis', arch: ['x64', 'arm64'] }])
   assert.deepEqual(packageJson.build.linux.target, [{ target: 'AppImage', arch: ['x64', 'arm64'] }])
+})
+
+/**
+ * 校验 macOS 每个架构都必须在匹配架构的原生运行器上打包，避免 PaddleOCR 的
+ * sharp native binding 被错误复制到另一种架构的应用包中。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 打包应按原生架构拆分并保留双架构更新清单', () => {
+  assert.match(packageJson.scripts['dist:mac:x64:ci'], /--mac --x64/u)
+  assert.match(packageJson.scripts['dist:mac:arm64:ci'], /--mac --arm64/u)
+  assert.match(
+    packageWorkflow,
+    /name: macOS x64[\s\S]*?os: macos-15-intel[\s\S]*?command: dist:mac:x64:ci/u
+  )
+  assert.match(
+    packageWorkflow,
+    /name: macOS arm64[\s\S]*?os: macos-14[\s\S]*?command: dist:mac:arm64:ci/u
+  )
+  assert.match(packageWorkflow, /latest-mac-\$\{\{ matrix\.arch \}\}\.yml/u)
+  assert.match(packageWorkflow, /merge-mac-update-info\.mjs/u)
 })

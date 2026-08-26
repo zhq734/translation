@@ -4,6 +4,7 @@ import type {
   UpdateStatus
 } from '../shared/types'
 import type { ManualMacUpdateService } from './manualMacUpdate'
+import type { ReleaseChecksumStatus } from './releaseChecksums'
 
 export type { ManualMacUpdateService } from './manualMacUpdate'
 
@@ -17,6 +18,8 @@ export interface UpdateDriverInfo {
   manualDownloadSha512?: string
   /** 该 DMG 在更新清单中的字节长度。 */
   manualDownloadSize?: number
+  /** 最新安装包在 SHA256SUMS 中的校验状态。 */
+  checksumStatus?: ReleaseChecksumStatus
 }
 
 /** electron-updater 返回的最小下载进度信息。 */
@@ -333,9 +336,14 @@ export class UpdateManager {
         ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
       }
       : undefined
-    const message = this.status.installMode === 'automatic'
+    const checksumNotice = info.checksumStatus === 'missing'
+      ? '；Release 缺少当前安装包的 SHA256SUMS 校验值，建议升级'
+      : info.checksumStatus === 'mismatch'
+        ? '；Release 的 SHA256SUMS 与安装包不一致，建议重新升级'
+        : ''
+    const message = (this.status.installMode === 'automatic'
       ? `发现新版本 ${info.version}，可以下载并安装`
-      : `发现新版本 ${info.version}，当前环境需要手动安装`
+      : `发现新版本 ${info.version}，当前环境需要手动安装`) + checksumNotice
     this.setStatus({
       phase: 'available',
       latestVersion: info.version,
@@ -343,7 +351,8 @@ export class UpdateManager {
       progress: undefined,
       manualDownloadAvailable: this.options.manualUpdate && info.manualDownloadUrl
         ? true
-        : undefined
+        : undefined,
+      checksumStatus: info.checksumStatus
     })
   }
 
@@ -354,14 +363,27 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleNotAvailable(info: UpdateDriverInfo): void {
-    this.manualDownloadUrl = undefined
-    this.manualDownloadIntegrity = undefined
+    const checksumNeedsUpdate = info.checksumStatus === 'missing' || info.checksumStatus === 'mismatch'
+    this.manualDownloadUrl = checksumNeedsUpdate ? info.manualDownloadUrl : undefined
+    this.manualDownloadIntegrity = checksumNeedsUpdate && (info.manualDownloadSha512 || info.manualDownloadSize)
+      ? {
+        ...(info.manualDownloadSha512 ? { sha512: info.manualDownloadSha512 } : {}),
+        ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
+      }
+      : undefined
     this.setStatus({
-      phase: 'not-available',
+      phase: checksumNeedsUpdate ? 'available' : 'not-available',
       latestVersion: info.version || this.status.currentVersion,
-      message: '当前已经是最新版本',
+      message: checksumNeedsUpdate
+        ? info.checksumStatus === 'mismatch'
+          ? '当前版本的 SHA256SUMS 校验值不一致，建议升级'
+          : '当前版本没有 SHA256SUMS 校验值，建议升级'
+        : '当前已经是最新版本',
       progress: undefined,
-      manualDownloadAvailable: undefined
+      manualDownloadAvailable: checksumNeedsUpdate && this.options.manualUpdate && info.manualDownloadUrl
+        ? true
+        : undefined,
+      checksumStatus: info.checksumStatus
     })
   }
 

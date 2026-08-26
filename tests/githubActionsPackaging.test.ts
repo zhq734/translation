@@ -85,7 +85,8 @@ test('GitHub Actions 应覆盖 macOS、Windows 与 Linux 打包任务', () => {
   const workflow = readPackagingWorkflow()
 
   assert.match(workflow, /os:\s*macos-[\w-]+/u)
-  assert.match(workflow, /command:\s*dist:mac:ci/u)
+  assert.match(workflow, /command:\s*dist:mac:x64:ci/u)
+  assert.match(workflow, /command:\s*dist:mac:arm64:ci/u)
   assert.match(workflow, /os:\s*windows-[\w-]+/u)
   assert.match(workflow, /command:\s*dist:win/u)
   assert.match(workflow, /os:\s*ubuntu-[\d.]+/u)
@@ -114,7 +115,7 @@ test('GitHub Actions 的 macOS 安装包应支持签名构建与未签名发布�
   assert.match(workflow, /APPLE_API_KEY:\s*\$\{\{ runner\.temp \}\}\/AuthKey_\$\{\{ secrets\.APPLE_API_KEY_ID \}\}\.p8/u)
   assert.match(workflow, /echo "enabled=true" >> "\$GITHUB_OUTPUT"/u)
   assert.match(workflow, /echo "enabled=false" >> "\$GITHUB_OUTPUT"/u)
-  assert.match(workflow, /npm run dist:mac:unsigned/u)
+  assert.match(workflow, /run: npm run \$\{\{ matrix\.unsigned_command \}\}/u)
   assert.match(workflow, /run: npm run \$\{\{ matrix\.command \}\}/u)
   assert.match(workflow, /steps\.macos_signing\.outputs\.enabled == 'true'/u)
   assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY:\s*['"]false['"]/u)
@@ -135,7 +136,7 @@ test('GitHub Actions 正式发布应允许未签名 macOS 安装包', () => {
 
   assert.match(
     workflow,
-    /if: matrix\.name == 'macOS' && steps\.macos_signing\.outputs\.enabled == 'false'\s+[\s\S]*run: npm run dist:mac:unsigned/u
+    /if: matrix\.platform == 'macos' && steps\.macos_signing\.outputs\.enabled == 'false'\s+[\s\S]*run: npm run \$\{\{ matrix\.unsigned_command \}\}/u
   )
   assert.doesNotMatch(workflow, /版本标签发布必须配置完整的 macOS 签名与公证凭据/u)
   assert.doesNotMatch(
@@ -185,8 +186,10 @@ test('GitHub Actions 应上传各平台安装包产物', () => {
   const workflow = readPackagingWorkflow()
 
   assert.match(workflow, /actions\/upload-artifact@v7/u)
-  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-\*\.dmg/u)
-  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-\*\.zip/u)
+  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-x64\.dmg/u)
+  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-arm64\.dmg/u)
+  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-x64\.zip/u)
+  assert.match(workflow, /dist\/SelectionTranslator-\*-mac-arm64\.zip/u)
   assert.match(workflow, /dist\/SelectionTranslator-\*-Setup-\*\.exe/u)
   assert.match(workflow, /dist\/SelectionTranslator-\*-linux-\*\.AppImage/u)
   assert.match(workflow, /dist\/latest\*\.yml/u)
@@ -259,12 +262,20 @@ test('打包配置应生成 GitHub 自动更新元数据', () => {
     }
   ])
   assert.equal(
-    packageJson.scripts?.['dist:mac:ci'],
-    'npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=true'
+    packageJson.scripts?.['dist:mac:x64:ci'],
+    'npm run build && electron-builder --mac --x64 --publish never --config.forceCodeSigning=true'
   )
   assert.equal(
-    packageJson.scripts?.['dist:mac:unsigned'],
-    'npm run build && electron-builder --mac --x64 --arm64 --publish never --config.forceCodeSigning=false --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false'
+    packageJson.scripts?.['dist:mac:arm64:ci'],
+    'npm run build && electron-builder --mac --arm64 --publish never --config.forceCodeSigning=true'
+  )
+  assert.equal(
+    packageJson.scripts?.['dist:mac:x64:unsigned'],
+    'npm run build && electron-builder --mac --x64 --publish never --config.forceCodeSigning=false --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false'
+  )
+  assert.equal(
+    packageJson.scripts?.['dist:mac:arm64:unsigned'],
+    'npm run build && electron-builder --mac --arm64 --publish never --config.forceCodeSigning=false --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false'
   )
   assert.notEqual(packageJson.build?.mac?.identity, null)
   assert.equal(packageJson.build?.mac?.hardenedRuntime, true)

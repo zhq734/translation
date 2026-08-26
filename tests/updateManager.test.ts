@@ -9,6 +9,11 @@ import {
   type UpdateDriver,
   type UpdateDriverListeners
 } from '../src/main/updateManager.ts'
+import {
+  parseSha256Sums,
+  validateReleaseChecksum,
+  validateReleaseChecksums
+} from '../src/main/releaseChecksums.ts'
 import type { UpdateStatus } from '../src/shared/types.ts'
 
 class FakeUpdateDriver implements UpdateDriver {
@@ -217,6 +222,76 @@ test('自动更新应依次广播检查、发现、下载进度和已下载状�
   manager.installUpdate()
   assert.equal(driver.installCount, 1)
   assert.ok(statuses.length >= 5)
+})
+
+test('SHA256SUMS 缺少当前安装包时应提示升级', () => {
+  const { manager, driver, manualUpdate } = createManager('manual')
+
+  driver.listeners?.notAvailable({
+    version: '1.0.3',
+    checksumStatus: 'missing',
+    manualDownloadUrl: 'https://example.test/SelectionTranslator-1.0.3-mac-arm64.dmg'
+  })
+
+  assert.equal(manager.getStatus().phase, 'available')
+  assert.match(manager.getStatus().message, /没有 SHA256SUMS 校验值/u)
+  assert.equal(manager.getStatus().checksumStatus, 'missing')
+  assert.equal(manager.getStatus().manualDownloadAvailable, true)
+})
+
+test('SHA256SUMS 应解析并比较 GitHub Release 资产摘要', async () => {
+  const content = 'a'.repeat(64) + '  SelectionTranslator-1.0.4-mac-arm64.dmg\n'
+  assert.equal(
+    parseSha256Sums(content).get('SelectionTranslator-1.0.4-mac-arm64.dmg'),
+    'a'.repeat(64)
+  )
+
+  const result = await validateReleaseChecksum({
+    manifestUrl: 'https://example.test/SHA256SUMS',
+    assetName: 'SelectionTranslator-1.0.4-mac-arm64.dmg',
+    assetDigest: `sha256:${'a'.repeat(64)}`,
+    fetch: async () => new Response(content, { status: 200 })
+  })
+  assert.equal(result.status, 'verified')
+})
+
+test('SHA256SUMS 与 GitHub Release 资产摘要不一致时应标记 mismatch', async () => {
+  const expected = 'a'.repeat(64)
+  const actual = 'b'.repeat(64)
+  const result = await validateReleaseChecksums({
+    manifestUrl: 'https://example.test/SHA256SUMS',
+    assetNames: ['SelectionTranslator-1.0.4-mac-arm64.dmg'],
+    assets: [{ name: 'SelectionTranslator-1.0.4-mac-arm64.dmg', digest: `sha256:${actual}` }],
+    fetch: async () => new Response(`${expected}  SelectionTranslator-1.0.4-mac-arm64.dmg\n`)
+  })
+
+  assert.equal(result.status, 'mismatch')
+})
+
+test('SHA256SUMS 缺失或资产没有摘要时应标记 missing', async () => {
+  const result = await validateReleaseChecksums({
+    manifestUrl: 'https://example.test/SHA256SUMS',
+    assetNames: ['SelectionTranslator-1.0.4-mac-arm64.dmg'],
+    assets: [{ name: 'SelectionTranslator-1.0.4-mac-arm64.dmg' }],
+    fetch: async () => new Response('')
+  })
+  assert.equal(result.status, 'missing')
+
+  const missingDigest = await validateReleaseChecksums({
+    manifestUrl: 'https://example.test/SHA256SUMS',
+    assetNames: ['SelectionTranslator-1.0.4-mac-arm64.dmg'],
+    fetch: async () => new Response(`${'a'.repeat(64)}  SelectionTranslator-1.0.4-mac-arm64.dmg\n`)
+  })
+  assert.equal(missingDigest.status, 'missing')
+})
+
+test('SHA256SUMS 校验通过且版本相同时应保持最新状态', () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.notAvailable({ version: '1.0.3', checksumStatus: 'verified' })
+
+  assert.equal(manager.getStatus().phase, 'not-available')
+  assert.equal(manager.getStatus().message, '当前已经是最新版本')
 })
 
 test('手动安装模式应下载 DMG 到本地并打开安装界面', async () => {

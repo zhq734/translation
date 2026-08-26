@@ -202,6 +202,7 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 - Update checks and package downloads share the app's proxy session, using the same proxy configuration as translation requests;
 - Downloads probe the source for HTTP Range support: when supported, the package is fetched with up to 4 concurrent segments; otherwise the download falls back to a single connection;
 - Interrupted downloads resume from the completed bytes on retry, restarting only when the version, package size, or checksum changes;
+- Update checks also read `SHA256SUMS` from the same Release and compare it with GitHub Release asset digests; even when the version is unchanged, a missing or mismatched checksum prompts an upgrade;
 - Manual macOS updates verify the DMG's sha512 before opening it. A mismatch deletes the file and reports the failure; when the update manifest has no matching checksum, the status explicitly states the package was not integrity-checked;
 - If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
@@ -619,17 +620,19 @@ npm run release:checksums
 
 The repository includes `.github/workflows/package.yml`. Run it manually from **Actions → Multi-Platform Packaging → Run workflow**. An optional version such as `V1.0.3` can be supplied; otherwise, the version from `package.json` is used.
 
-The workflow runs unit tests and type checking first, then builds x64/arm64 installers on native macOS, Windows, and Linux runners and uploads the platform artifacts to the workflow run. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
+The workflow runs unit tests and type checking first, then builds x64/arm64 installers on native macOS, Windows, and Linux runners and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-14` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
 
 1. Synchronize the package version from the tag;
 2. Collect installers from all three platforms;
 3. Generate `SHA256SUMS`;
 4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
+The two macOS jobs first produce `latest-mac-x64.yml` and `latest-mac-arm64.yml`; the release job merges them into the `latest-mac.yml` consumed by electron-updater.
+
 The macOS job supports both signed and unsigned release builds:
 
-- When all five Apple release secrets are configured, CI runs `npm run dist:mac:ci` and requires Developer ID signing, Apple notarization, and `codesign`, `stapler`, and `spctl` validation. The certificate must be a `Developer ID Application` certificate owned by the fixed team `TeamIdentifier=499QMYBXLR`;
-- When a `workflow_dispatch` run or version tag is created without any Apple release secrets, CI falls back to `npm run dist:mac:unsigned` and generates unsigned x64/arm64 DMG and ZIP files. A version-tag build uploads those files to the GitHub Release;
+- When all five Apple release secrets are configured, CI runs `npm run dist:mac:x64:ci` or `npm run dist:mac:arm64:ci` per architecture and requires Developer ID signing, Apple notarization, and `codesign`, `stapler`, and `spctl` validation. The certificate must be a `Developer ID Application` certificate owned by the fixed team `TeamIdentifier=499QMYBXLR`;
+- When a `workflow_dispatch` run or version tag is created without any Apple release secrets, CI runs `npm run dist:mac:x64:unsigned` or `npm run dist:mac:arm64:unsigned` per architecture and generates unsigned x64/arm64 DMG and ZIP files. A version-tag build uploads those files to the GitHub Release;
 - When only some secrets are configured, CI reports the missing names and stops to avoid treating a broken signing configuration as a signed release;
 - Arbitrary names such as `LOCAL` are not read by the workflow. Use the exact names below.
 
