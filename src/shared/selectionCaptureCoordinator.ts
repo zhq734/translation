@@ -84,11 +84,13 @@ export class SelectionCaptureCoordinator {
    * 创建选中文字捕获协调器。
    * @param captureSelection 实际执行系统取词的异步函数。
    * @param prefetchSelection 按钮显示期间执行只读预取的异步函数；不注入复制键、不写剪贴板。
+   * @param buttonCaptureSelection 点击“译”按钮后执行的专用取词函数；macOS/Windows 优先复制，避免再次等待原生直读。
    * @author zhenghq
    */
   constructor(
     private readonly captureSelection: CaptureSelection,
-    private readonly prefetchSelection?: CaptureSelection
+    private readonly prefetchSelection?: CaptureSelection,
+    private readonly buttonCaptureSelection?: CaptureSelection
   ) {}
 
   /**
@@ -117,6 +119,18 @@ export class SelectionCaptureCoordinator {
   capture(anchor?: SelectionAnchor): Promise<SelectionCaptureResult | null> {
     this.preparedSelection = null
     return this.enqueue(anchor, false, 0)
+  }
+
+  /**
+   * 取消仍在进行的只读预取，并执行点击按钮专用取词，避免 AX/UIA 直读超时让选区过期。
+   * @param anchor 翻译弹窗使用的选区锚点。
+   * @returns 当前请求的捕获结果；如果请求已被更新则返回 null。
+   * @author zhenghq
+   */
+  captureFromButton(anchor?: SelectionAnchor): Promise<SelectionCaptureResult | null> {
+    this.preparedSelection = null
+    this.pendingPreparation = null
+    return this.enqueue(anchor, false, 0, false, true)
   }
 
   /**
@@ -171,6 +185,8 @@ export class SelectionCaptureCoordinator {
    * @param anchor 当前请求的选区锚点。
    * @param prepare 是否把捕获结果保存为按钮点击时使用的缓存。
    * @param delayMs 开始系统取词前等待选区稳定的时长（毫秒）。
+   * @param usePrefetch 是否使用按钮显示期间的只读预取函数。
+   * @param useButtonCapture 是否使用点击“译”按钮后的专用取词函数。
    * @returns 排队后的取词 Promise。
    * @author zhenghq
    */
@@ -178,7 +194,8 @@ export class SelectionCaptureCoordinator {
     anchor: SelectionAnchor | undefined,
     prepare: boolean,
     delayMs: number,
-    usePrefetch = false
+    usePrefetch = false,
+    useButtonCapture = false
   ): Promise<SelectionCaptureResult | null> {
     const requestId = ++this.latestRequestId
     this.abortActiveCapture()
@@ -196,7 +213,9 @@ export class SelectionCaptureCoordinator {
           if (controller.signal.aborted || requestId !== this.latestRequestId) return null
           const capture = usePrefetch && this.prefetchSelection
             ? this.prefetchSelection
-            : this.captureSelection
+            : useButtonCapture && this.buttonCaptureSelection
+              ? this.buttonCaptureSelection
+              : this.captureSelection
           const raw = await capture(controller.signal)
           // 兼容返回纯字符串的底层实现，同时支持携带失败原因的结构化结果。
           if (typeof raw === 'string') {

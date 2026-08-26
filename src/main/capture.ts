@@ -261,6 +261,7 @@ async function captureByCopy(
   signal?: AbortSignal,
   timeoutMs = 800
 ): Promise<SelectionCaptureOutcome> {
+  const captureStartedAt = Date.now()
   const originalImage = clipboard.readImage()
   const hadImage = !originalImage.isEmpty()
   const originalText = clipboard.readText()
@@ -292,8 +293,13 @@ async function captureByCopy(
   if (signal?.aborted) return { text: '' }
   if (resolveSelectionCaptureStrategy(process.platform) === 'linux-primary-selection') {
     const text = clipboard.readText('selection')
+    console.log(
+      `[capture] copy-finish platform=${process.platform} status=${text.trim() ? 'text' : 'empty'} ` +
+      `textLength=${text.length} elapsedMs=${Date.now() - captureStartedAt}`
+    )
     return text.trim() ? { text } : { text: '', reason: 'empty' }
   }
+  console.log(`[capture] copy-start platform=${process.platform} timeoutMs=${timeoutMs}`)
   signal?.addEventListener('abort', handleAbort, { once: true })
 
   const sentinel = `__SELECTION_TRANSLATOR_SENTINEL_${Date.now()}__`
@@ -306,6 +312,13 @@ async function captureByCopy(
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
       await simulateCopy()
+      console.log(`[capture] copy-shortcut-sent elapsedMs=${Date.now() - captureStartedAt}`)
+    } catch (error) {
+      console.warn(
+        `[capture] copy-shortcut-failed error=${error instanceof Error ? error.name : 'unknown'} ` +
+        `elapsedMs=${Date.now() - captureStartedAt}`
+      )
+      throw error
     } finally {
       await expectation.finish()
     }
@@ -352,9 +365,22 @@ async function captureByCopy(
     }
   }
 
-  if (signal?.aborted) return { text: '' }
-  if (hasImage) return { text: '', hasImage: true }
-  if (!text || text === sentinel) return { text: '', reason: 'timeout' }
+  if (signal?.aborted) {
+    console.log(`[capture] copy-finish status=aborted elapsedMs=${Date.now() - captureStartedAt}`)
+    return { text: '' }
+  }
+  if (hasImage) {
+    console.log(`[capture] copy-finish status=image elapsedMs=${Date.now() - captureStartedAt}`)
+    return { text: '', hasImage: true }
+  }
+  if (!text || text === sentinel) {
+    console.log(`[capture] copy-finish status=timeout elapsedMs=${Date.now() - captureStartedAt}`)
+    return { text: '', reason: 'timeout' }
+  }
+  console.log(
+    `[capture] copy-finish status=text textLength=${text.length} ` +
+    `elapsedMs=${Date.now() - captureStartedAt}`
+  )
   return { text }
 }
 
@@ -384,6 +410,44 @@ export async function captureSelectionByNativeOnly(
   }
 }
 
+/**
+ * 执行点击“译”按钮后的专用取词：macOS/Windows 直接复制，Linux 保留主选区读取。
+ * 这样可跳过可能耗时 1.5 秒以上的 AX/UIA 直读，尽量在源应用选区失效前发送复制快捷键。
+ * @param signal 用于在请求失效后中止取词和恢复剪贴板的取消信号。
+ * @param timeoutMs 等待前台应用写入剪贴板的最长时间。
+ * @returns 结构化取词结果，包含文本、图片标志或失败原因。
+ * @author zhenghq
+ */
+export async function captureSelectionAfterButtonClick(
+  signal?: AbortSignal,
+  timeoutMs = 800
+): Promise<SelectionCaptureOutcome> {
+  if (signal?.aborted) return { text: '' }
+
+  const plan = getSelectionCapturePlan(process.platform)
+  console.log(
+    `[capture] button-capture-start platform=${process.platform} copyFallback=${plan.copyFallback}`
+  )
+  if (plan.copyFallback) {
+    return captureByCopy(signal, timeoutMs)
+  }
+
+  if (plan.supportsNativeRead) {
+    return captureSelectionByNativeOnly(signal)
+  }
+
+  return { text: '', reason: 'unsupported' }
+}
+
+/**
+ * 捕获当前选中文字：优先原生直读，直读不可用或为空时回退到模拟复制，并按原因返回失败结果。
+ * Linux 读取主选区，macOS 使用辅助功能属性，Windows 使用 UI Automation；
+ * 直读无法覆盖的应用（如不支持 AX/UIA）自动回退到复制兜底。
+ * @param signal 用于在用户粘贴或点击其他位置时中止取词。
+ * @param timeoutMs 复制兜底等待前台应用写入剪贴板的最长时间。
+ * @returns 结构化取词结果，失败时携带图片标志或失败原因。
+ * @author zhenghq
+ */
 export async function captureSelection(
   signal?: AbortSignal,
   timeoutMs = 800

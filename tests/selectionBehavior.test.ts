@@ -12,7 +12,9 @@ import {
   resolveLanguagePair,
   resolveWindowsPointerPoint,
   shouldShowSelectionButtonAfterInspection,
-  shouldTriggerSelectionGesture
+  shouldTriggerSelectionGesture,
+  isPointInsideBounds,
+  isSelectionGestureInsideOwnWindows
 } from '../src/shared/selectionBehavior.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { buildProxyConfig } from '../src/shared/proxySettings.ts'
@@ -412,6 +414,45 @@ test('点击“译”按钮时应等待正在进行的选区预取并且只消�
 })
 
 /**
+ * 校验点击“译”按钮时不会等待卡住的只读预取，而是立即取消预取并开始按钮专用取词。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('点击“译”按钮应取消未完成预取并立即开始按钮专用取词', async () => {
+  let prefetchAbortObserved = false
+  let buttonCaptureCount = 0
+  let notifyPrefetchStarted: (() => void) | undefined
+  const prefetchStarted = new Promise<void>((resolve) => {
+    notifyPrefetchStarted = resolve
+  })
+  const coordinator = new SelectionCaptureCoordinator(
+    async () => '普通完整取词',
+    async (signal) => await new Promise((resolve) => {
+      notifyPrefetchStarted?.()
+      signal.addEventListener('abort', () => {
+        prefetchAbortObserved = true
+        resolve({ text: '', reason: 'unknown' })
+      }, { once: true })
+    }),
+    async () => {
+      buttonCaptureCount += 1
+      return '按钮立即复制到的文字'
+    }
+  )
+  const anchor = { x: 460, y: 280 }
+
+  void coordinator.prepare(anchor)
+  await prefetchStarted
+  const prepared = coordinator.consumePrepared()
+  const captured = await coordinator.captureFromButton(anchor)
+
+  assert.equal(prepared, null)
+  assert.equal(prefetchAbortObserved, true)
+  assert.deepEqual(captured, { text: '按钮立即复制到的文字', anchor })
+  assert.equal(buttonCaptureCount, 1)
+})
+
+/**
  * 校验图标可以先展示，而后台取词仍等待前台应用完成选区更新。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
@@ -589,11 +630,15 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
   )
   // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
   assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
-  assert.match(translateSource, /await selectionCapture\.consumePreparedOrWait\(\)/u)
+  assert.match(translateSource, /selectionCapture\.consumePrepared\(\)/u)
+  assert.doesNotMatch(translateSource, /consumePreparedOrWait/u)
+  assert.match(translateSource, /const anchor = lastSelectionAnchor/u)
+  assert.match(translateSource, /selectionInteraction\.beginButtonCapture\(\)/u)
   assert.match(
     translateSource,
-    /prepared\?\s*\.\s*text[\s\S]*?selectionCapture\.capture\(lastSelectionAnchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
+    /prepared\?\s*\.\s*text[\s\S]*?selectionCapture\.captureFromButton\(anchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
+  assert.match(translateSource, /selectionInteraction\.isCurrent\(interactionToken\)/u)
   assert.match(
     source,
     /startAutoTrigger\(\s*handleSelectionGesture,\s*handleSelectionPointerDown,\s*handleCopyShortcut,\s*handlePasteShortcut\s*\)/u
@@ -661,12 +706,12 @@ test('点击“译”按钮应在全局鼠标按下阶段直接激活并阻止�
 
   assert.match(
     pointerDownSource,
-    /if\s*\(isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?return true/u
+    /ocrActive:[\s\S]*?selectionButtonHit:\s*isPointInsideSelectionButton\(point\)[\s\S]*?if\s*\(result === 'consume' && isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?if\s*\(result === 'consume'\)\s*return result/u
   )
   assert.doesNotMatch(pointerDownSource, /process\.platform\s*===\s*'win32'/u)
   assert.match(
     autoTriggerSource,
-    /const pointerHandled = pointerDownCallback\?\.\(point\)\s*\?\?\s*false[\s\S]*?if\s*\(pointerHandled\)\s*\{[\s\S]*?downAt\s*=\s*null[\s\S]*?return/u
+    /let result:\s*PointerDownResult\s*=\s*'track'[\s\S]*?result\s*=\s*pointerDownCallback\?\.\(point\)\s*\?\?\s*'track'[\s\S]*?resolvePointerDownTracking\(/u
   )
 })
 
@@ -676,7 +721,8 @@ test('全局监听应传递双击次数，并监听用户复制和粘贴快捷�
   assert.match(source, /shouldTriggerSelectionGesture\(gesture,\s*e\.clicks/u)
   assert.match(source, /screen\.screenToDipPoint\(/u)
   assert.match(source, /screen\.getCursorScreenPoint\(\)/u)
-  assert.match(source, /uIOhook\.on\('keydown',\s*onKeyDown\)/u)
+  assert.match(source, /keydown:\s*onKeyDown as AutoTriggerHookListeners\['keydown'\]/u)
+  assert.match(source, /startAutoTriggerLifecycle\(\{/u)
   assert.match(
     source,
     /if\s*\(copyShortcutGuard\.observeCopyShortcut\(\)\)\s*copyShortcutCallback\?\.\(\)/u
@@ -899,4 +945,171 @@ test('系统代理和直连模式不应携带自定义代理规则', () => {
     proxyRules: 'http://127.0.0.1:7890',
     proxyBypassRules: '<local>'
   }), { mode: 'direct' })
+})
+
+test('落在应用自有窗口内的鼠标动作不应被当成划词手势', () => {
+  const settingsBounds = { x: 100, y: 100, width: 640, height: 820 }
+
+  assert.equal(isPointInsideBounds({ x: 300, y: 400 }, settingsBounds), true)
+  assert.equal(isPointInsideBounds({ x: 90, y: 400 }, settingsBounds), false)
+  assert.equal(isPointInsideBounds({ x: 300, y: 400 }, null), false)
+
+  // 设置窗口内的点击与拖动：起点或终点任意一端落在窗口内都应忽略
+  const insideGesture = getSelectionGesture(
+    { x: 200, y: 300, time: 1000 },
+    { x: 420, y: 300, time: 1400 }
+  )
+  const leavingGesture = getSelectionGesture(
+    { x: 200, y: 300, time: 1000 },
+    { x: 2000, y: 300, time: 1400 }
+  )
+  const outsideGesture = getSelectionGesture(
+    { x: 900, y: 300, time: 1000 },
+    { x: 1100, y: 300, time: 1400 }
+  )
+
+  assert.equal(isSelectionGestureInsideOwnWindows(insideGesture, [settingsBounds]), true)
+  assert.equal(isSelectionGestureInsideOwnWindows(leavingGesture, [settingsBounds]), true)
+  assert.equal(isSelectionGestureInsideOwnWindows(outsideGesture, [settingsBounds]), false)
+  assert.equal(isSelectionGestureInsideOwnWindows(insideGesture, []), false)
+  assert.equal(isSelectionGestureInsideOwnWindows(insideGesture, [null]), false)
+})
+
+test('划词手势处理只应排除持有焦点的应用自有窗口，后台设置窗口不得屏蔽其他应用划词', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+
+  // 只有当前持有焦点的自有窗口参与排除；仅按矩形位置判断会让后台设置窗口挡住其他应用的划词
+  assert.match(source, /function getFocusedOwnWindowBounds/u)
+  const boundsStart = source.indexOf('function getFocusedOwnWindowBounds')
+  const boundsEnd = source.indexOf('\n}', boundsStart)
+  const boundsSource = source.slice(boundsStart, boundsEnd)
+  assert.match(boundsSource, /settingsWin/u)
+  assert.match(boundsSource, /isFocused\(\)/u)
+  assert.match(boundsSource, /webReader\?\.isWindowFocused\(\)/u)
+
+  const handlerStart = source.indexOf('function handleSelectionGesture')
+  const handlerEnd = source.indexOf('/**', handlerStart + 1)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+  assert.match(
+    handlerSource,
+    /isSelectionGestureInsideOwnWindows\(gesture,\s*getFocusedOwnWindowBounds\(\)\)/u
+  )
+
+  const pointerStart = source.indexOf('function handleSelectionPointerDown')
+  const pointerEnd = source.indexOf('/**', pointerStart + 1)
+  const pointerSource = source.slice(pointerStart, pointerEnd)
+  // 焦点在设置窗口内按下不得清空已有选区缓存，也不得被按钮流程消费
+  assert.match(pointerSource, /isPointInsideFocusedOwnWindow\(point\)/u)
+})
+
+test('网页阅读器窗口应暴露焦点状态，供划词监听区分前台与后台窗口', () => {
+  const source = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  assert.match(source, /isWindowFocused\(\):\s*boolean/u)
+  assert.match(source, /getVisibleBounds\(\):\s*Rectangle \| null/u)
+})
+
+test('设置窗口焦点切换应清理窗口内遗留状态但保留先到达的外部鼠标按下', () => {
+  const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+
+  // macOS 可能先派发外部 mousedown，再派发设置窗口 blur；失焦清理必须限定窗口边界，
+  // 否则会把用户切出设置页后的第一次正常划词起点一起清除。
+  assert.match(autoTriggerSource, /export function resetAutoTriggerPointerState\(blurredWindowBounds\?: ScreenBounds\): void/u)
+  assert.match(autoTriggerSource, /resetPointerTrackingForWindowBlur/u)
+  assert.match(
+    mainSource,
+    /settingsWin\.on\('focus',[\s\S]*?settingsWin\.getBounds\(\)[\s\S]*?resetAutoTriggerPointerState\(settingsBounds\)[\s\S]*?settingsWin\.on\('blur',[\s\S]*?settingsWin\.getBounds\(\)[\s\S]*?resetAutoTriggerPointerState\(settingsBounds\)/u
+  )
+})
+
+test('OCR 框选收尾必须无条件恢复划词监听，避免全局钩子被永久停用', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+
+  // OCR 暂停与恢复统一交给监听控制器记账，移除分散布尔状态。
+  assert.match(source, /new SelectionListenerController/u)
+  assert.doesNotMatch(source, /selectionListenerSuspendedForOcr/u)
+  assert.match(source, /function suspendSelectionListenerForOcr/u)
+
+  const suspendStart = source.indexOf('function suspendSelectionListenerForOcr')
+  const suspendSource = source.slice(suspendStart, source.indexOf('\n}', suspendStart))
+  assert.match(suspendSource, /selectionListenerController\.pause\('ocr'\)/u)
+  assert.doesNotMatch(suspendSource, /stopAutoTrigger\(\)/u)
+
+  const restoreStart = source.indexOf('function restoreSelectionListenerAfterOcr')
+  const restoreSource = source.slice(restoreStart, source.indexOf('\n}', restoreStart))
+  assert.match(restoreSource, /selectionListenerController\.resume\('ocr'\)/u)
+  assert.match(restoreSource, /ocrInteractionToken = null/u)
+  assert.doesNotMatch(restoreSource, /applySelectionListener\(\)/u)
+
+  // openOcrSelection 必须通过记账函数停用，不能直接 stopAutoTrigger
+  const openStart = source.indexOf('async function openOcrSelection')
+  const openSource = source.slice(openStart, source.indexOf('\n}\n', openStart))
+  assert.match(openSource, /suspendSelectionListenerForOcr\(\)/u)
+  assert.match(
+    openSource,
+    /if\s*\(!selectionInteraction\.isCurrent\(interactionToken\)\)\s*\{[\s\S]*?restoreSelectionListenerAfterOcr\(interactionToken\)[\s\S]*?return/u
+  )
+  assert.doesNotMatch(openSource, /\bstopAutoTrigger\(\)/u)
+
+  const hotkeyStart = source.indexOf('function onOcrHotkey')
+  const hotkeySource = source.slice(hotkeyStart, source.indexOf('\n}', hotkeyStart))
+  assert.doesNotMatch(hotkeySource, /selectionInteraction\.invalidate\(\)/u)
+
+  const translationQueueStart = source.indexOf('function queueSelectionTranslation')
+  const translationQueueSource = source.slice(
+    translationQueueStart,
+    source.indexOf('/**\n * 响应“译”按钮点击', translationQueueStart)
+  )
+  assert.match(translationQueueSource, /snapshot\(\)\.state === 'ocr-selecting'\) return/u)
+
+  // 取消与提交都不得再用“窗口曾可见”作为恢复前提
+  const cancelStart = source.indexOf('function cancelOcrSelection')
+  const cancelSource = source.slice(cancelStart, source.indexOf('\n}', cancelStart))
+  assert.match(cancelSource, /restoreSelectionListenerAfterOcr\(\)/u)
+  assert.doesNotMatch(cancelSource, /if\s*\(wasVisible\)/u)
+
+  const submitStart = source.indexOf('async function submitOcrSelection')
+  const submitSource = source.slice(submitStart, source.indexOf('\n}\n', submitStart))
+  assert.doesNotMatch(submitSource, /if\s*\(!ocrSelectionWasVisible\s*\|\|/u)
+})
+
+test('OCR 取消应始终通知主进程，即使 Renderer 已退出框选模式', () => {
+  const source = readFileSync('src/renderer/src/selection.ts', 'utf8')
+  const cancelStart = source.indexOf('function cancelOcrSelection')
+  const cancelSource = source.slice(cancelStart, source.indexOf('\n}', cancelStart))
+
+  // 提前返回会让主进程收不到取消通知，全局钩子将无法恢复
+  assert.doesNotMatch(cancelSource, /if\s*\(!ocrMode\)\s*return/u)
+  assert.match(cancelSource, /window\.api\.cancelOcrSelection\(\)/u)
+})
+
+test('全局钩子启动失败时应清理监听器状态并允许后续重试', () => {
+  const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
+  const lifecycleSource = readFileSync('src/main/autoTriggerLifecycle.ts', 'utf8')
+  const startStart = source.indexOf('export function startAutoTrigger')
+  const startSource = source.slice(startStart, source.indexOf('\n}', startStart))
+
+  // 行为测试覆盖真实清理结果；此处仅保留接线断言，避免主入口绕过生命周期辅助函数。
+  assert.match(startSource, /startAutoTriggerLifecycle\(\{[\s\S]*?clearCallbackState:\s*clearAutoTriggerCallbacks/u)
+  assert.match(source, /function detachHookListeners/u)
+  assert.match(lifecycleSource, /catch[\s\S]*?detachAutoTriggerHookListeners\(hook, listeners\)[\s\S]*?options\.clearCallbackState\(\)/u)
+
+  // 需要暴露启动结果，便于上层判断钩子是否真的在工作
+  assert.match(source, /export function startAutoTrigger\([\s\S]*?\):\s*boolean/u)
+  assert.match(startSource, /return true/u)
+  assert.match(startSource, /return false/u)
+})
+
+test('划词监听启动失败应记录可诊断日志，避免手势失效时无迹可查', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const controllerSource = readFileSync('src/main/selectionListenerController.ts', 'utf8')
+  const applyStart = source.indexOf('function applySelectionListener')
+  const applySource = source.slice(applyStart, source.indexOf('\n}', applyStart))
+
+  assert.match(applySource, /selectionListenerController\.setMode\(getSettings\(\)\.triggerMode\)/u)
+  assert.match(applySource, /!selectionListenerController\.isRunning\(\)/u)
+  assert.match(applySource, /console\.warn/u)
+  assert.match(controllerSource, /const started = this\.options\.start\(\)/u)
+  assert.match(controllerSource, /this\.running = started/u)
+  assert.match(controllerSource, /后续 refresh 可重试/u)
 })

@@ -174,7 +174,8 @@ test('OCR 框选期间应暂停并屏蔽普通划词监听', () => {
   const gestureEnd = main.indexOf('/**', gestureStart + 1)
   const gestureSource = main.slice(gestureStart, gestureEnd)
 
-  assert.match(openSource, /stopAutoTrigger\(\)/u)
+  // 暂停经由记账函数完成，保证任何收尾路径都能把全局钩子恢复回来
+  assert.match(openSource, /suspendSelectionListenerForOcr\(\)/u)
   assert.match(openSource, /selectionCapture\.invalidate\(\)/u)
   assert.match(cancelSource, /restoreSelectionListenerAfterOcr\(\)/u)
   assert.match(gestureSource, /isOcrSelectionVisible\(\)/u)
@@ -332,4 +333,19 @@ test('OCR 运行时依赖应锁定并纳入打包配置', () => {
   assert.match(benchmarkDoc, /onnxruntime-node`\s*\|\s*1\.27\.0/u)
   assert.match(benchmarkDoc, /PP-OCRv4 ONNX/u)
   assert.match(benchmarkDoc, /PP-OCRv6_tiny ONNX/u)
+})
+
+/**
+ * 校验 OCR 框选窗口通过隐藏或关闭等旁路收尾时，全局划词监听仍能恢复。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 框选窗口隐藏或关闭时应兜底恢复划词监听', () => {
+  const windowStart = main.indexOf('function getOcrSelectionWindow(): BrowserWindow')
+  const windowEnd = main.indexOf('\n}\n', windowStart)
+  const windowSource = main.slice(windowStart, windowEnd)
+
+  // 覆盖层被任何旁路收尾时都要恢复钩子，否则划词与双击会静默失效
+  assert.match(windowSource, /ocrSelectionWin\.on\('hide',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
+  assert.match(windowSource, /ocrSelectionWin\.on\('closed',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
 })
