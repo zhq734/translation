@@ -59,6 +59,7 @@
     ],
     "asarUnpack": [
       "assets/ocr/**/*",
+      "node_modules/@gutenye/**/*",
       "node_modules/@gutenye/ocr-models/assets/**/*",
       "node_modules/@img/**/*",
       "node_modules/onnxruntime-node/**/*",

@@ -168,3 +168,19 @@ test('PaddleOcrEngine 应传入自定义 PP-OCRv6_tiny 模型路径', async () =
   })
   assert.equal(result.text, '你好')
 })
+
+/**
+ * 校验 PaddleOCR runtime 初始化失败时应保留脱敏后的诊断原因。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('PaddleOcrEngine 初始化失败应返回具体不可用原因', async () => {
+  const engine = new PaddleOcrEngine({
+    createOcrNode: async () => {
+      throw new Error('native binding load failed')
+    }
+  })
+
+  assert.equal(await engine.isAvailable(), false)
+  assert.equal(engine.getUnavailableReason(), 'PaddleOCR runtime 初始化失败: native binding load failed')
+})

@@ -230,6 +230,9 @@ export class PaddleOcrEngine implements OcrEngine {
   /** ocr-node 加载的 ONNX 模型路径。 */
   private readonly models?: PaddleOcrModelPaths
 
+  /** 最近一次 runtime 初始化失败原因。 */
+  private unavailableReason: string | undefined
+
   /**
    * 创建 PaddleOCR 引擎。
    * @param options 可注入依赖与模型路径；省略时使用默认值（生产环境）。
@@ -266,10 +269,23 @@ export class PaddleOcrEngine implements OcrEngine {
   async isAvailable(): Promise<boolean> {
     try {
       await this.getOrCreate()
+      this.unavailableReason = undefined
       return true
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.unavailableReason = `PaddleOCR runtime 初始化失败: ${message}`
+      console.error('[ocr] PaddleOCR runtime 初始化失败:', message)
       return false
     }
+  }
+
+  /**
+   * 返回 PaddleOCR runtime 最近一次不可用原因。
+   * @returns 不可用原因；尚未检测或可用时返回 undefined。
+   * @author zhenghq
+   */
+  getUnavailableReason(): string | undefined {
+    return this.unavailableReason
   }
 
   /**

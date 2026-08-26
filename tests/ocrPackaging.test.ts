@@ -26,6 +26,10 @@ test('OCR 模型资产与 native runtime 应纳入打包并解包', () => {
   assert.ok(packageJson.build.files.includes('assets/ocr/**/*'))
   assert.ok(packageJson.build.files.includes('node_modules/onnxruntime-node/**/*'))
   assert.ok(packageJson.build.files.includes('node_modules/sharp/**/*'))
+  assert.ok(
+    packageJson.build.asarUnpack.includes('node_modules/@gutenye/**/*'),
+    '@gutenye OCR runtime 必须与 onnxruntime native 模块位于同一解包目录'
+  )
   assert.ok(packageJson.build.asarUnpack.includes('assets/ocr/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/onnxruntime-node/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/sharp/**/*'))
