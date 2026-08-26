@@ -198,6 +198,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - 更新检查与更新包下载都走应用统一的代理会话，与翻译请求使用同一套代理配置；
 - 更新包下载会先探测下载源是否支持 Range：支持时按最多 4 个分片并发下载，不支持或探测失败则自动回退单连接下载；
 - 下载中断后重试会从已完成字节继续，仅在版本、更新包长度或校验值变化时重新完整下载；
+- 检查更新时还会读取同一 Release 的 `SHA256SUMS`，并与 GitHub Release 资产摘要比较；即使版本号没有变化，只要校验值缺失或不一致，也会提示升级；
 - 手动 macOS 更新在打开 DMG 前会校验 sha512：校验失败会删除文件并提示，更新清单没有对应校验值时会明确说明该安装包未经完整性校验；
 - 无法从更新清单解析出对应 DMG 时会打开 GitHub Release 作为兜底。源码开发模式不会访问更新服务，检查或下载发生异常时设置页也会保留“打开发布页”入口。
 
@@ -597,17 +598,19 @@ npm run release:checksums
 
 仓库内置 `.github/workflows/package.yml`，可在 GitHub 的 **Actions → 多平台打包 → Run workflow** 中手动执行。手动执行时可以填写版本号，例如 `V1.0.3`；留空则使用 `package.json` 中的版本。
 
-工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建 x64/arm64 安装包，并把各平台产物上传到本次 Actions 运行记录中。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
+工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建 x64/arm64 安装包，并把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-14`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
 
 1. 使用标签中的版本号同步安装包版本；
 2. 汇总三个平台的安装包；
 3. 生成 `SHA256SUMS`；
 4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
+两个 macOS 架构任务会先分别生成 `latest-mac-x64.yml` 和 `latest-mac-arm64.yml`，发布阶段再合并为 electron-updater 使用的 `latest-mac.yml`。
+
 macOS 流水线支持签名发布和未签名发布两种模式：
 
-- 五个 Apple 发布 Secret 全部配置时，CI 使用 `npm run dist:mac:ci` 强制完成 Developer ID 签名、Apple 公证，以及 `codesign`、`stapler`、`spctl` 验证；签名证书必须是 `Developer ID Application`，且必须属于固定团队 `TeamIdentifier=499QMYBXLR`；
-- 通过 `workflow_dispatch` 手动触发或推送版本标签时，如果没有配置任何 Apple 发布 Secret，CI 自动改用 `npm run dist:mac:unsigned`，生成 x64/arm64 的未签名 DMG 与 ZIP；版本标签构建会把这些产物上传到 GitHub Release；
+- 五个 Apple 发布 Secret 全部配置时，CI 按架构使用 `npm run dist:mac:x64:ci` 或 `npm run dist:mac:arm64:ci` 强制完成 Developer ID 签名、Apple 公证，以及 `codesign`、`stapler`、`spctl` 验证；签名证书必须是 `Developer ID Application`，且必须属于固定团队 `TeamIdentifier=499QMYBXLR`；
+- 通过 `workflow_dispatch` 手动触发或推送版本标签时，如果没有配置任何 Apple 发布 Secret，CI 按架构使用 `npm run dist:mac:x64:unsigned` 或 `npm run dist:mac:arm64:unsigned`，生成 x64/arm64 的未签名 DMG 与 ZIP；版本标签构建会把这些产物上传到 GitHub Release；
 - 只配置了部分 Secret 时，CI 会列出缺少的名称并停止，避免把错误配置误判为已签名发布；
 - 任意自定义名称（例如 `LOCAL`）不会被工作流读取，必须使用下表中的准确名称。
 

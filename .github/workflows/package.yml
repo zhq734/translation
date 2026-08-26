@@ -49,16 +49,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
+          - name: macOS x64
+            platform: macos
+            arch: x64
             os: macos-15-intel
-            command: dist:mac:ci
-            artifact_name: packages-macos
+            command: dist:mac:x64:ci
+            unsigned_command: dist:mac:x64:unsigned
+            artifact_name: packages-macos-x64
             artifact_path: |
-              dist/SelectionTranslator-*-mac-*.dmg
-              dist/SelectionTranslator-*-mac-*.zip
-              dist/latest*.yml
+              dist/SelectionTranslator-*-mac-x64.dmg
+              dist/SelectionTranslator-*-mac-x64.zip
+              dist/latest-mac-x64.yml
+              dist/*.blockmap
+          - name: macOS arm64
+            platform: macos
+            arch: arm64
+            os: macos-14
+            command: dist:mac:arm64:ci
+            unsigned_command: dist:mac:arm64:unsigned
+            artifact_name: packages-macos-arm64
+            artifact_path: |
+              dist/SelectionTranslator-*-mac-arm64.dmg
+              dist/SelectionTranslator-*-mac-arm64.zip
+              dist/latest-mac-arm64.yml
               dist/*.blockmap
           - name: Windows
+            platform: windows
             os: windows-2025
             command: dist:win
             artifact_name: packages-windows
@@ -67,6 +83,7 @@ jobs:
               dist/latest*.yml
               dist/*.blockmap
           - name: Linux
+            platform: linux
             os: ubuntu-24.04
             command: dist:linux
             artifact_name: packages-linux
@@ -103,7 +120,7 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: 检查并准备 macOS 签名与公证凭据
-        if: matrix.name == 'macOS'
+        if: matrix.platform == 'macos'
         id: macos_signing
         shell: bash
         env:
@@ -147,7 +164,7 @@ jobs:
           fi
 
       - name: 构建已签名 macOS 安装包
-        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'true'
+        if: matrix.platform == 'macos' && steps.macos_signing.outputs.enabled == 'true'
         env:
           CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -157,17 +174,22 @@ jobs:
         run: npm run ${{ matrix.command }}
 
       - name: 构建未签名 macOS 安装包
-        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'false'
+        if: matrix.platform == 'macos' && steps.macos_signing.outputs.enabled == 'false'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist:mac:unsigned
+        run: npm run ${{ matrix.unsigned_command }}
 
       - name: 构建非 macOS 安装包
-        if: matrix.name != 'macOS'
+        if: matrix.platform != 'macos'
         run: npm run ${{ matrix.command }}
 
+      - name: 区分 macOS 架构更新清单
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: mv dist/latest-mac.yml "dist/latest-mac-${{ matrix.arch }}.yml"
+
       - name: 验证 macOS 签名、公证与 Gatekeeper 状态
-        if: matrix.name == 'macOS' && steps.macos_signing.outputs.enabled == 'true'
+        if: matrix.platform == 'macos' && steps.macos_signing.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -228,6 +250,9 @@ jobs:
 
       - name: 生成 SHA-256 校验和
         run: node scripts/generate-checksums.mjs --directory release-assets
+
+      - name: 合并 macOS 双架构更新清单
+        run: node scripts/merge-mac-update-info.mjs --directory release-assets
 
       - name: 创建或更新 GitHub Release
         shell: bash
