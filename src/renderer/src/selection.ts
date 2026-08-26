@@ -246,7 +246,8 @@ function leaveOcrSelectionMode(): void {
  * @author zhenghq
  */
 function cancelOcrSelection(): void {
-  if (!ocrMode) return
+  // 不能因本地 ocrMode 已复位而提前返回：主进程收不到取消通知时，
+  // 会把全局划词监听一直留在暂停状态，导致划词与双击都不再显示“译”按钮。
   leaveOcrSelectionMode()
   window.api.cancelOcrSelection()
 }

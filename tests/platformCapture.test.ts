@@ -137,8 +137,8 @@ test('Linux 取词应纳入主选区直读并保留分类结果', () => {
 test('只读预取应仅使用原生直读且不注入复制键或写剪贴板', () => {
   const source = readFileSync('src/main/capture.ts', 'utf8')
   const prefetchStart = source.indexOf('export async function captureSelectionByNativeOnly')
-  // 结束标记必须带左括号，避免把 captureSelectionByNativeOnly 自身当作 captureSelection 的起点。
-  const prefetchEnd = source.indexOf('export async function captureSelection(', prefetchStart)
+  // 结束标记指向按钮专用取词函数，避免把按钮点击逻辑误算为只读预取实现。
+  const prefetchEnd = source.indexOf('export async function captureSelectionAfterButtonClick', prefetchStart)
   const prefetchSource = source.slice(prefetchStart, prefetchEnd)
 
   assert.ok(prefetchStart >= 0, '应导出 captureSelectionByNativeOnly 只读预取函数')
@@ -157,13 +157,31 @@ test('只读预取应仅使用原生直读且不注入复制键或写剪贴板',
 test('双击只读预取应在选区稳定期间短暂重试原生读取', () => {
   const source = readFileSync('src/main/capture.ts', 'utf8')
   const prefetchStart = source.indexOf('export async function captureSelectionByNativeOnly')
-  const prefetchEnd = source.indexOf('export async function captureSelection(', prefetchStart)
+  const prefetchEnd = source.indexOf('export async function captureSelectionAfterButtonClick', prefetchStart)
   const prefetchSource = source.slice(prefetchStart, prefetchEnd)
 
   assert.match(source, /NATIVE_SELECTION_RETRY_COUNT/u)
   assert.match(source, /NATIVE_SELECTION_RETRY_DELAY_MS/u)
   assert.match(prefetchSource, /readSelectionByNativeWithRetry/u)
   assert.doesNotMatch(prefetchSource, /captureByCopy|simulateCopy|keybd_event|CGEvent/u)
+})
+
+/**
+ * 校验“译”按钮点击后的兜底取词应直接发送复制快捷键，不能再次被缓慢的原生直读阻塞。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮点击兜底取词应复制优先且不再次等待原生直读', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('export async function captureSelectionAfterButtonClick')
+  const end = source.indexOf('export async function captureSelection(', start)
+  const buttonCaptureSource = source.slice(start, end)
+
+  assert.ok(start >= 0, '应导出按钮点击专用取词函数')
+  assert.ok(end > start, '按钮取词函数应位于通用取词函数之前')
+  assert.match(buttonCaptureSource, /plan\.copyFallback/u)
+  assert.match(buttonCaptureSource, /captureByCopy\(signal, timeoutMs\)/u)
+  assert.doesNotMatch(buttonCaptureSource, /readSelectionByNative\(/u)
 })
 
 /**

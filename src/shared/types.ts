@@ -299,6 +299,8 @@ export interface Settings {
   triggerMode: TriggerMode
   /** 是否在 macOS Dock 栏显示应用图标。 */
   showDockIcon: boolean
+  /** 是否随系统开机自动启动应用。 */
+  autoLaunch: boolean
   /** 翻译网络代理模式。 */
   proxyMode: ProxyMode
   /** Electron 自定义代理规则，例如 http://127.0.0.1:7890。 */

@@ -5,9 +5,21 @@ import {
   getSelectionGesture,
   resolveWindowsPointerPoint,
   shouldTriggerSelectionGesture,
+  type ScreenBounds,
   type SelectionGesture
 } from '../shared/selectionBehavior'
+import {
+  resetPointerTrackingForWindowBlur,
+  resolvePointerDownTracking,
+  type PointerDownResult
+} from '../shared/selectionInteraction'
 import { copyShortcutGuard } from './copyShortcutState'
+import {
+  detachAutoTriggerHookListeners,
+  startAutoTriggerLifecycle,
+  type AutoTriggerHook,
+  type AutoTriggerHookListeners
+} from './autoTriggerLifecycle'
 
 export interface AutoTriggerOptions {
   /** 最小拖动距离（像素），低于此值视为点击而非划词。 */
@@ -40,7 +52,7 @@ type KeyboardSample = {
 }
 
 type SelectionCallback = (gesture: SelectionGesture) => void
-type PointerDownCallback = (point: { x: number; y: number }) => boolean
+export type PointerDownCallback = (point: { x: number; y: number }) => PointerDownResult
 type CopyShortcutCallback = () => void
 type PasteShortcutCallback = () => void
 
@@ -52,6 +64,9 @@ let pasteShortcutCallback: PasteShortcutCallback | null = null
 
 let downAt: MouseSample | null = null
 let modifiersHeld = false
+
+/** 返回当前全局钩子实例的最小生命周期接口。 */
+const autoTriggerHook = uIOhook as unknown as AutoTriggerHook
 
 /**
  * 将全局钩子的鼠标坐标转换为 Electron 窗口定位使用的 DIP 坐标。
@@ -79,21 +94,22 @@ function resolveMousePoint(e: MouseSample): { x: number; y: number } {
  */
 function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaKey: boolean }): void {
   const point = resolveMousePoint(e)
-  const pointerHandled = pointerDownCallback?.(point) ?? false
-  if (pointerHandled) {
-    modifiersHeld = false
-    downAt = null
-    return
+  let result: PointerDownResult = 'track'
+  try {
+    result = pointerDownCallback?.(point) ?? 'track'
+  } catch (error) {
+    // 单次窗口销毁/焦点竞态不应让全局钩子回调链进入半状态；本次事件安全忽略，后续事件仍可继续监听。
+    result = 'ignore'
+    console.warn('[autoTrigger] 鼠标按下分类异常，本次事件已忽略:', error)
   }
-
-  // 带修饰键的拖拽通常属于复制、窗口操作或快捷操作，不作为普通划词。
-  if (e.ctrlKey || e.altKey || e.metaKey) {
-    modifiersHeld = true
-    downAt = null
-    return
-  }
-  modifiersHeld = false
-  downAt = createObservedPointerSample(point, Date.now())
+  const tracking = resolvePointerDownTracking(
+    result,
+    point,
+    Date.now(),
+    e.ctrlKey || e.altKey || e.metaKey
+  )
+  modifiersHeld = tracking.modifiersHeld
+  downAt = tracking.downAt
 }
 
 /**
@@ -144,12 +160,46 @@ function onKeyDown(e: KeyboardSample): void {
 }
 
 /**
+ * 解绑全局钩子事件监听器，保证监听器注册状态与运行标记始终一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function detachHookListeners(): void {
+  detachAutoTriggerHookListeners(autoTriggerHook, getHookListeners())
+}
+
+/**
+ * 返回需要注册到全局钩子的固定事件监听器集合。
+ * @returns 鼠标按下、鼠标松开和键盘按下监听器。
+ * @author zhenghq
+ */
+function getHookListeners(): AutoTriggerHookListeners {
+  return {
+    mousedown: onMouseDown as AutoTriggerHookListeners['mousedown'],
+    mouseup: onMouseUp as AutoTriggerHookListeners['mouseup'],
+    keydown: onKeyDown as AutoTriggerHookListeners['keydown']
+  }
+}
+
+/**
+ * 清空全局钩子持有的业务回调状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearAutoTriggerCallbacks(): void {
+  callback = null
+  pointerDownCallback = null
+  copyShortcutCallback = null
+  pasteShortcutCallback = null
+}
+
+/**
  * 启动全局鼠标监听，用于发现跨应用的划词动作。
  * @param cb 发现有效划词后的回调。
- * @param onPointerDown 发现鼠标按下时的回调，返回 true 表示事件已被悬浮按钮消费。
+ * @param onPointerDown 发现鼠标按下时的回调，返回 track、ignore 或 consume。
  * @param onCopyShortcut 发现用户复制快捷键时的回调，用于中止剪贴板取词。
  * @param onPasteShortcut 发现用户粘贴快捷键时的回调，用于中止剪贴板取词。
- * @returns 无返回值。
+ * @returns 钩子成功启动时返回 true，启动失败时返回 false。
  * @author zhenghq
  */
 export function startAutoTrigger(
@@ -157,22 +207,26 @@ export function startAutoTrigger(
   onPointerDown?: PointerDownCallback,
   onCopyShortcut?: CopyShortcutCallback,
   onPasteShortcut?: PasteShortcutCallback
-): void {
+): boolean {
   stopAutoTrigger()
   callback = cb
   pointerDownCallback = onPointerDown ?? null
   copyShortcutCallback = onCopyShortcut ?? null
   pasteShortcutCallback = onPasteShortcut ?? null
-  uIOhook.on('mousedown', onMouseDown)
-  uIOhook.on('mouseup', onMouseUp)
-  uIOhook.on('keydown', onKeyDown)
-  try {
-    uIOhook.start()
-    running = true
+  const started = startAutoTriggerLifecycle({
+    hook: autoTriggerHook,
+    listeners: getHookListeners(),
+    clearCallbackState: clearAutoTriggerCallbacks,
+    logFailure: (error) => {
+      console.warn('[selection-translator] 划词监听启动失败:', (error as Error).message)
+    }
+  })
+  running = started
+  if (started) {
     console.log('[autoTrigger] 划词监听已启动')
-  } catch (e) {
-    console.warn('[selection-translator] 划词监听启动失败:', (e as Error).message)
+    return true
   }
+  return false
 }
 
 /**
@@ -181,9 +235,7 @@ export function startAutoTrigger(
  * @author zhenghq
  */
 export function stopAutoTrigger(): void {
-  uIOhook.off('mousedown', onMouseDown)
-  uIOhook.off('mouseup', onMouseUp)
-  uIOhook.off('keydown', onKeyDown)
+  detachHookListeners()
   if (running) {
     try {
       uIOhook.stop()
@@ -192,12 +244,39 @@ export function stopAutoTrigger(): void {
     }
   }
   running = false
-  callback = null
-  pointerDownCallback = null
-  copyShortcutCallback = null
-  pasteShortcutCallback = null
+  clearAutoTriggerCallbacks()
   downAt = null
   modifiersHeld = false
+}
+
+/**
+ * 清理当前全局鼠标手势的按下状态。
+ * macOS 在窗口切换、应用内拖拽或输入法上下文变化时可能漏发 mouseup；
+ * 失焦时只清理起始于该窗口内部的旧手势，避免晚到的 blur 清除已经发生的外部 mousedown。
+ * @param blurredWindowBounds 刚刚失焦的自有窗口边界；省略时无条件清理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetAutoTriggerPointerState(blurredWindowBounds?: ScreenBounds): void {
+  if (!blurredWindowBounds) {
+    downAt = null
+    modifiersHeld = false
+    return
+  }
+
+  const previousStart = downAt
+  const next = resetPointerTrackingForWindowBlur(
+    { downAt, modifiersHeld },
+    blurredWindowBounds
+  )
+  downAt = next.downAt
+  modifiersHeld = next.modifiersHeld
+  if (!previousStart) return
+  console.log(
+    next.downAt
+      ? '[autoTrigger] 设置窗口失焦发生在外部 mousedown 之后，保留当前划词起点'
+      : '[autoTrigger] 设置窗口失焦，清理窗口内遗留的鼠标按下状态'
+  )
 }
 
 /**

@@ -27,3 +27,17 @@ test('设置页应提供划词后自动显示“译”按钮开关并与触发�
     /function saveTriggerMode\(\): void[\s\S]*?autoShowSelectionButton\.checked\s*=\s*value\s*===\s*'button'/u
   )
 })
+
+test('触发模式补丁应在异步设置操作前同步持久化并应用，快速切换无需额外保存队列', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const applyStart = mainSource.indexOf('async function applySettingsPatch')
+  const applyEnd = mainSource.indexOf('/**', applyStart + 1)
+  const applySource = mainSource.slice(applyStart, applyEnd)
+  const saveIndex = applySource.indexOf('const settings = saveSettings(safePatch)')
+  const listenerIndex = applySource.indexOf('applySelectionListener()')
+  const firstAwaitIndex = applySource.indexOf('await ')
+
+  assert.ok(saveIndex >= 0)
+  assert.ok(listenerIndex > saveIndex)
+  assert.ok(firstAwaitIndex < 0 || listenerIndex < firstAwaitIndex)
+})

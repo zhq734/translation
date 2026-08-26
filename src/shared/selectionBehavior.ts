@@ -68,6 +68,49 @@ import type {
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
 
+/** 应用自有窗口在屏幕坐标系中的矩形区域。 */
+export interface ScreenBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * 判断屏幕坐标是否位于指定矩形区域内部。
+ * @param point 待判断的屏幕坐标。
+ * @param bounds 目标矩形区域；窗口不可见时传入 null 或 undefined。
+ * @returns 坐标位于矩形内部时返回 true，区域缺失时返回 false。
+ * @author zhenghq
+ */
+export function isPointInsideBounds(
+  point: { x: number; y: number },
+  bounds: ScreenBounds | null | undefined
+): boolean {
+  if (!bounds) return false
+  return point.x >= bounds.x &&
+    point.x <= bounds.x + bounds.width &&
+    point.y >= bounds.y &&
+    point.y <= bounds.y + bounds.height
+}
+
+/**
+ * 判断划词手势是否发生在应用自有窗口内部。
+ * 起点或终点任意一端落在自有窗口内即视为应用内交互，不应触发跨应用取词。
+ * @param gesture 当前划词手势。
+ * @param windowBounds 当前可见的应用自有窗口区域列表，不可见窗口以 null 占位。
+ * @returns 手势属于应用内交互时返回 true。
+ * @author zhenghq
+ */
+export function isSelectionGestureInsideOwnWindows(
+  gesture: Pick<SelectionGesture, 'start' | 'end'>,
+  windowBounds: readonly (ScreenBounds | null | undefined)[]
+): boolean {
+  return windowBounds.some((bounds) =>
+    isPointInsideBounds(gesture.start, bounds) || isPointInsideBounds(gesture.end, bounds)
+  )
+}
+
 /** 不发送复制快捷键时检查到的系统选区状态。 */
 export type SelectionPresence = 'present' | 'empty' | 'unknown'
 

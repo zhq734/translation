@@ -176,7 +176,7 @@
           </section>
 
           <section>
-            <h2>应用外观</h2>
+            <h2>应用外观与启动</h2>
             <div class="row">
               <label for="show-dock-icon">Dock 栏</label>
               <label class="checkbox-control">
@@ -185,6 +185,14 @@
               </label>
             </div>
             <p class="field-hint">仅 macOS 生效；点击 Dock 栏图标会直接进入设置页面。</p>
+            <div class="row">
+              <label for="auto-launch">开机自启动</label>
+              <label class="checkbox-control">
+                <input id="auto-launch" type="checkbox" />
+                随系统启动时自动运行划词翻译
+              </label>
+            </div>
+            <p class="field-hint">开启后应用会在登录系统时自动启动并常驻托盘；开发调试模式下不会写入系统登录项。</p>
           </section>
 
           <section>

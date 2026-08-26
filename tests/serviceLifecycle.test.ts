@@ -105,8 +105,11 @@ test('初始化失败和显式退出应关闭应用并清理全部全局资源',
   assert.match(mainSource, /stopApplicationService\(\)[\s\S]*?app\.quit\(\)/u)
   assert.match(
     mainSource,
-    /function cleanupBeforeQuit\(\): void \{[\s\S]*?stopAutoTrigger\(\)[\s\S]*?globalShortcut\.unregisterAll\(\)[\s\S]*?tray\?\.destroy\(\)[\s\S]*?tray = null/u
+    /function cleanupBeforeQuit\(\): void \{[\s\S]*?selectionListenerController\.stop\(\)[\s\S]*?globalShortcut\.unregisterAll\(\)[\s\S]*?tray\?\.destroy\(\)[\s\S]*?tray = null/u
   )
+  const cleanupStart = mainSource.indexOf('function cleanupBeforeQuit')
+  const cleanupSource = mainSource.slice(cleanupStart, mainSource.indexOf('\n}', cleanupStart))
+  assert.doesNotMatch(cleanupSource, /stopAutoTrigger\(\)/u)
   assert.match(mainSource, /app\.on\('before-quit', cleanupBeforeQuit\)/u)
 })
 

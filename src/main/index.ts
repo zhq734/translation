@@ -17,15 +17,17 @@ import {
 } from 'electron'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import {
   captureSelection,
   captureSelectionByNativeOnly,
+  captureSelectionAfterButtonClick,
   PermissionError,
   checkAccessibilityPermission
 } from './capture'
@@ -57,15 +59,29 @@ import {
   isSelectionButtonVisible,
   isPointInsideSelectionButton
 } from './selectionButton'
-import { startAutoTrigger, stopAutoTrigger } from './autoTrigger'
+import {
+  resetAutoTriggerPointerState,
+  startAutoTrigger,
+  stopAutoTrigger
+} from './autoTrigger'
+import { SelectionListenerController } from './selectionListenerController'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
+  isPointInsideBounds,
+  isSelectionGestureInsideOwnWindows,
+  type ScreenBounds,
   type SelectionGesture
 } from '../shared/selectionBehavior'
+import {
+  canTreatActivateAsDockLaunch,
+  classifySelectionPointerDown,
+  SelectionInteractionController,
+  type PointerDownResult
+} from '../shared/selectionInteraction'
 import {
   SelectionCaptureCoordinator,
   type SelectionCaptureResult
@@ -126,10 +142,18 @@ import type {
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
 import { shouldShowMacOSDockIcon } from './dockVisibility'
+import {
+  buildLinuxAutostartEntry,
+  buildLoginItemSettings,
+  resolveAutoLaunchStrategy,
+  resolveLinuxAutostartEntryPath
+} from './autoLaunch'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
+/** 应用唯一标识，与 electron-builder 的 appId 保持一致，用于 Linux 自启动桌面入口命名。 */
+const APP_ID = 'com.selection.translator'
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
 const SELECTION_SETTLE_DELAY_MS = 80
 const UPDATE_CHECK_DELAY_MS = 5000
@@ -152,12 +176,28 @@ const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 let latestOcrSnapshot: { png: Buffer; bounds: CaptureBounds; source: string } | null = null
-// 按钮显示期间用只读直读做后台预取，点击按钮时优先消费缓存；
-// 只有预取未取到文本时才走完整取词管线（直读 + 复制兜底）。
+// 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
+const selectionInteraction = new SelectionInteractionController()
+let ocrInteractionToken: number | null = null
+let internalActivationLeaseUntil = 0
+const INTERNAL_ACTIVATION_LEASE_MS = 300
+// 按钮显示期间用只读直读做后台预取，点击按钮时只消费已经完成的有效缓存；
+// 预取未完成或为空时立即取消它，并通过按钮专用管线优先发送复制快捷键。
 const selectionCapture = new SelectionCaptureCoordinator(
   captureSelection,
-  captureSelectionByNativeOnly
+  captureSelectionByNativeOnly,
+  captureSelectionAfterButtonClick
 )
+const selectionListenerController = new SelectionListenerController({
+  start: () => startAutoTrigger(
+    handleSelectionGesture,
+    handleSelectionPointerDown,
+    handleCopyShortcut,
+    handlePasteShortcut
+  ),
+  stop: () => stopAutoTrigger(),
+  log: (message) => console.warn(message)
+})
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
 let lastOcrText = ''
@@ -255,6 +295,50 @@ function cancelEdgeSpeech(requestId: string): void {
 }
 
 /**
+ * 判断本次 activate 事件是否为用户真正的 Dock 激活操作。
+ * macOS 的 activate 会在应用内任意窗口被激活时触发，包括划词过程中显示的
+ * “译”按钮与翻译弹窗。若不加区分就打开设置窗口，会在用户划词时突然抢走
+ * 前台应用焦点，导致原生选区失效、随后取词失败。
+ * @returns 交互状态、内部窗口、OCR 暂停和激活租约均为空闲时返回 true。
+ * @author zhenghq
+ */
+function shouldTreatActivateAsDockLaunch(): boolean {
+  const decision = canTreatActivateAsDockLaunch({
+    interactionState: selectionInteraction.snapshot().state,
+    selectionButtonVisible: isSelectionButtonVisible(),
+    popupVisible: isPopupVisible(),
+    ocrVisible: isOcrSelectionVisible(),
+    listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
+    internalActivationLeaseUntil,
+    now: Date.now()
+  })
+  if (!decision.allowed) {
+    console.log(`[main] 忽略内部 activate: ${decision.reason ?? 'unknown'}`)
+  }
+  return decision.allowed
+}
+
+/**
+ * 延长一次内部窗口激活租约，避免隐藏按钮到弹窗接管之间被误判为空闲。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renewInternalActivationLease(): void {
+  internalActivationLeaseUntil = Date.now() + INTERNAL_ACTIVATION_LEASE_MS
+}
+
+/**
+ * 释放当前交互 token 并清除其内部激活租约。
+ * @param token 需要释放的交互 token。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSelectionInteraction(token: number): void {
+  if (!selectionInteraction.release(token)) return
+  internalActivationLeaseUntil = 0
+}
+
+/**
  * 激活已有网页阅读器页面；没有尚未关闭的页面时打开设置窗口。
  * @returns 无返回值。
  * @author zhenghq
@@ -282,6 +366,8 @@ if (!gotLock) {
     app.on('activate', () => {
       void initialization.then((initialized) => {
         if (!initialized) return
+        // 划词交互中的窗口激活也会触发 activate，此时不能打开设置窗口抢走选区。
+        if (!shouldTreatActivateAsDockLaunch()) return
         activateExistingPageOrOpenSettings()
       })
     })
@@ -323,6 +409,49 @@ function applyMacOSDockVisibility(showDockIcon: boolean): void {
   }
   app.setActivationPolicy('accessory')
   app.dock?.hide()
+}
+
+/**
+ * 根据设置同步系统开机自启动状态。
+ * macOS/Windows 写入系统登录项，Linux 写入 XDG 自启动桌面入口，开发模式与其他平台跳过。
+ * @param enabled 是否开启开机自启动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function applyAutoLaunch(enabled: boolean): void {
+  const strategy = resolveAutoLaunchStrategy({
+    platform: process.platform,
+    packaged: app.isPackaged
+  })
+  if (strategy === 'skipped' || strategy === 'unsupported') {
+    console.log(`[autoLaunch] 当前环境不写入自启动配置: ${strategy}`)
+    return
+  }
+  try {
+    if (strategy === 'login-item') {
+      app.setLoginItemSettings(
+        buildLoginItemSettings({
+          platform: process.platform,
+          enabled,
+          execPath: process.execPath
+        })
+      )
+      return
+    }
+    const entryPath = resolveLinuxAutostartEntryPath(homedir(), APP_ID)
+    if (!enabled) {
+      rmSync(entryPath, { force: true })
+      return
+    }
+    mkdirSync(dirname(entryPath), { recursive: true })
+    writeFileSync(
+      entryPath,
+      buildLinuxAutostartEntry({ appName: app.getName(), execPath: process.execPath }),
+      { mode: 0o644 }
+    )
+  } catch (error) {
+    console.error('[autoLaunch] 同步开机自启动失败:', (error as Error).message)
+  }
 }
 
 /**
@@ -381,6 +510,7 @@ async function onReady(): Promise<boolean> {
 
   loadSettings()
   configureMacOSMenuBarApplication(getSettings().showDockIcon)
+  applyAutoLaunch(getSettings().autoLaunch)
   createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
     getSettings,
@@ -530,6 +660,7 @@ function registerOcrShortcut(accelerator: string): void {
  */
 function onHotkey(): void {
   latestSelectionGesture += 1
+  selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
   queueSelectionTranslation()
 }
@@ -546,6 +677,40 @@ function onOcrHotkey(): void {
 }
 
 /**
+ * 收集当前持有焦点的应用自有窗口区域，用于把应用内鼠标操作排除在划词监听之外。
+ * 全局钩子无法区分事件来源，设置窗口、网页阅读器等窗口内的点击与拖动
+ * 若不排除会被误判为跨应用划词，进而反复触发取词并打断真正的划词流程。
+ * 只统计持有焦点的窗口：后台窗口只是遮挡不到的矩形，若一并排除，
+ * 用户在其他应用中与该矩形重叠位置的正常划词会被静默忽略。
+ * @returns 当前持有焦点的自有窗口区域列表；无焦点窗口时以 null 占位。
+ * @author zhenghq
+ */
+function getFocusedOwnWindowBounds(): (ScreenBounds | null)[] {
+  // 只统计承载用户交互的普通窗口；翻译弹窗与“译”按钮有各自的命中判定，
+  // 需要保留原有的点击消费与选区失效行为，不能并入这里统一忽略。
+  const settingsFocused = Boolean(
+    settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && settingsWin.isFocused()
+  )
+  const settingsBounds = settingsFocused && settingsWin
+    ? settingsWin.getBounds()
+    : null
+  const webReaderBounds = webReader?.isWindowFocused()
+    ? webReader.getVisibleBounds()
+    : null
+  return [settingsBounds, webReaderBounds]
+}
+
+/**
+ * 判断屏幕坐标是否位于当前持有焦点的应用自有窗口内部。
+ * @param point 待判断的屏幕坐标。
+ * @returns 坐标位于持有焦点的自有窗口内部时返回 true。
+ * @author zhenghq
+ */
+function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean {
+  return getFocusedOwnWindowBounds().some((bounds) => isPointInsideBounds(point, bounds))
+}
+
+/**
  * 安排一次选区处理动作；按钮模式显示图标并后台只读预取文本，完整取词等用户点击确认。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
@@ -553,6 +718,7 @@ function onOcrHotkey(): void {
  */
 function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   const gestureId = ++latestSelectionGesture
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
   lastSelectionAnchor = anchor
@@ -560,6 +726,7 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   if (action === 'ignore') return
 
   if (action === 'show-button') {
+    selectionInteraction.showButton()
     showSelectionButton(anchor)
     // 按钮显示期间后台只读直读预取文本：不注入复制键、不写剪贴板，
     // 避免用户把鼠标移到“译”按钮期间选区失效，导致点击后复制兜底超时。
@@ -567,9 +734,11 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
     return
   }
 
+  const interactionToken = selectionInteraction.beginTranslation()
+  renewInternalActivationLease()
   setTimeout(() => {
-    if (gestureId !== latestSelectionGesture) return
-    queueSelectionTranslation(anchor)
+    if (gestureId !== latestSelectionGesture || !selectionInteraction.isCurrent(interactionToken)) return
+    queueSelectionTranslation(anchor, interactionToken)
   }, SELECTION_SETTLE_DELAY_MS)
 }
 
@@ -582,11 +751,13 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
  */
 async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Promise<void> {
   const gestureId = ++latestSelectionGesture
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
   lastSelectionAnchor = gesture.anchor
 
   // 双击场景先显示按钮，避免系统辅助功能直读失败时用户完全看不到入口。
+  selectionInteraction.showButton()
   showSelectionButton(gesture.anchor)
 
   // 按钮显示后再等待系统提交选区并做只读预取；不发送复制快捷键、不写剪贴板。
@@ -605,7 +776,9 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
  * @author zhenghq
  */
 function handleSelectionGesture(gesture: SelectionGesture): void {
-  if (isOcrSelectionVisible() ||
+  if (selectionInteraction.snapshot().state === 'ocr-selecting' ||
+      isOcrSelectionVisible() ||
+      isSelectionGestureInsideOwnWindows(gesture, getFocusedOwnWindowBounds()) ||
       isPointInsidePopup(gesture.start) ||
       isPointInsidePopup(gesture.end) ||
       isPointInsideSelectionButton(gesture.start) ||
@@ -625,19 +798,31 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
  * 响应全局鼠标按下事件，在“译”按钮被按下时立即捕获选中文字，避免源应用先清除选区。
  * 其他位置的鼠标按下会使已失效的选区缓存和“译”按钮立即消失。
  * @param point 鼠标按下时的屏幕坐标。
- * @returns 鼠标事件是否已被“译”按钮消费。
+ * @returns 外部应用返回 track，自有窗口返回 ignore，按钮或 OCR 返回 consume。
  * @author zhenghq
  */
-function handleSelectionPointerDown(point: { x: number; y: number }): boolean {
-  if (isOcrSelectionVisible()) return true
-  if (isPointInsideSelectionButton(point)) {
+function handleSelectionPointerDown(point: { x: number; y: number }): PointerDownResult {
+  const result = classifySelectionPointerDown({
+    ocrActive: selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible(),
+    selectionButtonHit: isPointInsideSelectionButton(point),
+    popupHit: isPointInsidePopup(point),
+    // 翻译弹窗内部的拖动也属于应用内交互，按下阶段直接忽略，
+    // 避免 mouseup 时再被拼成一次跨应用划词。
+    focusedOwnWindowHit: isPointInsideFocusedOwnWindow(point)
+  })
+  if (result === 'consume' && isPointInsideSelectionButton(point)) {
     void translateSelectionButton()
-    return true
+    renewInternalActivationLease()
   }
+  if (result === 'consume') return result
+  // 焦点在设置窗口等自有窗口内时的点击属于应用内交互，不参与跨应用取词，
+  // 也不应清空当前已捕获的选区缓存，否则设置页操作会让划词结果丢失。
+  if (result === 'ignore') return result
   latestSelectionGesture += 1
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
-  return false
+  return 'track'
 }
 
 /**
@@ -647,6 +832,7 @@ function handleSelectionPointerDown(point: { x: number; y: number }): boolean {
  */
 function handleCopyShortcut(): void {
   latestSelectionGesture += 1
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
 }
@@ -658,6 +844,7 @@ function handleCopyShortcut(): void {
  */
 function handlePasteShortcut(): void {
   latestSelectionGesture += 1
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
 }
@@ -665,12 +852,21 @@ function handlePasteShortcut(): void {
 /**
  * 捕获当前选中文字，并在取词完成后执行翻译。
  * @param anchor 本次选区右上角锚点。
+ * @param interactionToken 已经取得所有权的交互 token；省略时创建新的翻译流程。
  * @returns 无返回值。
  * @author zhenghq
  */
-function queueSelectionTranslation(anchor?: { x: number; y: number }): void {
+function queueSelectionTranslation(
+  anchor?: { x: number; y: number },
+  interactionToken?: number
+): void {
+  if (selectionInteraction.snapshot().state === 'ocr-selecting') return
+  const token = interactionToken ?? selectionInteraction.beginTranslation()
+  renewInternalActivationLease()
   void selectionCapture.capture(anchor).then((result) => {
-    if (result) handleSelectionCaptureResult(result)
+    if (!selectionInteraction.isCurrent(token)) return
+    if (result) handleSelectionCaptureResult(result, token)
+    else releaseSelectionInteraction(token)
   })
 }
 
@@ -681,27 +877,42 @@ function queueSelectionTranslation(anchor?: { x: number; y: number }): void {
  */
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
+  const interactionToken = selectionInteraction.beginButtonCapture()
+  if (interactionToken === null) return
+  const anchor = lastSelectionAnchor
   latestSelectionGesture += 1
+  renewInternalActivationLease()
   hideSelectionButton()
-  // 优先消费按钮显示期间预取的缓存文本，避免点击瞬间原生选区已失效导致复制兜底超时；
-  // 预取未取到文本或从未预取时，再走完整取词管线（直读 + 复制兜底）。
-  const prepared = await selectionCapture.consumePreparedOrWait()
-  const result = prepared?.text
-    ? prepared
-    : await selectionCapture.capture(lastSelectionAnchor)
-  selectionCapture.invalidate()
-  if (result) handleSelectionCaptureResult(result)
+  try {
+    // 只消费已经完成且有文本的预取，不等待可能卡住的 AX/UIA 直读；
+    // 预取未完成或为空时立即取消它，再走按钮专用取词，尽快发送复制快捷键。
+    const prepared = selectionCapture.consumePrepared()
+    if (!selectionInteraction.isCurrent(interactionToken)) return
+    const result = prepared?.text
+      ? prepared
+      : await selectionCapture.captureFromButton(anchor)
+    if (!selectionInteraction.isCurrent(interactionToken)) return
+    selectionCapture.invalidate()
+    if (result) handleSelectionCaptureResult(result, interactionToken)
+  } finally {
+    if (selectionInteraction.isCurrent(interactionToken) &&
+        selectionInteraction.snapshot().state === 'capturing') {
+      releaseSelectionInteraction(interactionToken)
+    }
+  }
 }
 
 /**
  * 处理取词结果，统一展示权限错误、空选区提示或启动翻译。
  * @param result 选中文字捕获结果。
+ * @param interactionToken 当前取词流程 token；省略时仅处理结果而不管理交互状态。
  * @returns 无返回值。
  * @author zhenghq
  */
-function handleSelectionCaptureResult(result: SelectionCaptureResult): void {
+function handleSelectionCaptureResult(result: SelectionCaptureResult, interactionToken?: number): void {
   if (result.error) {
     handleTranslateError(result.error, getSettings(), result.anchor)
+    if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
   if (!result.text) {
@@ -717,10 +928,14 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult): void {
       2000,
       result.anchor
     )
+    if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
 
-  void translateText(result.text, result.anchor)
+  if (interactionToken !== undefined) {
+    selectionInteraction.transition(interactionToken, 'translating')
+  }
+  void translateText(result.text, result.anchor, undefined, 'selection', interactionToken)
 }
 
 /**
@@ -729,6 +944,7 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult): void {
  * @param anchor 首次展示弹窗时使用的选区锚点。
  * @param preferences 可选的语言偏好。
  * @param origin 翻译来源。
+ * @param interactionToken 当前选区交互 token；省略时不释放选区交互状态。
  * @returns 翻译流程完成后的 Promise。
  * @author zhenghq
  */
@@ -736,7 +952,8 @@ async function translateText(
   text: string,
   anchor?: { x: number; y: number },
   preferences?: { sourceLang: string; targetLang: string },
-  origin: TranslationOrigin = 'selection'
+  origin: TranslationOrigin = 'selection',
+  interactionToken?: number
 ): Promise<void> {
   const settings = getSettings()
   const sourcePreference = preferences?.sourceLang ?? settings.sourceLang
@@ -811,6 +1028,8 @@ async function translateText(
       { sourceLang: sourcePreference, targetLang: targetPreference },
       { origin, requestId, original: text }
     )
+  } finally {
+    if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
   }
 }
 
@@ -916,8 +1135,14 @@ function getOcrSelectionWindow(): BrowserWindow {
   })
   ocrSelectionWin.setAlwaysOnTop(true, 'screen-saver')
   ocrSelectionWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // 覆盖层可能被隐藏、关闭等旁路收尾（含异常路径），这里兜底恢复全局划词监听，
+  // 避免钩子停在暂停状态导致划词与双击不再显示“译”按钮；恢复函数自身幂等。
+  ocrSelectionWin.on('hide', () => {
+    restoreSelectionListenerAfterOcr()
+  })
   ocrSelectionWin.on('closed', () => {
     ocrSelectionWin = null
+    restoreSelectionListenerAfterOcr()
   })
   ocrSelectionWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -938,12 +1163,30 @@ function isOcrSelectionVisible(): boolean {
 }
 
 /**
- * OCR 框选结束后恢复普通划词监听。
+ * 暂停普通划词监听，供 OCR 框选期间独占鼠标事件。
+ * 与 restoreSelectionListenerAfterOcr 配对记账，确保任何收尾路径都能恢复。
  * @returns 无返回值。
  * @author zhenghq
  */
-function restoreSelectionListenerAfterOcr(): void {
-  applySelectionListener()
+function suspendSelectionListenerForOcr(): void {
+  selectionListenerController.pause('ocr')
+}
+
+/**
+ * OCR 框选结束后恢复普通划词监听。
+ * 只要曾因 OCR 暂停就必须恢复：早期实现以“覆盖窗口曾可见”为前提，
+ * 一旦窗口已提前隐藏，全局钩子会被永久停用，导致划词与双击彻底失效。
+ * @param interactionToken 可选的 OCR 交互 token，用于拒绝旧流程清理新流程。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreSelectionListenerAfterOcr(interactionToken?: number): void {
+  // 旧 OCR 请求的异常或关闭信号不能清理新 OCR 请求持有的 token。
+  if (interactionToken !== undefined && ocrInteractionToken !== interactionToken) return
+  selectionListenerController.resume('ocr')
+  const token = ocrInteractionToken
+  ocrInteractionToken = null
+  if (token !== null) releaseSelectionInteraction(token)
 }
 
 /**
@@ -963,14 +1206,24 @@ function hideOcrSelectionWindow(): boolean {
  * @author zhenghq
  */
 async function openOcrSelection(): Promise<void> {
+  // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
+  if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   latestSelectionGesture += 1
+  const interactionToken = selectionInteraction.beginOcrSelection()
+  ocrInteractionToken = interactionToken
+  renewInternalActivationLease()
   selectionCapture.invalidate()
-  stopAutoTrigger()
+  suspendSelectionListenerForOcr()
   hideSelectionButton()
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const anchor = screen.getCursorScreenPoint()
   try {
     const snapshot = await captureOcrPreviewSnapshot(display.bounds)
+    // 截图期间若交互 token 已被新流程取代，旧 OCR 不得重新显示覆盖窗口。
+    if (!selectionInteraction.isCurrent(interactionToken)) {
+      restoreSelectionListenerAfterOcr(interactionToken)
+      return
+    }
     latestOcrSnapshot = snapshot
     const payload = {
       imageDataUrl: `data:image/png;base64,${snapshot.png.toString('base64')}`,
@@ -985,7 +1238,7 @@ async function openOcrSelection(): Promise<void> {
     })
     if (!win.webContents.isLoading()) win.webContents.send('ocr-selection:start', payload)
   } catch (error) {
-    restoreSelectionListenerAfterOcr()
+    restoreSelectionListenerAfterOcr(interactionToken)
     const settings = getSettings()
     const code = resolveOcrErrorCode(error)
     const message = error instanceof Error ? error.message : '无法获取屏幕截图'
@@ -1011,9 +1264,9 @@ async function openOcrSelection(): Promise<void> {
  * @author zhenghq
  */
 function cancelOcrSelection(): void {
-  const wasVisible = hideOcrSelectionWindow()
+  hideOcrSelectionWindow()
   latestOcrSnapshot = null
-  if (wasVisible) restoreSelectionListenerAfterOcr()
+  restoreSelectionListenerAfterOcr()
 }
 
 /**
@@ -1322,12 +1575,10 @@ async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Setting
  */
 async function submitOcrSelection(value: unknown): Promise<void> {
   const bounds = normalizeOcrSelectionBounds(value)
-  const ocrSelectionWasVisible = hideOcrSelectionWindow()
-  let selectionListenerRestored = false
+  hideOcrSelectionWindow()
+  // 恢复自身幂等且不依赖窗口可见状态，避免任何早退路径把全局钩子留在停用状态。
   const restoreSelectionListener = (): void => {
-    if (!ocrSelectionWasVisible || selectionListenerRestored) return
     restoreSelectionListenerAfterOcr()
-    selectionListenerRestored = true
   }
   if (!bounds) {
     latestOcrSnapshot = null
@@ -1481,16 +1732,12 @@ async function translateManualRequest(request: unknown): Promise<void> {
  */
 function applySelectionListener(): void {
   latestSelectionGesture += 1
+  selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
-  stopAutoTrigger()
   hideSelectionButton()
-  if (getSettings().triggerMode !== 'hotkey') {
-    startAutoTrigger(
-      handleSelectionGesture,
-      handleSelectionPointerDown,
-      handleCopyShortcut,
-      handlePasteShortcut
-    )
+  selectionListenerController.setMode(getSettings().triggerMode)
+  if (getSettings().triggerMode !== 'hotkey' && !selectionListenerController.isRunning()) {
+    console.warn('[autoTrigger] 划词监听未能启动，划词与双击将不可用，快捷键仍可使用')
   }
 }
 
@@ -1561,7 +1808,28 @@ function createSettingsWindow(): BrowserWindow {
 
   if (process.platform === 'win32') settingsWin.removeMenu()
   loadRendererHtml(settingsWin, 'settings.html')
+  // 设置页切换 Tab、拖拽滚动条或输入控件时，macOS 可能在窗口边界切换处漏发 mouseup。
+  // 焦点事件可能晚于外部应用的 mousedown 到达，清理必须限定为起始于设置窗口内部的手势。
+  settingsWin.on('focus', () => {
+    const settingsBounds = settingsWin && !settingsWin.isDestroyed()
+      ? settingsWin.getBounds()
+      : undefined
+    resetAutoTriggerPointerState(settingsBounds)
+  })
+  settingsWin.on('blur', () => {
+    const settingsBounds = settingsWin && !settingsWin.isDestroyed()
+      ? settingsWin.getBounds()
+      : undefined
+    resetAutoTriggerPointerState(settingsBounds)
+  })
+  settingsWin.on('hide', () => {
+    const settingsBounds = settingsWin && !settingsWin.isDestroyed()
+      ? settingsWin.getBounds()
+      : undefined
+    resetAutoTriggerPointerState(settingsBounds)
+  })
   settingsWin.on('closed', () => {
+    resetAutoTriggerPointerState()
     settingsWin = null
     refreshMacOSDockVisibility()
   })
@@ -1894,6 +2162,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.showDockIcon !== undefined && settings.showDockIcon !== previous.showDockIcon) {
     applyMacOSDockVisibility(settings.showDockIcon)
   }
+  if (patch.autoLaunch !== undefined && settings.autoLaunch !== previous.autoLaunch) {
+    applyAutoLaunch(settings.autoLaunch)
+  }
   if (patch.proxyMode !== undefined ||
       patch.proxyRules !== undefined ||
       patch.proxyBypassRules !== undefined) {
@@ -2115,7 +2386,8 @@ function buildTrayMenu(): Menu {
 function cleanupBeforeQuit(): void {
   webReader?.close()
   webReader = null
-  stopAutoTrigger()
+  selectionInteraction.invalidate()
+  selectionListenerController.stop()
   globalShortcut.unregisterAll()
   tray?.destroy()
   tray = null

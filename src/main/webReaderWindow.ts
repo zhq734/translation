@@ -2,6 +2,7 @@ import {
   BrowserWindow,
   WebContentsView,
   session,
+  type Rectangle,
   type Session
 } from 'electron'
 import { randomUUID } from 'node:crypto'
@@ -139,6 +140,26 @@ export class WebReaderManager {
     this.window.show()
     this.window.focus()
     return true
+  }
+
+  /**
+   * 返回阅读器窗口当前可见的屏幕区域，供划词监听排除应用内鼠标操作。
+   * @returns 窗口可见时返回其屏幕区域，不可见或已销毁时返回 null。
+   * @author zhenghq
+   */
+  getVisibleBounds(): Rectangle | null {
+    if (!this.window || this.window.isDestroyed() || !this.window.isVisible()) return null
+    return this.window.getBounds()
+  }
+
+  /**
+   * 返回阅读器窗口当前是否持有焦点，供划词监听区分前台与后台窗口。
+   * @returns 窗口存在且持有焦点时返回 true。
+   * @author zhenghq
+   */
+  isWindowFocused(): boolean {
+    if (!this.window || this.window.isDestroyed()) return false
+    return this.window.isFocused()
   }
 
   /** 关闭阅读器并取消任务。
