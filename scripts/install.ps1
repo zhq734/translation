@@ -4,6 +4,10 @@ $RequestedVersion = if ($env:SELECTION_TRANSLATOR_VERSION) { $env:SELECTION_TRAN
 $ProductName = '划词翻译'
 $TemporaryDirectory = $null
 
+# Windows PowerShell 5.1 在部分旧系统上仍默认使用 TLS 1.0，GitHub 下载需要显式启用 TLS 1.2。
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor `
+    [Net.SecurityProtocolType]::Tls12
+
 <#
 .SYNOPSIS
 输出安装进度。
@@ -28,10 +32,16 @@ function Write-InstallLog {
 @author zhenghq
 #>
 function Resolve-Architecture {
-    $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-    switch ($Architecture) {
-        'X64' { return 'x64' }
-        'Arm64' { return 'arm64' }
+    $Architecture = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($Architecture.ToUpperInvariant()) {
+        'AMD64' { return 'x64' }
+        'X86_64' { return 'x64' }
+        'ARM64' { return 'arm64' }
+        'AARCH64' { return 'arm64' }
         default { throw "暂不支持当前处理器架构：$Architecture" }
     }
 }
@@ -54,10 +64,10 @@ function Resolve-Version {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -Headers $Headers
         $Version = [string]$Release.tag_name
     }
-    if (-not $Version.StartsWith('v')) {
-        $Version = "v$Version"
+    if ($Version -notmatch '^[vV]') {
+        $Version = "V$Version"
     }
-    if ($Version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
+    if ($Version -notmatch '^[vV][0-9A-Za-z][0-9A-Za-z._-]*$') {
         throw "版本格式不合法：$Version"
     }
     return $Version
@@ -139,9 +149,7 @@ function Write-DefaultConfig {
 @author zhenghq
 #>
 function Install-SelectionTranslator {
-    if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
-        [System.Runtime.InteropServices.OSPlatform]::Windows
-    )) {
+    if ($env:OS -ne 'Windows_NT') {
         throw 'install.ps1 仅支持 Windows，请在 Linux 或 macOS 上使用 install.sh。'
     }
 

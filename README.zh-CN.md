@@ -153,6 +153,14 @@ curl -fsSL \
 irm https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1 | iex
 ```
 
+> Windows Terminal 只是终端窗口，请确认当前标签页使用的是 **Windows PowerShell** 或 **PowerShell 7**。不要把上面的命令直接粘贴到 CMD、Git Bash 或 WSL；`irm` 和 `iex` 是 PowerShell 命令别名。
+
+如果当前打开的是 CMD，也可以直接运行下面的命令启动 PowerShell 安装：
+
+```cmd
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1' | Invoke-Expression"
+```
+
 如需固定版本，可设置 `SELECTION_TRANSLATOR_VERSION`（支持带或不带 `v` 前缀）。为兼容既有一键安装命令，也接受 `GROKBUILD_VERSION`。如项目迁移到其他 GitHub 仓库，可设置 `SELECTION_TRANSLATOR_REPOSITORY=owner/repository`：
 
 ```bash

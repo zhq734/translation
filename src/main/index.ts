@@ -67,6 +67,7 @@ import {
 import { SelectionListenerController } from './selectionListenerController'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
+import { resolveHotkeyCaptureDelay } from '../shared/hotkeyCaptureTiming'
 import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
@@ -662,6 +663,11 @@ function onHotkey(): void {
   latestSelectionGesture += 1
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
+  const captureDelay = resolveHotkeyCaptureDelay(process.platform)
+  if (captureDelay > 0) {
+    setTimeout(queueSelectionTranslation, captureDelay)
+    return
+  }
   queueSelectionTranslation()
 }
 

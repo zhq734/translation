@@ -161,7 +161,7 @@
             <p class="field-hint">开启后切换为按钮触发；关闭后切换为仅快捷键。与上方“触发方式”以及托盘菜单开关保持同步。</p>
             <div class="row">
               <label for="hotkey">全局快捷键</label>
-              <input id="hotkey" type="text" placeholder="如 Alt+T / Cmd+Shift+Y" />
+              <input id="hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
             </div>
             <div class="row">
               <label for="autohide">结果自动隐藏</label>
@@ -345,7 +345,7 @@
             </div>
             <div class="row">
               <label for="ocr-hotkey">截图快捷键</label>
-              <input id="ocr-hotkey" type="text" placeholder="如 Alt+O / Cmd+Shift+O" />
+              <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
             </div>
             <div class="row">
               <label for="ocr-lang">识别语言</label>

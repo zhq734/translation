@@ -186,6 +186,15 @@ input[type='number'] {
   padding: 7px 10px;
 }
 
+[data-hotkey-recorder] {
+  cursor: pointer;
+  caret-color: transparent;
+}
+
+[data-hotkey-recorder]:focus {
+  cursor: crosshair;
+}
+
 textarea {
   resize: vertical;
   padding: 10px;

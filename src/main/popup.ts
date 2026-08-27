@@ -29,6 +29,7 @@ export function createPopup(preloadPath: string): BrowserWindow {
     show: false,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     resizable: true,
     movable: true,
     minimizable: false,

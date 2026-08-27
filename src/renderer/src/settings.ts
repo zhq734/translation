@@ -1,5 +1,6 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
+import { formatKeyboardAccelerator } from '../../shared/keyboardAccelerator'
 import { formatUpdateProgressText } from '../../shared/updateProgressFormat'
 import type {
   AiCheckStatus,
@@ -655,6 +656,21 @@ function saveHotkey(): void {
 }
 
 /**
+ * 记录翻译快捷键的键盘按下事件并立即保存。
+ * @param event 用户按下快捷键产生的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleTranslationHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  hotkey.value = accelerator
+  saveHotkey()
+}
+
+/**
  * 保存弹窗自动隐藏时长。
  * @returns 无返回值。
  * @author zhenghq
@@ -727,6 +743,21 @@ function saveOcrSettings(): void {
     ocrScale: Number(ocrScale.value),
     ocrTesseractEnabled: ocrTesseractEnabled.checked
   })
+}
+
+/**
+ * 记录 OCR 快捷键的键盘按下事件并立即保存。
+ * @param event 用户按下快捷键产生的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  ocrHotkey.value = accelerator
+  saveOcrSettings()
 }
 
 /**
@@ -1352,6 +1383,7 @@ sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
 autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
 hotkey.addEventListener('change', saveHotkey)
+hotkey.addEventListener('keydown', handleTranslationHotkeyKeydown)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 autoLaunch.addEventListener('change', saveAutoLaunch)
@@ -1363,6 +1395,7 @@ webTranslationMaxChars.addEventListener('change', saveWebTranslationSettings)
 webTranslationDefaultMode.addEventListener('change', saveWebTranslationSettings)
 ocrEnginePreference.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('change', saveOcrSettings)
+ocrHotkey.addEventListener('keydown', handleOcrHotkeyKeydown)
 ocrLang.addEventListener('change', saveOcrSettings)
 ocrScale.addEventListener('change', saveOcrSettings)
 ocrTesseractEnabled.addEventListener('change', saveOcrSettings)

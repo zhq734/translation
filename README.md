@@ -157,6 +157,14 @@ curl -fsSL \
 irm https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1 | iex
 ```
 
+> Windows Terminal is only a terminal host. Make sure the current tab uses **Windows PowerShell** or **PowerShell 7**. Do not paste the command above directly into Command Prompt, Git Bash, or WSL; `irm` and `iex` are PowerShell aliases.
+
+If the current shell is Command Prompt, run the following command to start the installer through PowerShell:
+
+```cmd
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1' | Invoke-Expression"
+```
+
 Pin a version with `SELECTION_TRANSLATOR_VERSION` (with or without the `v` prefix). For compatibility with existing one-click commands, `GROKBUILD_VERSION` is also accepted. If the project moves to another GitHub repository, set `SELECTION_TRANSLATOR_REPOSITORY=owner/repository`:
 
 ```bash
