@@ -335,6 +335,18 @@ test('Windows 一键安装脚本应兼容当前 Release 使用的大写 V 标签
   )
 })
 
+/**
+ * 校验用户传入小写 v 版本时会转换成实际 Release 使用的大写 V 标签。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 一键安装脚本应把用户输入的小写 v 版本规范化为 Release 的大写 V 标签', () => {
+  const script = readRepositoryFile('scripts/install.ps1')
+
+  assert.match(script, /\$Version = "V\$\(\$Version\.Substring\(1\)\)"/u)
+  assert.match(script, /Release 标签统一使用大写 V/u)
+})
+
 test('桌面发行配置应为一键安装脚本生成稳定的跨平台文件名', () => {
   assert.equal(
     packageJson.scripts?.['dist:mac'],

@@ -284,6 +284,31 @@ test('按钮入口应有界等待预取并记录预取诊断日志', () => {
 })
 
 /**
+ * 校验 Windows 按钮入口立即非激活显示读取状态，同时保留源应用焦点供复制取词。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('点击“译”后应先显示读取中的翻译弹窗，再等待 Windows 剪贴板取词完成', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const popupSource = readFileSync('src/main/popup.ts', 'utf8')
+  const translateStart = source.indexOf('async function translateSelectionButton')
+  const translateEnd = source.indexOf('/**\n * 处理取词结果', translateStart)
+  const translateSource = source.slice(translateStart, translateEnd)
+
+  assert.ok(translateStart >= 0)
+  assert.ok(translateEnd > translateStart)
+  assert.match(
+    translateSource,
+    /hideSelectionButton\(\)[\s\S]*?showPopup\([\s\S]*?loading:\s*true[\s\S]*?consumePreparedBounded\(\)/u
+  )
+  assert.match(
+    translateSource,
+    /showPopup\([\s\S]*?loadingMessage:\s*'正在读取选中文字…'[\s\S]*?anchor,\s*false\s*\)/u
+  )
+  assert.match(popupSource, /activate\s*\?\s*win\.show\(\)\s*:\s*win\.showInactive\(\)/u)
+})
+
+/**
  * 校验复制兜底在剪贴板稳定期后重新读取状态，并让晚到内容参与最终判定。
  * @returns 无返回值。
  * @author zhenghq

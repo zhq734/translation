@@ -182,6 +182,8 @@ export interface TranslatePayload {
   /** 当前请求序号，用于 Renderer 丢弃过期结果。 */
   requestId?: number
   loading?: boolean
+  /** loading 状态下展示给用户的阶段提示。 */
+  loadingMessage?: string
   original?: string
   translation?: string
   detectedLang?: string

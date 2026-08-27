@@ -25,7 +25,6 @@ body {
   border: 1px solid var(--selection-button-border);
   border-radius: 9px;
   background: var(--selection-button-bg);
-  box-shadow: 0 4px 14px var(--selection-button-shadow);
   color: var(--button-bg);
   cursor: pointer;
   font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
@@ -33,11 +32,10 @@ body {
   font-weight: 700;
   line-height: 30px;
   padding: 0;
-  transition: transform 120ms ease, box-shadow 120ms ease;
+  transition: transform 120ms ease;
 }
 
 #translate:hover {
-  box-shadow: 0 6px 18px var(--selection-button-shadow);
   transform: scale(1.06);
 }
 

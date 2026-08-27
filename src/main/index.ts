@@ -889,6 +889,23 @@ async function translateSelectionButton(): Promise<void> {
   latestSelectionGesture += 1
   renewInternalActivationLease()
   hideSelectionButton()
+  const settings = getSettings()
+  const popupCloseVersion = getPopupCloseVersion()
+  // 先显示读取阶段，避免 Windows 剪贴板或 UIA 取词耗时阻塞弹窗首次出现。
+  showPopup(
+    {
+      ok: true,
+      origin: 'selection',
+      loading: true,
+      loadingMessage: '正在读取选中文字…',
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    },
+    0,
+    anchor,
+    false
+  )
   try {
     // 先在很短的有界窗口内消费只读预取：已完成的缓存立即命中，尚未完成的预取最多再等
     // PREPARED_PREFETCH_WAIT_MS，避免快速点击时丢弃即将产出的原生取词结果。
@@ -897,11 +914,14 @@ async function translateSelectionButton(): Promise<void> {
     console.log(
       `[capture] button-prefetch status=${consumption.status} waitedMs=${consumption.waitedMs}`
     )
-    if (!selectionInteraction.isCurrent(interactionToken)) return
+    if (!selectionInteraction.isCurrent(interactionToken) ||
+        popupCloseVersion !== getPopupCloseVersion()) return
     const result = consumption.result ?? await selectionCapture.captureFromButton(anchor)
-    if (!selectionInteraction.isCurrent(interactionToken)) return
+    if (!selectionInteraction.isCurrent(interactionToken) ||
+        popupCloseVersion !== getPopupCloseVersion()) return
     selectionCapture.invalidate()
     if (result) handleSelectionCaptureResult(result, interactionToken)
+    else hidePopup()
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
         selectionInteraction.snapshot().state === 'capturing') {

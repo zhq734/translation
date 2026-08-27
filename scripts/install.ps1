@@ -50,7 +50,7 @@ function Resolve-Architecture {
 .SYNOPSIS
 解析要安装的 Release 标签，未指定时跟随 GitHub 最新正式版本。
 .OUTPUTS
-返回以 v 开头的 Release 标签。
+返回以大写 V 开头的 Release 标签。
 .NOTES
 @author zhenghq
 #>
@@ -66,6 +66,9 @@ function Resolve-Version {
     }
     if ($Version -notmatch '^[vV]') {
         $Version = "V$Version"
+    } else {
+        # Release 标签统一使用大写 V，兼容用户传入的小写 v。
+        $Version = "V$($Version.Substring(1))"
     }
     if ($Version -notmatch '^[vV][0-9A-Za-z][0-9A-Za-z._-]*$') {
         throw "版本格式不合法：$Version"

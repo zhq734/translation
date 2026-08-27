@@ -1083,6 +1083,22 @@ test('OCR 取消应始终通知主进程，即使 Renderer 已退出框选模式
   assert.match(cancelSource, /window\.api\.cancelOcrSelection\(\)/u)
 })
 
+/**
+ * 校验“译”浮动图标不使用原生或 CSS 半透明阴影，避免 Windows 透明窗口底部出现阴影残留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows “译”浮动图标应去除底部半透明阴影', () => {
+  const buttonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
+  const styles = readFileSync('src/renderer/src/selection.css', 'utf8')
+  const buttonRule = styles.match(/#translate\s*\{([^}]*)\}/u)?.[1] ?? ''
+  const hoverRule = styles.match(/#translate:hover\s*\{([^}]*)\}/u)?.[1] ?? ''
+
+  assert.match(buttonSource, /hasShadow:\s*false/u)
+  assert.doesNotMatch(buttonRule, /box-shadow/u)
+  assert.doesNotMatch(hoverRule, /box-shadow/u)
+})
+
 test('全局钩子启动失败时应清理监听器状态并允许后续重试', () => {
   const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
   const lifecycleSource = readFileSync('src/main/autoTriggerLifecycle.ts', 'utf8')
