@@ -4,7 +4,9 @@ import { promisify } from 'node:util'
 import {
   hasClipboardCaptureCompleted,
   shouldRestoreClipboardAfterAbort,
-  shouldRestoreClipboard
+  shouldRestoreClipboard,
+  resolveCapturedClipboardState,
+  type ResolvedClipboardCapture
 } from '../shared/copyShortcutBehavior'
 import {
   parseNativeSelectionReadOutput,
@@ -308,6 +310,8 @@ async function captureByCopy(
 
   let text = ''
   let hasImage = false
+  // 最终捕获来源：轮询命中、剪贴板稳定期内晚到命中或真实超时，用于诊断日志与失败原因。
+  let captureStatus: ResolvedClipboardCapture['status'] = 'timeout'
   try {
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
@@ -350,6 +354,16 @@ async function captureByCopy(
         const externalCopyObserved = copyShortcutGuard.hasExternalCopySince(externalCopyVersion)
         const currentText = clipboard.readText()
         const currentHasImage = !clipboard.readImage().isEmpty()
+        // 轮询超时不代表取词失败：稳定期内前台应用可能刚写入选中文字或图片，
+        // 必须用稳定期后的状态参与最终判定，避免把已成功的捕获误报为超时。
+        const resolved = resolveCapturedClipboardState(
+          { text, hasImage },
+          { text: currentText, hasImage: currentHasImage },
+          sentinel
+        )
+        text = resolved.text
+        hasImage = resolved.hasImage
+        captureStatus = resolved.status
         if (shouldRestoreClipboard(
           externalCopyObserved,
           currentText,
@@ -370,15 +384,19 @@ async function captureByCopy(
     return { text: '' }
   }
   if (hasImage) {
-    console.log(`[capture] copy-finish status=image elapsedMs=${Date.now() - captureStartedAt}`)
+    console.log(
+      `[capture] copy-finish status=${captureStatus === 'late' ? 'image-late' : 'image'} ` +
+      `elapsedMs=${Date.now() - captureStartedAt}`
+    )
     return { text: '', hasImage: true }
   }
-  if (!text || text === sentinel) {
+  if (!text) {
     console.log(`[capture] copy-finish status=timeout elapsedMs=${Date.now() - captureStartedAt}`)
     return { text: '', reason: 'timeout' }
   }
   console.log(
-    `[capture] copy-finish status=text textLength=${text.length} ` +
+    `[capture] copy-finish status=${captureStatus === 'late' ? 'text-late' : 'text'} ` +
+    `textLength=${text.length} ` +
     `elapsedMs=${Date.now() - captureStartedAt}`
   )
   return { text }

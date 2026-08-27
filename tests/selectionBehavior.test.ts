@@ -630,13 +630,13 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
   )
   // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
   assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
-  assert.match(translateSource, /selectionCapture\.consumePrepared\(\)/u)
+  assert.match(translateSource, /selectionCapture\.consumePreparedBounded\(\)/u)
   assert.doesNotMatch(translateSource, /consumePreparedOrWait/u)
   assert.match(translateSource, /const anchor = lastSelectionAnchor/u)
   assert.match(translateSource, /selectionInteraction\.beginButtonCapture\(\)/u)
   assert.match(
     translateSource,
-    /prepared\?\s*\.\s*text[\s\S]*?selectionCapture\.captureFromButton\(anchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
+    /consumption\.result\s*\?\?\s*await selectionCapture\.captureFromButton\(anchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
   assert.match(translateSource, /selectionInteraction\.isCurrent\(interactionToken\)/u)
   assert.match(

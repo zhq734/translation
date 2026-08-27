@@ -890,13 +890,15 @@ async function translateSelectionButton(): Promise<void> {
   renewInternalActivationLease()
   hideSelectionButton()
   try {
-    // 只消费已经完成且有文本的预取，不等待可能卡住的 AX/UIA 直读；
-    // 预取未完成或为空时立即取消它，再走按钮专用取词，尽快发送复制快捷键。
-    const prepared = selectionCapture.consumePrepared()
+    // 先在很短的有界窗口内消费只读预取：已完成的缓存立即命中，尚未完成的预取最多再等
+    // PREPARED_PREFETCH_WAIT_MS，避免快速点击时丢弃即将产出的原生取词结果。
+    // 窗口到期仍无文本时才取消预取并走按钮专用取词，绝不无界等待 AX/UIA 直读。
+    const consumption = await selectionCapture.consumePreparedBounded()
+    console.log(
+      `[capture] button-prefetch status=${consumption.status} waitedMs=${consumption.waitedMs}`
+    )
     if (!selectionInteraction.isCurrent(interactionToken)) return
-    const result = prepared?.text
-      ? prepared
-      : await selectionCapture.captureFromButton(anchor)
+    const result = consumption.result ?? await selectionCapture.captureFromButton(anchor)
     if (!selectionInteraction.isCurrent(interactionToken)) return
     selectionCapture.invalidate()
     if (result) handleSelectionCaptureResult(result, interactionToken)

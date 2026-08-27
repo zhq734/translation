@@ -44,6 +44,59 @@ export function hasClipboardCaptureCompleted(
   return hasImage || Boolean(currentText && currentText !== sentinel)
 }
 
+/** 一次剪贴板读取到的原始状态。 */
+export interface ClipboardCaptureState {
+  /** 当次读取到的剪贴板文本。 */
+  text: string
+  /** 当次读取时剪贴板是否包含图片。 */
+  hasImage: boolean
+}
+
+/** 复制兜底最终采用的捕获状态及其来源。 */
+export interface ResolvedClipboardCapture extends ClipboardCaptureState {
+  /** polled 表示轮询阶段命中，late 表示稳定期内晚到命中，timeout 表示两阶段均无有效内容。 */
+  status: 'polled' | 'late' | 'timeout'
+}
+
+/**
+ * 判定复制兜底的最终捕获结果：轮询命中优先，其次采纳剪贴板稳定期内晚到的内容。
+ * 轮询已命中时不得被稳定期内容覆盖，避免把用户随后主动复制的内容当成本次选区。
+ * @param polled 轮询循环结束时读取到的剪贴板状态。
+ * @param settled 剪贴板稳定期结束后重新读取到的剪贴板状态。
+ * @param sentinel 内部取词写入的哨兵文本。
+ * @returns 最终采用的文本、图片标志与命中来源；哨兵文本一律不作为结果返回。
+ * @author zhenghq
+ */
+export function resolveCapturedClipboardState(
+  polled: ClipboardCaptureState,
+  settled: ClipboardCaptureState,
+  sentinel: string
+): ResolvedClipboardCapture {
+  /**
+   * 剔除哨兵文本，避免内部写入的占位值被当作选中文字。
+   * @param state 待归一化的剪贴板状态。
+   * @param status 本次状态对应的命中来源。
+   * @returns 归一化后的捕获结果。
+   * @author zhenghq
+   */
+  const normalize = (
+    state: ClipboardCaptureState,
+    status: ResolvedClipboardCapture['status']
+  ): ResolvedClipboardCapture => ({
+    text: state.text && state.text !== sentinel ? state.text : '',
+    hasImage: state.hasImage,
+    status
+  })
+
+  if (hasClipboardCaptureCompleted(polled.text, polled.hasImage, sentinel)) {
+    return normalize(polled, 'polled')
+  }
+  if (hasClipboardCaptureCompleted(settled.text, settled.hasImage, sentinel)) {
+    return normalize(settled, 'late')
+  }
+  return { text: '', hasImage: false, status: 'timeout' }
+}
+
 /**
  * 判断快捷键是否为系统标准复制组合，避免翻译快捷键抢占复制功能。
  * @param accelerator Electron 快捷键描述。
