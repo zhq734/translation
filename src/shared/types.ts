@@ -114,6 +114,15 @@ export type UpdatePhase =
 /** 新版本采用的安装方式。 */
 export type UpdateInstallMode = 'automatic' | 'manual' | 'disabled'
 
+/** 本次更新可用的原因。 */
+export type UpdateReason = 'higher-version' | 'same-version-new-build'
+
+/** 本次更新可执行的交付动作。 */
+export type UpdateAction =
+  | 'automatic-download'
+  | 'verified-manual-download'
+  | 'open-release'
+
 export interface UpdateProgress {
   /** 下载完成百分比。 */
   percent: number
@@ -146,6 +155,16 @@ export interface UpdateStatus {
   manualDownloadAvailable?: boolean
   /** 最新安装包在 SHA256SUMS 中的校验状态。 */
   checksumStatus?: 'verified' | 'missing' | 'mismatch' | 'unreachable'
+  /** 本次更新可用的原因；没有可用更新时不存在。 */
+  updateReason?: UpdateReason
+  /** 本次更新可执行的交付动作；没有可用更新时不存在。 */
+  updateAction?: UpdateAction
+  /** 当前安装构建标识的脱敏展示值。 */
+  localBuildLabel?: string
+  /** 远程构建标识的脱敏展示值。 */
+  remoteBuildLabel?: string
+  /** 本地与远程构建元数据是否均可用于比较。 */
+  buildMetadataAvailable?: boolean
 }
 
 /** macOS 应用隔离属性处理结果。 */

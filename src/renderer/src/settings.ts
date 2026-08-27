@@ -81,6 +81,8 @@ const openDoc = document.getElementById('open-doc') as HTMLButtonElement
 const stopServiceButton = document.getElementById('stop-service') as HTMLButtonElement
 const currentVersion = document.getElementById('current-version') as HTMLElement
 const latestVersion = document.getElementById('latest-version') as HTMLElement
+const buildIdentityRow = document.getElementById('build-identity-row') as HTMLElement
+const buildIdentity = document.getElementById('build-identity') as HTMLElement
 const updateProgress = document.getElementById('update-progress') as HTMLElement
 const updateProgressBar = document.getElementById('update-progress-bar') as HTMLProgressElement
 const updateProgressText = document.getElementById('update-progress-text') as HTMLElement
@@ -476,9 +478,22 @@ function renderUpdateStatus(status: UpdateStatus): void {
       ? 'status update-status online'
       : 'status update-status'
 
+  const sameVersionNewBuild = status.updateReason === 'same-version-new-build'
+  const openReleaseOnly = status.updateAction === 'open-release'
+  const buildLabels = [
+    status.localBuildLabel ? `当前 ${status.localBuildLabel}` : '',
+    status.remoteBuildLabel && status.remoteBuildLabel !== status.localBuildLabel
+      ? `最新 ${status.remoteBuildLabel}`
+      : ''
+  ].filter(Boolean)
+  buildIdentityRow.hidden = buildLabels.length === 0
+  buildIdentity.textContent = buildLabels.join(' → ') || '尚未检查'
+
   const busy = status.phase === 'checking' || status.phase === 'downloading'
-  const hasManualDownload = status.installMode === 'manual' &&
-    status.manualDownloadAvailable === true
+  const hasManualDownload = status.manualDownloadAvailable === true && (
+    status.installMode === 'manual' ||
+    status.updateAction === 'verified-manual-download'
+  )
   const manualDownloadReady = hasManualDownload &&
     status.phase === 'manual-downloaded'
   const manualDownloadActionAvailable = hasManualDownload && (
@@ -493,8 +508,10 @@ function renderUpdateStatus(status: UpdateStatus): void {
     status.phase !== 'downloaded' &&
     !manualDownloadActionAvailable
   removeQuarantineButton.hidden = !manualDownloadReady
-  if (status.phase === 'downloaded') {
+  if (status.phase === 'downloaded' && !sameVersionNewBuild) {
     updateActionButton.textContent = '立即重启升级'
+  } else if (openReleaseOnly) {
+    updateActionButton.textContent = '打开 GitHub Release 手动更新'
   } else if (hasManualDownload) {
     updateActionButton.textContent = manualDownloadReady ? '重新下载 DMG' : '下载并打开 DMG'
   } else {
@@ -515,6 +532,12 @@ function renderUpdateStatus(status: UpdateStatus): void {
 
   if (status.phase === 'disabled') {
     updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
+  } else if (sameVersionNewBuild && openReleaseOnly) {
+    updateInstallHint.textContent = '发现同版本的新构建；当前平台不支持应用内自动安装，请打开 GitHub Release 手动下载覆盖安装。'
+  } else if (sameVersionNewBuild) {
+    updateInstallHint.textContent = '发现同版本的新构建；点击后会下载并校验对应架构的 DMG，仍由你确认拖入“应用程序”覆盖旧版本。'
+  } else if (openReleaseOnly) {
+    updateInstallHint.textContent = '当前更新需要在 GitHub Release 手动下载安装包并覆盖安装。'
   } else if (hasManualDownload) {
     updateInstallHint.textContent = manualDownloadReady
       ? '更新包已下载到“下载”文件夹并打开 DMG；请手动拖入“应用程序”覆盖旧版本，再点击“解除 macOS 隔离属性”。'
@@ -545,6 +568,7 @@ async function checkApplicationUpdate(): Promise<void> {
  */
 async function runUpdateAction(): Promise<void> {
   if (latestUpdateStatus?.phase === 'downloaded' &&
+      latestUpdateStatus.updateReason !== 'same-version-new-build' &&
       latestUpdateStatus.installMode === 'automatic') {
     window.api.installUpdate()
     return

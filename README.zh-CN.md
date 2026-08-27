@@ -210,6 +210,18 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - 手动 macOS 更新在打开 DMG 前会校验 sha512：校验失败会删除文件并提示，更新清单没有对应校验值时会明确说明该安装包未经完整性校验；
 - 无法从更新清单解析出对应 DMG 时会打开 GitHub Release 作为兜底。源码开发模式不会访问更新服务，检查或下载发生异常时设置页也会保留“打开发布页”入口。
 
+#### 同版本重新构建检测
+
+流水线每次正式打包都会生成 `build-info.json` 构建元数据，字段固定为 `schemaVersion`、`version`、`buildId`、`sourceCommit`、`workflowRunId` 和 `workflowRunAttempt`。`buildId` 由 GitHub Actions 的运行 ID 与运行尝试组成（形如 `github-run-<run_id>-attempt-<attempt>`），因此同一提交被重新运行或重试时也会得到不同的构建标识。同一份元数据会同时写入三平台安装包的资源目录和 GitHub Release 资产。
+
+- 检查更新时除比较 SemVer 之外，还会下载 Release 中的 `build-info.json`，用 GitHub API 返回的资产 SHA-256 摘要校验内容，并与 Release 版本交叉校验；
+- 版本号相同但构建标识不同时，设置页显示“发现同版本的新构建”，并展示当前与最新构建的脱敏短标识；
+- 同版本新构建不会进入 `electron-updater` 的自动下载或安装流程：macOS 在能解析到当前架构 DMG 时沿用受 sha512/`SHA256SUMS` 校验的手动下载，Windows、Linux 及其他情况只提供“打开 GitHub Release 手动更新”入口；
+- 本地或远程构建元数据缺失、损坏、摘要不一致或 schemaVersion 不支持时，一律回退到既有 SemVer 行为，不会误报更新，也不会把正常检查转成错误状态；
+- 迁移限制：只有安装了包含本能力的版本后，后续同版本重新发布才能被识别。首个兼容版本必须以递增 SemVer 发布，旧版本用户需要通过版本升级或手动安装完成一次过渡。
+
+发布运维要点：正式流水线在打包前执行 `node scripts/generate-build-info.mjs`（依赖 `GITHUB_REF_NAME`、`GITHUB_SHA`、`GITHUB_RUN_ID`、`GITHUB_RUN_ATTEMPT`，缺失即失败）；Release 阶段重新生成同一份元数据、用 `--check` 确认属于本次工作流运行，并与安装包、`SHA256SUMS` 一起使用 `--clobber` 覆盖上传。本地 `npm run build` 使用 `--allow-local-fallback` 生成 `local-development` 占位标识，不依赖任何 GitHub 环境变量，也不可用于正式发布。
+
 > 已经发布的 `V1.0.3` 不包含自动更新代码和 `latest*.yml` / `.blockmap` 元数据，因此该版本用户需要先手动安装一次包含本功能的新版本。之后发布新版本时，必须把安装包、更新元数据、差分文件和 `SHA256SUMS` 上传到同一个 Release。建议后续标签统一使用小写形式，例如 `v1.0.4`。
 
 ### 方式三：从源码运行

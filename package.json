@@ -7,8 +7,8 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "node scripts/build-macos-vision-ocr.mjs && electron-vite dev",
-    "build": "node scripts/build-macos-vision-ocr.mjs && electron-vite build",
+    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
+    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
@@ -87,6 +87,10 @@
         {
           "from": "build/macos-vision-ocr",
           "to": "macos-vision-ocr"
+        },
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
         }
       ]
     },
@@ -107,6 +111,10 @@
         {
           "from": "build/icon.ico",
           "to": "app-icon.ico"
+        },
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
         }
       ],
       "icon": "build/icon.ico"
@@ -135,6 +143,12 @@
         }
       ],
       "category": "Utility",
+      "extraResources": [
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
+        }
+      ],
       "artifactName": "SelectionTranslator-${version}-linux-${arch}.${ext}",
       "icon": "build/icon.png"
     },

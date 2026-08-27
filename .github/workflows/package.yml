@@ -119,6 +119,15 @@ jobs:
           VERSION="${VERSION#V}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
+      - name: 生成构建元数据
+        shell: bash
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/generate-build-info.mjs --output build/build-info.json
+
       - name: 检查并准备 macOS 签名与公证凭据
         if: matrix.platform == 'macos'
         id: macos_signing
@@ -253,6 +262,25 @@ jobs:
 
       - name: 合并 macOS 双架构更新清单
         run: node scripts/merge-mac-update-info.mjs --directory release-assets
+
+      - name: 生成并校验 Release 构建元数据
+        shell: bash
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/generate-build-info.mjs --output release-assets/build-info.json
+          node scripts/generate-build-info.mjs --output release-assets/build-info.json --check
+          VERSION="$(node -e "process.stdout.write(require('./release-assets/build-info.json').version)")"
+          shopt -s nullglob
+          installers=(release-assets/SelectionTranslator-"$VERSION"-*)
+          if (( ${#installers[@]} == 0 )); then
+            echo "构建元数据版本 $VERSION 与本次安装包不一致，拒绝发布过期元数据" >&2
+            exit 1
+          fi
 
       - name: 创建或更新 GitHub Release
         shell: bash

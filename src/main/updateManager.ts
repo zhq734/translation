@@ -1,8 +1,11 @@
+import { formatBuildIdLabel, type BuildMetadata } from '../shared/buildMetadata'
 import type {
+  UpdateAction,
   UpdateInstallMode,
   UpdateProgress,
   UpdateStatus
 } from '../shared/types'
+import { decideUpdateAvailability } from '../shared/updateAvailability'
 import type { ManualMacUpdateService } from './manualMacUpdate'
 import type { ReleaseChecksumStatus } from './releaseChecksums'
 
@@ -20,6 +23,12 @@ export interface UpdateDriverInfo {
   manualDownloadSize?: number
   /** 最新安装包在 SHA256SUMS 中的校验状态。 */
   checksumStatus?: ReleaseChecksumStatus
+  /** 当前安装包内嵌的本地构建元数据。 */
+  localBuild?: BuildMetadata
+  /** 已通过摘要与格式校验的远程构建元数据。 */
+  remoteBuild?: BuildMetadata
+  /** 辅助构建元数据不可用的诊断原因。 */
+  buildMetadataUnavailableReason?: string
 }
 
 /** electron-updater 返回的最小下载进度信息。 */
@@ -210,6 +219,19 @@ function formatUpdateErrorMessage(error: unknown): string {
 }
 
 /**
+ * 将 SHA256SUMS 校验状态转换为附加在状态消息后的风险提示。
+ * @param checksumStatus 安装包 SHA256SUMS 校验状态。
+ * @returns 需要提示时返回以分号开头的说明，否则返回空字符串。
+ * @author zhenghq
+ */
+function formatChecksumNotice(checksumStatus: ReleaseChecksumStatus | undefined): string {
+  if (checksumStatus === 'missing') return '；Release 缺少当前安装包的 SHA256SUMS 校验值，建议升级'
+  if (checksumStatus === 'mismatch') return '；Release 的 SHA256SUMS 与安装包不一致，建议重新升级'
+  if (checksumStatus === 'unreachable') return '；无法读取 Release 的 SHA256SUMS 校验值，请确认安装包来源'
+  return ''
+}
+
+/**
  * 管理自动更新状态、用户操作和平台降级策略。
  * @author zhenghq
  */
@@ -283,6 +305,12 @@ export class UpdateManager {
    * @author zhenghq
    */
   async downloadUpdate(): Promise<UpdateStatus> {
+    if (this.status.updateAction === 'open-release') {
+      return this.openReleaseForManualUpdate()
+    }
+    if (this.status.updateAction === 'verified-manual-download') {
+      return this.downloadManualMacUpdate()
+    }
     if (this.status.installMode === 'manual') {
       return this.downloadManualMacUpdate()
     }
@@ -309,6 +337,7 @@ export class UpdateManager {
    * @author zhenghq
    */
   installUpdate(): void {
+    if (this.status.updateReason === 'same-version-new-build') return
     if (this.status.installMode !== 'automatic' || this.status.phase !== 'downloaded') return
     this.options.driver.installUpdate()
   }
@@ -329,21 +358,11 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleAvailable(info: UpdateDriverInfo): void {
-    this.manualDownloadUrl = info.manualDownloadUrl
-    this.manualDownloadIntegrity = info.manualDownloadSha512 || info.manualDownloadSize
-      ? {
-        ...(info.manualDownloadSha512 ? { sha512: info.manualDownloadSha512 } : {}),
-        ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
-      }
-      : undefined
-    const checksumNotice = info.checksumStatus === 'missing'
-      ? '；Release 缺少当前安装包的 SHA256SUMS 校验值，建议升级'
-      : info.checksumStatus === 'mismatch'
-        ? '；Release 的 SHA256SUMS 与安装包不一致，建议重新升级'
-        : ''
+    this.applyManualDownloadTarget(info)
+    const decision = this.decide(info)
     const message = (this.status.installMode === 'automatic'
       ? `发现新版本 ${info.version}，可以下载并安装`
-      : `发现新版本 ${info.version}，当前环境需要手动安装`) + checksumNotice
+      : `发现新版本 ${info.version}，当前环境需要手动安装`) + formatChecksumNotice(info.checksumStatus)
     this.setStatus({
       phase: 'available',
       latestVersion: info.version,
@@ -352,8 +371,75 @@ export class UpdateManager {
       manualDownloadAvailable: this.options.manualUpdate && info.manualDownloadUrl
         ? true
         : undefined,
-      checksumStatus: info.checksumStatus
+      checksumStatus: info.checksumStatus,
+      updateReason: 'higher-version',
+      updateAction: this.status.installMode === 'automatic'
+        ? 'automatic-download'
+        : this.resolveManualUpdateAction(info),
+      ...this.buildIdentityFields(info, decision)
     })
+  }
+
+  /**
+   * 记录本次更新可用的手动 DMG 下载目标和完整性信息。
+   * @param info 驱动上报的更新信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private applyManualDownloadTarget(info: UpdateDriverInfo): void {
+    this.manualDownloadUrl = info.manualDownloadUrl
+    this.manualDownloadIntegrity = info.manualDownloadSha512 || info.manualDownloadSize
+      ? {
+        ...(info.manualDownloadSha512 ? { sha512: info.manualDownloadSha512 } : {}),
+        ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
+      }
+      : undefined
+  }
+
+  /**
+   * 判断当前平台对本次更新可执行的手动交付动作。
+   * @param info 驱动上报的更新信息。
+   * @returns 具备受校验 DMG 目标时返回手动下载动作，否则返回打开 Release 动作。
+   * @author zhenghq
+   */
+  private resolveManualUpdateAction(info: UpdateDriverInfo): UpdateAction {
+    return this.options.manualUpdate && info.manualDownloadUrl
+      ? 'verified-manual-download'
+      : 'open-release'
+  }
+
+  /**
+   * 使用纯函数决策器比较版本号与构建身份。
+   * @param info 驱动上报的更新信息。
+   * @returns 更新判断结果。
+   * @author zhenghq
+   */
+  private decide(info: UpdateDriverInfo): ReturnType<typeof decideUpdateAvailability> {
+    return decideUpdateAvailability({
+      currentVersion: this.status.currentVersion,
+      remoteVersion: info.version,
+      ...(info.localBuild ? { localBuild: info.localBuild } : {}),
+      ...(info.remoteBuild ? { remoteBuild: info.remoteBuild } : {})
+    })
+  }
+
+  /**
+   * 生成构建标识的脱敏展示字段。
+   * @param info 驱动上报的更新信息。
+   * @param decision 更新判断结果。
+   * @returns 可直接合并进状态的构建标识字段。
+   * @author zhenghq
+   */
+  private buildIdentityFields(
+    info: UpdateDriverInfo,
+    decision: ReturnType<typeof decideUpdateAvailability>
+  ): Partial<UpdateStatus> {
+    const comparable = Boolean(decision.localBuildId && decision.remoteBuildId)
+    return {
+      localBuildLabel: formatBuildIdLabel(decision.localBuildId ?? info.localBuild?.buildId) || undefined,
+      remoteBuildLabel: formatBuildIdLabel(decision.remoteBuildId ?? info.remoteBuild?.buildId) || undefined,
+      buildMetadataAvailable: comparable
+    }
   }
 
   /**
@@ -363,28 +449,61 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleNotAvailable(info: UpdateDriverInfo): void {
+    const decision = this.decide(info)
     const checksumNeedsUpdate = info.checksumStatus === 'missing' || info.checksumStatus === 'mismatch'
-    this.manualDownloadUrl = checksumNeedsUpdate ? info.manualDownloadUrl : undefined
-    this.manualDownloadIntegrity = checksumNeedsUpdate && (info.manualDownloadSha512 || info.manualDownloadSize)
-      ? {
-        ...(info.manualDownloadSha512 ? { sha512: info.manualDownloadSha512 } : {}),
-        ...(info.manualDownloadSize ? { size: info.manualDownloadSize } : {})
-      }
-      : undefined
+    const sameVersionNewBuild = decision.outcome === 'same-version-new-build'
+    const needsUpdate = sameVersionNewBuild || checksumNeedsUpdate
+    const identityFields = this.buildIdentityFields(info, decision)
+
+    if (needsUpdate) {
+      this.applyManualDownloadTarget(info)
+    } else {
+      this.manualDownloadUrl = undefined
+      this.manualDownloadIntegrity = undefined
+    }
+
     this.setStatus({
-      phase: checksumNeedsUpdate ? 'available' : 'not-available',
+      phase: needsUpdate ? 'available' : 'not-available',
       latestVersion: info.version || this.status.currentVersion,
-      message: checksumNeedsUpdate
-        ? info.checksumStatus === 'mismatch'
-          ? '当前版本的 SHA256SUMS 校验值不一致，建议升级'
-          : '当前版本没有 SHA256SUMS 校验值，建议升级'
-        : '当前已经是最新版本',
+      message: sameVersionNewBuild
+        ? this.formatSameVersionMessage(info, decision)
+        : checksumNeedsUpdate
+          ? info.checksumStatus === 'mismatch'
+            ? '当前版本的 SHA256SUMS 校验值不一致，建议升级'
+            : '当前版本没有 SHA256SUMS 校验值，建议升级'
+          : identityFields.buildMetadataAvailable
+            ? `当前已经是最新构建（构建 ${identityFields.localBuildLabel}）`
+            : '当前已经是最新版本',
       progress: undefined,
-      manualDownloadAvailable: checksumNeedsUpdate && this.options.manualUpdate && info.manualDownloadUrl
+      manualDownloadAvailable: needsUpdate && this.options.manualUpdate && info.manualDownloadUrl
         ? true
         : undefined,
-      checksumStatus: info.checksumStatus
+      checksumStatus: info.checksumStatus,
+      updateReason: sameVersionNewBuild ? 'same-version-new-build' : undefined,
+      updateAction: needsUpdate ? this.resolveManualUpdateAction(info) : undefined,
+      ...identityFields
     })
+  }
+
+  /**
+   * 组织同版本新构建的用户提示文案。
+   * @param info 驱动上报的更新信息。
+   * @param decision 更新判断结果。
+   * @returns 面向用户的同版本新构建说明。
+   * @author zhenghq
+   */
+  private formatSameVersionMessage(
+    info: UpdateDriverInfo,
+    decision: ReturnType<typeof decideUpdateAvailability>
+  ): string {
+    const version = info.version || this.status.currentVersion
+    const localLabel = formatBuildIdLabel(decision.localBuildId)
+    const remoteLabel = formatBuildIdLabel(decision.remoteBuildId)
+    const action = this.resolveManualUpdateAction(info) === 'verified-manual-download'
+      ? '可下载 DMG 覆盖安装'
+      : '请打开 GitHub Release 手动更新'
+    return `发现同版本的新构建 ${version}（当前构建 ${localLabel}，最新构建 ${remoteLabel}），${action}` +
+      formatChecksumNotice(info.checksumStatus)
   }
 
   /**
@@ -416,6 +535,22 @@ export class UpdateManager {
         ? { ...this.status.progress, percent: 100 }
         : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 }
     })
+  }
+
+  /**
+   * 为无法安全自动安装的平台打开 GitHub Release 手动更新入口。
+   * @returns 操作完成后的当前状态。
+   * @author zhenghq
+   */
+  private async openReleaseForManualUpdate(): Promise<UpdateStatus> {
+    if (this.status.phase === 'checking' || this.status.phase === 'downloading') {
+      return this.getStatus()
+    }
+    await this.openReleasePage()
+    this.setStatus({
+      message: '已打开 GitHub Release，请手动下载对应平台的安装包覆盖安装'
+    })
+    return this.getStatus()
   }
 
   /**
