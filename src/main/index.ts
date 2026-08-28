@@ -814,7 +814,9 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
     return
   }
 
-  if (gesture.clicks >= 2 && getSettings().triggerMode === 'button') {
+  const settings = getSettings()
+  if (gesture.clicks >= 2 && settings.triggerMode === 'button') {
+    if (!settings.doubleClickSelectionButtonEnabled) return
     void scheduleDoubleClickSelectionButton(gesture)
     return
   }

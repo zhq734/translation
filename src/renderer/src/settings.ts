@@ -22,6 +22,7 @@ const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
 const triggerMode = document.getElementById('trigger-mode') as HTMLSelectElement
 const triggerHint = document.getElementById('trigger-hint') as HTMLElement
 const autoShowSelectionButton = document.getElementById('auto-show-selection-button') as HTMLInputElement
+const doubleClickSelectionButtonEnabled = document.getElementById('double-click-selection-button-enabled') as HTMLInputElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
@@ -360,6 +361,7 @@ function renderSettings(settings: Settings): void {
   sourceLang.value = settings.sourceLang
   triggerMode.value = settings.triggerMode
   autoShowSelectionButton.checked = settings.triggerMode === 'button'
+  doubleClickSelectionButtonEnabled.checked = settings.doubleClickSelectionButtonEnabled
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
@@ -661,6 +663,17 @@ function saveAutoShowSelectionButton(): void {
   triggerMode.value = value
   updateTriggerHint(value)
   void save({ triggerMode: autoShowSelectionButton.checked ? 'button' : 'hotkey' })
+}
+
+/**
+ * 保存双击选词后是否显示“译”按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDoubleClickSelectionButtonEnabled(): void {
+  void save({
+    doubleClickSelectionButtonEnabled: doubleClickSelectionButtonEnabled.checked
+  })
 }
 
 /**
@@ -1406,6 +1419,7 @@ targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
 autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
+doubleClickSelectionButtonEnabled.addEventListener('change', saveDoubleClickSelectionButtonEnabled)
 hotkey.addEventListener('change', saveHotkey)
 hotkey.addEventListener('keydown', handleTranslationHotkeyKeydown)
 autohide.addEventListener('change', saveAutoHide)

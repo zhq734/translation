@@ -320,6 +320,8 @@ export interface Settings {
   deepLxUrl: string
   /** 划词后的触发方式。 */
   triggerMode: TriggerMode
+  /** 双击选词后是否显示“译”按钮。 */
+  doubleClickSelectionButtonEnabled: boolean
   /** 是否在 macOS Dock 栏显示应用图标。 */
   showDockIcon: boolean
   /** 是否随系统开机自动启动应用。 */
