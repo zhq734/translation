@@ -82,3 +82,16 @@ export function getSelectionCapturePlan(
     copyFallback: false
   }
 }
+
+/**
+ * 判断“译”按钮显示期间是否应后台预取选中文字。
+ * Windows 原生预取会冷启动 PowerShell/UI Automation，并可能阻塞随后更快的复制取词，因此跳过。
+ * @param platform Node.js 提供的操作系统平台标识。
+ * @returns 当前平台是否允许按钮阶段后台预取。
+ * @author zhenghq
+ */
+export function shouldPrefetchSelectionForButton(
+  platform: NodeJS.Platform
+): boolean {
+  return platform !== 'win32'
+}

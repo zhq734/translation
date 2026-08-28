@@ -175,6 +175,34 @@ test('没有预取缓存与进行中预取时应立即返回未命中', async ()
 })
 
 /**
+ * 校验快捷键直接取词会跳过完整原生直读管线，并复用及时发送复制键的专用取词函数。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('快捷键直接取词应跳过原生直读并调用复制取词函数', async () => {
+  let fullCaptureCount = 0
+  let directCaptureCount = 0
+  const coordinator = new SelectionCaptureCoordinator(
+    async () => {
+      fullCaptureCount += 1
+      return '原生直读结果'
+    },
+    undefined,
+    async () => {
+      directCaptureCount += 1
+      return '快捷键复制结果'
+    }
+  )
+  const anchor = { x: 360, y: 280 }
+
+  const captured = await coordinator.captureDirect(anchor)
+
+  assert.deepEqual(captured, { text: '快捷键复制结果', anchor })
+  assert.equal(fullCaptureCount, 0)
+  assert.equal(directCaptureCount, 1)
+})
+
+/**
  * 校验预取已完成但为空时不等待，直接判定未命中，由按钮专用取词兜底。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
@@ -299,12 +327,15 @@ test('点击“译”后应先显示读取中的翻译弹窗，再等待 Windows
   assert.ok(translateEnd > translateStart)
   assert.match(
     translateSource,
-    /hideSelectionButton\(\)[\s\S]*?showPopup\([\s\S]*?loading:\s*true[\s\S]*?consumePreparedBounded\(\)/u
+    /hideSelectionButton\(\)[\s\S]*?showSelectionReadingPopup\(anchor\)[\s\S]*?consumePreparedBounded\(\)/u
   )
-  assert.match(
-    translateSource,
-    /showPopup\([\s\S]*?loadingMessage:\s*'正在读取选中文字…'[\s\S]*?anchor,\s*false\s*\)/u
-  )
+  const popupHelperStart = source.indexOf('function showSelectionReadingPopup')
+  const popupHelperEnd = source.indexOf('/**\n * 捕获当前选中文字', popupHelperStart)
+  const popupHelperSource = source.slice(popupHelperStart, popupHelperEnd)
+  assert.ok(popupHelperStart >= 0)
+  assert.ok(popupHelperEnd > popupHelperStart)
+  assert.match(popupHelperSource, /loadingMessage:\s*'正在读取选中文字…'/u)
+  assert.match(popupHelperSource, /anchor,\s*false\s*\)/u)
   assert.match(popupSource, /activate\s*\?\s*win\.show\(\)\s*:\s*win\.showInactive\(\)/u)
 })
 

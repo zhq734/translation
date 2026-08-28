@@ -184,6 +184,17 @@ export class SelectionCaptureCoordinator {
   }
 
   /**
+   * 直接执行复制取词，跳过可能耗时的原生直读，供 Windows 全局快捷键使用。
+   * @param anchor 翻译弹窗使用的选区锚点。
+   * @returns 当前请求的捕获结果；如果请求已被更新则返回 null。
+   * @author zhenghq
+   */
+  captureDirect(anchor?: SelectionAnchor): Promise<SelectionCaptureResult | null> {
+    this.preparedSelection = null
+    return this.enqueue(anchor, false, 0, false, true)
+  }
+
+  /**
    * 取消仍在进行的只读预取，并执行点击按钮专用取词，避免 AX/UIA 直读超时让选区过期。
    * @param anchor 翻译弹窗使用的选区锚点。
    * @returns 当前请求的捕获结果；如果请求已被更新则返回 null。

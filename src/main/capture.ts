@@ -1,6 +1,7 @@
 import { clipboard, systemPreferences } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { uIOhook, UiohookKey } from 'uiohook-napi'
 import {
   hasClipboardCaptureCompleted,
   shouldRestoreClipboardAfterAbort,
@@ -14,11 +15,17 @@ import {
   type SelectionPresence
 } from '../shared/selectionBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
+import { isAutoTriggerRunning } from './autoTrigger'
 import {
   getSelectionCapturePlan,
   resolveSelectionCaptureStrategy,
   type NativeSelectionReadResult
 } from '../shared/platformCapture'
+import {
+  shouldReleaseHotkeyModifiersBeforeCopy,
+  shouldRetryCopyInjection,
+  type HotkeyModifier
+} from '../shared/hotkeyCaptureTiming'
 import type { SelectionCaptureOutcome } from '../shared/selectionCaptureCoordinator'
 
 const execFileP = promisify(execFile)
@@ -27,6 +34,22 @@ const CLIPBOARD_STABILITY_DELAY_MS = 120
 const SELECTION_INSPECTION_TIMEOUT_MS = 1500
 const NATIVE_SELECTION_RETRY_COUNT = 2
 const NATIVE_SELECTION_RETRY_DELAY_MS = 40
+/** 释放快捷键修饰键后等待前台应用处理释放事件的时间（毫秒）。 */
+const MODIFIER_RELEASE_SETTLE_MS = 24
+
+/**
+ * 各修饰键对应的左右两侧全局钩子键码，注入复制键前需要同时释放两侧。
+ * 用户可能按住右侧 Ctrl/Alt/Shift 触发快捷键，只释放左侧会残留修饰状态。
+ */
+const MODIFIER_KEYCODES: Record<HotkeyModifier, number[]> = {
+  control: [UiohookKey.Ctrl, UiohookKey.CtrlRight],
+  alt: [UiohookKey.Alt, UiohookKey.AltRight],
+  shift: [UiohookKey.Shift, UiohookKey.ShiftRight],
+  meta: [UiohookKey.Meta, UiohookKey.MetaRight]
+}
+
+/** 下一次模拟复制前需要强制释放的快捷键修饰键，由快捷键入口登记。 */
+let pendingCopyModifierRelease: HotkeyModifier[] = []
 
 // macOS 通过辅助功能读取前台控件的选中文字；PRESENT 时同时输出选中文本，不读取或修改剪贴板。
 const MACOS_SELECTION_PRESENCE = [
@@ -55,16 +78,6 @@ const WINDOWS_SELECTION_PRESENCE = [
   "if ($null -eq $ranges -or $ranges.Count -eq 0) { Write-Output 'EMPTY'; exit }",
   "$text = ($ranges | ForEach-Object { $_.GetText(-1) }) -join '';",
   "if ([string]::IsNullOrWhiteSpace($text)) { Write-Output 'EMPTY' } else { Write-Output ('PRESENT' + [char]10 + $text) }"
-].join(' ')
-
-// 使用 Windows user32.dll 向当前前台窗口发送 Ctrl+C，不抢占前台焦点。
-const WINDOWS_COPY = [
-  "$signature = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);';",
-  "Add-Type -MemberDefinition $signature -Name NativeKeyboard -Namespace SelectionTranslator;",
-  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero);",
-  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x43, 0, 0, [UIntPtr]::Zero);",
-  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x43, 0, 2, [UIntPtr]::Zero);",
-  "[SelectionTranslator.NativeKeyboard]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero);"
 ].join(' ')
 
 export class PermissionError extends Error {}
@@ -193,6 +206,45 @@ export async function checkAccessibilityPermission(): Promise<boolean> {
   return strategy !== 'unsupported'
 }
 
+/**
+ * 登记下一次模拟复制前需要强制释放的快捷键修饰键。
+ * Windows 的全局快捷键在按键按下阶段回调，用户此时仍按住 Alt、Ctrl 等键，
+ * 直接注入 Ctrl+C 会被前台应用识别成 Ctrl+Alt+C 等错误组合，导致取词超时。
+ * @param modifiers 触发快捷键时按住的修饰键列表；传空数组表示无需释放。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setPendingCopyModifierRelease(modifiers: HotkeyModifier[]): void {
+  pendingCopyModifierRelease = shouldReleaseHotkeyModifiersBeforeCopy(process.platform)
+    ? [...modifiers]
+    : []
+}
+
+/**
+ * 在注入复制快捷键前释放已登记的快捷键修饰键，并等待前台应用处理释放事件。
+ * 同时释放左右两侧修饰键，覆盖用户使用右侧 Ctrl/Alt/Shift 触发快捷键的情况；
+ * 释放后清空登记，避免影响后续由划词按钮等入口触发的取词。
+ * @returns 释放完成后的 Promise。
+ * @author zhenghq
+ */
+async function releasePendingCopyModifiers(): Promise<void> {
+  const modifiers = pendingCopyModifierRelease
+  pendingCopyModifierRelease = []
+  if (modifiers.length === 0) return
+
+  for (const modifier of modifiers) {
+    for (const keycode of MODIFIER_KEYCODES[modifier]) {
+      try {
+        uIOhook.keyToggle(keycode, 'up')
+      } catch {
+        // 单个修饰键释放失败不应中断取词，后续复制注入仍会尝试。
+      }
+    }
+  }
+  console.log(`[capture] modifier-release keys=${modifiers.join(',')}`)
+  await sleep(MODIFIER_RELEASE_SETTLE_MS)
+}
+
 // 用 CGEvent 发送 Cmd+C（keycode 55 = Command 键，keycode 8 = C 键）。
 // 用户未按住 Command 时显式发送其按下和释放，避免部分前台应用把 C 事件当成普通字符。
 // 用户已按住左、右任一 Command 时只发送带修饰键标志的 C，避免误释放物理按键。
@@ -219,7 +271,8 @@ const JXA_COPY = [
 ].join('')
 
 /**
- * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用 user32.dll 注入 Ctrl+C。
+ * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用已加载的 uiohook 原生模块注入 Ctrl+C。
+ * Windows 不再为每次取词冷启动 PowerShell 和动态编译 P/Invoke，以缩短快捷键与按钮取词耗时。
  * macOS 需要「辅助功能」权限（Accessibility）。
  * @returns 模拟复制完成后的 Promise。
  * @author zhenghq
@@ -233,14 +286,8 @@ export async function simulateCopy(): Promise<void> {
     if (strategy === 'macos-command-copy') {
       await execFileP('osascript', ['-l', 'JavaScript', '-e', JXA_COPY])
     } else {
-      await execFileP('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-WindowStyle',
-        'Hidden',
-        '-Command',
-        WINDOWS_COPY
-      ])
+      await releasePendingCopyModifiers()
+      uIOhook.keyTap(UiohookKey.C, [UiohookKey.Ctrl])
     }
   } catch (e) {
     const err = e as Error & { stderr?: string }
@@ -312,26 +359,68 @@ async function captureByCopy(
   let hasImage = false
   // 最终捕获来源：轮询命中、剪贴板稳定期内晚到命中或真实超时，用于诊断日志与失败原因。
   let captureStatus: ResolvedClipboardCapture['status'] = 'timeout'
-  try {
+  // 已发送的复制快捷键次数，用于在首次注入无响应时限次重投。
+  let copyAttempts = 0
+
+  /**
+   * 发送一次复制快捷键，并在观测窗口内区分内部模拟复制与用户主动复制。
+   * @returns 注入完成后的 Promise。
+   * @author zhenghq
+   */
+  const injectCopyShortcut = async (): Promise<void> => {
+    /**
+     * 实际注入一次复制快捷键并记录诊断日志。
+     * @param observed 本次注入是否登记了内部模拟复制观测。
+     * @returns 注入完成后的 Promise。
+     * @author zhenghq
+     */
+    const sendCopyShortcut = async (observed: boolean): Promise<void> => {
+      try {
+        await simulateCopy()
+        copyAttempts += 1
+        console.log(
+          `[capture] copy-shortcut-sent attempt=${copyAttempts} observed=${observed} ` +
+          `elapsedMs=${Date.now() - captureStartedAt}`
+        )
+      } catch (error) {
+        console.warn(
+          `[capture] copy-shortcut-failed error=${error instanceof Error ? error.name : 'unknown'} ` +
+          `elapsedMs=${Date.now() - captureStartedAt}`
+        )
+        throw error
+      }
+    }
+
+    // 纯快捷键模式不启动全局钩子，观测窗口内不可能收到复制事件，
+    // 此时登记观测只会白等超时，直接注入即可。
+    const shouldObserveSyntheticCopy = isAutoTriggerRunning()
+    if (!shouldObserveSyntheticCopy) {
+      await sendCopyShortcut(false)
+      return
+    }
+
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
-      await simulateCopy()
-      console.log(`[capture] copy-shortcut-sent elapsedMs=${Date.now() - captureStartedAt}`)
-    } catch (error) {
-      console.warn(
-        `[capture] copy-shortcut-failed error=${error instanceof Error ? error.name : 'unknown'} ` +
-        `elapsedMs=${Date.now() - captureStartedAt}`
-      )
-      throw error
+      await sendCopyShortcut(true)
     } finally {
       await expectation.finish()
     }
+  }
+
+  try {
+    await injectCopyShortcut()
 
     const start = Date.now()
     while (!signal?.aborted && Date.now() - start < timeoutMs) {
       text = clipboard.readText()
       hasImage = !clipboard.readImage().isEmpty()
       if (hasClipboardCaptureCompleted(text, hasImage, sentinel)) break
+      // 首次注入可能因修饰键仍被按住或前台应用尚未就绪而丢失，等待间隔后补发一次。
+      if (shouldRetryCopyInjection(Date.now() - start, copyAttempts)) {
+        console.log(`[capture] copy-retry elapsedMs=${Date.now() - captureStartedAt}`)
+        await injectCopyShortcut()
+        continue
+      }
       await sleep(40)
     }
   } finally {

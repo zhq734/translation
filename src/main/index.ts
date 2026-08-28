@@ -29,7 +29,8 @@ import {
   captureSelectionByNativeOnly,
   captureSelectionAfterButtonClick,
   PermissionError,
-  checkAccessibilityPermission
+  checkAccessibilityPermission,
+  setPendingCopyModifierRelease
 } from './capture'
 import {
   checkDingTalk as checkDingTalkTranslation,
@@ -67,7 +68,12 @@ import {
 import { SelectionListenerController } from './selectionListenerController'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
-import { resolveHotkeyCaptureDelay } from '../shared/hotkeyCaptureTiming'
+import {
+  resolveHotkeyCaptureDelay,
+  resolveHotkeyModifiers,
+  shouldReleaseHotkeyModifiersBeforeCopy
+} from '../shared/hotkeyCaptureTiming'
+import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
 import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
@@ -663,12 +669,25 @@ function onHotkey(): void {
   latestSelectionGesture += 1
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
+  const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
+  // Windows 的全局快捷键在按键按下阶段回调，用户此时仍按住 Alt、Control 等修饰键，
+  // 注入的复制快捷键会与这些残留修饰键叠加成其他组合而不触发复制，导致取词超时。
+  // 先登记这些修饰键，模拟复制前会显式释放左右两侧按键。
+  if (shouldReleaseHotkeyModifiersBeforeCopy(process.platform)) {
+    setPendingCopyModifierRelease(
+      resolveHotkeyModifiers(getSettings().hotkey, process.platform)
+    )
+  }
   if (captureDelay > 0) {
-    setTimeout(queueSelectionTranslation, captureDelay)
+    // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
+    setTimeout(
+      () => queueSelectionTranslation(undefined, undefined, true, popupCloseVersion),
+      captureDelay
+    )
     return
   }
-  queueSelectionTranslation()
+  queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
 }
 
 /**
@@ -717,7 +736,7 @@ function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean
 }
 
 /**
- * 安排一次选区处理动作；按钮模式显示图标并后台只读预取文本，完整取词等用户点击确认。
+ * 安排一次选区处理动作；按钮模式显示图标，支持快速预取的平台后台只读取词。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -734,9 +753,10 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   if (action === 'show-button') {
     selectionInteraction.showButton()
     showSelectionButton(anchor)
-    // 按钮显示期间后台只读直读预取文本：不注入复制键、不写剪贴板，
-    // 避免用户把鼠标移到“译”按钮期间选区失效，导致点击后复制兜底超时。
-    void selectionCapture.prepare(anchor)
+    // Windows UIA 需要冷启动 PowerShell，且串行预取会拖慢点击后的复制取词，因此直接跳过。
+    if (shouldPrefetchSelectionForButton(process.platform)) {
+      void selectionCapture.prepare(anchor)
+    }
     return
   }
 
@@ -749,8 +769,8 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
- * 处理按钮模式的双击选词：立即显示“译”按钮，再用只读直读后台预取选中文字。
- * 全程不发送复制快捷键、不写剪贴板；预取成功时供点击按钮直接消费，失败时由完整取词兜底。
+ * 处理按钮模式的双击选词：立即显示“译”按钮，并在支持快速预取的平台后台只读取词。
+ * Windows 跳过 PowerShell/UIA 预取，点击按钮后直接使用原生模块发送复制快捷键。
  * @param gesture 当前双击选词手势及按钮锚点。
  * @returns 选区检查完成后的 Promise。
  * @author zhenghq
@@ -765,6 +785,8 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
   // 双击场景先显示按钮，避免系统辅助功能直读失败时用户完全看不到入口。
   selectionInteraction.showButton()
   showSelectionButton(gesture.anchor)
+
+  if (!shouldPrefetchSelectionForButton(process.platform)) return
 
   // 按钮显示后再等待系统提交选区并做只读预取；不发送复制快捷键、不写剪贴板。
   // 预取结果只用于点击时消费，失败时由点击流程继续走完整取词兜底。
@@ -856,21 +878,61 @@ function handlePasteShortcut(): void {
 }
 
 /**
+ * 非激活显示选区读取状态，使源应用继续保持焦点以便随后复制取词。
+ * @param anchor 弹窗定位锚点；省略时使用当前鼠标位置。
+ * @returns 显示读取状态时的弹窗关闭版本号，用于阻止关闭后的异步结果重新打开弹窗。
+ * @author zhenghq
+ */
+function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
+  const settings = getSettings()
+  const popupCloseVersion = getPopupCloseVersion()
+  showPopup(
+    {
+      ok: true,
+      origin: 'selection',
+      loading: true,
+      loadingMessage: '正在读取选中文字…',
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    },
+    0,
+    anchor,
+    false
+  )
+  return popupCloseVersion
+}
+
+/**
  * 捕获当前选中文字，并在取词完成后执行翻译。
  * @param anchor 本次选区右上角锚点。
  * @param interactionToken 已经取得所有权的交互 token；省略时创建新的翻译流程。
+ * @param directCapture 是否跳过原生直读并直接执行复制取词。
+ * @param popupCloseVersion 读取弹窗显示时的关闭版本；变化后丢弃异步结果。
  * @returns 无返回值。
  * @author zhenghq
  */
 function queueSelectionTranslation(
   anchor?: { x: number; y: number },
-  interactionToken?: number
+  interactionToken?: number,
+  directCapture = false,
+  popupCloseVersion?: number
 ): void {
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
+  if (popupCloseVersion !== undefined &&
+      popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
   renewInternalActivationLease()
-  void selectionCapture.capture(anchor).then((result) => {
+  const capture = directCapture
+    ? selectionCapture.captureDirect(anchor)
+    : selectionCapture.capture(anchor)
+  void capture.then((result) => {
     if (!selectionInteraction.isCurrent(token)) return
+    if (popupCloseVersion !== undefined &&
+        popupCloseVersion !== getPopupCloseVersion()) {
+      releaseSelectionInteraction(token)
+      return
+    }
     if (result) handleSelectionCaptureResult(result, token)
     else releaseSelectionInteraction(token)
   })
@@ -889,23 +951,7 @@ async function translateSelectionButton(): Promise<void> {
   latestSelectionGesture += 1
   renewInternalActivationLease()
   hideSelectionButton()
-  const settings = getSettings()
-  const popupCloseVersion = getPopupCloseVersion()
-  // 先显示读取阶段，避免 Windows 剪贴板或 UIA 取词耗时阻塞弹窗首次出现。
-  showPopup(
-    {
-      ok: true,
-      origin: 'selection',
-      loading: true,
-      loadingMessage: '正在读取选中文字…',
-      sourcePreference: settings.sourceLang,
-      targetPreference: settings.targetLang,
-      targetLang: settings.targetLang
-    },
-    0,
-    anchor,
-    false
-  )
+  const popupCloseVersion = showSelectionReadingPopup(anchor)
   try {
     // 先在很短的有界窗口内消费只读预取：已完成的缓存立即命中，尚未完成的预取最多再等
     // PREPARED_PREFETCH_WAIT_MS，避免快速点击时丢弃即将产出的原生取词结果。

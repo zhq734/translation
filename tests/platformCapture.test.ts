@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   getSelectionCapturePlan,
-  resolveSelectionCaptureStrategy
+  resolveSelectionCaptureStrategy,
+  shouldPrefetchSelectionForButton
 } from '../src/shared/platformCapture.ts'
 
 test('不同桌面平台应选择可用的系统级取词策略', () => {
@@ -39,9 +40,49 @@ test('主进程取词实现应包含 Windows Ctrl+C、Linux primary selection �
   const source = readFileSync('src/main/capture.ts', 'utf8')
 
   assert.match(source, /powershell\.exe/u)
-  assert.match(source, /keybd_event/u)
+  assert.match(source, /uIOhook\.keyTap/u)
   assert.match(source, /clipboard\.readText\('selection'\)/u)
   assert.match(source, /readSelectionByNative/u)
+})
+
+/**
+ * 校验 Windows 注入 Ctrl+C 前等待用户松开原快捷键修饰键，避免生成 Ctrl+Alt+C 等错误组合。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 复制取词应使用已加载的原生模块直接发送 Ctrl+C', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const copyStart = source.indexOf('export async function simulateCopy')
+  const copyEnd = source.indexOf('/**\n * 通过模拟复制快捷键', copyStart)
+  const copySource = source.slice(copyStart, copyEnd)
+
+  assert.ok(copyStart >= 0)
+  assert.ok(copyEnd > copyStart)
+  assert.match(source, /import \{ uIOhook, UiohookKey \} from 'uiohook-napi'/u)
+  assert.match(copySource, /uIOhook\.keyTap\(UiohookKey\.C,\s*\[UiohookKey\.Ctrl\]\)/u)
+  assert.doesNotMatch(copySource, /powershell\.exe|Add-Type|keybd_event/u)
+})
+
+/**
+ * 校验 Windows 按钮模式跳过耗时的 UI Automation 后台预取，点击后直接走快速复制取词。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 选择按钮不应启动 PowerShell 原生预取', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const scheduleStart = source.indexOf('function scheduleSelectionAction')
+  const scheduleEnd = source.indexOf('/**\n * 处理按钮模式的双击选词', scheduleStart)
+  const scheduleSource = source.slice(scheduleStart, scheduleEnd)
+
+  assert.equal(shouldPrefetchSelectionForButton('win32'), false)
+  assert.equal(shouldPrefetchSelectionForButton('darwin'), true)
+  assert.equal(shouldPrefetchSelectionForButton('linux'), true)
+  assert.ok(scheduleStart >= 0)
+  assert.ok(scheduleEnd > scheduleStart)
+  assert.match(
+    scheduleSource,
+    /shouldPrefetchSelectionForButton\(process\.platform\)[\s\S]*?selectionCapture\.prepare\(anchor\)/u
+  )
 })
 
 test('macOS 模拟复制必须显式按下和释放 Command，避免把 C 当作普通字符输入', () => {
