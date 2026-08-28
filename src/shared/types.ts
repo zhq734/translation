@@ -604,6 +604,21 @@ export interface DeepLxStatus {
   message?: string
 }
 
+/**
+ * 主进程结构化日志条目，用于设置窗口日志查看界面展示。
+ * @author zhenghq
+ */
+export interface LogEntry {
+  /** 日志产生时间（ISO 字符串）。 */
+  ts: string
+  /** 日志级别，对应 console 方法名。 */
+  level: 'log' | 'info' | 'warn' | 'error'
+  /** 日志来源模块标签。 */
+  scope: string
+  /** 序列化后的日志内容（已截断）。 */
+  message: string
+}
+
 export interface Api {
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
@@ -692,6 +707,12 @@ export interface Api {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void
+  /** 获取内存缓冲中的近期主进程日志（时间升序）。 */
+  getLogHistory(): Promise<LogEntry[]>
+  /** 订阅主进程日志增量推送，返回取消订阅方法。 */
+  onLogEntry(cb: (entries: LogEntry[]) => void): () => void
+  /** 弹出保存对话框导出当日日志文件，返回保存路径；取消时返回 null。 */
+  exportLogs(): Promise<string | null>
   /** 获取 OCR 引擎与模型资产状态。 */
   getOcrStatus(): Promise<OcrStatus>
   checkDeepLx(url: string): Promise<DeepLxStatus>

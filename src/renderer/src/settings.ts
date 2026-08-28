@@ -96,7 +96,7 @@ const removeQuarantineButton = document.getElementById('remove-quarantine') as H
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
-type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'logs' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
@@ -107,6 +107,7 @@ const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'microsoft',
   'deeplx',
   'advanced',
+  'logs',
   'about'
 ]
 const SETTINGS_TAB_STORAGE_KEY = 'selection-translator.settings.active-tab'
@@ -1491,3 +1492,186 @@ window.api.onSettingsChanged(renderSettings)
 window.api.onUpdateStatusChanged(renderUpdateStatus)
 
 void initialize()
+
+// ---- 日志查看面板 ----
+
+import type { LogEntry } from '../../shared/types'
+
+const logsList = document.getElementById('logs-list') as HTMLElement
+const logsStatus = document.getElementById('logs-status') as HTMLElement
+const logsSearch = document.getElementById('logs-search') as HTMLInputElement
+const logsFilterInfo = document.getElementById('logs-filter-info') as HTMLInputElement
+const logsFilterWarn = document.getElementById('logs-filter-warn') as HTMLInputElement
+const logsFilterError = document.getElementById('logs-filter-error') as HTMLInputElement
+const logsTogglePauseButton = document.getElementById('logs-toggle-pause') as HTMLButtonElement
+const logsClearButton = document.getElementById('logs-clear') as HTMLButtonElement
+const logsExportButton = document.getElementById('logs-export') as HTMLButtonElement
+
+/** 日志列表 DOM 渲染上限，超出时移除最旧节点，保持界面流畅。 */
+const LOGS_RENDER_LIMIT = 500
+
+/** 日志面板的全部条目（含被过滤的），清空视图前与缓冲同步。 */
+let logsViewEntries: LogEntry[] = []
+/** 暂停期间暂存的增量日志，恢复后统一补显。 */
+let logsPendingEntries: LogEntry[] = []
+let logsPaused = false
+let logsFollowTail = true
+let logsInitialized = false
+
+/**
+ * 将日志级别映射到过滤复选框状态，console.log 归入信息级别展示。
+ * @param entry 日志条目。
+ * @returns 该级别当前是否允许展示。
+ * @author zhenghq
+ */
+function isLogLevelVisible(entry: LogEntry): boolean {
+  if (entry.level === 'error') return logsFilterError.checked
+  if (entry.level === 'warn') return logsFilterWarn.checked
+  return logsFilterInfo.checked
+}
+
+/**
+ * 判断日志条目是否通过当前级别过滤与关键字搜索。
+ * @param entry 日志条目。
+ * @returns 通过过滤时返回 true。
+ * @author zhenghq
+ */
+function isLogEntryVisible(entry: LogEntry): boolean {
+  if (!isLogLevelVisible(entry)) return false
+  const keyword = logsSearch.value.trim().toLowerCase()
+  if (!keyword) return true
+  return entry.message.toLowerCase().includes(keyword) || entry.scope.toLowerCase().includes(keyword)
+}
+
+/**
+ * 创建单条日志的 DOM 节点。
+ * @param entry 日志条目。
+ * @returns 日志行元素。
+ * @author zhenghq
+ */
+function createLogRow(entry: LogEntry): HTMLElement {
+  const row = document.createElement('div')
+  row.className = `log-row log-level-${entry.level}`
+  const time = document.createElement('span')
+  time.className = 'log-time'
+  time.textContent = entry.ts.slice(11, 19)
+  const level = document.createElement('span')
+  level.className = 'log-level'
+  level.textContent = entry.level.toUpperCase()
+  const scope = document.createElement('span')
+  scope.className = 'log-scope'
+  scope.textContent = `[${entry.scope}]`
+  const message = document.createElement('span')
+  message.className = 'log-message'
+  message.textContent = entry.message
+  row.append(time, level, scope, message)
+  return row
+}
+
+/**
+ * 裁剪日志列表至渲染上限，丢弃最旧的 DOM 节点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function trimLogsList(): void {
+  while (logsList.childElementCount > LOGS_RENDER_LIMIT) {
+    logsList.firstElementChild?.remove()
+  }
+}
+
+/**
+ * 将日志条目追加渲染到列表（应用过滤），并保持尾部跟随或裁剪。
+ * @param entries 待追加的日志条目。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function appendLogRows(entries: LogEntry[]): void {
+  const fragment = document.createDocumentFragment()
+  for (const entry of entries) {
+    if (isLogEntryVisible(entry)) fragment.append(createLogRow(entry))
+  }
+  logsList.append(fragment)
+  trimLogsList()
+  if (logsFollowTail) logsList.scrollTop = logsList.scrollHeight
+}
+
+/**
+ * 按当前过滤条件全量重建日志列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function rerenderLogsList(): void {
+  logsList.textContent = ''
+  appendLogRows(logsViewEntries)
+}
+
+/**
+ * 接收主进程增量日志：暂停时暂存，否则直接展示。
+ * @param entries 增量日志条目批次。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleIncomingLogEntries(entries: LogEntry[]): void {
+  if (logsPaused) {
+    logsPendingEntries.push(...entries)
+    return
+  }
+  logsViewEntries.push(...entries)
+  appendLogRows(entries)
+}
+
+/**
+ * 初始化日志面板：拉取历史、订阅增量、绑定工具栏事件（幂等）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeLogsPanel(): Promise<void> {
+  if (logsInitialized) return
+  logsInitialized = true
+  logsViewEntries = await window.api.getLogHistory()
+  appendLogRows(logsViewEntries)
+  window.api.onLogEntry(handleIncomingLogEntries)
+
+  for (const filter of [logsFilterInfo, logsFilterWarn, logsFilterError]) {
+    filter.addEventListener('change', rerenderLogsList)
+  }
+  logsSearch.addEventListener('input', rerenderLogsList)
+  logsList.addEventListener('scroll', () => {
+    // 用户上滚时暂停自动跟随，回到底部附近时恢复
+    const distanceToBottom = logsList.scrollHeight - logsList.scrollTop - logsList.clientHeight
+    logsFollowTail = distanceToBottom < 24
+  })
+  logsTogglePauseButton.addEventListener('click', () => {
+    logsPaused = !logsPaused
+    logsTogglePauseButton.textContent = logsPaused ? '恢复' : '暂停'
+    if (!logsPaused && logsPendingEntries.length > 0) {
+      const pending = logsPendingEntries
+      logsPendingEntries = []
+      logsViewEntries.push(...pending)
+      appendLogRows(pending)
+    }
+  })
+  logsClearButton.addEventListener('click', () => {
+    // 仅清空界面视图，不影响主进程内存缓冲与日志文件
+    logsViewEntries = []
+    logsPendingEntries = []
+    logsList.textContent = ''
+  })
+  logsExportButton.addEventListener('click', () => {
+    void (async () => {
+      const savedPath = await window.api.exportLogs()
+      if (savedPath === null) return
+      logsStatus.textContent = `日志已导出到 ${savedPath}`
+      setTimeout(() => { logsStatus.textContent = '' }, 4000)
+    })()
+  })
+}
+
+// 切换到日志 Tab 时懒初始化：打开瞬间补历史，之后接增量推送
+for (const button of settingsTabButtons) {
+  button.addEventListener('click', () => {
+    if (button.dataset.tab === 'logs') void initializeLogsPanel()
+  })
+}
+// 通过 URL 查询参数直达日志 Tab 时同样需要初始化
+if (readSettingsTabFromQuery() === 'logs') void initializeLogsPanel()

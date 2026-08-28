@@ -18,12 +18,13 @@ import {
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile, unlink } from 'node:fs/promises'
+import { copyFile, readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
+import { createAppLogger, type LogEntry } from './logging'
 import {
   captureSelection,
   captureSelectionByNativeOnly,
@@ -354,6 +355,25 @@ function activateExistingPageOrOpenSettings(): void {
   if (webReader?.focusExistingWindow()) return
   openSettings()
 }
+
+// ---- 主进程日志层 ----
+// 尽早初始化：包装 console 输出，按天滚动落盘并保留最近 1 天，供设置窗口实时查看。
+// 必须放在其余模块日志输出之前，确保启动期日志也被采集。
+// @author zhenghq
+const appLogger = createAppLogger({ logDir: app.getPath('logs') })
+
+/**
+ * 向存活的设置窗口推送增量日志；窗口未打开时不做任何推送。
+ * @param entries 同 tick 聚合后的日志条目。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function pushLogEntries(entries: LogEntry[]): void {
+  if (!settingsWin || settingsWin.isDestroyed()) return
+  settingsWin.webContents.send('logs:entry', entries)
+}
+
+appLogger.subscribe(pushLogEntries)
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -1866,9 +1886,9 @@ function createSettingsWindow(): BrowserWindow {
   }
 
   settingsWin = new BrowserWindow({
-    width: 640,
+    width: 900,
     height: 820,
-    minWidth: 480,
+    minWidth: 640,
     minHeight: 600,
     title: '划词翻译 · 设置',
     resizable: true,
@@ -2340,6 +2360,27 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings:get', () => getSettings())
+  /**
+   * 返回内存环形缓冲中的全部近期日志，供日志查看界面初始化展示。
+   * @returns 按时间升序排列的结构化日志条目。
+   * @author zhenghq
+   */
+  ipcMain.handle('logs:get-history', () => appLogger.getHistory())
+  /**
+   * 弹出保存对话框，将当日日志文件复制到用户选定路径。
+   * @returns 导出结果：成功返回保存路径，取消返回 null。
+   * @author zhenghq
+   */
+  ipcMain.handle('logs:export', async (): Promise<string | null> => {
+    const source = appLogger.getLogFilePath()
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '导出日志',
+      defaultPath: `main-${new Date().toISOString().slice(0, 10)}.log`
+    })
+    if (canceled || !filePath) return null
+    await copyFile(source, filePath)
+    return filePath
+  })
   ipcMain.handle('settings:set', (_event, patch: Partial<Settings>) => applySettingsPatch(patch))
   ipcMain.handle('dingtalk:configure', (_event, patch: DingTalkConfigPatch) =>
     applyDingTalkConfig(patch)

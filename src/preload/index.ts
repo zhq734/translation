@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Api,
+  LogEntry,
   TranslatePayload,
   ManualTranslateRequest,
   Settings,
@@ -311,6 +312,29 @@ const api: Api = {
     ipcRenderer.on('settings:changed', listener)
     return () => ipcRenderer.removeListener('settings:changed', listener)
   },
+  /**
+   * 获取内存缓冲中的近期主进程日志。
+   * @returns 按时间升序排列的结构化日志条目。
+   * @author zhenghq
+   */
+  getLogHistory: (): Promise<LogEntry[]> => ipcRenderer.invoke('logs:get-history'),
+  /**
+   * 订阅主进程日志增量推送。
+   * @param callback 日志条目批次回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onLogEntry(callback: (entries: LogEntry[]) => void) {
+    const listener = (_event: unknown, entries: LogEntry[]): void => callback(entries)
+    ipcRenderer.on('logs:entry', listener)
+    return () => ipcRenderer.removeListener('logs:entry', listener)
+  },
+  /**
+   * 弹出保存对话框导出当日日志文件。
+   * @returns 保存路径；用户取消时返回 null。
+   * @author zhenghq
+   */
+  exportLogs: (): Promise<string | null> => ipcRenderer.invoke('logs:export'),
   /**
    * 获取 OCR 引擎与模型资产状态。
    * @returns OCR 状态。

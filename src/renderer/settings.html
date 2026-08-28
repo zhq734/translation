@@ -106,6 +106,18 @@
           高级
         </button>
         <button
+          id="settings-tab-logs"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-logs"
+          data-tab="logs"
+          tabindex="-1"
+        >
+          日志
+        </button>
+        <button
           id="settings-tab-about"
           class="settings-tab"
           type="button"
@@ -557,6 +569,49 @@
               <p class="hint">停止后托盘图标和划词翻译功能都会退出，需要使用时请重新启动应用。</p>
               <button id="stop-service" class="btn danger">关闭并停止服务</button>
             </div>
+          </section>
+        </div>
+
+        <div
+          id="settings-panel-logs"
+          class="tab-panel tab-panel-logs"
+          role="tabpanel"
+          aria-labelledby="settings-tab-logs"
+          data-tab-panel="logs"
+          tabindex="0"
+          hidden
+        >
+          <section class="logs-section">
+            <div class="logs-toolbar">
+              <div class="logs-filters" role="group" aria-label="日志级别过滤">
+                <label class="checkbox-control">
+                  <input id="logs-filter-info" type="checkbox" checked />
+                  信息
+                </label>
+                <label class="checkbox-control">
+                  <input id="logs-filter-warn" type="checkbox" checked />
+                  警告
+                </label>
+                <label class="checkbox-control">
+                  <input id="logs-filter-error" type="checkbox" checked />
+                  错误
+                </label>
+              </div>
+              <input
+                id="logs-search"
+                class="logs-search"
+                type="search"
+                placeholder="搜索日志内容"
+                aria-label="搜索日志内容"
+              />
+              <div class="logs-actions">
+                <button id="logs-toggle-pause" class="btn" type="button">暂停</button>
+                <button id="logs-clear" class="btn" type="button">清空</button>
+                <button id="logs-export" class="btn" type="button">导出</button>
+              </div>
+            </div>
+            <div id="logs-list" class="logs-list" role="log" aria-live="polite"></div>
+            <p id="logs-status" class="hint logs-status" role="status" aria-live="polite"></p>
           </section>
         </div>
 
