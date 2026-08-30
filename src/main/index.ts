@@ -2433,6 +2433,7 @@ function loadTrayIcon(): NativeImage {
 
 /**
  * 创建仅显示模板图标的菜单栏状态项，减少 macOS 菜单栏占用宽度。
+ * 左键单击或双击图标时直接打开设置主页面，右键仍弹出托盘菜单。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -2440,6 +2441,8 @@ function createTray(): void {
   tray = new Tray(loadTrayIcon())
   tray.setToolTip('划词翻译')
   tray.setContextMenu(buildTrayMenu())
+  tray.on('click', () => openSettings())
+  tray.on('double-click', () => openSettings())
 }
 
 /**

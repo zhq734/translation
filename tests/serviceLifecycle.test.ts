@@ -41,6 +41,8 @@ test('macOS 打包保持菜单栏应用模式，并在启动阶段按设置控�
   assert.doesNotMatch(mainSource, /tray\.setTitle\(/u)
   assert.match(mainSource, /tray\.setToolTip\('划词翻译'\)/u)
   assert.match(mainSource, /tray\.setContextMenu\(buildTrayMenu\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('click', \(\) => openSettings\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('double-click', \(\) => openSettings\(\)\)/u)
   assert.match(mainSource, /app\.whenReady\(\)[\s\S]*?\.catch\(handleApplicationInitializationFailure\)/u)
 })
 
