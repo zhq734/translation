@@ -1,4 +1,6 @@
-const WINDOWS_HOTKEY_RELEASE_DELAY_MS = 120
+// Alt 类快捷键需要更长等待：Windows 会将按住的 Alt 识别为菜单助记符模式（SYSKEY），
+// 注入的 Ctrl+C 会被前台应用吞掉导致取词超时，因此给用户松开修饰键留足余量。
+const WINDOWS_HOTKEY_RELEASE_DELAY_MS = 300
 
 /**
  * 解析全局快捷键触发后开始取词前的等待时间。

@@ -60,7 +60,7 @@ test('设置页应通过按键直接录入翻译与 OCR 快捷键', () => {
 test('Windows 快捷键触发后应等待修饰键释放再取词，快捷键变更应整体重绑', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
-  assert.equal(resolveHotkeyCaptureDelay('win32'), 120)
+  assert.equal(resolveHotkeyCaptureDelay('win32'), 300)
   assert.equal(resolveHotkeyCaptureDelay('darwin'), 0)
   assert.equal(resolveHotkeyCaptureDelay('linux'), 0)
   assert.match(source, /resolveHotkeyCaptureDelay\(process\.platform\)/u)
