@@ -80,6 +80,18 @@ export class SelectionListenerController {
   }
 
   /**
+   * 强制重建当前应运行的全局划词监听，用于系统辅助功能服务恢复后重新挂接钩子。
+   * 快捷键模式或暂停状态下只刷新目标状态，不会错误启动监听。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  restart(): void {
+    if (this.running) this.options.stop()
+    this.running = false
+    this.refresh()
+  }
+
+  /**
    * 停止监听并记录关闭暂停原因。
    * @returns 无返回值。
    * @author zhenghq

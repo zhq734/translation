@@ -97,6 +97,15 @@ test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快�
   )
 })
 
+test('macOS 托盘菜单应提供划词服务修复入口', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+
+  assert.match(
+    mainSource,
+    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*'修复 macOS 划词服务…',[\s\S]*?click:\s*\(\)\s*=>\s*promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
+  )
+})
+
 test('初始化失败和显式退出应关闭应用并清理全部全局资源', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
 

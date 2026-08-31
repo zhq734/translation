@@ -32,7 +32,8 @@ import {
   captureSelectionAfterButtonClick,
   PermissionError,
   checkAccessibilityPermission,
-  setPendingCopyModifierRelease
+  setPendingCopyModifierRelease,
+  setPendingMacOSCommandWasDown
 } from './capture'
 import {
   checkDingTalk as checkDingTalkTranslation,
@@ -95,6 +96,10 @@ import {
   SelectionCaptureCoordinator,
   type SelectionCaptureResult
 } from '../shared/selectionCaptureCoordinator'
+import {
+  recordCaptureOutcome,
+  resetCopyTimeoutTracker
+} from './copyTimeoutTracker'
 import type {
   DingTalkCheckStatus,
   DingTalkConfigPatch,
@@ -694,13 +699,15 @@ function onHotkey(): void {
   hideSelectionButton()
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
+  const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
+  if (process.platform === 'darwin') {
+    setPendingMacOSCommandWasDown(hotkeyModifiers.includes('meta'))
+  }
   // Windows 的全局快捷键在按键按下阶段回调，用户此时仍按住 Alt、Control 等修饰键，
   // 注入的复制快捷键会与这些残留修饰键叠加成其他组合而不触发复制，导致取词超时。
   // 先登记这些修饰键，模拟复制前会显式释放左右两侧按键。
   if (shouldReleaseHotkeyModifiersBeforeCopy(process.platform)) {
-    setPendingCopyModifierRelease(
-      resolveHotkeyModifiers(getSettings().hotkey, process.platform)
-    )
+    setPendingCopyModifierRelease(hotkeyModifiers)
   }
   if (captureDelay > 0) {
     // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
@@ -970,6 +977,7 @@ function queueSelectionTranslation(
  */
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
+  setPendingMacOSCommandWasDown(false)
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
   const anchor = lastSelectionAnchor
@@ -991,7 +999,7 @@ async function translateSelectionButton(): Promise<void> {
     if (!selectionInteraction.isCurrent(interactionToken) ||
         popupCloseVersion !== getPopupCloseVersion()) return
     selectionCapture.invalidate()
-    if (result) handleSelectionCaptureResult(result, interactionToken)
+    if (result) handleSelectionCaptureResult(result, interactionToken, true)
     else hidePopup()
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
@@ -1005,10 +1013,16 @@ async function translateSelectionButton(): Promise<void> {
  * 处理取词结果，统一展示权限错误、空选区提示或启动翻译。
  * @param result 选中文字捕获结果。
  * @param interactionToken 当前取词流程 token；省略时仅处理结果而不管理交互状态。
+ * @param trackMacCopyTimeout 是否追踪 macOS 按钮复制兜底的连续超时。
  * @returns 无返回值。
  * @author zhenghq
  */
-function handleSelectionCaptureResult(result: SelectionCaptureResult, interactionToken?: number): void {
+function handleSelectionCaptureResult(
+  result: SelectionCaptureResult,
+  interactionToken?: number,
+  trackMacCopyTimeout = false
+): void {
+  const shouldPromptHiServicesRepair = trackMacCopyTimeout && recordCaptureOutcome(result)
   if (result.error) {
     handleTranslateError(result.error, getSettings(), result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
@@ -1027,6 +1041,7 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult, interactio
       2000,
       result.anchor
     )
+    if (shouldPromptHiServicesRepair) promptHiServicesRepair(result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
@@ -1874,6 +1889,82 @@ function openAccessibilitySettings(): void {
   void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
 }
 
+/**
+ * 重启 macOS hiservices 系统服务，修复模拟按键注入失效。
+ * hiservices 半故障时所有第三方应用的 CGEvent/System Events 注入都会到不了前台，
+ * 表现为划词取词反复超时；杀掉该服务后系统会自动重启并恢复注入。
+ * @returns 修复命令执行完成的 Promise。
+ * @author zhenghq
+ */
+function restartMacHiServices(): Promise<{ ok: true } | { ok: false; error: string }> {
+  return new Promise((resolve) => {
+    execFile('pkill', ['-9', '-f', 'com.apple.hiservices-xpcservice'], (error) => {
+      // pkill 返回 1 表示未找到进程，此时仍重建应用侧监听，避免控制器保留失效状态。
+      if (error && error.code !== 1) {
+        resolve({ ok: false, error: error.message })
+        return
+      }
+      setTimeout(() => {
+        selectionListenerController.restart()
+        resolve({ ok: true })
+      }, 500)
+    })
+  })
+}
+
+/** hiservices 修复提示是否正在显示，避免连续超时反复弹窗。 */
+let hiServicesRepairPromptShowing = false
+
+/**
+ * 在划词取词连续超时时提示用户一键重启 hiservices 服务。
+ * @param anchor 弹窗定位锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
+  if (hiServicesRepairPromptShowing || process.platform !== 'darwin') return
+  hiServicesRepairPromptShowing = true
+  resetCopyTimeoutTracker()
+  void dialog.showMessageBox({
+    type: 'warning',
+    title: '划词取词服务异常',
+    message: '划词按钮未出现或取词连续失败',
+    detail: '检测到 macOS 的按键注入服务（hiservices）可能已故障，导致模拟复制无法送达前台应用。' +
+      '点击下方按钮可立即重启该服务，系统会自动重新拉起，通常可恢复划词翻译。',
+    buttons: ['一键修复', '稍后'],
+    defaultId: 0,
+    cancelId: 1
+  }).then(async ({ response }) => {
+    if (response !== 0) return
+    const repairResult = await restartMacHiServices()
+    const settings = getSettings()
+    showPopup(
+      repairResult.ok
+        ? {
+            ok: true,
+            loading: false,
+            original: '',
+            translation: '已重启系统按键注入服务并刷新划词监听，请再划词试一次。',
+            sourcePreference: settings.sourceLang,
+            targetPreference: settings.targetLang,
+            targetLang: settings.targetLang
+          }
+        : {
+            ok: false,
+            error: '自动修复失败，请在终端执行 sudo pkill -9 -f hiservices 后重试。',
+            sourcePreference: settings.sourceLang,
+            targetPreference: settings.targetLang,
+            targetLang: settings.targetLang
+          },
+      5000,
+      anchor
+    )
+  }).finally(() => {
+    resetCopyTimeoutTracker()
+    hiServicesRepairPromptShowing = false
+  })
+}
+
 // ---- 设置窗口 ----
 
 /**
@@ -2503,6 +2594,10 @@ function buildTrayMenu(): Menu {
       click: (menuItem) =>
         void applySettingsPatch({ triggerMode: menuItem.checked ? 'button' : 'hotkey' })
     },
+    ...(isMac ? [{
+      label: '修复 macOS 划词服务…',
+      click: () => promptHiServicesRepair()
+    }] : []),
     { type: 'separator' },
     { label: '目标语言', submenu: targetSubmenu },
     { label: '源语言', submenu: sourceSubmenu },

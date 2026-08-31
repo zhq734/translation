@@ -101,8 +101,9 @@ test('macOS 模拟复制必须显式按下和释放 Command，避免把 C 当作
 test('macOS 模拟复制不得释放用户正在按住的 Command 键', () => {
   const source = readFileSync('src/main/capture.ts', 'utf8')
 
-  assert.match(source, /CGEventSourceKeyState\(\$\.kCGEventSourceStateHIDSystemState,55\)/u)
-  assert.match(source, /CGEventSourceKeyState\(\$\.kCGEventSourceStateHIDSystemState,54\)/u)
+  // 按键状态由全局快捷键入口短时传递，避免脚本查询 hiservices 或调用不存在的 uiohook API。
+  assert.match(source, /pendingMacOSCommandWasDownUntil/u)
+  assert.match(source, /Date\.now\(\) <= pendingMacOSCommandWasDownUntil/u)
   assert.match(source, /if\(!commandWasDown\)\{[\s\S]*?commandDown/u)
   assert.match(source, /if\(!commandWasDown\)\{[\s\S]*?commandUp/u)
 })

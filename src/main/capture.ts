@@ -34,6 +34,10 @@ const CLIPBOARD_STABILITY_DELAY_MS = 120
 const SELECTION_INSPECTION_TIMEOUT_MS = 1500
 const NATIVE_SELECTION_RETRY_COUNT = 2
 const NATIVE_SELECTION_RETRY_DELAY_MS = 40
+/** macOS 模拟复制脚本的最长执行时间，防止偶发阻塞让取词一直等不到复制键。 */
+const MACOS_COPY_SCRIPT_TIMEOUT_MS = 2000
+/** macOS 快捷键触发后保留 Command 已按下状态的短窗口，超时后按已释放处理。 */
+const MACOS_COMMAND_PRESERVE_WINDOW_MS = 500
 /** 释放快捷键修饰键后等待前台应用处理释放事件的时间（毫秒）。 */
 const MODIFIER_RELEASE_SETTLE_MS = 24
 
@@ -50,6 +54,8 @@ const MODIFIER_KEYCODES: Record<HotkeyModifier, number[]> = {
 
 /** 下一次模拟复制前需要强制释放的快捷键修饰键，由快捷键入口登记。 */
 let pendingCopyModifierRelease: HotkeyModifier[] = []
+/** macOS 快捷键触发时 Command 仍按下的短期截止时间。 */
+let pendingMacOSCommandWasDownUntil = 0
 
 // macOS 通过辅助功能读取前台控件的选中文字；PRESENT 时同时输出选中文本，不读取或修改剪贴板。
 const MACOS_SELECTION_PRESENCE = [
@@ -221,6 +227,19 @@ export function setPendingCopyModifierRelease(modifiers: HotkeyModifier[]): void
 }
 
 /**
+ * 登记 macOS 全局快捷键触发时 Command 是否仍处于按下状态。
+ * 状态只在短窗口内有效，避免原生直读成功后残留状态影响后续划词按钮取词。
+ * @param wasDown 触发快捷键是否包含 Command 修饰键。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setPendingMacOSCommandWasDown(wasDown: boolean): void {
+  pendingMacOSCommandWasDownUntil = wasDown
+    ? Date.now() + MACOS_COMMAND_PRESERVE_WINDOW_MS
+    : 0
+}
+
+/**
  * 在注入复制快捷键前释放已登记的快捷键修饰键，并等待前台应用处理释放事件。
  * 同时释放左右两侧修饰键，覆盖用户使用右侧 Ctrl/Alt/Shift 触发快捷键的情况；
  * 释放后清空登记，避免影响后续由划词按钮等入口触发的取词。
@@ -248,10 +267,13 @@ async function releasePendingCopyModifiers(): Promise<void> {
 // 用 CGEvent 发送 Cmd+C（keycode 55 = Command 键，keycode 8 = C 键）。
 // 用户未按住 Command 时显式发送其按下和释放，避免部分前台应用把 C 事件当成普通字符。
 // 用户已按住左、右任一 Command 时只发送带修饰键标志的 C，避免误释放物理按键。
+// 已按住的修饰键状态由全局快捷键入口短时传递；不再在脚本内查询系统按键状态，
+// 该查询 API 在部分 macOS 环境会无限阻塞等待 hiservices XPC 回复，使复制键无法发出而取词超时。
 const JXA_COPY = [
   "ObjC.import('CoreGraphics');",
   'var s=$.CGEventSourceCreate($.kCGEventSourceStateCombinedSessionState);',
-  'var commandWasDown=$.CGEventSourceKeyState($.kCGEventSourceStateHIDSystemState,55)||$.CGEventSourceKeyState($.kCGEventSourceStateHIDSystemState,54);',
+  "var env=$.NSProcessInfo.processInfo.environment;",
+  "var commandWasDown=env.objectForKey('commandWasDown')&&env.objectForKey('commandWasDown').js==='1';",
   'if(!commandWasDown){',
   'var commandDown=$.CGEventCreateKeyboardEvent(s,55,true);',
   '$.CGEventSetFlags(commandDown,$.kCGEventFlagMaskCommand);',
@@ -271,6 +293,16 @@ const JXA_COPY = [
 ].join('')
 
 /**
+ * 返回 macOS 全局快捷键触发时 Command 是否仍可能处于按下状态。
+ * 短窗口过期后按已释放处理，按钮入口也会显式清空，避免不同取词路径相互污染。
+ * @returns Command 仍可能处于按下状态时返回 true。
+ * @author zhenghq
+ */
+function isMacOSCommandKeyDown(): boolean {
+  return Date.now() <= pendingMacOSCommandWasDownUntil
+}
+
+/**
  * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用已加载的 uiohook 原生模块注入 Ctrl+C。
  * Windows 不再为每次取词冷启动 PowerShell 和动态编译 P/Invoke，以缩短快捷键与按钮取词耗时。
  * macOS 需要「辅助功能」权限（Accessibility）。
@@ -284,7 +316,17 @@ export async function simulateCopy(): Promise<void> {
 
   try {
     if (strategy === 'macos-command-copy') {
-      await execFileP('osascript', ['-l', 'JavaScript', '-e', JXA_COPY])
+      // 已按住的 Command 状态由 Node 侧提供，脚本内禁止再查询系统按键状态，
+      // 该查询在部分 macOS 环境会无限阻塞，导致复制键迟迟发不出而取词超时。
+      const commandWasDown = isMacOSCommandKeyDown()
+      await execFileP(
+        'osascript',
+        ['-l', 'JavaScript', '-e', JXA_COPY],
+        {
+          env: { ...process.env, commandWasDown: commandWasDown ? '1' : '0' },
+          timeout: MACOS_COPY_SCRIPT_TIMEOUT_MS
+        }
+      )
     } else {
       await releasePendingCopyModifiers()
       uIOhook.keyTap(UiohookKey.C, [UiohookKey.Ctrl])
