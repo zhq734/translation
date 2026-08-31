@@ -1,6 +1,7 @@
 import { app, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { CancellationToken } from 'builder-util-runtime'
 import {
   autoUpdater,
   type ProgressInfo,
@@ -51,6 +52,8 @@ const execFileAsync = promisify(execFile)
  */
 class ElectronUpdateDriver implements UpdateDriver {
   private releaseValidation: Promise<void> = Promise.resolve()
+  /** 当前下载使用的取消令牌；每次重新发起下载时更换。 */
+  private downloadCancellation: CancellationToken | undefined
 
   /**
    * 创建 electron-updater 适配器。
@@ -188,7 +191,21 @@ class ElectronUpdateDriver implements UpdateDriver {
    * @author zhenghq
    */
   async downloadUpdate(): Promise<void> {
-    await autoUpdater.downloadUpdate()
+    this.downloadCancellation = new CancellationToken()
+    try {
+      await autoUpdater.downloadUpdate(this.downloadCancellation)
+    } finally {
+      this.downloadCancellation = undefined
+    }
+  }
+
+  /**
+   * 取消 electron-updater 正在进行的更新下载；未在下载时为空操作。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelDownload(): void {
+    this.downloadCancellation?.cancel()
   }
 
   /**

@@ -102,6 +102,8 @@ export interface DownloadSegmentsOptions {
    * @author zhenghq
    */
   onProgress?: (progress: UpdateProgress) => void
+  /** 可选的取消信号；触发后各分片下载中断。 */
+  signal?: AbortSignal
 }
 
 /**
@@ -136,9 +138,11 @@ export async function downloadSegments(options: DownloadSegmentsOptions): Promis
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       const rangeStart = segment.start + segment.completed
       if (rangeStart > segment.end) return
+      if (options.signal?.aborted) throw new Error('下载已取消')
       try {
         const response = await options.fetch(options.url, {
-          headers: { range: `bytes=${rangeStart}-${segment.end}` }
+          headers: { range: `bytes=${rangeStart}-${segment.end}` },
+          signal: options.signal
         })
         if (response.status !== 206 && response.status !== 200) {
           throw new Error(`HTTP ${response.status}`)
@@ -147,6 +151,7 @@ export async function downloadSegments(options: DownloadSegmentsOptions): Promis
         if (response.body) {
           const reader = response.body.getReader()
           while (true) {
+            if (options.signal?.aborted) throw new Error('下载已取消')
             const chunk = await reader.read()
             if (chunk.done) break
             if (!chunk.value) continue

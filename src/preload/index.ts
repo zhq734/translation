@@ -432,6 +432,13 @@ const api: Api = {
    */
   downloadUpdate: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:download'),
   /**
+   * 取消正在进行的更新下载，回到可重新下载状态。
+   * @returns 取消操作完成后的自动更新状态。
+   * @author zhenghq
+   */
+  cancelUpdateDownload: (): Promise<UpdateStatus> =>
+    ipcRenderer.invoke('updater:cancel-download'),
+  /**
    * 安装已下载更新并重新启动应用。
    * @returns 无返回值。
    * @author zhenghq

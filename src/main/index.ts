@@ -2030,6 +2030,15 @@ async function downloadApplicationUpdate(): Promise<UpdateStatus> {
 }
 
 /**
+ * 取消正在进行的更新下载，回到可重新下载状态。
+ * @returns 取消操作完成后的更新状态。
+ * @author zhenghq
+ */
+async function cancelApplicationUpdateDownload(): Promise<UpdateStatus> {
+  return getUpdateManager().cancelDownload()
+}
+
+/**
  * 安装已经下载完成的更新并重新启动应用。
  * @returns 无返回值。
  * @author zhenghq
@@ -2400,6 +2409,7 @@ function registerIpc(): void {
   ipcMain.handle('updater:get-status', () => getUpdateManager().getStatus())
   ipcMain.handle('updater:check', () => checkForApplicationUpdates())
   ipcMain.handle('updater:download', () => downloadApplicationUpdate())
+  ipcMain.handle('updater:cancel-download', () => cancelApplicationUpdateDownload())
   ipcMain.on('updater:install', () => installApplicationUpdate())
   ipcMain.handle('updater:open-release', () => openApplicationReleasePage())
   ipcMain.handle('updater:remove-quarantine', () => removeApplicationQuarantine())

@@ -2,6 +2,7 @@ import { formatBuildIdLabel, type BuildMetadata } from '../shared/buildMetadata'
 import type {
   UpdateAction,
   UpdateInstallMode,
+  UpdatePhase,
   UpdateProgress,
   UpdateStatus
 } from '../shared/types'
@@ -100,6 +101,12 @@ export interface UpdateDriver {
    * @author zhenghq
    */
   downloadUpdate(): Promise<void>
+  /**
+   * 取消正在进行的更新下载；未在下载时为空操作。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelDownload(): void
   /**
    * 退出应用并安装已经下载的更新。
    * @returns 无返回值。
@@ -239,6 +246,8 @@ export class UpdateManager {
   private status: UpdateStatus
   private manualDownloadUrl: string | undefined
   private manualDownloadIntegrity: { sha512?: string; size?: number } | undefined
+  /** 手动 DMG 下载的取消控制器；仅下载期间存在。 */
+  private manualDownloadAbort: AbortController | undefined
 
   /**
    * 创建自动更新管理器并连接底层驱动事件。
@@ -326,6 +335,8 @@ export class UpdateManager {
     try {
       await this.options.driver.downloadUpdate()
     } catch (error) {
+      // 下载期间用户取消时，底层抛出的中断异常不得覆盖已取消状态。
+      if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
       this.handleError(error)
     }
     return this.getStatus()
@@ -340,6 +351,26 @@ export class UpdateManager {
     if (this.status.updateReason === 'same-version-new-build') return
     if (this.status.installMode !== 'automatic' || this.status.phase !== 'downloaded') return
     this.options.driver.installUpdate()
+  }
+
+  /**
+   * 取消正在进行的更新下载，回到可重新下载状态，方便用户重新点击升级。
+   * 自动安装模式通过驱动取消 electron-updater 下载；手动 DMG 模式通过
+   * AbortSignal 中断分片或单流下载，已写入的断点续传记录会保留。
+   * @returns 取消操作完成后的当前状态。
+   * @author zhenghq
+   */
+  async cancelDownload(): Promise<UpdateStatus> {
+    if (this.status.phase !== 'downloading') return this.getStatus()
+    this.options.driver.cancelDownload()
+    this.manualDownloadAbort?.abort()
+    this.manualDownloadAbort = undefined
+    this.setStatus({
+      phase: 'available',
+      message: '已取消下载，可重新点击升级继续',
+      progress: undefined
+    })
+    return this.getStatus()
   }
 
   /**
@@ -513,6 +544,8 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleProgress(progress: UpdateDriverProgress): void {
+    // 用户取消后底层驱动可能仍补发迟到进度，忽略以保持已取消状态。
+    if (this.status.phase !== 'downloading') return
     this.setStatus({
       phase: 'downloading',
       message: `正在下载更新… ${Math.max(0, Math.min(100, progress.percent)).toFixed(1)}%`,
@@ -527,6 +560,8 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleDownloaded(info: UpdateDriverInfo): void {
+    // 用户取消后底层驱动可能仍补发下载完成事件，忽略以保持已取消状态。
+    if (this.status.phase !== 'downloading') return
     this.setStatus({
       phase: 'downloaded',
       latestVersion: info.version,
@@ -579,12 +614,25 @@ export class UpdateManager {
       manualDownloadPath: undefined
     })
     try {
-      const result = await this.options.manualUpdate.downloadAndOpen(
+      const abortController = new AbortController()
+      this.manualDownloadAbort = abortController
+      const downloadPromise = this.options.manualUpdate.downloadAndOpen(
         this.manualDownloadUrl,
         version,
         (progress) => this.handleProgress(progress),
-        this.manualDownloadIntegrity
+        this.manualDownloadIntegrity,
+        abortController.signal
       )
+      let result
+      try {
+        result = await downloadPromise
+      } finally {
+        if (this.manualDownloadAbort === abortController) {
+          this.manualDownloadAbort = undefined
+        }
+      }
+      // 下载期间用户取消时，迟到的下载完成结果不得覆盖已取消状态。
+      if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
       const integrityNotice = result.verified
         ? ''
         : '；本次更新清单未提供该 DMG 的校验值，安装包未经完整性校验'
@@ -598,13 +646,15 @@ export class UpdateManager {
         manualDownloadPath: result.path
       })
     } catch (error) {
+      // 下载期间用户取消时，底层抛出的中断异常不得覆盖已取消状态。
+      if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
       this.handleError(error)
     }
     return this.getStatus()
   }
 
   /**
-   * 将底层异常转换为设置页可展示的错误状态。
+  * 将底层异常转换为设置页可展示的错误状态。
    * @param error 自动更新异常。
    * @returns 无返回值。
    * @author zhenghq

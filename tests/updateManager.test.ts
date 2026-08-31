@@ -20,6 +20,7 @@ class FakeUpdateDriver implements UpdateDriver {
   listeners: UpdateDriverListeners | null = null
   checkCount = 0
   downloadCount = 0
+  cancelCount = 0
   installCount = 0
 
   /**
@@ -51,6 +52,15 @@ class FakeUpdateDriver implements UpdateDriver {
   }
 
   /**
+   * 记录取消下载调用次数。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelDownload(): void {
+    this.cancelCount += 1
+  }
+
+  /**
    * 记录安装更新调用次数。
    * @returns 无返回值。
    * @author zhenghq
@@ -63,21 +73,33 @@ class FakeUpdateDriver implements UpdateDriver {
 class FakeManualMacUpdateService implements ManualMacUpdateService {
   calls: Array<{ url: string; version: string }> = []
   progressCallbacks = 0
+  /** 取消测试时用于挂起下载直到外部释放。 */
+  blockSignal?: Promise<void>
+  /** 最近一次下载收到的取消信号。 */
+  lastSignal?: AbortSignal
 
   /**
    * 记录手动 macOS 更新包下载和打开请求，并模拟下载进度。
    * @param url DMG 下载地址。
    * @param version 更新版本号。
    * @param onProgress 下载进度回调。
+   * @param integrity 更新清单提供的校验值与文件长度。
+   * @param signal 外部传入的取消信号。
    * @returns 模拟下载文件路径的 Promise。
    * @author zhenghq
    */
   async downloadAndOpen(
     url: string,
     version: string,
-    onProgress?: (progress: UpdateStatus['progress']) => void
+    onProgress?: (progress: UpdateStatus['progress']) => void,
+    integrity?: { sha512?: string; size?: number },
+    signal?: AbortSignal
   ): Promise<{ path: string }> {
     this.calls.push({ url, version })
+    this.lastSignal = signal
+    if (this.blockSignal) {
+      await this.blockSignal
+    }
     if (onProgress) {
       this.progressCallbacks += 1
       onProgress({ percent: 100, transferred: 10, total: 10, bytesPerSecond: 10 })
@@ -222,6 +244,62 @@ test('自动更新应依次广播检查、发现、下载进度和已下载状�
   manager.installUpdate()
   assert.equal(driver.installCount, 1)
   assert.ok(statuses.length >= 5)
+})
+
+test('下载中的自动更新应支持取消并回到可重新下载状态', async () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.available({ version: '1.0.4' })
+  await manager.downloadUpdate()
+  assert.equal(manager.getStatus().phase, 'downloading')
+
+  await manager.cancelDownload()
+  assert.equal(driver.cancelCount, 1)
+  assert.equal(manager.getStatus().phase, 'available')
+  assert.equal(manager.getStatus().progress, undefined)
+
+  // 取消后的迟到进度与下载完成事件不得覆盖已取消状态。
+  driver.listeners?.progress({
+    percent: 60,
+    transferred: 60,
+    total: 100,
+    bytesPerSecond: 10
+  })
+  driver.listeners?.downloaded({ version: '1.0.4' })
+  assert.equal(manager.getStatus().phase, 'available')
+
+  // 取消后用户可以立即重新点击升级重新下载。
+  await manager.downloadUpdate()
+  assert.equal(driver.downloadCount, 2)
+  assert.equal(manager.getStatus().phase, 'downloading')
+})
+
+test('手动 DMG 下载应支持取消并保留断点续传状态', async () => {
+  const { manager, driver, manualUpdate } = createManager('manual')
+  // 模拟真实下载：挂起直到取消信号触发，随后以“下载已取消”结束。
+  manualUpdate.blockSignal = new Promise<void>((_resolve, reject) => {
+    const timer = setInterval(() => {
+      if (manualUpdate.lastSignal?.aborted) {
+        clearInterval(timer)
+        reject(new Error('下载已取消'))
+      }
+    }, 5)
+  })
+
+  driver.listeners?.available({
+    version: '1.0.4',
+    manualDownloadUrl: 'https://example.com/App-1.0.4-mac-arm64.dmg',
+    manualDownloadSize: 1024
+  })
+  const downloading = manager.downloadUpdate()
+  assert.equal(manager.getStatus().phase, 'downloading')
+
+  await manager.cancelDownload()
+  assert.equal(manualUpdate.lastSignal?.aborted, true)
+  await downloading
+  assert.equal(manager.getStatus().phase, 'available')
+  assert.equal(manager.getStatus().progress, undefined)
+  assert.match(manager.getStatus().message, /已取消/)
 })
 
 test('SHA256SUMS 缺少当前安装包时应提示升级', () => {

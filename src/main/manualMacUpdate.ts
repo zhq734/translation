@@ -73,6 +73,7 @@ export interface ManualMacUpdateService {
    * @param version 更新版本号。
    * @param onProgress 下载进度回调。
    * @param integrity 更新清单提供的 sha512 校验值与文件长度。
+   * @param signal 可选的取消信号；触发后下载中断并保留断点续传记录。
    * @returns 下载文件路径与校验结果的 Promise。
    * @author zhenghq
    */
@@ -80,7 +81,8 @@ export interface ManualMacUpdateService {
     url: string,
     version: string,
     onProgress?: (progress: UpdateProgress) => void,
-    integrity?: { sha512?: string; size?: number }
+    integrity?: { sha512?: string; size?: number },
+    signal?: AbortSignal
   ): Promise<ManualMacUpdateResult>
 }
 
@@ -268,6 +270,7 @@ function resolveResponseTotal(response: Response, alreadyCompleted: number): num
  * @param fetcher 注入的网络请求函数。
  * @param initialUrl 初始下载地址。
  * @param headers 请求头，包含续传使用的 Range。
+ * @param signal 可选的取消信号，透传给 fetch 以中断网络请求。
  * @returns 最终响应。
  * @throws 重定向缺少目标地址、次数过多或响应失败时抛出异常。
  * @author zhenghq
@@ -275,12 +278,13 @@ function resolveResponseTotal(response: Response, alreadyCompleted: number): num
 async function requestWithRedirects(
   fetcher: UpdateDownloadFetch,
   initialUrl: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<Response> {
   let currentUrl = initialUrl
   let response: Response | undefined
   for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
-    response = await fetcher(currentUrl, { redirect: 'manual', headers })
+    response = await fetcher(currentUrl, { redirect: 'manual', headers, signal })
     if (response.status < 300 || response.status >= 400) break
     const location = response.headers.get('location')
     if (!location) throw new Error('DMG 下载重定向缺少目标地址')
@@ -299,6 +303,7 @@ async function requestWithRedirects(
  * @param temporaryPath 临时文件路径。
  * @param startOffset 写入起始偏移，续传时为已完成字节数。
  * @param reporter 进度聚合器。
+ * @param signal 可选的取消信号，触发后中断读取循环。
  * @returns 写入完成后的 Promise。
  * @author zhenghq
  */
@@ -306,7 +311,8 @@ async function writeResponseToTemporaryFile(
   response: Response,
   temporaryPath: string,
   startOffset: number,
-  reporter: ReturnType<typeof createUpdateProgressReporter>
+  reporter: ReturnType<typeof createUpdateProgressReporter>,
+  signal?: AbortSignal
 ): Promise<void> {
   const fileHandle = await open(temporaryPath, startOffset > 0 ? 'r+' : 'w')
   let position = startOffset
@@ -314,6 +320,7 @@ async function writeResponseToTemporaryFile(
     if (response.body) {
       const reader = response.body.getReader()
       while (true) {
+        if (signal?.aborted) throw new Error('下载已取消')
         const chunk = await reader.read()
         if (chunk.done) break
         if (!chunk.value) continue
@@ -425,8 +432,9 @@ export function createManualMacUpdateService(
      * 下载指定 DMG、校验完整性、保存到 Downloads 并交给 Finder 打开。
      * @param url 已从更新清单获取的 DMG 下载地址。
      * @param version 更新版本号。
-     * @param onProgress 下载进度回调。
+    * @param onProgress 下载进度回调。
      * @param integrity 更新清单提供的 sha512 校验值与文件长度。
+     * @param signal 可选的取消信号；触发后下载中断并保留断点续传记录。
      * @returns 下载文件路径与校验结果的 Promise。
      * @author zhenghq
      */
@@ -434,8 +442,14 @@ export function createManualMacUpdateService(
       url: string,
       version: string,
       onProgress?: (progress: UpdateProgress) => void,
-      integrity?: { sha512?: string; size?: number }
+      integrity?: { sha512?: string; size?: number },
+      signal?: AbortSignal
     ): Promise<ManualMacUpdateResult> {
+      // 取消信号到达时主动中断后续网络与写入流程。
+      const throwIfAborted = (): void => {
+        if (signal?.aborted) throw new Error('下载已取消')
+      }
+      throwIfAborted()
       const validatedUrl = validateDmgUrl(url)
       const destination = buildDmgPath(options.downloadsDirectory, version, architecture)
       const temporaryPath = resumeTemporaryPath(destination)
@@ -479,7 +493,8 @@ export function createManualMacUpdateService(
             segments,
             concurrency: MAX_DOWNLOAD_CONCURRENCY,
             fetch: fetcher,
-            onProgress
+            onProgress,
+            signal
           })
         } catch (error) {
           // 保留各分片已完成偏移，供用户重试时继续下载。
@@ -503,7 +518,7 @@ export function createManualMacUpdateService(
       reporter.start(completedBytes)
 
       // 请求失败时保留临时文件与进度记录，供用户重试时继续下载。
-      const response = await requestWithRedirects(fetcher, validatedUrl, headers)
+      const response = await requestWithRedirects(fetcher, validatedUrl, headers, signal)
 
       // 服务端忽略 Range 时会返回 200 并重新发送整包，此时必须从头写入。
       const startOffset = completedBytes > 0 && response.status === 206 ? completedBytes : 0
@@ -514,7 +529,7 @@ export function createManualMacUpdateService(
       reporter.setTotal(resolveResponseTotal(response, startOffset))
 
       try {
-        await writeResponseToTemporaryFile(response, temporaryPath, startOffset, reporter)
+        await writeResponseToTemporaryFile(response, temporaryPath, startOffset, reporter, signal)
       } catch (error) {
         const total = expectedTotal > 0 ? expectedTotal : 0
         const written = await stat(temporaryPath).then((info) => info.size).catch(() => 0)

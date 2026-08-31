@@ -91,6 +91,7 @@ const updateStatus = document.getElementById('update-status') as HTMLElement
 const updateInstallHint = document.getElementById('update-install-hint') as HTMLElement
 const checkUpdateButton = document.getElementById('check-update') as HTMLButtonElement
 const updateActionButton = document.getElementById('update-action') as HTMLButtonElement
+const updateCancelButton = document.getElementById('update-cancel') as HTMLButtonElement
 const openReleaseButton = document.getElementById('open-release') as HTMLButtonElement
 const removeQuarantineButton = document.getElementById('remove-quarantine') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
@@ -510,6 +511,8 @@ function renderUpdateStatus(status: UpdateStatus): void {
   updateActionButton.hidden = status.phase !== 'available' &&
     status.phase !== 'downloaded' &&
     !manualDownloadActionAvailable
+  // 仅下载中展示取消按钮，方便用户中断后重新点击升级。
+  updateCancelButton.hidden = status.phase !== 'downloading'
   removeQuarantineButton.hidden = !manualDownloadReady
   if (status.phase === 'downloaded' && !sameVersionNewBuild) {
     updateActionButton.textContent = '立即重启升级'
@@ -581,6 +584,20 @@ async function runUpdateAction(): Promise<void> {
     renderUpdateStatus(status)
   } catch (error) {
     updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  }
+}
+
+/**
+ * 取消正在进行的更新下载，恢复到可重新点击升级的状态。
+ * @returns 操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function cancelUpdateDownload(): Promise<void> {
+  try {
+    renderUpdateStatus(await window.api.cancelUpdateDownload())
+  } catch (error) {
+    updateStatus.textContent = `取消下载失败：${(error as Error).message || '未知错误'}`
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -1486,6 +1503,7 @@ openDoc.addEventListener('click', openDeployDocument)
 stopServiceButton.addEventListener('click', requestStopService)
 checkUpdateButton.addEventListener('click', () => void checkApplicationUpdate())
 updateActionButton.addEventListener('click', () => void runUpdateAction())
+updateCancelButton.addEventListener('click', () => void cancelUpdateDownload())
 openReleaseButton.addEventListener('click', () => void openApplicationRelease())
 removeQuarantineButton.addEventListener('click', () => void removeMacOSQuarantine())
 window.api.onSettingsChanged(renderSettings)
