@@ -666,6 +666,16 @@ For a production release, configure these repository secrets under **Settings â†
 | `APPLE_API_KEY_ID` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect API issuer ID |
 
+### Usage statistics report secrets (optional)
+
+The app sends a silent daily usage-count report (channels and translation providers only; no user text) through QQ Mail SMTP on the first translation of each day. To enable it, configure these repository secrets; without them the packaged app keeps an empty config and silently skips sending:
+
+| Secret | Value |
+| --- | --- |
+| `USAGE_SMTP_USER` | Sender QQ mailbox address |
+| `USAGE_SMTP_PASS` | QQ mailbox SMTP authorization code |
+| `USAGE_REPORT_TO` | Recipient mailbox address |
+
 Convert the `.p12` to a single-line Base64 value with:
 
 ```bash

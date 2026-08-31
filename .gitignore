@@ -16,3 +16,4 @@ build/build-info.json
 *.cer
 *.certSigningRequest
 *.mobileprovision
+build/usage-report-config.json

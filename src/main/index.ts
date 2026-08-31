@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
+import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
 import { createAppLogger, type LogEntry } from './logging'
 import {
   captureSelection,
@@ -586,6 +587,7 @@ async function onReady(): Promise<boolean> {
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
       const output = await translate(text, settings, dingTalkCredentials, aiApiKey)
+      recordWebPageUsage(output.provider)
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
   })
@@ -687,6 +689,7 @@ function registerOcrShortcut(accelerator: string): void {
  */
 function onHotkey(): void {
   latestSelectionGesture += 1
+  markHotkeyTrigger()
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
   const popupCloseVersion = showSelectionReadingPopup()
@@ -1094,6 +1097,7 @@ async function translateText(
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
     const output = await translate(text, requestSettings, dingTalkCredentials, aiApiKey)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    recordTranslationUsage(origin, output.provider)
     showPopup(
       {
         ok: true,

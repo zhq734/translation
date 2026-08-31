@@ -38,6 +38,7 @@ async function runTests() {
       // 排除 Electron 环境模块与可选原生依赖，单元测试通过依赖注入替代
       external: [
         'electron',
+        'nodemailer',
         'uiohook-napi',
         '@gutenye/ocr-node',
         'tesseract.js'
