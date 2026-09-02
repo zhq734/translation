@@ -26,6 +26,11 @@ import {
   shouldRetryCopyInjection,
   type HotkeyModifier
 } from '../shared/hotkeyCaptureTiming'
+import {
+  shouldUseWlPasteForLinux,
+  resolveWlPasteReadOutcome,
+  WL_PASTE_TIMEOUT_MS
+} from '../shared/waylandSelection'
 import type { SelectionCaptureOutcome } from '../shared/selectionCaptureCoordinator'
 
 const execFileP = promisify(execFile)
@@ -88,6 +93,41 @@ const WINDOWS_SELECTION_PRESENCE = [
 
 export class PermissionError extends Error {}
 
+/** wl-paste 不可用提示日志是否已输出，避免每次取词重复刷屏。 */
+let wlPasteUnavailableLogged = false
+
+/**
+ * Linux 下统一的原生选区读取：Wayland 会话优先调用 wl-paste 读取主选区，
+ * wl-paste 不可用、超时或输出为空时回退 Electron `readText('selection')`，
+ * 保证 XWayland 桥接场景（X11 应用划词）仍能读到内容；X11 会话保持原路径不变。
+ * @param signal 用于在请求失效后中止 wl-paste 进程的取消信号。
+ * @returns 读取到的选区文本；无选区或读取失败时返回空串。
+ * @author zhenghq
+ */
+async function readLinuxSelectionByNative(signal?: AbortSignal): Promise<string> {
+  if (shouldUseWlPasteForLinux(process.platform, process.env)) {
+    try {
+      const { stdout } = await execFileP(
+        'wl-paste',
+        ['--primary', '--no-newline'],
+        { timeout: WL_PASTE_TIMEOUT_MS, signal }
+      )
+      const outcome = resolveWlPasteReadOutcome({ ok: true, text: stdout })
+      if (outcome.kind === 'text') return outcome.text
+    } catch (error) {
+      // wl-paste 主选区为空、超时或被取消时静默回退；仅命令缺失时提示一次安装建议。
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' && !wlPasteUnavailableLogged) {
+        wlPasteUnavailableLogged = true
+        console.warn(
+          '[capture] wl-paste 不可用：Wayland 会话建议安装 wl-clipboard 以支持原生应用划词取词'
+        )
+      }
+    }
+  }
+  return clipboard.readText('selection')
+}
+
 /**
  * 在不模拟复制快捷键的前提下检查前台应用当前是否存在选中文字。
  * Linux 读取主选区，macOS 使用辅助功能属性，Windows 使用 UI Automation；无法确认时返回 unknown。
@@ -97,7 +137,8 @@ export class PermissionError extends Error {}
 export async function inspectSelectedTextPresence(): Promise<SelectionPresence> {
   try {
     if (process.platform === 'linux') {
-      return clipboard.readText('selection').trim() ? 'present' : 'empty'
+      const text = await readLinuxSelectionByNative()
+      return text.trim() ? 'present' : 'empty'
     }
 
     if (process.platform === 'darwin') {
@@ -144,7 +185,7 @@ export async function readSelectionByNative(
     if (signal?.aborted) return { status: 'unknown', text: '', reason: 'unknown' }
 
     if (process.platform === 'linux') {
-      const text = clipboard.readText('selection')
+      const text = await readLinuxSelectionByNative(signal)
       return text.trim() ? { status: 'present', text } : { status: 'empty', text: '' }
     }
 
