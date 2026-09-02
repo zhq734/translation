@@ -73,45 +73,77 @@ export function previousDate(today: string): string {
 }
 
 /**
- * 组装统计上报邮件正文（纯文本），仅含计数与版本信息，不含任何用户文本。
+ * 组装统计上报邮件正文（优化排版、大气结构化样式）
+ * 分层展示系统信息、每日使用数据，格式规整、可读性强，无任何用户隐私文本
  * @param stats 统计快照。
  * @param environment 运行环境信息。
  * @param today 当天日期。
  * @param yesterday 前一天日期。
- * @returns 邮件正文。
+ * @returns 格式化邮件正文。
  * @author zhenghq
  */
 export function buildReportBody(
-  stats: UsageStatsData,
-  environment: UsageReportEnvironment,
-  today: string,
-  yesterday: string
+    stats: UsageStatsData,
+    environment: UsageReportEnvironment,
+    today: string,
+    yesterday: string
 ): string {
+  // 统一分隔线，打造规整视觉层级
+  const DIVIDER = '============================================================'
+  const SUB_DIVIDER = '------------------------------------------------------------'
+
   const lines: string[] = [
-    '划词翻译 - 使用量统计日报',
     '',
-    `所属系统: ${environment.platform} (${environment.osRelease})`,
-    `安装版本: ${environment.appVersion} (构建 ${environment.buildId})`,
+    DIVIDER,
+    '                划词翻译 - 每日使用量统计日报',
+    DIVIDER,
+    '',
+    '【 运行环境信息 】',
+    SUB_DIVIDER,
+    `  操作系统：${environment.platform} (内核版本：${environment.osRelease})`,
+    `  应用版本：${environment.appVersion}`,
+    `  构建编号：${environment.buildId}`,
+    '',
+    DIVIDER,
+    '【 每日使用数据统计 】',
+    DIVIDER,
     ''
   ]
+
+  // 遍历昨日、今日数据，分层渲染
   for (const date of [yesterday, today]) {
     const bucket = stats.days[date]
-    lines.push(`【${date}】`)
+    lines.push(`📅 统计日期：${date}`)
+    lines.push(SUB_DIVIDER)
+
     if (!bucket) {
-      lines.push('  无使用记录')
+      lines.push('  ✅ 当日无翻译使用记录')
       lines.push('')
       continue
     }
-    lines.push('  翻译方式:')
+
+    // 翻译方式统计
+    lines.push('  📝 翻译方式使用次数：')
     for (const [channel, count] of Object.entries(bucket.channels)) {
-      lines.push(`    ${CHANNEL_LABELS[channel] ?? channel}: ${count}`)
+      lines.push(`    • ${CHANNEL_LABELS[channel] ?? channel}：${count} 次`)
     }
-    lines.push('  翻译服务:')
+
+    // 翻译服务统计
+    lines.push('')
+    lines.push('  🔧 翻译服务使用次数：')
     for (const [provider, count] of Object.entries(bucket.providers)) {
-      lines.push(`    ${PROVIDER_LABELS[provider] ?? provider}: ${count}`)
+      lines.push(`    • ${PROVIDER_LABELS[provider] ?? provider}：${count} 次`)
     }
+
     lines.push('')
   }
+
+  // 页脚备注
+  lines.push(DIVIDER)
+  lines.push('  说明：本报表为自动化统计数据，仅记录使用次数，不包含任何用户隐私内容')
+  lines.push(DIVIDER)
+  lines.push('')
+
   return lines.join('\n')
 }
 
@@ -127,9 +159,9 @@ export async function sendUsageReport(options: SendUsageReportOptions): Promise<
   try {
     const transporter = options.transporter ?? (options.createTransporter ?? defaultCreateTransporter)(config)
     await transporter.sendMail({
-      from: config.smtpUser,
+      from: `"划词翻译-统计系统" <${config.smtpUser}>`,
       to: config.reportTo,
-      subject: `划词翻译使用量统计 ${today}`,
+      subject: `【划词翻译】每日使用量统计报表 - ${today}`,
       text: buildReportBody(stats, environment, today, yesterday)
     })
     return true
