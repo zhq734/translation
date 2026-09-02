@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { release } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Transporter } from 'nodemailer'
 import type { SendMailOptions } from 'nodemailer'
 
@@ -59,10 +59,61 @@ export interface InstallEventServiceOptions {
   filePath?: string
 }
 
-/** 默认公网 IP 服务。 */
-const PUBLIC_IP_URL = 'https://api.ipify.org'
+/** 默认公网 IP 服务，按顺序回退。 */
+const PUBLIC_IP_URLS = [
+  'https://api.ipify.org',
+  'https://ipv4.icanhazip.com',
+  'https://api.my-ip.io/v4/ip'
+] as const
 /** IPv4 格式校验。 */
 const IPV4_PATTERN = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/u
+/** 单个公网 IP 服务超时时间。 */
+const PUBLIC_IP_TIMEOUT_MS = 5_000
+
+/**
+ * 安装通知配置读取依赖。
+ * @author zhenghq
+ */
+interface ConfigReaderOptions {
+  /** 按优先级排列的候选配置目录。 */
+  getDirectories: () => string[]
+  /** 文件存在性判断。 */
+  exists: (path: string) => boolean
+  /** 配置文件读取函数。 */
+  readConfig: (path: string) => UsageReportConfig
+}
+
+/**
+ * 读取安装通知 SMTP 配置，兼容打包目录和本地运行目录。
+ * @param options 可注入读取依赖。
+ * @returns 配置与命中的配置路径。
+ * @author zhenghq
+ */
+export function loadInstallNotificationConfig(options: ConfigReaderOptions): {
+  config: UsageReportConfig
+  configPath: string | null
+} {
+  for (const directory of Array.from(new Set(options.getDirectories()))) {
+    const configPath = join(directory, 'usage-report-config.json')
+    if (options.exists(configPath)) {
+      return { config: options.readConfig(configPath), configPath }
+    }
+  }
+  return { config: { smtpUser: '', smtpPass: '', reportTo: '' }, configPath: null }
+}
+
+/**
+ * 格式化安装升级事件本地时间。
+ * @param now 事件时间，默认当前时间。
+ * @returns 运行时兼容的中文日期时间字符串。
+ * @author zhenghq
+ */
+export function formatInstallEventTime(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'long'
+  }).format(now)
+}
 
 /**
  * 根据持久化记录判定当前启动事件。
@@ -115,10 +166,17 @@ export function buildInstallEventBody(
 export async function resolvePublicIpAddress(
   fetch: typeof globalThis.fetch = globalThis.fetch
 ): Promise<string | null> {
-  const response = await fetch(PUBLIC_IP_URL)
-  if (!response.ok) return null
-  const value = (await response.text()).trim()
-  return IPV4_PATTERN.test(value) ? value : null
+  for (const url of PUBLIC_IP_URLS) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(PUBLIC_IP_TIMEOUT_MS) })
+      if (!response.ok) continue
+      const value = (await response.text()).trim()
+      if (IPV4_PATTERN.test(value)) return value
+    } catch {
+      // 单个服务失败继续尝试下一个服务
+    }
+  }
+  return null
 }
 
 /**
@@ -208,12 +266,16 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
         connectionTimeout: 15_000,
         socketTimeout: 20_000
       })
-      await transporter.sendMail({
-        from: options.config.smtpUser,
-        to: options.config.reportTo,
-        subject: `划词翻译${event.type === 'install' ? '首次安装' : '升级'} ${event.currentVersion}`,
-        text: buildInstallEventBody(event, { ...options.environment, ip })
-      } satisfies SendMailOptions)
+      try {
+        await transporter.sendMail({
+          from: `"划词翻译" <${options.config.smtpUser}>`,
+          to: options.config.reportTo,
+          subject: `划词翻译${event.type === 'install' ? '首次安装' : '升级'} ${event.currentVersion}`,
+          text: buildInstallEventBody(event, { ...options.environment, ip })
+        } satisfies SendMailOptions)
+      } catch (error) {
+        throw error
+      }
       writeRecord(path, {
         version: currentVersion,
         confirmedAt: new Date().toISOString()
@@ -231,15 +293,19 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
 export async function maybeSendInstallUpgradeNotification(): Promise<boolean> {
   try {
     const electron = require('electron') as typeof import('electron')
-    const configPath = `${electron.app.getAppPath()}/build/usage-report-config.json`
-    if (!existsSync(configPath)) return false
-    const config = JSON.parse(readFileSync(configPath, 'utf8')) as UsageReportConfig
+    const { config, configPath: resolvedConfigPath } = loadInstallNotificationConfig({
+      getDirectories: () => [
+        join(electron.app.getAppPath(), 'build'),
+        electron.app.getAppPath(),
+        join(process.cwd(), 'build'),
+        process.cwd()
+      ],
+      exists: existsSync,
+      readConfig: (path) => JSON.parse(readFileSync(path, 'utf8')) as UsageReportConfig
+    })
+    if (!resolvedConfigPath) return false
     if (!config.smtpUser || !config.smtpPass || !config.reportTo) return false
-    const eventTime = new Intl.DateTimeFormat('zh-CN', {
-      dateStyle: 'medium',
-      timeStyle: 'long',
-      timeZoneName: 'shortOffset'
-    }).format(new Date())
+    const eventTime = formatInstallEventTime()
     const service = createInstallEventService({
       config,
       environment: {
