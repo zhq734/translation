@@ -108,11 +108,29 @@ function waitForPendingPreparation(
 
   return new Promise((resolve) => {
     let finished = false
-    const timer = setTimeout(() => {
+    // 使用单调递增的亚毫秒时钟打点；setTimeout 在部分平台（如 Windows CI）可能提前
+    // 最多约 1ms 触发，需要在超时回调中校验实际经过时间并补齐剩余等待，确保
+    // 等待窗口严格不小于 waitMs，让调用方上报的 waitedMs 恒不低于等待窗口。
+    const startedAt = performance.now()
+    let timer: ReturnType<typeof setTimeout>
+
+    /**
+     * 处理超时：实际经过时间不足等待窗口时补齐剩余时间，否则结束等待。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    const onTimeout = (): void => {
       if (finished) return
+      const remaining = waitMs - (performance.now() - startedAt)
+      if (remaining > 0) {
+        timer = setTimeout(onTimeout, remaining)
+        return
+      }
       finished = true
       resolve({ settled: false, result: null })
-    }, waitMs)
+    }
+
+    timer = setTimeout(onTimeout, waitMs)
 
     void pending.then(
       (result) => {
