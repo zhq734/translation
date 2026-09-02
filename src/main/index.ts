@@ -25,6 +25,7 @@ import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
+import { maybeSendInstallUpgradeNotification } from './installUpgradeNotification'
 import { createAppLogger, type LogEntry } from './logging'
 import {
   captureSelection,
@@ -621,6 +622,8 @@ async function onReady(): Promise<boolean> {
 
   // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
   setTimeout(() => void warnIfNoAccessibility(), 1500)
+  // 避免安装/升级通知网络请求与启动初始化争用资源；失败静默且不阻塞。
+  setTimeout(() => void maybeSendInstallUpgradeNotification(), 1_500)
   return true
 }
 
