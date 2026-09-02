@@ -238,6 +238,85 @@ test('Linux 与 macOS 一键安装脚本应检测平台架构并校验 SHA-256',
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr)
 })
 
+/**
+ * 提取 install.sh 中的 resolve_version 函数并调用，验证真实 Release 标签的解析结果。
+ * @param environmentOverrides 注入函数运行所需的环境变量（版本、仓库、PATH 等）。
+ * @returns 函数执行状态与标准输出、标准错误。
+ * @author zhenghq
+ */
+function runResolveVersion(
+  environmentOverrides: Record<string, string>
+): { status: number | null; stdout: string; stderr: string } {
+  const script = readRepositoryFile('scripts/install.sh')
+  const match = script.match(/^resolve_version\(\) \{[\s\S]*?^\}/mu)
+  assert.notEqual(match, null, 'install.sh 中应存在 resolve_version 函数')
+  // 函数依赖脚本顶部的 REQUESTED_VERSION/REPOSITORY 变量初始化，测试时需要一并注入。
+  const snippet = [
+    'REQUESTED_VERSION="${SELECTION_TRANSLATOR_VERSION:-${GROKBUILD_VERSION:-latest}}"',
+    'REPOSITORY="${SELECTION_TRANSLATOR_REPOSITORY:-zhq734/translation}"',
+    match[0],
+    'resolve_version'
+  ].join('\n')
+  const scriptPath = join(mkdtempSync(join(tmpdir(), 'selection-translator-resolve-fn-')), 'resolve.sh')
+  writeFileSync(scriptPath, snippet)
+  const result = spawnSync('sh', [scriptPath], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '', ...environmentOverrides }
+  })
+  return {
+    status: result.error ? 1 : result.status,
+    stdout: result.stdout,
+    stderr: result.error ? String(result.error) : result.stderr
+  }
+}
+
+/**
+ * 当前 Release 使用大写 V 标签（如 V1.1.5），脚本不应再叠加小写 v 前缀。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Linux 一键安装脚本不应把大写 V 标签解析成 vV 前缀', () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'selection-translator-resolve-version-'))
+  try {
+    const fakeCurlPath = join(temporaryDirectory, 'curl')
+    // latest 解析路径应原样返回 GitHub 重定向后的大写 V 标签。
+    writeFileSync(
+      fakeCurlPath,
+      '#!/bin/sh\nprintf \'%s\\n\' \'https://github.com/zhq734/translation/releases/tag/V1.1.5\'\n'
+    )
+    chmodSync(fakeCurlPath, 0o755)
+
+    const pathWithFakeCurl = `${temporaryDirectory}:${process.env.PATH ?? ''}`
+    const latestResult = runResolveVersion({ PATH: pathWithFakeCurl })
+    assert.equal(latestResult.status, 0, latestResult.stderr)
+    assert.equal(latestResult.stdout.trim(), 'V1.1.5')
+
+    const specifiedResult = runResolveVersion({
+      PATH: pathWithFakeCurl,
+      SELECTION_TRANSLATOR_VERSION: 'V1.1.5'
+    })
+    assert.equal(specifiedResult.status, 0, specifiedResult.stderr)
+    assert.equal(specifiedResult.stdout.trim(), 'V1.1.5')
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 用户传入小写 v 前缀或不带前缀的版本号时，应规范化为 Release 使用的大写 V 标签。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Linux 一键安装脚本应将小写 v 与裸版本号规范化为大写 V 标签', () => {
+  const lowercaseResult = runResolveVersion({ SELECTION_TRANSLATOR_VERSION: 'v0.2.0' })
+  assert.equal(lowercaseResult.status, 0, lowercaseResult.stderr)
+  assert.equal(lowercaseResult.stdout.trim(), 'V0.2.0')
+
+  const bareResult = runResolveVersion({ SELECTION_TRANSLATOR_VERSION: '0.2.0' })
+  assert.equal(bareResult.status, 0, bareResult.stderr)
+  assert.equal(bareResult.stdout.trim(), 'V0.2.0')
+})
+
 
 test('Linux 一键安装脚本应完成下载校验、用户目录安装和默认配置生成', () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'selection-translator-installer-'))

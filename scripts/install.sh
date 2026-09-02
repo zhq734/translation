@@ -67,7 +67,9 @@ resolve_architecture() {
 }
 
 # 解析要安装的 Release 标签，未指定时跟随 GitHub 最新正式版本。
-# @return 在标准输出打印以 v 开头的 Release 标签。
+# Release 标签统一规范化为大写 V 前缀（如 V1.1.5），兼容用户传入的小写 v 或裸版本号，
+# 也兼容 GitHub 重定向返回的既有大写 V 标签，避免拼出 vV1.1.5 这类不存在的下载地址。
+# @return 在标准输出打印以 V 开头的 Release 标签。
 # @author zhenghq
 resolve_version() {
   version="$REQUESTED_VERSION"
@@ -77,13 +79,13 @@ resolve_version() {
   fi
 
   case "$version" in
-    v*) ;;
-    *) version="v${version}" ;;
+    [vV]*) version="V${version#?}" ;;
+    *) version="V${version}" ;;
   esac
   case "$version" in
-    v|*[!0-9A-Za-z._-]*) fail "版本格式不合法：$version" ;;
+    V|*[!0-9A-Za-z._-]*) fail "版本格式不合法：$version" ;;
   esac
-  [ "$version" != 'vlatest' ] || fail '无法解析最新 Release 版本。'
+  [ "$version" != 'Vlatest' ] || fail '无法解析最新 Release 版本。'
   printf '%s\n' "$version"
 }
 
@@ -414,7 +416,8 @@ main() {
   operating_system="$(resolve_operating_system)"
   architecture="$(resolve_architecture)"
   version="$(resolve_version)"
-  asset_version="${version#v}"
+  # 去掉标签上的 V/v 前缀，得到安装包文件名使用的纯版本号（如 1.1.5）。
+  asset_version="${version#[vV]}"
   asset_name="$(resolve_asset_name "$operating_system" "$architecture" "$asset_version")"
   release_base_url="https://github.com/${REPOSITORY}/releases/download/${version}"
 
