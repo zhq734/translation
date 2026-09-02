@@ -41,6 +41,8 @@ test('macOS 打包保持菜单栏应用模式，并在启动阶段按设置控�
   assert.doesNotMatch(mainSource, /tray\.setTitle\(/u)
   assert.match(mainSource, /tray\.setToolTip\('划词翻译'\)/u)
   assert.match(mainSource, /tray\.setContextMenu\(buildTrayMenu\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('click', \(\) => openSettings\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('double-click', \(\) => openSettings\(\)\)/u)
   assert.match(mainSource, /app\.whenReady\(\)[\s\S]*?\.catch\(handleApplicationInitializationFailure\)/u)
 })
 
@@ -92,6 +94,15 @@ test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快�
   assert.match(
     mainSource,
     /label:\s*'划词后自动显示“译”按钮',[\s\S]*?type:\s*'checkbox',[\s\S]*?checked:\s*settings\.triggerMode\s*===\s*'button',[\s\S]*?click:\s*\(menuItem\)\s*=>[\s\S]*?triggerMode:\s*menuItem\.checked\s*\?\s*'button'\s*:\s*'hotkey'/u
+  )
+})
+
+test('macOS 托盘菜单应提供划词服务修复入口', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+
+  assert.match(
+    mainSource,
+    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*'修复 macOS 划词服务…',[\s\S]*?click:\s*\(\)\s*=>\s*promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
   )
 })
 

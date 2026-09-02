@@ -114,6 +114,15 @@ export type UpdatePhase =
 /** 新版本采用的安装方式。 */
 export type UpdateInstallMode = 'automatic' | 'manual' | 'disabled'
 
+/** 本次更新可用的原因。 */
+export type UpdateReason = 'higher-version' | 'same-version-new-build'
+
+/** 本次更新可执行的交付动作。 */
+export type UpdateAction =
+  | 'automatic-download'
+  | 'verified-manual-download'
+  | 'open-release'
+
 export interface UpdateProgress {
   /** 下载完成百分比。 */
   percent: number
@@ -146,6 +155,16 @@ export interface UpdateStatus {
   manualDownloadAvailable?: boolean
   /** 最新安装包在 SHA256SUMS 中的校验状态。 */
   checksumStatus?: 'verified' | 'missing' | 'mismatch' | 'unreachable'
+  /** 本次更新可用的原因；没有可用更新时不存在。 */
+  updateReason?: UpdateReason
+  /** 本次更新可执行的交付动作；没有可用更新时不存在。 */
+  updateAction?: UpdateAction
+  /** 当前安装构建标识的脱敏展示值。 */
+  localBuildLabel?: string
+  /** 远程构建标识的脱敏展示值。 */
+  remoteBuildLabel?: string
+  /** 本地与远程构建元数据是否均可用于比较。 */
+  buildMetadataAvailable?: boolean
 }
 
 /** macOS 应用隔离属性处理结果。 */
@@ -163,6 +182,8 @@ export interface TranslatePayload {
   /** 当前请求序号，用于 Renderer 丢弃过期结果。 */
   requestId?: number
   loading?: boolean
+  /** loading 状态下展示给用户的阶段提示。 */
+  loadingMessage?: string
   original?: string
   translation?: string
   detectedLang?: string
@@ -299,6 +320,8 @@ export interface Settings {
   deepLxUrl: string
   /** 划词后的触发方式。 */
   triggerMode: TriggerMode
+  /** 双击选词后是否显示“译”按钮。 */
+  doubleClickSelectionButtonEnabled: boolean
   /** 是否在 macOS Dock 栏显示应用图标。 */
   showDockIcon: boolean
   /** 是否随系统开机自动启动应用。 */
@@ -581,6 +604,21 @@ export interface DeepLxStatus {
   message?: string
 }
 
+/**
+ * 主进程结构化日志条目，用于设置窗口日志查看界面展示。
+ * @author zhenghq
+ */
+export interface LogEntry {
+  /** 日志产生时间（ISO 字符串）。 */
+  ts: string
+  /** 日志级别，对应 console 方法名。 */
+  level: 'log' | 'info' | 'warn' | 'error'
+  /** 日志来源模块标签。 */
+  scope: string
+  /** 序列化后的日志内容（已截断）。 */
+  message: string
+}
+
 export interface Api {
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
@@ -669,6 +707,12 @@ export interface Api {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void
+  /** 获取内存缓冲中的近期主进程日志（时间升序）。 */
+  getLogHistory(): Promise<LogEntry[]>
+  /** 订阅主进程日志增量推送，返回取消订阅方法。 */
+  onLogEntry(cb: (entries: LogEntry[]) => void): () => void
+  /** 弹出保存对话框导出当日日志文件，返回保存路径；取消时返回 null。 */
+  exportLogs(): Promise<string | null>
   /** 获取 OCR 引擎与模型资产状态。 */
   getOcrStatus(): Promise<OcrStatus>
   checkDeepLx(url: string): Promise<DeepLxStatus>
@@ -731,6 +775,12 @@ export interface Api {
    * @author zhenghq
    */
   downloadUpdate(): Promise<UpdateStatus>
+  /**
+   * 取消正在进行的更新下载，回到可重新下载状态。
+   * @returns 取消操作完成后的自动更新状态。
+   * @author zhenghq
+   */
+  cancelUpdateDownload(): Promise<UpdateStatus>
   /**
    * 安装已下载更新并重新启动应用。
    * @returns 无返回值。

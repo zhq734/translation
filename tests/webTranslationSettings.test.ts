@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS, SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults'
 
 test('网页翻译设置应提供安全默认值并升级设置版本', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 15)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 16)
   assert.equal(DEFAULT_SETTINGS.webTranslationEnabled, true)
   assert.equal(DEFAULT_SETTINGS.webTranslationScope, 'all')
   assert.equal(DEFAULT_SETTINGS.webTranslationDefaultMode, 'target')

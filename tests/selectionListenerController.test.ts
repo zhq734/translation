@@ -89,3 +89,29 @@ test('启动失败后实际状态保持未运行，重新应用设置可以再�
   assert.equal(harness.starts(), 2)
   assert.equal(harness.controller.isRunning(), true)
 })
+
+test('修复系统监听服务后应强制停止并重新启动正在运行的监听', () => {
+  const harness = createListenerHarness()
+  harness.controller.setMode('button')
+
+  harness.controller.restart()
+
+  assert.equal(harness.stops(), 1)
+  assert.equal(harness.starts(), 2)
+  assert.equal(harness.controller.isRunning(), true)
+})
+
+test('快捷键模式或暂停状态下重启不得错误启动划词监听', () => {
+  const hotkeyHarness = createListenerHarness()
+  hotkeyHarness.controller.restart()
+  assert.equal(hotkeyHarness.starts(), 0)
+  assert.equal(hotkeyHarness.stops(), 0)
+
+  const pausedHarness = createListenerHarness()
+  pausedHarness.controller.setMode('button')
+  pausedHarness.controller.pause('ocr')
+  pausedHarness.controller.restart()
+  assert.equal(pausedHarness.starts(), 1)
+  assert.equal(pausedHarness.stops(), 1)
+  assert.equal(pausedHarness.controller.isRunning(), false)
+})

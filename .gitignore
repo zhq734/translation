@@ -6,6 +6,9 @@ dist/
 .DS_Store
 *.log
 
+# 流水线生成的构建元数据
+build/build-info.json
+
 # Apple 代码签名与公证私密文件
 *.key
 *.p8
@@ -13,3 +16,4 @@ dist/
 *.cer
 *.certSigningRequest
 *.mobileprovision
+build/usage-report-config.json

@@ -455,6 +455,12 @@ function renderOcrLoading(payload: TranslatePayload): void {
   ocrCopyBtn.hidden = true
 }
 
+/**
+ * 渲染划词或 OCR 翻译的读取中、成功及失败状态。
+ * @param payload 主进程发送的翻译状态负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
 function renderSelection(payload: TranslatePayload): void {
   const visible = mode === 'selection'
   if (visible) syncLanguageSelectors(payload)
@@ -469,13 +475,13 @@ function renderSelection(payload: TranslatePayload): void {
     lastTranslation = ''
     selectionSpeechLanguage = ''
     selectionProvider = undefined
-    selectionStatus = payload.targetLang
+    selectionStatus = payload.loadingMessage ?? (payload.targetLang
       ? `正在翻译为${langLabel(payload.targetLang)}…`
-      : '正在翻译…'
+      : '正在翻译…')
     if (visible) renderTranslationProviderResult()
     resultEl.textContent = payload.origin === 'ocr'
       ? (payload.original ?? '正在识别图片文字…')
-      : '正在翻译…'
+      : (payload.loadingMessage ?? '正在翻译…')
     resultEl.classList.add('loading')
     originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
     copyBtn.hidden = true

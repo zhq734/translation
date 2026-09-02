@@ -54,13 +54,16 @@ test('弹窗失焦处理应排除顶部原生拖拽区域', () => {
 })
 
 /**
- * 校验弹窗已经显示后更新翻译内容不会重复调用 showInactive，避免打断正在进行的原生窗口拖拽。
+ * 校验 showInactive 只用于弹窗首次显示，已经显示后的普通结果更新不会重复执行首次显示分支。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('翻译结果更新不应在已显示弹窗上重复调用 showInactive', () => {
+test('翻译结果更新不应在已显示弹窗上重复执行非激活首次显示', () => {
   const start = popupMain.indexOf('export function showPopup(')
   const end = popupMain.indexOf('export function hidePopup(', start)
   const showPopupSource = popupMain.slice(start, end)
-  assert.doesNotMatch(showPopupSource, /win\.showInactive\(\)/u)
+  assert.match(
+    showPopupSource,
+    /if \(!alreadyVisible\) \{[\s\S]*?win\.showInactive\(\)[\s\S]*?\} else if \(activate && shownInactive\) \{[\s\S]*?win\.show\(\)/u
+  )
 })

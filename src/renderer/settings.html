@@ -106,6 +106,18 @@
           高级
         </button>
         <button
+          id="settings-tab-logs"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-logs"
+          data-tab="logs"
+          tabindex="-1"
+        >
+          日志
+        </button>
+        <button
           id="settings-tab-about"
           class="settings-tab"
           type="button"
@@ -160,8 +172,16 @@
             </div>
             <p class="field-hint">开启后切换为按钮触发；关闭后切换为仅快捷键。与上方“触发方式”以及托盘菜单开关保持同步。</p>
             <div class="row">
+              <label for="double-click-selection-button-enabled">双击选词</label>
+              <label class="checkbox-control">
+                <input id="double-click-selection-button-enabled" type="checkbox" />
+                双击选词显示“译”按钮
+              </label>
+            </div>
+            <p class="field-hint">关闭后，双击选词不再显示“译”按钮；鼠标拖拽划词仍按上方触发方式处理。</p>
+            <div class="row">
               <label for="hotkey">全局快捷键</label>
-              <input id="hotkey" type="text" placeholder="如 Alt+T / Cmd+Shift+Y" />
+              <input id="hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
             </div>
             <div class="row">
               <label for="autohide">结果自动隐藏</label>
@@ -345,7 +365,7 @@
             </div>
             <div class="row">
               <label for="ocr-hotkey">截图快捷键</label>
-              <input id="ocr-hotkey" type="text" placeholder="如 Alt+O / Cmd+Shift+O" />
+              <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
             </div>
             <div class="row">
               <label for="ocr-lang">识别语言</label>
@@ -553,6 +573,49 @@
         </div>
 
         <div
+          id="settings-panel-logs"
+          class="tab-panel tab-panel-logs"
+          role="tabpanel"
+          aria-labelledby="settings-tab-logs"
+          data-tab-panel="logs"
+          tabindex="0"
+          hidden
+        >
+          <section class="logs-section">
+            <div class="logs-toolbar">
+              <div class="logs-filters" role="group" aria-label="日志级别过滤">
+                <label class="checkbox-control">
+                  <input id="logs-filter-info" type="checkbox" checked />
+                  信息
+                </label>
+                <label class="checkbox-control">
+                  <input id="logs-filter-warn" type="checkbox" checked />
+                  警告
+                </label>
+                <label class="checkbox-control">
+                  <input id="logs-filter-error" type="checkbox" checked />
+                  错误
+                </label>
+              </div>
+              <input
+                id="logs-search"
+                class="logs-search"
+                type="search"
+                placeholder="搜索日志内容"
+                aria-label="搜索日志内容"
+              />
+              <div class="logs-actions">
+                <button id="logs-toggle-pause" class="btn" type="button">暂停</button>
+                <button id="logs-clear" class="btn" type="button">清空</button>
+                <button id="logs-export" class="btn" type="button">导出</button>
+              </div>
+            </div>
+            <div id="logs-list" class="logs-list" role="log" aria-live="polite"></div>
+            <p id="logs-status" class="hint logs-status" role="status" aria-live="polite"></p>
+          </section>
+        </div>
+
+        <div
           id="settings-panel-about"
           class="tab-panel"
           role="tabpanel"
@@ -572,6 +635,10 @@
                 <span class="update-label">最新版本</span>
                 <strong id="latest-version">尚未检查</strong>
               </div>
+              <div id="build-identity-row" hidden>
+                <span class="update-label">构建标识</span>
+                <strong id="build-identity">尚未检查</strong>
+              </div>
             </div>
             <div id="update-progress" class="update-progress" hidden>
               <progress id="update-progress-bar" max="100" value="0"></progress>
@@ -585,6 +652,9 @@
               <button id="open-release" class="btn" type="button">打开发布页</button>
               <button id="update-action" class="btn primary" type="button" hidden>
                 下载并打开 DMG
+              </button>
+              <button id="update-cancel" class="btn" type="button" hidden>
+                取消下载
               </button>
               <button id="remove-quarantine" class="btn" type="button" hidden>
                 解除 macOS 隔离属性

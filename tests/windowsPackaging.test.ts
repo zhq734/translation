@@ -61,7 +61,8 @@ test('Windows NSIS 配置应支持自定义安装目录和快捷方式', () => {
  */
 test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用图标', () => {
   assert.deepEqual(packageJson.build?.win?.extraResources, [
-    { from: 'build/icon.ico', to: 'app-icon.ico' }
+    { from: 'build/icon.ico', to: 'app-icon.ico' },
+    { from: 'build/build-info.json', to: 'build-info.json' }
   ])
   assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh')
   assert.equal(existsSync('build/installer.nsh'), true)

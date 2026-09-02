@@ -38,6 +38,30 @@ export interface SelectionCaptureResult {
 type CaptureSelection = (signal: AbortSignal) => Promise<SelectionCaptureOutcome>
 
 /**
+ * 点击“译”按钮后等待尚未完成的只读预取的最长时间（毫秒）。
+ * 该窗口必须远小于原生直读超时，保证按钮点击响应有界。
+ */
+export const PREPARED_PREFETCH_WAIT_MS = 60
+
+/** 有界消费只读预取的结果状态。 */
+export type PreparedConsumptionStatus =
+  | 'hit'
+  | 'empty'
+  | 'absent'
+  | 'timeout'
+  | 'stale'
+
+/** 一次有界消费只读预取的结果，用于按钮入口决定是否回退复制兜底。 */
+export interface PreparedConsumption {
+  /** 本次消费的判定状态。 */
+  status: PreparedConsumptionStatus
+  /** 命中时的预取结果；未命中时为 null。 */
+  result: SelectionCaptureResult | null
+  /** 实际等待预取的耗时（毫秒）。 */
+  waitedMs: number
+}
+
+/**
  * 在不阻塞主线程的前提下等待选区稳定，并支持请求失效时立即结束等待。
  * @param delayMs 等待时长（毫秒）。
  * @param signal 当前取词请求的取消信号。
@@ -66,6 +90,44 @@ function waitForCaptureDelay(delayMs: number, signal: AbortSignal): Promise<void
 
     signal.addEventListener('abort', finish, { once: true })
     if (signal.aborted) finish()
+  })
+}
+
+/**
+ * 在有界时间内等待尚未完成的只读预取，超时后立即返回而不取消预取。
+ * @param pending 正在进行的预取 Promise。
+ * @param waitMs 允许等待的最长时间（毫秒）。
+ * @returns 预取在窗口内完成时返回 settled 为 true 及其结果，超时返回 settled 为 false。
+ * @author zhenghq
+ */
+function waitForPendingPreparation(
+  pending: Promise<SelectionCaptureResult | null>,
+  waitMs: number
+): Promise<{ settled: boolean; result: SelectionCaptureResult | null }> {
+  if (waitMs <= 0) return Promise.resolve({ settled: false, result: null })
+
+  return new Promise((resolve) => {
+    let finished = false
+    const timer = setTimeout(() => {
+      if (finished) return
+      finished = true
+      resolve({ settled: false, result: null })
+    }, waitMs)
+
+    void pending.then(
+      (result) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        resolve({ settled: true, result })
+      },
+      () => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        resolve({ settled: true, result: null })
+      }
+    )
   })
 }
 
@@ -122,6 +184,17 @@ export class SelectionCaptureCoordinator {
   }
 
   /**
+   * 直接执行复制取词，跳过可能耗时的原生直读，供 Windows 全局快捷键使用。
+   * @param anchor 翻译弹窗使用的选区锚点。
+   * @returns 当前请求的捕获结果；如果请求已被更新则返回 null。
+   * @author zhenghq
+   */
+  captureDirect(anchor?: SelectionAnchor): Promise<SelectionCaptureResult | null> {
+    this.preparedSelection = null
+    return this.enqueue(anchor, false, 0, false, true)
+  }
+
+  /**
    * 取消仍在进行的只读预取，并执行点击按钮专用取词，避免 AX/UIA 直读超时让选区过期。
    * @param anchor 翻译弹窗使用的选区锚点。
    * @returns 当前请求的捕获结果；如果请求已被更新则返回 null。
@@ -156,6 +229,42 @@ export class SelectionCaptureCoordinator {
     if (!pending) return null
     await pending
     return this.consumePrepared()
+  }
+
+  /**
+   * 在有界时间内消费只读预取结果，避免快速点击“译”按钮时丢弃即将完成的原生取词。
+   * 已完成且含文本的缓存立即命中；预取仍在进行时最多等待 waitMs，超时后仅返回未命中，
+   * 由调用方继续执行按钮专用取词，等待过程不会取消预取也不会无界阻塞按钮点击。
+   * @param waitMs 允许等待进行中预取的最长时间（毫秒），默认 PREPARED_PREFETCH_WAIT_MS。
+   * @returns 本次消费的判定状态、命中的预取结果与实际等待耗时。
+   * @author zhenghq
+   */
+  async consumePreparedBounded(
+    waitMs = PREPARED_PREFETCH_WAIT_MS
+  ): Promise<PreparedConsumption> {
+    const startedAt = Date.now()
+    const requestId = this.latestRequestId
+
+    const prepared = this.consumePrepared()
+    if (prepared?.text) return { status: 'hit', result: prepared, waitedMs: 0 }
+    if (prepared) return { status: 'empty', result: null, waitedMs: 0 }
+
+    const pending = this.pendingPreparation
+    if (!pending) return { status: 'absent', result: null, waitedMs: 0 }
+
+    const { settled } = await waitForPendingPreparation(pending, waitMs)
+    const waitedMs = Date.now() - startedAt
+
+    // 等待期间发生新的手势、复制、粘贴或显式失效时，过期预取结果一律丢弃。
+    if (requestId !== this.latestRequestId) {
+      this.preparedSelection = null
+      return { status: 'stale', result: null, waitedMs }
+    }
+
+    const late = this.consumePrepared()
+    if (late?.text) return { status: 'hit', result: late, waitedMs }
+    if (settled) return { status: late ? 'empty' : 'absent', result: null, waitedMs }
+    return { status: 'timeout', result: null, waitedMs }
   }
 
   /**

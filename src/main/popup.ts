@@ -12,6 +12,7 @@ let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
 let pinned = false
 let currentAutoHideMs = 0
+let shownInactive = false
 const pendingPayloads: TranslatePayload[] = []
 
 /**
@@ -21,6 +22,7 @@ const pendingPayloads: TranslatePayload[] = []
  * @author zhenghq
  */
 export function createPopup(preloadPath: string): BrowserWindow {
+  shownInactive = false
   win = new BrowserWindow({
     width: 460,
     height: 360,
@@ -29,6 +31,7 @@ export function createPopup(preloadPath: string): BrowserWindow {
     show: false,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     resizable: true,
     movable: true,
     minimizable: false,
@@ -135,13 +138,15 @@ function deliverPopupPayload(payload: TranslatePayload): void {
  * @param payload 翻译状态或结果。
  * @param autoHideMs 自动隐藏毫秒数，0 表示不自动关闭。
  * @param anchor 首次打开时使用的选区锚点。
+ * @param activate 首次显示时是否激活窗口；取词前传 false 可避免抢走源应用焦点。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function showPopup(
   payload: TranslatePayload,
   autoHideMs: number,
-  anchor?: { x: number; y: number }
+  anchor?: { x: number; y: number },
+  activate = true
 ): void {
   if (!win) return
   currentAutoHideMs = Math.max(0, autoHideMs)
@@ -150,8 +155,12 @@ export function showPopup(
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
     positionNearAnchor(anchor)
-    // 首次显示时获取焦点，确保用户点击其他应用时能够触发 blur 关闭。
+    // Windows 复制取词前使用非激活显示，避免弹窗抢走源应用焦点；取词完成后再激活。
+    activate ? win.show() : win.showInactive()
+    shownInactive = !activate
+  } else if (activate && shownInactive) {
     win.show()
+    shownInactive = false
   }
   scheduleHide(autoHideMs)
 }
@@ -172,6 +181,7 @@ export function showManualTranslationPopup(): void {
   } else {
     win.focus()
   }
+  shownInactive = false
   win.webContents.send('popup:pinned', pinned)
   if (win.webContents.isLoadingMainFrame()) {
     win.webContents.once('did-finish-load', () => {
@@ -191,6 +201,7 @@ export function hidePopup(): void {
   clearHide()
   closeVersion += 1
   pinned = false
+  shownInactive = false
   win?.webContents.send('popup:pinned', false)
   win?.hide()
 }

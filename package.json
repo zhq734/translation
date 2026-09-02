@@ -7,8 +7,8 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "node scripts/build-macos-vision-ocr.mjs && electron-vite dev",
-    "build": "node scripts/build-macos-vision-ocr.mjs && electron-vite build",
+    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
+    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
+    "@types/nodemailer": "^8.0.1",
     "electron": "^33.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
@@ -59,6 +60,7 @@
       "node_modules/tesseract.js/**/*",
       "node_modules/tesseract.js-core/**/*",
       "node_modules/uiohook-napi/**/*",
+      "build/usage-report-config.json",
       "build/tray*.png"
     ],
     "asarUnpack": [
@@ -87,6 +89,10 @@
         {
           "from": "build/macos-vision-ocr",
           "to": "macos-vision-ocr"
+        },
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
         }
       ]
     },
@@ -107,6 +113,10 @@
         {
           "from": "build/icon.ico",
           "to": "app-icon.ico"
+        },
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
         }
       ],
       "icon": "build/icon.ico"
@@ -135,6 +145,12 @@
         }
       ],
       "category": "Utility",
+      "extraResources": [
+        {
+          "from": "build/build-info.json",
+          "to": "build-info.json"
+        }
+      ],
       "artifactName": "SelectionTranslator-${version}-linux-${arch}.${ext}",
       "icon": "build/icon.png"
     },
@@ -143,6 +159,7 @@
   "dependencies": {
     "@gutenye/ocr-node": "^1.4.8",
     "electron-updater": "^6.8.9",
+    "nodemailer": "^9.0.6",
     "tesseract.js": "^7.0.0",
     "uiohook-napi": "^1.5.5",
     "undici": "^6.28.0"

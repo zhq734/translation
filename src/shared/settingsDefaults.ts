@@ -2,7 +2,7 @@ import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvid
 import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 15
+export const SETTINGS_SCHEMA_VERSION = 16
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
+  doubleClickSelectionButtonEnabled: true,
   showDockIcon: false,
   autoLaunch: false,
   proxyMode: 'system',
@@ -156,6 +157,7 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),
     triggerMode,
+    doubleClickSelectionButtonEnabled: merged.doubleClickSelectionButtonEnabled !== false,
     showDockIcon: rawSettings.showDockIcon === true,
     autoLaunch: rawSettings.autoLaunch === true,
     proxyMode: isProxyMode(rawSettings.proxyMode) ? rawSettings.proxyMode : 'system',

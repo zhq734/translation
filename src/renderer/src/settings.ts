@@ -1,5 +1,6 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
+import { formatKeyboardAccelerator } from '../../shared/keyboardAccelerator'
 import { formatUpdateProgressText } from '../../shared/updateProgressFormat'
 import type {
   AiCheckStatus,
@@ -21,6 +22,7 @@ const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
 const triggerMode = document.getElementById('trigger-mode') as HTMLSelectElement
 const triggerHint = document.getElementById('trigger-hint') as HTMLElement
 const autoShowSelectionButton = document.getElementById('auto-show-selection-button') as HTMLInputElement
+const doubleClickSelectionButtonEnabled = document.getElementById('double-click-selection-button-enabled') as HTMLInputElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
@@ -80,6 +82,8 @@ const openDoc = document.getElementById('open-doc') as HTMLButtonElement
 const stopServiceButton = document.getElementById('stop-service') as HTMLButtonElement
 const currentVersion = document.getElementById('current-version') as HTMLElement
 const latestVersion = document.getElementById('latest-version') as HTMLElement
+const buildIdentityRow = document.getElementById('build-identity-row') as HTMLElement
+const buildIdentity = document.getElementById('build-identity') as HTMLElement
 const updateProgress = document.getElementById('update-progress') as HTMLElement
 const updateProgressBar = document.getElementById('update-progress-bar') as HTMLProgressElement
 const updateProgressText = document.getElementById('update-progress-text') as HTMLElement
@@ -87,12 +91,13 @@ const updateStatus = document.getElementById('update-status') as HTMLElement
 const updateInstallHint = document.getElementById('update-install-hint') as HTMLElement
 const checkUpdateButton = document.getElementById('check-update') as HTMLButtonElement
 const updateActionButton = document.getElementById('update-action') as HTMLButtonElement
+const updateCancelButton = document.getElementById('update-cancel') as HTMLButtonElement
 const openReleaseButton = document.getElementById('open-release') as HTMLButtonElement
 const removeQuarantineButton = document.getElementById('remove-quarantine') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
 
-type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'logs' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
@@ -103,6 +108,7 @@ const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'microsoft',
   'deeplx',
   'advanced',
+  'logs',
   'about'
 ]
 const SETTINGS_TAB_STORAGE_KEY = 'selection-translator.settings.active-tab'
@@ -357,6 +363,7 @@ function renderSettings(settings: Settings): void {
   sourceLang.value = settings.sourceLang
   triggerMode.value = settings.triggerMode
   autoShowSelectionButton.checked = settings.triggerMode === 'button'
+  doubleClickSelectionButtonEnabled.checked = settings.doubleClickSelectionButtonEnabled
   hotkey.value = settings.hotkey
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
@@ -475,9 +482,22 @@ function renderUpdateStatus(status: UpdateStatus): void {
       ? 'status update-status online'
       : 'status update-status'
 
+  const sameVersionNewBuild = status.updateReason === 'same-version-new-build'
+  const openReleaseOnly = status.updateAction === 'open-release'
+  const buildLabels = [
+    status.localBuildLabel ? `当前 ${status.localBuildLabel}` : '',
+    status.remoteBuildLabel && status.remoteBuildLabel !== status.localBuildLabel
+      ? `最新 ${status.remoteBuildLabel}`
+      : ''
+  ].filter(Boolean)
+  buildIdentityRow.hidden = buildLabels.length === 0
+  buildIdentity.textContent = buildLabels.join(' → ') || '尚未检查'
+
   const busy = status.phase === 'checking' || status.phase === 'downloading'
-  const hasManualDownload = status.installMode === 'manual' &&
-    status.manualDownloadAvailable === true
+  const hasManualDownload = status.manualDownloadAvailable === true && (
+    status.installMode === 'manual' ||
+    status.updateAction === 'verified-manual-download'
+  )
   const manualDownloadReady = hasManualDownload &&
     status.phase === 'manual-downloaded'
   const manualDownloadActionAvailable = hasManualDownload && (
@@ -491,9 +511,13 @@ function renderUpdateStatus(status: UpdateStatus): void {
   updateActionButton.hidden = status.phase !== 'available' &&
     status.phase !== 'downloaded' &&
     !manualDownloadActionAvailable
+  // 仅下载中展示取消按钮，方便用户中断后重新点击升级。
+  updateCancelButton.hidden = status.phase !== 'downloading'
   removeQuarantineButton.hidden = !manualDownloadReady
-  if (status.phase === 'downloaded') {
+  if (status.phase === 'downloaded' && !sameVersionNewBuild) {
     updateActionButton.textContent = '立即重启升级'
+  } else if (openReleaseOnly) {
+    updateActionButton.textContent = '打开 GitHub Release 手动更新'
   } else if (hasManualDownload) {
     updateActionButton.textContent = manualDownloadReady ? '重新下载 DMG' : '下载并打开 DMG'
   } else {
@@ -514,6 +538,12 @@ function renderUpdateStatus(status: UpdateStatus): void {
 
   if (status.phase === 'disabled') {
     updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
+  } else if (sameVersionNewBuild && openReleaseOnly) {
+    updateInstallHint.textContent = '发现同版本的新构建；当前平台不支持应用内自动安装，请打开 GitHub Release 手动下载覆盖安装。'
+  } else if (sameVersionNewBuild) {
+    updateInstallHint.textContent = '发现同版本的新构建；点击后会下载并校验对应架构的 DMG，仍由你确认拖入“应用程序”覆盖旧版本。'
+  } else if (openReleaseOnly) {
+    updateInstallHint.textContent = '当前更新需要在 GitHub Release 手动下载安装包并覆盖安装。'
   } else if (hasManualDownload) {
     updateInstallHint.textContent = manualDownloadReady
       ? '更新包已下载到“下载”文件夹并打开 DMG；请手动拖入“应用程序”覆盖旧版本，再点击“解除 macOS 隔离属性”。'
@@ -544,6 +574,7 @@ async function checkApplicationUpdate(): Promise<void> {
  */
 async function runUpdateAction(): Promise<void> {
   if (latestUpdateStatus?.phase === 'downloaded' &&
+      latestUpdateStatus.updateReason !== 'same-version-new-build' &&
       latestUpdateStatus.installMode === 'automatic') {
     window.api.installUpdate()
     return
@@ -553,6 +584,20 @@ async function runUpdateAction(): Promise<void> {
     renderUpdateStatus(status)
   } catch (error) {
     updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
+    updateStatus.className = 'status update-status offline'
+  }
+}
+
+/**
+ * 取消正在进行的更新下载，恢复到可重新点击升级的状态。
+ * @returns 操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function cancelUpdateDownload(): Promise<void> {
+  try {
+    renderUpdateStatus(await window.api.cancelUpdateDownload())
+  } catch (error) {
+    updateStatus.textContent = `取消下载失败：${(error as Error).message || '未知错误'}`
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -639,6 +684,17 @@ function saveAutoShowSelectionButton(): void {
 }
 
 /**
+ * 保存双击选词后是否显示“译”按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDoubleClickSelectionButtonEnabled(): void {
+  void save({
+    doubleClickSelectionButtonEnabled: doubleClickSelectionButtonEnabled.checked
+  })
+}
+
+/**
  * 保存全局快捷键。
  * @returns 无返回值。
  * @author zhenghq
@@ -652,6 +708,21 @@ function saveHotkey(): void {
     return
   }
   void save({ hotkey: accelerator })
+}
+
+/**
+ * 记录翻译快捷键的键盘按下事件并立即保存。
+ * @param event 用户按下快捷键产生的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleTranslationHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  hotkey.value = accelerator
+  saveHotkey()
 }
 
 /**
@@ -727,6 +798,21 @@ function saveOcrSettings(): void {
     ocrScale: Number(ocrScale.value),
     ocrTesseractEnabled: ocrTesseractEnabled.checked
   })
+}
+
+/**
+ * 记录 OCR 快捷键的键盘按下事件并立即保存。
+ * @param event 用户按下快捷键产生的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  ocrHotkey.value = accelerator
+  saveOcrSettings()
 }
 
 /**
@@ -1351,7 +1437,9 @@ targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)
 autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
+doubleClickSelectionButtonEnabled.addEventListener('change', saveDoubleClickSelectionButtonEnabled)
 hotkey.addEventListener('change', saveHotkey)
+hotkey.addEventListener('keydown', handleTranslationHotkeyKeydown)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 autoLaunch.addEventListener('change', saveAutoLaunch)
@@ -1363,6 +1451,7 @@ webTranslationMaxChars.addEventListener('change', saveWebTranslationSettings)
 webTranslationDefaultMode.addEventListener('change', saveWebTranslationSettings)
 ocrEnginePreference.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('change', saveOcrSettings)
+ocrHotkey.addEventListener('keydown', handleOcrHotkeyKeydown)
 ocrLang.addEventListener('change', saveOcrSettings)
 ocrScale.addEventListener('change', saveOcrSettings)
 ocrTesseractEnabled.addEventListener('change', saveOcrSettings)
@@ -1414,9 +1503,193 @@ openDoc.addEventListener('click', openDeployDocument)
 stopServiceButton.addEventListener('click', requestStopService)
 checkUpdateButton.addEventListener('click', () => void checkApplicationUpdate())
 updateActionButton.addEventListener('click', () => void runUpdateAction())
+updateCancelButton.addEventListener('click', () => void cancelUpdateDownload())
 openReleaseButton.addEventListener('click', () => void openApplicationRelease())
 removeQuarantineButton.addEventListener('click', () => void removeMacOSQuarantine())
 window.api.onSettingsChanged(renderSettings)
 window.api.onUpdateStatusChanged(renderUpdateStatus)
 
 void initialize()
+
+// ---- 日志查看面板 ----
+
+import type { LogEntry } from '../../shared/types'
+
+const logsList = document.getElementById('logs-list') as HTMLElement
+const logsStatus = document.getElementById('logs-status') as HTMLElement
+const logsSearch = document.getElementById('logs-search') as HTMLInputElement
+const logsFilterInfo = document.getElementById('logs-filter-info') as HTMLInputElement
+const logsFilterWarn = document.getElementById('logs-filter-warn') as HTMLInputElement
+const logsFilterError = document.getElementById('logs-filter-error') as HTMLInputElement
+const logsTogglePauseButton = document.getElementById('logs-toggle-pause') as HTMLButtonElement
+const logsClearButton = document.getElementById('logs-clear') as HTMLButtonElement
+const logsExportButton = document.getElementById('logs-export') as HTMLButtonElement
+
+/** 日志列表 DOM 渲染上限，超出时移除最旧节点，保持界面流畅。 */
+const LOGS_RENDER_LIMIT = 500
+
+/** 日志面板的全部条目（含被过滤的），清空视图前与缓冲同步。 */
+let logsViewEntries: LogEntry[] = []
+/** 暂停期间暂存的增量日志，恢复后统一补显。 */
+let logsPendingEntries: LogEntry[] = []
+let logsPaused = false
+let logsFollowTail = true
+let logsInitialized = false
+
+/**
+ * 将日志级别映射到过滤复选框状态，console.log 归入信息级别展示。
+ * @param entry 日志条目。
+ * @returns 该级别当前是否允许展示。
+ * @author zhenghq
+ */
+function isLogLevelVisible(entry: LogEntry): boolean {
+  if (entry.level === 'error') return logsFilterError.checked
+  if (entry.level === 'warn') return logsFilterWarn.checked
+  return logsFilterInfo.checked
+}
+
+/**
+ * 判断日志条目是否通过当前级别过滤与关键字搜索。
+ * @param entry 日志条目。
+ * @returns 通过过滤时返回 true。
+ * @author zhenghq
+ */
+function isLogEntryVisible(entry: LogEntry): boolean {
+  if (!isLogLevelVisible(entry)) return false
+  const keyword = logsSearch.value.trim().toLowerCase()
+  if (!keyword) return true
+  return entry.message.toLowerCase().includes(keyword) || entry.scope.toLowerCase().includes(keyword)
+}
+
+/**
+ * 创建单条日志的 DOM 节点。
+ * @param entry 日志条目。
+ * @returns 日志行元素。
+ * @author zhenghq
+ */
+function createLogRow(entry: LogEntry): HTMLElement {
+  const row = document.createElement('div')
+  row.className = `log-row log-level-${entry.level}`
+  const time = document.createElement('span')
+  time.className = 'log-time'
+  time.textContent = entry.ts.slice(11, 19)
+  const level = document.createElement('span')
+  level.className = 'log-level'
+  level.textContent = entry.level.toUpperCase()
+  const scope = document.createElement('span')
+  scope.className = 'log-scope'
+  scope.textContent = `[${entry.scope}]`
+  const message = document.createElement('span')
+  message.className = 'log-message'
+  message.textContent = entry.message
+  row.append(time, level, scope, message)
+  return row
+}
+
+/**
+ * 裁剪日志列表至渲染上限，丢弃最旧的 DOM 节点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function trimLogsList(): void {
+  while (logsList.childElementCount > LOGS_RENDER_LIMIT) {
+    logsList.firstElementChild?.remove()
+  }
+}
+
+/**
+ * 将日志条目追加渲染到列表（应用过滤），并保持尾部跟随或裁剪。
+ * @param entries 待追加的日志条目。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function appendLogRows(entries: LogEntry[]): void {
+  const fragment = document.createDocumentFragment()
+  for (const entry of entries) {
+    if (isLogEntryVisible(entry)) fragment.append(createLogRow(entry))
+  }
+  logsList.append(fragment)
+  trimLogsList()
+  if (logsFollowTail) logsList.scrollTop = logsList.scrollHeight
+}
+
+/**
+ * 按当前过滤条件全量重建日志列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function rerenderLogsList(): void {
+  logsList.textContent = ''
+  appendLogRows(logsViewEntries)
+}
+
+/**
+ * 接收主进程增量日志：暂停时暂存，否则直接展示。
+ * @param entries 增量日志条目批次。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleIncomingLogEntries(entries: LogEntry[]): void {
+  if (logsPaused) {
+    logsPendingEntries.push(...entries)
+    return
+  }
+  logsViewEntries.push(...entries)
+  appendLogRows(entries)
+}
+
+/**
+ * 初始化日志面板：拉取历史、订阅增量、绑定工具栏事件（幂等）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeLogsPanel(): Promise<void> {
+  if (logsInitialized) return
+  logsInitialized = true
+  logsViewEntries = await window.api.getLogHistory()
+  appendLogRows(logsViewEntries)
+  window.api.onLogEntry(handleIncomingLogEntries)
+
+  for (const filter of [logsFilterInfo, logsFilterWarn, logsFilterError]) {
+    filter.addEventListener('change', rerenderLogsList)
+  }
+  logsSearch.addEventListener('input', rerenderLogsList)
+  logsList.addEventListener('scroll', () => {
+    // 用户上滚时暂停自动跟随，回到底部附近时恢复
+    const distanceToBottom = logsList.scrollHeight - logsList.scrollTop - logsList.clientHeight
+    logsFollowTail = distanceToBottom < 24
+  })
+  logsTogglePauseButton.addEventListener('click', () => {
+    logsPaused = !logsPaused
+    logsTogglePauseButton.textContent = logsPaused ? '恢复' : '暂停'
+    if (!logsPaused && logsPendingEntries.length > 0) {
+      const pending = logsPendingEntries
+      logsPendingEntries = []
+      logsViewEntries.push(...pending)
+      appendLogRows(pending)
+    }
+  })
+  logsClearButton.addEventListener('click', () => {
+    // 仅清空界面视图，不影响主进程内存缓冲与日志文件
+    logsViewEntries = []
+    logsPendingEntries = []
+    logsList.textContent = ''
+  })
+  logsExportButton.addEventListener('click', () => {
+    void (async () => {
+      const savedPath = await window.api.exportLogs()
+      if (savedPath === null) return
+      logsStatus.textContent = `日志已导出到 ${savedPath}`
+      setTimeout(() => { logsStatus.textContent = '' }, 4000)
+    })()
+  })
+}
+
+// 切换到日志 Tab 时懒初始化：打开瞬间补历史，之后接增量推送
+for (const button of settingsTabButtons) {
+  button.addEventListener('click', () => {
+    if (button.dataset.tab === 'logs') void initializeLogsPanel()
+  })
+}
+// 通过 URL 查询参数直达日志 Tab 时同样需要初始化
+if (readSettingsTabFromQuery() === 'logs') void initializeLogsPanel()

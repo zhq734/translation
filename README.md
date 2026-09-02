@@ -157,6 +157,14 @@ curl -fsSL \
 irm https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1 | iex
 ```
 
+> Windows Terminal is only a terminal host. Make sure the current tab uses **Windows PowerShell** or **PowerShell 7**. Do not paste the command above directly into Command Prompt, Git Bash, or WSL; `irm` and `iex` are PowerShell aliases.
+
+If the current shell is Command Prompt, run the following command to start the installer through PowerShell:
+
+```cmd
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1' | Invoke-Expression"
+```
+
 Pin a version with `SELECTION_TRANSLATOR_VERSION` (with or without the `v` prefix). For compatibility with existing one-click commands, `GROKBUILD_VERSION` is also accepted. If the project moves to another GitHub repository, set `SELECTION_TRANSLATOR_REPOSITORY=owner/repository`:
 
 ```bash
@@ -205,6 +213,18 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` an
 - Update checks also read `SHA256SUMS` from the same Release and compare it with GitHub Release asset digests; even when the version is unchanged, a missing or mismatched checksum prompts an upgrade;
 - Manual macOS updates verify the DMG's sha512 before opening it. A mismatch deletes the file and reports the failure; when the update manifest has no matching checksum, the status explicitly states the package was not integrity-checked;
 - If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
+
+#### Same-version rebuild detection
+
+Every official pipeline build generates `build-info.json` with a fixed shape: `schemaVersion`, `version`, `buildId`, `sourceCommit`, `workflowRunId`, and `workflowRunAttempt`. The `buildId` is derived from the GitHub Actions run ID and run attempt (`github-run-<run_id>-attempt-<attempt>`), so re-running or retrying the same commit still yields a different build identity. The same file is embedded in the resources directory of every platform installer and uploaded as a Release asset.
+
+- Update checks compare SemVer as before and additionally download `build-info.json` from the Release, verify its SHA-256 against the digest reported by the GitHub API, and cross-check the version against the Release;
+- When the version matches but the build identity differs, Settings reports a new build of the same version and shows redacted short labels for the installed and latest builds;
+- Same-version builds never enter the `electron-updater` automatic download or install path. macOS reuses the existing sha512/`SHA256SUMS`-verified manual DMG download when a matching architecture is resolvable; Windows, Linux, and every other case only offer an "open GitHub Release" action;
+- Missing, corrupted, digest-mismatched, or unsupported build metadata degrades to the existing SemVer behaviour: no false update prompts, and no normal check turned into an error state;
+- Migration limit: only installs that already contain this capability can detect a same-version re-release. Ship the first compatible version with an incremented SemVer; existing users migrate through a version upgrade or one manual install.
+
+Release operations: the official pipeline runs `node scripts/generate-build-info.mjs` before packaging (requires `GITHUB_REF_NAME`, `GITHUB_SHA`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`, and fails when any is missing). The release job regenerates the same metadata, confirms it belongs to the current workflow run with `--check`, and uploads it with `--clobber` alongside the installers and `SHA256SUMS`. Local `npm run build` uses `--allow-local-fallback` to emit a `local-development` placeholder identity that requires no GitHub environment variables and must not be published.
 
 > The already-published `V1.0.3` release does not contain the updater code or the required `latest*.yml` / `.blockmap` metadata, so users of that version must manually install the first release containing this feature. Subsequent releases must upload installers, updater metadata, differential files, and `SHA256SUMS` together. Prefer lowercase tags such as `v1.0.4`.
 
@@ -645,6 +665,16 @@ For a production release, configure these repository secrets under **Settings â†
 | `APPLE_API_KEY_P8` | Complete App Store Connect API key `.p8` text, including its header and footer |
 | `APPLE_API_KEY_ID` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect API issuer ID |
+
+### Usage statistics report secrets (optional)
+
+The app sends a silent daily usage-count report (channels and translation providers only; no user text) through QQ Mail SMTP on the first translation of each day. To enable it, configure these repository secrets; without them the packaged app keeps an empty config and silently skips sending:
+
+| Secret | Value |
+| --- | --- |
+| `USAGE_SMTP_USER` | Sender QQ mailbox address |
+| `USAGE_SMTP_PASS` | QQ mailbox SMTP authorization code |
+| `USAGE_REPORT_TO` | Recipient mailbox address |
 
 Convert the `.p12` to a single-line Base64 value with:
 

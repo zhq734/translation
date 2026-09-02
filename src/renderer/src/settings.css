@@ -24,7 +24,7 @@ body {
 .container {
   display: flex;
   flex-direction: column;
-  width: min(100%, 760px);
+  width: min(100%, 1100px);
   height: 100vh;
   min-height: 0;
   margin: 0 auto;
@@ -127,6 +127,11 @@ h1 {
   display: none;
 }
 
+/* 日志面板使用 flex 布局，[hidden] 时需以更高优先级覆盖 display */
+.tab-panel.tab-panel-logs[hidden] {
+  display: none;
+}
+
 section {
   margin-bottom: 16px;
   border: 1px solid var(--border-default);
@@ -184,6 +189,15 @@ input[type='password'],
 input[type='number'] {
   min-height: 36px;
   padding: 7px 10px;
+}
+
+[data-hotkey-recorder] {
+  cursor: pointer;
+  caret-color: transparent;
+}
+
+[data-hotkey-recorder]:focus {
+  cursor: crosshair;
 }
 
 textarea {
@@ -513,9 +527,13 @@ input[type='number']:disabled {
 
 .update-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.update-summary > div[hidden] {
+  display: none;
 }
 
 .update-summary > div {
@@ -657,4 +675,129 @@ input[type='number']:disabled {
   .update-actions .btn {
     flex: 1 1 100%;
   }
+}
+
+/* ---- 日志查看面板 ---- */
+
+.tab-panel-logs {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+
+.logs-section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  border: none;
+  padding: 0;
+  margin-bottom: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.logs-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+}
+
+.logs-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logs-search {
+  flex: 1;
+  min-width: 120px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.logs-search:focus-visible {
+  outline: none;
+  border-color: var(--button-bg);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.logs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+}
+
+.log-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+}
+
+.log-time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.log-level {
+  flex: 0 0 auto;
+  min-width: 44px;
+  font-weight: 600;
+}
+
+.log-level-log .log-level,
+.log-level-info .log-level {
+  color: var(--text-muted);
+}
+
+.log-level-warn .log-level {
+  color: var(--button-bg);
+}
+
+.log-level-error .log-level,
+.log-level-error .log-message {
+  color: var(--status-error);
+}
+
+.log-scope {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.log-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.logs-status {
+  flex: 0 0 auto;
+  padding-top: 6px;
+  color: var(--status-success);
 }

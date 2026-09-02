@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Api,
+  LogEntry,
   TranslatePayload,
   ManualTranslateRequest,
   Settings,
@@ -312,6 +313,29 @@ const api: Api = {
     return () => ipcRenderer.removeListener('settings:changed', listener)
   },
   /**
+   * 获取内存缓冲中的近期主进程日志。
+   * @returns 按时间升序排列的结构化日志条目。
+   * @author zhenghq
+   */
+  getLogHistory: (): Promise<LogEntry[]> => ipcRenderer.invoke('logs:get-history'),
+  /**
+   * 订阅主进程日志增量推送。
+   * @param callback 日志条目批次回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onLogEntry(callback: (entries: LogEntry[]) => void) {
+    const listener = (_event: unknown, entries: LogEntry[]): void => callback(entries)
+    ipcRenderer.on('logs:entry', listener)
+    return () => ipcRenderer.removeListener('logs:entry', listener)
+  },
+  /**
+   * 弹出保存对话框导出当日日志文件。
+   * @returns 保存路径；用户取消时返回 null。
+   * @author zhenghq
+   */
+  exportLogs: (): Promise<string | null> => ipcRenderer.invoke('logs:export'),
+  /**
    * 获取 OCR 引擎与模型资产状态。
    * @returns OCR 状态。
    * @author zhenghq
@@ -407,6 +431,13 @@ const api: Api = {
    * @author zhenghq
    */
   downloadUpdate: (): Promise<UpdateStatus> => ipcRenderer.invoke('updater:download'),
+  /**
+   * 取消正在进行的更新下载，回到可重新下载状态。
+   * @returns 取消操作完成后的自动更新状态。
+   * @author zhenghq
+   */
+  cancelUpdateDownload: (): Promise<UpdateStatus> =>
+    ipcRenderer.invoke('updater:cancel-download'),
   /**
    * 安装已下载更新并重新启动应用。
    * @returns 无返回值。

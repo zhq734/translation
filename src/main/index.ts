@@ -18,18 +18,22 @@ import {
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile, unlink } from 'node:fs/promises'
+import { copyFile, readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
+import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
+import { createAppLogger, type LogEntry } from './logging'
 import {
   captureSelection,
   captureSelectionByNativeOnly,
   captureSelectionAfterButtonClick,
   PermissionError,
-  checkAccessibilityPermission
+  checkAccessibilityPermission,
+  setPendingCopyModifierRelease,
+  setPendingMacOSCommandWasDown
 } from './capture'
 import {
   checkDingTalk as checkDingTalkTranslation,
@@ -68,6 +72,12 @@ import { SelectionListenerController } from './selectionListenerController'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
+  resolveHotkeyCaptureDelay,
+  resolveHotkeyModifiers,
+  shouldReleaseHotkeyModifiersBeforeCopy
+} from '../shared/hotkeyCaptureTiming'
+import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
+import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
@@ -86,6 +96,10 @@ import {
   SelectionCaptureCoordinator,
   type SelectionCaptureResult
 } from '../shared/selectionCaptureCoordinator'
+import {
+  recordCaptureOutcome,
+  resetCopyTimeoutTracker
+} from './copyTimeoutTracker'
 import type {
   DingTalkCheckStatus,
   DingTalkConfigPatch,
@@ -348,6 +362,25 @@ function activateExistingPageOrOpenSettings(): void {
   openSettings()
 }
 
+// ---- 主进程日志层 ----
+// 尽早初始化：包装 console 输出，按天滚动落盘并保留最近 1 天，供设置窗口实时查看。
+// 必须放在其余模块日志输出之前，确保启动期日志也被采集。
+// @author zhenghq
+const appLogger = createAppLogger({ logDir: app.getPath('logs') })
+
+/**
+ * 向存活的设置窗口推送增量日志；窗口未打开时不做任何推送。
+ * @param entries 同 tick 聚合后的日志条目。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function pushLogEntries(entries: LogEntry[]): void {
+  if (!settingsWin || settingsWin.isDestroyed()) return
+  settingsWin.webContents.send('logs:entry', entries)
+}
+
+appLogger.subscribe(pushLogEntries)
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -559,6 +592,7 @@ async function onReady(): Promise<boolean> {
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
       const output = await translate(text, settings, dingTalkCredentials, aiApiKey)
+      recordWebPageUsage(output.provider)
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
   })
@@ -660,9 +694,30 @@ function registerOcrShortcut(accelerator: string): void {
  */
 function onHotkey(): void {
   latestSelectionGesture += 1
+  markHotkeyTrigger()
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
-  queueSelectionTranslation()
+  const popupCloseVersion = showSelectionReadingPopup()
+  const captureDelay = resolveHotkeyCaptureDelay(process.platform)
+  const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
+  if (process.platform === 'darwin') {
+    setPendingMacOSCommandWasDown(hotkeyModifiers.includes('meta'))
+  }
+  // Windows 的全局快捷键在按键按下阶段回调，用户此时仍按住 Alt、Control 等修饰键，
+  // 注入的复制快捷键会与这些残留修饰键叠加成其他组合而不触发复制，导致取词超时。
+  // 先登记这些修饰键，模拟复制前会显式释放左右两侧按键。
+  if (shouldReleaseHotkeyModifiersBeforeCopy(process.platform)) {
+    setPendingCopyModifierRelease(hotkeyModifiers)
+  }
+  if (captureDelay > 0) {
+    // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
+    setTimeout(
+      () => queueSelectionTranslation(undefined, undefined, true, popupCloseVersion),
+      captureDelay
+    )
+    return
+  }
+  queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
 }
 
 /**
@@ -711,7 +766,7 @@ function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean
 }
 
 /**
- * 安排一次选区处理动作；按钮模式显示图标并后台只读预取文本，完整取词等用户点击确认。
+ * 安排一次选区处理动作；按钮模式显示图标，支持快速预取的平台后台只读取词。
  * @param anchor 选区按钮或翻译弹窗使用的屏幕锚点。
  * @returns 无返回值。
  * @author zhenghq
@@ -728,9 +783,10 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   if (action === 'show-button') {
     selectionInteraction.showButton()
     showSelectionButton(anchor)
-    // 按钮显示期间后台只读直读预取文本：不注入复制键、不写剪贴板，
-    // 避免用户把鼠标移到“译”按钮期间选区失效，导致点击后复制兜底超时。
-    void selectionCapture.prepare(anchor)
+    // Windows UIA 需要冷启动 PowerShell，且串行预取会拖慢点击后的复制取词，因此直接跳过。
+    if (shouldPrefetchSelectionForButton(process.platform)) {
+      void selectionCapture.prepare(anchor)
+    }
     return
   }
 
@@ -743,8 +799,8 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
- * 处理按钮模式的双击选词：立即显示“译”按钮，再用只读直读后台预取选中文字。
- * 全程不发送复制快捷键、不写剪贴板；预取成功时供点击按钮直接消费，失败时由完整取词兜底。
+ * 处理按钮模式的双击选词：立即显示“译”按钮，并在支持快速预取的平台后台只读取词。
+ * Windows 跳过 PowerShell/UIA 预取，点击按钮后直接使用原生模块发送复制快捷键。
  * @param gesture 当前双击选词手势及按钮锚点。
  * @returns 选区检查完成后的 Promise。
  * @author zhenghq
@@ -759,6 +815,8 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
   // 双击场景先显示按钮，避免系统辅助功能直读失败时用户完全看不到入口。
   selectionInteraction.showButton()
   showSelectionButton(gesture.anchor)
+
+  if (!shouldPrefetchSelectionForButton(process.platform)) return
 
   // 按钮显示后再等待系统提交选区并做只读预取；不发送复制快捷键、不写剪贴板。
   // 预取结果只用于点击时消费，失败时由点击流程继续走完整取词兜底。
@@ -786,7 +844,9 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
     return
   }
 
-  if (gesture.clicks >= 2 && getSettings().triggerMode === 'button') {
+  const settings = getSettings()
+  if (gesture.clicks >= 2 && settings.triggerMode === 'button') {
+    if (!settings.doubleClickSelectionButtonEnabled) return
     void scheduleDoubleClickSelectionButton(gesture)
     return
   }
@@ -850,21 +910,61 @@ function handlePasteShortcut(): void {
 }
 
 /**
+ * 非激活显示选区读取状态，使源应用继续保持焦点以便随后复制取词。
+ * @param anchor 弹窗定位锚点；省略时使用当前鼠标位置。
+ * @returns 显示读取状态时的弹窗关闭版本号，用于阻止关闭后的异步结果重新打开弹窗。
+ * @author zhenghq
+ */
+function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
+  const settings = getSettings()
+  const popupCloseVersion = getPopupCloseVersion()
+  showPopup(
+    {
+      ok: true,
+      origin: 'selection',
+      loading: true,
+      loadingMessage: '正在读取选中文字…',
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    },
+    0,
+    anchor,
+    false
+  )
+  return popupCloseVersion
+}
+
+/**
  * 捕获当前选中文字，并在取词完成后执行翻译。
  * @param anchor 本次选区右上角锚点。
  * @param interactionToken 已经取得所有权的交互 token；省略时创建新的翻译流程。
+ * @param directCapture 是否跳过原生直读并直接执行复制取词。
+ * @param popupCloseVersion 读取弹窗显示时的关闭版本；变化后丢弃异步结果。
  * @returns 无返回值。
  * @author zhenghq
  */
 function queueSelectionTranslation(
   anchor?: { x: number; y: number },
-  interactionToken?: number
+  interactionToken?: number,
+  directCapture = false,
+  popupCloseVersion?: number
 ): void {
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
+  if (popupCloseVersion !== undefined &&
+      popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
   renewInternalActivationLease()
-  void selectionCapture.capture(anchor).then((result) => {
+  const capture = directCapture
+    ? selectionCapture.captureDirect(anchor)
+    : selectionCapture.capture(anchor)
+  void capture.then((result) => {
     if (!selectionInteraction.isCurrent(token)) return
+    if (popupCloseVersion !== undefined &&
+        popupCloseVersion !== getPopupCloseVersion()) {
+      releaseSelectionInteraction(token)
+      return
+    }
     if (result) handleSelectionCaptureResult(result, token)
     else releaseSelectionInteraction(token)
   })
@@ -877,23 +977,30 @@ function queueSelectionTranslation(
  */
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
+  setPendingMacOSCommandWasDown(false)
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
   const anchor = lastSelectionAnchor
   latestSelectionGesture += 1
   renewInternalActivationLease()
   hideSelectionButton()
+  const popupCloseVersion = showSelectionReadingPopup(anchor)
   try {
-    // 只消费已经完成且有文本的预取，不等待可能卡住的 AX/UIA 直读；
-    // 预取未完成或为空时立即取消它，再走按钮专用取词，尽快发送复制快捷键。
-    const prepared = selectionCapture.consumePrepared()
-    if (!selectionInteraction.isCurrent(interactionToken)) return
-    const result = prepared?.text
-      ? prepared
-      : await selectionCapture.captureFromButton(anchor)
-    if (!selectionInteraction.isCurrent(interactionToken)) return
+    // 先在很短的有界窗口内消费只读预取：已完成的缓存立即命中，尚未完成的预取最多再等
+    // PREPARED_PREFETCH_WAIT_MS，避免快速点击时丢弃即将产出的原生取词结果。
+    // 窗口到期仍无文本时才取消预取并走按钮专用取词，绝不无界等待 AX/UIA 直读。
+    const consumption = await selectionCapture.consumePreparedBounded()
+    console.log(
+      `[capture] button-prefetch status=${consumption.status} waitedMs=${consumption.waitedMs}`
+    )
+    if (!selectionInteraction.isCurrent(interactionToken) ||
+        popupCloseVersion !== getPopupCloseVersion()) return
+    const result = consumption.result ?? await selectionCapture.captureFromButton(anchor)
+    if (!selectionInteraction.isCurrent(interactionToken) ||
+        popupCloseVersion !== getPopupCloseVersion()) return
     selectionCapture.invalidate()
-    if (result) handleSelectionCaptureResult(result, interactionToken)
+    if (result) handleSelectionCaptureResult(result, interactionToken, true)
+    else hidePopup()
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
         selectionInteraction.snapshot().state === 'capturing') {
@@ -906,10 +1013,16 @@ async function translateSelectionButton(): Promise<void> {
  * 处理取词结果，统一展示权限错误、空选区提示或启动翻译。
  * @param result 选中文字捕获结果。
  * @param interactionToken 当前取词流程 token；省略时仅处理结果而不管理交互状态。
+ * @param trackMacCopyTimeout 是否追踪 macOS 按钮复制兜底的连续超时。
  * @returns 无返回值。
  * @author zhenghq
  */
-function handleSelectionCaptureResult(result: SelectionCaptureResult, interactionToken?: number): void {
+function handleSelectionCaptureResult(
+  result: SelectionCaptureResult,
+  interactionToken?: number,
+  trackMacCopyTimeout = false
+): void {
+  const shouldPromptHiServicesRepair = trackMacCopyTimeout && recordCaptureOutcome(result)
   if (result.error) {
     handleTranslateError(result.error, getSettings(), result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
@@ -928,6 +1041,7 @@ function handleSelectionCaptureResult(result: SelectionCaptureResult, interactio
       2000,
       result.anchor
     )
+    if (shouldPromptHiServicesRepair) promptHiServicesRepair(result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
@@ -998,6 +1112,7 @@ async function translateText(
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
     const output = await translate(text, requestSettings, dingTalkCredentials, aiApiKey)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    recordTranslationUsage(origin, output.provider)
     showPopup(
       {
         ok: true,
@@ -1774,6 +1889,82 @@ function openAccessibilitySettings(): void {
   void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
 }
 
+/**
+ * 重启 macOS hiservices 系统服务，修复模拟按键注入失效。
+ * hiservices 半故障时所有第三方应用的 CGEvent/System Events 注入都会到不了前台，
+ * 表现为划词取词反复超时；杀掉该服务后系统会自动重启并恢复注入。
+ * @returns 修复命令执行完成的 Promise。
+ * @author zhenghq
+ */
+function restartMacHiServices(): Promise<{ ok: true } | { ok: false; error: string }> {
+  return new Promise((resolve) => {
+    execFile('pkill', ['-9', '-f', 'com.apple.hiservices-xpcservice'], (error) => {
+      // pkill 返回 1 表示未找到进程，此时仍重建应用侧监听，避免控制器保留失效状态。
+      if (error && error.code !== 1) {
+        resolve({ ok: false, error: error.message })
+        return
+      }
+      setTimeout(() => {
+        selectionListenerController.restart()
+        resolve({ ok: true })
+      }, 500)
+    })
+  })
+}
+
+/** hiservices 修复提示是否正在显示，避免连续超时反复弹窗。 */
+let hiServicesRepairPromptShowing = false
+
+/**
+ * 在划词取词连续超时时提示用户一键重启 hiservices 服务。
+ * @param anchor 弹窗定位锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
+  if (hiServicesRepairPromptShowing || process.platform !== 'darwin') return
+  hiServicesRepairPromptShowing = true
+  resetCopyTimeoutTracker()
+  void dialog.showMessageBox({
+    type: 'warning',
+    title: '划词取词服务异常',
+    message: '划词按钮未出现或取词连续失败',
+    detail: '检测到 macOS 的按键注入服务（hiservices）可能已故障，导致模拟复制无法送达前台应用。' +
+      '点击下方按钮可立即重启该服务，系统会自动重新拉起，通常可恢复划词翻译。',
+    buttons: ['一键修复', '稍后'],
+    defaultId: 0,
+    cancelId: 1
+  }).then(async ({ response }) => {
+    if (response !== 0) return
+    const repairResult = await restartMacHiServices()
+    const settings = getSettings()
+    showPopup(
+      repairResult.ok
+        ? {
+            ok: true,
+            loading: false,
+            original: '',
+            translation: '已重启系统按键注入服务并刷新划词监听，请再划词试一次。',
+            sourcePreference: settings.sourceLang,
+            targetPreference: settings.targetLang,
+            targetLang: settings.targetLang
+          }
+        : {
+            ok: false,
+            error: '自动修复失败，请在终端执行 sudo pkill -9 -f hiservices 后重试。',
+            sourcePreference: settings.sourceLang,
+            targetPreference: settings.targetLang,
+            targetLang: settings.targetLang
+          },
+      5000,
+      anchor
+    )
+  }).finally(() => {
+    resetCopyTimeoutTracker()
+    hiServicesRepairPromptShowing = false
+  })
+}
+
 // ---- 设置窗口 ----
 
 /**
@@ -1790,9 +1981,9 @@ function createSettingsWindow(): BrowserWindow {
   }
 
   settingsWin = new BrowserWindow({
-    width: 640,
+    width: 900,
     height: 820,
-    minWidth: 480,
+    minWidth: 640,
     minHeight: 600,
     title: '划词翻译 · 设置',
     resizable: true,
@@ -1931,6 +2122,15 @@ async function checkForApplicationUpdates(): Promise<UpdateStatus> {
  */
 async function downloadApplicationUpdate(): Promise<UpdateStatus> {
   return getUpdateManager().downloadUpdate()
+}
+
+/**
+ * 取消正在进行的更新下载，回到可重新下载状态。
+ * @returns 取消操作完成后的更新状态。
+ * @author zhenghq
+ */
+async function cancelApplicationUpdateDownload(): Promise<UpdateStatus> {
+  return getUpdateManager().cancelDownload()
 }
 
 /**
@@ -2264,6 +2464,27 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings:get', () => getSettings())
+  /**
+   * 返回内存环形缓冲中的全部近期日志，供日志查看界面初始化展示。
+   * @returns 按时间升序排列的结构化日志条目。
+   * @author zhenghq
+   */
+  ipcMain.handle('logs:get-history', () => appLogger.getHistory())
+  /**
+   * 弹出保存对话框，将当日日志文件复制到用户选定路径。
+   * @returns 导出结果：成功返回保存路径，取消返回 null。
+   * @author zhenghq
+   */
+  ipcMain.handle('logs:export', async (): Promise<string | null> => {
+    const source = appLogger.getLogFilePath()
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '导出日志',
+      defaultPath: `main-${new Date().toISOString().slice(0, 10)}.log`
+    })
+    if (canceled || !filePath) return null
+    await copyFile(source, filePath)
+    return filePath
+  })
   ipcMain.handle('settings:set', (_event, patch: Partial<Settings>) => applySettingsPatch(patch))
   ipcMain.handle('dingtalk:configure', (_event, patch: DingTalkConfigPatch) =>
     applyDingTalkConfig(patch)
@@ -2283,6 +2504,7 @@ function registerIpc(): void {
   ipcMain.handle('updater:get-status', () => getUpdateManager().getStatus())
   ipcMain.handle('updater:check', () => checkForApplicationUpdates())
   ipcMain.handle('updater:download', () => downloadApplicationUpdate())
+  ipcMain.handle('updater:cancel-download', () => cancelApplicationUpdateDownload())
   ipcMain.on('updater:install', () => installApplicationUpdate())
   ipcMain.handle('updater:open-release', () => openApplicationReleasePage())
   ipcMain.handle('updater:remove-quarantine', () => removeApplicationQuarantine())
@@ -2316,6 +2538,7 @@ function loadTrayIcon(): NativeImage {
 
 /**
  * 创建仅显示模板图标的菜单栏状态项，减少 macOS 菜单栏占用宽度。
+ * 左键单击或双击图标时直接打开设置主页面，右键仍弹出托盘菜单。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -2323,6 +2546,8 @@ function createTray(): void {
   tray = new Tray(loadTrayIcon())
   tray.setToolTip('划词翻译')
   tray.setContextMenu(buildTrayMenu())
+  tray.on('click', () => openSettings())
+  tray.on('double-click', () => openSettings())
 }
 
 /**
@@ -2369,6 +2594,10 @@ function buildTrayMenu(): Menu {
       click: (menuItem) =>
         void applySettingsPatch({ triggerMode: menuItem.checked ? 'button' : 'hotkey' })
     },
+    ...(isMac ? [{
+      label: '修复 macOS 划词服务…',
+      click: () => promptHiServicesRepair()
+    }] : []),
     { type: 'separator' },
     { label: '目标语言', submenu: targetSubmenu },
     { label: '源语言', submenu: sourceSubmenu },

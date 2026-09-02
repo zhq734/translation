@@ -9,13 +9,17 @@ body {
   width: 100%;
   height: 100%;
   background: transparent;
+  border-radius: 12px;
+  clip-path: inset(0 round 12px);
 }
 
 body {
+  padding: 8px;
   color: var(--text-primary);
   font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  isolation: isolate;
   user-select: none;
 }
 
@@ -28,6 +32,8 @@ body {
   background: var(--popup-bg);
   border: 1px solid var(--popup-border);
   border-radius: 12px;
+  clip-path: inset(0 round 12px);
+  overflow: hidden;
   padding: 6px 16px 14px;
   box-shadow: 0 12px 44px var(--popup-shadow);
 }

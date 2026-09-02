@@ -630,13 +630,13 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
   )
   // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
   assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
-  assert.match(translateSource, /selectionCapture\.consumePrepared\(\)/u)
+  assert.match(translateSource, /selectionCapture\.consumePreparedBounded\(\)/u)
   assert.doesNotMatch(translateSource, /consumePreparedOrWait/u)
   assert.match(translateSource, /const anchor = lastSelectionAnchor/u)
   assert.match(translateSource, /selectionInteraction\.beginButtonCapture\(\)/u)
   assert.match(
     translateSource,
-    /prepared\?\s*\.\s*text[\s\S]*?selectionCapture\.captureFromButton\(anchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
+    /consumption\.result\s*\?\?\s*await selectionCapture\.captureFromButton\(anchor\)[\s\S]*?selectionCapture\.invalidate\(\)/u
   )
   assert.match(translateSource, /selectionInteraction\.isCurrent\(interactionToken\)/u)
   assert.match(
@@ -861,7 +861,7 @@ test('旧版设置升级后应默认启用选词按钮、自动中英互译、�
     autoTrigger: true
   })
 
-  assert.equal(settings.schemaVersion, 15)
+  assert.equal(settings.schemaVersion, 16)
   assert.equal(settings.targetLang, 'auto')
   assert.equal(settings.autoHideMs, 0)
   assert.equal(settings.triggerMode, 'button')
@@ -895,7 +895,7 @@ test('第三版自动模式配置升级后应回到按钮模式', () => {
     triggerMode: 'auto'
   })
 
-  assert.equal(settings.schemaVersion, 15)
+  assert.equal(settings.schemaVersion, 16)
   assert.equal(settings.triggerMode, 'button')
 })
 
@@ -1081,6 +1081,22 @@ test('OCR 取消应始终通知主进程，即使 Renderer 已退出框选模式
   // 提前返回会让主进程收不到取消通知，全局钩子将无法恢复
   assert.doesNotMatch(cancelSource, /if\s*\(!ocrMode\)\s*return/u)
   assert.match(cancelSource, /window\.api\.cancelOcrSelection\(\)/u)
+})
+
+/**
+ * 校验“译”浮动图标不使用原生或 CSS 半透明阴影，避免 Windows 透明窗口底部出现阴影残留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows “译”浮动图标应去除底部半透明阴影', () => {
+  const buttonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
+  const styles = readFileSync('src/renderer/src/selection.css', 'utf8')
+  const buttonRule = styles.match(/#translate\s*\{([^}]*)\}/u)?.[1] ?? ''
+  const hoverRule = styles.match(/#translate:hover\s*\{([^}]*)\}/u)?.[1] ?? ''
+
+  assert.match(buttonSource, /hasShadow:\s*false/u)
+  assert.doesNotMatch(buttonRule, /box-shadow/u)
+  assert.doesNotMatch(hoverRule, /box-shadow/u)
 })
 
 test('全局钩子启动失败时应清理监听器状态并允许后续重试', () => {

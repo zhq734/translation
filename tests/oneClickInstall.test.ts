@@ -314,11 +314,37 @@ test('Windows 一键安装脚本应检测架构并校验 SHA-256', () => {
   assert.match(script, /zhq734\/translation/u)
   assert.match(script, /SELECTION_TRANSLATOR_VERSION/u)
   assert.match(script, /GROKBUILD_VERSION/u)
-  assert.match(script, /OSArchitecture/u)
+  assert.match(script, /PROCESSOR_ARCHITEW6432/u)
+  assert.match(script, /PROCESSOR_ARCHITECTURE/u)
+  assert.match(script, /Windows_NT/u)
+  assert.match(script, /SecurityProtocol[\s\S]*?Tls12/u)
   assert.match(script, /SHA256SUMS/u)
   assert.match(script, /Get-FileHash/u)
   assert.match(script, /settings\.json/u)
   assert.match(script, /Start-Process/u)
+})
+
+test('Windows 一键安装脚本应兼容当前 Release 使用的大写 V 标签', () => {
+  const script = readRepositoryFile('scripts/install.ps1')
+
+  assert.match(script, /\$Version -notmatch '\^\[vV\]'/u)
+  assert.match(script, /\$Version = "V\$Version"/u)
+  assert.equal(
+    script.includes("if ($Version -notmatch '^[vV][0-9A-Za-z][0-9A-Za-z._-]*$')"),
+    true
+  )
+})
+
+/**
+ * 校验用户传入小写 v 版本时会转换成实际 Release 使用的大写 V 标签。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 一键安装脚本应把用户输入的小写 v 版本规范化为 Release 的大写 V 标签', () => {
+  const script = readRepositoryFile('scripts/install.ps1')
+
+  assert.match(script, /\$Version = "V\$\(\$Version\.Substring\(1\)\)"/u)
+  assert.match(script, /Release 标签统一使用大写 V/u)
 })
 
 test('桌面发行配置应为一键安装脚本生成稳定的跨平台文件名', () => {
@@ -405,6 +431,16 @@ test('中英文 README 都应提供一键安装命令和固定版本示例', () 
     assert.match(readme, /GROKBUILD_VERSION=v0\.2\.0/u)
     assert.match(readme, /SHA-256/u)
   }
+})
+
+test('README 应明确 Windows Terminal 必须使用 PowerShell，并提供 CMD 启动命令', () => {
+  const englishReadme = readRepositoryFile('README.md')
+  const chineseReadme = readRepositoryFile('README.zh-CN.md')
+
+  assert.match(chineseReadme, /Windows Terminal[\s\S]*?PowerShell[\s\S]*?CMD、Git Bash 或 WSL/u)
+  assert.match(chineseReadme, /powershell\.exe -NoProfile -ExecutionPolicy Bypass -Command/u)
+  assert.match(englishReadme, /Windows Terminal[\s\S]*?PowerShell[\s\S]*?Command Prompt, Git Bash, or WSL/u)
+  assert.match(englishReadme, /powershell\.exe -NoProfile -ExecutionPolicy Bypass -Command/u)
 })
 
 test('macOS 一键安装应按 Bundle ID 停止旧实例并从目标路径启动新应用', () => {

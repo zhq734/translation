@@ -1,4 +1,5 @@
 import type { AiProtocol } from '../shared/types'
+import { sanitizeAiTranslation } from '../shared/aiTranslationSanitize'
 
 /** 统一 AI 翻译请求输入。 */
 export interface AiTranslationRequestInput {
@@ -53,7 +54,7 @@ function buildTranslationSystemPrompt(sourceLang: string, targetLang: string): s
     sourceLang,
     '翻译为',
     targetLang,
-    '，只输出译文，保留换行和基本格式，不要输出解释、Markdown 代码块或额外引号。'
+    '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。'
   ].join('')
 }
 
@@ -138,13 +139,24 @@ export function parseAiTranslationResponse(protocol: AiProtocol, data: Record<st
 }
 
 /**
- * 根据协议从已解析对象中提取译文文本。
+ * 根据协议从已解析对象中提取译文文本，并清洗工具调用等噪声。
  * @param protocol AI 协议类型。
  * @param data 已解析的 JSON 对象。
- * @returns 译文文本。
+ * @returns 只保留最终译文的文本。
  * @author zhenghq
  */
 function extractTranslation(protocol: AiProtocol, data: Record<string, unknown>): string {
+  return sanitizeAiTranslation(extractRawTranslation(protocol, data))
+}
+
+/**
+ * 根据协议从已解析对象中提取未清洗的原始译文文本。
+ * @param protocol AI 协议类型。
+ * @param data 已解析的 JSON 对象。
+ * @returns 原始译文文本。
+ * @author zhenghq
+ */
+function extractRawTranslation(protocol: AiProtocol, data: Record<string, unknown>): string {
   switch (protocol) {
     case 'ollama': {
       const message = data.message as { content?: string } | undefined
