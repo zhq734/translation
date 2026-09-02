@@ -8,6 +8,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
+    "dev:notify-test": "node --experimental-strip-types scripts/test-install-notification.mts",
     "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",

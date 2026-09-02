@@ -45,6 +45,10 @@ jobs:
   package:
     name: 打包 ${{ matrix.name }}
     needs: verify
+    env:
+      USAGE_SMTP_USER: ${{ secrets.USAGE_SMTP_USER }}
+      USAGE_SMTP_PASS: ${{ secrets.USAGE_SMTP_PASS }}
+      USAGE_REPORT_TO: ${{ secrets.USAGE_REPORT_TO }}
     strategy:
       fail-fast: false
       matrix:
@@ -199,6 +203,10 @@ jobs:
       - name: 构建非 macOS 安装包
         if: matrix.platform != 'macos'
         run: npm run ${{ matrix.command }}
+
+      - name: 校验使用量统计上报配置
+        run: |
+          node scripts/validate-usage-report-config.mjs --output build/usage-report-config.json
 
       - name: 区分 macOS 架构更新清单
         if: matrix.platform == 'macos'

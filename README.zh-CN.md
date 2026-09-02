@@ -294,7 +294,7 @@ npm test
 
 - **macOS**：通过辅助功能读取前台应用的 `AXSelectedText`；若应用不暴露选区文本（如密码框、未启用辅助功能的应用），则回退到受控 `Command+C` 并读取剪贴板。
 - **Windows**：通过 UI Automation（`TextPattern.GetText`）读取焦点控件的选区；若应用不支持 `TextPattern`（如部分传统 Win32 控件、PDF 阅读器），则回退到受控 `Ctrl+C` 并读取剪贴板。
-- **Linux**：直接读取 X11 主选区，从不注入复制按键；Wayland 下主选区可能不可读，请在支持 XWayland 的环境中运行或到目标合成器上验证。
+- **Linux**：从不注入复制按键。Wayland 会话优先调用 `wl-paste --primary` 读取 Wayland 主选区（需安装 wl-clipboard），读取失败或为空时回退 X11 主选区；X11 会话直接读取 X11 主选区。
 
 当直读与复制兜底都失败时，应用会按失败原因（空选区 / 取词超时 / 应用不支持 / 权限缺失）给出对应提示，不再统一提示“未检测到选中文字”。
 
@@ -515,7 +515,7 @@ http://127.0.0.1:1189/translate
 
 请在使用前了解以下数据流：
 
-1. 应用优先通过平台原生接口直读选区且不触碰剪贴板：macOS 经辅助功能读取 `AXSelectedText`，Windows 经 UI Automation 读取 `TextPattern`，Linux 读取 X11 主选区；仅当直读不可用或为空时才回退到受控的 `Command+C`/`Ctrl+C` 复制；
+1. 应用优先通过平台原生接口直读选区且不触碰剪贴板：macOS 经辅助功能读取 `AXSelectedText`，Windows 经 UI Automation 读取 `TextPattern`，Linux 在 Wayland 会话经 `wl-paste` 读取主选区（未安装 wl-clipboard 时回退 X11 主选区）、X11 会话直接读取主选区；仅当直读不可用或为空时才回退到受控的 `Command+C`/`Ctrl+C` 复制；
 2. 选中文字会根据当前通道发送给对应的翻译服务；
 3. 如果配置了自建 DeepLX，可将请求发送到你的本机、局域网或自有服务器；
 4. 如果前序通道不可用，应用会按配置优先级继续请求微软翻译、自建/公共 DeepLX、Google 或 MyMemory；
