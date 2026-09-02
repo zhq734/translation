@@ -3,7 +3,8 @@ import { release } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Transporter } from 'nodemailer'
 import type { SendMailOptions } from 'nodemailer'
-import {UsageStatsData, UsageStatsStore} from "./usageStats";
+import { UsageStatsStore } from "./usageStats.ts";
+import type { UsageStatsData } from "./usageStats.ts";
 
 
 
@@ -280,7 +281,7 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
       })
       try {
         await transporter.sendMail({
-          from: `"划词翻译-系统通知" <${options.config.smtpUser}>`,
+          from: `"划词翻译" <${options.config.smtpUser}>`,
           to: options.config.reportTo,
           subject: `【划词翻译】${event.type === 'install' ? '首次安装' : '版本升级'}通知 - ${event.currentVersion}`,
           text: buildInstallEventBody(event, { ...options.environment, ip })
@@ -488,7 +489,7 @@ export async function sendUsageReport(options: SendUsageReportOptions): Promise<
   try {
     const transporter = options.transporter ?? (options.createTransporter ?? defaultCreateTransporter)(config)
     await transporter.sendMail({
-      from: `"划词翻译-统计系统" <${config.smtpUser}>`,
+      from: `"划词翻译" <${config.smtpUser}>`,
       to: config.reportTo,
       subject: `【划词翻译】每日使用量统计报表 - ${today}`,
       text: buildReportBody(stats, environment, today, yesterday)

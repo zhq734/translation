@@ -26,6 +26,9 @@ async function main(): Promise<void> {
         sendMail: async (options) => {
           console.log('模拟发送邮件')
           console.log(`主题: ${options.subject}`)
+          console.log('事件类型: 首次安装')
+          console.log(`当前版本: ${packageJson.version ?? '0.0.0'}`)
+          console.log('公网 IP: 198.51.100.10')
           console.log(options.text)
         }
       },
