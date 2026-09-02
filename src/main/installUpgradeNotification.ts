@@ -98,6 +98,7 @@ export function loadInstallNotificationConfig(options: ConfigReaderOptions): {
 
 /**
  * 格式化安装升级事件本地时间。
+ * 固定使用东八区（Asia/Shanghai）时区，确保上报时间在不同运行环境下展示一致。
  * @param now 事件时间，默认当前时间。
  * @returns 运行时兼容的中文日期时间字符串。
  * @author zhenghq
@@ -105,7 +106,8 @@ export function loadInstallNotificationConfig(options: ConfigReaderOptions): {
 export function formatInstallEventTime(now: Date = new Date()): string {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
-    timeStyle: 'long'
+    timeStyle: 'long',
+    timeZone: 'Asia/Shanghai'
   }).format(now)
 }
 
