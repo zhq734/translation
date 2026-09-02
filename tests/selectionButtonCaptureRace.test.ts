@@ -120,9 +120,9 @@ test('预取超过有界窗口时应按时结束等待并允许回退按钮专�
 
   void coordinator.prepare(anchor)
   await controllable.started
-  const startedAt = Date.now()
+  const startedAt = performance.now()
   const consumption = await coordinator.consumePreparedBounded()
-  const waited = Date.now() - startedAt
+  const waited = performance.now() - startedAt
 
   assert.equal(consumption.status, 'timeout')
   assert.equal(consumption.result, null)
@@ -134,6 +134,21 @@ test('预取超过有界窗口时应按时结束等待并允许回退按钮专�
   assert.deepEqual(captured, { text: '按钮复制到的文字', anchor })
   assert.equal(buttonCaptureCount, 1)
   assert.equal(controllable.abortObserved(), true)
+})
+
+/**
+ * 有界等待的打点必须使用单调递增的亚毫秒时钟（performance.now），
+ * 避免 Date.now 的毫秒取整误差让 waitedMs 在 CI 上偶发小于等待窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('有界等待的耗时打点应使用 performance.now 单调时钟', () => {
+  const source = readFileSync('src/shared/selectionCaptureCoordinator.ts', 'utf8')
+  const boundedBody = source.match(/consumePreparedBounded\([\s\S]*?^  \}/mu)?.[0] ?? ''
+
+  assert.notEqual(boundedBody, '', '应能提取 consumePreparedBounded 实现')
+  assert.match(boundedBody, /performance\.now\(\)/u)
+  assert.doesNotMatch(boundedBody, /Date\.now\(\)/u)
 })
 
 /**

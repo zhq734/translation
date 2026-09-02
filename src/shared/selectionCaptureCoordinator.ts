@@ -242,7 +242,8 @@ export class SelectionCaptureCoordinator {
   async consumePreparedBounded(
     waitMs = PREPARED_PREFETCH_WAIT_MS
   ): Promise<PreparedConsumption> {
-    const startedAt = Date.now()
+    // 使用单调递增的亚毫秒时钟打点，避免 Date.now 毫秒取整误差导致 waitedMs 偶发小于等待窗口。
+    const startedAt = performance.now()
     const requestId = this.latestRequestId
 
     const prepared = this.consumePrepared()
@@ -253,7 +254,7 @@ export class SelectionCaptureCoordinator {
     if (!pending) return { status: 'absent', result: null, waitedMs: 0 }
 
     const { settled } = await waitForPendingPreparation(pending, waitMs)
-    const waitedMs = Date.now() - startedAt
+    const waitedMs = performance.now() - startedAt
 
     // 等待期间发生新的手势、复制、粘贴或显式失效时，过期预取结果一律丢弃。
     if (requestId !== this.latestRequestId) {
