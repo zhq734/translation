@@ -5,15 +5,7 @@ import type { Transporter } from 'nodemailer'
 import type { SendMailOptions } from 'nodemailer'
 import {UsageStatsData, UsageStatsStore} from "./usageStats";
 
-/** SMTP 上报配置。 */
-interface UsageReportConfig {
-  /** 发件邮箱。 */
-  smtpUser: string
-  /** SMTP 授权码。 */
-  smtpPass: string
-  /** 收件邮箱。 */
-  reportTo: string
-}
+
 
 /** 安装事件类型。 */
 export type InstallEventType = 'install' | 'upgrade'
