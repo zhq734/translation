@@ -57,7 +57,7 @@ body {
   transition: opacity 220ms ease-in;
 }
 
-/* 复制/保存成功后的关闭动画：整个覆盖层快速淡出，toast 因自身 opacity 更高不受影响 */
+/* 复制/保存成功后的关闭动画：整个覆盖层快速淡出后隐藏窗口 */
 .ocr-overlay.closing {
   opacity: 0.12;
 }
@@ -289,35 +289,6 @@ body {
 
 .ocr-panel-resize:hover {
   opacity: 1;
-}
-
-.ocr-toast {
-  position: fixed;
-  left: 50%;
-  top: 42%;
-  transform: translate(-50%, -50%) scale(0.96);
-  z-index: 6;
-  border: none;
-  border-radius: 8px;
-  background: var(--toast-bg);
-  box-shadow: 0 8px 24px var(--popup-shadow);
-  color: var(--toast-text);
-  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
-  font-size: 14px;
-  line-height: 1.4;
-  padding: 10px 18px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-
-.ocr-toast.visible {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-.ocr-toast[hidden] {
-  display: none;
 }
 
 .ocr-tooltip {

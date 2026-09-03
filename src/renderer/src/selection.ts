@@ -19,7 +19,6 @@ const ocrCancelButton = document.getElementById('ocr-cancel') as HTMLButtonEleme
 const ocrPanel = document.getElementById('ocr-panel') as HTMLElement
 const ocrPanelStatus = document.getElementById('ocr-panel-status') as HTMLElement
 const ocrPanelText = document.getElementById('ocr-panel-text') as HTMLTextAreaElement
-const ocrToast = document.getElementById('ocr-toast') as HTMLElement
 const ocrTooltip = document.getElementById('ocr-tooltip') as HTMLElement
 const ocrPanelResizeHandle = document.getElementById('ocr-panel-resize') as HTMLElement
 const ocrResizeHandles = Array.from(
@@ -54,9 +53,6 @@ let pendingScreenshotRequestId: string | null = null
 let screenshotRequestSeq = 0
 // OCR 侧栏状态：pending 处理中 / ready 展示文本（成功或失败描述）。
 let ocrPanelState: 'hidden' | 'pending' | 'ready' = 'hidden'
-let ocrToastTimer: number | undefined
-// Toast 淡出动画定时器：与隐藏定时器分离，保证淡出动画完整播放后再隐藏元素。
-let ocrToastFadeTimer: number | undefined
 // OCR 侧栏用户手动调整的尺寸；为 null 时按默认自适应尺寸布局。
 let ocrPanelUserSize: { width: number; height: number } | null = null
 // OCR 侧栏尺寸拖拽状态：记录起点与初始尺寸。
@@ -349,36 +345,6 @@ function renderOcrPanel(state: 'hidden' | 'pending' | 'ready', text = '', status
 }
 
 /**
- * 显示动作成功/失败的非阻塞反馈，不关闭截图窗口、不清空已展示的 OCR 原文。
- * Toast 采用微信截图风格：屏幕中央黑底胶囊，淡入显示、淡出隐藏。
- * @param message 反馈文本。
- * @param options 展示选项：duration 控制停留毫秒数（默认 2400），persistent 为 true 时不自动隐藏（用于复制先提示等待回执）。
- * @returns 无返回值。
- * @author zhenghq
- */
-function showOcrToast(message: string, options?: { duration?: number; persistent?: boolean }): void {
-  if (ocrToastTimer !== undefined) window.clearTimeout(ocrToastTimer)
-  if (ocrToastFadeTimer !== undefined) window.clearTimeout(ocrToastFadeTimer)
-  ocrToastTimer = undefined
-  ocrToastFadeTimer = undefined
-  ocrToast.textContent = message
-  ocrToast.hidden = false
-  // 强制重排后再加 visible 类，确保连续触发时淡入动画重新播放。
-  ocrToast.classList.remove('visible')
-  void ocrToast.offsetWidth
-  ocrToast.classList.add('visible')
-  if (options?.persistent) return
-  const duration = options?.duration ?? 2400
-  ocrToastTimer = window.setTimeout(() => {
-    ocrToast.classList.remove('visible')
-    // 淡出动画结束后再隐藏，避免硬切换的闪断感。
-    ocrToastFadeTimer = window.setTimeout(() => {
-      ocrToast.hidden = true
-    }, 200)
-  }, duration)
-}
-
-/**
  * 在截图窗口内展示工具条按钮的自定义悬停提示。
  * 截图窗口为透明无边框窗口，系统原生 title 提示绘制在窗口透明区域外会被裁剪，
  * 因此改为窗口内 tooltip 元素，跟随按钮位置并限制在可视范围内。
@@ -513,9 +479,6 @@ function copyCurrentOcrSelectionImage(): void {
   if (!request) return
   pendingScreenshotRequestId = request.requestId
   ocrCopyImageButton.disabled = true
-  // 微信截图式即时反馈：先弹出“已添加到剪贴板”提示再执行复制，
-  // 避免等待裁剪与写剪贴板期间用户感觉卡顿；失败时由结果回执改写文案。
-  showOcrToast('已添加到剪贴板', { persistent: true })
   window.api.copyOcrSelectionImage(request)
 }
 
@@ -545,18 +508,22 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
   if (result.action === 'copy-image') {
     ocrCopyImageButton.disabled = false
     if (result.ok) {
-      // 提示已在点击时展示，成功后让截图窗口快速淡出关闭，
-      // toast 以自身透明度继续停留，不与窗口淡出绑定。
+      // 提示由主进程独立 toast 窗口展示，截图窗口仅负责自身淡出关闭。
       scheduleScreenshotAutoClose()
       return
     }
-    // 复制失败：将已展示的提示改写为错误文案并延长停留。
-    showOcrToast(result.error || '复制图片失败', { duration: 3000 })
+    // 复制失败：通过独立提示窗口展示错误，截图窗口保持打开。
+    window.api.showScreenshotToast({ message: result.error || '复制图片失败', displayTimeMs: 3000 })
     return
   }
   ocrSaveImageButton.disabled = false
   if (result.canceled) return
-  showOcrToast(result.ok ? '保存成功' : (result.error || '保存图片失败'))
+  if (result.ok) {
+    // 保存成功提示由主进程独立 toast 窗口展示。
+    window.api.showScreenshotToast({ message: '已保存到本地' })
+  } else {
+    window.api.showScreenshotToast({ message: result.error || '保存图片失败', displayTimeMs: 3000 })
+  }
   if (result.ok) scheduleScreenshotAutoClose()
 }
 
@@ -623,13 +590,11 @@ function enterOcrSelectionMode(payload: OcrSelectionStartPayload): void {
   renderOcrSnapshot(payload)
   // 进入新会话时重置上次关闭动画与提示状态，避免残留。
   ocrOverlay.classList.remove('closing')
-  ocrToast.classList.remove('visible')
   ocrOverlay.hidden = false
   ocrRecognizeButton.disabled = false
   ocrCopyImageButton.disabled = false
   ocrSaveImageButton.disabled = false
   renderOcrPanel('hidden')
-  ocrToast.hidden = true
   hideOcrTooltip()
   ocrPanelUserSize = null
   ocrPanelResizeState = null
@@ -653,15 +618,13 @@ function leaveOcrSelectionMode(): void {
   ocrToolbar.hidden = true
   renderOcrPanel('hidden')
   ocrOverlay.classList.remove('closing')
-  ocrToast.classList.remove('visible')
-  ocrToast.hidden = true
   hideOcrTooltip()
   ocrPanelUserSize = null
   ocrPanelResizeState = null
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
   ocrSnapshot.removeAttribute('src')
-  translateButton.hidden = false
+  // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
   renderSelectionRect(null)
 }
 
@@ -712,10 +675,9 @@ function handleOcrMouseDown(event: MouseEvent): void {
   if (!ocrMode || event.button !== 0) return
   const target = event.target as HTMLElement
   if (target.closest('#ocr-toolbar')) return
-  // 点击 OCR 结果侧栏或动作反馈提示时不得触发重新框选，
+  // 点击 OCR 结果侧栏时不得触发重新框选，
   // 否则用户选取/复制 OCR 原文会导致当前选区被清空。
   if (target.closest('#ocr-panel')) return
-  if (target.closest('#ocr-toast')) return
   const point = getEventPoint(event)
   const handle = target.dataset['handle'] as DragHandle | undefined
   if (handle && currentRect) {

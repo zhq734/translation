@@ -8,6 +8,8 @@ const types = readFileSync('src/shared/types.ts', 'utf8')
 const selectionHtml = readFileSync('src/renderer/selection.html', 'utf8')
 const selectionRenderer = readFileSync('src/renderer/src/selection.ts', 'utf8')
 const selectionCss = readFileSync('src/renderer/src/selection.css', 'utf8')
+const toastHtml = readFileSync('src/renderer/toast.html', 'utf8')
+const toastRenderer = readFileSync('src/renderer/src/toast.ts', 'utf8')
 
 /**
  * 校验截图工具条提供五个图标按钮，并带有中文提示与无障碍名称。
@@ -140,6 +142,9 @@ test('主进程应实现截图复制图片并反馈成功或失败', () => {
   // 复制不触发 OCR，成功后结束截图会话（由 Renderer 展示完成提示后隐藏窗口）
   assert.doesNotMatch(source, /dispatcher\.recognize\(/u)
   assert.match(source, /finishScreenshotSession\(\)/u)
+  // 复制成功后 toast 窗口显示期间暂停划词监听，隐藏后再恢复
+  assert.match(main, /selectionListenerController\.pause\('ocr'\)/u)
+  assert.match(main, /selectionListenerController\.resume\('ocr'\)/u)
   assert.match(main, /ipcMain\.on\('ocr-selection:copy-image'/u)
 })
 
@@ -161,6 +166,10 @@ test('主进程应实现截图保存到本地，取消对话框不视为错误',
   assert.match(source, /result\.canceled/u)
   assert.match(source, /writeFile/u)
   assert.match(source, /sendScreenshotActionResult\(/u)
+  // 保存对话框必须先于同步图片裁剪，避免路径框出现前被大图编码阻塞。
+  const dialogIndex = source.indexOf('dialog.showSaveDialog(')
+  const cropIndex = source.indexOf('cropCurrentOcrSelectionPngFast(')
+  assert.ok(dialogIndex >= 0 && cropIndex > dialogIndex)
   // 保存成功后结束截图会话（由 Renderer 展示完成提示后隐藏窗口）
   assert.match(source, /finishScreenshotSession\(\)/u)
   assert.match(main, /ipcMain\.on\('ocr-selection:save-image'/u)
@@ -196,29 +205,77 @@ test('Renderer 应接入五个截图动作并防止识别重复提交', () => {
 })
 
 /**
- * 校验 Renderer 复制图片采用微信式即时提示：点击即展示“已添加到剪贴板”，
- * 成功后让覆盖窗口快速淡出关闭，失败时改写提示文案。
+ * 校验主进程实现独立的截图动作提示窗口：与截图覆盖层解耦，
+ * 复制/保存成功后展示，到时间后自行隐藏。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Renderer 复制图片应先弹“已添加到剪贴板”提示再执行复制', () => {
-  assert.match(selectionRenderer, /showOcrToast\('已添加到剪贴板', \{ persistent: true \}\)/u)
-  const copyStart = selectionRenderer.indexOf('function copyCurrentOcrSelectionImage(')
-  const copyEnd = selectionRenderer.indexOf('/**', copyStart + 1)
-  const copySource = selectionRenderer.slice(copyStart, copyEnd)
-  // 提示必须先于复制请求发出，保证零延迟反馈
-  assert.ok(copySource.indexOf("showOcrToast('已添加到剪贴板'") < copySource.indexOf('window.api.copyOcrSelectionImage'))
+test('主进程应实现独立的截图动作提示窗口', () => {
+  assert.match(main, /function getScreenshotToastWindow\(\)/u)
+  assert.match(main, /function showScreenshotToast\(/u)
+  assert.match(main, /function handleScreenshotToastShowWindow\(/u)
+  assert.match(main, /ipcMain\.on\('screenshot-toast:show'/u)
+  assert.match(main, /ipcMain\.on\('screenshot-toast:show-window'/u)
+  // 复制/保存成功后通过独立 toast 窗口展示提示
+  assert.match(main, /showScreenshotToast\('已添加到剪贴板', 1500\)/u)
+  assert.match(main, /showScreenshotToast\('已保存到本地', 1500\)/u)
+  // 提示窗口注册为独立渲染入口
+  assert.match(toastHtml, /id="toast"/u)
+  assert.match(toastRenderer, /window\.api\.onShowScreenshotToast/u)
+  assert.match(toastRenderer, /window\.api\.showScreenshotToastWindow/u)
+  // 提示窗口由主进程控制隐藏，与截图窗口生命周期解耦
+  assert.match(main, /screenshotToastHideTimer/u)
+  assert.match(main, /screenshotToastWin\.hide\(\)/u)
 })
 
 /**
- * 校验复制成功后不再重复提示，失败时改写已展示的提示文案。
+ * 校验截图 Toast 使用独立的监听暂停原因，避免截图窗口收尾提前恢复划词监听。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Renderer 应在复制失败时改写提示文案，成功时直接淡出关闭窗口', () => {
-  assert.doesNotMatch(selectionRenderer, /showOcrToast\(result\.ok \? '复制成功'/u)
-  assert.match(selectionRenderer, /showOcrToast\(result\.error \|\| '复制图片失败', \{ duration: 3000 \}\)/u)
-  assert.match(selectionRenderer, /showOcrToast\(result\.ok \? '保存成功'/u)
+test('截图 Toast 应使用独立暂停原因并在隐藏后恢复', () => {
+  const showStart = main.indexOf('function showScreenshotToast')
+  const showSource = main.slice(showStart, main.indexOf('/**', showStart + 1))
+  const toastSource = main.slice(
+    main.indexOf('function handleScreenshotToastShowWindow'),
+    main.indexOf('/**', main.indexOf('function handleScreenshotToastShowWindow') + 1)
+  )
+
+  // 必须在异步 Toast 渲染前立即暂停，避免截图窗口先关闭造成“译”图标闪现。
+  assert.match(showSource, /selectionListenerController\.pause\('screenshot-toast'\)/u)
+  assert.match(toastSource, /selectionListenerController\.resume\('screenshot-toast'\)/u)
+  assert.doesNotMatch(toastSource, /selectionListenerController\.pause\(/u)
+  assert.doesNotMatch(toastSource, /selectionListenerController\.resume\('ocr'\)/u)
+})
+
+/**
+ * 校验截图覆盖层关闭动画期间不会恢复共用页面中的普通“译”按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('截图覆盖层关闭动画期间不得恢复普通“译”按钮', () => {
+  const leaveStart = selectionRenderer.indexOf('function leaveOcrSelectionMode')
+  const leaveEnd = selectionRenderer.indexOf('/**', leaveStart + 1)
+  const leaveSource = selectionRenderer.slice(leaveStart, leaveEnd)
+
+  // OCR 窗口仍可见时恢复按钮会让“译”图标在淡出期间闪现；普通按钮窗口本身无需走该收尾逻辑。
+  assert.doesNotMatch(leaveSource, /translateButton\.hidden\s*=\s*false/u)
+})
+
+/**
+ * 校验 Renderer 复制/保存成功后不再本地展示 toast，
+ * 仅负责让覆盖窗口快速淡出关闭；失败时经主进程独立提示窗口展示错误。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Renderer 应在复制/保存成功后仅关闭窗口，失败时经独立窗口提示错误', () => {
+  // 截图窗口内不再持有 toast DOM 元素
+  assert.doesNotMatch(selectionRenderer, /showOcrToast/u)
+  assert.doesNotMatch(selectionHtml, /id="ocr-toast"/u)
+  assert.doesNotMatch(selectionCss, /\.ocr-toast/u)
+  // 失败时通过主进程独立提示窗口展示错误
+  assert.match(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: result\.error \|\| '复制图片失败'/u)
+  assert.match(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: '已保存到本地'/u)
   assert.match(selectionRenderer, /function scheduleScreenshotAutoClose\(\)/u)
   assert.match(selectionRenderer, /ocrOverlay\.classList\.add\('closing'\)/u)
 })
@@ -242,14 +299,16 @@ test('复制/保存裁剪快速路径应使用原生 nativeImage 实现', () => 
 })
 
 /**
- * 校验截图动作反馈 toast 采用微信截图风格：屏幕中央黑底胶囊、淡入淡出动画。
+ * 校验截图动作提示窗口采用微信截图风格：屏幕中央黑底胶囊、淡入淡出动画，
+ * 且由独立窗口承载而非截图窗口内嵌 DOM。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('截图动作提示应为屏幕中央黑底样式并支持淡入淡出', () => {
-  assert.match(selectionCss, /\.ocr-toast\s*\{[^}]*top:\s*42%/u)
-  assert.match(selectionCss, /\.ocr-toast\s*\{[^}]*transition:\s*opacity\s+150ms/u)
-  assert.match(selectionCss, /\.ocr-toast\.visible/u)
+test('截图动作提示应为独立窗口内的黑底样式并支持淡入淡出', () => {
+  const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')
+  assert.match(toastCss, /\.screenshot-toast\s*\{[^}]*transition:\s*opacity\s+150ms/u)
+  assert.match(toastCss, /\.screenshot-toast\.visible/u)
+  assert.match(toastCss, /background:\s*var\(--toast-bg\)/u)
   // 关闭动画：覆盖层淡出而非直接消失
   assert.match(selectionCss, /\.ocr-overlay\.closing/u)
   assert.match(selectionCss, /\.ocr-overlay\s*\{[^}]*transition:\s*opacity/u)
@@ -319,16 +378,15 @@ test('截图动作结果事件不应携带原始 PNG 字节', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('点击 OCR 侧栏与反馈提示不应触发重新框选', () => {
+test('点击 OCR 侧栏不应触发重新框选', () => {
   const downStart = selectionRenderer.indexOf('function handleOcrMouseDown')
   assert.notEqual(downStart, -1)
   const downEnd = selectionRenderer.indexOf('/**', downStart + 1)
   const downSource = selectionRenderer.slice(downStart, downEnd)
 
-  // mousedown 在工具条、OCR 侧栏和反馈提示上都必须直接返回，不进入绘制分支
+  // mousedown 在工具条和 OCR 侧栏上都必须直接返回，不进入绘制分支
   assert.match(downSource, /target\.closest\('#ocr-toolbar'\)/u)
   assert.match(downSource, /target\.closest\('#ocr-panel'\)/u)
-  assert.match(downSource, /target\.closest\('#ocr-toast'\)/u)
 })
 
 /**

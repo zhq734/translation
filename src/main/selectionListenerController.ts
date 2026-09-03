@@ -1,7 +1,7 @@
 import type { TriggerMode } from '../shared/types'
 
 /** 全局划词监听暂停原因。 */
-export type SelectionListenerPauseReason = 'ocr' | 'shutdown'
+export type SelectionListenerPauseReason = 'ocr' | 'screenshot-toast' | 'shutdown'
 
 /** 监听控制器依赖。 */
 export interface SelectionListenerControllerOptions {

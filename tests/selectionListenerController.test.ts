@@ -77,6 +77,26 @@ test('OCR 暂停与重复恢复应幂等，并按当前模式恢复目标状态'
   assert.equal(harness.controller.isRunning(), false)
 })
 
+test('截图 Toast 与 OCR 暂停应相互独立，OCR 收尾不得提前恢复划词监听', () => {
+  const harness = createListenerHarness()
+  harness.controller.setMode('button')
+
+  harness.controller.pause('ocr')
+  harness.controller.pause('screenshot-toast')
+  assert.equal(harness.controller.isRunning(), false)
+  assert.equal(harness.stops(), 1)
+
+  // 截图窗口关闭时只恢复 OCR 暂停，Toast 仍在显示，监听必须继续暂停。
+  harness.controller.resume('ocr')
+  assert.equal(harness.controller.isRunning(), false)
+  assert.equal(harness.starts(), 1)
+
+  // Toast 隐藏后才允许恢复普通划词监听。
+  harness.controller.resume('screenshot-toast')
+  assert.equal(harness.controller.isRunning(), true)
+  assert.equal(harness.starts(), 2)
+})
+
 test('启动失败后实际状态保持未运行，重新应用设置可以再次启动', () => {
   const harness = createListenerHarness()
   harness.setStartResults([false, true])

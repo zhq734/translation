@@ -15,7 +15,8 @@ export default defineConfig({
           index: resolve('src/renderer/index.html'),
           selection: resolve('src/renderer/selection.html'),
           settings: resolve('src/renderer/settings.html'),
-          'web-reader': resolve('src/renderer/web-reader.html')
+          'web-reader': resolve('src/renderer/web-reader.html'),
+          toast: resolve('src/renderer/toast.html')
         }
       }
     }

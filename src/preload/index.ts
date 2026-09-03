@@ -309,6 +309,36 @@ const api: Api = {
     return () => ipcRenderer.removeListener('ocr-selection:action-result', listener)
   },
   /**
+   * 请求主进程展示独立的截图动作提示窗口。
+   * @param payload 提示文本与停留时长。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  showScreenshotToast(payload: { message: string; displayTimeMs?: number }) {
+    ipcRenderer.send('screenshot-toast:show', payload)
+  },
+  /**
+   * 提示窗口渲染进程回传尺寸测量结果，请求主进程居中显示窗口。
+   * @param payload 测得的内容尺寸与停留时长。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  showScreenshotToastWindow(payload: { width: number; height: number; displayTimeMs: number }) {
+    ipcRenderer.send('screenshot-toast:show-window', payload)
+  },
+  /**
+   * 订阅主进程转发到提示窗口的展示事件。
+   * @param callback 展示回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShowScreenshotToast(callback: (payload: { message: string; displayTimeMs: number }) => void) {
+    const listener = (_event: unknown, payload: { message: string; displayTimeMs: number }): void =>
+      callback(payload)
+    ipcRenderer.on('screenshot-toast:show', listener)
+    return () => ipcRenderer.removeListener('screenshot-toast:show', listener)
+  },
+  /**
    * 使用手动语言偏好重新翻译当前文本。
    * @param sourceLang 源语言偏好。
    * @param targetLang 目标语言偏好。

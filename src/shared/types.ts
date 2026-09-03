@@ -753,6 +753,12 @@ export interface Api {
   onOcrRecognizeResult(cb: (result: ScreenshotOcrRecognizeResult) => void): () => void
   /** 订阅截图图片复制/保存动作反馈事件，返回取消订阅方法。 */
   onOcrActionResult(cb: (result: ScreenshotOcrActionResult) => void): () => void
+  /** 请求主进程展示独立的截图动作提示窗口。 */
+  showScreenshotToast(payload: { message: string; displayTimeMs?: number }): void
+  /** 提示窗口渲染进程回传尺寸测量结果，请求主进程居中显示。 */
+  showScreenshotToastWindow(payload: { width: number; height: number; displayTimeMs: number }): void
+  /** 订阅主进程转发到提示窗口的展示事件，返回取消订阅方法。 */
+  onShowScreenshotToast(cb: (payload: { message: string; displayTimeMs: number }) => void): () => void
   /** 使用弹窗中的语言偏好重新翻译当前文本。 */
   retranslate(sourceLang: string, targetLang: string, origin?: TranslationOrigin): Promise<void>
   /** 提交一条手动翻译请求。 */

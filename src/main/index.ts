@@ -181,6 +181,8 @@ const OCR_TIMEOUT_MS = 30000
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let ocrSelectionWin: BrowserWindow | null = null
+let screenshotToastWin: BrowserWindow | null = null
+let screenshotToastHideTimer: NodeJS.Timeout | null = null
 let dockIconEnabled = false
 let webReaderWindowOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
@@ -1288,6 +1290,106 @@ function isOcrSelectionVisible(): boolean {
 }
 
 /**
+ * 创建或返回独立的截图动作提示窗口。
+ * 提示窗口与截图覆盖层解耦：截图窗口关闭后提示仍独立存活，到时间后自行隐藏。
+ * @returns 截图提示窗口。
+ * @author zhenghq
+ */
+function getScreenshotToastWindow(): BrowserWindow {
+  if (screenshotToastWin && !screenshotToastWin.isDestroyed()) return screenshotToastWin
+  screenshotToastWin = new BrowserWindow({
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: false,
+    hasShadow: false,
+    width: 200,
+    height: 44,
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  screenshotToastWin.setAlwaysOnTop(true, 'screen-saver')
+  screenshotToastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  screenshotToastWin.on('closed', () => {
+    if (screenshotToastHideTimer) {
+      clearTimeout(screenshotToastHideTimer)
+      screenshotToastHideTimer = null
+    }
+    screenshotToastWin = null
+    // Toast 窗口异常关闭时也必须释放自己的暂停原因，避免全局划词监听永久停用。
+    selectionListenerController.resume('screenshot-toast')
+  })
+  screenshotToastWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    screenshotToastWin.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/toast.html`)
+  } else {
+    screenshotToastWin.loadFile(join(__dirname, '../renderer/toast.html'))
+  }
+  return screenshotToastWin
+}
+
+/**
+ * 展示独立的截图动作提示窗口：转发消息给提示窗口渲染进程，
+ * 由渲染进程完成尺寸测量后再通过 `screenshot-toast:show-window` 居中显示。
+ * @param message 提示文本。
+ * @param displayTimeMs 停留时长（毫秒）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showScreenshotToast(message: string, displayTimeMs = 1500): void {
+  // 在异步 Toast 渲染和尺寸测量前立即暂停，避免截图窗口关闭时“译”图标闪现。
+  selectionListenerController.pause('screenshot-toast')
+  const win = getScreenshotToastWindow()
+  const show = (): void => {
+    win.webContents.send('screenshot-toast:show', { message, displayTimeMs })
+  }
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', show)
+  } else {
+    show()
+  }
+}
+
+/**
+ * 处理提示窗口回传的尺寸测量结果：调整窗口大小、居中到当前屏幕并显示，
+ * 同时安排到时间后自动隐藏。
+ * @param value 提示窗口渲染进程回传的尺寸与停留时长。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleScreenshotToastShowWindow(value: unknown): void {
+  const win = screenshotToastWin
+  if (!win || win.isDestroyed()) return
+  const raw = value as { width?: number; height?: number; displayTimeMs?: number }
+  const width = Math.min(Math.max(Math.ceil(raw.width ?? 0) + 4, 120), 480)
+  const height = Math.min(Math.max(Math.ceil(raw.height ?? 0) + 4, 36), 120)
+  const displayTimeMs = Math.max(raw.displayTimeMs ?? 1500, 500)
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const x = Math.round(display.bounds.x + (display.bounds.width - width) / 2)
+  const y = Math.round(display.bounds.y + display.bounds.height * 0.42 - height / 2)
+  win.setBounds({ x, y, width, height })
+  win.showInactive()
+  if (screenshotToastHideTimer) clearTimeout(screenshotToastHideTimer)
+  screenshotToastHideTimer = setTimeout(() => {
+    if (screenshotToastWin && !screenshotToastWin.isDestroyed()) {
+      screenshotToastWin.hide()
+    }
+    screenshotToastHideTimer = null
+    selectionListenerController.resume('screenshot-toast')
+  }, displayTimeMs)
+}
+
+/**
  * 暂停普通划词监听，供 OCR 框选期间独占鼠标事件。
  * 与 restoreSelectionListenerAfterOcr 配对记账，确保任何收尾路径都能恢复。
  * @returns 无返回值。
@@ -1397,15 +1499,16 @@ function cancelOcrSelection(): void {
 
 /**
  * 结束当前截图会话但不隐藏覆盖窗口：
- * 供复制/保存成功后调用，先释放快照与全局划词监听，
- * 由 Renderer 展示完成提示后再通过取消 IPC 隐藏窗口。
+ * 供复制/保存成功后调用，先释放快照，
+ * 全局划词监听延迟恢复以等待覆盖窗口关闭动画播完，
+ * 避免新窗口（如独立 toast）被误判为划词触发"译"按钮。
  * @returns 无返回值。
  * @author zhenghq
  */
 function finishScreenshotSession(): void {
   activeScreenshotOcrRequests.clear()
   latestOcrSnapshot = null
-  restoreSelectionListenerAfterOcr()
+  // 划词监听由 toast 窗口统一接管：toast 显示期间保持暂停，隐藏后再恢复
 }
 
 /** 截图选区动作错误：携带细分错误码，便于截图窗口展示差异化提示。
@@ -1918,7 +2021,8 @@ async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
     clipboard.writeImage(nativeImage.createFromBuffer(png))
     sendScreenshotActionResult({ requestId: request.requestId, action: 'copy-image', ok: true })
     // 复制成功后结束截图会话：先释放快照与全局划词监听，
-    // 覆盖窗口由 Renderer 展示完成提示后再通过取消 IPC 隐藏。
+    // 提示由独立 toast 窗口展示，覆盖窗口由 Renderer 收到回执后淡出关闭。
+    showScreenshotToast('已添加到剪贴板', 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -1947,9 +2051,8 @@ function buildScreenshotSaveFileName(): string {
 }
 
 /**
- * 处理截图“保存到本地”动作：裁剪当前选区并弹出系统保存对话框，
- * 仅用户确认路径后才写入 PNG；取消对话框不视为错误并保持窗口打开，
- * 保存成功后退出截图。
+ * 处理截图“保存到本地”动作：先弹出系统保存对话框，用户确认路径后再裁剪当前选区并写入 PNG，
+ * 避免大图编码阻塞保存地址框的显示；取消对话框不视为错误并保持窗口打开，保存成功后退出截图。
  * @param value Renderer 提交的截图动作请求负载。
  * @returns 保存流程完成后的 Promise。
  * @author zhenghq
@@ -1958,8 +2061,6 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
   if (!request) return
   try {
-    // 保存图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理以保持主线程响应。
-    const png = cropCurrentOcrSelectionPngFast(request.bounds)
     const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
     const result = win
       ? await dialog.showSaveDialog(win, {
@@ -1968,8 +2069,8 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
         })
       : await dialog.showSaveDialog({
           defaultPath: buildScreenshotSaveFileName(),
-          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
-        })
+        filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+      })
     // 保存对话框阻塞期间窗口可能已关闭或请求已失效，仅写回仍有效的请求。
     if (result.canceled || !result.filePath) {
       sendScreenshotActionResult({
@@ -1981,6 +2082,9 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
       return
     }
     if (!isScreenshotOcrRequestActive(request.requestId)) return
+    // 用户确认路径后再执行同步裁剪和 PNG 编码，避免保存地址框出现前被大图处理阻塞。
+    // 保存图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理。
+    const png = cropCurrentOcrSelectionPngFast(request.bounds)
     await writeFile(result.filePath, png)
     sendScreenshotActionResult({
       requestId: request.requestId,
@@ -1989,7 +2093,8 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
       filePath: result.filePath
     })
     // 保存成功后结束截图会话：先释放快照与全局划词监听，
-    // 覆盖窗口由 Renderer 展示完成提示后再通过取消 IPC 隐藏。
+    // 提示由独立 toast 窗口展示，覆盖窗口由 Renderer 收到回执后淡出关闭。
+    showScreenshotToast('已保存到本地', 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -2778,6 +2883,15 @@ function registerIpc(): void {
     const normalized = normalizeScreenshotActionRequest(request)
     if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
     void saveOcrSelectionImageAction(request)
+  })
+  ipcMain.on('screenshot-toast:show', (_event, payload: unknown) => {
+    const raw = payload as { message?: string; displayTimeMs?: number }
+    if (typeof raw?.message === 'string' && raw.message.trim()) {
+      showScreenshotToast(raw.message, raw.displayTimeMs)
+    }
+  })
+  ipcMain.on('screenshot-toast:show-window', (_event, payload: unknown) => {
+    handleScreenshotToastShowWindow(payload)
   })
   ipcMain.on('ocr-clipboard:translate', () => {
     void translateClipboardImage()

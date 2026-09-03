@@ -1,0 +1,42 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screenshot-toast {
+  max-width: 100%;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--toast-bg);
+  color: var(--toast-text);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+
+.screenshot-toast.visible {
+  opacity: 1;
+  transform: scale(1);
+}
