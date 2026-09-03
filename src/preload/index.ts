@@ -16,6 +16,9 @@ import type {
   OcrSelectionBounds,
   OcrSelectionStartPayload,
   OcrStatus,
+  ScreenshotOcrActionRequest,
+  ScreenshotOcrActionResult,
+  ScreenshotOcrRecognizeResult,
   WebReaderState,
   WebTranslationExtractionPayload,
   WebTranslationMode,
@@ -244,6 +247,66 @@ const api: Api = {
    */
   cancelOcrSelection() {
     ipcRenderer.send('ocr-selection:cancel')
+  },
+  /**
+   * 请求对当前截图选区执行文字识别，不关闭截图窗口。
+   * @param request 截图动作请求负载。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  recognizeOcrSelection(request: ScreenshotOcrActionRequest) {
+    ipcRenderer.send('ocr-selection:recognize', request)
+  },
+  /**
+   * 请求将当前截图选区送入现有 OCR 翻译流程。
+   * @param request 截图动作请求负载。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  translateOcrSelection(request: ScreenshotOcrActionRequest) {
+    ipcRenderer.send('ocr-selection:translate', request)
+  },
+  /**
+   * 请求将当前截图选区图片复制到系统剪贴板。
+   * @param request 截图动作请求负载。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  copyOcrSelectionImage(request: ScreenshotOcrActionRequest) {
+    ipcRenderer.send('ocr-selection:copy-image', request)
+  },
+  /**
+   * 请求将当前截图选区图片保存到本地磁盘。
+   * @param request 截图动作请求负载。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  saveOcrSelectionImage(request: ScreenshotOcrActionRequest) {
+    ipcRenderer.send('ocr-selection:save-image', request)
+  },
+  /**
+   * 订阅截图文字识别结果事件。
+   * @param callback 识别结果回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onOcrRecognizeResult(callback: (result: ScreenshotOcrRecognizeResult) => void) {
+    const listener = (_event: unknown, result: ScreenshotOcrRecognizeResult): void =>
+      callback(result)
+    ipcRenderer.on('ocr-selection:recognize-result', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:recognize-result', listener)
+  },
+  /**
+   * 订阅截图图片复制/保存动作反馈事件。
+   * @param callback 动作反馈回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onOcrActionResult(callback: (result: ScreenshotOcrActionResult) => void) {
+    const listener = (_event: unknown, result: ScreenshotOcrActionResult): void =>
+      callback(result)
+    ipcRenderer.on('ocr-selection:action-result', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:action-result', listener)
   },
   /**
    * 使用手动语言偏好重新翻译当前文本。

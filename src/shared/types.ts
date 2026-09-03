@@ -264,6 +264,71 @@ export interface OcrSelectionStartPayload {
   bounds: OcrSelectionBounds
 }
 
+/** 截图动作类型：文字识别、翻译、复制图片或保存到本地。
+ * @author zhenghq
+ */
+export type ScreenshotOcrAction = 'recognize' | 'translate' | 'copy-image' | 'save-image'
+
+/** 截图动作细分错误码：在 OCR 错误码基础上扩展剪贴板与文件写入失败。
+ * @author zhenghq
+ */
+export type ScreenshotOcrErrorCode =
+  | OcrErrorCode
+  | 'invalid-selection'
+  | 'snapshot-expired'
+  | 'clipboard-write-failed'
+  | 'save-failed'
+
+/** 截图动作请求负载：只携带选区矩形与请求元数据，不包含原始图片字节。
+ * @author zhenghq
+ */
+export interface ScreenshotOcrActionRequest {
+  /** 本次动作类型。 */
+  action: ScreenshotOcrAction
+  /** Renderer 生成的请求 ID，用于隔离旧回调。 */
+  requestId: string
+  /** 用户当前调整后的选区矩形（截图窗口内逻辑坐标）。 */
+  bounds: OcrSelectionBounds
+}
+
+/** 截图文字识别结果事件负载：只包含文本、引擎与错误状态，不包含原始 PNG。
+ * @author zhenghq
+ */
+export interface ScreenshotOcrRecognizeResult {
+  /** 对应请求的 ID。 */
+  requestId: string
+  /** 识别是否成功且返回了可用文本。 */
+  ok: boolean
+  /** 清洗后的 OCR 原文（成功时携带）。 */
+  text?: string
+  /** 实际产出 OCR 原文的引擎（成功时携带）。 */
+  engine?: OcrEngineId
+  /** 失败或空结果时的细分错误码。 */
+  code?: ScreenshotOcrErrorCode
+  /** 用户可读的错误描述（失败时携带）。 */
+  error?: string
+}
+
+/** 截图图片复制/保存动作反馈事件负载。
+ * @author zhenghq
+ */
+export interface ScreenshotOcrActionResult {
+  /** 对应请求的 ID。 */
+  requestId: string
+  /** 本次动作类型，仅复制图片或保存到本地。 */
+  action: 'copy-image' | 'save-image'
+  /** 动作是否成功；用户取消保存对话框时亦为 true。 */
+  ok: boolean
+  /** 用户是否取消了保存对话框（仅保存动作）。 */
+  canceled?: boolean
+  /** 实际写入的本地路径（保存成功时携带）。 */
+  filePath?: string
+  /** 失败时的细分错误码。 */
+  code?: ScreenshotOcrErrorCode
+  /** 用户可读的错误描述（失败时携带）。 */
+  error?: string
+}
+
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
 export interface OcrStatus {
   /** 系统 OCR 是否可在当前平台使用。 */
@@ -676,6 +741,18 @@ export interface Api {
   submitOcrSelection(bounds: OcrSelectionBounds): void
   /** 取消 OCR 框选。 */
   cancelOcrSelection(): void
+  /** 请求对当前截图选区执行文字识别，不关闭截图窗口。 */
+  recognizeOcrSelection(request: ScreenshotOcrActionRequest): void
+  /** 请求将当前截图选区送入现有 OCR 翻译流程。 */
+  translateOcrSelection(request: ScreenshotOcrActionRequest): void
+  /** 请求将当前截图选区图片复制到系统剪贴板。 */
+  copyOcrSelectionImage(request: ScreenshotOcrActionRequest): void
+  /** 请求将当前截图选区图片保存到本地磁盘。 */
+  saveOcrSelectionImage(request: ScreenshotOcrActionRequest): void
+  /** 订阅截图文字识别结果事件，返回取消订阅方法。 */
+  onOcrRecognizeResult(cb: (result: ScreenshotOcrRecognizeResult) => void): () => void
+  /** 订阅截图图片复制/保存动作反馈事件，返回取消订阅方法。 */
+  onOcrActionResult(cb: (result: ScreenshotOcrActionResult) => void): () => void
   /** 使用弹窗中的语言偏好重新翻译当前文本。 */
   retranslate(sourceLang: string, targetLang: string, origin?: TranslationOrigin): Promise<void>
   /** 提交一条手动翻译请求。 */

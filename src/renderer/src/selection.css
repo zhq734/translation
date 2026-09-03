@@ -54,6 +54,12 @@ body {
   background: var(--ocr-overlay-bg);
   cursor: crosshair;
   user-select: none;
+  transition: opacity 220ms ease-in;
+}
+
+/* 复制/保存成功后的关闭动画：整个覆盖层快速淡出，toast 因自身 opacity 更高不受影响 */
+.ocr-overlay.closing {
+  opacity: 0.12;
 }
 
 .ocr-snapshot {
@@ -160,13 +166,14 @@ body {
 .ocr-toolbar {
   position: fixed;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   z-index: 4;
   padding: 6px;
   border: 1px solid var(--border-default);
   border-radius: 8px;
   background: var(--popup-bg);
   box-shadow: 0 8px 24px var(--popup-shadow);
+  max-width: calc(100vw - 16px);
 }
 
 .ocr-toolbar[hidden] {
@@ -174,24 +181,161 @@ body {
 }
 
 .ocr-toolbar button {
-  min-width: 54px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--border-control);
   border-radius: 6px;
   background: var(--control-bg);
   color: var(--text-primary);
   cursor: pointer;
-  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
-  font-size: 13px;
-  line-height: 1.2;
-  padding: 5px 10px;
+  padding: 0;
+  transition: background 120ms ease, transform 120ms ease;
 }
 
 .ocr-toolbar button:hover {
   background: var(--bg-secondary);
 }
 
+.ocr-toolbar button:active {
+  transform: scale(0.94);
+}
+
+.ocr-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.ocr-toolbar button:focus-visible {
+  outline: 2px solid var(--button-bg);
+  outline-offset: 2px;
+}
+
+.ocr-toolbar button svg {
+  display: block;
+}
+
 #ocr-recognize {
   border-color: var(--button-bg);
   background: var(--button-bg);
   color: var(--button-text);
+}
+
+.ocr-panel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 5;
+  width: clamp(180px, 24vw, 320px);
+  max-width: calc(100vw - 16px);
+  max-height: min(60vh, 420px);
+  padding: 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--popup-bg);
+  box-shadow: 0 8px 24px var(--popup-shadow);
+}
+
+.ocr-panel[hidden] {
+  display: none;
+}
+
+.ocr-panel-status {
+  color: var(--text-secondary);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ocr-panel-text {
+  flex: 1;
+  min-height: 96px;
+  max-height: 320px;
+  resize: none;
+  overflow: auto;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 6px 8px;
+  user-select: text;
+  cursor: text;
+}
+
+.ocr-panel-text:focus-visible {
+  outline: 2px solid var(--button-bg);
+  outline-offset: 1px;
+}
+
+.ocr-panel-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 0 50%, var(--text-muted) 50% 58%, transparent 58% 64%, var(--text-muted) 64% 72%, transparent 72% 78%, var(--text-muted) 78% 86%, transparent 86%);
+  border-bottom-right-radius: 6px;
+  opacity: 0.7;
+}
+
+.ocr-panel-resize:hover {
+  opacity: 1;
+}
+
+.ocr-toast {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%) scale(0.96);
+  z-index: 6;
+  border: none;
+  border-radius: 8px;
+  background: var(--toast-bg);
+  box-shadow: 0 8px 24px var(--popup-shadow);
+  color: var(--toast-text);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 10px 18px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+
+.ocr-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.ocr-toast[hidden] {
+  display: none;
+}
+
+.ocr-tooltip {
+  position: fixed;
+  z-index: 7;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--popup-bg);
+  box-shadow: 0 4px 12px var(--popup-shadow);
+  color: var(--text-primary);
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 8px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.ocr-tooltip[hidden] {
+  display: none;
 }

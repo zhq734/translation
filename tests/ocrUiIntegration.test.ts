@@ -214,7 +214,10 @@ test('OCR 框选页应支持快照预览、调整选区和点击识别', () => {
   assert.match(selectionRenderer, /function renderOcrSnapshot/u)
   assert.match(selectionRenderer, /function updateResizeHandlePositions/u)
   assert.match(selectionRenderer, /function submitCurrentOcrSelection/u)
-  assert.match(selectionRenderer, /ocrRecognizeButton\.addEventListener\('click',\s*submitCurrentOcrSelection\)/u)
+  // 截图工具条改造后，“识别”按钮触发窗口内文字识别；Enter/空格仍走翻译提交路径。
+  assert.match(selectionRenderer, /function recognizeCurrentOcrSelection/u)
+  assert.match(selectionRenderer, /ocrRecognizeButton\.addEventListener\('click',\s*recognizeCurrentOcrSelection\)/u)
+  assert.match(selectionRenderer, /ocrTranslateButton\.addEventListener\('click',\s*translateCurrentOcrSelection\)/u)
   assert.match(selectionCss, /\.ocr-snapshot\s*\{[^}]*object-fit:\s*fill;/su)
   assert.match(selectionCss, /\.ocr-resize-handle/u)
   assert.doesNotMatch(selectionRenderer, /window\.api\.submitOcrSelection\(rect\)/u)

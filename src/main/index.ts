@@ -18,7 +18,7 @@ import {
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { copyFile, readFile, unlink } from 'node:fs/promises'
+import { copyFile, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -147,10 +147,13 @@ import { preprocessOcrImageBytes } from './ocrImagePreprocess'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
 import { OcrEngineError } from '../shared/ocrEngine'
+import { cleanOcrText } from '../shared/ocrText'
 import type {
   OcrErrorCode,
   OcrSelectionBounds,
   OcrStatus,
+  ScreenshotOcrActionRequest,
+  ScreenshotOcrErrorCode,
   WebTranslationMode,
   WebTranslationRunRequest,
   WebViewBounds
@@ -191,6 +194,8 @@ const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 let latestOcrSnapshot: { png: Buffer; bounds: CaptureBounds; source: string } | null = null
+// 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
+const activeScreenshotOcrRequests = new Set<string>()
 // 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
 const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
@@ -1256,10 +1261,12 @@ function getOcrSelectionWindow(): BrowserWindow {
   // 覆盖层可能被隐藏、关闭等旁路收尾（含异常路径），这里兜底恢复全局划词监听，
   // 避免钩子停在暂停状态导致划词与双击不再显示“译”按钮；恢复函数自身幂等。
   ocrSelectionWin.on('hide', () => {
+    activeScreenshotOcrRequests.clear()
     restoreSelectionListenerAfterOcr()
   })
   ocrSelectionWin.on('closed', () => {
     ocrSelectionWin = null
+    activeScreenshotOcrRequests.clear()
     restoreSelectionListenerAfterOcr()
   })
   ocrSelectionWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -1382,9 +1389,43 @@ async function openOcrSelection(): Promise<void> {
  * @author zhenghq
  */
 function cancelOcrSelection(): void {
+  activeScreenshotOcrRequests.clear()
   hideOcrSelectionWindow()
   latestOcrSnapshot = null
   restoreSelectionListenerAfterOcr()
+}
+
+/**
+ * 结束当前截图会话但不隐藏覆盖窗口：
+ * 供复制/保存成功后调用，先释放快照与全局划词监听，
+ * 由 Renderer 展示完成提示后再通过取消 IPC 隐藏窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function finishScreenshotSession(): void {
+  activeScreenshotOcrRequests.clear()
+  latestOcrSnapshot = null
+  restoreSelectionListenerAfterOcr()
+}
+
+/** 截图选区动作错误：携带细分错误码，便于截图窗口展示差异化提示。
+ * @author zhenghq
+ */
+class ScreenshotSelectionError extends Error {
+  /** 细分错误码。 */
+  readonly code: ScreenshotOcrErrorCode
+
+  /**
+   * 创建截图选区动作错误。
+   * @param code 细分错误码。
+   * @param message 面向用户的描述。
+   * @author zhenghq
+   */
+  constructor(code: ScreenshotOcrErrorCode, message: string) {
+    super(message)
+    this.name = 'ScreenshotSelectionError'
+    this.code = code
+  }
 }
 
 /**
@@ -1683,6 +1724,286 @@ async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Setting
   await logOcrCaptureDiagnostic(png, bounds, `${snapshot.source}-crop`)
   latestOcrSnapshot = null
   return png
+}
+
+/**
+ * 校验截图动作请求负载：动作、请求 ID 与选区矩形必须齐全有效。
+ * @param value Renderer 提交的未知请求负载。
+ * @returns 校验后的截图动作请求；非法时返回 null。
+ * @author zhenghq
+ */
+function normalizeScreenshotActionRequest(value: unknown): ScreenshotOcrActionRequest | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<ScreenshotOcrActionRequest>
+  const actions = ['recognize', 'translate', 'copy-image', 'save-image'] as const
+  if (!actions.includes(raw.action as (typeof actions)[number])) return null
+  if (typeof raw.requestId !== 'string' || !raw.requestId.trim()) return null
+  if (!raw.bounds || typeof raw.bounds !== 'object') return null
+  return raw as ScreenshotOcrActionRequest
+}
+
+/**
+ * 从当前 OCR 屏幕快照中裁剪用户当前调整后的选区，不消费快照、不重新截屏。
+ * 识别、复制图片和保存图片统一走此入口，保证三个动作针对同一选区。
+ * @param value Renderer 提交的选区矩形（截图窗口内逻辑坐标）。
+ * @param settings 当前设置。
+ * @returns 裁剪并预处理后的 PNG 图片字节。
+ * @author zhenghq
+ */
+function cropCurrentOcrSelectionPng(value: unknown, settings: Settings): Buffer {
+  const bounds = normalizeOcrSelectionBounds(value)
+  if (!bounds) {
+    throw new ScreenshotSelectionError('invalid-selection', '选区无效，请重新框选')
+  }
+  const snapshot = latestOcrSnapshot
+  if (!snapshot) {
+    throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
+  }
+  const fullImage = decodePng(snapshot.png)
+  const cropRect = computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+  const cropped = cropRgba(fullImage, cropRect)
+  const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
+  return encodePng(scaled)
+}
+
+/**
+ * 从当前 OCR 屏幕快照中快速裁剪用户当前调整后的选区：
+ * 使用 Chromium 原生 nativeImage 裁剪并编码 PNG，不做 OCR 放大预处理，
+ * 避免主线程被 JS 版 PNG 解码与双线性缩放阻塞，供复制/保存动作使用。
+ * @param value Renderer 提交的选区矩形（截图窗口内逻辑坐标）。
+ * @returns 原分辨率裁剪后的 PNG 图片字节。
+ * @author zhenghq
+ */
+function cropCurrentOcrSelectionPngFast(value: unknown): Buffer {
+  const bounds = normalizeOcrSelectionBounds(value)
+  if (!bounds) {
+    throw new ScreenshotSelectionError('invalid-selection', '选区无效，请重新框选')
+  }
+  const snapshot = latestOcrSnapshot
+  if (!snapshot) {
+    throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
+  }
+  const fullImage = nativeImage.createFromBuffer(snapshot.png)
+  const { width, height } = fullImage.getSize()
+  const cropRect = computeCropRect(bounds, snapshot.bounds, width, height)
+  return fullImage.crop(cropRect).toPNG()
+}
+
+/**
+ * 判断截图窗口是否仍然持有指定请求：窗口未销毁且请求未被取消/关闭清理。
+ * @param requestId Renderer 生成的请求 ID。
+ * @returns 请求是否仍然有效。
+ * @author zhenghq
+ */
+function isScreenshotOcrRequestActive(requestId: string): boolean {
+  return activeScreenshotOcrRequests.has(requestId) &&
+    Boolean(ocrSelectionWin && !ocrSelectionWin.isDestroyed())
+}
+
+/**
+ * 将截图动作异常转换为细分错误码。
+ * @param error 捕获到的异常。
+ * @returns 截图动作细分错误码。
+ * @author zhenghq
+ */
+function resolveScreenshotActionErrorCode(error: unknown): ScreenshotOcrErrorCode {
+  if (error instanceof ScreenshotSelectionError) return error.code
+  if (error instanceof OcrEngineError) return error.code
+  if (error instanceof ScreenCaptureError) {
+    return error.code === 'permission' ? 'permission' : 'snapshot-expired'
+  }
+  return 'engine-unavailable'
+}
+
+/**
+ * 向截图窗口发送文字识别结果，仅在请求仍有效时写回，避免旧回调覆盖新会话。
+ * @param result 识别结果事件负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function sendScreenshotRecognizeResult(result: {
+  requestId: string
+  ok: boolean
+  text?: string
+  engine?: 'system' | 'paddle' | 'tesseract'
+  code?: ScreenshotOcrErrorCode
+  error?: string
+}): void {
+  if (!isScreenshotOcrRequestActive(result.requestId)) return
+  ocrSelectionWin?.webContents.send('ocr-selection:recognize-result', result)
+}
+
+/**
+ * 向截图窗口发送图片复制/保存动作反馈，仅在请求仍有效时写回。
+ * @param result 动作反馈事件负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function sendScreenshotActionResult(result: {
+  requestId: string
+  action: 'copy-image' | 'save-image'
+  ok: boolean
+  canceled?: boolean
+  filePath?: string
+  code?: ScreenshotOcrErrorCode
+  error?: string
+}): void {
+  if (!isScreenshotOcrRequestActive(result.requestId)) return
+  ocrSelectionWin?.webContents.send('ocr-selection:action-result', result)
+}
+
+/**
+ * 处理截图“文字识别”动作：裁剪当前选区并执行 OCR，只回传文本、引擎与错误状态。
+ * 截图窗口保持打开，原始 PNG 不发送给 Renderer。
+ * @param value Renderer 提交的截图动作请求负载。
+ * @returns 识别流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
+  const request = normalizeScreenshotActionRequest(value)
+  if (!request) return
+  const settings = getSettings()
+  try {
+    const png = cropCurrentOcrSelectionPng(request.bounds, settings)
+    const preparedImageBytes = preprocessOcrImageBytes(png, settings.ocrScale)
+    const dispatcher = createOcrDispatcher(settings)
+    const ocr = await dispatcher.recognize({
+      imageBytes: preparedImageBytes,
+      language: settings.ocrLang,
+      timeoutMs: OCR_TIMEOUT_MS
+    }, settings.ocrEnginePreference)
+    const text = cleanOcrText(ocr.text ?? '')
+    sendScreenshotRecognizeResult(
+      text
+        ? { requestId: request.requestId, ok: true, text, engine: ocr.engine }
+        : { requestId: request.requestId, ok: false, code: 'empty', error: '未识别到文字' }
+    )
+  } catch (error) {
+    sendScreenshotRecognizeResult({
+      requestId: request.requestId,
+      ok: false,
+      code: resolveScreenshotActionErrorCode(error),
+      error: error instanceof Error ? error.message : 'OCR 识别失败'
+    })
+  } finally {
+    activeScreenshotOcrRequests.delete(request.requestId)
+  }
+}
+
+/**
+ * 处理截图“翻译”动作：沿用现有截图 OCR 翻译流程，隐藏截图窗口并打开翻译窗口。
+ * @param value Renderer 提交的截图动作请求负载。
+ * @returns 翻译流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function translateOcrSelectionAction(value: unknown): Promise<void> {
+  const request = normalizeScreenshotActionRequest(value)
+  if (!request) return
+  activeScreenshotOcrRequests.clear()
+  await submitOcrSelection(request.bounds)
+}
+
+/**
+ * 处理截图“复制图片”动作：将当前选区 PNG 写入系统图片剪贴板，成功后退出截图。
+ * @param value Renderer 提交的截图动作请求负载。
+ * @returns 复制流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
+  const request = normalizeScreenshotActionRequest(value)
+  if (!request) return
+  try {
+    // 复制图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理以保持主线程响应。
+    const png = cropCurrentOcrSelectionPngFast(request.bounds)
+    clipboard.writeImage(nativeImage.createFromBuffer(png))
+    sendScreenshotActionResult({ requestId: request.requestId, action: 'copy-image', ok: true })
+    // 复制成功后结束截图会话：先释放快照与全局划词监听，
+    // 覆盖窗口由 Renderer 展示完成提示后再通过取消 IPC 隐藏。
+    finishScreenshotSession()
+  } catch (error) {
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'copy-image',
+      ok: false,
+      code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
+        ? resolveScreenshotActionErrorCode(error)
+        : 'clipboard-write-failed',
+      error: error instanceof Error ? error.message : '复制图片失败'
+    })
+  } finally {
+    activeScreenshotOcrRequests.delete(request.requestId)
+  }
+}
+
+/**
+ * 生成截图保存的默认 PNG 文件名（带时间戳）。
+ * @returns 默认文件名。
+ * @author zhenghq
+ */
+function buildScreenshotSaveFileName(): string {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `截图-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`
+}
+
+/**
+ * 处理截图“保存到本地”动作：裁剪当前选区并弹出系统保存对话框，
+ * 仅用户确认路径后才写入 PNG；取消对话框不视为错误并保持窗口打开，
+ * 保存成功后退出截图。
+ * @param value Renderer 提交的截图动作请求负载。
+ * @returns 保存流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
+  const request = normalizeScreenshotActionRequest(value)
+  if (!request) return
+  try {
+    // 保存图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理以保持主线程响应。
+    const png = cropCurrentOcrSelectionPngFast(request.bounds)
+    const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          defaultPath: buildScreenshotSaveFileName(),
+          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        })
+      : await dialog.showSaveDialog({
+          defaultPath: buildScreenshotSaveFileName(),
+          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        })
+    // 保存对话框阻塞期间窗口可能已关闭或请求已失效，仅写回仍有效的请求。
+    if (result.canceled || !result.filePath) {
+      sendScreenshotActionResult({
+        requestId: request.requestId,
+        action: 'save-image',
+        ok: true,
+        canceled: true
+      })
+      return
+    }
+    if (!isScreenshotOcrRequestActive(request.requestId)) return
+    await writeFile(result.filePath, png)
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'save-image',
+      ok: true,
+      filePath: result.filePath
+    })
+    // 保存成功后结束截图会话：先释放快照与全局划词监听，
+    // 覆盖窗口由 Renderer 展示完成提示后再通过取消 IPC 隐藏。
+    finishScreenshotSession()
+  } catch (error) {
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'save-image',
+      ok: false,
+      code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
+        ? resolveScreenshotActionErrorCode(error)
+        : 'save-failed',
+      error: error instanceof Error ? error.message : '保存图片失败'
+    })
+  } finally {
+    activeScreenshotOcrRequests.delete(request.requestId)
+  }
 }
 
 /**
@@ -2439,6 +2760,24 @@ function registerIpc(): void {
   ipcMain.on('ocr-selection:cancel', () => cancelOcrSelection())
   ipcMain.on('ocr-selection:submit', (_event, bounds: unknown) => {
     void submitOcrSelection(bounds)
+  })
+  ipcMain.on('ocr-selection:recognize', (_event, request: unknown) => {
+    const normalized = normalizeScreenshotActionRequest(request)
+    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    void recognizeOcrSelectionAction(request)
+  })
+  ipcMain.on('ocr-selection:translate', (_event, request: unknown) => {
+    void translateOcrSelectionAction(request)
+  })
+  ipcMain.on('ocr-selection:copy-image', (_event, request: unknown) => {
+    const normalized = normalizeScreenshotActionRequest(request)
+    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    void copyOcrSelectionImageAction(request)
+  })
+  ipcMain.on('ocr-selection:save-image', (_event, request: unknown) => {
+    const normalized = normalizeScreenshotActionRequest(request)
+    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    void saveOcrSelectionImageAction(request)
   })
   ipcMain.on('ocr-clipboard:translate', () => {
     void translateClipboardImage()
