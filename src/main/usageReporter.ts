@@ -159,7 +159,7 @@ export async function sendUsageReport(options: SendUsageReportOptions): Promise<
   try {
     const transporter = options.transporter ?? (options.createTransporter ?? defaultCreateTransporter)(config)
     await transporter.sendMail({
-      from: config.smtpUser,
+      from: `"划词翻译" <${config.smtpUser}>`,
       to: config.reportTo,
       subject: `【划词翻译】每日使用量统计报表 - ${today}`,
       text: buildReportBody(stats, environment, today, yesterday)

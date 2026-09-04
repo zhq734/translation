@@ -224,6 +224,58 @@ test('OCR 框选页应支持快照预览、调整选区和点击识别', () => {
 })
 
 /**
+ * 校验截图预览页允许加载主进程传入的 data URL 快照，避免 CSP 阻止图片后触发加载失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 框选页 CSP 应允许 data URL 截图资源', () => {
+  assert.match(selectionHtml, /img-src\s+'self'\s+data:/u)
+})
+
+/**
+ * 校验 OCR 覆盖窗口使用目标显示器外层边界定位，避免内容区域换算造成快照整体下移。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口应按目标屏幕外层边界对齐', () => {
+  const openStart = main.indexOf('async function openOcrSelection')
+  const openEnd = main.indexOf('/**', openStart + 1)
+  const openSource = main.slice(openStart, openEnd)
+  assert.match(openSource, /win\.setBounds\(display\.bounds\)/u)
+  assert.doesNotMatch(openSource, /win\.setContentBounds\(display\.bounds\)/u)
+  assert.match(openSource, /win\.setSimpleFullScreen\(true\)/u)
+  assert.match(main, /function hideOcrSelectionWindow[\s\S]*?ocrSelectionWin\.setSimpleFullScreen\(false\)/u)
+})
+
+/**
+ * 校验截图文字编辑框使用透明多行输入控件，避免空格/回车被截图快捷键吞掉。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('截图文字编辑框应支持透明多行输入', () => {
+  assert.match(selectionHtml, /<textarea[^>]*id="ocr-text-input"/u)
+  assert.match(selectionRenderer, /const ocrTextInput = document\.getElementById\('ocr-text-input'\) as HTMLTextAreaElement/u)
+  assert.match(selectionCss, /\.ocr-text-input[\s\S]*?background:\s*transparent/u)
+  assert.match(selectionCss, /\.ocr-text-input[\s\S]*?resize:\s*none/u)
+  assert.match(selectionRenderer, /if \(event\.target === ocrTextInput\) return/u)
+  assert.match(selectionRenderer, /ocrTextInput\.addEventListener\('input',/u)
+  assert.match(selectionRenderer, /scrollHeight/u)
+  assert.match(selectionCss, /\.ocr-tip[\s\S]*?margin-top:\s*64px/u)
+})
+
+/**
+ * 校验工具栏布局会避让右侧 OCR 识别内容区域，避免两个浮层相互遮挡。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('截图工具栏应避让 OCR 识别内容区域', () => {
+  assert.match(selectionRenderer, /function avoidOcrToolbarPanelOverlap\(/u)
+  assert.match(selectionRenderer, /avoidOcrToolbarPanelOverlap\(\)/u)
+  assert.match(selectionRenderer, /toolbarRight <= panelRect\.left/u)
+  assert.match(selectionRenderer, /toolbarBottom <= panelRect\.top/u)
+})
+
+/**
  * 校验截图采集发生在弹窗 loading 展示之前，避免截到弹窗。
  * @returns 无返回值。
  * @author zhenghq

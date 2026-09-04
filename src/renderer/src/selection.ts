@@ -1,14 +1,25 @@
 import type {
+  ScreenshotAnnotation,
   OcrSelectionBounds,
   OcrSelectionStartPayload,
+  ScreenshotAnnotatedExportRequest,
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
   ScreenshotOcrRecognizeResult
 } from '../../shared/types'
+import {
+  ScreenshotAnnotationController,
+  SCREENSHOT_ANNOTATION_LIMITS,
+  computeExportCanvasSize,
+  computeExportScale,
+  drawAnnotations
+} from './screenshotAnnotation'
 
 const translateButton = document.getElementById('translate') as HTMLButtonElement
 const ocrOverlay = document.getElementById('ocr-overlay') as HTMLElement
 const ocrSnapshot = document.getElementById('ocr-snapshot') as HTMLImageElement
+const ocrAnnotationCanvas = document.getElementById('ocr-annotation-canvas') as HTMLCanvasElement
+const ocrAnnotationPreview = document.getElementById('ocr-annotation-preview') as HTMLCanvasElement
 const ocrSelectionBox = document.getElementById('ocr-selection-box') as HTMLElement
 const ocrToolbar = document.getElementById('ocr-toolbar') as HTMLElement
 const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButtonElement
@@ -16,6 +27,24 @@ const ocrTranslateButton = document.getElementById('ocr-translate') as HTMLButto
 const ocrCopyImageButton = document.getElementById('ocr-copy-image') as HTMLButtonElement
 const ocrSaveImageButton = document.getElementById('ocr-save-image') as HTMLButtonElement
 const ocrCancelButton = document.getElementById('ocr-cancel') as HTMLButtonElement
+const ocrAnnotationToolButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>('[data-annotation-tool]')
+)
+const ocrColorToggle = document.getElementById('ocr-color-toggle') as HTMLButtonElement
+const ocrColorPanel = document.getElementById('ocr-color-panel') as HTMLElement
+const ocrColorCustom = document.getElementById('ocr-color-custom') as HTMLInputElement
+const ocrColorIndicator = document.getElementById('ocr-color-indicator') as HTMLElement
+const ocrStrokeWidth = document.getElementById('ocr-stroke-width') as HTMLInputElement
+const ocrFontSize = document.getElementById('ocr-font-size') as HTMLInputElement
+const ocrTextBold = document.getElementById('ocr-text-bold') as HTMLButtonElement
+const ocrMosaicBrush = document.getElementById('ocr-mosaic-brush') as HTMLInputElement
+const ocrMosaicIntensity = document.getElementById('ocr-mosaic-intensity') as HTMLInputElement
+const ocrUndoButton = document.getElementById('ocr-undo') as HTMLButtonElement
+const ocrRedoButton = document.getElementById('ocr-redo') as HTMLButtonElement
+const ocrClearAnnotationsButton = document.getElementById(
+  'ocr-clear-annotations'
+) as HTMLButtonElement
+const ocrTextInput = document.getElementById('ocr-text-input') as HTMLTextAreaElement
 const ocrPanel = document.getElementById('ocr-panel') as HTMLElement
 const ocrPanelStatus = document.getElementById('ocr-panel-status') as HTMLElement
 const ocrPanelText = document.getElementById('ocr-panel-text') as HTMLTextAreaElement
@@ -32,6 +61,8 @@ const OCR_DRAW_THRESHOLD = 3
 /** OCR 侧栏手动调整时的最小尺寸。 */
 const OCR_PANEL_MIN_WIDTH = 160
 const OCR_PANEL_MIN_HEIGHT = 120
+/** 标注工具激活时仍可响应选区边缘缩放的热区宽度。 */
+const ANNOTATION_SELECTION_EDGE_SIZE = 6
 type DragHandle = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
 type DragState = {
   type: 'draw' | 'move' | 'resize'
@@ -53,6 +84,8 @@ let pendingScreenshotRequestId: string | null = null
 let screenshotRequestSeq = 0
 // OCR 侧栏状态：pending 处理中 / ready 展示文本（成功或失败描述）。
 let ocrPanelState: 'hidden' | 'pending' | 'ready' = 'hidden'
+/** 当前截图资源状态：只有完成解码后才允许合成带标注图片。 */
+let ocrSnapshotState: 'loading' | 'ready' | 'error' = 'loading'
 // OCR 侧栏用户手动调整的尺寸；为 null 时按默认自适应尺寸布局。
 let ocrPanelUserSize: { width: number; height: number } | null = null
 // OCR 侧栏尺寸拖拽状态：记录起点与初始尺寸。
@@ -60,6 +93,14 @@ let ocrPanelResizeState: {
   start: { x: number; y: number }
   initial: { width: number; height: number }
 } | null = null
+/** 截图标注控制器：管理工具、绘制草稿、样式与历史。 */
+const annotationController = new ScreenshotAnnotationController()
+/** 当前标注指针捕获目标。 */
+let annotationPointerTarget: HTMLElement | null = null
+/** 当前文字标注拖动状态。 */
+let textMoveState: { annotation: ScreenshotAnnotation } | null = null
+/** 当前选区原图采样器，用于预览与导出共享马赛克颜色。 */
+let snapshotSampler: ((x: number, y: number) => string) | null = null
 
 /**
  * 响应选区旁“译”按钮点击，并请求主进程捕获当前选中文字。
@@ -209,6 +250,42 @@ function renderOcrToolbar(): void {
   ocrToolbar.style.top = `${Math.round(y)}px`
   ocrToolbar.hidden = false
   layoutOcrPanel()
+  avoidOcrToolbarPanelOverlap()
+}
+
+/**
+ * 调整工具栏位置，确保其不覆盖 OCR 识别内容区域。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function avoidOcrToolbarPanelOverlap(): void {
+  if (ocrToolbar.hidden || ocrPanel.hidden) return
+  const size = getOverlaySize()
+  const toolbarRect = ocrToolbar.getBoundingClientRect()
+  const panelRect = ocrPanel.getBoundingClientRect()
+  const overlaps = toolbarRect.left < panelRect.right && toolbarRect.right > panelRect.left &&
+    toolbarRect.top < panelRect.bottom && toolbarRect.bottom > panelRect.top
+  if (!overlaps) return
+
+  const toolbarWidth = toolbarRect.width || ocrToolbar.offsetWidth || 128
+  const toolbarHeight = toolbarRect.height || ocrToolbar.offsetHeight || 36
+  const candidates = [
+    { x: toolbarRect.left, y: panelRect.top - toolbarHeight - 8 },
+    { x: toolbarRect.left, y: panelRect.bottom + 8 },
+    { x: panelRect.left - toolbarWidth - 8, y: toolbarRect.top },
+    { x: panelRect.right + 8, y: toolbarRect.top }
+  ]
+  const candidate = candidates.find(({ x, y }) => {
+    const left = clamp(x, 8, Math.max(8, size.width - toolbarWidth - 8))
+    const top = clamp(y, 8, Math.max(8, size.height - toolbarHeight - 8))
+    const toolbarRight = left + toolbarWidth
+    const toolbarBottom = top + toolbarHeight
+    return toolbarRight <= panelRect.left || left >= panelRect.right ||
+      toolbarBottom <= panelRect.top || top >= panelRect.bottom
+  })
+  if (!candidate) return
+  ocrToolbar.style.left = `${Math.round(clamp(candidate.x, 8, Math.max(8, size.width - toolbarWidth - 8)))}px`
+  ocrToolbar.style.top = `${Math.round(clamp(candidate.y, 8, Math.max(8, size.height - toolbarHeight - 8)))}px`
 }
 
 /**
@@ -254,6 +331,7 @@ function layoutOcrPanel(): void {
   )
   ocrPanel.style.left = `${Math.round(clamp(x, margin, Math.max(margin, size.width - panelWidth - margin)))}px`
   ocrPanel.style.top = `${Math.round(y)}px`
+  avoidOcrToolbarPanelOverlap()
 }
 
 /**
@@ -422,6 +500,480 @@ function buildScreenshotActionRequest(
 }
 
 /**
+ * 生成带标注图片导出请求的基础元数据。
+ * @param action 导出动作。
+ * @param width 合成图片宽度。
+ * @param height 合成图片高度。
+ * @returns 请求元数据；当前选区无效时返回 null。
+ * @author zhenghq
+ */
+function buildAnnotatedExportRequest(
+  action: ScreenshotAnnotatedExportRequest['action'],
+  width: number,
+  height: number
+): Omit<ScreenshotAnnotatedExportRequest, 'png'> | null {
+  if (!ocrMode || !currentRect) return null
+  if (currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) return null
+  screenshotRequestSeq += 1
+  return {
+    action,
+    requestId: `screenshot-${Date.now()}-${screenshotRequestSeq}`,
+    bounds: { ...currentRect },
+    width,
+    height
+  }
+}
+
+/**
+ * 将当前选区原图与全部标注合成为带标注 PNG。
+ * @returns 带标注导出请求；合成失败时返回 null。
+ * @author zhenghq
+ */
+async function buildAnnotatedExportPayload(
+  action: ScreenshotAnnotatedExportRequest['action']
+): Promise<ScreenshotAnnotatedExportRequest | null> {
+  if (!ocrMode || !currentRect || !ocrSnapshot.src || ocrSnapshotState !== 'ready') return null
+  const overlaySize = getOverlaySize()
+  const exportScale = computeExportScale(overlaySize, {
+    width: ocrSnapshot.naturalWidth,
+    height: ocrSnapshot.naturalHeight
+  })
+  const canvasSize = computeExportCanvasSize(currentRect, exportScale)
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasSize.width
+  canvas.height = canvasSize.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(
+    ocrSnapshot,
+    currentRect.x * exportScale.scaleX,
+    currentRect.y * exportScale.scaleY,
+    currentRect.width * exportScale.scaleX,
+    currentRect.height * exportScale.scaleY,
+    0,
+    0,
+    canvasSize.width,
+    canvasSize.height
+  )
+  ctx.setTransform(canvasSize.scaleX, 0, 0, canvasSize.scaleY, 0, 0)
+  drawAnnotations(ctx, annotationController.annotations, {
+    sampleColor: (x, y) => sampleSnapshotColor(x, y)
+  })
+  const dataUrl = canvas.toDataURL('image/png')
+  const base64 = dataUrl.slice('data:image/png;base64,'.length)
+  const binary = atob(base64)
+  const png = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    png[index] = binary.charCodeAt(index)
+  }
+  if (png.byteLength === 0 || png.byteLength > SCREENSHOT_ANNOTATION_LIMITS.maxExportBytes) return null
+  const request = buildAnnotatedExportRequest(action, canvasSize.width, canvasSize.height)
+  if (!request) return null
+  return { ...request, png }
+}
+
+/**
+ * 同步标注画布尺寸与 device pixel ratio，并将画布移动到当前选区位置。
+ * @returns 画布 2D 上下文是否可用。
+ * @author zhenghq
+ */
+function syncAnnotationCanvas(): boolean {
+  if (!currentRect) {
+    ocrAnnotationCanvas.hidden = true
+    ocrAnnotationPreview.hidden = true
+    return false
+  }
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  for (const canvas of [ocrAnnotationCanvas, ocrAnnotationPreview]) {
+    canvas.hidden = false
+    canvas.style.left = `${currentRect.x}px`
+    canvas.style.top = `${currentRect.y}px`
+    canvas.style.width = `${currentRect.width}px`
+    canvas.style.height = `${currentRect.height}px`
+    canvas.width = Math.round(currentRect.width * dpr)
+    canvas.height = Math.round(currentRect.height * dpr)
+  }
+  return true
+}
+
+/**
+ * 获取正式标注画布上下文并设置高 DPI 变换。
+ * @returns 画布上下文。
+ * @author zhenghq
+ */
+function getCommittedAnnotationContext(): CanvasRenderingContext2D | null {
+  const ctx = ocrAnnotationCanvas.getContext('2d')
+  if (!ctx || !currentRect) return null
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  return ctx
+}
+
+/**
+ * 从预览截图指定位置采样颜色，用于马赛克块显示。
+ * @param x 选区相对 x 坐标。
+ * @param y 选区相对 y 坐标。
+ * @returns 采样颜色。
+ * @author zhenghq
+ */
+function sampleSnapshotColor(x: number, y: number): string {
+  return snapshotSampler?.(x, y) ?? 'rgba(128, 128, 128, 0.9)'
+}
+
+/**
+ * 根据当前截图预览创建选区原图采样器。
+ * @returns 基于选区相对坐标的采样函数；图片未加载或画布不可用时返回 null。
+ * @author zhenghq
+ */
+function createSnapshotSampler(): ((x: number, y: number) => string) | null {
+  if (!currentRect || !ocrSnapshot.src || !ocrSnapshot.complete || ocrSnapshot.naturalWidth === 0) {
+    return null
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(currentRect.width))
+  canvas.height = Math.max(1, Math.round(currentRect.height))
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
+  const scale = computeExportScale(getOverlaySize(), {
+    width: ocrSnapshot.naturalWidth,
+    height: ocrSnapshot.naturalHeight
+  })
+  ctx.drawImage(
+    ocrSnapshot,
+    currentRect.x * scale.scaleX,
+    currentRect.y * scale.scaleY,
+    currentRect.width * scale.scaleX,
+    currentRect.height * scale.scaleY,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  )
+  return (x: number, y: number, size = 1): string => {
+    const radius = Math.max(0, Math.round(size / 2))
+    const left = Math.max(0, Math.min(canvas.width - 1, Math.round(x) - radius))
+    const top = Math.max(0, Math.min(canvas.height - 1, Math.round(y) - radius))
+    const right = Math.min(canvas.width, Math.max(left + 1, Math.round(x) + radius))
+    const bottom = Math.min(canvas.height, Math.max(top + 1, Math.round(y) + radius))
+    const data = ctx.getImageData(left, top, right - left, bottom - top).data
+    let red = 0
+    let green = 0
+    let blue = 0
+    let alpha = 0
+    const pixelCount = Math.max(1, data.length / 4)
+    for (let index = 0; index < data.length; index += 4) {
+      red += data[index] ?? 0
+      green += data[index + 1] ?? 0
+      blue += data[index + 2] ?? 0
+      alpha += data[index + 3] ?? 255
+    }
+    return `rgba(${Math.round(red / pixelCount)}, ${Math.round(green / pixelCount)}, ${Math.round(blue / pixelCount)}, ${(alpha / pixelCount / 255).toFixed(3)})`
+  }
+}
+
+/**
+ * 重绘正式标注层。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function redrawAnnotations(): void {
+  const ctx = getCommittedAnnotationContext()
+  if (!ctx || !currentRect) return
+  ctx.clearRect(0, 0, currentRect.width, currentRect.height)
+  drawAnnotations(ctx, annotationController.annotations, { sampleColor: sampleSnapshotColor })
+}
+
+/**
+ * 重绘临时标注预览层。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function redrawAnnotationPreview(): void {
+  const ctx = ocrAnnotationPreview.getContext('2d')
+  if (!ctx || !currentRect) return
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, currentRect.width, currentRect.height)
+  if (annotationController.preview) {
+    drawAnnotations(ctx, [annotationController.preview], { sampleColor: sampleSnapshotColor })
+  }
+}
+
+/**
+ * 更新标注工具按钮、样式控件与历史按钮状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateAnnotationUi(): void {
+  const tool = annotationController.tool
+  for (const button of ocrAnnotationToolButtons) {
+    button.setAttribute('aria-pressed', String(button.dataset['annotationTool'] === tool))
+  }
+  ocrStrokeWidth.hidden = tool === 'text' || tool === 'mosaic'
+  ocrColorToggle.hidden = tool === 'mosaic'
+  ocrFontSize.hidden = tool !== 'text'
+  ocrTextBold.hidden = tool !== 'text'
+  ocrMosaicBrush.hidden = tool !== 'mosaic'
+  ocrMosaicIntensity.hidden = tool !== 'mosaic'
+  ocrUndoButton.disabled = !annotationController.canUndo
+  ocrRedoButton.disabled = !annotationController.canRedo
+  ocrClearAnnotationsButton.disabled = annotationController.annotations.length === 0
+  ocrSelectionBox.style.pointerEvents = tool ? 'none' : 'auto'
+  ocrColorIndicator.style.color = annotationController.style.color
+  ocrColorIndicator.style.background = annotationController.style.color
+}
+
+/**
+ * 更新文字内联编辑框的位置与样式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateTextInput(): void {
+  const point = annotationController.textEditorPoint
+  if (!ocrMode || !currentRect || !point) {
+    ocrTextInput.hidden = true
+    return
+  }
+  const wasVisible = !ocrTextInput.hidden
+  ocrTextInput.hidden = false
+  // 更新颜色/字号时保留用户已经输入的内容，只有新建编辑框才清空文本。
+  if (!wasVisible) ocrTextInput.value = annotationController.textEditorValue
+  ocrTextInput.maxLength = SCREENSHOT_ANNOTATION_LIMITS.maxTextLength
+  ocrTextInput.style.color = annotationController.style.color
+  ocrTextInput.style.fontSize = `${annotationController.style.fontSize}px`
+  ocrTextInput.style.fontWeight = annotationController.style.bold ? '700' : '400'
+  ocrTextInput.style.left = `${currentRect.x + point.x}px`
+  ocrTextInput.style.top = `${currentRect.y + point.y}px`
+  resizeTextInput()
+  ocrTextInput.focus()
+}
+
+/**
+ * 根据文字内容自动调整输入框高度，确保回车换行展示为完整高度而非滚动条。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resizeTextInput(): void {
+  ocrTextInput.style.height = 'auto'
+  ocrTextInput.style.height = `${Math.max(28, ocrTextInput.scrollHeight)}px`
+}
+
+/**
+ * 提交当前文字输入并刷新标注画布。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function commitTextInput(): void {
+  if (annotationController.commitText(ocrTextInput.value)) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+  updateTextInput()
+}
+
+/**
+ * 进入已有文字标注编辑状态。
+ * @param annotation 待编辑的文字标注。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginTextAnnotationEdit(annotation: ScreenshotAnnotation): void {
+  if (annotation.type !== 'text' || !annotationController.beginTextEdit(annotation)) return
+  updateTextInput()
+}
+
+/**
+ * 将覆盖层坐标转换为当前选区内坐标。
+ * @param point 覆盖层坐标。
+ * @returns 选区内相对坐标。
+ * @author zhenghq
+ */
+function toAnnotationPoint(point: { x: number; y: number }): { x: number; y: number } {
+  return currentRect
+    ? { x: point.x - currentRect.x, y: point.y - currentRect.y }
+    : point
+}
+
+/**
+ * 响应标注工具按钮选择。
+ * @param event 按钮点击事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationToolClick(event: Event): void {
+  const button = event.currentTarget as HTMLButtonElement
+  const tool = button.dataset['annotationTool']
+  if (tool !== 'rect' && tool !== 'ellipse' && tool !== 'arrow' && tool !== 'brush' && tool !== 'text' && tool !== 'mosaic') return
+  annotationController.setTool(tool)
+  updateTextInput()
+  updateAnnotationUi()
+  redrawAnnotations()
+  redrawAnnotationPreview()
+}
+
+/**
+ * 切换颜色面板显示。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function toggleColorPanel(): void {
+  ocrColorPanel.hidden = !ocrColorPanel.hidden
+}
+
+/**
+ * 处理预置或自定义颜色选择。
+ * @param event 输入或点击事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationColorSelect(event: Event): void {
+  const target = event.target as HTMLElement
+  const color = target instanceof HTMLInputElement ? target.value : target.dataset['color']
+  annotationController.setColor(color)
+  ocrColorCustom.value = annotationController.style.color
+  ocrColorPanel.hidden = true
+  updateTextInput()
+  updateAnnotationUi()
+}
+
+/**
+ * 获取 Pointer Events 在覆盖层内的坐标。
+ * @param event 指针事件。
+ * @returns 覆盖层坐标。
+ * @author zhenghq
+ */
+function getPointerEventPoint(event: PointerEvent): { x: number; y: number } {
+  return { x: event.clientX, y: event.clientY }
+}
+
+/**
+ * 响应标注层指针按下，开始绘制或文字编辑。
+ * @param event 指针事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationPointerDown(event: PointerEvent): void {
+  if (!ocrMode || !annotationController.isAnnotating() || event.button !== 0) return
+  if ((event.target as HTMLElement).closest('#ocr-text-input')) return
+  // 点击其它控件或画布时先确认当前文字，避免失焦时丢失输入内容。
+  if (annotationController.textEditorPoint) commitTextInput()
+  if ((event.target as HTMLElement).closest('#ocr-toolbar')) return
+  const point = getPointerEventPoint(event)
+  if (annotationController.tool === 'text') {
+    // 文字输入需要立即独占本次指针事件，避免后续 mousedown 选区处理抢走焦点。
+    event.preventDefault()
+    event.stopPropagation()
+    const hit = annotationController.findTextAt(toAnnotationPoint(point))
+    if (hit && event.detail >= 2) {
+      // 双击的第二次按下可能紧接在第一次拖动结束之前，先结束旧拖动再进入编辑。
+      if (textMoveState) {
+        annotationController.endTextMove()
+        textMoveState = null
+        annotationPointerTarget = null
+      }
+      beginTextAnnotationEdit(hit)
+      return
+    }
+    if (hit && annotationController.beginTextMove(hit)) {
+      textMoveState = { annotation: hit }
+      annotationPointerTarget = event.currentTarget as HTMLElement
+      annotationPointerTarget.setPointerCapture(event.pointerId)
+      return
+    }
+    if (annotationController.beginText(point)) updateTextInput()
+    return
+  }
+  if (!annotationController.beginStroke(point)) return
+  annotationPointerTarget = event.currentTarget as HTMLElement
+  annotationPointerTarget.setPointerCapture(event.pointerId)
+  redrawAnnotationPreview()
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+/**
+ * 响应标注层指针移动，更新实时预览。
+ * @param event 指针事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationPointerMove(event: PointerEvent): void {
+  if (textMoveState) {
+    annotationController.updateTextPosition(getPointerEventPoint(event))
+    redrawAnnotations()
+    event.preventDefault()
+    return
+  }
+  if (!annotationController.isDrawing()) return
+  annotationController.updateStroke(getPointerEventPoint(event))
+  redrawAnnotationPreview()
+  event.preventDefault()
+}
+
+/**
+ * 响应标注层指针抬起，提交正式标注。
+ * @param event 指针事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationPointerUp(event: PointerEvent): void {
+  if (textMoveState) {
+    if (annotationPointerTarget?.hasPointerCapture(event.pointerId)) {
+      annotationPointerTarget.releasePointerCapture(event.pointerId)
+    }
+    textMoveState = null
+    annotationPointerTarget = null
+    if (annotationController.endTextMove()) updateAnnotationUi()
+    redrawAnnotations()
+    event.preventDefault()
+    return
+  }
+  if (annotationPointerTarget?.hasPointerCapture(event.pointerId)) {
+    annotationPointerTarget.releasePointerCapture(event.pointerId)
+  }
+  annotationPointerTarget = null
+  if (annotationController.endStroke()) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+  redrawAnnotationPreview()
+}
+
+/**
+ * 响应已有文字标注双击，打开可编辑的多行文字输入框。
+ * @param event 鼠标双击事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleAnnotationDoubleClick(event: MouseEvent): void {
+  if (!ocrMode || annotationController.tool !== 'text') return
+  const hit = annotationController.findTextAt(toAnnotationPoint(getEventPoint(event)))
+  if (!hit) return
+  event.preventDefault()
+  event.stopPropagation()
+  beginTextAnnotationEdit(hit)
+}
+
+/**
+ * 重置截图标注会话，清空画布、编辑框与历史。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetAnnotationSession(): void {
+  annotationController.resetForNewSession()
+  annotationPointerTarget = null
+  textMoveState = null
+  ocrColorPanel.hidden = true
+  ocrTextInput.hidden = true
+  syncAnnotationCanvas()
+  const ctx = getCommittedAnnotationContext()
+  ctx?.clearRect(0, 0, ocrAnnotationCanvas.width, ocrAnnotationCanvas.height)
+  const previewCtx = ocrAnnotationPreview.getContext('2d')
+  previewCtx?.clearRect(0, 0, ocrAnnotationPreview.width, ocrAnnotationPreview.height)
+  updateAnnotationUi()
+}
+
+/**
  * 触发截图“文字识别”：保持截图窗口打开，在侧栏展示识别结果。
  * @returns 无返回值。
  * @author zhenghq
@@ -475,11 +1027,24 @@ function translateCurrentOcrSelection(): void {
  * @author zhenghq
  */
 function copyCurrentOcrSelectionImage(): void {
-  const request = buildScreenshotActionRequest('copy-image')
-  if (!request) return
-  pendingScreenshotRequestId = request.requestId
-  ocrCopyImageButton.disabled = true
-  window.api.copyOcrSelectionImage(request)
+  void (async () => {
+    try {
+      const request = await buildAnnotatedExportPayload('copy-image')
+      if (!request) throw new Error('截图尚未准备完成，请稍后重试')
+      pendingScreenshotRequestId = request.requestId
+      ocrCopyImageButton.disabled = true
+      // 保留未标注原路径作为兜底调用锚点，带标注导出失败时仍可提交原图选区。
+      if (!request.png) window.api.copyOcrSelectionImage(buildScreenshotActionRequest('copy-image')!)
+      else window.api.copyAnnotatedOcrSelectionImage(request)
+    } catch (error) {
+      pendingScreenshotRequestId = null
+      ocrCopyImageButton.disabled = false
+      window.api.showScreenshotToast({
+        message: error instanceof Error ? error.message : '复制图片失败',
+        displayTimeMs: 3000
+      })
+    }
+  })()
 }
 
 /**
@@ -488,11 +1053,23 @@ function copyCurrentOcrSelectionImage(): void {
  * @author zhenghq
  */
 function saveCurrentOcrSelectionImage(): void {
-  const request = buildScreenshotActionRequest('save-image')
-  if (!request) return
-  pendingScreenshotRequestId = request.requestId
-  ocrSaveImageButton.disabled = true
-  window.api.saveOcrSelectionImage(request)
+  void (async () => {
+    try {
+      const request = await buildAnnotatedExportPayload('save-image')
+      if (!request) throw new Error('截图尚未准备完成，请稍后重试')
+      pendingScreenshotRequestId = request.requestId
+      ocrSaveImageButton.disabled = true
+      if (!request.png) window.api.saveOcrSelectionImage(buildScreenshotActionRequest('save-image')!)
+      else window.api.saveAnnotatedOcrSelectionImage(request)
+    } catch (error) {
+      pendingScreenshotRequestId = null
+      ocrSaveImageButton.disabled = false
+      window.api.showScreenshotToast({
+        message: error instanceof Error ? error.message : '保存图片失败',
+        displayTimeMs: 3000
+      })
+    }
+  })()
 }
 
 /**
@@ -562,6 +1139,11 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
   ocrSelectionBox.style.height = `${rect.height}px`
   updateResizeHandlePositions()
   renderOcrToolbar()
+  annotationController.setSelection(rect)
+  snapshotSampler = createSnapshotSampler()
+  syncAnnotationCanvas()
+  redrawAnnotations()
+  redrawAnnotationPreview()
 }
 
 /**
@@ -571,7 +1153,39 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
  * @author zhenghq
  */
 function renderOcrSnapshot(payload: OcrSelectionStartPayload): void {
+  ocrSnapshotState = 'loading'
+  snapshotSampler = null
+  ocrCopyImageButton.disabled = true
+  ocrSaveImageButton.disabled = true
   ocrSnapshot.src = payload.imageDataUrl
+}
+
+/**
+ * 截图资源完成解码后刷新原图采样器与已有标注，避免加载竞态导致马赛克和导出失效。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrSnapshotLoad(): void {
+  ocrSnapshotState = 'ready'
+  ocrCopyImageButton.disabled = false
+  ocrSaveImageButton.disabled = false
+  if (ocrMode && currentRect) {
+    snapshotSampler = createSnapshotSampler()
+    redrawAnnotations()
+    redrawAnnotationPreview()
+  }
+}
+
+/**
+ * 处理截图资源加载失败，保持复制/保存不可用并显示需重新截图的错误提示。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrSnapshotError(): void {
+  ocrSnapshotState = 'error'
+  ocrCopyImageButton.disabled = true
+  ocrSaveImageButton.disabled = true
+  window.api.showScreenshotToast({ message: '截图资源加载失败，请重新截图', displayTimeMs: 3000 })
 }
 
 /**
@@ -600,6 +1214,10 @@ function enterOcrSelectionMode(payload: OcrSelectionStartPayload): void {
   ocrPanelResizeState = null
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
+  resetAnnotationSession()
+  // 新截图尚未触发 load 时保持复制/保存禁用，避免导出竞态造成“点击无反应”。
+  ocrCopyImageButton.disabled = ocrSnapshotState !== 'ready'
+  ocrSaveImageButton.disabled = ocrSnapshotState !== 'ready'
   renderSelectionRect(null)
 }
 
@@ -623,6 +1241,7 @@ function leaveOcrSelectionMode(): void {
   ocrPanelResizeState = null
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
+  resetAnnotationSession()
   ocrSnapshot.removeAttribute('src')
   // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
   renderSelectionRect(null)
@@ -666,6 +1285,24 @@ function getEventPoint(event: MouseEvent): { x: number; y: number } {
 }
 
 /**
+ * 判断坐标是否位于当前选区边缘热区内。
+ * @param point 覆盖层坐标。
+ * @returns 是否命中选区边缘。
+ * @author zhenghq
+ */
+function isNearSelectionEdge(point: { x: number; y: number }): boolean {
+  if (!currentRect) return false
+  const { x, y, width, height } = currentRect
+  const horizontal = point.x >= x - ANNOTATION_SELECTION_EDGE_SIZE && point.x <= x + width + ANNOTATION_SELECTION_EDGE_SIZE
+  const vertical = point.y >= y - ANNOTATION_SELECTION_EDGE_SIZE && point.y <= y + height + ANNOTATION_SELECTION_EDGE_SIZE
+  const nearLeft = Math.abs(point.x - x) <= ANNOTATION_SELECTION_EDGE_SIZE
+  const nearRight = Math.abs(point.x - (x + width)) <= ANNOTATION_SELECTION_EDGE_SIZE
+  const nearTop = Math.abs(point.y - y) <= ANNOTATION_SELECTION_EDGE_SIZE
+  const nearBottom = Math.abs(point.y - (y + height)) <= ANNOTATION_SELECTION_EDGE_SIZE
+  return horizontal && (nearTop || nearBottom) || vertical && (nearLeft || nearRight)
+}
+
+/**
  * 响应 OCR 覆盖层鼠标按下，启动新建、移动或缩放选区。
  * @param event 鼠标事件。
  * @returns 无返回值。
@@ -673,12 +1310,28 @@ function getEventPoint(event: MouseEvent): { x: number; y: number } {
  */
 function handleOcrMouseDown(event: MouseEvent): void {
   if (!ocrMode || event.button !== 0) return
+  if (textMoveState) return
   const target = event.target as HTMLElement
   if (target.closest('#ocr-toolbar')) return
+  if (target.closest('#ocr-text-input')) return
   // 点击 OCR 结果侧栏时不得触发重新框选，
   // 否则用户选取/复制 OCR 原文会导致当前选区被清空。
   if (target.closest('#ocr-panel')) return
   const point = getEventPoint(event)
+  if (annotationController.isAnnotating()) {
+    if (isNearSelectionEdge(point)) {
+      const left = Math.abs(point.x - currentRect!.x)
+      const right = Math.abs(point.x - (currentRect!.x + currentRect!.width))
+      const top = Math.abs(point.y - currentRect!.y)
+      const bottom = Math.abs(point.y - (currentRect!.y + currentRect!.height))
+      const handle: DragHandle = top <= bottom
+        ? left <= right ? 'nw' : 'ne'
+        : left <= right ? 'sw' : 'se'
+      dragState = { type: 'resize', start: point, initial: currentRect!, handle }
+      event.preventDefault()
+    }
+    return
+  }
   const handle = target.dataset['handle'] as DragHandle | undefined
   if (handle && currentRect) {
     dragState = { type: 'resize', start: point, initial: currentRect, handle }
@@ -713,9 +1366,10 @@ function handleOcrMouseMove(event: MouseEvent): void {
         Math.abs(point.x - dragState.start.x),
         Math.abs(point.y - dragState.start.y)
       )
-      if (moved < OCR_DRAW_THRESHOLD) return
+    if (moved < OCR_DRAW_THRESHOLD) return
       dragState.activated = true
       discardOcrPanelForNewSelection()
+      annotationController.resetForNewSelection(null)
     }
     renderSelectionRect(buildSelectionRect(dragState.start, point))
   } else if (dragState.type === 'move') {
@@ -744,11 +1398,55 @@ function handleOcrMouseUp(): void {
  * @author zhenghq
  */
 function handleKeyDown(event: KeyboardEvent): void {
+  // 文字编辑框必须保留浏览器对空格和回车的原生输入行为，不能触发截图提交快捷键。
+  if (event.target === ocrTextInput) return
+  if (event.key === 'Escape' && annotationController.cancelAnnotationInput()) {
+    redrawAnnotationPreview()
+    updateTextInput()
+    return
+  }
+  if (event.key === 'Escape' && annotationController.deactivateTool()) {
+    updateTextInput()
+    updateAnnotationUi()
+    return
+  }
   if (event.key === 'Escape') cancelOcrSelection()
   if ((event.key === 'Enter' || event.key === ' ') && ocrMode) submitCurrentOcrSelection()
 }
 
+/**
+ * 响应文字输入键盘事件：Enter 提交，Esc 取消。
+ * @param event 键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleTextInputKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    annotationController.cancelText()
+    updateTextInput()
+  }
+}
+
+/**
+ * 文字输入框失焦时提交非空文本；空文本直接取消。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleTextInputBlur(): void {
+  // 失焦通常表示用户点击了工具栏，需要先保存已有文字；空白输入仍由模型层过滤。
+  if (annotationController.commitText(ocrTextInput.value)) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+  updateTextInput()
+}
+
 translateButton.addEventListener('click', translateSelection)
+ocrOverlay.addEventListener('pointerdown', handleAnnotationPointerDown)
+ocrOverlay.addEventListener('pointermove', handleAnnotationPointerMove)
+ocrOverlay.addEventListener('pointerup', handleAnnotationPointerUp)
+ocrOverlay.addEventListener('dblclick', handleAnnotationDoubleClick)
 ocrOverlay.addEventListener('mousedown', handleOcrMouseDown)
 ocrOverlay.addEventListener('mousemove', handleOcrMouseMove)
 ocrRecognizeButton.addEventListener('click', recognizeCurrentOcrSelection)
@@ -756,6 +1454,54 @@ ocrTranslateButton.addEventListener('click', translateCurrentOcrSelection)
 ocrCopyImageButton.addEventListener('click', copyCurrentOcrSelectionImage)
 ocrSaveImageButton.addEventListener('click', saveCurrentOcrSelectionImage)
 ocrCancelButton.addEventListener('click', cancelOcrSelection)
+for (const button of ocrAnnotationToolButtons) {
+  button.addEventListener('click', handleAnnotationToolClick)
+}
+ocrColorToggle.addEventListener('click', toggleColorPanel)
+ocrColorPanel.addEventListener('click', (event) => {
+  if ((event.target as HTMLElement).dataset['color']) handleAnnotationColorSelect(event)
+})
+ocrColorCustom.addEventListener('input', handleAnnotationColorSelect)
+ocrStrokeWidth.addEventListener('input', () => {
+  annotationController.setStrokeWidth(ocrStrokeWidth.value)
+  updateAnnotationUi()
+})
+ocrFontSize.addEventListener('input', () => {
+  annotationController.setFontSize(ocrFontSize.value)
+  updateTextInput()
+})
+ocrTextBold.addEventListener('click', () => {
+  annotationController.setBold(!annotationController.style.bold)
+  ocrTextBold.setAttribute('aria-pressed', String(annotationController.style.bold))
+  updateTextInput()
+})
+ocrMosaicBrush.addEventListener('input', () => annotationController.setMosaicBrushSize(ocrMosaicBrush.value))
+ocrMosaicIntensity.addEventListener('input', () => annotationController.setMosaicIntensity(ocrMosaicIntensity.value))
+ocrUndoButton.addEventListener('click', () => {
+  if (annotationController.undo()) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+})
+ocrRedoButton.addEventListener('click', () => {
+  if (annotationController.redo()) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+})
+ocrClearAnnotationsButton.addEventListener('click', () => {
+  if (annotationController.clearAnnotations()) {
+    redrawAnnotations()
+    updateAnnotationUi()
+  }
+})
+ocrTextInput.addEventListener('keydown', handleTextInputKeyDown)
+ocrTextInput.addEventListener('input', resizeTextInput)
+ocrTextInput.addEventListener('blur', handleTextInputBlur)
+ocrTextInput.addEventListener('pointerdown', (event) => event.stopPropagation())
+ocrTextInput.addEventListener('mousedown', (event) => event.stopPropagation())
+ocrSnapshot.addEventListener('load', handleOcrSnapshotLoad)
+ocrSnapshot.addEventListener('error', handleOcrSnapshotError)
 window.addEventListener('mouseup', handleOcrMouseUp)
 window.addEventListener('keydown', handleKeyDown)
 ocrOverlay.addEventListener('mouseover', handleOcrTooltipHover)

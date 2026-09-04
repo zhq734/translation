@@ -19,8 +19,9 @@ const toastRenderer = readFileSync('src/renderer/src/toast.ts', 'utf8')
 test('截图工具条应提供文字识别、翻译、复制图片、保存到本地和取消五个图标按钮', () => {
   const toolbarStart = selectionHtml.indexOf('id="ocr-toolbar"')
   assert.notEqual(toolbarStart, -1)
-  const toolbarEnd = selectionHtml.indexOf('</div>', toolbarStart)
-  const toolbarSource = selectionHtml.slice(toolbarStart, toolbarEnd)
+  const toolbarStart2 = selectionHtml.indexOf('data-group="screenshot-actions"', toolbarStart)
+  const toolbarEnd = selectionHtml.indexOf('</div>', toolbarStart2)
+  const toolbarSource = selectionHtml.slice(toolbarStart2, toolbarEnd)
 
   // 五个按钮齐全且均提供中文 title 与 aria-label
   assert.match(toolbarSource, /id="ocr-recognize"[^>]*title="文字识别"[^>]*aria-label="文字识别"/u)
@@ -195,8 +196,8 @@ test('截图翻译动作应复用现有 OCR 翻译流程', () => {
 test('Renderer 应接入五个截图动作并防止识别重复提交', () => {
   assert.match(selectionRenderer, /window\.api\.recognizeOcrSelection\(/u)
   assert.match(selectionRenderer, /window\.api\.translateOcrSelection\(/u)
-  assert.match(selectionRenderer, /window\.api\.copyOcrSelectionImage\(/u)
-  assert.match(selectionRenderer, /window\.api\.saveOcrSelectionImage\(/u)
+  assert.match(selectionRenderer, /window\.api\.copyAnnotatedOcrSelectionImage\(/u)
+  assert.match(selectionRenderer, /window\.api\.saveAnnotatedOcrSelectionImage\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrRecognizeResult\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrActionResult\(/u)
   assert.match(selectionRenderer, /window\.api\.cancelOcrSelection\(\)/u)

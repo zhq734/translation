@@ -278,6 +278,7 @@ export type ScreenshotOcrErrorCode =
   | 'snapshot-expired'
   | 'clipboard-write-failed'
   | 'save-failed'
+  | 'invalid-export-payload'
 
 /** 截图动作请求负载：只携带选区矩形与请求元数据，不包含原始图片字节。
  * @author zhenghq
@@ -327,6 +328,158 @@ export interface ScreenshotOcrActionResult {
   code?: ScreenshotOcrErrorCode
   /** 用户可读的错误描述（失败时携带）。 */
   error?: string
+}
+
+/** 截图标注工具类型：矩形、椭圆、箭头、画笔、文字与马赛克。
+ * @author zhenghq
+ */
+export type ScreenshotAnnotationTool = 'rect' | 'ellipse' | 'arrow' | 'brush' | 'text' | 'mosaic'
+
+/** 标注坐标点，以当前选区左上角为原点的逻辑坐标。
+ * @author zhenghq
+ */
+export interface ScreenshotAnnotationPoint {
+  /** 相对选区左上角的 x 坐标。 */
+  x: number
+  /** 相对选区左上角的 y 坐标。 */
+  y: number
+}
+
+/** 标注矩形区域，以当前选区左上角为原点的逻辑坐标。
+ * @author zhenghq
+ */
+export interface ScreenshotAnnotationRect extends ScreenshotAnnotationPoint {
+  /** 区域宽度。 */
+  width: number
+  /** 区域高度。 */
+  height: number
+}
+
+/** 标注样式状态：新建标注时复制这些值，之后修改不影响历史标注。
+ * @author zhenghq
+ */
+export interface ScreenshotAnnotationStyle {
+  /** 当前绘制颜色（小写十六进制，形如 #ff3b30）。 */
+  color: string
+  /** 形状与画笔线条粗细（像素）。 */
+  strokeWidth: number
+  /** 文字标注字号（像素）。 */
+  fontSize: number
+  /** 文字标注是否加粗。 */
+  bold: boolean
+  /** 马赛克笔刷直径（像素）。 */
+  mosaicBrushSize: number
+  /** 马赛克像素块边长（像素）。 */
+  mosaicBlockSize: number
+}
+
+/** 矩形或椭圆标注。
+ * @author zhenghq
+ */
+export interface ScreenshotShapeAnnotation {
+  /** 标注类型。 */
+  type: 'rect' | 'ellipse'
+  /** 规范化后的图形边界。 */
+  bounds: ScreenshotAnnotationRect
+  /** 创建时冻结的颜色。 */
+  color: string
+  /** 创建时冻结的线宽。 */
+  strokeWidth: number
+}
+
+/** 箭头标注。
+ * @author zhenghq
+ */
+export interface ScreenshotArrowAnnotation {
+  /** 标注类型。 */
+  type: 'arrow'
+  /** 箭头起点。 */
+  start: ScreenshotAnnotationPoint
+  /** 箭头终点（箭头头部所在位置）。 */
+  end: ScreenshotAnnotationPoint
+  /** 创建时冻结的颜色。 */
+  color: string
+  /** 创建时冻结的线宽。 */
+  strokeWidth: number
+}
+
+/** 画笔自由笔迹标注。
+ * @author zhenghq
+ */
+export interface ScreenshotBrushAnnotation {
+  /** 标注类型。 */
+  type: 'brush'
+  /** 抽稀后的笔迹点集合。 */
+  points: ScreenshotAnnotationPoint[]
+  /** 创建时冻结的颜色。 */
+  color: string
+  /** 创建时冻结的笔刷粗细。 */
+  strokeWidth: number
+}
+
+/** 文字标注。
+ * @author zhenghq
+ */
+export interface ScreenshotTextAnnotation {
+  /** 标注类型。 */
+  type: 'text'
+  /** 文字左上角位置。 */
+  position: ScreenshotAnnotationPoint
+  /** 归一化后的文字内容（非空且受最大长度限制）。 */
+  text: string
+  /** 创建时冻结的颜色。 */
+  color: string
+  /** 创建时冻结的字号。 */
+  fontSize: number
+  /** 创建时冻结的加粗状态。 */
+  bold: boolean
+}
+
+/** 马赛克标注：按笔刷经过的点对原图区域做像素化。
+ * @author zhenghq
+ */
+export interface ScreenshotMosaicAnnotation {
+  /** 标注类型。 */
+  type: 'mosaic'
+  /** 抽稀后的笔刷轨迹点集合。 */
+  points: ScreenshotAnnotationPoint[]
+  /** 创建时冻结的笔刷直径。 */
+  brushSize: number
+  /** 创建时冻结的像素块边长。 */
+  blockSize: number
+}
+
+/** 截图标注联合类型。
+ * @author zhenghq
+ */
+export type ScreenshotAnnotation =
+  | ScreenshotShapeAnnotation
+  | ScreenshotArrowAnnotation
+  | ScreenshotBrushAnnotation
+  | ScreenshotTextAnnotation
+  | ScreenshotMosaicAnnotation
+
+/** 带标注图片导出动作：仅复制图片与保存到本地。
+ * @author zhenghq
+ */
+export type ScreenshotAnnotatedExportAction = 'copy-image' | 'save-image'
+
+/** 带标注图片导出请求负载：Renderer 已在本地合成 PNG，主进程只负责校验与写入。
+ * @author zhenghq
+ */
+export interface ScreenshotAnnotatedExportRequest {
+  /** 导出动作类型。 */
+  action: ScreenshotAnnotatedExportAction
+  /** Renderer 生成的请求 ID，用于隔离旧回调。 */
+  requestId: string
+  /** 导出对应的选区矩形（截图窗口内逻辑坐标）。 */
+  bounds: OcrSelectionBounds
+  /** 合成图片像素宽度。 */
+  width: number
+  /** 合成图片像素高度。 */
+  height: number
+  /** 合成后的 PNG 字节。 */
+  png: Uint8Array
 }
 
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
@@ -749,6 +902,10 @@ export interface Api {
   copyOcrSelectionImage(request: ScreenshotOcrActionRequest): void
   /** 请求将当前截图选区图片保存到本地磁盘。 */
   saveOcrSelectionImage(request: ScreenshotOcrActionRequest): void
+  /** 请求将 Renderer 合成的带标注 PNG 复制到系统剪贴板。 */
+  copyAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
+  /** 请求将 Renderer 合成的带标注 PNG 保存到本地磁盘。 */
+  saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
   /** 订阅截图文字识别结果事件，返回取消订阅方法。 */
   onOcrRecognizeResult(cb: (result: ScreenshotOcrRecognizeResult) => void): () => void
   /** 订阅截图图片复制/保存动作反馈事件，返回取消订阅方法。 */

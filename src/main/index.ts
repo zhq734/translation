@@ -144,6 +144,7 @@ import { PaddleOcrEngine } from './paddleOcr'
 import { resolveBundledOcrModelAssets } from './ocrModelAssets'
 import { TesseractOcrEngine } from './tesseractOcr'
 import { preprocessOcrImageBytes } from './ocrImagePreprocess'
+import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
 import { OcrEngineError } from '../shared/ocrEngine'
@@ -1423,6 +1424,10 @@ function restoreSelectionListenerAfterOcr(interactionToken?: number): void {
  */
 function hideOcrSelectionWindow(): boolean {
   const wasVisible = isOcrSelectionVisible()
+  // 退出简单全屏，避免 macOS 保留全屏状态影响后续窗口显示；下次进入截图时会重新开启。
+  if (ocrSelectionWin && !ocrSelectionWin.isDestroyed() && process.platform === 'darwin') {
+    ocrSelectionWin.setSimpleFullScreen(false)
+  }
   ocrSelectionWin?.hide()
   return wasVisible
 }
@@ -1457,7 +1462,12 @@ async function openOcrSelection(): Promise<void> {
       bounds: snapshot.bounds
     }
     const win = getOcrSelectionWindow()
+    // 覆盖窗口使用外层无边框尺寸与显示器边界对齐；这里必须使用屏幕坐标下的 setBounds，
+    // 否则 macOS 会把内容区域再次换算，导致快照画面整体向下偏移。
     win.setBounds(display.bounds)
+    // macOS 普通无边框窗口的 content area 仍可能避让顶部菜单栏；切换为简单全屏后，
+    // Renderer 的 (0, 0) 才与 screencapture 快照左上角保持一致。
+    if (process.platform === 'darwin') win.setSimpleFullScreen(true)
     win.show()
     win.focus()
     win.webContents.once('did-finish-load', () => {
@@ -2104,6 +2114,113 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
       code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
         ? resolveScreenshotActionErrorCode(error)
         : 'save-failed',
+      error: error instanceof Error ? error.message : '保存图片失败'
+    })
+  } finally {
+    activeScreenshotOcrRequests.delete(request.requestId)
+  }
+}
+
+/**
+ * 处理带标注截图“复制图片”动作：校验 Renderer 合成的 PNG 后写入系统剪贴板。
+ * @param value Renderer 提交的带标注导出请求。
+ * @returns 复制流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<void> {
+  const validated = validateAnnotatedExportPayload(value)
+  if (!validated.ok) {
+    sendScreenshotActionResult({
+      requestId: typeof (value as { requestId?: unknown })?.requestId === 'string'
+        ? (value as { requestId: string }).requestId
+        : '',
+      action: 'copy-image',
+      ok: false,
+      code: 'invalid-export-payload',
+      error: validated.error
+    })
+    return
+  }
+  const request = validated.request
+  try {
+    clipboard.writeImage(nativeImage.createFromBuffer(request.png))
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'copy-image',
+      ok: true
+    })
+    showScreenshotToast('已添加到剪贴板', 1500)
+    finishScreenshotSession()
+  } catch (error) {
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'copy-image',
+      ok: false,
+      code: 'clipboard-write-failed',
+      error: error instanceof Error ? error.message : '复制图片失败'
+    })
+  } finally {
+    activeScreenshotOcrRequests.delete(request.requestId)
+  }
+}
+
+/**
+ * 处理带标注截图“保存到本地”动作：校验 PNG、弹出保存对话框并写入文件。
+ * @param value Renderer 提交的带标注导出请求。
+ * @returns 保存流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<void> {
+  const validated = validateAnnotatedExportPayload(value)
+  if (!validated.ok) {
+    sendScreenshotActionResult({
+      requestId: typeof (value as { requestId?: unknown })?.requestId === 'string'
+        ? (value as { requestId: string }).requestId
+        : '',
+      action: 'save-image',
+      ok: false,
+      code: 'invalid-export-payload',
+      error: validated.error
+    })
+    return
+  }
+  const request = validated.request
+  try {
+    const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          defaultPath: buildScreenshotSaveFileName(),
+          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        })
+      : await dialog.showSaveDialog({
+          defaultPath: buildScreenshotSaveFileName(),
+          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        })
+    if (result.canceled || !result.filePath) {
+      sendScreenshotActionResult({
+        requestId: request.requestId,
+        action: 'save-image',
+        ok: true,
+        canceled: true
+      })
+      return
+    }
+    if (!isScreenshotOcrRequestActive(request.requestId)) return
+    await writeFile(result.filePath, request.png)
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'save-image',
+      ok: true,
+      filePath: result.filePath
+    })
+    showScreenshotToast('已保存到本地', 1500)
+    finishScreenshotSession()
+  } catch (error) {
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      action: 'save-image',
+      ok: false,
+      code: 'save-failed',
       error: error instanceof Error ? error.message : '保存图片失败'
     })
   } finally {
@@ -2883,6 +3000,16 @@ function registerIpc(): void {
     const normalized = normalizeScreenshotActionRequest(request)
     if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
     void saveOcrSelectionImageAction(request)
+  })
+  ipcMain.on('ocr-selection:copy-annotated-image', (_event, request: unknown) => {
+    const validated = validateAnnotatedExportPayload(request)
+    if (validated.ok) activeScreenshotOcrRequests.add(validated.request.requestId)
+    void copyAnnotatedOcrSelectionImageAction(request)
+  })
+  ipcMain.on('ocr-selection:save-annotated-image', (_event, request: unknown) => {
+    const validated = validateAnnotatedExportPayload(request)
+    if (validated.ok) activeScreenshotOcrRequests.add(validated.request.requestId)
+    void saveAnnotatedOcrSelectionImageAction(request)
   })
   ipcMain.on('screenshot-toast:show', (_event, payload: unknown) => {
     const raw = payload as { message?: string; displayTimeMs?: number }

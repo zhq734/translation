@@ -18,6 +18,7 @@ import type {
   OcrStatus,
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
+  ScreenshotAnnotatedExportRequest,
   ScreenshotOcrRecognizeResult,
   WebReaderState,
   WebTranslationExtractionPayload,
@@ -283,6 +284,24 @@ const api: Api = {
    */
   saveOcrSelectionImage(request: ScreenshotOcrActionRequest) {
     ipcRenderer.send('ocr-selection:save-image', request)
+  },
+  /**
+   * 请求将 Renderer 合成的带标注 PNG 复制到系统剪贴板。
+   * @param request 带标注导出请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  copyAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest) {
+    ipcRenderer.send('ocr-selection:copy-annotated-image', request)
+  },
+  /**
+   * 请求将 Renderer 合成的带标注 PNG 保存到本地磁盘。
+   * @param request 带标注导出请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest) {
+    ipcRenderer.send('ocr-selection:save-annotated-image', request)
   },
   /**
    * 订阅截图文字识别结果事件。
