@@ -92,7 +92,7 @@ test('配置完整时应发送邮件并返回 true', async () => {
   })
   assert.equal(ok, true)
   assert.equal(sent.length, 1)
-  assert.equal(sent[0]?.from, 'sender@qq.com')
+  assert.equal(sent[0]?.from, '"划词翻译" <sender@qq.com>')
   assert.equal(sent[0]?.to, 'receiver@qq.com')
   assert.match(String(sent[0]?.subject), /2026-08-31/)
 })

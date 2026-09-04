@@ -69,7 +69,6 @@ test('日志按天命名文件并追加写入，内容格式正确', async (t) =
   t.after(() => logger.dispose())
 
   logger.append('warn', ['磁盘空间不足'])
-  await new Promise((resolve) => setImmediate(resolve))
   logger.dispose()
 
   const files = readdirSync(logDir)
@@ -77,6 +76,25 @@ test('日志按天命名文件并追加写入，内容格式正确', async (t) =
   const content = readFileSync(join(logDir, files[0]), 'utf8')
   assert.match(content, /^\[2026-08-28T10:00:00\.000Z\] \[WARN\] \[main\] 磁盘空间不足\n$/u)
   assert.ok(logger.getLogFilePath().endsWith('main-2026-08-28.log'))
+})
+
+/**
+ * 校验日志写入在立即释放 logger 后仍能稳定落盘，避免 CI 中偶发读取到空字符串。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('日志释放后应保证已追加内容可读', async (t) => {
+  const logDir = makeLogDir()
+  t.after(() => rmSync(logDir, { recursive: true, force: true }))
+  const fixed = new Date('2026-08-28T10:00:00.000Z')
+  const logger = createAppLogger({ logDir, hookConsole: false, now: () => fixed })
+
+  logger.append('warn', ['磁盘空间不足'])
+  await new Promise((resolve) => setImmediate(resolve))
+  logger.dispose()
+
+  const content = readFileSync(join(logDir, 'main-2026-08-28.log'), 'utf8')
+  assert.equal(content, '[2026-08-28T10:00:00.000Z] [WARN] [main] 磁盘空间不足\n')
 })
 
 test('跨天时切换到新日期日志文件', async (t) => {

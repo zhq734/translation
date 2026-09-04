@@ -1,4 +1,4 @@
-import { createWriteStream, mkdirSync, readdirSync, rmSync, type WriteStream } from 'node:fs'
+import { appendFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { inspect } from 'node:util'
 import { join } from 'node:path'
 
@@ -113,7 +113,6 @@ export function createAppLogger(options: {
   const buffer: LogEntry[] = []
   const listeners = new Set<LogListener>()
   let currentDate = currentLogDate(now())
-  let stream: WriteStream | null = null
   let fileDisabled = false
   let pending: LogEntry[] = []
   let flushScheduled = false
@@ -125,21 +124,13 @@ export function createAppLogger(options: {
    */
   function ensureStream(): void {
     const today = currentLogDate(now())
-    if (stream && today === currentDate) return
-    stream?.end()
+    if (today === currentDate && !fileDisabled) return
     currentDate = today
     if (fileDisabled) return
     try {
       mkdirSync(logDir, { recursive: true })
-      stream = createWriteStream(join(logDir, `main-${today}.log`), { flags: 'a' })
-      stream.on('error', () => {
-        // 写盘失败时降级为仅内存缓冲与终端输出，不阻断业务
-        fileDisabled = true
-        stream = null
-      })
     } catch {
       fileDisabled = true
-      stream = null
     }
   }
 
@@ -197,7 +188,15 @@ export function createAppLogger(options: {
       if (buffer.length > LOG_BUFFER_CAPACITY) buffer.shift()
       ensureStream()
       try {
-        stream?.write(`[${entry.ts}] [${entry.level.toUpperCase()}] [${entry.scope}] ${entry.message}\n`)
+        if (!fileDisabled) {
+          // 日志写入量很低，使用同步追加保证 append 返回后文件内容已可读，
+          // 避免异步 WriteStream 在进程退出或测试立即读取时得到空文件。
+          appendFileSync(
+            join(logDir, `main-${currentDate}.log`),
+            `[${entry.ts}] [${entry.level.toUpperCase()}] [${entry.scope}] ${entry.message}\n`,
+            'utf8'
+          )
+        }
       } catch {
         fileDisabled = true
       }
@@ -222,8 +221,6 @@ export function createAppLogger(options: {
     },
     dispose() {
       listeners.clear()
-      stream?.end()
-      stream = null
       restoreConsole()
     }
   }
