@@ -954,9 +954,8 @@ export class ScreenshotAnnotationController {
    */
   get textEditorValue(): string {
     if (this.textEditingIndex === null) return ''
-    return this.store.annotations[this.textEditingIndex]?.type === 'text'
-      ? this.store.annotations[this.textEditingIndex].text
-      : ''
+    const annotation = this.store.annotations[this.textEditingIndex]
+    return annotation?.type === 'text' ? annotation.text : ''
   }
 
   /**
