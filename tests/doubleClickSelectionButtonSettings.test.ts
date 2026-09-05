@@ -8,7 +8,7 @@ import {
 } from '../src/shared/settingsDefaults.ts'
 
 test('双击选词“译”按钮设置应默认开启并支持持久化关闭', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 16)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 17)
   assert.equal(DEFAULT_SETTINGS.doubleClickSelectionButtonEnabled, true)
   assert.equal(
     normalizeSettings({ schemaVersion: 15 }).doubleClickSelectionButtonEnabled,
@@ -16,7 +16,7 @@ test('双击选词“译”按钮设置应默认开启并支持持久化关闭',
   )
   assert.equal(
     normalizeSettings({
-      schemaVersion: 16,
+      schemaVersion: 17,
       doubleClickSelectionButtonEnabled: false
     }).doubleClickSelectionButtonEnabled,
     false

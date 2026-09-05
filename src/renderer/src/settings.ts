@@ -16,8 +16,14 @@ import type {
   MacOSQuarantineResult,
   UpdateStatus
 } from '../../shared/types'
+import { startThemeRuntime } from './theme'
+import type { ThemeMode, ThemePreset } from '../../shared/types'
+
+startThemeRuntime(window.api)
 
 const targetLang = document.getElementById('target-lang') as HTMLSelectElement
+const themeMode = document.getElementById('theme-mode') as HTMLSelectElement
+const themePresetCards = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-preset]')]
 const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
 const triggerMode = document.getElementById('trigger-mode') as HTMLSelectElement
 const triggerHint = document.getElementById('trigger-hint') as HTMLElement
@@ -359,6 +365,10 @@ function updateSpeechProviderHint(provider: SpeechProvider): void {
  * @author zhenghq
  */
 function renderSettings(settings: Settings): void {
+  themeMode.value = settings.themeMode
+  for (const card of themePresetCards) {
+    card.setAttribute('aria-pressed', String(card.dataset.themePreset === settings.themePreset))
+  }
   targetLang.value = settings.targetLang
   sourceLang.value = settings.sourceLang
   triggerMode.value = settings.triggerMode
@@ -418,6 +428,25 @@ function renderSettings(settings: Settings): void {
   updateTriggerHint(settings.triggerMode)
   updateSpeechProviderHint(settings.speechProvider)
   updateProxyFields(settings.proxyMode)
+}
+
+/** 保存用户选择的主题模式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveThemeMode(): void {
+  void save({ themeMode: themeMode.value as ThemeMode })
+}
+
+/** 保存用户选择的主题预设。
+ * @param card 被激活的主题卡片。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveThemePreset(card: HTMLButtonElement): void {
+  const preset = card.dataset.themePreset
+  if (!preset) return
+  void save({ themePreset: preset as ThemePreset })
 }
 
 /**
@@ -1433,6 +1462,8 @@ function requestStopService(): void {
 
 initializeSettingsTabs()
 
+themeMode.addEventListener('change', saveThemeMode)
+for (const card of themePresetCards) card.addEventListener('click', () => saveThemePreset(card))
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
 triggerMode.addEventListener('change', saveTriggerMode)

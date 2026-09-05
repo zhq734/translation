@@ -140,6 +140,40 @@
           data-tab-panel="general"
           tabindex="0"
         >
+          <section class="appearance-section">
+            <h2>外观</h2>
+            <div class="row">
+              <label for="theme-mode">主题模式</label>
+              <select id="theme-mode">
+                <option value="system">跟随系统</option>
+                <option value="light">始终浅色</option>
+                <option value="dark">始终深色</option>
+              </select>
+            </div>
+            <p class="field-hint">主题会立即应用到弹窗、设置页、截图工具和网页阅读器。</p>
+            <div class="theme-preset-grid" role="group" aria-label="主题配色">
+              <button class="theme-preset-card" type="button" data-theme-preset="sakura" aria-pressed="false">
+                <span class="theme-preset-swatch theme-swatch-sakura" aria-hidden="true"></span>
+                <strong>樱花粉</strong><small>柔和轻盈</small>
+              </button>
+              <button class="theme-preset-card" type="button" data-theme-preset="emerald" aria-pressed="false">
+                <span class="theme-preset-swatch theme-swatch-emerald" aria-hidden="true"></span>
+                <strong>祖母绿</strong><small>清爽自然</small>
+              </button>
+              <button class="theme-preset-card" type="button" data-theme-preset="sky" aria-pressed="false">
+                <span class="theme-preset-swatch theme-swatch-sky" aria-hidden="true"></span>
+                <strong>天空蓝</strong><small>清晰专业</small>
+              </button>
+              <button class="theme-preset-card" type="button" data-theme-preset="navy" aria-pressed="false">
+                <span class="theme-preset-swatch theme-swatch-navy" aria-hidden="true"></span>
+                <strong>藏青色</strong><small>稳重低调</small>
+              </button>
+              <button class="theme-preset-card" type="button" data-theme-preset="platinum-black" aria-pressed="false">
+                <span class="theme-preset-swatch theme-swatch-platinum-black" aria-hidden="true"></span>
+                <strong>铂金黑</strong><small>高级极简</small>
+              </button>
+            </div>
+          </section>
           <section>
             <h2>翻译语言</h2>
             <div class="row">

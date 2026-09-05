@@ -308,7 +308,7 @@ body {
   flex: 0 0 auto;
   border: none;
   border-radius: 6px;
-  background: var(--button-bg);
+  background: var(--accent-gradient);
   color: var(--button-text);
   cursor: pointer;
   font-size: 13px;
@@ -320,7 +320,7 @@ body {
   flex: 0 0 auto;
   border: none;
   border-radius: 6px;
-  background: var(--button-bg);
+  background: var(--accent-gradient);
   color: var(--button-text);
   cursor: pointer;
   font-size: 13px;

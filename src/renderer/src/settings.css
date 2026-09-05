@@ -97,7 +97,7 @@ h1 {
 
 .settings-tab[aria-selected='true'] {
   border-color: var(--button-bg);
-  background: var(--button-bg);
+  background: var(--accent-gradient);
   color: var(--button-text);
   box-shadow: 0 1px 2px var(--panel-shadow);
 }
@@ -143,6 +143,69 @@ section {
 
 section:last-child {
   margin-bottom: 0;
+}
+
+.theme-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.theme-preset-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  min-width: 0;
+  border: 1px solid var(--border-control);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  padding: 8px;
+  text-align: left;
+}
+
+.theme-preset-card:hover,
+.theme-preset-card[aria-pressed='true'] {
+  border-color: var(--button-bg);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.theme-preset-card[aria-pressed='true'] strong::after {
+  content: ' ✓';
+  color: var(--button-bg);
+}
+
+.theme-preset-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.theme-preset-swatch {
+  grid-column: 1 / -1;
+  display: block;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--accent-gradient);
+}
+
+.theme-swatch-sakura { background: var(--theme-sakura-gradient); }
+.theme-swatch-emerald { background: var(--theme-emerald-gradient); }
+.theme-swatch-sky { background: var(--theme-sky-gradient); }
+.theme-swatch-navy { background: var(--theme-navy-gradient); }
+.theme-swatch-platinum-black { background: var(--theme-platinum-black-gradient); }
+
+.theme-preset-card strong,
+.theme-preset-card small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.theme-preset-card small {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 h2 {
@@ -489,7 +552,7 @@ input[type='number']:disabled {
 
 .btn.primary {
   border-color: var(--button-bg);
-  background: var(--button-bg);
+  background: var(--accent-gradient);
   color: var(--button-text);
 }
 

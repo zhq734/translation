@@ -7,6 +7,9 @@ import type {
   WebTranslationRunPayload
 } from '../../shared/types'
 import { normalizeWebTranslationError } from '../../shared/webTranslationErrors'
+import { startThemeRuntime } from './theme'
+
+startThemeRuntime(window.api)
 
 const addressForm = document.getElementById('web-address-form') as HTMLFormElement
 const address = document.getElementById('web-address') as HTMLInputElement

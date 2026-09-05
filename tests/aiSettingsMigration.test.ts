@@ -43,13 +43,38 @@ test('schema 8 及更早版本应升级到当前版本并补齐 AI 默认值', (
 })
 
 test('默认设置应包含关闭的 AI 通道和本地 Ollama 地址', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 16)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 17)
   assert.equal(DEFAULT_SETTINGS.aiEnabled, false)
   assert.equal(DEFAULT_SETTINGS.aiProtocol, 'ollama')
   assert.equal(DEFAULT_SETTINGS.aiBaseUrl, DEFAULT_AI_BASE_URL)
   assert.equal(DEFAULT_SETTINGS.aiModel, '')
   assert.equal(DEFAULT_SETTINGS.aiApiKeyConfigured, false)
   assert.equal(DEFAULT_SETTINGS.speechProvider, 'system')
+})
+
+test('默认设置应使用天空蓝和跟随系统主题', () => {
+  assert.equal(DEFAULT_SETTINGS.themePreset, 'sky')
+  assert.equal(DEFAULT_SETTINGS.themeMode, 'system')
+})
+
+test('主题设置应保留合法值并将非法值回退到默认值', () => {
+  assert.equal(normalizeSettings({ themePreset: 'sakura', themeMode: 'dark' } as never).themePreset, 'sakura')
+  assert.equal(normalizeSettings({ themePreset: 'unknown', themeMode: 'invalid' } as never).themePreset, 'sky')
+  assert.equal(normalizeSettings({ themePreset: 'unknown', themeMode: 'invalid' } as never).themeMode, 'system')
+})
+
+test('旧设置迁移时应补齐主题字段且保留业务设置', () => {
+  const settings = normalizeSettings({
+    schemaVersion: 1,
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    triggerMode: 'hotkey'
+  } as never)
+  assert.equal(settings.themePreset, 'sky')
+  assert.equal(settings.themeMode, 'system')
+  assert.equal(settings.sourceLang, 'EN')
+  assert.equal(settings.targetLang, 'auto')
+  assert.equal(settings.triggerMode, 'button')
 })
 
 test('语音引擎默认使用系统内置语音', () => {
@@ -59,7 +84,7 @@ test('语音引擎默认使用系统内置语音', () => {
 test('旧设置缺少语音引擎字段时应迁移为系统内置语音', () => {
   const settings = normalizeSettings(legacyWithoutAi(10) as never)
   assert.equal(settings.speechProvider, 'system')
-  assert.equal(settings.schemaVersion, 16)
+  assert.equal(settings.schemaVersion, 17)
 })
 
 test('Edge 语音引擎设置应保留，非法值应回退系统内置语音', () => {

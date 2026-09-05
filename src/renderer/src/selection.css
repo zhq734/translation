@@ -312,7 +312,7 @@ body {
 
 #ocr-recognize {
   border-color: var(--button-bg);
-  background: var(--button-bg);
+  background: var(--accent-gradient);
   color: var(--button-text);
 }
 

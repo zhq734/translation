@@ -13,6 +13,12 @@ export type TriggerMode = 'auto' | 'button' | 'hotkey'
 /** 翻译请求的来源，用于隔离划词与手动输入状态。 */
 export type TranslationOrigin = 'selection' | 'manual' | 'ocr'
 
+/** 应用内置的彩色主题预设。 */
+export type ThemePreset = 'sakura' | 'emerald' | 'sky' | 'navy' | 'platinum-black'
+
+/** 应用主题的明暗模式。 */
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 /** 手动翻译允许提交的最大字符数。 */
 export const MANUAL_TRANSLATION_MAX_CHARS = 5000
 
@@ -530,6 +536,10 @@ export function normalizeOcrScale(value: unknown): number {
 export interface Settings {
   /** 设置结构版本，用于自动升级旧配置。 */
   schemaVersion: number
+  /** 应用彩色主题预设。 */
+  themePreset: ThemePreset
+  /** 应用主题明暗模式。 */
+  themeMode: ThemeMode
   targetLang: string
   sourceLang: string
   hotkey: string

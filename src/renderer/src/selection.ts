@@ -14,6 +14,9 @@ import {
   computeExportScale,
   drawAnnotations
 } from './screenshotAnnotation'
+import { startThemeRuntime } from './theme'
+
+startThemeRuntime(window.api)
 
 const translateButton = document.getElementById('translate') as HTMLButtonElement
 const ocrOverlay = document.getElementById('ocr-overlay') as HTMLElement

@@ -2,10 +2,12 @@ import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvid
 import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 
-export const SETTINGS_SCHEMA_VERSION = 16
+export const SETTINGS_SCHEMA_VERSION = 17
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
+  themePreset: 'sky',
+  themeMode: 'system',
   targetLang: 'auto',
   sourceLang: 'auto',
   hotkey: 'Alt+T',
@@ -40,6 +42,24 @@ export const DEFAULT_SETTINGS: Settings = {
   webTranslationMaxBlocks: 1000,
   webTranslationMaxChars: 500000,
   webTranslationDefaultMode: 'target'
+}
+
+/** 判断主题预设是否为当前版本支持的值。
+ * @param value 待校验的主题预设。
+ * @returns 是否为合法主题预设。
+ * @author zhenghq
+ */
+function isThemePreset(value: unknown): value is Settings['themePreset'] {
+  return value === 'sakura' || value === 'emerald' || value === 'sky' || value === 'navy' || value === 'platinum-black'
+}
+
+/** 判断主题模式是否为当前版本支持的值。
+ * @param value 待校验的主题模式。
+ * @returns 是否为合法主题模式。
+ * @author zhenghq
+ */
+function isThemeMode(value: unknown): value is Settings['themeMode'] {
+  return value === 'system' || value === 'light' || value === 'dark'
 }
 
 type LegacySettings = Partial<Settings> & {
@@ -151,6 +171,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
+    themePreset: isThemePreset(rawSettings.themePreset) ? rawSettings.themePreset : DEFAULT_SETTINGS.themePreset,
+    themeMode: isThemeMode(rawSettings.themeMode) ? rawSettings.themeMode : DEFAULT_SETTINGS.themeMode,
     targetLang: schemaVersion < 2 ? 'auto' : String(merged.targetLang || 'auto'),
     sourceLang: String(merged.sourceLang || 'auto'),
     hotkey: String(merged.hotkey || ''),

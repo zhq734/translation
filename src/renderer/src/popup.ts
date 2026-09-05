@@ -27,6 +27,9 @@ import {
   type EdgeAudioLike,
   type EdgePlaybackController
 } from './edgeSpeechPlayback'
+import { startThemeRuntime } from './theme'
+
+startThemeRuntime(window.api)
 
 const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement

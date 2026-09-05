@@ -14,7 +14,7 @@ button, select { cursor: pointer; }
 #web-address:focus, select:focus { border-color: var(--button-bg); box-shadow: 0 0 0 3px var(--focus-ring); }
 .icon-button, .primary-button, .secondary-button { min-height: 36px; border: 1px solid var(--border-control); border-radius: 8px; padding: 7px 11px; background: var(--button-secondary-bg); }
 .icon-button { min-width: 36px; padding: 7px; font-size: 18px; }
-.primary-button { border-color: var(--button-bg); background: var(--button-bg); color: var(--button-text); font-weight: 650; }
+.primary-button { border-color: var(--button-bg); background: var(--accent-gradient); color: var(--button-text); font-weight: 650; }
 .icon-button:hover:not(:disabled), .secondary-button:hover:not(:disabled) { background: var(--button-secondary-hover); }
 .primary-button:hover:not(:disabled) { background: var(--button-bg-hover); }
 button:disabled { cursor: not-allowed; opacity: 0.5; }

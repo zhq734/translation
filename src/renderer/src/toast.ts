@@ -1,5 +1,9 @@
 // 截图动作提示窗口：独立小窗口渲染，与截图覆盖层生命周期完全解耦。
 
+import { startThemeRuntime } from './theme'
+
+startThemeRuntime(window.api)
+
 const toastElement = document.getElementById('toast') as HTMLElement
 
 /**
