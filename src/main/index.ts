@@ -562,7 +562,7 @@ async function onReady(): Promise<boolean> {
       safeStorage
     ),
     onSettingsChanged: (settings) => {
-      tray?.setContextMenu(buildTrayMenu())
+      refreshTrayMenu()
       broadcast('settings:changed', settings)
     },
     resetTranslationRuntime: resetDingTalkTranslationRuntime
@@ -576,7 +576,7 @@ async function onReady(): Promise<boolean> {
       safeStorage
     ),
     onSettingsChanged: (settings) => {
-      tray?.setContextMenu(buildTrayMenu())
+      refreshTrayMenu()
       broadcast('settings:changed', settings)
     },
     resetTranslationRuntime: resetAiTranslationRuntime
@@ -2925,7 +2925,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     resetAiTranslationRuntime()
     aiModelDiscovery?.clearCache()
   }
-  tray?.setContextMenu(buildTrayMenu())
+  refreshTrayMenu()
   broadcast('settings:changed', settings)
   return settings
 }
@@ -3128,7 +3128,12 @@ function loadTrayIcon(): NativeImage {
 function createTray(): void {
   tray = new Tray(loadTrayIcon())
   tray.setToolTip('划词翻译')
-  tray.setContextMenu(buildTrayMenu())
+  if (isMac) {
+    // macOS 上 setContextMenu 会让左键点击也弹出菜单，因此改为右键事件时动态弹出
+    tray.on('right-click', () => tray?.popUpContextMenu(buildTrayMenu()))
+  } else {
+    tray?.setContextMenu(buildTrayMenu())
+  }
   tray.on('click', () => openSettings())
   tray.on('double-click', () => openSettings())
 }
@@ -3188,6 +3193,15 @@ function buildTrayMenu(): Menu {
     { label: '设置', click: () => openSettings() },
     { label: '退出', click: () => stopApplicationService() }
   ])
+}
+
+/**
+ * 刷新非 macOS 平台预挂的托盘菜单；macOS 的菜单在右键时动态构建，无需刷新。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function refreshTrayMenu(): void {
+  if (!isMac) tray?.setContextMenu(buildTrayMenu())
 }
 
 /**
