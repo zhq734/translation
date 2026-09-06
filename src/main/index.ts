@@ -2571,6 +2571,9 @@ function createSettingsWindow(): BrowserWindow {
     refreshMacOSDockVisibility()
   })
   refreshMacOSDockVisibility()
+  // 菜单栏应用新建窗口时不会自动成为前台应用，需显式显示并聚焦，否则首次打开会落在其他应用后面
+  settingsWin.show()
+  settingsWin.focus()
   return settingsWin
 }
 
@@ -2581,6 +2584,10 @@ function createSettingsWindow(): BrowserWindow {
  */
 function openSettings(): void {
   createSettingsWindow()
+  if (isMac) {
+    // 从 accessory 激活策略切回 regular 后系统不会自动激活应用，必须显式抢占焦点窗口才会置顶
+    app.focus({ steal: true })
+  }
 }
 
 // ---- 自建 DeepLX 集成 ----
