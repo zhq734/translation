@@ -156,6 +156,27 @@ export function computeCropRect(
 }
 
 /**
+ * 将 Windows GDI 采集到的物理像素图像坐标换算为选区对应的裁剪矩形。
+ * Windows 走 PowerShell System.Drawing CopyFromScreen 直采物理像素，不再经过
+ * desktopCapturer/DXGI 缩略图，因此直接将选区（虚拟屏幕坐标）按显示器在物理
+ * 图像中的实际比例对齐即可，无需依赖 scaleFactor 是否准确的推导。
+ * @param bounds 选区矩形（虚拟屏幕坐标）。
+ * @param displayBounds 目标显示器矩形（虚拟屏幕坐标）。
+ * @param imageWidth 物理图像实际宽度（像素）。
+ * @param imageHeight 物理图像实际高度（像素）。
+ * @returns 裁剪矩形（物理图像像素坐标）。
+ * @author zhenghq
+ */
+export function resolveCroppedRectForWindows(
+  bounds: CaptureBounds,
+  displayBounds: CaptureBounds,
+  imageWidth: number,
+  imageHeight: number
+): CaptureBounds {
+  return computeCropRect(bounds, displayBounds, imageWidth, imageHeight)
+}
+
+/**
  * 从屏幕源列表中挑选目标显示器对应的源；
  * 优先按 display_id 匹配，其次取首个非空缩略图。
  * @param sources 屏幕源列表。

@@ -404,3 +404,42 @@ test('OCR 框选窗口隐藏或关闭时应兜底恢复划词监听', () => {
   assert.match(windowSource, /ocrSelectionWin\.on\('hide',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
   assert.match(windowSource, /ocrSelectionWin\.on\('closed',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
 })
+
+/**
+ * 校验 Windows 截图走 GDI 原生采集分支，绕开 desktopCapturer/DXGI 缩略图；
+ * Linux 仍保留 Electron desktopCapturer 路径。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () => {
+  const previewStart = main.indexOf('async function captureOcrPreviewSnapshot')
+  const previewEnd = main.indexOf('/**', previewStart + 1)
+  const previewSource = main.slice(previewStart, previewEnd)
+
+  // Windows 分支：调用 PowerShell GDI 原生截屏，避免 DXGI 高 DPI 行错位彩色条纹
+  assert.match(previewSource, /if \(process\.platform === 'win32'\)/u)
+  assert.match(previewSource, /captureWindowsRegionAsPng\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
+  assert.match(previewSource, /execFile:\s*execFileP/u)
+  assert.match(previewSource, /tmpDir:\s*tmpdir/u)
+  assert.match(previewSource, /windows-gdi-copyscreen-preview/u)
+
+  // Linux / 其他平台：继续使用 Electron desktopCapturer 缩略图路径
+  assert.match(previewSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: 1 \}/u)
+  assert.match(previewSource, /electron-desktopCapturer-preview/u)
+})
+
+/**
+ * 校验 Windows 最终 OCR 选区采集同样走 GDI 分支，并在成功后记录诊断日志。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 最终选区采集应走 GDI 分支并记录诊断日志', () => {
+  const start = main.indexOf('async function captureOcrSelectionPng')
+  const end = main.indexOf('/**', start + 1)
+  const source = main.slice(start, end)
+
+  assert.match(source, /if \(process\.platform === 'win32'\)/u)
+  assert.match(source, /captureWindowsRegionAsPng\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
+  assert.match(source, /logOcrCaptureDiagnostic\(png,\s*bounds,\s*'windows-gdi-copyscreen'\)/u)
+  assert.match(source, /electron-desktopCapturer/u)
+})

@@ -7,6 +7,7 @@ import {
   getDisplayForBounds,
   intersectBounds,
   pickDisplaySource,
+  resolveCroppedRectForWindows,
   type DisplayInfo,
   type ScreenCaptureDeps,
   type ScreenSource
@@ -186,4 +187,38 @@ test('端到端采集应按设置放大图像', async () => {
     deps
   )
   assert.deepEqual(result.ocrSize, { width: 800, height: 400 })
+})
+
+/**
+ * 校验 Windows 采集坐标映射：GDI 虚拟屏幕坐标经 DIP 换算后应直接对应图像像素。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 虚拟屏幕坐标应直接映射到图像像素', () => {
+  const rect = resolveCroppedRectForWindows(
+    { x: 100, y: 50, width: 200, height: 100 },
+    { x: 0, y: 0, width: 1920, height: 1080 },
+    2880,
+    1620
+  )
+  assert.deepEqual(rect, { x: 150, y: 75, width: 300, height: 150 })
+})
+
+/**
+ * 校验 Windows 采集在 scaleFactor 不可靠时按缩略图实际尺寸与显示器逻辑宽高的比值对齐。
+ * 桌面合成器返回的物理像素大于 bounds*scaleFactor（如多屏不同 DPI 取最大值）时，
+ * 不能错误地按请求尺寸裁剪。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 采集应容忍缩略图实际分辨率高于请求尺寸', () => {
+  // 150% 缩放的 2560x1440 逻辑屏：请求 3840x2160，实际交付 3840x2160，无需处理；
+  // 但混合 DPI 下 thumbnail 可能被合成器放大到 5120x2880（系统按最高缩放渲染）。
+  const rect = resolveCroppedRectForWindows(
+    { x: 1280, y: 720, width: 1280, height: 720 },
+    { x: 0, y: 0, width: 2560, height: 1440 },
+    5120,
+    2880
+  )
+  assert.deepEqual(rect, { x: 2560, y: 1440, width: 2560, height: 1440 })
 })

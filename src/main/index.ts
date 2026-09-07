@@ -134,9 +134,11 @@ import { removeMacOSApplicationQuarantine } from './macQuarantine'
 import {
   captureRegionAsPng,
   computeCropRect,
+  resolveCroppedRectForWindows,
   ScreenCaptureError,
   type CaptureBounds
 } from './screenCapture'
+import { captureWindowsRegionAsPng } from './windowsScreenCapture'
 import { decodePng, encodePng } from './pngCodec'
 import { OcrDispatcher } from './ocrDispatcher'
 import { createSystemOcrEngine } from './systemOcr'
@@ -1785,6 +1787,22 @@ async function captureOcrPreviewSnapshot(
     const png = await captureMacRegionAsPng(bounds)
     return { png, bounds, source: 'macos-screencapture-preview' }
   }
+  if (process.platform === 'win32') {
+    // Windows 走 PowerShell + System.Drawing GDI 原样抓取物理像素，
+    // 绕开 desktopCapturer/DXGI 缩略图在高 DPI 下的行错位彩色条纹问题。
+    const display = screen.getDisplayNearestPoint({
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2)
+    })
+    const png = await captureWindowsRegionAsPng(bounds, display?.scaleFactor ?? 1, {
+      platform: process.platform,
+      execFile: execFileP,
+      readFile,
+      unlink,
+      tmpDir: tmpdir
+    })
+    return { png, bounds, source: 'windows-gdi-copyscreen-preview' }
+  }
   const image = await captureRegionAsPng(bounds, { ocrScale: 1 }, {
     getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
     getDisplayNearestPoint: (point) => screen.getDisplayNearestPoint(point),
@@ -1805,6 +1823,22 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
   if (process.platform === 'darwin') {
     const png = await captureMacRegionAsPng(bounds)
     await logOcrCaptureDiagnostic(png, bounds, 'macos-screencapture')
+    return png
+  }
+  if (process.platform === 'win32') {
+    // Windows 走 GDI 原生采集，避免 desktopCapturer/DXGI 缩略图行错位产生彩色条纹。
+    const display = screen.getDisplayNearestPoint({
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2)
+    })
+    const png = await captureWindowsRegionAsPng(bounds, display?.scaleFactor ?? 1, {
+      platform: process.platform,
+      execFile: execFileP,
+      readFile,
+      unlink,
+      tmpDir: tmpdir
+    })
+    await logOcrCaptureDiagnostic(png, bounds, 'windows-gdi-copyscreen')
     return png
   }
   const image = await captureRegionAsPng(bounds, { ocrScale: settings.ocrScale }, {
@@ -1830,7 +1864,10 @@ async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Setting
     throw new ScreenCaptureError('no-source', '截图已失效，请重新截图')
   }
   const fullImage = decodePng(snapshot.png)
-  const cropRect = computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+  // Windows GDI 物理像素快照与虚拟屏幕坐标直接对应，走专属裁剪；其余平台按缩略图比例对齐。
+  const cropRect = snapshot.source.startsWith('windows-gdi')
+    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+    : computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
   const cropped = cropRgba(fullImage, cropRect)
   const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
   const png = encodePng(scaled)
@@ -1873,7 +1910,9 @@ function cropCurrentOcrSelectionPng(value: unknown, settings: Settings): Buffer 
     throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
   }
   const fullImage = decodePng(snapshot.png)
-  const cropRect = computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+  const cropRect = snapshot.source.startsWith('windows-gdi')
+    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, fullImage.width, fullImage.height)
+    : computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
   const cropped = cropRgba(fullImage, cropRect)
   const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
   return encodePng(scaled)
@@ -1898,7 +1937,9 @@ function cropCurrentOcrSelectionPngFast(value: unknown): Buffer {
   }
   const fullImage = nativeImage.createFromBuffer(snapshot.png)
   const { width, height } = fullImage.getSize()
-  const cropRect = computeCropRect(bounds, snapshot.bounds, width, height)
+  const cropRect = snapshot.source.startsWith('windows-gdi')
+    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, width, height)
+    : computeCropRect(bounds, snapshot.bounds, width, height)
   return fullImage.crop(cropRect).toPNG()
 }
 
