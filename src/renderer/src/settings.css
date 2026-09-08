@@ -745,7 +745,8 @@ input[type='number']:disabled {
 .tab-panel-logs {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 8px;
 }
 
@@ -810,11 +811,48 @@ input[type='number']:disabled {
   border-top: 1px solid var(--border-default);
 }
 
+.diagnostics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .diagnostics-section h2 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.diagnostics-toggle {
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  background: var(--button-secondary-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+.diagnostics-toggle:hover {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.diagnostics-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.diagnostics-section.diagnostics-collapsed {
+  gap: 0;
+}
+
+.diagnostics-section.diagnostics-collapsed .diagnostics-body {
+  display: none;
 }
 
 .diagnostics-summary {

@@ -60,3 +60,30 @@ test('诊断字段白名单不应包含文本内容字段', () => {
   assert.match(source, /CAPTURE_DIAGNOSTIC_WHITELIST/u)
   assert.doesNotMatch(source, /text|content|selectedText|clipboardData/iu)
 })
+
+/**
+ * 校验取词诊断面板提供收起/展开入口，且切换状态可被持久化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取词诊断面板应支持收起与展开', () => {
+  const html = readFileSync('src/renderer/settings.html', 'utf8')
+  assert.match(html, /id="diagnostics-section"/u)
+  assert.match(html, /id="diagnostics-toggle"/u)
+  assert.match(html, /aria-controls="diagnostics-body"/u)
+  assert.match(html, /aria-expanded="true"/u)
+  assert.match(html, /id="diagnostics-body"/u)
+
+  const source = readFileSync('src/renderer/src/settings.ts', 'utf8')
+  assert.match(source, /diagnostics-toggle/u)
+  assert.match(source, /diagnostics-collapsed/u)
+  assert.match(source, /aria-expanded/u)
+  assert.match(source, /localStorage/u)
+  assert.match(source, /收起/u)
+  assert.match(source, /展开/u)
+
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /\.diagnostics-header\s*\{[\s\S]*display:\s*flex/u)
+  assert.match(css, /\.diagnostics-collapsed[\s\S]*display:\s*none/u)
+  assert.doesNotMatch(css, /\.diagnostics-collapsed[\s\S]*#[0-9a-fA-F]{3,8}\b/u)
+})

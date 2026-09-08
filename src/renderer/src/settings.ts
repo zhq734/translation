@@ -1730,6 +1730,11 @@ if (readSettingsTabFromQuery() === 'logs') void initializeLogsPanel()
 const diagnosticsSummary = document.getElementById('diagnostics-summary') as HTMLElement
 const diagnosticsExportButton = document.getElementById('diagnostics-export') as HTMLButtonElement
 const diagnosticsStatus = document.getElementById('diagnostics-status') as HTMLElement
+const diagnosticsSection = document.getElementById('diagnostics-section') as HTMLElement
+const diagnosticsBody = document.getElementById('diagnostics-body') as HTMLElement
+const diagnosticsToggle = document.getElementById('diagnostics-toggle') as HTMLButtonElement
+/** 取词诊断面板收起状态持久化使用的本地缓存键。 */
+const DIAGNOSTICS_COLLAPSED_STORAGE_KEY = 'selection-translator.settings.diagnostics-collapsed'
 let diagnosticsInitialized = false
 
 /** 入口中文展示名。 */
@@ -1853,13 +1858,50 @@ function renderDiagnosticDay(date: string, summary: {
 }
 
 /**
- * 初始化取词诊断面板：拉取摘要、绑定导出按钮（幂等）。
+ * 恢复取词诊断面板的收起状态并同步按钮文案。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreDiagnosticsCollapsedState(): void {
+  let collapsed = false
+  try {
+    collapsed = window.localStorage.getItem(DIAGNOSTICS_COLLAPSED_STORAGE_KEY) === '1'
+  } catch {
+    // 本地缓存不可用时保持展开状态。
+  }
+  diagnosticsSection.classList.toggle('diagnostics-collapsed', collapsed)
+  diagnosticsBody.hidden = collapsed
+  diagnosticsToggle.ariaExpanded = String(!collapsed)
+  diagnosticsToggle.textContent = collapsed ? '展开' : '收起'
+}
+
+/**
+ * 切换取词诊断面板的收起与展开状态，并持久化到本地缓存。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function toggleDiagnosticsCollapsed(): void {
+  const collapsed = diagnosticsToggle.ariaExpanded !== 'true'
+  diagnosticsSection.classList.toggle('diagnostics-collapsed', collapsed)
+  diagnosticsBody.hidden = collapsed
+  diagnosticsToggle.ariaExpanded = String(!collapsed)
+  diagnosticsToggle.textContent = collapsed ? '展开' : '收起'
+  try {
+    window.localStorage.setItem(DIAGNOSTICS_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
+  } catch {
+    // 本地缓存不可用时仍允许用户手动切换。
+  }
+}
+
+/**
+ * 初始化取词诊断面板：拉取摘要、绑定导出与收起切换按钮（幂等）。
  * @returns 无返回值。
  * @author zhenghq
  */
 async function initializeDiagnosticsPanel(): Promise<void> {
   if (diagnosticsInitialized) return
   diagnosticsInitialized = true
+  restoreDiagnosticsCollapsedState()
 
   const summary = await window.api.getCaptureDiagnosticsSummary()
   diagnosticsSummary.textContent = ''
@@ -1884,6 +1926,7 @@ async function initializeDiagnosticsPanel(): Promise<void> {
       setTimeout(() => { diagnosticsStatus.textContent = '' }, 4000)
     })()
   })
+  diagnosticsToggle.addEventListener('click', toggleDiagnosticsCollapsed)
 }
 
 // 切换到日志 Tab 时懒初始化诊断面板
