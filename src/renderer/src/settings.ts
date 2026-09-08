@@ -2,6 +2,7 @@ import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
 import { formatKeyboardAccelerator } from '../../shared/keyboardAccelerator'
 import { formatUpdateProgressText } from '../../shared/updateProgressFormat'
+import { nextDiagnosticsExpandedState } from '../../shared/diagnosticsPanelState'
 import type {
   AiCheckStatus,
   AiModelListResult,
@@ -1881,13 +1882,13 @@ function restoreDiagnosticsCollapsedState(): void {
  * @author zhenghq
  */
 function toggleDiagnosticsCollapsed(): void {
-  const collapsed = diagnosticsToggle.ariaExpanded !== 'true'
-  diagnosticsSection.classList.toggle('diagnostics-collapsed', collapsed)
-  diagnosticsBody.hidden = collapsed
-  diagnosticsToggle.ariaExpanded = String(!collapsed)
-  diagnosticsToggle.textContent = collapsed ? '展开' : '收起'
+  const expanded = nextDiagnosticsExpandedState(diagnosticsToggle.ariaExpanded === 'true')
+  diagnosticsSection.classList.toggle('diagnostics-collapsed', !expanded)
+  diagnosticsBody.hidden = !expanded
+  diagnosticsToggle.ariaExpanded = String(expanded)
+  diagnosticsToggle.textContent = expanded ? '收起' : '展开'
   try {
-    window.localStorage.setItem(DIAGNOSTICS_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
+    window.localStorage.setItem(DIAGNOSTICS_COLLAPSED_STORAGE_KEY, expanded ? '0' : '1')
   } catch {
     // 本地缓存不可用时仍允许用户手动切换。
   }

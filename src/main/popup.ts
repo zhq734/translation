@@ -241,6 +241,16 @@ export function isPopupVisible(): boolean {
 }
 
 /**
+ * 返回翻译弹窗当前是否已激活（可见且非 showInactive 显示）。
+ * 用于快捷键取词前判断弹窗是否抢占了前台焦点，需要先隐藏归还焦点。
+ * @returns 弹窗可见且已被激活时返回 true。
+ * @author zhenghq
+ */
+export function isPopupActivated(): boolean {
+  return Boolean(win?.isVisible()) && !shownInactive
+}
+
+/**
  * 返回弹窗关闭版本号，用于阻止关闭后的异步结果重新打开弹窗。
  * @returns 当前关闭版本号。
  * @author zhenghq

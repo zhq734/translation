@@ -52,6 +52,7 @@ import {
   showPopup,
   hidePopup,
   isPopupVisible,
+  isPopupActivated,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
@@ -1003,6 +1004,12 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
+  // 弹窗已可见且已被激活（上次翻译结果调用了 win.show()）时，先隐藏弹窗归还前台焦点给源应用，
+  // 再以非激活方式重新显示，确保取词时 GetForegroundWindow 指向源应用而非弹窗。
+  // 弹窗可见但未激活（shownInactive=true）时焦点已在源应用，无需隐藏。
+  if (isPopupVisible() && isPopupActivated()) {
+    hidePopup()
+  }
   const popupCloseVersion = getPopupCloseVersion()
   showPopup(
     {
