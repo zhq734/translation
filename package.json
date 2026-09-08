@@ -7,9 +7,9 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
+    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
     "dev:notify-test": "node --experimental-strip-types scripts/test-install-notification.mts",
-    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
+    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
@@ -62,7 +62,8 @@
       "node_modules/tesseract.js-core/**/*",
       "node_modules/uiohook-napi/**/*",
       "build/usage-report-config.json",
-      "build/tray*.png"
+      "build/tray*.png",
+      "node_modules/koffi/**/*"
     ],
     "asarUnpack": [
       "assets/ocr/**/*",
@@ -71,7 +72,8 @@
       "node_modules/@img/**/*",
       "node_modules/onnxruntime-node/**/*",
       "node_modules/sharp/**/*",
-      "node_modules/uiohook-napi/**/*"
+      "node_modules/uiohook-napi/**/*",
+      "node_modules/koffi/**/*"
     ],
     "mac": {
       "target": [
@@ -90,6 +92,10 @@
         {
           "from": "build/macos-vision-ocr",
           "to": "macos-vision-ocr"
+        },
+        {
+          "from": "build/macos-ax-reader",
+          "to": "macos-ax-reader"
         },
         {
           "from": "build/build-info.json",
@@ -114,6 +120,13 @@
         {
           "from": "build/icon.ico",
           "to": "app-icon.ico"
+        },
+        {
+          "from": "helpers/windows-uia-reader",
+          "to": ".",
+          "filter": [
+            "windows-uia-reader.exe"
+          ]
         },
         {
           "from": "build/build-info.json",
@@ -160,6 +173,7 @@
   "dependencies": {
     "@gutenye/ocr-node": "^1.4.8",
     "electron-updater": "^6.8.9",
+    "koffi": "^3.2.1",
     "nodemailer": "^9.0.6",
     "tesseract.js": "^7.0.0",
     "uiohook-napi": "^1.5.5",

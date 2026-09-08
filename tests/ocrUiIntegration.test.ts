@@ -418,9 +418,8 @@ test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () 
 
   // Windows 分支：调用 PowerShell GDI 原生截屏，避免 DXGI 高 DPI 行错位彩色条纹
   assert.match(previewSource, /if \(process\.platform === 'win32'\)/u)
-  assert.match(previewSource, /captureWindowsRegionAsPng\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
-  assert.match(previewSource, /execFile:\s*execFileP/u)
-  assert.match(previewSource, /tmpDir:\s*tmpdir/u)
+  assert.match(previewSource, /captureWindowsRegionAsPngGdi\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
+  assert.match(previewSource, /platform:\s*process\.platform/u)
   assert.match(previewSource, /windows-gdi-copyscreen-preview/u)
 
   // Linux / 其他平台：继续使用 Electron desktopCapturer 缩略图路径
@@ -439,7 +438,7 @@ test('Windows 最终选区采集应走 GDI 分支并记录诊断日志', () => {
   const source = main.slice(start, end)
 
   assert.match(source, /if \(process\.platform === 'win32'\)/u)
-  assert.match(source, /captureWindowsRegionAsPng\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
+  assert.match(source, /captureWindowsRegionAsPngGdi\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
   assert.match(source, /logOcrCaptureDiagnostic\(png,\s*bounds,\s*'windows-gdi-copyscreen'\)/u)
   assert.match(source, /electron-desktopCapturer/u)
 })

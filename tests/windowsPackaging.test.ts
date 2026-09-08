@@ -8,7 +8,7 @@ type PackageJson = {
     electronDist?: string
     win?: {
       target?: Array<string | { target: string; arch?: string[] }>
-      extraResources?: Array<{ from: string; to: string }>
+      extraResources?: Array<{ from: string; to: string; filter?: string[] }>
     }
     nsis?: {
       oneClick?: boolean
@@ -62,6 +62,7 @@ test('Windows NSIS 配置应支持自定义安装目录和快捷方式', () => {
 test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用图标', () => {
   assert.deepEqual(packageJson.build?.win?.extraResources, [
     { from: 'build/icon.ico', to: 'app-icon.ico' },
+    { from: 'helpers/windows-uia-reader', to: '.', filter: ['windows-uia-reader.exe'] },
     { from: 'build/build-info.json', to: 'build-info.json' }
   ])
   assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh')
@@ -86,4 +87,18 @@ test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用
  */
 test('打包配置应允许 electron-builder 下载目标平台 Electron', () => {
   assert.equal(packageJson.build?.electronDist, undefined)
+})
+
+/**
+ * 校验 Windows helper 资源条目使用通配写法，使仓库尚未提交预编译 exe 时
+ * `dist:win` 不会因缺少文件而整包失败（electron-builder 对无匹配的 glob 不报错）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows helper 资源条目应容忍预编译 exe 缺失', () => {
+  const winResources = packageJson.build?.win?.extraResources ?? []
+  const helperEntry = winResources.find((entry) => entry.to === '.')
+  assert.ok(helperEntry, 'win extraResources 应包含 windows-uia-reader helper 条目')
+  assert.equal(helperEntry?.from, 'helpers/windows-uia-reader')
+  assert.deepEqual(helperEntry?.filter, ['windows-uia-reader.exe'])
 })

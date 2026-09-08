@@ -40,6 +40,7 @@ async function runTests() {
         'electron',
         'nodemailer',
         'uiohook-napi',
+        'koffi',
         '@gutenye/ocr-node',
         'tesseract.js'
       ]

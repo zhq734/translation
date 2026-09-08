@@ -134,6 +134,8 @@ export function resolveSelectionCaptureFailureMessage(
       return '当前应用不支持划词取词，请确认所选内容可复制'
     case 'permission':
       return '需要「辅助功能」权限才能读取选中文字，请授权后重试'
+    case 'clipboard-locked':
+      return '剪贴板被占用，请关闭其他剪贴板工具后重试'
     case 'empty':
     default:
       return '未检测到选中文字，请重新划词后点击“译”按钮'

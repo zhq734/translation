@@ -26,7 +26,8 @@ import type {
   WebTranslationProgressPayload,
   WebTranslationRunPayload,
   WebTranslationRunRequest,
-  WebViewBounds
+  WebViewBounds,
+  CaptureDiagnosticsSummary
 } from '../shared/types'
 
 const api: Api = {
@@ -447,6 +448,20 @@ const api: Api = {
    * @author zhenghq
    */
   exportLogs: (): Promise<string | null> => ipcRenderer.invoke('logs:export'),
+  /**
+   * 获取近两天取词诊断聚合摘要。
+   * @returns 两天聚合摘要。
+   * @author zhenghq
+   */
+  getCaptureDiagnosticsSummary: (): Promise<CaptureDiagnosticsSummary> =>
+    ipcRenderer.invoke('capture-diagnostics:get-summary'),
+  /**
+   * 弹出保存对话框导出取词诊断 JSON。
+   * @returns 保存路径；用户取消时返回 null。
+   * @author zhenghq
+   */
+  exportCaptureDiagnostics: (): Promise<string | null> =>
+    ipcRenderer.invoke('capture-diagnostics:export'),
   /**
    * 获取 OCR 引擎与模型资产状态。
    * @returns OCR 状态。

@@ -15,7 +15,7 @@ import {
   type NativeImage,
   type SourcesOptions
 } from 'electron'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { copyFile, readFile, unlink, writeFile } from 'node:fs/promises'
@@ -36,6 +36,7 @@ import {
   setPendingCopyModifierRelease,
   setPendingMacOSCommandWasDown
 } from './capture'
+import { recordCaptureDiagnostic, queryFrontmostApp, getCaptureDiagnosticsStore } from './captureDiagnostics'
 import {
   checkDingTalk as checkDingTalkTranslation,
   checkMicrosoft as checkMicrosoftTranslation,
@@ -138,7 +139,7 @@ import {
   ScreenCaptureError,
   type CaptureBounds
 } from './screenCapture'
-import { captureWindowsRegionAsPng } from './windowsScreenCapture'
+import { captureWindowsRegionAsPngGdi } from './windowsGdiCapture'
 import { decodePng, encodePng } from './pngCodec'
 import { OcrDispatcher } from './ocrDispatcher'
 import { createSystemOcrEngine } from './systemOcr'
@@ -172,6 +173,22 @@ import {
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
+/**
+ * promisified spawn：启动进程并等待退出，返回退出码与 stdout/stderr。
+ * 用于直接 spawn 预编译的 Windows 截图 helper exe。
+ * @author zhenghq
+ */
+const spawnP = (executable: string, args: string[], options?: { timeout?: number; windowsHide?: boolean }): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (data: Buffer) => { stdout += data.toString() })
+    child.stderr?.on('data', (data: Buffer) => { stderr += data.toString() })
+    child.on('error', reject)
+    child.on('close', (code: number | null) => resolve({ exitCode: code ?? -1, stdout, stderr }))
+  })
+}
 const PRELOAD_PATH = join(__dirname, '../preload/index.js')
 /** 应用唯一标识，与 electron-builder 的 appId 保持一致，用于 Linux 自启动桌面入口命名。 */
 const APP_ID = 'com.selection.translator'
@@ -211,7 +228,23 @@ const INTERNAL_ACTIVATION_LEASE_MS = 300
 const selectionCapture = new SelectionCaptureCoordinator(
   captureSelection,
   captureSelectionByNativeOnly,
-  captureSelectionAfterButtonClick
+  captureSelectionAfterButtonClick,
+  {
+    onDiagnostic: (input) => {
+      // 惰性查询前台应用标识，取词结果不等待它；查询失败兜底为 unknown。
+      void queryFrontmostApp().then(({ app }) => {
+        recordCaptureDiagnostic({
+          at: input.at,
+          entry: input.entry ?? 'button',
+          platform: input.platform,
+          level: input.level,
+          reason: input.reason,
+          elapsedMs: input.elapsedMs,
+          app
+        })
+      })
+    }
+  }
 )
 const selectionListenerController = new SelectionListenerController({
   start: () => startAutoTrigger(
@@ -708,6 +741,7 @@ function registerOcrShortcut(accelerator: string): void {
 function onHotkey(): void {
   latestSelectionGesture += 1
   markHotkeyTrigger()
+  selectionCapture.markEntry('hotkey')
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
   const popupCloseVersion = showSelectionReadingPopup()
@@ -803,6 +837,7 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
     return
   }
 
+  selectionCapture.markEntry('auto')
   const interactionToken = selectionInteraction.beginTranslation()
   renewInternalActivationLease()
   setTimeout(() => {
@@ -991,6 +1026,7 @@ function queueSelectionTranslation(
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
   setPendingMacOSCommandWasDown(false)
+  selectionCapture.markEntry('button')
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
   const anchor = lastSelectionAnchor
@@ -1794,12 +1830,8 @@ async function captureOcrPreviewSnapshot(
       x: Math.round(bounds.x + bounds.width / 2),
       y: Math.round(bounds.y + bounds.height / 2)
     })
-    const png = await captureWindowsRegionAsPng(bounds, display?.scaleFactor ?? 1, {
-      platform: process.platform,
-      execFile: execFileP,
-      readFile,
-      unlink,
-      tmpDir: tmpdir
+    const png = await captureWindowsRegionAsPngGdi(bounds, display?.scaleFactor ?? 1, {
+      platform: process.platform
     })
     return { png, bounds, source: 'windows-gdi-copyscreen-preview' }
   }
@@ -1831,12 +1863,8 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
       x: Math.round(bounds.x + bounds.width / 2),
       y: Math.round(bounds.y + bounds.height / 2)
     })
-    const png = await captureWindowsRegionAsPng(bounds, display?.scaleFactor ?? 1, {
-      platform: process.platform,
-      execFile: execFileP,
-      readFile,
-      unlink,
-      tmpDir: tmpdir
+    const png = await captureWindowsRegionAsPngGdi(bounds, display?.scaleFactor ?? 1, {
+      platform: process.platform
     })
     await logOcrCaptureDiagnostic(png, bounds, 'windows-gdi-copyscreen')
     return png
@@ -3114,6 +3142,35 @@ function registerIpc(): void {
     })
     if (canceled || !filePath) return null
     await copyFile(source, filePath)
+    return filePath
+  })
+  /**
+   * 返回近两天取词诊断聚合摘要，供设置页诊断卡片展示。
+   * @returns 两天聚合摘要。
+   * @author zhenghq
+   */
+  ipcMain.handle('capture-diagnostics:get-summary', () => {
+    const data = getCaptureDiagnosticsStore().getSummary()
+    const days: Record<string, unknown> = {}
+    for (const [date, bucket] of Object.entries(data.days)) {
+      days[date] = bucket.summary
+    }
+    return { days }
+  })
+  /**
+   * 弹出保存对话框，将近两天诊断聚合与原始样本导出为 JSON 文件。
+   * @returns 导出结果：成功返回保存路径，取消返回 null。
+   * @author zhenghq
+   */
+  ipcMain.handle('capture-diagnostics:export', async (): Promise<string | null> => {
+    const data = getCaptureDiagnosticsStore().getExportData()
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '导出取词诊断',
+      defaultPath: `capture-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (canceled || !filePath) return null
+    await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
     return filePath
   })
   ipcMain.handle('settings:set', (_event, patch: Partial<Settings>) => applySettingsPatch(patch))

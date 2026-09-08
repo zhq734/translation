@@ -12,7 +12,22 @@ export type SelectionFailureReason =
   | 'timeout'
   | 'unsupported'
   | 'permission'
+  | 'clipboard-locked'
   | 'unknown'
+
+/** 取词诊断命中级别：原生直读、复制轮询命中、复制稳定期晚到或最终失败。 */
+export type CaptureDiagnosticLevel = 'native-read' | 'copy-polled' | 'copy-late' | 'failed'
+
+/** 取词诊断入口：按钮、快捷键或自动模式。 */
+export type CaptureDiagnosticEntry = 'button' | 'hotkey' | 'auto'
+
+/** 取词结果携带的诊断元数据（仅级别与失败原因，不含任何文本内容）。 */
+export interface CaptureDiagnosticMeta {
+  /** 命中级别。 */
+  level: CaptureDiagnosticLevel
+  /** 失败原因（仅失败时存在）。 */
+  reason?: SelectionFailureReason
+}
 
 /** 底层取词函数返回的结构化结果，包含文本、失败原因与图片选区标志。 */
 export interface SelectionCaptureOutcome {
@@ -22,6 +37,8 @@ export interface SelectionCaptureOutcome {
   reason?: SelectionFailureReason
   /** 是否通过复制捕获到图片选区（仅图片、无可翻译文本）。 */
   hasImage?: boolean
+  /** 诊断元数据。 */
+  diagnostics?: CaptureDiagnosticMeta
 }
 
 /** 一次取词操作的结果，包含文字、锚点、失败原因、图片标志及可能发生的错误。 */
@@ -33,6 +50,26 @@ export interface SelectionCaptureResult {
   reason?: SelectionFailureReason
   /** 是否通过复制捕获到图片选区（仅图片、无可翻译文本）。 */
   hasImage?: boolean
+  /** 诊断元数据。 */
+  diagnostics?: CaptureDiagnosticMeta
+}
+
+/** 诊断记录回调输入。 */
+export interface CaptureDiagnosticInput {
+  /** 结束时间戳（毫秒）。 */
+  at: number
+  /** 入口：button / hotkey / auto。 */
+  entry?: CaptureDiagnosticEntry
+  /** 平台：darwin / win32 / linux。 */
+  platform: NodeJS.Platform
+  /** 命中级别。 */
+  level: CaptureDiagnosticLevel
+  /** 失败原因（仅失败时存在）。 */
+  reason?: SelectionFailureReason
+  /** 取词耗时（毫秒）。 */
+  elapsedMs: number
+  /** 前台应用标识。 */
+  app: string
 }
 
 type CaptureSelection = (signal: AbortSignal) => Promise<SelectionCaptureOutcome>
@@ -159,19 +196,34 @@ export class SelectionCaptureCoordinator {
   private preparedSelection: SelectionCaptureResult | null = null
   private pendingPreparation: Promise<SelectionCaptureResult | null> | null = null
   private activeCaptureController: AbortController | null = null
+  private currentEntry: CaptureDiagnosticEntry | undefined
 
   /**
    * 创建选中文字捕获协调器。
    * @param captureSelection 实际执行系统取词的异步函数。
    * @param prefetchSelection 按钮显示期间执行只读预取的异步函数；不注入复制键、不写剪贴板。
    * @param buttonCaptureSelection 点击“译”按钮后执行的专用取词函数；macOS/Windows 优先复制，避免再次等待原生直读。
+   * @param options 可选配置。
    * @author zhenghq
    */
   constructor(
     private readonly captureSelection: CaptureSelection,
     private readonly prefetchSelection?: CaptureSelection,
-    private readonly buttonCaptureSelection?: CaptureSelection
+    private readonly buttonCaptureSelection?: CaptureSelection,
+    private readonly options?: {
+      onDiagnostic?: (record: CaptureDiagnosticInput) => void
+    }
   ) {}
+
+  /**
+   * 标记下一次取词的入口类型，供诊断记录使用。
+   * @param entry 入口类型：button / hotkey / auto。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  markEntry(entry: CaptureDiagnosticEntry): void {
+    this.currentEntry = entry
+  }
 
   /**
    * 在显示“译”按钮后后台捕获当前选中文字，并缓存结果供按钮点击时消费。
@@ -336,6 +388,7 @@ export class SelectionCaptureCoordinator {
         this.activeCaptureController = controller
         let outcome: SelectionCaptureOutcome = { text: '' }
         let error: Error | undefined
+        const captureStartedAt = Date.now()
         try {
           await waitForCaptureDelay(delayMs, controller.signal)
           if (controller.signal.aborted || requestId !== this.latestRequestId) return null
@@ -352,7 +405,8 @@ export class SelectionCaptureCoordinator {
             outcome = {
               text: normalizeSelectedText(raw?.text ?? ''),
               reason: raw?.reason,
-              hasImage: Boolean(raw?.hasImage)
+              hasImage: Boolean(raw?.hasImage),
+              diagnostics: raw?.diagnostics
             }
           }
         } catch (cause) {
@@ -367,9 +421,25 @@ export class SelectionCaptureCoordinator {
         const result: SelectionCaptureResult = { text: outcome.text }
         if (outcome.reason) result.reason = outcome.reason
         if (outcome.hasImage) result.hasImage = true
+        if (outcome.diagnostics) result.diagnostics = outcome.diagnostics
         if (anchor) result.anchor = anchor
         if (error) result.error = error
         if (prepare) this.preparedSelection = result
+
+        // 双击预取本身不上报诊断，只有用户发起的取词才进入记录。
+        if (!usePrefetch && this.options?.onDiagnostic) {
+          const level = outcome.diagnostics?.level ??
+            (outcome.text ? 'native-read' : 'failed')
+          this.options.onDiagnostic({
+            at: Date.now(),
+            entry: this.currentEntry,
+            platform: process.platform,
+            level,
+            reason: outcome.diagnostics?.reason ?? outcome.reason,
+            elapsedMs: Date.now() - captureStartedAt,
+            app: 'unknown'
+          })
+        }
         return result
       })
 

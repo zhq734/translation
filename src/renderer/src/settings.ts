@@ -1724,3 +1724,172 @@ for (const button of settingsTabButtons) {
 }
 // 通过 URL 查询参数直达日志 Tab 时同样需要初始化
 if (readSettingsTabFromQuery() === 'logs') void initializeLogsPanel()
+
+// ---- 取词诊断面板 ----
+
+const diagnosticsSummary = document.getElementById('diagnostics-summary') as HTMLElement
+const diagnosticsExportButton = document.getElementById('diagnostics-export') as HTMLButtonElement
+const diagnosticsStatus = document.getElementById('diagnostics-status') as HTMLElement
+let diagnosticsInitialized = false
+
+/** 入口中文展示名。 */
+const DIAGNOSTIC_ENTRY_LABELS: Record<string, string> = {
+  button: '按钮',
+  hotkey: '快捷键',
+  auto: '自动'
+}
+
+/** 命中级别中文展示名。 */
+const DIAGNOSTIC_LEVEL_LABELS: Record<string, string> = {
+  'native-read': '原生直读',
+  'copy-polled': '复制轮询',
+  'copy-late': '稳定期命中',
+  failed: '失败'
+}
+
+/** 失败原因中文展示名。 */
+const DIAGNOSTIC_REASON_LABELS: Record<string, string> = {
+  empty: '空选区',
+  timeout: '超时',
+  unsupported: '不支持',
+  permission: '权限',
+  unknown: '未知'
+}
+
+/**
+ * 渲染单日诊断摘要为 DOM 节点。
+ * @param date 日期字符串。
+ * @param summary 当日聚合摘要。
+ * @returns 单日诊断卡片元素。
+ * @author zhenghq
+ */
+function renderDiagnosticDay(date: string, summary: {
+  total: number
+  byEntry: Record<string, number>
+  byLevel: Record<string, number>
+  byReason: Record<string, number>
+  topApps: { app: string; count: number }[]
+}): HTMLElement {
+  const day = document.createElement('div')
+  day.className = 'diagnostics-day'
+
+  const title = document.createElement('div')
+  title.className = 'diagnostics-day-title'
+  title.textContent = `${date}（共 ${summary.total} 次）`
+  day.appendChild(title)
+
+  // 入口 × 级别矩阵
+  const matrix = document.createElement('div')
+  matrix.className = 'diagnostics-matrix'
+  for (const [entry, count] of Object.entries(summary.byEntry)) {
+    const item = document.createElement('div')
+    item.className = 'diagnostics-matrix-item'
+    const label = document.createElement('span')
+    label.className = 'diagnostics-matrix-label'
+    label.textContent = DIAGNOSTIC_ENTRY_LABELS[entry] ?? entry
+    const value = document.createElement('span')
+    value.className = 'diagnostics-matrix-value'
+    value.textContent = String(count)
+    item.appendChild(label)
+    item.appendChild(value)
+    matrix.appendChild(item)
+  }
+  day.appendChild(matrix)
+
+  // 级别分布
+  const levelRow = document.createElement('div')
+  levelRow.className = 'diagnostics-matrix'
+  for (const [level, count] of Object.entries(summary.byLevel)) {
+    const item = document.createElement('div')
+    item.className = 'diagnostics-matrix-item'
+    const label = document.createElement('span')
+    label.className = 'diagnostics-matrix-label'
+    label.textContent = DIAGNOSTIC_LEVEL_LABELS[level] ?? level
+    const value = document.createElement('span')
+    value.className = 'diagnostics-matrix-value'
+    value.textContent = String(count)
+    item.appendChild(label)
+    item.appendChild(value)
+    levelRow.appendChild(item)
+  }
+  day.appendChild(levelRow)
+
+  // 失败原因
+  const reasonKeys = Object.keys(summary.byReason)
+  if (reasonKeys.length > 0) {
+    const reasons = document.createElement('div')
+    reasons.className = 'diagnostics-reasons'
+    const subtitle = document.createElement('div')
+    subtitle.className = 'diagnostics-subtitle'
+    subtitle.textContent = '失败原因'
+    reasons.appendChild(subtitle)
+    for (const reason of reasonKeys) {
+      const tag = document.createElement('span')
+      tag.className = 'diagnostics-tag'
+      tag.textContent = `${DIAGNOSTIC_REASON_LABELS[reason] ?? reason} ${summary.byReason[reason]}`
+      reasons.appendChild(tag)
+    }
+    day.appendChild(reasons)
+  }
+
+  // 失败应用 Top 5
+  if (summary.topApps.length > 0) {
+    const apps = document.createElement('div')
+    apps.className = 'diagnostics-apps'
+    const subtitle = document.createElement('div')
+    subtitle.className = 'diagnostics-subtitle'
+    subtitle.textContent = '失败应用 Top 5'
+    apps.appendChild(subtitle)
+    for (const item of summary.topApps) {
+      const tag = document.createElement('span')
+      tag.className = 'diagnostics-tag'
+      tag.textContent = `${item.app} ${item.count}`
+      apps.appendChild(tag)
+    }
+    day.appendChild(apps)
+  }
+
+  return day
+}
+
+/**
+ * 初始化取词诊断面板：拉取摘要、绑定导出按钮（幂等）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeDiagnosticsPanel(): Promise<void> {
+  if (diagnosticsInitialized) return
+  diagnosticsInitialized = true
+
+  const summary = await window.api.getCaptureDiagnosticsSummary()
+  diagnosticsSummary.textContent = ''
+
+  const dates = Object.keys(summary.days).sort()
+  if (dates.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'diagnostics-empty'
+    empty.textContent = '近两天暂无取词诊断记录'
+    diagnosticsSummary.appendChild(empty)
+  } else {
+    for (const date of dates) {
+      diagnosticsSummary.appendChild(renderDiagnosticDay(date, summary.days[date]!))
+    }
+  }
+
+  diagnosticsExportButton.addEventListener('click', () => {
+    void (async () => {
+      const savedPath = await window.api.exportCaptureDiagnostics()
+      if (savedPath === null) return
+      diagnosticsStatus.textContent = `诊断已导出到 ${savedPath}`
+      setTimeout(() => { diagnosticsStatus.textContent = '' }, 4000)
+    })()
+  })
+}
+
+// 切换到日志 Tab 时懒初始化诊断面板
+for (const button of settingsTabButtons) {
+  button.addEventListener('click', () => {
+    if (button.dataset.tab === 'logs') void initializeDiagnosticsPanel()
+  })
+}
+if (readSettingsTabFromQuery() === 'logs') void initializeDiagnosticsPanel()

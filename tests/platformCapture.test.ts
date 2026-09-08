@@ -68,13 +68,13 @@ test('Windows 复制取词应使用已加载的原生模块直接发送 Ctrl+C',
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows 选择按钮不应启动 PowerShell 原生预取', () => {
+test('各平台均允许按钮预取，helper 不可用时由管线跳过', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 处理按钮模式的双击选词', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)
 
-  assert.equal(shouldPrefetchSelectionForButton('win32'), false)
+  assert.equal(shouldPrefetchSelectionForButton('win32'), true)
   assert.equal(shouldPrefetchSelectionForButton('darwin'), true)
   assert.equal(shouldPrefetchSelectionForButton('linux'), true)
   assert.ok(scheduleStart >= 0)
@@ -188,7 +188,7 @@ test('只读预取应仅使用原生直读且不注入复制键或写剪贴板',
   assert.match(prefetchSource, /native\.status === 'present'/u)
   assert.doesNotMatch(prefetchSource, /captureByCopy|simulateCopy|keybd_event|CGEvent/u)
   assert.doesNotMatch(prefetchSource, /clipboard\.write/u)
-  assert.match(prefetchSource, /reason: native\.status === 'empty' \? 'empty' : 'unsupported'/u)
+  assert.match(prefetchSource, /native\.status === 'empty' \? 'empty' : 'unsupported'/u)
 })
 
 /**

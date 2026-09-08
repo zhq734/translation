@@ -22,6 +22,12 @@ import {
   type NativeSelectionReadResult
 } from '../shared/platformCapture'
 import {
+  NativeReaderHost,
+  resolveMacosAxReaderPath,
+  resolveWindowsUiaReaderPath
+} from './nativeReaderHost'
+import { parseNativeReaderResponseLine, type NativeReaderResult } from '../shared/nativeReaderProtocol'
+import {
   shouldReleaseHotkeyModifiersBeforeCopy,
   shouldRetryCopyInjection,
   type HotkeyModifier
@@ -31,7 +37,7 @@ import {
   resolveWlPasteReadOutcome,
   WL_PASTE_TIMEOUT_MS
 } from '../shared/waylandSelection'
-import type { SelectionCaptureOutcome } from '../shared/selectionCaptureCoordinator'
+import type { SelectionCaptureOutcome, CaptureDiagnosticLevel, SelectionFailureReason } from '../shared/selectionCaptureCoordinator'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -45,6 +51,90 @@ const MACOS_COPY_SCRIPT_TIMEOUT_MS = 2000
 const MACOS_COMMAND_PRESERVE_WINDOW_MS = 500
 /** 释放快捷键修饰键后等待前台应用处理释放事件的时间（毫秒）。 */
 const MODIFIER_RELEASE_SETTLE_MS = 24
+/** Windows 快捷键路径在 helper 可用时的直读超时上限（毫秒）。 */
+const NATIVE_DIRECT_READ_TIMEOUT_MS = 300
+/** Windows WM_COPY 向焦点控件发送复制消息的超时（毫秒）。 */
+const WM_COPY_TIMEOUT_MS = 500
+/** 哨兵回读校验不一致时的重试次数。 */
+const SENTINEL_VERIFY_RETRY_COUNT = 1
+
+/**
+ * Windows 常驻 UIA helper 宿主单例；非 Windows 平台或 helper 不存在时为 null。
+ * 惰性初始化，首次调用 readSelectionByNative 时才创建。
+ * @author zhenghq
+ */
+let windowsReaderHost: NativeReaderHost | null = null
+
+/**
+ * 获取 Windows 常驻 helper 宿主单例；helper 可执行文件不存在时返回 null。
+ * @returns helper 宿主或 null。
+ * @author zhenghq
+ */
+function getWindowsReaderHost(): NativeReaderHost | null {
+  if (process.platform !== 'win32') return null
+  if (windowsReaderHost) return windowsReaderHost
+  const helperPath = resolveWindowsUiaReaderPath(process.resourcesPath as string | undefined)
+  if (!helperPath) return null
+  windowsReaderHost = new NativeReaderHost()
+  return windowsReaderHost
+}
+
+/**
+ * 将 helper 直读结果转换为 NativeSelectionReadResult。
+ * @param result helper 直读结果。
+ * @returns 规范化后的直读结果。
+ * @author zhenghq
+ */
+function convertHelperResult(result: NativeReaderResult): NativeSelectionReadResult {
+  return {
+    status: result.status,
+    text: result.text ?? '',
+    reason: result.reason
+  }
+}
+
+/**
+ * macOS 常驻 AX helper 直读：调用预编译的 macos-ax-reader 二进制读取选区文本。
+ * @param signal 用于在请求失效后中止子进程的取消信号。
+ * @returns 直读结果；helper 不存在或不可用时返回 null 以触发降级。
+ * @author zhenghq
+ */
+async function readSelectionViaMacosHelper(signal?: AbortSignal): Promise<NativeSelectionReadResult | null> {
+  const helperPath = resolveMacosAxReaderPath({
+    resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
+      ? process.resourcesPath
+      : undefined
+  })
+  if (!helperPath) return null
+  try {
+    const { stdout } = await execFileP(
+      helperPath,
+      [],
+      { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
+    )
+    return parseNativeSelectionReadOutput(stdout)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Windows 常驻 helper 直读：通过 nativeReaderHost 向 UIA helper 发送取词请求。
+ * @param signal 用于在请求失效后中止的取消信号（当前未直连子进程，仅占位）。
+ * @returns 直读结果；helper 不存在或不可用时返回 null 以触发降级。
+ * @author zhenghq
+ */
+async function readSelectionViaWindowsHelper(signal?: AbortSignal): Promise<NativeSelectionReadResult | null> {
+  void signal
+  const host = getWindowsReaderHost()
+  if (!host) return null
+  try {
+    const result = await host.readSelection()
+    return convertHelperResult(result)
+  } catch {
+    return null
+  }
+}
 
 /**
  * 各修饰键对应的左右两侧全局钩子键码，注入复制键前需要同时释放两侧。
@@ -173,6 +263,7 @@ export async function inspectSelectedTextPresence(): Promise<SelectionPresence> 
 
 /**
  * 在不模拟复制快捷键的前提下原生直读当前前台应用的选中文字。
+ * 优先调用常驻 helper（macOS AX 二进制 / Windows UIA helper），helper 不可用时降级到现有脚本路径。
  * macOS 使用辅助功能属性，Windows 使用 UI Automation，Linux 读取主选区；均不触碰剪贴板。
  * @param signal 用于在请求失效后中止原生命令的取消信号。
  * @returns 直读结果，包含状态、选中文本与可能的失败原因。
@@ -190,6 +281,9 @@ export async function readSelectionByNative(
     }
 
     if (process.platform === 'darwin') {
+      // 优先调用常驻 AX helper（毫秒级冷启动），不可用时降级到 osascript 脚本。
+      const helperResult = await readSelectionViaMacosHelper(signal)
+      if (helperResult) return helperResult
       const { stdout } = await execFileP(
         'osascript',
         ['-e', MACOS_SELECTION_PRESENCE],
@@ -199,6 +293,9 @@ export async function readSelectionByNative(
     }
 
     if (process.platform === 'win32') {
+      // 优先调用常驻 UIA helper，不可用时降级到 PowerShell 脚本。
+      const helperResult = await readSelectionViaWindowsHelper(signal)
+      if (helperResult) return helperResult
       const { stdout } = await execFileP('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
@@ -344,6 +441,49 @@ function isMacOSCommandKeyDown(): boolean {
 }
 
 /**
+ * Windows WM_COPY 中间层：向焦点控件发送 WM_COPY 消息并轮询剪贴板。
+ * 相比全局 Ctrl+C，WM_COPY 不会干扰用户的按键状态，适合按住鼠标点击按钮时使用。
+ * @param signal 用于在请求失效后中止轮询的取消信号。
+ * @param timeoutMs 等待剪贴板写入的最长时间。
+ * @param sentinel 写入剪贴板用于检测内容变更的哨兵值。
+ * @returns 读到的文本；超时或不可用时返回 null。
+ * @author zhenghq
+ */
+async function tryWmCopyPoll(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  sentinel: string
+): Promise<string | null> {
+  if (process.platform !== 'win32') return null
+  try {
+    // 通过 PowerShell 向焦点控件发送 WM_COPY。
+    const psScript = [
+      'Add-Type -AssemblyName UIAutomationClient',
+      '$element = [System.Windows.Automation.AutomationElement]::FocusedElement',
+      "if ($null -eq $element) { exit 1 }",
+      '$hwnd = [IntPtr]::Zero',
+      'try { $hwnd = [IntPtr]::new($element.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::NativeWindowHandleProperty)) } catch {}',
+      'if ($hwnd -eq [IntPtr]::Zero) { exit 1 }',
+      '[User32]::SendMessageTimeout($hwnd, 0x0301, [IntPtr]::Zero, [IntPtr]::Zero, 0x0001, 500, [ref]([IntPtr]::Zero)) | Out-Null',
+      'Add-Type -Namespace User32 -Name User32 -MemberDefinition "[DllImport(\"user32.dll\")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, ref IntPtr lpdwResult);"'
+    ].join('\n')
+    await execFileP('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psScript
+    ], { timeout: WM_COPY_TIMEOUT_MS, windowsHide: true, signal })
+
+    // 轮询剪贴板，等待 WM_COPY 写入内容。
+    const start = Date.now()
+    while (!signal?.aborted && Date.now() - start < timeoutMs) {
+      const current = clipboard.readText()
+      if (current !== sentinel && current.trim()) return current
+      await sleep(40)
+    }
+  } catch {
+    // WM_COPY 不可用或超时，返回 null 让调用方回退到全局 Ctrl+C。
+  }
+  return null
+}
+/**
  * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用已加载的 uiohook 原生模块注入 Ctrl+C。
  * Windows 不再为每次取词冷启动 PowerShell 和动态编译 P/Invoke，以缩短快捷键与按钮取词耗时。
  * macOS 需要「辅助功能」权限（Accessibility）。
@@ -381,6 +521,7 @@ export async function simulateCopy(): Promise<void> {
     throw new Error(`模拟复制失败: ${msg}`)
   }
 }
+
 
 /**
  * 通过模拟复制快捷键从剪贴板读取当前选中文字，并在用户未主动复制时恢复取词前的剪贴板内容。
@@ -429,7 +570,9 @@ async function captureByCopy(
       `[capture] copy-finish platform=${process.platform} status=${text.trim() ? 'text' : 'empty'} ` +
       `textLength=${text.length} elapsedMs=${Date.now() - captureStartedAt}`
     )
-    return text.trim() ? { text } : { text: '', reason: 'empty' }
+    return text.trim()
+      ? { text, diagnostics: { level: 'native-read' } }
+      : { text: '', reason: 'empty', diagnostics: { level: 'failed', reason: 'empty' } }
   }
   console.log(`[capture] copy-start platform=${process.platform} timeoutMs=${timeoutMs}`)
   signal?.addEventListener('abort', handleAbort, { once: true })
@@ -437,6 +580,35 @@ async function captureByCopy(
   const sentinel = `__SELECTION_TRANSLATOR_SENTINEL_${Date.now()}__`
   clipboard.clear()
   clipboard.writeText(sentinel)
+
+  /**
+   * 哨兵回读校验：写入哨兵后立即回读，不一致时重试一次，仍失败表示剪贴板被其他程序占用。
+   * @returns 校验通过返回 null；校验失败返回 clipboard-locked 失败结果。
+   * @author zhenghq
+   */
+  const verifySentinelWrite = (): SelectionCaptureOutcome | null => {
+    for (let attempt = 0; attempt <= SENTINEL_VERIFY_RETRY_COUNT; attempt += 1) {
+      const readback = clipboard.readText()
+      if (readback === sentinel) return null
+      // 回读不一致，重试写入并再次校验。
+      if (attempt < SENTINEL_VERIFY_RETRY_COUNT) {
+        clipboard.clear()
+        clipboard.writeText(sentinel)
+      }
+    }
+    // 哨兵写入后回读仍不一致，剪贴板被其他程序占用。
+    console.log(`[capture] clipboard-locked sentinel-readback-mismatch elapsedMs=${Date.now() - captureStartedAt}`)
+    restoreOriginalClipboard()
+    return {
+      text: '',
+      reason: 'clipboard-locked' as SelectionFailureReason,
+      diagnostics: { level: 'failed', reason: 'clipboard-locked' as SelectionFailureReason }
+    }
+  }
+
+  // 哨兵写入后回读校验：剪贴板被其他程序占用时直接返回 clipboard-locked。
+  const sentinelFailure = verifySentinelWrite()
+  if (sentinelFailure) return sentinelFailure
 
   let text = ''
   let hasImage = false
@@ -491,6 +663,16 @@ async function captureByCopy(
   }
 
   try {
+    // Windows 先尝试 WM_COPY 中间层（不干扰按键状态），无响应再回退到全局 Ctrl+C。
+    if (process.platform === 'win32') {
+      const wmCopyText = await tryWmCopyPoll(signal, WM_COPY_TIMEOUT_MS, sentinel)
+      if (wmCopyText && wmCopyText.trim()) {
+        console.log(`[capture] wm-copy-hit textLength=${wmCopyText.length} elapsedMs=${Date.now() - captureStartedAt}`)
+        text = wmCopyText
+      }
+    }
+
+    if (!text) {
     await injectCopyShortcut()
 
     const start = Date.now()
@@ -505,6 +687,7 @@ async function captureByCopy(
         continue
       }
       await sleep(40)
+    }
     }
   } finally {
     try {
@@ -560,18 +743,20 @@ async function captureByCopy(
       `[capture] copy-finish status=${captureStatus === 'late' ? 'image-late' : 'image'} ` +
       `elapsedMs=${Date.now() - captureStartedAt}`
     )
-    return { text: '', hasImage: true }
+    const level: CaptureDiagnosticLevel = captureStatus === 'late' ? 'copy-late' : 'copy-polled'
+    return { text: '', hasImage: true, diagnostics: { level } }
   }
   if (!text) {
     console.log(`[capture] copy-finish status=timeout elapsedMs=${Date.now() - captureStartedAt}`)
-    return { text: '', reason: 'timeout' }
+    return { text: '', reason: 'timeout', diagnostics: { level: 'failed', reason: 'timeout' } }
   }
   console.log(
     `[capture] copy-finish status=${captureStatus === 'late' ? 'text-late' : 'text'} ` +
     `textLength=${text.length} ` +
     `elapsedMs=${Date.now() - captureStartedAt}`
   )
-  return { text }
+  const level: CaptureDiagnosticLevel = captureStatus === 'late' ? 'copy-late' : 'copy-polled'
+  return { text, diagnostics: { level } }
 }
 
 /**
@@ -592,11 +777,13 @@ export async function captureSelectionByNativeOnly(
   // 避免在用户尚未点击按钮时干扰前台应用或占用剪贴板。
   const native = await readSelectionByNativeWithRetry(signal)
   if (native.status === 'present' && native.text.trim()) {
-    return { text: native.text }
+    return { text: native.text, diagnostics: { level: 'native-read' } }
   }
+  const reason = native.status === 'empty' ? 'empty' : 'unsupported'
   return {
     text: '',
-    reason: native.status === 'empty' ? 'empty' : 'unsupported'
+    reason,
+    diagnostics: { level: 'failed', reason }
   }
 }
 
@@ -626,7 +813,7 @@ export async function captureSelectionAfterButtonClick(
     return captureSelectionByNativeOnly(signal)
   }
 
-  return { text: '', reason: 'unsupported' }
+  return { text: '', reason: 'unsupported', diagnostics: { level: 'failed', reason: 'unsupported' } }
 }
 
 /**
@@ -650,7 +837,7 @@ export async function captureSelection(
   if (plan.supportsNativeRead) {
     const native = await readSelectionByNative(signal)
     if (native.status === 'present' && native.text.trim()) {
-      return { text: native.text }
+      return { text: native.text, diagnostics: { level: 'native-read' } }
     }
 
     // 第二级：复制兜底（macOS/Windows 注入复制键）。
@@ -659,9 +846,11 @@ export async function captureSelection(
     }
 
     // 无复制兜底（Linux）：直接按直读状态返回。
+    const reason = native.status === 'empty' ? 'empty' : 'unsupported'
     return {
       text: '',
-      reason: native.status === 'empty' ? 'empty' : 'unsupported'
+      reason,
+      diagnostics: { level: 'failed', reason }
     }
   }
 
@@ -669,5 +858,5 @@ export async function captureSelection(
   if (plan.copyFallback) {
     return captureByCopy(signal, timeoutMs)
   }
-  return { text: '', reason: 'unsupported' }
+  return { text: '', reason: 'unsupported', diagnostics: { level: 'failed', reason: 'unsupported' } }
 }

@@ -847,6 +847,23 @@ export interface LogEntry {
   message: string
 }
 
+/** 取词诊断摘要，供设置页展示。 */
+export interface CaptureDiagnosticsSummary {
+  /** 按日期索引的聚合桶。 */
+  days: Record<string, {
+    /** 当日总取词次数。 */
+    total: number
+    /** 按入口分组的计数。 */
+    byEntry: Record<string, number>
+    /** 按命中级别分组的计数。 */
+    byLevel: Record<string, number>
+    /** 按失败原因分组的计数。 */
+    byReason: Record<string, number>
+    /** 失败前台应用 Top 5。 */
+    topApps: { app: string; count: number }[]
+  }>
+}
+
 export interface Api {
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
@@ -963,6 +980,10 @@ export interface Api {
   onLogEntry(cb: (entries: LogEntry[]) => void): () => void
   /** 弹出保存对话框导出当日日志文件，返回保存路径；取消时返回 null。 */
   exportLogs(): Promise<string | null>
+  /** 获取近两天取词诊断摘要。 */
+  getCaptureDiagnosticsSummary(): Promise<CaptureDiagnosticsSummary>
+  /** 弹出保存对话框导出取词诊断 JSON，返回保存路径；取消时返回 null。 */
+  exportCaptureDiagnostics(): Promise<string | null>
   /** 获取 OCR 引擎与模型资产状态。 */
   getOcrStatus(): Promise<OcrStatus>
   checkDeepLx(url: string): Promise<DeepLxStatus>

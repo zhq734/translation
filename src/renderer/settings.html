@@ -647,6 +647,16 @@
             <div id="logs-list" class="logs-list" role="log" aria-live="polite"></div>
             <p id="logs-status" class="hint logs-status" role="status" aria-live="polite"></p>
           </section>
+
+          <section class="diagnostics-section">
+            <h2>取词诊断</h2>
+            <p class="hint">记录每次取词的命中级别、耗时与失败原因，仅保留近两天数据，不包含任何选中文字。</p>
+            <div id="diagnostics-summary" class="diagnostics-summary"></div>
+            <div class="diagnostics-actions">
+              <button id="diagnostics-export" class="btn" type="button">导出诊断</button>
+            </div>
+            <p id="diagnostics-status" class="hint diagnostics-status" role="status" aria-live="polite"></p>
+          </section>
         </div>
 
         <div

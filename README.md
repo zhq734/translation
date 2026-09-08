@@ -273,7 +273,7 @@ The app does not open a conventional main window. After startup, it stays in the
 
 ## Grant Accessibility Permission
 
-Selection capture requires macOS Accessibility permission. The app reads the selected text from the frontmost application through the Accessibility API (`AXSelectedText`) first, and only falls back to a controlled system-level `Command+C` simulation when direct reading is unavailable or empty.
+Selection capture requires macOS Accessibility permission. The app reads the selected text from the frontmost application through the Accessibility API (`AXSelectedText`) first, and only falls back to a controlled system-level `Command+C` simulation when direct reading is unavailable or empty. A resident native helper (`macos-ax-reader`) performs the read via the Accessibility API without launching AppleScript or System Events, so **only the Accessibility permission is required** — the app no longer triggers the separate Automation permission prompt.
 
 1. Open **System Settings → Privacy & Security → Accessibility**;
 2. Add and enable `划词翻译`;
@@ -289,6 +289,7 @@ The app captures selected text with a native-read-first pipeline on every platfo
 
 - **macOS**: reads `AXSelectedText` from the frontmost app through Accessibility. If the app does not expose the text (for example password fields or apps without accessibility support), it falls back to a controlled `Command+C` and reads the clipboard.
 - **Windows**: reads the focused control's selection through UI Automation (`TextPattern.GetText`). If the app does not support `TextPattern` (for example some legacy Win32 controls or PDF readers), it falls back to a controlled `Ctrl+C` and reads the clipboard.
+  The resident `windows-uia-reader` helper communicates over stdio with line-delimited JSON. When `TextPattern` is unavailable the helper attempts a `WM_COPY` message to the focused control (500 ms timeout) before falling back to the global `Ctrl+C` shortcut, so button-triggered captures do not disturb the user's keyboard state. The pre-compiled `windows-uia-reader.exe` is shipped inside the installer; its SHA-256 checksum is documented in `helpers/windows-uia-reader/README.md` for verification.
 - **Linux**: reads the X11 primary selection directly and never injects copy keys. On Wayland the primary selection may not be readable, so keep an XWayland-capable environment or verify behavior on the target compositor.
 
 When both direct reading and the copy fallback fail, the app distinguishes the failure and shows a targeted message for empty selection, capture timeout, unsupported app, or missing permission, instead of a generic prompt.
@@ -540,7 +541,11 @@ The data flow is:
 
 Do not use the app to translate passwords, API keys, customer data, unreleased source code, or other sensitive content without first assessing the provider and deployment you selected.
 
-Full-page web translation follows an additional explicit-consent boundary: the app cannot read tabs from the system browser, does not extract content merely because the built-in reader is open, and reads only the visible main-document DOM after **Translate page** is clicked. The reader uses a dedicated persistent session isolated from the translation API session. Dynamic page changes only produce a local “translate again” prompt and are not automatically extracted or uploaded. Page text selected for translation is still sent to the providers enabled in your settings.
+Full-page web translation follows an additional explicit-consent boundary: the app cannot read tabs from the system browser, does not extract content merely because the built-in reader is open, and reads only the visible main-document DOM after **Translate page** is clicked. The reader uses a dedicated persistent session isolated from the translation API session. Dynamic page changes only produce a local "translate again" prompt and are not automatically extracted or uploaded. Page text selected for translation is still sent to the providers enabled in your settings.
+
+### Selection Capture Diagnostics
+
+The app records local diagnostic metadata for each selection capture to help troubleshoot "cannot get text" issues. The diagnostic record includes only: timestamp, entry point (button/hotkey/auto), platform, capture level (native-read/copy-polled/copy-late/failed), failure reason, elapsed time, and frontmost app identifier. **It never records selected text, clipboard content, window titles, file paths, or text length.** Data is stored locally in `userData/capture-diagnostics.json` with a two-day rolling window and is never sent to any remote server. You can view the summary in Settings → Logs and export it as JSON for feedback.
 
 This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. Edge online speech also requires no user credential: only the selected engine is stored, while read-aloud text is not logged and generated audio is not persisted. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 

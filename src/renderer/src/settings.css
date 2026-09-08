@@ -799,6 +799,106 @@ input[type='number']:disabled {
   gap: 8px;
 }
 
+/* ---- 取词诊断卡片 ---- */
+
+.diagnostics-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-default);
+}
+
+.diagnostics-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.diagnostics-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.diagnostics-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.diagnostics-day-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.diagnostics-matrix {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px 12px;
+}
+
+.diagnostics-matrix-item {
+  display: flex;
+  justify-content: space-between;
+}
+
+.diagnostics-matrix-label {
+  color: var(--text-muted);
+}
+
+.diagnostics-matrix-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.diagnostics-reasons,
+.diagnostics-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diagnostics-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.diagnostics-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  font-size: 12px;
+}
+
+.diagnostics-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.diagnostics-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.diagnostics-status {
+  min-height: 18px;
+}
+
 .logs-list {
   flex: 1;
   min-height: 0;
