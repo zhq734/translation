@@ -262,12 +262,26 @@ export interface OcrSelectionBounds {
   height: number
 }
 
-/** OCR 框选窗口启动时使用的屏幕快照。 */
-export interface OcrSelectionStartPayload {
+/** OCR 框选开始负载：覆盖窗口先显示、快照尚未就绪时下发，不含图像。 */
+export interface OcrSelectionBeginPayload {
+  /** 覆盖窗口对应的全局屏幕坐标区域。 */
+  bounds: OcrSelectionBounds
+}
+
+/** OCR 框选快照负载：屏幕采集完成后下发，用于填充覆盖层背景图。 */
+export interface OcrSelectionSnapshotPayload {
   /** 屏幕快照 PNG 的 data URL。 */
   imageDataUrl: string
-  /** 快照对应的全局屏幕坐标区域。 */
+  /** 快照对应的全局屏幕坐标区域，必须与 begin 一致。 */
   bounds: OcrSelectionBounds
+}
+
+/** OCR 框选采集失败负载：覆盖窗口需立即退出框选模式。 */
+export interface OcrSelectionFailedPayload {
+  /** 面向用户的失败原因。 */
+  message: string
+  /** OCR 细分错误码。 */
+  ocrCode: OcrErrorCode
 }
 
 /** 截图动作类型：文字识别、翻译、复制图片或保存到本地。
@@ -915,8 +929,12 @@ export interface Api {
   openOcrSelection(): void
   /** 请求主进程读取剪贴板图片并进行 OCR 翻译。 */
   translateClipboardImage(): void
-  /** 订阅主进程打开 OCR 框选模式的通知。 */
-  onOcrSelectionStart(cb: (payload: OcrSelectionStartPayload) => void): () => void
+  /** 订阅主进程打开 OCR 框选模式（快照尚未就绪）的通知。 */
+  onOcrSelectionBegin(cb: (payload: OcrSelectionBeginPayload) => void): () => void
+  /** 订阅主进程下发的 OCR 屏幕快照，用于填充覆盖层背景图。 */
+  onOcrSelectionSnapshot(cb: (payload: OcrSelectionSnapshotPayload) => void): () => void
+  /** 订阅主进程下发的 OCR 采集失败通知。 */
+  onOcrSelectionFailed(cb: (payload: OcrSelectionFailedPayload) => void): () => void
   /** 提交 OCR 框选区域。 */
   submitOcrSelection(bounds: OcrSelectionBounds): void
   /** 取消 OCR 框选。 */

@@ -230,67 +230,91 @@ export function decodePng(buffer: Uint8Array): RgbaImage {
   return { width, height, data }
 }
 
+/** PNG 编码选项。 */
+export interface EncodePngOptions {
+  /**
+   * zlib 压缩级别，范围 0–9。
+   * 截图预览与 OCR 选区优先速度，默认 1；体积对本地 IPC 不敏感。
+   */
+  level?: number
+}
+
 /**
- * 写入一个 PNG 块。
- * @param out 输出数组。
+ * 将 32 位无符号整数以大端序写入缓冲。
+ * @param out 目标缓冲。
+ * @param offset 写入偏移。
+ * @param value 待写入的无符号整数。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function writeUint32Be(out: Uint8Array, offset: number, value: number): void {
+  out[offset] = (value >>> 24) & 0xff
+  out[offset + 1] = (value >>> 16) & 0xff
+  out[offset + 2] = (value >>> 8) & 0xff
+  out[offset + 3] = value & 0xff
+}
+
+/**
+ * 写入一个 PNG 块到预分配缓冲。
+ * CRC 直接对块类型与数据的连续字节计算，禁止 spread 大数组。
+ * @param out 输出缓冲。
  * @param cursor 当前写入位置。
- * @param type 块类型。
+ * @param type 四字符块类型。
  * @param data 块数据。
  * @returns 新的写入位置。
  * @author zhenghq
  */
 function writeChunk(
-  out: number[],
+  out: Uint8Array,
   cursor: number,
   type: string,
-  data: number[]
+  data: Uint8Array
 ): number {
   const length = data.length
-  out[cursor] = (length >>> 24) & 0xff
-  out[cursor + 1] = (length >>> 16) & 0xff
-  out[cursor + 2] = (length >>> 8) & 0xff
-  out[cursor + 3] = length & 0xff
-  const typeBytes = [type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3)]
-  for (let i = 0; i < 4; i += 1) out[cursor + 4 + i] = typeBytes[i]
-  for (let i = 0; i < length; i += 1) out[cursor + 8 + i] = data[i]
-  const crcInput = new Uint8Array([...typeBytes, ...data])
-  const crc = crc32(crcInput)
-  out[cursor + 8 + length] = (crc >>> 24) & 0xff
-  out[cursor + 9 + length] = (crc >>> 16) & 0xff
-  out[cursor + 10 + length] = (crc >>> 8) & 0xff
-  out[cursor + 11 + length] = crc & 0xff
+  writeUint32Be(out, cursor, length)
+  out[cursor + 4] = type.charCodeAt(0)
+  out[cursor + 5] = type.charCodeAt(1)
+  out[cursor + 6] = type.charCodeAt(2)
+  out[cursor + 7] = type.charCodeAt(3)
+  out.set(data, cursor + 8)
+  const crc = crc32(out.subarray(cursor + 4, cursor + 8 + length))
+  writeUint32Be(out, cursor + 8 + length, crc)
   return cursor + 12 + length
 }
 
 /**
  * 编码 RGBA 图像为 PNG 字节（8 位、每行滤镜 0、非隔行）。
+ * 扫描线与 PNG 块均预分配 Uint8Array，默认 zlib 级别为 1，避免全屏截图阻塞主进程。
  * @param image RGBA 图像。
+ * @param options 可选编码参数；未指定时默认压缩级别为 1。
  * @returns PNG 字节。
  * @author zhenghq
  */
-export function encodePng(image: RgbaImage): Buffer {
+export function encodePng(image: RgbaImage, options: EncodePngOptions = {}): Buffer {
   const { width, height, data } = image
   if (!width || !height || data.length < width * height * 4) {
     throw new PngDecodeError('无法编码空图像或数据不完整的图像')
   }
-  const raw: number[] = []
+  const stride = width * 4
+  const raw = new Uint8Array(height * (stride + 1))
   for (let y = 0; y < height; y += 1) {
-    raw.push(0)
-    const rowStart = y * width * 4
-    for (let i = 0; i < width * 4; i += 1) raw.push(data[rowStart + i])
+    const dest = y * (stride + 1)
+    raw[dest] = 0
+    raw.set(data.subarray(y * stride, y * stride + stride), dest + 1)
   }
-  const idat = Array.from(deflateSync(Buffer.from(raw), { level: 9 }))
-  const ihdr = [
-    (width >>> 24) & 0xff, (width >>> 16) & 0xff, (width >>> 8) & 0xff, width & 0xff,
-    (height >>> 24) & 0xff, (height >>> 16) & 0xff, (height >>> 8) & 0xff, height & 0xff,
-    8, 6, 0, 0, 0
-  ]
+  const level = options.level ?? 1
+  const idat = deflateSync(raw, { level })
+  const ihdr = new Uint8Array(13)
+  writeUint32Be(ihdr, 0, width)
+  writeUint32Be(ihdr, 4, height)
+  ihdr[8] = 8
+  ihdr[9] = 6
   const total = 8 + (12 + 13) + (12 + idat.length) + 12
-  const out: number[] = new Array(total)
-  for (let i = 0; i < 8; i += 1) out[i] = PNG_SIGNATURE[i]
+  const out = new Uint8Array(total)
+  out.set(PNG_SIGNATURE, 0)
   let cursor = 8
   cursor = writeChunk(out, cursor, 'IHDR', ihdr)
   cursor = writeChunk(out, cursor, 'IDAT', idat)
-  cursor = writeChunk(out, cursor, 'IEND', [])
-  return Buffer.from(out)
+  writeChunk(out, cursor, 'IEND', new Uint8Array(0))
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength)
 }

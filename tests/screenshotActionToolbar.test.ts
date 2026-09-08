@@ -98,7 +98,8 @@ test('主进程应提供统一的当前快照选区裁剪函数', () => {
   // 统一校验：选区、快照与最小尺寸
   assert.match(cropSource, /normalizeOcrSelectionBounds/u)
   assert.match(cropSource, /latestOcrSnapshot/u)
-  assert.match(cropSource, /computeCropRect/u)
+  // 裁剪坐标换算收敛到 cropSnapshotSelectionPng → resolveSnapshotCropRect
+  assert.match(cropSource, /cropSnapshotSelectionPng\(snapshot,\s*bounds,\s*settings\.ocrScale\)/u)
 })
 
 /**
@@ -291,9 +292,11 @@ test('复制/保存裁剪快速路径应使用原生 nativeImage 实现', () => 
   assert.notStrictEqual(start, -1)
   const end = main.indexOf('/**', start + 1)
   const source = main.slice(start, end)
-  assert.match(source, /nativeImage\.createFromBuffer\(snapshot\.png\)/u)
-  assert.match(source, /fullImage\.crop\(cropRect\)\.toPNG\(\)/u)
-  assert.match(source, /computeCropRect/u)
+  // 快照本身就是内存 nativeImage，不再为裁剪重新解码整屏 PNG
+  assert.match(source, /snapshot\.image\.getSize\(\)/u)
+  assert.match(source, /snapshot\.image\.crop\(cropRect\)\.toPNG\(\)/u)
+  assert.match(source, /resolveSnapshotCropRect\(/u)
+  assert.doesNotMatch(source, /nativeImage\.createFromBuffer\(snapshot\.png\)/u)
   // 快速路径不做 JS 版 PNG 解码与 OCR 双线性缩放
   assert.doesNotMatch(source, /decodePng/u)
   assert.doesNotMatch(source, /resizeRgbaForOcr/u)

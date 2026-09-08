@@ -365,8 +365,13 @@ test('Renderer 应处理截图加载状态与导出异常', () => {
   const enterStart = selectionRenderer.indexOf('function enterOcrSelectionMode')
   const enterEnd = selectionRenderer.indexOf('/**', enterStart + 1)
   const enterSource = selectionRenderer.slice(enterStart, enterEnd)
-  assert.match(enterSource, /ocrCopyImageButton\.disabled = ocrSnapshotState !== 'ready'/u)
-  assert.match(enterSource, /ocrSaveImageButton\.disabled = ocrSnapshotState !== 'ready'/u)
+  // 采集中态统一由 updateOcrImageActionAvailability 按快照状态禁用图像动作
+  assert.match(enterSource, /updateOcrImageActionAvailability\(\)/u)
+  const availabilityStart = selectionRenderer.indexOf('function updateOcrImageActionAvailability')
+  const availabilityEnd = selectionRenderer.indexOf('\n}', availabilityStart)
+  const availabilitySource = selectionRenderer.slice(availabilityStart, availabilityEnd)
+  assert.match(availabilitySource, /ocrCopyImageButton\.disabled = blocked/u)
+  assert.match(availabilitySource, /ocrSaveImageButton\.disabled = blocked/u)
 })
 
 /**

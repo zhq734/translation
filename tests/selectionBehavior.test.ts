@@ -1045,10 +1045,15 @@ test('OCR 框选收尾必须无条件恢复划词监听，避免全局钩子被�
   const openStart = source.indexOf('async function openOcrSelection')
   const openSource = source.slice(openStart, source.indexOf('\n}\n', openStart))
   assert.match(openSource, /suspendSelectionListenerForOcr\(\)/u)
+  // 采集所有权判定收敛到 isCurrentOcrCapture：取消或新会话后旧采集必须归还暂停记账
   assert.match(
     openSource,
-    /if\s*\(!selectionInteraction\.isCurrent\(interactionToken\)\)\s*\{[\s\S]*?restoreSelectionListenerAfterOcr\(interactionToken\)[\s\S]*?return/u
+    /if\s*\(!isCurrentOcrCapture\(interactionToken\)\)\s*\{[\s\S]*?restoreSelectionListenerAfterOcr\(interactionToken\)[\s\S]*?return/u
   )
+  const captureGuardStart = source.indexOf('function isCurrentOcrCapture(')
+  const captureGuardSource = source.slice(captureGuardStart, source.indexOf('\n}', captureGuardStart))
+  assert.match(captureGuardSource, /selectionInteraction\.isCurrent\(token\)/u)
+  assert.match(captureGuardSource, /ocrInteractionToken === token/u)
   assert.doesNotMatch(openSource, /\bstopAutoTrigger\(\)/u)
 
   const hotkeyStart = source.indexOf('function onOcrHotkey')

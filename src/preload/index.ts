@@ -13,8 +13,10 @@ import type {
   MacOSQuarantineResult,
   UpdateStatus,
   EdgeSpeechResult,
+  OcrSelectionBeginPayload,
   OcrSelectionBounds,
-  OcrSelectionStartPayload,
+  OcrSelectionFailedPayload,
+  OcrSelectionSnapshotPayload,
   OcrStatus,
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
@@ -223,15 +225,37 @@ const api: Api = {
     ipcRenderer.send('ocr-clipboard:translate')
   },
   /**
-   * 订阅 OCR 框选模式启动通知。
-   * @param callback 框选启动回调。
+   * 订阅 OCR 框选模式开始通知：覆盖窗口已显示但屏幕快照尚未就绪。
+   * @param callback 框选开始回调。
    * @returns 取消订阅方法。
    * @author zhenghq
    */
-  onOcrSelectionStart(callback: (payload: OcrSelectionStartPayload) => void) {
-    const listener = (_event: unknown, payload: OcrSelectionStartPayload): void => callback(payload)
-    ipcRenderer.on('ocr-selection:start', listener)
-    return () => ipcRenderer.removeListener('ocr-selection:start', listener)
+  onOcrSelectionBegin(callback: (payload: OcrSelectionBeginPayload) => void) {
+    const listener = (_event: unknown, payload: OcrSelectionBeginPayload): void => callback(payload)
+    ipcRenderer.on('ocr-selection:begin', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:begin', listener)
+  },
+  /**
+   * 订阅 OCR 屏幕快照就绪通知，用于填充覆盖层背景图。
+   * @param callback 快照就绪回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onOcrSelectionSnapshot(callback: (payload: OcrSelectionSnapshotPayload) => void) {
+    const listener = (_event: unknown, payload: OcrSelectionSnapshotPayload): void => callback(payload)
+    ipcRenderer.on('ocr-selection:snapshot', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:snapshot', listener)
+  },
+  /**
+   * 订阅 OCR 屏幕采集失败通知，覆盖窗口需立即退出框选模式。
+   * @param callback 采集失败回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onOcrSelectionFailed(callback: (payload: OcrSelectionFailedPayload) => void) {
+    const listener = (_event: unknown, payload: OcrSelectionFailedPayload): void => callback(payload)
+    ipcRenderer.on('ocr-selection:failed', listener)
+    return () => ipcRenderer.removeListener('ocr-selection:failed', listener)
   },
   /**
    * 提交 OCR 框选截图区域。

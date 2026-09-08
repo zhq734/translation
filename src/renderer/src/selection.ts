@@ -1,7 +1,9 @@
 import type {
   ScreenshotAnnotation,
+  OcrSelectionBeginPayload,
   OcrSelectionBounds,
-  OcrSelectionStartPayload,
+  OcrSelectionFailedPayload,
+  OcrSelectionSnapshotPayload,
   ScreenshotAnnotatedExportRequest,
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
@@ -51,6 +53,7 @@ const ocrTextInput = document.getElementById('ocr-text-input') as HTMLTextAreaEl
 const ocrPanel = document.getElementById('ocr-panel') as HTMLElement
 const ocrPanelStatus = document.getElementById('ocr-panel-status') as HTMLElement
 const ocrPanelText = document.getElementById('ocr-panel-text') as HTMLTextAreaElement
+const ocrTip = document.getElementById('ocr-tip') as HTMLElement
 const ocrTooltip = document.getElementById('ocr-tooltip') as HTMLElement
 const ocrPanelResizeHandle = document.getElementById('ocr-panel-resize') as HTMLElement
 const ocrResizeHandles = Array.from(
@@ -983,6 +986,8 @@ function resetAnnotationSession(): void {
  */
 function recognizeCurrentOcrSelection(): void {
   if (screenshotRecognizePending) return
+  // 快照未就绪时（含键盘快捷键路径）不得提交，避免识别到过期或空白画面。
+  if (ocrSnapshotState !== 'ready') return
   const request = buildScreenshotActionRequest('recognize')
   if (!request) return
   screenshotRecognizePending = true
@@ -1002,7 +1007,7 @@ function handleOcrRecognizeResult(result: ScreenshotOcrRecognizeResult): void {
   if (result.requestId !== pendingScreenshotRequestId) return
   screenshotRecognizePending = false
   pendingScreenshotRequestId = null
-  ocrRecognizeButton.disabled = false
+  updateOcrImageActionAvailability()
   if (result.ok && result.text) {
     renderOcrPanel('ready', result.text, `识别完成${result.engine ? `（${result.engine}）` : ''}`)
   } else if (result.code === 'empty') {
@@ -1018,6 +1023,7 @@ function handleOcrRecognizeResult(result: ScreenshotOcrRecognizeResult): void {
  * @author zhenghq
  */
 function translateCurrentOcrSelection(): void {
+  if (ocrSnapshotState !== 'ready') return
   const request = buildScreenshotActionRequest('translate')
   if (!request) return
   leaveOcrSelectionMode()
@@ -1041,7 +1047,7 @@ function copyCurrentOcrSelectionImage(): void {
       else window.api.copyAnnotatedOcrSelectionImage(request)
     } catch (error) {
       pendingScreenshotRequestId = null
-      ocrCopyImageButton.disabled = false
+      updateOcrImageActionAvailability()
       window.api.showScreenshotToast({
         message: error instanceof Error ? error.message : '复制图片失败',
         displayTimeMs: 3000
@@ -1066,7 +1072,7 @@ function saveCurrentOcrSelectionImage(): void {
       else window.api.saveAnnotatedOcrSelectionImage(request)
     } catch (error) {
       pendingScreenshotRequestId = null
-      ocrSaveImageButton.disabled = false
+      updateOcrImageActionAvailability()
       window.api.showScreenshotToast({
         message: error instanceof Error ? error.message : '保存图片失败',
         displayTimeMs: 3000
@@ -1086,7 +1092,7 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
   if (result.requestId !== pendingScreenshotRequestId) return
   pendingScreenshotRequestId = null
   if (result.action === 'copy-image') {
-    ocrCopyImageButton.disabled = false
+    updateOcrImageActionAvailability()
     if (result.ok) {
       // 提示由主进程独立 toast 窗口展示，截图窗口仅负责自身淡出关闭。
       scheduleScreenshotAutoClose()
@@ -1096,7 +1102,7 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
     window.api.showScreenshotToast({ message: result.error || '复制图片失败', displayTimeMs: 3000 })
     return
   }
-  ocrSaveImageButton.disabled = false
+  updateOcrImageActionAvailability()
   if (result.canceled) return
   if (result.ok) {
     // 保存成功提示由主进程独立 toast 窗口展示。
@@ -1150,17 +1156,58 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
 }
 
 /**
- * 渲染 OCR 框选使用的屏幕快照。
+ * 按当前快照状态渲染覆盖层顶部提示文案。
+ * 采集中告知用户画面正在获取，就绪后切回框选操作说明。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderOcrTip(): void {
+  ocrTip.textContent = ocrSnapshotState === 'ready'
+    ? '拖拽选择区域，可移动或拉伸，点击识别开始 OCR，按 Esc 取消'
+    : '正在获取屏幕画面，可先拖拽选择区域，按 Esc 取消'
+}
+
+/**
+ * 按当前快照状态同步依赖图像的动作可用性。
+ * 采集中（loading）或加载失败（error）时禁用识别、翻译、复制与保存，
+ * 避免用户对着尚未就绪的画面执行会读取像素的操作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateOcrImageActionAvailability(): void {
+  const blocked = ocrSnapshotState !== 'ready'
+  ocrRecognizeButton.disabled = blocked || screenshotRecognizePending
+  ocrTranslateButton.disabled = blocked
+  ocrCopyImageButton.disabled = blocked
+  ocrSaveImageButton.disabled = blocked
+}
+
+/**
+ * 应用主进程下发的屏幕快照：填充覆盖层背景图并启用依赖图像的动作。
+ * 采集期间用户已经拖出的选区保持不变，不重置框选。
  * @param payload 主进程传入的快照数据。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderOcrSnapshot(payload: OcrSelectionStartPayload): void {
+function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
+  if (!ocrMode) return
   ocrSnapshotState = 'loading'
   snapshotSampler = null
-  ocrCopyImageButton.disabled = true
-  ocrSaveImageButton.disabled = true
+  updateOcrImageActionAvailability()
+  renderOcrTip()
   ocrSnapshot.src = payload.imageDataUrl
+}
+
+/**
+ * 处理主进程下发的采集失败通知：退出框选模式，错误提示由主进程弹窗承担。
+ * @param payload 采集失败负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrSelectionFailed(payload: OcrSelectionFailedPayload): void {
+  void payload
+  if (!ocrMode) return
+  leaveOcrSelectionMode()
 }
 
 /**
@@ -1170,8 +1217,8 @@ function renderOcrSnapshot(payload: OcrSelectionStartPayload): void {
  */
 function handleOcrSnapshotLoad(): void {
   ocrSnapshotState = 'ready'
-  ocrCopyImageButton.disabled = false
-  ocrSaveImageButton.disabled = false
+  updateOcrImageActionAvailability()
+  renderOcrTip()
   if (ocrMode && currentRect) {
     snapshotSampler = createSnapshotSampler()
     redrawAnnotations()
@@ -1186,31 +1233,33 @@ function handleOcrSnapshotLoad(): void {
  */
 function handleOcrSnapshotError(): void {
   ocrSnapshotState = 'error'
-  ocrCopyImageButton.disabled = true
-  ocrSaveImageButton.disabled = true
+  updateOcrImageActionAvailability()
+  renderOcrTip()
   window.api.showScreenshotToast({ message: '截图资源加载失败，请重新截图', displayTimeMs: 3000 })
 }
 
 /**
- * 进入 OCR 框选模式，隐藏普通翻译按钮并显示屏幕快照覆盖层。
- * @param payload 屏幕快照数据。
+ * 进入 OCR 框选模式：立即显示半透明遮罩，此时屏幕快照尚未到达。
+ * 用户可以马上拖动选区或按 Esc 取消；依赖图像的动作保持禁用，等 snapshot 到达后启用。
+ * @param payload 框选开始负载（仅含覆盖窗口对应的屏幕区域）。
  * @returns 无返回值。
  * @author zhenghq
  */
-function enterOcrSelectionMode(payload: OcrSelectionStartPayload): void {
+function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
+  void payload
   ocrMode = true
   dragState = null
   currentRect = null
   screenshotRecognizePending = false
   pendingScreenshotRequestId = null
   translateButton.hidden = true
-  renderOcrSnapshot(payload)
+  // 采集尚未完成：清掉上一次的背景图，避免残留旧画面误导用户。
+  ocrSnapshotState = 'loading'
+  snapshotSampler = null
+  ocrSnapshot.removeAttribute('src')
   // 进入新会话时重置上次关闭动画与提示状态，避免残留。
   ocrOverlay.classList.remove('closing')
   ocrOverlay.hidden = false
-  ocrRecognizeButton.disabled = false
-  ocrCopyImageButton.disabled = false
-  ocrSaveImageButton.disabled = false
   renderOcrPanel('hidden')
   hideOcrTooltip()
   ocrPanelUserSize = null
@@ -1218,9 +1267,8 @@ function enterOcrSelectionMode(payload: OcrSelectionStartPayload): void {
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
   resetAnnotationSession()
-  // 新截图尚未触发 load 时保持复制/保存禁用，避免导出竞态造成“点击无反应”。
-  ocrCopyImageButton.disabled = ocrSnapshotState !== 'ready'
-  ocrSaveImageButton.disabled = ocrSnapshotState !== 'ready'
+  updateOcrImageActionAvailability()
+  renderOcrTip()
   renderSelectionRect(null)
 }
 
@@ -1520,6 +1568,8 @@ window.addEventListener('resize', () => {
   hideOcrTooltip()
   layoutOcrPanel()
 })
-window.api.onOcrSelectionStart(enterOcrSelectionMode)
+window.api.onOcrSelectionBegin(enterOcrSelectionMode)
+window.api.onOcrSelectionSnapshot(applyOcrSnapshot)
+window.api.onOcrSelectionFailed(handleOcrSelectionFailed)
 window.api.onOcrRecognizeResult(handleOcrRecognizeResult)
 window.api.onOcrActionResult(handleOcrActionResult)

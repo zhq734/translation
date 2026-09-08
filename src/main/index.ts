@@ -22,7 +22,6 @@ import { copyFile, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
 import { maybeSendInstallUpgradeNotification } from './installUpgradeNotification'
@@ -134,14 +133,21 @@ import type { UpdateManager } from './updateManager'
 import { removeMacOSApplicationQuarantine } from './macQuarantine'
 import {
   captureRegionAsPng,
-  computeCropRect,
-  resolveCroppedRectForWindows,
   ScreenCaptureError,
   type CaptureBounds
 } from './screenCapture'
-import { captureWindowsOcrPngPreferGdi } from './windowsGdiCapture'
+import {
+  captureWindowsOcrPngPreferGdi,
+  captureWindowsOcrPreviewPreferGdi,
+  warmUpWindowsGdiCapture,
+  type WindowsPreviewCapture
+} from './windowsGdiCapture'
 import { captureWindowsRegionAsPng } from './windowsScreenCapture'
-import { decodePng, encodePng } from './pngCodec'
+import {
+  bgraToRgba,
+  encodeOcrSelectionPng,
+  resolveSnapshotCropRect
+} from './ocrSnapshotImage'
 import { OcrDispatcher } from './ocrDispatcher'
 import { createSystemOcrEngine } from './systemOcr'
 import { PaddleOcrEngine } from './paddleOcr'
@@ -156,6 +162,7 @@ import { cleanOcrText } from '../shared/ocrText'
 import type {
   OcrErrorCode,
   OcrSelectionBounds,
+  OcrSelectionFailedPayload,
   OcrStatus,
   ScreenshotOcrActionRequest,
   ScreenshotOcrErrorCode,
@@ -216,7 +223,7 @@ const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslati
 const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
-let latestOcrSnapshot: { png: Buffer; bounds: CaptureBounds; source: string } | null = null
+let latestOcrSnapshot: OcrSnapshot | null = null
 // 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
 const activeScreenshotOcrRequests = new Set<string>()
 // 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
@@ -224,6 +231,10 @@ const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
 let internalActivationLeaseUntil = 0
 const INTERNAL_ACTIVATION_LEASE_MS = 300
+/** OCR 预览采集超时阈值：覆盖窗口已显示但迟迟拿不到快照时按采集失败收尾。 */
+const OCR_PREVIEW_CAPTURE_TIMEOUT_MS = 5000
+/** 截图运行时预热延迟：让启动关键路径先完成，再在空闲时创建覆盖窗口与绑定 GDI。 */
+const SCREENSHOT_PREWARM_DELAY_MS = 1500
 // 按钮显示期间用只读直读做后台预取，点击按钮时只消费已经完成的有效缓存；
 // 预取未完成或为空时立即取消它，并通过按钮专用管线优先发送复制快捷键。
 const selectionCapture = new SelectionCaptureCoordinator(
@@ -575,6 +586,31 @@ async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
 }
 
 /**
+ * 空闲预热截图运行时：提前创建并加载 OCR 覆盖窗口、在 Windows 上提前绑定 koffi/GDI。
+ * 首次 new BrowserWindow + 加载 selection.html 在 Windows 上常见数百毫秒，
+ * koffi 首次 require 还可能被杀毒扫描拖慢；把这部分成本从快捷键热路径挪到启动空闲期。
+ * 任何失败只打日志，不影响应用启动，首次真实截图会再次尝试。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function prewarmScreenshotRuntime(): void {
+  setTimeout(() => {
+    try {
+      // 预创建保持隐藏；openOcrSelection 会复用同一实例。
+      getOcrSelectionWindow()
+    } catch (error) {
+      console.log('[ocr] 覆盖窗口预创建失败', error instanceof Error ? error.message : error)
+    }
+    try {
+      const warmed = warmUpWindowsGdiCapture(process.platform)
+      if (warmed) console.log('[ocr] GDI 采集预热完成')
+    } catch (error) {
+      console.log('[ocr] GDI 采集预热失败', error instanceof Error ? error.message : error)
+    }
+  }, SCREENSHOT_PREWARM_DELAY_MS)
+}
+
+/**
  * 初始化主进程窗口、全局监听、托盘和 IPC。
  * @returns 初始化完成时返回 true；用户选择退出磁盘镜像实例时返回 false。
  * @author zhenghq
@@ -668,6 +704,7 @@ async function onReady(): Promise<boolean> {
   setTimeout(() => void warnIfNoAccessibility(), 1500)
   // 避免安装/升级通知网络请求与启动初始化争用资源；失败静默且不阻塞。
   setTimeout(() => void maybeSendInstallUpgradeNotification(), 1_500)
+  prewarmScreenshotRuntime()
   return true
 }
 
@@ -1472,13 +1509,82 @@ function hideOcrSelectionWindow(): boolean {
 }
 
 /**
- * 打开 OCR 框选窗口：先采集鼠标所在显示器快照，再把快照交给 Renderer 调整选区。
+ * 判断指定 token 是否仍拥有当前这次 OCR 采集。
+ * 用户取消、新会话开始或采集失败收尾都会清空 `ocrInteractionToken`，
+ * 因此不能只看 selectionInteraction 的 token 自增，否则旧采集超时会污染新会话。
+ * @param token 待校验的 OCR 交互 token。
+ * @returns token 仍是当前采集时返回 true。
+ * @author zhenghq
+ */
+function isCurrentOcrCapture(token: number): boolean {
+  return ocrInteractionToken === token && selectionInteraction.isCurrent(token)
+}
+
+/**
+ * 向 OCR 覆盖窗口发送事件；页面仍在加载时等 did-finish-load 后补发，避免事件丢失。
+ * @param win 覆盖窗口。
+ * @param channel IPC 频道名。
+ * @param payload 事件负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function sendToOcrSelectionWindow(win: BrowserWindow, channel: string, payload: unknown): void {
+  if (win.isDestroyed()) return
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    })
+    return
+  }
+  win.webContents.send(channel, payload)
+}
+
+/**
+ * 处理 OCR 预览采集失败：通知覆盖窗口退出框选、隐藏窗口、恢复划词监听并展示错误弹窗。
+ * @param interactionToken 本次 OCR 交互 token。
+ * @param error 采集失败的异常。
+ * @param anchor 弹窗锚点（快捷键按下时的光标位置）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function failOcrSelectionCapture(interactionToken: number, error: unknown, anchor: { x: number; y: number }): void {
+  // 旧采集的失败不得打断新会话。
+  if (!isCurrentOcrCapture(interactionToken)) return
+  const settings = getSettings()
+  const code = resolveOcrErrorCode(error)
+  const message = error instanceof Error ? error.message : '无法获取屏幕截图'
+  const failedPayload: OcrSelectionFailedPayload = { message, ocrCode: code }
+  if (ocrSelectionWin && !ocrSelectionWin.isDestroyed()) {
+    sendToOcrSelectionWindow(ocrSelectionWin, 'ocr-selection:failed', failedPayload)
+  }
+  latestOcrSnapshot = null
+  hideOcrSelectionWindow()
+  restoreSelectionListenerAfterOcr(interactionToken)
+  showPopup({
+    ok: false,
+    origin: 'ocr',
+    original: '',
+    error: message,
+    ocrCode: code,
+    sourcePreference: settings.sourceLang,
+    targetPreference: settings.targetLang,
+    targetLang: settings.targetLang
+  }, code === 'permission' ? 8000 : 5000, anchor)
+  if (code === 'permission') {
+    void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+  }
+}
+
+/**
+ * 打开 OCR 框选窗口：先把覆盖窗口显示出来（Show-then-Capture），
+ * 再异步采集鼠标所在显示器快照并回填背景图，让快捷键到遮罩出现的延迟与采集耗时解耦。
  * @returns 打开流程完成后的 Promise。
  * @author zhenghq
  */
 async function openOcrSelection(): Promise<void> {
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
+  const hotkeyAt = Date.now()
   latestSelectionGesture += 1
   const interactionToken = selectionInteraction.beginOcrSelection()
   ocrInteractionToken = interactionToken
@@ -1488,49 +1594,56 @@ async function openOcrSelection(): Promise<void> {
   hideSelectionButton()
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const anchor = screen.getCursorScreenPoint()
+  latestOcrSnapshot = null
+
+  const win = getOcrSelectionWindow()
+  // 覆盖窗口使用外层无边框尺寸与显示器边界对齐；这里必须使用屏幕坐标下的 setBounds，
+  // 否则 macOS 会把内容区域再次换算，导致快照画面整体向下偏移。
+  win.setBounds(display.bounds)
+  // macOS 普通无边框窗口的 content area 仍可能避让顶部菜单栏；切换为简单全屏后，
+  // Renderer 的 (0, 0) 才与 screencapture 快照左上角保持一致。
+  if (process.platform === 'darwin') win.setSimpleFullScreen(true)
+  win.show()
+  win.focus()
+  sendToOcrSelectionWindow(win, 'ocr-selection:begin', { bounds: display.bounds })
+  const hotkeyToShowMs = Date.now() - hotkeyAt
+
+  let timedOut = false
+  const timeoutTimer = setTimeout(() => {
+    timedOut = true
+    failOcrSelectionCapture(
+      interactionToken,
+      new ScreenCaptureError('no-source', '屏幕采集超时，请重试'),
+      anchor
+    )
+  }, OCR_PREVIEW_CAPTURE_TIMEOUT_MS)
+
   try {
-    const snapshot = await captureOcrPreviewSnapshot(display.bounds)
-    // 截图期间若交互 token 已被新流程取代，旧 OCR 不得重新显示覆盖窗口。
-    if (!selectionInteraction.isCurrent(interactionToken)) {
+    const preview = await captureOcrPreviewSnapshot(display.bounds)
+    clearTimeout(timeoutTimer)
+    if (timedOut) return
+    // 采集期间若交互 token 被新流程取代或用户已取消，旧快照必须丢弃，并收回自己曾登记的暂停记账。
+    if (!isCurrentOcrCapture(interactionToken)) {
       restoreSelectionListenerAfterOcr(interactionToken)
       return
     }
-    latestOcrSnapshot = snapshot
-    const payload = {
-      imageDataUrl: `data:image/png;base64,${snapshot.png.toString('base64')}`,
-      bounds: snapshot.bounds
-    }
-    const win = getOcrSelectionWindow()
-    // 覆盖窗口使用外层无边框尺寸与显示器边界对齐；这里必须使用屏幕坐标下的 setBounds，
-    // 否则 macOS 会把内容区域再次换算，导致快照画面整体向下偏移。
-    win.setBounds(display.bounds)
-    // macOS 普通无边框窗口的 content area 仍可能避让顶部菜单栏；切换为简单全屏后，
-    // Renderer 的 (0, 0) 才与 screencapture 快照左上角保持一致。
-    if (process.platform === 'darwin') win.setSimpleFullScreen(true)
-    win.show()
-    win.focus()
-    win.webContents.once('did-finish-load', () => {
-      win.webContents.send('ocr-selection:start', payload)
+    latestOcrSnapshot = preview.snapshot
+    const sendStartedAt = Date.now()
+    sendToOcrSelectionWindow(win, 'ocr-selection:snapshot', {
+      imageDataUrl: preview.previewDataUrl,
+      bounds: preview.snapshot.bounds
     })
-    if (!win.webContents.isLoading()) win.webContents.send('ocr-selection:start', payload)
+    console.log('[ocr] 预览就绪', {
+      source: preview.snapshot.source,
+      hotkeyToShowMs,
+      captureMs: preview.captureMs,
+      previewEncodeMs: preview.previewEncodeMs,
+      ipcSendMs: Date.now() - sendStartedAt
+    })
   } catch (error) {
-    restoreSelectionListenerAfterOcr(interactionToken)
-    const settings = getSettings()
-    const code = resolveOcrErrorCode(error)
-    const message = error instanceof Error ? error.message : '无法获取屏幕截图'
-    showPopup({
-      ok: false,
-      origin: 'ocr',
-      original: '',
-      error: message,
-      ocrCode: code,
-      sourcePreference: settings.sourceLang,
-      targetPreference: settings.targetLang,
-      targetLang: settings.targetLang
-    }, code === 'permission' ? 8000 : 5000, anchor)
-    if (code === 'permission') {
-      void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
-    }
+    clearTimeout(timeoutTimer)
+    if (timedOut) return
+    failOcrSelectionCapture(interactionToken, error, anchor)
   }
 }
 
@@ -1819,11 +1932,35 @@ async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
  * @author zhenghq
  */
 async function captureWindowsOcrRegion(bounds: CaptureBounds): Promise<{ png: Buffer; source: string }> {
+  return await captureWindowsOcrPngPreferGdi(bounds, resolveWindowsCaptureScale(bounds), buildWindowsOcrCaptureDeps())
+}
+
+/**
+ * 解析 Windows 采集所用的显示器缩放因子：按选区中心点定位所在显示器。
+ * @param bounds 目标区域（虚拟屏幕逻辑坐标）。
+ * @returns 显示器缩放因子，取不到时按 1 处理。
+ * @author zhenghq
+ */
+function resolveWindowsCaptureScale(bounds: CaptureBounds): number {
   const display = screen.getDisplayNearestPoint({
     x: Math.round(bounds.x + bounds.width / 2),
     y: Math.round(bounds.y + bounds.height / 2)
   })
-  return await captureWindowsOcrPngPreferGdi(bounds, display?.scaleFactor ?? 1, {
+  return display?.scaleFactor ?? 1
+}
+
+/**
+ * 构造 Windows 采集的可注入依赖：GDI 失败时回退 helper exe / PowerShell 并记录降级日志。
+ * 预览路径与最终选区路径共用同一份回退策略，避免两条链路的降级行为出现分歧。
+ * @returns Windows 采集依赖。
+ * @author zhenghq
+ */
+function buildWindowsOcrCaptureDeps(): {
+  platform: NodeJS.Platform
+  captureFallback(displayBounds: CaptureBounds, scale: number): Promise<Buffer>
+  onGdiFailure(message: string): void
+} {
+  return {
     platform: process.platform,
     captureFallback: (displayBounds, scale) => captureWindowsRegionAsPng(displayBounds, scale, {
       platform: process.platform,
@@ -1837,27 +1974,92 @@ async function captureWindowsOcrRegion(bounds: CaptureBounds): Promise<{ png: Bu
       // console 已被 appLogger 接管，warn 会同时进入应用日志文件
       console.warn('[ocr] GDI 截屏失败，回退 helper exe / PowerShell', { message })
     }
-  })
+  }
 }
 
 /**
- * 打开 OCR 选择器前采集一张屏幕快照，后续用户只在这张快照上调整区域。
- * @param bounds 需要快照的显示器区域。
- * @returns 快照 PNG、对应屏幕区域和采集来源。
+ * 采集 Windows OCR 预览：优先 GDI 物理像素直采（不做 PNG 编码），
+ * koffi 绑定或 GDI 调用失败时回退 helper exe / PowerShell 的 PNG 产物。
+ * @param bounds 目标显示器矩形（虚拟屏幕逻辑坐标）。
+ * @returns 像素或 PNG 形态的采集结果与来源标识。
  * @author zhenghq
  */
-async function captureOcrPreviewSnapshot(
+async function captureWindowsOcrPreview(bounds: CaptureBounds): Promise<WindowsPreviewCapture> {
+  return await captureWindowsOcrPreviewPreferGdi(
+    bounds,
+    resolveWindowsCaptureScale(bounds),
+    buildWindowsOcrCaptureDeps()
+  )
+}
+
+/** OCR 屏幕快照：主进程持有可直接裁剪的内存图像，避免为裁剪重新解码整屏 PNG。 */
+interface OcrSnapshot {
+  /** 快照内存图像（物理像素）。 */
+  image: NativeImage
+  /** 快照对应的显示器矩形（全局屏幕逻辑坐标）。 */
   bounds: CaptureBounds
-): Promise<{ png: Buffer; bounds: CaptureBounds; source: string }> {
-  if (process.platform === 'darwin') {
-    const png = await captureMacRegionAsPng(bounds)
-    return { png, bounds, source: 'macos-screencapture-preview' }
-  }
+  /** 采集来源标识，决定裁剪坐标换算规则。 */
+  source: string
+}
+
+/** OCR 预览采集结果：快照本体、预览 data URL 与分阶段耗时。 */
+interface OcrPreviewCapture {
+  /** 主进程持有的内存快照。 */
+  snapshot: OcrSnapshot
+  /** 供覆盖层背景图使用的 PNG data URL。 */
+  previewDataUrl: string
+  /** 屏幕采集耗时（毫秒）。 */
+  captureMs: number
+  /** 预览图编码耗时（毫秒）。 */
+  previewEncodeMs: number
+}
+
+/**
+ * 打开 OCR 选择器后采集一张屏幕快照，后续用户只在这张快照上调整区域。
+ * Windows 优先把 GDI 的 BGRA 直接交给 nativeImage，由 Chromium 原生编码器生成预览，
+ * 不再对整屏调用 JS 版 encodePng；koffi 绑定失败时回退 helper exe / PowerShell 的 PNG 产物。
+ * macOS / Linux 复用各自既有 PNG 采集来源。
+ * @param bounds 需要快照的显示器区域。
+ * @returns 内存快照、预览 data URL 与分阶段耗时。
+ * @author zhenghq
+ */
+async function captureOcrPreviewSnapshot(bounds: CaptureBounds): Promise<OcrPreviewCapture> {
+  const captureStartedAt = Date.now()
   if (process.platform === 'win32') {
     // Windows 优先 koffi GDI 直采物理像素；绑定失败时回退 helper exe / PowerShell，
     // 绕开 desktopCapturer/DXGI 缩略图在高 DPI 下的行错位彩色条纹问题。
-    const captured = await captureWindowsOcrRegion(bounds)
-    return { png: captured.png, bounds, source: `${captured.source}-preview` }
+    const captured = await captureWindowsOcrPreview(bounds)
+    const captureMs = Date.now() - captureStartedAt
+    const encodeStartedAt = Date.now()
+    // GDI 返回的就是 Chromium 期望的 BGRA 布局，直接建位图，省掉整屏通道交换拷贝；
+    // 回退路径只能拿到 PNG，交给原生解码器建图，同样不经过 JS 版 decodePng。
+    const image = captured.kind === 'pixels'
+      ? nativeImage.createFromBitmap(
+          Buffer.from(
+            captured.pixels.data.buffer,
+            captured.pixels.data.byteOffset,
+            captured.pixels.data.byteLength
+          ),
+          { width: captured.pixels.width, height: captured.pixels.height }
+        )
+      : nativeImage.createFromBuffer(captured.png)
+    const previewDataUrl = image.toDataURL()
+    return {
+      snapshot: { image, bounds, source: `${captured.source}-preview` },
+      previewDataUrl,
+      captureMs,
+      previewEncodeMs: Date.now() - encodeStartedAt
+    }
+  }
+  if (process.platform === 'darwin') {
+    const png = await captureMacRegionAsPng(bounds)
+    const captureMs = Date.now() - captureStartedAt
+    return {
+      snapshot: { image: nativeImage.createFromBuffer(png), bounds, source: 'macos-screencapture-preview' },
+      previewDataUrl: `data:image/png;base64,${png.toString('base64')}`,
+      captureMs,
+      previewEncodeMs: 0
+    }
   }
   const image = await captureRegionAsPng(bounds, { ocrScale: 1 }, {
     getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
@@ -1865,7 +2067,40 @@ async function captureOcrPreviewSnapshot(
     getPrimaryDisplay: () => screen.getPrimaryDisplay(),
     platform: process.platform
   })
-  return { png: image.png, bounds, source: 'electron-desktopCapturer-preview' }
+  const captureMs = Date.now() - captureStartedAt
+  return {
+    snapshot: {
+      image: nativeImage.createFromBuffer(image.png),
+      bounds,
+      source: 'electron-desktopCapturer-preview'
+    },
+    previewDataUrl: `data:image/png;base64,${image.png.toString('base64')}`,
+    captureMs,
+    previewEncodeMs: 0
+  }
+}
+
+/**
+ * 从内存快照中裁出选区并编码为 OCR 输入 PNG。
+ * 先用 Chromium 原生 crop 取出选区，再只对选区做通道转换、放大与 PNG 编码，
+ * 不对整屏调用 decodePng / encodePng。
+ * @param snapshot 当前内存快照。
+ * @param bounds 用户选区（全局屏幕坐标）。
+ * @param ocrScale OCR 放大倍率。
+ * @returns 选区 PNG 字节。
+ * @author zhenghq
+ */
+function cropSnapshotSelectionPng(
+  snapshot: OcrSnapshot,
+  bounds: CaptureBounds,
+  ocrScale: number
+): Buffer {
+  const { width, height } = snapshot.image.getSize()
+  const rect = resolveSnapshotCropRect(snapshot.source, bounds, snapshot.bounds, width, height)
+  const cropped = snapshot.image.crop(rect)
+  const size = cropped.getSize()
+  const rgba = bgraToRgba(cropped.getBitmap(), size.width, size.height)
+  return encodeOcrSelectionPng(rgba, ocrScale)
 }
 
 /**
@@ -1909,14 +2144,8 @@ async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Setting
   if (!snapshot) {
     throw new ScreenCaptureError('no-source', '截图已失效，请重新截图')
   }
-  const fullImage = decodePng(snapshot.png)
-  // Windows GDI 物理像素快照与虚拟屏幕坐标直接对应，走专属裁剪；其余平台按缩略图比例对齐。
-  const cropRect = snapshot.source.startsWith('windows-gdi')
-    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, fullImage.width, fullImage.height)
-    : computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
-  const cropped = cropRgba(fullImage, cropRect)
-  const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
-  const png = encodePng(scaled)
+  // 只裁选区再编码：整屏 decodePng / encodePng 在 2K/4K 上各要数百毫秒，属于纯浪费。
+  const png = cropSnapshotSelectionPng(snapshot, bounds, settings.ocrScale)
   await logOcrCaptureDiagnostic(png, bounds, `${snapshot.source}-crop`)
   latestOcrSnapshot = null
   return png
@@ -1955,13 +2184,7 @@ function cropCurrentOcrSelectionPng(value: unknown, settings: Settings): Buffer 
   if (!snapshot) {
     throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
   }
-  const fullImage = decodePng(snapshot.png)
-  const cropRect = snapshot.source.startsWith('windows-gdi')
-    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, fullImage.width, fullImage.height)
-    : computeCropRect(bounds, snapshot.bounds, fullImage.width, fullImage.height)
-  const cropped = cropRgba(fullImage, cropRect)
-  const scaled = resizeRgbaForOcr(cropped, settings.ocrScale)
-  return encodePng(scaled)
+  return cropSnapshotSelectionPng(snapshot, bounds, settings.ocrScale)
 }
 
 /**
@@ -1981,12 +2204,9 @@ function cropCurrentOcrSelectionPngFast(value: unknown): Buffer {
   if (!snapshot) {
     throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
   }
-  const fullImage = nativeImage.createFromBuffer(snapshot.png)
-  const { width, height } = fullImage.getSize()
-  const cropRect = snapshot.source.startsWith('windows-gdi')
-    ? resolveCroppedRectForWindows(bounds, snapshot.bounds, width, height)
-    : computeCropRect(bounds, snapshot.bounds, width, height)
-  return fullImage.crop(cropRect).toPNG()
+  const { width, height } = snapshot.image.getSize()
+  const cropRect = resolveSnapshotCropRect(snapshot.source, bounds, snapshot.bounds, width, height)
+  return snapshot.image.crop(cropRect).toPNG()
 }
 
 /**

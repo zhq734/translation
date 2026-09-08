@@ -186,17 +186,23 @@ test('OCR 框选期间应暂停并屏蔽普通划词监听', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 截图应在打开框选窗口前完成，并把快照传给 Renderer 调整选区', () => {
+test('OCR 截图应先显示框选窗口，再把快照传给 Renderer 调整选区', () => {
   const openStart = main.indexOf('async function openOcrSelection')
-  const openEnd = main.indexOf('/**', openStart + 1)
+  const openEnd = main.indexOf('\n}\n', openStart)
   const openSource = main.slice(openStart, openEnd)
   const submitStart = main.indexOf('async function submitOcrSelection')
   const submitEnd = main.indexOf('/**', submitStart + 1)
   const submitSource = main.slice(submitStart, submitEnd)
 
   assert.match(openSource, /captureOcrPreviewSnapshot\(display\.bounds\)/u)
-  assert.match(openSource, /imageDataUrl:\s*`data:image\/png;base64,\$\{snapshot\.png\.toString\('base64'\)\}`/u)
-  assert.match(openSource, /win\.webContents\.send\('ocr-selection:start',\s*payload\)/u)
+  // Show-then-Capture：先发 begin 出遮罩，采集完成后再用 snapshot 填图
+  assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:begin'/u)
+  assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:snapshot'/u)
+  assert.match(openSource, /imageDataUrl:\s*preview\.previewDataUrl/u)
+  assert.ok(
+    openSource.indexOf("'ocr-selection:begin'") < openSource.indexOf('captureOcrPreviewSnapshot('),
+    'begin 事件必须早于屏幕采集'
+  )
   assert.match(submitSource, /cropOcrSnapshotSelection\(bounds,\s*settings\)/u)
   assert.doesNotMatch(submitSource, /await sleep\(OCR_CAPTURE_SETTLE_DELAY_MS\)/u)
   assert.doesNotMatch(submitSource, /captureOcrSelectionPng\(bounds,\s*settings\)/u)
@@ -211,7 +217,7 @@ test('OCR 框选页应支持快照预览、调整选区和点击识别', () => {
   assert.match(selectionHtml, /id="ocr-snapshot"/u)
   assert.match(selectionHtml, /id="ocr-recognize"/u)
   assert.match(selectionHtml, /data-handle="nw"/u)
-  assert.match(selectionRenderer, /function renderOcrSnapshot/u)
+  assert.match(selectionRenderer, /function applyOcrSnapshot/u)
   assert.match(selectionRenderer, /function updateResizeHandlePositions/u)
   assert.match(selectionRenderer, /function submitCurrentOcrSelection/u)
   // 截图工具条改造后，“识别”按钮触发窗口内文字识别；Enter/空格仍走翻译提交路径。
@@ -416,10 +422,16 @@ test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () 
   const previewEnd = main.indexOf('/**', previewStart + 1)
   const previewSource = main.slice(previewStart, previewEnd)
 
-  // Windows 分支：优先 koffi GDI，失败回退 PowerShell/helper exe
+  // Windows 分支：GDI 直采物理像素后交给 nativeImage，失败回退 PowerShell/helper exe
   assert.match(previewSource, /if \(process\.platform === 'win32'\)/u)
-  assert.match(previewSource, /captureWindowsOcrRegion\(bounds\)/u)
+  assert.match(previewSource, /captureWindowsOcrPreview\(bounds\)/u)
   assert.match(previewSource, /\$\{captured\.source\}-preview/u)
+  // 预览成功路径把 BGRA 直接交给 Chromium；回退路径只能拿到 PNG，同样不走 JS 解码
+  assert.match(previewSource, /nativeImage\.createFromBitmap\(/u)
+  assert.match(previewSource, /captured\.kind === 'pixels'/u)
+  assert.match(previewSource, /nativeImage\.createFromBuffer\(captured\.png\)/u)
+  // 预览路径不得对整屏调用 JS 版 PNG 编码器
+  assert.doesNotMatch(previewSource, /encodePng\(/u)
 
   // Linux / 其他平台：继续使用 Electron desktopCapturer 缩略图路径
   assert.match(previewSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: 1 \}/u)
@@ -448,10 +460,20 @@ test('Windows 最终选区采集应走 GDI 分支并记录诊断日志', () => {
  * @author zhenghq
  */
 test('Windows 采集辅助函数应优先 GDI 并接入回退路径', () => {
-  const start = main.indexOf('async function captureWindowsOcrRegion')
-  const end = main.indexOf('/**', start + 1)
+  const regionStart = main.indexOf('async function captureWindowsOcrRegion')
+  const regionSource = main.slice(regionStart, main.indexOf('\n}\n', regionStart))
+  assert.match(regionSource, /captureWindowsOcrPngPreferGdi\(/u)
+  assert.match(regionSource, /buildWindowsOcrCaptureDeps\(\)/u)
+
+  // 预览路径与最终选区路径共用同一份回退依赖，避免降级行为分歧
+  const previewStart = main.indexOf('async function captureWindowsOcrPreview')
+  const previewSource = main.slice(previewStart, main.indexOf('\n}\n', previewStart))
+  assert.match(previewSource, /captureWindowsOcrPreviewPreferGdi\(/u)
+  assert.match(previewSource, /buildWindowsOcrCaptureDeps\(\)/u)
+
+  const start = main.indexOf('function buildWindowsOcrCaptureDeps')
+  const end = main.indexOf('\n}\n', start)
   const source = main.slice(start, end)
-  assert.match(source, /captureWindowsOcrPngPreferGdi\(/u)
   assert.match(source, /captureWindowsRegionAsPng\(/u)
   assert.match(source, /execFile:\s*execFileP/u)
   assert.match(source, /tmpDir:\s*tmpdir/u)

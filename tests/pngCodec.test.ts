@@ -136,3 +136,75 @@ test('非法 PNG 签名应抛出解码错误', () => {
 test('编码空图像应抛出参数错误', () => {
   assert.throws(() => encodePng({ width: 0, height: 0, data: new Uint8Array(0) }))
 })
+
+/**
+ * 校验 encodePng 默认使用低压缩级别（level ≤ 3），避免全屏截图编码同步阻塞主进程。
+ * 断言方式：默认产物体积应明显大于显式 level 9 的产物，说明默认没有走最高压缩。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('encodePng 默认应使用低压缩级别而非最高压缩', () => {
+  // 构造带噪声的渐变图，保证不同压缩级别产物体积有可测差异。
+  const image = makeImage(160, 120, (x, y) => [
+    (x * 7 + y * 13) % 256,
+    (x * 31 + y * 17) % 256,
+    (x * 5 + y * 3) % 256,
+    255
+  ])
+  const fast = encodePng(image)
+  const best = encodePng(image, { level: 9 })
+  assert.ok(fast.length > best.length, '默认级别产物应比 level 9 更大，证明默认不是最高压缩')
+  // 两者解码后像素必须完全一致：压缩级别只影响体积，不影响像素。
+  assert.deepEqual(Array.from(decodePng(fast).data), Array.from(image.data))
+  assert.deepEqual(Array.from(decodePng(best).data), Array.from(image.data))
+})
+
+/**
+ * 校验显式指定压缩级别时编码结果仍可正确解码，覆盖 level 0（仅存储）到 9。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('encodePng 显式压缩级别应保持像素等价', () => {
+  const image = makeImage(9, 7, (x, y) => [x * 20, y * 30, (x * y) % 256, 255])
+  for (const level of [0, 1, 6, 9]) {
+    const decoded = decodePng(encodePng(image, { level }))
+    assert.equal(decoded.width, 9)
+    assert.equal(decoded.height, 7)
+    assert.deepEqual(Array.from(decoded.data), Array.from(image.data), `level ${level} 像素应等价`)
+  }
+})
+
+/**
+ * 校验 encodePng 支持带 byteOffset 的 Uint8Array 视图，避免改为 Buffer 拷贝后读到整块底层内存。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('encodePng 应正确处理带偏移的像素视图', () => {
+  const image = makeImage(3, 2, (x, y) => [x * 40, y * 60, 10, 255])
+  const backing = new Uint8Array(image.data.length + 16)
+  backing.set(image.data, 8)
+  const view = backing.subarray(8, 8 + image.data.length)
+  const decoded = decodePng(encodePng({ width: 3, height: 2, data: view }))
+  assert.deepEqual(Array.from(decoded.data), Array.from(image.data))
+})
+
+/**
+ * 校验大图编码不再退化为 number[] 逐字节路径：2560×1440 全屏级图像应在 300ms 内完成。
+ * 旧实现（number[] 拼扫描线 + deflate level 9）在该尺寸约需 1 秒，
+ * 该断言防止 encodePng 回归成阻塞主进程的实现。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('encodePng 编码 2560×1440 图像应在 300ms 内完成', () => {
+  const image = makeImage(2560, 1440, (x, y) => [
+    (x + y) % 256,
+    (x * 2) % 256,
+    (y * 3) % 256,
+    255
+  ])
+  const started = Date.now()
+  const png = encodePng(image)
+  const elapsed = Date.now() - started
+  assert.ok(png.length > 0)
+  assert.ok(elapsed < 300, `编码耗时 ${elapsed}ms 应小于 300ms`)
+})

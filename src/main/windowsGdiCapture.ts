@@ -13,7 +13,7 @@
  * 5. SelectObject 选入位图
  * 6. BitBlt 从屏幕 DC 拷贝到内存 DC
  * 7. GetDIBits 以 BGRA 格式提取像素数据
- * 8. 转换 BGRA → RGBA，用 encodePng 编码为 PNG
+ * 8. 预览路径直接把 BGRA 交给 nativeImage；仅兜底路径才转 RGBA 并 encodePng
  *
  * 所有 GDI 句柄用完后立即释放，避免资源泄漏。
  *
@@ -23,6 +23,7 @@
 import type { RgbaImage } from '../shared/imagePreprocess'
 import type { CaptureBounds } from './screenCapture'
 import { ScreenCaptureError } from './screenCapture'
+import { bgraToRgba as convertBgraToRgba, forceOpaqueBgra } from './ocrSnapshotImage'
 import { encodePng } from './pngCodec'
 
 /** BGRA 像素数据回调签名，用于依赖注入测试。 */
@@ -303,8 +304,7 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
 
 /**
  * 将 BGRA 像素数据转换为 RGBA。
- * Win32 GetDIBits 返回的 32 位位图格式为 BGRA（蓝-绿-红-alpha），
- * 需要交换 B 和 R 通道以匹配 RgbaImage 要求的 RGBA 顺序。
+ * 实际转换复用 `ocrSnapshotImage.bgraToRgba`，此处保留导出以兼容既有调用方与测试。
  * @param bgra BGRA 像素数据。
  * @param width 图像宽度。
  * @param height 图像高度。
@@ -312,14 +312,90 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
  * @author zhenghq
  */
 export function bgraToRgba(bgra: Uint8Array, width: number, height: number): RgbaImage {
-  const rgba = new Uint8Array(bgra.length)
-  for (let i = 0; i < bgra.length; i += 4) {
-    rgba[i] = bgra[i + 2]     // R ← B
-    rgba[i + 1] = bgra[i + 1] // G
-    rgba[i + 2] = bgra[i]     // B ← R
-    rgba[i + 3] = 0xff        // A = 255（不透明）
+  return convertBgraToRgba(bgra, width, height)
+}
+
+/** GDI 物理像素采集结果：BGRA 缓冲与物理像素尺寸。 */
+export interface WindowsPixelCapture {
+  /** 物理像素宽度。 */
+  width: number
+  /** 物理像素高度。 */
+  height: number
+  /** BGRA 像素缓冲，alpha 已补为不透明，可直接交给 nativeImage.createFromBitmap。 */
+  data: Uint8Array
+}
+
+/**
+ * 将显示器逻辑矩形按缩放因子换算为物理像素矩形。
+ * @param displayBounds 目标显示器矩形（虚拟屏幕逻辑坐标）。
+ * @param scaleFactor 目标显示器缩放因子。
+ * @returns 物理像素矩形。
+ * @author zhenghq
+ */
+function toPhysicalRect(
+  displayBounds: CaptureBounds,
+  scaleFactor: number
+): { x: number; y: number; width: number; height: number } {
+  const scale = scaleFactor || 1
+  return {
+    x: Math.round(displayBounds.x * scale),
+    y: Math.round(displayBounds.y * scale),
+    width: Math.max(1, Math.round(displayBounds.width * scale)),
+    height: Math.max(1, Math.round(displayBounds.height * scale))
   }
-  return { width, height, data: rgba }
+}
+
+/**
+ * 通过 koffi FFI 调用 Win32 GDI 采集屏幕区域的原始 BGRA 像素。
+ * 该入口不做任何 PNG 编码：预览路径把 BGRA 直接交给 `nativeImage.createFromBitmap`，
+ * 由 Chromium 的原生编码器承担后续工作，避免整屏 JS PNG 编码阻塞窗口显示。
+ * @param displayBounds 目标显示器矩形（虚拟屏幕逻辑坐标）。
+ * @param scaleFactor 目标显示器缩放因子。
+ * @param deps 可注入依赖（测试用）。
+ * @returns 物理像素尺寸与 BGRA 缓冲。
+ * @author zhenghq
+ */
+export async function captureWindowsRegionPixels(
+  displayBounds: CaptureBounds,
+  scaleFactor: number,
+  deps: WindowsGdiCaptureDeps
+): Promise<WindowsPixelCapture> {
+  if (deps.platform !== 'win32') {
+    throw new ScreenCaptureError('no-source', '仅 Windows 支持 GDI 原生截屏')
+  }
+  const rect = toPhysicalRect(displayBounds, scaleFactor)
+  try {
+    const captureFn = deps.captureGdi ?? getKoffiGdiCapture(deps.loadKoffi)
+    const captured = await captureFn(rect.x, rect.y, rect.width, rect.height)
+    return {
+      width: captured.width,
+      height: captured.height,
+      // GetDIBits 不写 alpha（恒为 0），直接交给 Chromium 会得到全透明图像；
+      // 原地补 255 而不复制，避免 4K 整屏多出一次 30MB 级别的内存拷贝。
+      data: forceOpaqueBgra(captured.data)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new ScreenCaptureError('no-source', `GDI 截屏失败: ${message}`)
+  }
+}
+
+/**
+ * 预热 koffi/GDI 绑定：在应用空闲时提前加载 DLL 与函数签名，
+ * 消除首次截图时的 require + 杀毒扫描延迟。失败只返回 false，不抛异常。
+ * @param platform 当前运行平台。
+ * @param loadKoffi koffi 模块加载器，默认 require('koffi')，测试可注入桩。
+ * @returns 预热是否成功。
+ * @author zhenghq
+ */
+export function warmUpWindowsGdiCapture(platform: NodeJS.Platform, loadKoffi?: KoffiLoader): boolean {
+  if (platform !== 'win32') return false
+  try {
+    getKoffiGdiCapture(loadKoffi)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -341,24 +417,8 @@ export async function captureWindowsRegionAsPngGdi(
   scaleFactor: number,
   deps: WindowsGdiCaptureDeps
 ): Promise<Buffer> {
-  if (deps.platform !== 'win32') {
-    throw new ScreenCaptureError('no-source', '仅 Windows 支持 GDI 原生截屏')
-  }
-  const scale = scaleFactor || 1
-  const x = Math.round(displayBounds.x * scale)
-  const y = Math.round(displayBounds.y * scale)
-  const width = Math.max(1, Math.round(displayBounds.width * scale))
-  const height = Math.max(1, Math.round(displayBounds.height * scale))
-
-  try {
-    const captureFn = deps.captureGdi ?? getKoffiGdiCapture(deps.loadKoffi)
-    const { data, width: imgW, height: imgH } = await captureFn(x, y, width, height)
-    const rgba = bgraToRgba(data, imgW, imgH)
-    return encodePng(rgba)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new ScreenCaptureError('no-source', `GDI 截屏失败: ${message}`)
-  }
+  const captured = await captureWindowsRegionPixels(displayBounds, scaleFactor, deps)
+  return encodePng(bgraToRgba(captured.data, captured.width, captured.height))
 }
 
 /** GDI 原生采集成功时的来源标识。 */
@@ -407,6 +467,66 @@ export async function captureWindowsOcrPngPreferGdi(
     try {
       const png = await deps.captureFallback(displayBounds, scaleFactor)
       return { png, source: WINDOWS_GDI_FALLBACK_SOURCE }
+    } catch (fallbackError) {
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+      throw new ScreenCaptureError(
+        'no-source',
+        `无法获取屏幕截图: GDI 失败（${gdiMessage}）；回退失败（${fallbackMessage}）`
+      )
+    }
+  }
+}
+
+/**
+ * Windows OCR 预览采集结果：优先返回 GDI 物理像素，回退路径只能返回 PNG。
+ * 用可辨识联合表达两种来源，让调用方各自交给 `nativeImage.createFromBitmap`
+ * 或 `nativeImage.createFromBuffer`，两条路径都不经过 JS 版 PNG 编解码。
+ */
+export type WindowsPreviewCapture =
+  | {
+      /** 采集形态：GDI 物理像素直采。 */
+      kind: 'pixels'
+      /** BGRA 像素缓冲与物理像素尺寸。 */
+      pixels: WindowsPixelCapture
+      /** 采集来源标识。 */
+      source: string
+    }
+  | {
+      /** 采集形态：回退路径产出的 PNG 字节。 */
+      kind: 'png'
+      /** PNG 图片字节。 */
+      png: Buffer
+      /** 采集来源标识。 */
+      source: string
+    }
+
+/**
+ * 采集 Windows OCR 预览：优先 koffi GDI 直采 BGRA 物理像素，
+ * 绑定或采集失败时回退 PowerShell / helper exe 的 PNG 产物。
+ *
+ * 与 `captureWindowsOcrPngPreferGdi` 的区别：成功路径不做任何 PNG 编码，
+ * 把像素原样交给调用方，避免整屏 JS `encodePng` 阻塞覆盖窗口显示。
+ * 两条路径都失败时归类为 no-source，错误信息同时包含两侧原因。
+ * @param displayBounds 目标显示器矩形（虚拟屏幕坐标）。
+ * @param scaleFactor 目标显示器缩放因子。
+ * @param deps 可注入依赖（测试用）。
+ * @returns 物理像素或 PNG 形态的采集结果与来源标识。
+ * @author zhenghq
+ */
+export async function captureWindowsOcrPreviewPreferGdi(
+  displayBounds: CaptureBounds,
+  scaleFactor: number,
+  deps: WindowsOcrPreferGdiDeps
+): Promise<WindowsPreviewCapture> {
+  try {
+    const pixels = await captureWindowsRegionPixels(displayBounds, scaleFactor, deps)
+    return { kind: 'pixels', pixels, source: WINDOWS_GDI_CAPTURE_SOURCE }
+  } catch (gdiError) {
+    const gdiMessage = gdiError instanceof Error ? gdiError.message : String(gdiError)
+    deps.onGdiFailure?.(gdiMessage)
+    try {
+      const png = await deps.captureFallback(displayBounds, scaleFactor)
+      return { kind: 'png', png, source: WINDOWS_GDI_FALLBACK_SOURCE }
     } catch (fallbackError) {
       const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
       throw new ScreenCaptureError(
