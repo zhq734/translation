@@ -416,11 +416,10 @@ test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () 
   const previewEnd = main.indexOf('/**', previewStart + 1)
   const previewSource = main.slice(previewStart, previewEnd)
 
-  // Windows 分支：调用 PowerShell GDI 原生截屏，避免 DXGI 高 DPI 行错位彩色条纹
+  // Windows 分支：优先 koffi GDI，失败回退 PowerShell/helper exe
   assert.match(previewSource, /if \(process\.platform === 'win32'\)/u)
-  assert.match(previewSource, /captureWindowsRegionAsPngGdi\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
-  assert.match(previewSource, /platform:\s*process\.platform/u)
-  assert.match(previewSource, /windows-gdi-copyscreen-preview/u)
+  assert.match(previewSource, /captureWindowsOcrRegion\(bounds\)/u)
+  assert.match(previewSource, /\$\{captured\.source\}-preview/u)
 
   // Linux / 其他平台：继续使用 Electron desktopCapturer 缩略图路径
   assert.match(previewSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: 1 \}/u)
@@ -438,7 +437,24 @@ test('Windows 最终选区采集应走 GDI 分支并记录诊断日志', () => {
   const source = main.slice(start, end)
 
   assert.match(source, /if \(process\.platform === 'win32'\)/u)
-  assert.match(source, /captureWindowsRegionAsPngGdi\(bounds,\s*display\?\.scaleFactor \?\? 1,\s*\{/u)
-  assert.match(source, /logOcrCaptureDiagnostic\(png,\s*bounds,\s*'windows-gdi-copyscreen'\)/u)
+  assert.match(source, /captureWindowsOcrRegion\(bounds\)/u)
+  assert.match(source, /logOcrCaptureDiagnostic\(captured\.png,\s*bounds,\s*captured\.source\)/u)
   assert.match(source, /electron-desktopCapturer/u)
+})
+
+/**
+ * 校验 Windows 采集辅助函数优先 GDI 并在失败时回退 helper exe / PowerShell。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 采集辅助函数应优先 GDI 并接入回退路径', () => {
+  const start = main.indexOf('async function captureWindowsOcrRegion')
+  const end = main.indexOf('/**', start + 1)
+  const source = main.slice(start, end)
+  assert.match(source, /captureWindowsOcrPngPreferGdi\(/u)
+  assert.match(source, /captureWindowsRegionAsPng\(/u)
+  assert.match(source, /execFile:\s*execFileP/u)
+  assert.match(source, /tmpDir:\s*tmpdir/u)
+  assert.match(source, /spawn:\s*spawnP/u)
+  assert.match(source, /GDI 截屏失败，回退 helper exe \/ PowerShell/u)
 })

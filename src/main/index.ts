@@ -139,7 +139,8 @@ import {
   ScreenCaptureError,
   type CaptureBounds
 } from './screenCapture'
-import { captureWindowsRegionAsPngGdi } from './windowsGdiCapture'
+import { captureWindowsOcrPngPreferGdi } from './windowsGdiCapture'
+import { captureWindowsRegionAsPng } from './windowsScreenCapture'
 import { decodePng, encodePng } from './pngCodec'
 import { OcrDispatcher } from './ocrDispatcher'
 import { createSystemOcrEngine } from './systemOcr'
@@ -1811,6 +1812,35 @@ async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
 }
 
 /**
+ * 采集 Windows 指定显示器区域：优先 koffi GDI 原生直采，绑定或采集失败时
+ * 回退既有 helper exe / PowerShell 路径，保证单点绑定错误不会让截屏整体不可用。
+ * @param bounds 目标显示器矩形（虚拟屏幕坐标）。
+ * @returns PNG 字节与采集来源标识（回退时来源体现降级）。
+ * @author zhenghq
+ */
+async function captureWindowsOcrRegion(bounds: CaptureBounds): Promise<{ png: Buffer; source: string }> {
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(bounds.x + bounds.width / 2),
+    y: Math.round(bounds.y + bounds.height / 2)
+  })
+  return await captureWindowsOcrPngPreferGdi(bounds, display?.scaleFactor ?? 1, {
+    platform: process.platform,
+    captureFallback: (displayBounds, scale) => captureWindowsRegionAsPng(displayBounds, scale, {
+      platform: process.platform,
+      execFile: execFileP,
+      readFile,
+      unlink,
+      tmpDir: tmpdir,
+      spawn: spawnP
+    }),
+    onGdiFailure: (message) => {
+      // console 已被 appLogger 接管，warn 会同时进入应用日志文件
+      console.warn('[ocr] GDI 截屏失败，回退 helper exe / PowerShell', { message })
+    }
+  })
+}
+
+/**
  * 打开 OCR 选择器前采集一张屏幕快照，后续用户只在这张快照上调整区域。
  * @param bounds 需要快照的显示器区域。
  * @returns 快照 PNG、对应屏幕区域和采集来源。
@@ -1824,16 +1854,10 @@ async function captureOcrPreviewSnapshot(
     return { png, bounds, source: 'macos-screencapture-preview' }
   }
   if (process.platform === 'win32') {
-    // Windows 走 PowerShell + System.Drawing GDI 原样抓取物理像素，
+    // Windows 优先 koffi GDI 直采物理像素；绑定失败时回退 helper exe / PowerShell，
     // 绕开 desktopCapturer/DXGI 缩略图在高 DPI 下的行错位彩色条纹问题。
-    const display = screen.getDisplayNearestPoint({
-      x: Math.round(bounds.x + bounds.width / 2),
-      y: Math.round(bounds.y + bounds.height / 2)
-    })
-    const png = await captureWindowsRegionAsPngGdi(bounds, display?.scaleFactor ?? 1, {
-      platform: process.platform
-    })
-    return { png, bounds, source: 'windows-gdi-copyscreen-preview' }
+    const captured = await captureWindowsOcrRegion(bounds)
+    return { png: captured.png, bounds, source: `${captured.source}-preview` }
   }
   const image = await captureRegionAsPng(bounds, { ocrScale: 1 }, {
     getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
@@ -1858,16 +1882,10 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
     return png
   }
   if (process.platform === 'win32') {
-    // Windows 走 GDI 原生采集，避免 desktopCapturer/DXGI 缩略图行错位产生彩色条纹。
-    const display = screen.getDisplayNearestPoint({
-      x: Math.round(bounds.x + bounds.width / 2),
-      y: Math.round(bounds.y + bounds.height / 2)
-    })
-    const png = await captureWindowsRegionAsPngGdi(bounds, display?.scaleFactor ?? 1, {
-      platform: process.platform
-    })
-    await logOcrCaptureDiagnostic(png, bounds, 'windows-gdi-copyscreen')
-    return png
+    // Windows 优先 GDI 原生采集；失败回退 helper exe / PowerShell，避免 DXGI 行错位彩条。
+    const captured = await captureWindowsOcrRegion(bounds)
+    await logOcrCaptureDiagnostic(captured.png, bounds, captured.source)
+    return captured.png
   }
   const image = await captureRegionAsPng(bounds, { ocrScale: settings.ocrScale }, {
     getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
