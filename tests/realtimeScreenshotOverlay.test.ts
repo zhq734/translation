@@ -166,8 +166,65 @@ test('Renderer 应区分采集中态与快照就绪态', () => {
 
   const applySource = sliceFunction(selectionRenderer, 'function applyOcrSnapshot(')
   assert.match(applySource, /ocrSnapshot\.src = payload\.imageDataUrl/u)
-  // 快照到达后必须保留采集中已经拖出的选区
-  assert.doesNotMatch(applySource, /currentRect = null/u)
+  // 同会话快照到达后必须保留采集中已经拖出的选区（跨会话由 enterOcrSelectionMode 清理）
+  assert.doesNotMatch(applySource, /currentRect\s*=\s*null/u)
+})
+
+/**
+ * 校验 enterOcrSelectionMode 记录本次会话的 sessionId，用于防串扰。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('enterOcrSelectionMode 应记录本次会话的 sessionId', () => {
+  const enterSource = sliceFunction(selectionRenderer, 'function enterOcrSelectionMode(')
+  assert.match(enterSource, /payload\.sessionId/u, '应读取 begin 负载中的 sessionId')
+  assert.match(enterSource, /currentOcrSessionId\s*=\s*payload\.sessionId/u, '应记录当前会话 sessionId')
+})
+
+/**
+ * 校验 applyOcrSnapshot 通过 sessionId 防串扰：同会话应用，跨会话清理旧选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('applyOcrSnapshot 应校验 sessionId 防止跨会话串扰', () => {
+  const applySource = sliceFunction(selectionRenderer, 'function applyOcrSnapshot(')
+  // 必须读取 snapshot 中的 sessionId 并与当前会话比较
+  assert.match(applySource, /payload\.sessionId/u, '应读取 snapshot 负载中的 sessionId')
+  assert.match(applySource, /currentOcrSessionId/u, '应引用当前会话 sessionId')
+  // sessionId 不匹配时不得直接应用旧快照，必须先清理旧选区
+  assert.match(applySource, /enterOcrSelectionMode/u, 'sessionId 不匹配时应调用 enterOcrSelectionMode 清理')
+})
+
+/**
+ * 校验 OcrSelectionBeginPayload 与 OcrSelectionSnapshotPayload 包含 sessionId 字段。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 框选负载应包含 sessionId 字段', () => {
+  assert.match(types, /interface OcrSelectionBeginPayload/u)
+  assert.match(types, /interface OcrSelectionSnapshotPayload/u)
+  // begin 与 snapshot 都必须携带 sessionId
+  const beginIdx = types.indexOf('interface OcrSelectionBeginPayload')
+  const beginEnd = types.indexOf('}', beginIdx)
+  const beginBody = types.slice(beginIdx, beginEnd)
+  assert.match(beginBody, /sessionId/u, 'OcrSelectionBeginPayload 应包含 sessionId')
+
+  const snapIdx = types.indexOf('interface OcrSelectionSnapshotPayload')
+  const snapEnd = types.indexOf('}', snapIdx)
+  const snapBody = types.slice(snapIdx, snapEnd)
+  assert.match(snapBody, /sessionId/u, 'OcrSelectionSnapshotPayload 应包含 sessionId')
+})
+
+/**
+ * 校验主进程 openOcrSelection 发送 begin 与 snapshot 时携带自增 sessionId。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('openOcrSelection 发送 begin 与 snapshot 时应携带 sessionId', () => {
+  const openSource = sliceFunction(main, 'async function openOcrSelection')
+  // begin 与 snapshot 负载都必须包含 sessionId
+  assert.match(openSource, /'ocr-selection:begin'[\s\S]*?sessionId/u, 'begin 负载应包含 sessionId')
+  assert.match(openSource, /'ocr-selection:snapshot'[\s\S]*?sessionId/u, 'snapshot 负载应包含 sessionId')
 })
 
 /**

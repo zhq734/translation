@@ -82,6 +82,8 @@ type DragState = {
 let ocrMode = false
 let dragState: DragState | null = null
 let currentRect: OcrSelectionBounds | null = null
+// 当前 OCR 框选会话序号：与主进程 begin/snapshot 负载一致，用于丢弃跨会话残留事件。
+let currentOcrSessionId = 0
 // 截图“文字识别”进行中标记：防止同一识别请求重复提交。
 let screenshotRecognizePending = false
 // 当前截图动作请求 ID：仅响应当前请求的结果事件，丢弃旧回调。
@@ -1191,6 +1193,10 @@ function updateOcrImageActionAvailability(): void {
  */
 function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
   if (!ocrMode) return
+  // 跨会话残留：快照序号与当前会话不一致时，先按新会话清空旧选区，再应用快照。
+  if (payload.sessionId !== currentOcrSessionId) {
+    enterOcrSelectionMode({ sessionId: payload.sessionId, bounds: payload.bounds })
+  }
   ocrSnapshotState = 'loading'
   snapshotSampler = null
   updateOcrImageActionAvailability()
@@ -1246,7 +1252,8 @@ function handleOcrSnapshotError(): void {
  * @author zhenghq
  */
 function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
-  void payload
+  // 记录本次会话序号，供 applyOcrSnapshot 判别跨会话残留快照。
+  currentOcrSessionId = payload.sessionId
   ocrMode = true
   dragState = null
   currentRect = null

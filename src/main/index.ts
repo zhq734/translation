@@ -52,7 +52,6 @@ import {
   showPopup,
   hidePopup,
   isPopupVisible,
-  isPopupActivated,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
@@ -141,11 +140,13 @@ import {
   captureWindowsOcrPngPreferGdi,
   captureWindowsOcrPreviewPreferGdi,
   warmUpWindowsGdiCapture,
+  type WindowsPixelCapture,
   type WindowsPreviewCapture
 } from './windowsGdiCapture'
 import { captureWindowsRegionAsPng } from './windowsScreenCapture'
 import {
   bgraToRgba,
+  cropBgraSelectionPng,
   encodeOcrSelectionPng,
   resolveSnapshotCropRect
 } from './ocrSnapshotImage'
@@ -225,6 +226,8 @@ const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 let latestOcrSnapshot: OcrSnapshot | null = null
+// OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
+let ocrSelectionSessionSeq = 0
 // 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
 const activeScreenshotOcrRequests = new Set<string>()
 // 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
@@ -1004,12 +1007,9 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
-  // 弹窗已可见且已被激活（上次翻译结果调用了 win.show()）时，先隐藏弹窗归还前台焦点给源应用，
-  // 再以非激活方式重新显示，确保取词时 GetForegroundWindow 指向源应用而非弹窗。
-  // 弹窗可见但未激活（shownInactive=true）时焦点已在源应用，无需隐藏。
-  if (isPopupVisible() && isPopupActivated()) {
-    hidePopup()
-  }
+  // 以非激活方式显示读取状态弹窗。弹窗已可见且已被激活（上次翻译结果调用了
+  // win.show()）时，showPopup 的降级分支会调用 win.showInactive() 归还前台焦点
+  // 给源应用；弹窗未激活时仅更新内容。两种情况都不关闭弹窗。
   const popupCloseVersion = getPopupCloseVersion()
   showPopup(
     {
@@ -1595,6 +1595,10 @@ async function openOcrSelection(): Promise<void> {
   latestSelectionGesture += 1
   const interactionToken = selectionInteraction.beginOcrSelection()
   ocrInteractionToken = interactionToken
+  // 每次打开都自增会话序号：begin 与 snapshot 携带同一序号，
+  // Renderer 据此识别并丢弃上一次会话残留的选区与快照。
+  ocrSelectionSessionSeq += 1
+  const ocrSessionId = ocrSelectionSessionSeq
   renewInternalActivationLease()
   selectionCapture.invalidate()
   suspendSelectionListenerForOcr()
@@ -1612,7 +1616,10 @@ async function openOcrSelection(): Promise<void> {
   if (process.platform === 'darwin') win.setSimpleFullScreen(true)
   win.show()
   win.focus()
-  sendToOcrSelectionWindow(win, 'ocr-selection:begin', { bounds: display.bounds })
+  sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
+    sessionId: ocrSessionId,
+    bounds: display.bounds
+  })
   const hotkeyToShowMs = Date.now() - hotkeyAt
 
   let timedOut = false
@@ -1637,6 +1644,7 @@ async function openOcrSelection(): Promise<void> {
     latestOcrSnapshot = preview.snapshot
     const sendStartedAt = Date.now()
     sendToOcrSelectionWindow(win, 'ocr-selection:snapshot', {
+      sessionId: ocrSessionId,
       imageDataUrl: preview.previewDataUrl,
       bounds: preview.snapshot.bounds
     })
@@ -2003,6 +2011,8 @@ async function captureWindowsOcrPreview(bounds: CaptureBounds): Promise<WindowsP
 interface OcrSnapshot {
   /** 快照内存图像（物理像素）。 */
   image: NativeImage
+  /** Windows GDI 原始 BGRA 像素；OCR 裁剪时优先使用，避免 nativeImage 通道契约差异。 */
+  pixels?: WindowsPixelCapture
   /** 快照对应的显示器矩形（全局屏幕逻辑坐标）。 */
   bounds: CaptureBounds
   /** 采集来源标识，决定裁剪坐标换算规则。 */
@@ -2052,7 +2062,12 @@ async function captureOcrPreviewSnapshot(bounds: CaptureBounds): Promise<OcrPrev
       : nativeImage.createFromBuffer(captured.png)
     const previewDataUrl = image.toDataURL()
     return {
-      snapshot: { image, bounds, source: `${captured.source}-preview` },
+      snapshot: {
+        image,
+        pixels: captured.kind === 'pixels' ? captured.pixels : undefined,
+        bounds,
+        source: `${captured.source}-preview`
+      },
       previewDataUrl,
       captureMs,
       previewEncodeMs: Date.now() - encodeStartedAt
@@ -2102,6 +2117,17 @@ function cropSnapshotSelectionPng(
   bounds: CaptureBounds,
   ocrScale: number
 ): Buffer {
+  if (snapshot.pixels) {
+    return cropBgraSelectionPng(
+      snapshot.pixels.data,
+      snapshot.pixels.width,
+      snapshot.pixels.height,
+      snapshot.source,
+      bounds,
+      snapshot.bounds,
+      ocrScale
+    )
+  }
   const { width, height } = snapshot.image.getSize()
   const rect = resolveSnapshotCropRect(snapshot.source, bounds, snapshot.bounds, width, height)
   const cropped = snapshot.image.crop(rect)

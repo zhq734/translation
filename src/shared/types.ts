@@ -264,12 +264,16 @@ export interface OcrSelectionBounds {
 
 /** OCR 框选开始负载：覆盖窗口先显示、快照尚未就绪时下发，不含图像。 */
 export interface OcrSelectionBeginPayload {
+  /** 本次框选会话自增序号，用于 Renderer 丢弃跨会话残留事件。 */
+  sessionId: number
   /** 覆盖窗口对应的全局屏幕坐标区域。 */
   bounds: OcrSelectionBounds
 }
 
 /** OCR 框选快照负载：屏幕采集完成后下发，用于填充覆盖层背景图。 */
 export interface OcrSelectionSnapshotPayload {
+  /** 本次框选会话自增序号，必须与 begin 一致，不一致时 Renderer 丢弃。 */
+  sessionId: number
   /** 屏幕快照 PNG 的 data URL。 */
   imageDataUrl: string
   /** 快照对应的全局屏幕坐标区域，必须与 begin 一致。 */

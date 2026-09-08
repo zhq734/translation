@@ -7,6 +7,7 @@ const CJK_CHARACTER_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff]/u
 const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—]$/u
 const NO_SPACE_BEFORE_PATTERN = /^[,.;:!?，。！？；：、)\]}”’]/u
 const SENTENCE_END_PATTERN = /[.!?。！？]["'”’）)\]}]*$/u
+const WINDOWS_LINE_BREAK_MARKER = '\uE000'
 
 /**
  * 判断捕获文本中的一行属于普通段落、列表还是需要独立保留的块级内容。
@@ -60,7 +61,8 @@ function endsCompleteSentence(line: string): boolean {
  */
 export function normalizeSelectedText(text: string): string {
   const normalizedText = String(text ?? '')
-    .replace(/\r\n?|[\u2028\u2029]/gu, '\n')
+    .replace(/\r\n/gu, `${WINDOWS_LINE_BREAK_MARKER}\n`)
+    .replace(/\r|[\u2028\u2029]/gu, '\n')
     .replace(/\u00ad/gu, '')
     .replace(/\u00a0/gu, ' ')
     .trim()
@@ -69,10 +71,15 @@ export function normalizeSelectedText(text: string): string {
   const lines = normalizedText.split('\n')
   let result = ''
   let previousRawLine = ''
+  let previousLineEndsWithWindowsBreak = false
   let paragraphBreakPending = false
 
   for (const rawLine of lines) {
-    const line = rawLine.trim()
+    const lineEndsWithWindowsBreak = rawLine.endsWith(WINDOWS_LINE_BREAK_MARKER)
+    const contentRawLine = lineEndsWithWindowsBreak
+      ? rawLine.slice(0, -WINDOWS_LINE_BREAK_MARKER.length)
+      : rawLine
+    const line = contentRawLine.trim()
     if (!line) {
       if (result) paragraphBreakPending = true
       continue
@@ -84,8 +91,9 @@ export function normalizeSelectedText(text: string): string {
       result += `\n\n${line}`
     } else {
       const previousKind = classifySelectedLine(previousRawLine)
-      const currentKind = classifySelectedLine(rawLine)
-      const preserveLineBreak = currentKind !== 'prose'
+      const currentKind = classifySelectedLine(contentRawLine)
+      const preserveLineBreak = previousLineEndsWithWindowsBreak
+        || currentKind !== 'prose'
         || previousKind === 'block'
         || (previousKind === 'prose' && endsCompleteSentence(previousRawLine.trim()))
       result += preserveLineBreak
@@ -93,7 +101,8 @@ export function normalizeSelectedText(text: string): string {
         : `${resolveSoftLineSeparator(previousRawLine.trim(), line)}${line}`
     }
 
-    previousRawLine = rawLine
+    previousRawLine = contentRawLine
+    previousLineEndsWithWindowsBreak = lineEndsWithWindowsBreak
     paragraphBreakPending = false
   }
 

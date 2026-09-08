@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   bgraToRgba,
+  cropBgraSelectionPng,
   encodeOcrSelectionPng,
   forceOpaqueBgra,
   resolveSnapshotCropRect
@@ -32,6 +33,71 @@ test('bgraToRgba 对纯红像素不得反转成蓝色', () => {
   const bgra = new Uint8Array([0x00, 0x00, 0xff, 0x00])
   const rgba = bgraToRgba(bgra, 1, 1)
   assert.deepEqual(Array.from(rgba.data), [0xff, 0x00, 0x00, 0xff])
+})
+
+/**
+ * 校验从原始 BGRA 缓冲裁剪选区并编码 PNG 后红蓝通道不得互换。
+ * Windows GDI 快照的 BGRA 物理像素在裁剪时必须按 BGR→RGB 交换，
+ * 否则交给 OCR 的输入图像红蓝颠倒，导致识别不出内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('cropBgraSelectionPng 裁剪 BGRA 选区编码后红蓝不得互换', () => {
+  const width = 16
+  const height = 16
+  // 16x16 BGRA 缓冲：中间 8x8 区域为纯红 (255,0,0)，其余为绿色 (0,255,0)；
+  // GDI 的 BGRA 内存顺序为 B、G、R、A。
+  const bgra = new Uint8Array(width * height * 4)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4
+      const isRed = x >= 4 && x <= 11 && y >= 4 && y <= 11
+      bgra[i] = 0x00 // B
+      bgra[i + 1] = isRed ? 0x00 : 0xff // G
+      bgra[i + 2] = isRed ? 0xff : 0x00 // R
+      bgra[i + 3] = 0xff // A
+    }
+  }
+  const png = cropBgraSelectionPng(
+    bgra,
+    width,
+    height,
+    'windows-gdi-copyscreen-preview',
+    { x: 4, y: 4, width: 8, height: 8 },
+    { x: 0, y: 0, width, height },
+    1
+  )
+  const decoded = decodePng(png)
+  assert.equal(decoded.width, 8)
+  assert.equal(decoded.height, 8)
+  for (let i = 0; i < decoded.data.length; i += 4) {
+    assert.deepEqual(
+      Array.from(decoded.data.subarray(i, i + 4)),
+      [0xff, 0x00, 0x00, 0xff],
+      '选区应为纯红，红蓝通道不得互换'
+    )
+  }
+})
+
+/**
+ * 校验从 BGRA 缓冲裁剪选区时按显示器物理比例换算裁剪矩形，并按 OCR 倍率放大。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('cropBgraSelectionPng 裁剪选区应按倍率放大', () => {
+  const bgra = new Uint8Array(16 * 16 * 4).fill(0xff)
+  const png = cropBgraSelectionPng(
+    bgra,
+    16,
+    16,
+    'windows-gdi-copyscreen-preview',
+    { x: 4, y: 4, width: 8, height: 8 },
+    { x: 0, y: 0, width: 16, height: 16 },
+    2
+  )
+  const decoded = decodePng(png)
+  assert.equal(decoded.width, 16)
+  assert.equal(decoded.height, 16)
 })
 
 /**

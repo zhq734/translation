@@ -16,14 +16,26 @@ test('英文整句中的单个硬换行应合并为空格', () => {
 })
 
 /**
- * 校验连续硬换行、Windows 换行和行首尾空格都能稳定规范化。
+ * 校验连续软换行和行首尾空格都能稳定规范化。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('连续软换行和 Windows 换行应合并且不产生重复空格', () => {
+test('连续软换行应合并且不产生重复空格', () => {
   assert.equal(
-    normalizeSelectedText('  A sentence can be\r\n  wrapped across\r\nseveral visual lines.  '),
+    normalizeSelectedText('  A sentence can be\n  wrapped across\nseveral visual lines.  '),
     'A sentence can be wrapped across several visual lines.'
+  )
+})
+
+/**
+ * 校验 Windows 划词复制产生的 CRLF 会保留为逻辑换行，避免多行原文被压成一行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 多行选区的 CRLF 换行应保留', () => {
+  assert.equal(
+    normalizeSelectedText('第一行内容\r\n第二行内容\r\nThird line'),
+    '第一行内容\n第二行内容\nThird line'
   )
 })
 

@@ -161,6 +161,10 @@ export function showPopup(
   } else if (activate && shownInactive) {
     win.show()
     shownInactive = false
+  } else if (!activate && !shownInactive && alreadyVisible) {
+    // 弹窗已可见且已被激活，需要降级为非激活以归还前台焦点给源应用。
+    win.showInactive()
+    shownInactive = true
   }
   scheduleHide(autoHideMs)
 }

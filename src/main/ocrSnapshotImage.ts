@@ -57,6 +57,51 @@ export function bgraToRgba(bgra: Uint8Array, width: number, height: number): Rgb
 }
 
 /**
+ * 从 Windows GDI 直采的原始 BGRA 缓冲中裁出选区并编码为 OCR 输入 PNG。
+ *
+ * 背景：`nativeImage.createFromBitmap` / `getBitmap` 的位图通道顺序在 Electron
+ * 中属于平台相关契约，直接依赖它做「BGRA → RGBA」会在部分环境产生二次交换，
+ * 导致 OCR 输入红蓝颠倒、识别不出内容。这里改为持有 GDI 原始字节，
+ * 由纯函数按「BGR → RGB」语义完成裁剪、通道交换、倍率放大与 PNG 编码，
+ * 不依赖 nativeImage 的位图通道约定。
+ * @param bgra GDI 采集到的整屏 BGRA 原始像素。
+ * @param width 整屏物理像素宽度。
+ * @param height 整屏物理像素高度。
+ * @param source 快照来源标识（决定裁剪矩形换算规则）。
+ * @param bounds 用户选区（全局屏幕坐标）。
+ * @param snapshotBounds 快照对应的显示器矩形（全局屏幕坐标）。
+ * @param ocrScale OCR 放大倍率。
+ * @returns 选区 OCR 输入 PNG 字节。
+ * @author zhenghq
+ */
+export function cropBgraSelectionPng(
+  bgra: Uint8Array,
+  width: number,
+  height: number,
+  source: string,
+  bounds: CaptureBounds,
+  snapshotBounds: CaptureBounds,
+  ocrScale: number
+): Buffer {
+  const rect = resolveSnapshotCropRect(source, bounds, snapshotBounds, width, height)
+  const selection = new Uint8Array(rect.width * rect.height * 4)
+  let out = 0
+  for (let y = 0; y < rect.height; y += 1) {
+    let src = ((rect.y + y) * width + rect.x) * 4
+    for (let x = 0; x < rect.width; x += 1) {
+      // BGRA → RGBA：B 与 R 交换，alpha 统一补为不透明
+      selection[out] = bgra[src + 2]
+      selection[out + 1] = bgra[src + 1]
+      selection[out + 2] = bgra[src]
+      selection[out + 3] = 0xff
+      out += 4
+      src += 4
+    }
+  }
+  return encodeOcrSelectionPng({ width: rect.width, height: rect.height, data: selection }, ocrScale)
+}
+
+/**
  * 按快照来源换算选区在快照图像内的裁剪矩形。
  * Windows GDI 快照是物理像素直采，其余平台是 desktopCapturer 缩略图，
  * 两者都按「显示器矩形 → 图像尺寸」的实际比例对齐。
