@@ -65,8 +65,10 @@ static NSString *CopyStringAttribute(AXUIElementRef element, CFStringRef attribu
  */
 static NSString *CopySelectedTextViaMarkerRange(AXUIElementRef element) {
   CFTypeRef markerRange = NULL;
+  // GitHub Actions 可能使用较旧 macOS SDK，其中未声明
+  // kAXSelectedTextMarkerRangeAttribute；直接使用运行时属性名保持兼容。
   if (AXUIElementCopyAttributeValue(
-        element, kAXSelectedTextMarkerRangeAttribute, &markerRange) != kAXErrorSuccess ||
+        element, CFSTR("AXSelectedTextMarkerRange"), &markerRange) != kAXErrorSuccess ||
       !markerRange) {
     return nil;
   }
