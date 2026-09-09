@@ -52,6 +52,25 @@ test('Windows 单个换行分隔的完整段落应保留段落边界', () => {
 })
 
 /**
+ * 校验 Windows 选区末尾的 CRLF 不会把内部换行标记泄漏到最终文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 选区末尾带空格或连续 CRLF 时不应出现私有区字符', () => {
+  assert.equal(normalizeSelectedText('hello  \r\n'), 'hello')
+  assert.equal(normalizeSelectedText('hello \r\n\r\n'), 'hello')
+})
+
+/**
+ * 校验 Windows 多行选区在去除行尾空格后仍保留逻辑换行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 多行选区的行尾空格不应污染下一行', () => {
+  assert.equal(normalizeSelectedText('hello \r\nworld  '), 'hello\nworld')
+})
+
+/**
  * 校验中文视觉换行合并时不会在汉字之间引入多余空格。
  * @returns 无返回值。
  * @author zhenghq

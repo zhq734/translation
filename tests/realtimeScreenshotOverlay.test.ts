@@ -43,6 +43,69 @@ test('openOcrSelection 应先显示覆盖窗口再采集快照', () => {
 })
 
 /**
+ * 校验覆盖窗口完成加载后才允许显示、聚焦并开始 OCR 会话，避免空白窗口闪现。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口 ready 后才能 show、focus 和发送 begin', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  const readyIndex = source.indexOf('whenOcrSelectionWindowReady(win)')
+  const showIndex = source.indexOf('win.show()')
+  const focusIndex = source.indexOf('win.focus()')
+  const beginIndex = source.indexOf("'ocr-selection:begin'")
+  assert.ok(readyIndex >= 0, 'openOcrSelection 必须等待覆盖窗口 ready')
+  assert.ok(showIndex > readyIndex, '窗口 ready 前不得显示覆盖窗口')
+  assert.ok(focusIndex > readyIndex, '窗口 ready 前不得聚焦覆盖窗口')
+  assert.ok(beginIndex > readyIndex, '窗口 ready 前不得发送 begin')
+})
+
+/**
+ * 校验复用覆盖窗口时先清空上一轮会话，再让窗口可见，避免旧选区闪现。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口应在 show 前发送 begin 清理旧会话', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  const showIndex = source.indexOf('win.show()')
+  const beginIndex = source.indexOf("'ocr-selection:begin'")
+  assert.ok(showIndex >= 0, '应显示覆盖窗口')
+  assert.ok(beginIndex >= 0, '应发送 begin 事件')
+  assert.ok(beginIndex < showIndex, '必须先清理旧会话，再显示覆盖窗口')
+})
+
+/**
+ * 校验 ready 门禁对已加载窗口立即放行，对加载窗口只建立一组生命周期监听。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口 ready 门禁应复用单次等待并处理失败与销毁', () => {
+  const source = sliceFunction(main, 'function whenOcrSelectionWindowReady(')
+  assert.match(source, /webContents\.isLoading\(\)/u)
+  assert.match(source, /did-finish-load/u)
+  assert.match(source, /did-fail-load/u)
+  assert.match(source, /closed/u)
+  assert.match(main, /WeakMap<BrowserWindow, Promise<void>>/u)
+
+  const sendSource = sliceFunction(main, 'function sendToOcrSelectionWindow(')
+  assert.doesNotMatch(sendSource, /webContents\.once\(['"]did-finish-load/u)
+})
+
+/**
+ * 校验预热窗口和真实截图入口共用 ready 门禁，保证 Windows/macOS 不分叉。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('预热与截图入口应共用跨平台 OCR ready 门禁', () => {
+  const prewarmSource = sliceFunction(main, 'function prewarmScreenshotRuntime(')
+  const openSource = sliceFunction(main, 'async function openOcrSelection')
+  assert.match(prewarmSource, /getOcrSelectionWindow\(\)/u)
+  assert.match(main, /whenOcrSelectionWindowReady/u)
+  assert.match(openSource, /whenOcrSelectionWindowReady\(win\)/u)
+  assert.doesNotMatch(openSource, /process\.platform\s*===\s*['"]win32['"][\s\S]*?whenOcrSelectionWindowReady/u)
+  assert.match(openSource, /process\.platform\s*===\s*['"]darwin['"]/u)
+})
+
+/**
  * 校验快照就绪后通过 snapshot 事件填图，并校验交互 token。
  * @returns 无返回值。
  * @author zhenghq
@@ -225,6 +288,25 @@ test('openOcrSelection 发送 begin 与 snapshot 时应携带 sessionId', () => 
   // begin 与 snapshot 负载都必须包含 sessionId
   assert.match(openSource, /'ocr-selection:begin'[\s\S]*?sessionId/u, 'begin 负载应包含 sessionId')
   assert.match(openSource, /'ocr-selection:snapshot'[\s\S]*?sessionId/u, 'snapshot 负载应包含 sessionId')
+})
+
+/**
+ * 校验采集失败事件绑定当前会话，避免旧会话的失败通知关闭新截图窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 采集失败事件应携带并校验 sessionId', () => {
+  const failedIdx = types.indexOf('interface OcrSelectionFailedPayload')
+  const failedEnd = types.indexOf('}', failedIdx)
+  const failedBody = types.slice(failedIdx, failedEnd)
+  assert.match(failedBody, /sessionId/u, 'failed 负载应包含 sessionId')
+
+  const failSource = sliceFunction(main, 'function failOcrSelectionCapture(')
+  assert.match(failSource, /sessionId/u, '失败处理应生成当前会话 sessionId')
+
+  const handlerSource = sliceFunction(selectionRenderer, 'function handleOcrSelectionFailed(')
+  assert.match(handlerSource, /payload\.sessionId/u, 'Renderer 应读取失败事件 sessionId')
+  assert.match(handlerSource, /currentOcrSessionId/u, 'Renderer 应校验当前会话 sessionId')
 })
 
 /**

@@ -61,11 +61,13 @@ function endsCompleteSentence(line: string): boolean {
  */
 export function normalizeSelectedText(text: string): string {
   const normalizedText = String(text ?? '')
-    .replace(/\r\n/gu, `${WINDOWS_LINE_BREAK_MARKER}\n`)
-    .replace(/\r|[\u2028\u2029]/gu, '\n')
     .replace(/\u00ad/gu, '')
     .replace(/\u00a0/gu, ' ')
     .trim()
+    // 先裁剪原始选区的首尾空白，再注入仅供内部判断的 Windows 换行标记。
+    // 否则末尾 CRLF 会先变成“标记 + 换行”，trim() 只会移除换行，导致标记泄漏到结果。
+    .replace(/\r\n/gu, `${WINDOWS_LINE_BREAK_MARKER}\n`)
+    .replace(/\r|[\u2028\u2029]/gu, '\n')
   if (!normalizedText.includes('\n')) return normalizedText
 
   const lines = normalizedText.split('\n')

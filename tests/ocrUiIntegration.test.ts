@@ -250,7 +250,31 @@ test('OCR 覆盖窗口应按目标屏幕外层边界对齐', () => {
   assert.match(openSource, /win\.setBounds\(display\.bounds\)/u)
   assert.doesNotMatch(openSource, /win\.setContentBounds\(display\.bounds\)/u)
   assert.match(openSource, /win\.setSimpleFullScreen\(true\)/u)
-  assert.match(main, /function hideOcrSelectionWindow[\s\S]*?ocrSelectionWin\.setSimpleFullScreen\(false\)/u)
+})
+
+/**
+ * 校验复用 OCR 覆盖窗口时不会通过退出简单全屏触发窗口闪烁。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口隐藏时不应退出简单全屏', () => {
+  const hideStart = main.indexOf('function hideOcrSelectionWindow')
+  const hideEnd = main.indexOf('\n}\n', hideStart)
+  const hideSource = main.slice(hideStart, hideEnd)
+  assert.notStrictEqual(hideStart, -1, '应存在 OCR 覆盖窗口隐藏函数')
+  assert.doesNotMatch(hideSource, /setSimpleFullScreen\(false\)/u)
+})
+
+/**
+ * 校验复用 OCR 覆盖窗口时只在尚未进入简单全屏时切换，避免重复触发系统窗口动画。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口重复打开时不应重复进入简单全屏', () => {
+  const openStart = main.indexOf('async function openOcrSelection')
+  const openEnd = main.indexOf('/**', openStart + 1)
+  const openSource = main.slice(openStart, openEnd)
+  assert.match(openSource, /!win\.isSimpleFullScreen\(\)/u)
 })
 
 /**

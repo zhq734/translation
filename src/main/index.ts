@@ -211,6 +211,7 @@ const OCR_TIMEOUT_MS = 30000
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let ocrSelectionWin: BrowserWindow | null = null
+const ocrSelectionWindowReadyPromises = new WeakMap<BrowserWindow, Promise<void>>()
 let screenshotToastWin: BrowserWindow | null = null
 let screenshotToastHideTimer: NodeJS.Timeout | null = null
 let dockIconEnabled = false
@@ -1374,6 +1375,52 @@ function isOcrSelectionVisible(): boolean {
 }
 
 /**
+ * 等待 OCR 覆盖窗口完成首屏加载，避免空白透明窗口先显示造成遮罩闪烁。
+ * @param win OCR 覆盖窗口。
+ * @returns 页面 ready 后完成的 Promise。
+ * @author zhenghq
+ */
+function whenOcrSelectionWindowReady(win: BrowserWindow): Promise<void> {
+  if (win.isDestroyed()) return Promise.reject(new Error('OCR 覆盖窗口已销毁'))
+  if (!win.webContents.isLoading()) return Promise.resolve()
+  const existing = ocrSelectionWindowReadyPromises.get(win)
+  if (existing) return existing
+
+  const ready = new Promise<void>((resolve, reject) => {
+    let settled = false
+    const cleanup = (): void => {
+      win.webContents.removeListener('did-finish-load', onFinish)
+      win.webContents.removeListener('did-fail-load', onFail)
+      win.removeListener('closed', onClosed)
+      ocrSelectionWindowReadyPromises.delete(win)
+    }
+    const succeed = (): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const onFinish = (): void => succeed()
+    const onFail = (_event: Electron.Event, errorCode: number, errorDescription: string): void => {
+      fail(new Error(`OCR 覆盖窗口加载失败（${errorCode}）：${errorDescription}`))
+    }
+    const onClosed = (): void => fail(new Error('OCR 覆盖窗口已关闭'))
+
+    win.webContents.once('did-finish-load', onFinish)
+    win.webContents.once('did-fail-load', onFail)
+    win.once('closed', onClosed)
+  })
+  ocrSelectionWindowReadyPromises.set(win, ready)
+  return ready
+}
+
+/**
  * 创建或返回独立的截图动作提示窗口。
  * 提示窗口与截图覆盖层解耦：截图窗口关闭后提示仍独立存活，到时间后自行隐藏。
  * @returns 截图提示窗口。
@@ -1507,10 +1554,8 @@ function restoreSelectionListenerAfterOcr(interactionToken?: number): void {
  */
 function hideOcrSelectionWindow(): boolean {
   const wasVisible = isOcrSelectionVisible()
-  // 退出简单全屏，避免 macOS 保留全屏状态影响后续窗口显示；下次进入截图时会重新开启。
-  if (ocrSelectionWin && !ocrSelectionWin.isDestroyed() && process.platform === 'darwin') {
-    ocrSelectionWin.setSimpleFullScreen(false)
-  }
+  // 保留 macOS 简单全屏状态，仅隐藏窗口。反复退出再进入简单全屏会触发系统窗口切换动画，
+  // 导致复用的上一次截图窗口短暂闪现；窗口销毁时由系统统一回收该状态。
   ocrSelectionWin?.hide()
   return wasVisible
 }
@@ -1528,7 +1573,7 @@ function isCurrentOcrCapture(token: number): boolean {
 }
 
 /**
- * 向 OCR 覆盖窗口发送事件；页面仍在加载时等 did-finish-load 后补发，避免事件丢失。
+ * 向已经 ready 的 OCR 覆盖窗口发送事件；页面未 ready 时直接跳过，避免各事件分别积压回调。
  * @param win 覆盖窗口。
  * @param channel IPC 频道名。
  * @param payload 事件负载。
@@ -1537,12 +1582,10 @@ function isCurrentOcrCapture(token: number): boolean {
  */
 function sendToOcrSelectionWindow(win: BrowserWindow, channel: string, payload: unknown): void {
   if (win.isDestroyed()) return
-  if (win.webContents.isLoading()) {
-    win.webContents.once('did-finish-load', () => {
-      if (!win.isDestroyed()) win.webContents.send(channel, payload)
-    })
-    return
-  }
+  const sessionId = (payload as { sessionId?: unknown })?.sessionId
+  // 页面加载期间不能补发旧会话事件；正常调用路径已由 ready 门禁保护。
+  if (win.webContents.isLoading()) return
+  if (typeof sessionId === 'number' && sessionId !== ocrSelectionSessionSeq) return
   win.webContents.send(channel, payload)
 }
 
@@ -1560,7 +1603,11 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
   const settings = getSettings()
   const code = resolveOcrErrorCode(error)
   const message = error instanceof Error ? error.message : '无法获取屏幕截图'
-  const failedPayload: OcrSelectionFailedPayload = { message, ocrCode: code }
+  const failedPayload: OcrSelectionFailedPayload = {
+    sessionId: ocrSelectionSessionSeq,
+    message,
+    ocrCode: code
+  }
   if (ocrSelectionWin && !ocrSelectionWin.isDestroyed()) {
     sendToOcrSelectionWindow(ocrSelectionWin, 'ocr-selection:failed', failedPayload)
   }
@@ -1613,28 +1660,38 @@ async function openOcrSelection(): Promise<void> {
   win.setBounds(display.bounds)
   // macOS 普通无边框窗口的 content area 仍可能避让顶部菜单栏；切换为简单全屏后，
   // Renderer 的 (0, 0) 才与 screencapture 快照左上角保持一致。
-  if (process.platform === 'darwin') win.setSimpleFullScreen(true)
-  win.show()
-  win.focus()
-  sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
-    sessionId: ocrSessionId,
-    bounds: display.bounds
-  })
-  const hotkeyToShowMs = Date.now() - hotkeyAt
-
+  if (process.platform === 'darwin' && !win.isSimpleFullScreen()) {
+    win.setSimpleFullScreen(true)
+  }
+  let timeoutTimer: NodeJS.Timeout | null = null
   let timedOut = false
-  const timeoutTimer = setTimeout(() => {
-    timedOut = true
-    failOcrSelectionCapture(
-      interactionToken,
-      new ScreenCaptureError('no-source', '屏幕采集超时，请重试'),
-      anchor
-    )
-  }, OCR_PREVIEW_CAPTURE_TIMEOUT_MS)
-
   try {
+    await whenOcrSelectionWindowReady(win)
+    if (!isCurrentOcrCapture(interactionToken)) {
+      restoreSelectionListenerAfterOcr(interactionToken)
+      return
+    }
+    // 复用窗口时必须先让 Renderer 清空上一轮选区、截图和面板内容，
+    // 再显示窗口，避免旧画面在新一轮截图开始时短暂闪现。
+    sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
+      sessionId: ocrSessionId,
+      bounds: display.bounds
+    })
+    win.show()
+    win.focus()
+    const hotkeyToShowMs = Date.now() - hotkeyAt
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true
+      failOcrSelectionCapture(
+        interactionToken,
+        new ScreenCaptureError('no-source', '屏幕采集超时，请重试'),
+        anchor
+      )
+    }, OCR_PREVIEW_CAPTURE_TIMEOUT_MS)
+
     const preview = await captureOcrPreviewSnapshot(display.bounds)
-    clearTimeout(timeoutTimer)
+    if (timeoutTimer) clearTimeout(timeoutTimer)
     if (timedOut) return
     // 采集期间若交互 token 被新流程取代或用户已取消，旧快照必须丢弃，并收回自己曾登记的暂停记账。
     if (!isCurrentOcrCapture(interactionToken)) {
@@ -1656,7 +1713,7 @@ async function openOcrSelection(): Promise<void> {
       ipcSendMs: Date.now() - sendStartedAt
     })
   } catch (error) {
-    clearTimeout(timeoutTimer)
+    if (timeoutTimer) clearTimeout(timeoutTimer)
     if (timedOut) return
     failOcrSelectionCapture(interactionToken, error, anchor)
   }

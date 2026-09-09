@@ -1211,8 +1211,8 @@ function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
  * @author zhenghq
  */
 function handleOcrSelectionFailed(payload: OcrSelectionFailedPayload): void {
-  void payload
-  if (!ocrMode) return
+  // 旧会话的失败通知可能在新截图开始后才到达，不能关闭当前会话。
+  if (!ocrMode || payload.sessionId !== currentOcrSessionId) return
   leaveOcrSelectionMode()
 }
 

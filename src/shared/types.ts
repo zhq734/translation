@@ -282,6 +282,8 @@ export interface OcrSelectionSnapshotPayload {
 
 /** OCR 框选采集失败负载：覆盖窗口需立即退出框选模式。 */
 export interface OcrSelectionFailedPayload {
+  /** 失败所属的框选会话序号，避免旧会话通知关闭新窗口。 */
+  sessionId: number
   /** 面向用户的失败原因。 */
   message: string
   /** OCR 细分错误码。 */
