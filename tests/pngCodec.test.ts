@@ -139,24 +139,42 @@ test('编码空图像应抛出参数错误', () => {
 
 /**
  * 校验 encodePng 默认使用低压缩级别（level ≤ 3），避免全屏截图编码同步阻塞主进程。
- * 断言方式：默认产物体积应明显大于显式 level 9 的产物，说明默认没有走最高压缩。
+ * 断言方式：默认产物体积应显著大于显式 level 9 的产物，说明默认没有走最高压缩。
+ * 测试图必须选用「低级别压缩效果差、高级别压缩效果好」的图案：
+ * 横向 16 像素周期 + 纵向 8 行周期的条纹在 level 1 下几乎压不动，
+ * 到 level 9 可缩小一个数量级以上，因此体积差异远超 zlib 实现的版本间抖动。
+ * 反例：随机噪声渐变图在 level 1 与 level 9 下体积仅差 0.1%，断言会随 zlib 版本翻转。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('encodePng 默认应使用低压缩级别而非最高压缩', () => {
-  // 构造带噪声的渐变图，保证不同压缩级别产物体积有可测差异。
-  const image = makeImage(160, 120, (x, y) => [
-    (x * 7 + y * 13) % 256,
-    (x * 31 + y * 17) % 256,
-    (x * 5 + y * 3) % 256,
-    255
-  ])
+  // 构造长周期重复条纹图：level 1 的短匹配窗口抓不到跨行重复，level 9 能充分利用。
+  const image = makeImage(320, 240, (x, y) => [(x % 16) * 16, (y % 8) * 32, 0, 255])
   const fast = encodePng(image)
   const best = encodePng(image, { level: 9 })
-  assert.ok(fast.length > best.length, '默认级别产物应比 level 9 更大，证明默认不是最高压缩')
+  // 留出 1.5 倍余量：level ≤ 3 在该图上至少为 level 9 的 2.3 倍，level 6 仅 1.35 倍。
+  assert.ok(
+    fast.length > best.length * 1.5,
+    `默认级别产物应显著大于 level 9（默认 ${fast.length} 字节，level 9 ${best.length} 字节），证明默认不是最高压缩`
+  )
   // 两者解码后像素必须完全一致：压缩级别只影响体积，不影响像素。
   assert.deepEqual(Array.from(decodePng(fast).data), Array.from(image.data))
   assert.deepEqual(Array.from(decodePng(best).data), Array.from(image.data))
+})
+
+/**
+ * 校验默认压缩级别精确等于 level 1，锁定默认值不被静默改动。
+ * 该断言不依赖 zlib 压缩率启发式，仅比较字节，跨 Node.js 版本稳定。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('encodePng 未传 level 时应与显式 level 1 产物字节一致', () => {
+  const image = makeImage(64, 48, (x, y) => [(x * 3) % 256, (y * 5) % 256, (x + y) % 256, 255])
+  assert.deepEqual(
+    Array.from(encodePng(image)),
+    Array.from(encodePng(image, { level: 1 })),
+    '默认压缩级别应为 1'
+  )
 })
 
 /**
