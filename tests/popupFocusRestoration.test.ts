@@ -64,7 +64,8 @@ test('翻译结果到达时 showPopup 调用 win.show 激活弹窗保持与 macO
   const src = showPopupSource()
   assert.match(src, /activate \? win\.show\(\) : win\.showInactive\(\)/u,
     '首次显示应根据 activate 选择 show/showInactive')
-  assert.match(src, /else if \(activate && shownInactive\)\s*\{\s*win\.show\(\)/u,
+  // 激活前会先记录源应用前台窗口，供取词时精确交还焦点，因此允许 win.show 之前存在该调用。
+  assert.match(src, /else if \(activate && shownInactive\)\s*\{[\s\S]*?win\.show\(\)/u,
     '弹窗已可见且 shownInactive 时应 win.show() 激活')
 })
 

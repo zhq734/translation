@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import type { TranslatePayload } from '../shared/types'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
+import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
+import { createWindowsForegroundTracker } from './windowsForeground'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -13,6 +15,13 @@ let closeVersion = 0
 let pinned = false
 let currentAutoHideMs = 0
 let shownInactive = false
+/** 正在为取词主动归还前台焦点的截止时间；此窗口内的 blur 属于内部动作，不关闭弹窗。 */
+let restoringForegroundUntil = 0
+/**
+ * 源应用前台窗口跟踪器：弹窗激活前记录源窗口，取词前精确交还焦点。
+ * Chromium 的 win.blur() 由系统按 Z-order 挑下一个前台窗口，不保证回到源应用。
+ */
+const foregroundTracker = createWindowsForegroundTracker({ platform: process.platform })
 const pendingPayloads: TranslatePayload[] = []
 
 /**
@@ -23,6 +32,7 @@ const pendingPayloads: TranslatePayload[] = []
  */
 export function createPopup(preloadPath: string): BrowserWindow {
   shownInactive = false
+  restoringForegroundUntil = 0
   win = new BrowserWindow({
     width: 460,
     height: 360,
@@ -77,7 +87,37 @@ function handlePopupBlur(): void {
     screen.getCursorScreenPoint(),
     win.getBounds()
   )
-  if (!cursorInsideDragRegion && shouldDismissPopupOnBlur(pinned)) hidePopup()
+  if (!cursorInsideDragRegion &&
+      shouldDismissPopupOnBlur(pinned, isRestoringForeground())) {
+    hidePopup()
+  }
+}
+
+/**
+ * 返回当前是否处于为取词主动归还前台焦点的短窗口内。
+ * @returns 处于归还焦点窗口内时返回 true。
+ * @author zhenghq
+ */
+function isRestoringForeground(): boolean {
+  return Date.now() <= restoringForegroundUntil
+}
+
+/**
+ * 让已激活的翻译弹窗主动退出前台，把焦点归还给源应用以便随后取词。
+ * Windows 对已处于前台的窗口调用 showInactive 不会交还焦点，必须显式 blur；
+ * 归还期间的失焦事件由 handlePopupBlur 短路，不会关闭弹窗。
+ * @returns 实际执行了失活时返回 true；弹窗不可见或本就非激活时返回 false。
+ * @author zhenghq
+ */
+export function deactivatePopupForCapture(): boolean {
+  if (!win || !win.isVisible() || shownInactive) return false
+  restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
+  shownInactive = true
+  // 先把焦点精确交还给记录的源应用窗口；SetForegroundWindow 成功时源应用立即回到前台。
+  const restored = foregroundTracker.restore()
+  // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，至少弹窗不再持有焦点。
+  if (!restored) win.blur()
+  return true
 }
 
 /**
@@ -156,11 +196,16 @@ export function showPopup(
   if (!alreadyVisible) {
     positionNearAnchor(anchor)
     // Windows 复制取词前使用非激活显示，避免弹窗抢走源应用焦点；取词完成后再激活。
+    // 激活会让弹窗顶掉源应用的前台状态，激活前先记录源窗口以便取词时精确交还。
+    if (activate) foregroundTracker.remember()
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
+    if (activate) restoringForegroundUntil = 0
   } else if (activate && shownInactive) {
+    foregroundTracker.remember()
     win.show()
     shownInactive = false
+    restoringForegroundUntil = 0
   } else if (!activate && !shownInactive && alreadyVisible) {
     // 弹窗已可见且已被激活，需要降级为非激活以归还前台焦点给源应用。
     win.showInactive()
@@ -206,6 +251,7 @@ export function hidePopup(): void {
   closeVersion += 1
   pinned = false
   shownInactive = false
+  restoringForegroundUntil = 0
   win?.webContents.send('popup:pinned', false)
   win?.hide()
 }

@@ -52,6 +52,8 @@ import {
   showPopup,
   hidePopup,
   isPopupVisible,
+  isPopupActivated,
+  deactivatePopupForCapture,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
@@ -78,6 +80,10 @@ import {
   shouldReleaseHotkeyModifiersBeforeCopy
 } from '../shared/hotkeyCaptureTiming'
 import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
+import {
+  POPUP_FOREGROUND_RESTORE_SETTLE_MS,
+  shouldRestoreForegroundBeforeCapture
+} from '../shared/popupForeground'
 import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
@@ -207,6 +213,17 @@ const SELECTION_SETTLE_DELAY_MS = 80
 const UPDATE_CHECK_DELAY_MS = 5000
 const MIN_OCR_SELECTION_SIZE = 8
 const OCR_TIMEOUT_MS = 30000
+
+/**
+ * 等待指定毫秒后继续，用于让系统完成焦点等异步状态切换。
+ * @param ms 等待时长（毫秒）；小于等于 0 时立即返回。
+ * @returns 等待完成后的 Promise。
+ * @author zhenghq
+ */
+function waitFor(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
@@ -1015,6 +1032,13 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
+  // Windows 上弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口，
+  // 对已在前台的窗口再调用 showInactive 不会交还焦点，随后的 WM_COPY 与
+  // Ctrl+C 全部发往弹窗，剪贴板哨兵不变而报取词超时。这里先显式让弹窗
+  // 退出前台把焦点还给源应用，归还期间的 blur 不会关闭弹窗。
+  if (shouldRestoreForegroundBeforeCapture(process.platform, isPopupActivated())) {
+    deactivatePopupForCapture()
+  }
   // 以非激活方式显示读取状态弹窗。弹窗已可见且已被激活（上次翻译结果调用了
   // win.show()）时，showPopup 的降级分支会调用 win.showInactive() 归还前台焦点
   // 给源应用；弹窗未激活时仅更新内容。两种情况都不关闭弹窗。
@@ -1086,8 +1110,19 @@ async function translateSelectionButton(): Promise<void> {
   latestSelectionGesture += 1
   renewInternalActivationLease()
   hideSelectionButton()
+  const popupWasActivated = shouldRestoreForegroundBeforeCapture(
+    process.platform,
+    isPopupActivated()
+  )
   const popupCloseVersion = showSelectionReadingPopup(anchor)
   try {
+    // 弹窗刚从前台失活时，Windows 需要几十毫秒才把焦点交回源应用；
+    // 不等待就注入复制键会打在旧焦点上，导致剪贴板哨兵不变而报取词超时。
+    if (popupWasActivated) {
+      await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
+      if (!selectionInteraction.isCurrent(interactionToken) ||
+          popupCloseVersion !== getPopupCloseVersion()) return
+    }
     // 先在很短的有界窗口内消费只读预取：已完成的缓存立即命中，尚未完成的预取最多再等
     // PREPARED_PREFETCH_WAIT_MS，避免快速点击时丢弃即将产出的原生取词结果。
     // 窗口到期仍无文本时才取消预取并走按钮专用取词，绝不无界等待 AX/UIA 直读。
