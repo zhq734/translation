@@ -212,6 +212,11 @@ let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
 let ocrSelectionWin: BrowserWindow | null = null
 const ocrSelectionWindowReadyPromises = new WeakMap<BrowserWindow, Promise<void>>()
+let pendingOcrSelectionReady: {
+  sessionId: number
+  resolve: (ready: boolean) => void
+  timer: NodeJS.Timeout
+} | null = null
 let screenshotToastWin: BrowserWindow | null = null
 let screenshotToastHideTimer: NodeJS.Timeout | null = null
 let dockIconEnabled = false
@@ -230,7 +235,7 @@ let latestOcrSnapshot: OcrSnapshot | null = null
 // OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
 let ocrSelectionSessionSeq = 0
 // 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
-const activeScreenshotOcrRequests = new Set<string>()
+const activeScreenshotOcrRequests = new Map<string, number>()
 // 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
 const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
@@ -705,6 +710,8 @@ async function onReady(): Promise<boolean> {
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
 
+  // 提前创建 Toast 窗口，避免首次复制/保存时临时创建窗口和加载页面造成提示延迟。
+  getScreenshotToastWindow()
   // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
   setTimeout(() => void warnIfNoAccessibility(), 1500)
   // 避免安装/升级通知网络请求与启动初始化争用资源；失败静默且不阻塞。
@@ -1348,12 +1355,16 @@ function getOcrSelectionWindow(): BrowserWindow {
   // 覆盖层可能被隐藏、关闭等旁路收尾（含异常路径），这里兜底恢复全局划词监听，
   // 避免钩子停在暂停状态导致划词与双击不再显示“译”按钮；恢复函数自身幂等。
   ocrSelectionWin.on('hide', () => {
+    resolveOcrSelectionReady(false)
     activeScreenshotOcrRequests.clear()
+    latestOcrSnapshot = null
     restoreSelectionListenerAfterOcr()
   })
   ocrSelectionWin.on('closed', () => {
+    resolveOcrSelectionReady(false)
     ocrSelectionWin = null
     activeScreenshotOcrRequests.clear()
+    latestOcrSnapshot = null
     restoreSelectionListenerAfterOcr()
   })
   ocrSelectionWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -1363,6 +1374,39 @@ function getOcrSelectionWindow(): BrowserWindow {
     ocrSelectionWin.loadFile(join(__dirname, '../renderer/selection.html'))
   }
   return ocrSelectionWin
+}
+
+/**
+ * 等待 Renderer 完成当前截图会话的 UI 清理确认。
+ * @param win OCR 框选窗口。
+ * @param sessionId 当前截图会话序号。
+ * @returns 收到匹配确认且窗口仍可用时返回 true，超时或窗口关闭时返回 false。
+ * @author zhenghq
+ */
+function waitForOcrSelectionReady(win: BrowserWindow, sessionId: number): Promise<boolean> {
+  if (pendingOcrSelectionReady) resolveOcrSelectionReady(false)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (pendingOcrSelectionReady?.sessionId === sessionId) pendingOcrSelectionReady = null
+      resolve(false)
+    }, 1000)
+    pendingOcrSelectionReady = { sessionId, resolve, timer }
+    if (win.isDestroyed()) resolveOcrSelectionReady(false)
+  })
+}
+
+/**
+ * 结束当前 Renderer 会话确认等待，避免窗口关闭或新会话开始时悬挂。
+ * @param ready 是否已完成会话清理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resolveOcrSelectionReady(ready: boolean): void {
+  const pending = pendingOcrSelectionReady
+  if (!pending) return
+  pendingOcrSelectionReady = null
+  clearTimeout(pending.timer)
+  pending.resolve(ready)
 }
 
 /**
@@ -1501,6 +1545,11 @@ function showScreenshotToast(message: string, displayTimeMs = 1500): void {
 function handleScreenshotToastShowWindow(value: unknown): void {
   const win = screenshotToastWin
   if (!win || win.isDestroyed()) return
+  // 新提示到达时先取消旧的隐藏任务，避免旧定时器抢先把本次提示隐藏。
+  if (screenshotToastHideTimer) {
+    clearTimeout(screenshotToastHideTimer)
+    screenshotToastHideTimer = null
+  }
   const raw = value as { width?: number; height?: number; displayTimeMs?: number }
   const width = Math.min(Math.max(Math.ceil(raw.width ?? 0) + 4, 120), 480)
   const height = Math.min(Math.max(Math.ceil(raw.height ?? 0) + 4, 36), 120)
@@ -1510,7 +1559,6 @@ function handleScreenshotToastShowWindow(value: unknown): void {
   const y = Math.round(display.bounds.y + display.bounds.height * 0.42 - height / 2)
   win.setBounds({ x, y, width, height })
   win.showInactive()
-  if (screenshotToastHideTimer) clearTimeout(screenshotToastHideTimer)
   screenshotToastHideTimer = setTimeout(() => {
     if (screenshotToastWin && !screenshotToastWin.isDestroyed()) {
       screenshotToastWin.hide()
@@ -1673,13 +1721,27 @@ async function openOcrSelection(): Promise<void> {
     }
     // 复用窗口时必须先让 Renderer 清空上一轮选区、截图和面板内容，
     // 再显示窗口，避免旧画面在新一轮截图开始时短暂闪现。
+    // 先登记 ready 等待，再发送 begin，避免 Renderer 同步回执时丢失确认。
+    const rendererReadyPromise = waitForOcrSelectionReady(win, ocrSessionId)
     sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
       sessionId: ocrSessionId,
       bounds: display.bounds
     })
-    win.show()
-    win.focus()
-    const hotkeyToShowMs = Date.now() - hotkeyAt
+    const rendererReady = await rendererReadyPromise
+    if (!rendererReady || !isCurrentOcrCapture(interactionToken)) {
+      restoreSelectionListenerAfterOcr(interactionToken)
+      return
+    }
+    // Windows 的 GDI BitBlt 会直接读取屏幕，覆盖窗口若先显示，窗口上一轮的合成表面
+    // 可能在第二次截图时仍未被 DWM 刷新，从而把上一次截图区域再次采入新快照。
+    // Windows 因此必须保持隐藏到屏幕采集完成；macOS/Linux 继续先显示再采集，保持原有交互时序。
+    const showBeforeCapture = process.platform !== 'win32'
+    let hotkeyToShowMs = 0
+    if (showBeforeCapture) {
+      win.show()
+      win.focus()
+      hotkeyToShowMs = Date.now() - hotkeyAt
+    }
 
     timeoutTimer = setTimeout(() => {
       timedOut = true
@@ -1697,6 +1759,12 @@ async function openOcrSelection(): Promise<void> {
     if (!isCurrentOcrCapture(interactionToken)) {
       restoreSelectionListenerAfterOcr(interactionToken)
       return
+    }
+    if (!showBeforeCapture) {
+      // 采集已经完成后再显示覆盖层，保证 Windows GDI 永远不会把本窗口的旧画面采进去。
+      win.show()
+      win.focus()
+      hotkeyToShowMs = Date.now() - hotkeyAt
     }
     latestOcrSnapshot = preview.snapshot
     const sendStartedAt = Date.now()
@@ -1726,6 +1794,7 @@ async function openOcrSelection(): Promise<void> {
  */
 function cancelOcrSelection(): void {
   activeScreenshotOcrRequests.clear()
+  resolveOcrSelectionReady(false)
   hideOcrSelectionWindow()
   latestOcrSnapshot = null
   restoreSelectionListenerAfterOcr()
@@ -2253,8 +2322,19 @@ function normalizeScreenshotActionRequest(value: unknown): ScreenshotOcrActionRe
   const actions = ['recognize', 'translate', 'copy-image', 'save-image'] as const
   if (!actions.includes(raw.action as (typeof actions)[number])) return null
   if (typeof raw.requestId !== 'string' || !raw.requestId.trim()) return null
+  if (!Number.isInteger(raw.sessionId) || (raw.sessionId as number) <= 0) return null
   if (!raw.bounds || typeof raw.bounds !== 'object') return null
   return raw as ScreenshotOcrActionRequest
+}
+
+/**
+ * 判断请求是否属于当前截图会话，避免旧窗口消息重新激活截图动作。
+ * @param request 已校验的截图请求。
+ * @returns 是否属于当前会话。
+ * @author zhenghq
+ */
+function isCurrentScreenshotRequest(request: ScreenshotOcrActionRequest): boolean {
+  return request.sessionId === ocrSelectionSessionSeq
 }
 
 /**
@@ -2305,8 +2385,9 @@ function cropCurrentOcrSelectionPngFast(value: unknown): Buffer {
  * @returns 请求是否仍然有效。
  * @author zhenghq
  */
-function isScreenshotOcrRequestActive(requestId: string): boolean {
-  return activeScreenshotOcrRequests.has(requestId) &&
+function isScreenshotOcrRequestActive(requestId: string, sessionId: number): boolean {
+  return activeScreenshotOcrRequests.get(requestId) === sessionId &&
+    sessionId === ocrSelectionSessionSeq &&
     Boolean(ocrSelectionWin && !ocrSelectionWin.isDestroyed())
 }
 
@@ -2333,14 +2414,16 @@ function resolveScreenshotActionErrorCode(error: unknown): ScreenshotOcrErrorCod
  */
 function sendScreenshotRecognizeResult(result: {
   requestId: string
+  sessionId?: number
   ok: boolean
   text?: string
   engine?: 'system' | 'paddle' | 'tesseract'
   code?: ScreenshotOcrErrorCode
   error?: string
 }): void {
-  if (!isScreenshotOcrRequestActive(result.requestId)) return
-  ocrSelectionWin?.webContents.send('ocr-selection:recognize-result', result)
+  const sessionId = result.sessionId ?? ocrSelectionSessionSeq
+  if (!isScreenshotOcrRequestActive(result.requestId, sessionId)) return
+  ocrSelectionWin?.webContents.send('ocr-selection:recognize-result', { ...result, sessionId })
 }
 
 /**
@@ -2351,6 +2434,7 @@ function sendScreenshotRecognizeResult(result: {
  */
 function sendScreenshotActionResult(result: {
   requestId: string
+  sessionId?: number
   action: 'copy-image' | 'save-image'
   ok: boolean
   canceled?: boolean
@@ -2358,8 +2442,9 @@ function sendScreenshotActionResult(result: {
   code?: ScreenshotOcrErrorCode
   error?: string
 }): void {
-  if (!isScreenshotOcrRequestActive(result.requestId)) return
-  ocrSelectionWin?.webContents.send('ocr-selection:action-result', result)
+  const sessionId = result.sessionId ?? ocrSelectionSessionSeq
+  if (!isScreenshotOcrRequestActive(result.requestId, sessionId)) return
+  ocrSelectionWin?.webContents.send('ocr-selection:action-result', { ...result, sessionId })
 }
 
 /**
@@ -2371,7 +2456,7 @@ function sendScreenshotActionResult(result: {
  */
 async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request) return
+  if (!request || !isCurrentScreenshotRequest(request)) return
   const settings = getSettings()
   try {
     const png = cropCurrentOcrSelectionPng(request.bounds, settings)
@@ -2385,12 +2470,13 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
     const text = cleanOcrText(ocr.text ?? '')
     sendScreenshotRecognizeResult(
       text
-        ? { requestId: request.requestId, ok: true, text, engine: ocr.engine }
-        : { requestId: request.requestId, ok: false, code: 'empty', error: '未识别到文字' }
+        ? { requestId: request.requestId, sessionId: request.sessionId, ok: true, text, engine: ocr.engine }
+        : { requestId: request.requestId, sessionId: request.sessionId, ok: false, code: 'empty', error: '未识别到文字' }
     )
   } catch (error) {
     sendScreenshotRecognizeResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       ok: false,
       code: resolveScreenshotActionErrorCode(error),
       error: error instanceof Error ? error.message : 'OCR 识别失败'
@@ -2408,7 +2494,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
  */
 async function translateOcrSelectionAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request) return
+  if (!request || !isCurrentScreenshotRequest(request)) return
   activeScreenshotOcrRequests.clear()
   await submitOcrSelection(request.bounds)
 }
@@ -2421,12 +2507,17 @@ async function translateOcrSelectionAction(value: unknown): Promise<void> {
  */
 async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request) return
+  if (!request || !isCurrentScreenshotRequest(request)) return
   try {
     // 复制图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理以保持主线程响应。
     const png = cropCurrentOcrSelectionPngFast(request.bounds)
     clipboard.writeImage(nativeImage.createFromBuffer(png))
-    sendScreenshotActionResult({ requestId: request.requestId, action: 'copy-image', ok: true })
+    sendScreenshotActionResult({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      action: 'copy-image',
+      ok: true
+    })
     // 复制成功后结束截图会话：先释放快照与全局划词监听，
     // 提示由独立 toast 窗口展示，覆盖窗口由 Renderer 收到回执后淡出关闭。
     showScreenshotToast('已添加到剪贴板', 1500)
@@ -2434,6 +2525,7 @@ async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
   } catch (error) {
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'copy-image',
       ok: false,
       code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
@@ -2466,7 +2558,7 @@ function buildScreenshotSaveFileName(): string {
  */
 async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request) return
+  if (!request || !isCurrentScreenshotRequest(request)) return
   try {
     const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
     const result = win
@@ -2482,19 +2574,21 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
     if (result.canceled || !result.filePath) {
       sendScreenshotActionResult({
         requestId: request.requestId,
+        sessionId: request.sessionId,
         action: 'save-image',
         ok: true,
         canceled: true
       })
       return
     }
-    if (!isScreenshotOcrRequestActive(request.requestId)) return
+    if (!isScreenshotOcrRequestActive(request.requestId, request.sessionId)) return
     // 用户确认路径后再执行同步裁剪和 PNG 编码，避免保存地址框出现前被大图处理阻塞。
     // 保存图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理。
     const png = cropCurrentOcrSelectionPngFast(request.bounds)
     await writeFile(result.filePath, png)
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'save-image',
       ok: true,
       filePath: result.filePath
@@ -2506,6 +2600,7 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
   } catch (error) {
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'save-image',
       ok: false,
       code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
@@ -2539,10 +2634,12 @@ async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     return
   }
   const request = validated.request
+  if (!isCurrentScreenshotRequest(request)) return
   try {
     clipboard.writeImage(nativeImage.createFromBuffer(request.png))
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'copy-image',
       ok: true
     })
@@ -2551,6 +2648,7 @@ async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
   } catch (error) {
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'copy-image',
       ok: false,
       code: 'clipboard-write-failed',
@@ -2582,6 +2680,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     return
   }
   const request = validated.request
+  if (!isCurrentScreenshotRequest(request)) return
   try {
     const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
     const result = win
@@ -2596,16 +2695,18 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     if (result.canceled || !result.filePath) {
       sendScreenshotActionResult({
         requestId: request.requestId,
+        sessionId: request.sessionId,
         action: 'save-image',
         ok: true,
         canceled: true
       })
       return
     }
-    if (!isScreenshotOcrRequestActive(request.requestId)) return
+    if (!isScreenshotOcrRequestActive(request.requestId, request.sessionId)) return
     await writeFile(result.filePath, request.png)
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'save-image',
       ok: true,
       filePath: result.filePath
@@ -2615,6 +2716,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
   } catch (error) {
     sendScreenshotActionResult({
       requestId: request.requestId,
+      sessionId: request.sessionId,
       action: 'save-image',
       ok: false,
       code: 'save-failed',
@@ -3383,13 +3485,18 @@ function registerIpc(): void {
   ipcMain.on('ocr-selection:open', () => {
     void openOcrSelection()
   })
+  ipcMain.on('ocr-selection:ready', (_event, payload: unknown) => {
+    const sessionId = (payload as { sessionId?: unknown })?.sessionId
+    if (typeof sessionId !== 'number' || sessionId !== ocrSelectionSessionSeq) return
+    resolveOcrSelectionReady(true)
+  })
   ipcMain.on('ocr-selection:cancel', () => cancelOcrSelection())
   ipcMain.on('ocr-selection:submit', (_event, bounds: unknown) => {
     void submitOcrSelection(bounds)
   })
   ipcMain.on('ocr-selection:recognize', (_event, request: unknown) => {
     const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
     void recognizeOcrSelectionAction(request)
   })
   ipcMain.on('ocr-selection:translate', (_event, request: unknown) => {
@@ -3397,22 +3504,22 @@ function registerIpc(): void {
   })
   ipcMain.on('ocr-selection:copy-image', (_event, request: unknown) => {
     const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
     void copyOcrSelectionImageAction(request)
   })
   ipcMain.on('ocr-selection:save-image', (_event, request: unknown) => {
     const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized) activeScreenshotOcrRequests.add(normalized.requestId)
+    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
     void saveOcrSelectionImageAction(request)
   })
   ipcMain.on('ocr-selection:copy-annotated-image', (_event, request: unknown) => {
     const validated = validateAnnotatedExportPayload(request)
-    if (validated.ok) activeScreenshotOcrRequests.add(validated.request.requestId)
+    if (validated.ok && validated.request.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(validated.request.requestId, validated.request.sessionId)
     void copyAnnotatedOcrSelectionImageAction(request)
   })
   ipcMain.on('ocr-selection:save-annotated-image', (_event, request: unknown) => {
     const validated = validateAnnotatedExportPayload(request)
-    if (validated.ok) activeScreenshotOcrRequests.add(validated.request.requestId)
+    if (validated.ok && validated.request.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(validated.request.requestId, validated.request.sessionId)
     void saveAnnotatedOcrSelectionImageAction(request)
   })
   ipcMain.on('screenshot-toast:show', (_event, payload: unknown) => {

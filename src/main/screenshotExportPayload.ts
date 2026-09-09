@@ -79,6 +79,9 @@ export function validateAnnotatedExportPayload(value: unknown): ValidateAnnotate
   if (typeof raw.requestId !== 'string' || !raw.requestId.trim()) {
     return { ok: false, code: 'invalid-export-payload', error: '导出请求 ID 无效' }
   }
+  if (!Number.isInteger(raw.sessionId) || (raw.sessionId as number) <= 0) {
+    return { ok: false, code: 'invalid-export-payload', error: '截图会话无效' }
+  }
   if (!isValidBounds(raw.bounds)) {
     return { ok: false, code: 'invalid-export-payload', error: '导出选区无效' }
   }
@@ -107,6 +110,7 @@ export function validateAnnotatedExportPayload(value: unknown): ValidateAnnotate
     ok: true,
     request: {
       action: raw.action,
+      sessionId: raw.sessionId as number,
       requestId: raw.requestId,
       bounds: {
         x: Number(raw.bounds!.x),

@@ -125,7 +125,8 @@ test('普通划词模式不应显示截图标注工具', () => {
   const leaveStart = selectionRenderer.indexOf('function leaveOcrSelectionMode(')
   const leaveEnd = selectionRenderer.indexOf('/**', leaveStart + 1)
   const leaveSource = selectionRenderer.slice(leaveStart, leaveEnd)
-  assert.match(leaveSource, /resetAnnotationSession\(\)/u)
+  assert.match(leaveSource, /resetOcrSessionUi\(\)/u)
+  assert.match(selectionRenderer, /function resetOcrSessionUi\(\)[\s\S]*?resetAnnotationSession\(\)/u)
 })
 
 /**

@@ -251,6 +251,22 @@ test('截图 Toast 应使用独立暂停原因并在隐藏后恢复', () => {
 })
 
 /**
+ * 校验 Toast 预热并在新提示显示前清理旧隐藏任务，避免提示刚显示就被旧 timer 隐藏。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('截图 Toast 应预热且按消息重新计时', () => {
+  assert.match(main, /getScreenshotToastWindow\(\)/u)
+  const handlerStart = main.indexOf('function handleScreenshotToastShowWindow')
+  const handlerEnd = main.indexOf('/**', handlerStart + 1)
+  const handlerSource = main.slice(handlerStart, handlerEnd)
+  const clearIndex = handlerSource.indexOf('clearTimeout(screenshotToastHideTimer)')
+  const showIndex = handlerSource.indexOf('win.showInactive()')
+  assert.ok(clearIndex >= 0, '新提示显示前应清理旧隐藏 timer')
+  assert.ok(clearIndex < showIndex, '应先清理旧 timer 再显示新提示')
+})
+
+/**
  * 校验截图覆盖层关闭动画期间不会恢复共用页面中的普通“译”按钮。
  * @returns 无返回值。
  * @author zhenghq
@@ -277,7 +293,7 @@ test('Renderer 应在复制/保存成功后仅关闭窗口，失败时经独立�
   assert.doesNotMatch(selectionCss, /\.ocr-toast/u)
   // 失败时通过主进程独立提示窗口展示错误
   assert.match(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: result\.error \|\| '复制图片失败'/u)
-  assert.match(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: '已保存到本地'/u)
+  assert.doesNotMatch(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: '已保存到本地'/u)
   assert.match(selectionRenderer, /function scheduleScreenshotAutoClose\(\)/u)
   assert.match(selectionRenderer, /ocrOverlay\.classList\.add\('closing'\)/u)
 })
@@ -362,6 +378,55 @@ test('截图动作应通过请求 ID 隔离旧回调', () => {
   // 主进程在完成、取消、关闭路径清理动作请求
   assert.match(main, /activeScreenshotOcrRequests/u)
   assert.match(main, /activeScreenshotOcrRequests\.delete/u)
+})
+
+/**
+ * 校验复制和保存在耗时导出前同步显示局部反馈，并在异步导出期间阻止重复提交。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('复制和保存点击应先显示处理中提示并立即建立重复提交保护', () => {
+  const copyStart = selectionRenderer.indexOf('function copyCurrentOcrSelectionImage')
+  const copyEnd = selectionRenderer.indexOf('/**', copyStart + 1)
+  const copySource = selectionRenderer.slice(copyStart, copyEnd)
+  const saveStart = selectionRenderer.indexOf('function saveCurrentOcrSelectionImage')
+  const saveEnd = selectionRenderer.indexOf('/**', saveStart + 1)
+  const saveSource = selectionRenderer.slice(saveStart, saveEnd)
+
+  for (const [source, message, exportCall] of [
+    [copySource, '正在复制图片…', 'buildAnnotatedExportPayload'],
+    [saveSource, '正在准备保存…', 'buildAnnotatedExportPayload']
+  ]) {
+    const pendingIndex = source.indexOf('screenshotActionPending =')
+    const tipIndex = source.indexOf(`renderOcrTip('${message}')`)
+    const exportIndex = source.indexOf(`await ${exportCall}`)
+    assert.ok(pendingIndex >= 0 && pendingIndex < exportIndex, '应在导出前建立动作状态')
+    assert.ok(tipIndex >= 0 && tipIndex < exportIndex, '应在导出前显示处理中提示')
+    assert.match(source, /if \(pendingScreenshotRequestId \|\| screenshotActionPending\) return/u)
+  }
+  assert.match(selectionRenderer, /const exportPending = screenshotActionPending !== null \|\| pendingScreenshotRequestId !== null/u)
+  assert.match(selectionRenderer, /ocrCopyImageButton\.disabled = blocked \|\| exportPending/u)
+  assert.match(selectionRenderer, /ocrSaveImageButton\.disabled = blocked \|\| exportPending/u)
+})
+
+/**
+ * 校验保存取消恢复截图交互，且最终成功提示只由主进程发送一次。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('保存取消应恢复交互且 Renderer 不发送保存成功 Toast', () => {
+  const resultStart = selectionRenderer.indexOf('function handleOcrActionResult')
+  const resultEnd = selectionRenderer.indexOf('/**', resultStart + 1)
+  const resultSource = selectionRenderer.slice(resultStart, resultEnd)
+  assert.match(resultSource, /if \(result\.canceled\) \{[\s\S]*?renderOcrTip\(\)/u)
+  assert.doesNotMatch(selectionRenderer, /showScreenshotToast\(\{ message: '已保存到本地'/u)
+
+  const saveStart = main.indexOf('async function saveOcrSelectionImageAction')
+  const saveEnd = main.indexOf('/**', saveStart + 1)
+  const saveSource = main.slice(saveStart, saveEnd)
+  assert.match(saveSource, /result\.canceled/u)
+  assert.match(saveSource, /canceled:\s*true/u)
+  assert.match(saveSource, /showScreenshotToast\('已保存到本地', 1500\)/u)
 })
 
 /**

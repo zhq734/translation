@@ -270,6 +270,12 @@ export interface OcrSelectionBeginPayload {
   bounds: OcrSelectionBounds
 }
 
+/** OCR 框选 Renderer 完成会话重置后的就绪确认负载。 */
+export interface OcrSelectionReadyPayload {
+  /** 已完成重置的框选会话序号。 */
+  sessionId: number
+}
+
 /** OCR 框选快照负载：屏幕采集完成后下发，用于填充覆盖层背景图。 */
 export interface OcrSelectionSnapshotPayload {
   /** 本次框选会话自增序号，必须与 begin 一致，不一致时 Renderer 丢弃。 */
@@ -310,6 +316,8 @@ export type ScreenshotOcrErrorCode =
  * @author zhenghq
  */
 export interface ScreenshotOcrActionRequest {
+  /** 所属截图会话序号。 */
+  sessionId: number
   /** 本次动作类型。 */
   action: ScreenshotOcrAction
   /** Renderer 生成的请求 ID，用于隔离旧回调。 */
@@ -322,6 +330,8 @@ export interface ScreenshotOcrActionRequest {
  * @author zhenghq
  */
 export interface ScreenshotOcrRecognizeResult {
+  /** 所属截图会话序号。 */
+  sessionId: number
   /** 对应请求的 ID。 */
   requestId: string
   /** 识别是否成功且返回了可用文本。 */
@@ -340,6 +350,8 @@ export interface ScreenshotOcrRecognizeResult {
  * @author zhenghq
  */
 export interface ScreenshotOcrActionResult {
+  /** 所属截图会话序号。 */
+  sessionId: number
   /** 对应请求的 ID。 */
   requestId: string
   /** 本次动作类型，仅复制图片或保存到本地。 */
@@ -494,6 +506,8 @@ export type ScreenshotAnnotatedExportAction = 'copy-image' | 'save-image'
  * @author zhenghq
  */
 export interface ScreenshotAnnotatedExportRequest {
+  /** 所属截图会话序号。 */
+  sessionId: number
   /** 导出动作类型。 */
   action: ScreenshotAnnotatedExportAction
   /** Renderer 生成的请求 ID，用于隔离旧回调。 */
@@ -937,6 +951,8 @@ export interface Api {
   translateClipboardImage(): void
   /** 订阅主进程打开 OCR 框选模式（快照尚未就绪）的通知。 */
   onOcrSelectionBegin(cb: (payload: OcrSelectionBeginPayload) => void): () => void
+  /** 确认 Renderer 已完成 OCR 截图会话重置。 */
+  confirmOcrSelectionReady(payload: OcrSelectionReadyPayload): void
   /** 订阅主进程下发的 OCR 屏幕快照，用于填充覆盖层背景图。 */
   onOcrSelectionSnapshot(cb: (payload: OcrSelectionSnapshotPayload) => void): () => void
   /** 订阅主进程下发的 OCR 采集失败通知。 */

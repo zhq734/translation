@@ -46,6 +46,7 @@ function buildFakePng(length = 64): Uint8Array {
  */
 function buildPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    sessionId: 1,
     action: 'copy-image',
     requestId: 'screenshot-1-1',
     bounds: { x: 10, y: 20, width: 200, height: 120 },

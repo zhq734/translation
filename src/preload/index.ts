@@ -14,6 +14,7 @@ import type {
   UpdateStatus,
   EdgeSpeechResult,
   OcrSelectionBeginPayload,
+  OcrSelectionReadyPayload,
   OcrSelectionBounds,
   OcrSelectionFailedPayload,
   OcrSelectionSnapshotPayload,
@@ -234,6 +235,15 @@ const api: Api = {
     const listener = (_event: unknown, payload: OcrSelectionBeginPayload): void => callback(payload)
     ipcRenderer.on('ocr-selection:begin', listener)
     return () => ipcRenderer.removeListener('ocr-selection:begin', listener)
+  },
+  /**
+   * 确认 Renderer 已清理旧截图会话并完成新会话初始化。
+   * @param payload 当前截图会话序号。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  confirmOcrSelectionReady(payload: OcrSelectionReadyPayload) {
+    ipcRenderer.send('ocr-selection:ready', payload)
   },
   /**
    * 订阅 OCR 屏幕快照就绪通知，用于填充覆盖层背景图。

@@ -25,20 +25,24 @@ function sliceFunction(source: string, signature: string): string {
 }
 
 /**
- * 校验覆盖窗口在采集之前显示，并先发送 begin 事件。
+ * 校验 Windows 采集时覆盖窗口保持隐藏，避免 GDI 把上一次覆盖层画面再次采进新截图；
+ * macOS/Linux 仍保留先显示后采集的低延迟路径。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('openOcrSelection 应先显示覆盖窗口再采集快照', () => {
+test('openOcrSelection 应避免 Windows 覆盖层参与屏幕采集', () => {
   const source = sliceFunction(main, 'async function openOcrSelection')
-  const showIndex = source.indexOf('win.show()')
+  const showIndex = source.lastIndexOf('win.show()')
   const beginIndex = source.indexOf("'ocr-selection:begin'")
   const captureIndex = source.indexOf('captureOcrPreviewSnapshot(')
   assert.ok(showIndex >= 0, '应显示覆盖窗口')
   assert.ok(beginIndex >= 0, '应发送 begin 事件')
   assert.ok(captureIndex >= 0, '应采集预览快照')
-  assert.ok(showIndex < captureIndex, '覆盖窗口显示必须早于屏幕采集')
   assert.ok(beginIndex < captureIndex, 'begin 事件必须早于屏幕采集')
+  assert.match(source, /const showBeforeCapture = process\.platform !== 'win32'/u)
+  assert.match(source, /if \(showBeforeCapture\) \{[\s\S]*?win\.show\(\)/u)
+  assert.match(source, /if \(!showBeforeCapture\) \{[\s\S]*?win\.show\(\)/u)
+  assert.ok(showIndex > captureIndex, 'Windows 覆盖窗口必须在采集完成后显示')
   assert.match(source, /win\.setBounds\(display\.bounds\)/u)
 })
 
@@ -71,6 +75,21 @@ test('OCR 覆盖窗口应在 show 前发送 begin 清理旧会话', () => {
   assert.ok(showIndex >= 0, '应显示覆盖窗口')
   assert.ok(beginIndex >= 0, '应发送 begin 事件')
   assert.ok(beginIndex < showIndex, '必须先清理旧会话，再显示覆盖窗口')
+  const waitIndex = source.indexOf('waitForOcrSelectionReady(win, ocrSessionId)')
+  assert.ok(waitIndex >= 0, '必须建立 Renderer 清理确认等待')
+  assert.ok(waitIndex < beginIndex, '必须先登记 ready 等待，再发送 begin，避免同步 ACK 丢失')
+})
+
+/**
+ * 校验 ready 回执严格绑定当前会话，避免迟到回执放行下一次截图。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR ready 回执应严格校验当前 sessionId', () => {
+  const readySource = sliceFunction(main, "ipcMain.on('ocr-selection:ready'")
+  assert.match(readySource, /typeof sessionId !== 'number'/u)
+  assert.match(readySource, /sessionId !== ocrSelectionSessionSeq/u)
+  assert.match(readySource, /resolveOcrSelectionReady\(true\)/u)
 })
 
 /**
@@ -254,8 +273,9 @@ test('applyOcrSnapshot 应校验 sessionId 防止跨会话串扰', () => {
   // 必须读取 snapshot 中的 sessionId 并与当前会话比较
   assert.match(applySource, /payload\.sessionId/u, '应读取 snapshot 负载中的 sessionId')
   assert.match(applySource, /currentOcrSessionId/u, '应引用当前会话 sessionId')
-  // sessionId 不匹配时不得直接应用旧快照，必须先清理旧选区
-  assert.match(applySource, /enterOcrSelectionMode/u, 'sessionId 不匹配时应调用 enterOcrSelectionMode 清理')
+  // sessionId 不匹配时静默丢弃，不能复活旧会话或改写当前会话。
+  assert.match(applySource, /if \(!ocrMode \|\| payload\.sessionId !== currentOcrSessionId\) return/u)
+  assert.doesNotMatch(applySource, /enterOcrSelectionMode/u, '迟到快照不得复活旧会话')
 })
 
 /**
@@ -390,7 +410,7 @@ test('取消后完成的旧采集应被丢弃', () => {
 test('采集中态应提示正在获取屏幕画面', () => {
   assert.match(selectionHtml, /id="ocr-tip"/u)
   assert.match(selectionRenderer, /const ocrTip = document\.getElementById\('ocr-tip'\) as HTMLElement/u)
-  assert.match(selectionRenderer, /function renderOcrTip\(\): void/u)
+  assert.match(selectionRenderer, /function renderOcrTip\(message\?: string\): void/u)
   const source = sliceFunction(selectionRenderer, 'function renderOcrTip(')
   assert.match(source, /正在获取屏幕画面/u)
   assert.match(source, /ocrSnapshotState/u)
@@ -398,4 +418,79 @@ test('采集中态应提示正在获取屏幕画面', () => {
   assert.match(enterSource, /renderOcrTip\(\)/u)
   // 提示样式必须走主题变量，不硬编码颜色
   assert.doesNotMatch(selectionCss, /\.ocr-tip[^}]*(?:#[0-9a-fA-F]{3,8}|rgb\()/su)
+})
+
+/**
+ * 校验 OCR 会话重置覆盖所有可复用 UI 和异步资源，避免取消后重开残留旧状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 会话重置应清理选区、面板、标注、图片、按钮和延迟任务', () => {
+  const resetSource = sliceFunction(selectionRenderer, 'function resetOcrSessionUi(')
+  for (const expression of [
+    /clearTimeout/u,
+    /ocrSnapshotLoadToken \+=\s*1/u,
+    /currentRect = null/u,
+    /pendingScreenshotRequestId = null/u,
+    /screenshotActionPending = null/u,
+    /resetAnnotationSession\(\)/u,
+    /ocrSnapshot\.removeAttribute\('src'\)/u,
+    /ocrOverlay\.classList\.remove\('closing'\)/u,
+    /updateOcrImageActionAvailability\(\)/u
+  ]) {
+    assert.match(resetSource, expression)
+  }
+  const enterSource = sliceFunction(selectionRenderer, 'function enterOcrSelectionMode(')
+  assert.match(enterSource, /resetOcrSessionUi\(\)/u)
+})
+
+/**
+ * 校验背景图 load/error 回调同时受会话 ID 和加载令牌保护，旧资源不能污染新会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('旧背景图 load/error 回调不得更新新截图会话', () => {
+  for (const signature of ['function handleOcrSnapshotLoad(', 'function handleOcrSnapshotError(']) {
+    const source = sliceFunction(selectionRenderer, signature)
+    assert.match(source, /ocrSnapshot\.dataset\.sessionId/u)
+    assert.match(source, /ocrSnapshot\.dataset\.loadToken/u)
+    assert.match(source, /ocrSnapshotLoadToken/u)
+  }
+})
+
+/**
+ * 校验完成动画绑定创建会话，旧会话定时器不能关闭新会话窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('截图完成延迟关闭应再次校验 sessionId', () => {
+  const source = sliceFunction(selectionRenderer, 'function scheduleScreenshotAutoClose(')
+  assert.match(source, /const sessionId = currentOcrSessionId/u)
+  assert.match(source, /currentOcrSessionId !== sessionId/u)
+  assert.match(source, /clearTimeout/u)
+})
+
+/**
+ * 校验取消（Esc / 取消按钮）在通知主进程隐藏窗口前，先让清空后的画面真正上屏。
+ * 窗口被复用且隐藏后不再绘制，若带着旧选区的那一帧被隐藏，下次显示会先闪出旧画面。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取消截图应等清空画面上屏后再通知主进程隐藏窗口', () => {
+  const cancelSource = sliceFunction(selectionRenderer, 'function cancelOcrSelection(')
+  const leaveIndex = cancelSource.indexOf('leaveOcrSelectionMode()')
+  const deferIndex = cancelSource.indexOf('afterOverlayCleared(')
+  const notifyIndex = cancelSource.indexOf('window.api.cancelOcrSelection()')
+  assert.ok(leaveIndex >= 0, '取消必须先清空本轮截图会话 UI')
+  assert.ok(deferIndex >= 0, '取消必须等待清空后的画面上屏')
+  assert.ok(leaveIndex < deferIndex, '必须先清空再等待上屏')
+  assert.ok(deferIndex < notifyIndex, '通知主进程隐藏窗口必须发生在等待之后')
+
+  const deferSource = sliceFunction(selectionRenderer, 'function afterOverlayCleared(')
+  // 双帧等待：第一帧提交 DOM 变更，第二帧确认清空后的画面已经合成上屏。
+  assert.match(deferSource, /requestAnimationFrame\([\s\S]*?requestAnimationFrame\(/u)
+  // 窗口隐藏或渲染被节流时 rAF 可能不触发，必须有超时兜底，避免主进程收不到取消通知。
+  assert.match(deferSource, /setTimeout\(/u)
+  // 兜底与正常路径只能执行一次，避免重复发送取消 IPC。
+  assert.match(deferSource, /if \(done\) return/u)
 })

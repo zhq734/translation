@@ -84,6 +84,12 @@ let dragState: DragState | null = null
 let currentRect: OcrSelectionBounds | null = null
 // 当前 OCR 框选会话序号：与主进程 begin/snapshot 负载一致，用于丢弃跨会话残留事件。
 let currentOcrSessionId = 0
+/** 当前背景图加载令牌，防止被替换的图片回调污染新会话。 */
+let ocrSnapshotLoadToken = 0
+/** 当前截图完成动画定时器及其所属会话。 */
+let screenshotAutoCloseTimer: number | null = null
+/** 当前图片动作的局部处理中状态，避免导出期间的普通提示覆盖即时反馈。 */
+let screenshotActionPending: 'copy-image' | 'save-image' | null = null
 // 截图“文字识别”进行中标记：防止同一识别请求重复提交。
 let screenshotRecognizePending = false
 // 当前截图动作请求 ID：仅响应当前请求的结果事件，丢弃旧回调。
@@ -502,6 +508,7 @@ function buildScreenshotActionRequest(
   screenshotRequestSeq += 1
   return {
     action,
+    sessionId: currentOcrSessionId,
     requestId: `screenshot-${Date.now()}-${screenshotRequestSeq}`,
     bounds: { ...currentRect }
   }
@@ -525,6 +532,7 @@ function buildAnnotatedExportRequest(
   screenshotRequestSeq += 1
   return {
     action,
+    sessionId: currentOcrSessionId,
     requestId: `screenshot-${Date.now()}-${screenshotRequestSeq}`,
     bounds: { ...currentRect },
     width,
@@ -1006,7 +1014,7 @@ function recognizeCurrentOcrSelection(): void {
  * @author zhenghq
  */
 function handleOcrRecognizeResult(result: ScreenshotOcrRecognizeResult): void {
-  if (result.requestId !== pendingScreenshotRequestId) return
+  if (result.sessionId !== currentOcrSessionId || result.requestId !== pendingScreenshotRequestId) return
   screenshotRecognizePending = false
   pendingScreenshotRequestId = null
   updateOcrImageActionAvailability()
@@ -1038,18 +1046,23 @@ function translateCurrentOcrSelection(): void {
  * @author zhenghq
  */
 function copyCurrentOcrSelectionImage(): void {
+  if (pendingScreenshotRequestId || screenshotActionPending) return
+  screenshotActionPending = 'copy-image'
+  renderOcrTip('正在复制图片…')
+  ocrCopyImageButton.disabled = true
   void (async () => {
     try {
       const request = await buildAnnotatedExportPayload('copy-image')
       if (!request) throw new Error('截图尚未准备完成，请稍后重试')
       pendingScreenshotRequestId = request.requestId
-      ocrCopyImageButton.disabled = true
       // 保留未标注原路径作为兜底调用锚点，带标注导出失败时仍可提交原图选区。
       if (!request.png) window.api.copyOcrSelectionImage(buildScreenshotActionRequest('copy-image')!)
       else window.api.copyAnnotatedOcrSelectionImage(request)
     } catch (error) {
       pendingScreenshotRequestId = null
+      screenshotActionPending = null
       updateOcrImageActionAvailability()
+      renderOcrTip()
       window.api.showScreenshotToast({
         message: error instanceof Error ? error.message : '复制图片失败',
         displayTimeMs: 3000
@@ -1064,17 +1077,22 @@ function copyCurrentOcrSelectionImage(): void {
  * @author zhenghq
  */
 function saveCurrentOcrSelectionImage(): void {
+  if (pendingScreenshotRequestId || screenshotActionPending) return
+  screenshotActionPending = 'save-image'
+  renderOcrTip('正在准备保存…')
+  ocrSaveImageButton.disabled = true
   void (async () => {
     try {
       const request = await buildAnnotatedExportPayload('save-image')
       if (!request) throw new Error('截图尚未准备完成，请稍后重试')
       pendingScreenshotRequestId = request.requestId
-      ocrSaveImageButton.disabled = true
       if (!request.png) window.api.saveOcrSelectionImage(buildScreenshotActionRequest('save-image')!)
       else window.api.saveAnnotatedOcrSelectionImage(request)
     } catch (error) {
       pendingScreenshotRequestId = null
+      screenshotActionPending = null
       updateOcrImageActionAvailability()
+      renderOcrTip()
       window.api.showScreenshotToast({
         message: error instanceof Error ? error.message : '保存图片失败',
         displayTimeMs: 3000
@@ -1091,8 +1109,9 @@ function saveCurrentOcrSelectionImage(): void {
  * @author zhenghq
  */
 function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
-  if (result.requestId !== pendingScreenshotRequestId) return
+  if (result.sessionId !== currentOcrSessionId || result.requestId !== pendingScreenshotRequestId) return
   pendingScreenshotRequestId = null
+  screenshotActionPending = null
   if (result.action === 'copy-image') {
     updateOcrImageActionAvailability()
     if (result.ok) {
@@ -1105,14 +1124,17 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
     return
   }
   updateOcrImageActionAvailability()
-  if (result.canceled) return
+  if (result.canceled) {
+    renderOcrTip()
+    return
+  }
   if (result.ok) {
     // 保存成功提示由主进程独立 toast 窗口展示。
-    window.api.showScreenshotToast({ message: '已保存到本地' })
+    scheduleScreenshotAutoClose()
+    return
   } else {
     window.api.showScreenshotToast({ message: result.error || '保存图片失败', displayTimeMs: 3000 })
   }
-  if (result.ok) scheduleScreenshotAutoClose()
 }
 
 /**
@@ -1122,8 +1144,12 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
  * @author zhenghq
  */
 function scheduleScreenshotAutoClose(): void {
+  if (screenshotAutoCloseTimer !== null) window.clearTimeout(screenshotAutoCloseTimer)
+  const sessionId = currentOcrSessionId
   ocrOverlay.classList.add('closing')
-  window.setTimeout(() => {
+  screenshotAutoCloseTimer = window.setTimeout(() => {
+    screenshotAutoCloseTimer = null
+    if (!ocrMode || currentOcrSessionId !== sessionId) return
     cancelOcrSelection()
   }, 260)
 }
@@ -1163,10 +1189,15 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderOcrTip(): void {
-  ocrTip.textContent = ocrSnapshotState === 'ready'
+function renderOcrTip(message?: string): void {
+  const pendingMessage = screenshotActionPending === 'copy-image'
+    ? '正在复制图片…'
+    : screenshotActionPending === 'save-image'
+      ? '正在准备保存…'
+      : null
+  ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
     ? '拖拽选择区域，可移动或拉伸，点击识别开始 OCR，按 Esc 取消'
-    : '正在获取屏幕画面，可先拖拽选择区域，按 Esc 取消'
+    : '正在获取屏幕画面，可先拖拽选择区域，按 Esc 取消')
 }
 
 /**
@@ -1180,8 +1211,9 @@ function updateOcrImageActionAvailability(): void {
   const blocked = ocrSnapshotState !== 'ready'
   ocrRecognizeButton.disabled = blocked || screenshotRecognizePending
   ocrTranslateButton.disabled = blocked
-  ocrCopyImageButton.disabled = blocked
-  ocrSaveImageButton.disabled = blocked
+  const exportPending = screenshotActionPending !== null || pendingScreenshotRequestId !== null
+  ocrCopyImageButton.disabled = blocked || exportPending
+  ocrSaveImageButton.disabled = blocked || exportPending
 }
 
 /**
@@ -1192,15 +1224,14 @@ function updateOcrImageActionAvailability(): void {
  * @author zhenghq
  */
 function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
-  if (!ocrMode) return
-  // 跨会话残留：快照序号与当前会话不一致时，先按新会话清空旧选区，再应用快照。
-  if (payload.sessionId !== currentOcrSessionId) {
-    enterOcrSelectionMode({ sessionId: payload.sessionId, bounds: payload.bounds })
-  }
+  if (!ocrMode || payload.sessionId !== currentOcrSessionId) return
+  const loadToken = ++ocrSnapshotLoadToken
   ocrSnapshotState = 'loading'
   snapshotSampler = null
   updateOcrImageActionAvailability()
   renderOcrTip()
+  ocrSnapshot.dataset.sessionId = String(payload.sessionId)
+  ocrSnapshot.dataset.loadToken = String(loadToken)
   ocrSnapshot.src = payload.imageDataUrl
 }
 
@@ -1222,6 +1253,8 @@ function handleOcrSelectionFailed(payload: OcrSelectionFailedPayload): void {
  * @author zhenghq
  */
 function handleOcrSnapshotLoad(): void {
+  if (!ocrMode || Number(ocrSnapshot.dataset.sessionId) !== currentOcrSessionId ||
+      Number(ocrSnapshot.dataset.loadToken) !== ocrSnapshotLoadToken) return
   ocrSnapshotState = 'ready'
   updateOcrImageActionAvailability()
   renderOcrTip()
@@ -1238,6 +1271,8 @@ function handleOcrSnapshotLoad(): void {
  * @author zhenghq
  */
 function handleOcrSnapshotError(): void {
+  if (!ocrMode || Number(ocrSnapshot.dataset.sessionId) !== currentOcrSessionId ||
+      Number(ocrSnapshot.dataset.loadToken) !== ocrSnapshotLoadToken) return
   ocrSnapshotState = 'error'
   updateOcrImageActionAvailability()
   renderOcrTip()
@@ -1252,31 +1287,17 @@ function handleOcrSnapshotError(): void {
  * @author zhenghq
  */
 function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
-  // 记录本次会话序号，供 applyOcrSnapshot 判别跨会话残留快照。
+  resetOcrSessionUi()
   currentOcrSessionId = payload.sessionId
   ocrMode = true
-  dragState = null
-  currentRect = null
-  screenshotRecognizePending = false
-  pendingScreenshotRequestId = null
   translateButton.hidden = true
   // 采集尚未完成：清掉上一次的背景图，避免残留旧画面误导用户。
-  ocrSnapshotState = 'loading'
-  snapshotSampler = null
-  ocrSnapshot.removeAttribute('src')
-  // 进入新会话时重置上次关闭动画与提示状态，避免残留。
-  ocrOverlay.classList.remove('closing')
   ocrOverlay.hidden = false
-  renderOcrPanel('hidden')
-  hideOcrTooltip()
-  ocrPanelUserSize = null
-  ocrPanelResizeState = null
-  ocrPanel.style.width = ''
-  ocrPanel.style.height = ''
-  resetAnnotationSession()
   updateOcrImageActionAvailability()
   renderOcrTip()
   renderSelectionRect(null)
+  // 只有本轮会话状态已清空并初始化完成后，主进程才允许显示复用窗口。
+  window.api.confirmOcrSelectionReady({ sessionId: payload.sessionId })
 }
 
 /**
@@ -1285,24 +1306,43 @@ function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
  * @author zhenghq
  */
 function leaveOcrSelectionMode(): void {
+  resetOcrSessionUi()
   ocrMode = false
+  // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
+  renderSelectionRect(null)
+}
+
+/**
+ * 幂等清理 OCR 截图会话的全部异步 UI 状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetOcrSessionUi(): void {
+  if (screenshotAutoCloseTimer !== null) window.clearTimeout(screenshotAutoCloseTimer)
+  screenshotAutoCloseTimer = null
+  ocrSnapshotLoadToken += 1
   dragState = null
   currentRect = null
   screenshotRecognizePending = false
   pendingScreenshotRequestId = null
+  screenshotActionPending = null
+  snapshotSampler = null
+  ocrOverlay.classList.remove('closing')
   ocrOverlay.hidden = true
   ocrToolbar.hidden = true
   renderOcrPanel('hidden')
-  ocrOverlay.classList.remove('closing')
   hideOcrTooltip()
+  ocrSnapshot.removeAttribute('src')
+  ocrSnapshot.removeAttribute('data-session-id')
+  ocrSnapshot.removeAttribute('data-load-token')
   ocrPanelUserSize = null
   ocrPanelResizeState = null
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
   resetAnnotationSession()
-  ocrSnapshot.removeAttribute('src')
-  // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
+  updateOcrImageActionAvailability()
   renderSelectionRect(null)
+  renderOcrTip()
 }
 
 /**
@@ -1314,7 +1354,30 @@ function cancelOcrSelection(): void {
   // 不能因本地 ocrMode 已复位而提前返回：主进程收不到取消通知时，
   // 会把全局划词监听一直留在暂停状态，导致划词与双击都不再显示“译”按钮。
   leaveOcrSelectionMode()
-  window.api.cancelOcrSelection()
+  // 覆盖窗口是复用的，隐藏后不再产出新帧。若在“清空后的画面”上屏之前就让主进程隐藏窗口，
+  // 系统保留的最后一帧仍是带旧选区的画面，下次显示时会先闪出上一次的框选区域。
+  afterOverlayCleared(() => window.api.cancelOcrSelection())
+}
+
+/**
+ * 等待清空后的覆盖层画面真正合成上屏后再执行收尾回调。
+ * 连续两帧回调用于确保 DOM 变更已提交并完成合成；窗口隐藏或渲染被节流时
+ * requestAnimationFrame 可能不触发，因此再加超时兜底，保证取消通知一定送达主进程。
+ * @param callback 画面清空确认后执行的收尾回调。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function afterOverlayCleared(callback: () => void): void {
+  let done = false
+  const run = (): void => {
+    if (done) return
+    done = true
+    callback()
+  }
+  window.setTimeout(run, 120)
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(run)
+  })
 }
 
 /**
