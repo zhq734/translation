@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   UpdateManager,
@@ -244,6 +245,21 @@ test('自动更新应依次广播检查、发现、下载进度和已下载状�
   manager.installUpdate()
   assert.equal(driver.installCount, 1)
   assert.ok(statuses.length >= 5)
+})
+
+test('Windows 与 Linux 自动更新初始化时应禁用差分下载，Windows 还应禁用 Web 安装器', () => {
+  const source = readFileSync('src/main/updater.ts', 'utf8')
+
+  assert.match(
+    source,
+    /if \(process\.platform === 'win32' \|\| process\.platform === 'linux'\) \{\s*autoUpdater\.disableDifferentialDownload = true\s*\}/u
+  )
+  assert.match(
+    source,
+    /if \(process\.platform === 'win32'\) \{\s*autoUpdater\.disableWebInstaller = true\s*\}/u
+  )
+  assert.doesNotMatch(source, /disableDifferentialDownload = false/u)
+  assert.doesNotMatch(source, /disableWebInstaller = false/u)
 })
 
 test('下载中的自动更新应支持取消并回到可重新下载状态', async () => {

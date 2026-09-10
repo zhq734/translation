@@ -71,6 +71,16 @@ class ElectronUpdateDriver implements UpdateDriver {
   initialize(listeners: UpdateDriverListeners): void {
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false
+    // Windows 与 Linux 的差分下载需要旧安装包和远端 blockmap 完全可靠；本应用
+    // 打包体积较大，一旦差分回退，用户会看到“下载完成后又重新下载”的完整包。
+    if (process.platform === 'win32' || process.platform === 'linux') {
+      autoUpdater.disableDifferentialDownload = true
+    }
+    // NSIS web installer 的二次包下载同样可能被误认为更新在重复下载，这里禁止
+    // 更新器接受 web installer，保证一次下载即为完整更新。
+    if (process.platform === 'win32') {
+      autoUpdater.disableWebInstaller = true
+    }
     autoUpdater.allowPrerelease = false
     autoUpdater.fullChangelog = false
     autoUpdater.on('checking-for-update', listeners.checking)
