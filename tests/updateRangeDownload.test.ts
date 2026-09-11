@@ -66,9 +66,12 @@ test('Range 探测应接受清单提供的总长度作为兜底', () => {
 
 test('分片规划应按并发上限覆盖完整字节区间且不重叠', () => {
   const total = 100 * 1024 * 1024
-  const segments = planDownloadSegments(total, 4)
+  const segments = planDownloadSegments(total, MAX_DOWNLOAD_CONCURRENCY)
 
-  assert.equal(segments.length, 4)
+  assert.ok(
+    segments.length > MAX_DOWNLOAD_CONCURRENCY,
+    '应生成动态任务队列，避免下载后期固定大分片陆续耗尽后并发下降'
+  )
   assert.equal(segments[0].start, 0)
   assert.equal(segments[segments.length - 1].end, total - 1)
   for (let index = 1; index < segments.length; index += 1) {
@@ -95,7 +98,7 @@ test('分片规划在更新包过小时应退化为单个分片', () => {
 })
 
 test('分片并发上限应为固定小值，避免触发下载源限流', () => {
-  assert.equal(MAX_DOWNLOAD_CONCURRENCY, 4)
+  assert.equal(MAX_DOWNLOAD_CONCURRENCY, 8)
 })
 
 /**
@@ -215,6 +218,86 @@ test('单个分片失败后应只重试该分片的剩余部分', async () => {
   }
 })
 
+test('分片请求超时应中断悬挂连接并重试剩余字节', { timeout: 2000 }, async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 1)
+  let attempts = 0
+  let firstRequestAborted = false
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/App-1.0.4-mac-arm64.dmg',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 1,
+      maxRetries: 2,
+      requestTimeoutMs: 20,
+      fetch: (_url, init) => new Promise<Response>((resolve) => {
+        attempts += 1
+        if (attempts === 1) {
+          init?.signal?.addEventListener('abort', () => {
+            firstRequestAborted = true
+            resolve(new Response(Buffer.alloc(0), { status: 206 }))
+          }, { once: true })
+          return
+        }
+        resolve(new Response(content, { status: 206 }))
+      })
+    })
+
+    assert.equal(firstRequestAborted, true, '请求超时后必须中断悬挂连接')
+    assert.equal(attempts, 2, '超时后应重试该分片')
+    assert.equal(Buffer.from(content).equals(await readFile(path)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片读取超时应取消死响应流并重试剩余字节', { timeout: 2000 }, async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 1)
+  let attempts = 0
+  let stalledStreamCancelled = false
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/App-1.0.4-mac-arm64.dmg',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 1,
+      maxRetries: 2,
+      readTimeoutMs: 20,
+      fetch: async (_url, init) => {
+        attempts += 1
+        if (attempts === 1) {
+          const stalledBody = new ReadableStream<Uint8Array>({
+            pull: () => new Promise<ReadonlyArray<Uint8Array>>(() => {
+              // 故意不 resolve，模拟已经建立但永远不再输出数据的响应流。
+            }),
+            cancel: async () => {
+              stalledStreamCancelled = true
+            }
+          })
+          return new Response(stalledBody, { status: 206 })
+        }
+        return new Response(content, { status: 206 })
+      }
+    })
+
+    assert.equal(stalledStreamCancelled, true, '读取超时后必须取消死响应流')
+    assert.equal(attempts, 2, '读取超时后应重试该分片')
+    assert.equal(Buffer.from(content).equals(await readFile(path)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
 test('分片重试耗尽时应抛出明确错误并保留已完成进度', async () => {
   const { path, cleanup } = await createTemporaryTarget()
   const content = buildContent(4000)
@@ -308,6 +391,71 @@ test('分片进度应合计所有分片已完成字节且百分比单调不减',
     for (let index = 1; index < percents.length; index += 1) {
       assert.ok(percents[index] >= percents[index - 1], `百分比不应回退：${percents.join(',')}`)
     }
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片下载应透传调用方请求头并保留 Range 请求头', async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const requestHeaders: string[] = []
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/App-1.0.4-mac-arm64.dmg',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments: buildTestSegments(content.byteLength, 4),
+      concurrency: 4,
+      headers: { authorization: 'Bearer update-token' },
+      fetch: async (_url, init) => {
+        const headers = new Headers(init?.headers ?? {})
+        requestHeaders.push(`${headers.get('authorization')}|${headers.get('range')}`)
+        const { start, end } = parseRangeHeader(init)
+        return new Response(content.slice(start, end + 1), { status: 206 })
+      }
+    })
+
+    assert.equal(requestHeaders.length, 4)
+    assert.ok(
+      requestHeaders.every((value) => value.startsWith('Bearer update-token|bytes=')),
+      `所有分片请求都应透传鉴权头：${requestHeaders.join(', ')}`
+    )
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片请求收到 200 响应时不应按分片偏移写入完整文件', async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 4)
+  let requestCount = 0
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await assert.rejects(
+      downloadSegments({
+        url: 'https://example.com/App-1.0.4-mac-arm64.dmg',
+        temporaryPath: path,
+        total: content.byteLength,
+        segments,
+        concurrency: 4,
+        maxRetries: 2,
+        fetch: async (_url, init) => {
+          parseRangeHeader(init)
+          requestCount += 1
+          // 忽略 Range 的服务器会返回 200 和完整文件，分片下载必须拒绝它。
+          return new Response(content, { status: 200 })
+        }
+      }),
+      /分片下载失败/u
+    )
+
+    assert.equal(requestCount, 4 * 3, '每个分片都应在重试耗尽前拒绝 200 响应')
+    assert.equal(segments.every((segment) => segment.completed === 0), true)
   } finally {
     await cleanup()
   }

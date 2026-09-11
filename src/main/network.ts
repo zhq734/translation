@@ -62,6 +62,19 @@ export function translationFetch(input: string | Request, init?: RequestInit): P
 }
 
 /**
+ * 使用 electron-updater 专用会话和已配置的代理发送更新包下载请求。
+ * Windows 与 Linux 的并行下载会话必须与 electron-updater 原生下载一致，
+ * 避免代理设置只应用到其中一个路径。
+ * @param input 请求地址或 Request 对象。
+ * @param init 请求参数。
+ * @returns 网络响应。
+ * @author zhenghq
+ */
+export function updateDownloadFetch(input: string | Request, init?: RequestInit): Promise<Response> {
+  return getUpdateDownloadSession().fetch(input, init) as Promise<Response>
+}
+
+/**
  * 使用翻译专用 Electron Session 的代理解析结果创建 Edge WebSocket。
  * @param url Edge WebSocket 握手地址。
  * @param headers 模拟 Edge 浏览器扩展的握手请求头。

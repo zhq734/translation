@@ -90,11 +90,21 @@ test('网络模块应把翻译会话与 electron-updater 会话一起交给代�
 test('手动 macOS 更新服务应注入统一代理会话的 fetch', () => {
   const source = readFileSync('src/main/updater.ts', 'utf8')
 
-  assert.match(source, /import \{ translationFetch \} from '\.\/network'/u)
+  assert.match(source, /import \{ translationFetch, updateDownloadFetch \} from '\.\/network'/u)
   assert.match(
     source,
     /createManualMacUpdateService\(\{[\s\S]*?fetch:\s*translationFetch/u,
     '手动 DMG 下载必须使用应用代理会话，而不是 Node 全局 fetch'
+  )
+})
+
+test('Windows 与 Linux 并行更新下载应使用 electron-updater 代理会话的 fetch', () => {
+  const source = readFileSync('src/main/updater.ts', 'utf8')
+
+  assert.match(
+    source,
+    /installParallelUpdateDownload\(autoUpdater, updateDownloadFetch\)/u,
+    '并行更新下载必须与 electron-updater 原生下载共用代理会话'
   )
 })
 

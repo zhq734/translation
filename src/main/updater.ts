@@ -17,7 +17,7 @@ import {
   resolveManualMacDmgTarget
 } from './manualMacUpdate'
 import type { ManualMacUpdateTarget } from './manualMacUpdate'
-import { translationFetch } from './network'
+import { translationFetch, updateDownloadFetch } from './network'
 import {
   fetchRemoteBuildMetadata,
   type ReleaseBuildMetadataAsset
@@ -27,6 +27,7 @@ import {
   type ReleaseAssetDigest,
   type ReleaseChecksumStatus
 } from './releaseChecksums'
+import { installParallelUpdateDownload } from './updateHttpExecutor'
 import {
   UpdateManager,
   isMacOSDeveloperIdApplicationSignature,
@@ -80,6 +81,11 @@ class ElectronUpdateDriver implements UpdateDriver {
     // 更新器接受 web installer，保证一次下载即为完整更新。
     if (process.platform === 'win32') {
       autoUpdater.disableWebInstaller = true
+    }
+    // Windows 与 Linux 的 electron-updater 原生下载是单流连接；这里复用 macOS
+    // 手动更新已验证的分片并发下载，Range 不可用时自动回退原生下载。
+    if (process.platform === 'win32' || process.platform === 'linux') {
+      installParallelUpdateDownload(autoUpdater, updateDownloadFetch)
     }
     autoUpdater.allowPrerelease = false
     autoUpdater.fullChangelog = false

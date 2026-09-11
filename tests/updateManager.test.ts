@@ -262,6 +262,19 @@ test('Windows 与 Linux 自动更新初始化时应禁用差分下载，Windows 
   assert.doesNotMatch(source, /disableWebInstaller = false/u)
 })
 
+test('Windows 与 Linux 自动更新初始化时应启用分片并发下载，macOS 不应改变', () => {
+  const source = readFileSync('src/main/updater.ts', 'utf8')
+
+  assert.match(
+    source,
+    /if \(process\.platform === 'win32' \|\| process\.platform === 'linux'\) \{\s*installParallelUpdateDownload\(autoUpdater, updateDownloadFetch\)\s*\}/u
+  )
+  assert.doesNotMatch(
+    source,
+    /if \(process\.platform === 'darwin'\) \{\s*installParallelUpdateDownload/u
+  )
+})
+
 test('下载中的自动更新应支持取消并回到可重新下载状态', async () => {
   const { manager, driver } = createManager()
 
