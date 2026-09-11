@@ -72,6 +72,7 @@ import {
   stopAutoTrigger
 } from './autoTrigger'
 import { SelectionListenerController } from './selectionListenerController'
+import { registerWindowControls } from './windowControls'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
@@ -151,9 +152,7 @@ import {
 } from './windowsGdiCapture'
 import { captureWindowsRegionAsPng } from './windowsScreenCapture'
 import {
-  bgraToRgba,
   cropBgraSelectionPng,
-  encodeOcrSelectionPng,
   resolveSnapshotCropRect
 } from './ocrSnapshotImage'
 import { OcrDispatcher } from './ocrDispatcher'
@@ -1713,8 +1712,9 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
 }
 
 /**
- * 打开 OCR 框选窗口：先把覆盖窗口显示出来（Show-then-Capture），
- * 再异步采集鼠标所在显示器快照并回填背景图，让快捷键到遮罩出现的延迟与采集耗时解耦。
+ * 打开 OCR 框选窗口：先通知 Renderer 清理上一轮会话，再采集鼠标所在显示器快照并回填背景图。
+ * Windows 与 macOS 在采集完成前保持覆盖窗口隐藏，避免系统截图把应用自身遮罩采入 OCR 输入；
+ * Linux 保留先显示后采集的低延迟路径。
  * @returns 打开流程完成后的 Promise。
  * @author zhenghq
  */
@@ -1767,10 +1767,10 @@ async function openOcrSelection(): Promise<void> {
       restoreSelectionListenerAfterOcr(interactionToken)
       return
     }
-    // Windows 的 GDI BitBlt 会直接读取屏幕，覆盖窗口若先显示，窗口上一轮的合成表面
-    // 可能在第二次截图时仍未被 DWM 刷新，从而把上一次截图区域再次采入新快照。
-    // Windows 因此必须保持隐藏到屏幕采集完成；macOS/Linux 继续先显示再采集，保持原有交互时序。
-    const showBeforeCapture = process.platform !== 'win32'
+    // Windows GDI BitBlt 与 macOS screencapture 都会读取当前屏幕合成结果；覆盖窗口若先显示，
+    // 应用自身的半透明遮罩会进入快照，导致三个 OCR 引擎共享同一张无有效文字的输入图。
+    // 两个平台都保持隐藏到采集完成；Linux 暂时保留先显示再采集的原有交互时序。
+    const showBeforeCapture = !['win32', 'darwin'].includes(process.platform)
     let hotkeyToShowMs = 0
     if (showBeforeCapture) {
       win.show()
@@ -1796,7 +1796,7 @@ async function openOcrSelection(): Promise<void> {
       return
     }
     if (!showBeforeCapture) {
-      // 采集已经完成后再显示覆盖层，保证 Windows GDI 永远不会把本窗口的旧画面采进去。
+      // 采集已经完成后再显示覆盖层，保证 Windows/macOS 不会把本窗口遮罩采进 OCR 快照。
       win.show()
       win.focus()
       hotkeyToShowMs = Date.now() - hotkeyAt
@@ -2264,19 +2264,17 @@ async function captureOcrPreviewSnapshot(bounds: CaptureBounds): Promise<OcrPrev
 }
 
 /**
- * 从内存快照中裁出选区并编码为 OCR 输入 PNG。
- * 先用 Chromium 原生 crop 取出选区，再只对选区做通道转换、放大与 PNG 编码，
+ * 从内存快照中裁出选区并编码为原始分辨率 PNG。
+ * 先用 Chromium 原生 crop 取出选区，再只对选区做通道转换与 PNG 编码，
  * 不对整屏调用 decodePng / encodePng。
  * @param snapshot 当前内存快照。
  * @param bounds 用户选区（全局屏幕坐标）。
- * @param ocrScale OCR 放大倍率。
- * @returns 选区 PNG 字节。
+ * @returns 保持原始分辨率的选区 PNG 字节。
  * @author zhenghq
  */
 function cropSnapshotSelectionPng(
   snapshot: OcrSnapshot,
-  bounds: CaptureBounds,
-  ocrScale: number
+  bounds: CaptureBounds
 ): Buffer {
   if (snapshot.pixels) {
     return cropBgraSelectionPng(
@@ -2285,16 +2283,14 @@ function cropSnapshotSelectionPng(
       snapshot.pixels.height,
       snapshot.source,
       bounds,
-      snapshot.bounds,
-      ocrScale
+      snapshot.bounds
     )
   }
   const { width, height } = snapshot.image.getSize()
   const rect = resolveSnapshotCropRect(snapshot.source, bounds, snapshot.bounds, width, height)
-  const cropped = snapshot.image.crop(rect)
-  const size = cropped.getSize()
-  const rgba = bgraToRgba(cropped.getBitmap(), size.width, size.height)
-  return encodeOcrSelectionPng(rgba, ocrScale)
+  // 直接使用 Chromium 原生 nativeImage 裁剪与 PNG 编码，绕过 getBitmap() 在 Retina
+  // 显示器上返回物理像素与 getSize() 逻辑点数不匹配导致的像素错乱问题。
+  return snapshot.image.crop(rect).toPNG()
 }
 
 /**
@@ -2327,19 +2323,18 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
 }
 
 /**
- * 从已采集的 OCR 屏幕快照中裁剪用户确认的区域，并按 OCR 倍率放大。
+ * 从已采集的 OCR 屏幕快照中裁剪用户确认的区域，并保持原始分辨率。
  * @param bounds 用户确认的全局屏幕坐标区域。
- * @param settings 当前设置。
- * @returns 裁剪并预处理后的 PNG 图片字节。
+ * @returns 原始分辨率的裁剪 PNG 图片字节。
  * @author zhenghq
  */
-async function cropOcrSnapshotSelection(bounds: CaptureBounds, settings: Settings): Promise<Buffer> {
+async function cropOcrSnapshotSelection(bounds: CaptureBounds): Promise<Buffer> {
   const snapshot = latestOcrSnapshot
   if (!snapshot) {
     throw new ScreenCaptureError('no-source', '截图已失效，请重新截图')
   }
   // 只裁选区再编码：整屏 decodePng / encodePng 在 2K/4K 上各要数百毫秒，属于纯浪费。
-  const png = cropSnapshotSelectionPng(snapshot, bounds, settings.ocrScale)
+  const png = cropSnapshotSelectionPng(snapshot, bounds)
   await logOcrCaptureDiagnostic(png, bounds, `${snapshot.source}-crop`)
   latestOcrSnapshot = null
   return png
@@ -2374,13 +2369,13 @@ function isCurrentScreenshotRequest(request: ScreenshotOcrActionRequest): boolea
 
 /**
  * 从当前 OCR 屏幕快照中裁剪用户当前调整后的选区，不消费快照、不重新截屏。
- * 识别、复制图片和保存图片统一走此入口，保证三个动作针对同一选区。
+ * 识别、复制图片和保存图片统一走此入口，保证三个动作针对同一选区；
+ * OCR 放大由后续识别入口统一执行。
  * @param value Renderer 提交的选区矩形（截图窗口内逻辑坐标）。
- * @param settings 当前设置。
- * @returns 裁剪并预处理后的 PNG 图片字节。
+ * @returns 保持原始分辨率的裁剪 PNG 图片字节。
  * @author zhenghq
  */
-function cropCurrentOcrSelectionPng(value: unknown, settings: Settings): Buffer {
+function cropCurrentOcrSelectionPng(value: unknown): Buffer {
   const bounds = normalizeOcrSelectionBounds(value)
   if (!bounds) {
     throw new ScreenshotSelectionError('invalid-selection', '选区无效，请重新框选')
@@ -2389,7 +2384,7 @@ function cropCurrentOcrSelectionPng(value: unknown, settings: Settings): Buffer 
   if (!snapshot) {
     throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
   }
-  return cropSnapshotSelectionPng(snapshot, bounds, settings.ocrScale)
+  return cropSnapshotSelectionPng(snapshot, bounds)
 }
 
 /**
@@ -2494,7 +2489,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
   if (!request || !isCurrentScreenshotRequest(request)) return
   const settings = getSettings()
   try {
-    const png = cropCurrentOcrSelectionPng(request.bounds, settings)
+    const png = cropCurrentOcrSelectionPng(request.bounds)
     const preparedImageBytes = preprocessOcrImageBytes(png, settings.ocrScale)
     const dispatcher = createOcrDispatcher(settings)
     const ocr = await dispatcher.recognize({
@@ -2785,7 +2780,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
   const anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
   const closeVersion = getPopupCloseVersion()
   try {
-    const imageBytes = await cropOcrSnapshotSelection(bounds, settings)
+    const imageBytes = await cropOcrSnapshotSelection(bounds)
     restoreSelectionListener()
     showPopup({
       ok: true,
@@ -3066,10 +3061,12 @@ function createSettingsWindow(): BrowserWindow {
     minWidth: 640,
     minHeight: 600,
     title: '划词翻译 · 设置',
+    frame: false,
     resizable: true,
     minimizable: true,
-    maximizable: false,
+    maximizable: true,
     fullscreenable: false,
+    backgroundColor: '#f5f7fa',
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
@@ -3477,6 +3474,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
  * @author zhenghq
  */
 function registerIpc(): void {
+  registerWindowControls({
+    isAllowedWindow: (window) => window === settingsWin || Boolean(webReader?.ownsWindow(window))
+  })
   ipcMain.on('popup:copy', (_event, text: unknown) => {
     clipboard.writeText(String(text ?? ''))
   })

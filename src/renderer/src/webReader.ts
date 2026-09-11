@@ -23,6 +23,11 @@ const cancelButton = document.getElementById('web-cancel') as HTMLButtonElement
 const modeSelect = document.getElementById('web-mode') as HTMLSelectElement
 const viewSlot = document.getElementById('web-view-slot') as HTMLElement
 const status = document.getElementById('web-status') as HTMLElement
+const loadingProgress = document.getElementById('web-loading-progress') as HTMLElement
+const readerTitlebar = document.getElementById('web-reader-titlebar') as HTMLElement
+const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
+const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
+const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement
 
 let currentState: WebReaderState | null = null
 let translating = false
@@ -37,6 +42,40 @@ let translationGeneration = 0
 function syncViewBounds(): void {
   const rect = viewSlot.getBoundingClientRect()
   window.api.webViewSetBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })
+}
+
+/**
+ * 根据窗口最大化状态更新阅读器标题栏图标和无障碍状态。
+ * @param maximized 当前窗口是否已最大化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderWindowMaximizedState(maximized: boolean): void {
+  const ariaLabel = maximized ? '还原' : '最大化'
+  windowMaximizeButton.ariaLabel = ariaLabel
+  windowMaximizeButton.title = ariaLabel
+  windowMaximizeButton.dataset.maximized = String(maximized)
+  document.documentElement.dataset.maximized = String(maximized)
+  windowMaximizeButton.innerHTML = maximized
+    ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h7v7H5z" /><path d="M3 11V3h8" /></svg>'
+    : '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>'
+}
+
+/**
+ * 初始化网页阅读器自绘标题栏窗口控制和双击切换行为。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeWindowTitlebar(): Promise<void> {
+  windowMinimizeButton.addEventListener('click', () => window.api.windowMinimize())
+  windowMaximizeButton.addEventListener('click', () => window.api.windowToggleMaximize())
+  windowCloseButton.addEventListener('click', () => window.api.windowClose())
+  readerTitlebar.addEventListener('dblclick', (event) => {
+    if ((event.target as HTMLElement).closest('.window-controls')) return
+    window.api.windowToggleMaximize()
+  })
+  window.api.onWindowMaximizedChanged(renderWindowMaximizedState)
+  renderWindowMaximizedState(await window.api.windowIsMaximized())
 }
 
 /**
@@ -86,6 +125,8 @@ function renderReaderState(state: WebReaderState): void {
     cancelButton.disabled = true
   }
   currentState = state
+  loadingProgress.hidden = !state.loading
+  loadingProgress.setAttribute('aria-valuenow', state.loading ? '50' : '100')
   if (document.activeElement !== address) address.value = state.url
   backButton.disabled = !state.canGoBack
   forwardButton.disabled = !state.canGoForward
@@ -232,6 +273,7 @@ const resizeObserver = new ResizeObserver(syncViewBounds)
 resizeObserver.observe(viewSlot)
 window.addEventListener('resize', syncViewBounds)
 window.addEventListener('beforeunload', () => resizeObserver.disconnect())
+void initializeWindowTitlebar()
 window.api.onWebReaderState(renderReaderState)
 window.api.onWebTranslateProgress(renderProgress)
 window.api.onWebTranslatePageUpdated((updated) => {

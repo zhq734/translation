@@ -1,0 +1,188 @@
+/* 五类 Renderer 共用的跨平台扁平化基础层。 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-family-sans);
+}
+
+body {
+  color: var(--text-primary);
+  font-size: var(--font-size-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+select,
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']),
+textarea {
+  min-height: var(--control-height);
+  border: var(--border-width) solid var(--border-control);
+  border-radius: var(--radius-control);
+  color: inherit;
+  font: inherit;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
+hr,
+.flat-divider {
+  height: var(--border-width);
+  margin: var(--space-3) 0;
+  border: 0;
+  background: var(--divider);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--control-height);
+  min-inline-size: var(--control-height);
+  padding: 0;
+}
+
+:where(button, .icon-button) svg {
+  inline-size: var(--icon-size-md);
+  block-size: var(--icon-size-md);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.flat-overlay {
+  border: var(--border-width) solid var(--popup-border);
+  border-radius: var(--radius-overlay);
+  background: var(--overlay-bg);
+  box-shadow: var(--shadow-overlay);
+}
+
+/* 设置页与网页阅读器共用的无边框窗口标题栏。 */
+.window-titlebar {
+  display: flex;
+  flex: 0 0 var(--titlebar-height);
+  align-items: center;
+  justify-content: space-between;
+  height: var(--titlebar-height);
+  border-bottom: var(--border-width) solid var(--border-default);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.window-titlebar-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-4);
+  font-size: var(--font-size-label);
+  font-weight: 650;
+}
+
+.window-titlebar-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: var(--radius-control);
+  background: var(--accent-gradient);
+  color: var(--button-text);
+  font-size: var(--font-size-caption);
+}
+
+.window-titlebar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  min-height: var(--titlebar-height);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button:hover {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.window-control-button.window-control-close:hover {
+  background: var(--status-error);
+  color: var(--button-text);
+}
+
+.window-control-button:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.window-control-button svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

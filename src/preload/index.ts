@@ -35,6 +35,49 @@ import type {
 
 const api: Api = {
   /**
+   * 最小化当前受信任窗口。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  windowMinimize() {
+    ipcRenderer.send('window:minimize')
+  },
+  /**
+   * 切换当前受信任窗口的最大化或恢复状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  windowToggleMaximize() {
+    ipcRenderer.send('window:toggle-maximize')
+  },
+  /**
+   * 关闭当前受信任窗口。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  windowClose() {
+    ipcRenderer.send('window:close')
+  },
+  /**
+   * 读取当前受信任窗口是否已最大化。
+   * @returns 最大化状态。
+   * @author zhenghq
+   */
+  windowIsMaximized() {
+    return ipcRenderer.invoke('window:is-maximized')
+  },
+  /**
+   * 订阅当前受信任窗口的最大化状态变化。
+   * @param callback 最大化状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onWindowMaximizedChanged(callback: (maximized: boolean) => void) {
+    const listener = (_event: unknown, maximized: boolean): void => callback(maximized)
+    ipcRenderer.on('window:maximized-changed', listener)
+    return () => ipcRenderer.removeListener('window:maximized-changed', listener)
+  },
+  /**
    * 订阅翻译结果。
    * @param callback 翻译负载回调。
    * @returns 取消订阅方法。

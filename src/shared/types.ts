@@ -899,6 +899,16 @@ export interface CaptureDiagnosticsSummary {
 }
 
 export interface Api {
+  /** 最小化当前受信任窗口。 */
+  windowMinimize(): void
+  /** 切换当前受信任窗口的最大化或恢复状态。 */
+  windowToggleMaximize(): void
+  /** 关闭当前受信任窗口。 */
+  windowClose(): void
+  /** 读取当前受信任窗口是否已最大化。 */
+  windowIsMaximized(): Promise<boolean>
+  /** 订阅当前受信任窗口的最大化状态变化。 */
+  onWindowMaximizedChanged(cb: (maximized: boolean) => void): () => void
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
   /** 订阅主进程打开手动翻译模式的通知。 */

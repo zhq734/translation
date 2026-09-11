@@ -1,5 +1,33 @@
 :root {
   color-scheme: light dark;
+  /* 跨平台共享设计 Token：所有 Renderer 使用同一套视觉尺度。 */
+  --font-family-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-size-caption: 12px;
+  --font-size-body: 14px;
+  --font-size-label: 13px;
+  --font-size-title: 20px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --control-height-compact: 28px;
+  --control-height: 32px;
+  --control-height-primary: 36px;
+  --titlebar-height: 40px;
+  --icon-size-sm: 16px;
+  --icon-size-md: 20px;
+  --icon-size-lg: 24px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-overlay: 12px;
+  --border-width: 1px;
+  --shadow-overlay: 0 12px 44px var(--popup-shadow);
+  --z-titlebar: 100;
+  --z-overlay: 1000;
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --page-bg: #f5f5f7;
   --panel-bg: #ffffff;
   --panel-shadow: rgba(0, 0, 0, 0.04);
@@ -31,6 +59,14 @@
   --toast-text: #ffffff;
   --status-success: #248a3d;
   --status-error: #d70015;
+  --status-warning: #9a6700;
+  /* 新组件只依赖语义别名，主题切换仍由现有基础变量驱动。 */
+  --bg-primary: var(--page-bg);
+  --bg-elevated: var(--panel-bg);
+  --text-danger: var(--status-error);
+  --overlay-bg: var(--popup-bg);
+  --capture-accent: var(--button-bg);
+  --focus-outline: var(--button-bg);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -63,6 +99,7 @@
     --toast-text: #ffffff;
     --status-success: #34c759;
     --status-error: #ff6961;
+    --status-warning: #ffd60a;
   }
 }
 

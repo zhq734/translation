@@ -8,13 +8,14 @@
     />
     <title>划词翻译</title>
     <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <div id="popup">
-      <div class="drag-handle" title="拖动弹窗" aria-hidden="true"></div>
+      <div class="drag-handle" title="拖动弹窗" aria-label="拖动翻译弹窗"></div>
       <div class="header">
-        <div class="language-picker" aria-label="翻译语言">
+        <div class="language-picker" aria-label="翻译语言工具栏">
           <select id="source-lang" title="源语言"></select>
           <span class="language-arrow" aria-hidden="true">→</span>
           <select id="target-lang" title="目标语言"></select>
@@ -88,7 +89,7 @@
           <div id="manual-result" class="manual-result" aria-live="polite"></div>
         </div>
       </section>
-      <div class="footer">
+      <div class="footer popup-status-actions" aria-label="翻译状态和操作">
         <div class="footer-meta">
           <span id="status"></span>
           <select id="translation-provider" aria-label="翻译 API" title="选择首选翻译 API"></select>

@@ -130,6 +130,16 @@ export class WebReaderManager {
   }
 
   /**
+   * 判断指定窗口是否为当前有效的网页阅读器壳窗口。
+   * @param window 待校验窗口。
+   * @returns 属于当前有效阅读器壳窗口时返回 true。
+   * @author zhenghq
+   */
+  ownsWindow(window: BrowserWindow): boolean {
+    return this.window === window && !window.isDestroyed()
+  }
+
+  /**
    * 激活仍然存在的网页阅读器窗口。
    * @returns 已成功激活时返回 true；窗口不存在或已销毁时返回 false。
    * @author zhenghq
@@ -216,7 +226,21 @@ export class WebReaderManager {
   setBounds(bounds: WebViewBounds): void {
     if (!this.window || !this.view || this.window.isDestroyed()) return
     const [width, height] = this.window.getContentSize()
-    this.view.setBounds(sanitizeWebViewBounds(bounds, { width, height }))
+    this.view.setBounds(this.calculateViewBounds(bounds, { width, height }))
+  }
+
+  /**
+   * 计算远程网页视图的安全可用区域，确保标题栏和本地工具栏不被覆盖。
+   * @param bounds Renderer 占位区矩形。
+   * @param contentSize 当前窗口内容区尺寸。
+   * @returns 裁剪后的 WebContentsView 矩形。
+   * @author zhenghq
+   */
+  private calculateViewBounds(
+    bounds: WebViewBounds,
+    contentSize: Pick<Rectangle, 'width' | 'height'>
+  ): Rectangle {
+    return sanitizeWebViewBounds(bounds, contentSize)
   }
 
   /** 显式提取当前已渲染网页文本并启动初始加载增量收集器。
@@ -755,6 +779,11 @@ export class WebReaderManager {
       minWidth: 760,
       minHeight: 520,
       title: '划词翻译 · 网页翻译',
+      frame: false,
+      resizable: true,
+      maximizable: true,
+      fullscreenable: false,
+      backgroundColor: '#f5f7fa',
       webPreferences: { preload: this.options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
     const view = new WebContentsView({

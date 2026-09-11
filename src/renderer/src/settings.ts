@@ -103,22 +103,30 @@ const openReleaseButton = document.getElementById('open-release') as HTMLButtonE
 const removeQuarantineButton = document.getElementById('remove-quarantine') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
+const settingsTitlebar = document.getElementById('settings-titlebar') as HTMLElement
+const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
+const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
+const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement
 
-type SettingsTabId = 'general' | 'ai' | 'ocr' | 'dingtalk' | 'microsoft' | 'deeplx' | 'advanced' | 'logs' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'ocr' | 'translation-services' | 'advanced' | 'logs' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'general',
   'ai',
   'ocr',
-  'dingtalk',
-  'microsoft',
-  'deeplx',
+  'translation-services',
   'advanced',
   'logs',
   'about'
 ]
+const LEGACY_SETTINGS_TAB_MAP: Record<string, SettingsTabId> = {
+  dingtalk: 'translation-services',
+  microsoft: 'translation-services',
+  deeplx: 'translation-services'
+}
 const SETTINGS_TAB_STORAGE_KEY = 'selection-translator.settings.active-tab'
+const settingsGroupScrollPositions = new Map<SettingsTabId, number>()
 const settingsTabButtons = [
   ...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')
 ]
@@ -144,8 +152,9 @@ function isSettingsTabId(value: string | null): value is SettingsTabId {
  * @returns 查询参数中的合法 Tab；不存在或不合法时返回 null。
  * @author zhenghq
  */
-function readSettingsTabFromQuery(): SettingsTabId | null {
-  const tabId = new URLSearchParams(window.location.search).get('tab')
+function readSettingsTabFromHash(): SettingsTabId | null {
+  const rawTabId = window.location.hash.replace(/^#/u, '').trim().toLowerCase()
+  const tabId = LEGACY_SETTINGS_TAB_MAP[rawTabId] ?? rawTabId
   return isSettingsTabId(tabId) ? tabId : null
 }
 
@@ -178,7 +187,7 @@ function storeSettingsTab(tabId: SettingsTabId): void {
 }
 
 /**
- * 将当前设置页 Tab 同步到 URL，以支持前进后退恢复页面状态。
+ * 将当前设置页 Tab 同步到 URL hash，以支持前进后退恢复页面状态。
  * @param tabId 当前激活的 Tab 标识。
  * @param historyMode 历史记录更新方式。
  * @returns 无返回值。
@@ -192,7 +201,7 @@ function syncSettingsTabToHistory(
 
   try {
     const url = new URL(window.location.href)
-    url.searchParams.set('tab', tabId)
+    url.hash = tabId
     if (historyMode === 'push') {
       window.history.pushState({ settingsTab: tabId }, '', url)
       return
@@ -216,6 +225,10 @@ function activateSettingsTab(
   focusTab: boolean,
   historyMode: SettingsTabHistoryMode
 ): void {
+  const activePanel = settingsTabPanels.find((panel) => !panel.hidden)
+  const activeTabId = activePanel?.dataset.tabPanel as SettingsTabId | undefined
+  if (activeTabId && activePanel) settingsGroupScrollPositions.set(activeTabId, activePanel.scrollTop)
+
   let activeButton: HTMLButtonElement | undefined
   for (const button of settingsTabButtons) {
     const active = button.dataset.tab === tabId
@@ -230,6 +243,12 @@ function activateSettingsTab(
 
   storeSettingsTab(tabId)
   syncSettingsTabToHistory(tabId, historyMode)
+  const nextPanel = settingsTabPanels.find((panel) => panel.dataset.tabPanel === tabId)
+  if (nextPanel) {
+    requestAnimationFrame(() => {
+      nextPanel.scrollTop = settingsGroupScrollPositions.get(tabId) ?? 0
+    })
+  }
   if (focusTab) activeButton?.focus()
 }
 
@@ -257,9 +276,9 @@ function handleSettingsTabKeydown(event: KeyboardEvent): void {
 
   const currentIndex = SETTINGS_TAB_IDS.indexOf(currentTabId)
   let nextIndex: number | null = null
-  if (event.key === 'ArrowLeft') {
+  if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
     nextIndex = (currentIndex - 1 + SETTINGS_TAB_IDS.length) % SETTINGS_TAB_IDS.length
-  } else if (event.key === 'ArrowRight') {
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
     nextIndex = (currentIndex + 1) % SETTINGS_TAB_IDS.length
   } else if (event.key === 'Home') {
     nextIndex = 0
@@ -278,7 +297,7 @@ function handleSettingsTabKeydown(event: KeyboardEvent): void {
  * @author zhenghq
  */
 function initializeSettingsTabs(): void {
-  const initialTab = readSettingsTabFromQuery() ?? readStoredSettingsTab() ?? 'general'
+  const initialTab = readSettingsTabFromHash() ?? readStoredSettingsTab() ?? 'general'
   activateSettingsTab(initialTab, false, 'replace')
 
   for (const button of settingsTabButtons) {
@@ -286,9 +305,46 @@ function initializeSettingsTabs(): void {
     button.addEventListener('keydown', handleSettingsTabKeydown)
   }
 
-  window.addEventListener('popstate', () => {
-    activateSettingsTab(readSettingsTabFromQuery() ?? 'general', false, 'none')
+  window.addEventListener('hashchange', () => {
+    activateSettingsTab(readSettingsTabFromHash() ?? 'general', false, 'none')
   })
+  window.addEventListener('popstate', () => {
+    activateSettingsTab(readSettingsTabFromHash() ?? 'general', false, 'none')
+  })
+}
+
+/**
+ * 根据窗口最大化状态更新标题栏图标、ARIA 名称和状态标记。
+ * @param maximized 当前窗口是否已最大化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderWindowMaximizedState(maximized: boolean): void {
+  const ariaLabel = maximized ? '还原' : '最大化'
+  windowMaximizeButton.ariaLabel = ariaLabel
+  windowMaximizeButton.title = ariaLabel
+  windowMaximizeButton.dataset.maximized = String(maximized)
+  document.documentElement.dataset.maximized = String(maximized)
+  windowMaximizeButton.innerHTML = maximized
+    ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h7v7H5z" /><path d="M3 11V3h8" /></svg>'
+    : '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>'
+}
+
+/**
+ * 初始化设置窗口自绘标题栏按钮、拖动区域双击和最大化状态订阅。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeWindowTitlebar(): Promise<void> {
+  windowMinimizeButton.addEventListener('click', () => window.api.windowMinimize())
+  windowMaximizeButton.addEventListener('click', () => window.api.windowToggleMaximize())
+  windowCloseButton.addEventListener('click', () => window.api.windowClose())
+  settingsTitlebar.addEventListener('dblclick', (event) => {
+    if ((event.target as HTMLElement).closest('.window-controls')) return
+    window.api.windowToggleMaximize()
+  })
+  window.api.onWindowMaximizedChanged(renderWindowMaximizedState)
+  renderWindowMaximizedState(await window.api.windowIsMaximized())
 }
 
 /**
@@ -1461,6 +1517,7 @@ function requestStopService(): void {
   window.api.stopService()
 }
 
+void initializeWindowTitlebar()
 initializeSettingsTabs()
 
 themeMode.addEventListener('change', saveThemeMode)
@@ -1724,7 +1781,7 @@ for (const button of settingsTabButtons) {
   })
 }
 // 通过 URL 查询参数直达日志 Tab 时同样需要初始化
-if (readSettingsTabFromQuery() === 'logs') void initializeLogsPanel()
+if (readSettingsTabFromHash() === 'logs') void initializeLogsPanel()
 
 // ---- 取词诊断面板 ----
 
@@ -1936,4 +1993,4 @@ for (const button of settingsTabButtons) {
     if (button.dataset.tab === 'logs') void initializeDiagnosticsPanel()
   })
 }
-if (readSettingsTabFromQuery() === 'logs') void initializeDiagnosticsPanel()
+if (readSettingsTabFromHash() === 'logs') void initializeDiagnosticsPanel()

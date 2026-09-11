@@ -1,7 +1,6 @@
 * {
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
 }
 
 html,
@@ -15,17 +14,109 @@ body {
 body {
   color: var(--text-primary);
   background: var(--page-bg);
-  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+.window-titlebar {
+  display: flex;
+  flex: 0 0 var(--titlebar-height);
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.window-titlebar-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-4);
+  font-size: var(--font-size-label);
+  font-weight: 650;
+}
+
+.window-titlebar-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 6px;
+  background: var(--accent-gradient);
+  color: var(--button-text);
+  font-size: 12px;
+}
+
+.window-titlebar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  min-height: var(--titlebar-height);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button:hover {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.window-control-button.window-control-close:hover {
+  background: var(--status-error);
+  color: var(--button-text);
+}
+
+.window-control-button:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.window-control-button svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.legacy-settings-anchor {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 .container {
   display: flex;
   flex-direction: column;
   width: min(100%, 1100px);
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-height));
   min-height: 0;
   margin: 0 auto;
   padding: clamp(16px, 3vw, 24px) clamp(16px, 4vw, 24px) 12px;
@@ -64,19 +155,35 @@ h1 {
 
 .settings-tabs {
   display: flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  margin-bottom: 14px;
-  padding: 5px;
+}
+
+.settings-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: var(--space-4);
+}
+
+.settings-sidebar {
+  display: flex;
+  flex: 0 0 184px;
+  width: 184px;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
   border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   background: var(--bg-secondary);
-  overflow-x: auto;
-  scrollbar-width: thin;
+}
+
+.settings-sidebar .settings-tab {
+  width: 100%;
 }
 
 .settings-tab {
-  flex: 1 0 max-content;
+  flex: 0 0 auto;
   min-height: 36px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -86,7 +193,7 @@ h1 {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  padding: 7px 14px;
+  padding: 7px 12px;
   white-space: nowrap;
 }
 
@@ -97,9 +204,9 @@ h1 {
 
 .settings-tab[aria-selected='true'] {
   border-color: var(--button-bg);
-  background: var(--accent-gradient);
-  color: var(--button-text);
-  box-shadow: 0 1px 2px var(--panel-shadow);
+  background: var(--button-secondary-hover);
+  color: var(--button-bg);
+  box-shadow: none;
 }
 
 .settings-tab:focus-visible {
@@ -111,6 +218,12 @@ h1 {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .tab-panel {
@@ -138,7 +251,7 @@ section {
   border-radius: 12px;
   background: var(--panel-bg);
   padding: clamp(14px, 3vw, 18px);
-  box-shadow: 0 1px 2px var(--panel-shadow);
+  box-shadow: none;
 }
 
 section:last-child {
@@ -737,6 +850,22 @@ input[type='number']:disabled {
 
   .update-actions .btn {
     flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-layout {
+    gap: var(--space-2);
+  }
+
+  .settings-sidebar {
+    flex-basis: 132px;
+    width: 132px;
+  }
+
+  .settings-tab {
+    padding-inline: var(--space-2);
+    text-align: left;
   }
 }
 

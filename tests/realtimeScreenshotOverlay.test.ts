@@ -25,12 +25,12 @@ function sliceFunction(source: string, signature: string): string {
 }
 
 /**
- * 校验 Windows 采集时覆盖窗口保持隐藏，避免 GDI 把上一次覆盖层画面再次采进新截图；
- * macOS/Linux 仍保留先显示后采集的低延迟路径。
+ * 校验 Windows 与 macOS 采集时覆盖窗口保持隐藏，避免把应用自身遮罩采进新截图；
+ * Linux 保留先显示后采集的低延迟路径。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('openOcrSelection 应避免 Windows 覆盖层参与屏幕采集', () => {
+test('openOcrSelection 应避免 Windows 与 macOS 覆盖层参与屏幕采集', () => {
   const source = sliceFunction(main, 'async function openOcrSelection')
   const showIndex = source.lastIndexOf('win.show()')
   const beginIndex = source.indexOf("'ocr-selection:begin'")
@@ -39,10 +39,10 @@ test('openOcrSelection 应避免 Windows 覆盖层参与屏幕采集', () => {
   assert.ok(beginIndex >= 0, '应发送 begin 事件')
   assert.ok(captureIndex >= 0, '应采集预览快照')
   assert.ok(beginIndex < captureIndex, 'begin 事件必须早于屏幕采集')
-  assert.match(source, /const showBeforeCapture = process\.platform !== 'win32'/u)
+  assert.match(source, /const showBeforeCapture = !\['win32', 'darwin'\]\.includes\(process\.platform\)/u)
   assert.match(source, /if \(showBeforeCapture\) \{[\s\S]*?win\.show\(\)/u)
   assert.match(source, /if \(!showBeforeCapture\) \{[\s\S]*?win\.show\(\)/u)
-  assert.ok(showIndex > captureIndex, 'Windows 覆盖窗口必须在采集完成后显示')
+  assert.ok(showIndex > captureIndex, 'Windows 与 macOS 覆盖窗口必须在采集完成后显示')
   assert.match(source, /win\.setBounds\(display\.bounds\)/u)
 })
 

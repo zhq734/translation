@@ -64,8 +64,7 @@ test('cropBgraSelectionPng 裁剪 BGRA 选区编码后红蓝不得互换', () =>
     height,
     'windows-gdi-copyscreen-preview',
     { x: 4, y: 4, width: 8, height: 8 },
-    { x: 0, y: 0, width, height },
-    1
+    { x: 0, y: 0, width, height }
   )
   const decoded = decodePng(png)
   assert.equal(decoded.width, 8)
@@ -80,11 +79,11 @@ test('cropBgraSelectionPng 裁剪 BGRA 选区编码后红蓝不得互换', () =>
 })
 
 /**
- * 校验从 BGRA 缓冲裁剪选区时按显示器物理比例换算裁剪矩形，并按 OCR 倍率放大。
+ * 校验从 BGRA 缓冲裁剪选区时只按显示器物理比例换算裁剪矩形，不提前执行 OCR 放大。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('cropBgraSelectionPng 裁剪选区应按倍率放大', () => {
+test('cropBgraSelectionPng 裁剪选区应保持原始分辨率', () => {
   const bgra = new Uint8Array(16 * 16 * 4).fill(0xff)
   const png = cropBgraSelectionPng(
     bgra,
@@ -92,12 +91,11 @@ test('cropBgraSelectionPng 裁剪选区应按倍率放大', () => {
     16,
     'windows-gdi-copyscreen-preview',
     { x: 4, y: 4, width: 8, height: 8 },
-    { x: 0, y: 0, width: 16, height: 16 },
-    2
+    { x: 0, y: 0, width: 16, height: 16 }
   )
   const decoded = decodePng(png)
-  assert.equal(decoded.width, 16)
-  assert.equal(decoded.height, 16)
+  assert.equal(decoded.width, 8)
+  assert.equal(decoded.height, 8)
 })
 
 /**

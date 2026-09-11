@@ -1,6 +1,7 @@
 import type { Api, Settings, ThemeMode, ThemePreset } from '../../shared/types'
 
 const THEME_CACHE_KEY = 'selection-translator.theme'
+const DEFAULT_THEME: ThemePreset = 'sky'
 const THEME_PRESETS: readonly ThemePreset[] = ['sakura', 'emerald', 'sky', 'navy', 'platinum-black']
 const THEME_MODES: readonly ThemeMode[] = ['system', 'light', 'dark']
 
@@ -69,7 +70,7 @@ function cacheTheme(settings: Pick<Settings, 'themePreset' | 'themeMode'>): void
  * @author zhenghq
  */
 export function applyTheme(settings: Pick<Settings, 'themePreset' | 'themeMode'>): void {
-  const themePreset = isThemePreset(settings.themePreset) ? settings.themePreset : 'sky'
+  const themePreset = isThemePreset(settings.themePreset) ? settings.themePreset : DEFAULT_THEME
   const themeMode = isThemeMode(settings.themeMode) ? settings.themeMode : 'system'
   const root = document.documentElement
   root.setAttribute('data-theme', themePreset)
@@ -88,7 +89,7 @@ export function startThemeRuntime(api: ThemeApi): () => void {
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   let currentTheme: Pick<Settings, 'themePreset' | 'themeMode'> = cached ?? {
-    themePreset: 'sky',
+    themePreset: DEFAULT_THEME,
     themeMode: 'system'
   }
   const handleSystemThemeChange = (): void => {

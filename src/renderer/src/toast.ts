@@ -5,6 +5,8 @@ import { startThemeRuntime } from './theme'
 startThemeRuntime(window.api)
 
 const toastElement = document.getElementById('toast') as HTMLElement
+const toastIcon = document.getElementById('toast-icon') as HTMLElement
+const toastMessage = document.getElementById('toast-message') as HTMLElement
 
 /**
  * 展示一条截图动作提示：设置文本后通过主进程完成尺寸测量与窗口居中显示。
@@ -14,7 +16,11 @@ const toastElement = document.getElementById('toast') as HTMLElement
  * @author zhenghq
  */
 function showToast(message: string, displayTimeMs: number): void {
-  toastElement.textContent = message
+  toastMessage.textContent = message
+  const isError = /失败|错误|无法|离线/u.test(message)
+  const isWarning = /警告|注意|重试/u.test(message)
+  toastElement.dataset.state = isError ? 'error' : isWarning ? 'warning' : 'success'
+  toastIcon.textContent = isError ? '!' : isWarning ? '!' : '✓'
   // 先测量内容尺寸，让主进程据此调整窗口大小并居中到当前屏幕。
   const rect = toastElement.getBoundingClientRect()
   window.api.showScreenshotToastWindow({

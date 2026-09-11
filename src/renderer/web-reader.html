@@ -5,11 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>网页翻译</title>
     <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
     <link rel="stylesheet" href="./src/webReader.css" />
   </head>
   <body>
     <main class="web-reader-shell">
-      <header class="web-toolbar" aria-label="网页翻译工具栏">
+      <header id="web-reader-titlebar" class="window-titlebar" aria-label="网页翻译窗口标题栏">
+        <div class="window-titlebar-brand" aria-label="划词翻译网页翻译">
+          <span class="window-titlebar-mark" aria-hidden="true">译</span>
+          <span class="window-titlebar-title">网页翻译</span>
+        </div>
+        <div class="window-controls" aria-label="窗口控制">
+          <button id="window-minimize" class="window-control-button" type="button" aria-label="最小化" title="最小化">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+          </button>
+          <button id="window-maximize" class="window-control-button" type="button" aria-label="最大化" title="最大化">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>
+          </button>
+          <button id="window-close" class="window-control-button window-control-close" type="button" aria-label="关闭" title="关闭">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
+          </button>
+        </div>
+      </header>
+      <header class="web-toolbar" aria-label="网页翻译导航工具栏">
         <div class="web-navigation-actions">
           <button id="web-back" class="icon-button" type="button" title="后退" disabled aria-label="后退">←</button>
           <button id="web-forward" class="icon-button" type="button" title="前进" disabled aria-label="前进">→</button>
@@ -34,6 +52,7 @@
           </select>
         </label>
       </header>
+      <div id="web-loading-progress" class="web-loading-progress" role="progressbar" aria-label="网页加载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden></div>
       <div id="web-status" class="web-status" role="status" aria-live="polite">请输入网页地址</div>
       <section id="web-view-slot" class="web-view-slot" aria-label="网页内容区域"></section>
     </main>

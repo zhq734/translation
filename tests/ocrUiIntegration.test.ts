@@ -182,11 +182,11 @@ test('OCR 框选期间应暂停并屏蔽普通划词监听', () => {
 })
 
 /**
- * 校验截图采集发生在弹窗 loading 展示之前，并等待框选窗口隐藏生效，避免截到自身遮罩或弹窗。
+ * 校验框选会话先完成清理，Windows/macOS 隐藏采集快照后再把快照传给 Renderer。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 截图应先显示框选窗口，再把快照传给 Renderer 调整选区', () => {
+test('OCR 截图应先清理框选会话，再把隐藏采集的快照传给 Renderer 调整选区', () => {
   const openStart = main.indexOf('async function openOcrSelection')
   const openEnd = main.indexOf('\n}\n', openStart)
   const openSource = main.slice(openStart, openEnd)
@@ -195,7 +195,7 @@ test('OCR 截图应先显示框选窗口，再把快照传给 Renderer 调整选
   const submitSource = main.slice(submitStart, submitEnd)
 
   assert.match(openSource, /captureOcrPreviewSnapshot\(display\.bounds\)/u)
-  // Show-then-Capture：先发 begin 出遮罩，采集完成后再用 snapshot 填图
+  // begin 只负责让隐藏的 Renderer 清理旧会话；Windows/macOS 此时不得显示遮罩。
   assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:begin'/u)
   assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:snapshot'/u)
   assert.match(openSource, /imageDataUrl:\s*preview\.previewDataUrl/u)
@@ -203,7 +203,8 @@ test('OCR 截图应先显示框选窗口，再把快照传给 Renderer 调整选
     openSource.indexOf("'ocr-selection:begin'") < openSource.indexOf('captureOcrPreviewSnapshot('),
     'begin 事件必须早于屏幕采集'
   )
-  assert.match(submitSource, /cropOcrSnapshotSelection\(bounds,\s*settings\)/u)
+  assert.match(submitSource, /cropOcrSnapshotSelection\(bounds\)/u)
+  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings\)/u)
   assert.doesNotMatch(submitSource, /await sleep\(OCR_CAPTURE_SETTLE_DELAY_MS\)/u)
   assert.doesNotMatch(submitSource, /captureOcrSelectionPng\(bounds,\s*settings\)/u)
 })

@@ -99,7 +99,9 @@ test('主进程应提供统一的当前快照选区裁剪函数', () => {
   assert.match(cropSource, /normalizeOcrSelectionBounds/u)
   assert.match(cropSource, /latestOcrSnapshot/u)
   // 裁剪坐标换算收敛到 cropSnapshotSelectionPng → resolveSnapshotCropRect
-  assert.match(cropSource, /cropSnapshotSelectionPng\(snapshot,\s*bounds,\s*settings\.ocrScale\)/u)
+  assert.match(cropSource, /cropSnapshotSelectionPng\(snapshot,\s*bounds\)/u)
+  // 裁剪阶段保持原始分辨率，OCR 放大统一由识别入口执行，避免重复重采样。
+  assert.doesNotMatch(cropSource, /ocrScale|preprocessOcrImageBytes/u)
 })
 
 /**
@@ -114,6 +116,7 @@ test('主进程应实现截图文字识别并通过结果事件回传文本', ()
   const source = main.slice(start, end)
 
   assert.match(source, /cropCurrentOcrSelectionPng/u)
+  assert.equal(source.match(/preprocessOcrImageBytes\(/gu)?.length, 1)
   assert.match(source, /dispatcher\.recognize\(/u)
   assert.match(source, /sendScreenshotRecognizeResult\(/u)
   assert.match(main, /webContents\.send\('ocr-selection:recognize-result'/u)
@@ -186,7 +189,9 @@ test('截图翻译动作应复用现有 OCR 翻译流程', () => {
   assert.match(main, /async function translateOcrSelectionAction\(/u)
   assert.match(main, /ipcMain\.on\('ocr-selection:translate'/u)
   // 翻译继续走既有 submitOcrSelection 核心路径（隐藏窗口并打开翻译弹窗）
-  assert.match(main, /cropOcrSnapshotSelection\(bounds,\s*settings\)/u)
+  assert.match(main, /cropOcrSnapshotSelection\(bounds\)/u)
+  // 翻译仍通过统一 OCR 流程执行一次预处理，不在裁剪阶段重复缩放。
+  assert.match(main, /processOcrImageBytes\(imageBytes,\s*settings\)/u)
 })
 
 /**

@@ -9,9 +9,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>划词翻译 · 设置</title>
     <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
     <link rel="stylesheet" href="./src/settings.css" />
   </head>
   <body>
+    <header id="settings-titlebar" class="window-titlebar" aria-label="设置窗口标题栏">
+      <div class="window-titlebar-brand" aria-label="划词翻译设置">
+        <span class="window-titlebar-mark" aria-hidden="true">译</span>
+        <span class="window-titlebar-title">划词翻译 · 设置</span>
+      </div>
+      <div class="window-controls" aria-label="窗口控制">
+        <button id="window-minimize" class="window-control-button" type="button" aria-label="最小化" title="最小化">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+        </button>
+        <button id="window-maximize" class="window-control-button" type="button" aria-label="最大化" title="最大化">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>
+        </button>
+        <button id="window-close" class="window-control-button window-control-close" type="button" aria-label="关闭" title="关闭">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
+        </button>
+      </div>
+    </header>
     <main class="container">
       <header class="page-header">
         <div>
@@ -21,7 +39,8 @@
         <span id="schema-version" class="version" title="配置结构版本"></span>
       </header>
 
-      <nav class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="horizontal">
+      <div class="settings-layout">
+      <nav class="settings-sidebar" role="tablist" aria-label="设置分类" aria-orientation="vertical">
         <button
           id="settings-tab-general"
           class="settings-tab"
@@ -58,40 +77,16 @@
           OCR
         </button>
         <button
-          id="settings-tab-dingtalk"
+          id="settings-tab-translation-services"
           class="settings-tab"
           type="button"
           role="tab"
           aria-selected="false"
-          aria-controls="settings-panel-dingtalk"
-          data-tab="dingtalk"
+          aria-controls="settings-panel-translation-services"
+          data-tab="translation-services"
           tabindex="-1"
         >
-          钉钉
-        </button>
-        <button
-          id="settings-tab-microsoft"
-          class="settings-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="settings-panel-microsoft"
-          data-tab="microsoft"
-          tabindex="-1"
-        >
-          微软
-        </button>
-        <button
-          id="settings-tab-deeplx"
-          class="settings-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="settings-panel-deeplx"
-          data-tab="deeplx"
-          tabindex="-1"
-        >
-          DeepLX
+          翻译服务
         </button>
         <button
           id="settings-tab-advanced"
@@ -131,7 +126,11 @@
         </button>
       </nav>
 
-      <div class="tab-panels">
+      <!-- 旧入口保留为不可见兼容锚点，避免历史自动化选择器和外部深链失效。 -->
+      <button id="settings-tab-dingtalk" class="legacy-settings-anchor" type="button" aria-controls="settings-panel-dingtalk" tabindex="-1" hidden>钉钉</button>
+      <span id="settings-panel-dingtalk" aria-labelledby="settings-tab-dingtalk" hidden></span>
+
+      <div class="settings-content tab-panels">
         <div
           id="settings-panel-general"
           class="tab-panel"
@@ -442,15 +441,15 @@
         </div>
 
         <div
-          id="settings-panel-dingtalk"
+          id="settings-panel-translation-services"
           class="tab-panel"
           role="tabpanel"
-          aria-labelledby="settings-tab-dingtalk"
-          data-tab-panel="dingtalk"
+          aria-labelledby="settings-tab-translation-services"
+          data-tab-panel="translation-services"
           tabindex="0"
           hidden
         >
-          <section>
+          <section id="translation-service-dingtalk" data-service-anchor="dingtalk">
             <h2>钉钉翻译</h2>
             <p class="hint">
               适用于已创建企业内部应用并开通 AI 文本翻译权限的账号。ClientSecret 仅在本机安全保存，页面不会回显。
@@ -487,18 +486,7 @@
             </div>
             <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite">未检测</p>
           </section>
-        </div>
-
-        <div
-          id="settings-panel-microsoft"
-          class="tab-panel"
-          role="tabpanel"
-          aria-labelledby="settings-tab-microsoft"
-          data-tab-panel="microsoft"
-          tabindex="0"
-          hidden
-        >
-          <section>
+          <section id="translation-service-microsoft" data-service-anchor="microsoft">
             <h2>微软翻译</h2>
             <p class="hint">
               使用微软 Bing 在线翻译，无需配置 Azure 账号、订阅密钥或 Region，启用后即可参与自动翻译降级链路。
@@ -518,18 +506,7 @@
             </div>
             <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite">未检测</p>
           </section>
-        </div>
-
-        <div
-          id="settings-panel-deeplx"
-          class="tab-panel"
-          role="tabpanel"
-          aria-labelledby="settings-tab-deeplx"
-          data-tab-panel="deeplx"
-          tabindex="0"
-          hidden
-        >
-          <section>
+          <section id="translation-service-deeplx" data-service-anchor="deeplx">
             <h2>翻译通道</h2>
             <p class="hint">默认按以下顺序依次尝试；也可在悬浮窗底部选择首选 API。首选 API 失败或熔断后会自动切换下一个，并保留首选设置供后续翻译继续优先使用。</p>
             <ol class="channels">
@@ -542,7 +519,7 @@
             </ol>
           </section>
 
-          <section>
+          <section id="translation-service-deeplx-config">
             <h2>自建 DeepLX</h2>
             <div class="row">
               <label for="deeplx-url">服务地址</label>

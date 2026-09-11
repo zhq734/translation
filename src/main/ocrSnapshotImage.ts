@@ -4,7 +4,7 @@
  * 把「像素格式转换」「选区裁剪矩形换算」「选区 PNG 编码」从主进程 index.ts 抽出，
  * 使截图预览链路可以在不经过整屏 JS PNG 编解码的前提下完成裁剪与 OCR 预处理：
  * - 预览：GDI BGRA 直接交给 nativeImage，不走 encodePng
- * - 识别/翻译：先裁选区再放大编码，避免对整屏调用 encodePng / decodePng
+ * - 识别/翻译：先裁选区并保持原始分辨率，后续统一执行 OCR 预处理
  *
  * @author zhenghq
  */
@@ -62,7 +62,7 @@ export function bgraToRgba(bgra: Uint8Array, width: number, height: number): Rgb
  * 背景：`nativeImage.createFromBitmap` / `getBitmap` 的位图通道顺序在 Electron
  * 中属于平台相关契约，直接依赖它做「BGRA → RGBA」会在部分环境产生二次交换，
  * 导致 OCR 输入红蓝颠倒、识别不出内容。这里改为持有 GDI 原始字节，
- * 由纯函数按「BGR → RGB」语义完成裁剪、通道交换、倍率放大与 PNG 编码，
+ * 由纯函数按「BGR → RGB」语义完成裁剪、通道交换与原分辨率 PNG 编码，
  * 不依赖 nativeImage 的位图通道约定。
  * @param bgra GDI 采集到的整屏 BGRA 原始像素。
  * @param width 整屏物理像素宽度。
@@ -70,8 +70,7 @@ export function bgraToRgba(bgra: Uint8Array, width: number, height: number): Rgb
  * @param source 快照来源标识（决定裁剪矩形换算规则）。
  * @param bounds 用户选区（全局屏幕坐标）。
  * @param snapshotBounds 快照对应的显示器矩形（全局屏幕坐标）。
- * @param ocrScale OCR 放大倍率。
- * @returns 选区 OCR 输入 PNG 字节。
+ * @returns 保持原始分辨率的选区 PNG 字节。
  * @author zhenghq
  */
 export function cropBgraSelectionPng(
@@ -80,8 +79,7 @@ export function cropBgraSelectionPng(
   height: number,
   source: string,
   bounds: CaptureBounds,
-  snapshotBounds: CaptureBounds,
-  ocrScale: number
+  snapshotBounds: CaptureBounds
 ): Buffer {
   const rect = resolveSnapshotCropRect(source, bounds, snapshotBounds, width, height)
   const selection = new Uint8Array(rect.width * rect.height * 4)
@@ -98,7 +96,7 @@ export function cropBgraSelectionPng(
       src += 4
     }
   }
-  return encodeOcrSelectionPng({ width: rect.width, height: rect.height, data: selection }, ocrScale)
+  return encodeOcrSelectionPng({ width: rect.width, height: rect.height, data: selection }, 1)
 }
 
 /**
