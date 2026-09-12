@@ -59,13 +59,14 @@
   --toast-bg: var(--popup-bg);
   --toast-text: var(--text-primary);
   --toast-border: var(--popup-border);
-  /* 截图动作提示：微信风格的反色胶囊，浅色主题深底白字、深色主题浅底深字。
-     提示浮在任意桌面内容之上，因此不跟随弹出层底色，而是取与主题相反的高对比面。 */
-  --screenshot-toast-bg: rgba(15, 23, 42, 0.9);
-  --screenshot-toast-text: #ffffff;
-  --screenshot-toast-icon-success: #34c759;
-  --screenshot-toast-icon-warning: #ffd60a;
-  --screenshot-toast-icon-error: #ff6961;
+  /* 覆盖层提示胶囊：截图动作提示与 OCR 框选提示共用的微信风格反色胶囊。
+     浅色主题深底白字、深色主题浅底深字——提示浮在任意桌面内容之上，
+     因此不跟随弹出层底色，而是取与主题相反的高对比面。 */
+  --hint-pill-bg: rgba(15, 23, 42, 0.9);
+  --hint-pill-text: #ffffff;
+  --hint-pill-icon-success: #34c759;
+  --hint-pill-icon-warning: #ffd60a;
+  --hint-pill-icon-error: #ff6961;
   --status-success: #248a3d;
   --status-error: #d70015;
   --status-warning: #9a6700;
@@ -104,11 +105,11 @@
     --ocr-selection-bg: rgba(255, 255, 255, 0.10);
     --ocr-selection-mask: rgba(0, 0, 0, 0.34);
     --popup-shadow: rgba(0, 0, 0, 0.4);
-    --screenshot-toast-bg: rgba(244, 244, 247, 0.94);
-    --screenshot-toast-text: #17171a;
-    --screenshot-toast-icon-success: #248a3d;
-    --screenshot-toast-icon-warning: #9a6700;
-    --screenshot-toast-icon-error: #d70015;
+    --hint-pill-bg: rgba(244, 244, 247, 0.94);
+    --hint-pill-text: #17171a;
+    --hint-pill-icon-success: #248a3d;
+    --hint-pill-icon-warning: #9a6700;
+    --hint-pill-icon-error: #d70015;
     --status-success: #34c759;
     --status-error: #ff6961;
     --status-warning: #ffd60a;
@@ -118,19 +119,19 @@
 /* 用户显式选择的明暗模式必须压过系统外观，否则系统深色 + 应用浅色时胶囊会取错配色。
    这两组的优先级高于上面的 :root 与 @media 块，但低于各主题预设块。 */
 :root[data-theme-mode='light'] {
-  --screenshot-toast-bg: rgba(15, 23, 42, 0.9);
-  --screenshot-toast-text: #ffffff;
-  --screenshot-toast-icon-success: #34c759;
-  --screenshot-toast-icon-warning: #ffd60a;
-  --screenshot-toast-icon-error: #ff6961;
+  --hint-pill-bg: rgba(15, 23, 42, 0.9);
+  --hint-pill-text: #ffffff;
+  --hint-pill-icon-success: #34c759;
+  --hint-pill-icon-warning: #ffd60a;
+  --hint-pill-icon-error: #ff6961;
 }
 
 :root[data-theme-mode='dark'] {
-  --screenshot-toast-bg: rgba(244, 244, 247, 0.94);
-  --screenshot-toast-text: #17171a;
-  --screenshot-toast-icon-success: #248a3d;
-  --screenshot-toast-icon-warning: #9a6700;
-  --screenshot-toast-icon-error: #d70015;
+  --hint-pill-bg: rgba(244, 244, 247, 0.94);
+  --hint-pill-text: #17171a;
+  --hint-pill-icon-success: #248a3d;
+  --hint-pill-icon-warning: #9a6700;
+  --hint-pill-icon-error: #d70015;
 }
 
 /* 多彩主题：通过根节点属性覆盖共享语义变量；组件不得直接依赖主题色值。 */
@@ -173,7 +174,7 @@
   --selection-button-border: rgba(190, 24, 93, 0.16);
   --selection-button-shadow: rgba(190, 24, 93, 0.24);
   --popup-shadow: rgba(190, 24, 93, 0.22);
-  --screenshot-toast-bg: rgba(63, 23, 46, 0.92);
+  --hint-pill-bg: rgba(63, 23, 46, 0.92);
 }
 
 :root[data-theme='sakura'][data-theme-mode='dark'] {
@@ -204,8 +205,8 @@
   --selection-button-border: rgba(253, 164, 175, 0.2);
   --selection-button-shadow: rgba(0, 0, 0, 0.48);
   --popup-shadow: rgba(0, 0, 0, 0.5);
-  --screenshot-toast-bg: rgba(255, 241, 245, 0.95);
-  --screenshot-toast-text: #3f172e;
+  --hint-pill-bg: rgba(255, 241, 245, 0.95);
+  --hint-pill-text: #3f172e;
 }
 
 :root[data-theme='emerald'][data-theme-mode='light'] {
@@ -236,7 +237,7 @@
   --selection-button-border: rgba(5, 150, 105, 0.16);
   --selection-button-shadow: rgba(5, 150, 105, 0.24);
   --popup-shadow: rgba(5, 150, 105, 0.2);
-  --screenshot-toast-bg: rgba(16, 43, 39, 0.92);
+  --hint-pill-bg: rgba(16, 43, 39, 0.92);
 }
 
 :root[data-theme='emerald'][data-theme-mode='dark'] {
@@ -267,15 +268,15 @@
   --selection-button-border: rgba(110, 231, 183, 0.2);
   --selection-button-shadow: rgba(0, 0, 0, 0.48);
   --popup-shadow: rgba(0, 0, 0, 0.5);
-  --screenshot-toast-bg: rgba(236, 253, 245, 0.95);
-  --screenshot-toast-text: #102a25;
+  --hint-pill-bg: rgba(236, 253, 245, 0.95);
+  --hint-pill-text: #102a25;
 }
 
 :root[data-theme='sky'][data-theme-mode='light'] {
   color-scheme: light;
   --accent-start: #38bdf8;
   --accent-end: #6366f1;
-  --screenshot-toast-bg: rgba(15, 23, 42, 0.9);
+  --hint-pill-bg: rgba(15, 23, 42, 0.9);
 }
 
 :root[data-theme='sky'][data-theme-mode='dark'] {
@@ -305,8 +306,8 @@
   --selection-button-border: rgba(125, 211, 252, 0.2);
   --selection-button-shadow: rgba(0, 0, 0, 0.48);
   --popup-shadow: rgba(0, 0, 0, 0.5);
-  --screenshot-toast-bg: rgba(239, 246, 255, 0.95);
-  --screenshot-toast-text: #111b31;
+  --hint-pill-bg: rgba(239, 246, 255, 0.95);
+  --hint-pill-text: #111b31;
 }
 
 :root[data-theme='navy'][data-theme-mode='light'] {
@@ -335,7 +336,7 @@
   --selection-button-bg: rgba(250, 252, 255, 0.98);
   --selection-button-border: rgba(30, 58, 138, 0.16);
   --selection-button-shadow: rgba(30, 58, 138, 0.24);
-  --screenshot-toast-bg: rgba(12, 20, 43, 0.92);
+  --hint-pill-bg: rgba(12, 20, 43, 0.92);
 }
 
 :root[data-theme='navy'][data-theme-mode='dark'] {
@@ -364,8 +365,8 @@
   --selection-button-bg: rgba(28, 45, 82, 0.98);
   --selection-button-border: rgba(147, 197, 253, 0.2);
   --selection-button-shadow: rgba(0, 0, 0, 0.5);
-  --screenshot-toast-bg: rgba(239, 246, 255, 0.95);
-  --screenshot-toast-text: #0c142b;
+  --hint-pill-bg: rgba(239, 246, 255, 0.95);
+  --hint-pill-text: #0c142b;
 }
 
 :root[data-theme='platinum-black'][data-theme-mode='light'] {
@@ -394,7 +395,7 @@
   --selection-button-bg: rgba(250, 251, 252, 0.98);
   --selection-button-border: rgba(15, 23, 42, 0.16);
   --selection-button-shadow: rgba(15, 23, 42, 0.24);
-  --screenshot-toast-bg: rgba(17, 24, 39, 0.92);
+  --hint-pill-bg: rgba(17, 24, 39, 0.92);
 }
 
 :root[data-theme='platinum-black'][data-theme-mode='dark'] {
@@ -423,8 +424,8 @@
   --selection-button-bg: rgba(32, 36, 44, 0.98);
   --selection-button-border: rgba(226, 232, 240, 0.2);
   --selection-button-shadow: rgba(0, 0, 0, 0.55);
-  --screenshot-toast-bg: rgba(248, 250, 252, 0.95);
-  --screenshot-toast-text: #111827;
+  --hint-pill-bg: rgba(248, 250, 252, 0.95);
+  --hint-pill-text: #111827;
 }
 
 /* 主题强调控件统一使用渐变，状态色仍保持成功/错误语义。 */

@@ -41,6 +41,7 @@ test('共享主题应提供完整的扁平化设计 Token', () => {
     '--radius-control',
     '--radius-panel',
     '--radius-overlay',
+    '--radius-pill',
     '--border-width',
     '--shadow-overlay',
     '--z-titlebar',

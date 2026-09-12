@@ -22,6 +22,7 @@ async function main(): Promise<void> {
         eventTime: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
       },
       fetchIp: async () => '198.51.100.10',
+      fetchLocation: async () => '中国 广东省 深圳市 电信',
       transporter: {
         sendMail: async (options) => {
           console.log('模拟发送邮件')
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
           console.log('事件类型: 首次安装')
           console.log(`当前版本: ${packageJson.version ?? '0.0.0'}`)
           console.log('公网 IP: 198.51.100.10')
+          console.log('IP 归属地: 中国 广东省 深圳市 电信')
           console.log(options.text)
         }
       },

@@ -3,6 +3,7 @@ import { release } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Transporter } from 'nodemailer'
 import type { SendMailOptions } from 'nodemailer'
+import { resolveIpLocation, resolvePublicIpAddress } from './ipLocation.ts'
 import { UsageStatsStore } from "./usageStats.ts";
 import type { UsageStatsData } from "./usageStats.ts";
 
@@ -47,22 +48,16 @@ export interface InstallEventServiceOptions {
   environment: InstallEventEnvironment
   /** 可注入的公网 IP 获取函数。 */
   fetchIp?: () => Promise<string | null>
+  /** 可注入的 IP 归属地获取函数。 */
+  fetchLocation?: (ip: string) => Promise<string | null>
   /** 可注入的 transporter，测试使用；缺省惰性加载 nodemailer。 */
   transporter?: Transporter
   /** 可注入的事件文件路径。 */
   filePath?: string
 }
 
-/** 默认公网 IP 服务，按顺序回退。 */
-const PUBLIC_IP_URLS = [
-  'https://api.ipify.org',
-  'https://ipv4.icanhazip.com',
-  'https://api.my-ip.io/v4/ip'
-] as const
-/** IPv4 格式校验。 */
-const IPV4_PATTERN = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/u
-/** 单个公网 IP 服务超时时间。 */
-const PUBLIC_IP_TIMEOUT_MS = 5_000
+// 复用共享 IP 查询实现，保持安装通知与统计日报行为一致
+export { resolvePublicIpAddress } from './ipLocation.ts'
 
 /**
  * 安装通知配置读取依赖。
@@ -138,7 +133,7 @@ export function detectInstallEvent(
  */
 export function buildInstallEventBody(
     event: InstallEvent,
-    context: { ip: string } & InstallEventEnvironment
+    context: { ip: string; location?: string | null } & InstallEventEnvironment
 ): string {
   // 与统计日报统一的分割线样式
   const DIVIDER = '============================================================'
@@ -162,6 +157,7 @@ export function buildInstallEventBody(
     SUB_DIVIDER,
     `  💻 操作系统：${context.platform} (内核版本：${context.osRelease})`,
     `  🌐 访问公网IP：${context.ip}`,
+    `  📍 IP归属地：${context.location || '未知'}`,
     '',
     DIVIDER,
     '  说明：本通知为自动化系统上报，仅记录设备安装/升级行为，无任何用户隐私数据',
@@ -170,28 +166,6 @@ export function buildInstallEventBody(
   ]
 
   return lines.join('\n')
-}
-
-/**
- * 获取并校验公网 IPv4 地址。
- * @param fetch 可注入的网络请求函数。
- * @returns 有效 IP；无效响应返回 null。
- * @author zhenghq
- */
-export async function resolvePublicIpAddress(
-    fetch: typeof globalThis.fetch = globalThis.fetch
-): Promise<string | null> {
-  for (const url of PUBLIC_IP_URLS) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(PUBLIC_IP_TIMEOUT_MS) })
-      if (!response.ok) continue
-      const value = (await response.text()).trim()
-      if (IPV4_PATTERN.test(value)) return value
-    } catch {
-      // 单个服务失败继续尝试下一个服务
-    }
-  }
-  return null
 }
 
 /**
@@ -252,6 +226,13 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
       return null
     }
   })
+  const fetchLocation = options.fetchLocation ?? (async (ip: string) => {
+    try {
+      return await resolveIpLocation(ip)
+    } catch {
+      return null
+    }
+  })
 
   return {
     /**
@@ -273,6 +254,8 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
       if (!event) return false
       const ip = await fetchIp()
       if (!ip) throw new Error('无法获取公网 IP')
+      // 归属地查询失败不影响通知发送，正文按「未知」降级展示
+      const location = await fetchLocation(ip)
       const transporter = options.transporter ?? (require('nodemailer') as typeof import('nodemailer')).createTransport({
         host: 'smtp.qq.com',
         port: 465,
@@ -286,7 +269,7 @@ export function createInstallEventService(options: InstallEventServiceOptions) {
           from: `"划词翻译" <${options.config.smtpUser}>`,
           to: options.config.reportTo,
           subject: `【划词翻译】${event.type === 'install' ? '首次安装' : '版本升级'}通知 - ${event.currentVersion}`,
-          text: buildInstallEventBody(event, { ...options.environment, ip })
+          text: buildInstallEventBody(event, { ...options.environment, ip, location })
         } satisfies SendMailOptions)
       } catch (error) {
         throw error

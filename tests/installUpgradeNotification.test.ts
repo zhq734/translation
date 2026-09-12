@@ -84,6 +84,7 @@ test('邮件正文应包含事件类型、版本、IP、系统与本地时间', 
     },
     {
       ip: '203.0.113.10',
+      location: '中国 广东省 深圳市 电信',
       platform: 'darwin',
       osRelease: '24.6.0',
       eventTime: '2026-09-02 09:00:00 GMT+8'
@@ -94,6 +95,7 @@ test('邮件正文应包含事件类型、版本、IP、系统与本地时间', 
     '1.1.4',
     '1.2.0',
     '203.0.113.10',
+    'IP归属地：中国 广东省 深圳市 电信',
     'darwin',
     '24.6.0',
     '2026-09-02 09:00:00 GMT+8'
@@ -132,6 +134,7 @@ test('首次安装发送成功后应确认版本且不再发送', async () => {
       eventTime: '2026-09-02 09:00:00 GMT+8'
     },
     fetchIp: async () => '203.0.113.8',
+    fetchLocation: async () => '中国 广东省 深圳市 电信',
     transporter: { sendMail: async (options) => { sent.push(options as any) } } as any
   })
   const first = await service.processLaunch('1.2.0')
@@ -142,6 +145,7 @@ test('首次安装发送成功后应确认版本且不再发送', async () => {
   assert.equal(sent[0]!.from, '"划词翻译" <sender@qq.com>')
   assert.match(sent[0]!.subject, /安装.*1\.2\.0/u)
   assert.match(sent[0]!.text, /203\.0\.113\.8/u)
+  assert.match(sent[0]!.text, /IP归属地：中国 广东省 深圳市 电信/u)
   assert.equal(service.readRecord()?.version, '1.2.0')
   assert.equal(second, false)
   assert.equal(sent.length, 1)
@@ -254,6 +258,7 @@ test('本地通知调试命令应使用 mock transporter 且只写临时事件�
   assert.match(output, /事件类型: 首次安装/u)
   assert.match(output, /当前版本: /u)
   assert.match(output, /公网 IP: 198\.51\.100\.10/u)
+  assert.match(output, /IP 归属地: 中国 广东省 深圳市 电信/u)
   assert.match(output, /事件文件: .*[/\\]install-events\.json/u)
   assert.doesNotMatch(output, /smtp\.qq\.com/u)
 })

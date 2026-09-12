@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { release } from 'node:os'
 import type { Transporter } from 'nodemailer'
+import { resolveIpLocation, resolvePublicIpAddress } from './ipLocation.ts'
 import { UsageStatsStore, type UsageStatsData } from './usageStats'
 
 /** 翻译来源到统计渠道的映射输入类型。 */
@@ -29,11 +30,21 @@ export interface UsageReportEnvironment {
   buildId: string
 }
 
+/** 邮件中展示的网络访问信息；任一字段缺失时按「未知」降级展示。 */
+export interface UsageReportNetwork {
+  /** 当前访问公网 IP。 */
+  ip?: string | null
+  /** IP 归属地（国家 省 市 运营商）。 */
+  location?: string | null
+}
+
 /** 发送选项，transporter 可注入便于测试。 */
 export interface SendUsageReportOptions {
   config: UsageReportConfig
   stats: UsageStatsData
   environment: UsageReportEnvironment
+  /** 访问公网 IP 与归属地信息；缺失时正文展示「未知」。 */
+  network?: UsageReportNetwork
   today: string
   yesterday: string
   /** 可注入的 transporter 工厂（测试用）；缺省惰性加载 nodemailer。 */
@@ -74,11 +85,13 @@ export function previousDate(today: string): string {
 
 /**
  * 组装统计上报邮件正文（优化排版、大气结构化样式）
- * 分层展示系统信息、每日使用数据，格式规整、可读性强，无任何用户隐私文本
+ * 分层展示系统信息、访问网络信息与每日使用数据，格式规整、可读性强；
+ * IP 与归属地仅用于区分访问来源，正文不含任何用户翻译文本
  * @param stats 统计快照。
  * @param environment 运行环境信息。
  * @param today 当天日期。
  * @param yesterday 前一天日期。
+ * @param network 访问公网 IP 与归属地信息。
  * @returns 格式化邮件正文。
  * @author zhenghq
  */
@@ -86,7 +99,8 @@ export function buildReportBody(
     stats: UsageStatsData,
     environment: UsageReportEnvironment,
     today: string,
-    yesterday: string
+    yesterday: string,
+    network: UsageReportNetwork = {}
 ): string {
   // 统一分隔线，打造规整视觉层级
   const DIVIDER = '============================================================'
@@ -103,6 +117,8 @@ export function buildReportBody(
     `  操作系统：${environment.platform} (内核版本：${environment.osRelease})`,
     `  应用版本：${environment.appVersion}`,
     `  构建编号：${environment.buildId}`,
+    `  🌐 访问公网IP：${network.ip || '未知'}`,
+    `  📍 IP归属地：${network.location || '未知'}`,
     '',
     DIVIDER,
     '【 每日使用数据统计 】',
@@ -140,7 +156,7 @@ export function buildReportBody(
 
   // 页脚备注
   lines.push(DIVIDER)
-  lines.push('  说明：本报表为自动化统计数据，仅记录使用次数，不包含任何用户隐私内容')
+  lines.push('  说明：本报表为自动化统计数据，仅记录使用次数、访问公网IP与归属地，不含用户翻译文本')
   lines.push(DIVIDER)
   lines.push('')
 
@@ -154,7 +170,7 @@ export function buildReportBody(
  * @author zhenghq
  */
 export async function sendUsageReport(options: SendUsageReportOptions): Promise<boolean> {
-  const { config, stats, environment, today, yesterday } = options
+  const { config, stats, environment, network, today, yesterday } = options
   if (!config.smtpUser || !config.smtpPass || !config.reportTo) return false
   try {
     const transporter = options.transporter ?? (options.createTransporter ?? defaultCreateTransporter)(config)
@@ -162,7 +178,7 @@ export async function sendUsageReport(options: SendUsageReportOptions): Promise<
       from: `"划词翻译" <${config.smtpUser}>`,
       to: config.reportTo,
       subject: `【划词翻译】每日使用量统计报表 - ${today}`,
-      text: buildReportBody(stats, environment, today, yesterday)
+      text: buildReportBody(stats, environment, today, yesterday, network)
     })
     return true
   } catch {
@@ -278,6 +294,8 @@ export async function maybeSendUsageReport(): Promise<void> {
     const month = String(today.getMonth() + 1).padStart(2, '0')
     const day = String(today.getDate()).padStart(2, '0')
     const todayString = `${today.getFullYear()}-${month}-${day}`
+    // IP 与归属地查询失败时不阻断上报，正文按「未知」降级展示
+    const ip = await resolvePublicIpAddress()
     const ok = await sendUsageReport({
       config,
       stats: statsStore.snapshot(),
@@ -287,6 +305,7 @@ export async function maybeSendUsageReport(): Promise<void> {
         appVersion: (require('electron') as typeof import('electron')).app.getVersion(),
         buildId: loadBuildId()
       },
+      network: { ip, location: ip ? await resolveIpLocation(ip) : null },
       today: todayString,
       yesterday: previousDate(todayString)
     })

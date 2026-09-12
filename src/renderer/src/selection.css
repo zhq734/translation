@@ -85,19 +85,21 @@ body {
   display: none;
 }
 
+/* 与截图动作提示共用同一套反色胶囊 Token，保证同一张截图页上的两处提示视觉一致。 */
 .ocr-tip {
   position: relative;
   z-index: 3;
   margin-top: 64px;
-  border: 1px solid var(--border-default);
-  border-radius: 999px;
-  background: var(--popup-bg);
-  box-shadow: var(--shadow-overlay);
-  color: var(--text-secondary);
+  max-width: min(100%, 560px);
+  border-radius: var(--radius-pill);
+  background: var(--hint-pill-bg);
+  color: var(--hint-pill-text);
   font-family: var(--font-family-sans);
-  font-size: 13px;
+  font-size: var(--font-size-label);
+  font-weight: 500;
   line-height: 1.4;
-  padding: 7px 14px;
+  padding: var(--space-2) var(--space-3);
+  text-align: center;
   pointer-events: none;
 }
 

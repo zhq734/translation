@@ -61,6 +61,13 @@ import {
   showManualTranslationPopup
 } from './popup'
 import {
+  forgetFrontmostApp,
+  handBackFrontmostThen,
+  readFrontmostAppSnapshot,
+  rememberFrontmostApp,
+  rememberFrontmostAppIfInactive
+} from './macForeground'
+import {
   createSelectionButton,
   showSelectionButton,
   hideSelectionButton,
@@ -84,6 +91,7 @@ import {
 import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
 import {
   POPUP_FOREGROUND_RESTORE_SETTLE_MS,
+  shouldActivatePopupForCaptureFailure,
   shouldRestoreForegroundBeforeCapture
 } from '../shared/popupForeground'
 import {
@@ -264,6 +272,21 @@ const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
 let internalActivationLeaseUntil = 0
 const INTERNAL_ACTIVATION_LEASE_MS = 300
+/**
+ * 本轮截图开始前应用是否已是 macOS 前台应用。
+ * 覆盖窗口显示时会把应用激活到最前，隐藏时系统又把应用内下一个窗口（通常是设置页）
+ * 提升为 key window 顶到所有应用之上；因此截图前应用不在最前时，收尾必须把前台交还回去，
+ * 否则用户会看到「截屏复制后设置页自动弹出」。
+ */
+let ocrSessionAppWasFrontmost = true
+/**
+ * 退化方案里恢复应用内窗口的延迟（毫秒）。
+ * app.hide() 由 macOS 异步生效，同一 tick（含 setTimeout 0）内 app.show() 会被随后的隐藏动作覆盖，
+ * 窗口会一直不可见（真机采样验证过），因此必须留出足够间隔。
+ */
+const FRONT_RESTORE_DELAY_MS = 60
+/** 退化方案的校验延迟（毫秒）：隐藏生效较慢时补一次 app.show()，避免窗口一直不可见。 */
+const FRONT_RESTORE_VERIFY_DELAY_MS = 180
 /** OCR 预览采集超时阈值：覆盖窗口已显示但迟迟拿不到快照时按采集失败收尾。 */
 const OCR_PREVIEW_CAPTURE_TIMEOUT_MS = 5000
 /** 截图运行时预热延迟：让启动关键路径先完成，再在空闲时创建覆盖窗口与绑定 GDI。 */
@@ -1102,6 +1125,9 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
+  // 记录用户原本在用的应用：此刻本应用还不是前台应用，读到的就是源应用。
+  // 弹窗最终隐藏时要把前台交还给它，否则 macOS 会把设置页提升到最前。
+  rememberFrontmostAppIfInactive()
   // Windows 上弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口，
   // 对已在前台的窗口再调用 showInactive 不会交还焦点，随后的 WM_COPY 与
   // Ctrl+C 全部发往弹窗，剪贴板哨兵不变而报取词超时。这里先显式让弹窗
@@ -1237,6 +1263,7 @@ function handleSelectionCaptureResult(
   }
   if (!result.text) {
     const settings = getSettings()
+    // macOS 不能激活本应用：失败提示自动隐藏时会把设置页提升为 key window 顶到最前。
     showPopup(
       {
         ok: false,
@@ -1246,7 +1273,8 @@ function handleSelectionCaptureResult(
         targetLang: settings.targetLang
       },
       2000,
-      result.anchor
+      result.anchor,
+      shouldActivatePopupForCaptureFailure(process.platform)
     )
     if (shouldPromptHiServicesRepair) promptHiServicesRepair(result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
@@ -1785,18 +1813,33 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
     sendToOcrSelectionWindow(ocrSelectionWin, 'ocr-selection:failed', failedPayload)
   }
   latestOcrSnapshot = null
-  hideOcrSelectionWindow()
-  restoreSelectionListenerAfterOcr(interactionToken)
-  showPopup({
-    ok: false,
-    origin: 'ocr',
-    original: '',
-    error: message,
-    ocrCode: code,
-    sourcePreference: settings.sourceLang,
-    targetPreference: settings.targetLang,
-    targetLang: settings.targetLang
-  }, code === 'permission' ? 8000 : 5000, anchor)
+  const hideOverlay = (): void => {
+    hideOcrSelectionWindow()
+    restoreSelectionListenerAfterOcr(interactionToken)
+  }
+  const showErrorPopup = (): void => {
+    showPopup({
+      ok: false,
+      origin: 'ocr',
+      original: '',
+      error: message,
+      ocrCode: code,
+      sourcePreference: settings.sourceLang,
+      targetPreference: settings.targetLang,
+      targetLang: settings.targetLang
+    }, code === 'permission' ? 8000 : 5000, anchor)
+  }
+  // macOS 上覆盖窗口是应用内最后一个 key window：直接隐藏会让系统把设置页提升为 key window
+  // 并顶到其它应用之上，因此先显示错误弹窗接管 key window，再收起覆盖窗口。
+  // 弹窗层级低于覆盖窗口（floating < screen-saver），先显示不会在覆盖层上露出。
+  // Windows 保持原顺序：弹窗显示时机依赖覆盖窗口隐藏后的前台状态，改动会影响取词焦点。
+  if (isMac) {
+    showErrorPopup()
+    hideOverlay()
+  } else {
+    hideOverlay()
+    showErrorPopup()
+  }
   if (code === 'permission') {
     void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
   }
@@ -1812,6 +1855,14 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
 async function openOcrSelection(): Promise<void> {
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
+  // 覆盖窗口显示后应用会成为前台应用，这里先记录截图前的状态，供收尾时决定是否归还前台。
+  ocrSessionAppWasFrontmost = BrowserWindow.getFocusedWindow() !== null
+  // 采集截图前最前的应用：必须赶在覆盖窗口显示之前，且与随后的屏幕采集并发进行，
+  // 收尾时才消费结果，因此不会额外增加覆盖窗口出现的延迟。
+  // 截图前本应用已是最前时没有可交还的目标，同时清掉上一轮可能残留的记录，
+  // 避免它把用户当前正在用的应用换掉。
+  forgetFrontmostApp()
+  const previousAppPromise = isMac && !ocrSessionAppWasFrontmost ? readFrontmostAppSnapshot() : null
   const hotkeyAt = Date.now()
   latestSelectionGesture += 1
   const interactionToken = selectionInteraction.beginOcrSelection()
@@ -1888,6 +1939,9 @@ async function openOcrSelection(): Promise<void> {
     }
     if (!showBeforeCapture) {
       // 采集已经完成后再显示覆盖层，保证 Windows/macOS 不会把本窗口遮罩采进 OCR 快照。
+      // 显示前收齐前台应用快照：此刻本应用还不是最前，读到的仍是截图前的应用。
+      // 记录写进 macForeground 的共享状态：覆盖窗口收起后由翻译弹窗继续持有并最终交还。
+      if (previousAppPromise) rememberFrontmostApp(await previousAppPromise)
       win.show()
       win.focus()
       hotkeyToShowMs = Date.now() - hotkeyAt
@@ -1914,6 +1968,55 @@ async function openOcrSelection(): Promise<void> {
 }
 
 /**
+ * 把 macOS 前台交还给截图前的应用，随后收起覆盖窗口。
+ *
+ * 覆盖窗口是应用内最后一个 key window：一旦隐藏，系统会把应用内下一个窗口（通常是设置页）
+ * 提升为 key window 并顶到所有应用最前，用户表现为「截屏复制后设置页自动弹出」。
+ * 交还细节（先激活源应用、确认失活后再隐藏）见 macForeground.handBackFrontmostThen。
+ *
+ * 拿不到源应用或激活无效时退化为隐藏应用再恢复：窗口会短暂消失，但同样不会让设置页留在最前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function returnFrontmostThenHideOcrSelection(): void {
+  const sessionSeqAtReturn = ocrSelectionSessionSeq
+  const hideOverlay = (): void => {
+    // 期间又开了新截图会话时放弃收起，避免把新会话的覆盖窗口隐藏掉。
+    if (ocrSelectionSessionSeq !== sessionSeqAtReturn) return
+    hideOcrSelectionWindow()
+  }
+  handBackFrontmostThen(ocrSelectionWin, hideOverlay, () => {
+    if (ocrSelectionSessionSeq !== sessionSeqAtReturn) return
+    hideOverlay()
+    restoreAppWindowsByHidingApp()
+  })
+}
+
+/**
+ * 退化方案：先隐藏应用让系统重新激活截图前的应用，再延后恢复应用内窗口。
+ *
+ * app.hide() 隐藏全部窗口（含正在展示的提示窗口），因此这条路径只在拿不到目标应用时使用；
+ * 恢复用 app.show()（unhideWithoutActivation）：它不激活应用，也不把窗口提到前台应用之上，
+ * 设置页会回到原本的层叠位置。
+ * 注意不能改用 win.showInactive() 逐个恢复窗口——orderFront 会把窗口顶到前台应用之上，
+ * 用户仍然会看到设置页盖在自己的应用上（真机用 CGWindowList 采样 z 序验证过）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreAppWindowsByHidingApp(): void {
+  const sessionSeqAtHide = ocrSelectionSessionSeq
+  app.hide()
+  const restoreAppWindows = (): void => {
+    // 期间又开了新截图会话时放弃恢复，避免把窗口可见性改回上一次会话的状态。
+    if (ocrSelectionSessionSeq !== sessionSeqAtHide) return
+    app.show()
+  }
+  setTimeout(restoreAppWindows, FRONT_RESTORE_DELAY_MS)
+  // app.hide() 生效较慢时首次 app.show() 会被覆盖，补一次校验恢复，避免窗口一直不可见。
+  setTimeout(restoreAppWindows, FRONT_RESTORE_VERIFY_DELAY_MS)
+}
+
+/**
  * 取消 OCR 框选并隐藏覆盖窗口。
  * @returns 无返回值。
  * @author zhenghq
@@ -1921,9 +2024,18 @@ async function openOcrSelection(): Promise<void> {
 function cancelOcrSelection(): void {
   activeScreenshotOcrRequests.clear()
   resolveOcrSelectionReady(false)
-  hideOcrSelectionWindow()
   latestOcrSnapshot = null
   restoreSelectionListenerAfterOcr()
+  const wasVisible = isOcrSelectionVisible()
+  // 截图前应用不在最前时，覆盖窗口一隐藏设置页就会被顶到最前，
+  // 因此这条路径先交还前台、再收起覆盖窗口（见 returnFrontmostThenHideOcrSelection）。
+  if (wasVisible && !ocrSessionAppWasFrontmost) {
+    ocrSessionAppWasFrontmost = true
+    returnFrontmostThenHideOcrSelection()
+    return
+  }
+  hideOcrSelectionWindow()
+  ocrSessionAppWasFrontmost = true
 }
 
 /**
@@ -2879,13 +2991,13 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
  */
 async function submitOcrSelection(value: unknown): Promise<void> {
   const bounds = normalizeOcrSelectionBounds(value)
-  hideOcrSelectionWindow()
   // 恢复自身幂等且不依赖窗口可见状态，避免任何早退路径把全局钩子留在停用状态。
   const restoreSelectionListener = (): void => {
     restoreSelectionListenerAfterOcr()
   }
   if (!bounds) {
     latestOcrSnapshot = null
+    hideOcrSelectionWindow()
     restoreSelectionListener()
     return
   }
@@ -2893,9 +3005,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
   const requestId = ++latestTranslationRequest
   const anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
   const closeVersion = getPopupCloseVersion()
-  try {
-    const imageBytes = await cropOcrSnapshotSelection(bounds)
-    restoreSelectionListener()
+  const showLoadingPopup = (): void => {
     showPopup({
       ok: true,
       origin: 'ocr',
@@ -2906,6 +3016,18 @@ async function submitOcrSelection(value: unknown): Promise<void> {
       targetPreference: settings.targetLang,
       targetLang: settings.targetLang
     }, 0, anchor)
+  }
+  // macOS 上覆盖窗口是应用内最后一个 key window：一旦隐藏，系统会把应用内下一个窗口
+  // （通常是设置页）提升为 key window 并顶到其它应用之上。
+  // 因此先显示「正在识别」弹窗接管 key window，再收起覆盖窗口；
+  // 弹窗层级低于覆盖窗口（floating < screen-saver），先显示不会在覆盖层上露出。
+  // 其它平台保持原顺序：立即收起覆盖窗口，采集完成后再显示弹窗。
+  if (isMac) showLoadingPopup()
+  hideOcrSelectionWindow()
+  try {
+    const imageBytes = await cropOcrSnapshotSelection(bounds)
+    restoreSelectionListener()
+    if (!isMac) showLoadingPopup()
     const result = await processOcrImageBytes(imageBytes, settings)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showOcrTranslationResult(result, settings, requestId, anchor)

@@ -5,6 +5,7 @@ import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
+import { handBackFrontmostThen } from './macForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
 const WINDOW_EDGE_GAP = 8
@@ -16,6 +17,12 @@ let closeVersion = 0
 let pinned = false
 let currentAutoHideMs = 0
 let shownInactive = false
+/**
+ * 正在「先交还前台、再隐藏窗口」的过程中。
+ * macOS 上弹窗是应用内最后一个 key window，交还前台需要等待系统确认失活（数十毫秒），
+ * 此期间弹窗仍可见但逻辑上已关闭：新请求必须按「未显示」处理，否则会复用即将隐藏的窗口。
+ */
+let hidingAfterFrontReturn = false
 /** 正在为取词主动归还前台焦点的截止时间；此窗口内的 blur 属于内部动作，不关闭弹窗。 */
 let restoringForegroundUntil = 0
 /**
@@ -33,6 +40,7 @@ const pendingPayloads: TranslatePayload[] = []
  */
 export function createPopup(preloadPath: string): BrowserWindow {
   shownInactive = false
+  hidingAfterFrontReturn = false
   restoringForegroundUntil = 0
   win = new BrowserWindow({
     width: 460,
@@ -191,7 +199,7 @@ export function showPopup(
 ): void {
   if (!win) return
   currentAutoHideMs = Math.max(0, autoHideMs)
-  const alreadyVisible = win.isVisible()
+  const alreadyVisible = win.isVisible() && !hidingAfterFrontReturn
   deliverPopupPayload(payload)
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
@@ -244,6 +252,11 @@ export function showManualTranslationPopup(): void {
 
 /**
  * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
+ *
+ * macOS 上弹窗通常是应用内最后一个 key window：直接隐藏会让系统把应用内下一个窗口
+ * （设置页）提升为 key window 并顶到其它应用之上，用户表现为「弹窗消失后设置页弹到最前」。
+ * 因此先把前台交还给用户原本在用的应用，确认本应用失活后再隐藏窗口。
+ * 交还期间弹窗逻辑上已关闭，新请求不会复用即将隐藏的窗口。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -254,7 +267,15 @@ export function hidePopup(): void {
   shownInactive = false
   restoringForegroundUntil = 0
   win?.webContents.send('popup:pinned', false)
-  win?.hide()
+  if (!win || win.isDestroyed() || hidingAfterFrontReturn) return
+  hidingAfterFrontReturn = true
+  // 交还前把这段失焦标记为内部动作：激活源应用会让弹窗失焦，
+  // 不能被 handlePopupBlur 当成用户点击外部而重复关闭。
+  restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
+  handBackFrontmostThen(win, () => {
+    hidingAfterFrontReturn = false
+    win?.hide()
+  })
 }
 
 /**
@@ -288,7 +309,7 @@ export function isPopupPinned(): boolean {
  * @author zhenghq
  */
 export function isPopupVisible(): boolean {
-  return Boolean(win?.isVisible())
+  return Boolean(win?.isVisible()) && !hidingAfterFrontReturn
 }
 
 /**
@@ -298,7 +319,7 @@ export function isPopupVisible(): boolean {
  * @author zhenghq
  */
 export function isPopupActivated(): boolean {
-  return Boolean(win?.isVisible()) && !shownInactive
+  return Boolean(win?.isVisible()) && !shownInactive && !hidingAfterFrontReturn
 }
 
 /**

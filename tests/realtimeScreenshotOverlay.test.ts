@@ -421,8 +421,9 @@ test('采集中态应提示正在获取屏幕画面', () => {
   assert.match(source, /ocrSnapshotState/u)
   const enterSource = sliceFunction(selectionRenderer, 'function enterOcrSelectionMode(')
   assert.match(enterSource, /renderOcrTip\(\)/u)
-  // 提示样式必须走主题变量，不硬编码颜色
+  // 提示样式必须走主题变量，不硬编码颜色；配色复用覆盖层提示胶囊 Token
   assert.doesNotMatch(selectionCss, /\.ocr-tip[^}]*(?:#[0-9a-fA-F]{3,8}|rgb\()/su)
+  assert.match(selectionCss, /\.ocr-tip[^}]*var\(--hint-pill-bg\)/su)
 })
 
 /**

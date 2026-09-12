@@ -28,3 +28,18 @@ export function shouldRestoreForegroundBeforeCapture(
 ): boolean {
   return platform === 'win32' && popupActivated
 }
+
+/**
+ * 判断取词失败提示弹窗是否应以激活方式显示。
+ *
+ * macOS 上失败提示若调用 win.show() 激活本应用，提示自动隐藏时本应用仍是前台应用，
+ * 系统会把应用内下一个窗口（通常是设置页）提升为 key window 并顶到其它应用之上。
+ * 改用 showInactive() 显示提示不会改变前台应用，收尾隐藏时走「本应用已不在最前」的安全分支。
+ * Windows 上失败提示需要正常激活弹窗，且不存在上述 key window 提升问题，保持原有行为。
+ * @param platform 当前 Node.js 平台标识。
+ * @returns 失败提示仍需激活弹窗时返回 true。
+ * @author zhenghq
+ */
+export function shouldActivatePopupForCaptureFailure(platform: NodeJS.Platform): boolean {
+  return platform !== 'darwin'
+}

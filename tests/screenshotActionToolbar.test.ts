@@ -334,8 +334,8 @@ test('截图动作提示应为独立窗口内的反色胶囊并支持淡入淡�
   const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')
   assert.match(toastCss, /\.screenshot-toast\s*\{[^}]*transition:\s*opacity\s+150ms/u)
   assert.match(toastCss, /\.screenshot-toast\.visible/u)
-  assert.match(toastCss, /background:\s*var\(--screenshot-toast-bg\)/u)
-  assert.match(toastCss, /color:\s*var\(--screenshot-toast-text\)/u)
+  assert.match(toastCss, /background:\s*var\(--hint-pill-bg\)/u)
+  assert.match(toastCss, /color:\s*var\(--hint-pill-text\)/u)
   assert.match(toastCss, /border-radius:\s*var\(--radius-pill\)/u)
   // 微信风格胶囊无描边无投影，保持纯平面；不能残留共享浮层的 1px 边框或阴影
   assert.doesNotMatch(toastCss, /border:\s*var\(--border-width\)/u)

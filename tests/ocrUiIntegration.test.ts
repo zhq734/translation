@@ -314,6 +314,25 @@ test('截图文字编辑框应支持透明多行输入', () => {
 })
 
 /**
+ * 校验 OCR 框选提示与截图动作提示共用同一套反色胶囊样式。
+ * 两者同处一张截图页，若各留一套描边/投影/底色，用户会在同一屏看到两种提示视觉。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 框选提示应与截图动作提示共用反色胶囊样式', () => {
+  const tipStart = selectionCss.indexOf('.ocr-tip {')
+  assert.notStrictEqual(tipStart, -1)
+  // 只截取 .ocr-tip 规则块本身，避免把后面 .ocr-selection-box 的投影算进来
+  const tipSource = selectionCss.slice(tipStart, selectionCss.indexOf('}', tipStart) + 1)
+  assert.match(tipSource, /background:\s*var\(--hint-pill-bg\)/u)
+  assert.match(tipSource, /color:\s*var\(--hint-pill-text\)/u)
+  assert.match(tipSource, /border-radius:\s*var\(--radius-pill\)/u)
+  // 旧风格的白卡描边与大投影必须一并去掉，否则两个提示仍不是同一套视觉
+  assert.doesNotMatch(tipSource, /border:\s*var\(--border-width\)/u)
+  assert.doesNotMatch(tipSource, /box-shadow/u)
+})
+
+/**
  * 校验工具栏布局会避让右侧 OCR 识别内容区域，避免两个浮层相互遮挡。
  * @returns 无返回值。
  * @author zhenghq
@@ -326,21 +345,39 @@ test('截图工具栏应避让 OCR 识别内容区域', () => {
 })
 
 /**
- * 校验截图采集发生在弹窗 loading 展示之前，避免截到弹窗。
+ * 校验 OCR 识别只裁内存快照，不会在展示 loading 弹窗后重新截屏。
+ *
+ * 旧约束要求「裁剪早于弹窗 loading」，目的是避免把弹窗自身截进识别输入；
+ * 但裁剪读的是采集阶段留在内存里的快照（latestOcrSnapshot），先显示弹窗不可能被截进去。
+ * 现在 macOS 必须先显示弹窗接管 key window 再收起覆盖窗口（见 ocrFrontRestore.test.ts），
+ * 因此这里改为直接约束「裁剪不得重新截屏」这一真正的不变量。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 截图应先完成再展示弹窗', () => {
+test('OCR 识别只裁内存快照，不重新截屏', () => {
   const submitStart = main.indexOf('async function submitOcrSelection')
   const submitEnd = main.indexOf('/**', submitStart + 1)
   const submitSource = main.slice(submitStart, submitEnd)
-  const captureIndex = submitSource.indexOf('cropOcrSnapshotSelection')
-  const loadingIndex = submitSource.indexOf("original: '正在识别屏幕区域…'")
+  const cropStart = main.indexOf('async function cropOcrSnapshotSelection')
+  const cropEnd = main.indexOf('/**', cropStart + 1)
+  const cropSource = main.slice(cropStart, cropEnd)
 
   assert.match(submitSource, /hideOcrSelectionWindow\(\)/u)
-  assert.ok(captureIndex >= 0, '应裁剪已采集快照')
-  assert.ok(loadingIndex >= 0, '应展示 OCR loading')
-  assert.ok(captureIndex < loadingIndex, '截图裁剪必须早于弹窗 loading，避免截到弹窗自身')
+  assert.ok(submitSource.includes('cropOcrSnapshotSelection'), '应裁剪已采集快照')
+  assert.ok(submitSource.includes("original: '正在识别屏幕区域…'"), '应展示 OCR loading')
+  assert.match(cropSource, /const snapshot = latestOcrSnapshot/u, '裁剪必须读内存快照')
+  assert.doesNotMatch(
+    cropSource,
+    /desktopCapturer|screencapture|execFileP/u,
+    '裁剪不得重新截屏，否则会把弹窗自身截进识别输入'
+  )
+  // macOS 先显示弹窗接管 key window 再收起覆盖窗口，避免系统把设置页提升到最前。
+  assert.match(
+    submitSource,
+    /if \(isMac\) showLoadingPopup\(\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
+    'macOS 必须先显示弹窗再收起覆盖窗口'
+  )
+  assert.match(submitSource, /if \(!isMac\) showLoadingPopup\(\)/u, '其它平台保持裁剪完成后再显示弹窗')
 })
 
 /**
