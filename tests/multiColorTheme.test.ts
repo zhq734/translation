@@ -40,6 +40,24 @@ test('气泡提示应跟随浅深与多彩主题使用语义颜色', () => {
   assert.match(css, /--toast-border:\s*var\(--popup-border\)/u)
 })
 
+test('截图动作提示应为反色胶囊并在五套主题与浅深模式下都有定义', () => {
+  const css = readFileSync('src/renderer/src/theme.css', 'utf8')
+  const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')
+  // 未应用主题属性前也要有兜底配色，否则提示会渲染成透明
+  assert.match(css, /--screenshot-toast-bg:\s*rgba\(/u)
+  assert.match(css, /--screenshot-toast-text:\s*#/u)
+  // 显式明暗模式必须压过系统外观：浅色主题深底白字，深色主题浅底深字
+  assert.match(css, /:root\[data-theme-mode='light'\]\s*\{[^}]*--screenshot-toast-text:\s*#ffffff/u)
+  assert.match(css, /:root\[data-theme-mode='dark'\]\s*\{[^}]*--screenshot-toast-text:\s*#17171a/u)
+  // 五套主题各自微调胶囊底色，保证多主题下都不是同一种黑
+  for (const theme of ['sakura', 'emerald', 'sky', 'navy', 'platinum-black']) {
+    assert.match(css, new RegExp(`data-theme=['"]${theme}['"][^}]*--screenshot-toast-bg:`, 'u'), `${theme} 缺少截图提示底色`)
+  }
+  // 状态图标必须走各自的 Token，不得退回共享状态色
+  assert.match(toastCss, /\[data-state='warning'\][^}]*--screenshot-toast-icon-warning/u)
+  assert.match(toastCss, /\[data-state='error'\][^}]*--screenshot-toast-icon-error/u)
+})
+
 test('设置页应提供主题模式和五个可访问主题卡片', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   for (const [id, label] of [

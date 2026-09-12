@@ -37,7 +37,7 @@ test('Toast 应以内容自适应尺寸和语义图标表达成功、警告与�
   assert.match(toastSource, /isWarning\s*\?\s*'warning'/u)
   assert.match(toastSource, /toastIcon\.textContent/u)
   assert.match(toastCss, /width:\s*max-content/u)
-  assert.match(toastCss, /background:\s*var\(--toast-bg\)/u)
+  assert.match(toastCss, /background:\s*var\(--screenshot-toast-bg\)/u)
   assert.match(toastCss, /prefers-reduced-motion:\s*reduce/u)
 })
 

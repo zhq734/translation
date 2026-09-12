@@ -1601,8 +1601,8 @@ function getScreenshotToastWindow(): BrowserWindow {
     skipTaskbar: true,
     focusable: false,
     hasShadow: false,
-    width: 200,
-    height: 44,
+    width: 260,
+    height: 56,
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
@@ -1611,6 +1611,8 @@ function getScreenshotToastWindow(): BrowserWindow {
   })
   screenshotToastWin.setAlwaysOnTop(true, 'screen-saver')
   screenshotToastWin.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
+  // 纯提示窗口不得拦截鼠标：胶囊贴在屏幕下方，若不透传点击会挡住用户对该区域的操作。
+  screenshotToastWin.setIgnoreMouseEvents(true)
   screenshotToastWin.on('closed', () => {
     if (screenshotToastHideTimer) {
       clearTimeout(screenshotToastHideTimer)
@@ -1667,12 +1669,15 @@ function handleScreenshotToastShowWindow(value: unknown): void {
     screenshotToastHideTimer = null
   }
   const raw = value as { width?: number; height?: number; displayTimeMs?: number }
-  const width = Math.min(Math.max(Math.ceil(raw.width ?? 0) + 4, 120), 480)
-  const height = Math.min(Math.max(Math.ceil(raw.height ?? 0) + 4, 36), 120)
+  // 渲染进程回传的是胶囊本体尺寸；这里补上提示页四周各 4px 留白，保证圆角与入场位移不被裁切。
+  const width = Math.min(Math.max(Math.ceil(raw.width ?? 0) + 8, 120), 480)
+  const height = Math.min(Math.max(Math.ceil(raw.height ?? 0) + 8, 36), 120)
   const displayTimeMs = Math.max(raw.displayTimeMs ?? 1500, 500)
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-  const x = Math.round(display.bounds.x + (display.bounds.width - width) / 2)
-  const y = Math.round(display.bounds.y + display.bounds.height * 0.42 - height / 2)
+  // 微信风格：轻量胶囊贴在屏幕下方居中。以 workArea 为基准，避免压住 Dock 栏。
+  const area = display.workArea
+  const x = Math.round(area.x + (area.width - width) / 2)
+  const y = Math.round(area.y + area.height * 0.9 - height)
   win.setBounds({ x, y, width, height })
   win.showInactive()
   screenshotToastHideTimer = setTimeout(() => {

@@ -325,16 +325,21 @@ test('复制/保存裁剪快速路径应使用原生 nativeImage 实现', () => 
 })
 
 /**
- * 校验截图动作提示窗口采用微信截图风格：屏幕中央黑底胶囊、淡入淡出动画，
+ * 校验截图动作提示窗口采用微信截图风格：屏幕下方居中的反色胶囊、淡入淡出动画，
  * 且由独立窗口承载而非截图窗口内嵌 DOM。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('截图动作提示应为独立窗口内的黑底样式并支持淡入淡出', () => {
+test('截图动作提示应为独立窗口内的反色胶囊并支持淡入淡出', () => {
   const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')
   assert.match(toastCss, /\.screenshot-toast\s*\{[^}]*transition:\s*opacity\s+150ms/u)
   assert.match(toastCss, /\.screenshot-toast\.visible/u)
-  assert.match(toastCss, /background:\s*var\(--toast-bg\)/u)
+  assert.match(toastCss, /background:\s*var\(--screenshot-toast-bg\)/u)
+  assert.match(toastCss, /color:\s*var\(--screenshot-toast-text\)/u)
+  assert.match(toastCss, /border-radius:\s*var\(--radius-pill\)/u)
+  // 微信风格胶囊无描边无投影，保持纯平面；不能残留共享浮层的 1px 边框或阴影
+  assert.doesNotMatch(toastCss, /border:\s*var\(--border-width\)/u)
+  assert.doesNotMatch(toastCss, /box-shadow/u)
   // 关闭动画：覆盖层淡出而非直接消失
   assert.match(selectionCss, /\.ocr-overlay\.closing/u)
   assert.match(selectionCss, /\.ocr-overlay\s*\{[^}]*transition:\s*opacity/u)

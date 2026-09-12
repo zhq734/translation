@@ -1,6 +1,7 @@
 * { margin: 0; padding: 0; }
 html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
-body { display: flex; align-items: center; justify-content: center; padding: var(--space-2); }
+/* 四周留 4px：既避免圆角贴边被裁，也保证入场时 translateY(4px) 不被 overflow 截断。 */
+body { display: flex; align-items: center; justify-content: center; padding: var(--space-1); }
 .screenshot-toast {
   display: inline-flex;
   width: max-content;
@@ -8,17 +9,19 @@ body { display: flex; align-items: center; justify-content: center; padding: var
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  background: var(--toast-bg);
-  color: var(--toast-text);
-  font-size: var(--font-size-body);
-  line-height: 1.4;
+  border-radius: var(--radius-pill);
+  background: var(--screenshot-toast-bg);
+  color: var(--screenshot-toast-text);
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  line-height: 1.3;
   overflow-wrap: anywhere;
   opacity: 0;
-  transform: translateY(2px);
+  transform: translateY(4px);
   transition: opacity 150ms var(--ease-standard), transform 150ms var(--ease-standard);
 }
-.toast-icon { display: inline-flex; flex: 0 0 20px; width: 20px; height: 20px; align-items: center; justify-content: center; border-radius: 50%; background: var(--status-success); color: var(--button-text); font-size: var(--font-size-caption); font-weight: 700; }
-.screenshot-toast[data-state='warning'] .toast-icon { background: var(--status-warning); }
-.screenshot-toast[data-state='error'] .toast-icon { background: var(--status-error); }
+.toast-icon { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--screenshot-toast-icon-success); font-size: var(--font-size-body); line-height: 1; }
+.screenshot-toast[data-state='warning'] .toast-icon { color: var(--screenshot-toast-icon-warning); }
+.screenshot-toast[data-state='error'] .toast-icon { color: var(--screenshot-toast-icon-error); }
 .screenshot-toast.visible { opacity: 1; transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { .screenshot-toast { transition: none; transform: none; } }
