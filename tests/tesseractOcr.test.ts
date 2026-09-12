@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
+  ensureTessDataDirectory,
   tesseractLanguageTag,
   normalizeTesseractLines,
   type TesseractOcrDeps
@@ -55,6 +59,27 @@ test('tesseractLanguageTag 日文应映射为 jpn+eng', () => {
  */
 test('tesseractLanguageTag 未知语言应回退 chi_sim+eng', () => {
   assert.equal(tesseractLanguageTag('xx-unknown'), 'chi_sim+eng')
+})
+
+/**
+ * 校验 tessdata 缓存目录缺失时会被自动创建，避免语言模型无法落盘。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('ensureTessDataDirectory 应递归创建缺失的缓存目录', () => {
+  const base = mkdtempSync(join(tmpdir(), 'tessdata-test-'))
+  const target = join(base, 'nested', 'tessdata')
+  try {
+    assert.equal(existsSync(target), false)
+    ensureTessDataDirectory(target)
+    assert.equal(existsSync(target), true)
+    // 目录已存在时应幂等，不抛异常。
+    ensureTessDataDirectory(target)
+    // 空路径不应创建任何内容。
+    ensureTessDataDirectory('')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
 })
 
 /**
@@ -175,6 +200,67 @@ test('TesseractOcrEngine worker terminated 应转换为引擎不可用错误', a
       assert.ok(err instanceof OcrEngineError)
       assert.equal(err.code, 'engine-unavailable')
       assert.equal(err.message, 'Tesseract OCR 已中断，请重新截图识别')
+      return true
+    }
+  )
+})
+
+/**
+ * 校验 worker 创建失败的 Promise 不会污染缓存，后续识别应能重新创建并成功。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('TesseractOcrEngine worker 创建失败后应允许重试', async () => {
+  const { TesseractOcrEngine } = await import('../src/main/tesseractOcr.ts')
+  let createCount = 0
+  const engine = new TesseractOcrEngine({
+    tessDataPath: '/tmp/tessdata',
+    createWorker: async (_lang: string) => {
+      createCount += 1
+      if (createCount === 1) {
+        throw new Error("Error opening data file ./玂traineddata")
+      }
+      return {
+        recognize: async (_input: unknown) => ({ data: { text: '第二次截图成功' } }),
+        setParameters: async (_params: unknown) => undefined,
+        terminate: async () => undefined
+      }
+    }
+  })
+
+  await assert.rejects(() => engine.recognize({
+    imageBytes: Buffer.from([1, 2, 3]),
+    timeoutMs: 200
+  }))
+  const result = await engine.recognize({
+    imageBytes: Buffer.from([1, 2, 3]),
+    timeoutMs: 200
+  })
+
+  assert.equal(createCount, 2)
+  assert.equal(result.text, '第二次截图成功')
+})
+
+/**
+ * 校验 worker 创建失败也应转换为可展示的引擎不可用错误，而不是泄漏原始英文堆栈。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('TesseractOcrEngine worker 创建失败应转换为引擎不可用错误', async () => {
+  const { TesseractOcrEngine } = await import('../src/main/tesseractOcr.ts')
+  const engine = new TesseractOcrEngine({
+    tessDataPath: '/tmp/tessdata',
+    createWorker: async (_lang: string) => {
+      throw new Error("Error opening data file ./玂traineddata")
+    }
+  })
+
+  await assert.rejects(
+    () => engine.recognize({ imageBytes: Buffer.from([1, 2, 3]), timeoutMs: 200 }),
+    (err: unknown) => {
+      assert.ok(err instanceof OcrEngineError)
+      assert.equal(err.code, 'engine-unavailable')
+      assert.equal(err.engine, 'tesseract')
       return true
     }
   )

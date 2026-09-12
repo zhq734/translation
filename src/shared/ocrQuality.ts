@@ -23,14 +23,17 @@ export interface OcrQualityEvaluation {
 }
 
 /**
- * 判断输入语言是否属于中文优先场景。
+ * 判断输入语言是否属于显式中文优先场景。
+ * auto 表示自动检测，不预设目标语言，因此不参与语言不匹配惩罚；
+ * 只有显式选择中文或中文地区变体时才按中文优先校验结果。
  * @param language OCR 输入语言；缺失时按 auto 处理。
- * @returns 中文、中文地区变体或 auto 返回 true。
+ * @returns 显式中文或中文地区变体返回 true，auto 返回 false。
  * @author zhenghq
  */
 function isChinesePreferredLanguage(language?: string): boolean {
-  const normalized = language?.trim().toLowerCase() || 'auto'
-  return normalized === 'auto' || normalized === 'zh' || normalized.startsWith('zh-')
+  const normalized = language?.trim().toLowerCase()
+  if (!normalized) return false
+  return normalized === 'zh' || normalized.startsWith('zh-')
 }
 
 /**

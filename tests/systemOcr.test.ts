@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
+import { encodePng } from '../src/main/pngCodec.ts'
 import {
   buildVisionOcrScript,
   MacOsVisionOcrEngine,
   parseVisionOcrOutput,
   defaultMacOsVisionHelperPath,
   buildWindowsOcrCommand,
+  parseWindowsOcrStructuredOutput,
+  restoreWindowsOcrUnderlines,
+  WindowsSystemOcrEngine,
   type SystemOcrDeps
 } from '../src/main/systemOcr.ts'
 
@@ -202,6 +209,305 @@ test('Windows OCR 命令应包含 powershell 与脚本路径', () => {
 test('Windows OCR auto 语言时应传 auto 标签给脚本', () => {
   const cmd = buildWindowsOcrCommand('C:\\tmp\\img.png', 'C:\\ocr\\win-ocr.ps1', 'auto')
   assert.ok(cmd.args.some((a) => a === 'auto' || a.includes('auto')), '应传入 auto 语言')
+})
+
+/**
+ * 校验 Windows OCR 执行失败时保留 PowerShell stderr，便于定位语言包、脚本或系统 API 问题。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('Windows OCR 失败应保留 PowerShell stderr 明细', async () => {
+  const engine = new WindowsSystemOcrEngine({
+    platform: 'win32',
+    tmpDir: () => 'C:\\Temp',
+    writeFile: async () => undefined,
+    execFile: async () => {
+      const error = new Error('Command failed: powershell.exe -File win-ocr.ps1') as Error & { stderr?: string }
+      error.stderr = '无法加载文件 win-ocr.ps1，因为在此系统上禁止运行脚本。'
+      throw error
+    }
+  })
+
+  await assert.rejects(
+    () => engine.recognize({ imageBytes: new Uint8Array([1, 2, 3]), language: 'auto' }),
+    (error: unknown) => {
+      const message = (error as Error).message
+      assert.match(message, /Windows OCR 执行失败/u)
+      assert.match(message, /禁止运行脚本/u)
+      return true
+    }
+  )
+  assert.match(engine.getUnavailableReason() ?? '', /禁止运行脚本/u)
+})
+
+/**
+ * 校验 Windows OCR 在未注入 writeFile 时会把 PowerShell 脚本真正写入临时目录，
+ * 避免生产环境因空实现导致 PowerShell 找不到 win-ocr.ps1。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('Windows OCR 默认依赖应写入 PowerShell 脚本', async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'selection-translator-win-ocr-'))
+  let scriptContent = ''
+
+  try {
+    const engine = new WindowsSystemOcrEngine({
+      platform: 'win32',
+      tmpDir: () => temporaryDirectory,
+      execFile: async (_executable, args) => {
+        const fileIndex = args.indexOf('-File')
+        assert.notEqual(fileIndex, -1, 'PowerShell 命令应包含 -File 参数')
+        const scriptPath = args[fileIndex + 1] ?? ''
+        assert.equal(scriptPath, join(temporaryDirectory, 'win-ocr.ps1'))
+        scriptContent = await readFile(scriptPath, 'utf8')
+        return { stdout: '测试文本', stderr: '' }
+      }
+    })
+
+    const result = await engine.recognize({
+      imagePath: 'C:\\Temp\\windows-ocr.png',
+      language: 'zh-Hans'
+    })
+
+    assert.equal(result.text, '测试文本')
+    assert.match(scriptContent, /Windows\.Media\.Ocr/u)
+    assert.match(scriptContent, /\$ImagePath/u)
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 校验 Windows OCR 脚本按 OcrResult.Lines 逐行输出，避免多行内容被 OcrResult.Text 合并成单行。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('Windows OCR 脚本应逐行输出识别结果以保留换行', async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'selection-translator-win-ocr-lines-'))
+  let scriptContent = ''
+
+  try {
+    const engine = new WindowsSystemOcrEngine({
+      platform: 'win32',
+      tmpDir: () => temporaryDirectory,
+      execFile: async (_executable, args) => {
+        const fileIndex = args.indexOf('-File')
+        const scriptPath = args[fileIndex + 1] ?? ''
+        scriptContent = await readFile(scriptPath, 'utf8')
+        return { stdout: '第一行\n第二行', stderr: '' }
+      }
+    })
+
+    const result = await engine.recognize({
+      imagePath: 'C:\\Temp\\windows-ocr-lines.png',
+      language: 'zh-Hans'
+    })
+
+    assert.equal(result.text, '第一行\n第二行')
+    assert.match(scriptContent, /\$result\.Lines/u, 'PowerShell 脚本应遍历 OcrResult.Lines')
+    assert.doesNotMatch(scriptContent, /\[string\]\$result\.Text/u, '不应直接输出会合并换行的 OcrResult.Text')
+    assert.match(scriptContent, /Words/u, 'PowerShell 脚本应读取 OcrLine.Words 以定位下划线')
+    assert.match(scriptContent, /BoundingRect/u, 'PowerShell 脚本应输出词框以检测词间下划线')
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 校验 Windows OCR 结构化输出解析会保留词框与行文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 结构化输出应解析每行的词框', () => {
+  const lines = parseWindowsOcrStructuredOutput(JSON.stringify({
+    lines: [{
+      text: 'user id',
+      words: [
+        { text: 'user', x: 10, y: 20, width: 40, height: 16 },
+        { text: 'id', x: 54, y: 20, width: 16, height: 16 }
+      ]
+    }]
+  }))
+
+  assert.equal(lines.length, 1)
+  assert.equal(lines[0]!.text, 'user id')
+  assert.equal(lines[0]!.words?.length, 2)
+  assert.deepEqual(lines[0]!.words?.[1], {
+    text: 'id', x: 54, y: 20, width: 16, height: 16
+  })
+})
+
+/**
+ * 校验词间存在实际横线时把 OCR 丢失的下划线恢复出来。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 词间横线应将空格恢复为下划线', () => {
+  const image = makeWindowsOcrTestImage()
+  for (let y = 25; y <= 27; y += 1) {
+    for (let x = 46; x <= 53; x += 1) setWindowsOcrTestPixel(image, x, y, 20)
+  }
+  const lines = restoreWindowsOcrUnderlines([{
+    text: 'user id',
+    words: [
+      { text: 'user', x: 8, y: 6, width: 37, height: 16 },
+      { text: 'id', x: 54, y: 6, width: 14, height: 16 }
+    ]
+  }], image)
+
+  assert.equal(lines[0]!.text, 'user_id')
+})
+
+/**
+ * 校验词间没有横线时保留普通空格，避免把英文短语误改成下划线。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 无词间横线时应保留普通空格', () => {
+  const image = makeWindowsOcrTestImage()
+  const lines = restoreWindowsOcrUnderlines([{
+    text: 'hello world',
+    words: [
+      { text: 'hello', x: 8, y: 6, width: 37, height: 16 },
+      { text: 'world', x: 54, y: 6, width: 36, height: 16 }
+    ]
+  }], image)
+
+  assert.equal(lines[0]!.text, 'hello world')
+})
+
+/**
+ * 校验词间横线位于字形中部（连字符）时不应恢复成下划线。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 连字符不应被恢复为下划线', () => {
+  const image = makeWindowsOcrTestImage()
+  for (let y = 14; y <= 16; y += 1) {
+    for (let x = 46; x <= 53; x += 1) setWindowsOcrTestPixel(image, x, y, 20)
+  }
+  const lines = restoreWindowsOcrUnderlines([{
+    text: 'foo bar',
+    words: [
+      { text: 'foo', x: 8, y: 6, width: 37, height: 16 },
+      { text: 'bar', x: 54, y: 6, width: 32, height: 16 }
+    ]
+  }], image)
+
+  assert.equal(lines[0]!.text, 'foo bar')
+})
+
+/**
+ * 校验同一行多个词间下划线可全部恢复，覆盖重复单词的索引推进。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 应恢复同一行的多个下划线', () => {
+  const image = makeWindowsOcrTestImage()
+  for (let y = 25; y <= 27; y += 1) {
+    for (let x = 46; x <= 53; x += 1) setWindowsOcrTestPixel(image, x, y, 20)
+    for (let x = 74; x <= 92; x += 1) setWindowsOcrTestPixel(image, x, y, 20)
+  }
+  const lines = restoreWindowsOcrUnderlines([{
+    text: 'user id user',
+    words: [
+      { text: 'user', x: 8, y: 6, width: 37, height: 16 },
+      { text: 'id', x: 54, y: 6, width: 14, height: 16 },
+      { text: 'user', x: 98, y: 6, width: 37, height: 16 }
+    ]
+  }], image)
+
+  assert.equal(lines[0]!.text, 'user_id_user')
+})
+
+/**
+ * 校验 Windows 引擎会把结构化词框与下划线恢复结果回传给调用方。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('Windows OCR 引擎应解析结构化输出并恢复下划线', async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'selection-translator-win-ocr-underline-'))
+  const source = makeWindowsOcrTestImage()
+  for (let y = 25; y <= 27; y += 1) {
+    for (let x = 46; x <= 53; x += 1) setWindowsOcrTestPixel(source, x, y, 20)
+  }
+
+  try {
+    const engine = new WindowsSystemOcrEngine({
+      platform: 'win32',
+      tmpDir: () => temporaryDirectory,
+      execFile: async () => ({
+        stdout: JSON.stringify({
+          lines: [{
+            text: 'user id',
+            words: [
+              { text: 'user', x: 8, y: 6, width: 37, height: 16 },
+              { text: 'id', x: 54, y: 6, width: 14, height: 16 }
+            ]
+          }]
+        }),
+        stderr: ''
+      })
+    })
+
+    const result = await engine.recognize({
+      imageBytes: encodePng(source),
+      language: 'en'
+    })
+
+    assert.equal(result.text, 'user_id')
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 构造用于 Windows OCR 下划线检测的白色测试图像。
+ * @returns 白色 RGBA 测试图像。
+ * @author zhenghq
+ */
+function makeWindowsOcrTestImage(): { width: number; height: number; data: Uint8Array } {
+  const image = { width: 144, height: 34, data: new Uint8Array(144 * 34 * 4) }
+  for (let i = 0; i < image.data.length; i += 4) {
+    image.data[i] = 255
+    image.data[i + 1] = 255
+    image.data[i + 2] = 255
+    image.data[i + 3] = 255
+  }
+  return image
+}
+
+/**
+ * 设置 Windows OCR 测试图像的单像素灰度值。
+ * @param image 目标图像。
+ * @param x 横坐标。
+ * @param y 纵坐标。
+ * @param value 灰度值。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setWindowsOcrTestPixel(
+  image: { width: number; height: number; data: Uint8Array },
+  x: number,
+  y: number,
+  value: number
+): void {
+  const offset = (y * image.width + x) * 4
+  image.data[offset] = value
+  image.data[offset + 1] = value
+  image.data[offset + 2] = value
+}
+
+/**
+ * 校验 Windows OCR 结构化输出损坏时安全回退为空结果，避免引擎整体失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows OCR 非结构化旧输出应安全回退为逐行文本', () => {
+  assert.deepEqual(parseWindowsOcrStructuredOutput('普通旧版输出\n第二行'), [
+    { text: '普通旧版输出' },
+    { text: '第二行' }
+  ])
 })
 
 /**

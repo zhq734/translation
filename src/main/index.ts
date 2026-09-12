@@ -167,7 +167,7 @@ import {
   cropBgraSelectionPng,
   resolveSnapshotCropRect
 } from './ocrSnapshotImage'
-import { OcrDispatcher } from './ocrDispatcher'
+import { OcrDispatcher, type OcrEnginePreferenceState } from './ocrDispatcher'
 import { createSystemOcrEngine } from './systemOcr'
 import { PaddleOcrEngine } from './paddleOcr'
 import { resolveBundledOcrModelAssets } from './ocrModelAssets'
@@ -329,6 +329,9 @@ let lastSelectionAnchor: { x: number; y: number } | undefined
 let lastOcrText = ''
 let lastOcrAnchor: { x: number; y: number } | undefined
 let lastOcrEngine: TranslatePayload['ocrEngine'] | undefined
+
+/** 自动 OCR 最近一次成功引擎，在应用生命周期内沿用，失败时再按顺序降级。 */
+const ocrEnginePreferenceState: OcrEnginePreferenceState = {}
 
 /**
  * 返回已初始化的钉钉配置服务。
@@ -2118,6 +2121,7 @@ function createOcrDispatcher(settings: Settings): OcrDispatcher {
   const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
   return new OcrDispatcher({
     platform: process.platform,
+    enginePreferenceState: ocrEnginePreferenceState,
     engines: {
       system: createSystemOcrEngine(),
       paddle: paddleModelAssets.ready
@@ -3685,6 +3689,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.microsoftEnabled !== undefined &&
       settings.microsoftEnabled !== previous.microsoftEnabled) {
     resetMicrosoftTranslationRuntime()
+  }
+  if (patch.ocrEnginePreference !== undefined && settings.ocrEnginePreference !== previous.ocrEnginePreference) {
+    delete ocrEnginePreferenceState.preferredEngine
   }
   if (aiFieldChanged) {
     resetAiTranslationRuntime()

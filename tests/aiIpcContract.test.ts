@@ -25,7 +25,10 @@ test('AI 配置保存成功后应通过专用服务广播脱敏 Settings', () =>
 test('翻译请求应从主进程安全存储读取 AI API Key 并传入运行时', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   assert.match(source, /const aiApiKey = settings\.aiEnabled \? getAiConfiguration\(\)\.getApiKey\(\) : null/u)
-  assert.match(source, /await translate\(text, requestSettings, dingTalkCredentials, aiApiKey\)/u)
+  assert.match(
+    source,
+    /await translate\(\s*text,\s*requestSettings,\s*dingTalkCredentials,\s*aiApiKey\s*\)/u
+  )
 })
 
 test('AI 配置变化应清理模型缓存和 AI 运行时', () => {

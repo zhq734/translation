@@ -51,6 +51,21 @@ test('统一 OCR 质量评价应优先目标语言匹配结果', () => {
 })
 
 /**
+ * 校验自动语言不预设中文，避免英文/代码截图被误判为语言不匹配而反复降级。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('统一 OCR 质量评价在 auto 语言下不应把拉丁文本判为语言不匹配', () => {
+  const english = evaluateOcrQuality(result('Upload the archive package to the server.'), 'auto')
+  const zh = evaluateOcrQuality(result('abcdef ghijkl'), 'zh')
+
+  assert.equal(english.languageMismatch, false)
+  assert.equal(english.safeToAccept, true)
+  // 显式中文目标仍应保留语言不匹配惩罚。
+  assert.equal(zh.languageMismatch, true)
+})
+
+/**
  * 校验缺失置信度可沿用文本门控，低置信度则不得安全接受。
  * @returns 无返回值。
  * @author zhenghq

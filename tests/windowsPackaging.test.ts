@@ -4,6 +4,7 @@ import test from 'node:test'
 
 type PackageJson = {
   scripts?: Record<string, string>
+  overrides?: Record<string, string>
   build?: {
     electronDist?: string
     win?: {
@@ -33,8 +34,28 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJ
 test('Windows 打包脚本应生成 x64 与 arm64 NSIS 安装程序', () => {
   assert.equal(
     packageJson.scripts?.['dist:win'],
-    'npm run build && electron-builder --win nsis --x64 --arm64 --publish never'
+    'npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never'
   )
+})
+
+/**
+ * 校验 Windows 打包会预取并验证 x64/arm64 的 sharp 原生运行时，避免交叉打包
+ * 把构建机的 darwin binding 带入安装包后导致 PaddleOCR 初始化失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 打包前应准备并校验目标架构 sharp 运行时', () => {
+  const expectedScript = 'node scripts/prepare-windows-ocr-runtime.mjs'
+  for (const command of ['dist:win']) {
+    assert.match(packageJson.scripts?.[command] ?? '', new RegExp(expectedScript.replace(/[.]/gu, '\\.'), 'u'))
+  }
+  assert.equal(existsSync('scripts/prepare-windows-ocr-runtime.mjs'), true)
+  assert.equal(packageJson.overrides?.sharp, '0.34.2')
+
+  const prepareScript = readFileSync('scripts/prepare-windows-ocr-runtime.mjs', 'utf8')
+  assert.match(prepareScript, /'x64', 'arm64'/u)
+  assert.match(prepareScript, /sharp-win32-\$\{arch\}\.node/u)
+  assert.match(prepareScript, /libvips-42\.dll/u)
 })
 
 /**

@@ -236,12 +236,46 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
         const body = response.body
         if (body) {
           const reader = body.getReader()
+
+          /**
+           * 读取下一个响应体数据块，并在取消信号或读取超时触发时立即中断等待。
+           * 某些 fetch 实现对已经建立的死响应流不会自动拒绝 reader.read()，
+           * 因此需要显式监听 AbortSignal，避免分片永远卡在读取阶段。
+           * @returns 下一个响应体数据块读取结果。
+           * @author zhenghq
+           */
+          const readChunk = (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+            return new Promise((resolve, reject) => {
+              const onAbort = (): void => {
+                requestAbortController.signal.removeEventListener('abort', onAbort)
+                reject(new Error(timeoutKind === 'read' ? '分片读取超时' : '分片请求超时'))
+              }
+
+              if (requestAbortController.signal.aborted) {
+                onAbort()
+                return
+              }
+
+              requestAbortController.signal.addEventListener('abort', onAbort, { once: true })
+              reader.read().then(
+                (chunk) => {
+                  requestAbortController.signal.removeEventListener('abort', onAbort)
+                  resolve(chunk)
+                },
+                (error) => {
+                  requestAbortController.signal.removeEventListener('abort', onAbort)
+                  reject(error)
+                }
+              )
+            })
+          }
+
           let chunkLoopCompleted = false
           try {
             resetReadTimeout()
             while (true) {
               if (options.signal?.aborted) throw new Error('下载已取消')
-              const chunk = await reader.read()
+              const chunk = await readChunk()
               if (chunk.done) break
               if (!chunk.value) continue
               resetReadTimeout()

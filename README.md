@@ -633,8 +633,8 @@ npm run release:checksums
 
 - `npm run build` generates main, preload, and renderer outputs in `out/`;
 - `npm run dist:mac` creates macOS x64/arm64 `dmg` and `zip` packages;
-- `npm run dist:linux` creates Linux x64/arm64 AppImage packages; the x64 artifact uses `x86_64` in its file name;
-- `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers;
+- `npm run dist:linux` creates Linux x64/arm64 AppImage packages and prepares/validates the `sharp`/`libvips` OCR runtime for both architectures; the x64 artifact uses `x86_64` in its file name;
+- `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers and prepares/validates the `sharp` OCR runtime for both architectures;
 - Every platform package creates a `latest*.yml` update manifest. macOS and Windows also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data;
 - `npm run release:checksums` creates `SHA256SUMS` for `.AppImage`, `.dmg`, `.zip`, and `.exe` files; upload it alongside all installers in the same Release;
 - All packaged files are written to `dist/`;

@@ -1,6 +1,8 @@
 import { tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { decodePng } from './pngCodec'
+import { lumaOf, type RgbaImage } from '../shared/imagePreprocess'
 import { OcrEngineError, type OcrEngine, type OcrRecognizeInput, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { joinOcrLines } from '../shared/ocrEngine'
 import type { OcrTextLine } from '../shared/types'
@@ -170,6 +172,150 @@ export interface WindowsOcrCommand {
   args: string[]
 }
 
+/** Windows OCR 输出的单词框，用于检测系统遗漏的词间下划线。 */
+export interface WindowsOcrWordBox {
+  /** 单词文本。 */
+  text: string
+  /** 包围盒左上角 x 坐标。 */
+  x: number
+  /** 包围盒左上角 y 坐标。 */
+  y: number
+  /** 包围盒宽度。 */
+  width: number
+  /** 包围盒高度。 */
+  height: number
+}
+
+/** Windows OCR 结构化行，保留词框以便在截图像素中恢复下划线。 */
+export interface WindowsOcrStructuredLine extends OcrTextLine {
+  /** 该行的单词框；旧版输出或解析失败时为空。 */
+  words?: WindowsOcrWordBox[]
+}
+
+/**
+ * 解析 Windows OCR 的 JSON 输出；为兼容旧脚本，纯文本输出仍按行解析。
+ * @param output PowerShell stdout。
+ * @returns 包含可选词框的文本行。
+ * @author zhenghq
+ */
+export function parseWindowsOcrStructuredOutput(output: string): WindowsOcrStructuredLine[] {
+  const raw = String(output ?? '').trim()
+  if (!raw) return []
+  if (!raw.startsWith('{')) return parseVisionOcrOutput(raw)
+
+  try {
+    const parsed = JSON.parse(raw) as { lines?: unknown }
+    if (!Array.isArray(parsed.lines)) return []
+    return parsed.lines
+      .map((line): WindowsOcrStructuredLine | null => {
+        if (!line || typeof line !== 'object') return null
+        const candidate = line as { text?: unknown; words?: unknown }
+        const text = typeof candidate.text === 'string' ? candidate.text.trim() : ''
+        if (!text) return null
+        const words = Array.isArray(candidate.words)
+          ? candidate.words
+            .map((word): WindowsOcrWordBox | null => {
+              if (!word || typeof word !== 'object') return null
+              const item = word as Record<string, unknown>
+              const wordText = typeof item.text === 'string' ? item.text.trim() : ''
+              const x = Number(item.x)
+              const y = Number(item.y)
+              const width = Number(item.width)
+              const height = Number(item.height)
+              if (!wordText || ![x, y, width, height].every(Number.isFinite)) return null
+              return { text: wordText, x, y, width, height }
+            })
+            .filter((word): word is WindowsOcrWordBox => word !== null)
+          : []
+        return words.length > 0 ? { text, words } : { text }
+      })
+      .filter((line): line is WindowsOcrStructuredLine => line !== null)
+  } catch {
+    return parseVisionOcrOutput(raw)
+  }
+}
+
+/**
+ * 判断图像中两个词框之间的空白区域是否存在横向下划线像素。
+ * @param image 原始 PNG 解码后的 RGBA 图像。
+ * @param left 左侧单词框。
+ * @param right 右侧单词框。
+ * @returns 是否存在贯穿词间空白的横线。
+ * @author zhenghq
+ */
+function hasUnderlineBetweenWords(
+  image: RgbaImage,
+  left: WindowsOcrWordBox,
+  right: WindowsOcrWordBox
+): boolean {
+  const gapLeft = Math.max(0, Math.ceil(left.x + left.width))
+  const gapRight = Math.min(image.width - 1, Math.floor(right.x) - 1)
+  const gapWidth = gapRight - gapLeft + 1
+  if (gapWidth < 2 || gapRight < gapLeft) return false
+
+  const top = Math.min(left.y, right.y)
+  const bottom = Math.max(left.y + left.height, right.y + right.height)
+  const lineHeight = Math.max(1, Math.min(left.height, right.height))
+  // 下划线位于字形基线下方；从 85% 高度开始扫描可避开连字符所在的字形中部。
+  const scanTop = Math.max(0, Math.floor(top + lineHeight * 0.85))
+  const scanBottom = Math.min(image.height - 1, Math.ceil(bottom + lineHeight * 0.35))
+
+  for (let y = scanTop; y <= scanBottom; y += 1) {
+    let darkPixels = 0
+    for (let x = gapLeft; x <= gapRight; x += 1) {
+      const offset = (y * image.width + x) * 4
+      const alpha = image.data[offset + 3] / 255
+      // 透明像素在白底上不可见，按 alpha 合成为实际亮度，避免把透明区域误判为横线。
+      const luma = lumaOf(image.data[offset], image.data[offset + 1], image.data[offset + 2]) *
+        alpha + 255 * (1 - alpha)
+      if (luma < 190) darkPixels += 1
+    }
+    if (darkPixels >= Math.max(2, Math.ceil(gapWidth * 0.6))) return true
+  }
+  return false
+}
+
+/**
+ * 结合 Windows OCR 词框与截图像素，把被识别为普通空格的词间下划线恢复为 `_`。
+ * 只有图像中确实存在横线时才修改文本，因此不会把普通英文短语误改成下划线。
+ * @param lines Windows OCR 结构化行。
+ * @param image 原始图片解码后的 RGBA 图像。
+ * @returns 恢复下划线后的文本行。
+ * @author zhenghq
+ */
+export function restoreWindowsOcrUnderlines(
+  lines: WindowsOcrStructuredLine[],
+  image: RgbaImage
+): WindowsOcrStructuredLine[] {
+  return lines.map((line) => {
+    if (!line.words || line.words.length < 2) return line
+    let text = line.text
+    for (let index = 0; index < line.words.length - 1; index += 1) {
+      const left = line.words[index]!
+      const right = line.words[index + 1]!
+      if (!hasUnderlineBetweenWords(image, left, right)) continue
+
+      const leftIndex = text.indexOf(left.text)
+      // 逐词推进搜索游标，避免重复单词时总是命中行首位置。
+      const rightIndex = leftIndex >= 0
+        ? text.indexOf(right.text, leftIndex + left.text.length)
+        : -1
+      if (leftIndex >= 0 && rightIndex > leftIndex) {
+        const gap = text.slice(leftIndex + left.text.length, rightIndex)
+        if (/^\s*$/u.test(gap)) {
+          text = text.slice(0, leftIndex + left.text.length) +
+            '_' + text.slice(rightIndex)
+        }
+      } else if (text === line.words.map((word) => word.text).join(' ')) {
+        text = line.words.map((word, wordIndex) =>
+          wordIndex === index ? `${word.text}_` : word.text
+        ).join(' ')
+      }
+    }
+    return { ...line, text }
+  })
+}
+
 /**
  * 构造用于调用 win-ocr.ps1 的 PowerShell 命令参数。
  * @param imagePath 图片本地路径（PNG）。
@@ -196,6 +342,26 @@ export function buildWindowsOcrCommand(
       '-Language', langTag
     ]
   }
+}
+
+/**
+ * 从子进程异常中提取最有诊断价值的输出文本。
+ * execFile 抛出异常时，底层错误对象通常会携带 stderr；优先使用它，避免只展示
+ * “Command failed” 而丢失 PowerShell 的真实错误。
+ * @param error 捕获到的异常。
+ * @returns 去除首尾空白后的诊断文本。
+ * @author zhenghq
+ */
+function extractProcessErrorMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error)
+
+  const processError = error as { stderr?: unknown; stdout?: unknown; message?: unknown }
+  for (const candidate of [processError.stderr, processError.stdout, processError.message]) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim()
+    }
+  }
+  return String(error)
 }
 
 /** win-ocr.ps1 脚本内容（从 Lumi-translate 迁移，Apache-2.0 兼容）。 */
@@ -251,13 +417,30 @@ try {
     }
 
     $bestText = ''
+    $bestLines = @()
     foreach ($tag in $candidates) {
       $engine = New-OcrEngine $tag
       if ($null -eq $engine) { continue }
       $result = Await-Operation ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-      $text = [string]$result.Text
+      $text = $result.Text
       if ($text.Trim().Length -gt $bestText.Trim().Length) {
         $bestText = $text
+        $bestLines = @($result.Lines | ForEach-Object {
+          $line = $_
+          [pscustomobject]@{
+            text = $line.Text
+            words = @($line.Words | ForEach-Object {
+              $rect = $_.BoundingRect
+              [pscustomobject]@{
+                text = $_.Text
+                x = [int][Math]::Round($rect.X)
+                y = [int][Math]::Round($rect.Y)
+                width = [int][Math]::Round($rect.Width)
+                height = [int][Math]::Round($rect.Height)
+              }
+            })
+          }
+        })
       }
       if ($Language -and $Language -ne 'auto' -and $bestText.Trim().Length -gt 0) {
         break
@@ -268,7 +451,7 @@ try {
       $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
       if ($null -eq $engine) { throw 'No Windows OCR language is available.' }
     }
-    Write-Output $bestText
+    [pscustomobject]@{ lines = @($bestLines) } | ConvertTo-Json -Compress -Depth 6
   } finally {
     if ($bitmap) { $bitmap.Dispose() }
   }
@@ -440,6 +623,9 @@ export class WindowsSystemOcrEngine implements OcrEngine {
   /** win-ocr.ps1 在 userData 目录的缓存路径。 */
   private scriptPath: string | undefined
 
+  /** Windows system OCR 最近一次不可用原因。 */
+  private unavailableReason: string | undefined
+
   /** 可注入依赖。 */
   private readonly deps: SystemOcrDeps
 
@@ -452,7 +638,10 @@ export class WindowsSystemOcrEngine implements OcrEngine {
     this.deps = {
       platform: process.platform,
       execFile: defaultExecFile,
-      writeFile: async () => undefined,
+      writeFile: async (path, data) => {
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(path, data)
+      },
       tmpDir: tmpdir,
       ...deps
     }
@@ -465,6 +654,15 @@ export class WindowsSystemOcrEngine implements OcrEngine {
    */
   isAvailable(): boolean {
     return this.deps.platform === 'win32'
+  }
+
+  /**
+   * 返回 Windows system OCR 最近一次不可用原因。
+   * @returns 不可用原因；尚未失败或可用时返回 undefined。
+   * @author zhenghq
+   */
+  getUnavailableReason(): string | undefined {
+    return this.unavailableReason
   }
 
   /**
@@ -523,20 +721,54 @@ export class WindowsSystemOcrEngine implements OcrEngine {
         throw new OcrEngineError('engine-unavailable', 'Windows OCR 语言包未安装', 'system')
       }
 
-      const lines = parseVisionOcrOutput(stdout) // Windows 输出同样是每行一条文本
+      let lines: WindowsOcrStructuredLine[] = parseWindowsOcrStructuredOutput(stdout)
+      // 系统 OCR 会把下划线当词间分隔符丢弃，仅在截图像素确有待恢复横线时修正。
+      if (lines.some((line) => line.words && line.words.length > 1)) {
+        try {
+          const imageBytes = input.imageBytes && input.imageBytes.length > 0
+            ? input.imageBytes
+            : await this.readImageBytes(imagePath)
+          const restored = restoreWindowsOcrUnderlines(lines, decodePng(imageBytes))
+          const restoredCount = restored.reduce((count, line, index) =>
+            count + ((line.text.match(/_/gu)?.length ?? 0) -
+              ((lines[index]?.text.match(/_/gu)?.length) ?? 0)), 0)
+          lines = restored
+          if (restoredCount > 0) {
+            console.log('[ocr] Windows 系统 OCR 已按词间横线恢复下划线', { restoredCount })
+          }
+        } catch {
+          // 读取或解码失败时沿用原始 OCR 文本，不让增强逻辑影响主链路。
+        }
+      }
       const text = joinOcrLines(lines)
+      this.unavailableReason = undefined
       return { lines, text, engine: 'system' }
     } catch (error) {
       if (error instanceof OcrEngineError) throw error
-      const message = error instanceof Error ? error.message : String(error)
+      const message = extractProcessErrorMessage(error)
       if (/timeout/i.test(message)) {
         throw new OcrEngineError('timeout', 'Windows OCR 超时', 'system')
       }
       if (/No Windows OCR/i.test(message)) {
-        throw new OcrEngineError('engine-unavailable', 'Windows OCR 语言包未安装', 'system')
+        const reason = 'Windows OCR 语言包未安装'
+        this.unavailableReason = reason
+        throw new OcrEngineError('engine-unavailable', reason, 'system')
       }
-      throw new OcrEngineError('engine-unavailable', `Windows OCR 执行失败: ${message}`, 'system')
+      const reason = `Windows OCR 执行失败: ${message}`
+      this.unavailableReason = reason
+      throw new OcrEngineError('engine-unavailable', reason, 'system')
     }
+  }
+
+  /**
+   * 读取本地图片路径的字节内容，用于输入为路径时恢复下划线。
+   * @param path 图片本地路径。
+   * @returns 图片字节。
+   * @author zhenghq
+   */
+  private async readImageBytes(path: string): Promise<Uint8Array> {
+    const { readFile } = await import('node:fs/promises')
+    return readFile(path)
   }
 }
 

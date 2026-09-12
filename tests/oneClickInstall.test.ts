@@ -437,11 +437,11 @@ test('桌面发行配置应为一键安装脚本生成稳定的跨平台文件�
   )
   assert.equal(
     packageJson.scripts?.['dist:linux'],
-    'npm run build && electron-builder --linux AppImage --x64 --arm64 --publish never'
+    'npm run build && node scripts/prepare-linux-ocr-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never'
   )
   assert.equal(
     packageJson.scripts?.['dist:win'],
-    'npm run build && electron-builder --win nsis --x64 --arm64 --publish never'
+    'npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never'
   )
   assert.equal(packageJson.scripts?.['release:checksums'], 'node scripts/generate-checksums.mjs')
   assert.equal(

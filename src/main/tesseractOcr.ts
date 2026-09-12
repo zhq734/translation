@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs'
 import {
   OcrEngineError,
   withOcrTimeout,
@@ -94,6 +95,23 @@ export function normalizeTesseractLines(rawText: string): OcrTextLine[] {
 }
 
 /**
+ * 确保 Tesseract 语言模型缓存目录存在。
+ * tesseract.js 只调用 fs.writeFile 写入缓存，不会创建父目录；
+ * 目录缺失会导致模型永远写不进缓存，每次识别都要重新下载。
+ * @param tessDataPath tessdata 缓存目录路径；为空时不做任何处理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function ensureTessDataDirectory(tessDataPath: string): void {
+  if (!tessDataPath) return
+  try {
+    mkdirSync(tessDataPath, { recursive: true })
+  } catch {
+    // 目录创建失败时保持原有行为，交由 tesseract.js 后续报错处理。
+  }
+}
+
+/**
  * 默认 Tesseract worker 创建函数，动态 import tesseract.js。
  * @param lang Tesseract 语言字符串。
  * @param tessDataPath tessdata 缓存目录。
@@ -106,6 +124,7 @@ async function defaultCreateWorker(
   tessDataPath: string,
   onProgress?: (status: string, progress?: number) => void
 ): Promise<TesseractWorker> {
+  ensureTessDataDirectory(tessDataPath)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await import('tesseract.js' as string) as any
   const createWorker = mod.createWorker ?? mod.default?.createWorker
@@ -179,7 +198,12 @@ export class TesseractOcrEngine implements OcrEngine {
    */
   private getOrCreateWorker(lang: string): Promise<TesseractWorker> {
     if (!this.workerCache.has(lang)) {
-      this.workerCache.set(lang, this.deps.createWorker(lang))
+      // 创建失败时必须移除缓存，否则后续截图会永久复用同一个 rejected Promise。
+      const created = this.deps.createWorker(lang).catch((error: unknown) => {
+        this.workerCache.delete(lang)
+        throw error
+      })
+      this.workerCache.set(lang, created)
     }
     return this.workerCache.get(lang)!
   }
@@ -201,13 +225,12 @@ export class TesseractOcrEngine implements OcrEngine {
     const lang = tesseractLanguageTag(input.language ?? 'auto')
     const timeoutMs = input.timeoutMs ?? 60000
 
-    const worker = await this.getOrCreateWorker(lang)
-
-    const imageInput = hasBytes
-      ? Buffer.from(input.imageBytes!)
-      : input.imagePath!
-
     try {
+      const worker = await this.getOrCreateWorker(lang)
+      const imageInput = hasBytes
+        ? Buffer.from(input.imageBytes!)
+        : input.imagePath!
+
       const { data } = await withOcrTimeout(
         worker.recognize(imageInput),
         { timeoutMs, signal: input.signal },

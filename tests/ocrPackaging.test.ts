@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
   scripts: Record<string, string>
+  overrides: Record<string, string>
   build: {
     files: string[]
     asarUnpack: string[]
@@ -34,6 +35,7 @@ test('OCR 模型资产与 native runtime 应纳入打包并解包', () => {
   assert.ok(packageJson.build.asarUnpack.includes('assets/ocr/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/onnxruntime-node/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/sharp/**/*'))
+  assert.equal(packageJson.overrides.sharp, '0.34.2')
 })
 
 /**

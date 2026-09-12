@@ -610,8 +610,8 @@ npm run release:checksums
 
 - `npm run build`：生成 Electron 主进程、preload 和 renderer 产物到 `out/`；
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
-- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；
-- `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；
+- `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；打包前会准备并校验两个架构的 `sharp`/`libvips` OCR 运行时；
+- `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；打包前会准备并校验两个架构的 `sharp` OCR 运行时；
 - 各平台打包会生成 `latest*.yml` 更新清单；macOS/Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；

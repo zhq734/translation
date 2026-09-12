@@ -106,7 +106,7 @@ PP-OCRv6_tiny 留档资产目录为 `assets/ocr/ppocrv6_tiny`：
 | `@gutenye/ocr-node` | 1.4.8 | MIT | ~60 KB | PaddleOCR/ONNX 主链路封装 |
 | `@gutenye/ocr-models` | 1.4.2 | MIT | ~15 MB | `@gutenye/ocr-node` 默认随包模型资产 |
 | `onnxruntime-node` | 1.27.0 | MIT | ~259 MB | ONNX Runtime CPU 推理运行时 |
-| `sharp` | 0.33.5 | Apache-2.0 | ~828 KB（不含平台 libvips） | `@gutenye/ocr-node` 图像处理依赖 |
+| `sharp` | 0.34.2 | Apache-2.0 | ~828 KB（不含平台 libvips） | `@gutenye/ocr-node` 图像处理依赖；支持 Windows x64 与 arm64 |
 | `@techstark/opencv-js` | 4.9.0-release.3 | Apache-2.0 | ~12 MB | OCR 前后处理依赖 |
 | `tesseract.js` | 7.0.0 | Apache-2.0 | ~1.6 MB | 本地兜底 OCR |
 | `tesseract.js-core` | 7.0.0 | Apache-2.0 | 由依赖树锁定 | Tesseract WASM 核心 |

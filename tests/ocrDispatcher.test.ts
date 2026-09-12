@@ -3,7 +3,8 @@ import test from 'node:test'
 import {
   buildEngineQueue,
   OcrDispatcher,
-  type OcrDispatcherDeps
+  type OcrDispatcherDeps,
+  type OcrEnginePreferenceState
 } from '../src/main/ocrDispatcher.ts'
 import {
   OcrEngineError,
@@ -11,6 +12,7 @@ import {
   type OcrRecognizeInput,
   type OcrRecognizeResult
 } from '../src/shared/ocrEngine.ts'
+import type { OcrEngineId } from '../src/shared/types.ts'
 
 /**
  * 构造可注入的假 OCR 引擎。
@@ -62,33 +64,63 @@ function makeTrackedEngine(
 }
 
 /**
- * 校验 auto 模式在 macOS 下优先 Tesseract，Paddle 放最后避免英文截图乱码。
+ * 构造按调用次数返回不同结果的假 OCR 引擎，用于验证跨轮次粘滞与降级。
+ * @param id 引擎标识。
+ * @param results 按调用顺序返回的结果或异常；超出后重复最后一个。
+ * @param available 是否可用。
+ * @returns 假引擎及识别调用次数读取函数。
+ * @author zhenghq
+ */
+function makeSequencedEngine(
+  id: OcrEngine['id'],
+  results: Array<OcrRecognizeResult | Error>,
+  available = true
+): { engine: OcrEngine; getRecognizeCount: () => number } {
+  let recognizeCount = 0
+  return {
+    engine: {
+      id,
+      isAvailable: async () => available,
+      recognize: async (_input: OcrRecognizeInput): Promise<OcrRecognizeResult> => {
+        const result = results[Math.min(recognizeCount, results.length - 1)]
+        recognizeCount += 1
+        if (!result) throw new Error('测试引擎未提供识别结果')
+        if (result instanceof Error) throw result
+        return result
+      }
+    },
+    getRecognizeCount: () => recognizeCount
+  }
+}
+
+/**
+ * 校验 auto 模式在 macOS 下按系统、Paddle、Tesseract 依次降级。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('buildEngineQueue auto 在 macOS 应排序 tesseract>system>paddle', () => {
+test('buildEngineQueue auto 在 macOS 应排序 system>paddle>tesseract', () => {
   const queue = buildEngineQueue('auto', 'darwin')
-  assert.deepEqual(queue, ['tesseract', 'system', 'paddle'])
+  assert.deepEqual(queue, ['system', 'paddle', 'tesseract'])
 })
 
 /**
- * 校验 auto 模式在 Windows 下先排系统 OCR，Paddle 放最后。
+ * 校验 auto 模式在 Windows 下按系统、Paddle、Tesseract 依次降级。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('buildEngineQueue auto 在 Windows 应排序 system>tesseract>paddle', () => {
+test('buildEngineQueue auto 在 Windows 应排序 system>paddle>tesseract', () => {
   const queue = buildEngineQueue('auto', 'win32')
-  assert.deepEqual(queue, ['system', 'tesseract', 'paddle'])
+  assert.deepEqual(queue, ['system', 'paddle', 'tesseract'])
 })
 
 /**
- * 校验 auto 模式在 Linux 下优先 Tesseract，Paddle 兜底。
+ * 校验 auto 模式在 Linux 下按 Paddle、Tesseract 依次降级。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('buildEngineQueue auto 在 Linux 应排序 tesseract>paddle', () => {
+test('buildEngineQueue auto 在 Linux 应排序 paddle>tesseract', () => {
   const queue = buildEngineQueue('auto', 'linux')
-  assert.deepEqual(queue, ['tesseract', 'paddle'])
+  assert.deepEqual(queue, ['paddle', 'tesseract'])
 })
 
 /**
@@ -119,6 +151,17 @@ test('buildEngineQueue paddle 偏好只返回 paddle', () => {
 test('buildEngineQueue tesseract 偏好只返回 tesseract', () => {
   const queue = buildEngineQueue('tesseract', 'darwin')
   assert.deepEqual(queue, ['tesseract'])
+})
+
+/**
+ * 校验 auto 模式会把粘滞引擎置顶，其余引擎保持默认降级顺序。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('buildEngineQueue auto 应支持从粘滞引擎继续依次降级', () => {
+  assert.deepEqual(buildEngineQueue('auto', 'darwin', 'paddle'), ['paddle', 'tesseract', 'system'])
+  assert.deepEqual(buildEngineQueue('auto', 'win32', 'tesseract'), ['tesseract', 'system', 'paddle'])
+  assert.deepEqual(buildEngineQueue('auto', 'linux', 'system'), ['paddle', 'tesseract'])
 })
 
 /**
@@ -326,15 +369,16 @@ test('OcrDispatcher 所有引擎空结果应抛出 empty', async () => {
 })
 
 /**
- * 校验用户中文截图对应的 Tesseract 拉丁乱码不会阻断 PaddleOCR。
+ * 校验中文截图的系统 OCR 仅返回拼音乱码时应继续降级到 PaddleOCR。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
  */
-test('OcrDispatcher 中文截图的长拉丁乱码应继续降级并选择高置信中文', async () => {
-  const tesseractResult: OcrRecognizeResult = {
+test('OcrDispatcher 中文截图的系统 OCR 疑似乱码时应继续降级到 Paddle', async () => {
+  const state: OcrEnginePreferenceState = {}
+  const systemResult: OcrRecognizeResult = {
     lines: [{ text: 'Shuzi hua chengguo jieshou yi jing jiagong hao de dangan shuju' }],
     text: 'Shuzi hua chengguo jieshou yi jing jiagong hao de dangan shuju',
-    engine: 'tesseract'
+    engine: 'system'
   }
   const paddleResult: OcrRecognizeResult = {
     lines: [
@@ -346,11 +390,11 @@ test('OcrDispatcher 中文截图的长拉丁乱码应继续降级并选择高置
     text: '数字化成果接收\n已经加工好的档案数字化成果，在该模块进行档案条目导入和档\n案原文挂接。大于1GB的数据包不建议直接上传，请联系系统管\n理员后台上传。',
     engine: 'paddle'
   }
-  const tesseract = makeTrackedEngine('tesseract', tesseractResult)
   const paddle = makeTrackedEngine('paddle', paddleResult)
   const dispatcher = new OcrDispatcher({
     platform: 'darwin',
-    engines: { tesseract: tesseract.engine, paddle: paddle.engine }
+    engines: { system: makeTrackedEngine('system', systemResult).engine, paddle: paddle.engine },
+    enginePreferenceState: state
   })
 
   const result = await dispatcher.recognize({
@@ -361,20 +405,58 @@ test('OcrDispatcher 中文截图的长拉丁乱码应继续降级并选择高置
 
   assert.equal(result.engine, 'paddle')
   assert.equal(result.text, paddleResult.text)
-  assert.equal(tesseract.getRecognizeCount(), 1)
+  assert.equal(state.preferredEngine, 'paddle')
   assert.equal(paddle.getRecognizeCount(), 1)
 })
 
 /**
- * 校验 auto 语言也按中文优先策略继续尝试高置信中文引擎。
+ * 校验 auto 语言不预设中文：系统 OCR 的英文结果应直接锁定，
+ * 不再因语言不匹配而继续降级到 Paddle/Tesseract。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
  */
-test('OcrDispatcher auto 输入的长拉丁乱码应继续降级', async () => {
+test('OcrDispatcher auto 输入英文结果应直接返回且不继续降级', async () => {
+  const system = makeTrackedEngine('system', {
+    lines: [{ text: 'Upload the archive package from the administration console.' }],
+    text: 'Upload the archive package from the administration console.',
+    engine: 'system'
+  })
+  const paddle = makeTrackedEngine('paddle', {
+    lines: [{ text: '不应调用的 Paddle 结果', confidence: 0.99 }],
+    text: '不应调用的 Paddle 结果',
+    engine: 'paddle'
+  })
   const tesseract = makeTrackedEngine('tesseract', {
+    lines: [{ text: '不应调用的 Tesseract 结果' }],
+    text: '不应调用的 Tesseract 结果',
+    engine: 'tesseract'
+  })
+  const dispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine, tesseract: tesseract.engine }
+  })
+
+  const result = await dispatcher.recognize({
+    imageBytes: Buffer.from([1]),
+    language: 'auto'
+  }, 'auto')
+
+  assert.equal(result.engine, 'system')
+  assert.equal(result.text, 'Upload the archive package from the administration console.')
+  assert.equal(paddle.getRecognizeCount(), 0)
+  assert.equal(tesseract.getRecognizeCount(), 0)
+})
+
+/**
+ * 校验显式中文目标下仍会把拉丁乱码判为不匹配并继续降级到中文引擎。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('OcrDispatcher 显式中文输入的长拉丁乱码应继续降级', async () => {
+  const system = makeTrackedEngine('system', {
     lines: [{ text: 'Dang an yuan wen gua jie data package upload administrator' }],
     text: 'Dang an yuan wen gua jie data package upload administrator',
-    engine: 'tesseract'
+    engine: 'system'
   })
   const paddle = makeTrackedEngine('paddle', {
     lines: [{ text: '档案原文挂接，请联系系统管理员后台上传。', confidence: 0.99 }],
@@ -382,13 +464,13 @@ test('OcrDispatcher auto 输入的长拉丁乱码应继续降级', async () => {
     engine: 'paddle'
   })
   const dispatcher = new OcrDispatcher({
-    platform: 'linux',
-    engines: { tesseract: tesseract.engine, paddle: paddle.engine }
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine }
   })
 
   const result = await dispatcher.recognize({
     imageBytes: Buffer.from([1]),
-    language: 'auto'
+    language: 'zh'
   }, 'auto')
 
   assert.equal(result.engine, 'paddle')
@@ -400,20 +482,25 @@ test('OcrDispatcher auto 输入的长拉丁乱码应继续降级', async () => {
  * @returns 测试完成后的 Promise。
  * @author zhenghq
  */
-test('OcrDispatcher 正常英文结果应快速返回且不调用 PaddleOCR', async () => {
-  const tesseract = makeTrackedEngine('tesseract', {
+test('OcrDispatcher 正常英文结果应快速返回且不调用后续引擎', async () => {
+  const system = makeTrackedEngine('system', {
     lines: [{ text: 'Upload the archive package from the administration console.' }],
     text: 'Upload the archive package from the administration console.',
-    engine: 'tesseract'
+    engine: 'system'
   })
   const paddle = makeTrackedEngine('paddle', {
     lines: [{ text: '错误后备结果', confidence: 0.99 }],
     text: '错误后备结果',
     engine: 'paddle'
   })
+  const tesseract = makeTrackedEngine('tesseract', {
+    lines: [{ text: '不应调用的 Tesseract 结果' }],
+    text: '不应调用的 Tesseract 结果',
+    engine: 'tesseract'
+  })
   const dispatcher = new OcrDispatcher({
-    platform: 'linux',
-    engines: { tesseract: tesseract.engine, paddle: paddle.engine }
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine, tesseract: tesseract.engine }
   })
 
   const result = await dispatcher.recognize({
@@ -421,8 +508,9 @@ test('OcrDispatcher 正常英文结果应快速返回且不调用 PaddleOCR', as
     language: 'en'
   }, 'auto')
 
-  assert.equal(result.engine, 'tesseract')
+  assert.equal(result.engine, 'system')
   assert.equal(paddle.getRecognizeCount(), 0)
+  assert.equal(tesseract.getRecognizeCount(), 0)
 })
 
 /**
@@ -546,4 +634,181 @@ test('OcrDispatcher 置信度缺失时应回退到文本质量分', async () => 
   }, 'auto')
 
   assert.equal(result.engine, 'paddle')
+})
+
+/**
+ * 校验自动模式首次成功后会把实际引擎写入共享状态，供后续调度器优先复用。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('OcrDispatcher auto 成功后应粘滞系统 OCR 并在下一次优先复用', async () => {
+  const state: OcrEnginePreferenceState = {}
+  const systemResult: OcrRecognizeResult = {
+    lines: [{ text: '系统 OCR 识别成功' }],
+    text: '系统 OCR 识别成功',
+    engine: 'system'
+  }
+  const firstSystem = makeTrackedEngine('system', systemResult)
+  const firstPaddle = makeTrackedEngine('paddle', {
+    lines: [{ text: '不应调用的 Paddle 结果' }],
+    text: '不应调用的 Paddle 结果',
+    engine: 'paddle'
+  })
+  const firstDispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: firstSystem.engine, paddle: firstPaddle.engine },
+    enginePreferenceState: state
+  })
+
+  const firstResult = await firstDispatcher.recognize({
+    imageBytes: Buffer.from([1]),
+    language: 'zh'
+  }, 'auto')
+
+  assert.equal(firstResult.engine, 'system')
+  assert.equal(state.preferredEngine, 'system')
+  assert.equal(firstPaddle.getRecognizeCount(), 0)
+
+  const secondSystem = makeTrackedEngine('system', systemResult)
+  const secondPaddle = makeTrackedEngine('paddle', {
+    lines: [{ text: '第二次也不应调用 Paddle' }],
+    text: '第二次也不应调用 Paddle',
+    engine: 'paddle'
+  })
+  const secondDispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: secondSystem.engine, paddle: secondPaddle.engine },
+    enginePreferenceState: state
+  })
+
+  const secondResult = await secondDispatcher.recognize({
+    imageBytes: Buffer.from([2]),
+    language: 'zh'
+  }, 'auto')
+
+  assert.equal(secondResult.engine, 'system')
+  assert.equal(secondSystem.getRecognizeCount(), 1)
+  assert.equal(secondPaddle.getRecognizeCount(), 0)
+})
+
+/**
+ * 校验粘滞引擎识别为空时按顺序切换，并将后续成功引擎更新为新的粘滞项。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('OcrDispatcher auto 粘滞引擎空结果时应切换并更新粘滞项', async () => {
+  const state: OcrEnginePreferenceState = { preferredEngine: 'system' }
+  const system = makeTrackedEngine('system', {
+    lines: [],
+    text: '',
+    engine: 'system'
+  })
+  const paddle = makeTrackedEngine('paddle', {
+    lines: [{ text: 'Paddle 接替识别成功' }],
+    text: 'Paddle 接替识别成功',
+    engine: 'paddle'
+  })
+  const tesseract = makeTrackedEngine('tesseract', {
+    lines: [{ text: '不应调用的 Tesseract 结果' }],
+    text: '不应调用的 Tesseract 结果',
+    engine: 'tesseract'
+  })
+  const dispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine, tesseract: tesseract.engine },
+    enginePreferenceState: state
+  })
+
+  const result = await dispatcher.recognize({
+    imageBytes: Buffer.from([1]),
+    language: 'zh'
+  }, 'auto')
+
+  assert.equal(result.engine, 'paddle')
+  assert.equal(state.preferredEngine, 'paddle')
+  assert.equal(system.getRecognizeCount(), 1)
+  assert.equal(paddle.getRecognizeCount(), 1)
+  assert.equal(tesseract.getRecognizeCount(), 0)
+})
+
+/**
+ * 校验粘滞引擎抛错时切换到默认顺序中的后续引擎，而不是跳回前置引擎。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('OcrDispatcher auto 粘滞引擎报错时应切换到后续引擎', async () => {
+  const state: OcrEnginePreferenceState = { preferredEngine: 'paddle' }
+  const system = makeTrackedEngine('system', {
+    lines: [{ text: '不应跳回系统 OCR' }],
+    text: '不应跳回系统 OCR',
+    engine: 'system'
+  })
+  const paddle = makeSequencedEngine('paddle', [
+    new OcrEngineError('engine-unavailable', 'Paddle 暂时不可用', 'paddle'),
+    {
+      lines: [{ text: 'Paddle 恢复识别成功' }],
+      text: 'Paddle 恢复识别成功',
+      engine: 'paddle'
+    }
+  ])
+  const tesseract = makeTrackedEngine('tesseract', {
+    lines: [{ text: 'Tesseract 接替识别成功' }],
+    text: 'Tesseract 接替识别成功',
+    engine: 'tesseract'
+  })
+  const dispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine, tesseract: tesseract.engine },
+    enginePreferenceState: state
+  })
+
+  const result = await dispatcher.recognize({
+    imageBytes: Buffer.from([1]),
+    language: 'zh'
+  }, 'auto')
+
+  assert.equal(result.engine, 'tesseract')
+  assert.equal(state.preferredEngine, 'tesseract')
+  assert.equal(system.getRecognizeCount(), 0)
+  assert.equal(paddle.getRecognizeCount(), 1)
+  assert.equal(tesseract.getRecognizeCount(), 1)
+})
+
+/**
+ * 校验粘滞引擎位于降级末位时失败仍会回环尝试其余引擎。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('OcrDispatcher auto 粘滞末位引擎失败时应回环降级', async () => {
+  const state: OcrEnginePreferenceState = { preferredEngine: 'tesseract' }
+  const system = makeTrackedEngine('system', {
+    lines: [{ text: '系统 OCR 回环接替成功' }],
+    text: '系统 OCR 回环接替成功',
+    engine: 'system'
+  })
+  const paddle = makeTrackedEngine('paddle', {
+    lines: [{ text: 'Paddle 不应被调用' }],
+    text: 'Paddle 不应被调用',
+    engine: 'paddle'
+  })
+  const tesseract = makeTrackedEngine(
+    'tesseract',
+    new OcrEngineError('engine-unavailable', 'Tesseract 暂时不可用', 'tesseract')
+  )
+  const dispatcher = new OcrDispatcher({
+    platform: 'darwin',
+    engines: { system: system.engine, paddle: paddle.engine, tesseract: tesseract.engine },
+    enginePreferenceState: state
+  })
+
+  const result = await dispatcher.recognize({
+    imageBytes: Buffer.from([1]),
+    language: 'zh'
+  }, 'auto')
+
+  assert.equal(result.engine, 'system')
+  assert.equal(state.preferredEngine, 'system')
+  assert.equal(tesseract.getRecognizeCount(), 1)
+  assert.equal(system.getRecognizeCount(), 1)
+  assert.equal(paddle.getRecognizeCount(), 0)
 })

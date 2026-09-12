@@ -26,6 +26,28 @@ GitHub Actions 现在拆分为两个 macOS 原生任务：
 
 两个任务分别上传 `latest-mac-x64.yml` 与 `latest-mac-arm64.yml`，发布前由 `scripts/merge-mac-update-info.mjs` 合并为 electron-updater 使用的 `latest-mac.yml`。这样既保留双架构自动更新清单，也保证每个安装包内的 native binding 与应用架构一致。
 
+## Windows 双架构 sharp 运行时
+
+Windows 安装包同时覆盖 x64 与 arm64，而 `sharp` 是 `@gutenye/ocr-node` 的 native 依赖。仅依赖构建机的 `npm ci` 时，安装包只会携带当前运行器架构的 `@img/sharp-*`，另一个架构的 PaddleOCR 会因找不到 native binding 而初始化失败。
+
+`npm run dist:win` 会先执行 `scripts/prepare-windows-ocr-runtime.mjs`，分别安装并校验以下两个运行时：
+
+- `@img/sharp-win32-x64/lib/sharp-win32-x64.node` 与 `libvips-42.dll`
+- `@img/sharp-win32-arm64/lib/sharp-win32-arm64.node` 与 `libvips-42.dll`
+
+任一文件缺失时脚本会以非零退出码终止打包，避免发布缺少 native binding 的安装包。`package.json` 通过 `overrides.sharp = 0.34.2` 固定版本，确保 Windows x64 与 arm64 都有可用的预编译包。
+
+## Linux 双架构 sharp 运行时
+
+Linux AppImage 同样同时覆盖 x64 与 arm64，而构建机上的 `npm ci` 只会安装当前架构的 `@img/sharp-linux-*` 可选依赖。若直接使用 `electron-builder --linux AppImage --x64 --arm64` 交叉打包，缺少目标架构 binding 的 AppImage 会在 PaddleOCR 初始化时报 `Could not load the "sharp" module`。
+
+`npm run dist:linux` 会先执行 `scripts/prepare-linux-ocr-runtime.mjs`，分别安装并校验以下两个运行时：
+
+- `@img/sharp-linux-x64/lib/sharp-linux-x64.node` 与 `@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.16.1`
+- `@img/sharp-linux-arm64/lib/sharp-linux-arm64.node` 与 `@img/sharp-libvips-linux-arm64/lib/libvips-cpp.so.8.16.1`
+
+脚本使用隔离的临时目录逐个架构安装，避免连续 `npm install` 触发可选依赖裁剪；任一文件缺失时以非零退出码终止打包，避免发布缺少 native binding 的 AppImage。该脚本准备的是 glibc 运行时；AppImage 目标仍应在对应的真实 x64/arm64 Linux 环境完成启动与 OCR 验证。
+
 ## 平台验证清单
 
 | 平台 | 模型路径 | 运行时 | 权限说明 |

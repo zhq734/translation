@@ -9,6 +9,8 @@ import {
 } from '../shared/ocrEngine'
 import type { OcrTextLine } from '../shared/types'
 import type { PaddleOcrModelPaths } from './ocrModelAssets'
+import { decodePng } from './pngCodec'
+import { restorePaddleOcrUnderlines } from './paddleOcrUnderline'
 
 /** @gutenye/ocr-node 返回的原始检测条目结构。 */
 export interface PaddleDetectItem {
@@ -84,6 +86,34 @@ export function joinOcrFragments(fragments: string[]): string {
 }
 
 /**
+ * 合并同一行内多个检测条目的包围盒，得到覆盖整行的范围。
+ * 下划线恢复需要完整行盒才能定位词间空白，因此不能只取首个片段。
+ * @param items 同行检测条目。
+ * @returns 覆盖整行的包围盒；条目均无有效包围盒时返回首个条目包围盒。
+ * @author zhenghq
+ */
+function mergePaddleItemBoxes(
+  items: Array<{ box: { x: number; y: number; width: number; height: number } }>
+): { x: number; y: number; width: number; height: number } {
+  const valid = items.filter(
+    (item) =>
+      Number.isFinite(item.box.x) &&
+      Number.isFinite(item.box.y) &&
+      Number.isFinite(item.box.width) &&
+      Number.isFinite(item.box.height) &&
+      item.box.width > 0 &&
+      item.box.height > 0
+  )
+  if (valid.length === 0) return items[0]!.box
+
+  const left = Math.min(...valid.map((item) => item.box.x))
+  const top = Math.min(...valid.map((item) => item.box.y))
+  const right = Math.max(...valid.map((item) => item.box.x + item.box.width))
+  const bottom = Math.max(...valid.map((item) => item.box.y + item.box.height))
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
+/**
  * 将 @gutenye/ocr-node 返回的原始检测行列表规范化为 OcrTextLine 数组。
  * 过滤低置信度与空白文本，按包围盒 Y 轴分组后同行内按 X 排序拼接。
  * @param lines @gutenye/ocr-node 检测结果。
@@ -139,10 +169,9 @@ export function normalizePaddleLines(lines: PaddleDetectItem[] | null | undefine
       const sorted = group.items.slice().sort((a, b) => a.box.x - b.box.x)
       const text = joinOcrFragments(sorted.map((item) => item.text))
       if (!text) return null
-      const firstBox = sorted[0]!.box
       return {
         text,
-        box: firstBox,
+        box: mergePaddleItemBoxes(sorted),
         confidence: sorted.reduce((sum, item) => sum + (item.confidence ?? 1), 0) / sorted.length
       } satisfies OcrTextLine
     })
@@ -172,6 +201,12 @@ export interface PaddleOcrDeps {
    * @param path 目标路径。
    */
   unlink(path: string): Promise<void>
+  /**
+   * 读取图片文件字节，用于按词间横线恢复下划线。
+   * @param path 图片路径。
+   * @returns 图片字节。
+   */
+  readFile(path: string): Promise<Buffer>
   /** 返回系统临时目录路径。 */
   tmpDir(): string
   /**
@@ -252,6 +287,10 @@ export class PaddleOcrEngine implements OcrEngine {
         } catch {
           // 静默忽略删除失败
         }
+      },
+      readFile: async (path) => {
+        const { readFile } = await import('node:fs/promises')
+        return readFile(path)
       },
       tmpDir: tmpdir,
       createOcrNode: defaultCreateOcrNode,
@@ -345,8 +384,9 @@ export class PaddleOcrEngine implements OcrEngine {
         'paddle'
       )
       const lines = normalizePaddleLines(raw)
-      const text = lines.map((l) => l.text).join('\n')
-      return { lines, text, engine: 'paddle' }
+      const restored = await this.restoreUnderlines(lines, input, imagePath)
+      const text = restored.map((l) => l.text).join('\n')
+      return { lines: restored, text, engine: 'paddle' }
     } catch (error) {
       if (error instanceof OcrEngineError) throw error
       const message = error instanceof Error ? error.message : String(error)
@@ -358,6 +398,44 @@ export class PaddleOcrEngine implements OcrEngine {
       if (tempPath) {
         await this.deps.unlink(tempPath)
       }
+    }
+  }
+
+  /**
+   * 按词间横线像素把 PaddleOCR 丢失为空格的下划线恢复出来。
+   * 读取或解码图片失败时沿用原始 OCR 文本，不让增强逻辑影响主链路。
+   * @param lines 规范化后的文本行。
+   * @param input 识别输入。
+   * @param imagePath 当前识别使用的图片路径。
+   * @returns 恢复下划线后的文本行。
+   * @author zhenghq
+   */
+  private async restoreUnderlines(
+    lines: OcrTextLine[],
+    input: OcrRecognizeInput,
+    imagePath: string
+  ): Promise<OcrTextLine[]> {
+    if (!lines.some((line) => /\s/u.test(line.text))) return lines
+    try {
+      const imageBytes = input.imageBytes && input.imageBytes.length > 0
+        ? input.imageBytes
+        : await this.deps.readFile(imagePath)
+      if (!imageBytes) return lines
+      const image = decodePng(imageBytes)
+      let restoredCount = 0
+      const restored = lines.map((line) => {
+        const text = restorePaddleOcrUnderlines(line.text, line.box, image)
+        if (text === line.text) return line
+        restoredCount += (text.match(/_/gu)?.length ?? 0) -
+          (line.text.match(/_/gu)?.length ?? 0)
+        return { ...line, text }
+      })
+      if (restoredCount > 0) {
+        console.log('[ocr] PaddleOCR 已按词间横线恢复下划线', { restoredCount })
+      }
+      return restored
+    } catch {
+      return lines
     }
   }
 }
