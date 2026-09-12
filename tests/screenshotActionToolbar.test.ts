@@ -116,8 +116,9 @@ test('主进程应实现截图文字识别并通过结果事件回传文本', ()
   const source = main.slice(start, end)
 
   assert.match(source, /cropCurrentOcrSelectionPng/u)
-  assert.equal(source.match(/preprocessOcrImageBytes\(/gu)?.length, 1)
-  assert.match(source, /dispatcher\.recognize\(/u)
+  assert.equal(source.match(/recognizeAdaptiveOcr\(/gu)?.length, 1)
+  assert.match(source, /imageBytes:\s*png,\s*\n\s*maxScale: settings\.ocrScale/u)
+  assert.match(source, /recognize:\s*\(preparedImageBytes\)\s*=>\s*\n?\s*dispatcher\.recognize\(/u)
   assert.match(source, /sendScreenshotRecognizeResult\(/u)
   assert.match(main, /webContents\.send\('ocr-selection:recognize-result'/u)
   // 识别结果写回前校验 OCR 会话与请求版本

@@ -7,7 +7,10 @@ interface PackageJson {
   build?: {
     icon?: string
     files?: string[]
-    mac?: { icon?: string }
+    mac?: {
+      icon?: string
+      extraResources?: Array<{ from: string; to: string }>
+    }
     win?: { icon?: string }
     linux?: { icon?: string }
   }
@@ -107,4 +110,25 @@ test('托盘应加载翻译图标而不是空白占位图', () => {
   assert.match(source, /nativeImage\.createFromPath\(/u)
   assert.match(source, /setTemplateImage\(true\)/u)
   assert.ok(packageJson.build?.files?.includes('build/tray*.png'))
+})
+
+/**
+ * 校验 macOS 从菜单栏形态恢复 Dock 时显式重设打包图标，避免回退为 Electron 默认图标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 动态显示 Dock 时应显式使用自定义应用图标', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+
+  assert.ok(
+    packageJson.build?.mac?.extraResources?.some(
+      (resource) => resource.from === 'build/icon.png' && resource.to === 'icon.png'
+    ),
+    'macOS 安装包应把 PNG 自定义图标复制到 process.resourcesPath/icon.png'
+  )
+  assert.match(source, /app\.isPackaged[\s\S]*?process\.resourcesPath[\s\S]*?icon\.png/u)
+  assert.match(
+    source,
+    /if \(presentation\.dockVisible\)[\s\S]*?app\.dock\?\.setIcon\([\s\S]*?app\.dock\?\.show\(\)/u
+  )
 })

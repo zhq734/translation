@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ocrEnginePreference: 'auto',
   ocrHotkey: 'Alt+O',
   ocrLang: 'auto',
-  ocrScale: 1.25,
+  ocrScale: 1,
   ocrTesseractEnabled: true,
   webTranslationEnabled: true,
   webTranslationScope: 'all',

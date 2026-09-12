@@ -50,7 +50,10 @@
           aria-controls="settings-panel-general"
           data-tab="general"
         >
-          常规
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" />
+          </svg>
+          <span class="settings-tab-label">常规</span>
         </button>
         <button
           id="settings-tab-ai"
@@ -62,7 +65,10 @@
           data-tab="ai"
           tabindex="-1"
         >
-          AI 翻译
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3ZM18.5 14l.75 2.25L21.5 17l-2.25.75L18.5 20l-.75-2.25L15.5 17l2.25-.75L18.5 14ZM5.5 12l.65 1.85L8 14.5l-1.85.65L5.5 17l-.65-1.85L3 14.5l1.85-.65L5.5 12Z" />
+          </svg>
+          <span class="settings-tab-label">AI 翻译</span>
         </button>
         <button
           id="settings-tab-ocr"
@@ -74,7 +80,10 @@
           data-tab="ocr"
           tabindex="-1"
         >
-          OCR
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4M8 12h8M8 16h6" />
+          </svg>
+          <span class="settings-tab-label">OCR</span>
         </button>
         <button
           id="settings-tab-translation-services"
@@ -86,7 +95,11 @@
           data-tab="translation-services"
           tabindex="-1"
         >
-          翻译服务
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+          </svg>
+          <span class="settings-tab-label">翻译服务</span>
         </button>
         <button
           id="settings-tab-advanced"
@@ -98,7 +111,11 @@
           data-tab="advanced"
           tabindex="-1"
         >
-          高级
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1 1.55V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.55-1H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
+          </svg>
+          <span class="settings-tab-label">高级</span>
         </button>
         <button
           id="settings-tab-logs"
@@ -110,7 +127,11 @@
           data-tab="logs"
           tabindex="-1"
         >
-          日志
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M6 3h9l4 4v14H6V3Z" />
+            <path d="M15 3v5h4M9 12h7M9 16h7" />
+          </svg>
+          <span class="settings-tab-label">日志</span>
         </button>
         <button
           id="settings-tab-about"
@@ -122,7 +143,11 @@
           data-tab="about"
           tabindex="-1"
         >
-          关于
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v6M12 7h.01" />
+          </svg>
+          <span class="settings-tab-label">关于</span>
         </button>
       </nav>
 
@@ -407,7 +432,7 @@
               </select>
             </div>
             <div class="row">
-              <label for="ocr-scale">放大倍率</label>
+              <label for="ocr-scale">最大尝试倍率</label>
               <select id="ocr-scale">
                 <option value="1">1.0×</option>
                 <option value="1.25">1.25×</option>
@@ -416,6 +441,7 @@
                 <option value="3">3.0×</option>
               </select>
             </div>
+            <p class="field-hint">首轮固定使用 1×；该值仅限制低质量回退时的放大上限。</p>
             <div class="row">
               <label for="ocr-tesseract-enabled">Tesseract</label>
               <label class="checkbox-control" for="ocr-tesseract-enabled">
@@ -523,12 +549,18 @@
             <h2>自建 DeepLX</h2>
             <div class="row">
               <label for="deeplx-url">服务地址</label>
-              <input id="deeplx-url" type="text" placeholder="http://127.0.0.1:1189/translate" />
+              <input
+                id="deeplx-url"
+                type="text"
+                placeholder="http://127.0.0.1:1189/translate, https://example.com/translate"
+              />
             </div>
-            <div class="row status-row">
-              <span id="deeplx-status" class="status unknown">未检测</span>
+            <p class="field-hint">支持配置多个服务地址，请使用英文或中文逗号分隔；翻译时会轮询地址并在失败后自动切换。</p>
+            <div class="provider-actions">
+              <button id="deeplx-save" class="btn primary">保存配置</button>
               <button id="deeplx-check" class="btn">检测是否在线</button>
             </div>
+            <p id="deeplx-status" class="status unknown" role="status" aria-live="polite">未检测</p>
             <div class="deploy">
               <p class="hint">
                 用 Docker 一键部署：把命令里的「你的dl_session值」替换为 DeepL
@@ -714,8 +746,17 @@
         </div>
       </div>
 
-      <p id="saved" class="saved" role="status" aria-live="polite"></p>
     </main>
+    <div
+      id="saved"
+      class="settings-toast"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <span id="saved-icon" class="settings-toast-icon" aria-hidden="true">✓</span>
+      <span id="saved-message"></span>
+    </div>
     <script type="module" src="./src/settings.ts"></script>
   </body>
 </html>

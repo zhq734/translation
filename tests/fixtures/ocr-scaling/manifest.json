@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "expectedTextNormalization": "去除空白与标点并转为大写后计算字符准确率",
+  "fixtures": [
+    {
+      "id": "clear",
+      "category": "clear",
+      "file": "clear.png",
+      "expectedText": "ADAPTIVE OCR 2026",
+      "source": "由仓库内生成脚本 scripts/generate-ocr-scaling-fixtures.mjs 确定性生成",
+      "generation": "720×220，Arial 58px 粗体，深色文字与浅色背景"
+    },
+    {
+      "id": "defocused",
+      "category": "defocused",
+      "file": "defocused.png",
+      "expectedText": "ADAPTIVE OCR 2026",
+      "source": "由仓库内生成脚本 scripts/generate-ocr-scaling-fixtures.mjs 确定性生成",
+      "generation": "720×220，由清晰源图应用 Gaussian blur sigma=2.2"
+    },
+    {
+      "id": "low-contrast",
+      "category": "low-contrast",
+      "file": "low-contrast.png",
+      "expectedText": "ADAPTIVE OCR 2026",
+      "source": "由仓库内生成脚本 scripts/generate-ocr-scaling-fixtures.mjs 确定性生成",
+      "generation": "720×220，文字 #a6aaad、背景 #e5e7e8"
+    },
+    {
+      "id": "compressed",
+      "category": "compressed",
+      "file": "compressed.png",
+      "expectedText": "ADAPTIVE OCR 2026",
+      "source": "由仓库内生成脚本 scripts/generate-ocr-scaling-fixtures.mjs 确定性生成",
+      "generation": "720×220，由清晰源图经 JPEG quality=16、4:2:0 往返后保存为 PNG"
+    }
+  ]
+}

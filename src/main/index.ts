@@ -43,6 +43,7 @@ import {
   resetDingTalkTranslationRuntime,
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
+  resetDeepLxTranslationRuntime,
   translate
 } from './translate'
 import { applyTranslationProxy, createTranslationWebSocket, translationFetch } from './network'
@@ -115,6 +116,7 @@ import type {
   AiConfigPatch,
   AiCheckStatus,
   AiModelListResult,
+  DeepLxConfigPatch,
   Settings,
   DeepLxStatus,
   MacOSQuarantineResult,
@@ -131,6 +133,8 @@ import { AiCredentialStore } from './aiCredentials'
 import { AiConfigurationService } from './aiConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
 import { AiCheckService } from './aiCheck'
+import { DeepLxConfigurationService } from './deepLxConfig'
+import { DeepLxCheckService } from './deepLxCheck'
 import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
@@ -160,7 +164,7 @@ import { createSystemOcrEngine } from './systemOcr'
 import { PaddleOcrEngine } from './paddleOcr'
 import { resolveBundledOcrModelAssets } from './ocrModelAssets'
 import { TesseractOcrEngine } from './tesseractOcr'
-import { preprocessOcrImageBytes } from './ocrImagePreprocess'
+import { recognizeAdaptiveOcr } from './adaptiveOcr'
 import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
@@ -178,7 +182,7 @@ import type {
   WebViewBounds
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
-import { shouldShowMacOSDockIcon } from './dockVisibility'
+import { resolveMacOSDockPresentation } from './dockVisibility'
 import {
   buildLinuxAutostartEntry,
   buildLoginItemSettings,
@@ -239,6 +243,8 @@ let dockIconEnabled = false
 let webReaderWindowOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
+let deepLxConfiguration: DeepLxConfigurationService | null = null
+let deepLxCheckService: DeepLxCheckService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
 let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
@@ -318,6 +324,16 @@ function getDingTalkConfiguration(): DingTalkConfigurationService {
 function getAiConfiguration(): AiConfigurationService {
   if (!aiConfiguration) throw new Error('AI 配置服务尚未初始化')
   return aiConfiguration
+}
+
+/**
+ * 获取已初始化的 DeepLX 配置服务。
+ * @returns DeepLX 配置服务实例。
+ * @author zhenghq
+ */
+function getDeepLxConfiguration(): DeepLxConfigurationService {
+  if (!deepLxConfiguration) throw new Error('DeepLX 配置服务尚未初始化')
+  return deepLxConfiguration
 }
 
 /**
@@ -441,7 +457,7 @@ function releaseSelectionInteraction(token: number): void {
  */
 function activateExistingPageOrOpenSettings(): void {
   if (webReader?.focusExistingWindow()) return
-  openSettings()
+  void openSettings()
 }
 
 // ---- 主进程日志层 ----
@@ -473,7 +489,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     void initialization.then((initialized) => {
       if (!initialized) return
-      openSettings()
+      void openSettings()
     })
   })
   if (isMac) {
@@ -504,26 +520,57 @@ function handleApplicationInitializationFailure(error: unknown): false {
 }
 
 /**
- * 根据设置切换 macOS Dock 栏图标和应用激活策略。
- * @param showDockIcon 是否显示 Dock 栏图标。
+ * 加载 macOS Dock 使用的自定义应用图标，避免应用从菜单栏形态恢复时回退为 Electron 默认图标。
+ * @returns 已加载的应用图标。
+ * @author zhenghq
+ */
+function loadMacOSDockIcon(): NativeImage {
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(app.getAppPath(), 'build', 'icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  if (icon.isEmpty()) {
+    throw new Error(`无法加载 macOS Dock 图标: ${iconPath}`)
+  }
+  return icon
+}
+
+/**
+ * 根据常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；showDockIcon 仅保留设置状态，
+ * 不得在常规窗口打开期间把 regular 策略降回 accessory。
+ * @param showDockIcon 用户保存的 Dock 图标设置。
  * @returns 无返回值。
  * @author zhenghq
  */
-function applyMacOSDockVisibility(showDockIcon: boolean): void {
+async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
-  const shouldShow = shouldShowMacOSDockIcon({
+  const settingsWindowToPreserve = settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() ? settingsWin : null
+  const presentation = resolveMacOSDockPresentation({
     showDockIcon,
     settingsOpen: Boolean(settingsWin && !settingsWin.isDestroyed()),
     webReaderOpen: webReaderWindowOpen
   })
-  if (shouldShow) {
-    app.setActivationPolicy('regular')
-    void app.dock?.show()
+  app.setActivationPolicy(presentation.policy)
+  if (presentation.dockVisible) {
+    try {
+      app.dock?.setIcon(loadMacOSDockIcon())
+      await app.dock?.show()
+    } catch (error) {
+      console.error('[main] 恢复 macOS Dock 图标失败:', error)
+    }
     return
   }
-  app.setActivationPolicy('accessory')
-  app.dock?.hide()
+  await app.dock?.hide()
+  if (
+    settingsWindowToPreserve &&
+    settingsWin === settingsWindowToPreserve &&
+    !settingsWindowToPreserve.isDestroyed()
+  ) {
+    settingsWindowToPreserve.show()
+    settingsWindowToPreserve.focus()
+  }
 }
 
 /**
@@ -574,8 +621,8 @@ function applyAutoLaunch(enabled: boolean): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function refreshMacOSDockVisibility(): void {
-  applyMacOSDockVisibility(dockIconEnabled)
+async function refreshMacOSDockVisibility(): Promise<void> {
+  await applyMacOSDockVisibility(dockIconEnabled)
 }
 
 /**
@@ -584,9 +631,9 @@ function refreshMacOSDockVisibility(): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function configureMacOSMenuBarApplication(showDockIcon: boolean): void {
+async function configureMacOSMenuBarApplication(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
-  applyMacOSDockVisibility(showDockIcon)
+  await applyMacOSDockVisibility(showDockIcon)
   Menu.setApplicationMenu(null)
 }
 
@@ -642,14 +689,13 @@ function prewarmScreenshotRuntime(): void {
  * @author zhenghq
  */
 async function onReady(): Promise<boolean> {
-  configureMacOSMenuBarApplication(false)
   if (!(await confirmMacOSInstalledApplicationLaunch())) {
     app.quit()
     return false
   }
 
   loadSettings()
-  configureMacOSMenuBarApplication(getSettings().showDockIcon)
+  await configureMacOSMenuBarApplication(getSettings().showDockIcon)
   applyAutoLaunch(getSettings().autoLaunch)
   createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
@@ -680,8 +726,18 @@ async function onReady(): Promise<boolean> {
     resetTranslationRuntime: resetAiTranslationRuntime
   })
   aiConfiguration.initialize()
+  deepLxConfiguration = new DeepLxConfigurationService({
+    getSettings,
+    saveSettings,
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetTranslationRuntime: resetDeepLxTranslationRuntime
+  })
   aiModelDiscovery = new AiModelDiscoveryService({ fetch: translationFetch })
   aiCheckService = new AiCheckService({ fetch: translationFetch })
+  deepLxCheckService = new DeepLxCheckService({ fetch: translationFetch })
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
   webReader = new WebReaderManager({
@@ -690,7 +746,7 @@ async function onReady(): Promise<boolean> {
     getSettings,
     onWindowStateChanged: (open) => {
       webReaderWindowOpen = open
-      refreshMacOSDockVisibility()
+      void refreshMacOSDockVisibility()
     },
     translate: async (text, sourceLang, targetLang) => {
       const settings = { ...getSettings(), sourceLang, targetLang }
@@ -698,7 +754,12 @@ async function onReady(): Promise<boolean> {
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      const output = await translate(text, settings, dingTalkCredentials, aiApiKey)
+      const output = await translate(
+        text,
+        settings,
+        dingTalkCredentials,
+        aiApiKey
+      )
       recordWebPageUsage(output.provider)
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
@@ -721,7 +782,7 @@ async function onReady(): Promise<boolean> {
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
-  if (shouldOpenSettingsOnInitialLaunch(process.platform)) openSettings()
+  if (shouldOpenSettingsOnInitialLaunch(process.platform)) await openSettings()
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
@@ -1246,7 +1307,12 @@ async function translateText(
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-    const output = await translate(text, requestSettings, dingTalkCredentials, aiApiKey)
+    const output = await translate(
+      text,
+      requestSettings,
+      dingTalkCredentials,
+      aiApiKey
+    )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(origin, output.provider)
     showPopup(
@@ -1636,8 +1702,11 @@ function restoreSelectionListenerAfterOcr(interactionToken?: number): void {
  */
 function hideOcrSelectionWindow(): boolean {
   const wasVisible = isOcrSelectionVisible()
-  // 保留 macOS 简单全屏状态，仅隐藏窗口。反复退出再进入简单全屏会触发系统窗口切换动画，
-  // 导致复用的上一次截图窗口短暂闪现；窗口销毁时由系统统一回收该状态。
+  // macOS 上必须先退出简单全屏再隐藏窗口。保留简单全屏状态时，隐藏的窗口仍被系统
+  // 视为全屏窗口，后续打开设置页或翻译页会导致 macOS 自动隐藏 Dock 栏。
+  if (process.platform === 'darwin' && ocrSelectionWin && !ocrSelectionWin.isDestroyed() && ocrSelectionWin.isSimpleFullScreen()) {
+    ocrSelectionWin.setSimpleFullScreen(false)
+  }
   ocrSelectionWin?.hide()
   return wasVisible
 }
@@ -2034,19 +2103,33 @@ async function processOcrImageBytes(
   settings: Settings
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
   const dispatcher = createOcrDispatcher(settings)
-  const preparedImageBytes = preprocessOcrImageBytes(imageBytes, settings.ocrScale)
-  const ocr = await dispatcher.recognize({
-    imageBytes: preparedImageBytes,
-    language: settings.ocrLang,
-    timeoutMs: OCR_TIMEOUT_MS
-  }, settings.ocrEnginePreference)
+  const ocr = await recognizeAdaptiveOcr(
+    {
+      imageBytes,
+      maxScale: settings.ocrScale,
+      language: settings.ocrLang
+    },
+    {
+      recognize: (preparedImageBytes) =>
+        dispatcher.recognize({
+          imageBytes: preparedImageBytes,
+          language: settings.ocrLang,
+          timeoutMs: OCR_TIMEOUT_MS
+        }, settings.ocrEnginePreference)
+    }
+  )
   return translateOcrResult(ocr, settings, {
     translate: async (text, requestSettings) => {
       const dingTalkCredentials = settings.dingTalkEnabled
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      return translate(text, requestSettings ?? settings, dingTalkCredentials, aiApiKey)
+      return translate(
+        text,
+        requestSettings ?? settings,
+        dingTalkCredentials,
+        aiApiKey
+      )
     }
   })
 }
@@ -2312,7 +2395,7 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
     await logOcrCaptureDiagnostic(captured.png, bounds, captured.source)
     return captured.png
   }
-  const image = await captureRegionAsPng(bounds, { ocrScale: settings.ocrScale }, {
+  const image = await captureRegionAsPng(bounds, { ocrScale: 1 }, {
     getSources: (options) => desktopCapturer.getSources(options as SourcesOptions),
     getDisplayNearestPoint: (point) => screen.getDisplayNearestPoint(point),
     getPrimaryDisplay: () => screen.getPrimaryDisplay(),
@@ -2490,13 +2573,22 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
   const settings = getSettings()
   try {
     const png = cropCurrentOcrSelectionPng(request.bounds)
-    const preparedImageBytes = preprocessOcrImageBytes(png, settings.ocrScale)
     const dispatcher = createOcrDispatcher(settings)
-    const ocr = await dispatcher.recognize({
-      imageBytes: preparedImageBytes,
-      language: settings.ocrLang,
-      timeoutMs: OCR_TIMEOUT_MS
-    }, settings.ocrEnginePreference)
+    const ocr = await recognizeAdaptiveOcr(
+      {
+        imageBytes: png,
+        maxScale: settings.ocrScale,
+        language: settings.ocrLang
+      },
+      {
+        recognize: (preparedImageBytes) =>
+          dispatcher.recognize({
+            imageBytes: preparedImageBytes,
+            language: settings.ocrLang,
+            timeoutMs: OCR_TIMEOUT_MS
+          }, settings.ocrEnginePreference)
+      }
+    )
     const text = cleanOcrText(ocr.text ?? '')
     sendScreenshotRecognizeResult(
       text
@@ -3047,15 +3139,18 @@ function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
  * @returns 设置窗口实例。
  * @author zhenghq
  */
-function createSettingsWindow(): BrowserWindow {
+async function createSettingsWindow(): Promise<BrowserWindow> {
   if (settingsWin && !settingsWin.isDestroyed()) {
+    const existingWindow = settingsWin
+    await refreshMacOSDockVisibility()
+    if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
+    if (isMac) app.focus({ steal: true })
     settingsWin.show()
     settingsWin.focus()
-    refreshMacOSDockVisibility()
     return settingsWin
   }
 
-  settingsWin = new BrowserWindow({
+  const createdWindow = new BrowserWindow({
     width: 900,
     height: 820,
     minWidth: 640,
@@ -3066,6 +3161,7 @@ function createSettingsWindow(): BrowserWindow {
     minimizable: true,
     maximizable: true,
     fullscreenable: false,
+    show: false,
     backgroundColor: '#f5f7fa',
     webPreferences: {
       preload: PRELOAD_PATH,
@@ -3073,6 +3169,7 @@ function createSettingsWindow(): BrowserWindow {
       nodeIntegration: false
     }
   })
+  settingsWin = createdWindow
 
   if (process.platform === 'win32') settingsWin.removeMenu()
   loadRendererHtml(settingsWin, 'settings.html')
@@ -3098,11 +3195,13 @@ function createSettingsWindow(): BrowserWindow {
   })
   settingsWin.on('closed', () => {
     resetAutoTriggerPointerState()
-    settingsWin = null
-    refreshMacOSDockVisibility()
+    if (settingsWin === createdWindow) settingsWin = null
+    void refreshMacOSDockVisibility()
   })
-  refreshMacOSDockVisibility()
+  await refreshMacOSDockVisibility()
+  if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
   // 菜单栏应用新建窗口时不会自动成为前台应用，需显式显示并聚焦，否则首次打开会落在其他应用后面
+  if (isMac) app.focus({ steal: true })
   settingsWin.show()
   settingsWin.focus()
   return settingsWin
@@ -3113,47 +3212,30 @@ function createSettingsWindow(): BrowserWindow {
  * @returns 无返回值。
  * @author zhenghq
  */
-function openSettings(): void {
-  createSettingsWindow()
-  if (isMac) {
-    // 从 accessory 激活策略切回 regular 后系统不会自动激活应用，必须显式抢占焦点窗口才会置顶
-    app.focus({ steal: true })
-  }
+async function openSettings(): Promise<void> {
+  await createSettingsWindow()
 }
 
 // ---- 自建 DeepLX 集成 ----
 
 /**
- * 检测自建 DeepLX 服务是否可用。
- * @param url DeepLX 翻译端点。
- * @returns 服务在线状态。
+ * 检测当前保存的所有自建 DeepLX 服务。
+ * @returns 多地址汇总在线状态。
  * @author zhenghq
  */
-async function checkDeepLx(url: string): Promise<DeepLxStatus> {
-  const normalizedUrl = (url || '').trim()
-  if (!normalizedUrl) return { url: '', online: false, message: '未配置地址' }
-  try {
-    const response = await translationFetch(normalizedUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'ping', source_lang: 'en', target_lang: 'zh' }),
-      signal: AbortSignal.timeout(3000)
-    })
-    const json = (await response.json()) as { code?: number; message?: string }
-    if (json?.code === 200) return { url: normalizedUrl, online: true }
-    return {
-      url: normalizedUrl,
-      online: false,
-      message: json?.message || `HTTP ${response.status}`
-    }
-  } catch (e) {
-    const message = (e as Error).message || String(e)
-    return {
-      url: normalizedUrl,
-      online: false,
-      message: message.includes('abort') ? '连接超时' : message
-    }
-  }
+function checkDeepLx(): Promise<DeepLxStatus> {
+  if (!deepLxCheckService) throw new Error('DeepLX 检测服务尚未初始化')
+  return deepLxCheckService.check(getSettings().deepLxUrl)
+}
+
+/**
+ * 保存 DeepLX 多地址。
+ * @param patch DeepLX 配置补丁。
+ * @returns 保存后的脱敏设置。
+ * @author zhenghq
+ */
+function applyDeepLxConfig(patch: DeepLxConfigPatch): Settings {
+  return getDeepLxConfiguration().applyPatch(patch)
 }
 
 /**
@@ -3420,6 +3502,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
 
   const previous = getSettings()
   const safePatch = { ...patch }
+  delete safePatch.deepLxUrl
   delete safePatch.dingTalkEnabled
   delete safePatch.dingTalkCorpId
   delete safePatch.dingTalkClientId
@@ -3444,7 +3527,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     if (settings.triggerMode === 'auto') void warnIfNoAccessibility()
   }
   if (patch.showDockIcon !== undefined && settings.showDockIcon !== previous.showDockIcon) {
-    applyMacOSDockVisibility(settings.showDockIcon)
+    await applyMacOSDockVisibility(settings.showDockIcon)
   }
   if (patch.autoLaunch !== undefined && settings.autoLaunch !== previous.autoLaunch) {
     applyAutoLaunch(settings.autoLaunch)
@@ -3484,7 +3567,7 @@ function registerIpc(): void {
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
   })
-  ipcMain.on('settings:open', () => openSettings())
+  ipcMain.on('settings:open', () => void openSettings())
   ipcMain.on('webview:open', (_event, url: unknown) => {
     void getWebReader()
       .open(typeof url === 'string' && url.trim() ? url : undefined)
@@ -3656,7 +3739,10 @@ function registerIpc(): void {
   ipcMain.handle('ai:check', () => checkAi())
   ipcMain.handle('ocr:get-status', () => getOcrStatus())
 
-  ipcMain.handle('deeplx:check', (_event, url: string) => checkDeepLx(url))
+  ipcMain.handle('deeplx:configure', (_event, patch: DeepLxConfigPatch) =>
+    applyDeepLxConfig(patch)
+  )
+  ipcMain.handle('deeplx:check', () => checkDeepLx())
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
   ipcMain.on('deeplx:open-doc', () => openDeployDoc())
   ipcMain.handle('updater:get-status', () => getUpdateManager().getStatus())
@@ -3709,8 +3795,8 @@ function createTray(): void {
   } else {
     tray?.setContextMenu(buildTrayMenu())
   }
-  tray.on('click', () => openSettings())
-  tray.on('double-click', () => openSettings())
+  tray.on('click', () => void openSettings())
+  tray.on('double-click', () => void openSettings())
 }
 
 /**
@@ -3765,7 +3851,7 @@ function buildTrayMenu(): Menu {
     { label: '目标语言', submenu: targetSubmenu },
     { label: '源语言', submenu: sourceSubmenu },
     { type: 'separator' },
-    { label: '设置', click: () => openSettings() },
+    { label: '设置', click: () => void openSettings() },
     { label: '退出', click: () => stopApplicationService() }
   ])
 }

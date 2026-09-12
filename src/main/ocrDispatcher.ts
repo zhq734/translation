@@ -4,7 +4,11 @@ import {
   type OcrRecognizeInput,
   type OcrRecognizeResult
 } from '../shared/ocrEngine'
-import { isMostlyNoise, scoreOcrText } from '../shared/ocrScoring'
+import {
+  compareOcrQuality,
+  evaluateOcrQuality,
+  type OcrQualityEvaluation
+} from '../shared/ocrQuality'
 import type { OcrEngineId, OcrEnginePreference } from '../shared/types'
 
 /**
@@ -52,31 +56,26 @@ export function buildEngineQueue(
 }
 
 /**
- * 判断 OCR 结果是否为有效非空文本（排除噪声）。
- * @param result OCR 识别结果。
- * @returns 是否有效。
- * @author zhenghq
- */
-function isValidResult(result: OcrRecognizeResult): boolean {
-  if (!result.text || !result.text.trim()) return false
-  if (isMostlyNoise(result.text)) return false
-  const score = scoreOcrText(result.text)
-  return score > 0
-}
-
-/**
  * 记录 OCR 引擎单次结果质量，便于排查乱码是否被采纳。
  * @param result OCR 引擎返回结果。
  * @param accepted 是否被调度器采纳为候选结果。
+ * @param quality 统一质量评价摘要。
  * @returns 无返回值。
  * @author zhenghq
  */
-function logOcrEngineResult(result: OcrRecognizeResult, accepted: boolean): void {
+function logOcrEngineResult(
+  result: OcrRecognizeResult,
+  accepted: boolean,
+  quality: OcrQualityEvaluation
+): void {
   console.log('[ocr] 引擎结果', {
     engine: result.engine,
     textLength: result.text?.length ?? 0,
-    score: scoreOcrText(result.text ?? ''),
-    noise: isMostlyNoise(result.text ?? ''),
+    score: quality.textScore,
+    noise: !quality.valid,
+    languageMismatch: quality.languageMismatch,
+    averageConfidence: quality.averageConfidence,
+    safeToStop: quality.safeToAccept,
     accepted
   })
 }
@@ -142,8 +141,12 @@ export class OcrDispatcher {
 
       try {
         const result = await engine.recognize(input)
-        const accepted = isValidResult(result)
-        logOcrEngineResult(result, accepted)
+        const quality = evaluateOcrQuality(result, input.language)
+        const accepted = quality.valid
+        const safeToStop = accepted && preference === 'auto'
+          ? quality.safeToAccept
+          : false
+        logOcrEngineResult(result, accepted, quality)
 
         if (accepted) {
           // 收集有效结果，继续尝试其他引擎以便择优
@@ -151,7 +154,7 @@ export class OcrDispatcher {
           // 若当前为指定单引擎偏好（非 auto），直接返回
           if (preference !== 'auto') return result
           // auto 模式：如果首层已有高质量结果，不必继续
-          if (validResults.length >= 1 && scoreOcrText(result.text) >= 5) break
+          if (safeToStop) break
         } else {
           errors.push(`${engineId}: 识别结果为空或疑似乱码`)
         }
@@ -180,9 +183,13 @@ export class OcrDispatcher {
       )
     }
 
-    // 多结果择优：按质量分排序取最高分
-    return validResults.reduce((best, candidate) =>
-      scoreOcrText(candidate.text) >= scoreOcrText(best.text) ? candidate : best
-    )
+    // 多结果择优：先比较目标语言匹配，再比较有效置信度，最后回退文本质量分。
+    return validResults.reduce((best, candidate) => {
+      const comparison = compareOcrQuality(
+        evaluateOcrQuality(candidate, input.language),
+        evaluateOcrQuality(best, input.language)
+      )
+      return comparison >= 0 ? candidate : best
+    })
   }
 }

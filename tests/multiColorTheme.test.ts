@@ -33,6 +33,13 @@ test('主题样式应提供五套主题的浅深模式和强调渐变', () => {
   assert.match(css, /--accent-gradient:\s*linear-gradient/u)
 })
 
+test('气泡提示应跟随浅深与多彩主题使用语义颜色', () => {
+  const css = readFileSync('src/renderer/src/theme.css', 'utf8')
+  assert.match(css, /--toast-bg:\s*var\(--popup-bg\)/u)
+  assert.match(css, /--toast-text:\s*var\(--text-primary\)/u)
+  assert.match(css, /--toast-border:\s*var\(--popup-border\)/u)
+})
+
 test('设置页应提供主题模式和五个可访问主题卡片', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   for (const [id, label] of [

@@ -254,16 +254,17 @@ test('OCR 覆盖窗口应按目标屏幕外层边界对齐', () => {
 })
 
 /**
- * 校验复用 OCR 覆盖窗口时不会通过退出简单全屏触发窗口闪烁。
+ * 校验复用 OCR 覆盖窗口隐藏时在 macOS 上退出简单全屏，避免隐藏的全屏窗口
+ * 导致后续打开其他窗口时 macOS 自动隐藏 Dock 栏。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 覆盖窗口隐藏时不应退出简单全屏', () => {
+test('OCR 覆盖窗口隐藏时应退出 macOS 简单全屏', () => {
   const hideStart = main.indexOf('function hideOcrSelectionWindow')
   const hideEnd = main.indexOf('\n}\n', hideStart)
   const hideSource = main.slice(hideStart, hideEnd)
   assert.notStrictEqual(hideStart, -1, '应存在 OCR 覆盖窗口隐藏函数')
-  assert.doesNotMatch(hideSource, /setSimpleFullScreen\(false\)/u)
+  assert.match(hideSource, /setSimpleFullScreen\(false\)/u)
 })
 
 /**
@@ -387,6 +388,22 @@ test('设置页应提供 OCR 分组和模型资产状态', () => {
 })
 
 /**
+ * 校验 OCR 倍率仅表示低质量回退上限，并保留已有倍率选项和读写方式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('设置页应说明 OCR 最大尝试倍率并保持配置兼容', () => {
+  assert.match(settingsHtml, /<label for="ocr-scale">最大尝试倍率<\/label>/u)
+  assert.match(settingsHtml, /首轮固定使用 1×/u)
+  assert.match(settingsHtml, /仅限制低质量回退/u)
+  for (const value of ['1', '1.25', '1.5', '2', '3']) {
+    assert.match(settingsHtml, new RegExp(`<option value="${value}">`, 'u'))
+  }
+  assert.match(settingsRenderer, /ocrScale\.value = String\(settings\.ocrScale\)/u)
+  assert.match(settingsRenderer, /ocrScale: Number\(ocrScale\.value\)/u)
+})
+
+/**
  * 校验预加载层和共享类型暴露受限 OCR 状态接口，供设置页展示模型版本与许可。
  * @returns 无返回值。
  * @author zhenghq
@@ -477,6 +494,26 @@ test('Windows 最终选区采集应走 GDI 分支并记录诊断日志', () => {
   assert.match(source, /captureWindowsOcrRegion\(bounds\)/u)
   assert.match(source, /logOcrCaptureDiagnostic\(captured\.png,\s*bounds,\s*captured\.source\)/u)
   assert.match(source, /electron-desktopCapturer/u)
+})
+
+/**
+ * 校验 Linux 最终选区采集保持原始倍率，用户倍率只作为统一协调器的回退上限。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Linux 最终选区采集应固定 1 倍率并避免重复缩放', () => {
+  const captureStart = main.indexOf('async function captureOcrSelectionPng')
+  const captureEnd = main.indexOf('/**', captureStart + 1)
+  const captureSource = main.slice(captureStart, captureEnd)
+  const processStart = main.indexOf('async function processOcrImageBytes')
+  const processEnd = main.indexOf('/**', processStart + 1)
+  const processSource = main.slice(processStart, processEnd)
+
+  assert.match(captureSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: 1 \}/u)
+  assert.doesNotMatch(captureSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: settings\.ocrScale \}/u)
+  assert.equal(processSource.match(/recognizeAdaptiveOcr\(/gu)?.length, 1)
+  assert.match(processSource, /imageBytes,\s*\n\s*maxScale: settings\.ocrScale/u)
+  assert.match(processSource, /recognize:\s*\(preparedImageBytes\)\s*=>\s*\n?\s*dispatcher\.recognize\(/u)
 })
 
 /**

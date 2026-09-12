@@ -85,10 +85,11 @@
       "notarize": true,
       "artifactName": "SelectionTranslator-${version}-mac-${arch}.${ext}",
       "icon": "build/icon.icns",
-      "extendInfo": {
-        "LSUIElement": true
-      },
       "extraResources": [
+        {
+          "from": "build/icon.png",
+          "to": "icon.png"
+        },
         {
           "from": "build/macos-vision-ocr",
           "to": "macos-vision-ocr"

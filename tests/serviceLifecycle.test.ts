@@ -13,26 +13,32 @@ type PackageJson = {
   }
 }
 
-test('macOS 打包保持菜单栏应用模式，并在启动阶段按设置控制 Dock 图标', () => {
+test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形态与 Dock 图标', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJson
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
-  const menuBarIndex = mainSource.indexOf('configureMacOSMenuBarApplication(false)')
-  const warningIndex = mainSource.indexOf('await confirmMacOSInstalledApplicationLaunch()')
+  const onReadyBlock = mainSource.match(
+    /async function onReady\(\): Promise<boolean> \{([\s\S]*?)\n\}/u
+  )
   const trayIndex = mainSource.indexOf('\n  createTray()\n')
   const proxyIndex = mainSource.indexOf('await applyTranslationProxy(')
 
-  assert.equal(packageJson.build?.mac?.extendInfo?.LSUIElement, true)
+  assert.ok(onReadyBlock)
+  const loadSettingsIndex = onReadyBlock[1].indexOf('loadSettings()')
+  const finalDockConfiguration = 'configureMacOSMenuBarApplication(getSettings().showDockIcon)'
+  const finalDockConfigurationIndex = onReadyBlock[1].indexOf(finalDockConfiguration)
+  assert.equal(packageJson.build?.mac?.extendInfo?.LSUIElement, undefined)
   assert.ok(packageJson.build?.files?.includes('build/tray*.png'))
   assert.equal(existsSync('build/trayTemplate.png'), true)
   assert.equal(existsSync('build/trayTemplate@2x.png'), true)
-  assert.match(mainSource, /shouldShowMacOSDockIcon\([\s\S]*?settingsOpen:[\s\S]*?webReaderOpen:/u)
-  assert.match(mainSource, /app\.setActivationPolicy\('regular'\)/u)
-  assert.match(mainSource, /app\.setActivationPolicy\('accessory'\)/u)
-  assert.match(mainSource, /app\.dock\?\.show\(\)/u)
-  assert.match(mainSource, /app\.dock\?\.hide\(\)/u)
+  assert.match(mainSource, /resolveMacOSDockPresentation\([\s\S]*?settingsOpen:[\s\S]*?webReaderOpen:/u)
+  assert.match(mainSource, /app\.setActivationPolicy\(presentation\.policy\)/u)
+  assert.match(mainSource, /if \(presentation\.dockVisible\)[\s\S]*?app\.dock\?\.show\(\)[\s\S]*?app\.dock\?\.hide\(\)/u)
+  assert.doesNotMatch(mainSource, /shouldShowMacOSDockIcon/u)
   assert.match(mainSource, /Menu\.setApplicationMenu\(null\)/u)
   assert.match(mainSource, /configureMacOSMenuBarApplication\(getSettings\(\)\.showDockIcon\)/u)
-  assert.ok(menuBarIndex >= 0 && menuBarIndex < warningIndex)
+  assert.doesNotMatch(onReadyBlock[1], /configureMacOSMenuBarApplication\(false\)/u)
+  assert.ok(loadSettingsIndex >= 0 && finalDockConfigurationIndex > loadSettingsIndex)
+  assert.equal(onReadyBlock[1].split(finalDockConfiguration).length - 1, 1)
   assert.ok(trayIndex >= 0 && trayIndex < proxyIndex)
   assert.match(mainSource, /let tray: Tray \| null = null/u)
   assert.match(mainSource, /const filename = isMac \? 'trayTemplate\.png' : 'tray\.png'/u)
@@ -45,8 +51,8 @@ test('macOS 打包保持菜单栏应用模式，并在启动阶段按设置控�
     /if \(isMac\) \{[\s\S]*?tray\.on\('right-click', \(\) => tray\?\.popUpContextMenu\(buildTrayMenu\(\)\)\)/u
   )
   assert.match(mainSource, /if \(!isMac\) tray\?\.setContextMenu\(buildTrayMenu\(\)\)/u)
-  assert.match(mainSource, /tray\.on\('click', \(\) => openSettings\(\)\)/u)
-  assert.match(mainSource, /tray\.on\('double-click', \(\) => openSettings\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('click', \(\) => void openSettings\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('double-click', \(\) => void openSettings\(\)\)/u)
   assert.match(mainSource, /app\.whenReady\(\)[\s\S]*?\.catch\(handleApplicationInitializationFailure\)/u)
 })
 
@@ -54,14 +60,14 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const ipcIndex = mainSource.indexOf('\n  registerIpc()\n')
   const platformSettingsIndex = mainSource.indexOf(
-    'if (shouldOpenSettingsOnInitialLaunch(process.platform)) openSettings()',
+    'if (shouldOpenSettingsOnInitialLaunch(process.platform)) await openSettings()',
     ipcIndex
   )
 
   assert.match(mainSource, /function stopApplicationService\(\): void/u)
   assert.match(
     mainSource,
-    /label:\s*'设置',[\s\S]*?click:\s*\(\)\s*=>\s*openSettings\(\)/u
+    /label:\s*'设置',[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
   )
   assert.match(
     mainSource,
@@ -78,7 +84,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
 test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = mainSource.match(
-    /function createSettingsWindow\(\): BrowserWindow \{([\s\S]*?)\n\}/u
+    /async function createSettingsWindow\(\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
 
   assert.ok(settingsWindowBlock)

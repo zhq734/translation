@@ -543,7 +543,7 @@ export interface OcrStatus {
 }
 
 /** 默认 OCR 图像放大倍率。 */
-export const DEFAULT_OCR_SCALE = 1.25
+export const DEFAULT_OCR_SCALE = 1
 
 /**
  * 判断未知值是否为支持的 OCR 引擎偏好。
@@ -578,7 +578,7 @@ export interface Settings {
   sourceLang: string
   hotkey: string
   autoHideMs: number
-  /** 自建 DeepLX 端点，留空则不启用自建通道。 */
+  /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
   /** 划词后的触发方式。 */
   triggerMode: TriggerMode
@@ -866,6 +866,12 @@ export interface DeepLxStatus {
   message?: string
 }
 
+/** 自建 DeepLX 多地址配置补丁。 */
+export interface DeepLxConfigPatch {
+  /** 中英文逗号分隔的 DeepLX 服务地址。 */
+  url?: string
+}
+
 /**
  * 主进程结构化日志条目，用于设置窗口日志查看界面展示。
  * @author zhenghq
@@ -1036,7 +1042,10 @@ export interface Api {
   exportCaptureDiagnostics(): Promise<string | null>
   /** 获取 OCR 引擎与模型资产状态。 */
   getOcrStatus(): Promise<OcrStatus>
-  checkDeepLx(url: string): Promise<DeepLxStatus>
+  /** 保存 DeepLX 多地址。 */
+  setDeepLxConfig(patch: DeepLxConfigPatch): Promise<Settings>
+  /** 检测当前保存的 DeepLX 服务地址。 */
+  checkDeepLx(): Promise<DeepLxStatus>
   /** 保存钉钉公开配置和可选 ClientSecret。 */
   setDingTalkConfig(patch: DingTalkConfigPatch): Promise<Settings>
   /** 显式清除已保存的钉钉 ClientSecret。 */

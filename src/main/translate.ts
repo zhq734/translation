@@ -59,6 +59,7 @@ interface MyMemoryResponse {
 interface TranslationChannel {
   id: TranslationProviderId
   name: string
+  breakerKey: string
   cooldownMs: number
   maxChars: number
   run: () => Promise<TranslateOutput>
@@ -67,6 +68,16 @@ interface TranslationChannel {
 interface CachedTranslation extends TranslateOutput {
   provider: TranslationProviderId
   channel: string
+}
+
+/**
+ * 将 DeepLX 地址配置拆分为去重后的服务地址列表。
+ * @param value 使用中英文逗号分隔的地址配置。
+ * @returns 保持配置顺序的非空唯一地址列表。
+ * @author zhenghq
+ */
+export function parseDeepLxUrls(value: string): string[] {
+  return [...new Set(value.split(/[,，]/u).map((url) => url.trim()).filter(Boolean))]
 }
 
 /**
@@ -97,6 +108,7 @@ export class TranslationRuntime {
   private readonly dingTalkClient: DingTalkTranslationClient
   private readonly microsoftClient: MicrosoftTranslationClient
   private readonly aiClient: AiTranslationClient
+  private deepLxRoundRobinIndex = 0
 
   constructor(private readonly options: TranslationRuntimeOptions) {
     this.now = options.now ?? Date.now
@@ -114,6 +126,7 @@ export class TranslationRuntime {
    * @param text 待翻译文本。
    * @param settings 当前公开设置快照。
    * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+   * @param aiApiKey 主进程解密后的 AI API Key。
    * @returns 首个成功通道的统一翻译结果。
    * @author zhenghq
    */
@@ -147,13 +160,13 @@ export class TranslationRuntime {
         console.warn(`[translate] 跳过 ${channel.name}（输入超过 ${channel.maxChars} 字符）`)
         continue
       }
-      if (this.isTripped(channel.name)) {
+      if (this.isTripped(channel.breakerKey)) {
         console.warn(`[translate] 跳过 ${channel.name}（熔断中）`)
         continue
       }
       try {
         const output = await channel.run()
-        this.resetBreaker(channel.name)
+        this.resetBreaker(channel.breakerKey)
         const successful: CachedTranslation = {
           ...output,
           channel: channel.name,
@@ -168,7 +181,7 @@ export class TranslationRuntime {
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
         lastError = `${channel.name}: ${message}`
-        this.trip(channel.name, channel.cooldownMs)
+        this.trip(channel.breakerKey, channel.cooldownMs)
         console.warn(`[translate] ${lastError}`)
       }
     }
@@ -238,10 +251,24 @@ export class TranslationRuntime {
   }
 
   /**
+   * 在 DeepLX 地址变化后清理缓存、轮询位置及全部自建地址熔断。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resetDeepLxRuntime(): void {
+    this.cache.clear()
+    this.deepLxRoundRobinIndex = 0
+    for (const key of this.breaker.keys()) {
+      if (key.startsWith('deeplx-self:')) this.breaker.delete(key)
+    }
+  }
+
+  /**
    * 根据配置和语言对构建本次翻译通道列表。
    * @param text 已截断的待翻译文本。
    * @param settings 当前公开设置。
    * @param dingTalkCredentials 当前主进程钉钉凭证快照。
+   * @param aiApiKey 当前主进程 AI API Key 快照。
    * @returns 按优先级排列的翻译通道。
    * @author zhenghq
    */
@@ -258,6 +285,7 @@ export class TranslationRuntime {
       channels.push({
         id: 'ai',
         name: AI_CHANNEL,
+        breakerKey: AI_CHANNEL,
         cooldownMs: 60_000,
         maxChars: MAX_CHARS,
         run: () => this.aiChannel(text, settings, aiApiKey)
@@ -273,6 +301,7 @@ export class TranslationRuntime {
         channels.push({
           id: 'dingtalk',
           name: DINGTALK_CHANNEL,
+          breakerKey: DINGTALK_CHANNEL,
           cooldownMs: 60_000,
           maxChars: MAX_CHARS,
           run: () => this.dingTalkClient.translate(text, pair, dingTalkCredentials)
@@ -286,6 +315,7 @@ export class TranslationRuntime {
         channels.push({
           id: 'microsoft',
           name: MICROSOFT_CHANNEL,
+          breakerKey: MICROSOFT_CHANNEL,
           cooldownMs: 60_000,
           maxChars: MAX_CHARS,
           run: () => this.microsoftClient.translate(text, pair)
@@ -293,19 +323,26 @@ export class TranslationRuntime {
       }
     }
 
-    const selfHost = settings.deepLxUrl.trim()
-    if (selfHost) {
+    const selfHosts = parseDeepLxUrls(settings.deepLxUrl)
+    if (selfHosts.length > 0) {
+      const start = this.deepLxRoundRobinIndex % selfHosts.length
+      this.deepLxRoundRobinIndex = (this.deepLxRoundRobinIndex + 1) % selfHosts.length
+      const orderedHosts = [...selfHosts.slice(start), ...selfHosts.slice(0, start)]
+      orderedHosts.forEach((selfHost, index) => {
       channels.push({
         id: 'deeplx-self',
-        name: '自建 DeepLX',
+        name: selfHosts.length === 1 ? '自建 DeepLX' : `自建 DeepLX ${index + 1}`,
+        breakerKey: `deeplx-self:${selfHost}`,
         cooldownMs: 15_000,
         maxChars: MAX_CHARS,
         run: () => this.deepLxChannel(selfHost, text, settings, 2500)
+      })
       })
     }
     channels.push({
       id: 'deeplx-public',
       name: '公共 DeepLX',
+      breakerKey: '公共 DeepLX',
       cooldownMs: 120_000,
       maxChars: MAX_CHARS,
       run: () => this.deepLxChannel(PUBLIC_DEEPLX, text, settings, 3000)
@@ -313,6 +350,7 @@ export class TranslationRuntime {
     channels.push({
       id: 'google',
       name: 'Google',
+      breakerKey: 'Google',
       cooldownMs: 60_000,
       maxChars: GOOGLE_MAX_CHARS,
       run: () => this.googleChannel(text, settings)
@@ -320,17 +358,16 @@ export class TranslationRuntime {
     channels.push({
       id: 'mymemory',
       name: 'MyMemory',
+      breakerKey: 'MyMemory',
       cooldownMs: 60_000,
       maxChars: MYMEMORY_MAX_CHARS,
       run: () => this.myMemoryChannel(text, settings)
     })
     const preferred = settings.preferredTranslationProvider
     if (preferred === 'auto') return channels
-    const preferredIndex = channels.findIndex((channel) => channel.id === preferred)
-    if (preferredIndex <= 0) return channels
-    const [preferredChannel] = channels.splice(preferredIndex, 1)
-    channels.unshift(preferredChannel)
-    return channels
+    const preferredChannels = channels.filter((channel) => channel.id === preferred)
+    if (preferredChannels.length === 0 || channels[0]?.id === preferred) return channels
+    return [...preferredChannels, ...channels.filter((channel) => channel.id !== preferred)]
   }
 
   /**
@@ -559,6 +596,7 @@ export function configureTranslationFetch(fetch: DingTalkFetch): void {
  * @param text 待翻译文本。
  * @param settings 当前公开设置快照。
  * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+ * @param aiApiKey 主进程解密后的 AI API Key。
  * @returns 翻译结果。
  * @author zhenghq
  */
@@ -569,6 +607,15 @@ export function translate(
   aiApiKey: string | null = null
 ): Promise<TranslateOutput> {
   return defaultRuntime.translate(text, settings, dingTalkCredentials, aiApiKey)
+}
+
+/**
+ * 清理默认翻译运行时中的 DeepLX 缓存、轮询位置和自建地址熔断状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetDeepLxTranslationRuntime(): void {
+  defaultRuntime.resetDeepLxRuntime()
 }
 
 /**

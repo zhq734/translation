@@ -36,6 +36,16 @@ test('设置页应提供统一的可拖动自绘标题栏和固定顺序窗口�
   assert.match(css, /\.window-controls[\s\S]*-webkit-app-region:\s*no-drag/u)
 })
 
+test('设置窗口不应启用 alwaysOnTop，以便其他应用可以正常覆盖', () => {
+  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const settingsWindowBlock = mainSource.match(
+    /async function createSettingsWindow\(\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
+  )
+  assert.ok(settingsWindowBlock)
+  assert.doesNotMatch(settingsWindowBlock[1], /alwaysOnTop/u)
+  assert.doesNotMatch(settingsWindowBlock[1], /setAlwaysOnTop/u)
+})
+
 test('设置页标题栏应调用最小窗口 API并同步最大化状态', () => {
   const source = readFileSync('src/renderer/src/settings.ts', 'utf8')
   assert.match(source, /window\.api\.windowMinimize\(\)/u)

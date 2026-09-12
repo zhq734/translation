@@ -81,6 +81,7 @@ const microsoftEnabled = document.getElementById('microsoft-enabled') as HTMLInp
 const microsoftCheck = document.getElementById('microsoft-check') as HTMLButtonElement
 const microsoftStatus = document.getElementById('microsoft-status') as HTMLElement
 const deeplxUrl = document.getElementById('deeplx-url') as HTMLInputElement
+const deeplxSave = document.getElementById('deeplx-save') as HTMLButtonElement
 const deeplxStatus = document.getElementById('deeplx-status') as HTMLElement
 const deeplxCheck = document.getElementById('deeplx-check') as HTMLButtonElement
 const dockerCmd = document.getElementById('docker-cmd') as HTMLTextAreaElement
@@ -103,6 +104,8 @@ const openReleaseButton = document.getElementById('open-release') as HTMLButtonE
 const removeQuarantineButton = document.getElementById('remove-quarantine') as HTMLButtonElement
 const schemaVersion = document.getElementById('schema-version') as HTMLElement
 const savedEl = document.getElementById('saved') as HTMLElement
+const savedIconEl = document.getElementById('saved-icon') as HTMLElement
+const savedMessageEl = document.getElementById('saved-message') as HTMLElement
 const settingsTitlebar = document.getElementById('settings-titlebar') as HTMLElement
 const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
 const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
@@ -348,16 +351,21 @@ async function initializeWindowTitlebar(): Promise<void> {
 }
 
 /**
- * 短暂显示设置保存结果。
+ * 短暂显示设置操作反馈气泡。
  * @param message 提示内容。
  * @returns 无返回值。
  * @author zhenghq
  */
 function flash(message: string): void {
-  savedEl.textContent = message
+  const isError = /失败|错误|无法|离线/u.test(message)
+  const isWarning = /警告|注意|冲突|重试/u.test(message)
+  savedEl.dataset.state = isError ? 'error' : isWarning ? 'warning' : 'success'
+  savedIconEl.textContent = isError || isWarning ? '!' : '✓'
+  savedMessageEl.textContent = message
+  savedEl.classList.add('visible')
   if (flashTimer) clearTimeout(flashTimer)
   flashTimer = setTimeout(() => {
-    savedEl.textContent = ''
+    savedEl.classList.remove('visible')
   }, 1800)
 }
 
@@ -1459,12 +1467,43 @@ async function checkMicrosoftConfig(): Promise<void> {
 }
 
 /**
- * 保存自建 DeepLX 地址。
+ * 切换 DeepLX 配置区域的忙碌状态。
+ * @param busy 是否正在执行异步操作。
  * @returns 无返回值。
  * @author zhenghq
  */
-function saveDeepLxUrl(): void {
-  void save({ deepLxUrl: deeplxUrl.value.trim() })
+function setDeepLxBusy(busy: boolean): void {
+  deeplxSave.disabled = busy
+  deeplxCheck.disabled = busy
+}
+
+/**
+ * 保存自建 DeepLX 多地址。
+ * @param showFeedback 是否显示全局保存结果提示。
+ * @returns 配置是否保存成功。
+ * @author zhenghq
+ */
+async function saveDeepLxConfig(showFeedback = true): Promise<boolean> {
+  setDeepLxBusy(true)
+  try {
+    const settings = await window.api.setDeepLxConfig({
+      url: deeplxUrl.value.trim()
+    })
+    renderSettings(settings)
+    if (showFeedback) flash('DeepLX 配置已保存并生效')
+    return true
+  } catch (error) {
+    const message = (error as Error).message || '未知错误'
+    if (showFeedback) {
+      flash(`DeepLX 配置保存失败：${message}`)
+    } else {
+      deeplxStatus.textContent = `✗ 配置保存失败：${message}`
+      deeplxStatus.className = 'status offline'
+    }
+    return false
+  } finally {
+    setDeepLxBusy(false)
+  }
 }
 
 /**
@@ -1473,15 +1512,26 @@ function saveDeepLxUrl(): void {
  * @author zhenghq
  */
 async function checkDeepLxStatus(): Promise<void> {
+  setDeepLxBusy(true)
   deeplxStatus.textContent = '检测中…'
   deeplxStatus.className = 'status'
-  const status = await window.api.checkDeepLx(deeplxUrl.value)
-  if (status.online) {
-    deeplxStatus.textContent = '✓ 在线'
-    deeplxStatus.className = 'status online'
-  } else {
-    deeplxStatus.textContent = '✗ 离线：' + (status.message || '无法连接')
+  try {
+    const saved = await saveDeepLxConfig(false)
+    if (!saved) return
+    setDeepLxBusy(true)
+    const status = await window.api.checkDeepLx()
+    if (status.online) {
+      deeplxStatus.textContent = `✓ ${status.message || '服务在线'}`
+      deeplxStatus.className = 'status online'
+    } else {
+      deeplxStatus.textContent = `✗ ${status.message || '无法连接'}`
+      deeplxStatus.className = 'status offline'
+    }
+  } catch (error) {
+    deeplxStatus.textContent = `✗ 检测失败：${(error as Error).message || '未知错误'}`
     deeplxStatus.className = 'status offline'
+  } finally {
+    setDeepLxBusy(false)
   }
 }
 
@@ -1585,7 +1635,7 @@ window.addEventListener('resize', () => {
 })
 microsoftEnabled.addEventListener('change', () => void saveMicrosoftEnabled())
 microsoftCheck.addEventListener('click', () => void checkMicrosoftConfig())
-deeplxUrl.addEventListener('change', saveDeepLxUrl)
+deeplxSave.addEventListener('click', () => void saveDeepLxConfig())
 deeplxCheck.addEventListener('click', () => void checkDeepLxStatus())
 dockerCopy.addEventListener('click', () => void copyDockerCommand())
 openDoc.addEventListener('click', openDeployDocument)

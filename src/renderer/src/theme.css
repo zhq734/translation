@@ -55,8 +55,9 @@
   --ocr-selection-bg: rgba(255, 255, 255, 0.12);
   --ocr-selection-mask: rgba(0, 0, 0, 0.24);
   --popup-shadow: rgba(0, 0, 0, 0.26);
-  --toast-bg: rgba(0, 0, 0, 0.72);
-  --toast-text: #ffffff;
+  --toast-bg: var(--popup-bg);
+  --toast-text: var(--text-primary);
+  --toast-border: var(--popup-border);
   --status-success: #248a3d;
   --status-error: #d70015;
   --status-warning: #9a6700;
@@ -95,8 +96,6 @@
     --ocr-selection-bg: rgba(255, 255, 255, 0.10);
     --ocr-selection-mask: rgba(0, 0, 0, 0.34);
     --popup-shadow: rgba(0, 0, 0, 0.4);
-    --toast-bg: rgba(0, 0, 0, 0.72);
-    --toast-text: #ffffff;
     --status-success: #34c759;
     --status-error: #ff6961;
     --status-warning: #ffd60a;

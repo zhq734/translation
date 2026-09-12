@@ -8,8 +8,8 @@ export interface RgbaImage {
   data: Uint8Array
 }
 
-/** OCR 输入图像像素总数上限，防止放大后内存与耗时失控。 */
-export const MAX_OCR_PIXELS = 850000
+/** OCR 输入图像像素总数上限：完整保留 1080p，并防止超大图片导致内存与耗时失控。 */
+export const MAX_OCR_PIXELS = 2100000
 
 /**
  * 按 ITU-R BT.601 权重计算亮度。

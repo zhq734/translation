@@ -60,6 +60,19 @@ test('倍率不超过 1 时应保持原尺寸', () => {
 })
 
 /**
+ * 校验全高清图片在 1 倍率下保留原始像素细节。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('1920×1080 图片在 1 倍率下应保持原尺寸', () => {
+  const image = makeImage(1920, 1080, () => [1, 2, 3, 255])
+  const scaled = resizeRgbaForOcr(image, 1)
+  assert.equal(scaled.width, 1920)
+  assert.equal(scaled.height, 1080)
+  assert.strictEqual(scaled, image)
+})
+
+/**
  * 校验放大倍率被限制在 3 以内。
  * @returns 无返回值。
  * @author zhenghq
@@ -90,11 +103,11 @@ test('放大后像素总数不应超过上限', () => {
  * @author zhenghq
  */
 test('源图像超过像素上限时应缩小到预算内', () => {
-  const image = makeImage(1000, 1000, () => [1, 2, 3, 255])
+  const image = makeImage(1600, 1400, () => [1, 2, 3, 255])
   const scaled = resizeRgbaForOcr(image, 3)
   assert.ok(scaled.width * scaled.height <= MAX_OCR_PIXELS)
-  assert.ok(scaled.width < 1000)
-  assert.ok(scaled.height < 1000)
+  assert.ok(scaled.width < 1600)
+  assert.ok(scaled.height < 1400)
 })
 
 /**

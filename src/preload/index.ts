@@ -6,6 +6,7 @@ import type {
   ManualTranslateRequest,
   Settings,
   DeepLxStatus,
+  DeepLxConfigPatch,
   DingTalkConfigPatch,
   AiConfigPatch,
   AiCheckStatus,
@@ -546,12 +547,19 @@ const api: Api = {
    */
   getOcrStatus: (): Promise<OcrStatus> => ipcRenderer.invoke('ocr:get-status'),
   /**
-   * 检测 DeepLX 服务状态。
-   * @param url DeepLX 服务地址。
-   * @returns 服务状态。
+   * 保存 DeepLX 多地址。
+   * @param patch DeepLX 配置补丁。
+   * @returns 保存后的设置。
    * @author zhenghq
    */
-  checkDeepLx: (url: string): Promise<DeepLxStatus> => ipcRenderer.invoke('deeplx:check', url),
+  setDeepLxConfig: (patch: DeepLxConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('deeplx:configure', patch),
+  /**
+   * 检测当前保存的 DeepLX 服务。
+   * @returns 多地址汇总状态。
+   * @author zhenghq
+   */
+  checkDeepLx: (): Promise<DeepLxStatus> => ipcRenderer.invoke('deeplx:check'),
   /**
    * 保存钉钉公开配置和可选 ClientSecret。
    * @param patch 钉钉配置补丁。

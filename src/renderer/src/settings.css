@@ -183,7 +183,10 @@ h1 {
 }
 
 .settings-tab {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-start;
   min-height: 36px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -193,8 +196,21 @@ h1 {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
+  gap: var(--space-2);
   padding: 7px 12px;
+  text-align: left;
   white-space: nowrap;
+}
+
+.settings-tab-icon {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .settings-tab:hover {
@@ -205,7 +221,7 @@ h1 {
 .settings-tab[aria-selected='true'] {
   border-color: var(--button-bg);
   background: var(--button-secondary-hover);
-  color: var(--button-bg);
+  color: var(--button-text);
   box-shadow: none;
 }
 
@@ -774,14 +790,58 @@ input[type='number']:disabled {
   margin-bottom: 0;
 }
 
-.saved {
-  flex: 0 0 18px;
-  min-height: 18px;
-  color: var(--status-success);
+.settings-toast {
+  position: fixed;
+  top: calc(var(--titlebar-height) + var(--space-4));
+  left: 50%;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - (var(--space-4) * 2));
+  padding: 10px 14px;
+  border: var(--border-width) solid var(--toast-border);
+  border-radius: var(--radius-overlay);
+  background: var(--toast-bg);
+  box-shadow: var(--shadow-overlay);
+  color: var(--toast-text);
   font-size: 13px;
-  line-height: 18px;
-  text-align: center;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -8px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    visibility 160ms ease;
   pointer-events: none;
+}
+
+.settings-toast.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.settings-toast-icon {
+  flex: 0 0 auto;
+  color: var(--status-success);
+  font-weight: 700;
+}
+
+.settings-toast[data-state='error'] .settings-toast-icon {
+  color: var(--status-error);
+}
+
+.settings-toast[data-state='warning'] .settings-toast-icon {
+  color: var(--status-warning);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-toast {
+    transition: none;
+  }
 }
 
 @media (max-width: 480px) {

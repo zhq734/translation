@@ -12,7 +12,7 @@ test('默认设置应包含 OCR 分组字段', () => {
   assert.equal(DEFAULT_SETTINGS.ocrEnginePreference, 'auto')
   assert.equal(DEFAULT_SETTINGS.ocrHotkey, 'Alt+O')
   assert.equal(DEFAULT_SETTINGS.ocrLang, 'auto')
-  assert.equal(DEFAULT_SETTINGS.ocrScale, 1.25)
+  assert.equal(DEFAULT_SETTINGS.ocrScale, 1)
   assert.equal(DEFAULT_SETTINGS.ocrTesseractEnabled, true)
 })
 
@@ -36,9 +36,9 @@ test('非法 OCR 引擎偏好应回退到 auto', () => {
 test('OCR 放大倍率应被限制在 1~3 之间', () => {
   assert.equal(normalizeSettings({ ocrScale: 9.9 }).ocrScale, 3)
   assert.equal(normalizeSettings({ ocrScale: 0.2 }).ocrScale, 1)
-  assert.equal(normalizeSettings({ ocrScale: 'xx' as never }).ocrScale, 1.25)
+  assert.equal(normalizeSettings({ ocrScale: 'xx' as never }).ocrScale, 1)
   assert.equal(normalizeOcrScale(2), 2)
-  assert.equal(normalizeOcrScale(NaN), 1.25)
+  assert.equal(normalizeOcrScale(NaN), 1)
 })
 
 /**
@@ -51,7 +51,7 @@ test('旧版设置缺失 OCR 字段时应补齐默认值', () => {
   assert.equal(legacy.ocrEnginePreference, 'auto')
   assert.equal(legacy.ocrHotkey, 'Alt+O')
   assert.equal(legacy.ocrLang, 'auto')
-  assert.equal(legacy.ocrScale, 1.25)
+  assert.equal(legacy.ocrScale, 1)
   assert.equal(legacy.ocrTesseractEnabled, true)
 })
 
