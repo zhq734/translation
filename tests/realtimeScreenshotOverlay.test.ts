@@ -121,7 +121,12 @@ test('预热与截图入口应共用跨平台 OCR ready 门禁', () => {
   assert.match(main, /whenOcrSelectionWindowReady/u)
   assert.match(openSource, /whenOcrSelectionWindowReady\(win\)/u)
   assert.doesNotMatch(openSource, /process\.platform\s*===\s*['"]win32['"][\s\S]*?whenOcrSelectionWindowReady/u)
-  assert.match(openSource, /process\.platform\s*===\s*['"]darwin['"]/u)
+  // 旧实现曾在 macOS 上进入简单全屏以对齐菜单栏；该分支会让系统隐藏菜单栏与 Dock 栏，
+  // 导致采集到的快照缺失这两个区域。现改为窗口级 enableLargerThanScreen，
+  // openOcrSelection 中不应再出现平台专用分支或简单全屏调用。
+  assert.doesNotMatch(openSource, /process\.platform\s*===\s*['"]darwin['"]/u)
+  assert.doesNotMatch(openSource, /\.setSimpleFullScreen\s*\(/u)
+  assert.doesNotMatch(openSource, /\.isSimpleFullScreen\s*\(/u)
 })
 
 /**

@@ -1454,6 +1454,12 @@ function getOcrSelectionWindow(): BrowserWindow {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
+    // macOS 上普通无边框窗口会被系统钳制在菜单栏下方：setBounds 传入 y = 0 时实际会被抬到
+    // workArea.y（本机为 33），窗口永远盖不住菜单栏。开启该选项后才能让覆盖窗口真正对齐
+    // display.bounds 的 (0, 0)，这也是替代 setSimpleFullScreen 的关键——简单全屏会切换应用
+    // 呈现模式并让系统隐藏菜单栏与 Dock 栏，采集到的快照本身就缺失这两个区域。
+    // 该选项仅 macOS 生效，其它平台会被忽略。
+    enableLargerThanScreen: true,
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
@@ -1712,8 +1718,9 @@ function restoreSelectionListenerAfterOcr(interactionToken?: number): void {
  */
 function hideOcrSelectionWindow(): boolean {
   const wasVisible = isOcrSelectionVisible()
-  // macOS 上必须先退出简单全屏再隐藏窗口。保留简单全屏状态时，隐藏的窗口仍被系统
-  // 视为全屏窗口，后续打开设置页或翻译页会导致 macOS 自动隐藏 Dock 栏。
+  // 兜底清理：正常路径下 openOcrSelection 已不再进入简单全屏，但一旦窗口处于简单全屏状态，
+  // 隐藏后系统仍把它视为全屏窗口，后续打开设置页或翻译页会导致 macOS 自动隐藏 Dock 栏，
+  // 同时菜单栏也不会恢复。这里显式退出，避免任何遗留状态污染后续窗口。
   if (process.platform === 'darwin' && ocrSelectionWin && !ocrSelectionWin.isDestroyed() && ocrSelectionWin.isSimpleFullScreen()) {
     ocrSelectionWin.setSimpleFullScreen(false)
   }
@@ -1820,11 +1827,11 @@ async function openOcrSelection(): Promise<void> {
   // 覆盖窗口使用外层无边框尺寸与显示器边界对齐；这里必须使用屏幕坐标下的 setBounds，
   // 否则 macOS 会把内容区域再次换算，导致快照画面整体向下偏移。
   win.setBounds(display.bounds)
-  // macOS 普通无边框窗口的 content area 仍可能避让顶部菜单栏；切换为简单全屏后，
-  // Renderer 的 (0, 0) 才与 screencapture 快照左上角保持一致。
-  if (process.platform === 'darwin' && !win.isSimpleFullScreen()) {
-    win.setSimpleFullScreen(true)
-  }
+  // 这里刻意不进入 macOS 简单全屏（setSimpleFullScreen）。简单全屏会切换应用呈现模式，
+  // 系统随之隐藏顶部菜单栏与底部 Dock 栏，于是紧随其后的 screencapture 快照本身就缺少
+  // 这两个区域，用户看到的就是「截图时 Dock 栏和菜单栏消失」。
+  // 覆盖窗口在创建时已开启 enableLargerThanScreen，setBounds(display.bounds) 可精确落到
+  // (0, 0) 且 content area 与窗口边界一致，配合 screen-saver 层级即可盖住菜单栏与 Dock。
   let timeoutTimer: NodeJS.Timeout | null = null
   let timedOut = false
   try {

@@ -250,16 +250,32 @@ test('OCR 覆盖窗口应按目标屏幕外层边界对齐', () => {
   const openSource = main.slice(openStart, openEnd)
   assert.match(openSource, /win\.setBounds\(display\.bounds\)/u)
   assert.doesNotMatch(openSource, /win\.setContentBounds\(display\.bounds\)/u)
-  assert.match(openSource, /win\.setSimpleFullScreen\(true\)/u)
 })
 
 /**
- * 校验复用 OCR 覆盖窗口隐藏时在 macOS 上退出简单全屏，避免隐藏的全屏窗口
+ * 校验 OCR 覆盖窗口通过 enableLargerThanScreen 对齐真实屏幕边界，而不是进入 macOS 简单全屏。
+ * 简单全屏会让系统隐藏菜单栏与 Dock 栏，使采集到的快照缺失这两个区域（用户可见的
+ * 「截图时 Dock 栏和菜单栏消失」）；enableLargerThanScreen 可让窗口落到 (0, 0) 且不改变应用呈现。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口应使用 enableLargerThanScreen 而非 macOS 简单全屏', () => {
+  const windowStart = main.indexOf('function getOcrSelectionWindow(): BrowserWindow')
+  const windowEnd = main.indexOf('/**', windowStart + 1)
+  const windowSource = main.slice(windowStart, windowEnd)
+  assert.notStrictEqual(windowStart, -1, '应存在 OCR 覆盖窗口创建函数')
+  assert.match(windowSource, /enableLargerThanScreen: true/u)
+  assert.match(windowSource, /transparent: true/u)
+  assert.match(windowSource, /fullscreenable: false/u)
+})
+
+/**
+ * 校验复用 OCR 覆盖窗口隐藏时兜底退出 macOS 简单全屏，避免隐藏的全屏窗口
  * 导致后续打开其他窗口时 macOS 自动隐藏 Dock 栏。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 覆盖窗口隐藏时应退出 macOS 简单全屏', () => {
+test('OCR 覆盖窗口隐藏时应兜底退出 macOS 简单全屏', () => {
   const hideStart = main.indexOf('function hideOcrSelectionWindow')
   const hideEnd = main.indexOf('\n}\n', hideStart)
   const hideSource = main.slice(hideStart, hideEnd)
@@ -268,15 +284,17 @@ test('OCR 覆盖窗口隐藏时应退出 macOS 简单全屏', () => {
 })
 
 /**
- * 校验复用 OCR 覆盖窗口时只在尚未进入简单全屏时切换，避免重复触发系统窗口动画。
+ * 校验 OCR 覆盖窗口打开流程不得进入 macOS 简单全屏：该模式会让系统隐藏菜单栏与 Dock 栏，
+ * 并导致采集到的快照缺失顶部菜单栏与底部 Dock 区域。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('OCR 覆盖窗口重复打开时不应重复进入简单全屏', () => {
+test('OCR 覆盖窗口打开流程不应进入 macOS 简单全屏', () => {
   const openStart = main.indexOf('async function openOcrSelection')
   const openEnd = main.indexOf('/**', openStart + 1)
   const openSource = main.slice(openStart, openEnd)
-  assert.match(openSource, /!win\.isSimpleFullScreen\(\)/u)
+  assert.doesNotMatch(openSource, /\.setSimpleFullScreen\s*\(/u)
+  assert.doesNotMatch(openSource, /\.isSimpleFullScreen\s*\(/u)
 })
 
 /**
