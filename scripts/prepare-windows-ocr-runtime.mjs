@@ -59,7 +59,6 @@ function isWindowsSharpReady(arch) {
  */
 function installWindowsSharp(arch) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), `selection-translator-sharp-${arch}-`))
-  const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const packageName = `@img/sharp-win32-${arch}`
 
   try {
@@ -67,24 +66,31 @@ function installWindowsSharp(arch) {
       join(temporaryRoot, 'package.json'),
       JSON.stringify({ name: `sharp-win32-${arch}-runtime`, private: true }, null, 2)
     )
-    const result = spawnSync(
-      npmExecutable,
-      [
-        'install',
-        '--no-save',
-        '--package-lock=false',
-        '--include=optional',
-        `--os=win32`,
-        `--cpu=${arch}`,
-        `${packageName}@${expectedSharpVersion}`
-      ],
-      {
-        cwd: temporaryRoot,
-        encoding: 'utf8',
-        stdio: 'inherit',
-        env: process.env
-      }
-    )
+    const npmArguments = [
+      'install',
+      '--no-save',
+      '--package-lock=false',
+      '--include=optional',
+      `--os=win32`,
+      `--cpu=${arch}`,
+      `${packageName}@${expectedSharpVersion}`
+    ]
+    // Windows 上 Node.js 直接执行 npm.cmd 可能返回 EINVAL，优先通过当前 Node 启动 npm CLI。
+    const npmExecPath = process.env.npm_execpath
+    const result = npmExecPath
+      ? spawnSync(process.execPath, [npmExecPath, ...npmArguments], {
+          cwd: temporaryRoot,
+          encoding: 'utf8',
+          stdio: 'inherit',
+          env: process.env
+        })
+      : spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', npmArguments, {
+          cwd: temporaryRoot,
+          encoding: 'utf8',
+          stdio: 'inherit',
+          env: process.env,
+          shell: process.platform === 'win32'
+        })
 
     if (result.error) throw result.error
     if (result.status !== 0) {

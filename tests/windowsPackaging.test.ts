@@ -59,6 +59,18 @@ test('Windows 打包前应准备并校验目标架构 sharp 运行时', () => {
 })
 
 /**
+ * 校验 Windows 运行时准备脚本通过 npm_execpath 启动 npm，避免 Node.js 在 Windows
+ * 直接 spawn npm.cmd 时返回 EINVAL，导致 CI 打包中断。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 运行时准备脚本应通过 npm_execpath 调用 npm', () => {
+  const prepareScript = readFileSync('scripts/prepare-windows-ocr-runtime.mjs', 'utf8')
+  assert.match(prepareScript, /process\.env\.npm_execpath/u)
+  assert.match(prepareScript, /spawnSync\(\s*process\.execPath/u)
+})
+
+/**
  * 校验 Windows 打包配置包含可安装、可创建快捷方式的 NSIS 选项。
  * @returns 无返回值。
  * @author zhenghq
