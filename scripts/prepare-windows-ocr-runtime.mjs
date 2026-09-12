@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -51,8 +51,8 @@ function isWindowsSharpReady(arch) {
 }
 
 /**
- * 在隔离的临时目录安装指定 Windows 架构的 sharp 原生包并复制到项目，
- * 避免连续 npm install 触发可选依赖裁剪而丢失另一架构。
+ * 在隔离的临时目录通过 npm pack 下载指定 Windows 架构的 sharp 原生包并解包到项目。
+ * npm pack 不执行平台校验，可避免 x64 构建机下载 arm64 包时触发 EBADPLATFORM。
  * @param arch Windows CPU 架构，仅支持 x64 或 arm64。
  * @returns 无返回值；安装或复制失败时抛出异常。
  * @author zhenghq
@@ -62,45 +62,46 @@ function installWindowsSharp(arch) {
   const packageName = `@img/sharp-win32-${arch}`
 
   try {
-    writeFileSync(
-      join(temporaryRoot, 'package.json'),
-      JSON.stringify({ name: `sharp-win32-${arch}-runtime`, private: true }, null, 2)
-    )
-    const npmArguments = [
-      'install',
-      '--no-save',
-      '--package-lock=false',
-      '--include=optional',
-      `--os=win32`,
-      `--cpu=${arch}`,
-      `${packageName}@${expectedSharpVersion}`
-    ]
+    const npmArguments = ['pack', `${packageName}@${expectedSharpVersion}`, '--pack-destination', temporaryRoot, '--silent']
     // Windows 上 Node.js 直接执行 npm.cmd 可能返回 EINVAL，优先通过当前 Node 启动 npm CLI。
     const npmExecPath = process.env.npm_execpath
     const result = npmExecPath
       ? spawnSync(process.execPath, [npmExecPath, ...npmArguments], {
           cwd: temporaryRoot,
           encoding: 'utf8',
-          stdio: 'inherit',
+          stdio: ['ignore', 'pipe', 'inherit'],
           env: process.env
         })
       : spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', npmArguments, {
           cwd: temporaryRoot,
           encoding: 'utf8',
-          stdio: 'inherit',
+          stdio: ['ignore', 'pipe', 'inherit'],
           env: process.env,
           shell: process.platform === 'win32'
         })
 
     if (result.error) throw result.error
     if (result.status !== 0) {
-      throw new Error(`安装 Windows ${arch} 的 sharp ${expectedSharpVersion} 失败，退出码 ${result.status}`)
+      throw new Error(`下载 Windows ${arch} 的 sharp ${expectedSharpVersion} 失败，退出码 ${result.status}`)
     }
 
-    const sourceRoot = join(temporaryRoot, 'node_modules', '@img', `sharp-win32-${arch}`)
-    if (!existsSync(sourceRoot)) {
-      throw new Error(`npm 未安装预期的 Windows ${arch} sharp 包: ${packageName}`)
+    const tarballName = String(result.stdout ?? '').trim().split(/\r?\n/u).filter(Boolean).at(-1)
+    if (!tarballName) throw new Error(`npm pack 未返回 ${packageName} 的压缩包名称`)
+
+    const extractRoot = join(temporaryRoot, 'extract')
+    mkdirSync(extractRoot, { recursive: true })
+    const extractResult = spawnSync('tar', ['-xzf', join(temporaryRoot, tarballName), '-C', extractRoot], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+      env: process.env
+    })
+    if (extractResult.error) throw extractResult.error
+    if (extractResult.status !== 0) {
+      throw new Error(`解包 Windows ${arch} 的 sharp ${expectedSharpVersion} 失败，退出码 ${extractResult.status}`)
     }
+
+    const sourceRoot = join(extractRoot, 'package')
+    if (!existsSync(sourceRoot)) throw new Error(`下载的 ${packageName} 缺少 package 目录`)
 
     const targetRoot = windowsSharpPackageRoot(arch)
     rmSync(targetRoot, { recursive: true, force: true })

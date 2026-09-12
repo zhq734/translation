@@ -71,6 +71,18 @@ test('Windows 运行时准备脚本应通过 npm_execpath 调用 npm', () => {
 })
 
 /**
+ * 校验 Windows 运行时准备脚本通过 npm pack 下载非宿主架构包，避免 npm install
+ * 在 x64 Windows 上校验 arm64 包时返回 EBADPLATFORM，导致 CI 打包中断。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 运行时准备脚本应通过 npm pack 下载目标架构包', () => {
+  const prepareScript = readFileSync('scripts/prepare-windows-ocr-runtime.mjs', 'utf8')
+  assert.match(prepareScript, /['"]pack['"]/u)
+  assert.doesNotMatch(prepareScript, /['"]install['"]/u)
+})
+
+/**
  * 校验 Windows 打包配置包含可安装、可创建快捷方式的 NSIS 选项。
  * @returns 无返回值。
  * @author zhenghq
