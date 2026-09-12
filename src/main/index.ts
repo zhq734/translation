@@ -183,6 +183,7 @@ import type {
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
 import { resolveMacOSDockPresentation } from './dockVisibility'
+import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import {
   buildLinuxAutostartEntry,
   buildLoginItemSettings,
@@ -536,9 +537,8 @@ function loadMacOSDockIcon(): NativeImage {
 }
 
 /**
- * 根据常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
- * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；showDockIcon 仅保留设置状态，
- * 不得在常规窗口打开期间把 regular 策略降回 accessory。
+ * 根据用户设置和设置窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；仅在用户开启功能且设置窗口存在时显示图标。
  * @param showDockIcon 用户保存的 Dock 图标设置。
  * @returns 无返回值。
  * @author zhenghq
@@ -617,7 +617,7 @@ function applyAutoLaunch(enabled: boolean): void {
 }
 
 /**
- * 根据当前设置页和网页翻译页状态刷新 macOS Dock 图标。
+ * 根据当前设置和设置窗口状态刷新 macOS Dock 图标。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -627,13 +627,19 @@ async function refreshMacOSDockVisibility(): Promise<void> {
 
 /**
  * 将 macOS 应用配置为菜单栏应用，并按用户设置控制 Dock 栏图标。
+ * 首次启动即将打开设置页且用户开启 Dock 图标时，延后到设置窗口创建后再切换，避免先隐藏再恢复导致窗口失焦或关闭。
  * @param showDockIcon 是否显示 Dock 栏图标。
+ * @param settingsWillOpen 是否即将打开首次设置窗口。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function configureMacOSMenuBarApplication(showDockIcon: boolean): Promise<void> {
+async function configureMacOSMenuBarApplication(
+  showDockIcon: boolean,
+  settingsWillOpen: boolean
+): Promise<void> {
   if (!isMac) return
-  await applyMacOSDockVisibility(showDockIcon)
+  dockIconEnabled = showDockIcon
+  if (!showDockIcon || !settingsWillOpen) await applyMacOSDockVisibility(showDockIcon)
   Menu.setApplicationMenu(null)
 }
 
@@ -695,7 +701,11 @@ async function onReady(): Promise<boolean> {
   }
 
   loadSettings()
-  await configureMacOSMenuBarApplication(getSettings().showDockIcon)
+  const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch(process.platform)
+  await configureMacOSMenuBarApplication(
+    getSettings().showDockIcon,
+    openSettingsOnInitialLaunch
+  )
   applyAutoLaunch(getSettings().autoLaunch)
   createTray()
   dingTalkConfiguration = new DingTalkConfigurationService({
@@ -782,7 +792,7 @@ async function onReady(): Promise<boolean> {
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
-  if (shouldOpenSettingsOnInitialLaunch(process.platform)) await openSettings()
+  if (openSettingsOnInitialLaunch) await openSettings()
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
@@ -1451,7 +1461,7 @@ function getOcrSelectionWindow(): BrowserWindow {
     }
   })
   ocrSelectionWin.setAlwaysOnTop(true, 'screen-saver')
-  ocrSelectionWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  ocrSelectionWin.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
   // 覆盖层可能被隐藏、关闭等旁路收尾（含异常路径），这里兜底恢复全局划词监听，
   // 避免钩子停在暂停状态导致划词与双击不再显示“译”按钮；恢复函数自身幂等。
   ocrSelectionWin.on('hide', () => {
@@ -1594,7 +1604,7 @@ function getScreenshotToastWindow(): BrowserWindow {
     }
   })
   screenshotToastWin.setAlwaysOnTop(true, 'screen-saver')
-  screenshotToastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  screenshotToastWin.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
   screenshotToastWin.on('closed', () => {
     if (screenshotToastHideTimer) {
       clearTimeout(screenshotToastHideTimer)

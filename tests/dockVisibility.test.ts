@@ -9,13 +9,42 @@ const windowStates = [
   { settingsOpen: true, webReaderOpen: true }
 ]
 
-test('开启 Dock 图标后所有窗口组合都必须保持 regular 策略并显示图标', () => {
-  for (const windowState of windowStates) {
-    assert.deepEqual(
-      resolveMacOSDockPresentation({ showDockIcon: true, ...windowState }),
-      { policy: 'regular', dockVisible: true }
-    )
-  }
+test('开启 Dock 图标后仅设置窗口存在时使用 regular 策略并显示图标', () => {
+  assert.deepEqual(
+    resolveMacOSDockPresentation({
+      showDockIcon: true,
+      settingsOpen: true,
+      webReaderOpen: false
+    }),
+    { policy: 'regular', dockVisible: true }
+  )
+  assert.deepEqual(
+    resolveMacOSDockPresentation({
+      showDockIcon: true,
+      settingsOpen: true,
+      webReaderOpen: true
+    }),
+    { policy: 'regular', dockVisible: true }
+  )
+})
+
+test('开启 Dock 图标但设置窗口不存在时必须隐藏图标', () => {
+  assert.deepEqual(
+    resolveMacOSDockPresentation({
+      showDockIcon: true,
+      settingsOpen: false,
+      webReaderOpen: false
+    }),
+    { policy: 'accessory', dockVisible: false }
+  )
+  assert.deepEqual(
+    resolveMacOSDockPresentation({
+      showDockIcon: true,
+      settingsOpen: false,
+      webReaderOpen: true
+    }),
+    { policy: 'accessory', dockVisible: false }
+  )
 })
 
 test('关闭 Dock 图标后所有窗口组合都必须保持 accessory 策略并隐藏图标', () => {

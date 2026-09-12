@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
+import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
 const BUTTON_SIZE = 36
 const EDGE_GAP = 8
@@ -69,7 +70,7 @@ export function createSelectionButton(preloadPath: string): BrowserWindow {
   })
 
   win.setAlwaysOnTop(true, 'pop-up-menu')
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  win.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
   win.webContents.once('did-finish-load', () => {
     rendererReady = true
     if (pendingAnchor) showReadySelectionButton(pendingAnchor)

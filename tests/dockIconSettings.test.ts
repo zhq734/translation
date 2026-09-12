@@ -32,7 +32,10 @@ test('主进程应成对切换 macOS 激活策略与 Dock 图标并通过 Dock �
   assert.match(source, /app\.setActivationPolicy\(presentation\.policy\)/u)
   assert.match(source, /if \(presentation\.dockVisible\)[\s\S]*?await app\.dock\?\.show\(\)[\s\S]*?app\.dock\?\.hide\(\)/u)
   assert.doesNotMatch(source, /shouldShowMacOSDockIcon/u)
-  assert.match(source, /configureMacOSMenuBarApplication\(getSettings\(\)\.showDockIcon\)/u)
+  assert.match(
+    source,
+    /configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)/u
+  )
   assert.match(source, /patch\.showDockIcon\s*!==\s*undefined[\s\S]*?applyMacOSDockVisibility\(settings\.showDockIcon\)/u)
   assert.match(source, /app\.on\('activate',[\s\S]*?openSettings\(\)/u)
   assert.match(source, /settingsWin\.on\('closed',[\s\S]*?refreshMacOSDockVisibility\(\)/u)

@@ -24,7 +24,7 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
 
   assert.ok(onReadyBlock)
   const loadSettingsIndex = onReadyBlock[1].indexOf('loadSettings()')
-  const finalDockConfiguration = 'configureMacOSMenuBarApplication(getSettings().showDockIcon)'
+  const finalDockConfiguration = 'configureMacOSMenuBarApplication('
   const finalDockConfigurationIndex = onReadyBlock[1].indexOf(finalDockConfiguration)
   assert.equal(packageJson.build?.mac?.extendInfo?.LSUIElement, undefined)
   assert.ok(packageJson.build?.files?.includes('build/tray*.png'))
@@ -35,7 +35,10 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
   assert.match(mainSource, /if \(presentation\.dockVisible\)[\s\S]*?app\.dock\?\.show\(\)[\s\S]*?app\.dock\?\.hide\(\)/u)
   assert.doesNotMatch(mainSource, /shouldShowMacOSDockIcon/u)
   assert.match(mainSource, /Menu\.setApplicationMenu\(null\)/u)
-  assert.match(mainSource, /configureMacOSMenuBarApplication\(getSettings\(\)\.showDockIcon\)/u)
+  assert.match(
+    mainSource,
+    /configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)/u
+  )
   assert.doesNotMatch(onReadyBlock[1], /configureMacOSMenuBarApplication\(false\)/u)
   assert.ok(loadSettingsIndex >= 0 && finalDockConfigurationIndex > loadSettingsIndex)
   assert.equal(onReadyBlock[1].split(finalDockConfiguration).length - 1, 1)
@@ -58,12 +61,16 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
 
 test('首次启动和第二实例都应打开设置窗口', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const onReadyBlock = mainSource.match(
+    /async function onReady\(\): Promise<boolean> \{([\s\S]*?)\n\}/u
+  )
   const ipcIndex = mainSource.indexOf('\n  registerIpc()\n')
   const platformSettingsIndex = mainSource.indexOf(
-    'if (shouldOpenSettingsOnInitialLaunch(process.platform)) await openSettings()',
+    'if (openSettingsOnInitialLaunch) await openSettings()',
     ipcIndex
   )
 
+  assert.ok(onReadyBlock)
   assert.match(mainSource, /function stopApplicationService\(\): void/u)
   assert.match(
     mainSource,
@@ -74,6 +81,10 @@ test('首次启动和第二实例都应打开设置窗口', () => {
     /label:\s*'退出',[\s\S]*?click:\s*\(\)\s*=>\s*stopApplicationService\(\)/u
   )
   assert.ok(ipcIndex >= 0 && platformSettingsIndex > ipcIndex)
+  assert.match(
+    onReadyBlock[1],
+    /loadSettings\(\)[\s\S]*?const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch\(process\.platform\)[\s\S]*?configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)[\s\S]*?if \(openSettingsOnInitialLaunch\) await openSettings\(\)/u
+  )
   assert.doesNotMatch(mainSource, /function showTrayMenu\(\): void/u)
   assert.match(
     mainSource,

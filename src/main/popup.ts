@@ -5,6 +5,7 @@ import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
+import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -61,7 +62,7 @@ export function createPopup(preloadPath: string): BrowserWindow {
   })
 
   win.setAlwaysOnTop(true, 'floating')
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  win.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
   win.webContents.setAudioMuted(false)
 
   if (process.env['ELECTRON_RENDERER_URL']) {
