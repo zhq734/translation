@@ -51,7 +51,9 @@ test('剪贴板图片翻译应区分无图片并复用 OCR 管线', () => {
  * @author zhenghq
  */
 test('OCR loading 状态应展示识别中提示和 OCR 原文区域', () => {
-  assert.match(main, /loading:\s*true,\s*\n\s*original:\s*'正在识别屏幕区域…'/u)
+  // loading 提示文案已参数化：识别路径用默认值，命中会话识别结果缓存时改为「正在翻译识别结果…」。
+  assert.match(main, /original = '正在识别屏幕区域…'/u)
+  assert.match(main, /loading:\s*true,\s*\n\s*original,/u)
   assert.match(main, /loading:\s*true,\s*\n\s*original:\s*'正在识别剪贴板图片…'/u)
   assert.match(popupRenderer, /function renderOcrLoading\(payload: TranslatePayload\): void/u)
   assert.match(popupRenderer, /if \(payload\.origin === 'ocr'\) \{\s*\n\s*renderOcrLoading\(payload\)/u)
@@ -198,7 +200,10 @@ test('OCR 截图应先清理框选会话，再把隐藏采集的快照传给 Ren
   // begin 只负责让隐藏的 Renderer 清理旧会话；Windows/macOS 此时不得显示遮罩。
   assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:begin'/u)
   assert.match(openSource, /sendToOcrSelectionWindow\(win,\s*'ocr-selection:snapshot'/u)
-  assert.match(openSource, /imageDataUrl:\s*preview\.previewDataUrl/u)
+  // 预览负载构建已推迟到窗口显示之后：这里改为断言负载结果被送进 snapshot 事件，
+  // 具体时机由 realtimeScreenshotOverlay 的时序测试保证。
+  assert.match(openSource, /preview\.buildPreviewPayload\(\)/u)
+  assert.match(openSource, /preview:\s*previewPayload/u)
   assert.ok(
     openSource.indexOf("'ocr-selection:begin'") < openSource.indexOf('captureOcrPreviewSnapshot('),
     'begin 事件必须早于屏幕采集'
@@ -225,7 +230,10 @@ test('OCR 框选页应支持快照预览、调整选区和点击识别', () => {
   assert.match(selectionRenderer, /function recognizeCurrentOcrSelection/u)
   assert.match(selectionRenderer, /ocrRecognizeButton\.addEventListener\('click',\s*recognizeCurrentOcrSelection\)/u)
   assert.match(selectionRenderer, /ocrTranslateButton\.addEventListener\('click',\s*translateCurrentOcrSelection\)/u)
-  assert.match(selectionCss, /\.ocr-snapshot\s*\{[^}]*object-fit:\s*fill;/su)
+  // 快照改为 canvas 直接承载原始像素：不再依赖 <img> 的 object-fit 拉伸语义
+  assert.match(selectionHtml, /<canvas id="ocr-snapshot"/u)
+  assert.match(selectionCss, /\.ocr-snapshot\s*\{[^}]*width:\s*100%;/su)
+  assert.doesNotMatch(selectionCss, /\.ocr-snapshot\s*\{[^}]*object-fit:/su)
   assert.match(selectionCss, /\.ocr-resize-handle/u)
   assert.doesNotMatch(selectionRenderer, /window\.api\.submitOcrSelection\(rect\)/u)
 })
@@ -364,7 +372,7 @@ test('OCR 识别只裁内存快照，不重新截屏', () => {
 
   assert.match(submitSource, /hideOcrSelectionWindow\(\)/u)
   assert.ok(submitSource.includes('cropOcrSnapshotSelection'), '应裁剪已采集快照')
-  assert.ok(submitSource.includes("original: '正在识别屏幕区域…'"), '应展示 OCR loading')
+  assert.ok(submitSource.includes("original = '正在识别屏幕区域…'"), '应展示 OCR loading')
   assert.match(cropSource, /const snapshot = latestOcrSnapshot/u, '裁剪必须读内存快照')
   assert.doesNotMatch(
     cropSource,
@@ -374,10 +382,10 @@ test('OCR 识别只裁内存快照，不重新截屏', () => {
   // macOS 先显示弹窗接管 key window 再收起覆盖窗口，避免系统把设置页提升到最前。
   assert.match(
     submitSource,
-    /if \(isMac\) showLoadingPopup\(\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
+    /if \(isMac\) showLoadingPopup\([^)]*\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
     'macOS 必须先显示弹窗再收起覆盖窗口'
   )
-  assert.match(submitSource, /if \(!isMac\) showLoadingPopup\(\)/u, '其它平台保持裁剪完成后再显示弹窗')
+  assert.match(submitSource, /if \(!isMac\) showLoadingPopup\([^)]*\)/u, '其它平台保持裁剪完成后再显示弹窗')
 })
 
 /**
@@ -504,8 +512,9 @@ test('OCR 框选窗口隐藏或关闭时应兜底恢复划词监听', () => {
   const windowSource = main.slice(windowStart, windowEnd)
 
   // 覆盖层被任何旁路收尾时都要恢复钩子，否则划词与双击会静默失效
-  assert.match(windowSource, /ocrSelectionWin\.on\('hide',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
-  assert.match(windowSource, /ocrSelectionWin\.on\('closed',[\s\S]*?restoreSelectionListenerAfterOcr\(\)/u)
+  // hide / closed 收敛到共享事件处理器，恢复划词监听的职责随之转移，但契约不变。
+  assert.match(windowSource, /ocrSelectionWin\.on\('hide',[\s\S]*?restoreSelectionListener: restoreSelectionListenerAfterOcr/u)
+  assert.match(windowSource, /ocrSelectionWin\.on\('closed',[\s\S]*?restoreSelectionListener: restoreSelectionListenerAfterOcr/u)
 })
 
 /**
@@ -519,12 +528,11 @@ test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () 
   const previewEnd = main.indexOf('/**', previewStart + 1)
   const previewSource = main.slice(previewStart, previewEnd)
 
-  // Windows 分支：GDI 直采物理像素后交给 nativeImage，失败回退 PowerShell/helper exe
+  // Windows 分支：GDI 直采物理像素后直接交给渲染层，失败回退 PowerShell/helper exe
   assert.match(previewSource, /if \(process\.platform === 'win32'\)/u)
   assert.match(previewSource, /captureWindowsOcrPreview\(bounds\)/u)
   assert.match(previewSource, /\$\{captured\.source\}-preview/u)
-  // 预览成功路径把 BGRA 直接交给 Chromium；回退路径只能拿到 PNG，同样不走 JS 解码
-  assert.match(previewSource, /nativeImage\.createFromBitmap\(/u)
+  // 回退路径只能拿到 PNG，交给 Chromium 原生解码，同样不走 JS 版解码
   assert.match(previewSource, /captured\.kind === 'pixels'/u)
   assert.match(previewSource, /nativeImage\.createFromBuffer\(captured\.png\)/u)
   // 预览路径不得对整屏调用 JS 版 PNG 编码器
@@ -533,6 +541,88 @@ test('Windows 截图应走 GDI 原生采集，Linux 保留 desktopCapturer', () 
   // Linux / 其他平台：继续使用 Electron desktopCapturer 缩略图路径
   assert.match(previewSource, /captureRegionAsPng\(bounds,\s*\{ ocrScale: 1 \}/u)
   assert.match(previewSource, /electron-desktopCapturer-preview/u)
+})
+
+/**
+ * 校验 Windows 预览走「原始 BGRA 像素直传」，不做任何编码与降采样。
+ *
+ * 这是微信式截图的做法：抓屏得到的位图原样贴到覆盖层上屏，既没有编码耗时，
+ * 也不存在重编码带来的画质损失。历史方案两次踩坑——
+ * 整屏 PNG + base64 编码会阻塞主进程（4K 实测 205ms），
+ * 降采样 + JPEG 虽然快但预览肉眼可见变糊。
+ * 原始像素直传实测主进程仅需约 40ms 序列化，且逐像素无损。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 预览应直传原始像素且不做降采样与重编码', () => {
+  const previewStart = main.indexOf('async function captureOcrPreviewSnapshot')
+  const previewEnd = main.indexOf('/**', previewStart + 1)
+  const previewSource = main.slice(previewStart, previewEnd)
+  const windowsBranch = previewSource.slice(0, previewSource.indexOf("if (process.platform === 'darwin')"))
+
+  assert.match(windowsBranch, /buildPreviewPayload/u, 'Windows 分支应提供原始像素负载构建入口')
+  assert.match(windowsBranch, /pixels:/u, '预览负载应携带原始像素')
+  assert.match(windowsBranch, /captured\.kind === 'pixels'/u, '只有 GDI 直采路径才能直传像素')
+  assert.doesNotMatch(windowsBranch, /toJPEG\(/u, '预览不得再做有损 JPEG 编码')
+  assert.doesNotMatch(windowsBranch, /\.resize\(/u, '预览不得再降采样')
+  assert.doesNotMatch(windowsBranch, /WINDOWS_PREVIEW_MAX_EDGE/u, '预览不应再有最长边限制')
+  assert.doesNotMatch(windowsBranch, /WINDOWS_PREVIEW_JPEG_QUALITY/u, '预览不应再有 JPEG 质量参数')
+})
+
+/**
+ * 校验构建 Windows 预览负载时不触发整屏 nativeImage 构造。
+ *
+ * 原始像素已由渲染层直接上屏，若构建预览负载时顺带构造整屏 nativeImage，
+ * 只会平白多出一次 4K 位图上传。nativeImage 仍保留给快速裁剪等按需路径惰性构造。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('构建 Windows 预览负载不应触发整屏 nativeImage 构造', () => {
+  const previewStart = main.indexOf('async function captureOcrPreviewSnapshot')
+  const previewEnd = main.indexOf('/**', previewStart + 1)
+  const previewSource = main.slice(previewStart, previewEnd)
+  const windowsBranch = previewSource.slice(0, previewSource.indexOf("if (process.platform === 'darwin')"))
+  const buildStart = windowsBranch.indexOf('buildPreviewPayload:')
+  assert.notStrictEqual(buildStart, -1, 'Windows 分支应提供 buildPreviewPayload 实现')
+  const buildSource = windowsBranch.slice(buildStart, windowsBranch.indexOf('\n      }', buildStart))
+
+  assert.doesNotMatch(
+    buildSource,
+    /resolveImage\(\)|createImage\(\)/u,
+    '构建预览负载不得触发整屏 nativeImage 构造'
+  )
+})
+
+/**
+ * 校验带标注导出改走主进程原始分辨率通道，不再直接复用降采样预览图。
+ *
+ * 预览图降采样后只能用于显示，若继续被渲染层当作导出底图，复制/保存结果就会模糊。
+ * 这里要求新增受限的 `ocr-selection:export-image` 通道，由主进程按当前选区返回
+ * 原始分辨率 PNG data URL，渲染层仅在用户点击复制/保存时才请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('带标注导出应通过主进程按需获取原始分辨率原图', () => {
+  assert.match(types, /export interface ScreenshotExportImageRequest/u)
+  assert.match(types, /requestOcrSelectionExportImage\(/u)
+  assert.match(preload, /ipcRenderer\.invoke\('ocr-selection:export-image'/u)
+  assert.match(main, /ipcMain\.handle\('ocr-selection:export-image'/u)
+
+  const exportHandlerStart = main.indexOf("ipcMain.handle('ocr-selection:export-image'")
+  assert.notStrictEqual(exportHandlerStart, -1, '主进程应注册原图导出通道')
+  const exportHandlerSource = main.slice(exportHandlerStart, main.indexOf('\n  })', exportHandlerStart))
+  assert.match(
+    exportHandlerSource,
+    /cropCurrentOcrSelectionPng\(/u,
+    '原图导出应复用 OCR 同源的原始像素裁剪入口，避免 nativeImage 通道差异'
+  )
+  assert.match(exportHandlerSource, /data:image\/png;base64,/u, '原图导出应返回无损 PNG data URL')
+
+  const exportStart = selectionRenderer.indexOf('async function buildAnnotatedExportPayload(')
+  const exportEnd = selectionRenderer.indexOf('/**', exportStart + 1)
+  const exportSource = selectionRenderer.slice(exportStart, exportEnd)
+  assert.match(exportSource, /window\.api\.requestOcrSelectionExportImage\(/u, '导出时应按需请求原图')
+  assert.doesNotMatch(exportSource, /drawImage\(\s*ocrSnapshot/u, '导出底图不得再使用降采样预览图')
 })
 
 /**
@@ -592,8 +682,13 @@ test('Windows 采集辅助函数应优先 GDI 并接入回退路径', () => {
   const end = main.indexOf('\n}\n', start)
   const source = main.slice(start, end)
   assert.match(source, /captureWindowsRegionAsPng\(/u)
-  assert.match(source, /execFile:\s*execFileP/u)
-  assert.match(source, /tmpDir:\s*tmpdir/u)
-  assert.match(source, /spawn:\s*spawnP/u)
+  // 具体 IO 依赖抽到 buildWindowsScreenCaptureDeps，采集热路径与空闲预热共用同一份，
+  // 保证预热写入的 helper exe 缓存路径与真实回退采集读取的路径一致。
+  assert.match(source, /buildWindowsScreenCaptureDeps\(\)/u)
+  const ioStart = main.indexOf('function buildWindowsScreenCaptureDeps')
+  const ioSource = main.slice(ioStart, main.indexOf('\n}\n', ioStart))
+  assert.match(ioSource, /execFile:\s*execFileP/u)
+  assert.match(ioSource, /tmpDir:\s*tmpdir/u)
+  assert.match(ioSource, /spawn:\s*spawnP/u)
   assert.match(source, /GDI 截屏失败，回退 helper exe \/ PowerShell/u)
 })

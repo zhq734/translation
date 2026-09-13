@@ -22,7 +22,14 @@ startThemeRuntime(window.api)
 
 const translateButton = document.getElementById('translate') as HTMLButtonElement
 const ocrOverlay = document.getElementById('ocr-overlay') as HTMLElement
-const ocrSnapshot = document.getElementById('ocr-snapshot') as HTMLImageElement
+const ocrSnapshot = document.getElementById('ocr-snapshot') as HTMLCanvasElement
+/**
+ * 编码图快照的解码载体。
+ *
+ * Windows GDI 直采走原始像素直传，不需要这个对象；只有回退路径或 macOS/Linux
+ * 的 PNG data URL 才通过它解码后贴到快照画布上。
+ */
+const ocrSnapshotSource = new Image()
 const ocrAnnotationCanvas = document.getElementById('ocr-annotation-canvas') as HTMLCanvasElement
 const ocrAnnotationPreview = document.getElementById('ocr-annotation-preview') as HTMLCanvasElement
 const ocrSelectionBox = document.getElementById('ocr-selection-box') as HTMLElement
@@ -86,6 +93,14 @@ let currentRect: OcrSelectionBounds | null = null
 let currentOcrSessionId = 0
 /** 当前背景图加载令牌，防止被替换的图片回调污染新会话。 */
 let ocrSnapshotLoadToken = 0
+/**
+ * 是否正在等待编码图解码。
+ *
+ * Windows GDI 直采的原始像素是同步上屏的，不能走 <img> 的 load 回调；
+ * 该标记把「编码图解码完成」与「原始像素已上屏」两条路径区分开，
+ * 避免复用窗口时上一轮图片的残留尺寸被误当成新一轮画面。
+ */
+let ocrSnapshotSourcePending = false
 /** 当前截图完成动画定时器及其所属会话。 */
 let screenshotAutoCloseTimer: number | null = null
 /** 当前图片动作的局部处理中状态，避免导出期间的普通提示覆盖即时反馈。 */
@@ -147,6 +162,15 @@ function getOverlaySize(): { width: number; height: number } {
     width: Math.max(1, ocrOverlay.clientWidth || window.innerWidth),
     height: Math.max(1, ocrOverlay.clientHeight || window.innerHeight)
   }
+}
+
+/**
+ * 判断快照画面是否已经可用。
+ * @returns 快照画布是否已写入有效像素。
+ * @author zhenghq
+ */
+function hasOcrSnapshotImage(): boolean {
+  return ocrSnapshotState === 'ready' && ocrSnapshot.width > 0 && ocrSnapshot.height > 0
 }
 
 /**
@@ -541,6 +565,21 @@ function buildAnnotatedExportRequest(
 }
 
 /**
+ * 加载主进程按需返回的原始分辨率选区 PNG。
+ * @param dataUrl 原始分辨率选区 PNG data URL。
+ * @returns 解码完成的图片；加载失败时返回 null。
+ * @author zhenghq
+ */
+function loadScreenshotExportImage(dataUrl: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => resolve(null)
+    image.src = dataUrl
+  })
+}
+
+/**
  * 将当前选区原图与全部标注合成为带标注 PNG。
  * @returns 带标注导出请求；合成失败时返回 null。
  * @author zhenghq
@@ -548,11 +587,24 @@ function buildAnnotatedExportRequest(
 async function buildAnnotatedExportPayload(
   action: ScreenshotAnnotatedExportRequest['action']
 ): Promise<ScreenshotAnnotatedExportRequest | null> {
-  if (!ocrMode || !currentRect || !ocrSnapshot.src || ocrSnapshotState !== 'ready') return null
-  const overlaySize = getOverlaySize()
-  const exportScale = computeExportScale(overlaySize, {
-    width: ocrSnapshot.naturalWidth,
-    height: ocrSnapshot.naturalHeight
+  if (!ocrMode || !currentRect || !hasOcrSnapshotImage()) return null
+  // 覆盖层显示的是原始像素，但带标注导出需要「选区裁剪 + 标注」的合成结果，
+  // 因此这里仍按需向主进程请求当前选区的原始分辨率 PNG，保证导出与识别同源。
+  let exportImageResult: Awaited<ReturnType<typeof window.api.requestOcrSelectionExportImage>>
+  try {
+    exportImageResult = await window.api.requestOcrSelectionExportImage({
+      sessionId: currentOcrSessionId,
+      bounds: { ...currentRect }
+    })
+  } catch {
+    return null
+  }
+  const exportImage = await loadScreenshotExportImage(exportImageResult.dataUrl)
+  if (!exportImage || exportImage.naturalWidth === 0 || exportImage.naturalHeight === 0) return null
+  // 主进程返回的原图已按当前选区裁剪，因此缩放基准是选区而不是整块覆盖层。
+  const exportScale = computeExportScale(currentRect, {
+    width: exportImage.naturalWidth,
+    height: exportImage.naturalHeight
   })
   const canvasSize = computeExportCanvasSize(currentRect, exportScale)
   const canvas = document.createElement('canvas')
@@ -561,11 +613,11 @@ async function buildAnnotatedExportPayload(
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   ctx.drawImage(
-    ocrSnapshot,
-    currentRect.x * exportScale.scaleX,
-    currentRect.y * exportScale.scaleY,
-    currentRect.width * exportScale.scaleX,
-    currentRect.height * exportScale.scaleY,
+    exportImage,
+    0,
+    0,
+    exportImage.naturalWidth,
+    exportImage.naturalHeight,
     0,
     0,
     canvasSize.width,
@@ -637,12 +689,74 @@ function sampleSnapshotColor(x: number, y: number): string {
 }
 
 /**
+ * 清空快照画布，释放上一轮会话的整屏位图。
+ *
+ * 4K 原始像素约 33MB，若不主动缩到 0，复用窗口会一直持有上一轮内存。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearOcrSnapshotCanvas(): void {
+  // 隐藏画布本身：`alpha: false` 的 2D 画布即使一帧都没绘制，合成结果也是不透明纯黑。
+  // 仅把 width/height 归零时，CSS 的 100% 宽高仍会把 0×0 画布拉伸成整屏黑块上屏。
+  ocrSnapshot.hidden = true
+  ocrSnapshot.width = 0
+  ocrSnapshot.height = 0
+  ocrSnapshotSourcePending = false
+  ocrSnapshotSource.removeAttribute('src')
+}
+
+/**
+ * 把 Windows GDI 直采的原始 BGRA 像素同步贴到快照画布。
+ *
+ * 这是微信式截图的显示路径：抓屏位图不做任何编码、不降采样、不经过 base64，
+ * 因此既没有编码耗时也没有重编码画质损失。Win32 GetDIBits 返回 BGRA 顺序，
+ * 而 ImageData 要求 RGBA，这里按 32 位整体交换红蓝通道（比逐字节快约 30%）。
+ * @param payload 快照负载，需携带原始像素。
+ * @param sessionId 该负载所属会话序号。
+ * @param loadToken 该负载的加载令牌。
+ * @returns 像素是否成功写入画布。
+ * @author zhenghq
+ */
+function applyRawOcrSnapshot(
+  payload: OcrSelectionSnapshotPayload,
+  sessionId: number,
+  loadToken: number
+): boolean {
+  const raw = payload.pixels
+  if (!raw || raw.width <= 0 || raw.height <= 0) return false
+  const expectedBytes = raw.width * raw.height * 4
+  if (raw.data.byteLength < expectedBytes) return false
+  // 结构化克隆通常给出 4 字节对齐的缓冲；万一未对齐则复制一份，保证 Uint32Array 可用。
+  // 结构化克隆产生的是 ArrayBuffer；显式收窄以兼容 TypeScript 的 ArrayBufferLike 类型。
+  // 若字节偏移不是 4 的倍数，Uint32Array 无法直接建立在原缓冲上，必须复制到新缓冲再交换通道。
+  const rgba = raw.data.byteOffset % 4 === 0
+    ? new Uint8ClampedArray(raw.data.buffer as ArrayBuffer, raw.data.byteOffset, expectedBytes)
+    : new Uint8ClampedArray(raw.data.slice(0, expectedBytes))
+  const words = new Uint32Array(rgba.buffer, rgba.byteOffset, expectedBytes / 4)
+  for (let index = 0; index < words.length; index += 1) {
+    const value = words[index]!
+    // BGRA -> RGBA：保留 G 与 A，交换 R 与 B。
+    words[index] = ((value & 0xff00ff00) | ((value & 0xff) << 16) | ((value >>> 16) & 0xff)) >>> 0
+  }
+  // 写入前再次确认会话与令牌未被新会话取代，避免迟到像素覆盖当前画面。
+  if (!ocrMode || sessionId !== currentOcrSessionId || loadToken !== ocrSnapshotLoadToken) return false
+  ocrSnapshot.width = raw.width
+  ocrSnapshot.height = raw.height
+  const ctx = ocrSnapshot.getContext('2d', { alpha: false })
+  if (!ctx) return false
+  ctx.putImageData(new ImageData(rgba, raw.width, raw.height), 0, 0)
+  // 像素写入完成后才让画布参与合成，避免空画布的黑底在窗口上屏瞬间闪出。
+  ocrSnapshot.hidden = false
+  return true
+}
+
+/**
  * 根据当前截图预览创建选区原图采样器。
  * @returns 基于选区相对坐标的采样函数；图片未加载或画布不可用时返回 null。
  * @author zhenghq
  */
 function createSnapshotSampler(): ((x: number, y: number) => string) | null {
-  if (!currentRect || !ocrSnapshot.src || !ocrSnapshot.complete || ocrSnapshot.naturalWidth === 0) {
+  if (!currentRect || !hasOcrSnapshotImage()) {
     return null
   }
   const canvas = document.createElement('canvas')
@@ -651,8 +765,8 @@ function createSnapshotSampler(): ((x: number, y: number) => string) | null {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) return null
   const scale = computeExportScale(getOverlaySize(), {
-    width: ocrSnapshot.naturalWidth,
-    height: ocrSnapshot.naturalHeight
+    width: ocrSnapshot.width,
+    height: ocrSnapshot.height
   })
   ctx.drawImage(
     ocrSnapshot,
@@ -1232,7 +1346,24 @@ function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
   renderOcrTip()
   ocrSnapshot.dataset.sessionId = String(payload.sessionId)
   ocrSnapshot.dataset.loadToken = String(loadToken)
-  ocrSnapshot.src = payload.imageDataUrl
+  // Windows GDI 直采路径直接贴原始像素，同步完成，不需要等解码回调。
+  if (payload.pixels) {
+    // 清掉可能残留的编码图待解码标记，避免旧图片的 load 回调把上一轮画面重绘上来。
+    ocrSnapshotSourcePending = false
+    if (applyRawOcrSnapshot(payload, payload.sessionId, loadToken)) {
+      handleOcrSnapshotLoad()
+    } else {
+      handleOcrSnapshotError()
+    }
+    return
+  }
+  if (!payload.imageDataUrl) {
+    handleOcrSnapshotError()
+    return
+  }
+  // 回退路径与 macOS/Linux 仍是 PNG data URL，交给 <img> 解码后再贴到画布。
+  ocrSnapshotSourcePending = true
+  ocrSnapshotSource.src = payload.imageDataUrl
 }
 
 /**
@@ -1255,6 +1386,21 @@ function handleOcrSelectionFailed(payload: OcrSelectionFailedPayload): void {
 function handleOcrSnapshotLoad(): void {
   if (!ocrMode || Number(ocrSnapshot.dataset.sessionId) !== currentOcrSessionId ||
       Number(ocrSnapshot.dataset.loadToken) !== ocrSnapshotLoadToken) return
+  // 编码图路径：把解码完成的图片贴到快照画布，保证后续采样与导出统一读取画布。
+  if (ocrSnapshotSourcePending && ocrSnapshotSource.naturalWidth > 0) {
+    ocrSnapshotSourcePending = false
+    ocrSnapshot.width = ocrSnapshotSource.naturalWidth
+    ocrSnapshot.height = ocrSnapshotSource.naturalHeight
+    const ctx = ocrSnapshot.getContext('2d', { alpha: false })
+    if (!ctx) return
+    ctx.drawImage(ocrSnapshotSource, 0, 0)
+    // 编码图路径同样先贴图再显示画布，避免解码期间以黑底上屏。
+    ocrSnapshot.hidden = false
+  }
+  // 注意：这里不能用 hasOcrSnapshotImage() 做守卫。该函数要求状态已经是 ready，
+  // 而本函数正是把状态从 loading 翻到 ready 的地方，先判断会形成死锁，
+  // 导致编码图与原始像素两条路径都无法就绪。改为直接校验画布是否已有像素。
+  if (ocrSnapshot.width <= 0 || ocrSnapshot.height <= 0) return
   ocrSnapshotState = 'ready'
   updateOcrImageActionAvailability()
   renderOcrTip()
@@ -1273,6 +1419,7 @@ function handleOcrSnapshotLoad(): void {
 function handleOcrSnapshotError(): void {
   if (!ocrMode || Number(ocrSnapshot.dataset.sessionId) !== currentOcrSessionId ||
       Number(ocrSnapshot.dataset.loadToken) !== ocrSnapshotLoadToken) return
+  ocrSnapshotSourcePending = false
   ocrSnapshotState = 'error'
   updateOcrImageActionAvailability()
   renderOcrTip()
@@ -1327,12 +1474,19 @@ function resetOcrSessionUi(): void {
   pendingScreenshotRequestId = null
   screenshotActionPending = null
   snapshotSampler = null
+  // 回到 loading 态：画布已被清空，若仍停留在 ready，动作按钮会短暂可用并读取空白像素。
+  ocrSnapshotState = 'loading'
+  // 复用窗口可能残留上一轮的关闭淡出标记：先禁用过渡再清除，避免下一轮显示时
+  // 从半透明状态淡入。微信截图按下快捷键就是直接出现遮罩，没有任何过渡动画。
+  ocrOverlay.style.transition = 'none'
   ocrOverlay.classList.remove('closing')
+  void ocrOverlay.offsetWidth
+  ocrOverlay.style.transition = ''
   ocrOverlay.hidden = true
   ocrToolbar.hidden = true
   renderOcrPanel('hidden')
   hideOcrTooltip()
-  ocrSnapshot.removeAttribute('src')
+  clearOcrSnapshotCanvas()
   ocrSnapshot.removeAttribute('data-session-id')
   ocrSnapshot.removeAttribute('data-load-token')
   ocrPanelUserSize = null
@@ -1621,8 +1775,9 @@ ocrTextInput.addEventListener('input', resizeTextInput)
 ocrTextInput.addEventListener('blur', handleTextInputBlur)
 ocrTextInput.addEventListener('pointerdown', (event) => event.stopPropagation())
 ocrTextInput.addEventListener('mousedown', (event) => event.stopPropagation())
-ocrSnapshot.addEventListener('load', handleOcrSnapshotLoad)
-ocrSnapshot.addEventListener('error', handleOcrSnapshotError)
+// 快照画布不会触发 load/error，解码回调必须绑定在临时 Image 上。
+ocrSnapshotSource.addEventListener('load', handleOcrSnapshotLoad)
+ocrSnapshotSource.addEventListener('error', handleOcrSnapshotError)
 window.addEventListener('mouseup', handleOcrMouseUp)
 window.addEventListener('keydown', handleKeyDown)
 ocrOverlay.addEventListener('mouseover', handleOcrTooltipHover)

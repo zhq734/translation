@@ -23,6 +23,8 @@ import type {
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
   ScreenshotAnnotatedExportRequest,
+  ScreenshotExportImageRequest,
+  ScreenshotExportImageResult,
   ScreenshotOcrRecognizeResult,
   WebReaderState,
   WebTranslationExtractionPayload,
@@ -381,6 +383,17 @@ const api: Api = {
    */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest) {
     ipcRenderer.send('ocr-selection:save-annotated-image', request)
+  },
+  /**
+   * 请求主进程按当前选区返回原始分辨率 PNG，供带标注导出合成底图。
+   * @param request 原图导出请求负载。
+   * @returns 原始分辨率选区 PNG data URL。
+   * @author zhenghq
+   */
+  requestOcrSelectionExportImage(
+    request: ScreenshotExportImageRequest
+  ): Promise<ScreenshotExportImageResult> {
+    return ipcRenderer.invoke('ocr-selection:export-image', request)
   },
   /**
    * 订阅截图文字识别结果事件。

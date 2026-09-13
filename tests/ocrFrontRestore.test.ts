@@ -174,13 +174,13 @@ test('框选提交时 macOS 先显示识别弹窗再收起覆盖窗口', () => {
 
   assert.match(
     submitSource,
-    /if \(isMac\) showLoadingPopup\(\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
+    /if \(isMac\) showLoadingPopup\([^)]*\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
     'macOS 必须先显示识别弹窗接管 key window，再收起覆盖窗口'
   )
   // Windows 先收起覆盖窗口能立即给出反馈，采集完成后再显示弹窗，必须保持原顺序。
   assert.match(
     submitSource,
-    /if \(!isMac\) showLoadingPopup\(\)/u,
+    /if \(!isMac\) showLoadingPopup\([^)]*\)/u,
     'Windows 必须保持采集完成后再显示弹窗'
   )
   // 选区无效时既没有弹窗也不需要交还，但覆盖窗口仍必须收起。

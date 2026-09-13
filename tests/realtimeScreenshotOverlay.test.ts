@@ -47,6 +47,85 @@ test('openOcrSelection 应避免 Windows 与 macOS 覆盖层参与屏幕采集',
 })
 
 /**
+ * 校验屏幕读取完成后立即显示覆盖窗口，预览图编码不再阻塞用户开始拖拽。
+ *
+ * 4K 整屏 toDataURL 实测约 70-170ms，属于「按下快捷键到可以拖拽」的关键路径。
+ * 像素读取完成后显示窗口不会再被采进快照，因此编码可以安全地挪到显示之后，
+ * 让用户更早看到遮罩并开始框选。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('屏幕读取完成后应先显示覆盖窗口再编码预览图', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  const captureIndex = source.indexOf('captureOcrPreviewSnapshot(')
+  const encodeIndex = source.indexOf('.buildPreviewPayload()')
+  const showIndex = source.lastIndexOf('win.show()')
+  assert.ok(captureIndex >= 0, '应调用屏幕读取入口')
+  assert.ok(encodeIndex >= 0, '应调用预览负载构建入口')
+  assert.ok(showIndex > captureIndex, '屏幕读取必须先于显示，避免把自身遮罩采进快照')
+  assert.ok(showIndex < encodeIndex, '预览负载构建必须晚于显示，避免阻塞用户开始拖拽')
+})
+
+/**
+ * 校验 Renderer 会话清理与屏幕采集并行执行。
+ *
+ * 旧实现先 await ready 回执、再采集屏幕，把一次 IPC 往返加整轮 UI 重置串在
+ * 「按下快捷键 → 可以拖拽」的关键路径上。begin 只影响隐藏窗口的 Renderer 状态，
+ * 不会改变屏幕内容，因此可以先把 begin 发出去，紧接着开始采集，
+ * 采集完成后再汇合 ready 回执、确认旧会话已清理干净才显示覆盖窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 屏幕采集应与 Renderer 会话清理并行，只在显示前等待 ready', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  const beginIndex = source.indexOf("'ocr-selection:begin'")
+  const captureIndex = source.indexOf('captureOcrPreviewSnapshot(')
+  const joinIndex = source.indexOf('Promise.all([')
+  const showIndex = source.lastIndexOf('win.show()')
+  assert.ok(beginIndex >= 0, '应发送 begin 事件')
+  assert.ok(captureIndex >= 0, '应采集预览快照')
+  assert.ok(joinIndex >= 0, '应汇合 Renderer ready 回执与屏幕采集')
+  assert.ok(showIndex >= 0, '应显示覆盖窗口')
+  assert.ok(beginIndex < captureIndex, 'begin 必须先发出，让 Renderer 开始清理')
+  // Windows/macOS 不串行等待：begin 发出后立即开始采集，ready 回执与采集结果在同一处汇合。
+  // 仅 Linux 的「先显示后采集」分支保留串行等待，因此把 await rendererReadyPromise
+  // 限定在 showBeforeCapture 分支内校验，避免把平台分支误判成热路径串行。
+  assert.match(
+    source,
+    /if \(showBeforeCapture\) \{[\s\S]*?await rendererReadyPromise[\s\S]*?\n    \}\n    const capturePromise = captureOcrPreviewSnapshot\(/u,
+    '串行等待 ready 只允许出现在 Linux 先显示分支内'
+  )
+  assert.match(
+    source,
+    /const capturePromise = captureOcrPreviewSnapshot\(display\.bounds\)\n[\s\S]*?Promise\.all\(/u,
+    'Windows/macOS 的采集必须与 ready 回执并行汇合'
+  )
+  assert.ok(joinIndex > captureIndex, '采集与 ready 回执应在同一处汇合')
+  assert.ok(joinIndex < showIndex, '显示覆盖窗口前必须确认 Renderer 已清理完成')
+})
+
+/**
+ * 校验覆盖窗口显示后先让出一次事件循环，再做同步的整屏预览图编码。
+ *
+ * win.show() 只是把显示请求投递给 Windows，窗口真正上屏与合成依赖主进程消息循环继续运转。
+ * 紧接着同步执行 toDataURL 会阻塞消息循环，窗口反而要等编码结束才可见，
+ * 所以必须先让出一次事件循环让窗口完成上屏，再编码预览图。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('覆盖窗口显示后应先让出事件循环再编码预览图', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  const showIndex = source.lastIndexOf('win.show()')
+  const yieldIndex = source.indexOf('await yieldToEventLoop()')
+  const encodeIndex = source.indexOf('.buildPreviewPayload()')
+  assert.ok(showIndex >= 0, '应显示覆盖窗口')
+  assert.ok(yieldIndex >= 0, '显示后应让出一次事件循环')
+  assert.ok(encodeIndex >= 0, '应构建预览负载')
+  assert.ok(showIndex < yieldIndex, '必须先显示覆盖窗口')
+  assert.ok(yieldIndex < encodeIndex, '构建预览负载前必须让出事件循环，保证窗口先完成上屏')
+})
+
+/**
  * 校验覆盖窗口完成加载后才允许显示、聚焦并开始 OCR 会话，避免空白窗口闪现。
  * @returns 无返回值。
  * @author zhenghq
@@ -61,6 +140,55 @@ test('OCR 覆盖窗口 ready 后才能 show、focus 和发送 begin', () => {
   assert.ok(showIndex > readyIndex, '窗口 ready 前不得显示覆盖窗口')
   assert.ok(focusIndex > readyIndex, '窗口 ready 前不得聚焦覆盖窗口')
   assert.ok(beginIndex > readyIndex, '窗口 ready 前不得发送 begin')
+})
+
+/**
+ * 校验 OCR 覆盖窗口显式声明全透明原生背景色，避免 Windows 首帧闪黑框。
+ *
+ * Windows 上透明窗口若不声明原生背景色，上屏首帧会按默认背景色合成，
+ * 用户看到的就是窗口出现瞬间整屏闪一下大黑框；翻译弹窗早已按同一约定设置了
+ * backgroundColor: '#00000000'，覆盖窗口必须保持一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口应显式声明全透明原生背景色', () => {
+  const windowSource = sliceFunction(main, 'function getOcrSelectionWindow(')
+  assert.match(windowSource, /transparent:\s*true/u, '覆盖窗口必须保持透明')
+  assert.match(
+    windowSource,
+    /backgroundColor:\s*'#00000000'/u,
+    '覆盖窗口必须显式声明全透明原生背景色，否则 Windows 上屏首帧会按默认背景色合成出黑框'
+  )
+})
+
+/**
+ * 校验覆盖层从窗口上屏第一帧起就是半透明遮罩，没有额外的过渡动画。
+ *
+ * 微信截图按下快捷键就是直接出现遮罩，不做淡入或缩放。此前的整屏黑块来自空快照画布
+ * （`alpha: false` 未绘制时合成纯黑），与遮罩本身无关；把遮罩延迟到快照就绪反而会
+ * 让采集中先露出透明桌面、再「闪」出一层遮罩，与微信观感不一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖层应在窗口上屏时就铺满遮罩且无入场过渡', () => {
+  assert.match(
+    selectionCss,
+    /\.ocr-overlay\s*\{[^}]*background:\s*var\(--ocr-overlay-bg\);/su,
+    '覆盖层应在第一帧就启用半透明遮罩，与微信截图一致'
+  )
+  assert.doesNotMatch(selectionCss, /snapshot-ready/u, '不应保留延迟启用遮罩的中间态')
+
+  const resetSource = sliceFunction(selectionRenderer, 'function resetOcrSessionUi(')
+  assert.match(
+    resetSource,
+    /ocrOverlay\.style\.transition = 'none'/u,
+    '复用窗口重置时必须先禁用过渡，避免上一轮的关闭淡出让新一轮遮罩淡入'
+  )
+  assert.match(
+    resetSource,
+    /ocrOverlay\.classList\.remove\('closing'\)/u,
+    '复用窗口重置时必须清掉关闭淡出标记'
+  )
 })
 
 /**
@@ -179,6 +307,22 @@ test('预览采集应记录分阶段耗时', () => {
 })
 
 /**
+ * 校验预览日志记录显示前的固定开销拆分，便于继续定位剩余延迟。
+ *
+ * 用户追问「1.5 秒还能不能再快」时，只靠 hotkeyToShowMs / captureMs 两个数字
+ * 无法区分 IPC 往返、窗口合成、GDI 采集各占多少。这里要求把按下快捷键到开始采集
+ * 之间的准备耗时与 Renderer ready 等待耗时分开记录，避免后续优化继续靠猜。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('预览日志应拆分显示前的准备与 ready 等待耗时', () => {
+  const source = sliceFunction(main, 'async function openOcrSelection')
+  assert.match(source, /const prepareMs = Date\.now\(\) - hotkeyAt/u)
+  assert.match(source, /rendererReadyMs/u)
+  assert.match(source, /prepareMs/u)
+})
+
+/**
  * 校验主进程快照持有 nativeImage，裁剪不再解码整屏 PNG。
  * @returns 无返回值。
  * @author zhenghq
@@ -247,12 +391,14 @@ test('Renderer 应区分采集中态与快照就绪态', () => {
   assert.match(selectionRenderer, /window\.api\.onOcrSelectionFailed\(/u)
 
   const enterSource = sliceFunction(selectionRenderer, 'function enterOcrSelectionMode(')
-  // 进入采集中态时不得触碰快照 src，遮罩必须立刻可见
+  // 进入采集中态时不得触碰快照画面，遮罩必须立刻可见
   assert.match(enterSource, /ocrOverlay\.hidden = false/u)
-  assert.doesNotMatch(enterSource, /ocrSnapshot\.src =/u)
+  assert.doesNotMatch(enterSource, /drawOcrSnapshot/u)
 
   const applySource = sliceFunction(selectionRenderer, 'function applyOcrSnapshot(')
-  assert.match(applySource, /ocrSnapshot\.src = payload\.imageDataUrl/u)
+  // 快照可能是编码后的 data URL，也可能是 Windows 原始像素，两条路径都要支持
+  assert.match(applySource, /payload\.pixels/u, '应支持原始像素直传')
+  assert.match(applySource, /payload\.imageDataUrl/u, '应兼容编码图路径')
   // 同会话快照到达后必须保留采集中已经拖出的选区（跨会话由 enterOcrSelectionMode 清理）
   assert.doesNotMatch(applySource, /currentRect\s*=\s*null/u)
 })
@@ -360,6 +506,10 @@ test('应用就绪后应空闲预创建覆盖窗口并预热 GDI', () => {
   assert.match(source, /setTimeout|setImmediate/u)
   assert.match(source, /getOcrSelectionWindow\(\)/u)
   assert.match(source, /warmUpWindowsGdiCapture\(process\.platform\)/u)
+  // 慢回退路径的 helper exe 编译同样必须前移：否则首次回退采集会在热路径上
+  // 现场调用 csc 编译，额外增加 1~3 秒，用户观感仍是「按了没反应」。
+  assert.match(source, /prewarmWindowsCaptureHelper\(/u)
+  assert.match(main, /prewarmWindowsCaptureHelper/u)
   assert.match(main, /prewarmScreenshotRuntime\(\)/u)
 })
 
@@ -439,8 +589,9 @@ test('OCR 会话重置应清理选区、面板、标注、图片、按钮和延�
     /currentRect = null/u,
     /pendingScreenshotRequestId = null/u,
     /screenshotActionPending = null/u,
+    /ocrSnapshotState = 'loading'/u,
     /resetAnnotationSession\(\)/u,
-    /ocrSnapshot\.removeAttribute\('src'\)/u,
+    /clearOcrSnapshotCanvas\(\)/u,
     /ocrOverlay\.classList\.remove\('closing'\)/u,
     /updateOcrImageActionAvailability\(\)/u
   ]) {
@@ -455,13 +606,17 @@ test('OCR 会话重置应清理选区、面板、标注、图片、按钮和延�
  * @returns 无返回值。
  * @author zhenghq
  */
-test('旧背景图 load/error 回调不得更新新截图会话', () => {
-  for (const signature of ['function handleOcrSnapshotLoad(', 'function handleOcrSnapshotError(']) {
-    const source = sliceFunction(selectionRenderer, signature)
-    assert.match(source, /ocrSnapshot\.dataset\.sessionId/u)
-    assert.match(source, /ocrSnapshot\.dataset\.loadToken/u)
-    assert.match(source, /ocrSnapshotLoadToken/u)
-  }
+test('旧快照异步回调不得更新新截图会话', () => {
+  // 编码图路径通过 Image load/error 回调落地，必须同时受会话 ID 与加载令牌保护。
+  const loadSource = sliceFunction(selectionRenderer, 'function handleOcrSnapshotLoad(')
+  assert.match(loadSource, /ocrSnapshot\.dataset\.sessionId/u)
+  assert.match(loadSource, /ocrSnapshot\.dataset\.loadToken/u)
+  assert.match(loadSource, /ocrSnapshotLoadToken/u)
+
+  // 原始像素直传是同步落地路径，同样必须在写入画布前校验会话与令牌。
+  const rawSource = sliceFunction(selectionRenderer, 'function applyRawOcrSnapshot(')
+  assert.match(rawSource, /sessionId/u, '原始像素路径应校验会话')
+  assert.match(rawSource, /ocrSnapshotLoadToken/u, '原始像素路径应校验加载令牌')
 })
 
 /**
@@ -499,4 +654,70 @@ test('取消截图应等清空画面上屏后再通知主进程隐藏窗口', ()
   assert.match(deferSource, /setTimeout\(/u)
   // 兜底与正常路径只能执行一次，避免重复发送取消 IPC。
   assert.match(deferSource, /if \(done\) return/u)
+})
+
+/**
+ * 校验 OCR 覆盖窗口在创建时就使用覆盖全部显示器的边界，而不是 Electron 默认的 800×600。
+ *
+ * Windows 上窗口会先按创建尺寸布局渲染进程内容，随后 `setBounds` 才撑到全屏；
+ * 空快照画布在 `alpha: false` 下合成出的纯黑位图会随这次尺寸变化一起放大，
+ * 用户看到的就是「一个放大的黑块动作一闪而过」。创建即全屏后不再存在这次尺寸变化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 覆盖窗口创建时就应使用全屏边界，避免上屏时由小放大', () => {
+  const windowSource = sliceFunction(main, 'function getOcrSelectionWindow(')
+  assert.match(
+    windowSource,
+    /\.\.\.getOcrSelectionWindowBounds\(\)/u,
+    '覆盖窗口必须在创建时就铺满显示器，避免默认 800×600 被撑到全屏时出现放大动作'
+  )
+  assert.match(
+    main,
+    /function getOcrSelectionWindowBounds\(\): CaptureBounds/u,
+    '必须保留显示器联合边界计算函数供窗口创建使用'
+  )
+
+  const openSource = sliceFunction(main, 'async function openOcrSelection')
+  assert.match(openSource, /win\.setBounds\(display\.bounds\)/u, '仍应按光标所在显示器对齐边界')
+  assert.match(openSource, /const currentBounds = win\.getBounds\(\)/u, '对齐前应先读取当前窗口边界')
+  assert.match(
+    openSource,
+    /if \([\s\S]{0,400}?\) \{\s*win\.setBounds\(display\.bounds\)/u,
+    '边界与目标显示器一致时应跳过 setBounds，避免多余的尺寸变化'
+  )
+})
+
+/**
+ * 校验快照画布在像素写入前保持隐藏。
+ *
+ * `alpha: false` 的 2D 画布即使一帧都没绘制，合成结果也是不透明纯黑；
+ * 覆盖窗口显示到原始像素贴图之间还有一次事件循环让出与 IPC 传输，
+ * 这段时间画布会以整屏黑块上屏，随后又随窗口尺寸变化被放大。
+ * 画布必须等像素真正写入后才显示，视觉上与微信截图一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('快照画布应在像素写入前保持隐藏，避免空画布合成整屏黑块', () => {
+  const clearSource = sliceFunction(selectionRenderer, 'function clearOcrSnapshotCanvas(')
+  assert.match(
+    clearSource,
+    /ocrSnapshot\.hidden\s*=\s*true/u,
+    '清空画布时必须同时隐藏画布元素，避免 0×0 画布被拉伸成整屏黑块'
+  )
+
+  const rawSource = sliceFunction(selectionRenderer, 'function applyRawOcrSnapshot(')
+  const rawPutIndex = rawSource.indexOf('putImageData(')
+  const rawShowIndex = rawSource.indexOf('ocrSnapshot.hidden = false')
+  assert.ok(rawShowIndex >= 0, '原始像素路径写入像素后必须显示画布')
+  assert.ok(rawPutIndex >= 0 && rawShowIndex > rawPutIndex, '必须先写入像素再显示画布')
+
+  const loadSource = sliceFunction(selectionRenderer, 'function handleOcrSnapshotLoad(')
+  assert.match(loadSource, /ocrSnapshot\.hidden = false/u, '编码图路径贴图完成后必须显示画布')
+
+  assert.match(
+    selectionCss,
+    /\.ocr-snapshot\[hidden\]\s*\{[^}]*display:\s*none;/su,
+    '隐藏态必须真正不参与布局与合成，避免黑块上屏'
+  )
 })

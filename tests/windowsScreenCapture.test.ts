@@ -5,6 +5,8 @@ import {
   buildWindowsCaptureCommand,
   buildHelperExeCompileCommand,
   captureWindowsRegionAsPng,
+  prewarmWindowsCaptureHelper,
+  resetHelperExeVerificationCacheForTests,
   type WindowsScreenCaptureDeps
 } from '../src/main/windowsScreenCapture.ts'
 
@@ -20,6 +22,9 @@ const HELPER_EXE = 'C:\\Temp\\selection-translator-ocr-cache\\ScreenCaptureHelpe
  * @author zhenghq
  */
 function makeDeps(overrides: Partial<WindowsScreenCaptureDeps> = {}): WindowsScreenCaptureDeps {
+  // 存在性校验缓存是模块级状态，测试之间必须隔离，避免前一个用例的缓存
+  // 让后一个用例的「应触发编译」路径被跳过。
+  resetHelperExeVerificationCacheForTests()
   return {
     platform: 'win32',
     execFile: async () => ({ stdout: '', stderr: '' }),
@@ -318,4 +323,149 @@ test('非 Windows 平台调用应拒绝执行', async () => {
     ),
     (error: unknown) => error instanceof ScreenCaptureError && error.code === 'no-source'
   )
+})
+
+/**
+ * 校验空闲预热会提前编译 helper exe：首次回退采集不再现场触发 1~3 秒的 csc 编译。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('空闲预热应提前编译 helper exe 并缓存到磁盘', async () => {
+  const execFileCalls: Array<{ executable: string; args: string[] }> = []
+  const result = await prewarmWindowsCaptureHelper(
+    makeDeps({
+      // 预热阶段 exe 尚不存在：首次 spawn 抛 ENOENT，触发编译。
+      spawn: async () => {
+        throw new Error('ENOENT')
+      },
+      execFile: async (executable, args) => {
+        execFileCalls.push({ executable, args })
+        return { stdout: '', stderr: '' }
+      }
+    })
+  )
+  assert.equal(result, true)
+  assert.equal(execFileCalls.length, 1)
+  const script = execFileCalls[0].args[execFileCalls[0].args.indexOf('-Command') + 1]
+  assert.match(script, /-OutputAssembly/u)
+  assert.match(script, /ScreenCaptureHelper\.exe/u)
+})
+
+/**
+ * 校验 helper exe 已缓存时预热不重复编译，且非 Windows 平台直接跳过。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('预热应跳过已缓存的 helper exe 与非 Windows 平台', async () => {
+  let compileCount = 0
+  const cached = await prewarmWindowsCaptureHelper(
+    makeDeps({
+      // exitCode 1 表示 exe 存在但参数不足，即缓存命中。
+      spawn: async () => ({ exitCode: 1, stdout: '', stderr: '' }),
+      execFile: async () => {
+        compileCount += 1
+        return { stdout: '', stderr: '' }
+      }
+    })
+  )
+  assert.equal(cached, true)
+  assert.equal(compileCount, 0)
+
+  const skipped = await prewarmWindowsCaptureHelper(
+    makeDeps({
+      platform: 'linux',
+      spawn: async () => {
+        throw new Error('不应被调用')
+      }
+    })
+  )
+  assert.equal(skipped, false)
+})
+
+/**
+ * 校验预热编译失败不抛异常：预热只是优化，不能影响应用启动。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('预热编译失败应静默返回 false', async () => {
+  const result = await prewarmWindowsCaptureHelper(
+    makeDeps({
+      spawn: async () => {
+        throw new Error('ENOENT')
+      },
+      execFile: async () => {
+        throw new Error('csc 编译失败')
+      }
+    })
+  )
+  assert.equal(result, false)
+})
+
+/**
+ * 校验预热与首次采集并发触发时只编译一次 helper exe。
+ * csc 编译需要 1~3 秒，重复编译会互相争抢 CPU，反而拖慢首次采集。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('预热与采集并发时 helper exe 只编译一次', async () => {
+  let compileCount = 0
+  let releaseCompile: (() => void) | null = null
+  const compileGate = new Promise<void>((resolve) => {
+    releaseCompile = resolve
+  })
+  const deps = makeDeps({
+    // 无参数调用是「校验 exe 是否存在」：抛 ENOENT 表示尚未编译；
+    // 带坐标参数的调用是真实截图，编译完成后应当成功。
+    spawn: async (_executable, args) => {
+      if (args.length === 0) throw new Error('ENOENT')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    },
+    execFile: async () => {
+      compileCount += 1
+      await compileGate
+      return { stdout: '', stderr: '' }
+    }
+  })
+
+  const first = captureWindowsRegionAsPng({ x: 0, y: 0, width: 8, height: 8 }, 1, deps)
+  const second = prewarmWindowsCaptureHelper(deps)
+  // 让两个调用都进入编译等待，再放行，模拟并发窗口。
+  await Promise.resolve()
+  releaseCompile?.()
+  const [, warmed] = await Promise.all([first, second])
+  assert.equal(compileCount, 1, '并发请求必须合并为一次编译')
+  assert.equal(warmed, true)
+})
+
+/**
+ * 校验同一进程内 helper exe 的存在性校验只做一次。
+ *
+ * 旧实现每次回退采集都先 spawn 一次 exe（无参数）确认可执行，Windows 上
+ * 一次进程创建约几十毫秒，却完全落在「按下快捷键 → 可拖拽」的关键路径上。
+ * 预热成功后即可确认 exe 可用，后续采集直接 spawn 真实参数，跳过重复校验。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('helper exe 存在性校验在同一进程内只做一次', async () => {
+  resetHelperExeVerificationCacheForTests()
+  let verifyCount = 0
+  let captureCount = 0
+  const deps = makeDeps({
+    spawn: async (_executable, args) => {
+      if (args.length === 0) {
+        verifyCount += 1
+        return { exitCode: 1, stdout: '', stderr: '' }
+      }
+      captureCount += 1
+      return { exitCode: 0, stdout: '', stderr: '' }
+    },
+    readFile: async () => Buffer.from('png')
+  })
+
+  assert.equal(await prewarmWindowsCaptureHelper(deps), true)
+  await captureWindowsRegionAsPng({ x: 0, y: 0, width: 8, height: 8 }, 1, deps)
+  await captureWindowsRegionAsPng({ x: 0, y: 0, width: 8, height: 8 }, 1, deps)
+
+  assert.equal(verifyCount, 1, '存在性校验不得每次采集重复执行')
+  assert.equal(captureCount, 2, '每次采集仍必须真正执行 helper exe')
 })

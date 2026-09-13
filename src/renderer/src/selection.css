@@ -48,6 +48,8 @@ body {
   justify-content: center;
   width: 100%;
   height: 100%;
+  /* 窗口一上屏就是半透明遮罩，与微信截图一致：没有淡入、没有缩放，也没有其它过渡动画。
+     之前出现的整屏黑块来自空快照画布（alpha:false 未绘制时合成纯黑），不是这层遮罩。 */
   background: var(--ocr-overlay-bg);
   cursor: crosshair;
   user-select: none;
@@ -59,14 +61,19 @@ body {
   opacity: 0.12;
 }
 
+/* 快照画布：原始像素按显示器物理尺寸等比铺满覆盖层，与 <img> 的 object-fit: fill 等价。 */
 .ocr-snapshot {
   position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: fill;
   pointer-events: none;
   user-select: none;
+}
+
+/* 快照未写入像素前彻底退出合成：alpha:false 画布的空内容会合成成不透明纯黑。 */
+.ocr-snapshot[hidden] {
+  display: none;
 }
 
 .ocr-annotation-canvas,

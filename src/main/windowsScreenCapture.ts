@@ -64,6 +64,29 @@ const HELPER_DLL_NAME = 'ScreenCaptureDpiHelper.dll'
 /** 预编译 helper exe 文件名，缓存后直接 spawn 以跳过 PowerShell 启动开销。 */
 const HELPER_EXE_NAME = 'ScreenCaptureHelper.exe'
 
+/** 进行中的 helper exe 编译任务，按缓存路径合并并发请求避免重复编译。 */
+const helperExeCompileTasks = new Map<string, Promise<string | null>>()
+
+/**
+ * 已确认存在且可执行的 helper exe 路径。
+ *
+ * 旧实现每次回退采集都要先无参数 spawn 一次 exe 做存在性校验，Windows 上一次
+ * 进程创建约几十毫秒，却完全落在「按下快捷键 → 可拖拽」的关键路径上。
+ * 预热或首次校验成功后记入本集合，后续采集直接带参数 spawn 真实截图。
+ * 若真实采集发现 exe 失效（被清理/拦截），会移除记录并在下次重新校验与编译。
+ */
+const verifiedHelperExePaths = new Set<string>()
+
+/**
+ * 清空 helper exe 存在性校验缓存，仅供测试使用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetHelperExeVerificationCacheForTests(): void {
+  verifiedHelperExePaths.clear()
+  helperExeCompileTasks.clear()
+}
+
 /**
  * DPI helper C# 源码：声明 SetProcessDpiAwarenessContext 与 SetProcessDPIAware 两个
  * user32 P/Invoke，仅在首次采集且缓存缺失/损坏时现场编译一次并落盘。
@@ -269,11 +292,40 @@ export async function ensureHelperExe(
   deps: WindowsScreenCaptureDeps,
   helperExePath: string
 ): Promise<string | null> {
+  // 空闲预热与用户首次截图可能几乎同时触发编译（csc 编译本身要 1~3 秒）。
+  // 这里按目标路径合并并发请求，避免重复编译互相争抢 CPU、反而拖慢首次采集。
+  const inFlight = helperExeCompileTasks.get(helperExePath)
+  if (inFlight) return inFlight
+  const task = buildHelperExe(deps, helperExePath)
+  helperExeCompileTasks.set(helperExePath, task)
+  try {
+    return await task
+  } finally {
+    helperExeCompileTasks.delete(helperExePath)
+  }
+}
+
+/**
+ * 确保 helper exe 可用：缓存命中直接返回，缺失时编译落盘。
+ * 调用方负责并发去重，这里只关心单次编译逻辑。
+ * @param deps 屏幕采集依赖。
+ * @param helperExePath exe 缓存路径。
+ * @returns exe 路径（成功）或 null（编译失败）。
+ * @author zhenghq
+ */
+async function buildHelperExe(
+  deps: WindowsScreenCaptureDeps,
+  helperExePath: string
+): Promise<string | null> {
+  // 本进程内已经确认过该 exe 可执行：跳过无参数校验进程，直接返回，
+  // 避免每次回退采集都在热路径上多付一次进程创建开销。
+  if (verifiedHelperExePaths.has(helperExePath)) return helperExePath
   // 尝试 spawn exe 验证其存在且可执行（exitCode 1 表示参数不足但 exe 可运行）
   try {
     const result = await deps.spawn(helperExePath, [], { timeout: 3000, windowsHide: true })
     // exe 存在且可执行（exitCode 1 = 参数不足，说明 exe 本身没问题）
     if (result.exitCode === 1 || result.exitCode === 0) {
+      verifiedHelperExePaths.add(helperExePath)
       return helperExePath
     }
   } catch {
@@ -286,9 +338,33 @@ export async function ensureHelperExe(
       timeout: 10000,
       windowsHide: true
     })
+    verifiedHelperExePaths.add(helperExePath)
     return helperExePath
   } catch {
     return null
+  }
+}
+
+/**
+ * 空闲预热 Windows 采集 helper exe：提前完成 PowerShell 编译并落盘缓存。
+ *
+ * helper exe 缺失时，第一次回退采集要在截图热路径上现场调用 csc 编译，
+ * 实测会额外增加 1~3 秒，用户观感就是「按下快捷键后长时间没反应」。
+ * 把这段编译挪到应用启动空闲期，首次回退采集即可直接 spawn 缓存 exe。
+ * 预热只是优化：任何失败都静默返回 false，不影响启动，真实采集仍会按需重试编译。
+ * @param deps 屏幕采集依赖（测试可注入）。
+ * @returns 预热后 helper exe 可用时返回 true，否则返回 false。
+ * @author zhenghq
+ */
+export async function prewarmWindowsCaptureHelper(
+  deps: WindowsScreenCaptureDeps
+): Promise<boolean> {
+  if (deps.platform !== 'win32') return false
+  try {
+    const helperExePath = makeHelperExePath(deps.tmpDir())
+    return (await ensureHelperExe(deps, helperExePath)) !== null
+  } catch {
+    return false
   }
 }
 
@@ -326,6 +402,9 @@ export async function captureWindowsRegionAsPng(
       const exeArgs = [String(x), String(y), String(width), String(height), path]
       const result = await deps.spawn(exePath, exeArgs, { timeout: 5000, windowsHide: true })
       if (result.exitCode !== 0) {
+        // exe 被清理、被安全软件拦截或缓存损坏：清掉存在性校验记录，
+        // 下次采集重新校验并按需编译，避免一直复用失效缓存。
+        verifiedHelperExePaths.delete(exePath)
         throw new Error(`helper exe 退出码 ${result.exitCode}: ${result.stderr}`)
       }
       return await deps.readFile(path)

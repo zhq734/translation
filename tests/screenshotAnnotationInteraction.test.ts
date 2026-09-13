@@ -354,8 +354,9 @@ test('Renderer 标注移动应检查绘制草稿状态', () => {
  * @author zhenghq
  */
 test('Renderer 应处理截图加载状态与导出异常', () => {
-  assert.match(selectionRenderer, /ocrSnapshot\.addEventListener\('load', handleOcrSnapshotLoad\)/u)
-  assert.match(selectionRenderer, /ocrSnapshot\.addEventListener\('error', handleOcrSnapshotError\)/u)
+  // 快照画布不触发 load/error，解码事件由临时 Image 承载。
+  assert.match(selectionRenderer, /ocrSnapshotSource\.addEventListener\('load', handleOcrSnapshotLoad\)/u)
+  assert.match(selectionRenderer, /ocrSnapshotSource\.addEventListener\('error', handleOcrSnapshotError\)/u)
   assert.match(selectionRenderer, /ocrSnapshotState !== 'ready'/u)
   const copyStart = selectionRenderer.indexOf('function copyCurrentOcrSelectionImage')
   const copyEnd = selectionRenderer.indexOf('\n}', copyStart)

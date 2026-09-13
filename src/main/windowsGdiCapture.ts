@@ -147,15 +147,85 @@ let koffiModule: GdiCaptureFn | null = null
 /** koffi 加载失败错误信息。 */
 let koffiLoadError: string | null = null
 
+/** 上次 koffi 绑定失败的时间戳（毫秒）；为 0 表示当前没有待冷却的失败。 */
+let koffiLoadFailedAt = 0
+
+/** 可注入时钟，默认 Date.now，测试用它模拟冷却时间流逝。 */
+let koffiBindingClock: () => number = () => Date.now()
+
+/**
+ * koffi 绑定失败后的重试冷却时间（毫秒）。
+ *
+ * 绑定失败在旧实现里是进程内终态：只要启动预热时被杀毒软件拦截、或 DLL 被短暂占用，
+ * 整个会话的每一次截图都会永久退化到 1.5-3 秒的 PowerShell / helper exe 回退路径，
+ * 用户观感就是「按了快捷键要等 3 秒」。这里改为冷却后自动重试，让失败可以自愈；
+ * 冷却窗口本身仍能避免连续截图反复付出绑定失败的代价。
+ */
+export const KOFFI_BINDING_RETRY_INTERVAL_MS = 10_000
+
+/**
+ * 已经成功注册到 koffi 全局类型表的具名类型对象。
+ *
+ * koffi 的具名类型注册在进程级全局注册表里，无法反注册；绑定失败重试时
+ * 必须复用上一次已经注册成功的类型对象，否则会抛 "Duplicate type name"。
+ */
+const registeredKoffiTypes = new Map<string, unknown>()
+
+/** 上面这份类型缓存所属的 koffi 模块实例；实例变化时必须重新注册。 */
+let registeredKoffiModule: KoffiLike | null = null
+
+/**
+ * 覆盖 koffi 绑定使用的时钟，仅供测试使用。
+ * @param clock 时钟函数；传入 null 恢复默认的 Date.now。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setKoffiBindingClockForTests(clock: (() => number) | null): void {
+  koffiBindingClock = clock ?? (() => Date.now())
+}
+
+/**
+ * 幂等注册一个 koffi 具名类型。
+ *
+ * koffi 的具名类型进的是进程级全局注册表，重复注册同名类型会抛
+ * "Duplicate type name"。绑定失败重试时，上一轮已经注册成功的类型仍然留在注册表里，
+ * 若不加判断地重新注册，重试必然再次失败并重新落入终态降级。
+ * 因此这里按名字记忆注册结果，已注册过的直接跳过。
+ * 记忆以 koffi 模块实例为界：若重试拿到的是另一个实例（其类型表是空的），
+ * 必须为新实例重新注册，否则原型解析会报 Unknown or invalid type name。
+ * @param name 具名类型名。
+ * @param register 实际执行注册的工厂函数。
+ * @returns 注册得到的类型对象；已注册过时返回上次缓存的对象。
+ * @author zhenghq
+ */
+function registerKoffiTypeOnce(
+  koffi: KoffiLike,
+  name: string,
+  register: () => unknown
+): unknown {
+  if (registeredKoffiModule !== koffi) {
+    registeredKoffiTypes.clear()
+    registeredKoffiModule = koffi
+  }
+  if (registeredKoffiTypes.has(name)) return registeredKoffiTypes.get(name)
+  const registered = register()
+  registeredKoffiTypes.set(name, registered)
+  return registered
+}
+
 /**
  * 重置 koffi 绑定缓存，仅供测试使用。
- * 生产代码不调用：加载失败在进程内是终态，避免每次截图重复付出失败代价。
+ * 生产代码不调用：真实环境里 koffi 具名类型无法反注册，清空记忆会让重试重复注册并报错。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function resetKoffiBindingCacheForTests(): void {
   koffiModule = null
   koffiLoadError = null
+  koffiLoadFailedAt = 0
+  registeredKoffiTypes.clear()
+  registeredKoffiModule = null
+  koffiBindingClock = () => Date.now()
 }
 
 /**
@@ -185,14 +255,17 @@ export function buildBitmapInfo(width: number, height: number): Record<string, n
 /**
  * 惰性加载 koffi FFI 模块，返回 GDI 采集函数。
  * 首次调用时加载 koffi 并绑定 Win32 API；后续调用直接返回缓存的函数。
- * 加载失败时记录错误，后续调用不再重试（修复绑定后需重启进程才生效）。
+ * 加载失败后进入冷却窗口：冷却期内直接抛出上次的错误避免反复重试，
+ * 冷却结束后自动重新加载，让被拦截或短暂失败的绑定能够自愈。
  * @param loadKoffi koffi 模块加载器，默认 require('koffi')。
  * @returns GDI 采集函数。
  * @author zhenghq
  */
 export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
   if (koffiModule) return koffiModule
-  if (koffiLoadError) throw new Error(koffiLoadError)
+  if (koffiLoadError && koffiBindingClock() - koffiLoadFailedAt < KOFFI_BINDING_RETRY_INTERVAL_MS) {
+    throw new Error(koffiLoadError)
+  }
   try {
     const koffi = loadKoffi
       ? loadKoffi()
@@ -203,12 +276,18 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
 
     // ---- 类型注册 ----
     // 句柄注册为具名不透明指针；DWORD 必须显式 alias，koffi 不预置 Win32 别名。
-    koffi.pointer('HWND', koffi.opaque())
-    koffi.pointer('HDC', koffi.opaque())
-    koffi.pointer('HBITMAP', koffi.opaque())
-    koffi.pointer('HGDIOBJ', koffi.opaque())
-    koffi.alias('DWORD', 'uint32_t')
-    koffi.struct('BITMAPINFO', BITMAPINFO_FIELDS)
+    // 重试时这些类型已经在 koffi 全局注册表中，必须复用而不能重复注册。
+    registerKoffiTypeOnce(koffi, 'HWND', () => koffi.pointer('HWND', koffi.opaque()))
+    registerKoffiTypeOnce(koffi, 'HDC', () => koffi.pointer('HDC', koffi.opaque()))
+    registerKoffiTypeOnce(koffi, 'HBITMAP', () => koffi.pointer('HBITMAP', koffi.opaque()))
+    registerKoffiTypeOnce(koffi, 'HGDIOBJ', () => koffi.pointer('HGDIOBJ', koffi.opaque()))
+    registerKoffiTypeOnce(koffi, 'DWORD', () => koffi.alias('DWORD', 'uint32_t'))
+    registerKoffiTypeOnce(koffi, 'BITMAPINFO', () => koffi.struct('BITMAPINFO', BITMAPINFO_FIELDS))
+    registerKoffiTypeOnce(
+      koffi,
+      'DPI_AWARENESS_CONTEXT',
+      () => koffi.pointer('DPI_AWARENESS_CONTEXT', koffi.opaque())
+    )
 
     // ---- user32 函数 ----
     const SetProcessDpiAwarenessContext = user32.func(WIN32_PROTOTYPES.SetProcessDpiAwarenessContext)
@@ -227,7 +306,10 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
 
     // DPI awareness 只需设置一次（进程级别）。
     // -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2，旧系统回退 SetProcessDPIAware。
-    const PER_MONITOR_DPI_AWARE = koffi.as(-4, koffi.pointer('DPI_AWARENESS_CONTEXT', koffi.opaque()))
+    const PER_MONITOR_DPI_AWARE = koffi.as(
+      -4,
+      registeredKoffiTypes.get('DPI_AWARENESS_CONTEXT')
+    )
     if (!SetProcessDpiAwarenessContext(PER_MONITOR_DPI_AWARE)) {
       SetProcessDPIAware()
     }
@@ -276,6 +358,8 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
       // BITMAPINFO 以 JS 对象按结构体指针传入，由 koffi 负责编组；
       // GDI 调用返回后不再持有该指针，无需 koffi.alloc 提供稳定地址。
       const bi = buildBitmapInfo(width, height)
+      // 4K 整屏约 33MB：这里刻意不再复制一份 Uint8Array（实测多出约 3-4ms 停顿），
+      // 而是用零拷贝视图直接复用 Buffer 背后的内存，GetDIBits 写入后即可返回。
       const pixels = Buffer.alloc(width * height * 4)
 
       // DIB_RGB_COLORS = 0
@@ -291,13 +375,21 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
         throw new Error('GetDIBits 失败：无法获取像素数据')
       }
 
-      return { data: new Uint8Array(pixels), width, height }
+      return {
+        data: new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength),
+        width,
+        height
+      }
     }
 
+    // 绑定成功后清掉上次失败的残留状态，避免日志与诊断信息继续指向已经自愈的旧错误。
+    koffiLoadError = null
+    koffiLoadFailedAt = 0
     return koffiModule
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    koffiLoadError = `koffi 绑定加载失败（进程内不再重试，修复后需重启应用）: ${detail}`
+    koffiLoadFailedAt = koffiBindingClock()
+    koffiLoadError = `koffi 绑定加载失败（将在 ${KOFFI_BINDING_RETRY_INTERVAL_MS} 毫秒后自动重试）: ${detail}`
     throw new Error(koffiLoadError)
   }
 }

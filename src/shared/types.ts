@@ -276,14 +276,26 @@ export interface OcrSelectionReadyPayload {
   sessionId: number
 }
 
+/** Windows GDI 原始像素负载：全分辨率直传，避免预览重编码造成画质损失。 */
+export interface OcrSelectionSnapshotPixels {
+  /** BGRA 像素缓冲，alpha 已补为不透明。 */
+  data: Uint8Array
+  /** 物理像素宽度。 */
+  width: number
+  /** 物理像素高度。 */
+  height: number
+}
+
 /** OCR 框选快照负载：屏幕采集完成后下发，用于填充覆盖层背景图。 */
 export interface OcrSelectionSnapshotPayload {
   /** 本次框选会话自增序号，必须与 begin 一致，不一致时 Renderer 丢弃。 */
   sessionId: number
-  /** 屏幕快照 PNG 的 data URL。 */
-  imageDataUrl: string
   /** 快照对应的全局屏幕坐标区域，必须与 begin 一致。 */
   bounds: OcrSelectionBounds
+  /** 编码后的快照 data URL；Windows 原始像素直传路径不携带该字段。 */
+  imageDataUrl?: string
+  /** Windows GDI 原始 BGRA 像素；存在时渲染层直接上屏，不做解码与缩放。 */
+  pixels?: OcrSelectionSnapshotPixels
 }
 
 /** OCR 框选采集失败负载：覆盖窗口需立即退出框选模式。 */
@@ -520,6 +532,20 @@ export interface ScreenshotAnnotatedExportRequest {
   height: number
   /** 合成后的 PNG 字节。 */
   png: Uint8Array
+}
+
+/** 原始分辨率原图导出请求：只携带会话与当前选区，不包含任何图片字节。 */
+export interface ScreenshotExportImageRequest {
+  /** 所属截图会话序号。 */
+  sessionId: number
+  /** 用户当前调整后的选区矩形（截图窗口内逻辑坐标）。 */
+  bounds: OcrSelectionBounds
+}
+
+/** 原始分辨率原图导出结果：主进程裁剪并编码后的无损 PNG data URL。 */
+export interface ScreenshotExportImageResult {
+  /** 原始分辨率选区 PNG data URL。 */
+  dataUrl: string
 }
 
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
@@ -989,6 +1015,10 @@ export interface Api {
   copyAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
   /** 请求将 Renderer 合成的带标注 PNG 保存到本地磁盘。 */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
+  /** 按当前选区请求原始分辨率原图，供带标注导出合成使用。 */
+  requestOcrSelectionExportImage(
+    request: ScreenshotExportImageRequest
+  ): Promise<ScreenshotExportImageResult>
   /** 订阅截图文字识别结果事件，返回取消订阅方法。 */
   onOcrRecognizeResult(cb: (result: ScreenshotOcrRecognizeResult) => void): () => void
   /** 订阅截图图片复制/保存动作反馈事件，返回取消订阅方法。 */
