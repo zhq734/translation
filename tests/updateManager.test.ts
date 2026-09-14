@@ -303,6 +303,20 @@ test('下载中的自动更新应支持取消并回到可重新下载状态', as
   assert.equal(manager.getStatus().phase, 'downloading')
 })
 
+test('取消下载后底层补发的取消错误不得把状态覆盖成失败', async () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.available({ version: '1.0.4' })
+  await manager.downloadUpdate()
+  await manager.cancelDownload()
+  assert.equal(manager.getStatus().phase, 'available')
+
+  // 真实 electron-updater 在分片适配层抛出普通 Error 时会补发 error 事件。
+  driver.listeners?.error(new Error('分片下载失败（字节 0-8132141）：下载已取消'))
+  assert.equal(manager.getStatus().phase, 'available')
+  assert.match(manager.getStatus().message, /已取消/u)
+})
+
 test('手动 DMG 下载应支持取消并保留断点续传状态', async () => {
   const { manager, driver, manualUpdate } = createManager('manual')
   // 模拟真实下载：挂起直到取消信号触发，随后以“下载已取消”结束。
@@ -432,6 +446,103 @@ test('驱动异常应转为可展示的错误状态并保留手动下载入口',
 
   await manager.openReleasePage()
   assert.equal(openedUrls.length, 1)
+})
+
+test('检查更新遇到连接中断时应自动重试并给出可操作提示', async () => {
+  const { manager, driver, statuses } = createManager()
+  let attempts = 0
+  driver.checkForUpdates = async () => {
+    attempts += 1
+    if (attempts < 3) {
+      // 模拟 electron-updater：失败时既广播 error 事件，又让 Promise 拒绝。
+      driver.listeners?.error(new Error('net::ERR_CONNECTION_CLOSED'))
+      throw new Error('net::ERR_CONNECTION_CLOSED')
+    }
+  }
+
+  await manager.checkForUpdates()
+
+  assert.equal(attempts, 3)
+  assert.equal(manager.getStatus().phase, 'checking')
+  assert.equal(manager.getStatus().message, '正在检查更新…')
+  assert.equal(
+    statuses.some((status) => status.phase === 'error'),
+    false,
+    '重试期间不应把临时网络抖动展示为最终失败'
+  )
+})
+
+test('检查更新重试耗尽后应提示网络连接中断', async () => {
+  const { manager, driver } = createManager()
+  driver.checkForUpdates = async () => {
+    throw new Error('net::ERR_CONNECTION_CLOSED')
+  }
+
+  await manager.checkForUpdates()
+
+  assert.equal(manager.getStatus().phase, 'error')
+  assert.equal(
+    manager.getStatus().message,
+    '更新失败：网络连接被中断，请检查网络或代理设置后重试'
+  )
+})
+
+test('下载中断后应自动从断点继续而不是要求用户重新点击升级', async () => {
+  const { manager, driver, statuses } = createManager()
+  let attempts = 0
+
+  driver.listeners?.available({ version: '1.0.4' })
+  driver.downloadUpdate = async () => {
+    attempts += 1
+    if (attempts < 3) {
+      // 模拟 electron-updater：先广播 error 事件，再让 Promise 拒绝。
+      driver.listeners?.error(new Error('分片下载失败（字节 0-8132141）：This operation was aborted'))
+      throw new Error('分片下载失败（字节 0-8132141）：This operation was aborted')
+    }
+  }
+
+  await manager.downloadUpdate()
+
+  assert.equal(attempts, 3, '下载连接中断后应自动重试并从断点继续')
+  assert.equal(manager.getStatus().phase, 'downloading')
+  assert.equal(
+    statuses.some((status) => status.phase === 'error'),
+    false,
+    '自动续传重试期间不应把中断展示为最终失败'
+  )
+})
+
+test('下载中断重试耗尽后应提示已保留断点并可重新继续', async () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.available({ version: '1.0.4' })
+  driver.downloadUpdate = async () => {
+    throw new Error('分片下载失败（字节 65057136-73189277）：网络连接被中断')
+  }
+
+  await manager.downloadUpdate()
+
+  assert.equal(manager.getStatus().phase, 'error')
+  assert.equal(
+    manager.getStatus().message,
+    '更新失败：下载连接中断，已保留断点，可重新点击升级继续'
+  )
+})
+
+test('下载校验失败属于确定性错误，不应自动重试续传', async () => {
+  const { manager, driver } = createManager()
+  let attempts = 0
+
+  driver.listeners?.available({ version: '1.0.4' })
+  driver.downloadUpdate = async () => {
+    attempts += 1
+    throw new Error('sha512 checksum mismatch')
+  }
+
+  await manager.downloadUpdate()
+
+  assert.equal(attempts, 1, '校验失败重试没有意义，必须立即失败')
+  assert.equal(manager.getStatus().phase, 'error')
 })
 
 test('Release 缺少更新清单时应显示简短中文提示而不是底层调用栈', () => {

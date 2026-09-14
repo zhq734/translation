@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -74,12 +74,17 @@ interface FakeUpdater {
 async function createDownloadTarget(options?: {
   truncateError?: Error
 }): Promise<{
+  directory: string
   destination: string
   cleanup: () => Promise<void>
   updater: FakeUpdater
 }> {
   const directory = await mkdtemp(join(tmpdir(), 'selection-translator-parallel-update-'))
-  const destination = join(directory, 'update.exe.part')
+  // 与 electron-updater 真实目录结构保持一致：目标文件位于 pending 子目录，
+  // 续传文件则存放在 pending 的同级目录，避免被 electron-updater 失败清理逻辑删除。
+  const pendingDirectory = join(directory, 'pending')
+  await mkdir(pendingDirectory, { recursive: true })
+  const destination = join(pendingDirectory, 'temp-update.exe')
   await writeFile(destination, Buffer.alloc(0))
   const updater = {
     httpExecutor: {
@@ -89,7 +94,133 @@ async function createDownloadTarget(options?: {
       }
     }
   }
-  return { destination, cleanup: async () => rm(directory, { recursive: true, force: true }), updater }
+  return {
+    directory,
+    destination,
+    cleanup: async () => rm(directory, { recursive: true, force: true }),
+    updater
+  }
+}
+
+/**
+ * 解析分片请求头中的字节区间。
+ * @param init 请求初始化参数。
+ * @returns 请求的起始与结束偏移（含）。
+ * @author zhenghq
+ */
+function parseRequestRange(init?: RequestInit): { start: number; end: number } {
+  const range = new Headers(init?.headers ?? {}).get('range') ?? ''
+  const matched = /bytes=(\d+)-(\d+)/u.exec(range)
+  assert.ok(matched, `请求必须携带 Range：${range}`)
+  return { start: Number(matched[1]), end: Number(matched[2]) }
+}
+
+/**
+ * 构造先返回部分数据、随后模拟连接超时的分片响应。
+ * @param content 完整测试数据。
+ * @param start 本次分片起始偏移。
+ * @param end 本次分片结束偏移（含）。
+ * @param total 完整数据长度。
+ * @returns 首个数据块之后抛出超时错误的 206 响应。
+ * @author zhenghq
+ */
+function createRangeResponse(
+  content: Uint8Array,
+  start: number,
+  end: number,
+  total: number
+): Response {
+  return new Response(content.slice(start, end + 1), {
+    status: 206,
+    headers: {
+      'accept-ranges': 'bytes',
+      'content-range': `bytes ${start}-${end}/${total}`
+    }
+  })
+}
+
+/**
+ * 构造先返回指定字节、随后抛出错误的伪响应体，用于确定性地模拟传输中断。
+ * @param chunks 中断前已到达的数据块。
+ * @param error 数据块耗尽后抛出的错误。
+ * @returns 只实现 downloadSegments 依赖方法的伪响应体。
+ * @author zhenghq
+ */
+function createInterruptedBody(
+  chunks: Uint8Array[],
+  error: Error
+): ReadableStream<Uint8Array> {
+  let index = 0
+  return {
+    getReader: () => ({
+      read: async () => {
+        if (index < chunks.length) {
+          const value = chunks[index]
+          index += 1
+          return { done: false, value }
+        }
+        throw error
+      },
+      cancel: async () => undefined
+    })
+  } as unknown as ReadableStream<Uint8Array>
+}
+
+/**
+ * 构造模拟连接中断的 206 响应。
+ * @param chunks 中断前已到达的数据块。
+ * @param start 本次分片起始偏移。
+ * @param end 本次分片结束偏移（含）。
+ * @param total 完整安装包长度。
+ * @returns 读取到末尾时抛出错误的伪响应。
+ * @author zhenghq
+ */
+function createInterruptedResponse(
+  chunks: Uint8Array[],
+  start: number,
+  end: number,
+  total: number
+): Response {
+  return {
+    status: 206,
+    headers: new Headers({
+      'accept-ranges': 'bytes',
+      'content-range': `bytes ${start}-${end}/${total}`
+    }),
+    body: createInterruptedBody(chunks, new Error('ERR_SOCKET_CONNECTION_RESET'))
+  } as unknown as Response
+}
+
+/**
+ * 构造 Range 能力探测响应。
+ * @param total 完整安装包长度。
+ * @returns 声明支持字节范围请求的 206 响应。
+ * @author zhenghq
+ */
+function createProbeResponse(total: number): Response {
+  return new Response(Buffer.alloc(1), {
+    status: 206,
+    headers: {
+      'accept-ranges': 'bytes',
+      'content-range': `bytes 0-0/${total}`
+    }
+  })
+}
+
+/**
+ * 读取续传目录中唯一的进度记录文件内容。
+ * @param directory 续传记录所在目录。
+ * @returns 进度记录文件路径与解析后的 JSON。
+ * @author zhenghq
+ */
+async function readResumeRecordFile(
+  directory: string
+): Promise<{ path: string; record: { total: number; sha512?: string; segments: Array<{ completed: number }> } }> {
+  const entries = await readdir(directory)
+  const recordName = entries.find((entry) => entry.endsWith('.part.json'))
+  assert.ok(recordName, `应保留续传进度记录，实际目录内容：${entries.join(', ')}`)
+  const recordPath = join(directory, recordName)
+  return { path: recordPath, record: JSON.parse(await readFile(recordPath, 'utf8')) }
 }
 
 /**
@@ -280,8 +411,8 @@ test('Range 探测收到 200 响应时不应消费完整响应体', async () => 
   }
 })
 
-test('取消 electron-updater 下载令牌时应中断分片下载并清理目标文件', async () => {
-  const { destination, cleanup, updater } = await createDownloadTarget()
+test('取消 electron-updater 下载令牌时应中断分片下载且不产出目标文件', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
   const cancellationToken = new FakeCancellationToken()
   let releaseFetch: (() => void) | undefined
 
@@ -317,6 +448,312 @@ test('取消 electron-updater 下载令牌时应中断分片下载并清理目�
     releaseFetch?.()
     await assert.rejects(downloading, /下载已取消/u)
     assert.equal(await stat(destination).then((info) => info.size).catch(() => 0), 0)
+    // 取消属于可重试中断，已下载字节应保留在续传目录而非被直接删除。
+    const resumeEntries = await readdir(join(directory, 'resume')).catch(() => [])
+    assert.ok(resumeEntries.length > 0, '取消后应保留续传文件与进度记录')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片下载中断时应保留临时文件与续传记录，供下次继续下载', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      // 首轮所有分片都只传回一半数据后中断，确保既产生部分字节又能结束整次下载。
+      const half = Math.max(1, Math.floor((end - start + 1) / 2))
+      return createInterruptedResponse(
+        [content.slice(start, start + half)],
+        start,
+        end,
+        content.byteLength
+      )
+    })
+
+    await assert.rejects(
+      updater.httpExecutor.download(
+        new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe'),
+        destination,
+        {
+          cancellationToken: new FakeCancellationToken(),
+          sha512: contentHash
+        }
+      )
+    )
+
+    const resumeDirectory = join(directory, 'resume')
+    const { record } = await readResumeRecordFile(resumeDirectory)
+    assert.equal(record.total, content.byteLength)
+    assert.equal(record.sha512, contentHash)
+    assert.ok(
+      record.segments.some((segment) => segment.completed > 0),
+      '续传记录应保存已下载的分片进度'
+    )
+    const temporaryStat = await stat(join(resumeDirectory, 'temp-update.exe.part'))
+    assert.equal(temporaryStat.size, content.byteLength, '续传文件应保持预分配长度')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片请求超时后重试应从已完成偏移继续，而不是从分片开头重下', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+  const requestedRanges: string[] = []
+  let resumePhase = false
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      requestedRanges.push(`${start}-${end}`)
+      if (!resumePhase) {
+        // 模拟“分片请求超时”：连接建立阶段即失败，尚未写入任何字节。
+        throw new Error('分片请求超时')
+      }
+      return createRangeResponse(content, start, end, content.byteLength)
+    })
+
+    const url = new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe')
+    await assert.rejects(
+      updater.httpExecutor.download(url, destination, {
+        cancellationToken: new FakeCancellationToken(),
+        sha512: contentHash
+      }),
+      /分片请求超时/u
+    )
+
+    const resumeDirectory = join(directory, 'resume')
+    const { record } = await readResumeRecordFile(resumeDirectory)
+    assert.equal(record.total, content.byteLength)
+    assert.ok(
+      record.segments.every((segment) => segment.completed === 0),
+      '请求阶段超时确实没有可续传的字节'
+    )
+
+    resumePhase = true
+    requestedRanges.length = 0
+    await updater.httpExecutor.download(url, destination, {
+      cancellationToken: new FakeCancellationToken(),
+      sha512: contentHash
+    })
+
+    assert.ok(
+      requestedRanges.some((range) => range.startsWith('0-')),
+      `未写入任何字节时分片仍需从起点请求，实际请求：${requestedRanges.join(', ')}`
+    )
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片传输中途超时应保留已写入字节，下次下载从超时位置继续', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+  const requestedRanges: string[] = []
+  let resumePhase = false
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      requestedRanges.push(`${start}-${end}`)
+      if (!resumePhase) {
+        // 模拟“分片请求超时”：先写入一段数据，随后连接被超时中断。
+        const delivered = Math.max(1, Math.floor((end - start + 1) / 4))
+        return createInterruptedResponse(
+          [content.slice(start, start + delivered)],
+          start,
+          end,
+          content.byteLength
+        )
+      }
+      return createRangeResponse(content, start, end, content.byteLength)
+    })
+
+    const url = new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe')
+    await assert.rejects(
+      updater.httpExecutor.download(url, destination, {
+        cancellationToken: new FakeCancellationToken(),
+        sha512: contentHash
+      })
+    )
+
+    const resumeDirectory = join(directory, 'resume')
+    const { record } = await readResumeRecordFile(resumeDirectory)
+    const completedBefore = record.segments.reduce((sum, segment) => sum + segment.completed, 0)
+    assert.ok(completedBefore > 0, '超时中断前已写入的字节必须被记录')
+
+    resumePhase = true
+    requestedRanges.length = 0
+    await updater.httpExecutor.download(url, destination, {
+      cancellationToken: new FakeCancellationToken(),
+      sha512: contentHash
+    })
+
+    const zeroOffsetRequests = requestedRanges.filter((range) => range.startsWith('0-'))
+    assert.equal(
+      zeroOffsetRequests.length,
+      0,
+      `续传时不应再从头请求分片，实际请求：${requestedRanges.join(', ')}`
+    )
+    assert.equal(Buffer.from(content).equals(await readFile(destination)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('再次下载时应从续传记录中的已完成偏移继续而不是从头下载', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+  const requestedRanges: string[] = []
+  let resumePhase = false
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      requestedRanges.push(`${start}-${end}`)
+      if (!resumePhase) {
+        const half = Math.max(1, Math.floor((end - start + 1) / 2))
+        return createInterruptedResponse(
+          [content.slice(start, start + half)],
+          start,
+          end,
+          content.byteLength
+        )
+      }
+      return createRangeResponse(content, start, end, content.byteLength)
+    })
+
+    const url = new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe')
+    await assert.rejects(
+      updater.httpExecutor.download(url, destination, {
+        cancellationToken: new FakeCancellationToken(),
+        sha512: contentHash
+      })
+    )
+
+    resumePhase = true
+    requestedRanges.length = 0
+    await updater.httpExecutor.download(url, destination, {
+      cancellationToken: new FakeCancellationToken(),
+      sha512: contentHash
+    })
+
+    const resumeDirectory = join(directory, 'resume')
+    assert.equal(Buffer.from(content).equals(await readFile(destination)), true)
+    assert.deepEqual(
+      await readdir(resumeDirectory).catch(() => []),
+      [],
+      '续传完成后应清理续传文件与进度记录'
+    )
+    assert.ok(
+      requestedRanges.every((range) => !range.startsWith('0-')),
+      `续传时不应从零重新下载，实际请求：${requestedRanges.join(', ')}`
+    )
+  } finally {
+    await cleanup()
+  }
+})
+
+test('续传记录与本次校验值不一致时应丢弃旧进度并重新下载', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+  let resumePhase = false
+  const requestedRanges: string[] = []
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      requestedRanges.push(`${start}-${end}`)
+      if (!resumePhase) {
+        return createInterruptedResponse(
+          [content.slice(start, start + 1)],
+          start,
+          end,
+          content.byteLength
+        )
+      }
+      return createRangeResponse(content, start, end, content.byteLength)
+    })
+
+    const url = new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe')
+    await assert.rejects(
+      updater.httpExecutor.download(url, destination, {
+        cancellationToken: new FakeCancellationToken(),
+        sha512: contentHash
+      })
+    )
+
+    resumePhase = true
+    requestedRanges.length = 0
+    await updater.httpExecutor.download(url, destination, {
+      cancellationToken: new FakeCancellationToken(),
+      sha512: createHash('sha512').update('different content').digest('base64')
+    }).catch(() => undefined)
+
+    assert.ok(
+      requestedRanges.some((range) => range.startsWith('0-')),
+      `校验值变化后应从零重新下载，实际请求：${requestedRanges.join(', ')}`
+    )
+    assert.equal(
+      (await readdir(join(directory, 'resume'))).some((entry) => entry.endsWith('.part.json')),
+      false,
+      '校验失败后不应保留不匹配的续传记录'
+    )
+  } finally {
+    await cleanup()
+  }
+})
+
+test('续传下载完成并通过校验后应清理临时文件与续传记录', async () => {
+  const { directory, destination, cleanup, updater } = await createDownloadTarget()
+  const content = buildContent(16 * 1024 * 1024)
+  const contentHash = createHash('sha512').update(content).digest('base64')
+  let resumePhase = false
+
+  try {
+    installParallelUpdateDownload(updater, async (_url, init) => {
+      const { start, end } = parseRequestRange(init)
+      if (start === 0 && end === 0) return createProbeResponse(content.byteLength)
+      if (!resumePhase) {
+        const half = Math.max(1, Math.floor((end - start + 1) / 2))
+        return createInterruptedResponse(
+          [content.slice(start, start + half)],
+          start,
+          end,
+          content.byteLength
+        )
+      }
+      return createRangeResponse(content, start, end, content.byteLength)
+    })
+
+    const url = new URL('https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe')
+    await assert.rejects(
+      updater.httpExecutor.download(url, destination, {
+        cancellationToken: new FakeCancellationToken(),
+        sha512: contentHash
+      })
+    )
+    resumePhase = true
+    await updater.httpExecutor.download(url, destination, {
+      cancellationToken: new FakeCancellationToken(),
+      sha512: contentHash
+    })
+
+    const resumeEntries = await readdir(join(directory, 'resume')).catch(() => [])
+    assert.deepEqual(resumeEntries, [], '下载完成后应清空续传目录')
   } finally {
     await cleanup()
   }

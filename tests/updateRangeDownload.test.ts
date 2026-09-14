@@ -298,6 +298,172 @@ test('分片读取超时应取消死响应流并重试剩余字节', { timeout: 
   }
 })
 
+test('分片响应头返回后持续收到数据时不应被请求超时误中断', { timeout: 2000 }, async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(96)
+  const chunks = Array.from({ length: 8 }, (_, index) =>
+    content.slice(index * 12, (index + 1) * 12)
+  )
+  let chunkIndex = 0
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/App-1.0.4-win-x64.exe',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments: buildTestSegments(content.byteLength, 1),
+      concurrency: 1,
+      maxRetries: 0,
+      requestTimeoutMs: 30,
+      readTimeoutMs: 100,
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          // 首个数据块故意晚于请求超时到达，但仍在读取超时范围内；
+          // 响应头已经返回后，不能再把整体传输耗时算作请求建立超时。
+          await new Promise((resolve) => setTimeout(resolve, chunkIndex === 0 ? 50 : 10))
+          const chunk = chunks[chunkIndex]
+          chunkIndex += 1
+          if (chunk) {
+            controller.enqueue(chunk)
+          } else {
+            controller.close()
+          }
+        }
+      }), { status: 206 })
+    })
+
+    assert.equal(Buffer.from(content).equals(await readFile(path)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片请求超时被 Electron 中断时应重试并翻译为中文超时错误', { timeout: 2000 }, async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 1)
+  let attempts = 0
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 1,
+      maxRetries: 2,
+      requestTimeoutMs: 20,
+      fetch: (_url, init) => new Promise<Response>((resolve, reject) => {
+        attempts += 1
+        if (attempts === 1) {
+          // 模拟 Electron net.fetch 被自身超时 abort 后抛出的 Chromium 原始
+          // AbortError：消息为英文，且错误名不是标准的 AbortError。
+          init?.signal?.addEventListener('abort', () => {
+            reject(new Error('This operation was aborted'))
+          }, { once: true })
+          return
+        }
+        resolve(new Response(content, { status: 206 }))
+      })
+    })
+
+    assert.equal(attempts, 2, 'Chromium 原始中断错误也必须触发重试')
+    assert.equal(Buffer.from(content).equals(await readFile(path)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片重试耗尽时 Chromium 原始中断错误不应把英文原文抛给用户', async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 2)
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    const error = await downloadSegments({
+      url: 'https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 2,
+      maxRetries: 1,
+      fetch: async () => {
+        throw new Error('This operation was aborted')
+      }
+    }).then(() => undefined, (reason: Error) => reason)
+
+    assert.ok(error, '持续中断时应抛出错误')
+    assert.doesNotMatch(error.message, /This operation was aborted/u)
+    assert.match(error.message, /网络|中断|超时/u)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片传输被 Chromium 以不完整响应中断时应重试并保留已写入字节', { timeout: 2000 }, async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 1)
+  const requestedRanges: string[] = []
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    await downloadSegments({
+      url: 'https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 1,
+      maxRetries: 2,
+      fetch: async (_url, init) => {
+        const { start, end } = parseRangeHeader(init)
+        requestedRanges.push(`${start}-${end}`)
+        if (requestedRanges.length === 1) {
+          // 模拟响应体在传输中途被截断：Electron 会抛出 Chromium 错误码。
+          throw new Error('net::ERR_INCOMPLETE_CHUNKED_ENCODING')
+        }
+        return new Response(content.slice(start, end + 1), { status: 206 })
+      }
+    })
+
+    assert.equal(requestedRanges.length, 2, '不完整响应必须触发重试')
+    assert.equal(Buffer.from(content).equals(await readFile(path)), true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分片重试耗尽时 Chromium 传输截断错误应归一化为中文网络提示', async () => {
+  const { path, cleanup } = await createTemporaryTarget()
+  const content = buildContent(4000)
+  const segments = buildTestSegments(content.byteLength, 1)
+
+  try {
+    await writeFile(path, Buffer.alloc(0))
+    const error = await downloadSegments({
+      url: 'https://example.com/SelectionTranslator-1.0.4-Setup-x64.exe',
+      temporaryPath: path,
+      total: content.byteLength,
+      segments,
+      concurrency: 1,
+      maxRetries: 1,
+      fetch: async () => {
+        // 响应体中途被截断时 Electron 抛出的 Chromium 错误码。
+        throw new Error('net::ERR_INCOMPLETE_CHUNKED_ENCODING')
+      }
+    }).then(() => undefined, (reason: Error) => reason)
+
+    assert.ok(error, '持续截断时应抛出错误')
+    assert.doesNotMatch(error.message, /ERR_INCOMPLETE_CHUNKED_ENCODING/u)
+    assert.match(error.message, /网络连接被中断/u)
+  } finally {
+    await cleanup()
+  }
+})
+
 test('分片重试耗尽时应抛出明确错误并保留已完成进度', async () => {
   const { path, cleanup } = await createTemporaryTarget()
   const content = buildContent(4000)

@@ -12,6 +12,20 @@ import type { ReleaseChecksumStatus } from './releaseChecksums'
 
 export type { ManualMacUpdateService } from './manualMacUpdate'
 
+/** 检查更新遇到可恢复网络错误时的最大尝试次数（含首次请求）。 */
+const UPDATE_CHECK_MAX_ATTEMPTS = 3
+/** 检查更新重试之间的基础等待毫秒数，按尝试次数线性退避。 */
+const UPDATE_CHECK_RETRY_BASE_DELAY_MS = 600
+
+/**
+ * 更新包下载遇到可恢复网络中断时的最大尝试次数（含首次下载）。
+ * 分片下载会把已完成字节与断点记录保留在独立续传目录，因此重试只补齐
+ * 剩余字节，不会重新下载整包。
+ */
+const UPDATE_DOWNLOAD_MAX_ATTEMPTS = 3
+/** 更新包下载重试之间的基础等待毫秒数，按尝试次数线性退避。 */
+const UPDATE_DOWNLOAD_RETRY_BASE_DELAY_MS = 1_000
+
 /** electron-updater 返回的最小版本信息。 */
 export interface UpdateDriverInfo {
   /** 可用或已下载版本号。 */
@@ -203,16 +217,106 @@ function isMacOSCodeSignatureValidationError(rawMessage: string): boolean {
 }
 
 /**
+ * 判断检查更新失败是否属于可自动重试的临时网络故障。
+ *
+ * Windows 上 GitHub 连接被重置、代理连接池被关闭或 TLS 握手被中断时，底层会
+ * 抛出 `ERR_CONNECTION_CLOSED` 等一次性网络错误；这类错误与版本信息、签名或
+ * Release 配置无关，稍后重试通常即可恢复。DNS 解析失败与连接超时也纳入重试，
+ * 但 HTTP 404、校验失败等确定性错误不会重试。
+ * @param error 底层更新器抛出的异常。
+ * @returns 属于可恢复网络故障时返回 true。
+ * @author zhenghq
+ */
+function isRetryableUpdateCheckError(error: unknown): boolean {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  return /ERR_(?:CONNECTION_CLOSED|CONNECTION_RESET|CONNECTION_ABORTED|CONNECTION_REFUSED|CONNECTION_FAILED|TIMED_OUT|NETWORK_CHANGED|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up/iu
+    .test(rawMessage)
+}
+
+/**
+ * 将临时网络故障转换为用户可理解且可操作的提示。
+ * @param rawMessage 底层更新器返回的原始错误文本。
+ * @returns 匹配到网络故障时返回中文提示，否则返回 undefined。
+ * @author zhenghq
+ */
+function formatTransientNetworkErrorMessage(rawMessage: string): string | undefined {
+  if (/ERR_(?:TIMED_OUT|CONNECTION_TIMED_OUT)|ETIMEDOUT|timeout/iu.test(rawMessage)) {
+    return '更新失败：网络请求超时，请检查网络或代理设置后重试'
+  }
+  if (/ERR_(?:NAME_NOT_RESOLVED|INTERNET_DISCONNECTED)|ENOTFOUND|EAI_AGAIN/iu.test(rawMessage)) {
+    return '更新失败：无法连接更新服务器，请检查网络或代理设置后重试'
+  }
+  if (isRetryableUpdateCheckError(rawMessage)) {
+    return '更新失败：网络连接被中断，请检查网络或代理设置后重试'
+  }
+  return undefined
+}
+
+/**
+ * 判断下载失败是否属于可自动重试并续传的连接中断。
+ *
+ * 分片下载在中途超时、连接被重置或被 Electron 中止时，已完成字节与断点记录
+ * 会保留在独立续传目录；这类错误重试会从中断偏移继续，因此值得自动重试。
+ * 校验失败、HTTP 状态错误等确定性失败不在其中，重复下载没有意义。
+ * @param error 底层更新器抛出的异常。
+ * @returns 属于可续传的连接中断时返回 true。
+ * @author zhenghq
+ */
+function isResumableDownloadError(error: unknown): boolean {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  if (/checksum mismatch|更新包长度校验失败|HTTP \d{3}/iu.test(rawMessage)) return false
+  // 用户主动取消不是网络故障，不能触发自动续传重试。
+  if (isDownloadCancelledError(error)) return false
+  return /分片(?:下载失败|请求超时|读取超时)|ERR_(?:CONNECTION_CLOSED|CONNECTION_RESET|CONNECTION_ABORTED|CONNECTION_REFUSED|CONNECTION_FAILED|TIMED_OUT|NETWORK_CHANGED|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|ABORTED)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|This operation was aborted|网络连接被中断/iu
+    .test(rawMessage)
+}
+
+/**
+ * 判断异常是否表示用户主动取消下载。
+ *
+ * 分片适配层在取消时抛出普通 `Error`（而非 electron-updater 的
+ * `CancellationError`），底层因此会把它当作真实错误补发 `error` 事件；这里
+ * 统一识别取消语义，避免已取消状态被覆盖成下载失败。
+ * @param error 底层更新器抛出的异常。
+ * @returns 属于用户取消时返回 true。
+ * @author zhenghq
+ */
+function isDownloadCancelledError(error: unknown): boolean {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  return /下载已取消|已取消下载|cancell?ed/iu.test(rawMessage)
+}
+
+/**
+ * 将下载连接中断转换为说明断点已保留的中文提示。
+ * @param rawMessage 底层更新器返回的原始错误文本。
+ * @returns 属于可续传中断时返回中文提示，否则返回 undefined。
+ * @author zhenghq
+ */
+function formatResumableDownloadErrorMessage(rawMessage: string): string | undefined {
+  if (!isResumableDownloadError(rawMessage)) return undefined
+  return /超时|timed? out|ETIMEDOUT/iu.test(rawMessage)
+    ? '更新失败：下载连接超时，已保留断点，可重新点击升级继续'
+    : '更新失败：下载连接中断，已保留断点，可重新点击升级继续'
+}
+
+/**
  * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
  * @param error 自动更新异常。
+ * @param phase 出错时所处的更新阶段，用于区分检查与下载的提示语义。
  * @returns 适合直接展示在设置页的错误信息。
  * @author zhenghq
  */
-function formatUpdateErrorMessage(error: unknown): string {
+function formatUpdateErrorMessage(error: unknown, phase?: UpdatePhase): string {
   const rawMessage = error instanceof Error ? error.message : String(error)
   if (isMacOSCodeSignatureValidationError(rawMessage)) {
     return '更新包签名与当前应用不兼容，已改用手动安装；请下载 DMG，拖入“应用程序”并覆盖旧版本'
   }
+  if (phase === 'downloading') {
+    const resumeMessage = formatResumableDownloadErrorMessage(rawMessage)
+    if (resumeMessage) return resumeMessage
+  }
+  const networkMessage = formatTransientNetworkErrorMessage(rawMessage)
+  if (networkMessage) return networkMessage
   const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
   if (metadataMatch && /\b404\b/u.test(rawMessage)) {
     return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
@@ -269,8 +373,30 @@ export class UpdateManager {
       notAvailable: (info) => this.handleNotAvailable(info),
       progress: (progress) => this.handleProgress(progress),
       downloaded: (info) => this.handleDownloaded(info),
-      error: (error) => this.handleError(error)
+      error: (error) => this.handleDriverError(error)
     })
+  }
+
+  /**
+   * 处理底层更新驱动广播的错误事件。
+   *
+   * electron-updater 在检查失败时会先同步广播 `error` 事件、再拒绝
+   * `checkForUpdates()` 的 Promise。重试期间若直接把临时网络错误展示为最终
+   * 失败，界面会先闪出错误提示，随后又被重试覆盖。这里把可恢复网络错误交回
+   * `checkForUpdates()` 的重试循环统一处理，只在重试耗尽后展示最终错误。
+   * @param error 底层更新驱动上报的异常。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private handleDriverError(error: Error): void {
+    if (this.status.phase === 'checking' && isRetryableUpdateCheckError(error)) return
+    // 下载中断重试期间同样先广播 error 事件；此时断点已经落盘，交给
+    // `downloadUpdate()` 的重试循环统一处理，避免界面先闪出失败提示。
+    if (this.status.phase === 'downloading' && isResumableDownloadError(error)) return
+    // 用户取消后底层会把取消语义包装成普通错误补发事件，此时不得覆盖
+    // 已经回到“可重新下载”的状态。
+    if (isDownloadCancelledError(error)) return
+    this.handleError(error)
   }
 
   /**
@@ -300,10 +426,22 @@ export class UpdateManager {
     if (this.status.phase === 'checking') return this.getStatus()
 
     this.setStatus({ phase: 'checking', message: '正在检查更新…', progress: undefined })
-    try {
-      await this.options.driver.checkForUpdates()
-    } catch (error) {
-      this.handleError(error)
+    for (let attempt = 1; attempt <= UPDATE_CHECK_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await this.options.driver.checkForUpdates()
+        return this.getStatus()
+      } catch (error) {
+        const isLastAttempt = attempt >= UPDATE_CHECK_MAX_ATTEMPTS
+        if (isLastAttempt || !isRetryableUpdateCheckError(error)) {
+          this.handleError(error)
+          return this.getStatus()
+        }
+        // GitHub 在部分网络下会偶发重置连接；短暂等待后重试，避免用户看到
+        // 一次网络抖动就判定更新失败。重试期间保持“正在检查更新”状态。
+        await new Promise((resolve) => {
+          setTimeout(resolve, UPDATE_CHECK_RETRY_BASE_DELAY_MS * attempt)
+        })
+      }
     }
     return this.getStatus()
   }
@@ -332,12 +470,28 @@ export class UpdateManager {
       message: '正在下载更新…',
       progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 }
     })
-    try {
-      await this.options.driver.downloadUpdate()
-    } catch (error) {
-      // 下载期间用户取消时，底层抛出的中断异常不得覆盖已取消状态。
-      if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
-      this.handleError(error)
+    for (let attempt = 1; attempt <= UPDATE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await this.options.driver.downloadUpdate()
+        return this.getStatus()
+      } catch (error) {
+        // 下载期间用户取消时，底层抛出的中断异常不得覆盖已取消状态。
+        if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
+        const isLastAttempt = attempt >= UPDATE_DOWNLOAD_MAX_ATTEMPTS
+        if (isLastAttempt || !isResumableDownloadError(error)) {
+          this.handleError(error)
+          return this.getStatus()
+        }
+        // 断点已经落盘，短暂等待后从中断偏移继续补齐剩余字节；重试期间保持
+        // “正在下载更新”状态，避免界面在续传过程中闪出失败提示。
+        this.setStatus({
+          phase: 'downloading',
+          message: `下载连接中断，正在从断点继续（第 ${attempt + 1} 次尝试）…`
+        })
+        await new Promise((resolve) => {
+          setTimeout(resolve, UPDATE_DOWNLOAD_RETRY_BASE_DELAY_MS * attempt)
+        })
+      }
     }
     return this.getStatus()
   }
@@ -662,10 +816,11 @@ export class UpdateManager {
   private handleError(error: unknown): void {
     const rawMessage = error instanceof Error ? error.message : String(error)
     const signatureValidationFailed = isMacOSCodeSignatureValidationError(rawMessage)
+    const errorPhase = this.status.phase as UpdatePhase
     this.setStatus({
       phase: 'error',
       installMode: signatureValidationFailed ? 'manual' : this.status.installMode,
-      message: formatUpdateErrorMessage(error),
+      message: formatUpdateErrorMessage(error, errorPhase),
       progress: undefined,
       manualDownloadAvailable: signatureValidationFailed && this.options.manualUpdate &&
         this.manualDownloadUrl

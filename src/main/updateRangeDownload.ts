@@ -31,6 +31,12 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 /** 单个分片读取相邻数据块的默认超时时间，慢速链路下仍能及时中断死连接。 */
 const DEFAULT_READ_TIMEOUT_MS = 15_000
 
+/**
+ * 续传进度落盘的最小字节增量。逐块写盘会拖慢下载，间隔过大则进程被强杀时
+ * 丢失的进度过多；4MB 在两者之间取得平衡。
+ */
+const DEFAULT_CHECKPOINT_INTERVAL_BYTES = 4 * 1024 * 1024
+
 /** Range 能力探测响应中与分片决策相关的字段。 */
 export interface RangeProbeInput {
   /** 探测响应状态码。 */
@@ -135,6 +141,16 @@ export interface DownloadSegmentsOptions {
    * @author zhenghq
    */
   onProgress?: (progress: UpdateProgress) => void
+  /**
+   * 周期性接收各分片已完成字节，用于把续传进度持久化到磁盘。
+   * 进程被强制结束等无法进入 catch 的场景，只能依靠该回调保留断点。
+   * @param segments 各分片当前已完成字节。
+   * @returns 落盘完成后的 Promise。
+   * @author zhenghq
+   */
+  onCheckpoint?: (segments: DownloadResumeSegment[]) => void | Promise<void>
+  /** 触发一次续传进度落盘所需的累计字节增量，默认 4MB。 */
+  checkpointIntervalBytes?: number
   /** 可选的取消信号；触发后各分片下载中断。 */
   signal?: AbortSignal
 }
@@ -152,6 +168,10 @@ export async function downloadSegments(options: DownloadSegmentsOptions): Promis
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES
   const requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
   const readTimeoutMs = Math.max(1, options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS)
+  const checkpointIntervalBytes = Math.max(
+    1,
+    options.checkpointIntervalBytes ?? DEFAULT_CHECKPOINT_INTERVAL_BYTES
+  )
   const alreadyCompleted = options.segments.reduce((sum, segment) => sum + segment.completed, 0)
   const reporter = createUpdateProgressReporter({
     total: options.total,
@@ -161,6 +181,57 @@ export async function downloadSegments(options: DownloadSegmentsOptions): Promis
 
   const fileHandle = await open(options.temporaryPath, 'r+').catch(() => open(options.temporaryPath, 'w+'))
   let nextSegmentIndex = 0
+  let bytesSinceCheckpoint = 0
+  let checkpointChain: Promise<void> = Promise.resolve()
+
+  /**
+   * 把当前分片进度串行落盘，避免并发检查点互相覆盖同一个 sidecar 记录。
+   * 单次落盘失败只影响断点精度，不应中断仍在进行的下载。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const requestCheckpoint = (): void => {
+    const onCheckpoint = options.onCheckpoint
+    if (!onCheckpoint) return
+    checkpointChain = checkpointChain
+      .then(() => onCheckpoint(options.segments))
+      .catch(() => undefined)
+  }
+
+  /**
+   * 按偏移完整写入一个数据块，兼容底层文件写入只落盘部分字节的情况。
+   * @param chunk 待写入的数据块。
+   * @param position 写入的起始偏移。
+   * @returns 实际写入的字节数。
+   * @author zhenghq
+   */
+  const writeChunkAt = async (chunk: Uint8Array, position: number): Promise<number> => {
+    let written = 0
+    while (written < chunk.byteLength) {
+      const result = await fileHandle.write(
+        chunk,
+        written,
+        chunk.byteLength - written,
+        position + written
+      )
+      if (result.bytesWritten <= 0) throw new Error('写入更新临时文件失败')
+      written += result.bytesWritten
+    }
+    return written
+  }
+
+  /**
+   * 累计新写入字节，并在达到阈值时触发一次续传进度落盘。
+   * @param bytes 本次写入的字节数。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const recordWrittenBytes = (bytes: number): void => {
+    bytesSinceCheckpoint += bytes
+    if (bytesSinceCheckpoint < checkpointIntervalBytes) return
+    bytesSinceCheckpoint = 0
+    requestCheckpoint()
+  }
 
   /**
    * 下载单个分片剩余字节，并把数据写入其在目标文件中的偏移。
@@ -223,9 +294,19 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
             },
             signal: requestAbortController.signal
           })
+        } catch (error) {
+          // fetch 被中止时，Electron 抛出的原始 abort 错误不带超时语义，
+          // 这里结合计时器状态还原真实原因，保证重试判断与提示都准确。
+          if (options.signal?.aborted) throw new Error('下载已取消')
+          if (timeoutKind === 'request') throw new Error('分片请求超时')
+          if (isAbortLikeError(error)) throw new Error('网络连接被中断')
+          throw error
         } finally {
           if (!response) cleanupRequestResources()
         }
+        // 请求超时只约束“收到响应头”这一段。响应已经建立后，慢速链路的
+        // 总传输时长不应继续受该计时器约束，数据停滞改由读取超时检测。
+        clearTimeout(requestTimer)
         if (timeoutKind === 'request') throw new Error('分片请求超时')
         // 分片响应必须是 206。若服务器忽略 Range 返回 200，响应体会从文件
         // 开头开始，不能继续按分片偏移写入，否则会得到错位的损坏文件。
@@ -248,7 +329,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
             return new Promise((resolve, reject) => {
               const onAbort = (): void => {
                 requestAbortController.signal.removeEventListener('abort', onAbort)
-                reject(new Error(timeoutKind === 'read' ? '分片读取超时' : '分片请求超时'))
+                // 用户取消优先于超时：调用方信号触发时不能误报为分片超时。
+                if (options.signal?.aborted) {
+                  reject(new Error('下载已取消'))
+                } else {
+                  reject(new Error(timeoutKind === 'read' ? '分片读取超时' : '分片请求超时'))
+                }
               }
 
               if (requestAbortController.signal.aborted) {
@@ -279,10 +365,11 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
               if (chunk.done) break
               if (!chunk.value) continue
               resetReadTimeout()
-              await fileHandle.write(chunk.value, 0, chunk.value.byteLength, position)
-              position += chunk.value.byteLength
-              segment.completed += chunk.value.byteLength
-              reporter.add(chunk.value.byteLength)
+              const written = await writeChunkAt(chunk.value, position)
+              position += written
+              segment.completed += written
+              reporter.add(written)
+              recordWrittenBytes(written)
             }
             if (timeoutKind === 'read') throw new Error('分片读取超时')
             chunkLoopCompleted = true
@@ -296,9 +383,10 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
             resetReadTimeout()
             const content = new Uint8Array(await response.arrayBuffer())
             if (timeoutKind === 'read') throw new Error('分片读取超时')
-            await fileHandle.write(content, 0, content.byteLength, position)
-            segment.completed += content.byteLength
-            reporter.add(content.byteLength)
+            const written = await writeChunkAt(content, position)
+            segment.completed += written
+            reporter.add(written)
+            recordWrittenBytes(written)
             arrayBufferCompleted = true
           } finally {
             cleanupRequestResources()
@@ -307,7 +395,7 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
         }
         return
       } catch (error) {
-        lastError = error as Error
+        lastError = normalizeSegmentError(error, options.signal)
         if (isNetworkError(lastError)) {
           consecutiveNetworkFailures += 1
           if (attempt < maxRetries) {
@@ -347,6 +435,8 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
     if (failure && failure.status === 'rejected') throw failure.reason as Error
     reporter.finish()
   } finally {
+    // 确保已排队的检查点全部落盘后再关闭文件，避免成功清理后又被迟到写入复活记录。
+    await checkpointChain.catch(() => undefined)
     await fileHandle.close().catch(() => undefined)
   }
 }
@@ -358,8 +448,49 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
  * @author zhenghq
  */
 function isNetworkError(error: Error): boolean {
-  return /ERR_(?:CONNECTION|TIMED_OUT|NETWORK)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|分片(?:请求|读取)超时/u
+  // 除 Node 侧错误码外，Electron 会把底层失败包装成 `net::ERR_*` 形式的
+  // Chromium 网络层错误码（如 ERR_INCOMPLETE_CHUNKED_ENCODING、
+  // ERR_CONTENT_LENGTH_MISMATCH）；这类错误都可重试并从断点继续。
+  return /net::ERR_|ERR_(?:CONNECTION|TIMED_OUT|NETWORK|ABORTED)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|分片(?:请求|读取)超时|网络(?:连接)?被中断/u
     .test(error.message)
+}
+
+/**
+ * 判断异常是否为 Chromium/Electron 在连接被中断时抛出的原始 abort 错误。
+ *
+ * Electron 的 `net.fetch` 在请求被中止时不一定抛出标准 `AbortError`，而是抛出
+ * 消息为 `This operation was aborted`、名称为 `Error` 的 Chromium 原始异常；
+ * 这类异常若不识别，会被当作确定性失败直接展示给用户且不触发重试。
+ * @param error 分片下载过程中抛出的异常。
+ * @returns 属于可重试的连接中断错误时返回 true。
+ * @author zhenghq
+ */
+function isAbortLikeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.name === 'AbortError') return true
+  return /this operation was aborted|operation aborted|the operation was aborted|request aborted|net::ERR_ABORTED/iu
+    .test(error.message)
+}
+
+/**
+ * 把各运行时抛出的中断异常归一化为可重试且可展示的中文错误。
+ *
+ * 调用方主动取消时保留“下载已取消”语义，避免把用户操作误报成网络故障；
+ * 其余中断统一转换为“网络连接被中断”，使重试判断与最终提示都能正确处理。
+ * @param error 底层 fetch 或读取流程抛出的异常。
+ * @param signal 调用方传入的取消信号，用于区分用户取消与网络中断。
+ * @returns 归一化后的异常。
+ * @author zhenghq
+ */
+function normalizeSegmentError(error: unknown, signal?: AbortSignal): Error {
+  if (signal?.aborted) return new Error('下载已取消')
+  if (isAbortLikeError(error)) return new Error('网络连接被中断')
+  // Chromium 的 `net::ERR_*` 错误码属于网络层失败，统一转成可重试且可展示
+  // 的中文提示，避免英文错误码直接暴露在设置页。
+  if (error instanceof Error && /net::ERR_/u.test(error.message)) {
+    return new Error('网络连接被中断')
+  }
+  return error instanceof Error ? error : new Error(String(error))
 }
 
 /**
