@@ -38,6 +38,7 @@ import {
 import { normalizeWebReaderUrl, isAllowedWebReaderUrl, sanitizeWebViewBounds } from './webReaderSecurity'
 import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
 import { sendToAliveWebContents } from './webContentsMessaging'
+import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
 import {
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
@@ -104,6 +105,10 @@ export class WebReaderManager {
   private incrementalStopPromise: Promise<unknown> = Promise.resolve()
   private incrementalSeenUnitKeys = new Set<string>()
   private hasExtractedSnapshot = false
+  /** 是否正在「先交还前台、再关闭窗口」的过程中，用于阻止重复关闭。 */
+  private closingWindow = false
+  /** 本次关闭是否已经获准放行 close 事件，避免统一关闭入口被再次拦截。 */
+  private allowWindowClose = false
   private state: WebReaderState
 
   /** 创建网页阅读器管理器。
@@ -123,6 +128,11 @@ export class WebReaderManager {
    */
   async open(url?: string): Promise<void> {
     if (!this.options.getSettings().webTranslationEnabled) throw new Error('网页全文翻译已在设置中关闭')
+    // 正在交还前台并关闭时不再复用即将销毁的窗口，避免关闭回调把新请求一起关掉。
+    if (this.closingWindow) return
+    // 必须在窗口 show()/focus() 之前等待源应用快照，否则读到的会是本应用自己，
+    // 关闭阅读器时就没有可交还的目标，macOS 会把设置页提升为 key window 顶到最前。
+    await rememberFrontmostAppIfInactiveAsync()
     await this.ensureWindow()
     this.window?.show()
     this.window?.focus()
@@ -177,8 +187,34 @@ export class WebReaderManager {
    * @author zhenghq
    */
   close(): void {
+    const window = this.window
+    if (!window || window.isDestroyed()) return
     this.cancel()
-    this.window?.close()
+    if (this.closingWindow) return
+    this.closingWindow = true
+    // 阅读器通常是应用内最后一个 key window：直接关闭会让 macOS 把设置页提升为
+    // key window 并顶到其它应用之上，因此先交还前台、确认失活后再销毁窗口。
+    handBackFrontmostThen(window, () => {
+      this.closingWindow = false
+      if (window.isDestroyed()) return
+      this.allowWindowClose = true
+      window.close()
+    })
+  }
+
+  /**
+   * 应用退出时立即销毁阅读器，不再交还前台。
+   * 退出流程中应用整体结束，交还会额外激活源应用，反而干扰系统退出动画。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  dispose(): void {
+    this.cancel()
+    const window = this.window
+    if (!window || window.isDestroyed()) return
+    this.allowWindowClose = true
+    this.closingWindow = false
+    window.destroy()
   }
 
   /** 导航到 HTTP(S) URL。
@@ -794,6 +830,14 @@ export class WebReaderManager {
     this.view = view
     this.options.onWindowStateChanged?.(true)
     this.bindRemoteEvents(view)
+    this.allowWindowClose = false
+    this.closingWindow = false
+    window.on('close', (event) => {
+      if (this.allowWindowClose) return
+      // 标题栏、快捷键或系统关闭都必须先交还前台，避免设置页被提升到最前。
+      event.preventDefault()
+      this.close()
+    })
     window.on('closed', () => this.disposeWindow(window, view))
     window.webContents.once('did-finish-load', () => this.emitState())
     this.mode = this.options.getSettings().webTranslationDefaultMode
@@ -1002,6 +1046,8 @@ export class WebReaderManager {
     // BrowserWindow 的 closed 事件触发时其 WebContents 已进入销毁流程，先断开引用，
     // 避免取消增量任务时 emitState 继续向已销毁的壳窗口发送消息。
     this.window = null
+    this.closingWindow = false
+    this.allowWindowClose = false
     this.options.onWindowStateChanged?.(false)
     this.invalidateActiveJob(true)
     this.stopPageChangePolling()

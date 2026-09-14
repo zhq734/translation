@@ -4,6 +4,11 @@ import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, typ
 export interface WindowControlRegistrationOptions {
   /** 判断窗口是否允许由 Renderer 控制。 */
   isAllowedWindow(window: BrowserWindow): boolean
+  /**
+   * 自定义窗口关闭处理；缺省直接调用 `window.close()`。
+   * 网页阅读器需要先交还 macOS 前台再关闭窗口，不能走原生直接关闭。
+   */
+  closeWindow?(window: BrowserWindow): void
 }
 
 /** 已绑定最大化状态监听的 Renderer 及其清理方法。 */
@@ -78,7 +83,14 @@ export function registerWindowControls(options: WindowControlRegistrationOptions
     else window.maximize()
   })
   ipcMain.on('window:close', (event) => {
-    resolveWindow(event)?.close()
+    const window = resolveWindow(event)
+    if (!window) return
+    const closeWindow = options.closeWindow
+    if (closeWindow) {
+      closeWindow(window)
+      return
+    }
+    window.close()
   })
   ipcMain.handle('window:is-maximized', (event) => resolveWindow(event)?.isMaximized() ?? false)
 }

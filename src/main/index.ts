@@ -65,7 +65,8 @@ import {
   handBackFrontmostThen,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
-  rememberFrontmostAppIfInactive
+  rememberFrontmostAppIfInactive,
+  rememberFrontmostAppIfInactiveAsync
 } from './macForeground'
 import {
   createSelectionButton,
@@ -203,7 +204,7 @@ import type {
   WebViewBounds
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
-import { resolveMacOSDockPresentation } from './dockVisibility'
+import { resolveMacOSDockPresentation, type MacOSDockPresentation } from './dockVisibility'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import {
   buildLinuxAutostartEntry,
@@ -275,6 +276,13 @@ let pendingOcrSelectionReady: {
 let screenshotToastWin: BrowserWindow | null = null
 let screenshotToastHideTimer: NodeJS.Timeout | null = null
 let dockIconEnabled = false
+/**
+ * 最近一次成功应用的 macOS 激活策略与 Dock 可见性。
+ * 用于跳过重复切换：关闭网页翻译等场景会重复刷新 Dock 状态，
+ * 而重复调用 `setActivationPolicy` / `dock.hide()` 会再次隐藏窗口，
+ * 迫使下面的保留逻辑重新 `show()+focus()` 设置页，表现为设置页无缘无故弹到最前。
+ */
+let appliedMacOSDockPresentation: MacOSDockPresentation | null = null
 let webReaderWindowOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
@@ -601,12 +609,20 @@ function loadMacOSDockIcon(): NativeImage {
 async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
-  const settingsWindowToPreserve = settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() ? settingsWin : null
   const presentation = resolveMacOSDockPresentation({
     showDockIcon,
     settingsOpen: Boolean(settingsWin && !settingsWin.isDestroyed()),
     webReaderOpen: webReaderWindowOpen
   })
+  // 呈现方式没有变化时必须直接返回：关闭网页翻译等场景会重复刷新 Dock 状态，
+  // 重复切换激活策略会再次隐藏窗口，迫使下面的保留逻辑把设置页重新显示并聚焦。
+  if (
+    appliedMacOSDockPresentation?.policy === presentation.policy &&
+    appliedMacOSDockPresentation.dockVisible === presentation.dockVisible
+  ) {
+    return
+  }
+  const settingsWindowToPreserve = settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() ? settingsWin : null
   app.setActivationPolicy(presentation.policy)
   if (presentation.dockVisible) {
     try {
@@ -615,9 +631,11 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
     } catch (error) {
       console.error('[main] 恢复 macOS Dock 图标失败:', error)
     }
+    appliedMacOSDockPresentation = presentation
     return
   }
   await app.dock?.hide()
+  appliedMacOSDockPresentation = presentation
   if (
     settingsWindowToPreserve &&
     settingsWin === settingsWindowToPreserve &&
@@ -1478,7 +1496,10 @@ function handleTranslateError(
  * @returns 无返回值。
  * @author zhenghq
  */
-function openManualTranslation(): void {
+async function openManualTranslation(): Promise<void> {
+  // 托盘入口触发时本应用未必已在前台：弹窗 show() 会激活应用，
+  // 若没有源应用记录，关闭弹窗时系统会把设置页提升为 key window 顶到最前。
+  await rememberFrontmostAppIfInactiveAsync()
   setPopupPinned(true)
   showManualTranslationPopup()
 }
@@ -3295,6 +3316,8 @@ async function submitOcrSelection(value: unknown): Promise<void> {
  * @author zhenghq
  */
 async function translateClipboardImage(): Promise<void> {
+  // 与手动翻译一致：显示弹窗前先记录源应用，供弹窗隐藏时交还前台。
+  await rememberFrontmostAppIfInactiveAsync()
   const settings = getSettings()
   const anchor = screen.getCursorScreenPoint()
   const requestId = ++latestTranslationRequest
@@ -3940,7 +3963,16 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
  */
 function registerIpc(): void {
   registerWindowControls({
-    isAllowedWindow: (window) => window === settingsWin || Boolean(webReader?.ownsWindow(window))
+    isAllowedWindow: (window) => window === settingsWin || Boolean(webReader?.ownsWindow(window)),
+    closeWindow: (window) => {
+      // 网页阅读器关闭前必须先把 macOS 前台交还给源应用，
+      // 否则最后一个 key window 销毁时系统会把设置页提升到最前。
+      if (webReader?.ownsWindow(window)) {
+        webReader.close()
+        return
+      }
+      window.close()
+    }
   })
   ipcMain.on('popup:copy', (_event, text: unknown) => {
     clipboard.writeText(String(text ?? ''))
@@ -4046,7 +4078,7 @@ function registerIpc(): void {
   ipcMain.on('ocr-clipboard:translate', () => {
     void translateClipboardImage()
   })
-  ipcMain.on('manual-translate:open-request', () => openManualTranslation())
+  ipcMain.on('manual-translate:open-request', () => void openManualTranslation())
   ipcMain.handle('manual-translate:submit', (_event, request: unknown) =>
     translateManualRequest(request)
   )
@@ -4220,7 +4252,7 @@ function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     { label: `划词翻译   ${settings.hotkey}`, enabled: false },
     { type: 'separator' },
-    { label: '手动翻译…', click: () => openManualTranslation() },
+    { label: '手动翻译…', click: () => void openManualTranslation() },
     { label: '打开网页翻译…', enabled: settings.webTranslationEnabled, click: () => {
       void getWebReader().open().catch((error: unknown) => {
         const message = error instanceof Error ? error.message : '无法打开网页阅读器'
@@ -4265,7 +4297,7 @@ function refreshTrayMenu(): void {
  * @author zhenghq
  */
 function cleanupBeforeQuit(): void {
-  webReader?.close()
+  webReader?.dispose()
   webReader = null
   selectionInteraction.invalidate()
   selectionListenerController.stop()

@@ -149,6 +149,23 @@ export function rememberFrontmostAppIfInactive(): void {
 }
 
 /**
+ * 在「本应用尚未占用前台」时异步记录待交还应用，并等待记录完成（仅 macOS）。
+ *
+ * 打开网页阅读器等会立刻调用 `show()/focus()` 的窗口前必须等待本函数返回：
+ * 快照读取走子进程，若不等它结束，`show()` 已经把本应用激活成最前应用，
+ * 读到的就是本应用自己，关闭窗口时便没有可交还的目标。
+ * 已有待交还记录时不覆盖：一次前台占用期间只认第一次记下的源应用。
+ * @returns 记录流程完成时结束的 Promise。
+ * @author zhenghq
+ */
+export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {
+  if (process.platform !== 'darwin') return
+  if (pendingReturnApp) return
+  if (BrowserWindow.getFocusedWindow() !== null) return
+  rememberFrontmostApp(await readFrontmostAppSnapshot())
+}
+
+/**
  * 丢弃待交还记录（仅 macOS）。
  *
  * 本应用已经因为用户点击其它应用而失去最前状态时，记录即失效；
