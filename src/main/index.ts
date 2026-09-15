@@ -1300,14 +1300,9 @@ function handleSelectionPointerDown(point: { x: number; y: number }): PointerDow
     // 避免 mouseup 时再被拼成一次跨应用划词。
     focusedOwnWindowHit
   })
-  // 外部应用的正常按下是绝对多数，逐条记录会让同步写盘成为常态开销；
-  // 只有 consume/ignore 才代表划词起点被自有界面接管，需要留下可追溯的分类依据。
-  if (result !== 'track') {
-    const focusedOwnWindowDetail = focusedOwnWindowHit ? describeFocusedOwnWindowHit(point) : null
-    console.log(
-      `[selection] pointerdown 分类 result=${result} ocr=${ocrActive} button=${selectionButtonHit} popup=${popupHit} focusedOwnWindow=${focusedOwnWindowHit}${focusedOwnWindowDetail ? ` focusedHit=${focusedOwnWindowDetail}` : ''} x=${Math.round(point.x)} y=${Math.round(point.y)}`
-    )
-  } else {
+  // 外部应用的正常按下是绝对多数，不逐条记录；只有按 track 继续跟踪、
+  // 却落在已失活自有窗口矩形内的场景需要留痕，用于实机确认门禁生效。
+  if (result === 'track') {
     // 应用失活却落在自有窗口矩形内，正是修复前划词被静默吞掉的场景；
     // 这里按 track 继续跟踪说明门禁生效，记录一行便于实机确认。
     const suppressedDetail = describeSuppressedOwnWindowHit(point)

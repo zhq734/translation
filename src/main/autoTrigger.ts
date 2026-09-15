@@ -154,14 +154,7 @@ function onMouseUp(e: MouseSample): void {
     createObservedPointerSample(resolveMousePoint(e), Date.now()),
     e.clicks ?? 1
   )
-  if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) {
-    // distance=0 的瞬时点击占绝大多数且与划词无关，只在确实拖动过却未达阈值时记录。
-    if (gesture.distance < 1) return
-    console.log(
-      `[autoTrigger] 划词未达阈值 reason=threshold clicks=${e.clicks ?? 1} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms startX=${Math.round(gesture.start.x)} startY=${Math.round(gesture.start.y)} endX=${Math.round(gesture.end.x)} endY=${Math.round(gesture.end.y)}`
-    )
-    return
-  }
+  if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) return
 
   console.log(
     `[autoTrigger] 检测到选区 clicks=${e.clicks ?? 1} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms`

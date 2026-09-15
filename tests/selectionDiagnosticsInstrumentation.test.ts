@@ -17,19 +17,18 @@ function readFunctionSource(source: string, functionName: string): string {
   return source.slice(start, end < 0 ? source.length : end)
 }
 
-test('划词起点被自有界面接管时应保留指针分类诊断日志', () => {
+test('划词起点分类收敛：非 track 分类不再逐条写盘', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const downSource = readFunctionSource(source, 'handleSelectionPointerDown')
 
   assert.notEqual(downSource, '')
-  assert.match(downSource, /console\.log\(/)
-  // 外部应用的正常按下是绝对多数，必须按 result 收敛，避免每次点击都同步写盘。
-  assert.match(downSource, /if \(result !== 'track'\)/u, '仅在非 track 时记录')
-  assert.match(downSource, /focusedOwnWindow=/u)
-  assert.match(downSource, /focusedHit=/u)
+  // 外部应用的正常按下是绝对多数，pointerdown 分类日志已移除，
+  // 避免每次点击都同步写盘；仅保留失活自有窗口矩形的抑制留痕。
+  assert.doesNotMatch(downSource, /pointerdown 分类/u)
+  assert.match(downSource, /if \(result === 'track'\)/u, '仅在 track 时检查是否需要留痕')
 })
 
-test('鼠标松开未触发划词时应记录静默原因与阈值信息', () => {
+test('鼠标松开未触发划词时应记录静默原因', () => {
   const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
   const upSource = readFunctionSource(source, 'onMouseUp')
 
@@ -37,11 +36,8 @@ test('鼠标松开未触发划词时应记录静默原因与阈值信息', () =>
   assert.match(upSource, /modifier-held/u)
   assert.match(upSource, /no-start/u)
   assert.match(upSource, /no-callback/u)
-  assert.match(upSource, /划词未达阈值/u)
-  assert.match(upSource, /distance/u)
-  assert.match(upSource, /duration/u)
-  // 瞬时单击占绝大多数，阈值日志必须按拖动距离收敛，否则日志会持续增长。
-  assert.match(upSource, /gesture\.distance < 1/u, 'distance=0 的点击不应记录')
+  // 阈值未达的高频日志已移除，只保留低频的静默原因。
+  assert.doesNotMatch(upSource, /划词未达阈值/u)
 })
 
 test('选区手势被忽略时应记录 OCR、自有窗口、弹窗与按钮命中条件', () => {
