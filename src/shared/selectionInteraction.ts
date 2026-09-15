@@ -29,13 +29,30 @@ export interface DockActivationContext {
   ocrVisible: boolean
   listenerPausedForOcr: boolean
   internalActivationLeaseUntil: number
+  /** 是否处于内部窗口收尾抑制期（交还前台 → 隐藏弹窗 → hide 生效）。 */
+  internalWindowTeardown?: boolean
   now?: number
+}
+
+/** Dock 激活判定所依据的各检查项取值，供放行日志记录。 */
+export interface DockActivationChecks {
+  selectionInteractionActive: boolean
+  selectionButtonVisible: boolean
+  popupVisible: boolean
+  popupHandingBackFront: boolean
+  hiServicesRepairPromptVisible: boolean
+  ocrVisible: boolean
+  listenerPausedForOcr: boolean
+  internalActivationLeaseActive: boolean
+  internalWindowTeardown: boolean
 }
 
 /** Dock 激活判定结果。 */
 export interface DockActivationDecision {
   allowed: boolean
   reason?: string
+  /** 本次判定所依据的各检查项取值；放行与拦截时都会返回。 */
+  checks?: DockActivationChecks
 }
 
 /** 鼠标按下分类输入。 */
@@ -230,16 +247,33 @@ export function resetPointerTrackingForWindowBlur(
  */
 export function canTreatActivateAsDockLaunch(context: DockActivationContext): DockActivationDecision {
   const now = context.now ?? Date.now()
-  const checks: Array<[boolean, string]> = [
-    [context.interactionState !== 'idle', 'selection-interaction-active'],
-    [context.selectionButtonVisible, 'selection-button-visible'],
-    [context.popupVisible, 'translation-popup-visible'],
-    [context.popupHandingBackFront, 'translation-popup-handing-back-front'],
-    [context.hiServicesRepairPromptVisible, 'hiservices-repair-prompt-visible'],
-    [context.ocrVisible, 'ocr-selection-visible'],
-    [context.listenerPausedForOcr, 'ocr-listener-paused'],
-    [context.internalActivationLeaseUntil > now, 'internal-activation-lease']
+  const internalWindowTeardown = context.internalWindowTeardown === true
+  // 收尾抑制期由内部窗口显隐确定性触发，是最高优先级的硬拦截：
+  // 此时无需再逐项判定，直接按内部激活忽略即可。
+  if (internalWindowTeardown) return { allowed: false, reason: 'internal-window-teardown' }
+  const checks: DockActivationChecks = {
+    selectionInteractionActive: context.interactionState !== 'idle',
+    selectionButtonVisible: context.selectionButtonVisible,
+    popupVisible: context.popupVisible,
+    popupHandingBackFront: context.popupHandingBackFront,
+    hiServicesRepairPromptVisible: context.hiServicesRepairPromptVisible,
+    ocrVisible: context.ocrVisible,
+    listenerPausedForOcr: context.listenerPausedForOcr,
+    internalActivationLeaseActive: context.internalActivationLeaseUntil > now,
+    internalWindowTeardown
+  }
+  const blockers: Array<[boolean, string]> = [
+    [checks.selectionInteractionActive, 'selection-interaction-active'],
+    [checks.selectionButtonVisible, 'selection-button-visible'],
+    [checks.popupVisible, 'translation-popup-visible'],
+    [checks.popupHandingBackFront, 'translation-popup-handing-back-front'],
+    [checks.hiServicesRepairPromptVisible, 'hiservices-repair-prompt-visible'],
+    [checks.ocrVisible, 'ocr-selection-visible'],
+    [checks.listenerPausedForOcr, 'ocr-listener-paused'],
+    [checks.internalActivationLeaseActive, 'internal-activation-lease']
   ]
-  const blocked = checks.find(([active]) => active)
-  return blocked ? { allowed: false, reason: blocked[1] } : { allowed: true }
+  const blocked = blockers.find(([active]) => active)
+  return blocked
+    ? { allowed: false, reason: blocked[1], checks }
+    : { allowed: true, checks }
 }

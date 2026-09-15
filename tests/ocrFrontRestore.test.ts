@@ -190,3 +190,55 @@ test('框选提交时 macOS 先显示识别弹窗再收起覆盖窗口', () => {
     '选区无效的早退路径也必须收起覆盖窗口'
   )
 })
+
+test('取词失败分支不得在弹窗隐藏完成前清零内部激活租约', () => {
+  const start = mainSource.indexOf('if (!result.text) {')
+  const end = mainSource.indexOf('if (shouldPromptHiServicesRepair)', start)
+  assert.ok(start >= 0 && end > start, '应能定位取词失败分支')
+  const failureSource = mainSource.slice(start, end)
+
+  // releaseSelectionInteraction() 会清零 internalActivationLeaseUntil，
+  // 等于在失败提示弹窗的隐藏收尾开始前就拆掉唯一的时间维度防线。
+  assert.doesNotMatch(
+    failureSource,
+    /if \(interactionToken !== undefined\) releaseSelectionInteraction\(interactionToken\)/u,
+    '失败分支不得直接调用会清零租约的 releaseSelectionInteraction'
+  )
+  assert.match(
+    failureSource,
+    /releaseSelectionInteractionAfterPopupHidden/u,
+    '失败分支必须改用不提前清零租约的释放方式'
+  )
+})
+
+test('延迟释放入口必须把租约清零绑定到弹窗隐藏收尾之后', () => {
+  assert.match(
+    mainSource,
+    /function releaseSelectionInteractionAfterPopupHidden\(/u,
+    '必须提供与弹窗收尾绑定的延迟释放入口'
+  )
+  const releaseSource = extractFunction(mainSource, 'function releaseSelectionInteractionAfterPopupHidden(')
+  assert.match(releaseSource, /internalActivationLeaseUntil/u, '释放入口负责清零内部激活租约')
+  assert.ok(
+    releaseSource.indexOf('releaseSelectionInteraction(') > releaseSource.indexOf('internalActivationLeaseUntil'),
+    '必须先解除租约覆盖再释放交互状态'
+  )
+})
+
+test('按钮取词流程的 finally 兜底不得抢在弹窗隐藏前清零租约', () => {
+  const buttonSource = extractFunction(
+    mainSource,
+    'async function translateSelectionButton(): Promise<void> {'
+  )
+  const finallyStart = buttonSource.indexOf('} finally {')
+  assert.ok(finallyStart > 0, '按钮取词流程必须保留 finally 兜底')
+  const finallySource = buttonSource.slice(finallyStart)
+
+  // 失败分支把释放推迟到弹窗隐藏之后，但交互状态在延迟期间仍是 capturing；
+  // 若 finally 兜底照旧释放，租约会在弹窗收尾开始前就被清零，延迟释放形同虚设。
+  assert.match(
+    finallySource,
+    /pendingPopupReleaseToken/u,
+    'finally 兜底必须先排除正在等待弹窗隐藏收尾的 token'
+  )
+})

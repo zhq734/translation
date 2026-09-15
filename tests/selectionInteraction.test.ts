@@ -165,3 +165,61 @@ test('设置窗口失焦只清理窗口内旧起点，不得清除先到达的�
     modifiersHeld: false
   })
 })
+
+test('内部窗口收尾抑制期内的 activate 必须被抑制，真实 Dock 启动仍放行', () => {
+  const base = {
+    interactionState: 'idle' as const,
+    selectionButtonVisible: false,
+    popupVisible: false,
+    popupHandingBackFront: false,
+    hiServicesRepairPromptVisible: false,
+    ocrVisible: false,
+    listenerPausedForOcr: false,
+    internalActivationLeaseUntil: 0,
+    now: 1000
+  }
+
+  // 收尾抑制期覆盖「交还前台 → 隐藏弹窗 → hide 生效」整段窗口期，
+  // 期间到达的 activate 不能按 Dock 启动处理。
+  assert.deepEqual(
+    canTreatActivateAsDockLaunch({ ...base, internalWindowTeardown: true }),
+    { allowed: false, reason: 'internal-window-teardown' }
+  )
+  // 抑制期结束且其余检查空闲时，真实 Dock 启动必须放行。
+  assert.equal(canTreatActivateAsDockLaunch({ ...base, internalWindowTeardown: false }).allowed, true)
+})
+
+test('activate 放行时必须返回判定依据，供日志区分误放行与真实 Dock 启动', () => {
+  const base = {
+    interactionState: 'idle' as const,
+    selectionButtonVisible: false,
+    popupVisible: false,
+    popupHandingBackFront: false,
+    hiServicesRepairPromptVisible: false,
+    ocrVisible: false,
+    listenerPausedForOcr: false,
+    internalActivationLeaseUntil: 0,
+    internalWindowTeardown: false,
+    now: 1000
+  }
+
+  const allowed = canTreatActivateAsDockLaunch(base)
+  assert.equal(allowed.allowed, true)
+  // 放行路径原本完全静默：必须带回各检查项取值，才能事后判定是否存在内部 activate 误放行。
+  assert.deepEqual(allowed.checks, {
+    selectionInteractionActive: false,
+    selectionButtonVisible: false,
+    popupVisible: false,
+    popupHandingBackFront: false,
+    hiServicesRepairPromptVisible: false,
+    ocrVisible: false,
+    listenerPausedForOcr: false,
+    internalActivationLeaseActive: false,
+    internalWindowTeardown: false
+  })
+
+  const blocked = canTreatActivateAsDockLaunch({ ...base, popupVisible: true })
+  assert.equal(blocked.allowed, false)
+  assert.equal(blocked.reason, 'translation-popup-visible')
+  assert.equal(blocked.checks?.popupVisible, true)
+})

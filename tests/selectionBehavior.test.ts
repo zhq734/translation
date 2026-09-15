@@ -706,7 +706,7 @@ test('点击“译”按钮应在全局鼠标按下阶段直接激活并阻止�
 
   assert.match(
     pointerDownSource,
-    /ocrActive:[\s\S]*?selectionButtonHit:\s*isPointInsideSelectionButton\(point\)[\s\S]*?if\s*\(result === 'consume' && isPointInsideSelectionButton\(point\)\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?if\s*\(result === 'consume'\)\s*return result/u
+    /const ocrActive =[\s\S]*?const selectionButtonHit = isPointInsideSelectionButton\(point\)[\s\S]*?classifySelectionPointerDown\(\{[\s\S]*?ocrActive,[\s\S]*?selectionButtonHit,[\s\S]*?\}\)[\s\S]*?if\s*\(result === 'consume' && selectionButtonHit\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?if\s*\(result === 'consume'\)\s*return result/u
   )
   assert.doesNotMatch(pointerDownSource, /process\.platform\s*===\s*'win32'/u)
   assert.match(
@@ -978,14 +978,23 @@ test('落在应用自有窗口内的鼠标动作不应被当成划词手势', ()
 test('划词手势处理只应排除持有焦点的应用自有窗口，后台设置窗口不得屏蔽其他应用划词', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
-  // 只有当前持有焦点的自有窗口参与排除；仅按矩形位置判断会让后台设置窗口挡住其他应用的划词
-  assert.match(source, /function getFocusedOwnWindowBounds/u)
-  const boundsStart = source.indexOf('function getFocusedOwnWindowBounds')
-  const boundsEnd = source.indexOf('\n}', boundsStart)
+  // 候选窗口只在可见且持有焦点时提供边界；仅按矩形位置判断会让后台设置窗口挡住其他应用的划词。
+  // 应用失活后 macOS 仍可能让 key window 报告 isFocused()===true，
+  // 因此还必须叠加应用级激活事件门禁，避免后台窗口吞掉其他应用里的划词起点。
+  assert.match(source, /function resolveOwnWindowExclusionState/u)
+  const boundsStart = source.indexOf('function resolveOwnWindowExclusionState')
+  const boundsEnd = source.indexOf('/**', boundsStart + 1)
   const boundsSource = source.slice(boundsStart, boundsEnd)
-  assert.match(boundsSource, /settingsWin/u)
-  assert.match(boundsSource, /isFocused\(\)/u)
-  assert.match(boundsSource, /webReader\?\.isWindowFocused\(\)/u)
+  assert.match(boundsSource, /resolveOwnWindowExclusion\(/u)
+  assert.match(boundsSource, /isMacAppActiveByEvents\(\)/u)
+
+  const candidatesStart = source.indexOf('function collectOwnWindowCandidates')
+  assert.notEqual(candidatesStart, -1, '应存在自有窗口候选收集函数')
+  const candidatesEnd = source.indexOf('\n}', candidatesStart)
+  const candidatesSource = source.slice(candidatesStart, candidatesEnd)
+  assert.match(candidatesSource, /settingsWin/u)
+  assert.match(candidatesSource, /isFocused\(\)/u)
+  assert.match(candidatesSource, /webReader\?\.isWindowFocused\(\)/u)
 
   const handlerStart = source.indexOf('function handleSelectionGesture')
   const handlerEnd = source.indexOf('/**', handlerStart + 1)

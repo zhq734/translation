@@ -16,7 +16,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
@@ -70,6 +70,20 @@ export function isMacAppActive(): boolean {
   // 有自有窗口持有焦点时应用必然处于最前，优先采信这个同步信号；
   // 其余情况（例如 key window 是原生对话框）回退到事件跟踪的激活状态。
   if (BrowserWindow.getFocusedWindow() !== null) return true
+  return macAppActive
+}
+
+/**
+ * 返回仅由 macOS 应用激活事件跟踪的最前状态。
+ *
+ * 与 `isMacAppActive()` 的区别：后者会优先采信 `BrowserWindow.getFocusedWindow()`，
+ * 而应用失活后系统可能仍让 key window 保持焦点，导致该信号误报为 true。
+ * 判断「自有窗口的矩形能否吞掉这次全局鼠标事件」时不能容忍这种误报，
+ * 必须使用不带窗口焦点回退的纯事件状态。
+ * @returns 最近一次应用激活事件表明本应用处于最前时返回 true。
+ * @author zhenghq
+ */
+export function isMacAppActiveByEvents(): boolean {
   return macAppActive
 }
 
@@ -157,6 +171,72 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
 let pendingReturnApp: FrontmostAppSnapshot | null = null
 
 /**
+ * 是否处于「内部窗口收尾抑制期」。
+ *
+ * 覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。此期间到达的 activate
+ * 属于内部窗口显隐引发的事件，必须按内部激活抑制，不能命中 Dock 入口把后台窗口顶到最前。
+ */
+let internalWindowTeardownActive = false
+
+/**
+ * 进入内部窗口收尾抑制期。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function beginInternalWindowTeardown(): void {
+  internalWindowTeardownActive = true
+}
+
+/**
+ * 退出内部窗口收尾抑制期。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function endInternalWindowTeardown(): void {
+  internalWindowTeardownActive = false
+}
+
+/**
+ * 返回当前是否处于内部窗口收尾抑制期。
+ * @returns 处于抑制期时返回 true。
+ * @author zhenghq
+ */
+export function isInternalWindowTeardownActive(): boolean {
+  return internalWindowTeardownActive
+}
+
+/**
+ * 在会激活本应用的窗口 `show()` 之前记录源应用。
+ *
+ * `rememberFrontmostAppIfInactive()` 是异步读子进程的，无法在同步的 `showPopup()` 内使用；
+ * 而「上一轮结果弹窗已经把本应用激活」时，本轮取词再调用 `rememberFrontmostAppIfInactive()`
+ * 会因为应用内已有焦点窗口而跳过，收尾便没有可交还目标，只能落到实测不稳定的
+ * `app.hide() → app.show()` 兜底。因此在激活显示前同步补一次快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function rememberFrontmostAppBeforeActivation(): void {
+  if (process.platform !== 'darwin') return
+  if (pendingReturnApp) return
+  if (isMacAppActive()) return
+  try {
+    const asn = execFileSync('lsappinfo', ['front'], {
+      encoding: 'utf8',
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    }).trim()
+    if (!asn) return
+    const info = execFileSync('lsappinfo', ['info', asn], {
+      encoding: 'utf8',
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    })
+    const snapshot = parseFrontmostAppSnapshot(info, process.pid)
+    if (snapshot) pendingReturnApp = snapshot
+  } catch {
+    // 读取失败时保持既有记录不变，收尾会退化到安全让出路径。
+  }
+}
+
+/**
  * 记录待交还的前台应用（仅 macOS）。
  * @param snapshot 本应用占用前台前的最前应用快照；为 null 时忽略。
  * @returns 无返回值。
@@ -179,7 +259,9 @@ export function rememberFrontmostApp(snapshot: FrontmostAppSnapshot | null): voi
 export function rememberFrontmostAppIfInactive(): void {
   if (process.platform !== 'darwin') return
   if (pendingReturnApp) return
-  if (BrowserWindow.getFocusedWindow() !== null) return
+  // 应用内存在焦点窗口（例如上一轮结果弹窗）不代表本应用占用 macOS 前台：
+  // 据此跳过会漏记源应用，使收尾失去可靠的 open -b 交还目标。
+  if (isMacAppActive()) return
   void readFrontmostAppSnapshot().then(rememberFrontmostApp)
 }
 
@@ -196,7 +278,8 @@ export function rememberFrontmostAppIfInactive(): void {
 export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {
   if (process.platform !== 'darwin') return
   if (pendingReturnApp) return
-  if (BrowserWindow.getFocusedWindow() !== null) return
+  // 同同步入口：必须以应用级激活状态判断，而不是应用内是否存在焦点窗口。
+  if (isMacAppActive()) return
   rememberFrontmostApp(await readFrontmostAppSnapshot())
 }
 
@@ -358,8 +441,11 @@ export function handBackFrontmostApp(): Promise<boolean> {
  *
  * 直接隐藏应用内 key window 会让系统把应用内下一个窗口（网页阅读器或设置页）
  * 提升为 key window，只要本应用仍是最前应用，该窗口就会盖到用户原本在用的应用之上。
- * 这里改用「隐藏应用→等待系统把前台还给其它应用→执行收尾→非激活恢复应用」，
+ * 这里改用「隐藏应用→等待系统把前台还给其它应用→非激活恢复应用→执行收尾」，
  * 窗口只会在屏上短暂消失，收尾后的窗口层级仍保持在用户应用之后。
+ * 恢复必须早于收尾：app.hide() 隐藏整个应用期间，弹窗的 isVisible() 也返回 false，
+ * 收尾函数会命中可见性短路分支而跳过真正的 win.hide()；随后的 app.show() 再把弹窗
+ * 恢复可见，表现为点关闭关不掉。
  * 先等待真正失活再收尾是必须的：真机 CGWindowList 采样验证过，
  * 未等待失活就收尾时阅读器仍会被顶到最前（表现为闪一下并抢占前台）。
  * @param run 失活后要执行的收尾动作（隐藏窗口或降级为非激活显示）。
@@ -381,14 +467,17 @@ export function yieldFrontmostAppThen(run: () => void): Promise<boolean> {
     const finish = (): void => {
       if (finished) return
       finished = true
-      run()
       // app.show() 走 unhideWithoutActivation：只恢复窗口可见性，不激活应用，
       // 也不会把窗口提到用户当前应用之上。
       app.show()
+      // 整应用隐藏期间弹窗的 isVisible() 同样为 false，收尾函数会因可见性短路
+      // 跳过真正的 win.hide()，必须先非激活恢复应用再收尾，否则随后的整体恢复
+      // 会把弹窗重新显示出来，用户表现为「点关闭后弹窗关不掉」。
+      run()
       resolve(true)
     }
     // app.hide() 会把应用内所有窗口（含正在展示的提示弹窗）一起隐藏，
-    // 因此显隐次序固定为「先隐藏应用→等待失活→收尾→恢复应用」。
+    // 因此显隐次序固定为「先隐藏应用→等待失活→非激活恢复应用→收尾」。
     app.hide()
     const deadline = Date.now() + FRONT_YIELD_TIMEOUT_MS
     const poll = (): void => {

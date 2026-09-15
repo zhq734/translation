@@ -200,7 +200,17 @@ export class WebReaderManager {
    */
   focusExistingWindow(): boolean {
     if (!this.window || this.window.isDestroyed()) return false
+    // 最小化的窗口 isVisible() 仍为 true，必须单独处理，否则会命中下面的早退分支而无法恢复。
+    const wasMinimized = this.window.isMinimized()
     if (this.window.isMinimized()) this.window.restore()
+    if (wasMinimized) {
+      this.window.show()
+      this.window.focus()
+      return true
+    }
+    // 已可见且未最小化时直接视为已处理：误放行的内部 activate 不得把后台
+    // 阅读器 show()+focus() 顶到用户应用之上。不可见时才真正恢复显示。
+    if (this.window.isVisible() && !this.window.isMinimized()) return true
     this.window.show()
     this.window.focus()
     return true

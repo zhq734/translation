@@ -36,7 +36,9 @@ export class SelectionListenerController {
    * @author zhenghq
    */
   setMode(mode: TriggerMode): void {
+    const changed = this.mode !== mode
     this.mode = mode
+    if (changed) this.logState(`模式切换为 ${mode}`)
     this.refresh()
   }
 
@@ -49,7 +51,10 @@ export class SelectionListenerController {
   pause(reason: SelectionListenerPauseReason): void {
     const wasPaused = this.pauseReasons.has(reason)
     this.pauseReasons.add(reason)
-    if (!wasPaused) this.refresh()
+    if (!wasPaused) {
+      this.logState(`新增暂停原因 ${reason}`)
+      this.refresh()
+    }
   }
 
   /**
@@ -60,6 +65,7 @@ export class SelectionListenerController {
    */
   resume(reason: SelectionListenerPauseReason): void {
     if (!this.pauseReasons.delete(reason)) return
+    this.logState(`移除暂停原因 ${reason}`)
     this.refresh()
   }
 
@@ -86,6 +92,7 @@ export class SelectionListenerController {
    * @author zhenghq
    */
   restart(): void {
+    this.logState('请求重启划词监听')
     if (this.running) this.options.stop()
     this.running = false
     this.refresh()
@@ -98,6 +105,7 @@ export class SelectionListenerController {
    */
   stop(): void {
     this.pauseReasons.add('shutdown')
+    this.logState('停止划词监听')
     if (this.running) this.options.stop()
     this.running = false
   }
@@ -128,6 +136,20 @@ export class SelectionListenerController {
   private start(): void {
     const started = this.options.start()
     this.running = started
+    this.logState(started ? '划词监听已启动' : '划词监听启动失败')
     if (!started) this.options.log?.('[selectionListener] 全局划词监听启动失败，后续 refresh 可重试')
+  }
+
+  /**
+   * 输出监听期望状态与暂停原因快照，便于排查划词无响应时的监听生命周期。
+   * @param action 本次状态变更描述。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private logState(action: string): void {
+    const reasons = [...this.pauseReasons]
+    this.options.log?.(
+      `[selectionListener] ${action} mode=${this.mode} running=${this.running} pauseReasons=[${reasons.join(',')}]`
+    )
   }
 }

@@ -188,10 +188,20 @@ test('安全让出前台必须先确认应用失活再收尾，最后非激活�
   )
   // 未等待失活就收尾仍会把阅读器顶到最前（真机 CGWindowList 采样验证过）。
   assert.match(source, /setTimeout\(poll, FRONT_RETURN_POLL_INTERVAL_MS\)/u, '必须有失活轮询')
-  // 收尾动作与 app.show() 的先后顺序必须固定：先执行收尾，再非激活恢复应用内窗口。
-  assert.ok(
-    source.indexOf('run()') < source.indexOf('app.show()'),
-    '收尾后必须用非激活的 app.show() 恢复应用内窗口'
+  // app.hide() 隐藏整个应用期间，弹窗的 isVisible() 也返回 false，收尾函数会
+  // 命中可见性短路分支而跳过真正的 win.hide()；随后的 app.show() 再把弹窗恢复
+  // 可见，用户表现为「点关闭后弹窗关不掉」。因此必须先非激活恢复应用内窗口，
+  // 让收尾动作在弹窗可见状态下真正执行隐藏。
+  const finishStart = source.indexOf('const finish = ')
+  // 用带缩进的调用语句定位截止点，避免注释中出现的同名文本干扰切片。
+  const finishEnd = source.indexOf('\n    app.hide()', finishStart)
+  assert.ok(finishStart >= 0 && finishEnd > finishStart, '应存在收尾函数与 app.hide() 调用')
+  const finishSource = source.slice(finishStart, finishEnd)
+  // 注释中同样会出现 app.show() 字样，必须按真实调用语句校验先后顺序。
+  assert.match(
+    finishSource,
+    /app\.show\(\)\n(?:\s*\/\/[^\n]*\n)*\s*run\(\)/u,
+    '必须先非激活恢复应用内窗口，再执行收尾动作'
   )
   assert.match(
     source,
@@ -213,4 +223,64 @@ test('原生对话框交还失败时同样必须先安全让出前台', () => {
     /!target \|\| !isProcessAlive\(target\.pid\)[\s\S]*?yieldFrontmostAppThen\(/u,
     '目标缺失或已退出时必须走安全退化路径'
   )
+})
+
+test('弹窗以激活方式显示前必须记录源应用，避免收尾时无目标可交还', () => {
+  const showSource = extractFunction(popupSource, 'export function showPopup(')
+
+  // 上一轮翻译结果弹窗用 win.show() 激活本应用后，本轮取词时 rememberFrontmostAppIfInactive()
+  // 会因为应用内已有焦点窗口而跳过记录，收尾只能落到实测不稳定的 app.hide()→app.show() 兜底。
+  // 因此激活显示之前必须记录源应用，让可靠的 open -b 交还路径真正执行。
+  assert.match(
+    showSource,
+    /if \(activate\) rememberFrontmostAppBeforeActivation\(\)/u,
+    '激活显示前必须记录源应用'
+  )
+  assert.ok(
+    showSource.indexOf('rememberFrontmostAppBeforeActivation()') < showSource.indexOf('win.show()'),
+    '记录源应用必须早于 win.show()'
+  )
+})
+
+test('收尾抑制期必须在隐藏真正生效之后才结束', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
+
+  // win.hide() 异步生效：若在调用 hide 之前就清除标记，收尾期到达的内部事件会看到标记已失效。
+  assert.ok(
+    hideSource.indexOf('hidingAfterFrontReturn = false') > hideSource.indexOf('win?.hide()'),
+    'hidingAfterFrontReturn 必须在 win.hide() 之后才清除'
+  )
+  assert.match(hideSource, /beginInternalWindowTeardown\(\)/u, '收尾开始必须进入抑制期')
+  assert.match(hideSource, /endInternalWindowTeardown\(\)/u, '收尾结束必须退出抑制期')
+})
+
+test('弹窗收尾失败时不得直接隐藏应用内 key window', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
+
+  assert.match(hideSource, /yieldFrontmostAppThen\(/u, '退化回调必须复用安全让出前台逻辑')
+  // 退化分支同样受抑制期保护，且必须在收尾完成后才释放。
+  const fallbackStart = hideSource.indexOf('yieldFrontmostAppThen(')
+  assert.ok(fallbackStart > 0, '必须存在退化分支')
+  assert.ok(
+    hideSource.indexOf('endInternalWindowTeardown()', fallbackStart) > fallbackStart,
+    '退化分支完成后必须释放抑制期'
+  )
+})
+
+test('应用内已有焦点窗口时仍必须记录源应用', () => {
+  const syncSource = extractFunction(
+    macForegroundSource,
+    'export function rememberFrontmostAppIfInactive(): void {'
+  )
+  const asyncSource = extractFunction(
+    macForegroundSource,
+    'export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {'
+  )
+
+  // 应用内存在焦点窗口（例如上一轮结果弹窗）不代表本应用占用 macOS 前台；
+  // 旧实现据此直接 return，导致源应用记录被跳过。
+  assert.doesNotMatch(syncSource, /BrowserWindow\.getFocusedWindow\(\)\s*!==\s*null\)\s*return/u, '不得因应用内焦点窗口跳过记录')
+  assert.doesNotMatch(asyncSource, /BrowserWindow\.getFocusedWindow\(\)\s*!==\s*null\)\s*return/u, '不得因应用内焦点窗口跳过记录')
+  assert.match(syncSource, /isMacAppActive\(\)/u, '必须按应用级激活状态判断')
+  assert.match(asyncSource, /isMacAppActive\(\)/u, '必须按应用级激活状态判断')
 })

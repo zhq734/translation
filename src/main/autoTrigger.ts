@@ -64,6 +64,8 @@ let pasteShortcutCallback: PasteShortcutCallback | null = null
 
 let downAt: MouseSample | null = null
 let modifiersHeld = false
+// 只在 mouseup 异常分支输出，用于排查修饰键残留导致的划词失效，不产生高频日志。
+let lastModifierText = 'none'
 
 /** 返回当前全局钩子实例的最小生命周期接口。 */
 const autoTriggerHook = uIOhook as unknown as AutoTriggerHook
@@ -87,6 +89,20 @@ function resolveMousePoint(e: MouseSample): { x: number; y: number } {
 }
 
 /**
+ * 将鼠标事件上的修饰键状态拼成便于检索的诊断文本。
+ * @param e 含 ctrl/alt/meta 标志的事件对象。
+ * @returns 形如 ctrl+alt 的修饰键文本；无修饰键时返回 none。
+ * @author zhenghq
+ */
+function describeModifiers(e: { ctrlKey: boolean; altKey: boolean; metaKey: boolean }): string {
+  const parts: string[] = []
+  if (e.ctrlKey) parts.push('ctrl')
+  if (e.altKey) parts.push('alt')
+  if (e.metaKey) parts.push('meta')
+  return parts.length > 0 ? parts.join('+') : 'none'
+}
+
+/**
  * 通知主进程鼠标已按下，记录起点并过滤带修饰键的拖拽操作。
  * @param e 全局鼠标按下事件。
  * @returns 无返回值。
@@ -94,6 +110,7 @@ function resolveMousePoint(e: MouseSample): { x: number; y: number } {
  */
 function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaKey: boolean }): void {
   const point = resolveMousePoint(e)
+  lastModifierText = describeModifiers(e)
   let result: PointerDownResult = 'track'
   try {
     result = pointerDownCallback?.(point) ?? 'track'
@@ -121,18 +138,30 @@ function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaK
 function onMouseUp(e: MouseSample): void {
   const start = downAt
   downAt = null
-  if (modifiersHeld || !start || !callback) {
-    modifiersHeld = false
+  const heldModifiers = modifiersHeld
+  modifiersHeld = false
+  if (heldModifiers || !start || !callback) {
+    // no-start 只在按下阶段被判为 ignore/consume（自有窗口、按钮或 OCR）时出现，
+    // 是划词链断点的关键特征，频率低且不可省略。
+    console.log(
+      `[autoTrigger] mouseup 未触发划词 reason=${heldModifiers ? 'modifier-held' : !start ? 'no-start' : 'no-callback'} modifiers=${lastModifierText} clicks=${e.clicks ?? 1} x=${Math.round(e.x)} y=${Math.round(e.y)}`
+    )
     return
   }
-  modifiersHeld = false
 
   const gesture = getSelectionGesture(
     start,
     createObservedPointerSample(resolveMousePoint(e), Date.now()),
     e.clicks ?? 1
   )
-  if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) return
+  if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) {
+    // distance=0 的瞬时点击占绝大多数且与划词无关，只在确实拖动过却未达阈值时记录。
+    if (gesture.distance < 1) return
+    console.log(
+      `[autoTrigger] 划词未达阈值 reason=threshold clicks=${e.clicks ?? 1} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms startX=${Math.round(gesture.start.x)} startY=${Math.round(gesture.start.y)} endX=${Math.round(gesture.end.x)} endY=${Math.round(gesture.end.y)}`
+    )
+    return
+  }
 
   console.log(
     `[autoTrigger] 检测到选区 clicks=${e.clicks ?? 1} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms`

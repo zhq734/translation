@@ -124,3 +124,36 @@ test('其它会激活本应用的托盘入口也要记录源应用，避免设�
     '记录源应用必须早于剪贴板图片翻译弹窗显示'
   )
 })
+
+test('已可见的阅读器不得被 activate 无条件置顶，不可见或最小化时仍正常恢复', () => {
+  const focusSource = extractFunction(
+    webReaderSource,
+    'focusExistingWindow(): boolean {'
+  )
+
+  // 已可见且未最小化：任何被误放行的 activate 都不得把后台阅读器 show()+focus() 到最前。
+  assert.match(
+    focusSource,
+    /if \(this\.window\.isVisible\(\) && !this\.window\.isMinimized\(\)\) return true/u,
+    '已可见且未最小化的阅读器必须直接视为已处理'
+  )
+  // 不可见（真正的 Dock 启动）仍必须显示并聚焦。
+  assert.match(focusSource, /this\.window\.show\(\)/u, '不可见窗口仍必须显示')
+  assert.match(focusSource, /this\.window\.focus\(\)/u, '不可见窗口仍必须聚焦')
+  // 最小化时仍必须恢复。
+  assert.match(focusSource, /isMinimized\(\)\) this\.window\.restore\(\)/u, '最小化阅读器仍必须恢复')
+})
+
+test('已可见的设置页不得被 activate 无条件置顶', () => {
+  const createSource = extractFunction(mainSource, 'async function createSettingsWindow(): Promise<BrowserWindow> {')
+
+  // 已可见分支不得再执行 app.focus({steal:true}) + show() + focus()，否则误放行的 activate 会把后台设置页顶到最前。
+  assert.match(
+    createSource,
+    /if \(settingsWin\.isVisible\(\)\) return settingsWin/u,
+    '已可见设置页必须直接返回，不得强制置顶'
+  )
+  // 不可见或最小化时仍必须显示并聚焦，保证真实 Dock 启动可用。
+  assert.match(createSource, /settingsWin\.show\(\)/u, '不可见设置页仍必须显示')
+  assert.match(createSource, /settingsWin\.focus\(\)/u, '不可见设置页仍必须聚焦')
+})

@@ -61,12 +61,15 @@ import {
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
-  showManualTranslationPopup
+  showManualTranslationPopup,
+  whenPopupHidden
 } from './popup'
 import {
   forgetFrontmostApp,
   handBackFrontmostApp,
   handBackFrontmostThen,
+  isInternalWindowTeardownActive,
+  isMacAppActiveByEvents,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
   rememberFrontmostAppIfInactive,
@@ -103,11 +106,16 @@ import {
   decideSelectionAction,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
-  isPointInsideBounds,
   isSelectionGestureInsideOwnWindows,
   type ScreenBounds,
   type SelectionGesture
 } from '../shared/selectionBehavior'
+import {
+  findOwnWindowHit,
+  resolveAppFrontmostForExclusion,
+  resolveOwnWindowExclusion,
+  type OwnWindowCandidate
+} from '../shared/selectionOwnWindow'
 import {
   canTreatActivateAsDockLaunch,
   classifySelectionPointerDown,
@@ -315,6 +323,15 @@ const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
 let internalActivationLeaseUntil = 0
 const INTERNAL_ACTIVATION_LEASE_MS = 300
+/** 取词失败提示弹窗未按时隐藏时，强制释放交互状态的最长等待时间。 */
+const POPUP_RELEASE_FALLBACK_MS = 5000
+/**
+ * 已把释放动作推迟到翻译弹窗隐藏之后的交互 token。
+ *
+ * 取词失败提示弹窗的收尾期间仍需保留交互状态与内部激活租约；
+ * 按钮取词流程的 finally 兜底必须跳过这类 token，否则会抢在弹窗隐藏前清零租约。
+ */
+let pendingPopupReleaseToken: number | null = null
 /**
  * 本轮截图开始前应用是否已是 macOS 前台应用。
  * 覆盖窗口显示时会把应用激活到最前，隐藏时系统又把应用内下一个窗口（通常是设置页）
@@ -494,9 +511,14 @@ function shouldTreatActivateAsDockLaunch(): boolean {
     ocrVisible: isOcrSelectionVisible(),
     listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
     internalActivationLeaseUntil,
+    internalWindowTeardown: isInternalWindowTeardownActive(),
     now: Date.now()
   })
-  if (!decision.allowed) {
+  if (decision.allowed) {
+    // 放行路径也要留痕：只有记录判定依据，才能事后区分真实 Dock 启动
+    // 与收尾窗口期漏网的内部 activate。
+    console.log('[main] activate 按 Dock 启动处理:', JSON.stringify(decision.checks ?? {}))
+  } else {
     console.log(`[main] 忽略内部 activate: ${decision.reason ?? 'unknown'}`)
   }
   return decision.allowed
@@ -520,6 +542,43 @@ function renewInternalActivationLease(): void {
 function releaseSelectionInteraction(token: number): void {
   if (!selectionInteraction.release(token)) return
   internalActivationLeaseUntil = 0
+}
+
+/**
+ * 等翻译弹窗真正隐藏之后再释放交互 token 并清零内部激活租约。
+ *
+ * 取词失败提示弹窗的收尾（交还前台 → 隐藏 → hide 生效）期间仍可能收到
+ * macOS 内部 activate：提前清零租约会让这段窗口期失去唯一的时间维度防线，
+ * 误放行的 activate 会把后台设置页或网页阅读器顶到最前。
+ * @param token 需要释放的交互 token。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSelectionInteractionAfterPopupHidden(token: number): void {
+  pendingPopupReleaseToken = token
+  let cancelPopupHiddenWait: () => void = () => {}
+  // 兜底：失败提示被用户固定等情况下弹窗可能长时间不隐藏，
+  // 不能让交互状态与租约永久悬挂，超时后强制完成释放。
+  const fallbackTimer = setTimeout(() => {
+    if (pendingPopupReleaseToken !== token) return
+    pendingPopupReleaseToken = null
+    // 弹窗仍未隐藏：撤销这次注册，避免连续失败在同一个窗口上累积 hide 监听器。
+    cancelPopupHiddenWait()
+    if (!selectionInteraction.isCurrent(token)) return
+    internalActivationLeaseUntil = 0
+    releaseSelectionInteraction(token)
+  }, POPUP_RELEASE_FALLBACK_MS)
+  fallbackTimer.unref?.()
+  cancelPopupHiddenWait = whenPopupHidden(() => {
+    clearTimeout(fallbackTimer)
+    if (pendingPopupReleaseToken !== token) return
+    pendingPopupReleaseToken = null
+    // 收尾期间可能已经开始新一轮交互：旧 token 已失效时不能顺手清掉新流程刚续上的租约。
+    if (!selectionInteraction.isCurrent(token)) return
+    // 弹窗已真正隐藏、收尾抑制期已结束，此时清零租约不会留下无保护的窗口期。
+    internalActivationLeaseUntil = 0
+    releaseSelectionInteraction(token)
+  })
 }
 
 /**
@@ -1028,27 +1087,56 @@ function onOcrHotkey(): void {
 }
 
 /**
- * 收集当前持有焦点的应用自有窗口区域，用于把应用内鼠标操作排除在划词监听之外。
- * 全局钩子无法区分事件来源，设置窗口、网页阅读器等窗口内的点击与拖动
- * 若不排除会被误判为跨应用划词，进而反复触发取词并打断真正的划词流程。
- * 只统计持有焦点的窗口：后台窗口只是遮挡不到的矩形，若一并排除，
- * 用户在其他应用中与该矩形重叠位置的正常划词会被静默忽略。
- * @returns 当前持有焦点的自有窗口区域列表；无焦点窗口时以 null 占位。
+ * 收集当前自有窗口候选，供应用级门禁与矩形排除共同判定。
+ * 只统计承载用户交互的普通窗口；翻译弹窗与“译”按钮有各自的命中判定，
+ * 需要保留原有的点击消费与选区失效行为，不能并入这里统一忽略。
+ * @returns 设置页与网页阅读器的候选信息。
  * @author zhenghq
  */
-function getFocusedOwnWindowBounds(): (ScreenBounds | null)[] {
-  // 只统计承载用户交互的普通窗口；翻译弹窗与“译”按钮有各自的命中判定，
-  // 需要保留原有的点击消费与选区失效行为，不能并入这里统一忽略。
+function collectOwnWindowCandidates(): OwnWindowCandidate[] {
   const settingsFocused = Boolean(
     settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && settingsWin.isFocused()
   )
-  const settingsBounds = settingsFocused && settingsWin
-    ? settingsWin.getBounds()
-    : null
-  const webReaderBounds = webReader?.isWindowFocused()
-    ? webReader.getVisibleBounds()
-    : null
-  return [settingsBounds, webReaderBounds]
+  const settingsBounds = settingsFocused && settingsWin ? settingsWin.getBounds() : null
+  const webReaderFocused = Boolean(webReader?.isWindowFocused())
+  return [
+    { name: 'settings', focused: settingsFocused, bounds: settingsBounds },
+    {
+      name: 'webReader',
+      focused: webReaderFocused,
+      bounds: webReaderFocused ? (webReader?.getVisibleBounds() ?? null) : null
+    }
+  ]
+}
+
+/**
+ * 解析当前可用于排除划词的自有窗口与应用级门禁状态。
+ *
+ * 全局钩子无法区分事件来源，设置窗口、网页阅读器等窗口内的点击与拖动
+ * 若不排除会被误判为跨应用划词，进而反复触发取词并打断真正的划词流程。
+ * 但必须先做应用级门禁：macOS 在应用失活后仍可能让 key window 保持 `isFocused() === true`，
+ * 此时后台窗口的整块矩形会吞掉用户在其他应用里的划词起点，表现为划词完全无响应。
+ * @returns 应用级门禁状态与通过门禁的自有窗口列表。
+ * @author zhenghq
+ */
+function resolveOwnWindowExclusionState(): {
+  appFrontmost: boolean
+  windows: readonly OwnWindowCandidate[]
+} {
+  const appFrontmost = resolveAppFrontmostForExclusion(process.platform, isMacAppActiveByEvents())
+  return { appFrontmost, windows: resolveOwnWindowExclusion(appFrontmost, collectOwnWindowCandidates()) }
+}
+
+/**
+ * 收集当前可排除划词的自有窗口矩形。
+ * @returns 允许按矩形排除划词的自有窗口边界列表。
+ * @author zhenghq
+ */
+function getFocusedOwnWindowBounds(): ScreenBounds[] {
+  return resolveOwnWindowExclusionState()
+    .windows
+    .map((candidate) => candidate.bounds)
+    .filter((bounds): bounds is ScreenBounds => bounds !== null)
 }
 
 /**
@@ -1058,7 +1146,41 @@ function getFocusedOwnWindowBounds(): (ScreenBounds | null)[] {
  * @author zhenghq
  */
 function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean {
-  return getFocusedOwnWindowBounds().some((bounds) => isPointInsideBounds(point, bounds))
+  return findOwnWindowHit(point, resolveOwnWindowExclusionState().windows) !== null
+}
+
+/**
+ * 描述自有窗口命中详情，定位划词被内部窗口矩形静默吞掉的具体来源。
+ * 仅矩形判定无法区分是设置页还是网页阅读器，也无法确认应用是否真的在最前，
+ * 因此日志需要同时给出窗口名、边界与应用激活状态。
+ * @param point 待判断的屏幕坐标。
+ * @returns 命中描述；未命中任何自有窗口时返回 null。
+ * @author zhenghq
+ */
+function describeFocusedOwnWindowHit(point: { x: number; y: number }): string | null {
+  const state = resolveOwnWindowExclusionState()
+  const hit = findOwnWindowHit(point, state.windows)
+  if (!hit?.bounds) return null
+  const { bounds } = hit
+  return `${hit.name} bounds=${bounds.x},${bounds.y},${bounds.width}x${bounds.height} appActive=${state.appFrontmost}`
+}
+
+/**
+ * 描述被应用级门禁抑制掉的自有窗口命中。
+ *
+ * 应用失活时若仍命中自有窗口矩形，说明修复前这里会把外部划词起点吞掉；
+ * 该日志只在异常状态出现时打印，用于实机确认门禁确实拦截了误判。
+ * @param point 待判断的屏幕坐标。
+ * @returns 抑制描述；未发生抑制时返回 null。
+ * @author zhenghq
+ */
+function describeSuppressedOwnWindowHit(point: { x: number; y: number }): string | null {
+  // 先做最廉价的布尔判断，应用在最前时（绝大多数点击）直接返回，避免热路径上的多余窗口查询。
+  if (resolveAppFrontmostForExclusion(process.platform, isMacAppActiveByEvents())) return null
+  const suppressed = findOwnWindowHit(point, resolveOwnWindowExclusion(true, collectOwnWindowCandidates()))
+  if (!suppressed?.bounds) return null
+  const { bounds } = suppressed
+  return `${suppressed.name} bounds=${bounds.x},${bounds.y},${bounds.width}x${bounds.height}`
 }
 
 /**
@@ -1131,13 +1253,20 @@ async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Pr
  * @author zhenghq
  */
 function handleSelectionGesture(gesture: SelectionGesture): void {
-  if (selectionInteraction.snapshot().state === 'ocr-selecting' ||
-      isOcrSelectionVisible() ||
-      isSelectionGestureInsideOwnWindows(gesture, getFocusedOwnWindowBounds()) ||
-      isPointInsidePopup(gesture.start) ||
-      isPointInsidePopup(gesture.end) ||
-      isPointInsideSelectionButton(gesture.start) ||
-      isPointInsideSelectionButton(gesture.end)) {
+  const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
+  const focusedOwnWindow = isSelectionGestureInsideOwnWindows(gesture, getFocusedOwnWindowBounds())
+  const popupHit = isPointInsidePopup(gesture.start) || isPointInsidePopup(gesture.end)
+  const buttonHit =
+    isPointInsideSelectionButton(gesture.start) || isPointInsideSelectionButton(gesture.end)
+  if (ocrActive || focusedOwnWindow || popupHit || buttonHit) {
+    const reasons: string[] = []
+    if (ocrActive) reasons.push('ocr')
+    if (focusedOwnWindow) reasons.push('focused-own-window')
+    if (popupHit) reasons.push('popup')
+    if (buttonHit) reasons.push('selection-button')
+    console.log(
+      `[selection] 忽略划词手势 reasons=${reasons.join(',')} startX=${Math.round(gesture.start.x)} startY=${Math.round(gesture.start.y)} endX=${Math.round(gesture.end.x)} endY=${Math.round(gesture.end.y)}`
+    )
     return
   }
 
@@ -1159,15 +1288,36 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
  * @author zhenghq
  */
 function handleSelectionPointerDown(point: { x: number; y: number }): PointerDownResult {
+  const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
+  const selectionButtonHit = isPointInsideSelectionButton(point)
+  const popupHit = isPointInsidePopup(point)
+  const focusedOwnWindowHit = isPointInsideFocusedOwnWindow(point)
   const result = classifySelectionPointerDown({
-    ocrActive: selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible(),
-    selectionButtonHit: isPointInsideSelectionButton(point),
-    popupHit: isPointInsidePopup(point),
+    ocrActive,
+    selectionButtonHit,
+    popupHit,
     // 翻译弹窗内部的拖动也属于应用内交互，按下阶段直接忽略，
     // 避免 mouseup 时再被拼成一次跨应用划词。
-    focusedOwnWindowHit: isPointInsideFocusedOwnWindow(point)
+    focusedOwnWindowHit
   })
-  if (result === 'consume' && isPointInsideSelectionButton(point)) {
+  // 外部应用的正常按下是绝对多数，逐条记录会让同步写盘成为常态开销；
+  // 只有 consume/ignore 才代表划词起点被自有界面接管，需要留下可追溯的分类依据。
+  if (result !== 'track') {
+    const focusedOwnWindowDetail = focusedOwnWindowHit ? describeFocusedOwnWindowHit(point) : null
+    console.log(
+      `[selection] pointerdown 分类 result=${result} ocr=${ocrActive} button=${selectionButtonHit} popup=${popupHit} focusedOwnWindow=${focusedOwnWindowHit}${focusedOwnWindowDetail ? ` focusedHit=${focusedOwnWindowDetail}` : ''} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+    )
+  } else {
+    // 应用失活却落在自有窗口矩形内，正是修复前划词被静默吞掉的场景；
+    // 这里按 track 继续跟踪说明门禁生效，记录一行便于实机确认。
+    const suppressedDetail = describeSuppressedOwnWindowHit(point)
+    if (suppressedDetail) {
+      console.log(
+        `[selection] pointerdown 应用失活，已抑制自有窗口矩形排除 hit=${suppressedDetail} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+      )
+    }
+  }
+  if (result === 'consume' && selectionButtonHit) {
     void translateSelectionButton()
     renewInternalActivationLease()
   }
@@ -1325,7 +1475,8 @@ async function translateSelectionButton(): Promise<void> {
     else hidePopup()
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
-        selectionInteraction.snapshot().state === 'capturing') {
+        selectionInteraction.snapshot().state === 'capturing' &&
+        pendingPopupReleaseToken !== interactionToken) {
       releaseSelectionInteraction(interactionToken)
     }
   }
@@ -1365,8 +1516,10 @@ function handleSelectionCaptureResult(
       result.anchor,
       shouldActivatePopupForCaptureFailure(process.platform)
     )
+    // 必须等失败提示弹窗隐藏收尾完成后再释放：收尾期间的内部 activate
+    // 仍需要租约兜底，否则设置页或阅读器会被顶到最前。
+    if (interactionToken !== undefined) releaseSelectionInteractionAfterPopupHidden(interactionToken)
     if (shouldPromptHiServicesRepair) void promptHiServicesRepair(result.anchor)
-    if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
 
@@ -3683,6 +3836,16 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
     const existingWindow = settingsWin
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
+    // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
+    if (settingsWin.isMinimized()) {
+      if (isMac) app.focus({ steal: true })
+      settingsWin.restore()
+      settingsWin.focus()
+      return settingsWin
+    }
+    // 已可见且未最小化时直接返回：误放行的内部 activate 不得把后台设置页
+    // show()+focus() 顶到用户应用之上。不可见时继续走下面的显示聚焦路径。
+    if (settingsWin.isVisible()) return settingsWin
     if (isMac) app.focus({ steal: true })
     settingsWin.show()
     settingsWin.focus()

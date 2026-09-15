@@ -5,11 +5,19 @@ import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
-import { handBackFrontmostThen, yieldFrontmostAppThen } from './macForeground'
+import {
+  beginInternalWindowTeardown,
+  endInternalWindowTeardown,
+  handBackFrontmostThen,
+  rememberFrontmostAppBeforeActivation,
+  yieldFrontmostAppThen
+} from './macForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
+/** hide 事件未按预期派发时，强制结束内部窗口收尾抑制期的最长等待时间。 */
+const POPUP_TEARDOWN_FALLBACK_MS = 1500
 
 let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
@@ -206,11 +214,16 @@ export function showPopup(
     positionNearAnchor(anchor)
     // Windows 复制取词前使用非激活显示，避免弹窗抢走源应用焦点；取词完成后再激活。
     // 激活会让弹窗顶掉源应用的前台状态，激活前先记录源窗口以便取词时精确交还。
+    // 同步补记源应用：上一轮结果弹窗已激活本应用时，异步的
+    // rememberFrontmostAppIfInactive() 会因应用内已有焦点窗口而跳过，
+    // 导致本次收尾没有可交还目标，只能落到不稳定的 app.hide()→app.show() 兜底。
+    if (activate) rememberFrontmostAppBeforeActivation()
     if (activate) foregroundTracker.remember()
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
     if (activate) restoringForegroundUntil = 0
   } else if (activate && shownInactive) {
+    rememberFrontmostAppBeforeActivation()
     foregroundTracker.remember()
     win.show()
     shownInactive = false
@@ -269,24 +282,93 @@ export function hidePopup(): void {
   win?.webContents.send('popup:pinned', false)
   if (!win || win.isDestroyed() || hidingAfterFrontReturn) return
   hidingAfterFrontReturn = true
+  // 进入收尾抑制期：覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。
+  // 期间到达的 macOS activate 属于内部窗口显隐引发的事件，不能被当成 Dock 启动
+  // 去激活网页阅读器或设置页。
+  beginInternalWindowTeardown()
   // 交还前把这段失焦标记为内部动作：激活源应用会让弹窗失焦，
   // 不能被 handlePopupBlur 当成用户点击外部而重复关闭。
   restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
-  handBackFrontmostThen(win, () => {
-    hidingAfterFrontReturn = false
+
+  // win.hide() 异步生效：必须等 hide 事件真正到达后再退出抑制期，
+  // 否则 hide 生效瞬间派发的内部事件会看到抑制期已结束而被误放行。
+  let teardownTarget: BrowserWindow | null = null
+  const hideAndEndTeardown = (): void => {
+    if (!win || win.isDestroyed() || !win.isVisible()) {
+      finishPopupTeardown()
+      return
+    }
+    // 记住本次收尾的窗口对象：模块级 win 可能被后续 createPopup() 替换，
+    // 摘监听器必须针对本次真正隐藏的窗口。
+    teardownTarget = win
+    win.once('hide', finishPopupTeardown)
+    // 窗口在 hide 事件前被销毁时也必须退出抑制期，避免状态永久卡住。
+    win.once('closed', finishPopupTeardown)
     win?.hide()
+    // 非 macOS 平台不存在「隐藏 key window 会提升应用内其它窗口」的问题，
+    // 保持原有同步收尾语义，不引入额外的逻辑关闭窗口期。
+    if (process.platform !== 'darwin') {
+      finishPopupTeardown()
+      return
+    }
+    // 最后一道兜底：hide 事件因平台差异未派发时，抑制期必须自行结束，
+    // 否则 Dock 激活会被永久拦截。
+    const teardownFallback = setTimeout(finishPopupTeardown, POPUP_TEARDOWN_FALLBACK_MS)
+    teardownFallback.unref?.()
+  }
+
+  // hide 事件与 closed 事件共用同一收尾，且函数声明会提升，
+  // 保证「先隐藏窗口，再退出抑制期并解除逻辑关闭标记」的先后语义。
+  let popupTeardownFinished = false
+  function finishPopupTeardown(): void {
+    if (popupTeardownFinished) return
+    popupTeardownFinished = true
+    // 收尾完成后立即摘掉另一个事件的监听，避免窗口复用时累积监听器。
+    if (teardownTarget && !teardownTarget.isDestroyed()) {
+      teardownTarget.removeListener('hide', finishPopupTeardown)
+      teardownTarget.removeListener('closed', finishPopupTeardown)
+    }
+    endInternalWindowTeardown()
+    hidingAfterFrontReturn = false
+  }
+
+  handBackFrontmostThen(win, () => {
+    hideAndEndTeardown()
   }, () => {
     // 拿不到源应用（快照读取失败、源应用已退出，或弹窗激活前本应用已是最前）时
     // 不能直接隐藏：本应用此时仍是最前应用，隐藏应用内 key window 会让系统把应用内
     // 下一个窗口提升为 key window，正在后台打开的网页阅读器会被顶到用户应用之上。
     // 改用安全让出序列：隐藏应用等待失活后收尾，再非激活恢复应用内其它窗口。
-    void yieldFrontmostAppThen(() => {
-      if (!win || win.isDestroyed()) return
-      win.hide()
-    }).finally(() => {
+    void yieldFrontmostAppThen(hideAndEndTeardown).catch(() => {
+      // 让出序列自身失败时兜底退出抑制期，不能把状态永久留在收尾中。
+      popupTeardownFinished = true
+      endInternalWindowTeardown()
       hidingAfterFrontReturn = false
     })
   })
+}
+
+/**
+ * 在翻译弹窗真正隐藏之后执行回调；弹窗已隐藏或已销毁时立即执行。
+ *
+ * 取词失败提示的交互租约必须在弹窗隐藏收尾完成后才释放：提前清零会让
+ * 收尾期间到达的内部 activate 失去时间维度防线，把设置页或阅读器顶到最前。
+ * @param callback 弹窗隐藏后执行的回调。
+ * @returns 取消注册的函数；回调已立即执行时为空操作。
+ * @author zhenghq
+ */
+export function whenPopupHidden(callback: () => void): () => void {
+  if (!win || win.isDestroyed() || !win.isVisible()) {
+    callback()
+    return () => {}
+  }
+  const target = win
+  target.once('hide', callback)
+  // 取词失败可能连续发生：调用方需要能撤销注册，
+  // 否则长期复用的弹窗会不断累积 hide 监听器。
+  return () => {
+    if (!target.isDestroyed()) target.removeListener('hide', callback)
+  }
 }
 
 /**
