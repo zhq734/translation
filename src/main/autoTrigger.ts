@@ -140,14 +140,7 @@ function onMouseUp(e: MouseSample): void {
   downAt = null
   const heldModifiers = modifiersHeld
   modifiersHeld = false
-  if (heldModifiers || !start || !callback) {
-    // no-start 只在按下阶段被判为 ignore/consume（自有窗口、按钮或 OCR）时出现，
-    // 是划词链断点的关键特征，频率低且不可省略。
-    console.log(
-      `[autoTrigger] mouseup 未触发划词 reason=${heldModifiers ? 'modifier-held' : !start ? 'no-start' : 'no-callback'} modifiers=${lastModifierText} clicks=${e.clicks ?? 1} x=${Math.round(e.x)} y=${Math.round(e.y)}`
-    )
-    return
-  }
+  if (heldModifiers || !start || !callback) return
 
   const gesture = getSelectionGesture(
     start,

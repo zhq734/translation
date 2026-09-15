@@ -28,16 +28,15 @@ test('划词起点分类收敛：非 track 分类不再逐条写盘', () => {
   assert.match(downSource, /if \(result === 'track'\)/u, '仅在 track 时检查是否需要留痕')
 })
 
-test('鼠标松开未触发划词时应记录静默原因', () => {
+test('鼠标松开不再记录未触发划词的静默原因', () => {
   const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
   const upSource = readFunctionSource(source, 'onMouseUp')
 
   assert.notEqual(upSource, '')
-  assert.match(upSource, /modifier-held/u)
-  assert.match(upSource, /no-start/u)
-  assert.match(upSource, /no-callback/u)
-  // 阈值未达的高频日志已移除，只保留低频的静默原因。
+  // 静默原因日志频率过高，已整体移除；判定逻辑必须以提前返回保留。
+  assert.doesNotMatch(upSource, /mouseup 未触发划词/u)
   assert.doesNotMatch(upSource, /划词未达阈值/u)
+  assert.match(upSource, /if \(heldModifiers \|\| !start \|\| !callback\) return/u)
 })
 
 test('选区手势被忽略时应记录 OCR、自有窗口、弹窗与按钮命中条件', () => {
