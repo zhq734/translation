@@ -5,13 +5,11 @@ import {
   createObservedPointerSample,
   decideSelectionAction,
   getSelectionGesture,
-  hasConfirmedSelectionText,
   parseNativeSelectionReadOutput,
   parseSelectionPresenceOutput,
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   resolveWindowsPointerPoint,
-  shouldShowSelectionButtonAfterInspection,
   shouldTriggerSelectionGesture,
   isPointInsideBounds,
   isSelectionGestureInsideOwnWindows
@@ -27,6 +25,14 @@ import {
   shouldRestoreClipboardAfterAbort,
   shouldRestoreClipboard
 } from '../src/shared/copyShortcutBehavior.ts'
+import {
+  CLICK_MAX_SELF_TRAVEL_PX,
+  DOUBLE_CLICK_MAX_DRIFT_PX,
+  DOUBLE_CLICK_MAX_INTERVAL_MS,
+  isPrimaryMouseButton,
+  normalizeReportedClicks,
+  resolveDoubleClickSequence
+} from '../src/shared/selectionInteraction.ts'
 
 test('全局鼠标事件应使用本机观测时间，避免 macOS 原生时间单位导致划词被过滤', () => {
   assert.deepEqual(
@@ -109,7 +115,7 @@ test('普通单击不应触发选区处理，常规划词拖拽仍应触发', ()
 })
 
 /**
- * 校验选区状态解析辅助函数仍能识别空选区，但按钮显示不依赖该异步检查结果。
+ * 校验选区状态解析辅助函数仍能识别空选区；按钮显示不再依赖任何直读状态检查。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -117,27 +123,23 @@ test('双击选区状态辅助解析应区分空选区与已选文字', () => {
   assert.equal(parseSelectionPresenceOutput('PRESENT\n'), 'present')
   assert.equal(parseSelectionPresenceOutput('EMPTY\r\n'), 'empty')
   assert.equal(parseSelectionPresenceOutput('无法读取'), 'unknown')
-  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'empty'), false)
-  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'present'), true)
-  assert.equal(shouldShowSelectionButtonAfterInspection(2, 'unknown'), false)
-  assert.equal(shouldShowSelectionButtonAfterInspection(1, 'empty'), true)
 })
 
 /**
- * 校验预取结果判断辅助函数仍能区分可缓存文字与无效结果。
- * 双击按钮本身会立即显示，预取结果只用于后续点击时消费。
+ * 校验严格只读确认链路已从 shared 层彻底移除。
+ * 双击不得再以“原生直读能否读到文字”作为按钮显示门槛，否则 IDEA 等
+ * 不暴露 AX 选区的自绘应用会重新出现“拖拽能用、双击不能用”的回归。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('双击预取结果判断应区分可缓存文字与无效结果', () => {
-  assert.equal(hasConfirmedSelectionText(null), false)
-  assert.equal(hasConfirmedSelectionText({ text: '' }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '   \n  ' }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'empty' }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'unsupported' }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '', reason: 'unknown' }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '已选文字', error: new Error('读取失败') }), false)
-  assert.equal(hasConfirmedSelectionText({ text: '  已选文字  ' }), true)
+test('双击严格只读确认链路应已从 shared 层移除', () => {
+  const source = readFileSync('src/shared/selectionBehavior.ts', 'utf8')
+
+  assert.doesNotMatch(source, /resolveDoubleClickConfirmOutcome/u)
+  assert.doesNotMatch(source, /DoubleClickConfirmOutcome/u)
+  assert.doesNotMatch(source, /DoubleClickConfirmReason/u)
+  assert.doesNotMatch(source, /hasConfirmedSelectionText/u)
+  assert.doesNotMatch(source, /shouldShowSelectionButtonAfterInspection/u)
 })
 
 /**
@@ -664,29 +666,43 @@ test('显示“译”按钮期间只允许只读预取，不得启动完整选�
 })
 
 /**
- * 校验按钮模式双击应先显示“译”按钮，再用只读直读后台预取选中文字，不发送复制快捷键。
+ * 校验按钮模式双击与拖拽走同一条取词路径：立即显示“译”按钮并后台只读预取，
+ * 点击时先消费预取、未命中再走复制兜底。
+ * 双击不得再以“原生直读能否读到文字”作为按钮显示门槛，否则 IDEA 等
+ * 不暴露 AX 选区的自绘应用会出现“拖拽能用、双击不能用”的回归。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('按钮模式双击应立即显示按钮并后台预取选区文字', () => {
+test('按钮模式双击应与拖拽走同一条取词路径', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
-  const doubleClickStart = mainSource.indexOf('function scheduleDoubleClickSelectionButton')
-  const doubleClickEnd = mainSource.indexOf('/**', doubleClickStart)
-  const doubleClickSource = mainSource.slice(doubleClickStart, doubleClickEnd)
+  const handlerStart = mainSource.indexOf('function handleSelectionGesture')
+  const handlerEnd = mainSource.indexOf('/**', handlerStart)
+  const handlerSource = mainSource.slice(handlerStart, handlerEnd)
+  const scheduleStart = mainSource.indexOf('function scheduleSelectionAction')
+  const scheduleEnd = mainSource.indexOf('/**', scheduleStart)
+  const scheduleSource = mainSource.slice(scheduleStart, scheduleEnd)
 
-  assert.ok(doubleClickStart >= 0)
-  assert.ok(doubleClickEnd > doubleClickStart)
-  // 预取结果只用于缓存，不能阻塞按钮显示，否则系统直读失败时用户永远看不到按钮。
-  assert.doesNotMatch(doubleClickSource, /hasConfirmedSelectionText\(prepared\)/u)
+  assert.ok(handlerStart >= 0)
+  assert.ok(handlerEnd > handlerStart)
+  // 双击分支保留开关校验，然后落到与拖拽相同的 scheduleSelectionAction。
   assert.match(
-    doubleClickSource,
-    /lastSelectionAnchor\s*=\s*gesture\.anchor[\s\S]*?showSelectionButton\(gesture\.anchor\)[\s\S]*?await selectionCapture\.prepare/u
+    handlerSource,
+    /gesture\.clicks >= 2[\s\S]*?triggerMode === 'button'[\s\S]*?doubleClickSelectionButtonEnabled[\s\S]*?scheduleSelectionAction\(gesture\.anchor\)/u
   )
-  assert.doesNotMatch(doubleClickSource, /selectionCapture\.capture|simulateCopy/u)
-  assert.match(doubleClickSource, /selectionCapture\.prepare\(gesture\.anchor,\s*SELECTION_SETTLE_DELAY_MS\)/u)
-  assert.match(doubleClickSource, /gestureId !== latestSelectionGesture/u)
-  assert.match(doubleClickSource, /getSettings\(\)\.triggerMode !== 'button'/u)
+  // 双击专用的严格确认链路必须彻底移除。
+  assert.doesNotMatch(mainSource, /scheduleDoubleClickSelectionButton/u)
+  assert.doesNotMatch(mainSource, /confirmDoubleClickSelection/u)
+  assert.doesNotMatch(mainSource, /resolveDoubleClickConfirmOutcome/u)
+  assert.doesNotMatch(mainSource, /DOUBLE_CLICK_CONFIRM/u)
+
+  // 共用路径必须保留“立即显示按钮 + 后台只读预取”的既有语义。
+  assert.match(scheduleSource, /selectionInteraction\.showButton\(\)/u)
+  assert.match(scheduleSource, /showSelectionButton\(anchor\)/u)
+  assert.match(scheduleSource, /selectionCapture\.prepare\(anchor\)/u)
+  // 点击后的取词顺序：先有界消费预取，未命中再走按钮专用复制兜底。
+  assert.match(mainSource, /consumePreparedBounded\(\)/u)
+  assert.match(mainSource, /captureFromButton\(anchor\)/u)
   assert.match(captureSource, /clipboard\.readText\('selection'\)/u)
   assert.match(captureSource, /AXSelectedText/u)
   assert.match(captureSource, /System\.Windows\.Automation\.TextPattern/u)
@@ -706,19 +722,38 @@ test('点击“译”按钮应在全局鼠标按下阶段直接激活并阻止�
 
   assert.match(
     pointerDownSource,
-    /const ocrActive =[\s\S]*?const selectionButtonHit = isPointInsideSelectionButton\(point\)[\s\S]*?classifySelectionPointerDown\(\{[\s\S]*?ocrActive,[\s\S]*?selectionButtonHit,[\s\S]*?\}\)[\s\S]*?if\s*\(result === 'consume' && selectionButtonHit\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?if\s*\(result === 'consume'\)\s*return result/u
+    /const primaryButton = button === 1[\s\S]*?const ocrActive =[\s\S]*?const selectionButtonHit = isPointInsideSelectionButton\(point\)[\s\S]*?classifySelectionPointerDown\(\{[\s\S]*?ocrActive,[\s\S]*?selectionButtonHit,[\s\S]*?\}\)[\s\S]*?if \(result === 'consume' && selectionButtonHit && primaryButton\)\s*\{[\s\S]*?void translateSelectionButton\(\)[\s\S]*?if \(result === 'consume' && primaryButton\) return result/u
   )
   assert.doesNotMatch(pointerDownSource, /process\.platform\s*===\s*'win32'/u)
+  // 非左键必须只做隐藏按钮/取消选区，绝不能触发翻译：右键点在“译”按钮上同样不得取词。
+  assert.match(pointerDownSource, /if \(result === 'consume' && selectionButtonHit && primaryButton\)/u)
+  assert.match(pointerDownSource, /if \(result === 'ignore' && primaryButton\) return result/u)
+  assert.match(pointerDownSource, /hideSelectionButton\(\)[\s\S]*?return primaryButton \? 'track' : 'ignore'/u)
   assert.match(
     autoTriggerSource,
-    /let result:\s*PointerDownResult\s*=\s*'track'[\s\S]*?result\s*=\s*pointerDownCallback\?\.\(point\)\s*\?\?\s*'track'[\s\S]*?resolvePointerDownTracking\(/u
+    /let result:\s*PointerDownResult\s*=\s*'track'[\s\S]*?result\s*=\s*pointerDownCallback\?\.\(point, e\.button\)\s*\?\?\s*'track'[\s\S]*?if \(!isPrimaryMouseButton\(e\.button\)\)[\s\S]*?resolvePointerDownTracking\(/u
+  )
+  // 非左键仍必须先把按下事件透传给主进程：主进程依赖该回调隐藏“译”按钮并取消旧选区，
+  // 否则右键点击会留下悬空按钮，点击它会错误触发取词。
+  assert.doesNotMatch(
+    autoTriggerSource,
+    /if \(!isPrimaryMouseButton\(e\.button\)\)[\s\S]{0,200}?return[\s\S]{0,120}?result\s*=\s*pointerDownCallback/u
+  )
+  // OCR 框选进行中的非左键（右键取消）只丢弃本次框选，不得清空已预取的选区缓存。
+  assert.match(
+    pointerDownSource,
+    /if \(result === 'consume' && ocrActive && !selectionButtonHit\) return result/u
   )
 })
 
-test('全局监听应传递双击次数，并监听用户复制和粘贴快捷键', () => {
+test('全局监听应自维护左键双击判定，并监听用户复制和粘贴快捷键', () => {
   const source = readFileSync('src/main/autoTrigger.ts', 'utf8')
 
-  assert.match(source, /shouldTriggerSelectionGesture\(gesture,\s*e\.clicks/u)
+  // 不再直接透传 hook 上报的 clicks：连续点击次数必须由 JS 侧左键松开序列判定后传入。
+  assert.doesNotMatch(source, /shouldTriggerSelectionGesture\(gesture,\s*e\.clicks/u)
+  assert.match(source, /resolveDoubleClickSequence\(lastPrimaryMouseUp,/u)
+  assert.match(source, /shouldTriggerSelectionGesture\(gesture,\s*clicks/u)
+  assert.match(source, /isPrimaryMouseButton\(e\.button\)/u)
   assert.match(source, /screen\.screenToDipPoint\(/u)
   assert.match(source, /screen\.getCursorScreenPoint\(\)/u)
   assert.match(source, /keydown:\s*onKeyDown as AutoTriggerHookListeners\['keydown'\]/u)
@@ -1031,6 +1066,24 @@ test('设置窗口焦点切换应清理窗口内遗留状态但保留先到达�
   )
 })
 
+
+/**
+ * 校验焦点切换清理按下状态时同一同清空自维护双击序列，避免残留样本拼出假双击。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('焦点切换清理应同一同清空自维护双击序列', () => {
+  const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
+  const resetStart = autoTriggerSource.indexOf('export function resetAutoTriggerPointerState')
+  const resetEnd = autoTriggerSource.indexOf('\n}', resetStart)
+  const resetSource = autoTriggerSource.slice(resetStart, resetEnd)
+
+  assert.ok(resetStart >= 0)
+  // 无边界清理与限定边界清理都必须清空双击序列，否则切换焦点后的一次左键松开会与
+  // 切换前的残留样本拼接成假双击。
+  assert.match(resetSource, /resetPrimaryClickState\(\)/u)
+  assert.match(resetSource, /resetPointerTrackingForWindowBlur/u)
+})
 test('OCR 框选收尾必须无条件恢复划词监听，避免全局钩子被永久停用', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
 
@@ -1128,6 +1181,125 @@ test('全局钩子启动失败时应清理监听器状态并允许后续重试',
   assert.match(source, /export function startAutoTrigger\([\s\S]*?\):\s*boolean/u)
   assert.match(startSource, /return true/u)
   assert.match(startSource, /return false/u)
+})
+
+/**
+ * 校验自维护双击判定的边界：只有两次左键松开且间隔严格小于阈值、漂移不超过阈值才算双击。
+ * 这些边界直接决定右键污染修复是否可靠，必须以真实调用锁定而非源码文本断言。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('自维护双击判定应忽略右键并严格遵守时间与位移边界', () => {
+  // 建模一次真实按下-松开：click 的 travel 为 0，drag 的 travel 为拖拽距离。
+  const click = (time: number, x = 0, y = 0, button = 1) => ({ button, travel: 0, x, y, time })
+  const drag = (time: number, travel: number, x = 0, y = 0, button = 1) => ({ button, travel, x, y, time })
+
+  // 快速两次单击是双击选词的正常来源：判定必须稳定报 2，按钮显示不再依赖直读结果。
+  assert.equal(resolveDoubleClickSequence(click(1000, 100, 200), click(1080, 101, 200)).clicks, 2)
+  assert.equal(resolveDoubleClickSequence(null, click(1000)).clicks, 1)
+  assert.equal(resolveDoubleClickSequence(click(1000), click(1200)).clicks, 2)
+  // 间隔与位移都必须落在阈值之内：恰好等于阈值不算双击，为避免边界歧义固定为“严格小于”。
+  assert.equal(
+    resolveDoubleClickSequence(click(1000), click(1000 + DOUBLE_CLICK_MAX_INTERVAL_MS)).clicks,
+    1
+  )
+  assert.equal(
+    resolveDoubleClickSequence(click(1000), click(1001 + DOUBLE_CLICK_MAX_INTERVAL_MS)).clicks,
+    1
+  )
+  assert.equal(
+    resolveDoubleClickSequence(click(1000), click(1200, DOUBLE_CLICK_MAX_DRIFT_PX)).clicks,
+    2
+  )
+  assert.equal(
+    resolveDoubleClickSequence(click(1000), click(1200, DOUBLE_CLICK_MAX_DRIFT_PX + 1)).clicks,
+    1
+  )
+  // 右键污染是本次修复的核心场景：历史样本若为右键，不得与后续左键拼成双击。
+  assert.equal(resolveDoubleClickSequence(click(1000, 0, 0, 2), click(1200)).clicks, 1)
+  // 反向场景同样成立：本次是右键时也不得与前一次左键拼成双击。
+  assert.equal(resolveDoubleClickSequence(click(1000), click(1200, 0, 0, 2)).clicks, 1)
+  // 连续第三次点击仍报 2，保证“拖拽判定”不会因为 clicks 变成 3 而漏掉按钮模式分支。
+  assert.equal(resolveDoubleClickSequence(click(1200), click(1250)).clicks, 2)
+})
+
+/**
+ * 校验“拖拽划词 + 随后就近单击”不得被拼成假双击。
+ * 真实缺陷回归：拖拽结束点与随后单击点距离很近且在 400ms 内时，
+ * 旧实现只比较两次松开点的间隔与漂移，会把单击误判成 clicks=2，
+ * 导致明明没有选中文字却仍走双击分支发起只读确认（日志 distance=0）。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('拖拽划词后的就近单击不得被拼成假双击', () => {
+  const click = (time: number, x = 0, y = 0) => ({ button: 1, travel: 0, x, y, time })
+  const drag = (time: number, travel: number, x = 0, y = 0) => ({ button: 1, travel, x, y, time })
+
+  // 场景一：先拖拽划词，75ms 后在落点附近单击（与实测日志一致）。
+  // 旧实现会报 2；修复后拖拽自身不产生样本，单击找不到配对对象，只能报 1。
+  const afterDrag = resolveDoubleClickSequence(drag(1000, 180, 0, 0), click(1075, 2, 0))
+  assert.equal(afterDrag.clicks, 1)
+  // 拖拽结束本身不返回样本，从根上阻断后续点击与之配对。
+  assert.equal(resolveDoubleClickSequence(null, drag(1000, 180, 0, 0)).sample, null)
+
+  // 场景二：历史样本是普通点击，但本次自身发生了拖拽，同样不构成双击。
+  const currentDrag = resolveDoubleClickSequence(click(1000, 0, 0), drag(1075, 180, 0, 0))
+  assert.equal(currentDrag.clicks, 1)
+
+  // 阈值边界：自身位移恰好等于 CLICK_MAX_SELF_TRAVEL_PX 仍算点击。
+  assert.equal(
+    resolveDoubleClickSequence(click(1000, 0, 0), {
+      button: 1,
+      travel: CLICK_MAX_SELF_TRAVEL_PX,
+      x: 0,
+      y: 0,
+      time: 1200
+    }).clicks,
+    2
+  )
+  assert.equal(
+    resolveDoubleClickSequence(click(1000, 0, 0), {
+      button: 1,
+      travel: CLICK_MAX_SELF_TRAVEL_PX + 1,
+      x: 0,
+      y: 0,
+      time: 1200
+    }).clicks,
+    1
+  )
+})
+
+/**
+ * 校验底层 hook 上报的 clicks 归一化：缺失与非有限值必须退化为普通单击。
+ * macOS hook 会因右键污染上报异常计数，非有限值若被当成“至少两次点击”会重新引入假双击。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('底层上报的 clicks 归一化不得把非有限值当成双击', () => {
+  assert.equal(normalizeReportedClicks(undefined), 1)
+  assert.equal(normalizeReportedClicks(null), 1)
+  assert.equal(normalizeReportedClicks(0), 1)
+  assert.equal(normalizeReportedClicks(-2), 1)
+  assert.equal(normalizeReportedClicks(1), 1)
+  assert.equal(normalizeReportedClicks(2), 2)
+  assert.equal(normalizeReportedClicks(Number.NaN), 1)
+  assert.equal(normalizeReportedClicks(Number.POSITIVE_INFINITY), 1)
+})
+
+/**
+ * 校验鼠标键判定：只有左键参与划词与双击，右键、中键与侧键一律排除。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('只有左键参与划词与双击判定', () => {
+  // 底层事件缺失 button 字段时按左键处理，保证旧行为兼容。
+  assert.equal(isPrimaryMouseButton(undefined), true)
+  assert.equal(isPrimaryMouseButton(null), true)
+  assert.equal(isPrimaryMouseButton(1), true)
+  assert.equal(isPrimaryMouseButton(2), false)
+  assert.equal(isPrimaryMouseButton(3), false)
+  assert.equal(isPrimaryMouseButton(4), false)
+  assert.equal(isPrimaryMouseButton(5), false)
 })
 
 test('划词监听启动失败应记录可诊断日志，避免手势失效时无迹可查', () => {

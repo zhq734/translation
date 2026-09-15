@@ -1,10 +1,10 @@
 /**
  * macOS AX 选区直读 helper。
- *
  * 直接调用 AXUIElement API 按序执行三级读取：
  *   1. 聚焦元素 AXSelectedText；
  *   2. 聚焦元素 AXSelectedTextMarkerRange 提取（覆盖 Safari/Chrome web area）；
- *   3. 鼠标位置元素及其最多 4 层祖先的 AXSelectedText。
+ *   3. 鼠标位置元素及其最多 4 层祖先的 AXSelectedText 与 AXSelectedTextMarkerRange
+ *      （覆盖 VS Code 注释、网页正文等自绘/Web 渲染控件，它们常不暴露 AXSelectedText）。
  * 仅依赖 Accessibility 授权，不触碰 System Events，因此不会触发 Automation 授权弹窗。
  *
  * 输出协议（与 src/shared/selectionBehavior.ts 的 parseNativeSelectionReadOutput 兼容）：
@@ -86,9 +86,10 @@ static NSString *CopySelectedTextViaMarkerRange(AXUIElementRef element) {
   NSString *result = (__bridge_transfer NSString *)text;
   return result.length > 0 ? result : nil;
 }
-
 /**
- * 读取单个元素及其祖先链上的 AXSelectedText，命中第一个非空选区即返回。
+ * 读取单个元素及其祖先链上的选中文本，命中第一个非空选区即返回。
+ * 每层先读 AXSelectedText，失败后回退 AXSelectedTextMarkerRange，
+ * 以覆盖 VS Code 注释、网页正文等不暴露 AXSelectedText 的自绘控件。
  * @param element 起始 AX 元素。
  * @param maxLevels 允许上溯的最大层数（含起始元素本身）。
  * @return 命中的非空选中文本；链上均无可读选区时返回 nil。
@@ -99,6 +100,9 @@ static NSString *CopySelectedTextFromAncestry(AXUIElementRef element, NSInteger 
   NSString *result = nil;
   for (NSInteger level = 0; level < maxLevels && current; level += 1) {
     NSString *text = CopyStringAttribute(current, kAXSelectedTextAttribute);
+    if (!text) {
+      text = CopySelectedTextViaMarkerRange(current);
+    }
     if (text) {
       result = text;
       break;
@@ -181,7 +185,7 @@ int main(int argc, const char *argv[]) {
       if (focused) CFRelease(focused);
     }
 
-    // 第三级：鼠标位置元素及其最多 kMaxAncestorLevels 层祖先的 AXSelectedText。
+    // 第三级：鼠标位置元素及其最多 kMaxAncestorLevels 层祖先的选中文本。
     AXUIElementRef hoverElement = CopyElementAtMousePosition(systemWide);
     if (hoverElement) {
       NSString *hoverText =

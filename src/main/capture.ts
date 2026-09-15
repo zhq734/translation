@@ -42,8 +42,10 @@ import type { SelectionCaptureOutcome, CaptureDiagnosticLevel, SelectionFailureR
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
-const SELECTION_INSPECTION_TIMEOUT_MS = 1500
-const NATIVE_SELECTION_RETRY_COUNT = 2
+/** 单次命令（helper 或脚本）允许的最长耗时。 */
+export const SELECTION_INSPECTION_TIMEOUT_MS = 1500
+/** 原生直读在选区刚建立时的最大尝试次数（含首次）。 */
+export const NATIVE_SELECTION_RETRY_COUNT = 2
 const NATIVE_SELECTION_RETRY_DELAY_MS = 40
 /** macOS 模拟复制脚本的最长执行时间，防止偶发阻塞让取词一直等不到复制键。 */
 const MACOS_COPY_SCRIPT_TIMEOUT_MS = 2000

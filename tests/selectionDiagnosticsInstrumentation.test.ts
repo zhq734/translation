@@ -36,7 +36,7 @@ test('鼠标松开不再记录未触发划词的静默原因', () => {
   // 静默原因日志频率过高，已整体移除；判定逻辑必须以提前返回保留。
   assert.doesNotMatch(upSource, /mouseup 未触发划词/u)
   assert.doesNotMatch(upSource, /划词未达阈值/u)
-  assert.match(upSource, /if \(heldModifiers \|\| !start \|\| !callback\) return/u)
+  assert.match(upSource, /if \(heldModifiers \|\| !start \|\| !callback\) \{/u)
 })
 
 test('选区手势被忽略时应记录 OCR、自有窗口、弹窗与按钮命中条件', () => {

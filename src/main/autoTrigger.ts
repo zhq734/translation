@@ -9,9 +9,12 @@ import {
   type SelectionGesture
 } from '../shared/selectionBehavior'
 import {
+  isPrimaryMouseButton,
   resetPointerTrackingForWindowBlur,
+  resolveDoubleClickSequence,
   resolvePointerDownTracking,
-  type PointerDownResult
+  type PointerDownResult,
+  type PrimaryClickSample
 } from '../shared/selectionInteraction'
 import { copyShortcutGuard } from './copyShortcutState'
 import {
@@ -40,7 +43,8 @@ type MouseSample = {
   x: number
   y: number
   time: number
-  clicks?: number
+  /** 鼠标键编号：1=左键、2=右键、3=中键、4/5=侧键。 */
+  button?: number
 }
 
 type KeyboardSample = {
@@ -52,7 +56,16 @@ type KeyboardSample = {
 }
 
 type SelectionCallback = (gesture: SelectionGesture) => void
-export type PointerDownCallback = (point: { x: number; y: number }) => PointerDownResult
+/**
+ * 鼠标按下分类回调。
+ * @param point 屏幕坐标（DIP）。
+ * @param button 鼠标键编号：1=左键、2=右键、3=中键、4/5=侧键；缺失按左键处理。
+ *   非左键只允许做“隐藏按钮/取消选区”这类副作用，不得当作点击“译”按钮。
+ */
+export type PointerDownCallback = (
+  point: { x: number; y: number },
+  button?: number
+) => PointerDownResult
 type CopyShortcutCallback = () => void
 type PasteShortcutCallback = () => void
 
@@ -64,6 +77,8 @@ let pasteShortcutCallback: PasteShortcutCallback | null = null
 
 let downAt: MouseSample | null = null
 let modifiersHeld = false
+// 自维护双击判定所需的“上一次左键松开”样本；非左键事件与超时间隔都会清空它。
+let lastPrimaryMouseUp: PrimaryClickSample | null = null
 // 只在 mouseup 异常分支输出，用于排查修饰键残留导致的划词失效，不产生高频日志。
 let lastModifierText = 'none'
 
@@ -104,6 +119,9 @@ function describeModifiers(e: { ctrlKey: boolean; altKey: boolean; metaKey: bool
 
 /**
  * 通知主进程鼠标已按下，记录起点并过滤带修饰键的拖拽操作。
+ * 非左键（右键、中键、侧键）不参与划词手势与双击判定，但仍要把按下事件透传给主进程：
+ * 主进程依赖该回调在点击按钮外区域时隐藏“译”按钮并取消当前选区，
+ * 若在这里直接 return，右键点击会留下悬空的旧按钮，点击它会错误触发取词。
  * @param e 全局鼠标按下事件。
  * @returns 无返回值。
  * @author zhenghq
@@ -113,11 +131,21 @@ function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaK
   lastModifierText = describeModifiers(e)
   let result: PointerDownResult = 'track'
   try {
-    result = pointerDownCallback?.(point) ?? 'track'
+    // 非左键也透传按下事件：主进程据此隐藏“译”按钮并取消旧选区，
+    // 但会依据 button 判定它不是点击按钮，不会触发翻译。
+    result = pointerDownCallback?.(point, e.button) ?? 'track'
   } catch (error) {
     // 单次窗口销毁/焦点竞态不应让全局钩子回调链进入半状态；本次事件安全忽略，后续事件仍可继续监听。
     result = 'ignore'
     console.warn('[autoTrigger] 鼠标按下分类异常，本次事件已忽略:', error)
+  }
+  if (!isPrimaryMouseButton(e.button)) {
+    // 非左键：保留上面的主进程副作用（隐藏按钮/取消选区），但不建立左键跟踪状态，
+    // 并清空上一次左键松开样本，避免右键交互与随后的左键拼接成假双击。
+    resetPrimaryClickState()
+    modifiersHeld = false
+    downAt = null
+    return
   }
   const tracking = resolvePointerDownTracking(
     result,
@@ -130,7 +158,18 @@ function onMouseDown(e: MouseSample & { ctrlKey: boolean; altKey: boolean; metaK
 }
 
 /**
+ * 清空自维护双击序列，避免非左键事件或长间隔与后续左键拼接成双击。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetPrimaryClickState(): void {
+  lastPrimaryMouseUp = null
+}
+
+/**
  * 判断鼠标拖拽是否达到划词阈值，并通知主进程新的选区锚点。
+ * 只有左键松开才进入手势判定；连续点击次数以自维护的两次左键松开序列为准，
+ * 不再采信底层 hook 上报的 clicks，避免 macOS 右键污染导致的假双击。
  * @param e 全局鼠标松开事件。
  * @returns 无返回值。
  * @author zhenghq
@@ -140,17 +179,35 @@ function onMouseUp(e: MouseSample): void {
   downAt = null
   const heldModifiers = modifiersHeld
   modifiersHeld = false
-  if (heldModifiers || !start || !callback) return
+  if (!isPrimaryMouseButton(e.button)) {
+    resetPrimaryClickState()
+    return
+  }
+  // 按住修饰键（Cmd/Ctrl/Alt）的拖拽不参与划词；被拒绝的松开也要清空双击序列。
+  if (heldModifiers || !start || !callback) {
+    resetPrimaryClickState()
+    return
+  }
 
-  const gesture = getSelectionGesture(
-    start,
-    createObservedPointerSample(resolveMousePoint(e), Date.now()),
-    e.clicks ?? 1
-  )
-  if (!shouldTriggerSelectionGesture(gesture, e.clicks ?? 1, DEFAULTS)) return
+  const end = createObservedPointerSample(resolveMousePoint(e), Date.now())
+  // 本次按下到松开的自身位移：位移过大说明是拖拽划词，不参与双击配对。
+  const dragDx = end.x - start.x
+  const dragDy = end.y - start.y
+  const sequence = resolveDoubleClickSequence(lastPrimaryMouseUp, {
+    button: e.button,
+    travel: Math.sqrt(dragDx * dragDx + dragDy * dragDy),
+    x: end.x,
+    y: end.y,
+    time: end.time
+  })
+  // 拖拽结束时 sample 为 null，显式清空避免与后续点击拼成假双击。
+  lastPrimaryMouseUp = sequence.sample
+  const clicks = sequence.clicks
+  const gesture = getSelectionGesture(start, end, clicks)
+  if (!shouldTriggerSelectionGesture(gesture, clicks, DEFAULTS)) return
 
   console.log(
-    `[autoTrigger] 检测到选区 clicks=${e.clicks ?? 1} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms`
+    `[autoTrigger] 检测到选区 clicks=${clicks} distance=${Math.round(gesture.distance)} duration=${gesture.durationMs}ms button=${e.button ?? 1}`
   )
   callback(gesture)
 }
@@ -262,17 +319,20 @@ export function stopAutoTrigger(): void {
   clearAutoTriggerCallbacks()
   downAt = null
   modifiersHeld = false
+  resetPrimaryClickState()
 }
 
 /**
  * 清理当前全局鼠标手势的按下状态。
- * macOS 在窗口切换、应用内拖拽或输入法上下文变化时可能漏发 mouseup；
  * 失焦时只清理起始于该窗口内部的旧手势，避免晚到的 blur 清除已经发生的外部 mousedown。
+ * 双击序列同一同清空：焦点切换可能漏发 mouseup，残留的左键松开样本会与切换后的
+ * 一次左键松开拼接成假双击。
  * @param blurredWindowBounds 刚刚失焦的自有窗口边界；省略时无条件清理。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function resetAutoTriggerPointerState(blurredWindowBounds?: ScreenBounds): void {
+  resetPrimaryClickState()
   if (!blurredWindowBounds) {
     downAt = null
     modifiersHeld = false

@@ -71,7 +71,7 @@ test('Windows 复制取词应使用已加载的原生模块直接发送 Ctrl+C',
 test('各平台均允许按钮预取，helper 不可用时由管线跳过', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
-  const scheduleEnd = source.indexOf('/**\n * 处理按钮模式的双击选词', scheduleStart)
+  const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)
 
   assert.equal(shouldPrefetchSelectionForButton('win32'), true)

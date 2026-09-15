@@ -249,6 +249,7 @@ const PRELOAD_PATH = join(__dirname, '../preload/index.js')
 /** 应用唯一标识，与 electron-builder 的 appId 保持一致，用于 Linux 自启动桌面入口命名。 */
 const APP_ID = 'com.selection.translator'
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
+/** 自动翻译与按钮定位等待选区稳定的时长（毫秒）。 */
 const SELECTION_SETTLE_DELAY_MS = 80
 const UPDATE_CHECK_DELAY_MS = 5000
 const MIN_OCR_SELECTION_SIZE = 8
@@ -1218,36 +1219,10 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 }
 
 /**
- * 处理按钮模式的双击选词：立即显示“译”按钮，并在支持快速预取的平台后台只读取词。
- * Windows 跳过 PowerShell/UIA 预取，点击按钮后直接使用原生模块发送复制快捷键。
- * @param gesture 当前双击选词手势及按钮锚点。
- * @returns 选区检查完成后的 Promise。
- * @author zhenghq
- */
-async function scheduleDoubleClickSelectionButton(gesture: SelectionGesture): Promise<void> {
-  const gestureId = ++latestSelectionGesture
-  selectionInteraction.invalidateSelectionFlow()
-  selectionCapture.invalidate()
-  hideSelectionButton()
-  lastSelectionAnchor = gesture.anchor
-
-  // 双击场景先显示按钮，避免系统辅助功能直读失败时用户完全看不到入口。
-  selectionInteraction.showButton()
-  showSelectionButton(gesture.anchor)
-
-  if (!shouldPrefetchSelectionForButton(process.platform)) return
-
-  // 按钮显示后再等待系统提交选区并做只读预取；不发送复制快捷键、不写剪贴板。
-  // 预取结果只用于点击时消费，失败时由点击流程继续走完整取词兜底。
-  const prepared = await selectionCapture.prepare(gesture.anchor, SELECTION_SETTLE_DELAY_MS)
-  if (gestureId !== latestSelectionGesture || getSettings().triggerMode !== 'button') return
-  // 预取结果只用于缓存，按钮已经显示；点击时会优先消费缓存，空结果则继续完整取词。
-  void prepared
-}
-
-/**
  * 响应一次全局划词动作，决定显示图标还是直接自动翻译。
- * 按钮模式的双击先无复制检查选区，常规拖拽只显示“译”按钮，不在用户确认前模拟系统复制。
+ * 双击与拖拽都只是手势来源，按钮模式下统一走 scheduleSelectionAction：
+ * 立即显示“译”按钮并后台只读预取，点击时预取命中即用、未命中再走复制兜底。
+ * 这样 IDEA 等不通过 Accessibility 暴露选区文本的自绘应用也能正常双击取词。
  * @param gesture 划词拖拽及选区锚点信息。
  * @returns 无返回值。
  * @author zhenghq
@@ -1273,8 +1248,6 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
   const settings = getSettings()
   if (gesture.clicks >= 2 && settings.triggerMode === 'button') {
     if (!settings.doubleClickSelectionButtonEnabled) return
-    void scheduleDoubleClickSelectionButton(gesture)
-    return
   }
 
   scheduleSelectionAction(gesture.anchor)
@@ -1287,7 +1260,10 @@ function handleSelectionGesture(gesture: SelectionGesture): void {
  * @returns 外部应用返回 track，自有窗口返回 ignore，按钮或 OCR 返回 consume。
  * @author zhenghq
  */
-function handleSelectionPointerDown(point: { x: number; y: number }): PointerDownResult {
+function handleSelectionPointerDown(point: { x: number; y: number }, button = 1): PointerDownResult {
+  // 非左键（右键/中键/侧键）只允许隐藏按钮与取消选区，绝不能当作点击“译”按钮：
+  // 否则右键点在按钮上会直接注入复制快捷键并弹出翻译。
+  const primaryButton = button === 1
   const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
   const selectionButtonHit = isPointInsideSelectionButton(point)
   const popupHit = isPointInsidePopup(point)
@@ -1312,19 +1288,23 @@ function handleSelectionPointerDown(point: { x: number; y: number }): PointerDow
       )
     }
   }
-  if (result === 'consume' && selectionButtonHit) {
+  if (result === 'consume' && selectionButtonHit && primaryButton) {
     void translateSelectionButton()
     renewInternalActivationLease()
   }
-  if (result === 'consume') return result
+  // 非左键不参与“点击按钮”语义，但必须继续走下面的隐藏/取消逻辑，
+  if (result === 'consume' && primaryButton) return result
+  // OCR 框选进行中的非左键（常见于“右键取消”手势）只丢弃本次框选，不得清空
+  // 已经预取好的选区缓存，否则随后的点击“译”按钮只能退回复制兜底。
+  if (result === 'consume' && ocrActive && !selectionButtonHit) return result
   // 焦点在设置窗口等自有窗口内时的点击属于应用内交互，不参与跨应用取词，
   // 也不应清空当前已捕获的选区缓存，否则设置页操作会让划词结果丢失。
-  if (result === 'ignore') return result
+  if (result === 'ignore' && primaryButton) return result
   latestSelectionGesture += 1
   selectionInteraction.invalidateSelectionFlow()
   selectionCapture.invalidate()
   hideSelectionButton()
-  return 'track'
+  return primaryButton ? 'track' : 'ignore'
 }
 
 /**

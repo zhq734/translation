@@ -53,6 +53,6 @@ test('关闭双击选词开关后按钮模式应忽略双击手势', () => {
   assert.ok(end > start)
   assert.match(
     handlerSource,
-    /gesture\.clicks >= 2[\s\S]*?triggerMode === 'button'[\s\S]*?if \(!settings\.doubleClickSelectionButtonEnabled\) return[\s\S]*?scheduleDoubleClickSelectionButton\(gesture\)/u
+    /gesture\.clicks >= 2[\s\S]*?triggerMode === 'button'[\s\S]*?if \(!settings\.doubleClickSelectionButtonEnabled\) return[\s\S]*?scheduleSelectionAction\(gesture\.anchor\)/u
   )
 })

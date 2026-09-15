@@ -59,11 +59,9 @@ export interface SelectionGesture {
 }
 
 import type { TriggerMode } from './types'
+import { normalizeReportedClicks } from './selectionInteraction'
 import type { NativeSelectionReadResult } from './platformCapture'
-import type {
-  SelectionCaptureResult,
-  SelectionFailureReason
-} from './selectionCaptureCoordinator'
+import type { SelectionFailureReason } from './selectionCaptureCoordinator'
 
 /** 划词完成后主进程需要执行的动作。 */
 export type SelectionAction = 'show-button' | 'translate' | 'ignore'
@@ -144,6 +142,8 @@ export function resolveSelectionCaptureFailureMessage(
 
 /**
  * 根据拖拽起点和终点生成划词几何信息。
+ * 连续点击次数统一经 normalizeReportedClicks 归一化：底层 hook 在 macOS 上会被非左键事件
+ * 污染 clicks，缺失、0、负数与 1 一律归一为 1，其余按至少两次点击处理。
  * @param start 鼠标按下位置。
  * @param end 鼠标松开位置。
  * @param clicks 当前鼠标事件的连续点击次数。
@@ -162,7 +162,7 @@ export function getSelectionGesture(
     end,
     distance: Math.sqrt(dx * dx + dy * dy),
     durationMs: Math.max(0, end.time - start.time),
-    clicks: Math.max(1, clicks),
+    clicks: normalizeReportedClicks(clicks),
     anchor: {
       x: Math.max(start.x, end.x),
       y: Math.min(start.y, end.y)
@@ -238,34 +238,6 @@ export function parseNativeSelectionReadOutput(output: unknown): NativeSelection
   if (status === 'EMPTY') return { status: 'empty', text: '' }
   if (status === 'UNKNOWN') return { status: 'unknown', text: '' }
   return { status: 'unknown', text: '' }
-}
-
-/**
- * 根据点击次数与无复制选区检查结果决定是否显示“译”按钮。
- * 双击采用严格确认策略，仅明确检测到非空选区时显示；普通拖拽保持现有兼容行为。
- * @param clicks 当前鼠标事件的连续点击次数。
- * @param presence 无复制选区检查得到的状态。
- * @returns 是否应显示“译”按钮。
- * @author zhenghq
- */
-export function shouldShowSelectionButtonAfterInspection(
-  clicks: number,
-  presence: SelectionPresence
-): boolean {
-  return clicks < 2 || presence === 'present'
-}
-
-/**
- * 判断双击选区预取结果是否已明确包含可翻译文字。
- * 双击按钮显示采用严格确认策略，空文本、未知状态及读取错误均不得显示按钮。
- * @param result 双击选区预取结果；尚未完成或已失效时传入 null。
- * @returns 预取结果包含无错误非空文字时返回 true，否则返回 false。
- * @author zhenghq
- */
-export function hasConfirmedSelectionText(
-  result: Pick<SelectionCaptureResult, 'text' | 'error'> | null
-): boolean {
-  return Boolean(result && !result.error && result.text.trim())
 }
 
 /**

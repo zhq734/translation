@@ -80,6 +80,36 @@ test('helper 应按序执行三级读取且不引用 System Events', () => {
   // 直读只依赖 Accessibility，代码中不得出现 System Events 引用（注释中的说明除外）。
   const codeOnly = source.split('\n').filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//') && !line.trim().startsWith('/*')).join('\n')
   assert.ok(!/System Events/u.test(codeOnly), 'helper 代码不得引用 System Events')
+
+/**
+ * 校验 CopySelectedTextFromAncestry 在祖先链每一层都保留 marker range 回退，
+ * 覆盖 VS Code 注释、网页正文等不暴露 AXSelectedText 的自绘控件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('祖先链读取的每一层都应保留 AXSelectedTextMarkerRange 回退', () => {
+  const source = readHelperSource()
+  assert.ok(source.length > 0, `缺少 macOS AX helper 源码: ${HELPER_PATH}`)
+
+  const startAt = source.indexOf('static NSString *CopySelectedTextFromAncestry')
+  const endAt = source.indexOf('static AXUIElementRef CopyElementAtMousePosition')
+  assert.ok(startAt >= 0, '缺少 CopySelectedTextFromAncestry 定义')
+  assert.ok(endAt > startAt, 'CopySelectedTextFromAncestry 定义顺序异常')
+  const ancestryBody = source.slice(startAt, endAt)
+
+  // 循环体内必须"先 AXSelectedText 后 marker range"，缺一即退化回只读 AXSelectedText。
+  const selectedTextAt = ancestryBody.indexOf('CopyStringAttribute(current, kAXSelectedTextAttribute)')
+  const markerRangeAt = ancestryBody.indexOf('CopySelectedTextViaMarkerRange(current)')
+  assert.ok(selectedTextAt >= 0, '祖先链每层应先读 AXSelectedText')
+  assert.ok(markerRangeAt > selectedTextAt, '祖先链每层的 AXSelectedText 失败后应回退 marker range')
+
+  // 回退必须真的挂在"当前层读取失败"分支上，而不是无条件覆盖。
+  assert.match(ancestryBody, /if \(!text\) \{\s*\n\s*text = CopySelectedTextViaMarkerRange\(current\);/u)
+
+  // 命中即返回首个非空选区，并沿 AXParent 上溯。
+  assert.match(ancestryBody, /kAXParentAttribute/u)
+  assert.match(ancestryBody, /break;/u)
+})
 })
 
 /**
