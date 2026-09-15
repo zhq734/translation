@@ -3802,6 +3802,36 @@ async function promptHiServicesRepair(anchor?: { x: number; y: number }): Promis
 // ---- 设置窗口 ----
 
 /**
+ * 等待窗口完成首帧渲染，确保页面已应用持久化主题后再上屏。
+ * @param win 待显示的窗口。
+ * @returns 窗口可以安全显示时完成的 Promise。
+ * @author zhenghq
+ */
+function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
+  if (win.isDestroyed()) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (!win.isDestroyed()) {
+        win.removeListener('ready-to-show', finish)
+        win.removeListener('closed', finish)
+        win.webContents.removeListener('did-fail-load', finish)
+      }
+      resolve()
+    }
+    win.once('ready-to-show', finish)
+    win.once('closed', finish)
+    win.webContents.once('did-fail-load', finish)
+    // 渲染进程异常崩溃时 ready-to-show 与 did-fail-load 都不会触发，兜底超时避免窗口永不显示。
+    timer = setTimeout(finish, 2000)
+  })
+}
+
+/**
  * 创建或复用设置窗口。
  * @returns 设置窗口实例。
  * @author zhenghq
@@ -3847,6 +3877,8 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
     }
   })
   settingsWin = createdWindow
+  // 必须在 loadRendererHtml 之前挂载监听，否则页面加载过快会漏掉 ready-to-show。
+  const readyToShow = whenWindowReadyToShow(createdWindow)
 
   if (process.platform === 'win32') settingsWin.removeMenu()
   loadRendererHtml(settingsWin, 'settings.html')
@@ -3876,6 +3908,10 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
     void refreshMacOSDockVisibility()
   })
   await refreshMacOSDockVisibility()
+  if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
+  // 主题运行时需异步读取主进程设置，若在首帧渲染前 show()，用户会先看到默认主题
+  // 再切回已保存主题。等待首帧就绪让页面带着持久化主题一次性上屏。
+  await readyToShow
   if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
   // 菜单栏应用新建窗口时不会自动成为前台应用，需显式显示并聚焦，否则首次打开会落在其他应用后面
   if (isMac) app.focus({ steal: true })
