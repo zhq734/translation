@@ -20,6 +20,7 @@ function extractFunction(source: string, signature: string): string {
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
 test('弹窗隐藏前先把 macOS 前台交还出去', () => {
   const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
@@ -93,5 +94,123 @@ test('macOS 上取词失败提示必须以非激活方式显示，避免设置�
     failureSource,
     /result\.anchor,\s*shouldActivatePopupForCaptureFailure\(process\.platform\)/u,
     '取词失败提示的激活方式必须由平台策略决定，不能沿用默认激活'
+  )
+})
+
+test('macOS 连续取词超时提示必须交还前台且结果提示不得重新激活应用', () => {
+  const promptSource = extractFunction(mainSource, 'function promptHiServicesRepair(')
+
+  // 原生消息框会激活本应用；阅读器作为应用内下一个 key window 会被系统顶到最前。
+  assert.match(
+    promptSource,
+    /await rememberFrontmostAppIfInactiveAsync\(\)[\s\S]*?dialog\.showMessageBox\(/u,
+    '显示原生修复提示前必须记录源应用并等待快照完成'
+  )
+  assert.match(
+    promptSource,
+    /showPopup\([\s\S]*?shouldActivatePopupForCaptureFailure\(process\.platform\)/u,
+    '修复结果提示必须复用 macOS 非激活显示策略'
+  )
+})
+
+test('原生修复对话框关闭后必须依据应用激活状态交还前台', () => {
+  const handBackAppSource = extractFunction(
+    macForegroundSource,
+    'export function handBackFrontmostApp(): Promise<boolean> {'
+  )
+  // dialog.showMessageBox 是原生对话框而不是 BrowserWindow：对话框存在时
+  // BrowserWindow.getFocusedWindow() 返回 null，但本应用仍然处于最前。
+  // 若据此判断「无需交还」，对话框关闭后系统会把网页翻译窗口提升到最前。
+  assert.match(handBackAppSource, /!isMacAppActive\(\)/u, '必须依据应用激活状态判断是否仍需交还前台')
+  assert.match(
+    handBackAppSource,
+    /if \(!isMacAppActive\(\)\) \{\s*\n\s*forgetFrontmostApp\(\)/u,
+    '本应用确实不在最前时才能放弃交还'
+  )
+  // 交还过程中同样必须等待应用失活，不能只看 BrowserWindow 焦点。
+  assert.match(
+    handBackAppSource,
+    /if \(!isMacAppActive\(\)\) \{\s*\n\s*finish\(true\)/u,
+    '必须轮询应用失活后才算交还完成'
+  )
+  // Electron 33 不提供 app.isActive()，必须通过获得/失去激活事件自行跟踪应用状态。
+  assert.match(macForegroundSource, /app\.on\('did-become-active'/u, '必须跟踪应用获得激活')
+  assert.match(macForegroundSource, /app\.on\('did-resign-active'/u, '必须跟踪应用失去激活')
+  assert.doesNotMatch(handBackAppSource, /app\.isActive\(\)/u, 'Electron 33 不提供 app.isActive()')
+})
+
+test('原生修复对话框显示期间隐藏失败提示不得丢弃待交还记录', () => {
+  const handBackThenSource = extractFunction(
+    macForegroundSource,
+    'export function handBackFrontmostThen('
+  )
+
+  // 修复对话框持有 key window 时 BrowserWindow.getFocusedWindow() 返回 null，
+  // 但本应用仍处于最前。失败提示在这期间自动隐藏，若此时丢弃待交还记录，
+  // 对话框关闭后就没有目标可以交还，网页翻译窗口会被系统顶到最前。
+  assert.match(
+    handBackThenSource,
+    /if \(focused === null\) \{[\s\S]*?if \(isMacAppActive\(\)\) \{\s*\n\s*run\(\)\s*\n\s*return\s*\n\s*\}/u,
+    '应用仍在前台（对话框持有 key window）时必须保留待交还记录'
+  )
+  assert.match(
+    handBackThenSource,
+    /if \(isMacAppActive\(\)\) \{[\s\S]*?forgetFrontmostApp\(\)/u,
+    '只有应用确实失活时才能丢弃待交还记录'
+  )
+})
+
+test('macOS 交还失败时弹窗必须走安全退化路径，不能直接隐藏应用内 key window', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
+
+  // 本应用仍是最前时直接隐藏应用内 key window，系统会把应用内下一个窗口
+  // （正在后台打开的网页阅读器）提升为 key window 并顶到用户应用之上。
+  // 拿不到源应用或激活无效时必须走独立退化回调，不能直接执行隐藏。
+  assert.match(
+    hideSource,
+    /handBackFrontmostThen\(\s*win,\s*\(\) => \{[\s\S]*?\n  \}, \(\) => \{/u,
+    '必须为交还失败注册独立退化回调'
+  )
+  assert.match(hideSource, /yieldFrontmostAppThen\(/u, '退化回调必须复用安全让出前台逻辑')
+})
+
+test('安全让出前台必须先确认应用失活再收尾，最后非激活恢复窗口', () => {
+  const source = extractFunction(
+    macForegroundSource,
+    'export function yieldFrontmostAppThen('
+  )
+
+  assert.match(source, /app\.hide\(\)/u, '必须用 app.hide() 让系统把前台还给用户原本在用的应用')
+  assert.match(
+    source,
+    /if \(!isMacAppActive\(\)\) \{\s*\n\s*finish\(\)/u,
+    '必须轮询确认本应用真正失活后才执行收尾'
+  )
+  // 未等待失活就收尾仍会把阅读器顶到最前（真机 CGWindowList 采样验证过）。
+  assert.match(source, /setTimeout\(poll, FRONT_RETURN_POLL_INTERVAL_MS\)/u, '必须有失活轮询')
+  // 收尾动作与 app.show() 的先后顺序必须固定：先执行收尾，再非激活恢复应用内窗口。
+  assert.ok(
+    source.indexOf('run()') < source.indexOf('app.show()'),
+    '收尾后必须用非激活的 app.show() 恢复应用内窗口'
+  )
+  assert.match(
+    source,
+    /if \(process\.platform !== 'darwin'[\s\S]*?\n/u,
+    '非 macOS 平台不存在窗口提升问题，必须直接收尾'
+  )
+})
+
+test('原生对话框交还失败时同样必须先安全让出前台', () => {
+  const source = extractFunction(
+    macForegroundSource,
+    'export function handBackFrontmostApp(): Promise<boolean> {'
+  )
+
+  // 对话框关闭后若没有可交还的源应用，直接继续会让系统把网页阅读器提升到最前。
+  assert.match(source, /yieldFrontmostAppThen\(/u, '没有可交还目标时必须安全让出前台')
+  assert.match(
+    source,
+    /!target \|\| !isProcessAlive\(target\.pid\)[\s\S]*?yieldFrontmostAppThen\(/u,
+    '目标缺失或已退出时必须走安全退化路径'
   )
 })

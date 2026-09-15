@@ -22,8 +22,25 @@ import type {
 import {
   createWebTextUnitKey,
   extractWebTextBlocks,
-  type ExtractedWebTextUnit
+  type ExtractedWebTextBlock,
+  type ExtractedWebTextUnit,
+  type WebImageCandidate
 } from '../shared/webPageTranslation'
+import {
+  filterWebImageCandidates,
+  resolveWebImageRenderDecision,
+  summarizeWebImageProgress,
+  type WebImageOverlayPlacement,
+  type WebImageProgressSummary
+} from '../shared/webImageOcr'
+import { WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT } from '../shared/webBlockSplitter'
+import { buildWebBilingualOperations } from '../shared/webBilingualRender'
+import {
+  mergeWebImageResults,
+  processWebImageCandidates,
+  type WebImageRecognition
+} from './webImagePipeline'
+import type { WebImageSource } from './webImageSource'
 import {
   aggregatePageTranslationUnits,
   PageTranslationCoordinator,
@@ -46,11 +63,18 @@ import {
   buildWebIncrementalCollectorDrainScript,
   buildWebIncrementalCollectorStartScript,
   buildWebIncrementalCollectorStopScript,
+  buildWebBilingualClearScript,
+  buildWebBilingualInjectScript,
+  buildWebBilingualStyleSheet,
+  buildWebImageOverlayClearScript,
+  buildWebImageOverlayInjectScript,
+  buildWebImageOverlayStyleSheet,
   buildWebTextApplyScript,
   executeWebTextExtraction,
   waitForWebDocumentReady,
   type WebDocumentReadiness,
   type WebIncrementalTextBatch,
+  type WebImageOverlayOperation,
   type WebTextWriteOperation
 } from './webTextExtractionScript'
 
@@ -70,6 +94,10 @@ export interface WebReaderManagerOptions {
   getSettings(): Settings
   /** 调用现有 TranslationRuntime 翻译单段文本。 */
   translate(text: string, sourceLang: string, targetLang: string): Promise<{ translation: string; provider?: string; channel?: string }>
+  /** 为远程页面创建取图器；未注入时跳过图片 OCR。 */
+  createImageSource?(view: WebContentsView, signal?: AbortSignal): WebImageSource
+  /** 对图片字节执行 OCR 识别；未注入时跳过图片 OCR。 */
+  recognizeImage?(bytes: Buffer, candidate: WebImageCandidate): Promise<WebImageRecognition>
   /** 阅读器窗口打开或关闭时通知主进程。 */
   onWindowStateChanged?: (open: boolean) => void
 }
@@ -85,7 +113,18 @@ export class WebReaderManager {
   private view: WebContentsView | null = null
   private pageRevision = 0
   private extractedUnits: ExtractedWebTextUnit[] = []
+  private extractedBlocks: ExtractedWebTextBlock[] = []
+  private blockUnitIds = new Map<string, string[]>()
+  private extractedImageCandidates: WebImageCandidate[] = []
+  private imageFilterSkipped = 0
   private translatedUnits: WebTranslationUnitResult[] = []
+  private translatedImageCandidates: WebImageCandidate[] = []
+  private bilingualInjected = false
+  private bilingualCssKey: string | null = null
+  private bilingualTargetLang = ''
+  private imageOverlayInjected = false
+  private imageOverlayCssKey: string | null = null
+  private streamBlockIds = new Map<string, string>()
   private activeJobId = ''
   private activeSourceLang = ''
   private activeTargetLang = ''
@@ -99,6 +138,7 @@ export class WebReaderManager {
   private incrementalUnitSequence = 0
   private incrementalDrainQueue = Promise.resolve()
   private incrementalUnitHandler: ((units: ExtractedWebTextUnit[]) => void | Promise<void>) | null = null
+  private incrementalImageHandler: ((candidates: WebImageCandidate[]) => void | Promise<void>) | null = null
   private incrementalWindowRevision: number | null = null
   private incrementalGeneration = 0
   private incrementalFinishPromise: Promise<void> | null = null
@@ -117,7 +157,11 @@ export class WebReaderManager {
    */
   constructor(options: WebReaderManagerOptions) {
     this.options = options
-    this.coordinator = new PageTranslationCoordinator({ concurrency: 3, translate: options.translate })
+    this.coordinator = new PageTranslationCoordinator({
+      // 每次调度都读取最新设置，用户调整并发数后无需重启阅读器即可生效。
+      concurrency: () => this.options.getSettings().webTranslationConcurrency,
+      translate: options.translate
+    })
     this.state = this.createState()
   }
 
@@ -286,6 +330,8 @@ export class WebReaderManager {
   async extract(): Promise<WebTranslationExtractionPayload> {
     const view = this.requireLoadedView()
     this.invalidateActiveJob(true)
+    await this.clearBilingualInjection()
+    await this.clearImageOverlays()
     await this.incrementalStopPromise
     const navigationRevision = this.pageRevision
     // 只等待主文档根节点出现，不等待 DOMContentLoaded、图片、埋点或长连接。
@@ -298,9 +344,22 @@ export class WebReaderManager {
     )
     if (navigationRevision !== this.pageRevision) throw new Error('网页已变化，请重新提取')
     const result = extractWebTextBlocks(raw.snapshot, raw.pageMeta)
+    const settings = this.options.getSettings()
+    const imageFilter = settings.webTranslationImageOcrEnabled
+      ? filterWebImageCandidates(raw.imageCandidates, {
+        minSize: settings.webTranslationImageOcrMinSize,
+        maxImages: settings.webTranslationImageOcrMaxImages
+      })
+      : { accepted: [], skipped: raw.imageCandidates.length }
     this.pageRevision += 1
     this.extractedUnits = result.units
+    this.extractedBlocks = result.blocks
+    this.blockUnitIds = this.createBlockUnitIds(result.units)
+    this.extractedImageCandidates = imageFilter.accepted
+    this.imageFilterSkipped = imageFilter.skipped
     this.translatedUnits = []
+    this.translatedImageCandidates = []
+    this.streamBlockIds.clear()
     this.incrementalUnitSequence = result.units.length
     this.incrementalSeenUnitKeys = new Set(result.units.map((unit) => this.unitKey(unit)))
     this.hasExtractedSnapshot = true
@@ -311,11 +370,18 @@ export class WebReaderManager {
       translationWindowActive: true,
       translationDiscovered: 0,
       translationDone: 0,
-      translationCacheHits: 0
+      translationCacheHits: 0,
+      ...summarizeWebImageProgress(this.extractedImageCandidates),
+      imageSkipped: summarizeWebImageProgress(this.extractedImageCandidates).imageSkipped + this.imageFilterSkipped
     }
     this.emitState()
     this.stopPageChangePolling()
-    return { ...result, readerId: this.readerId, pageRevision: this.pageRevision }
+    return {
+      ...result,
+      readerId: this.readerId,
+      pageRevision: this.pageRevision,
+      imageCandidates: this.extractedImageCandidates.map((candidate) => ({ ...candidate }))
+    }
   }
 
   /** 按语言方向翻译当前快照并原位写回。
@@ -327,6 +393,10 @@ export class WebReaderManager {
     if (!this.hasExtractedSnapshot) throw new Error('请先提取当前网页文本')
     // run 只失效旧翻译任务，不停止本次 extract 已启动的增量收集器。
     this.invalidateActiveJob(false)
+    // 语言或任务切换时先清理旧语言对照节点，避免迟到结果与新语言叠加。
+    await this.clearBilingualInjection()
+    // 图片覆盖层同样按任务重建，避免旧语言或旧快照的译文残留。
+    await this.clearImageOverlays()
     await this.restoreSource()
     const settings = this.options.getSettings()
     const sourceLang = request.sourceLang?.trim() || settings.sourceLang || 'auto'
@@ -339,21 +409,115 @@ export class WebReaderManager {
     this.activeJobId = jobId
     this.activeSourceLang = sourceLang
     this.activeTargetLang = targetLang
+    this.bilingualTargetLang = targetLang
     this.activeAbort = controller
     let apply: WebTranslationApplyPayload = { applied: 0, mismatched: 0, skipped: 0 }
     let applyQueue = Promise.resolve()
     const latestResults = new Map<string, PageTranslationResult>()
     const cachedTranslations = new Map<string, WebTranslationUnitResult>()
     const cacheContext = this.createCacheContext(scope, sourceLang, targetLang)
+    const imagePlacement: WebImageOverlayPlacement = settings.webTranslationImageOcrOverlay
+    const imageCandidates = settings.webTranslationImageOcrEnabled
+      ? this.extractedImageCandidates.map((candidate) => ({ ...candidate }))
+      : []
+    // 图片缓存按页面指纹、图片标识与语言方向隔离，命中后跳过取图与 OCR。
+    const cachedImageHits = new Map<string, WebImageCandidate & { ocrText: string; translation: string }>()
+    for (const hit of this.pageCache.matchImages(cacheContext, imageCandidates)) {
+      cachedImageHits.set(hit.imageId, hit)
+    }
+    const cachedImageCandidates = imageCandidates.map((candidate) => cachedImageHits.get(candidate.imageId) ?? candidate)
+    const pendingImageCandidates = imageCandidates.filter((candidate) => !cachedImageHits.has(candidate.imageId))
+    let imageCandidatesResult: WebImageCandidate[] = cachedImageCandidates
+    let imageCancelled = false
+    const processedImageIds = new Set(cachedImageHits.keys())
+    let imageProcessChain = Promise.resolve()
     /** 判断增量结果是否仍属于当前阅读器任务。 */
     const isCurrentJob = (): boolean => this.activeJobId === jobId && this.pageRevision === revision &&
       this.activeSourceLang === sourceLang && this.activeTargetLang === targetLang
+    /** 汇总当前图片维度的进度，包含提取阶段被过滤的候选。 */
+    const currentImageSummary = (): WebImageProgressSummary => {
+      const summary = summarizeWebImageProgress(imageCandidatesResult)
+      return { ...summary, imageSkipped: summary.imageSkipped + this.imageFilterSkipped }
+    }
+    /**
+     * 取图、OCR 与翻译一批图片候选，并把结果合并进当前任务。
+     * @param batch 本批次待处理的图片候选。
+     * @returns 处理完成后的 Promise。
+     * @author zhenghq
+     */
+    const processImageBatch = async (batch: WebImageCandidate[]): Promise<void> => {
+      if (batch.length === 0 || !isCurrentJob()) return
+      const createSource = this.options.createImageSource
+      const recognizeImage = this.options.recognizeImage
+      const view = this.view
+      const canFetch = Boolean(createSource && recognizeImage && view && !view.webContents.isDestroyed())
+      let processedCandidates: WebImageCandidate[]
+      if (canFetch) {
+        const source = (createSource as NonNullable<typeof createSource>).call(this.options, view as WebContentsView, controller.signal)
+        const processed = await processWebImageCandidates(batch, {
+          source,
+          recognize: (bytes, candidate) => (recognizeImage as NonNullable<typeof recognizeImage>).call(this.options, bytes, candidate),
+          translate: async (text) => {
+            const output = await this.options.translate(text, sourceLang, targetLang)
+            return { translation: output.translation }
+          },
+          sourceLang,
+          targetLang,
+          signal: controller.signal
+        })
+        imageCancelled = imageCancelled || processed.cancelled
+        processedCandidates = processed.candidates
+      } else {
+        // 缺少取图或 OCR 依赖时按跳过处理，保证图片失败不影响文本翻译。
+        processedCandidates = batch.map((candidate) => ({ ...candidate, skippedReason: 'unavailable' }))
+      }
+      imageCandidatesResult = mergeWebImageResults(imageCandidatesResult, processedCandidates)
+      for (const candidate of processedCandidates) processedImageIds.add(candidate.imageId)
+      if (!isCurrentJob()) return
+      this.translatedImageCandidates = imageCandidatesResult
+      this.state = { ...this.state, ...currentImageSummary() }
+      this.emitState()
+      this.emitProgress({
+        readerId: this.readerId,
+        pageRevision: revision,
+        jobId,
+        done: this.state.translationDone ?? 0,
+        discovered: this.state.translationDiscovered ?? 0,
+        queued: 0,
+        total: this.state.translationDiscovered ?? 0,
+        failed: 0,
+        cancelled: imageCancelled,
+        partial: false,
+        inputClosed: this.state.translationWindowActive !== true,
+        sourceLang,
+        targetLang,
+        cacheHits: cachedTranslations.size,
+        images: currentImageSummary()
+      })
+      await this.applyImageOverlays(imagePlacement)
+    }
+
+    /**
+     * 串行排队一批图片候选，避免增量图片与首批图片并发写回互相覆盖。
+     * @param batch 待处理的图片候选批次。
+     * @returns 该批次处理完成后的 Promise。
+     * @author zhenghq
+     */
+    const enqueueImageBatch = (batch: WebImageCandidate[]): Promise<void> => {
+      if (batch.length === 0) return Promise.resolve()
+      const run = imageProcessChain.then(() => processImageBatch(batch))
+      imageProcessChain = run.catch(() => undefined)
+      return run
+    }
+    const imagePromise = enqueueImageBatch(pendingImageCandidates)
     /** 累加一次文本单元写回统计，供最终结果汇总。 */
     const addApplyResult = (result: WebTranslationApplyPayload): void => {
       apply = {
         applied: apply.applied + result.applied,
         mismatched: apply.mismatched + result.mismatched,
-        skipped: apply.skipped + result.skipped
+        skipped: apply.skipped + result.skipped,
+        bilingualSkipped: (apply.bilingualSkipped ?? 0) + (result.bilingualSkipped ?? 0),
+        unrendered: (apply.unrendered ?? 0) + (result.unrendered ?? 0)
       }
     }
     /**
@@ -368,11 +532,16 @@ export class WebReaderManager {
       this.translatedUnits = this.mergeTranslatedUnits(latestResults, cachedTranslations)
       this.state = { ...this.state, translationCacheHits: cachedTranslations.size }
       this.emitState()
-      if (this.mode === 'target') {
+      if (this.mode === 'bilingual') {
+        addApplyResult(await this.applyBilingual())
+      } else if (this.mode === 'target') {
         addApplyResult(await this.applyUnits('target', new Set(units.map((unit) => unit.id))))
       }
     }
-    const initialHits = this.pageCache.match(cacheContext, this.extractedUnits)
+    const initialHits = this.selectCompleteCacheHits(
+      this.pageCache.match(cacheContext, this.extractedUnits),
+      this.extractedUnits
+    )
     await applyCacheHits(initialHits)
     const initialHitIds = new Set(initialHits.map((unit) => unit.id))
     const stream = this.coordinator.createStream({
@@ -380,7 +549,9 @@ export class WebReaderManager {
       pageRevision: revision,
       jobId,
       scope,
-      maxCharsPerSegment: 500,
+      maxCharsPerSegment: WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT,
+      // 相邻短段落合并为一次请求，显著降低请求数；模型未保留分隔标记时协调器会自动逐段回退。
+      mergeAcrossBlocks: true,
       maxBlocks: settings.webTranslationMaxBlocks,
       maxChars: settings.webTranslationMaxChars,
       locale: sourceLang === 'auto' ? undefined : sourceLang,
@@ -391,10 +562,18 @@ export class WebReaderManager {
         ...this.state,
         translationDiscovered: progress.discovered,
         translationDone: progress.done,
-        translationWindowActive: !progress.inputClosed
+        translationWindowActive: !progress.inputClosed,
+        ...currentImageSummary()
       }
       this.emitState()
-      this.emitProgress({ ...progress, readerId: this.readerId, sourceLang, targetLang, cacheHits: cachedTranslations.size })
+      this.emitProgress({
+        ...progress,
+        readerId: this.readerId,
+        sourceLang,
+        targetLang,
+        cacheHits: cachedTranslations.size,
+        images: currentImageSummary()
+      })
     }, controller.signal, async (segmentResult: PageTranslationResult, unitComplete: boolean) => {
       if (!isCurrentJob()) return
       latestResults.set(segmentResult.segmentId, segmentResult)
@@ -403,12 +582,22 @@ export class WebReaderManager {
       applyQueue = applyQueue.then(async () => {
         if (!isCurrentJob()) return
         const units = this.mergeTranslatedUnits(latestResults, cachedTranslations)
-        const completedUnit = units.find((unit) => unit.id === segmentResult.unitId)
+        const primaryUnitId = segmentResult.unitIds[0] ?? segmentResult.unitId
+        const completedUnit = units.find((unit) => unit.id === primaryUnitId)
         if (!completedUnit || !isCurrentJob()) return
         this.translatedUnits = units
-        // 仅写回刚完成的文本单元，避免等待其他分段或重复刷新整页。
-        if (isCurrentJob() && this.mode === 'target' && typeof completedUnit.translation === 'string') {
-          addApplyResult(await this.applyUnits('target', new Set([completedUnit.id])))
+        // 对照模式按块聚合：仅在所属块全部单元完成后才 upsert 该块译文节点。
+        if (isCurrentJob() && this.mode === 'bilingual') {
+          // 块内仍有单元未完成时不渲染、也不计入未对照，等整块完成后一次性 upsert。
+          if (this.isBlockComplete(completedUnit.blockId, units)) {
+            addApplyResult(await this.applyBilingual(new Set([completedUnit.blockId])))
+          }
+        } else if (isCurrentJob() && this.mode === 'target' && typeof completedUnit.translation === 'string') {
+          // 段落级译文挂在首个单元，需整块写回并清空其余单元，避免残留多份原文。
+          const blockUnitIds = this.blockUnitIds.get(completedUnit.blockId)
+          if (blockUnitIds && this.isBlockComplete(completedUnit.blockId, units)) {
+            addApplyResult(await this.applyUnits('target', new Set(blockUnitIds)))
+          }
         }
       })
       await applyQueue
@@ -418,13 +607,31 @@ export class WebReaderManager {
     this.startIncrementalWindow(stream, revision, async (newUnits) => {
       if (!isCurrentJob()) return
       const currentContext = this.createCacheContext(scope, sourceLang, targetLang)
-      const hits = this.pageCache.match(currentContext, newUnits)
+      const hits = this.selectCompleteCacheHits(this.pageCache.match(currentContext, newUnits), newUnits)
       await applyCacheHits(hits)
       const hitIds = new Set(hits.map((unit) => unit.id))
       stream.enqueue(newUnits.filter((unit) => !hitIds.has(unit.id)))
+    }, async (newImages) => {
+      if (!isCurrentJob()) return
+      const currentContext = this.createCacheContext(scope, sourceLang, targetLang)
+      const hits = this.pageCache.matchImages(currentContext, newImages)
+      const hitById = new Map(hits.map((candidate) => [candidate.imageId, candidate]))
+      const pending: WebImageCandidate[] = []
+      for (const candidate of newImages) {
+        const hit = hitById.get(candidate.imageId)
+        if (hit) {
+          processedImageIds.add(hit.imageId)
+          imageCandidatesResult.push(hit)
+        } else {
+          pending.push(candidate)
+        }
+      }
+      await enqueueImageBatch(pending)
     })
     const result = await stream.result
     await applyQueue
+    await imagePromise
+    await imageProcessChain
     const current = isCurrentJob()
     let units: WebTranslationUnitResult[] = []
     if (current) {
@@ -438,6 +645,7 @@ export class WebReaderManager {
           translation: unit.translation,
           error: unit.error
         })))
+        if (!imageCancelled) this.pageCache.putImages(finalContext, imageCandidatesResult)
         this.activeJobId = ''
         this.activeAbort = null
         this.activeStream = null
@@ -451,7 +659,15 @@ export class WebReaderManager {
       sourceLang,
       targetLang,
       cacheHits: cachedTranslations.size,
-      progress: { ...result.progress, readerId: this.readerId, sourceLang, targetLang, cacheHits: cachedTranslations.size }
+      images: currentImageSummary(),
+      progress: {
+        ...result.progress,
+        readerId: this.readerId,
+        sourceLang,
+        targetLang,
+        cacheHits: cachedTranslations.size,
+        images: currentImageSummary()
+      }
     }
   }
 
@@ -460,6 +676,8 @@ export class WebReaderManager {
    * @author zhenghq
    */
   cancel(): void {
+    void this.clearBilingualInjection()
+    void this.clearImageOverlays()
     this.invalidateActiveJob(true)
   }
 
@@ -469,8 +687,22 @@ export class WebReaderManager {
    * @author zhenghq
    */
   async setMode(mode: WebTranslationMode): Promise<WebTranslationApplyPayload> {
+    // D2 不变量：离开对照先清理注入；进入对照前先把文本节点还原为原文再注入。
+    if (this.bilingualInjected && mode !== 'bilingual') await this.clearBilingualInjection()
     this.mode = mode
-    return this.applyUnits(mode)
+    const placement = this.options.getSettings().webTranslationImageOcrOverlay
+    if (mode === 'source') {
+      await this.clearImageOverlays()
+      return this.applyUnits('source')
+    }
+    if (mode === 'target') {
+      const result = await this.applyUnits('target')
+      await this.applyImageOverlays(placement)
+      return result
+    }
+    await this.applyUnits('source')
+    await this.applyImageOverlays(placement)
+    return this.applyBilingual()
   }
 
   /** 将代理配置应用到独立阅读器 Session。
@@ -565,7 +797,8 @@ export class WebReaderManager {
   private startIncrementalWindow(
     stream: PageTranslationStream,
     revision: number,
-    onUnits: (units: ExtractedWebTextUnit[]) => void | Promise<void>
+    onUnits: (units: ExtractedWebTextUnit[]) => void | Promise<void>,
+    onImages?: (candidates: WebImageCandidate[]) => void | Promise<void>
   ): void {
     const collectorActive = this.state.translationWindowActive === true
     this.stopIncrementalTimers()
@@ -573,10 +806,12 @@ export class WebReaderManager {
     this.incrementalFinishPromise = null
     this.incrementalWindowRevision = revision
     this.incrementalUnitHandler = onUnits
+    this.incrementalImageHandler = onImages ?? null
     this.activeStream = stream
     if (!collectorActive) {
       this.incrementalWindowRevision = null
       this.incrementalUnitHandler = null
+      this.incrementalImageHandler = null
       this.activeStream = null
       stream.closeInput()
       void this.installPageChangeMonitoring(revision)
@@ -617,6 +852,8 @@ export class WebReaderManager {
       }
       const newUnits: ExtractedWebTextUnit[] = []
       const snapshots = batch.snapshots ?? []
+      // 增量窗口内新加载的图片同样进入 OCR 管道，重复候选由页面侧 imageId 去重。
+      const newImages = batch.imageCandidates ?? []
       for (const snapshot of snapshots) {
         const extracted = extractWebTextBlocks(snapshot, batch.pageMeta)
         for (const unit of extracted.units) {
@@ -624,16 +861,49 @@ export class WebReaderManager {
           if (this.incrementalSeenUnitKeys.has(key)) continue
           this.incrementalSeenUnitKeys.add(key)
           const sequence = this.incrementalUnitSequence++
+          // 同一原始 blockId 映射到页面代次内稳定的 streamBlockId，保持增量段落的对照分组。
+          const streamBlockId = this.streamBlockIds.get(unit.blockId) ?? `${unit.blockId}:stream`
+          this.streamBlockIds.set(unit.blockId, streamBlockId)
           newUnits.push({
             ...unit,
             id: `stream-${revision}-${sequence}`,
-            blockId: `${unit.blockId}:stream-${sequence}`
+            blockId: streamBlockId
           })
         }
+        // 把该批新单元所属块登记进 extractedBlocks，仅登记一次。
+        for (const block of extracted.blocks) {
+          const streamBlockId = this.streamBlockIds.get(block.id) ?? `${block.id}:stream`
+          this.streamBlockIds.set(block.id, streamBlockId)
+          if (this.extractedBlocks.some((existing) => existing.id === streamBlockId)) continue
+          this.extractedBlocks.push({ ...block, id: streamBlockId })
+        }
       }
-      if (snapshots.length > 0) this.scheduleIncrementalQuietStop(revision)
+      if (snapshots.length > 0 || newImages.length > 0) this.scheduleIncrementalQuietStop(revision)
+      if (newImages.length > 0) {
+        const settings = this.options.getSettings()
+        if (settings.webTranslationImageOcrEnabled) {
+          const filter = filterWebImageCandidates(newImages, {
+            minSize: settings.webTranslationImageOcrMinSize,
+            maxImages: settings.webTranslationImageOcrMaxImages
+          })
+          this.imageFilterSkipped += filter.skipped
+          const known = new Set(this.extractedImageCandidates.map((candidate) => candidate.imageId))
+          const added = filter.accepted.filter((candidate) => {
+            if (known.has(candidate.imageId)) return false
+            known.add(candidate.imageId)
+            return true
+          })
+          if (added.length > 0) {
+            this.extractedImageCandidates.push(...added)
+            await this.incrementalImageHandler?.(added.map((candidate) => ({ ...candidate })))
+          }
+        } else {
+          this.imageFilterSkipped += newImages.length
+        }
+      }
       if (newUnits.length === 0) return
       this.extractedUnits.push(...newUnits)
+      this.blockUnitIds = this.createBlockUnitIds(this.extractedUnits)
       this.state = {
         ...this.state,
         translationDiscovered: this.activeStream?.getProgress().discovered ?? this.state.translationDiscovered
@@ -762,6 +1032,222 @@ export class WebReaderManager {
   }
 
   /**
+   * 判断指定块内的全部文本单元是否都已取得成功译文。
+   * @param blockId 目标块标识。
+   * @param units 当前页面的全部文本单元结果。
+   * @returns 块内全部单元均已完成时返回 true。
+   * @author zhenghq
+   */
+  private isBlockComplete(blockId: string, units: readonly WebTranslationUnitResult[]): boolean {
+    const unitIds = this.blockUnitIds.get(blockId)
+    if (!unitIds || unitIds.length === 0) return false
+    const byId = new Map(units.map((unit) => [unit.id, unit]))
+    return unitIds.every((unitId) => typeof byId.get(unitId)?.translation === 'string')
+  }
+
+  /**
+   * 建立块到单元标识的映射，供对照模式按块聚合使用。
+   * @param units 当前页面的全部文本单元。
+   * @returns 块标识到单元标识列表的映射。
+   * @author zhenghq
+   */
+  private createBlockUnitIds(units: readonly ExtractedWebTextUnit[]): Map<string, string[]> {
+    const mapping = new Map<string, string[]>()
+    for (const unit of units) {
+      const list = mapping.get(unit.blockId)
+      if (list) list.push(unit.id)
+      else mapping.set(unit.blockId, [unit.id])
+    }
+    return mapping
+  }
+
+  /**
+   * 仅保留整段文本单元全部命中的缓存结果，避免段落级翻译拼接部分缓存译文。
+   * @param hits 当前批次命中的缓存单元。
+   * @param units 当前批次参与匹配的文本单元。
+   * @returns 可以安全复用的完整段落缓存单元。
+   * @author zhenghq
+   */
+  private selectCompleteCacheHits(
+    hits: Array<ExtractedWebTextUnit & { translation: string }>,
+    units: readonly ExtractedWebTextUnit[]
+  ): Array<ExtractedWebTextUnit & { translation: string }> {
+    if (hits.length === 0) return hits
+    const hitIds = new Set(hits.map((unit) => unit.id))
+    const unitsByBlock = new Map<string, ExtractedWebTextUnit[]>()
+    for (const unit of units) {
+      const list = unitsByBlock.get(unit.blockId)
+      if (list) list.push(unit)
+      else unitsByBlock.set(unit.blockId, [unit])
+    }
+    const completeBlocks = new Set<string>()
+    for (const [blockId, blockUnits] of unitsByBlock) {
+      if (blockUnits.every((unit) => hitIds.has(unit.id))) completeBlocks.add(blockId)
+    }
+    return hits.filter((hit) => completeBlocks.has(hit.blockId))
+  }
+
+  /**
+   * 按块聚合构建并执行对照译文注入，返回注入与未对照统计。
+   * @returns 对照注入统计。
+   * @author zhenghq
+   */
+  private async applyBilingual(onlyBlockIds?: ReadonlySet<string>): Promise<WebTranslationApplyPayload> {
+    const view = this.view
+    if (!view || view.webContents.isDestroyed()) {
+      return { applied: 0, mismatched: 0, skipped: 0, bilingualSkipped: 0, unrendered: 0 }
+    }
+    const translations = new Map<string, string>()
+    for (const unit of this.translatedUnits) {
+      if (typeof unit.translation === 'string') translations.set(unit.id, unit.translation)
+    }
+    const blocks = onlyBlockIds
+      ? this.extractedBlocks.filter((block) => onlyBlockIds.has(block.id))
+      : this.extractedBlocks
+    const built = buildWebBilingualOperations({
+      blocks,
+      units: onlyBlockIds ? this.extractedUnits.filter((unit) => onlyBlockIds.has(unit.blockId)) : this.extractedUnits,
+      translations
+    })
+    const configured = this.bilingualTargetLang || this.options.getSettings().targetLang?.trim() || ''
+    const targetLang = configured && configured.toLowerCase() !== 'auto' ? configured : 'ZH'
+    try {
+      await this.ensureBilingualStyles(view)
+      const result = await view.webContents.executeJavaScript(
+        buildWebBilingualInjectScript(built.operations, targetLang),
+        true
+      ) as { applied: number; mismatched: number; skipped: number }
+      this.bilingualInjected = true
+      if (result.mismatched > 0) this.markPageUpdated()
+      return {
+        applied: result.applied,
+        mismatched: result.mismatched,
+        skipped: result.skipped,
+        bilingualSkipped: built.skipped,
+        unrendered: built.unrendered
+      }
+    } catch (error) {
+      if (isDisposedWebFrameError(error)) {
+        return { applied: 0, mismatched: 0, skipped: built.operations.length, bilingualSkipped: built.skipped, unrendered: built.unrendered }
+      }
+      throw error
+    }
+  }
+
+  /**
+   * 注入对照样式表并记录 key，重复调用不重复注入。
+   * @param view 远程网页视图。
+   * @returns 注入完成后的 Promise。
+   * @author zhenghq
+   */
+  private async ensureBilingualStyles(view: WebContentsView): Promise<void> {
+    if (this.bilingualCssKey) return
+    this.bilingualCssKey = await view.webContents.insertCSS(buildWebBilingualStyleSheet())
+  }
+
+  /**
+   * 清除对照注入节点与样式，远程 Frame 已销毁时安全跳过。
+   * @returns 清理完成后的 Promise。
+   * @author zhenghq
+   */
+  private async clearBilingualInjection(): Promise<void> {
+    const view = this.view
+    const cssKey = this.bilingualCssKey
+    this.bilingualInjected = false
+    this.bilingualCssKey = null
+    if (!view || view.webContents.isDestroyed()) return
+    if (cssKey) {
+      try {
+        await view.webContents.removeInsertedCSS(cssKey)
+      } catch (error) {
+        if (!isDisposedWebFrameError(error)) throw error
+      }
+    }
+    try {
+      await view.webContents.executeJavaScript(buildWebBilingualClearScript(), true)
+    } catch (error) {
+      if (!isDisposedWebFrameError(error)) throw error
+    }
+  }
+
+  /**
+   * 注入或更新图片译文覆盖层，按当前展示模式与位置设置决定渲染方式。
+   * @param placement 用户配置的图片译文展示位置。
+   * @returns 注入完成后的 Promise。
+   * @author zhenghq
+   */
+  private async applyImageOverlays(placement: WebImageOverlayPlacement): Promise<void> {
+    const view = this.view
+    if (!view || view.webContents.isDestroyed()) return
+    const operations: WebImageOverlayOperation[] = []
+    for (const candidate of this.translatedImageCandidates) {
+      const decision = resolveWebImageRenderDecision(candidate, this.mode, placement)
+      if (decision === 'none' || !candidate.ocrText || !candidate.translation) continue
+      operations.push({
+        imageId: candidate.imageId,
+        selector: candidate.selector,
+        ...(candidate.shadowPath !== undefined ? { shadowPath: [...candidate.shadowPath] } : {}),
+        ocrText: candidate.ocrText,
+        translation: candidate.translation,
+        placement: decision === 'overlay' ? 'overlay' : 'below',
+        bilingual: decision === 'bilingual',
+        lang: this.bilingualTargetLang || undefined
+      })
+    }
+    if (operations.length === 0) {
+      await this.clearImageOverlays()
+      return
+    }
+    try {
+      await this.ensureImageOverlayStyles(view)
+      const result = await view.webContents.executeJavaScript(
+        buildWebImageOverlayInjectScript(operations),
+        true
+      ) as { applied: number; mismatched: number; skipped: number }
+      this.imageOverlayInjected = result.applied > 0
+      if (result.mismatched > 0) this.markPageUpdated()
+    } catch (error) {
+      if (!isDisposedWebFrameError(error)) throw error
+    }
+  }
+
+  /**
+   * 注入图片译文样式表并记录 key，重复调用不重复注入。
+   * @param view 远程网页视图。
+   * @returns 注入完成后的 Promise。
+   * @author zhenghq
+   */
+  private async ensureImageOverlayStyles(view: WebContentsView): Promise<void> {
+    if (this.imageOverlayCssKey) return
+    this.imageOverlayCssKey = await view.webContents.insertCSS(buildWebImageOverlayStyleSheet())
+  }
+
+  /**
+   * 清除图片译文覆盖层与样式，远程 Frame 已销毁时安全跳过。
+   * @returns 清理完成后的 Promise。
+   * @author zhenghq
+   */
+  private async clearImageOverlays(): Promise<void> {
+    const view = this.view
+    const cssKey = this.imageOverlayCssKey
+    this.imageOverlayInjected = false
+    this.imageOverlayCssKey = null
+    if (!view || view.webContents.isDestroyed()) return
+    if (cssKey) {
+      try {
+        await view.webContents.removeInsertedCSS(cssKey)
+      } catch (error) {
+        if (!isDisposedWebFrameError(error)) throw error
+      }
+    }
+    try {
+      await view.webContents.executeJavaScript(buildWebImageOverlayClearScript(), true)
+    } catch (error) {
+      if (!isDisposedWebFrameError(error)) throw error
+    }
+  }
+
+  /**
    * 将保存的文本单元按指定模式写回远程页面。
    * @param mode 原文或译文模式。
    * @param onlyUnitIds 可选的增量写回单元集合；未提供时写回全部快照单元。
@@ -798,6 +1284,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private async restoreSource(): Promise<WebTranslationApplyPayload> {
+    await this.clearImageOverlays()
     return this.applyUnits('source')
   }
 
@@ -903,11 +1390,24 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private advancePage(url: string): void {
+    // 导航会替换文档，先清掉旧页面的注入节点与样式，避免样式 key 悬挂。
+    void this.clearBilingualInjection()
+    void this.clearImageOverlays()
     this.invalidateActiveJob(true)
     this.stopPageChangePolling()
     this.pageRevision += 1
     this.extractedUnits = []
+    this.extractedBlocks = []
+    this.blockUnitIds.clear()
+    this.extractedImageCandidates = []
+    this.imageFilterSkipped = 0
     this.translatedUnits = []
+    this.translatedImageCandidates = []
+    this.streamBlockIds.clear()
+    this.bilingualInjected = false
+    this.bilingualCssKey = null
+    this.imageOverlayInjected = false
+    this.imageOverlayCssKey = null
     this.incrementalSeenUnitKeys.clear()
     this.hasExtractedSnapshot = false
     this.state = {
@@ -920,7 +1420,11 @@ export class WebReaderManager {
       translationWindowActive: false,
       translationDiscovered: 0,
       translationDone: 0,
-      translationCacheHits: 0
+      translationCacheHits: 0,
+      imageCandidates: 0,
+      imageProcessed: 0,
+      imageSkipped: 0,
+      imageFailed: 0
     }
   }
 
@@ -1049,12 +1553,24 @@ export class WebReaderManager {
     this.closingWindow = false
     this.allowWindowClose = false
     this.options.onWindowStateChanged?.(false)
+    void this.clearBilingualInjection()
+    void this.clearImageOverlays()
     this.invalidateActiveJob(true)
     this.stopPageChangePolling()
     if (!view.webContents.isDestroyed()) view.webContents.close()
     this.view = null
     this.extractedUnits = []
+    this.extractedBlocks = []
+    this.blockUnitIds.clear()
+    this.extractedImageCandidates = []
+    this.imageFilterSkipped = 0
     this.translatedUnits = []
+    this.translatedImageCandidates = []
+    this.streamBlockIds.clear()
+    this.bilingualInjected = false
+    this.bilingualCssKey = null
+    this.imageOverlayInjected = false
+    this.imageOverlayCssKey = null
     this.hasExtractedSnapshot = false
   }
 

@@ -10,7 +10,7 @@ test('DeepLX 设置迁移应保留多地址且不包含 Token 状态', () => {
     deepLxUrl: ' https://a.example/translate， https://b.example/translate '
   })
 
-  assert.equal(SETTINGS_SCHEMA_VERSION, 17)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 19)
   assert.equal(settings.deepLxUrl, 'https://a.example/translate， https://b.example/translate')
   assert.equal('deepLxTokenConfigured' in settings, false)
 })

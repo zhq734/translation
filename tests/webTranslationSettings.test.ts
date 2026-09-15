@@ -3,12 +3,24 @@ import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS, SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults'
 
 test('网页翻译设置应提供安全默认值并升级设置版本', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 17)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 19)
   assert.equal(DEFAULT_SETTINGS.webTranslationEnabled, true)
   assert.equal(DEFAULT_SETTINGS.webTranslationScope, 'all')
   assert.equal(DEFAULT_SETTINGS.webTranslationDefaultMode, 'target')
   assert.equal(DEFAULT_SETTINGS.webTranslationMaxBlocks, 1000)
   assert.equal(DEFAULT_SETTINGS.webTranslationMaxChars, 500000)
+  assert.equal(DEFAULT_SETTINGS.webTranslationConcurrency, 3)
+})
+
+test('网页翻译并发数应限制在 1 到 8 之间并兼容旧设置', () => {
+  assert.equal(normalizeSettings({ schemaVersion: 18 }).webTranslationConcurrency, 3)
+  assert.equal(normalizeSettings({ schemaVersion: 18, webTranslationConcurrency: 0 }).webTranslationConcurrency, 1)
+  assert.equal(normalizeSettings({ schemaVersion: 18, webTranslationConcurrency: 99 }).webTranslationConcurrency, 8)
+  assert.equal(
+    normalizeSettings({ schemaVersion: 18, webTranslationConcurrency: Number.NaN }).webTranslationConcurrency,
+    3
+  )
+  assert.equal(normalizeSettings({ schemaVersion: 18, webTranslationConcurrency: 6 }).webTranslationConcurrency, 6)
 })
 
 test('旧设置与非法网页翻译设置应回退默认并限制数值范围', () => {
@@ -59,4 +71,29 @@ test('容量升级只迁移缺失值或旧默认值，并保留用户自定义�
 test('旧双语对照设置应迁移为原位译文模式', () => {
   const migrated = normalizeSettings({ webTranslationDefaultMode: 'bilingual' as never })
   assert.equal(migrated.webTranslationDefaultMode, 'target')
+})
+
+test('图片 OCR 设置应提供安全默认值并校验范围', () => {
+  const defaults = normalizeSettings()
+  assert.equal(defaults.webTranslationImageOcrEnabled, true)
+  assert.equal(defaults.webTranslationImageOcrMaxImages, 30)
+  assert.equal(defaults.webTranslationImageOcrMinSize, 64)
+  assert.equal(defaults.webTranslationImageOcrOverlay, 'below')
+
+  const clamped = normalizeSettings({
+    webTranslationImageOcrMaxImages: 9999,
+    webTranslationImageOcrMinSize: 1,
+    webTranslationImageOcrOverlay: 'unknown' as never
+  })
+  assert.equal(clamped.webTranslationImageOcrMaxImages, 200)
+  assert.equal(clamped.webTranslationImageOcrMinSize, 16)
+  assert.equal(clamped.webTranslationImageOcrOverlay, 'below')
+})
+
+test('显式关闭图片 OCR 不应被旧版本迁移覆盖', () => {
+  const disabled = normalizeSettings({
+    schemaVersion: 17,
+    webTranslationImageOcrEnabled: false
+  } as never)
+  assert.equal(disabled.webTranslationImageOcrEnabled, false)
 })

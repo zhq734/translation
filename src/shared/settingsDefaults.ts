@@ -1,8 +1,9 @@
 import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvider, TriggerMode, WebTranslationMode, WebTranslationScope } from './types'
 import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
+import { isWebImageOverlayPlacement } from './webPageTranslation'
 
-export const SETTINGS_SCHEMA_VERSION = 17
+export const SETTINGS_SCHEMA_VERSION = 19
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -41,7 +42,12 @@ export const DEFAULT_SETTINGS: Settings = {
   webTranslationScope: 'all',
   webTranslationMaxBlocks: 1000,
   webTranslationMaxChars: 500000,
-  webTranslationDefaultMode: 'target'
+  webTranslationConcurrency: 3,
+  webTranslationDefaultMode: 'target',
+  webTranslationImageOcrEnabled: true,
+  webTranslationImageOcrMaxImages: 30,
+  webTranslationImageOcrMinSize: 64,
+  webTranslationImageOcrOverlay: 'below'
 }
 
 /** 判断主题预设是否为当前版本支持的值。
@@ -114,7 +120,7 @@ function isWebTranslationScope(value: unknown): value is WebTranslationScope {
  * @author zhenghq
  */
 function isWebTranslationMode(value: unknown): value is WebTranslationMode {
-  return value === 'source' || value === 'target'
+  return value === 'source' || value === 'target' || value === 'bilingual'
 }
 
 /**
@@ -125,10 +131,10 @@ function isWebTranslationMode(value: unknown): value is WebTranslationMode {
  * @returns 处于一到最大值之间的整数。
  * @author zhenghq
  */
-function normalizeWebLimit(value: unknown, fallback: number, maximum: number): number {
+function normalizeWebLimit(value: unknown, fallback: number, maximum: number, minimum = 1): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return fallback
-  return Math.min(maximum, Math.max(1, Math.floor(numeric)))
+  return Math.min(maximum, Math.max(minimum, Math.floor(numeric)))
 }
 
 /**
@@ -168,6 +174,9 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     (rawSettings.webTranslationMaxChars === undefined || Number(rawSettings.webTranslationMaxChars) === 200000)
     ? DEFAULT_SETTINGS.webTranslationMaxChars
     : normalizeWebLimit(merged.webTranslationMaxChars, DEFAULT_SETTINGS.webTranslationMaxChars, 2000000)
+  const webTranslationConcurrency = Number.isFinite(Number(merged.webTranslationConcurrency))
+    ? Math.min(8, Math.max(1, Math.floor(Number(merged.webTranslationConcurrency))))
+    : DEFAULT_SETTINGS.webTranslationConcurrency
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -217,8 +226,26 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       : isWebTranslationScope(merged.webTranslationScope) ? merged.webTranslationScope : 'all',
     webTranslationMaxBlocks,
     webTranslationMaxChars,
-    webTranslationDefaultMode: String(merged.webTranslationDefaultMode) === 'bilingual'
+    webTranslationConcurrency,
+    // 第十八版把“对照”作为合法模式；更早版本的 bilingual 来自已废弃的侧栏双语语义，迁移为 target。
+    webTranslationDefaultMode: schemaVersion < 18 && merged.webTranslationDefaultMode === 'bilingual'
       ? 'target'
-      : isWebTranslationMode(merged.webTranslationDefaultMode) ? merged.webTranslationDefaultMode : 'target'
+      : isWebTranslationMode(merged.webTranslationDefaultMode) ? merged.webTranslationDefaultMode : 'target',
+    // 第十九版新增图片 OCR；仅缺失时使用默认值，用户显式关闭必须保留。
+    webTranslationImageOcrEnabled: merged.webTranslationImageOcrEnabled !== false,
+    webTranslationImageOcrMaxImages: normalizeWebLimit(
+      merged.webTranslationImageOcrMaxImages,
+      DEFAULT_SETTINGS.webTranslationImageOcrMaxImages,
+      200
+    ),
+    webTranslationImageOcrMinSize: normalizeWebLimit(
+      merged.webTranslationImageOcrMinSize,
+      DEFAULT_SETTINGS.webTranslationImageOcrMinSize,
+      1024,
+      16
+    ),
+    webTranslationImageOcrOverlay: isWebImageOverlayPlacement(merged.webTranslationImageOcrOverlay)
+      ? merged.webTranslationImageOcrOverlay
+      : 'below'
   }
 }

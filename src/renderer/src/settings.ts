@@ -40,7 +40,12 @@ const webTranslationEnabled = document.getElementById('web-translation-enabled')
 const webTranslationScope = document.getElementById('web-translation-scope') as HTMLSelectElement
 const webTranslationMaxBlocks = document.getElementById('web-translation-max-blocks') as HTMLInputElement
 const webTranslationMaxChars = document.getElementById('web-translation-max-chars') as HTMLInputElement
+const webTranslationConcurrency = document.getElementById('web-translation-concurrency') as HTMLInputElement
 const webTranslationDefaultMode = document.getElementById('web-translation-default-mode') as HTMLSelectElement
+const webTranslationImageOcrEnabled = document.getElementById('web-translation-image-ocr-enabled') as HTMLInputElement
+const webTranslationImageOcrMaxImages = document.getElementById('web-translation-image-ocr-max-images') as HTMLInputElement
+const webTranslationImageOcrMinSize = document.getElementById('web-translation-image-ocr-min-size') as HTMLInputElement
+const webTranslationImageOcrOverlay = document.getElementById('web-translation-image-ocr-overlay') as HTMLSelectElement
 const proxyMode = document.getElementById('proxy-mode') as HTMLSelectElement
 const proxyRules = document.getElementById('proxy-rules') as HTMLInputElement
 const proxyBypassRules = document.getElementById('proxy-bypass-rules') as HTMLInputElement
@@ -447,7 +452,12 @@ function renderSettings(settings: Settings): void {
   webTranslationScope.value = settings.webTranslationScope
   webTranslationMaxBlocks.value = String(settings.webTranslationMaxBlocks)
   webTranslationMaxChars.value = String(settings.webTranslationMaxChars)
+  webTranslationConcurrency.value = String(settings.webTranslationConcurrency)
   webTranslationDefaultMode.value = settings.webTranslationDefaultMode
+  webTranslationImageOcrEnabled.checked = settings.webTranslationImageOcrEnabled
+  webTranslationImageOcrMaxImages.value = String(settings.webTranslationImageOcrMaxImages)
+  webTranslationImageOcrMinSize.value = String(settings.webTranslationImageOcrMinSize)
+  webTranslationImageOcrOverlay.value = settings.webTranslationImageOcrOverlay
   deeplxUrl.value = settings.deepLxUrl
   proxyMode.value = settings.proxyMode
   proxyRules.value = settings.proxyRules
@@ -868,7 +878,12 @@ function saveWebTranslationSettings(): void {
     webTranslationScope: webTranslationScope.value as Settings['webTranslationScope'],
     webTranslationMaxBlocks: Number(webTranslationMaxBlocks.value),
     webTranslationMaxChars: Number(webTranslationMaxChars.value),
-    webTranslationDefaultMode: webTranslationDefaultMode.value as Settings['webTranslationDefaultMode']
+    webTranslationConcurrency: Number(webTranslationConcurrency.value),
+    webTranslationDefaultMode: webTranslationDefaultMode.value as Settings['webTranslationDefaultMode'],
+    webTranslationImageOcrEnabled: webTranslationImageOcrEnabled.checked,
+    webTranslationImageOcrMaxImages: Number(webTranslationImageOcrMaxImages.value),
+    webTranslationImageOcrMinSize: Number(webTranslationImageOcrMinSize.value),
+    webTranslationImageOcrOverlay: webTranslationImageOcrOverlay.value as Settings['webTranslationImageOcrOverlay']
   })
 }
 
@@ -1587,7 +1602,12 @@ webTranslationEnabled.addEventListener('change', saveWebTranslationSettings)
 webTranslationScope.addEventListener('change', saveWebTranslationSettings)
 webTranslationMaxBlocks.addEventListener('change', saveWebTranslationSettings)
 webTranslationMaxChars.addEventListener('change', saveWebTranslationSettings)
+webTranslationConcurrency.addEventListener('change', saveWebTranslationSettings)
 webTranslationDefaultMode.addEventListener('change', saveWebTranslationSettings)
+webTranslationImageOcrEnabled.addEventListener('change', saveWebTranslationSettings)
+webTranslationImageOcrMaxImages.addEventListener('change', saveWebTranslationSettings)
+webTranslationImageOcrMinSize.addEventListener('change', saveWebTranslationSettings)
+webTranslationImageOcrOverlay.addEventListener('change', saveWebTranslationSettings)
 ocrEnginePreference.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('keydown', handleOcrHotkeyKeydown)

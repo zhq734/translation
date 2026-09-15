@@ -58,6 +58,8 @@ test('取词、翻译、OCR 和内部激活租约期间都不得按 Dock 激活�
   const base = {
     selectionButtonVisible: false,
     popupVisible: false,
+    popupHandingBackFront: false,
+    hiServicesRepairPromptVisible: false,
     ocrVisible: false,
     listenerPausedForOcr: false,
     internalActivationLeaseUntil: 0,
@@ -71,6 +73,20 @@ test('取词、翻译、OCR 和内部激活租约期间都不得按 Dock 激活�
     ...base,
     interactionState: 'idle',
     internalActivationLeaseUntil: 1200
+  }).allowed, false)
+  // 弹窗正在把 macOS 前台交还给源应用时，其内部 activate 同样不能按 Dock 启动处理，
+  // 否则已有的网页翻译或设置页会被顶到最前。
+  assert.equal(canTreatActivateAsDockLaunch({
+    ...base,
+    interactionState: 'idle',
+    popupHandingBackFront: true
+  }).allowed, false)
+  // 连续取词超时的原生修复对话框会激活本应用，其内部 activate 同样必须被抑制，
+  // 否则应用内已有的网页翻译窗口会被系统顶到最前。
+  assert.equal(canTreatActivateAsDockLaunch({
+    ...base,
+    interactionState: 'idle',
+    hiServicesRepairPromptVisible: true
   }).allowed, false)
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'idle' }).allowed, true)
 })

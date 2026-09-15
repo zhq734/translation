@@ -174,10 +174,34 @@ test('锚点应优先使用 id、其次 data-testid、最后使用 nth-child 标
     text: '第三项'
   })
 
-  assert.equal(anchor.selector, 'html:nth-child(1) > body:nth-child(2) > ul:nth-child(1) > li:nth-child(3)')
+  assert.equal(anchor.selector, 'html > body > ul:nth-child(1) > li:nth-child(3)')
   assert.equal(anchor.textFingerprint.length > 0, true)
   assert.deepEqual(parseWebTextAnchor(JSON.stringify(anchor)), anchor)
   assert.equal(parseWebTextAnchor('{"selector":1}'), null)
+})
+
+test('无 id 的块锚点应使用稳定根路径，避免 body 被误写为第一个子元素', () => {
+  const anchor = createWebTextAnchor({
+    tag: 'p',
+    elementPath: [{ tag: 'body', index: 1 }, { tag: 'p', index: 2 }],
+    text: 'Spec-driven orchestration for your coding agents.'
+  })
+
+  assert.equal(anchor.selector, 'body > p:nth-child(2)')
+})
+
+test('从 body 快照提取的无 id 段落应生成可命中真实页面的选择器', () => {
+  const snapshot = element('body', [
+    element('header', [text('导航')]),
+    element('p', [text('Spec-driven orchestration for your coding agents.')])
+  ])
+
+  const result = extractWebTextBlocks(snapshot, {
+    url: 'https://example.com',
+    title: '示例页面'
+  })
+
+  assert.equal(result.blocks[1].anchor.selector, 'body > p:nth-child(2)')
 })
 
 test('孤立文本检测应综合标签、角色、长度、链接密度和文本密度', () => {

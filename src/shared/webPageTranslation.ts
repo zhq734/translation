@@ -15,7 +15,7 @@ export type WebTextBlockCategory = 'body' | 'isolated'
 export type WebTranslationScope = 'body' | 'all'
 
 /** 网页原位展示模式。 */
-export type WebTranslationMode = 'source' | 'target'
+export type WebTranslationMode = 'source' | 'target' | 'bilingual'
 
 /** 页面元素矩形坐标。 */
 export interface WebTextRect {
@@ -172,6 +172,118 @@ export interface WebPageMeta {
   langHint?: string
 }
 
+/** 网页图片候选来源类型。 */
+export type WebImageKind = 'img' | 'canvas' | 'background'
+
+/** 图片译文展示位置。 */
+export type WebImageOverlayPlacement = 'below' | 'overlay'
+
+/** 图片取图策略。 */
+export type WebImageSourceStrategy = 'session' | 'capture'
+
+/** 图片译文渲染决策。 */
+export type WebImageRenderDecision = 'none' | 'below' | 'overlay' | 'bilingual'
+
+/** 网页图片定位锚点。 */
+export interface WebImageAnchor {
+  /** 图片宿主元素 CSS 选择器。 */
+  selector: string
+  /** 提取时记录的页面坐标。 */
+  rect: WebTextRect
+  /** 图片来源指纹，用于缓存与去重。 */
+  sourceFingerprint: string
+  /** 图片来源类型。 */
+  kind: WebImageKind
+  /** 开放 Shadow DOM 内的元素索引路径。 */
+  shadowPath?: number[]
+}
+
+/** 网页中待识别与翻译的图片候选。 */
+export interface WebImageCandidate {
+  /** 页面快照内稳定的图片标识。 */
+  imageId: string
+  /** 图片来源类型。 */
+  kind: WebImageKind
+  /** 图片宿主元素选择器。 */
+  selector: string
+  /** 元素页面矩形。 */
+  rect: WebTextRect
+  /** 自然宽度，Canvas 或背景图可能缺省。 */
+  naturalWidth?: number
+  /** 自然高度，Canvas 或背景图可能缺省。 */
+  naturalHeight?: number
+  /** 图片来源指纹；缺省时由锚点派生。 */
+  sourceFingerprint?: string
+  /** 图片地址；内联资源使用 data: 前缀。 */
+  src?: string
+  /** 图片替代文本。 */
+  alt?: string
+  /** 是否为内联资源，需回退区域截图。 */
+  inline?: boolean
+  /** 网络请求是否被页面策略阻断，需回退区域截图。 */
+  requestBlocked?: boolean
+  /** 是否被判定为装饰图片，不参与 OCR。 */
+  decorative?: boolean
+  /** 开放 Shadow DOM 内的元素索引路径。 */
+  shadowPath?: number[]
+  /** OCR 识别出的原文。 */
+  ocrText?: string
+  /** 图片文字译文。 */
+  translation?: string
+  /** OCR 或翻译失败原因。 */
+  error?: string
+  /** 跳过原因，例如 too-small / too-many。 */
+  skippedReason?: string
+}
+
+/** 图片候选过滤配置。 */
+export interface WebImageCandidateFilterOptions {
+  /** 最小图片边长（像素）。 */
+  minSize: number
+  /** 单页最多处理的图片数量。 */
+  maxImages: number
+}
+
+/** 图片候选过滤结果。 */
+export interface WebImageCandidateFilterResult {
+  /** 通过过滤的候选。 */
+  accepted: WebImageCandidate[]
+  /** 被跳过的候选数量。 */
+  skipped: number
+}
+
+/** 图片维度进度汇总。 */
+export interface WebImageProgressSummary {
+  /** 候选图片总数。 */
+  imageCandidates: number
+  /** 已完成识别的图片数量。 */
+  imageProcessed: number
+  /** 被跳过的图片数量。 */
+  imageSkipped: number
+  /** 识别或翻译失败的图片数量。 */
+  imageFailed: number
+}
+
+/**
+ * 判断未知值是否为合法图片候选来源类型。
+ * @param value 待校验值。
+ * @returns 是否为合法来源类型。
+ * @author zhenghq
+ */
+export function isWebImageKind(value: unknown): value is WebImageKind {
+  return value === 'img' || value === 'canvas' || value === 'background'
+}
+
+/**
+ * 判断未知值是否为合法图片译文展示位置。
+ * @param value 待校验值。
+ * @returns 是否为合法展示位置。
+ * @author zhenghq
+ */
+export function isWebImageOverlayPlacement(value: unknown): value is WebImageOverlayPlacement {
+  return value === 'below' || value === 'overlay'
+}
+
 /** 网页提取结果。 */
 export interface WebTextExtractionResult {
   /** 提取出的有序文本块。 */
@@ -273,7 +385,7 @@ export function isWebTranslationScope(value: unknown): value is WebTranslationSc
  * @author zhenghq
  */
 export function isWebTranslationMode(value: unknown): value is WebTranslationMode {
-  return value === 'source' || value === 'target'
+  return value === 'source' || value === 'target' || value === 'bilingual'
 }
 
 /**
@@ -312,6 +424,24 @@ function escapeCssAttribute(value: string): string {
 }
 
 /**
+ * 将元素路径片段格式化为稳定的 CSS 选择器。
+ * @param elementPath 从根元素到目标元素的路径片段。
+ * @returns 可定位目标元素的选择器。
+ * @author zhenghq
+ */
+function formatWebElementPath(elementPath: readonly WebElementPathSegment[]): string {
+  return elementPath
+    .map((segment) => {
+      const tag = segment.tag.toLowerCase()
+      // html 与 body 是文档中的唯一根元素，不能依赖会受 head 等兄弟节点影响的 nth-child。
+      return tag === 'html' || tag === 'body'
+        ? tag
+        : `${tag}:nth-child(${Math.max(1, segment.index)})`
+    })
+    .join(' > ')
+}
+
+/**
  * 根据 id、data-testid 或标签路径创建网页文本锚点。
  * @param input 元素定位信息。
  * @returns 可序列化的网页文本锚点。
@@ -322,9 +452,7 @@ export function createWebTextAnchor(input: WebTextAnchorInput): WebTextAnchor {
     ? `[id="${escapeCssAttribute(input.id)}"]`
     : input.testId
       ? `[data-testid="${escapeCssAttribute(input.testId)}"]`
-      : input.elementPath
-        .map((segment) => `${segment.tag.toLowerCase()}:nth-child(${Math.max(1, segment.index)})`)
-        .join(' > ')
+      : formatWebElementPath(input.elementPath)
   return {
     selector,
     ...(input.rect ? { rect: { ...input.rect } } : {}),
@@ -664,9 +792,7 @@ export function extractWebTextBlocks(
               const childPath = [...currentPath, { tag: (child.tag ?? 'div').toLowerCase(), index: elementIndex }]
               const childSelector = child.shadowPath !== undefined
                 ? child.shadowHostSelector ?? contentParentSelector
-                : child.selector ?? childPath
-                  .map((segment) => `${segment.tag.toLowerCase()}:nth-child(${Math.max(1, segment.index)})`)
-                  .join(' > ')
+                : child.selector ?? formatWebElementPath(childPath)
               collectUnits(
                 child,
                 childPath,

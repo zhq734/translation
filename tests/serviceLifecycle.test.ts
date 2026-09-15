@@ -123,7 +123,7 @@ test('macOS 托盘菜单应提供划词服务修复入口', () => {
 
   assert.match(
     mainSource,
-    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*'修复 macOS 划词服务…',[\s\S]*?click:\s*\(\)\s*=>\s*promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
+    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*'修复 macOS 划词服务…',[\s\S]*?click:\s*\(\)\s*=>\s*void\s+promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
   )
 })
 

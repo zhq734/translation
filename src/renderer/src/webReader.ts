@@ -142,6 +142,30 @@ function renderReaderState(state: WebReaderState): void {
 }
 
 /**
+ * 汇总图片 OCR 维度的进度提示。
+ * @param images 图片进度汇总。
+ * @returns 追加到状态文案后的图片提示，没有图片时返回空串。
+ * @author zhenghq
+ */
+function formatImageProgressHint(images?: WebTranslationProgressPayload['images']): string {
+  if (!images || images.imageCandidates <= 0) return ''
+  const processed = `图片 ${images.imageProcessed}/${images.imageCandidates}`
+  const skipped = images.imageSkipped ? `，跳过 ${images.imageSkipped}` : ''
+  const failed = images.imageFailed ? `，失败 ${images.imageFailed}` : ''
+  return `，${processed}${skipped}${failed}`
+}
+
+/**
+ * 判断图片维度是否存在失败或跳过，用于“部分翻译”语义提示。
+ * @param images 图片进度汇总。
+ * @returns 是否存在未完成或失败的图片。
+ * @author zhenghq
+ */
+function hasImagePartialResult(images?: WebTranslationProgressPayload['images']): boolean {
+  return Boolean(images && (images.imageFailed > 0 || images.imageSkipped > 0))
+}
+
+/**
  * 根据翻译进度刷新状态栏。
  * @param progress 最新翻译进度。
  * @returns 无返回值。
@@ -157,11 +181,12 @@ function renderProgress(progress: WebTranslationProgressPayload): void {
   }
   const cacheHint = progress.cacheHits ? `，缓存命中 ${progress.cacheHits} 项` : ''
   const failureHint = progress.failed ? `，失败 ${progress.failed} 项` : ''
+  const imageHint = formatImageProgressHint(progress.images)
   if (!progress.inputClosed) {
-    setStatus(`正在边加载边翻译：已完成 ${progress.done} / 已发现 ${progress.discovered}${cacheHint}${failureHint}`)
+    setStatus(`正在边加载边翻译：已完成 ${progress.done} / 已发现 ${progress.discovered}${cacheHint}${failureHint}${imageHint}`)
     return
   }
-  setStatus(`正在翻译：已完成 ${progress.done}/${progress.total}${cacheHint}${failureHint}`)
+  setStatus(`正在翻译：已完成 ${progress.done}/${progress.total}${cacheHint}${failureHint}${imageHint}`)
 }
 
 /**
@@ -192,13 +217,20 @@ async function translatePage(extractFresh = true): Promise<void> {
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
+    const imageHint = formatImageProgressHint(result.images ?? result.progress.images)
     if (result.progress.cancelled) setStatus('翻译已取消')
     else if (result.apply.mismatched > 0) {
-      setStatus(`翻译已继续完成，${result.apply.mismatched} 项因页面变化暂未写回；已完成译文仍保留，可再次点击补译`)
+      setStatus(`翻译已继续完成，${result.apply.mismatched} 项因页面变化暂未写回；已完成译文仍保留，可再次点击补译${imageHint}`)
     }
-    else if (result.partial) setStatus(`仅翻译了部分网页内容${result.progress.failed ? `，失败 ${result.progress.failed} 项` : ''}；初始加载收集已结束，可再次点击补译`)
-    else if (!result.progress.inputClosed) setStatus('翻译完成，初始加载收集仍在进行')
-    else setStatus('翻译完成')
+    else if (result.partial) {
+      const failedHint = result.progress.failed ? `，失败 ${result.progress.failed} 项` : ''
+      setStatus(`仅翻译了部分网页内容${failedHint}${imageHint}；初始加载收集已结束，可再次点击补译`)
+    }
+    else if (hasImagePartialResult(result.images ?? result.progress.images)) {
+      setStatus(`翻译完成，图片部分未处理${imageHint}`)
+    }
+    else if (!result.progress.inputClosed) setStatus(`翻译完成，初始加载收集仍在进行${imageHint}`)
+    else setStatus(`翻译完成${imageHint}`)
   } catch (error) {
     if (generation !== translationGeneration) return
     translating = false
@@ -217,6 +249,16 @@ async function changeMode(): Promise<void> {
   try {
     const mode = modeSelect.value as WebTranslationMode
     const result = await window.api.webTranslateSetMode(mode)
+    if (mode === 'bilingual') {
+      const unrendered = result.unrendered ?? 0
+      const skipped = result.bilingualSkipped ?? 0
+      const skippedHint = skipped > 0 ? `，另有 ${skipped} 个短文本/交互块按设计跳过对照` : ''
+      // 只有翻译失败或锚点失配的块才提示补译，跳过块不作为失败报告。
+      if (unrendered > 0) setStatus(`已切换对照显示，${unrendered} 个块未对照；可再次点击补译${skippedHint}`)
+      else if (result.mismatched > 0) setStatus(`已切换对照显示，${result.mismatched} 项因页面变化未对照；可再次点击补译${skippedHint}`)
+      else setStatus(`当前显示对照${skippedHint}`)
+      return
+    }
     if (result.mismatched > 0) setStatus('部分内容已变化，未受影响的译文仍保留；可再次点击补译')
     else setStatus(mode === 'source' ? '当前显示原文' : '当前显示译文')
   } catch (error) {
@@ -281,6 +323,8 @@ window.api.onWebTranslatePageUpdated((updated) => {
 })
 void window.api.getSettings().then((settings) => {
   populateLanguages(settings)
-  modeSelect.value = settings.webTranslationDefaultMode === 'source' ? 'source' : 'target'
+  modeSelect.value = settings.webTranslationDefaultMode
+  // 把设置页的默认显示同步给主进程，避免默认“对照”仍按原位译文渲染。
+  void window.api.webTranslateSetMode(settings.webTranslationDefaultMode).catch(() => undefined)
 })
 requestAnimationFrame(syncViewBounds)

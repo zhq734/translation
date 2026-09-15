@@ -115,4 +115,6 @@ test('翻译 Prompt 应包含源语言和目标语言并要求只输出译文', 
   assert.match(system.content as string, /EN/u)
   assert.match(system.content as string, /ZH/u)
   assert.match(system.content as string, /译文/u)
+  // 网页跨块合并依赖模型原样保留分段标记，提示词必须显式约束。
+  assert.match(system.content as string, /ST-SEG/u)
 })

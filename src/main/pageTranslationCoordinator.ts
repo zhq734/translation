@@ -1,4 +1,11 @@
-import { splitWebTextBlocks, splitWebTextUnits, type WebTranslationSegment } from '../shared/webBlockSplitter'
+import {
+  buildWebTranslationBatches,
+  parseMergedTranslation,
+  splitWebTextBlocks,
+  splitWebTextUnits,
+  type WebTranslationBatch,
+  type WebTranslationSegment
+} from '../shared/webBlockSplitter'
 import type {
   ExtractedWebTextBlock,
   ExtractedWebTextUnit,
@@ -8,6 +15,12 @@ import { createWebTextUnitKey } from '../shared/webPageTranslation'
 
 /** 可注入的单段翻译函数。 */
 export type PageTranslator = (text: string, sourceLang: string, targetLang: string) => Promise<{ translation: string; detectedLang?: string; provider?: string; channel?: string }>
+
+/**
+ * 跨块合并后单个请求的字符上限。
+ * 取低于 Google 通道 2000 字上限的值，保证 AI 通道失败降级后合并批次仍可被下游通道接受。
+ */
+export const WEB_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
 
 /** 页面翻译任务代次。 */
 export interface PageTranslationJob {
@@ -27,20 +40,40 @@ export interface PageTranslationJob {
   maxChars?: number
   /** 可选语言标签。 */
   locale?: string
+  /** 是否把相邻短段落合并为一次翻译请求，默认关闭以保持既有逐段行为。 */
+  mergeAcrossBlocks?: boolean
+  /** 跨块合并时单批最多包含的分段数，未提供时使用默认值。 */
+  maxSegmentsPerBatch?: number
   /** 源语言。 */
   sourceLang: string
   /** 目标语言。 */
   targetLang: string
 }
 
+/** 协调器内部的可翻译工作项，可能是单个分段或跨块合并批次。 */
+interface WebTranslationWorkItem {
+  /** 原始批量翻译请求，供拆分译文时校验分段数。 */
+  batch: WebTranslationBatch
+  /** 实际发送给翻译服务的文本。 */
+  text: string
+  /** 本次请求覆盖的全部网页分段，按原文顺序排列。 */
+  segments: WebTranslationSegment[]
+  /** 是否为包含分隔标记的跨块合并批次。 */
+  merged: boolean
+}
+
 /** 单个网页分段的翻译结果。 */
 export interface PageTranslationResult {
   /** 来源块标识。 */
   blockId: string
-  /** 来源文本单元标识。 */
+  /** 来源文本单元标识；按段落聚合时使用该段首个单元标识。 */
   unitId: string
+  /** 当前翻译分段覆盖的全部文本单元标识。 */
+  unitIds: string[]
   /** 来源分段标识。 */
   segmentId: string
+  /** 当前来源段落拆分出的分段总数。 */
+  segmentTotal: number
   /** 分段原文。 */
   text: string
   /** 译文，失败时不存在。 */
@@ -95,8 +128,8 @@ export interface PageTranslationRunResult {
 
 /** 协调器配置。 */
 export interface PageTranslationCoordinatorOptions {
-  /** 最大并发数，默认 3。 */
-  concurrency?: number
+  /** 最大并发数或运行时读取函数，默认 3；允许用户设置变更后立即生效。 */
+  concurrency?: number | (() => number)
   /** 注入单段翻译器。 */
   translate: PageTranslator
 }
@@ -158,7 +191,7 @@ interface ActivePageTranslationStream {
  * @author zhenghq
  */
 export class PageTranslationCoordinator {
-  private readonly concurrency: number
+  private readonly getConcurrency: () => number
   private readonly translate: PageTranslator
   private readonly invalidJobs = new Set<string>()
   private readonly activeStreams = new Set<ActivePageTranslationStream>()
@@ -169,7 +202,13 @@ export class PageTranslationCoordinator {
    * @author zhenghq
    */
   constructor(options: PageTranslationCoordinatorOptions) {
-    this.concurrency = Math.max(1, Math.min(8, Math.floor(options.concurrency ?? 3)))
+    const configured = options.concurrency
+    const read = typeof configured === 'function' ? configured : () => configured ?? 3
+    this.getConcurrency = () => {
+      const numeric = Number(read())
+      if (!Number.isFinite(numeric)) return 3
+      return Math.max(1, Math.min(8, Math.floor(numeric)))
+    }
     this.translate = options.translate
   }
 
@@ -212,7 +251,7 @@ export class PageTranslationCoordinator {
     const legacyKey = this.key(job.readerId, job.pageRevision, job.jobId)
     this.invalidJobs.delete(key)
     this.invalidJobs.delete(legacyKey)
-    const queue: WebTranslationSegment[] = []
+    const queue: WebTranslationWorkItem[] = []
     const results: PageTranslationResult[] = []
     const seenUnits = new Set<string>()
     const unitSegmentTotals = new Map<string, number>()
@@ -220,12 +259,16 @@ export class PageTranslationCoordinator {
     let acceptedUnits = 0
     let acceptedChars = 0
     let active = 0
+    let pendingWriteBacks = 0
+    let writeBackChain: Promise<void> = Promise.resolve()
     let done = 0
     let failed = 0
     let truncated = false
     let cancelled = false
     let inputClosed = false
     let settled = false
+    // 非 AI 通道通常不会原样保留分段标记；一旦发现就停止合并，避免每批都多付一次无效请求。
+    let mergeUnsupported = false
     let resolveResult: (result: PageTranslationRunResult) => void = () => undefined
     const result = new Promise<PageTranslationRunResult>((resolve) => { resolveResult = resolve })
 
@@ -269,7 +312,9 @@ export class PageTranslationCoordinator {
      * @author zhenghq
      */
     const finishIfReady = (): void => {
+      // 取消后立即提交结果，不再等待慢速写回，避免用户点击取消后仍被 DOM 写回阻塞。
       if (settled || !inputClosed || active > 0 || queue.length > 0) return
+      if (!cancelled && pendingWriteBacks > 0) return
       settled = true
       signal?.removeEventListener('abort', cancel)
       this.activeStreams.delete(activeStream)
@@ -299,29 +344,110 @@ export class PageTranslationCoordinator {
     }
 
     /**
-     * 处理一个翻译分段并在完成后继续调度。
-     * @param segment 当前翻译分段。
-     * @returns 当前分段处理完成后的 Promise。
+     * 将一次翻译结果写入结果集合并触发增量写回。
+     * @param completed 当前分段完成结果。
+     * @returns 无返回值。
      * @author zhenghq
      */
-    const processSegment = async (segment: WebTranslationSegment): Promise<void> => {
-      let completed: PageTranslationResult | undefined
-      try {
-        const output = await this.translate(segment.text, job.sourceLang, job.targetLang)
-        if (!isStale()) completed = this.success(segment, output)
-      } catch (error) {
-        if (!isStale()) {
-          failed += 1
-          completed = { ...segment, error: error instanceof Error ? error.message : '翻译失败' }
+    const commitResult = (completed: PageTranslationResult): void => {
+      results.push(completed)
+      let allUnitsComplete = true
+      for (const unitId of completed.unitIds) {
+        const completedCount = (unitSegmentDone.get(unitId) ?? 0) + 1
+        unitSegmentDone.set(unitId, completedCount)
+        if (completedCount < (unitSegmentTotals.get(unitId) ?? 1)) allUnitsComplete = false
+      }
+      emit()
+      // 写回回调与翻译并发解耦：网络请求完成后立即释放槽位，慢速 DOM 写回不再阻塞后续翻译。
+      if (!onResult) return
+      const finished = completed
+      const snapshot = results.slice()
+      pendingWriteBacks += 1
+      writeBackChain = writeBackChain.then(async () => {
+        try {
+          await onResult(finished, allUnitsComplete, snapshot)
+        } catch {
+          // 单次增量写回失败不应中断整页翻译，最终结果仍由调用方按锚点失配统计。
+        }
+      }).then(() => {
+        pendingWriteBacks -= 1
+        finishIfReady()
+      })
+    }
+
+    /**
+     * 逐段翻译一个合并批次，用于模型未保留分隔标记时的兜底。
+     * @param item 需要回退的合并批次。
+     * @returns 按分段顺序排列的逐段翻译结果，单段失败时该段保留错误。
+     * @author zhenghq
+     */
+    const fallbackSegments = async (item: WebTranslationWorkItem): Promise<PageTranslationResult[]> => {
+      const output: PageTranslationResult[] = []
+      for (const segment of item.segments) {
+        try {
+          const single = await this.translate(segment.text, job.sourceLang, job.targetLang)
+          if (isStale()) return []
+          output.push(this.success(segment, single))
+        } catch (error) {
+          if (isStale()) return []
+          output.push({ ...segment, error: error instanceof Error ? error.message : '翻译失败' })
         }
       }
-      if (completed && !isStale()) {
-        results.push(completed)
+      return output
+    }
+
+    /**
+     * 处理一个翻译工作项；合并批次拆分失败时自动回退为逐段请求。
+     * @param item 当前工作项，可能是单分段或跨块合并批次。
+     * @returns 当前工作项处理完成后的 Promise。
+     * @author zhenghq
+     */
+    const processWorkItem = async (item: WebTranslationWorkItem): Promise<void> => {
+      let completedResults: PageTranslationResult[] = []
+      try {
+        if (item.merged && mergeUnsupported) {
+          const fallback = await fallbackSegments(item)
+          failed += fallback.filter((result) => result.error).length
+          completedResults = fallback
+        } else {
+          const output = await this.translate(item.text, job.sourceLang, job.targetLang)
+          if (!isStale()) {
+            if (item.merged) {
+              const parts = parseMergedTranslation(item.batch, output.translation)
+              // 拆分出的任一段译文为空都视为不可用，回退逐段以避免写入空译文导致原文丢失。
+              if (parts && parts.every((part) => part !== '')) {
+                completedResults = item.segments.map((segment, index) => this.success(segment, output, parts[index]))
+              } else {
+                // 非 AI 通道未按约定保留标记时，后续批次不再发送注定无效的合并请求。
+                if (output.provider !== undefined && output.provider !== 'ai') mergeUnsupported = true
+                const fallback = await fallbackSegments(item)
+                failed += fallback.filter((result) => result.error).length
+                completedResults = fallback
+              }
+            } else {
+              completedResults = item.segments.map((segment) => this.success(segment, output))
+            }
+          }
+        }
+      } catch (error) {
+        if (!isStale()) {
+          if (item.merged) {
+            // 合并批次整体失败时回退逐段请求，避免下游通道字符上限更小时整批失败。
+            const fallback = await fallbackSegments(item)
+            failed += fallback.filter((result) => result.error).length
+            completedResults = fallback
+          } else {
+            failed += 1
+            const message = error instanceof Error ? error.message : '翻译失败'
+            completedResults = item.segments.map((segment) => ({ ...segment, error: message }))
+          }
+        }
+      }
+      if (!isStale()) {
+        // 进度按实际发出的请求数统计，跨块合并后用户看到的待翻译数才会真实下降；
+        // 先累加再提交，保证每次进度事件里的 done 与 total 处于同一时刻。
         done += 1
-        const completedCount = (unitSegmentDone.get(segment.unitId) ?? 0) + 1
-        unitSegmentDone.set(segment.unitId, completedCount)
-        emit()
-        await onResult?.(completed, completedCount === unitSegmentTotals.get(segment.unitId), results.slice())
+        for (const completed of completedResults) commitResult(completed)
       }
       active -= 1
       if (isStale()) cancel()
@@ -339,10 +465,11 @@ export class PageTranslationCoordinator {
         cancel()
         return
       }
-      while (active < this.concurrency && queue.length > 0) {
-        const segment = queue.shift() as WebTranslationSegment
+      const concurrency = this.getConcurrency()
+      while (active < concurrency && queue.length > 0) {
+        const item = queue.shift() as WebTranslationWorkItem
         active += 1
-        void processSegment(segment)
+        void processWorkItem(item)
       }
       emit()
       finishIfReady()
@@ -356,6 +483,7 @@ export class PageTranslationCoordinator {
       enqueue: (units: ExtractedWebTextUnit[]): PageTranslationEnqueueResult => {
         const stats: PageTranslationEnqueueResult = { accepted: 0, duplicate: 0, truncated: 0 }
         if (inputClosed || isStale()) return stats
+        const blockUnits = new Map<string, ExtractedWebTextUnit[]>()
         for (const unit of units) {
           if (job.scope === 'body' && unit.category !== 'body') continue
           const unitKey = createWebTextUnitKey(unit)
@@ -364,12 +492,20 @@ export class PageTranslationCoordinator {
             continue
           }
           seenUnits.add(unitKey)
+          const grouped = blockUnits.get(unit.blockId)
+          if (grouped) grouped.push(unit)
+          else blockUnits.set(unit.blockId, [unit])
+        }
+        // 先按块拆分，再把相邻短分段合并成更少的请求，最后统一入队。
+        const pendingSegments: WebTranslationSegment[] = []
+        for (const groupedUnits of blockUnits.values()) {
+          const primary = groupedUnits[0]
           if (acceptedUnits >= Math.max(0, job.maxBlocks ?? Number.MAX_SAFE_INTEGER)) {
             stats.truncated += 1
             truncated = true
             continue
           }
-          const segments = splitWebTextUnits([unit], { maxChars: job.maxCharsPerSegment, locale: job.locale })
+          const segments = splitWebTextUnits(groupedUnits, { maxChars: job.maxCharsPerSegment, locale: job.locale })
           const segmentChars = segments.reduce((sum, segment) => sum + segment.text.length, 0)
           if (segments.length === 0) continue
           if (acceptedChars + segmentChars > Math.max(0, job.maxChars ?? Number.MAX_SAFE_INTEGER)) {
@@ -380,8 +516,31 @@ export class PageTranslationCoordinator {
           acceptedUnits += 1
           acceptedChars += segmentChars
           stats.accepted += 1
-          unitSegmentTotals.set(unit.id, segments.length)
-          queue.push(...segments)
+          for (const groupedUnit of groupedUnits) {
+            unitSegmentTotals.set(groupedUnit.id, (unitSegmentTotals.get(groupedUnit.id) ?? 0) + segments.length)
+          }
+          // 只在完整段落之间插入分隔标记，避免把标记插进长段落被拆开的句子中间。
+          if (job.mergeAcrossBlocks && segments.length === 1) {
+            pendingSegments.push(...segments)
+          } else {
+            for (const segment of segments) {
+              queue.push({
+                batch: { batchId: segment.segmentId, segments: [segment], text: segment.text, mergeable: false },
+                text: segment.text,
+                segments: [segment],
+                merged: false
+              })
+            }
+          }
+        }
+        if (pendingSegments.length > 0) {
+          const batches = buildWebTranslationBatches(pendingSegments, {
+            maxChars: Math.min(job.maxCharsPerSegment, WEB_TRANSLATION_MERGED_BATCH_MAX_CHARS),
+            maxBlocksPerBatch: job.maxSegmentsPerBatch
+          })
+          for (const batch of batches) {
+            queue.push({ batch, text: batch.text, segments: batch.segments, merged: batch.mergeable })
+          }
         }
         emit()
         pump()
@@ -474,16 +633,23 @@ export class PageTranslationCoordinator {
    * 将翻译服务输出映射为网页结果。
    * @param segment 原始分段。
    * @param output 翻译服务输出。
+   * @param translation 可选的本段译文，用于跨块合并后按标记拆分的结果。
    * @returns 结构化网页翻译结果。
    * @author zhenghq
    */
-  private success(segment: WebTranslationSegment, output: Awaited<ReturnType<PageTranslator>>): PageTranslationResult {
+  private success(
+    segment: WebTranslationSegment,
+    output: Awaited<ReturnType<PageTranslator>>,
+    translation?: string
+  ): PageTranslationResult {
     return {
       unitId: segment.unitId,
+      unitIds: segment.unitIds,
       blockId: segment.blockId,
       segmentId: segment.segmentId,
+      segmentTotal: segment.segmentTotal,
       text: segment.text,
-      translation: output.translation,
+      translation: translation ?? output.translation,
       provider: output.provider,
       channel: output.channel
     }
@@ -515,16 +681,75 @@ export function aggregatePageTranslationUnits(
   units: ExtractedWebTextUnit[],
   results: PageTranslationResult[]
 ): Array<ExtractedWebTextUnit & { translation?: string; error?: string }> {
-  return units.map((unit) => {
-    const related = results.filter((result) => result.unitId === unit.id).sort((left, right) => {
+  const unitsByBlock = new Map<string, ExtractedWebTextUnit[]>()
+  for (const unit of units) {
+    const list = unitsByBlock.get(unit.blockId)
+    if (list) list.push(unit)
+    else unitsByBlock.set(unit.blockId, [unit])
+  }
+
+  const translations = new Map<string, string>()
+  const errors = new Map<string, string>()
+  for (const [blockId, blockUnits] of unitsByBlock) {
+    const positionByUnitId = new Map(blockUnits.map((unit, index) => [unit.id, index]))
+    const blockUnitIds = new Set(positionByUnitId.keys())
+    const blockResults = results.filter((result) => {
+      const coveredIds = result.unitIds?.length ? result.unitIds : [result.unitId]
+      return coveredIds.some((unitId) => blockUnitIds.has(unitId))
+    })
+    const failure = blockResults.find((result) => result.error)
+    if (failure?.error) {
+      for (const unit of blockUnits) errors.set(unit.id, failure.error)
+      continue
+    }
+    const covered = new Set<string>()
+    const indexesByBatch = new Map<string, Set<number>>()
+    const totalsByBatch = new Map<string, number>()
+    for (const result of blockResults) {
+      const coveredIds = result.unitIds?.length ? result.unitIds : [result.unitId]
+      for (const unitId of coveredIds) covered.add(unitId)
+      const batchKey = result.unitId
+      totalsByBatch.set(batchKey, Math.max(totalsByBatch.get(batchKey) ?? 1, result.segmentTotal ?? 1))
+      const segmentIndex = Number(result.segmentId.split(':').pop() ?? Number.NaN)
+      if (!Number.isFinite(segmentIndex)) continue
+      const indexes = indexesByBatch.get(batchKey) ?? new Set<number>()
+      indexes.add(segmentIndex)
+      indexesByBatch.set(batchKey, indexes)
+    }
+    // 段落内全部文本单元都有对应分段结果时，才认为整段翻译完成。
+    if (!blockUnits.every((unit) => covered.has(unit.id))) continue
+    // 每个来源批次必须收齐从 0 开始、连续到 segmentTotal - 1 的全部分段，避免长段落漏译。
+    let complete = true
+    for (const [batchKey, total] of totalsByBatch) {
+      const indexes = indexesByBatch.get(batchKey) ?? new Set<number>()
+      for (let index = 0; index < total; index += 1) {
+        if (!indexes.has(index)) { complete = false; break }
+      }
+      if (!complete) break
+    }
+    if (!complete) continue
+    const ordered = blockResults.slice().sort((left, right) => {
+      const leftCovered = left.unitIds?.length ? left.unitIds : [left.unitId]
+      const rightCovered = right.unitIds?.length ? right.unitIds : [right.unitId]
+      const leftPosition = Math.min(...leftCovered.map((unitId) => positionByUnitId.get(unitId) ?? Number.MAX_SAFE_INTEGER))
+      const rightPosition = Math.min(...rightCovered.map((unitId) => positionByUnitId.get(unitId) ?? Number.MAX_SAFE_INTEGER))
+      if (leftPosition !== rightPosition) return leftPosition - rightPosition
       const leftIndex = Number(left.segmentId.split(':').pop() ?? 0)
       const rightIndex = Number(right.segmentId.split(':').pop() ?? 0)
       return leftIndex - rightIndex
     })
-    const failure = related.find((result) => result.error)
-    return {
-      ...unit,
-      ...(failure ? { error: failure.error } : related.length ? { translation: related.map((result) => result.translation ?? '').join('') } : {})
+    const translation = ordered.map((result) => result.translation ?? '').join('')
+    // 段落级译文只挂在首个文本单元，其余单元写空串，避免原位或对照模式重复展示。
+    translations.set(blockUnits[0].id, translation)
+    for (let index = 1; index < blockUnits.length; index += 1) {
+      translations.set(blockUnits[index].id, '')
     }
+  }
+
+  return units.map((unit) => {
+    const error = errors.get(unit.id)
+    if (error !== undefined) return { ...unit, error }
+    const translation = translations.get(unit.id)
+    return translation === undefined ? { ...unit } : { ...unit, translation }
   })
 }

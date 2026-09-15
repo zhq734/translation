@@ -15,7 +15,7 @@
  * @author zhenghq
  */
 
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -30,12 +30,47 @@ const FRONT_RETURN_POLL_INTERVAL_MS = 16
 /** 交还前台的兜底超时（毫秒）：激活未生效时也必须继续后续动作，不能卡住窗口隐藏。 */
 const FRONT_RETURN_TIMEOUT_MS = 200
 
+/** 安全让出前台的兜底超时（毫秒）：app.hide() 生效较慢时最长等待时间，超时也必须收尾。 */
+const FRONT_YIELD_TIMEOUT_MS = 400
+
 /** 前台应用快照。 */
 export interface FrontmostAppSnapshot {
   /** 应用 bundle id，用于重新激活该应用。 */
   bundleId: string
   /** 应用进程号，用于确认它到交还时仍在运行。 */
   pid: number
+}
+
+/**
+ * 本应用当前是否为 macOS 最前应用。
+ *
+ * 不能用 `BrowserWindow.getFocusedWindow()` 代替：`dialog.showMessageBox` 等原生对话框
+ * 不属于 `BrowserWindow`，对话框存在时该方法返回 null，但本应用仍处于最前。
+ * Electron 33 未提供 `app.isActive()`，因此通过应用激活事件自行跟踪。
+ */
+// 初值取 false：只有确实收到获得激活事件或存在持有焦点的自有窗口时才认为本应用在最前，
+// 避免启动阶段误判为「仍在最前」而跳过前台交还或保留过期的待交还记录。
+let macAppActive = false
+
+if (process.platform === 'darwin') {
+  app.on('did-become-active', () => {
+    macAppActive = true
+  })
+  app.on('did-resign-active', () => {
+    macAppActive = false
+  })
+}
+
+/**
+ * 返回本应用当前是否为 macOS 最前应用。
+ * @returns 本应用仍持有最前状态时返回 true。
+ * @author zhenghq
+ */
+export function isMacAppActive(): boolean {
+  // 有自有窗口持有焦点时应用必然处于最前，优先采信这个同步信号；
+  // 其余情况（例如 key window 是原生对话框）回退到事件跟踪的激活状态。
+  if (BrowserWindow.getFocusedWindow() !== null) return true
+  return macAppActive
 }
 
 /**
@@ -206,6 +241,14 @@ export function handBackFrontmostThen(
   const focused = BrowserWindow.getFocusedWindow()
   // 本应用已不在最前：隐藏窗口不会提升应用内其它窗口，记录也已失效。
   if (focused === null) {
+    // 原生对话框（如 dialog.showMessageBox）不是 BrowserWindow：对话框存在时
+    // getFocusedWindow() 同样返回 null，但应用仍处于最前，对话框自身持有 key window。
+    // 此时隐藏弹窗不会提升其它窗口，必须保留记录，供对话框关闭后 handBackFrontmostApp 消费；
+    // 若在这里丢弃记录，对话框关闭时网页翻译窗口就会被系统提升到最前。
+    if (isMacAppActive()) {
+      run()
+      return
+    }
     forgetFrontmostApp()
     run()
     return
@@ -250,4 +293,115 @@ export function handBackFrontmostThen(
     setTimeout(pollDeactivated, FRONT_RETURN_POLL_INTERVAL_MS)
   }
   pollDeactivated()
+}
+
+/**
+ * 在原生对话框关闭后把 macOS 前台交还给对话框出现前的应用。
+ *
+ * `dialog.showMessageBox` 会激活本应用；对话框关闭时，应用内下一个窗口（通常是网页阅读器）
+ * 会被系统提升为 key window 并顶到最前。此入口不依赖具体 BrowserWindow，调用方可在
+ * 对话框 Promise 结束后等待前台交还完成，再继续显示自己的提示。
+ * @returns 已确认本应用失去最前状态时返回 true；无需交还或交还超时时返回 false。
+ * @author zhenghq
+ */
+export function handBackFrontmostApp(): Promise<boolean> {
+  if (process.platform !== 'darwin') return Promise.resolve(false)
+  // 原生对话框不是 BrowserWindow，关闭后 getFocusedWindow() 可能仍为 null，
+  // 但应用仍处于最前；必须依据应用激活状态判断是否真的还需要交还前台。
+  if (!isMacAppActive()) {
+    forgetFrontmostApp()
+    return Promise.resolve(false)
+  }
+  const target = pendingReturnApp
+  pendingReturnApp = null
+  // 没有可交还的目标（快照读取失败、源应用已退出，或本应用占用前台前就是自己）时
+  // 不能直接收尾：本应用仍是最前应用，随后隐藏或关闭窗口会让系统把应用内下一个
+  // 窗口（网页阅读器）提升为 key window 并顶到用户应用之上，因此改用安全退化序列让出前台。
+  if (!target || !isProcessAlive(target.pid)) {
+    return yieldFrontmostAppThen(() => {})
+  }
+  if (!activateFrontmostApp(target)) {
+    return yieldFrontmostAppThen(() => {})
+  }
+
+  return new Promise<boolean>((resolve) => {
+    let finished = false
+    const finish = (handedBack: boolean): void => {
+      if (finished) return
+      finished = true
+      // 目标应用在超时前没有真正接管前台：改用安全退化序列让出前台，
+      // 避免随后隐藏失败提示时把应用内其它窗口（网页阅读器）顶到最前。
+      if (!handedBack && isMacAppActive()) {
+        void yieldFrontmostAppThen(() => {}).then(() => resolve(false))
+        return
+      }
+      resolve(handedBack)
+    }
+    const deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
+    const pollDeactivated = (): void => {
+      if (!isMacAppActive()) {
+        finish(true)
+        return
+      }
+      if (Date.now() >= deadline) {
+        finish(false)
+        return
+      }
+      setTimeout(pollDeactivated, FRONT_RETURN_POLL_INTERVAL_MS)
+    }
+    pollDeactivated()
+  })
+}
+
+/**
+ * 在没有可交还源应用时安全让出 macOS 最前状态。
+ *
+ * 直接隐藏应用内 key window 会让系统把应用内下一个窗口（网页阅读器或设置页）
+ * 提升为 key window，只要本应用仍是最前应用，该窗口就会盖到用户原本在用的应用之上。
+ * 这里改用「隐藏应用→等待系统把前台还给其它应用→执行收尾→非激活恢复应用」，
+ * 窗口只会在屏上短暂消失，收尾后的窗口层级仍保持在用户应用之后。
+ * 先等待真正失活再收尾是必须的：真机 CGWindowList 采样验证过，
+ * 未等待失活就收尾时阅读器仍会被顶到最前（表现为闪一下并抢占前台）。
+ * @param run 失活后要执行的收尾动作（隐藏窗口或降级为非激活显示）。
+ * @returns 实际执行了安全让出流程时返回 true；无需让出时返回 false。
+ * @author zhenghq
+ */
+export function yieldFrontmostAppThen(run: () => void): Promise<boolean> {
+  if (process.platform !== 'darwin') {
+    run()
+    return Promise.resolve(false)
+  }
+  // 本应用不在最前时隐藏窗口不会提升其它窗口，直接收尾即可，避免整应用闪烁。
+  if (!isMacAppActive()) {
+    run()
+    return Promise.resolve(false)
+  }
+  return new Promise<boolean>((resolve) => {
+    let finished = false
+    const finish = (): void => {
+      if (finished) return
+      finished = true
+      run()
+      // app.show() 走 unhideWithoutActivation：只恢复窗口可见性，不激活应用，
+      // 也不会把窗口提到用户当前应用之上。
+      app.show()
+      resolve(true)
+    }
+    // app.hide() 会把应用内所有窗口（含正在展示的提示弹窗）一起隐藏，
+    // 因此显隐次序固定为「先隐藏应用→等待失活→收尾→恢复应用」。
+    app.hide()
+    const deadline = Date.now() + FRONT_YIELD_TIMEOUT_MS
+    const poll = (): void => {
+      if (!isMacAppActive()) {
+        finish()
+        return
+      }
+      if (Date.now() >= deadline) {
+        finish()
+        return
+      }
+      setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
+    }
+    poll()
+  })
 }

@@ -54,7 +54,8 @@ function buildTranslationSystemPrompt(sourceLang: string, targetLang: string): s
     sourceLang,
     '翻译为',
     targetLang,
-    '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。'
+    '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。',
+    '若原文包含形如 [[[ST-SEG-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。'
   ].join('')
 }
 

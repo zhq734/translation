@@ -22,6 +22,10 @@ export interface DockActivationContext {
   interactionState: SelectionInteractionState
   selectionButtonVisible: boolean
   popupVisible: boolean
+  /** 弹窗是否正在交还 macOS 前台（可见但逻辑已关闭）。 */
+  popupHandingBackFront: boolean
+  /** macOS hiservices 修复原生对话框是否正在显示；其 activate 属于内部激活。 */
+  hiServicesRepairPromptVisible: boolean
   ocrVisible: boolean
   listenerPausedForOcr: boolean
   internalActivationLeaseUntil: number
@@ -230,6 +234,8 @@ export function canTreatActivateAsDockLaunch(context: DockActivationContext): Do
     [context.interactionState !== 'idle', 'selection-interaction-active'],
     [context.selectionButtonVisible, 'selection-button-visible'],
     [context.popupVisible, 'translation-popup-visible'],
+    [context.popupHandingBackFront, 'translation-popup-handing-back-front'],
+    [context.hiServicesRepairPromptVisible, 'hiservices-repair-prompt-visible'],
     [context.ocrVisible, 'ocr-selection-visible'],
     [context.listenerPausedForOcr, 'ocr-listener-paused'],
     [context.internalActivationLeaseUntil > now, 'internal-activation-lease']

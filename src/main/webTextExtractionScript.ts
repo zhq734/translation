@@ -1,5 +1,6 @@
 import type {
   WebDomSnapshotNode,
+  WebImageCandidate,
   WebPageMeta,
   WebTextNodeAnchor,
   WebTranslationMode
@@ -27,6 +28,56 @@ export interface WebTextApplyResult {
   skipped: number
 }
 
+/** 对照译文注入操作。 */
+export interface WebBilingualInjectionOperation {
+  /** 目标块标识。 */
+  blockId: string
+  /** 目标块选择器。 */
+  selector: string
+  /** 拼接后的整段译文。 */
+  translation: string
+}
+
+/** 对照注入统计。 */
+export interface WebBilingualInjectionResult {
+  /** 成功写入或更新的块数量。 */
+  applied: number
+  /** 锚点失配的块数量。 */
+  mismatched: number
+  /** 跳过的块数量。 */
+  skipped: number
+}
+
+/** 图片译文覆盖层注入操作。 */
+export interface WebImageOverlayOperation {
+  /** 目标图片标识。 */
+  imageId: string
+  /** 图片宿主元素选择器。 */
+  selector: string
+  /** 开放 Shadow DOM 内的元素索引路径。 */
+  shadowPath?: number[]
+  /** OCR 识别原文。 */
+  ocrText: string
+  /** 图片文字译文。 */
+  translation: string
+  /** 展示位置：图片下方说明块或图片区域叠加。 */
+  placement: 'below' | 'overlay'
+  /** 是否同时展示原文。 */
+  bilingual: boolean
+  /** 译文语言代码，用于覆盖层 lang 属性。 */
+  lang?: string
+}
+
+/** 图片译文覆盖层注入统计。 */
+export interface WebImageOverlayResult {
+  /** 成功写入或更新的覆盖层数量。 */
+  applied: number
+  /** 锚点失配数量。 */
+  mismatched: number
+  /** 跳过的数量。 */
+  skipped: number
+}
+
 /** 网页主文档可提取状态。 */
 export interface WebDocumentReadiness {
   /** 主文档加载状态。 */
@@ -41,6 +92,8 @@ export interface WebDocumentReadiness {
 export interface WebIncrementalTextBatch {
   /** 本批次受影响语义根节点的快照。 */
   snapshots: WebDomSnapshotNode[]
+  /** 本批次新增的图片候选。 */
+  imageCandidates?: WebImageCandidate[]
   /** 当前页面元数据。 */
   pageMeta: WebPageMeta
   /** 收集器是否仍处于初始加载窗口。 */
@@ -81,7 +134,9 @@ export function buildWebTextExtractionScript(): string {
       while (current && current.nodeType === Node.ELEMENT_NODE) {
         const parent = current.parentElement;
         const index = parent ? Array.from(parent.children).indexOf(current) + 1 : 1;
-        segments.unshift(current.tagName.toLowerCase() + ':nth-child(' + index + ')');
+        const tag = current.tagName.toLowerCase();
+        // html 与 body 是文档唯一根元素，使用标签本身定位，避免受 head 等兄弟节点影响。
+        segments.unshift(tag === 'html' || tag === 'body' ? tag : tag + ':nth-child(' + index + ')');
         current = parent;
       }
       return segments.join(' > ');
@@ -92,6 +147,8 @@ export function buildWebTextExtractionScript(): string {
     };
     const visible = (element) => {
       if (!element || ignored.has(element.tagName) || element.isContentEditable || element.contentEditable === 'true') return false;
+      // 应用注入的对照译文节点及其子树不参与提取，避免译文被当作新原文再次翻译。
+      if (element.closest && element.closest('[data-st-translation],[data-st-image-translation]')) return false;
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
@@ -156,7 +213,105 @@ export function buildWebTextExtractionScript(): string {
         children
       };
     };
-    return { snapshot: snapshot(document.body || document.documentElement), pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined } };
+    const imageMinSize = 64;
+    const imageIgnoredTags = new Set(['SCRIPT','STYLE','TEMPLATE','NOSCRIPT','IFRAME']);
+    const decorativeSource = /(^|[\\/_.-])(sprite|icon|logo|avatar|favicon|badge|pixel|spacer|qrcode|qr-code)([\\/_.-]|$)/i;
+    const imageHash = (value) => {
+      let result = 2166136261;
+      for (let index = 0; index < value.length; index += 1) {
+        result ^= value.charCodeAt(index);
+        result = Math.imul(result, 16777619);
+      }
+      return (result >>> 0).toString(16).padStart(8, '0');
+    };
+    const imageVisible = (element) => {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      if (Number(style.opacity) === 0) return false;
+      return true;
+    };
+    const isDecorative = (element, source, rect) => {
+      const role = (element.getAttribute('role') || '').toLowerCase();
+      if (role === 'presentation' || role === 'none') return true;
+      if (element.getAttribute('aria-hidden') === 'true') return true;
+      const alt = element.getAttribute('alt');
+      if (alt === '' && rect.width < imageMinSize * 2 && rect.height < imageMinSize * 2) return true;
+      if (typeof source === 'string' && source && decorativeSource.test(source) &&
+          rect.width < imageMinSize * 3 && rect.height < imageMinSize * 3) return true;
+      return false;
+    };
+    const imageSelectorOf = (element) => {
+      const location = shadowLocationOf(element);
+      return location ? location.hostSelector : selectorOf(element);
+    };
+    const pushImageCandidate = (element, kind, source, naturalWidth, naturalHeight) => {
+      if (!element || !imageVisible(element)) return;
+      if (imageIgnoredTags.has(element.tagName)) return;
+      if (element.isContentEditable || element.contentEditable === 'true') return;
+      if (element.closest && element.closest('[data-st-image-translation]')) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < imageMinSize || rect.height < imageMinSize) return;
+      if (rect.width * rect.height > 20000000) return;
+      if (isDecorative(element, source, rect)) return;
+      const location = shadowLocationOf(element);
+      const selector = location ? location.hostSelector : selectorOf(element);
+      const pageRect = rectOf(element);
+      const normalizedSource = typeof source === 'string' ? source : '';
+      const inline = normalizedSource.startsWith('data:') || normalizedSource.startsWith('blob:');
+      const sourceFingerprint = imageHash([
+        normalizedSource,
+        element.getAttribute('alt') || '',
+        kind,
+        naturalWidth || 0,
+        naturalHeight || 0
+      ].join('|'));
+      const imageId = 'web-image-' + imageHash(JSON.stringify([
+        selector, kind, location ? location.path : [], pageRect.x, pageRect.y, pageRect.width, pageRect.height, sourceFingerprint
+      ]));
+      if (seenImageIds.has(imageId)) return;
+      seenImageIds.add(imageId);
+      results.push({
+        imageId,
+        kind,
+        selector,
+        rect: pageRect,
+        naturalWidth: naturalWidth || undefined,
+        naturalHeight: naturalHeight || undefined,
+        sourceFingerprint,
+        src: normalizedSource || undefined,
+        alt: element.getAttribute('alt') || undefined,
+        inline: inline || undefined,
+        shadowPath: location ? location.path : undefined
+      });
+    };
+    const results = [];
+    const seenImageIds = new Set();
+    const visitImageNode = (node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+      const element = node;
+      if (element.closest && element.closest('[data-st-image-translation]')) return;
+      if (element.tagName === 'IMG') {
+        pushImageCandidate(element, 'img', element.currentSrc || element.getAttribute('src') || '', element.naturalWidth, element.naturalHeight);
+      } else if (element.tagName === 'CANVAS') {
+        pushImageCandidate(element, 'canvas', '', element.width, element.height);
+      } else if (!imageIgnoredTags.has(element.tagName)) {
+        const style = getComputedStyle(element);
+        const background = style.backgroundImage || '';
+        if (background && background !== 'none' && background.indexOf('url(') >= 0) {
+          const match = /url\\(["']?([^"')]+)["']?\\)/i.exec(background);
+          pushImageCandidate(element, 'background', match ? match[1] : '', 0, 0);
+        }
+      }
+      if (element.shadowRoot) for (const child of element.shadowRoot.children) visitImageNode(child);
+      for (const child of element.children) visitImageNode(child);
+    };
+    const collectImageCandidates = (root) => {
+      if (!root) return [];
+      visitImageNode(root);
+      return results;
+    };
+    const imageCandidates = collectImageCandidates(document.body || document.documentElement);
+    return { snapshot: snapshot(document.body || document.documentElement), imageCandidates, pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined } };
   })()`
 }
 
@@ -191,13 +346,17 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
       while (current && current.nodeType === Node.ELEMENT_NODE) {
         const parent = current.parentElement;
         const index = parent ? Array.from(parent.children).indexOf(current) + 1 : 1;
-        segments.unshift(current.tagName.toLowerCase() + ':nth-child(' + index + ')');
+        const tag = current.tagName.toLowerCase();
+        // html 与 body 是文档唯一根元素，使用标签本身定位，避免受 head 等兄弟节点影响。
+        segments.unshift(tag === 'html' || tag === 'body' ? tag : tag + ':nth-child(' + index + ')');
         current = parent;
       }
       return segments.join(' > ');
     };
     const visible = (element) => {
       if (!element || ignored.has(element.tagName) || element.isContentEditable || element.contentEditable === 'true') return false;
+      // 应用注入的对照与图片译文节点及其子树不参与增量收集，避免译文被当作新原文再次翻译。
+      if (element.closest && element.closest('[data-st-translation],[data-st-image-translation]')) return false;
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
@@ -238,6 +397,86 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
       return { hostSelector: selectorOf(root.host), path };
     };
     const seen = new Set();
+    const imageMinSize = 64;
+    const imageIgnoredTags = new Set(['SCRIPT','STYLE','TEMPLATE','NOSCRIPT','IFRAME']);
+    const decorativeSource = /(^|[\\/_.-])(sprite|icon|logo|avatar|favicon|badge|pixel|spacer|qrcode|qr-code)([\\/_.-]|$)/i;
+    const imageHash = (value) => {
+      let result = 2166136261;
+      for (let index = 0; index < value.length; index += 1) { result ^= value.charCodeAt(index); result = Math.imul(result, 16777619); }
+      return (result >>> 0).toString(16).padStart(8, '0');
+    };
+    const imageVisible = (element) => {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      if (Number(style.opacity) === 0) return false;
+      return true;
+    };
+    const isDecorative = (element, source, rect) => {
+      const role = (element.getAttribute('role') || '').toLowerCase();
+      if (role === 'presentation' || role === 'none') return true;
+      if (element.getAttribute('aria-hidden') === 'true') return true;
+      const alt = element.getAttribute('alt');
+      if (alt === '' && rect.width < imageMinSize * 2 && rect.height < imageMinSize * 2) return true;
+      if (typeof source === 'string' && source && decorativeSource.test(source) &&
+          rect.width < imageMinSize * 3 && rect.height < imageMinSize * 3) return true;
+      return false;
+    };
+    const buildImageCandidate = (element, kind, source, naturalWidth, naturalHeight) => {
+      if (!element || !imageVisible(element)) return null;
+      if (imageIgnoredTags.has(element.tagName)) return null;
+      if (element.isContentEditable || element.contentEditable === 'true') return null;
+      if (element.closest && element.closest('[data-st-image-translation]')) return null;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < imageMinSize || rect.height < imageMinSize) return null;
+      if (rect.width * rect.height > 20000000) return null;
+      if (isDecorative(element, source, rect)) return null;
+      const location = shadowLocationOf(element);
+      const selector = location ? location.hostSelector : selectorOf(element);
+      const pageRect = rectOf(element);
+      const normalizedSource = typeof source === 'string' ? source : '';
+      const inline = normalizedSource.startsWith('data:') || normalizedSource.startsWith('blob:');
+      const sourceFingerprint = imageHash([normalizedSource, element.getAttribute('alt') || '', kind, naturalWidth || 0, naturalHeight || 0].join('|'));
+      const imageId = 'web-image-' + imageHash(JSON.stringify([
+        selector, kind, location ? location.path : [], pageRect.x, pageRect.y, pageRect.width, pageRect.height, sourceFingerprint
+      ]));
+      return {
+        imageId, kind, selector, rect: pageRect,
+        naturalWidth: naturalWidth || undefined, naturalHeight: naturalHeight || undefined,
+        sourceFingerprint, src: normalizedSource || undefined,
+        alt: element.getAttribute('alt') || undefined, inline: inline || undefined,
+        shadowPath: location ? location.path : undefined
+      };
+    };
+    const seenImageIds = new Set();
+    const collectImages = (root) => {
+      if (!root) return [];
+      const output = [];
+      const visit = (node) => {
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+        const element = node;
+        if (element.closest && element.closest('[data-st-image-translation]')) return;
+        let candidate = null;
+        if (element.tagName === 'IMG') {
+          candidate = buildImageCandidate(element, 'img', element.currentSrc || element.getAttribute('src') || '', element.naturalWidth, element.naturalHeight);
+        } else if (element.tagName === 'CANVAS') {
+          candidate = buildImageCandidate(element, 'canvas', '', element.width, element.height);
+        } else if (!imageIgnoredTags.has(element.tagName)) {
+          const background = getComputedStyle(element).backgroundImage || '';
+          if (background && background !== 'none' && background.indexOf('url(') >= 0) {
+            const match = /url\\(["']?([^"')]+)["']?\\)/i.exec(background);
+            candidate = buildImageCandidate(element, 'background', match ? match[1] : '', 0, 0);
+          }
+        }
+        if (candidate && !seenImageIds.has(candidate.imageId)) {
+          seenImageIds.add(candidate.imageId);
+          output.push(candidate);
+        }
+        if (element.shadowRoot) for (const child of element.shadowRoot.children) visit(child);
+        for (const child of element.children) visit(child);
+      };
+      visit(root);
+      return output;
+    };
     const snapshot = (node, onlyNew) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentNode;
@@ -272,13 +511,19 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
     };
     const state = window.__selectionTranslatorWebTranslation = {
       active: true, pageUpdated: false, suppressed: false, observer: null, observers: [], timer: null,
-      roots: new Set(), pending: [], seen,
+      roots: new Set(), pending: [], pendingImageCandidates: [], seen,
       flush() {
         if (!this.active || this.suppressed) return [];
         const roots = Array.from(this.roots); this.roots.clear();
         const snapshots = [];
-        for (const root of roots) { const item = snapshot(root, true); if (item) snapshots.push(item); }
+        const images = [];
+        for (const root of roots) {
+          const item = snapshot(root, true);
+          if (item) snapshots.push(item);
+          images.push(...collectImages(root));
+        }
         if (snapshots.length) this.pending.push(...snapshots);
+        if (images.length) this.pendingImageCandidates.push(...images);
         return snapshots;
       },
       stop() {
@@ -290,6 +535,7 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
       }
     };
     const root = document.body || document.documentElement;
+    const initialImages = collectImages(root);
     const initial = root ? snapshot(root, false) : null;
     const observer = new MutationObserver((records) => {
       if (!state.active || state.suppressed) return;
@@ -324,7 +570,7 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
     }
     state.observer = observer;
     state.observers = [observer];
-    return { snapshot: initial, pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined } };
+    return { snapshot: initial, imageCandidates: initialImages, pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined } };
   })()`
 }
 
@@ -336,10 +582,11 @@ export function buildWebIncrementalCollectorStartScript(debounceMs = 300): strin
 export function buildWebIncrementalCollectorDrainScript(): string {
   return `(() => {
     const state = window.__selectionTranslatorWebTranslation;
-    if (!state) return { snapshots: [], pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined }, active: false, pageUpdated: false };
+    if (!state) return { snapshots: [], imageCandidates: [], pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined }, active: false, pageUpdated: false };
     if (state.timer) { clearTimeout(state.timer); state.timer = null; state.flush(); }
     const snapshots = state.pending.splice(0);
-    return { snapshots, pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined }, active: Boolean(state.active), pageUpdated: Boolean(state.pageUpdated) };
+    const imageCandidates = state.pendingImageCandidates ? state.pendingImageCandidates.splice(0) : [];
+    return { snapshots, imageCandidates, pageMeta: { url: location.href, title: document.title || '', langHint: document.documentElement.lang || undefined }, active: Boolean(state.active), pageUpdated: Boolean(state.pageUpdated) };
   })()`
 }
 
@@ -433,6 +680,181 @@ export function buildWebTextApplyScript(
 }
 
 /**
+ * 构造对照译文注入脚本，按 blockId 幂等 upsert 译文节点。
+ * @param operations 待注入的对照操作。
+ * @param targetLang 目标语言代码，用于译文节点 lang 属性。
+ * @returns 可传给 webContents.executeJavaScript 的脚本字符串。
+ * @author zhenghq
+ */
+export function buildWebBilingualInjectScript(
+  operations: WebBilingualInjectionOperation[],
+  targetLang: string
+): string {
+  const serialized = JSON.stringify(operations)
+  const serializedLang = JSON.stringify(targetLang)
+  return `(() => {
+    const operations = ${serialized};
+    const targetLang = ${serializedLang};
+    const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
+    const stats = { applied: 0, mismatched: 0, skipped: 0 };
+    const resolveParent = (selector) => {
+      try { return document.querySelector(selector); } catch { return null; }
+    };
+    state.suppressed = true;
+    for (const operation of operations) {
+      const block = resolveParent(operation.selector);
+      if (!block || block.nodeType !== Node.ELEMENT_NODE) { stats.mismatched += 1; continue; }
+      if (block.closest('[data-st-translation]')) { stats.skipped += 1; continue; }
+      const display = getComputedStyle(block).display || '';
+      let node = null;
+      for (const candidate of block.querySelectorAll('[data-st-translation]')) {
+        if (candidate.getAttribute('data-st-translation-for') === operation.blockId) { node = candidate; break; }
+      }
+      if (!node) {
+        node = document.createElement('span');
+        node.setAttribute('data-st-translation', '');
+        node.setAttribute('data-st-translation-for', operation.blockId);
+        node.setAttribute('data-st-parent-display', display.indexOf('flex') >= 0 ? 'flex' : display.indexOf('grid') >= 0 ? 'grid' : 'block');
+        block.appendChild(node);
+      } else {
+        node.setAttribute('data-st-parent-display', display.indexOf('flex') >= 0 ? 'flex' : display.indexOf('grid') >= 0 ? 'grid' : 'block');
+      }
+      if (node.textContent !== operation.translation) node.textContent = operation.translation;
+      node.setAttribute('lang', targetLang);
+      node.setAttribute('dir', 'auto');
+      block.setAttribute('data-st-dimmed', 'true');
+      stats.applied += 1;
+    }
+    setTimeout(() => { state.suppressed = false; }, 0);
+    return stats;
+  })()`
+}
+
+/**
+ * 构造对照译文清理脚本，移除全部注入节点与标记属性。
+ * @returns 可传给 webContents.executeJavaScript 的脚本字符串。
+ * @author zhenghq
+ */
+export function buildWebBilingualClearScript(): string {
+  return `(() => {
+    const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
+    state.suppressed = true;
+    const nodes = document.querySelectorAll('[data-st-translation]');
+    let removed = 0;
+    for (const node of nodes) { if (node.parentNode) { node.parentNode.removeChild(node); removed += 1; } }
+    for (const element of document.querySelectorAll('[data-st-dimmed]')) element.removeAttribute('data-st-dimmed');
+    for (const element of document.querySelectorAll('[data-st-parent-display]')) element.removeAttribute('data-st-parent-display');
+    setTimeout(() => { state.suppressed = false; }, 0);
+    return { applied: removed, mismatched: 0, skipped: 0 };
+  })()`
+}
+
+/**
+ * 返回对照模式使用的页面内样式表。
+ * @returns 可传给 webContents.insertCSS 的样式字符串。
+ * @author zhenghq
+ */
+export function buildWebBilingualStyleSheet(): string {
+  return [
+    '[data-st-translation] { display: block; color: inherit; font: inherit; line-height: inherit; }',
+    "[data-st-translation][data-st-parent-display='flex'] { flex: 1 0 100%; }",
+    "[data-st-translation][data-st-parent-display='grid'] { grid-column: 1 / -1; }",
+    "[data-st-dimmed='true'] > *:not([data-st-translation]), [data-st-dimmed='true'] { opacity: 0.6; }"
+  ].join('\n')
+}
+
+/**
+ * 构造图片译文覆盖层注入脚本，按 imageId 幂等 upsert。
+ * @param operations 待注入的图片覆盖层操作。
+ * @returns 可传给 webContents.executeJavaScript 的脚本字符串。
+ * @author zhenghq
+ */
+export function buildWebImageOverlayInjectScript(operations: WebImageOverlayOperation[]): string {
+  const serialized = JSON.stringify(operations)
+  return `(() => {
+    const operations = ${serialized};
+    const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
+    const stats = { applied: 0, mismatched: 0, skipped: 0 };
+    const resolveTarget = (operation) => {
+      let element = null;
+      try { element = document.querySelector(operation.selector); } catch {}
+      if (!element || !Array.isArray(operation.shadowPath) || operation.shadowPath.length === 0) return element;
+      let current = element.shadowRoot;
+      for (const index of operation.shadowPath) {
+        if (!current?.childNodes?.[index]) return null;
+        current = current.childNodes[index];
+      }
+      return current?.nodeType === Node.ELEMENT_NODE ? current : null;
+    };
+    state.suppressed = true;
+    for (const operation of operations) {
+      const target = resolveTarget(operation);
+      if (!target || target.nodeType !== Node.ELEMENT_NODE) { stats.mismatched += 1; continue; }
+      if (target.closest && target.closest('[data-st-image-translation]')) { stats.skipped += 1; continue; }
+      let node = null;
+      for (const candidate of document.querySelectorAll('[data-st-image-translation]')) {
+        if (candidate.getAttribute('data-st-image-translation-for') === operation.imageId) { node = candidate; break; }
+      }
+      if (!node) {
+        node = document.createElement('div');
+        node.setAttribute('data-st-image-translation', '');
+        node.setAttribute('data-st-image-translation-for', operation.imageId);
+        if (operation.placement === 'overlay' && target.parentNode) {
+          target.parentNode.insertBefore(node, target.nextSibling);
+        } else if (target.parentNode) {
+          target.parentNode.insertBefore(node, target.nextSibling);
+        }
+      }
+      node.setAttribute('data-st-image-placement', operation.placement === 'overlay' ? 'overlay' : 'below');
+      const source = document.createElement('div');
+      source.setAttribute('data-st-image-source', '');
+      source.textContent = operation.ocrText;
+      const translation = document.createElement('div');
+      translation.setAttribute('data-st-image-target', '');
+      translation.setAttribute('lang', operation.lang || '');
+      translation.textContent = operation.translation;
+      node.textContent = '';
+      if (operation.bilingual) node.appendChild(source);
+      node.appendChild(translation);
+      stats.applied += 1;
+    }
+    setTimeout(() => { state.suppressed = false; }, 0);
+    return stats;
+  })()`
+}
+
+/**
+ * 构造图片译文覆盖层清理脚本，移除全部注入覆盖层。
+ * @returns 可传给 webContents.executeJavaScript 的脚本字符串。
+ * @author zhenghq
+ */
+export function buildWebImageOverlayClearScript(): string {
+  return `(() => {
+    const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
+    state.suppressed = true;
+    const nodes = document.querySelectorAll('[data-st-image-translation]');
+    let removed = 0;
+    for (const node of nodes) { if (node.parentNode) { node.parentNode.removeChild(node); removed += 1; } }
+    setTimeout(() => { state.suppressed = false; }, 0);
+    return { applied: removed, mismatched: 0, skipped: 0 };
+  })()`
+}
+
+/**
+ * 返回图片译文覆盖层使用的页面内样式表。
+ * @returns 可传给 webContents.insertCSS 的样式字符串。
+ * @author zhenghq
+ */
+export function buildWebImageOverlayStyleSheet(): string {
+  return [
+    '[data-st-image-translation] { display: block; box-sizing: border-box; margin: 6px 0; padding: 8px 10px; border-radius: 6px; font-size: 13px; line-height: 1.5; background: rgba(127,127,127,0.14); color: inherit; font-family: inherit; }',
+    "[data-st-image-placement='overlay'] { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0 0 6px 6px; background: rgba(0,0,0,0.62); color: #fff; max-height: 70%; overflow: auto; }",
+    '[data-st-image-target] { display: block; }',
+    '[data-st-image-source] { display: block; opacity: 0.7; font-size: 12px; margin-bottom: 4px; }'
+  ].join('\n')
+}
+
+/**
  * 构造只检测页面文本变化的 MutationObserver 脚本。
  * @returns 可传给 webContents.executeJavaScript 的脚本字符串。
  * @author zhenghq
@@ -465,21 +887,34 @@ export function buildWebPageChangeStatusScript(): string {
  * 带超时执行只读提取操作，避免远程页面脚本长期占用翻译流程。
  * @param execute 执行注入脚本的函数。
  * @param timeoutMs 超时时间。
- * @returns 可序列化的 DOM 快照和页面元数据。
+ * @returns 可序列化的 DOM 快照、图片候选和页面元数据。
  * @author zhenghq
  */
 export async function executeWebTextExtraction(
-  execute: () => Promise<{ snapshot: WebDomSnapshotNode; pageMeta: WebPageMeta }>,
+  execute: () => Promise<{
+    snapshot: WebDomSnapshotNode
+    imageCandidates?: WebImageCandidate[]
+    pageMeta: WebPageMeta
+  }>,
   timeoutMs = 5000
-): Promise<{ snapshot: WebDomSnapshotNode; pageMeta: WebPageMeta }> {
+): Promise<{
+  snapshot: WebDomSnapshotNode
+  imageCandidates: WebImageCandidate[]
+  pageMeta: WebPageMeta
+}> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       execute(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('网页文本提取超时')), timeoutMs)
       })
     ])
+    return {
+      snapshot: result.snapshot,
+      imageCandidates: Array.isArray(result.imageCandidates) ? result.imageCandidates : [],
+      pageMeta: result.pageMeta
+    }
   } catch (error) {
     if (error instanceof Error && error.message === '网页文本提取超时') throw error
     throw new Error('网页文本提取失败，请检查页面是否已加载完成')

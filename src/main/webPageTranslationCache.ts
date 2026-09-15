@@ -1,4 +1,4 @@
-import type { WebTranslationScope, ExtractedWebTextUnit } from '../shared/webPageTranslation'
+import type { WebImageCandidate, WebTranslationScope, ExtractedWebTextUnit } from '../shared/webPageTranslation'
 
 /** 页面翻译缓存上下文。 */
 export interface WebPageTranslationCacheContext {
@@ -40,14 +40,30 @@ export interface WebPageTranslationCacheOptions {
   maxBytes?: number
 }
 
-/** 内部页面缓存条目。 */
+/** 可写入页面缓存的图片识别与译文结果。 */
+export interface WebPageTranslationCacheImage {
+  /** 图片标识。 */
+  imageId: string
+  /** 图片来源指纹。 */
+  sourceFingerprint: string
+  /** OCR 识别出的原文。 */
+  ocrText: string
+  /** 图片文字译文。 */
+  translation: string
+}
+
+/** 内部页面缓存条目，文本与图片通过 kind 分区。 */
 interface WebPageTranslationCacheEntry {
   /** 页面分组键。 */
   pageKey: string
   /** 完整缓存键。 */
   key: string
-  /** 成功译文单元。 */
+  /** 条目分区类型。 */
+  kind: 'text' | 'image'
+  /** 成功译文单元，仅文本分区使用。 */
   units: WebPageTranslationCacheUnit[]
+  /** 图片识别与译文结果，仅图片分区使用。 */
+  image?: WebPageTranslationCacheImage
   /** 估算字节数。 */
   bytes: number
 }
@@ -102,7 +118,7 @@ export class WebPageTranslationCache {
     if (successful.length === 0) return 0
     const bytes = this.estimate(key, successful)
     if (successful.length > this.maxUnits || bytes > this.maxBytes) return 0
-    const entry: WebPageTranslationCacheEntry = { pageKey, key, units: successful, bytes }
+    const entry: WebPageTranslationCacheEntry = { pageKey, key, kind: 'text', units: successful, bytes }
     this.entries.set(key, entry)
     this.unitCount += successful.length
     this.byteCount += bytes
@@ -110,6 +126,79 @@ export class WebPageTranslationCache {
     this.trimPages()
     this.trimCapacity()
     return this.entries.has(key) ? successful.length : 0
+  }
+
+  /**
+   * 写入成功的图片 OCR 与译文结果，失败、取消或跳过结果不缓存。
+   * @param context 页面和翻译上下文。
+   * @param candidates 带识别与译文结果的图片候选。
+   * @returns 实际缓存的图片数量。
+   * @author zhenghq
+   */
+  putImages(context: WebPageTranslationCacheContext, candidates: readonly WebImageCandidate[]): number {
+    const successful = candidates.filter((candidate): candidate is WebImageCandidate & { ocrText: string; translation: string } =>
+      typeof candidate.imageId === 'string' && candidate.imageId !== '' &&
+      typeof candidate.sourceFingerprint === 'string' && candidate.sourceFingerprint !== '' &&
+      typeof candidate.ocrText === 'string' && candidate.ocrText.trim() !== '' &&
+      typeof candidate.translation === 'string' && candidate.translation.trim() !== '' &&
+      !candidate.error && !candidate.skippedReason)
+    let stored = 0
+    for (const candidate of successful) {
+      const key = this.imageKey(context, candidate)
+      this.remove(key)
+      const image: WebPageTranslationCacheImage = {
+        imageId: candidate.imageId,
+        sourceFingerprint: candidate.sourceFingerprint as string,
+        ocrText: candidate.ocrText,
+        translation: candidate.translation
+      }
+      const bytes = this.estimateImage(key, image)
+      if (bytes > this.maxBytes) continue
+      const entry: WebPageTranslationCacheEntry = {
+        pageKey: this.keys(context).pageKey,
+        key,
+        kind: 'image',
+        units: [],
+        image,
+        bytes
+      }
+      this.entries.set(key, entry)
+      this.unitCount += 1
+      this.byteCount += bytes
+      this.trimDirections(entry.pageKey)
+      this.trimPages()
+      this.trimCapacity()
+      if (this.entries.has(key)) stored += 1
+    }
+    return stored
+  }
+
+  /**
+   * 将缓存图片结果与当前快照按标识与来源指纹匹配。
+   * @param context 当前页面和翻译上下文。
+   * @param currentCandidates 当前页面重新提取的图片候选。
+   * @returns 使用当前锚点并带上缓存识别与译文的候选列表。
+   * @author zhenghq
+   */
+  matchImages(
+    context: WebPageTranslationCacheContext,
+    currentCandidates: readonly WebImageCandidate[]
+  ): Array<WebImageCandidate & { ocrText: string; translation: string }> {
+    const matched: Array<WebImageCandidate & { ocrText: string; translation: string }> = []
+    for (const candidate of currentCandidates) {
+      if (typeof candidate.imageId !== 'string' || candidate.imageId === '') continue
+      if (typeof candidate.sourceFingerprint !== 'string' || candidate.sourceFingerprint === '') continue
+      const key = this.imageKey(context, candidate)
+      const entry = this.entries.get(key)
+      if (!entry?.image) continue
+      this.touch(key, entry)
+      matched.push({
+        ...candidate,
+        ocrText: entry.image.ocrText,
+        translation: entry.image.translation
+      })
+    }
+    return matched
   }
 
   /**
@@ -189,7 +278,7 @@ export class WebPageTranslationCache {
     const entry = this.entries.get(key)
     if (!entry) return false
     this.entries.delete(key)
-    this.unitCount -= entry.units.length
+    this.unitCount -= entry.kind === 'image' ? 1 : entry.units.length
     this.byteCount -= entry.bytes
     return true
   }
@@ -201,7 +290,9 @@ export class WebPageTranslationCache {
    * @author zhenghq
    */
   private trimDirections(pageKey: string): void {
-    const keys = Array.from(this.entries.values()).filter((entry) => entry.pageKey === pageKey).map((entry) => entry.key)
+    const keys = Array.from(this.entries.values())
+      .filter((entry) => entry.pageKey === pageKey && entry.kind === 'text')
+      .map((entry) => entry.key)
     while (keys.length > this.maxDirectionsPerPage) this.remove(keys.shift() as string)
   }
 
@@ -242,6 +333,32 @@ export class WebPageTranslationCache {
    */
   private estimate(key: string, units: WebPageTranslationCacheUnit[]): number {
     return (key.length + units.reduce((sum, unit) => sum + unit.sourceText.length + unit.sourceFingerprint.length + (unit.translation?.length ?? 0), 0)) * 2
+  }
+
+  /**
+   * 构造图片缓存键，与文本分区使用不同前缀避免互相覆盖。
+   * @param context 页面缓存上下文。
+   * @param image 图片标识与来源指纹。
+   * @returns 图片完整缓存键。
+   * @author zhenghq
+   */
+  private imageKey(
+    context: WebPageTranslationCacheContext,
+    image: Pick<WebImageCandidate, 'imageId' | 'sourceFingerprint'>
+  ): string {
+    const { key } = this.keys(context)
+    return `${key}|image|${image.imageId}|${image.sourceFingerprint ?? ''}`
+  }
+
+  /**
+   * 估算图片缓存条目占用字节数。
+   * @param key 图片完整缓存键。
+   * @param image 图片缓存内容。
+   * @returns UTF-16 近似字节数。
+   * @author zhenghq
+   */
+  private estimateImage(key: string, image: WebPageTranslationCacheImage): number {
+    return (key.length + image.ocrText.length + image.translation.length + image.sourceFingerprint.length) * 2
   }
 }
 

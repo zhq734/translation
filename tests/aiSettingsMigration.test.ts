@@ -43,7 +43,7 @@ test('schema 8 及更早版本应升级到当前版本并补齐 AI 默认值', (
 })
 
 test('默认设置应包含关闭的 AI 通道和本地 Ollama 地址', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 17)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 19)
   assert.equal(DEFAULT_SETTINGS.aiEnabled, false)
   assert.equal(DEFAULT_SETTINGS.aiProtocol, 'ollama')
   assert.equal(DEFAULT_SETTINGS.aiBaseUrl, DEFAULT_AI_BASE_URL)
@@ -84,7 +84,7 @@ test('语音引擎默认使用系统内置语音', () => {
 test('旧设置缺少语音引擎字段时应迁移为系统内置语音', () => {
   const settings = normalizeSettings(legacyWithoutAi(10) as never)
   assert.equal(settings.speechProvider, 'system')
-  assert.equal(settings.schemaVersion, 17)
+  assert.equal(settings.schemaVersion, 19)
 })
 
 test('Edge 语音引擎设置应保留，非法值应回退系统内置语音', () => {
@@ -155,4 +155,19 @@ test('ai 应作为合法翻译 Provider 偏好被接受', () => {
     preferredTranslationProvider: 'ai'
   } as never)
   assert.equal(settings.preferredTranslationProvider, 'ai')
+})
+
+test('schema 低于 18 的历史 bilingual 应迁移为原位译文模式', () => {
+  const settings = normalizeSettings({ schemaVersion: 17, webTranslationDefaultMode: 'bilingual' } as never)
+  assert.equal(settings.webTranslationDefaultMode, 'target')
+})
+
+test('schema 18 及以上保存的 bilingual 对照模式应原样保留', () => {
+  const settings = normalizeSettings({ schemaVersion: 18, webTranslationDefaultMode: 'bilingual' } as never)
+  assert.equal(settings.webTranslationDefaultMode, 'bilingual')
+})
+
+test('未知网页默认显示模式应回退为原位译文模式', () => {
+  const settings = normalizeSettings({ schemaVersion: 18, webTranslationDefaultMode: 'unknown' } as never)
+  assert.equal(settings.webTranslationDefaultMode, 'target')
 })

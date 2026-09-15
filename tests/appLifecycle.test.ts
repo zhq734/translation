@@ -80,6 +80,11 @@ test('划词交互期间的 activate 事件不应打开设置窗口', () => {
   // 选区按钮或翻译弹窗可见时属于划词交互，不能视为 Dock 激活
   assert.match(guardSource, /isSelectionButtonVisible\(\)/u)
   assert.match(guardSource, /isPopupVisible\(\)/u)
+  // 弹窗正在交还 macOS 前台时窗口仍可见但逻辑已关闭，isPopupVisible() 会返回 false，
+  // 必须额外读取交还标记，避免交还过程里的内部 activate 把网页翻译顶到最前。
+  assert.match(guardSource, /isPopupHandingBackFront\(\)/u)
+  // 连续取词超时弹出的原生修复提示会激活本应用，其 activate 同样不能当作 Dock 启动。
+  assert.match(guardSource, /hiServicesRepairPromptShowing/u)
   assert.match(guardSource, /isOcrSelectionVisible\(\)/u)
 
   const activateStart = source.indexOf("app.on('activate'")

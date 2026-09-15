@@ -310,14 +310,47 @@
               <input id="web-translation-max-chars" type="number" min="1" max="2000000" />
             </div>
             <div class="row">
+              <label for="web-translation-concurrency">并发请求数</label>
+              <input id="web-translation-concurrency" type="number" min="1" max="8" />
+            </div>
+            <div class="row">
               <label for="web-translation-default-mode">默认显示</label>
               <select id="web-translation-default-mode">
                 <option value="target">译文</option>
                 <option value="source">原文</option>
+                <option value="bilingual">对照</option>
               </select>
             </div>
             <p class="field-hint">
               只有打开内置阅读器并显式点击提取/翻译后，应用才会读取当前页面文本。不会读取系统浏览器已打开的页面。
+            </p>
+            <p class="field-hint">
+              并发请求数越高，长网页翻译越快，但也会增加翻译服务商的瞬时压力，可能触发限流；建议自建或高配额通道使用较高数值。
+            </p>
+            <div class="row">
+              <label for="web-translation-image-ocr-enabled">图片文字识别</label>
+              <label class="checkbox-control">
+                <input id="web-translation-image-ocr-enabled" type="checkbox" />
+                <span>对页面图片执行 OCR 并翻译图片中的文字</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="web-translation-image-ocr-max-images">单页最大图片数</label>
+              <input id="web-translation-image-ocr-max-images" type="number" min="1" max="200" />
+            </div>
+            <div class="row">
+              <label for="web-translation-image-ocr-min-size">最小图片边长</label>
+              <input id="web-translation-image-ocr-min-size" type="number" min="16" max="1024" />
+            </div>
+            <div class="row">
+              <label for="web-translation-image-ocr-overlay">图片译文展示</label>
+              <select id="web-translation-image-ocr-overlay">
+                <option value="below">图片下方说明</option>
+                <option value="overlay">叠加在图片上</option>
+              </select>
+            </div>
+            <p class="field-hint">
+              开启后，阅读器会通过当前页面 Session 读取图片字节，必要时回退为图片区域截图；识别失败、尺寸过小或超过上限的图片会被跳过，不影响文本翻译。图片只在本机处理，OCR 结果仅在翻译当前页面时发送给所选翻译服务。
             </p>
           </section>
         </div>

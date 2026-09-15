@@ -5,7 +5,7 @@ import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
-import { handBackFrontmostThen } from './macForeground'
+import { handBackFrontmostThen, yieldFrontmostAppThen } from './macForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
 const WINDOW_EDGE_GAP = 8
@@ -275,6 +275,17 @@ export function hidePopup(): void {
   handBackFrontmostThen(win, () => {
     hidingAfterFrontReturn = false
     win?.hide()
+  }, () => {
+    // 拿不到源应用（快照读取失败、源应用已退出，或弹窗激活前本应用已是最前）时
+    // 不能直接隐藏：本应用此时仍是最前应用，隐藏应用内 key window 会让系统把应用内
+    // 下一个窗口提升为 key window，正在后台打开的网页阅读器会被顶到用户应用之上。
+    // 改用安全让出序列：隐藏应用等待失活后收尾，再非激活恢复应用内其它窗口。
+    void yieldFrontmostAppThen(() => {
+      if (!win || win.isDestroyed()) return
+      win.hide()
+    }).finally(() => {
+      hidingAfterFrontReturn = false
+    })
   })
 }
 
@@ -310,6 +321,19 @@ export function isPopupPinned(): boolean {
  */
 export function isPopupVisible(): boolean {
   return Boolean(win?.isVisible()) && !hidingAfterFrontReturn
+}
+
+/**
+ * 返回翻译弹窗是否正在执行「先交还前台、再隐藏」的收尾流程。
+ *
+ * 此期间弹窗窗口仍然可见，但逻辑上已关闭：既不能被当成普通可见弹窗参与交互判定，
+ * 也要抑制 macOS 在交还前台过程中产生的内部 activate，
+ * 否则应用会把网页翻译或设置页当作 Dock 启动重新激活并顶到最前。
+ * @returns 正在交还前台时返回 true。
+ * @author zhenghq
+ */
+export function isPopupHandingBackFront(): boolean {
+  return hidingAfterFrontReturn
 }
 
 /**

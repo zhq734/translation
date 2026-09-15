@@ -3,6 +3,7 @@ import {
   Tray,
   Menu,
   nativeImage,
+  net,
   globalShortcut,
   ipcMain,
   clipboard,
@@ -13,7 +14,8 @@ import {
   screen,
   dialog,
   type NativeImage,
-  type SourcesOptions
+  type SourcesOptions,
+  type WebContentsView
 } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -53,6 +55,7 @@ import {
   showPopup,
   hidePopup,
   isPopupVisible,
+  isPopupHandingBackFront,
   isPopupActivated,
   deactivatePopupForCapture,
   isPointInsidePopup,
@@ -62,6 +65,7 @@ import {
 } from './popup'
 import {
   forgetFrontmostApp,
+  handBackFrontmostApp,
   handBackFrontmostThen,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
@@ -182,6 +186,8 @@ import { PaddleOcrEngine } from './paddleOcr'
 import { resolveBundledOcrModelAssets } from './ocrModelAssets'
 import { TesseractOcrEngine } from './tesseractOcr'
 import { recognizeAdaptiveOcr } from './adaptiveOcr'
+import { createWebImageSource, type WebImageResponse, type WebImageSource } from './webImageSource'
+import { evaluateOcrQuality } from '../shared/ocrQuality'
 import {
   buildOcrSessionResultKey,
   OcrSessionResultCache
@@ -483,6 +489,8 @@ function shouldTreatActivateAsDockLaunch(): boolean {
     interactionState: selectionInteraction.snapshot().state,
     selectionButtonVisible: isSelectionButtonVisible(),
     popupVisible: isPopupVisible(),
+    popupHandingBackFront: isPopupHandingBackFront(),
+    hiServicesRepairPromptVisible: hiServicesRepairPromptShowing,
     ocrVisible: isOcrSelectionVisible(),
     listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
     internalActivationLeaseUntil,
@@ -832,6 +840,32 @@ async function onReady(): Promise<boolean> {
     preloadPath: PRELOAD_PATH,
     loadRenderer: loadRendererHtml,
     getSettings,
+    createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
+    recognizeImage: async (bytes, candidate) => {
+      const settings = getSettings()
+      const dispatcher = createOcrDispatcher(settings)
+      const ocr = await recognizeAdaptiveOcr(
+        {
+          imageBytes: bytes,
+          maxScale: settings.ocrScale,
+          language: settings.ocrLang
+        },
+        {
+          recognize: (preparedImageBytes) =>
+            dispatcher.recognize({
+              imageBytes: preparedImageBytes,
+              language: settings.ocrLang,
+              timeoutMs: OCR_TIMEOUT_MS
+            }, settings.ocrEnginePreference)
+        }
+      )
+      const text = cleanOcrText(ocr.text ?? '')
+      // 复用统一质量评价：噪声或明显语言不匹配的识别结果按空文本处理，
+      // 交由图片管道计入跳过，不进入翻译通道。
+      const quality = evaluateOcrQuality(ocr, settings.ocrLang)
+      if (!quality.valid || quality.languageMismatch) return { text: '', score: 0 }
+      return { text, score: quality.averageConfidence ?? Math.min(1, quality.textScore / 10) }
+    },
     onWindowStateChanged: (open) => {
       webReaderWindowOpen = open
       void refreshMacOSDockVisibility()
@@ -1331,7 +1365,7 @@ function handleSelectionCaptureResult(
       result.anchor,
       shouldActivatePopupForCaptureFailure(process.platform)
     )
-    if (shouldPromptHiServicesRepair) promptHiServicesRepair(result.anchor)
+    if (shouldPromptHiServicesRepair) void promptHiServicesRepair(result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
     return
   }
@@ -2218,6 +2252,101 @@ function resolveOcrErrorCode(error: unknown): OcrErrorCode {
   if (error instanceof ScreenCaptureError && error.code === 'permission') return 'permission'
   if (error instanceof OcrEngineError) return error.code
   return 'engine-unavailable'
+}
+
+/** 单张网页图片允许的最大字节数（8 MB）。 */
+const WEB_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+/** 单张网页图片允许的最大像素数（1600 万）。 */
+const WEB_IMAGE_MAX_PIXELS = 16_000_000
+/** 网页图片网络请求超时（毫秒）。 */
+const WEB_IMAGE_REQUEST_TIMEOUT_MS = 15_000
+
+/**
+ * 为远程网页创建图片取图器：优先使用阅读器独立 Session 请求图片地址，
+ * 失败或不可请求时回退到远程 View 的区域截图。
+ * @param view 远程网页视图。
+ * @param signal 任务取消信号。
+ * @returns 图片取图器。
+ * @author zhenghq
+ */
+function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal): WebImageSource {
+  const requestImage = async (url: string, requestSignal?: AbortSignal): Promise<WebImageResponse> => {
+    const request = net.request({ url, session: view.webContents.session, useSessionCookies: true })
+    return await new Promise<WebImageResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        request.abort()
+        reject(new Error('图片请求超时'))
+      }, WEB_IMAGE_REQUEST_TIMEOUT_MS)
+      const finish = (): void => { clearTimeout(timer) }
+      requestSignal?.addEventListener('abort', () => {
+        finish()
+        request.abort()
+        reject(new Error('图片请求已取消'))
+      }, { once: true })
+      request.on('error', (error) => { finish(); reject(error) })
+      request.on('response', (response) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        response.on('error', (error) => { finish(); reject(error) })
+        response.on('end', () => {
+          finish()
+          resolve({
+            bytes: Buffer.concat(chunks),
+            contentType: String(response.headers['content-type'] ?? '')
+          })
+        })
+      })
+      request.end()
+    })
+  }
+  /**
+   * 读取远程页面当前滚动位置与视口尺寸。
+   * @returns 视口滚动位置与尺寸。
+   * @author zhenghq
+   */
+  const resolveViewport = async (): Promise<{ scrollX: number; scrollY: number; width: number; height: number }> => {
+    return await view.webContents.executeJavaScript(`(() => ({
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      width: window.innerWidth,
+      height: window.innerHeight
+    }))()`, true) as { scrollX: number; scrollY: number; width: number; height: number }
+  }
+
+  return createWebImageSource({
+    requestImage,
+    captureRegion: async (rect, captureSignal) => {
+      if (captureSignal?.aborted) throw new Error('图片截图已取消')
+      const image = await view.webContents.capturePage(rect)
+      return image.toPNG()
+    },
+    resolveViewport,
+    scrollIntoView: async (rect) => {
+      return await view.webContents.executeJavaScript(`(async () => {
+        const targetY = Math.max(0, ${JSON.stringify(Math.round(rect.y))} - Math.round(window.innerHeight / 3));
+        // 页面可能声明 scroll-behavior: smooth，平滑动画结束前读取视口会取到错误区域，
+        // 因此强制即时滚动，并在滚动位置稳定后再交由截图读取。
+        window.scrollTo({ left: window.scrollX, top: targetY, behavior: 'instant' });
+        // capturePage 在滚动后立即调用会返回滚动前的旧帧，等待两次绘制确保合成器已提交新画面。
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        // 页面底部图片可能受最大滚动距离限制而无法到达目标位置，
+        // 因此以候选矩形是否进入视口作为成功判据，而非精确匹配目标滚动值。
+        const top = ${JSON.stringify(Math.round(rect.y))} - window.scrollY;
+        const left = ${JSON.stringify(Math.round(rect.x))} - window.scrollX;
+        return top + ${JSON.stringify(Math.round(rect.height))} > 0 && top < window.innerHeight &&
+          left + ${JSON.stringify(Math.round(rect.width))} > 0 && left < window.innerWidth;
+      })()`, true) as boolean
+    },
+    restoreScroll: async (scrollX, scrollY) => {
+      await view.webContents.executeJavaScript(
+        `window.scrollTo({ left: ${JSON.stringify(Math.round(scrollX))}, top: ${JSON.stringify(Math.round(scrollY))}, behavior: 'instant' })`,
+        true
+      )
+    },
+    maxBytes: WEB_IMAGE_MAX_BYTES,
+    maxPixels: WEB_IMAGE_MAX_PIXELS,
+    signal
+  })
 }
 
 /**
@@ -3487,14 +3616,17 @@ let hiServicesRepairPromptShowing = false
 /**
  * 在划词取词连续超时时提示用户一键重启 hiservices 服务。
  * @param anchor 弹窗定位锚点。
- * @returns 无返回值。
+ * @returns 提示流程完成后的 Promise。
  * @author zhenghq
  */
-function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
+async function promptHiServicesRepair(anchor?: { x: number; y: number }): Promise<void> {
   if (hiServicesRepairPromptShowing || process.platform !== 'darwin') return
   hiServicesRepairPromptShowing = true
   resetCopyTimeoutTracker()
-  void dialog.showMessageBox({
+  // 原生消息框会激活本应用；必须先等待源应用快照完成，关闭后才有目标可以交还，
+  // 否则应用内下一个 key window（网页阅读器或设置页）会被系统顶到最前。
+  await rememberFrontmostAppIfInactiveAsync()
+  const { response } = await dialog.showMessageBox({
     type: 'warning',
     title: '划词取词服务异常',
     message: '划词按钮未出现或取词连续失败',
@@ -3503,7 +3635,11 @@ function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
     buttons: ['一键修复', '稍后'],
     defaultId: 0,
     cancelId: 1
-  }).then(async ({ response }) => {
+  })
+  try {
+    // 消息框关闭后应用仍可能处于最前；先交还前台，再显示修复结果，
+    // 避免系统把应用内已有的阅读器窗口提升为 key window。
+    await handBackFrontmostApp()
     if (response !== 0) return
     const repairResult = await restartMacHiServices()
     const settings = getSettings()
@@ -3526,12 +3662,13 @@ function promptHiServicesRepair(anchor?: { x: number; y: number }): void {
             targetLang: settings.targetLang
           },
       5000,
-      anchor
+      anchor,
+      shouldActivatePopupForCaptureFailure(process.platform)
     )
-  }).finally(() => {
+  } finally {
     resetCopyTimeoutTracker()
     hiServicesRepairPromptShowing = false
-  })
+  }
 }
 
 // ---- 设置窗口 ----
@@ -3885,7 +4022,7 @@ function isWebTranslationRunRequest(value: unknown): value is WebTranslationRunR
  * @author zhenghq
  */
 function isWebTranslationMode(value: unknown): value is WebTranslationMode {
-  return value === 'source' || value === 'target'
+  return value === 'source' || value === 'target' || value === 'bilingual'
 }
 
 /**
@@ -4271,7 +4408,7 @@ function buildTrayMenu(): Menu {
     },
     ...(isMac ? [{
       label: '修复 macOS 划词服务…',
-      click: () => promptHiServicesRepair()
+      click: () => void promptHiServicesRepair()
     }] : []),
     { type: 'separator' },
     { label: '目标语言', submenu: targetSubmenu },

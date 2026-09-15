@@ -7,8 +7,14 @@ import {
   buildWebIncrementalCollectorStopScript,
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
+  buildWebBilingualClearScript,
+  buildWebBilingualInjectScript,
+  buildWebBilingualStyleSheet,
   buildWebTextApplyScript,
   buildWebTextExtractionScript,
+  buildWebImageOverlayClearScript,
+  buildWebImageOverlayInjectScript,
+  buildWebImageOverlayStyleSheet,
   executeWebTextExtraction,
   waitForWebDocumentReady
 } from '../src/main/webTextExtractionScript'
@@ -46,6 +52,36 @@ test('提取脚本不应因 display contents 包装节点没有布局矩形而�
 
   assert.match(extraction, /style\.display === 'contents'/u)
   assert.match(incremental, /style\.display === 'contents'/u)
+})
+
+test('提取脚本应收集可见图片候选并跳过已注入的图片覆盖层', () => {
+  const script = buildWebTextExtractionScript()
+  assert.match(script, /collectImageCandidates/u)
+  assert.match(script, /getBoundingClientRect/u)
+  assert.match(script, /naturalWidth/u)
+  assert.match(script, /backgroundImage/u)
+  assert.match(script, /data-st-image-translation/u)
+  assert.match(script, /imageCandidates/u)
+})
+
+test('图片覆盖层脚本应幂等注入、支持两种展示位置并可完整清理', () => {
+  const inject = buildWebImageOverlayInjectScript([])
+  const clear = buildWebImageOverlayClearScript()
+  const style = buildWebImageOverlayStyleSheet()
+
+  assert.match(inject, /data-st-image-translation-for/u)
+  assert.match(inject, /data-st-image-placement/u)
+  assert.match(inject, /overlay/u)
+  assert.match(inject, /insertBefore/u)
+  assert.match(clear, /data-st-image-translation/u)
+  assert.match(clear, /removeChild/u)
+  assert.match(style, /data-st-image-translation/u)
+  assert.match(style, /data-st-image-placement='overlay'/u)
+})
+
+test('图片覆盖层注入不应把覆盖层自身再次当作图片候选', () => {
+  const script = buildWebTextExtractionScript()
+  assert.match(script, /closest\('\[data-st-image-translation\]'\)/u)
 })
 
 test('提取脚本应覆盖开放 Shadow DOM 的相对时间和表单语义提示，并支持受控写回', () => {
@@ -141,4 +177,52 @@ test('增量收集器应扫描当前根节点并对受影响子树防抖去重',
   assert.match(stop, /disconnect/u)
   assert.match(stop, /clearTimeout/u)
   assert.match(stop, /active = false/u)
+})
+
+test('对照注入脚本应幂等 upsert 并写入语言方向与布局标记', () => {
+  const script = buildWebBilingualInjectScript([
+    { blockId: 'b1', selector: '#p1', translation: '你好' }
+  ], 'ZH')
+  assert.match(script, /data-st-translation-for/u)
+  assert.match(script, /createElement\('span'\)/u)
+  assert.match(script, /appendChild/u)
+  assert.match(script, /data-st-parent-display/u)
+  assert.match(script, /data-st-dimmed/u)
+  assert.match(script, /setAttribute\('lang', targetLang\)/u)
+  assert.match(script, /setAttribute\('dir', 'auto'\)/u)
+  assert.match(script, /state\.suppressed = true/u)
+  assert.doesNotMatch(script, /innerHTML|fetch\s*\(|XMLHttpRequest/u)
+})
+
+test('对照清理脚本应移除注入节点与全部标记且可重复执行', () => {
+  const script = buildWebBilingualClearScript()
+  assert.match(script, /data-st-translation/u)
+  assert.match(script, /data-st-dimmed/u)
+  assert.match(script, /data-st-parent-display/u)
+  assert.match(script, /removeAttribute/u)
+  assert.match(script, /removeChild/u)
+  assert.match(script, /state\.suppressed = true/u)
+  assert.doesNotMatch(script, /innerHTML|fetch\s*\(|XMLHttpRequest/u)
+})
+
+test('对照样式表应继承页面排版并为 flex/grid 父元素独占整行', () => {
+  const css = buildWebBilingualStyleSheet()
+  assert.match(css, /color: inherit/u)
+  assert.match(css, /font: inherit/u)
+  assert.match(css, /line-height: inherit/u)
+  assert.match(css, /flex: 1 0 100%/u)
+  assert.match(css, /grid-column: 1 \/ -1/u)
+  assert.match(css, /opacity: 0\.6/u)
+  assert.doesNotMatch(css, /var\(--/u)
+})
+
+test('提取脚本与增量收集器都应跳过对照注入节点及其子树', () => {
+  assert.match(buildWebTextExtractionScript(), /closest\('\[data-st-translation\],?\[?data-st-image-translation\]?'\)/u)
+  assert.match(buildWebIncrementalCollectorStartScript(300), /closest\('\[data-st-translation\],?\[?data-st-image-translation\]?'\)/u)
+})
+
+test('提取脚本与增量收集器都应为 html 和 body 生成稳定根选择器', () => {
+  const stableRootSelector = /tag === 'html' \|\| tag === 'body' \? tag : tag \+ ':nth-child\('/u
+  assert.match(buildWebTextExtractionScript(), stableRootSelector)
+  assert.match(buildWebIncrementalCollectorStartScript(300), stableRootSelector)
 })

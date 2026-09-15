@@ -1,11 +1,14 @@
 import type {
   ExtractedWebTextUnit,
+  WebImageCandidate,
+  WebImageOverlayPlacement,
+  WebImageProgressSummary,
   WebTextExtractionResult,
   WebTranslationMode,
   WebTranslationScope
 } from './webPageTranslation'
 
-export type { ExtractedWebTextUnit, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
+export type { ExtractedWebTextUnit, WebImageOverlayPlacement, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
 
 /** 划词后的弹窗触发方式。 */
 export type TriggerMode = 'auto' | 'button' | 'hotkey'
@@ -662,8 +665,18 @@ export interface Settings {
   webTranslationMaxBlocks: number
   /** 网页翻译最大总字符数。 */
   webTranslationMaxChars: number
+  /** 网页翻译并发请求数，范围 1 到 8。 */
+  webTranslationConcurrency: number
   /** 网页默认显示模式。 */
   webTranslationDefaultMode: WebTranslationMode
+  /** 是否启用网页图片 OCR 翻译。 */
+  webTranslationImageOcrEnabled: boolean
+  /** 单页最多处理的图片数量。 */
+  webTranslationImageOcrMaxImages: number
+  /** 参与 OCR 的图片最小边长（像素）。 */
+  webTranslationImageOcrMinSize: number
+  /** 图片译文渲染位置：below 表示图片下方，overlay 表示覆盖在图片上。 */
+  webTranslationImageOcrOverlay: WebImageOverlayPlacement
 }
 
 /** Renderer 上报给原生 WebContentsView 的窗口内容区矩形。 */
@@ -706,6 +719,14 @@ export interface WebReaderState {
   translationDone?: number
   /** 当前任务页面缓存命中数量。 */
   translationCacheHits?: number
+  /** 当前页面图片候选数量。 */
+  imageCandidates?: number
+  /** 已取得译文的图片数量。 */
+  imageProcessed?: number
+  /** 被跳过的图片数量。 */
+  imageSkipped?: number
+  /** OCR 或翻译失败的图片数量。 */
+  imageFailed?: number
 }
 
 /** 携带任务代次的网页文本提取结果。 */
@@ -714,6 +735,8 @@ export interface WebTranslationExtractionPayload extends WebTextExtractionResult
   readerId: string
   /** 页面代次。 */
   pageRevision: number
+  /** 提取阶段收集到的图片候选，未启用图片 OCR 时为空数组。 */
+  imageCandidates: WebImageCandidate[]
 }
 
 /** 网页翻译启动参数。 */
@@ -730,16 +753,24 @@ export interface WebTranslationRunRequest {
 export interface WebTranslationSegmentResult {
   /** 来源文本块标识。 */
   blockId: string
-  /** 来源文本单元标识。 */
+  /** 来源文本单元标识；按段落聚合时使用该段首个单元标识。 */
   unitId: string
+  /** 当前翻译分段覆盖的全部文本单元标识。 */
+  unitIds: string[]
   /** 分段标识。 */
   segmentId: string
+  /** 当前来源段落拆分出的分段总数。 */
+  segmentTotal: number
   /** 分段原文。 */
   text: string
   /** 译文。 */
   translation?: string
   /** 失败原因。 */
   error?: string
+  /** 翻译通道。 */
+  channel?: string
+  /** 翻译服务商。 */
+  provider?: string
 }
 
 /** 网页批量翻译进度。 */
@@ -772,6 +803,8 @@ export interface WebTranslationProgressPayload {
   sourceLang?: string
   /** 本次任务目标语言。 */
   targetLang?: string
+  /** 图片维度进度汇总。 */
+  images?: WebImageProgressSummary
 }
 
 /** 已聚合的文本单元翻译结果。 */
@@ -790,6 +823,10 @@ export interface WebTranslationApplyPayload {
   mismatched: number
   /** 无译文等跳过数量。 */
   skipped: number
+  /** 对照模式下按设计跳过渲染的块数量。 */
+  bilingualSkipped?: number
+  /** 对照模式下因翻译失败或锚点失配而未对照的块数量。 */
+  unrendered?: number
 }
 
 /** 网页批量翻译最终结果。 */
@@ -816,6 +853,8 @@ export interface WebTranslationRunPayload {
   targetLang: string
   /** 页面级缓存命中的文本单元数量。 */
   cacheHits?: number
+  /** 图片维度进度汇总。 */
+  images?: WebImageProgressSummary
 }
 
 /** Edge 在线语音合成结果。 */

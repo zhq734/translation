@@ -13,6 +13,7 @@ test('网页阅读器应提供原位翻译工具栏、原生 View 占位和自�
   }
   assert.match(html, /value="source"/u)
   assert.match(html, /value="target"/u)
+  assert.match(html, /value="bilingual"/u)
   assert.match(renderer, /new ResizeObserver/u)
   assert.match(renderer, /webViewSetBounds/u)
   assert.match(renderer, /sourceLang/u)
@@ -95,6 +96,19 @@ test('网页翻译增量写回应串行执行，并基于最新结果快照聚�
   assert.match(runMethod, /this\.mergeTranslatedUnits\(latestResults, cachedTranslations\)/u)
   assert.match(manager, /aggregatePageTranslationUnits\([\s\S]*this\.extractedUnits,[\s\S]*Array\.from\(latestResults\.values\(\)\)/u)
   assert.match(runMethod, /isCurrentJob\(\)\s*&&\s*this\.mode === 'target'/u)
+})
+
+test('网页翻译应按段落合并请求，单请求不超过 5000 字并按整块写回译文', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const splitter = readFileSync('src/shared/webBlockSplitter.ts', 'utf8')
+  const runMethod = manager.slice(manager.indexOf('async run('), manager.indexOf('/** 取消当前任务'))
+
+  assert.match(splitter, /WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT = 5000/u)
+  assert.match(splitter, /unitsByBlock/u)
+  assert.match(manager, /maxCharsPerSegment: WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT/u)
+  assert.match(runMethod, /const blockUnitIds = this\.blockUnitIds\.get\(completedUnit\.blockId\)/u)
+  assert.match(runMethod, /this\.applyUnits\('target', new Set\(blockUnitIds\)\)/u)
+  assert.match(runMethod, /this\.isBlockComplete\(completedUnit\.blockId, units\)/u)
 })
 
 test('网页翻译应管理有限增量窗口并允许首批文本为空', () => {
@@ -203,6 +217,7 @@ test('设置页应提供网页翻译分组并明确显式提取的隐私边界',
     'web-translation-scope',
     'web-translation-max-blocks',
     'web-translation-max-chars',
+    'web-translation-concurrency',
     'web-translation-default-mode'
   ]) {
     assert.match(html, new RegExp(`id="${id}"`, 'u'))
@@ -210,4 +225,116 @@ test('设置页应提供网页翻译分组并明确显式提取的隐私边界',
   assert.match(html, /显式点击提取\/翻译/u)
   assert.match(html, /不会读取系统浏览器/u)
   assert.match(renderer, /saveWebTranslationSettings/u)
+})
+
+test('网页对照模式应保持先还原再注入的往返不变量', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const setMode = manager.slice(manager.indexOf('async setMode('), manager.indexOf('/** 将代理配置应用到独立阅读器 Session'))
+  assert.match(setMode, /if \(this\.bilingualInjected && mode !== 'bilingual'\) await this\.clearBilingualInjection\(\)/u)
+  assert.ok(
+    setMode.lastIndexOf("await this.applyUnits('source')") < setMode.indexOf('this.applyBilingual()'),
+    '进入对照前必须先把文本节点还原为原文再注入对照译文'
+  )
+  assert.match(setMode, /return this\.applyBilingual\(\)/u)
+})
+
+test('网页对照模式应按块聚合渲染并保持增量分组', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const runMethod = manager.slice(manager.indexOf('async run('), manager.indexOf('/** 取消当前任务'))
+  const applyBilingual = manager.slice(manager.indexOf('private async applyBilingual('), manager.indexOf('private async ensureBilingualStyles'))
+  const drainMethod = manager.slice(manager.indexOf('private drainIncrementalUnits('), manager.indexOf('private scheduleIncrementalQuietStop'))
+
+  assert.match(runMethod, /applyBilingual\(new Set\(\[completedUnit\.blockId\]\)\)/u)
+  assert.match(applyBilingual, /buildWebBilingualOperations/u)
+  assert.match(applyBilingual, /bilingualSkipped: built\.skipped/u)
+  assert.match(applyBilingual, /unrendered: built\.unrendered/u)
+  assert.match(drainMethod, /this\.streamBlockIds\.get\(unit\.blockId\)/u)
+  assert.match(drainMethod, /streamBlockId/u)
+  assert.match(drainMethod, /this\.extractedBlocks\.push/u)
+})
+
+test('网页对照模式应在取消、导航与窗口关闭时清理注入与样式', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const clearMethod = manager.slice(manager.indexOf('private async clearBilingualInjection('), manager.indexOf('/**\n   * 将保存的文本单元按指定模式写回远程页面。'))
+  const cancelMethod = manager.slice(manager.indexOf('cancel(): void'), manager.indexOf('/** 在原文和当前译文之间切换'))
+  const advanceMethod = manager.slice(manager.indexOf('private advancePage('), manager.indexOf('/**\n   * 使当前任务失效'))
+  const disposeMethod = manager.slice(manager.indexOf('private disposeWindow('), manager.indexOf('/**\n   * 要求远程网页已经加载。'))
+
+  assert.match(clearMethod, /removeInsertedCSS\(cssKey\)/u)
+  assert.match(clearMethod, /buildWebBilingualClearScript/u)
+  assert.match(clearMethod, /isDisposedWebFrameError/u)
+  assert.match(cancelMethod, /clearBilingualInjection/u)
+  assert.match(advanceMethod, /this\.bilingualInjected = false/u)
+  assert.match(advanceMethod, /this\.bilingualCssKey = null/u)
+  assert.match(disposeMethod, /this\.bilingualInjected = false/u)
+})
+
+test('网页对照模式应记录提取块与块到单元映射并在代次推进时重置', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  assert.match(manager, /private extractedBlocks: ExtractedWebTextBlock\[\] = \[\]/u)
+  assert.match(manager, /private blockUnitIds = new Map<string, string\[\]>\(\)/u)
+  assert.match(manager, /private createBlockUnitIds\(/u)
+  const extractMethod = manager.slice(manager.indexOf('async extract('), manager.indexOf('/** 按语言方向翻译'))
+  assert.match(extractMethod, /this\.extractedBlocks = result\.blocks/u)
+  assert.match(extractMethod, /this\.blockUnitIds = this\.createBlockUnitIds\(result\.units\)/u)
+})
+
+test('网页阅读器显示模式应提供对照选项并区分未对照与跳过文案', () => {
+  const html = readFileSync('src/renderer/web-reader.html', 'utf8')
+  const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
+  const changeMode = renderer.slice(renderer.indexOf('async function changeMode('), renderer.indexOf('/**\n * 切换语言时取消旧任务'))
+
+  assert.match(html, /value="bilingual">对照</u)
+  assert.match(changeMode, /mode === 'bilingual'/u)
+  assert.match(changeMode, /result\.unrendered/u)
+  assert.match(changeMode, /result\.bilingualSkipped/u)
+  assert.match(changeMode, /未对照；可再次点击补译/u)
+  assert.match(changeMode, /按设计跳过对照/u)
+  assert.match(renderer, /modeSelect\.value = settings\.webTranslationDefaultMode/u)
+})
+
+test('设置页默认显示应提供对照选项', () => {
+  const html = readFileSync('src/renderer/settings.html', 'utf8')
+  assert.match(html, /id="web-translation-default-mode"[\s\S]*?value="bilingual">对照/u)
+})
+
+test('增量对照渲染应在块内全部单元完成后才注入且不虚增未对照', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const runMethod = manager.slice(manager.indexOf('async run('), manager.indexOf('/** 取消当前任务'))
+  assert.match(runMethod, /if \(this\.isBlockComplete\(completedUnit\.blockId, units\)\)/u)
+  assert.match(manager, /private isBlockComplete\(/u)
+  const completeMethod = manager.slice(manager.indexOf('private isBlockComplete('), manager.indexOf('private createBlockUnitIds('))
+  assert.match(completeMethod, /unitIds\.every/u)
+})
+
+test('阅读器初始化应把默认显示模式同步给主进程', () => {
+  const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
+  assert.match(renderer, /webTranslateSetMode\(settings\.webTranslationDefaultMode\)/u)
+})
+
+test('图片取图滚动必须使用即时滚动并等待滚动位置稳定', () => {
+  const main = readFileSync('src/main/index.ts', 'utf8')
+  const scrollStart = main.indexOf('scrollIntoView: async (rect) =>')
+  const scrollEnd = main.indexOf('restoreScroll: async (scrollX, scrollY) =>', scrollStart)
+  const scrollScript = main.slice(scrollStart, scrollEnd)
+
+  assert.ok(scrollStart >= 0 && scrollEnd > scrollStart, '应存在图片取图滚动注入')
+  // 页面可能声明 scroll-behavior: smooth，平滑动画未结束就截图会取到错误区域。
+  assert.match(scrollScript, /behavior: 'instant'|behavior: "instant"/u)
+  assert.match(scrollScript, /window\.scrollY/u)
+  // 底部图片受最大滚动距离限制，应以候选是否进入视口作为成功判据。
+  assert.match(scrollScript, /window\.innerHeight/u)
+  assert.match(scrollScript, /window\.innerWidth/u)
+  // capturePage 在滚动后立即调用会取到旧帧，必须等待下一次绘制完成。
+  assert.match(scrollScript, /requestAnimationFrame/u)
+})
+
+test('图片取图恢复滚动也必须使用即时滚动', () => {
+  const main = readFileSync('src/main/index.ts', 'utf8')
+  const restoreStart = main.indexOf('restoreScroll: async (scrollX, scrollY) =>')
+  const restoreEnd = main.indexOf('maxBytes: WEB_IMAGE_MAX_BYTES', restoreStart)
+  const restoreScript = main.slice(restoreStart, restoreEnd)
+
+  assert.ok(restoreStart >= 0 && restoreEnd > restoreStart, '应存在图片取图滚动恢复注入')
+  assert.match(restoreScript, /behavior: 'instant'|behavior: "instant"/u)
 })
