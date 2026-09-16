@@ -148,3 +148,40 @@ test('单张图片异常不应中断其他图片', async () => {
   assert.equal(result.candidates[1].translation, '你好，世界')
   assert.deepEqual(result.summary, { imageCandidates: 2, imageProcessed: 1, imageSkipped: 0, imageFailed: 1 })
 })
+
+test('整页 Canvas 的长 OCR 文本应按上限切分后逐段翻译并合并', async () => {
+  const longText = Array.from({ length: 60 }, (_, index) => `Sentence number ${index} about credits.`).join(' ')
+  assert.ok(longText.length > 1800)
+  const { deps: injected, calls } = deps({
+    recognize: async () => ({ text: longText, score: 0.9 })
+  })
+  const result = await processWebImageCandidates([candidate({ kind: 'canvas', src: undefined })], injected)
+
+  assert.ok(calls.translated.length > 1, '长文本必须切分为多次请求')
+  for (const part of calls.translated) assert.ok(part.length <= 1800, `分段长度超限: ${part.length}`)
+  assert.equal(calls.translated.join('').replace(/\s+/gu, ''), longText.replace(/\s+/gu, ''))
+  assert.equal(result.candidates[0].ocrText, longText)
+  assert.equal(
+    result.candidates[0].translation,
+    Array.from({ length: calls.translated.length }, () => '你好，世界').join('\n')
+  )
+  assert.equal(result.candidates[0].error, undefined)
+})
+
+test('长 OCR 文本切分后任一分段翻译失败时整图记为失败且不写入残缺译文', async () => {
+  const longText = Array.from({ length: 60 }, (_, index) => `Sentence number ${index} about credits.`).join(' ')
+  let calls = 0
+  const { deps: injected } = deps({
+    recognize: async () => ({ text: longText, score: 0.9 }),
+    translate: async () => {
+      calls += 1
+      if (calls === 2) throw new Error('provider-unavailable')
+      return { translation: '部分译文' }
+    }
+  })
+  const result = await processWebImageCandidates([candidate({ kind: 'canvas', src: undefined })], injected)
+
+  assert.equal(result.candidates[0].ocrText, longText)
+  assert.equal(result.candidates[0].translation, undefined)
+  assert.equal(result.candidates[0].error, 'provider-unavailable')
+})

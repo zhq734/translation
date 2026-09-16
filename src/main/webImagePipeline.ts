@@ -8,9 +8,19 @@
  * @author zhenghq
  */
 
+import { splitText } from '../shared/webBlockSplitter'
 import { summarizeWebImageProgress, type WebImageProgressSummary } from '../shared/webImageOcr'
 import type { WebImageCandidate } from '../shared/webPageTranslation'
 import type { WebImageSource } from './webImageSource'
+
+/**
+ * 图片 OCR 文本单次翻译的字符上限。
+ *
+ * 取低于 Google 通道 2000 字上限的值，保证首选通道失败后仍可降级到其余通道；
+ * Google Docs 等把整页正文绘制在 canvas 上的页面，OCR 文本会远超单次请求上限，
+ * 必须切分后逐段翻译再合并，否则整张图会被所有通道跳过。
+ */
+export const WEB_IMAGE_TRANSLATION_MAX_CHARS = 1800
 
 /** 单张图片的 OCR 结果。 */
 export interface WebImageRecognition {
@@ -44,6 +54,8 @@ export interface WebImagePipelineDeps {
   targetLang: string
   /** 最低 OCR 质量分，低于该值视为噪声跳过。 */
   minScore?: number
+  /** 图片 OCR 文本单次翻译的字符上限，未提供时使用默认值。 */
+  maxCharsPerRequest?: number
   /** 任务取消信号。 */
   signal?: AbortSignal
 }
@@ -96,6 +108,10 @@ export async function processWebImageCandidates(
   deps: WebImagePipelineDeps
 ): Promise<WebImagePipelineResult> {
   const minScore = Number.isFinite(deps.minScore) ? Number(deps.minScore) : 0.35
+  const configuredMaxChars = Number.isFinite(deps.maxCharsPerRequest)
+    ? Number(deps.maxCharsPerRequest)
+    : WEB_IMAGE_TRANSLATION_MAX_CHARS
+  const maxCharsPerRequest = Math.max(1, Math.floor(configuredMaxChars))
   const results: WebImageCandidate[] = []
   let cancelled = false
 
@@ -131,14 +147,18 @@ export async function processWebImageCandidates(
       results.push({ ...candidate, ocrText: text, skippedReason: 'low-quality' })
       continue
     }
+    // 整页 canvas（例如 Google Docs）的 OCR 文本会远超单次翻译上限，
+    // 必须按句边界切分后逐段翻译；任一分段失败时整图按失败处理，避免写入残缺译文。
+    const parts = splitText(text, maxCharsPerRequest, deps.sourceLang === 'auto' ? undefined : deps.sourceLang)
     try {
-      const translated = await deps.translate(text, candidate)
-      const translation = String(translated.translation || '').trim()
-      if (!translation) {
-        results.push({ ...candidate, ocrText: text, error: 'translate-failed' })
-        continue
+      const translations: string[] = []
+      for (const part of parts) {
+        const translated = await deps.translate(part, candidate)
+        const translation = String(translated.translation || '').trim()
+        if (!translation) throw new Error('translate-failed')
+        translations.push(translation)
       }
-      results.push({ ...candidate, ocrText: text, translation })
+      results.push({ ...candidate, ocrText: text, translation: translations.join('\n') })
     } catch (error) {
       results.push({
         ...candidate,

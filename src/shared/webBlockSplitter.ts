@@ -180,7 +180,7 @@ export function parseMergedTranslation(batch: WebTranslationBatch, translation: 
  * @returns 不超过上限且拼接后等于原文的文本段。
  * @author zhenghq
  */
-function splitText(text: string, maxChars: number, locale?: string): string[] {
+export function splitText(text: string, maxChars: number, locale?: string): string[] {
   if (text.length <= maxChars) return [text]
   const segmenter = typeof Intl.Segmenter === 'function'
     ? new Intl.Segmenter(locale, { granularity: 'sentence' })

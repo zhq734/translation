@@ -722,7 +722,6 @@ export function buildWebBilingualInjectScript(
       if (node.textContent !== operation.translation) node.textContent = operation.translation;
       node.setAttribute('lang', targetLang);
       node.setAttribute('dir', 'auto');
-      block.setAttribute('data-st-dimmed', 'true');
       stats.applied += 1;
     }
     setTimeout(() => { state.suppressed = false; }, 0);
@@ -758,8 +757,7 @@ export function buildWebBilingualStyleSheet(): string {
   return [
     '[data-st-translation] { display: block; color: inherit; font: inherit; line-height: inherit; }',
     "[data-st-translation][data-st-parent-display='flex'] { flex: 1 0 100%; }",
-    "[data-st-translation][data-st-parent-display='grid'] { grid-column: 1 / -1; }",
-    "[data-st-dimmed='true'] > *:not([data-st-translation]), [data-st-dimmed='true'] { opacity: 0.6; }"
+    "[data-st-translation][data-st-parent-display='grid'] { grid-column: 1 / -1; }"
   ].join('\n')
 }
 
@@ -805,6 +803,10 @@ export function buildWebImageOverlayInjectScript(operations: WebImageOverlayOper
           target.parentNode.insertBefore(node, target.nextSibling);
         }
       }
+      // Google Docs 这类页面把正文画在绝对定位的整页 canvas 上，父容器高度等于页面高度，
+      // 普通说明块会插到画布左上角遮住正文；此处标记为 canvas 说明块并由样式排到画布下方。
+      if (target.tagName === 'CANVAS') node.setAttribute('data-st-image-canvas', 'true');
+      else node.removeAttribute('data-st-image-canvas');
       node.setAttribute('data-st-image-placement', operation.placement === 'overlay' ? 'overlay' : 'below');
       const source = document.createElement('div');
       source.setAttribute('data-st-image-source', '');
@@ -848,6 +850,7 @@ export function buildWebImageOverlayClearScript(): string {
 export function buildWebImageOverlayStyleSheet(): string {
   return [
     '[data-st-image-translation] { display: block; box-sizing: border-box; margin: 6px 0; padding: 8px 10px; border-radius: 6px; font-size: 13px; line-height: 1.5; background: rgba(127,127,127,0.14); color: inherit; font-family: inherit; }',
+    "[data-st-image-canvas='true'][data-st-image-placement='below'] { position: absolute; top: 100%; left: 0; right: 0; margin: 0; }",
     "[data-st-image-placement='overlay'] { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0 0 6px 6px; background: rgba(0,0,0,0.62); color: #fff; max-height: 70%; overflow: auto; }",
     '[data-st-image-target] { display: block; }',
     '[data-st-image-source] { display: block; opacity: 0.7; font-size: 12px; margin-bottom: 4px; }'

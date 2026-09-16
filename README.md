@@ -337,7 +337,7 @@ The built-in web reader loads HTTP or HTTPS pages in an isolated Electron `WebCo
 2. Choose the source language (automatic detection by default) and target language, then click **Translate page** to explicitly read the current page and start a bounded initial loading window;
 3. The translated text replaces the matching source text nodes in place, without creating a sidebar or rebuilding the page structure;
 4. Follow discovered, queued, completed, failed, cancelled, cache-hit, and partial progress in the top status area while the page is still loading;
-5. Switch between **Translation**, **Source**, and **Bilingual** without reloading the page; bilingual mode appends each paragraph's translation below the original, dims the original to 60% opacity, and does not rebuild the page structure;
+5. Switch between **Translation**, **Source**, and **Bilingual** without reloading the page; bilingual mode appends each paragraph's translation below the original, keeps the original fully opaque, and does not rebuild the page structure;
 6. Change the source or target language to cancel the previous job, restore the source text, and retranslate the same snapshot without refreshing the page;
 7. During the initial window, newly rendered safe text is discovered after a 300 ms debounce and translated in batches. After loading stops, the reader waits for 1,500 ms of quiet time, or at most 30 seconds overall, then prompts you to explicitly translate later SPA/lazy-loaded content instead of automatically uploading it.
 

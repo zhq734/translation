@@ -147,6 +147,7 @@ import type {
   TranslatePayload
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
+import type { WebImageCandidate } from '../shared/webPageTranslation'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
@@ -2442,6 +2443,166 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
     }))()`, true) as { scrollX: number; scrollY: number; width: number; height: number }
   }
 
+  /**
+   * 直接导出页面内 canvas 位图。
+   *
+   * Google Docs 等应用把整页正文画在 canvas 上，canvas 高度通常大于视口，
+   * 区域截图只能截到可见的一小段；直接读取 canvas 位图可以拿到完整页面。
+   * 跨域污染导致导出失败时返回 null，由调用方回退区域截图。
+   *
+   * @param candidate 图片候选。
+   * @returns 位图字节与像素尺寸；无法导出时返回 null。
+   * @author zhenghq
+   */
+  const readCanvasImage = async (candidate: WebImageCandidate): Promise<WebImageResponse | null> => {
+    const anchor = JSON.stringify({
+      selector: candidate.selector,
+      shadowPath: candidate.shadowPath ?? []
+    })
+    const exported = await view.webContents.executeJavaScript(`(() => {
+      const anchor = ${anchor};
+      let element = null;
+      try { element = document.querySelector(anchor.selector); } catch {}
+      if (element && anchor.shadowPath.length > 0) {
+        let current = element.shadowRoot;
+        for (const index of anchor.shadowPath) {
+          if (!current?.childNodes?.[index]) { current = null; break; }
+          current = current.childNodes[index];
+        }
+        element = current;
+      }
+      if (!element || element.tagName !== 'CANVAS') return null;
+      try {
+        const dataUrl = element.toDataURL('image/png');
+        if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image/png;base64,') !== 0) return null;
+        return { base64: dataUrl.slice('data:image/png;base64,'.length), width: element.width, height: element.height };
+      } catch {
+        return null;
+      }
+    })()`, true) as { base64: string; width: number; height: number } | null
+    if (!exported?.base64) return null
+    const bytes = Buffer.from(exported.base64, 'base64')
+    if (bytes.length === 0) return null
+    return { bytes, contentType: 'image/png', width: exported.width, height: exported.height }
+  }
+
+  /**
+   * 把候选滚动到页面内任意可滚动祖先的可见区域。
+   *
+   * `window.scrollTo` 只能影响文档滚动，Google Docs 这类应用的正文位于内层
+   * `overflow: auto` 容器中，必须滚动真正的滚动祖先才能让候选进入可见区域。
+   * 原始滚动位置保存在页面全局变量中，由 `restoreRevealed` 恢复。
+   *
+   * @param candidate 图片候选。
+   * @returns 可见矩形（视口坐标）；无法进入可见区域时返回 null。
+   * @author zhenghq
+   */
+  const revealVisibleRect = async (candidate: WebImageCandidate): Promise<{ x: number; y: number; width: number; height: number } | null> => {
+    const anchor = JSON.stringify({
+      selector: candidate.selector,
+      shadowPath: candidate.shadowPath ?? [],
+      x: Math.round(candidate.rect.x),
+      y: Math.round(candidate.rect.y),
+      width: Math.round(candidate.rect.width),
+      height: Math.round(candidate.rect.height)
+    })
+    return await view.webContents.executeJavaScript(`(async () => {
+      const anchor = ${anchor};
+      const resolve = () => {
+        let element = null;
+        try { element = document.querySelector(anchor.selector); } catch {}
+        if (element && anchor.shadowPath.length > 0) {
+          let current = element.shadowRoot;
+          for (const index of anchor.shadowPath) {
+            if (!current?.childNodes?.[index]) return null;
+            current = current.childNodes[index];
+          }
+          element = current;
+        }
+        return element?.nodeType === Node.ELEMENT_NODE ? element : null;
+      };
+      const scrollableAncestors = (element) => {
+        const list = [];
+        let current = element.parentElement;
+        while (current && current !== document.documentElement) {
+          const style = getComputedStyle(current);
+          if (/(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 1) list.push(current);
+          current = current.parentElement;
+        }
+        return list;
+      };
+      const restore = [];
+      const element = resolve();
+      if (!element) return null;
+      for (const scroller of scrollableAncestors(element)) {
+        restore.push({ scroller, scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft });
+      }
+      // 同时记录文档滚动位置，避免无内层滚动容器时 window.scrollTo 无法还原。
+      window.__selectionTranslatorWebImageReveal = {
+        windowScroll: { scrollX: window.scrollX, scrollY: window.scrollY },
+        scrollers: restore
+      };
+      const viewport = { scrollX: window.scrollX, scrollY: window.scrollY };
+      if (restore.length === 0) {
+        const targetY = Math.max(0, anchor.y - Math.round(window.innerHeight / 3));
+        window.scrollTo({ left: viewport.scrollX, top: targetY, behavior: 'instant' });
+      } else {
+        // 逐层把候选对齐到各自滚动容器顶部，外层容器同样需要滚动。
+        for (const scroller of restore) {
+          const scrollerRect = scroller.scroller.getBoundingClientRect();
+          const elementRect = element.getBoundingClientRect();
+          scroller.scroller.scrollTop += Math.round(elementRect.top - scrollerRect.top);
+        }
+      }
+      // 页面被隐藏时 requestAnimationFrame 可能永不触发，改用定时器等待合成器提交新画面。
+      await new Promise((resolve) => setTimeout(resolve, 32));
+      const rect = element.getBoundingClientRect();
+      let clip = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+      let current = element.parentElement;
+      while (current) {
+        const style = getComputedStyle(current);
+        if (/(auto|scroll|overlay|hidden)/.test(style.overflowY) || /(auto|scroll|overlay|hidden)/.test(style.overflowX)) {
+          const clipRect = current.getBoundingClientRect();
+          clip = {
+            top: Math.max(clip.top, clipRect.top),
+            left: Math.max(clip.left, clipRect.left),
+            right: Math.min(clip.right, clipRect.right),
+            bottom: Math.min(clip.bottom, clipRect.bottom)
+          };
+        }
+        current = current.parentElement;
+      }
+      const top = Math.max(rect.top, clip.top);
+      const left = Math.max(rect.left, clip.left);
+      const right = Math.min(rect.right, clip.right);
+      const bottom = Math.min(rect.bottom, clip.bottom);
+      if (right - left < 1 || bottom - top < 1) return null;
+      return { x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top) };
+    })()`, true) as { x: number; y: number; width: number; height: number } | null
+  }
+
+  /**
+   * 恢复 `revealVisibleRect` 改变的滚动位置。
+   * @returns 恢复完成后的 Promise。
+   * @author zhenghq
+   */
+  const restoreRevealed = async (): Promise<void> => {
+    await view.webContents.executeJavaScript(`(() => {
+      const restore = window.__selectionTranslatorWebImageReveal;
+      window.__selectionTranslatorWebImageReveal = null;
+      if (!restore) return;
+      for (const item of restore.scrollers || []) {
+        if (!item?.scroller) continue;
+        item.scroller.scrollTop = item.scrollTop;
+        item.scroller.scrollLeft = item.scrollLeft;
+      }
+      const windowScroll = restore.windowScroll;
+      if (windowScroll) {
+        window.scrollTo({ left: windowScroll.scrollX, top: windowScroll.scrollY, behavior: 'instant' });
+      }
+    })()`, true)
+  }
+
   return createWebImageSource({
     requestImage,
     captureRegion: async (rect, captureSignal) => {
@@ -2450,6 +2611,9 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
       return image.toPNG()
     },
     resolveViewport,
+    readCanvasImage,
+    revealVisibleRect,
+    restoreRevealed,
     scrollIntoView: async (rect) => {
       return await view.webContents.executeJavaScript(`(async () => {
         const targetY = Math.max(0, ${JSON.stringify(Math.round(rect.y))} - Math.round(window.innerHeight / 3));

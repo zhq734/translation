@@ -52,7 +52,12 @@ import {
   WebPageTranslationCache,
   type WebPageTranslationCacheContext
 } from './webPageTranslationCache'
-import { normalizeWebReaderUrl, isAllowedWebReaderUrl, sanitizeWebViewBounds } from './webReaderSecurity'
+import {
+  normalizeWebReaderUrl,
+  toWebReaderHtmlViewUrl,
+  isAllowedWebReaderUrl,
+  sanitizeWebViewBounds
+} from './webReaderSecurity'
 import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
 import { sendToAliveWebContents } from './webContentsMessaging'
 import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
@@ -278,7 +283,9 @@ export class WebReaderManager {
    */
   async navigate(url: string): Promise<WebReaderState> {
     await this.ensureWindow()
-    const normalized = normalizeWebReaderUrl(url)
+    // Google Docs 编辑器正文绘制在 canvas 上，DOM 无可写文本节点；
+    // 统一转换为服务端 HTML 视图后再加载，使正文以真实文本节点呈现。
+    const normalized = toWebReaderHtmlViewUrl(normalizeWebReaderUrl(url))
     this.clearError()
     await this.view?.webContents.loadURL(normalized)
     return this.getState()
@@ -1365,7 +1372,17 @@ export class WebReaderManager {
     const contents = view.webContents
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
     contents.on('will-navigate', (event, url) => {
-      if (!isAllowedWebReaderUrl(url)) event.preventDefault()
+      if (!isAllowedWebReaderUrl(url)) {
+        event.preventDefault()
+        return
+      }
+      // 页面内点击进入 Google Docs 编辑器时同样切换到服务端 HTML 视图，
+      // 否则正文重新变成 canvas 绘制，已提取的文本节点会全部失效。
+      const htmlViewUrl = toWebReaderHtmlViewUrl(url)
+      if (htmlViewUrl !== url) {
+        event.preventDefault()
+        void this.view?.webContents.loadURL(htmlViewUrl)
+      }
     })
     contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return

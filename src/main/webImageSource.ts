@@ -84,6 +84,26 @@ export interface WebImageSourceDeps {
   restoreScroll?(scrollX: number, scrollY: number): Promise<void>
   /** 保留字段：截图矩形本身使用 DIP 坐标，无需按设备像素比换算。 */
   devicePixelRatio?: number
+  /**
+   * 直接导出页面内 canvas 位图；缺失或不支持时回退区域截图。
+   * @param candidate 图片候选。
+   * @returns 位图字节与像素尺寸；无法导出时返回 null。
+   */
+  readCanvasImage?(candidate: WebImageCandidate): Promise<WebImageResponse | null>
+  /**
+   * 把候选滚动到页面内任意可滚动祖先的可见区域，并返回实际可见矩形（视口坐标）。
+   *
+   * 部分页面（例如 Google Docs）的正文位于内层滚动容器中，`window.scrollTo` 无法
+   * 改变其位置；由页面侧解析真正的滚动容器才能正确取图。
+   * @param candidate 图片候选，包含选择器与页面坐标矩形。
+   * @returns 可见矩形（视口坐标）；无法进入可见区域时返回 null。
+   */
+  revealVisibleRect?(candidate: WebImageCandidate): Promise<{ x: number; y: number; width: number; height: number } | null>
+  /**
+   * 恢复 `revealVisibleRect` 改变的滚动位置。
+   * @returns 恢复完成后的 Promise。
+   */
+  restoreRevealed?(): Promise<void>
   /** 任务取消信号。 */
   signal?: AbortSignal
 }
@@ -214,18 +234,63 @@ export function createWebImageSource(deps: WebImageSourceDeps): WebImageSource {
 
       if (isAborted(deps.signal)) return { ok: false, strategy: 'capture', reason: 'cancelled' }
 
+      // Canvas 位图可以绕过视口尺寸限制直接导出，避免整页 canvas 被视口裁掉。
+      if (candidate.kind === 'canvas' && deps.readCanvasImage) {
+        try {
+          const exported = await deps.readCanvasImage(candidate)
+          if (isAborted(deps.signal)) return { ok: false, strategy: 'capture', reason: 'cancelled' }
+          if (exported && isValidImageResponse(exported, maxBytes, maxPixels)) {
+            return { ok: true, strategy: 'capture', bytes: Buffer.from(exported.bytes) }
+          }
+        } catch {
+          // 位图被跨域污染或导出失败时继续走区域截图兜底。
+        }
+      }
+
+      if (isAborted(deps.signal)) return { ok: false, strategy: 'capture', reason: 'cancelled' }
+
+      // 候选已可见时沿用原有截图路径，避免无谓滚动造成页面抖动。
       const originalViewport = deps.resolveViewport
         ? await deps.resolveViewport().catch(() => null)
         : null
-      let viewportRect = normalizeRect(candidate.rect)
+      const viewportRect = originalViewport
+        ? {
+          ...normalizeRect(candidate.rect),
+          x: normalizeRect(candidate.rect).x - Math.round(originalViewport.scrollX),
+          y: normalizeRect(candidate.rect).y - Math.round(originalViewport.scrollY)
+        }
+        : normalizeRect(candidate.rect)
+      const alreadyVisible = !originalViewport || isWithinViewport(viewportRect, originalViewport)
+
+      // 页面侧解析真实滚动容器，兼容 Google Docs 这类正文位于内层 overflow 容器的应用。
+      if (!alreadyVisible && deps.revealVisibleRect) {
+        let revealed: { x: number; y: number; width: number; height: number } | null = null
+        try {
+          revealed = await deps.revealVisibleRect(candidate)
+        } catch {
+          revealed = null
+        }
+        if (!revealed) {
+          await deps.restoreRevealed?.().catch(() => undefined)
+          return { ok: false, strategy: 'capture', reason: 'capture-failed' }
+        }
+        try {
+          const bytes = await deps.captureRegion(normalizeRect(revealed), deps.signal)
+          if (isAborted(deps.signal)) return { ok: false, strategy: 'capture', reason: 'cancelled' }
+          if (!bytes || bytes.length === 0) return { ok: false, strategy: 'capture', reason: 'capture-failed' }
+          if (bytes.length > maxBytes) return { ok: false, strategy: 'capture', reason: 'too-large' }
+          return { ok: true, strategy: 'capture', bytes: Buffer.from(bytes) }
+        } catch {
+          return { ok: false, strategy: 'capture', reason: 'capture-failed' }
+        } finally {
+          await deps.restoreRevealed?.().catch(() => undefined)
+        }
+      }
+
+      let scrollRect = viewportRect
       let scrolled = false
       if (originalViewport) {
-        viewportRect = {
-          ...viewportRect,
-          x: viewportRect.x - Math.round(originalViewport.scrollX),
-          y: viewportRect.y - Math.round(originalViewport.scrollY)
-        }
-        if (!isWithinViewport(viewportRect, originalViewport)) {
+        if (!isWithinViewport(scrollRect, originalViewport)) {
           if (!deps.scrollIntoView) return { ok: false, strategy: 'capture', reason: 'capture-failed' }
           let scrolledOk = false
           try {
@@ -237,12 +302,12 @@ export function createWebImageSource(deps: WebImageSourceDeps): WebImageSource {
           scrolled = true
           const scrolledViewport = await deps.resolveViewport?.().catch(() => null) ?? null
           if (!scrolledViewport) return { ok: false, strategy: 'capture', reason: 'capture-failed' }
-          viewportRect = {
+          scrollRect = {
             ...normalizeRect(candidate.rect),
             x: normalizeRect(candidate.rect).x - Math.round(scrolledViewport.scrollX),
             y: normalizeRect(candidate.rect).y - Math.round(scrolledViewport.scrollY)
           }
-          if (!isWithinViewport(viewportRect, scrolledViewport)) {
+          if (!isWithinViewport(scrollRect, scrolledViewport)) {
             await deps.restoreScroll?.(originalViewport.scrollX, originalViewport.scrollY).catch(() => undefined)
             return { ok: false, strategy: 'capture', reason: 'capture-failed' }
           }
@@ -250,7 +315,7 @@ export function createWebImageSource(deps: WebImageSourceDeps): WebImageSource {
       }
 
       try {
-        const bytes = await deps.captureRegion(viewportRect, deps.signal)
+        const bytes = await deps.captureRegion(scrollRect, deps.signal)
         if (isAborted(deps.signal)) return { ok: false, strategy: 'capture', reason: 'cancelled' }
         if (!bytes || bytes.length === 0) return { ok: false, strategy: 'capture', reason: 'capture-failed' }
         if (bytes.length > maxBytes) return { ok: false, strategy: 'capture', reason: 'too-large' }
