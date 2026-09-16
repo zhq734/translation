@@ -22,6 +22,19 @@ const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 const mainSource = readFileSync('src/main/index.ts', 'utf8')
 const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
+/**
+ * 去掉源码中的块注释与行注释。
+ *
+ * 断言「某处没有调用某函数」时必须基于真实代码而非注释文本：注释里为了说明
+ * 为什么不能使用某个判定，会原样写出该函数名，直接匹配源码会误报。
+ * @param source 源码。
+ * @returns 移除注释后的源码。
+ * @author zhenghq
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '')
+}
+
 test('弹窗隐藏前先把 macOS 前台交还出去', () => {
   const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
 
@@ -121,16 +134,17 @@ test('原生修复对话框关闭后必须依据应用激活状态交还前台',
   // dialog.showMessageBox 是原生对话框而不是 BrowserWindow：对话框存在时
   // BrowserWindow.getFocusedWindow() 返回 null，但本应用仍然处于最前。
   // 若据此判断「无需交还」，对话框关闭后系统会把网页翻译窗口提升到最前。
-  assert.match(handBackAppSource, /!isMacAppActive\(\)/u, '必须依据应用激活状态判断是否仍需交还前台')
+  // 判定必须使用应用激活事件状态：isMacAppActive() 会因窗口焦点残留误报。
+  assert.match(handBackAppSource, /!isMacAppActiveByEvents\(\)/u, '必须依据应用激活事件状态判断是否仍需交还前台')
   assert.match(
     handBackAppSource,
-    /if \(!isMacAppActive\(\)\) \{\s*\n\s*forgetFrontmostApp\(\)/u,
+    /if \(!isMacAppActiveByEvents\(\)\) \{\s*\n\s*forgetFrontmostApp\(\)/u,
     '本应用确实不在最前时才能放弃交还'
   )
   // 交还过程中同样必须等待应用失活，不能只看 BrowserWindow 焦点。
   assert.match(
     handBackAppSource,
-    /if \(!isMacAppActive\(\)\) \{\s*\n\s*finish\(true\)/u,
+    /if \(!isMacAppActiveByEvents\(\)\) \{\s*\n\s*finish\(true\)/u,
     '必须轮询应用失活后才算交还完成'
   )
   // Electron 33 不提供 app.isActive()，必须通过获得/失去激活事件自行跟踪应用状态。
@@ -150,7 +164,7 @@ test('原生修复对话框显示期间隐藏失败提示不得丢弃待交还�
   // 对话框关闭后就没有目标可以交还，网页翻译窗口会被系统顶到最前。
   assert.match(
     handBackThenSource,
-    /if \(focused === null\) \{[\s\S]*?if \(isMacAppActive\(\)\) \{\s*\n\s*run\(\)\s*\n\s*return\s*\n\s*\}/u,
+    /if \(focused === null\) \{[\s\S]*?if \(isMacAppActive\(\)\) \{\s*\n\s*run\(\)[\s\S]{0,120}?return\s*\n\s*\}/u,
     '应用仍在前台（对话框持有 key window）时必须保留待交还记录'
   )
   assert.match(
@@ -183,7 +197,7 @@ test('安全让出前台必须先确认应用失活再收尾，最后非激活�
   assert.match(source, /app\.hide\(\)/u, '必须用 app.hide() 让系统把前台还给用户原本在用的应用')
   assert.match(
     source,
-    /if \(!isMacAppActive\(\)\) \{\s*\n\s*finish\(\)/u,
+    /if \(!isMacAppActiveByEvents\(\)\) \{[\s\S]{0,160}?finish\(\)/u,
     '必须轮询确认本应用真正失活后才执行收尾'
   )
   // 未等待失活就收尾仍会把阅读器顶到最前（真机 CGWindowList 采样验证过）。
@@ -268,19 +282,192 @@ test('弹窗收尾失败时不得直接隐藏应用内 key window', () => {
 })
 
 test('应用内已有焦点窗口时仍必须记录源应用', () => {
-  const syncSource = extractFunction(
-    macForegroundSource,
-    'export function rememberFrontmostAppIfInactive(): void {'
+  const entries: Array<[string, string]> = [
+    [
+      'rememberFrontmostAppBeforeActivation',
+      extractFunction(
+        macForegroundSource,
+        'export function rememberFrontmostAppBeforeActivation(): void {'
+      )
+    ],
+    [
+      'rememberFrontmostAppIfInactive',
+      extractFunction(
+        macForegroundSource,
+        'export function rememberFrontmostAppIfInactive(): void {'
+      )
+    ],
+    [
+      'rememberFrontmostAppIfInactiveAsync',
+      extractFunction(
+        macForegroundSource,
+        'export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {'
+      )
+    ]
+  ]
+
+  // 应用内存在焦点窗口（例如后台设置页）不代表本应用占用 macOS 前台。
+  // 焦点/激活判定只能决定「是否交还」，不得用来决定「是否记录」：
+  // 记录成本极低，漏记的代价是退化到实测不稳定的 app.hide()→app.show() 兜底。
+  for (const [name, source] of entries) {
+    assert.doesNotMatch(
+      source,
+      /isMacAppActive/u,
+      `${name} 不得以焦点或激活判定作为跳过记录的理由`
+    )
+  }
+
+  // 三个入口最终都必须落到「读取系统最前应用」的路径上。
+  assert.match(
+    entries[0][1],
+    /recordFrontmostAppFromSystem\(\)/u,
+    '同步入口必须在无记录时直接读取系统最前应用'
   )
-  const asyncSource = extractFunction(
-    macForegroundSource,
-    'export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {'
+  assert.match(
+    entries[1][1],
+    /readFrontmostAppSnapshot\(\)/u,
+    '异步入口必须读取系统最前应用'
+  )
+  assert.match(
+    entries[2][1],
+    /readFrontmostAppSnapshot\(\)/u,
+    '可等待入口必须读取系统最前应用'
   )
 
-  // 应用内存在焦点窗口（例如上一轮结果弹窗）不代表本应用占用 macOS 前台；
-  // 旧实现据此直接 return，导致源应用记录被跳过。
-  assert.doesNotMatch(syncSource, /BrowserWindow\.getFocusedWindow\(\)\s*!==\s*null\)\s*return/u, '不得因应用内焦点窗口跳过记录')
-  assert.doesNotMatch(asyncSource, /BrowserWindow\.getFocusedWindow\(\)\s*!==\s*null\)\s*return/u, '不得因应用内焦点窗口跳过记录')
-  assert.match(syncSource, /isMacAppActive\(\)/u, '必须按应用级激活状态判断')
-  assert.match(asyncSource, /isMacAppActive\(\)/u, '必须按应用级激活状态判断')
+  // 「已有记录不覆盖」的短路必须保留，且读取路径本身不得带焦点判定。
+  const recordSource = extractFunction(
+    macForegroundSource,
+    'function recordFrontmostAppFromSystem(): void {'
+  )
+  assert.match(recordSource, /if \(pendingReturnApp\) return/u, '必须保留「已有记录不覆盖」的短路')
+  assert.match(recordSource, /execFileSync\('lsappinfo'/u, '必须直接读取系统最前应用')
+  assert.doesNotMatch(recordSource, /isMacAppActive/u, '读取路径不得带焦点判定')
+})
+
+test('安全让出前台的失活轮询必须使用应用激活事件状态', () => {
+  const yieldSource = stripComments(
+    extractFunction(macForegroundSource, 'export function yieldFrontmostAppThen(')
+  )
+
+  // isMacAppActive() 会因应用失活后残留的 key window 焦点而误报为 true，
+  // 使 app.hide() 后的失活轮询一路走到 400ms 超时，收尾时序退化为不确定。
+  assert.doesNotMatch(
+    yieldSource,
+    /\bisMacAppActive\(\)/u,
+    '安全让出流程不得使用会因窗口焦点残留而误报的激活判定'
+  )
+  assert.match(
+    yieldSource,
+    /isMacAppActiveByEvents\(\)/u,
+    '失活轮询必须使用不带窗口焦点回退的应用激活事件状态'
+  )
+})
+
+test('整应用隐藏期间的收尾仍必须真正隐藏弹窗', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
+
+  // app.hide() 生效期间弹窗 isVisible() 同样为 false，若收尾据此短路，
+  // 随后的 app.show() 会把弹窗重新显示出来，表现为「点关闭关不掉」。
+  // 因此收尾路径必须存在一条不受可见性约束的强制隐藏通道，并由安全让出分支使用。
+  assert.match(
+    hideSource,
+    /const hideAndEndTeardown = \((?:force\s*=\s*false|force:\s*boolean)/u,
+    '收尾动作必须支持强制隐藏'
+  )
+  assert.match(
+    hideSource,
+    /hideAndEndTeardown\(true\)/u,
+    '安全让出分支必须使用强制隐藏，不得依赖 isVisible()'
+  )
+  assert.match(
+    hideSource,
+    /force[\s\S]{0,500}?win\?\.hide\(\)/u,
+    '强制隐藏路径必须执行 win.hide()'
+  )
+})
+
+test('整应用隐藏期间窗口已不可见时，强制隐藏后应立即收尾而不等兜底定时器', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(): void {')
+
+  // win.hide() 只有在可见性发生跳变时才派发 hide 事件；安全让出期间窗口已被
+  // app.hide() 置为不可见，强制隐藏不会产生跳变，若只依赖 hide 事件收尾，抑制期
+  // 要等到 1500ms 兜底定时器才结束，期间用户对 Dock 的正常激活会被内部事件判定吞掉。
+  assert.match(
+    hideSource,
+    /const wasVisible = win\.isVisible\(\)/u,
+    '强制隐藏前必须记录窗口此前的可见性，用于判断 hide 事件是否会到达'
+  )
+  assert.match(
+    hideSource,
+    /if \(!wasVisible\) \{[\s\S]{0,200}?finishPopupTeardown\(\)/u,
+    '窗口此前不可见时必须立即收尾，不得依赖兜底定时器'
+  )
+})
+
+test('非 macOS 平台的弹窗收尾仍保持同步语义', () => {
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(): void {')
+  )
+
+  // 非 macOS 不存在「隐藏 key window 会提升应用内其它窗口」的问题，
+  // 强制隐藏与可见性判断都不得改变该平台「隐藏后立即收尾」的既有语义。
+  assert.match(
+    hideSource,
+    /if \(process\.platform !== 'darwin'\) \{[\s\S]{0,200}?finishPopupTeardown\(\)/u,
+    '非 macOS 平台必须保持隐藏后立即收尾'
+  )
+})
+
+test('应用已不在最前时只在真的丢弃了记录才输出日志', () => {
+  const handBackSource = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+
+  // 该分支在「应用确实已失活」时每次隐藏窗口都会走到，但多数情况下 pendingReturnApp
+  // 本就是 null（例如非激活显示的弹窗），此时 forgetFrontmostApp() 是空操作。
+  // 无条件打印「丢弃过期记录」会让真机日志出现误导性的丢弃记录，掩盖真实诊断信息；
+  // 日志必须只在确实存在待丢弃记录时输出，并带上被丢弃的目标应用便于追溯。
+  const branchStart = handBackSource.indexOf('forgetFrontmostApp()')
+  assert.ok(branchStart >= 0, '应存在丢弃过期记录的分支')
+  const branchSource = handBackSource.slice(
+    Math.max(0, branchStart - 300),
+    branchStart + 300
+  )
+  assert.match(
+    branchSource,
+    /if \(discarded\)|if \(stale\)|if \(pendingReturnApp\)/u,
+    '丢弃日志必须受「确实存在待丢弃记录」的条件保护'
+  )
+  assert.match(
+    branchSource,
+    /bundleId=\$\{(?:discarded|stale)\.bundleId\}/u,
+    '丢弃日志必须带上被丢弃的目标应用'
+  )
+})
+
+test('前台交还与安全让出必须输出可诊断日志', () => {
+  const handBackSource = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  const yieldSource = stripComments(
+    extractFunction(macForegroundSource, 'export function yieldFrontmostAppThen(')
+  )
+
+  // 交还/让出路径此前完全静默，真机复现时无法判断实际走了哪条分支。
+  assert.match(
+    handBackSource,
+    /logFrontDiagnostic\(|console\.(log|warn)/u,
+    '精确交还路径必须输出日志'
+  )
+  assert.match(
+    yieldSource,
+    /logFrontDiagnostic\(|console\.(log|warn)/u,
+    '安全让出路径必须输出日志'
+  )
+  // 日志必须足以区分「精确交还」「交还超时退化」「无记录退化」三条分支。
+  assert.match(
+    macForegroundSource,
+    /\[macForeground\]/u,
+    '日志必须带统一前缀，便于从主进程日志中筛选'
+  )
 })
