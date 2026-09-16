@@ -283,8 +283,11 @@ export function canTreatActivateAsDockLaunch(context: DockActivationContext): Do
     : { allowed: true, checks }
 }
 
-/** 自维护双击判定的最大间隔（毫秒）；严格小于该值才算双击，短于 macOS 默认双击间隔 500ms。 */
-export const DOUBLE_CLICK_MAX_INTERVAL_MS = 400
+/**
+ * 自维护双击判定的最大间隔（毫秒）；严格小于该值才算双击。
+ * 取值明显短于 macOS 默认双击间隔 500ms，避免把相近位置的连续独立单击误判为双击选词。
+ */
+export const DOUBLE_CLICK_MAX_INTERVAL_MS = 250
 
 /** 自维护双击判定的最大位置漂移（像素），超过视为两次独立点击。 */
 export const DOUBLE_CLICK_MAX_DRIFT_PX = 12

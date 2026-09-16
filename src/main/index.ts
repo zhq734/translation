@@ -584,12 +584,13 @@ function releaseSelectionInteractionAfterPopupHidden(token: number): void {
 
 /**
  * 激活已有网页阅读器页面；没有尚未关闭的页面时打开设置窗口。
+ * 该入口可能由误放行的内部 activate 触发，因此复用已可见设置页时不得强制置顶。
  * @returns 无返回值。
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
   if (webReader?.focusExistingWindow()) return
-  void openSettings()
+  void openSettings({ bringToFront: false })
 }
 
 // ---- 主进程日志层 ----
@@ -3833,10 +3834,11 @@ function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
 
 /**
  * 创建或复用设置窗口。
+ * @param bringToFront 复用已可见窗口时是否重新激活应用并置顶；内部 activate 必须传 false。
  * @returns 设置窗口实例。
  * @author zhenghq
  */
-async function createSettingsWindow(): Promise<BrowserWindow> {
+async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindow> {
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
     await refreshMacOSDockVisibility()
@@ -3848,9 +3850,15 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
       settingsWin.focus()
       return settingsWin
     }
-    // 已可见且未最小化时直接返回：误放行的内部 activate 不得把后台设置页
-    // show()+focus() 顶到用户应用之上。不可见时继续走下面的显示聚焦路径。
-    if (settingsWin.isVisible()) return settingsWin
+    if (settingsWin.isVisible()) {
+      // 用户显式打开设置页（菜单栏图标、托盘菜单、第二实例）时，设置页可能正被其它应用遮挡。
+      // 菜单栏图标点击不会像 Dock 图标那样激活应用，必须显式激活并聚焦才能把它带回最前。
+      if (!bringToFront) return settingsWin
+      if (isMac) app.focus({ steal: true })
+      settingsWin.show()
+      settingsWin.focus()
+      return settingsWin
+    }
     if (isMac) app.focus({ steal: true })
     settingsWin.show()
     settingsWin.focus()
@@ -3922,11 +3930,12 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
 
 /**
  * 打开设置窗口。
+ * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function openSettings(): Promise<void> {
-  await createSettingsWindow()
+async function openSettings(options: { bringToFront?: boolean } = {}): Promise<void> {
+  await createSettingsWindow(options.bringToFront ?? true)
 }
 
 // ---- 自建 DeepLX 集成 ----

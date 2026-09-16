@@ -45,7 +45,7 @@ test('主进程应成对切换 macOS 激活策略与 Dock 图标并通过 Dock �
 test('新建与复用设置窗口都必须先刷新策略并激活应用，再显示和聚焦窗口', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = source.match(
-    /async function createSettingsWindow\(\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
+    /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
 
   assert.ok(settingsWindowBlock)
@@ -61,9 +61,10 @@ test('新建与复用设置窗口都必须先刷新策略并激活应用，再�
       /await refreshMacOSDockVisibility\(\)[\s\S]*?if \(isMac\) app\.focus\(\{ steal: true \}\)[\s\S]*?settingsWin\.show\(\)[\s\S]*?settingsWin\.focus\(\)/u
     )
   }
-  assert.match(source, /async function openSettings\(\): Promise<void>[\s\S]*?await createSettingsWindow\(\)/u)
+  // 用户显式入口默认请求把设置页带到最前，内部 activate 才显式传 false 复用。
+  assert.match(source, /async function openSettings\(options[\s\S]*?await createSettingsWindow\(options\.bringToFront \?\? true\)/u)
   const openSettingsBlock = source.match(
-    /async function openSettings\(\): Promise<void> \{([\s\S]*?)\n\}/u
+    /async function openSettings\([\s\S]*?\): Promise<void> \{([\s\S]*?)\n\}/u
   )
   assert.ok(openSettingsBlock)
   assert.doesNotMatch(openSettingsBlock[1], /app\.focus/u)

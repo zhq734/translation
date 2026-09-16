@@ -144,14 +144,20 @@ test('已可见的阅读器不得被 activate 无条件置顶，不可见或最�
   assert.match(focusSource, /isMinimized\(\)\) this\.window\.restore\(\)/u, '最小化阅读器仍必须恢复')
 })
 
-test('已可见的设置页不得被 activate 无条件置顶', () => {
-  const createSource = extractFunction(mainSource, 'async function createSettingsWindow(): Promise<BrowserWindow> {')
+test('已可见的设置页仅在用户显式打开时才重新置顶', () => {
+  const createSource = extractFunction(mainSource, 'async function createSettingsWindow(')
 
-  // 已可见分支不得再执行 app.focus({steal:true}) + show() + focus()，否则误放行的 activate 会把后台设置页顶到最前。
+  // 已可见分支必须区分调用来源：内部 activate 传 bringToFront=false，不得把后台设置页顶到最前。
   assert.match(
     createSource,
-    /if \(settingsWin\.isVisible\(\)\) return settingsWin/u,
-    '已可见设置页必须直接返回，不得强制置顶'
+    /if \(settingsWin\.isVisible\(\)\) \{[\s\S]*?if \(!bringToFront\) return settingsWin/u,
+    '已可见设置页在非用户显式入口时必须直接返回'
+  )
+  // 用户显式打开（菜单栏图标、托盘菜单、第二实例）时必须重新激活并聚焦，否则被遮挡时点图标无反应。
+  assert.match(
+    createSource,
+    /if \(!bringToFront\) return settingsWin[\s\S]*?app\.focus\(\{ steal: true \}\)[\s\S]*?settingsWin\.show\(\)[\s\S]*?settingsWin\.focus\(\)/u,
+    '用户显式打开设置页时必须把它带到最前'
   )
   // 不可见或最小化时仍必须显示并聚焦，保证真实 Dock 启动可用。
   assert.match(createSource, /settingsWin\.show\(\)/u, '不可见设置页仍必须显示')

@@ -95,7 +95,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
 test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = mainSource.match(
-    /async function createSettingsWindow\(\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
+    /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
 
   assert.ok(settingsWindowBlock)

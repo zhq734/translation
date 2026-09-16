@@ -86,7 +86,7 @@ test('设置页应提供主题模式和五个可访问主题卡片', () => {
 test('设置窗口必须等首帧就绪后再显示，避免启动时先闪默认主题', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = source.match(
-    /async function createSettingsWindow\(\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
+    /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
   assert.ok(settingsWindowBlock)
   const createPath = settingsWindowBlock[1].slice(

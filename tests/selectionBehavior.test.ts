@@ -1197,7 +1197,6 @@ test('自维护双击判定应忽略右键并严格遵守时间与位移边界',
   // 快速两次单击是双击选词的正常来源：判定必须稳定报 2，按钮显示不再依赖直读结果。
   assert.equal(resolveDoubleClickSequence(click(1000, 100, 200), click(1080, 101, 200)).clicks, 2)
   assert.equal(resolveDoubleClickSequence(null, click(1000)).clicks, 1)
-  assert.equal(resolveDoubleClickSequence(click(1000), click(1200)).clicks, 2)
   // 间隔与位移都必须落在阈值之内：恰好等于阈值不算双击，为避免边界歧义固定为“严格小于”。
   assert.equal(
     resolveDoubleClickSequence(click(1000), click(1000 + DOUBLE_CLICK_MAX_INTERVAL_MS)).clicks,
@@ -1207,6 +1206,9 @@ test('自维护双击判定应忽略右键并严格遵守时间与位移边界',
     resolveDoubleClickSequence(click(1000), click(1001 + DOUBLE_CLICK_MAX_INTERVAL_MS)).clicks,
     1
   )
+  // 双击判定窗口固定为 250ms：窗口内仍算双击，达到阈值即视为两次独立单击。
+  assert.equal(resolveDoubleClickSequence(click(1000), click(1249)).clicks, 2)
+  assert.equal(resolveDoubleClickSequence(click(1000), click(1250)).clicks, 1)
   assert.equal(
     resolveDoubleClickSequence(click(1000), click(1200, DOUBLE_CLICK_MAX_DRIFT_PX)).clicks,
     2
@@ -1225,7 +1227,7 @@ test('自维护双击判定应忽略右键并严格遵守时间与位移边界',
 
 /**
  * 校验“拖拽划词 + 随后就近单击”不得被拼成假双击。
- * 真实缺陷回归：拖拽结束点与随后单击点距离很近且在 400ms 内时，
+ * 真实缺陷回归：拖拽结束点与随后单击点距离很近且在双击判定窗口内时，
  * 旧实现只比较两次松开点的间隔与漂移，会把单击误判成 clicks=2，
  * 导致明明没有选中文字却仍走双击分支发起只读确认（日志 distance=0）。
  * @returns 无返回值。
@@ -1253,7 +1255,7 @@ test('拖拽划词后的就近单击不得被拼成假双击', () => {
       travel: CLICK_MAX_SELF_TRAVEL_PX,
       x: 0,
       y: 0,
-      time: 1200
+      time: 1150
     }).clicks,
     2
   )
@@ -1263,7 +1265,7 @@ test('拖拽划词后的就近单击不得被拼成假双击', () => {
       travel: CLICK_MAX_SELF_TRAVEL_PX + 1,
       x: 0,
       y: 0,
-      time: 1200
+      time: 1150
     }).clicks,
     1
   )
