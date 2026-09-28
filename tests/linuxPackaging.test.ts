@@ -90,3 +90,15 @@ test('Linux 打包前应准备低 glibc 版本的 uiohook 运行时', () => {
   assert.match(prepareScript, /GLIBC_/u)
   assert.match(packagingDoc, /uiohook/u)
 })
+
+/**
+ * 校验低 glibc 的 uiohook 预编译产物不被 build 目录的忽略规则排除。
+ * 这些产物需要随仓库分发，否则 CI 在 npm ci 后执行测试与 dist:linux 时会因文件缺失而失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('uiohook 预编译产物不应被 Git 忽略', () => {
+  const gitignore = readFileSync('.gitignore', 'utf8')
+  assert.match(gitignore, /^!build\/uiohook-prebuilds\/$/mu)
+  assert.match(gitignore, /^!build\/uiohook-prebuilds\/\*\*$/mu)
+})

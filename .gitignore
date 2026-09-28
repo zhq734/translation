@@ -17,3 +17,6 @@ build/build-info.json
 *.certSigningRequest
 *.mobileprovision
 build/*
+# uiohook 低 glibc 预编译产物需随仓库分发，供 Linux AppImage 打包时替换 npm 自带的高 glibc 产物
+!build/uiohook-prebuilds/
+!build/uiohook-prebuilds/**
