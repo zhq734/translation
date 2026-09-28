@@ -28,8 +28,21 @@ import {
   type EdgePlaybackController
 } from './edgeSpeechPlayback'
 import { startThemeRuntime } from './theme'
+import { startLocaleRuntime } from './locale'
 
 startThemeRuntime(window.api)
+const localeRuntime = startLocaleRuntime(window.api)
+
+/**
+ * 使用当前界面语言翻译词条。
+ * @param key 语义化词条 key。
+ * @param params 可选插值参数。
+ * @returns 当前语言下的词条文本。
+ * @author zhenghq
+ */
+function t(key: string, params?: Record<string, string | number>): string {
+  return localeRuntime.translator.t(key, params)
+}
 
 const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement
@@ -65,9 +78,13 @@ let lastTranslation = ''
 let lastOriginal = ''
 let lastOcrText = ''
 let selectionStatus = ''
+let selectionSourceLangCode: string | null = null
+let selectionTargetLangCode = ''
 let selectionProvider: TranslatePayload['provider'] | undefined
 let currentSelectionOrigin: TranslatePayload['origin'] = 'selection'
 let manualStatus = ''
+let manualSourceLangCode: string | null = null
+let manualTargetLangCode = ''
 let manualProvider: TranslatePayload['provider'] | undefined
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 let pinned = false
@@ -83,14 +100,16 @@ const speechSynthesisApi: SpeechSynthesisLike | null = 'speechSynthesis' in wind
   : null
 const systemSpeechController: SpeechController = createSpeechController({
   synthesis: speechSynthesisApi,
+  getMessage: (key: string) => t(key),
   createUtterance(text: string): SpeechUtteranceLike {
     return new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike
   },
   onSpeakingChange: () => syncSpeechButton(),
-  onComplete: () => flashStatus('朗读完成'),
+  onComplete: () => flashStatus(t('popup.speechCompleted')),
   onError: (message: string) => flashStatus(message)
 })
 const edgeSpeechController: EdgePlaybackController = createEdgePlaybackController({
+  getMessage: (key: string) => t(key),
   synthesize: (text, language, signal) => {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
     let aborted = signal?.aborted === true
@@ -106,11 +125,11 @@ const edgeSpeechController: EdgePlaybackController = createEdgePlaybackControlle
     }
 
     signal?.addEventListener('abort', abort, { once: true })
-    if (aborted) return Promise.resolve({ ok: false, error: 'Edge 语音请求已取消' })
+    if (aborted) return Promise.resolve({ ok: false, error: t('popup.edgeSpeechCancelled') })
     return window.api
       .synthesizeEdgeSpeech(text, language, requestId)
       .then((result) => aborted
-        ? { ok: false, error: 'Edge 语音请求已取消' }
+        ? { ok: false, error: t('popup.edgeSpeechCancelled') }
         : result)
       .finally(() => signal?.removeEventListener('abort', abort))
   },
@@ -132,11 +151,11 @@ const edgeSpeechController: EdgePlaybackController = createEdgePlaybackControlle
       return null
     }
   },
-  onSynthesisStart: () => flashStatus('正在请求 Edge 语音…', 20_000),
-  onAudioReady: (byteLength) => flashStatus(`已收到 Edge 音频（${byteLength} 字节）`, 5000),
-  onPlaybackStart: () => flashStatus('正在播放 Edge 语音…', 5000),
+  onSynthesisStart: () => flashStatus(t('popup.edgeSpeechRequesting'), 20_000),
+  onAudioReady: (byteLength) => flashStatus(t('popup.edgeAudioReceived', { bytes: byteLength }), 5000),
+  onPlaybackStart: () => flashStatus(t('popup.edgeSpeechPlaying'), 5000),
   onSpeakingChange: () => syncSpeechButton(),
-  onComplete: () => flashStatus('朗读完成')
+  onComplete: () => flashStatus(t('popup.speechCompleted'))
 })
 
 /**
@@ -154,8 +173,8 @@ function isSpeechPlaying(): boolean {
  * @author zhenghq
  */
 async function initializeSelectors(): Promise<void> {
-  const sourceOptions = [{ code: 'auto', label: '自动检测' }, ...LANGUAGES]
-  const targetOptions = [{ code: 'auto', label: '自动中英互译' }, ...LANGUAGES]
+  const sourceOptions = [{ code: 'auto', label: t('popup.autoDetect') }, ...LANGUAGES]
+  const targetOptions = [{ code: 'auto', label: t('popup.autoBilingual') }, ...LANGUAGES]
   for (const language of sourceOptions) sourceLangEl.add(new Option(language.label, language.code))
   for (const language of targetOptions) targetLangEl.add(new Option(language.label, language.code))
   const settings = await window.api.getSettings()
@@ -174,10 +193,14 @@ async function initializeSelectors(): Promise<void> {
  */
 function renderTranslationProviderOptions(settings: Settings): void {
   translationProviderEl.replaceChildren()
-  translationProviderEl.add(new Option('自动选择', 'auto'))
+  translationProviderEl.add(new Option(t('popup.autoSelect'), 'auto'))
   for (const provider of TRANSLATION_PROVIDERS) {
     const available = isTranslationProviderAvailable(provider.id, settings)
-    const option = new Option(available ? provider.label : `${provider.label}（未启用）`, provider.id)
+    const providerLabel = translationProviderLabel(provider.id, localeRuntime.locale)
+    const option = new Option(
+      available ? providerLabel : t('popup.providerDisabledLabel', { provider: providerLabel }),
+      provider.id
+    )
     option.disabled = !available
     translationProviderEl.add(option)
   }
@@ -196,22 +219,25 @@ function renderTranslationProviderResult(actualProvider?: TranslatePayload['prov
   const preferredProvider = currentSettings?.preferredTranslationProvider ?? 'auto'
   const selectedOption = translationProviderEl.selectedOptions[0]
   if (!selectedOption) return
-  const preferredLabel = translationProviderLabel(preferredProvider)
+  const preferredLabel = translationProviderLabel(preferredProvider, localeRuntime.locale)
   if (!actualProvider) {
     selectedOption.textContent = preferredLabel
-    translationProviderEl.title = `首选翻译 API：${preferredLabel}`
+    translationProviderEl.title = t('popup.providerPreferred', { provider: preferredLabel })
     return
   }
-  const actualLabel = translationProviderLabel(actualProvider)
+  const actualLabel = translationProviderLabel(actualProvider, localeRuntime.locale)
   if (preferredProvider === 'auto') {
-    selectedOption.textContent = `自动 · ${actualLabel}`
-    translationProviderEl.title = `自动选择，实际使用：${actualLabel}`
+    selectedOption.textContent = t('popup.providerAutoActualShort', { provider: actualLabel })
+    translationProviderEl.title = t('popup.providerAutoActual', { provider: actualLabel })
   } else if (preferredProvider !== actualProvider) {
     selectedOption.textContent = `${preferredLabel} → ${actualLabel}`
-    translationProviderEl.title = `首选 ${preferredLabel} 已熔断或不可用，实际使用：${actualLabel}`
+    translationProviderEl.title = t('popup.providerFallbackActual', {
+      preferred: preferredLabel,
+      actual: actualLabel
+    })
   } else {
     selectedOption.textContent = preferredLabel
-    translationProviderEl.title = `首选并实际使用：${preferredLabel}`
+    translationProviderEl.title = t('popup.providerPreferredActual', { provider: preferredLabel })
   }
 }
 
@@ -271,14 +297,14 @@ function syncSpeechButton(): void {
   speakBtn.disabled = disabled
   speakBtn.setAttribute('aria-pressed', String(speaking))
   const label = speaking
-    ? '停止朗读'
+    ? t('popup.speechStop')
     : disabled
-      ? '暂无可朗读的译文'
+      ? t('popup.speechUnavailable')
       : currentSettings?.speechProvider === 'edge'
-        ? '使用 Edge 在线语音朗读译文'
+        ? t('popup.speechEdgeHint')
         : systemSpeechController.canSpeak(getCurrentSpeechLanguage())
-        ? '朗读译文'
-        : '朗读译文（需要系统语音）'
+        ? t('popup.speechRead')
+        : t('popup.speechSystemUnavailable')
   speakBtn.title = label
   speakBtn.setAttribute('aria-label', label)
   speakPlayIcon.toggleAttribute('hidden', speaking)
@@ -309,7 +335,7 @@ function stopSpeech(): void {
 async function toggleSpeech(): Promise<void> {
   if (isSpeechPlaying()) {
     stopSpeech()
-    flashStatus('已停止朗读')
+    flashStatus(t('popup.speechStopped'))
     return
   }
   const translation = getCurrentTranslation()
@@ -321,8 +347,10 @@ async function toggleSpeech(): Promise<void> {
   const operationId = ++speechOperationId
   if (currentSettings?.speechProvider === 'edge') {
     const result = await edgeSpeechController.start(translation, language)
-    if (operationId === speechOperationId && !result.ok && result.error !== 'Edge 语音请求已取消') {
-      flashStatus(`Edge 在线语音暂不可用：${result.error ?? '未知错误'}，已切换到系统语音`, 8000)
+    if (operationId === speechOperationId && !result.ok && result.error !== t('popup.edgeSpeechCancelled')) {
+      flashStatus(t('popup.edgeSpeechUnavailableWithError', {
+        error: result.error ?? t('common.unknownError')
+      }), 8000)
       systemSpeechController.start(translation, language)
     }
   } else {
@@ -356,7 +384,7 @@ function syncLanguageSelectors(payload: TranslatePayload): void {
  * @author zhenghq
  */
 function ocrEngineLabel(engine: string | undefined): string {
-  if (engine === 'system') return '系统 OCR'
+  if (engine === 'system') return t('popup.ocrSystem')
   if (engine === 'paddle') return 'PaddleOCR'
   if (engine === 'tesseract') return 'Tesseract'
   return 'OCR'
@@ -402,27 +430,27 @@ function renderOcrSource(payload: TranslatePayload): void {
   }
   ocrSourceEl.hidden = false
   if (payload.ocrCode === 'empty') {
-    ocrSourceTextEl.textContent = '未识别到文字'
+    ocrSourceTextEl.textContent = t('popup.ocrEmpty')
     ocrSourceTextEl.className = 'ocr-source-text ocr-empty'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrCode === 'noise') {
-    ocrSourceTextEl.textContent = '识别文字质量过低（噪声）'
+    ocrSourceTextEl.textContent = t('popup.ocrNoise')
     ocrSourceTextEl.className = 'ocr-source-text ocr-noise'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrCode === 'permission') {
-    ocrSourceTextEl.textContent = '缺少屏幕录制权限，请在系统设置中授权'
+    ocrSourceTextEl.textContent = t('popup.ocrPermission')
     ocrSourceTextEl.className = 'ocr-source-text ocr-error'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrCode === 'no-clipboard-image') {
-    ocrSourceTextEl.textContent = '剪贴板中没有图片'
+    ocrSourceTextEl.textContent = t('popup.ocrNoClipboardImage')
     ocrSourceTextEl.className = 'ocr-source-text ocr-error'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrCode === 'timeout') {
-    ocrSourceTextEl.textContent = 'OCR 识别超时'
+    ocrSourceTextEl.textContent = t('popup.ocrTimeout')
     ocrSourceTextEl.className = 'ocr-source-text ocr-error'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrCode === 'engine-unavailable') {
-    ocrSourceTextEl.textContent = 'OCR 引擎不可用'
+    ocrSourceTextEl.textContent = t('popup.ocrEngineUnavailable')
     ocrSourceTextEl.className = 'ocr-source-text ocr-error'
     ocrCopyBtn.hidden = true
   } else if (payload.ocrText || payload.ocrRawText) {
@@ -451,7 +479,7 @@ function renderOcrSource(payload: TranslatePayload): void {
 function renderOcrLoading(payload: TranslatePayload): void {
   resetOcrSourceState()
   ocrSourceEl.hidden = false
-  ocrSourceTextEl.textContent = payload.original ?? '正在识别图片文字…'
+  ocrSourceTextEl.textContent = payload.original ?? t('popup.ocrRecognizing')
   ocrSourceTextEl.className = 'ocr-source-text ocr-loading'
   ocrEngineBadgeEl.textContent = 'OCR'
   ocrEngineBadgeEl.hidden = false
@@ -478,13 +506,15 @@ function renderSelection(payload: TranslatePayload): void {
     lastTranslation = ''
     selectionSpeechLanguage = ''
     selectionProvider = undefined
+    selectionSourceLangCode = null
+    selectionTargetLangCode = payload.targetLang ?? ''
     selectionStatus = payload.loadingMessage ?? (payload.targetLang
-      ? `正在翻译为${langLabel(payload.targetLang)}…`
-      : '正在翻译…')
+      ? t('popup.translatingInto', { language: langLabel(payload.targetLang, localeRuntime.locale) })
+      : t('popup.translating'))
     if (visible) renderTranslationProviderResult()
     resultEl.textContent = payload.origin === 'ocr'
-      ? (payload.original ?? '正在识别图片文字…')
-      : (payload.loadingMessage ?? '正在翻译…')
+      ? (payload.original ?? t('popup.ocrRecognizing'))
+      : (payload.loadingMessage ?? t('popup.translating'))
     resultEl.classList.add('loading')
     originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
     copyBtn.hidden = true
@@ -503,9 +533,11 @@ function renderSelection(payload: TranslatePayload): void {
     lastTranslation = ''
     selectionSpeechLanguage = ''
     selectionProvider = undefined
-    selectionStatus = '翻译失败'
+    selectionSourceLangCode = null
+    selectionTargetLangCode = payload.targetLang ?? ''
+    selectionStatus = t('popup.translationFailed')
     if (visible) renderTranslationProviderResult()
-    resultEl.textContent = payload.error ?? '未知错误'
+    resultEl.textContent = payload.error ?? t('common.unknownError')
     originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
     copyBtn.hidden = true
     if (payload.origin === 'ocr') {
@@ -519,9 +551,13 @@ function renderSelection(payload: TranslatePayload): void {
   }
   stopSpeech()
   const sourceName = payload.detectedLang
-    ? langLabel(payload.detectedLang)
-    : payload.sourceLang === 'auto' ? '自动检测' : langLabel(payload.sourceLang ?? '')
-  const targetName = langLabel(payload.targetLang ?? '')
+    ? langLabel(payload.detectedLang, localeRuntime.locale)
+    : payload.sourceLang === 'auto'
+      ? t('popup.autoDetect')
+      : langLabel(payload.sourceLang ?? '', localeRuntime.locale)
+  const targetName = langLabel(payload.targetLang ?? '', localeRuntime.locale)
+  selectionSourceLangCode = payload.detectedLang ?? payload.sourceLang ?? 'auto'
+  selectionTargetLangCode = payload.targetLang ?? ''
   selectionProvider = payload.provider
   selectionStatus = `${sourceName} → ${targetName}`
   if (visible) renderTranslationProviderResult(selectionProvider)
@@ -555,12 +591,12 @@ function renderManualState(): void {
   if (manualSourceEl.value !== manualState.draft) manualSourceEl.value = manualState.draft
   manualCountEl.textContent = `${manualState.draft.length} / ${MANUAL_TRANSLATION_MAX_CHARS}`
   manualClearBtn.disabled = !manualState.draft && !manualState.translation && !manualState.error
-  manualSubmitBtn.disabled = !canSubmitManualTranslation(manualState)
-  manualSubmitBtn.textContent = manualState.loading ? '翻译中…' : '翻译'
+  manualSubmitBtn.disabled = !canSubmitManualTranslation(manualState, localeRuntime.translator)
+  manualSubmitBtn.textContent = manualState.loading ? t('popup.translating') : t('popup.translate')
   manualResultEl.className = 'manual-result'
   if (manualState.loading) {
     manualResultEl.classList.add('loading')
-    manualResultEl.textContent = '正在翻译…'
+    manualResultEl.textContent = t('popup.translating')
   } else if (manualState.error) {
     manualResultEl.classList.add('error')
     manualResultEl.textContent = manualState.error
@@ -568,7 +604,7 @@ function renderManualState(): void {
     manualResultEl.textContent = manualState.translation
   } else {
     manualResultEl.classList.add('empty')
-    manualResultEl.textContent = '翻译结果将显示在这里'
+    manualResultEl.textContent = t('popup.translationPlaceholder')
   }
   manualStaleEl.hidden = !manualState.stale
   manualCopyBtn.hidden = mode !== 'manual'
@@ -590,7 +626,7 @@ function renderMode(): void {
   manualViewEl.hidden = !manual
   selectionViewEl.hidden = manual
   manualModeBtn.setAttribute('aria-pressed', String(manual))
-  manualModeBtn.title = manual ? '切换划词翻译' : '切换手动翻译'
+  manualModeBtn.title = manual ? t('popup.switchToSelection') : t('popup.manualMode')
   manualModeBtn.setAttribute('aria-label', manualModeBtn.title)
   copyBtn.hidden = manual || !lastTranslation
   manualCopyBtn.hidden = !manual || !manualState.translation || manualState.loading || Boolean(manualState.error) || manualState.stale
@@ -643,13 +679,13 @@ function handleManualOpen(): void {
  * @author zhenghq
  */
 async function submitManualTranslation(): Promise<void> {
-  const validationError = validateManualTranslationText(manualState.draft)
+  const validationError = validateManualTranslationText(manualState.draft, localeRuntime.translator)
   if (validationError) {
     manualState = { ...manualState, error: validationError }
     renderManualState()
     return
   }
-  if (!canSubmitManualTranslation(manualState)) return
+  if (!canSubmitManualTranslation(manualState, localeRuntime.translator)) return
   stopSpeech()
   manualSpeechLanguage = ''
   manualState = beginManualTranslation(manualState)
@@ -661,7 +697,11 @@ async function submitManualTranslation(): Promise<void> {
       targetLang: targetLangEl.value
     })
   } catch {
-    manualState = failManualTranslation(manualState, manualState.requestId, '翻译请求失败，请重试')
+    manualState = failManualTranslation(
+      manualState,
+      manualState.requestId,
+      t('popup.translationRequestFailed')
+    )
     renderManualState()
   }
 }
@@ -685,7 +725,7 @@ async function retranslateWithCurrentLanguages(): Promise<void> {
       manualSpeechLanguage = ''
       renderManualState()
     } catch {
-      flashStatus('语言设置保存失败')
+      flashStatus(t('popup.languageSaveFailed'))
     } finally {
       sourceLangEl.disabled = false
       targetLangEl.disabled = false
@@ -699,7 +739,7 @@ async function retranslateWithCurrentLanguages(): Promise<void> {
   try {
     await window.api.retranslate(sourceLangEl.value, targetLangEl.value, currentSelectionOrigin)
   } catch {
-    flashStatus('重新翻译失败')
+    flashStatus(t('popup.retranslationFailed'))
   } finally {
     sourceLangEl.disabled = false
     targetLangEl.disabled = false
@@ -727,11 +767,16 @@ async function changeTranslationProvider(): Promise<void> {
     } else if (lastOriginal) {
       await retranslateWithCurrentLanguages()
     } else {
-      flashStatus(`已优先使用${translationProviderLabel(currentSettings.preferredTranslationProvider)}`)
+      flashStatus(t('popup.providerPreferredApplied', {
+        provider: translationProviderLabel(
+          currentSettings.preferredTranslationProvider,
+          localeRuntime.locale
+        )
+      }))
     }
   } catch {
     translationProviderEl.value = previousProvider
-    flashStatus('翻译 API 切换失败')
+    flashStatus(t('popup.providerSwitchFailed'))
   } finally {
     translationProviderEl.disabled = false
   }
@@ -763,6 +808,48 @@ function syncSettings(settings: Settings): void {
 }
 
 /**
+ * 界面语言切换后刷新动态文案，同时保留译文、草稿与选择状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleLocaleChanged(): void {
+  const sourceValue = sourceLangEl.value
+  const targetValue = targetLangEl.value
+  const providerValue = translationProviderEl.value
+  sourceLangEl.replaceChildren()
+  targetLangEl.replaceChildren()
+  sourceLangEl.add(new Option(t('popup.autoDetect'), 'auto'))
+  targetLangEl.add(new Option(t('popup.autoBilingual'), 'auto'))
+  for (const language of LANGUAGES) {
+    const label = langLabel(language.code, localeRuntime.locale)
+    sourceLangEl.add(new Option(label, language.code))
+    targetLangEl.add(new Option(label, language.code))
+  }
+  sourceLangEl.value = sourceValue || 'auto'
+  targetLangEl.value = targetValue || 'auto'
+  if (currentSettings) renderTranslationProviderOptions(currentSettings)
+  if (providerValue) translationProviderEl.value = providerValue
+  if (selectionSourceLangCode || selectionTargetLangCode) {
+    const sourceName = selectionSourceLangCode === 'auto' || !selectionSourceLangCode
+      ? t('popup.autoDetect')
+      : langLabel(selectionSourceLangCode, localeRuntime.locale)
+    selectionStatus = selectionTargetLangCode
+      ? `${sourceName} → ${langLabel(selectionTargetLangCode, localeRuntime.locale)}`
+      : selectionStatus
+  }
+  if (manualSourceLangCode || manualTargetLangCode) {
+    const sourceName = manualSourceLangCode === 'auto' || !manualSourceLangCode
+      ? t('popup.autoDetect')
+      : langLabel(manualSourceLangCode, localeRuntime.locale)
+    manualStatus = manualTargetLangCode
+      ? `${sourceName} → ${langLabel(manualTargetLangCode, localeRuntime.locale)}`
+      : manualStatus
+  }
+  renderMode()
+  renderPinnedState(pinned)
+}
+
+/**
  * 复制当前模式下的成功译文。
  * @returns 无返回值。
  * @author zhenghq
@@ -775,7 +862,7 @@ function copyTranslation(): void {
     if (!lastTranslation) return
     window.api.copy(lastTranslation)
   }
-  flashStatus('已复制')
+  flashStatus(t('popup.copied'))
 }
 
 /**
@@ -787,7 +874,7 @@ function copyTranslation(): void {
 function renderPinnedState(value: boolean): void {
   pinned = value
   pinBtn.setAttribute('aria-pressed', String(value))
-  pinBtn.title = value ? '取消固定弹窗' : '固定弹窗'
+  pinBtn.title = value ? t('popup.unpinWindow') : t('popup.pin')
   pinBtn.setAttribute('aria-label', pinBtn.title)
 }
 
@@ -856,9 +943,11 @@ window.api.onResult((payload) => {
         requestId: payload.requestId ?? manualState.requestId
       }
       manualProvider = undefined
+      manualSourceLangCode = null
+      manualTargetLangCode = payload.targetLang ?? ''
       manualStatus = payload.targetLang
-        ? `正在翻译为${langLabel(payload.targetLang)}…`
-        : '正在翻译…'
+        ? t('popup.translatingInto', { language: langLabel(payload.targetLang, localeRuntime.locale) })
+        : t('popup.translating')
       if (manualVisible) statusEl.textContent = manualStatus
     } else if (!payload.ok) {
       // 校验错误可能没有经过“加载中”负载；只要原文仍对应当前提交，就接受主进程返回的请求序号。
@@ -866,10 +955,16 @@ window.api.onResult((payload) => {
       stopSpeech()
       manualSpeechLanguage = ''
       if (payload.requestId !== undefined) manualState = { ...manualState, requestId: payload.requestId }
-      manualState = failManualTranslation(manualState, manualState.requestId, payload.error ?? '翻译失败')
+      manualState = failManualTranslation(
+        manualState,
+        manualState.requestId,
+        payload.error ?? t('popup.translationFailed')
+      )
       manualProvider = undefined
-      manualStatus = '翻译失败'
-      if (manualVisible) statusEl.textContent = '翻译失败'
+      manualSourceLangCode = null
+      manualTargetLangCode = payload.targetLang ?? ''
+      manualStatus = t('popup.translationFailed')
+      if (manualVisible) statusEl.textContent = t('popup.translationFailed')
     } else {
       if (payload.requestId !== undefined && payload.requestId !== manualState.requestId) return
       stopSpeech()
@@ -882,11 +977,15 @@ window.api.onResult((payload) => {
       }
       manualSpeechLanguage = payload.targetLang ?? targetLangEl.value
       manualProvider = payload.provider
+      manualSourceLangCode = payload.detectedLang ?? payload.sourceLang ?? 'auto'
+      manualTargetLangCode = payload.targetLang ?? ''
       if (manualVisible) renderTranslationProviderResult(payload.provider)
       const sourceName = payload.detectedLang
-        ? langLabel(payload.detectedLang)
-        : payload.sourceLang === 'auto' ? '自动检测' : langLabel(payload.sourceLang ?? '')
-      manualStatus = `${sourceName} → ${langLabel(payload.targetLang ?? '')}`
+        ? langLabel(payload.detectedLang, localeRuntime.locale)
+        : payload.sourceLang === 'auto'
+          ? t('popup.autoDetect')
+          : langLabel(payload.sourceLang ?? '', localeRuntime.locale)
+      manualStatus = `${sourceName} → ${langLabel(payload.targetLang ?? '', localeRuntime.locale)}`
       if (manualVisible) statusEl.textContent = manualStatus
     }
     renderManualState()
@@ -919,7 +1018,7 @@ manualCopyBtn.addEventListener('click', copyTranslation)
 ocrCopyBtn.addEventListener('click', () => {
   const text = ocrSourceTextEl.textContent ?? ''
   if (text) window.api.copy(text)
-  if (text) flashStatus('已复制 OCR 内容')
+  if (text) flashStatus(t('popup.ocrCopied'))
 })
 pinBtn.addEventListener('click', togglePinned)
 webReaderBtn.addEventListener('click', openWebReader)
@@ -929,6 +1028,7 @@ document.addEventListener('keydown', handleKeydown)
 window.api.onManualTranslateOpen(handleManualOpen)
 window.api.onPinnedChanged(renderPinnedState)
 window.api.onSettingsChanged(syncSettings)
+localeRuntime.onLocaleChanged(handleLocaleChanged)
 if ('speechSynthesis' in window) {
   window.speechSynthesis.addEventListener('voiceschanged', syncSpeechButton)
 }

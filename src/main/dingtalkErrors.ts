@@ -1,4 +1,5 @@
 import type { DingTalkCheckStatus } from '../shared/types'
+import { translateMain } from './messages'
 
 /** 钉钉内部错误分类。 */
 export type DingTalkErrorKind =
@@ -54,20 +55,20 @@ const PARAMETER_CODES = new Set([40003, 40004, 40035])
  */
 export function createDingTalkResponseError(status: number, errorCode?: number): DingTalkError {
   if (status === 401 || AUTHENTICATION_CODES.has(errorCode ?? -1)) {
-    return new DingTalkError('authentication', '钉钉鉴权失败', {
+    return new DingTalkError('authentication', translateMain('dingtalk.error.authentication'), {
       authenticationInvalid: AUTHENTICATION_CODES.has(errorCode ?? -1)
     })
   }
   if (status === 403 || PERMISSION_CODES.has(errorCode ?? -1)) {
-    return new DingTalkError('permission', '钉钉应用权限不足')
+    return new DingTalkError('permission', translateMain('dingtalk.error.permission'))
   }
   if (status === 429 || RATE_LIMIT_CODES.has(errorCode ?? -1)) {
-    return new DingTalkError('rate-limit', '钉钉接口请求过于频繁')
+    return new DingTalkError('rate-limit', translateMain('dingtalk.error.rateLimit'))
   }
   if (status === 400 || PARAMETER_CODES.has(errorCode ?? -1)) {
-    return new DingTalkError('parameter', '钉钉请求参数无效')
+    return new DingTalkError('parameter', translateMain('dingtalk.error.parameter'))
   }
-  return new DingTalkError('service', '钉钉服务暂时不可用')
+  return new DingTalkError('service', translateMain('dingtalk.error.serviceUnavailable'))
 }
 
 /**
@@ -80,9 +81,13 @@ export function normalizeDingTalkNetworkError(error: unknown): DingTalkError {
   if (error instanceof DingTalkError) return error
   const name = error instanceof Error ? error.name : ''
   const timeout = name === 'AbortError' || name === 'TimeoutError'
-  return new DingTalkError('network', timeout ? '钉钉请求超时' : '钉钉网络连接失败', {
-    cause: error
-  })
+  return new DingTalkError(
+    'network',
+    translateMain(timeout ? 'dingtalk.error.timeout' : 'dingtalk.error.network'),
+    {
+      cause: error
+    }
+  )
 }
 
 /**
@@ -97,18 +102,42 @@ export function toDingTalkCheckStatus(error: unknown): DingTalkCheckStatus {
     : normalizeDingTalkNetworkError(error)
   switch (normalized.kind) {
     case 'configuration':
-      return { ok: false, code: 'incomplete', message: '钉钉配置不完整，请填写 CorpId、ClientId 和 ClientSecret' }
+      return {
+        ok: false,
+        code: 'incomplete',
+        message: translateMain('dingtalk.error.configurationIncomplete')
+      }
     case 'authentication':
-      return { ok: false, code: 'authentication', message: '钉钉鉴权失败，请检查 CorpId、ClientId 和 ClientSecret' }
+      return {
+        ok: false,
+        code: 'authentication',
+        message: translateMain('dingtalk.error.authenticationStatus')
+      }
     case 'permission':
-      return { ok: false, code: 'permission', message: '钉钉应用未获得文本翻译权限' }
+      return {
+        ok: false,
+        code: 'permission',
+        message: translateMain('dingtalk.error.permissionStatus')
+      }
     case 'rate-limit':
-      return { ok: false, code: 'rate-limit', message: '钉钉接口请求过于频繁，请稍后重试' }
+      return {
+        ok: false,
+        code: 'rate-limit',
+        message: translateMain('dingtalk.error.rateLimitStatus')
+      }
     case 'parameter':
-      return { ok: false, code: 'parameter', message: '钉钉翻译请求参数不受支持' }
+      return {
+        ok: false,
+        code: 'parameter',
+        message: translateMain('dingtalk.error.parameterStatus')
+      }
     case 'network':
       return { ok: false, code: 'network', message: normalized.message }
     default:
-      return { ok: false, code: 'service', message: '钉钉服务暂时不可用，请稍后重试' }
+      return {
+        ok: false,
+        code: 'service',
+        message: translateMain('dingtalk.error.serviceStatus')
+      }
   }
 }

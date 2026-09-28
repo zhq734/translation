@@ -1,7 +1,13 @@
 import { open } from 'node:fs/promises'
 import type { UpdateProgress } from '../shared/types'
 import type { UpdateDownloadFetch } from './manualMacUpdate'
+import { translateMain } from './messages'
 import { createUpdateProgressReporter } from './updateDownloadProgress'
+import {
+  createUpdateDownloadError,
+  getUpdateDownloadErrorCode,
+  isUpdateDownloadErrorCode
+} from './updateDownloadError'
 import type { DownloadResumeSegment } from './updateDownloadResume'
 
 /** 分片并发上限，用于提升慢速链路吞吐且避免过度触发下载源限流。 */
@@ -214,7 +220,12 @@ export async function downloadSegments(options: DownloadSegmentsOptions): Promis
         chunk.byteLength - written,
         position + written
       )
-      if (result.bytesWritten <= 0) throw new Error('写入更新临时文件失败')
+      if (result.bytesWritten <= 0) {
+        throw createUpdateDownloadError(
+          'write-failed',
+          translateMain('update.downloadError.writeFailed')
+        )
+      }
       written += result.bytesWritten
     }
     return written
@@ -245,7 +256,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       const rangeStart = segment.start + segment.completed
       if (rangeStart > segment.end) return
-      if (options.signal?.aborted) throw new Error('下载已取消')
+      if (options.signal?.aborted) {
+        throw createUpdateDownloadError(
+          'cancelled',
+          translateMain('update.downloadError.cancelled')
+        )
+      }
       try {
         const requestAbortController = new AbortController()
         const abortRequest = (): void => requestAbortController.abort()
@@ -297,9 +313,24 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
         } catch (error) {
           // fetch 被中止时，Electron 抛出的原始 abort 错误不带超时语义，
           // 这里结合计时器状态还原真实原因，保证重试判断与提示都准确。
-          if (options.signal?.aborted) throw new Error('下载已取消')
-          if (timeoutKind === 'request') throw new Error('分片请求超时')
-          if (isAbortLikeError(error)) throw new Error('网络连接被中断')
+          if (options.signal?.aborted) {
+            throw createUpdateDownloadError(
+              'cancelled',
+              translateMain('update.downloadError.cancelled')
+            )
+          }
+          if (timeoutKind === 'request') {
+            throw createUpdateDownloadError(
+              'request-timeout',
+              translateMain('update.downloadError.requestTimeout')
+            )
+          }
+          if (isAbortLikeError(error)) {
+            throw createUpdateDownloadError(
+              'network-interrupted',
+              translateMain('update.downloadError.networkInterrupted')
+            )
+          }
           throw error
         } finally {
           if (!response) cleanupRequestResources()
@@ -307,7 +338,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
         // 请求超时只约束“收到响应头”这一段。响应已经建立后，慢速链路的
         // 总传输时长不应继续受该计时器约束，数据停滞改由读取超时检测。
         clearTimeout(requestTimer)
-        if (timeoutKind === 'request') throw new Error('分片请求超时')
+        if (timeoutKind === 'request') {
+          throw createUpdateDownloadError(
+            'request-timeout',
+            translateMain('update.downloadError.requestTimeout')
+          )
+        }
         // 分片响应必须是 206。若服务器忽略 Range 返回 200，响应体会从文件
         // 开头开始，不能继续按分片偏移写入，否则会得到错位的损坏文件。
         if (response.status !== 206) {
@@ -331,9 +367,19 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
                 requestAbortController.signal.removeEventListener('abort', onAbort)
                 // 用户取消优先于超时：调用方信号触发时不能误报为分片超时。
                 if (options.signal?.aborted) {
-                  reject(new Error('下载已取消'))
+                  reject(createUpdateDownloadError(
+                    'cancelled',
+                    translateMain('update.downloadError.cancelled')
+                  ))
                 } else {
-                  reject(new Error(timeoutKind === 'read' ? '分片读取超时' : '分片请求超时'))
+                  reject(createUpdateDownloadError(
+                    timeoutKind === 'read' ? 'read-timeout' : 'request-timeout',
+                    translateMain(
+                      timeoutKind === 'read'
+                        ? 'update.downloadError.readTimeout'
+                        : 'update.downloadError.requestTimeout'
+                    )
+                  ))
                 }
               }
 
@@ -360,7 +406,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
           try {
             resetReadTimeout()
             while (true) {
-              if (options.signal?.aborted) throw new Error('下载已取消')
+              if (options.signal?.aborted) {
+                throw createUpdateDownloadError(
+                  'cancelled',
+                  translateMain('update.downloadError.cancelled')
+                )
+              }
               const chunk = await readChunk()
               if (chunk.done) break
               if (!chunk.value) continue
@@ -371,7 +422,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
               reporter.add(written)
               recordWrittenBytes(written)
             }
-            if (timeoutKind === 'read') throw new Error('分片读取超时')
+            if (timeoutKind === 'read') {
+              throw createUpdateDownloadError(
+                'read-timeout',
+                translateMain('update.downloadError.readTimeout')
+              )
+            }
             chunkLoopCompleted = true
           } finally {
             cleanupRequestResources()
@@ -382,7 +438,12 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
           try {
             resetReadTimeout()
             const content = new Uint8Array(await response.arrayBuffer())
-            if (timeoutKind === 'read') throw new Error('分片读取超时')
+            if (timeoutKind === 'read') {
+              throw createUpdateDownloadError(
+                'read-timeout',
+                translateMain('update.downloadError.readTimeout')
+              )
+            }
             const written = await writeChunkAt(content, position)
             segment.completed += written
             reporter.add(written)
@@ -406,8 +467,13 @@ const downloadSegment = async (segment: DownloadResumeSegment): Promise<void> =>
         }
       }
     }
-    throw new Error(
-      `分片下载失败（字节 ${segment.start}-${segment.end}）：${lastError?.message ?? '未知错误'}`
+    throw createUpdateDownloadError(
+      'segment-failed',
+      translateMain('update.downloadError.segmentFailed', {
+        start: segment.start,
+        end: segment.end,
+        message: lastError?.message ?? translateMain('update.downloadError.unknown')
+      })
     )
   }
 
@@ -451,8 +517,13 @@ function isNetworkError(error: Error): boolean {
   // 除 Node 侧错误码外，Electron 会把底层失败包装成 `net::ERR_*` 形式的
   // Chromium 网络层错误码（如 ERR_INCOMPLETE_CHUNKED_ENCODING、
   // ERR_CONTENT_LENGTH_MISMATCH）；这类错误都可重试并从断点继续。
-  return /net::ERR_|ERR_(?:CONNECTION|TIMED_OUT|NETWORK|ABORTED)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|分片(?:请求|读取)超时|网络(?:连接)?被中断/u
-    .test(error.message)
+  return (
+    /net::ERR_|ERR_(?:CONNECTION|TIMED_OUT|NETWORK|ABORTED)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN/u
+      .test(error.message) ||
+    isUpdateDownloadErrorCode(error, 'request-timeout') ||
+    isUpdateDownloadErrorCode(error, 'read-timeout') ||
+    isUpdateDownloadErrorCode(error, 'network-interrupted')
+  )
 }
 
 /**
@@ -473,22 +544,36 @@ function isAbortLikeError(error: unknown): boolean {
 }
 
 /**
- * 把各运行时抛出的中断异常归一化为可重试且可展示的中文错误。
+ * 把各运行时抛出的中断异常归一化为可重试且可展示的错误。
  *
- * 调用方主动取消时保留“下载已取消”语义，避免把用户操作误报成网络故障；
- * 其余中断统一转换为“网络连接被中断”，使重试判断与最终提示都能正确处理。
+ * 调用方主动取消时保留取消语义，避免把用户操作误报成网络故障；
+ * 其余中断统一转换为网络中断错误，使重试判断与最终提示都能正确处理。
  * @param error 底层 fetch 或读取流程抛出的异常。
  * @param signal 调用方传入的取消信号，用于区分用户取消与网络中断。
  * @returns 归一化后的异常。
  * @author zhenghq
  */
 function normalizeSegmentError(error: unknown, signal?: AbortSignal): Error {
-  if (signal?.aborted) return new Error('下载已取消')
-  if (isAbortLikeError(error)) return new Error('网络连接被中断')
+  if (signal?.aborted) {
+    return createUpdateDownloadError(
+      'cancelled',
+      translateMain('update.downloadError.cancelled')
+    )
+  }
+  if (error instanceof Error && getUpdateDownloadErrorCode(error)) return error
+  if (isAbortLikeError(error)) {
+    return createUpdateDownloadError(
+      'network-interrupted',
+      translateMain('update.downloadError.networkInterrupted')
+    )
+  }
   // Chromium 的 `net::ERR_*` 错误码属于网络层失败，统一转成可重试且可展示
-  // 的中文提示，避免英文错误码直接暴露在设置页。
+  // 的提示，避免英文错误码直接暴露在设置页。
   if (error instanceof Error && /net::ERR_/u.test(error.message)) {
-    return new Error('网络连接被中断')
+    return createUpdateDownloadError(
+      'network-interrupted',
+      translateMain('update.downloadError.networkInterrupted')
+    )
   }
   return error instanceof Error ? error : new Error(String(error))
 }
@@ -501,7 +586,12 @@ function normalizeSegmentError(error: unknown, signal?: AbortSignal): Error {
  * @author zhenghq
  */
 function sleep(duration: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(new Error('下载已取消'))
+  if (signal?.aborted) {
+    return Promise.reject(createUpdateDownloadError(
+      'cancelled',
+      translateMain('update.downloadError.cancelled')
+    ))
+  }
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', abort)
@@ -509,7 +599,10 @@ function sleep(duration: number, signal?: AbortSignal): Promise<void> {
     }, duration)
     const abort = (): void => {
       clearTimeout(timer)
-      reject(new Error('下载已取消'))
+      reject(createUpdateDownloadError(
+        'cancelled',
+        translateMain('update.downloadError.cancelled')
+      ))
     }
     signal?.addEventListener('abort', abort, { once: true })
   })

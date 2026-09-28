@@ -8,6 +8,8 @@ import type {
   WebTranslationScope
 } from './webPageTranslation'
 
+import type { UiLocale } from './i18n/locale'
+
 export type { ExtractedWebTextUnit, WebImageOverlayPlacement, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
 
 /** 划词后的弹窗触发方式。 */
@@ -314,6 +316,9 @@ export interface OcrSelectionFailedPayload {
 /** 截图动作类型：文字识别、翻译、复制图片或保存到本地。
  * @author zhenghq
  */
+/** 截图动作提示的语义状态，供提示窗口选择图标与配色，避免依赖文案关键词判断。 */
+export type ScreenshotToastKind = 'success' | 'warning' | 'error'
+
 export type ScreenshotOcrAction = 'recognize' | 'translate' | 'copy-image' | 'save-image'
 
 /** 截图动作细分错误码：在 OCR 错误码基础上扩展剪贴板与文件写入失败。
@@ -599,6 +604,8 @@ export function normalizeOcrScale(value: unknown): number {
 export interface Settings {
   /** 设置结构版本，用于自动升级旧配置。 */
   schemaVersion: number
+  /** 界面语言偏好，auto 表示跟随系统语言。 */
+  uiLocale: UiLocale
   /** 应用彩色主题预设。 */
   themePreset: ThemePreset
   /** 应用主题明暗模式。 */
@@ -1063,11 +1070,11 @@ export interface Api {
   /** 订阅截图图片复制/保存动作反馈事件，返回取消订阅方法。 */
   onOcrActionResult(cb: (result: ScreenshotOcrActionResult) => void): () => void
   /** 请求主进程展示独立的截图动作提示窗口。 */
-  showScreenshotToast(payload: { message: string; displayTimeMs?: number }): void
+  showScreenshotToast(payload: { message: string; kind?: ScreenshotToastKind; displayTimeMs?: number }): void
   /** 提示窗口渲染进程回传尺寸测量结果，请求主进程居中显示。 */
   showScreenshotToastWindow(payload: { width: number; height: number; displayTimeMs: number }): void
   /** 订阅主进程转发到提示窗口的展示事件，返回取消订阅方法。 */
-  onShowScreenshotToast(cb: (payload: { message: string; displayTimeMs: number }) => void): () => void
+  onShowScreenshotToast(cb: (payload: { message: string; kind: ScreenshotToastKind; displayTimeMs: number }) => void): () => void
   /** 使用弹窗中的语言偏好重新翻译当前文本。 */
   retranslate(sourceLang: string, targetLang: string, origin?: TranslationOrigin): Promise<void>
   /** 提交一条手动翻译请求。 */

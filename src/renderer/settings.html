@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -7,26 +7,27 @@
       content="default-src 'self'; style-src 'self' 'unsafe-inline'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>划词翻译 · 设置</title>
+    <title data-i18n="settings.windowTitle">Selection Translator · Settings</title>
+    <script src="./localeBootstrap.js"></script>
     <script src="./themeBootstrap.js"></script>
     <link rel="stylesheet" href="./src/theme.css" />
     <link rel="stylesheet" href="./src/base.css" />
     <link rel="stylesheet" href="./src/settings.css" />
   </head>
   <body>
-    <header id="settings-titlebar" class="window-titlebar" aria-label="设置窗口标题栏">
-      <div class="window-titlebar-brand" aria-label="划词翻译设置">
+    <header id="settings-titlebar" class="window-titlebar" data-i18n-attr="aria-label:settings.titlebar" aria-label="Settings window title bar">
+      <div class="window-titlebar-brand" data-i18n-attr="aria-label:settings.brand" aria-label="Selection Translator settings">
         <span class="window-titlebar-mark" aria-hidden="true">译</span>
-        <span class="window-titlebar-title">划词翻译 · 设置</span>
+        <span class="window-titlebar-title" data-i18n="settings.windowTitle">Selection Translator · Settings</span>
       </div>
-      <div class="window-controls" aria-label="窗口控制">
-        <button id="window-minimize" class="window-control-button" type="button" aria-label="最小化" title="最小化">
+      <div class="window-controls" data-i18n-attr="aria-label:common.windowControls" aria-label="Window controls">
+        <button id="window-minimize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.minimize;title:common.minimize" aria-label="Minimize" title="Minimize">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
         </button>
-        <button id="window-maximize" class="window-control-button" type="button" aria-label="最大化" title="最大化">
+        <button id="window-maximize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.maximize;title:common.maximize" aria-label="Maximize" title="Maximize">
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>
         </button>
-        <button id="window-close" class="window-control-button window-control-close" type="button" aria-label="关闭" title="关闭">
+        <button id="window-close" class="window-control-button window-control-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
         </button>
       </div>
@@ -34,14 +35,14 @@
     <main class="container">
       <header class="page-header">
         <div>
-          <h1>划词翻译 · 设置</h1>
-          <p>所有修改都会自动保存并立即生效</p>
+          <h1 data-i18n="settings.windowTitle">Selection Translator · Settings</h1>
+          <p data-i18n="settings.autoSaveHint">All changes are saved automatically and take effect immediately</p>
         </div>
-        <span id="schema-version" class="version" title="配置结构版本"></span>
+        <span id="schema-version" class="version" data-i18n-attr="title:settings.schemaVersion" title="Settings schema version"></span>
       </header>
 
       <div class="settings-layout">
-      <nav class="settings-sidebar" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+      <nav class="settings-sidebar" role="tablist" data-i18n-attr="aria-label:settings.categories" aria-label="Settings categories" aria-orientation="vertical">
         <button
           id="settings-tab-general"
           class="settings-tab"
@@ -54,7 +55,7 @@
           <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" />
           </svg>
-          <span class="settings-tab-label">常规</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.general">General</span>
         </button>
         <button
           id="settings-tab-ai"
@@ -69,7 +70,7 @@
           <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3ZM18.5 14l.75 2.25L21.5 17l-2.25.75L18.5 20l-.75-2.25L15.5 17l2.25-.75L18.5 14ZM5.5 12l.65 1.85L8 14.5l-1.85.65L5.5 17l-.65-1.85L3 14.5l1.85-.65L5.5 12Z" />
           </svg>
-          <span class="settings-tab-label">AI 翻译</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.ai">AI Translation</span>
         </button>
         <button
           id="settings-tab-ocr"
@@ -84,7 +85,7 @@
           <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4M8 12h8M8 16h6" />
           </svg>
-          <span class="settings-tab-label">OCR</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.ocr">OCR</span>
         </button>
         <button
           id="settings-tab-translation-services"
@@ -100,7 +101,7 @@
             <circle cx="12" cy="12" r="9" />
             <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
           </svg>
-          <span class="settings-tab-label">翻译服务</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.translationServices">Translation Services</span>
         </button>
         <button
           id="settings-tab-advanced"
@@ -116,7 +117,7 @@
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1 1.55V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.55-1H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
           </svg>
-          <span class="settings-tab-label">高级</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.advanced">Advanced</span>
         </button>
         <button
           id="settings-tab-logs"
@@ -132,7 +133,7 @@
             <path d="M6 3h9l4 4v14H6V3Z" />
             <path d="M15 3v5h4M9 12h7M9 16h7" />
           </svg>
-          <span class="settings-tab-label">日志</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.logs">Logs</span>
         </button>
         <button
           id="settings-tab-about"
@@ -148,12 +149,12 @@
             <circle cx="12" cy="12" r="9" />
             <path d="M12 11v6M12 7h.01" />
           </svg>
-          <span class="settings-tab-label">关于</span>
+          <span class="settings-tab-label" data-i18n="settings.tab.about">About</span>
         </button>
       </nav>
 
       <!-- 旧入口保留为不可见兼容锚点，避免历史自动化选择器和外部深链失效。 -->
-      <button id="settings-tab-dingtalk" class="legacy-settings-anchor" type="button" aria-controls="settings-panel-dingtalk" tabindex="-1" hidden>钉钉</button>
+      <button id="settings-tab-dingtalk" class="legacy-settings-anchor" type="button" aria-controls="settings-panel-dingtalk" tabindex="-1" hidden data-i18n="settings.dingTalk.title">DingTalk</button>
       <span id="settings-panel-dingtalk" aria-labelledby="settings-tab-dingtalk" hidden></span>
 
       <div class="settings-content tab-panels">
@@ -166,192 +167,201 @@
           tabindex="0"
         >
           <section class="appearance-section">
-            <h2>外观</h2>
+            <h2 data-i18n="settings.appearance.title">Appearance</h2>
             <div class="row">
-              <label for="theme-mode">主题模式</label>
-              <select id="theme-mode">
-                <option value="system">跟随系统</option>
-                <option value="light">始终浅色</option>
-                <option value="dark">始终深色</option>
+              <label for="ui-locale" data-i18n="settings.uiLocale.label">Interface language</label>
+              <select id="ui-locale" data-i18n-attr="title:settings.uiLocale.title" title="Interface language">
+                <option value="auto" data-i18n="settings.uiLocale.auto">Follow system</option>
+                <option value="zh-CN" data-i18n="settings.uiLocale.zhCN">Simplified Chinese</option>
+                <option value="en-US" data-i18n="settings.uiLocale.enUS">English</option>
               </select>
             </div>
-            <p class="field-hint">主题会立即应用到弹窗、设置页、截图工具和网页阅读器。</p>
-            <div class="theme-preset-grid" role="group" aria-label="主题配色">
+            <p class="field-hint" data-i18n="settings.uiLocale.hint">Applies immediately to all open windows and the tray menu.</p>
+            <div class="row">
+              <label for="theme-mode" data-i18n="settings.themeMode.label">Theme mode</label>
+              <select id="theme-mode">
+                <option value="system" data-i18n="settings.themeMode.system">Follow system</option>
+                <option value="light" data-i18n="settings.themeMode.light">Always light</option>
+                <option value="dark" data-i18n="settings.themeMode.dark">Always dark</option>
+              </select>
+            </div>
+            <p class="field-hint" data-i18n="settings.themeMode.hint">The theme is applied immediately to the popup, settings, screenshot tools, and web reader.</p>
+            <div class="theme-preset-grid" role="group" data-i18n-attr="aria-label:settings.themePreset.group" aria-label="Theme colors">
               <button class="theme-preset-card" type="button" data-theme-preset="sakura" aria-pressed="false">
                 <span class="theme-preset-swatch theme-swatch-sakura" aria-hidden="true"></span>
-                <strong>樱花粉</strong><small>柔和轻盈</small>
+                <strong data-i18n="settings.themePreset.sakura.name">Sakura Pink</strong><small data-i18n="settings.themePreset.sakura.desc">Soft and light</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="emerald" aria-pressed="false">
                 <span class="theme-preset-swatch theme-swatch-emerald" aria-hidden="true"></span>
-                <strong>祖母绿</strong><small>清爽自然</small>
+                <strong data-i18n="settings.themePreset.emerald.name">Emerald</strong><small data-i18n="settings.themePreset.emerald.desc">Fresh and natural</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="sky" aria-pressed="false">
                 <span class="theme-preset-swatch theme-swatch-sky" aria-hidden="true"></span>
-                <strong>天空蓝</strong><small>清晰专业</small>
+                <strong data-i18n="settings.themePreset.sky.name">Sky Blue</strong><small data-i18n="settings.themePreset.sky.desc">Clear and professional</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="navy" aria-pressed="false">
                 <span class="theme-preset-swatch theme-swatch-navy" aria-hidden="true"></span>
-                <strong>藏青色</strong><small>稳重低调</small>
+                <strong data-i18n="settings.themePreset.navy.name">Navy</strong><small data-i18n="settings.themePreset.navy.desc">Calm and understated</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="platinum-black" aria-pressed="false">
                 <span class="theme-preset-swatch theme-swatch-platinum-black" aria-hidden="true"></span>
-                <strong>铂金黑</strong><small>高级极简</small>
+                <strong data-i18n="settings.themePreset.platinumBlack.name">Platinum Black</strong><small data-i18n="settings.themePreset.platinumBlack.desc">Premium and minimal</small>
               </button>
             </div>
           </section>
           <section>
-            <h2>翻译语言</h2>
+            <h2 data-i18n="settings.language.title">Translation Languages</h2>
             <div class="row">
-              <label for="target-lang">目标语言</label>
+              <label for="target-lang" data-i18n="menu.targetLanguage">Target Language</label>
               <select id="target-lang"></select>
             </div>
             <div class="row">
-              <label for="source-lang">源语言</label>
+              <label for="source-lang" data-i18n="menu.sourceLanguage">Source Language</label>
               <select id="source-lang"></select>
             </div>
           </section>
 
           <section>
-            <h2>触发与弹窗</h2>
+            <h2 data-i18n="settings.trigger.title">Trigger and Popup</h2>
             <div class="row">
-              <label for="trigger-mode">触发方式</label>
+              <label for="trigger-mode" data-i18n="settings.trigger.modeLabel">Trigger mode</label>
               <select id="trigger-mode">
-                <option value="auto">划词后自动打开并翻译</option>
-                <option value="button">划词后显示“译”按钮</option>
-                <option value="hotkey">仅使用快捷键打开</option>
+                <option value="auto" data-i18n="settings.trigger.mode.auto">Open and translate automatically after selection</option>
+                <option value="button" data-i18n="settings.trigger.mode.button">Show the Translate button after selection</option>
+                <option value="hotkey" data-i18n="settings.trigger.mode.hotkey">Open with hotkey only</option>
               </select>
             </div>
             <p id="trigger-hint" class="field-hint"></p>
             <div class="row">
-              <label for="auto-show-selection-button">选区按钮</label>
+              <label for="auto-show-selection-button" data-i18n="settings.trigger.selectionButton">Selection button</label>
               <label class="checkbox-control">
                 <input id="auto-show-selection-button" type="checkbox" />
-                划词后自动显示“译”按钮
+                <span data-i18n="settings.trigger.selectionButtonLabel">Show the Translate button automatically after selecting text</span>
               </label>
             </div>
-            <p class="field-hint">开启后切换为按钮触发；关闭后切换为仅快捷键。与上方“触发方式”以及托盘菜单开关保持同步。</p>
+            <p class="field-hint" data-i18n="settings.trigger.selectionButtonHint">When enabled, selection uses button trigger mode; when disabled, it uses hotkey-only mode. This stays in sync with Trigger mode and the tray menu.</p>
             <div class="row">
-              <label for="double-click-selection-button-enabled">双击选词</label>
+              <label for="double-click-selection-button-enabled" data-i18n="settings.trigger.doubleClick">Double-click selection</label>
               <label class="checkbox-control">
                 <input id="double-click-selection-button-enabled" type="checkbox" />
-                双击选词显示“译”按钮
+                <span data-i18n="settings.trigger.doubleClickLabel">Show the Translate button when selecting by double-click</span>
               </label>
             </div>
-            <p class="field-hint">关闭后，双击选词不再显示“译”按钮；鼠标拖拽划词仍按上方触发方式处理。</p>
+            <p class="field-hint" data-i18n="settings.trigger.doubleClickHint">When disabled, double-click selection no longer shows the Translate button. Drag selection still follows the trigger mode above.</p>
             <div class="row">
-              <label for="hotkey">全局快捷键</label>
-              <input id="hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
+              <label for="hotkey" data-i18n="settings.trigger.globalHotkey">Global hotkey</label>
+              <input id="hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.trigger.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
             </div>
             <div class="row">
-              <label for="autohide">结果自动隐藏</label>
+              <label for="autohide" data-i18n="settings.trigger.autoHide">Auto-hide result</label>
               <select id="autohide">
-                <option value="0">不自动隐藏（默认）</option>
-                <option value="3000">3 秒</option>
-                <option value="5000">5 秒</option>
-                <option value="8000">8 秒</option>
-                <option value="15000">15 秒</option>
+                <option value="0" data-i18n="settings.trigger.autoHide.never">Never (default)</option>
+                <option value="3000" data-i18n="settings.trigger.autoHide.seconds3">3 seconds</option>
+                <option value="5000" data-i18n="settings.trigger.autoHide.seconds5">5 seconds</option>
+                <option value="8000" data-i18n="settings.trigger.autoHide.seconds8">8 seconds</option>
+                <option value="15000" data-i18n="settings.trigger.autoHide.seconds15">15 seconds</option>
               </select>
             </div>
           </section>
 
           <section>
-            <h2>应用外观与启动</h2>
+            <h2 data-i18n="settings.launch.title">App Appearance and Startup</h2>
             <div class="row">
-              <label for="show-dock-icon">Dock 栏</label>
+              <label for="show-dock-icon" data-i18n="settings.launch.dock">Dock</label>
               <label class="checkbox-control">
                 <input id="show-dock-icon" type="checkbox" />
-                显示 Dock 栏图标
+                <span data-i18n="settings.launch.showDock">Show Dock icon</span>
               </label>
             </div>
-            <p class="field-hint">仅 macOS 生效；点击 Dock 栏图标会直接进入设置页面。</p>
+            <p class="field-hint" data-i18n="settings.launch.dockHint">macOS only. Clicking the Dock icon opens Settings.</p>
             <div class="row">
-              <label for="auto-launch">开机自启动</label>
+              <label for="auto-launch" data-i18n="settings.launch.autoLaunch">Launch at login</label>
               <label class="checkbox-control">
                 <input id="auto-launch" type="checkbox" />
-                随系统启动时自动运行划词翻译
+                <span data-i18n="settings.launch.autoLaunchLabel">Run Selection Translator automatically at login</span>
               </label>
             </div>
-            <p class="field-hint">开启后应用会在登录系统时自动启动并常驻托盘；开发调试模式下不会写入系统登录项。</p>
+            <p class="field-hint" data-i18n="settings.launch.autoLaunchHint">When enabled, the app starts at login and stays in the tray. Development mode does not write a system login item.</p>
           </section>
 
           <section>
-            <h2>语音朗读</h2>
+            <h2 data-i18n="settings.speech.title">Speech</h2>
             <div class="row">
-              <label for="speech-provider">语音引擎</label>
+              <label for="speech-provider" data-i18n="settings.speech.provider">Speech engine</label>
               <select id="speech-provider" aria-describedby="speech-provider-hint">
-                <option value="system">系统内置语音（默认）</option>
-                <option value="edge">Edge 在线神经网络语音</option>
+                <option value="system" data-i18n="settings.speech.system">System voice (default)</option>
+                <option value="edge" data-i18n="settings.speech.edge">Edge online neural voice</option>
               </select>
             </div>
             <p id="speech-provider-hint" class="field-hint"></p>
           </section>
 
           <section>
-            <h2>网页全文翻译</h2>
+            <h2 data-i18n="settings.web.title">Web Page Translation</h2>
             <div class="row">
-              <label for="web-translation-enabled">启用网页翻译</label>
+              <label for="web-translation-enabled" data-i18n="settings.web.enabled">Enable web translation</label>
               <label class="checkbox-control">
                 <input id="web-translation-enabled" type="checkbox" />
-                <span>允许打开内置网页翻译阅读器</span>
+                <span data-i18n="settings.web.enabledLabel">Allow opening the built-in web translation reader</span>
               </label>
             </div>
             <div class="row">
-              <label for="web-translation-scope">翻译范围</label>
+              <label for="web-translation-scope" data-i18n="settings.web.scope">Translation scope</label>
               <select id="web-translation-scope">
-                <option value="body">仅正文</option>
-                <option value="all">全部可见文本</option>
+                <option value="body" data-i18n="settings.web.scopeBody">Main content only</option>
+                <option value="all" data-i18n="settings.web.scopeAll">All visible text</option>
               </select>
             </div>
             <div class="row">
-              <label for="web-translation-max-blocks">最大文本块数</label>
+              <label for="web-translation-max-blocks" data-i18n="settings.web.maxBlocks">Max text blocks</label>
               <input id="web-translation-max-blocks" type="number" min="1" max="5000" />
             </div>
             <div class="row">
-              <label for="web-translation-max-chars">最大总字数</label>
+              <label for="web-translation-max-chars" data-i18n="settings.web.maxChars">Max total characters</label>
               <input id="web-translation-max-chars" type="number" min="1" max="2000000" />
             </div>
             <div class="row">
-              <label for="web-translation-concurrency">并发请求数</label>
+              <label for="web-translation-concurrency" data-i18n="settings.web.concurrency">Concurrent requests</label>
               <input id="web-translation-concurrency" type="number" min="1" max="8" />
             </div>
             <div class="row">
-              <label for="web-translation-default-mode">默认显示</label>
+              <label for="web-translation-default-mode" data-i18n="settings.web.defaultMode">Default view</label>
               <select id="web-translation-default-mode">
-                <option value="target">译文</option>
-                <option value="source">原文</option>
-                <option value="bilingual">对照</option>
+                <option value="target" data-i18n="settings.web.modeTarget">Translation</option>
+                <option value="source" data-i18n="settings.web.modeSource">Original</option>
+                <option value="bilingual" data-i18n="settings.web.modeBilingual">Side by side</option>
               </select>
             </div>
-            <p class="field-hint">
-              只有打开内置阅读器并显式点击提取/翻译后，应用才会读取当前页面文本。不会读取系统浏览器已打开的页面。
+            <p class="field-hint" data-i18n="settings.web.readHint">
+              The app reads the current page text only after you open the built-in reader and explicitly click Extract or Translate. It never reads pages already open in your system browser.
             </p>
-            <p class="field-hint">
-              并发请求数越高，长网页翻译越快，但也会增加翻译服务商的瞬时压力，可能触发限流；建议自建或高配额通道使用较高数值。
+            <p class="field-hint" data-i18n="settings.web.concurrencyHint">
+              Higher concurrency translates long pages faster but increases momentary load on the provider and may trigger rate limits; use higher values only with a self-hosted or high-quota channel.
             </p>
             <div class="row">
-              <label for="web-translation-image-ocr-enabled">图片文字识别</label>
+              <label for="web-translation-image-ocr-enabled" data-i18n="settings.web.imageOcr">Image text recognition</label>
               <label class="checkbox-control">
                 <input id="web-translation-image-ocr-enabled" type="checkbox" />
-                <span>对页面图片执行 OCR 并翻译图片中的文字</span>
+                <span data-i18n="settings.web.imageOcrLabel">Run OCR on page images and translate the text inside them</span>
               </label>
             </div>
             <div class="row">
-              <label for="web-translation-image-ocr-max-images">单页最大图片数</label>
+              <label for="web-translation-image-ocr-max-images" data-i18n="settings.web.maxImages">Max images per page</label>
               <input id="web-translation-image-ocr-max-images" type="number" min="1" max="200" />
             </div>
             <div class="row">
-              <label for="web-translation-image-ocr-min-size">最小图片边长</label>
+              <label for="web-translation-image-ocr-min-size" data-i18n="settings.web.minImageSize">Minimum image edge</label>
               <input id="web-translation-image-ocr-min-size" type="number" min="16" max="1024" />
             </div>
             <div class="row">
-              <label for="web-translation-image-ocr-overlay">图片译文展示</label>
+              <label for="web-translation-image-ocr-overlay" data-i18n="settings.web.imageOverlay">Image translation display</label>
               <select id="web-translation-image-ocr-overlay">
-                <option value="below">图片下方说明</option>
-                <option value="overlay">叠加在图片上</option>
+                <option value="below" data-i18n="settings.web.overlayBelow">Caption below image</option>
+                <option value="overlay" data-i18n="settings.web.overlayOnImage">Overlay on image</option>
               </select>
             </div>
-            <p class="field-hint">
-              开启后，阅读器会通过当前页面 Session 读取图片字节，必要时回退为图片区域截图；识别失败、尺寸过小或超过上限的图片会被跳过，不影响文本翻译。图片只在本机处理，OCR 结果仅在翻译当前页面时发送给所选翻译服务。
+            <p class="field-hint" data-i18n="settings.web.imageOcrHint">
+              When enabled, the reader reads image bytes through the current page session and falls back to a screenshot of the image region when needed. Images that fail recognition, are too small, or exceed the limit are skipped without affecting text translation. Images are processed locally, and OCR results are sent to the selected translation service only while translating the current page.
             </p>
           </section>
         </div>
@@ -366,47 +376,49 @@
           hidden
         >
           <section>
-            <h2>AI 翻译</h2>
-            <p class="hint">
-              使用本地或云端大语言模型进行划词翻译，支持 Ollama、OpenAI 兼容和 Claude Code（Anthropic）兼容 HTTP 协议。API Key 仅在本机安全保存，页面不会回显。
+            <h2 data-i18n="settings.ai.title">AI Translation</h2>
+            <p class="hint" data-i18n="settings.ai.hint">
+              Use a local or cloud large language model for selection translation. Ollama, OpenAI-compatible, and Claude Code (Anthropic)-compatible HTTP protocols are supported. The API key is stored securely on this device only and is never shown again in the page.
             </p>
             <div class="row">
-              <label for="ai-enabled">启用通道</label>
+              <label for="ai-enabled" data-i18n="settings.ai.enabled">Enable channel</label>
               <label class="checkbox-control" for="ai-enabled">
                 <input id="ai-enabled" type="checkbox" />
-                <span>优先使用 AI 翻译</span>
+                <span data-i18n="settings.ai.enabledLabel">Prefer AI translation</span>
               </label>
             </div>
             <div class="row">
-              <label for="ai-protocol">协议</label>
-              <select id="ai-protocol" aria-label="AI 协议">
+              <label for="ai-protocol" data-i18n="settings.ai.protocol">Protocol</label>
+              <select id="ai-protocol" data-i18n-attr="aria-label:settings.ai.protocolAria" aria-label="AI protocol">
                 <option value="ollama">Ollama</option>
-                <option value="openai">OpenAI 兼容</option>
-                <option value="claude-code">Claude Code 兼容</option>
+                <option value="openai" data-i18n="settings.ai.protocolOpenai">OpenAI-compatible</option>
+                <option value="claude-code" data-i18n="settings.ai.protocolClaude">Claude Code-compatible</option>
               </select>
             </div>
             <div class="row">
-              <label for="ai-base-url">Base URL</label>
-              <input id="ai-base-url" type="text" autocomplete="off" placeholder="例如 http://127.0.0.1:11434" />
+              <label for="ai-base-url" data-i18n="settings.ai.baseUrl">Base URL</label>
+              <input id="ai-base-url" type="text" autocomplete="off" data-i18n-attr="placeholder:settings.ai.baseUrlPlaceholder" placeholder="e.g. http://127.0.0.1:11434" />
             </div>
             <div class="row">
-              <label for="ai-api-key">API Key</label>
+              <label for="ai-api-key" data-i18n="settings.ai.apiKey">API Key</label>
               <input
                 id="ai-api-key"
                 type="password"
                 autocomplete="new-password"
-                placeholder="留空可保留已配置的 Key"
+                data-i18n-attr="placeholder:settings.ai.apiKeyPlaceholder"
+                placeholder="Leave blank to keep the configured key"
               />
             </div>
-            <p id="ai-api-key-status" class="field-hint ai-api-key-status">API Key 未配置</p>
+            <p id="ai-api-key-status" class="field-hint ai-api-key-status" data-i18n="settings.ai.apiKeyMissing">API key not configured</p>
             <div class="row">
-              <label for="ai-model">模型</label>
+              <label for="ai-model" data-i18n="settings.ai.model">Model</label>
               <div class="model-combobox">
                 <input
                   id="ai-model"
                   type="text"
                   autocomplete="off"
-                  placeholder="选择或手动输入模型名称"
+                  data-i18n-attr="placeholder:settings.ai.modelPlaceholder"
+                  placeholder="Select or type a model name"
                   role="combobox"
                   aria-autocomplete="list"
                   aria-expanded="false"
@@ -419,19 +431,20 @@
                   tabindex="-1"
                   aria-expanded="false"
                   aria-controls="ai-model-options"
-                  aria-label="展开模型列表"
+                  data-i18n-attr="aria-label:settings.ai.expandModels"
+                  aria-label="Expand model list"
                 ></button>
-                <ul id="ai-model-options" class="model-combobox-options" role="listbox" aria-label="可用模型" hidden></ul>
+                <ul id="ai-model-options" class="model-combobox-options" role="listbox" data-i18n-attr="aria-label:settings.ai.availableModels" aria-label="Available models" hidden></ul>
               </div>
             </div>
             <div class="ai-actions">
-              <button id="ai-save" class="btn primary">保存 AI 配置</button>
-              <button id="ai-refresh-models" class="btn">刷新模型列表</button>
-              <button id="ai-check" class="btn">检测配置</button>
-              <button id="ai-clear-key" class="btn">清除 API Key</button>
+              <button id="ai-save" class="btn primary" data-i18n="settings.ai.save">Save AI settings</button>
+              <button id="ai-refresh-models" class="btn" data-i18n="settings.ai.refreshModels">Refresh model list</button>
+              <button id="ai-check" class="btn" data-i18n="settings.ai.check">Test configuration</button>
+              <button id="ai-clear-key" class="btn" data-i18n="settings.ai.clearKey">Clear API key</button>
             </div>
-            <p id="ai-model-status" class="status ai-model-status" role="status" aria-live="polite">未加载模型列表</p>
-            <p id="ai-status" class="status ai-status" role="status" aria-live="polite">未检测</p>
+            <p id="ai-model-status" class="status ai-model-status" role="status" aria-live="polite" data-i18n="settings.ai.modelsNotLoaded">Model list not loaded</p>
+            <p id="ai-status" class="status ai-status" role="status" aria-live="polite" data-i18n="settings.ai.notChecked">Not tested</p>
           </section>
         </div>
 
@@ -445,28 +458,28 @@
           hidden
         >
           <section>
-            <h2>OCR 翻译</h2>
+            <h2 data-i18n="settings.ocr.title">OCR Translation</h2>
             <div class="row">
-              <label for="ocr-engine-preference">引擎偏好</label>
+              <label for="ocr-engine-preference" data-i18n="settings.ocr.enginePreference">Engine preference</label>
               <select id="ocr-engine-preference">
-                <option value="auto">自动选择</option>
-                <option value="system">仅系统 OCR</option>
-                <option value="paddle">仅 PaddleOCR</option>
-                <option value="tesseract">仅 Tesseract</option>
+                <option value="auto" data-i18n="settings.ocr.engineAuto">Auto select</option>
+                <option value="system" data-i18n="settings.ocr.engineSystem">System OCR only</option>
+                <option value="paddle" data-i18n="settings.ocr.enginePaddle">PaddleOCR only</option>
+                <option value="tesseract" data-i18n="settings.ocr.engineTesseract">Tesseract only</option>
               </select>
             </div>
             <div class="row">
-              <label for="ocr-hotkey">截图快捷键</label>
-              <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder placeholder="点击后按下快捷键" />
+              <label for="ocr-hotkey" data-i18n="settings.ocr.hotkey">Screenshot hotkey</label>
+              <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.ocr.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
             </div>
             <div class="row">
-              <label for="ocr-lang">识别语言</label>
+              <label for="ocr-lang" data-i18n="settings.ocr.lang">Recognition language</label>
               <select id="ocr-lang">
-                <option value="auto">自动</option>
+                <option value="auto" data-i18n="settings.ocr.langAuto">Auto</option>
               </select>
             </div>
             <div class="row">
-              <label for="ocr-scale">最大尝试倍率</label>
+              <label for="ocr-scale" data-i18n="settings.ocr.scale">Max retry scale</label>
               <select id="ocr-scale">
                 <option value="1">1.0×</option>
                 <option value="1.25">1.25×</option>
@@ -475,28 +488,28 @@
                 <option value="3">3.0×</option>
               </select>
             </div>
-            <p class="field-hint">首轮固定使用 1×；该值仅限制低质量回退时的放大上限。</p>
+            <p class="field-hint" data-i18n="settings.ocr.scaleHint">The first pass always uses 1×; this value only limits the maximum upscale used during low-quality fallback.</p>
             <div class="row">
-              <label for="ocr-tesseract-enabled">Tesseract</label>
+              <label for="ocr-tesseract-enabled" data-i18n="settings.ocr.tesseract">Tesseract</label>
               <label class="checkbox-control" for="ocr-tesseract-enabled">
                 <input id="ocr-tesseract-enabled" type="checkbox" />
-                <span>启用兜底识别</span>
+                <span data-i18n="settings.ocr.tesseractFallback">Enable fallback recognition</span>
               </label>
             </div>
-            <p class="field-hint">截图和剪贴板图片只在主动触发时识别；本地 OCR 引擎不会上传图片。</p>
+            <p class="field-hint" data-i18n="settings.ocr.privacyHint">Screenshots and clipboard images are recognized only when you explicitly trigger it; local OCR engines never upload images.</p>
           </section>
 
           <section>
-            <h2>模型资产</h2>
+            <h2 data-i18n="settings.ocr.assetsTitle">Model Assets</h2>
             <div class="ocr-model-grid">
-              <span>模型</span>
-              <strong id="ocr-model-name">读取中…</strong>
-              <span>版本</span>
-              <strong id="ocr-model-version">读取中…</strong>
-              <span>许可</span>
-              <strong id="ocr-model-license">读取中…</strong>
+              <span data-i18n="settings.ocr.assetModel">Model</span>
+              <strong id="ocr-model-name" data-i18n="settings.ocr.loading">Loading…</strong>
+              <span data-i18n="settings.ocr.assetVersion">Version</span>
+              <strong id="ocr-model-version" data-i18n="settings.ocr.loading">Loading…</strong>
+              <span data-i18n="settings.ocr.assetLicense">License</span>
+              <strong id="ocr-model-license" data-i18n="settings.ocr.loading">Loading…</strong>
             </div>
-            <p id="ocr-model-status" class="status ocr-model-status" role="status" aria-live="polite">正在读取 OCR 状态…</p>
+            <p id="ocr-model-status" class="status ocr-model-status" role="status" aria-live="polite" data-i18n="settings.ocr.readingStatus">Reading OCR status…</p>
           </section>
         </div>
 
@@ -510,100 +523,101 @@
           hidden
         >
           <section id="translation-service-dingtalk" data-service-anchor="dingtalk">
-            <h2>钉钉翻译</h2>
-            <p class="hint">
-              适用于已创建企业内部应用并开通 AI 文本翻译权限的账号。ClientSecret 仅在本机安全保存，页面不会回显。
+            <h2 data-i18n="settings.dingTalk.title">DingTalk Translation</h2>
+            <p class="hint" data-i18n="settings.dingTalk.hint">
+              For accounts that have created an internal enterprise app with the AI text translation permission enabled. The ClientSecret is stored securely on this device only and is never shown again in the page.
             </p>
             <div class="row">
-              <label for="dingtalk-enabled">启用通道</label>
+              <label for="dingtalk-enabled" data-i18n="settings.dingTalk.enabled">Enable channel</label>
               <label class="checkbox-control" for="dingtalk-enabled">
                 <input id="dingtalk-enabled" type="checkbox" />
-                <span>优先使用钉钉翻译</span>
+                <span data-i18n="settings.dingTalk.enabledLabel">Prefer DingTalk translation</span>
               </label>
             </div>
             <div class="row">
-              <label for="dingtalk-corp-id">CorpId</label>
-              <input id="dingtalk-corp-id" type="text" autocomplete="off" placeholder="请输入企业 CorpId" />
+              <label for="dingtalk-corp-id" data-i18n="settings.dingTalk.corpId">CorpId</label>
+              <input id="dingtalk-corp-id" type="text" autocomplete="off" data-i18n-attr="placeholder:settings.dingTalk.corpIdPlaceholder" placeholder="Enter the enterprise CorpId" />
             </div>
             <div class="row">
-              <label for="dingtalk-client-id">ClientId</label>
-              <input id="dingtalk-client-id" type="text" autocomplete="off" placeholder="请输入应用 ClientId" />
+              <label for="dingtalk-client-id" data-i18n="settings.dingTalk.clientId">ClientId</label>
+              <input id="dingtalk-client-id" type="text" autocomplete="off" data-i18n-attr="placeholder:settings.dingTalk.clientIdPlaceholder" placeholder="Enter the app ClientId" />
             </div>
             <div class="row">
-              <label for="dingtalk-client-secret">ClientSecret</label>
+              <label for="dingtalk-client-secret" data-i18n="settings.dingTalk.clientSecret">ClientSecret</label>
               <input
                 id="dingtalk-client-secret"
                 type="password"
                 autocomplete="new-password"
-                placeholder="留空可保留已配置的 Secret"
+                data-i18n-attr="placeholder:settings.dingTalk.secretPlaceholder"
+                placeholder="Leave blank to keep the configured secret"
               />
             </div>
-            <p id="dingtalk-secret-status" class="field-hint dingtalk-secret-status">Secret 未配置</p>
+            <p id="dingtalk-secret-status" class="field-hint dingtalk-secret-status" data-i18n="settings.dingTalk.secretMissing">Secret not configured</p>
             <div class="dingtalk-actions">
-              <button id="dingtalk-save" class="btn primary">保存钉钉配置</button>
-              <button id="dingtalk-clear-secret" class="btn">清除 Secret</button>
-              <button id="dingtalk-check" class="btn">检测配置</button>
+              <button id="dingtalk-save" class="btn primary" data-i18n="settings.dingTalk.save">Save DingTalk settings</button>
+              <button id="dingtalk-clear-secret" class="btn" data-i18n="settings.dingTalk.clearSecret">Clear secret</button>
+              <button id="dingtalk-check" class="btn" data-i18n="settings.dingTalk.check">Test configuration</button>
             </div>
-            <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite">未检测</p>
+            <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite" data-i18n="settings.dingTalk.notChecked">Not tested</p>
           </section>
           <section id="translation-service-microsoft" data-service-anchor="microsoft">
-            <h2>微软翻译</h2>
-            <p class="hint">
-              使用微软 Bing 在线翻译，无需配置 Azure 账号、订阅密钥或 Region，启用后即可参与自动翻译降级链路。
+            <h2 data-i18n="settings.microsoft.title">Microsoft Translator</h2>
+            <p class="hint" data-i18n="settings.microsoft.hint">
+              Uses Microsoft Bing online translation. No Azure account, subscription key, or region is required. Once enabled, it joins the automatic translation fallback chain.
             </p>
             <div class="row">
-              <label for="microsoft-enabled">启用通道</label>
+              <label for="microsoft-enabled" data-i18n="settings.microsoft.enabled">Enable channel</label>
               <label class="checkbox-control" for="microsoft-enabled">
                 <input id="microsoft-enabled" type="checkbox" />
-                <span>在 DeepLX 等免费通道前使用微软翻译</span>
+                <span data-i18n="settings.microsoft.enabledLabel">Use Microsoft Translator before free channels such as DeepLX</span>
               </label>
             </div>
-            <p class="field-hint">
-              此通道依赖 Bing 网页翻译的临时参数，并非微软承诺稳定的公开开发者 API；接口可能因服务调整而失效，失败时应用会自动切换到后续通道。
+            <p class="field-hint" data-i18n="settings.microsoft.warning">
+              This channel relies on temporary parameters from Bing web translation and is not a publicly documented Microsoft developer API with stability guarantees. The interface may break if the service changes; on failure, the app automatically switches to the next channel.
             </p>
             <div class="provider-actions microsoft-actions">
-              <button id="microsoft-check" class="btn">检测可用性</button>
+              <button id="microsoft-check" class="btn" data-i18n="settings.microsoft.check">Check availability</button>
             </div>
-            <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite">未检测</p>
+            <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite" data-i18n="settings.microsoft.notChecked">Not tested</p>
           </section>
           <section id="translation-service-deeplx" data-service-anchor="deeplx">
-            <h2>翻译通道</h2>
-            <p class="hint">默认按以下顺序依次尝试；也可在悬浮窗底部选择首选 API。首选 API 失败或熔断后会自动切换下一个，并保留首选设置供后续翻译继续优先使用。</p>
+            <h2 data-i18n="settings.channels.title">Translation Channels</h2>
+            <p class="hint" data-i18n="settings.channels.hint">Channels are tried in the following order by default; you can also choose a preferred API at the bottom of the popup. If the preferred API fails or its circuit breaker opens, the app automatically switches to the next one and keeps your preference for future translations.</p>
             <ol class="channels">
-              <li><b>钉钉翻译</b> — 启用且配置完整时优先使用</li>
-              <li><b>微软翻译</b> — 免订阅配置，启用后在 DeepLX 等免费通道前使用</li>
-              <li><b>自建 DeepLX</b> — 可配置，最稳定（推荐）</li>
-              <li><b>公共 DeepLX</b> — 免费，可能限流</li>
-              <li><b>Google</b> — 免费，部分网络需配置代理</li>
-              <li><b>MyMemory</b> — 免注册兜底，有免费额度限制</li>
+              <li><b data-i18n="settings.channels.dingTalkName">DingTalk</b> — <span data-i18n="settings.channels.dingTalkDesc">used first when enabled and fully configured</span></li>
+              <li><b data-i18n="settings.channels.microsoftName">Microsoft Translator</b> — <span data-i18n="settings.channels.microsoftDesc">no subscription required; used before free channels such as DeepLX when enabled</span></li>
+              <li><b data-i18n="settings.channels.selfHostedName">Self-hosted DeepLX</b> — <span data-i18n="settings.channels.selfHostedDesc">configurable and the most stable (recommended)</span></li>
+              <li><b data-i18n="settings.channels.publicName">Public DeepLX</b> — <span data-i18n="settings.channels.publicDesc">free, may be rate-limited</span></li>
+              <li><b data-i18n="settings.channels.googleName">Google</b> — <span data-i18n="settings.channels.googleDesc">free; some networks require a proxy</span></li>
+              <li><b data-i18n="settings.channels.myMemoryName">MyMemory</b> — <span data-i18n="settings.channels.myMemoryDesc">fallback with no registration but a free quota limit</span></li>
             </ol>
           </section>
 
           <section id="translation-service-deeplx-config">
-            <h2>自建 DeepLX</h2>
+            <h2 data-i18n="settings.deepLx.title">Self-hosted DeepLX</h2>
             <div class="row">
-              <label for="deeplx-url">服务地址</label>
+              <label for="deeplx-url" data-i18n="settings.deepLx.url">Service URL</label>
               <input
                 id="deeplx-url"
                 type="text"
+                data-i18n-attr="placeholder:settings.deepLx.urlPlaceholder"
                 placeholder="http://127.0.0.1:1189/translate, https://example.com/translate"
               />
             </div>
-            <p class="field-hint">支持配置多个服务地址，请使用英文或中文逗号分隔；翻译时会轮询地址并在失败后自动切换。</p>
+            <p class="field-hint" data-i18n="settings.deepLx.urlHint">You can configure multiple service URLs, separated by English or Chinese commas. Translations rotate across the URLs and automatically switch on failure.</p>
             <div class="provider-actions">
-              <button id="deeplx-save" class="btn primary">保存配置</button>
-              <button id="deeplx-check" class="btn">检测是否在线</button>
+              <button id="deeplx-save" class="btn primary" data-i18n="settings.deepLx.save">Save settings</button>
+              <button id="deeplx-check" class="btn" data-i18n="settings.deepLx.check">Check online status</button>
             </div>
-            <p id="deeplx-status" class="status unknown" role="status" aria-live="polite">未检测</p>
+            <p id="deeplx-status" class="status unknown" role="status" aria-live="polite" data-i18n="settings.deepLx.notChecked">Not tested</p>
             <div class="deploy">
-              <p class="hint">
-                用 Docker 一键部署：把命令里的「你的dl_session值」替换为 DeepL
-                登录后的 dl_session Cookie，然后在终端执行。
+              <p class="hint" data-i18n="settings.deepLx.deployHint">
+                Deploy with one Docker command: replace the dl_session placeholder in the command with the dl_session cookie from your DeepL login, then run it in a terminal.
               </p>
               <textarea id="docker-cmd" readonly rows="6" spellcheck="false"></textarea>
               <div class="btn-row">
-                <button id="docker-copy" class="btn primary">复制命令</button>
-                <button id="open-doc" class="btn">打开部署文档</button>
+                <button id="docker-copy" class="btn primary" data-i18n="settings.deepLx.copyCommand">Copy command</button>
+                <button id="open-doc" class="btn" data-i18n="settings.deepLx.openDoc">Open deployment docs</button>
               </div>
             </div>
           </section>
@@ -619,32 +633,42 @@
           hidden
         >
           <section>
-            <h2>网络代理</h2>
+            <h2 data-i18n="settings.proxy.title">Network Proxy</h2>
             <div class="row">
-              <label for="proxy-mode">代理模式</label>
+              <label for="proxy-mode" data-i18n="settings.proxy.mode">Proxy mode</label>
               <select id="proxy-mode">
-                <option value="system">跟随系统代理</option>
-                <option value="direct">直连（不使用代理）</option>
-                <option value="custom">自定义代理</option>
+                <option value="system" data-i18n="settings.proxy.modeSystem">Follow system proxy</option>
+                <option value="direct" data-i18n="settings.proxy.modeDirect">Direct (no proxy)</option>
+                <option value="custom" data-i18n="settings.proxy.modeCustom">Custom proxy</option>
               </select>
             </div>
             <div class="row">
-              <label for="proxy-rules">代理地址</label>
-              <input id="proxy-rules" type="text" placeholder="http://127.0.0.1:7890" />
+              <label for="proxy-rules" data-i18n="settings.proxy.rules">Proxy address</label>
+              <input
+                id="proxy-rules"
+                type="text"
+                data-i18n-attr="placeholder:settings.proxy.rulesPlaceholder"
+                placeholder="http://127.0.0.1:7890"
+              />
             </div>
-            <p class="field-hint">支持 HTTP、HTTPS、SOCKS4、SOCKS5，例如 socks5://127.0.0.1:7890。</p>
+            <p class="field-hint" data-i18n="settings.proxy.rulesHint">Supports HTTP, HTTPS, SOCKS4, and SOCKS5, for example socks5://127.0.0.1:7890.</p>
             <div class="row">
-              <label for="proxy-bypass-rules">绕过规则</label>
-              <input id="proxy-bypass-rules" type="text" placeholder="<local>;localhost;127.0.0.1" />
+              <label for="proxy-bypass-rules" data-i18n="settings.proxy.bypass">Bypass rules</label>
+              <input
+                id="proxy-bypass-rules"
+                type="text"
+                data-i18n-attr="placeholder:settings.proxy.bypassPlaceholder"
+                placeholder="<local>;localhost;127.0.0.1"
+              />
             </div>
-            <p class="field-hint">多个规则使用分号分隔；本机 DeepLX 建议保留 &lt;local&gt; 和 localhost。</p>
+            <p class="field-hint" data-i18n="settings.proxy.bypassHint">Separate multiple rules with semicolons; keep &lt;local&gt; and localhost for a local DeepLX service.</p>
           </section>
 
           <section class="service-control">
-            <h2>服务控制</h2>
+            <h2 data-i18n="settings.service.title">Service Control</h2>
             <div class="service-control-row">
-              <p class="hint">停止后托盘图标和划词翻译功能都会退出，需要使用时请重新启动应用。</p>
-              <button id="stop-service" class="btn danger">关闭并停止服务</button>
+              <p class="hint" data-i18n="settings.service.hint">Stopping the service exits the tray icon and selection translation; restart the app when you need it again.</p>
+              <button id="stop-service" class="btn danger" data-i18n="settings.service.stop">Close and stop service</button>
             </div>
           </section>
         </div>
@@ -660,31 +684,32 @@
         >
           <section class="logs-section">
             <div class="logs-toolbar">
-              <div class="logs-filters" role="group" aria-label="日志级别过滤">
+              <div class="logs-filters" role="group" data-i18n-attr="aria-label:settings.logs.filterAria" aria-label="Log level filters">
                 <label class="checkbox-control">
                   <input id="logs-filter-info" type="checkbox" checked />
-                  信息
+                  <span data-i18n="settings.logs.levelInfo">Info</span>
                 </label>
                 <label class="checkbox-control">
                   <input id="logs-filter-warn" type="checkbox" checked />
-                  警告
+                  <span data-i18n="settings.logs.levelWarn">Warning</span>
                 </label>
                 <label class="checkbox-control">
                   <input id="logs-filter-error" type="checkbox" checked />
-                  错误
+                  <span data-i18n="settings.logs.levelError">Error</span>
                 </label>
               </div>
               <input
                 id="logs-search"
                 class="logs-search"
                 type="search"
-                placeholder="搜索日志内容"
-                aria-label="搜索日志内容"
+                data-i18n-attr="placeholder:settings.logs.search;aria-label:settings.logs.search"
+                placeholder="Search log contents"
+                aria-label="Search log contents"
               />
               <div class="logs-actions">
-                <button id="logs-toggle-pause" class="btn" type="button">暂停</button>
-                <button id="logs-clear" class="btn" type="button">清空</button>
-                <button id="logs-export" class="btn" type="button">导出</button>
+                <button id="logs-toggle-pause" class="btn" type="button" data-i18n="settings.logs.pause">Pause</button>
+                <button id="logs-clear" class="btn" type="button" data-i18n="settings.logs.clear">Clear</button>
+                <button id="logs-export" class="btn" type="button" data-i18n="settings.logs.export">Export</button>
               </div>
             </div>
             <div id="logs-list" class="logs-list" role="log" aria-live="polite"></div>
@@ -693,22 +718,23 @@
 
           <section id="diagnostics-section" class="diagnostics-section">
             <div class="diagnostics-header">
-              <h2>取词诊断</h2>
+              <h2 data-i18n="settings.diagnostics.title">Selection Diagnostics</h2>
               <button
                 id="diagnostics-toggle"
                 class="diagnostics-toggle"
                 type="button"
                 aria-expanded="true"
                 aria-controls="diagnostics-body"
+                data-i18n="settings.diagnostics.collapse"
               >
-                收起
+                Collapse
               </button>
             </div>
             <div id="diagnostics-body" class="diagnostics-body">
-              <p class="hint">记录每次取词的命中级别、耗时与失败原因，仅保留近两天数据，不包含任何选中文字。</p>
+              <p class="hint" data-i18n="settings.diagnostics.hint">Records the hit level, duration, and failure reason for each selection. Only the last two days are kept, and no selected text is stored.</p>
               <div id="diagnostics-summary" class="diagnostics-summary"></div>
               <div class="diagnostics-actions">
-                <button id="diagnostics-export" class="btn" type="button">导出诊断</button>
+                <button id="diagnostics-export" class="btn" type="button" data-i18n="settings.diagnostics.export">Export diagnostics</button>
               </div>
               <p id="diagnostics-status" class="hint diagnostics-status" role="status" aria-live="polite"></p>
             </div>
@@ -725,55 +751,55 @@
           hidden
         >
           <section class="update-card">
-            <h2>版本与更新</h2>
+            <h2 data-i18n="settings.update.title">Version and Updates</h2>
             <div class="update-summary">
               <div>
-                <span class="update-label">当前版本</span>
-                <strong id="current-version">读取中…</strong>
+                <span class="update-label" data-i18n="settings.update.currentVersion">Current version</span>
+                <strong id="current-version" data-i18n="settings.ocr.loading">Loading…</strong>
               </div>
               <div>
-                <span class="update-label">最新版本</span>
-                <strong id="latest-version">尚未检查</strong>
+                <span class="update-label" data-i18n="settings.update.latestVersion">Latest version</span>
+                <strong id="latest-version" data-i18n="settings.update.notChecked">Not checked yet</strong>
               </div>
               <div id="build-identity-row" hidden>
-                <span class="update-label">构建标识</span>
-                <strong id="build-identity">尚未检查</strong>
+                <span class="update-label" data-i18n="settings.update.buildIdentity">Build identity</span>
+                <strong id="build-identity" data-i18n="settings.update.notChecked">Not checked yet</strong>
               </div>
             </div>
             <div id="update-progress" class="update-progress" hidden>
               <progress id="update-progress-bar" max="100" value="0"></progress>
               <span id="update-progress-text">0%</span>
             </div>
-            <p id="update-status" class="status update-status" role="status" aria-live="polite">
-              正在读取更新状态…
+            <p id="update-status" class="status update-status" role="status" aria-live="polite" data-i18n="settings.update.readingStatus">
+              Reading update status…
             </p>
             <div class="update-actions">
-              <button id="check-update" class="btn" type="button">检查更新</button>
-              <button id="open-release" class="btn" type="button">打开发布页</button>
-              <button id="update-action" class="btn primary" type="button" hidden>
-                下载并打开 DMG
+              <button id="check-update" class="btn" type="button" data-i18n="settings.update.check">Check for updates</button>
+              <button id="open-release" class="btn" type="button" data-i18n="settings.update.openRelease">Open release page</button>
+              <button id="update-action" class="btn primary" type="button" hidden data-i18n="settings.update.downloadDmg">
+                Download and open DMG
               </button>
-              <button id="update-cancel" class="btn" type="button" hidden>
-                取消下载
+              <button id="update-cancel" class="btn" type="button" hidden data-i18n="settings.update.cancelDownload">
+                Cancel download
               </button>
-              <button id="remove-quarantine" class="btn" type="button" hidden>
-                解除 macOS 隔离属性
+              <button id="remove-quarantine" class="btn" type="button" hidden data-i18n="settings.update.removeQuarantine">
+                Remove macOS quarantine
               </button>
             </div>
-            <p id="update-install-hint" class="hint update-install-hint">
-              macOS 手动升级会下载并打开 DMG，仍由用户确认拖入“应用程序”。
+            <p id="update-install-hint" class="hint update-install-hint" data-i18n="settings.update.installHint">
+              A manual macOS upgrade downloads and opens the DMG; you still confirm dragging the app into Applications.
             </p>
           </section>
 
           <section>
-            <h2>项目</h2>
-            <p class="hint">
-              划词翻译是一个支持 macOS、Windows 与 Linux 的桌面翻译工具。更新包来自项目公开的 GitHub Release。
+            <h2 data-i18n="settings.about.project">Project</h2>
+            <p class="hint" data-i18n="settings.about.projectHint">
+              Selection Translator is a desktop translation tool for macOS, Windows, and Linux. Update packages come from the project's public GitHub Releases.
             </p>
             <dl class="project-meta">
-              <dt>作者</dt>
+              <dt data-i18n="settings.about.author">Author</dt>
               <dd>zhenghq</dd>
-              <dt>邮箱</dt>
+              <dt data-i18n="settings.about.email">Email</dt>
               <dd>734652567@qq.com</dd>
             </dl>
           </section>

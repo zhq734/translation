@@ -3,6 +3,7 @@ import test from 'node:test'
 import { AiCheckService, type AiCheckFetch } from '../src/main/aiCheck.ts'
 import type { Settings } from '../src/shared/types.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 构造一个 JSON 响应。
@@ -54,6 +55,7 @@ test('配置不完整时应返回 incomplete 且不发网络请求', async () =>
     apiKey: 'sk-x'
   })
   assert.equal(result.code, 'incomplete')
+  assert.equal(result.message, tForTest('en-US', 'ai.check.incomplete'))
   assert.equal(called, false)
 })
 
@@ -62,6 +64,7 @@ test('检测成功应返回 available 且不含凭证', async () => {
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-secret' })
   assert.equal(result.ok, true)
   assert.equal(result.code, 'available')
+  assert.equal(result.message, tForTest('en-US', 'ai.check.available'))
   assert.equal(result.message.includes('sk-secret'), false)
 })
 
@@ -70,6 +73,7 @@ test('鉴权失败应返回 authentication 分类且不含 API Key', async () =>
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-secret' })
   assert.equal(result.ok, false)
   assert.equal(result.code, 'authentication')
+  assert.equal(result.message, tForTest('en-US', 'ai.error.authentication'))
   assert.equal(result.message.includes('sk-secret'), false)
   assert.equal(result.message.includes('sk-leak'), false)
 })
@@ -78,18 +82,21 @@ test('模型不存在应返回 not-found 分类', async () => {
   const service = makeService(async () => jsonResponse({ error: 'model not found' }, 404))
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-x' })
   assert.equal(result.code, 'not-found')
+  assert.equal(result.message, tForTest('en-US', 'ai.error.notFound'))
 })
 
 test('超时应返回 timeout 分类', async () => {
   const service = makeService(async () => { await new Promise((r) => setTimeout(r, 1000)); return jsonResponse({ choices: [{ message: { content: 'x' } }] }) })
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-x' })
   assert.equal(result.code, 'timeout')
+  assert.equal(result.message, tForTest('en-US', 'ai.error.timeout'))
 })
 
 test('网络错误应返回 network 分类且不含 URL', async () => {
   const service = makeService(async () => { throw new TypeError('failed for https://api.example.com') })
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-x' })
   assert.equal(result.code, 'network')
+  assert.equal(result.message, tForTest('en-US', 'ai.error.network'))
   assert.equal(result.message.includes('https://api.example.com'), false)
 })
 
@@ -97,10 +104,12 @@ test('限流应返回 rate-limit 分类', async () => {
   const service = makeService(async () => jsonResponse({}, 429))
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-x' })
   assert.equal(result.code, 'rate-limit')
+  assert.equal(result.message, tForTest('en-US', 'ai.check.rateLimit'))
 })
 
 test('空译文应返回 service 分类', async () => {
   const service = makeService(async () => jsonResponse({ choices: [{ message: { content: '   ' } }] }))
   const result = await service.check({ settings: aiSettings(), apiKey: 'sk-x' })
   assert.equal(result.code, 'service')
+  assert.equal(result.message, tForTest('en-US', 'ai.check.serviceUnavailable'))
 })

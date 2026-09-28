@@ -6,6 +6,7 @@ import {
   extractAiTranslation,
   type AiBuiltRequest
 } from './aiProtocol'
+import { translateMain } from './messages'
 
 /** AI 翻译网络请求函数签名，复用主进程代理会话。 */
 export type AiFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -68,7 +69,7 @@ export class AiTranslationClient {
         targetLang: input.targetLang
       })
     } catch (error) {
-      throw new AiError('service', 'AI 请求构造失败', { cause: error })
+      throw new AiError('service', translateMain('ai.error.requestBuild'), { cause: error })
     }
 
     const headers: Record<string, string> = {}
@@ -78,7 +79,7 @@ export class AiTranslationClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     const abortPromise = new Promise<never>((_, reject) => {
       controller.signal.addEventListener('abort', () => {
-        reject(new AiError('timeout', 'AI 请求超时'))
+        reject(new AiError('timeout', translateMain('ai.error.timeout')))
       })
     })
     let response: Response
@@ -104,19 +105,19 @@ export class AiTranslationClient {
 
     const contentType = response.headers.get('content-type') || ''
     if (!contentType.includes('json')) {
-      throw new AiError('service', 'AI 服务返回非 JSON 响应')
+      throw new AiError('service', translateMain('ai.error.nonJsonResponse'))
     }
 
     let data: Record<string, unknown>
     try {
       data = (await response.json()) as Record<string, unknown>
     } catch (error) {
-      throw new AiError('service', 'AI 服务响应解析失败', { cause: error })
+      throw new AiError('service', translateMain('ai.error.responseParse'), { cause: error })
     }
 
     const translation = extractAiTranslation(input.protocol, data)
     if (!translation) {
-      throw new AiError('service', 'AI 返回译文为空')
+      throw new AiError('service', translateMain('ai.error.emptyTranslation'))
     }
     return translation
   }

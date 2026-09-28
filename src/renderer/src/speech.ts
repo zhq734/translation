@@ -122,6 +122,8 @@ export interface SpeechStartResult {
 interface SpeechControllerOptions {
   synthesis: SpeechSynthesisLike | null
   createUtterance(text: string): SpeechUtteranceLike
+  /** 解析当前界面语言下的用户可见文案；缺省时回退英文。 */
+  getMessage?(key: string, params?: Record<string, string | number>): string
   maxChunkLength?: number
   onSpeakingChange?(speaking: boolean): void
   onComplete?(): void
@@ -335,6 +337,14 @@ export function splitSpeechText(
  * @author zhenghq
  */
 export function createSpeechController(options: SpeechControllerOptions): SpeechController {
+  /**
+   * 解析当前界面语言下的用户可见文案。
+   * @param key 语义化词条 key。
+   * @returns 当前界面语言下的文案。
+   * @author zhenghq
+   */
+  const message = (key: string): string => options.getMessage?.(key) ?? key
+
   let speaking = false
   let sessionId = 0
 
@@ -389,9 +399,9 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
      */
     start(text: string, language: string): SpeechStartResult {
       const normalizedText = text.trim()
-      if (!normalizedText) return { ok: false, error: '暂无可朗读的译文' }
+      if (!normalizedText) return { ok: false, error: message('rendererSpeech.error.noText') }
       if (!options.synthesis) {
-        const error = '当前环境不支持语音播放'
+        const error = message('rendererSpeech.error.unsupported')
         options.onError?.(error)
         return { ok: false, error }
       }
@@ -400,18 +410,18 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
       try {
         voices = options.synthesis.getVoices()
       } catch {
-        const error = '读取系统语音失败，请检查系统语音设置'
+        const error = message('rendererSpeech.error.voiceListFailed')
         options.onError?.(error)
         return { ok: false, error }
       }
       const voice = findSpeechVoice(voices, language)
       if (!voice) {
-        const error = '当前系统没有可用语音，请检查系统语音设置'
+        const error = message('rendererSpeech.error.noVoice')
         options.onError?.(error)
         return { ok: false, error }
       }
       const chunks = splitSpeechText(normalizedText, options.maxChunkLength)
-      if (chunks.length === 0) return { ok: false, error: '暂无可朗读的译文' }
+      if (chunks.length === 0) return { ok: false, error: message('rendererSpeech.error.noText') }
 
       const currentSession = ++sessionId
       const speechCode = languageToSpeechCode(language) || voice.lang
@@ -419,7 +429,7 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
         try {
           options.synthesis.cancel()
         } catch {
-          const error = '语音播放失败，请重试'
+          const error = message('rendererSpeech.error.playFailed')
           failSession(currentSession, error)
           return { ok: false, error }
         }
@@ -449,10 +459,10 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
           utterance.pitch = DEFAULT_SPEECH_PITCH
           utterance.rate = DEFAULT_SPEECH_RATE
           utterance.onend = () => playChunk(index + 1)
-          utterance.onerror = () => failSession(currentSession, '语音播放失败，请重试')
+          utterance.onerror = () => failSession(currentSession, message('rendererSpeech.error.playFailed'))
           options.synthesis?.speak(utterance)
         } catch {
-          failSession(currentSession, '语音播放失败，请重试')
+          failSession(currentSession, message('rendererSpeech.error.playFailed'))
         }
       }
 

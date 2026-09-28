@@ -6,6 +6,11 @@ import {
   PaddleOcrEngine,
   type PaddleDetectItem
 } from '../src/main/paddleOcr.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 /**
  * 构造测试用 PaddleOCR 检测条目。
@@ -182,5 +187,10 @@ test('PaddleOcrEngine 初始化失败应返回具体不可用原因', async () =
   })
 
   assert.equal(await engine.isAvailable(), false)
-  assert.equal(engine.getUnavailableReason(), 'PaddleOCR runtime 初始化失败: native binding load failed')
+  assert.equal(
+    engine.getUnavailableReason(),
+    tForTest('zh-CN', 'ocr.error.paddleRuntimeInitFailed', {
+      message: 'native binding load failed'
+    })
+  )
 })

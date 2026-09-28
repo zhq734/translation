@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 const popup = readFileSync('src/renderer/index.html', 'utf8')
 const popupCss = readFileSync('src/renderer/src/style.css', 'utf8')
@@ -12,9 +13,9 @@ const toastSource = readFileSync('src/renderer/src/toast.ts', 'utf8')
 const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')
 
 test('翻译弹窗应按标题、语言、内容和底部状态操作区组织结构', () => {
-  assert.match(popup, /class="drag-handle"[^>]+aria-label="拖动翻译弹窗"/u)
-  assert.match(popup, /class="language-picker"[^>]+aria-label="翻译语言工具栏"/u)
-  assert.match(popup, /class="footer popup-status-actions"[^>]*aria-label="翻译状态和操作"/u)
+  assert.match(popup, new RegExp(`class="drag-handle"[^>]+aria-label="${tForTest('en-US', 'popup.dragHandle.ariaLabel')}"`, 'u'))
+  assert.match(popup, new RegExp(`class="language-picker"[^>]+aria-label="${tForTest('en-US', 'popup.languageToolbar')}"`, 'u'))
+  assert.match(popup, new RegExp(`class="footer popup-status-actions"[^>]*aria-label="${tForTest('en-US', 'popup.statusActions')}"`, 'u'))
   assert.ok(popup.indexOf('class="drag-handle"') < popup.indexOf('class="header"'))
   assert.ok(popup.indexOf('id="selection-view"') < popup.indexOf('class="footer popup-status-actions"'))
   assert.match(popupCss, /#popup\s*\{[\s\S]*box-shadow:\s*var\(--shadow-overlay\)/u)
@@ -33,8 +34,8 @@ test('Toast 应以内容自适应尺寸和语义图标表达成功、警告与�
   assert.match(toast, /id="toast"[^>]+aria-live="polite"/u)
   assert.match(toast, /id="toast-icon"[^>]+aria-hidden="true"/u)
   assert.match(toast, /id="toast-message"/u)
-  assert.match(toastSource, /dataset\.state\s*=\s*isError\s*\?\s*'error'/u)
-  assert.match(toastSource, /isWarning\s*\?\s*'warning'/u)
+  assert.match(toastSource, /toastElement\.dataset\.state\s*=\s*kind/u)
+  assert.match(toastSource, /kind:\s*'success'\s*\|\s*'warning'\s*\|\s*'error'/u)
   assert.match(toastSource, /toastIcon\.textContent/u)
   assert.match(toastCss, /width:\s*max-content/u)
   assert.match(toastCss, /background:\s*var\(--hint-pill-bg\)/u)

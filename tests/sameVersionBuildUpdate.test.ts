@@ -387,8 +387,8 @@ test('设置页应区分更高版本与同版本新构建并提供手动入口',
 
   assert.match(source, /status\.updateReason === 'same-version-new-build'/u)
   assert.match(source, /status\.updateAction === 'open-release'/u)
-  assert.match(source, /打开 GitHub Release/u)
-  assert.match(source, /同版本的新构建/u)
+  assert.match(source, /t\('settings\.update\.openReleaseManual'\)/u)
+  assert.match(source, /t\('settings\.update\.hint\.sameVersionOpenRelease'\)/u)
   assert.match(source, /remoteBuildLabel/u)
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}/u)
 })

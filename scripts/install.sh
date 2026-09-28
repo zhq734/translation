@@ -103,7 +103,7 @@ resolve_asset_name() {
       if [ "$release_architecture" = 'x64' ]; then
         release_architecture='x86_64'
       fi
-      printf 'SelectionTranslator-%s-linux-%s.AppImage\n' "$3" "$release_architecture"
+      printf 'SelectionTranslator-%s-%s.AppImage\n' "$3" "$release_architecture"
       ;;
     *) fail "无法为平台 $1 选择安装包。" ;;
   esac

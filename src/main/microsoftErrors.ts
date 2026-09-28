@@ -1,4 +1,5 @@
 import type { MicrosoftCheckStatus } from '../shared/types'
+import { translateMain } from './messages'
 
 /** 微软翻译内部错误分类。 */
 export type MicrosoftErrorKind =
@@ -41,11 +42,15 @@ export class MicrosoftError extends Error {
  */
 export function createMicrosoftResponseError(status: number): MicrosoftError {
   if (status === 401 || status === 403) {
-    return new MicrosoftError('authentication', '微软翻译网页会话已失效')
+    return new MicrosoftError('authentication', translateMain('microsoft.error.authentication'))
   }
-  if (status === 429) return new MicrosoftError('rate-limit', '微软翻译接口请求过于频繁')
-  if (status === 400) return new MicrosoftError('parameter', '微软翻译请求参数无效')
-  return new MicrosoftError('service', '微软翻译服务暂时不可用')
+  if (status === 429) {
+    return new MicrosoftError('rate-limit', translateMain('microsoft.error.rateLimit'))
+  }
+  if (status === 400) {
+    return new MicrosoftError('parameter', translateMain('microsoft.error.parameter'))
+  }
+  return new MicrosoftError('service', translateMain('microsoft.error.serviceUnavailable'))
 }
 
 /**
@@ -58,9 +63,11 @@ export function normalizeMicrosoftNetworkError(error: unknown): MicrosoftError {
   if (error instanceof MicrosoftError) return error
   const name = error instanceof Error ? error.name : ''
   const timeout = name === 'AbortError' || name === 'TimeoutError'
-  return new MicrosoftError('network', timeout ? '微软翻译请求超时' : '微软翻译网络连接失败', {
-    cause: error
-  })
+  return new MicrosoftError(
+    'network',
+    translateMain(timeout ? 'microsoft.error.timeout' : 'microsoft.error.network'),
+    { cause: error }
+  )
 }
 
 /**
@@ -75,14 +82,30 @@ export function toMicrosoftCheckStatus(error: unknown): MicrosoftCheckStatus {
     : normalizeMicrosoftNetworkError(error)
   switch (normalized.kind) {
     case 'authentication':
-      return { ok: false, code: 'authentication', message: '微软翻译网页会话获取失败，请稍后重试' }
+      return {
+        ok: false,
+        code: 'authentication',
+        message: translateMain('microsoft.error.authenticationStatus')
+      }
     case 'rate-limit':
-      return { ok: false, code: 'rate-limit', message: '微软翻译接口请求过于频繁，请稍后重试' }
+      return {
+        ok: false,
+        code: 'rate-limit',
+        message: translateMain('microsoft.error.rateLimitStatus')
+      }
     case 'parameter':
-      return { ok: false, code: 'parameter', message: '微软翻译请求参数不受支持' }
+      return {
+        ok: false,
+        code: 'parameter',
+        message: translateMain('microsoft.error.parameterStatus')
+      }
     case 'network':
       return { ok: false, code: 'network', message: normalized.message }
     default:
-      return { ok: false, code: 'service', message: '微软翻译服务暂时不可用，请稍后重试' }
+      return {
+        ok: false,
+        code: 'service',
+        message: translateMain('microsoft.error.serviceStatus')
+      }
   }
 }

@@ -21,6 +21,7 @@
  */
 
 import type { RgbaImage } from '../shared/imagePreprocess'
+import { translateMain } from './messages'
 import type { CaptureBounds } from './screenCapture'
 import { ScreenCaptureError } from './screenCapture'
 import { bgraToRgba as convertBgraToRgba, forceOpaqueBgra } from './ocrSnapshotImage'
@@ -144,8 +145,8 @@ export const BITMAPINFO_FIELDS: Record<string, string> = {
 /** koffi 模块惰性加载状态。 */
 let koffiModule: GdiCaptureFn | null = null
 
-/** koffi 加载失败错误信息。 */
-let koffiLoadError: string | null = null
+/** koffi 加载失败详情；错误文案在抛出时按当前界面语言即时生成。 */
+let koffiLoadErrorDetail: string | null = null
 
 /** 上次 koffi 绑定失败的时间戳（毫秒）；为 0 表示当前没有待冷却的失败。 */
 let koffiLoadFailedAt = 0
@@ -221,7 +222,7 @@ function registerKoffiTypeOnce(
  */
 export function resetKoffiBindingCacheForTests(): void {
   koffiModule = null
-  koffiLoadError = null
+  koffiLoadErrorDetail = null
   koffiLoadFailedAt = 0
   registeredKoffiTypes.clear()
   registeredKoffiModule = null
@@ -263,8 +264,16 @@ export function buildBitmapInfo(width: number, height: number): Record<string, n
  */
 export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
   if (koffiModule) return koffiModule
-  if (koffiLoadError && koffiBindingClock() - koffiLoadFailedAt < KOFFI_BINDING_RETRY_INTERVAL_MS) {
-    throw new Error(koffiLoadError)
+  if (
+    koffiLoadErrorDetail &&
+    koffiBindingClock() - koffiLoadFailedAt < KOFFI_BINDING_RETRY_INTERVAL_MS
+  ) {
+    throw new Error(
+      translateMain('capture.error.gdiBindingLoadFailed', {
+        interval: KOFFI_BINDING_RETRY_INTERVAL_MS,
+        detail: koffiLoadErrorDetail
+      })
+    )
   }
   try {
     const koffi = loadKoffi
@@ -329,18 +338,18 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
     ): Promise<{ data: Uint8Array; width: number; height: number }> {
       const hdcScreen = GetDC(null)
       if (!hdcScreen) {
-        throw new Error('GetDC 失败：无法获取屏幕设备上下文')
+        throw new Error(translateMain('capture.error.gdiGetDcFailed'))
       }
       const hdcMem = CreateCompatibleDC(hdcScreen)
       if (!hdcMem) {
         ReleaseDC(null, hdcScreen)
-        throw new Error('CreateCompatibleDC 失败')
+        throw new Error(translateMain('capture.error.gdiCreateCompatibleDcFailed'))
       }
       const hBitmap = CreateCompatibleBitmap(hdcScreen, width, height)
       if (!hBitmap) {
         DeleteDC(hdcMem)
         ReleaseDC(null, hdcScreen)
-        throw new Error('CreateCompatibleBitmap 失败')
+        throw new Error(translateMain('capture.error.gdiCreateCompatibleBitmapFailed'))
       }
       const hOld = SelectObject(hdcMem, hBitmap)
 
@@ -352,7 +361,7 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
         DeleteObject(hBitmap)
         DeleteDC(hdcMem)
         ReleaseDC(null, hdcScreen)
-        throw new Error('BitBlt 失败')
+        throw new Error(translateMain('capture.error.gdiBitBltFailed'))
       }
 
       // BITMAPINFO 以 JS 对象按结构体指针传入，由 koffi 负责编组；
@@ -372,7 +381,7 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
       ReleaseDC(null, hdcScreen)
 
       if (!scanLines) {
-        throw new Error('GetDIBits 失败：无法获取像素数据')
+        throw new Error(translateMain('capture.error.gdiGetDIBitsFailed'))
       }
 
       return {
@@ -383,14 +392,19 @@ export function getKoffiGdiCapture(loadKoffi?: KoffiLoader): GdiCaptureFn {
     }
 
     // 绑定成功后清掉上次失败的残留状态，避免日志与诊断信息继续指向已经自愈的旧错误。
-    koffiLoadError = null
+    koffiLoadErrorDetail = null
     koffiLoadFailedAt = 0
     return koffiModule
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     koffiLoadFailedAt = koffiBindingClock()
-    koffiLoadError = `koffi 绑定加载失败（将在 ${KOFFI_BINDING_RETRY_INTERVAL_MS} 毫秒后自动重试）: ${detail}`
-    throw new Error(koffiLoadError)
+    koffiLoadErrorDetail = detail
+    throw new Error(
+      translateMain('capture.error.gdiBindingLoadFailed', {
+        interval: KOFFI_BINDING_RETRY_INTERVAL_MS,
+        detail
+      })
+    )
   }
 }
 
@@ -453,7 +467,7 @@ export async function captureWindowsRegionPixels(
   deps: WindowsGdiCaptureDeps
 ): Promise<WindowsPixelCapture> {
   if (deps.platform !== 'win32') {
-    throw new ScreenCaptureError('no-source', '仅 Windows 支持 GDI 原生截屏')
+    throw new ScreenCaptureError('no-source', translateMain('capture.error.windowsOnlyGdi'))
   }
   const rect = toPhysicalRect(displayBounds, scaleFactor)
   try {
@@ -468,7 +482,10 @@ export async function captureWindowsRegionPixels(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new ScreenCaptureError('no-source', `GDI 截屏失败: ${message}`)
+    throw new ScreenCaptureError(
+      'no-source',
+      translateMain('capture.error.gdiCaptureFailed', { message })
+    )
   }
 }
 
@@ -563,7 +580,7 @@ export async function captureWindowsOcrPngPreferGdi(
       const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
       throw new ScreenCaptureError(
         'no-source',
-        `无法获取屏幕截图: GDI 失败（${gdiMessage}）；回退失败（${fallbackMessage}）`
+        translateMain('capture.error.gdiAndFallbackFailed', { gdiMessage, fallbackMessage })
       )
     }
   }
@@ -623,7 +640,7 @@ export async function captureWindowsOcrPreviewPreferGdi(
       const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
       throw new ScreenCaptureError(
         'no-source',
-        `无法获取屏幕截图: GDI 失败（${gdiMessage}）；回退失败（${fallbackMessage}）`
+        translateMain('capture.error.gdiAndFallbackFailed', { gdiMessage, fallbackMessage })
       )
     }
   }

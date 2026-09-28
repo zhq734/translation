@@ -1,4 +1,4 @@
-import { app, shell } from 'electron'
+import { app, net, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { CancellationToken } from 'builder-util-runtime'
@@ -41,6 +41,27 @@ import {
 /** GitHub Release 资产快照条目，同时满足摘要校验与构建元数据校验所需字段。 */
 type ReleaseReleaseAsset = ReleaseAssetDigest & ReleaseBuildMetadataAsset
 
+/**
+ * electron-updater 日志转发接口。
+ *
+ * electron-updater 默认把日志直接交给 console，其内部 error 监听器会打印完整错误堆栈；
+ * 离线启动时这会把 net::ERR_INTERNET_DISCONNECTED 刷进日志。更新失败已由
+ * UpdateManager 统一转为可读状态提示，因此这里只保留可选的 warn 转发入口。
+ * @author zhenghq
+ */
+export interface UpdateDriverLogger {
+  /**
+   * 转发 electron-updater 的警告或错误日志。
+   * @param message electron-updater 传入的日志内容。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  warn(message: unknown): void
+}
+
+/** 默认静默日志器，避免 electron-updater 在离线启动时刷出完整错误堆栈。 */
+const silentUpdateLogger: UpdateDriverLogger = { warn: () => undefined }
+
 const RELEASE_URL = 'https://github.com/zhq734/translation/releases/latest'
 const RELEASE_DOWNLOAD_BASE_URL = `${RELEASE_URL}/download/`
 const RELEASE_CHECKSUMS_URL = `${RELEASE_DOWNLOAD_BASE_URL}SHA256SUMS`
@@ -59,9 +80,13 @@ class ElectronUpdateDriver implements UpdateDriver {
   /**
    * 创建 electron-updater 适配器。
    * @param localBuild 当前安装包内嵌的本地构建元数据；缺失时为 undefined。
+   * @param logger electron-updater 日志转发器；默认静默。
    * @author zhenghq
    */
-  constructor(private readonly localBuild?: BuildMetadata) {}
+  constructor(
+    private readonly localBuild?: BuildMetadata,
+    private readonly logger: UpdateDriverLogger = silentUpdateLogger
+  ) {}
 
   /**
    * 配置下载策略并转发 electron-updater 生命周期事件。
@@ -70,6 +95,14 @@ class ElectronUpdateDriver implements UpdateDriver {
    * @author zhenghq
    */
   initialize(listeners: UpdateDriverListeners): void {
+    // electron-updater 默认把日志直接交给 console，其内部 error 监听器会打印
+    // 完整错误堆栈。离线启动时这会把 net::ERR_INTERNET_DISCONNECTED 刷进日志，
+    // 而该错误由更新管理器统一转为可读提示，因此这里改用默认静默的受控日志器。
+    autoUpdater.logger = {
+      info: () => undefined,
+      warn: (message?: unknown) => this.logger.warn(message),
+      error: (message?: unknown) => this.logger.warn(message)
+    }
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false
     // Windows 与 Linux 的差分下载需要旧安装包和远端 blockmap 完全可靠；本应用
@@ -273,7 +306,8 @@ async function isMacOSApplicationSigned(executablePath: string): Promise<boolean
  * @author zhenghq
  */
 export async function createApplicationUpdateManager(
-  onStatusChanged: (status: UpdateStatus) => void
+  onStatusChanged: (status: UpdateStatus) => void,
+  logger?: UpdateDriverLogger
 ): Promise<UpdateManager> {
   const macSigned = process.platform === 'darwin' && app.isPackaged
     ? await isMacOSApplicationSigned(process.execPath)
@@ -293,10 +327,11 @@ export async function createApplicationUpdateManager(
   })
 
   return new UpdateManager({
-    driver: new ElectronUpdateDriver(localBuild),
+    driver: new ElectronUpdateDriver(localBuild, logger),
     currentVersion: app.getVersion(),
     enabled: app.isPackaged,
     installMode,
+    isOnline: () => net.isOnline(),
     releaseUrl: RELEASE_URL,
     manualUpdate: process.platform === 'darwin'
       ? createManualMacUpdateService({

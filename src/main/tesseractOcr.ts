@@ -7,6 +7,7 @@ import {
   type OcrRecognizeResult
 } from '../shared/ocrEngine'
 import type { OcrTextLine } from '../shared/types'
+import { translateMain } from './messages'
 
 /** Tesseract worker 最小接口，便于测试注入。 */
 export interface TesseractWorker {
@@ -219,7 +220,11 @@ export class TesseractOcrEngine implements OcrEngine {
     const hasBytes = Boolean(input.imageBytes && input.imageBytes.length > 0)
     const hasPath = typeof input.imagePath === 'string' && input.imagePath.trim() !== ''
     if (!hasBytes && !hasPath) {
-      throw new OcrEngineError('engine-unavailable', 'Tesseract OCR 缺少图片输入', 'tesseract')
+      throw new OcrEngineError(
+        'engine-unavailable',
+        translateMain('ocr.error.tesseractMissingInput'),
+        'tesseract'
+      )
     }
 
     const lang = tesseractLanguageTag(input.language ?? 'auto')
@@ -233,7 +238,7 @@ export class TesseractOcrEngine implements OcrEngine {
 
       const { data } = await withOcrTimeout(
         worker.recognize(imageInput),
-        { timeoutMs, signal: input.signal },
+        { timeoutMs, signal: input.signal, message: translateMain },
         'tesseract'
       )
       const lines = normalizeTesseractLines(data.text)
@@ -243,25 +248,25 @@ export class TesseractOcrEngine implements OcrEngine {
       if (error instanceof OcrEngineError) throw error
       const message = error instanceof Error ? error.message : String(error)
       if (/timeout/i.test(message)) {
-        throw new OcrEngineError('timeout', 'Tesseract OCR 超时', 'tesseract')
+        throw new OcrEngineError('timeout', translateMain('ocr.error.tesseractTimeout'), 'tesseract')
       }
       if (/traineddata|fetch|download|network/i.test(message)) {
         throw new OcrEngineError(
           'engine-unavailable',
-          'Tesseract 语言模型下载失败，请检查网络后重试',
+          translateMain('ocr.error.tesseractModelDownloadFailed'),
           'tesseract'
         )
       }
       if (/terminated/i.test(message)) {
         throw new OcrEngineError(
           'engine-unavailable',
-          'Tesseract OCR 已中断，请重新截图识别',
+          translateMain('ocr.error.tesseractInterrupted'),
           'tesseract'
         )
       }
       throw new OcrEngineError(
         'engine-unavailable',
-        `Tesseract OCR 执行失败: ${message}`,
+        translateMain('ocr.error.tesseractFailed', { message }),
         'tesseract'
       )
     }

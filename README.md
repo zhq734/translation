@@ -196,7 +196,7 @@ Linux installs an AppImage at `~/.local/bin/selection-translator` and creates a 
 For manual installation, download the matching asset from GitHub [Releases](../../releases):
 
 - **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`;
-- **Linux**: use `SelectionTranslator-<version>-linux-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-linux-arm64.AppImage` for ARM64;
+- **Linux**: use `SelectionTranslator-<version>-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-arm64.AppImage` for ARM64;
 - **Windows**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
 
 Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` and `arm64` are supported; see [Development, Testing, and Packaging](#development-testing-and-packaging).

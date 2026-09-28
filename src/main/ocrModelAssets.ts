@@ -1,5 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { translateMain } from './messages'
 
 /** PaddleOCR ONNX 模型路径集合。 */
 export interface PaddleOcrModelPaths {
@@ -152,8 +153,8 @@ export function resolveBundledOcrModelAssets(appPath: string): OcrModelAssetStat
       : undefined,
     missingFiles,
     message: ready
-      ? 'PP-OCRv4 兼容模型资产已就绪'
-      : `PP-OCRv4 兼容模型资产不完整：${missingFiles.join('、')}`
+      ? translateMain('ocr.model.gutenReady')
+      : translateMain('ocr.model.gutenIncomplete', { files: missingFiles.join('、') })
   }
 }
 
@@ -181,7 +182,7 @@ export function resolveBundledPpOcrV6ModelAssets(appPath: string): OcrModelAsset
       : undefined,
     missingFiles,
     message: ready
-      ? 'PP-OCRv6_tiny 留档模型资产已就绪（默认不启用）'
-      : `PP-OCRv6_tiny 留档模型资产不完整：${missingFiles.join('、')}`
+      ? translateMain('ocr.model.ppOcrV6Ready')
+      : translateMain('ocr.model.ppOcrV6Incomplete', { files: missingFiles.join('、') })
   }
 }

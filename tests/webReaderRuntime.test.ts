@@ -20,12 +20,23 @@ import {
   waitForWebDocumentReady
 } from '../src/main/webTextExtractionScript'
 import { normalizeWebReaderUrl, sanitizeWebViewBounds, toWebReaderHtmlViewUrl } from '../src/main/webReaderSecurity'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 test('阅读器 URL 只允许 HTTP(S) 且可为普通域名补全 HTTPS', () => {
   assert.equal(normalizeWebReaderUrl('example.com/path'), 'https://example.com/path')
   assert.equal(normalizeWebReaderUrl('http://example.com'), 'http://example.com/')
-  assert.throws(() => normalizeWebReaderUrl('file:///etc/passwd'), /仅支持 HTTP 或 HTTPS/u)
-  assert.throws(() => normalizeWebReaderUrl('javascript:alert(1)'), /仅支持 HTTP 或 HTTPS/u)
+  assert.throws(
+    () => normalizeWebReaderUrl('file:///etc/passwd'),
+    new RegExp(tForTest('zh-CN', 'webReader.error.onlyHttp'), 'u')
+  )
+  assert.throws(
+    () => normalizeWebReaderUrl('javascript:alert(1)'),
+    new RegExp(tForTest('zh-CN', 'webReader.error.onlyHttp'), 'u')
+  )
 })
 
 test('Google Docs 编辑器地址应转换为服务端 HTML 视图以便提取真实正文文本', () => {
@@ -164,7 +175,7 @@ test('提取执行器应返回快照并将超时转换为细分错误', async ()
 
   await assert.rejects(
     executeWebTextExtraction(() => new Promise(() => undefined), 5),
-    /网页文本提取超时/u
+    new RegExp(tForTest('zh-CN', 'webReader.error.extractionTimeout'), 'u')
   )
 })
 

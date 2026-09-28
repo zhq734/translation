@@ -17,8 +17,21 @@ import {
   drawAnnotations
 } from './screenshotAnnotation'
 import { startThemeRuntime } from './theme'
+import { startLocaleRuntime } from './locale'
 
 startThemeRuntime(window.api)
+const localeRuntime = startLocaleRuntime(window.api)
+
+/**
+ * 使用当前界面语言翻译词条。
+ * @param key 语义化词条 key。
+ * @param params 可选插值参数。
+ * @returns 当前语言下的词条文本。
+ * @author zhenghq
+ */
+function t(key: string, params?: Record<string, string | number>): string {
+  return localeRuntime.translator.t(key, params)
+}
 
 const translateButton = document.getElementById('translate') as HTMLButtonElement
 const ocrOverlay = document.getElementById('ocr-overlay') as HTMLElement
@@ -113,6 +126,9 @@ let pendingScreenshotRequestId: string | null = null
 let screenshotRequestSeq = 0
 // OCR 侧栏状态：pending 处理中 / ready 展示文本（成功或失败描述）。
 let ocrPanelState: 'hidden' | 'pending' | 'ready' = 'hidden'
+// OCR 侧栏状态对应的语义信息，供界面语言切换后重新生成本地化描述。
+let ocrPanelStatusMode: 'recognizing' | 'complete' | 'completeWithEngine' | 'empty' | 'failed' | null = null
+let ocrPanelStatusEngine = ''
 /** 当前截图资源状态：只有完成解码后才允许合成带标注图片。 */
 let ocrSnapshotState: 'loading' | 'ready' | 'error' = 'loading'
 // OCR 侧栏用户手动调整的尺寸；为 null 时按默认自适应尺寸布局。
@@ -1117,7 +1133,9 @@ function recognizeCurrentOcrSelection(): void {
   screenshotRecognizePending = true
   pendingScreenshotRequestId = request.requestId
   ocrRecognizeButton.disabled = true
-  renderOcrPanel('pending', '', '正在识别选区文字…')
+  ocrPanelStatusMode = 'recognizing'
+  ocrPanelStatusEngine = ''
+  renderOcrPanel('pending', '', t('selection.recognizing'))
   window.api.recognizeOcrSelection(request)
 }
 
@@ -1133,11 +1151,45 @@ function handleOcrRecognizeResult(result: ScreenshotOcrRecognizeResult): void {
   pendingScreenshotRequestId = null
   updateOcrImageActionAvailability()
   if (result.ok && result.text) {
-    renderOcrPanel('ready', result.text, `识别完成${result.engine ? `（${result.engine}）` : ''}`)
+    ocrPanelStatusMode = result.engine ? 'completeWithEngine' : 'complete'
+    ocrPanelStatusEngine = result.engine ?? ''
+    renderOcrPanel(
+      'ready',
+      result.text,
+      result.engine
+        ? t('selection.recognizeCompleteWithEngine', { engine: result.engine })
+        : t('selection.recognizeComplete')
+    )
   } else if (result.code === 'empty') {
-    renderOcrPanel('ready', '', '未识别到文字')
+    ocrPanelStatusMode = 'empty'
+    ocrPanelStatusEngine = ''
+    renderOcrPanel('ready', '', t('selection.noTextRecognized'))
   } else {
-    renderOcrPanel('ready', '', result.error || '识别失败，请重试')
+    ocrPanelStatusMode = 'failed'
+    ocrPanelStatusEngine = ''
+    renderOcrPanel('ready', '', result.error || t('selection.recognizeFailed'))
+  }
+}
+
+/**
+ * 根据记录的语义状态重新生成 OCR 侧栏描述。
+ * @returns 当前语言下的侧栏描述；没有记录时返回空串。
+ * @author zhenghq
+ */
+function localizedOcrPanelStatus(): string {
+  switch (ocrPanelStatusMode) {
+    case 'recognizing':
+      return t('selection.recognizing')
+    case 'complete':
+      return t('selection.recognizeComplete')
+    case 'completeWithEngine':
+      return t('selection.recognizeCompleteWithEngine', { engine: ocrPanelStatusEngine })
+    case 'empty':
+      return t('selection.noTextRecognized')
+    case 'failed':
+      return t('selection.recognizeFailed')
+    default:
+      return ''
   }
 }
 
@@ -1162,12 +1214,12 @@ function translateCurrentOcrSelection(): void {
 function copyCurrentOcrSelectionImage(): void {
   if (pendingScreenshotRequestId || screenshotActionPending) return
   screenshotActionPending = 'copy-image'
-  renderOcrTip('正在复制图片…')
+  renderOcrTip(t('selection.copyingImage'))
   ocrCopyImageButton.disabled = true
   void (async () => {
     try {
       const request = await buildAnnotatedExportPayload('copy-image')
-      if (!request) throw new Error('截图尚未准备完成，请稍后重试')
+      if (!request) throw new Error(t('selection.screenshotNotReady'))
       pendingScreenshotRequestId = request.requestId
       // 保留未标注原路径作为兜底调用锚点，带标注导出失败时仍可提交原图选区。
       if (!request.png) window.api.copyOcrSelectionImage(buildScreenshotActionRequest('copy-image')!)
@@ -1178,7 +1230,8 @@ function copyCurrentOcrSelectionImage(): void {
       updateOcrImageActionAvailability()
       renderOcrTip()
       window.api.showScreenshotToast({
-        message: error instanceof Error ? error.message : '复制图片失败',
+        message: error instanceof Error ? error.message : t('selection.copyImageFailed'),
+        kind: 'error',
         displayTimeMs: 3000
       })
     }
@@ -1193,12 +1246,12 @@ function copyCurrentOcrSelectionImage(): void {
 function saveCurrentOcrSelectionImage(): void {
   if (pendingScreenshotRequestId || screenshotActionPending) return
   screenshotActionPending = 'save-image'
-  renderOcrTip('正在准备保存…')
+  renderOcrTip(t('selection.preparingSave'))
   ocrSaveImageButton.disabled = true
   void (async () => {
     try {
       const request = await buildAnnotatedExportPayload('save-image')
-      if (!request) throw new Error('截图尚未准备完成，请稍后重试')
+      if (!request) throw new Error(t('selection.screenshotNotReady'))
       pendingScreenshotRequestId = request.requestId
       if (!request.png) window.api.saveOcrSelectionImage(buildScreenshotActionRequest('save-image')!)
       else window.api.saveAnnotatedOcrSelectionImage(request)
@@ -1208,7 +1261,8 @@ function saveCurrentOcrSelectionImage(): void {
       updateOcrImageActionAvailability()
       renderOcrTip()
       window.api.showScreenshotToast({
-        message: error instanceof Error ? error.message : '保存图片失败',
+        message: error instanceof Error ? error.message : t('selection.saveImageFailed'),
+        kind: 'error',
         displayTimeMs: 3000
       })
     }
@@ -1234,7 +1288,11 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
       return
     }
     // 复制失败：通过独立提示窗口展示错误，截图窗口保持打开。
-    window.api.showScreenshotToast({ message: result.error || '复制图片失败', displayTimeMs: 3000 })
+    window.api.showScreenshotToast({
+      message: result.error || t('selection.copyImageFailed'),
+      kind: 'error',
+      displayTimeMs: 3000
+    })
     return
   }
   updateOcrImageActionAvailability()
@@ -1247,7 +1305,11 @@ function handleOcrActionResult(result: ScreenshotOcrActionResult): void {
     scheduleScreenshotAutoClose()
     return
   } else {
-    window.api.showScreenshotToast({ message: result.error || '保存图片失败', displayTimeMs: 3000 })
+    window.api.showScreenshotToast({
+      message: result.error || t('selection.saveImageFailed'),
+      kind: 'error',
+      displayTimeMs: 3000
+    })
   }
 }
 
@@ -1305,13 +1367,13 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
  */
 function renderOcrTip(message?: string): void {
   const pendingMessage = screenshotActionPending === 'copy-image'
-    ? '正在复制图片…'
+    ? t('selection.copyingImage')
     : screenshotActionPending === 'save-image'
-      ? '正在准备保存…'
+      ? t('selection.preparingSave')
       : null
   ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
-    ? '拖拽选择区域，可移动或拉伸，点击识别开始 OCR，按 Esc 取消'
-    : '正在获取屏幕画面，可先拖拽选择区域，按 Esc 取消')
+    ? t('selection.tip')
+    : t('selection.tipLoading'))
 }
 
 /**
@@ -1423,7 +1485,11 @@ function handleOcrSnapshotError(): void {
   ocrSnapshotState = 'error'
   updateOcrImageActionAvailability()
   renderOcrTip()
-  window.api.showScreenshotToast({ message: '截图资源加载失败，请重新截图', displayTimeMs: 3000 })
+  window.api.showScreenshotToast({
+    message: t('selection.screenshotLoadFailed'),
+    kind: 'error',
+    displayTimeMs: 3000
+  })
 }
 
 /**
@@ -1798,3 +1864,12 @@ window.api.onOcrSelectionSnapshot(applyOcrSnapshot)
 window.api.onOcrSelectionFailed(handleOcrSelectionFailed)
 window.api.onOcrRecognizeResult(handleOcrRecognizeResult)
 window.api.onOcrActionResult(handleOcrActionResult)
+localeRuntime.onLocaleChanged(() => {
+  renderOcrTip()
+  updateAnnotationUi()
+  if (ocrPanelState === 'pending') {
+    renderOcrPanel('pending', '', localizedOcrPanelStatus())
+  } else if (ocrPanelState === 'ready') {
+    renderOcrPanel('ready', ocrPanelText.value, localizedOcrPanelStatus())
+  }
+})

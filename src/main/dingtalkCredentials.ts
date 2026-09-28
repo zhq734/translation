@@ -7,6 +7,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname } from 'node:path'
+import { translateMain } from './messages'
 
 /** Electron safeStorage 所需的最小依赖接口，便于单元测试注入假实现。 */
 export interface SafeStorageAdapter {
@@ -85,7 +86,11 @@ export class DingTalkCredentialStore {
   readSecret(): DingTalkSecretReadResult {
     if (!this.files.exists(this.path)) return { configured: false, secret: null }
     if (!this.safeStorage.isEncryptionAvailable()) {
-      return { configured: false, secret: null, error: '当前系统无法使用安全存储，无法读取钉钉凭证' }
+      return {
+        configured: false,
+        secret: null,
+        error: translateMain('dingtalk.credential.secureStorageUnavailableRead')
+      }
     }
     try {
       const raw = JSON.parse(this.files.read(this.path)) as Partial<CredentialFile>
@@ -97,7 +102,11 @@ export class DingTalkCredentialStore {
       if (!secret) throw new Error('empty secret')
       return { configured: true, secret }
     } catch {
-      return { configured: false, secret: null, error: '无法读取已保存的钉钉凭证，请重新配置' }
+      return {
+        configured: false,
+        secret: null,
+        error: translateMain('dingtalk.credential.readFailed')
+      }
     }
   }
 
@@ -111,7 +120,7 @@ export class DingTalkCredentialStore {
     const normalized = secret.trim()
     if (!normalized) return
     if (!this.safeStorage.isEncryptionAvailable()) {
-      throw new Error('当前系统安全存储不可用，无法保存钉钉凭证')
+      throw new Error(translateMain('dingtalk.credential.secureStorageUnavailableSave'))
     }
     const ciphertext = this.safeStorage.encryptString(normalized).toString('base64')
     const payload: CredentialFile = { version: 1, dingTalkClientSecret: ciphertext }

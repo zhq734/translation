@@ -10,6 +10,8 @@ import {
   type UpdateDriver,
   type UpdateDriverListeners
 } from '../src/main/updateManager.ts'
+import { createTranslator } from '../src/shared/i18n/translate.ts'
+import { tForTest } from './helpers/i18n.ts'
 import {
   parseSha256Sums,
   validateReleaseChecksum,
@@ -118,7 +120,9 @@ class FakeManualMacUpdateService implements ManualMacUpdateService {
  */
 function createManager(
   installMode: UpdateStatus['installMode'] = 'automatic',
-  enabled = true
+  enabled = true,
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+  getTranslator?: () => ReturnType<typeof createTranslator>
 ): {
   manager: UpdateManager
   driver: FakeUpdateDriver
@@ -137,6 +141,7 @@ function createManager(
     installMode,
     releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
     manualUpdate,
+    ...(getTranslator ? { getTranslator } : { translator: createTranslator(locale) }),
     openExternal: async (url) => {
       openedUrls.push(url)
     },
@@ -153,6 +158,73 @@ test('更新安装模式应根据打包状态、平台、签名和 AppImage 环�
   assert.equal(resolveUpdateInstallMode('darwin', true, false, false), 'manual')
   assert.equal(resolveUpdateInstallMode('linux', true, true, false), 'automatic')
   assert.equal(resolveUpdateInstallMode('linux', true, false, false), 'manual')
+})
+
+test('更新状态应使用注入的英文翻译器并正确插值', async () => {
+  const { manager, driver } = createManager('automatic', true, 'en-US')
+
+  assert.equal(manager.getStatus().message, tForTest('en-US', 'update.idle'))
+  await manager.checkForUpdates()
+  assert.equal(manager.getStatus().message, tForTest('en-US', 'update.checking'))
+
+  driver.listeners?.available({ version: '1.0.4' })
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('en-US', 'update.available', { version: '1.0.4' })
+  )
+
+  await manager.downloadUpdate()
+  driver.listeners?.progress({
+    percent: 52.34,
+    transferred: 52,
+    total: 100,
+    bytesPerSecond: 10
+  })
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('en-US', 'update.downloading', { percent: '52.3' })
+  )
+
+  await manager.cancelDownload()
+  assert.equal(manager.getStatus().message, tForTest('en-US', 'update.cancelled'))
+})
+
+test('英文更新错误状态应使用英文词条且保留诊断参数', async () => {
+  const { manager, driver } = createManager('automatic', true, 'en-US')
+
+  driver.checkForUpdates = async () => {
+    throw new Error('net::ERR_CONNECTION_CLOSED')
+  }
+  await manager.checkForUpdates()
+
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('en-US', 'update.error.networkInterrupted')
+  )
+})
+
+test('更新管理器应在语言切换后使用新的翻译器', async () => {
+  let locale: 'zh-CN' | 'en-US' = 'zh-CN'
+  const { manager, driver } = createManager(
+    'automatic',
+    true,
+    'zh-CN',
+    () => createTranslator(locale)
+  )
+
+  assert.equal(manager.getStatus().message, tForTest('zh-CN', 'update.idle'))
+  locale = 'en-US'
+  manager.setTranslator(createTranslator(locale))
+  driver.listeners?.checking()
+  assert.equal(manager.getStatus().message, tForTest('en-US', 'update.checking'))
+
+  locale = 'zh-CN'
+  manager.setTranslator(createTranslator(locale))
+  driver.listeners?.available({ version: '1.0.4' })
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('zh-CN', 'update.available', { version: '1.0.4' })
+  )
 })
 
 test('macOS 应从可执行文件路径解析应用包根目录', () => {
@@ -210,7 +282,7 @@ test('开发环境应返回禁用状态且不得请求远程更新', async () =>
     currentVersion: '1.0.3',
     installMode: 'disabled',
     releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
-    message: '开发环境不会检查更新'
+    message: tForTest('zh-CN', 'update.disabled')
   })
 
   await manager.checkForUpdates()
@@ -314,7 +386,7 @@ test('取消下载后底层补发的取消错误不得把状态覆盖成失败',
   // 真实 electron-updater 在分片适配层抛出普通 Error 时会补发 error 事件。
   driver.listeners?.error(new Error('分片下载失败（字节 0-8132141）：下载已取消'))
   assert.equal(manager.getStatus().phase, 'available')
-  assert.match(manager.getStatus().message, /已取消/u)
+  assert.ok(manager.getStatus().message.includes(tForTest('zh-CN', 'update.cancelled')))
 })
 
 test('手动 DMG 下载应支持取消并保留断点续传状态', async () => {
@@ -342,7 +414,7 @@ test('手动 DMG 下载应支持取消并保留断点续传状态', async () => 
   await downloading
   assert.equal(manager.getStatus().phase, 'available')
   assert.equal(manager.getStatus().progress, undefined)
-  assert.match(manager.getStatus().message, /已取消/)
+  assert.ok(manager.getStatus().message.includes(tForTest('zh-CN', 'update.cancelled')))
 })
 
 test('SHA256SUMS 缺少当前安装包时应提示升级', () => {
@@ -355,7 +427,7 @@ test('SHA256SUMS 缺少当前安装包时应提示升级', () => {
   })
 
   assert.equal(manager.getStatus().phase, 'available')
-  assert.match(manager.getStatus().message, /没有 SHA256SUMS 校验值/u)
+  assert.ok(manager.getStatus().message.includes(tForTest('zh-CN', 'update.checksumNeedsUpdateMissing')))
   assert.equal(manager.getStatus().checksumStatus, 'missing')
   assert.equal(manager.getStatus().manualDownloadAvailable, true)
 })
@@ -412,7 +484,7 @@ test('SHA256SUMS 校验通过且版本相同时应保持最新状态', () => {
   driver.listeners?.notAvailable({ version: '1.0.3', checksumStatus: 'verified' })
 
   assert.equal(manager.getStatus().phase, 'not-available')
-  assert.equal(manager.getStatus().message, '当前已经是最新版本')
+  assert.equal(manager.getStatus().message, tForTest('zh-CN', 'update.notAvailable'))
 })
 
 test('手动安装模式应下载 DMG 到本地并打开安装界面', async () => {
@@ -433,8 +505,8 @@ test('手动安装模式应下载 DMG 到本地并打开安装界面', async () 
   assert.equal(manualUpdate.progressCallbacks, 1)
   assert.equal(manager.getStatus().phase, 'manual-downloaded')
   assert.equal(manager.getStatus().manualDownloadAvailable, true)
-  assert.match(manager.getStatus().message, /已下载到“下载”文件夹/u)
-  assert.match(manager.getStatus().message, /拖入“应用程序”覆盖旧版本/u)
+  const manualDownloadedMessage = tForTest('zh-CN', 'update.manualDownloaded')
+  assert.ok(manager.getStatus().message.includes(manualDownloadedMessage))
 })
 
 test('驱动异常应转为可展示的错误状态并保留手动下载入口', async () => {
@@ -446,6 +518,56 @@ test('驱动异常应转为可展示的错误状态并保留手动下载入口',
 
   await manager.openReleasePage()
   assert.equal(openedUrls.length, 1)
+})
+
+test('离线时不应发起更新检查，也不应产生错误状态', async () => {
+  const driver = new FakeUpdateDriver()
+  const statuses: UpdateStatus[] = []
+  const manager = new UpdateManager({
+    driver,
+    currentVersion: '1.0.3',
+    enabled: true,
+    installMode: 'automatic',
+    releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+    isOnline: () => false,
+    openExternal: async () => undefined,
+    onStatusChanged: (status) => statuses.push(status)
+  })
+
+  await manager.checkForUpdates()
+
+  assert.equal(driver.checkCount, 0, '离线时不应发起更新检查网络请求')
+  assert.notEqual(manager.getStatus().phase, 'error')
+  assert.equal(
+    statuses.some((status) => status.phase === 'error'),
+    false,
+    '离线跳过更新检查不应产生错误状态'
+  )
+})
+
+test('在线时应照常发起更新检查', async () => {
+  const driver = new FakeUpdateDriver()
+  const manager = new UpdateManager({
+    driver,
+    currentVersion: '1.0.3',
+    enabled: true,
+    installMode: 'automatic',
+    releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+    isOnline: () => true,
+    openExternal: async () => undefined,
+    onStatusChanged: () => undefined
+  })
+
+  await manager.checkForUpdates()
+
+  assert.equal(driver.checkCount, 1)
+})
+
+test('electron-updater 应使用受控日志器，避免离线时刷出完整错误堆栈', () => {
+  const source = readFileSync('src/main/updater.ts', 'utf8')
+
+  assert.match(source, /autoUpdater\.logger\s*=/u)
+  assert.doesNotMatch(source, /autoUpdater\.logger\s*=\s*console/u)
 })
 
 test('检查更新遇到连接中断时应自动重试并给出可操作提示', async () => {
@@ -464,7 +586,7 @@ test('检查更新遇到连接中断时应自动重试并给出可操作提示',
 
   assert.equal(attempts, 3)
   assert.equal(manager.getStatus().phase, 'checking')
-  assert.equal(manager.getStatus().message, '正在检查更新…')
+  assert.equal(manager.getStatus().message, tForTest('zh-CN', 'update.checking'))
   assert.equal(
     statuses.some((status) => status.phase === 'error'),
     false,
@@ -483,7 +605,7 @@ test('检查更新重试耗尽后应提示网络连接中断', async () => {
   assert.equal(manager.getStatus().phase, 'error')
   assert.equal(
     manager.getStatus().message,
-    '更新失败：网络连接被中断，请检查网络或代理设置后重试'
+    tForTest('zh-CN', 'update.error.networkInterrupted')
   )
 })
 
@@ -525,7 +647,7 @@ test('下载中断重试耗尽后应提示已保留断点并可重新继续', as
   assert.equal(manager.getStatus().phase, 'error')
   assert.equal(
     manager.getStatus().message,
-    '更新失败：下载连接中断，已保留断点，可重新点击升级继续'
+    tForTest('zh-CN', 'update.error.downloadInterrupted')
   )
 })
 
@@ -555,7 +677,7 @@ test('Release 缺少更新清单时应显示简短中文提示而不是底层调
 
   assert.equal(
     manager.getStatus().message,
-    '当前 GitHub Release 缺少自动更新清单 latest-mac.yml，请稍后重新检查或打开发布页手动安装'
+    tForTest('zh-CN', 'update.error.missingManifest', { manifest: 'latest-mac.yml' })
   )
   assert.doesNotMatch(manager.getStatus().message, /createHttpError|node_modules/u)
 })
@@ -582,7 +704,7 @@ test('macOS 更新包签名不匹配时应切换为手动安装模式', async ()
   assert.equal(manager.getStatus().installMode, 'manual')
   assert.equal(
     manager.getStatus().message,
-    '更新包签名与当前应用不兼容，已改用手动安装；请下载 DMG，拖入“应用程序”并覆盖旧版本'
+    tForTest('zh-CN', 'update.error.signatureMismatch')
   )
 
   await manager.downloadUpdate()

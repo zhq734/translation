@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { MacOSQuarantineResult } from '../shared/types'
+import { translateMain } from './messages'
 
 /** 应用安装到“应用程序”目录后所使用的固定路径。 */
 export const MACOS_APPLICATION_PATH = '/Applications/划词翻译.app'
@@ -44,7 +45,10 @@ async function runXattrCommand(command: string, args: string[]): Promise<void> {
  */
 function formatCommandError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  return message.replace(/\s+/gu, ' ').trim().slice(0, 240) || '未知错误'
+  return (
+    message.replace(/\s+/gu, ' ').trim().slice(0, 240) ||
+    translateMain('macQuarantine.unknownError')
+  )
 }
 
 /**
@@ -76,26 +80,36 @@ export async function removeMacOSApplicationQuarantine(
   const manualCommand = `xattr -dr com.apple.quarantine "${MACOS_APPLICATION_PATH}"`
 
   if (platform !== 'darwin') {
-    return { ok: false, message: '仅 macOS 支持解除应用隔离属性' }
+    return { ok: false, message: translateMain('macQuarantine.unsupportedPlatform') }
   }
   if (!isAllowedMacOSApplicationPath(platform, applicationPath)) {
     return {
       ok: false,
-      message: `为避免误操作，只允许处理 ${MACOS_APPLICATION_PATH}`
+      message: translateMain('macQuarantine.pathNotAllowed', {
+        path: MACOS_APPLICATION_PATH
+      })
     }
   }
 
   try {
     await runCommand(XATTR_COMMAND, ['-dr', 'com.apple.quarantine', applicationPath])
-    return { ok: true, message: '已解除 /Applications/划词翻译.app 的 macOS 隔离属性' }
+    return {
+      ok: true,
+      message: translateMain('macQuarantine.success', {
+        path: MACOS_APPLICATION_PATH
+      })
+    }
   } catch (error) {
     const errorMessage = formatCommandError(error)
     if (/No such xattr/iu.test(errorMessage)) {
-      return { ok: true, message: '应用本来就没有隔离属性（com.apple.quarantine）' }
+      return { ok: true, message: translateMain('macQuarantine.noAttribute') }
     }
     return {
       ok: false,
-      message: `解除应用隔离属性失败：${errorMessage}。可手动执行：${manualCommand}`
+      message: translateMain('macQuarantine.failed', {
+        message: errorMessage,
+        command: manualCommand
+      })
     }
   }
 }

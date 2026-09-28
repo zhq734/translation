@@ -48,7 +48,7 @@ test('托盘与第二实例等用户入口应请求置顶，内部 activate 复�
   assert.match(mainSource, /tray\.on\('double-click', \(\) => void openSettings\(\)\)/u)
   assert.match(
     mainSource,
-    /label:\s*'设置',[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
+    /label:\s*t\.t\('menu\.settings'\),[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
   )
   assert.match(
     mainSource,

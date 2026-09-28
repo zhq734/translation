@@ -8,6 +8,8 @@ import {
   type OcrRecognizeResult
 } from '../shared/ocrEngine'
 import type { OcrTextLine } from '../shared/types'
+import type { TranslationParams } from '../shared/i18n'
+import { translateMain } from './messages'
 import type { PaddleOcrModelPaths } from './ocrModelAssets'
 import { decodePng } from './pngCodec'
 import { restorePaddleOcrUnderlines } from './paddleOcrUnderline'
@@ -265,8 +267,11 @@ export class PaddleOcrEngine implements OcrEngine {
   /** ocr-node 加载的 ONNX 模型路径。 */
   private readonly models?: PaddleOcrModelPaths
 
-  /** 最近一次 runtime 初始化失败原因。 */
-  private unavailableReason: string | undefined
+  /** 最近一次 runtime 初始化失败的语义化词条 key。 */
+  private unavailableReasonKey: string | undefined
+
+  /** 最近一次 runtime 初始化失败原因的插值参数。 */
+  private unavailableReasonParams: TranslationParams | undefined
 
   /**
    * 创建 PaddleOCR 引擎。
@@ -308,11 +313,13 @@ export class PaddleOcrEngine implements OcrEngine {
   async isAvailable(): Promise<boolean> {
     try {
       await this.getOrCreate()
-      this.unavailableReason = undefined
+      this.unavailableReasonKey = undefined
+      this.unavailableReasonParams = undefined
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.unavailableReason = `PaddleOCR runtime 初始化失败: ${message}`
+      this.unavailableReasonKey = 'ocr.error.paddleRuntimeInitFailed'
+      this.unavailableReasonParams = { message }
       console.error('[ocr] PaddleOCR runtime 初始化失败:', message)
       return false
     }
@@ -324,7 +331,9 @@ export class PaddleOcrEngine implements OcrEngine {
    * @author zhenghq
    */
   getUnavailableReason(): string | undefined {
-    return this.unavailableReason
+    return this.unavailableReasonKey
+      ? translateMain(this.unavailableReasonKey, this.unavailableReasonParams)
+      : undefined
   }
 
   /**
@@ -374,13 +383,13 @@ export class PaddleOcrEngine implements OcrEngine {
     } else if (input.imagePath) {
       imagePath = input.imagePath
     } else {
-      throw new OcrEngineError('empty', 'PaddleOCR 缺少图片输入', 'paddle')
+      throw new OcrEngineError('empty', translateMain('ocr.error.paddleMissingInput'), 'paddle')
     }
 
     try {
       const raw = await withOcrTimeout(
         ocr.detect(imagePath),
-        { timeoutMs, signal: input.signal },
+        { timeoutMs, signal: input.signal, message: translateMain },
         'paddle'
       )
       const lines = normalizePaddleLines(raw)
@@ -391,9 +400,13 @@ export class PaddleOcrEngine implements OcrEngine {
       if (error instanceof OcrEngineError) throw error
       const message = error instanceof Error ? error.message : String(error)
       if (/timeout/i.test(message)) {
-        throw new OcrEngineError('timeout', 'PaddleOCR 超时', 'paddle')
+        throw new OcrEngineError('timeout', translateMain('ocr.error.paddleTimeout'), 'paddle')
       }
-      throw new OcrEngineError('engine-unavailable', `PaddleOCR 执行失败: ${message}`, 'paddle')
+      throw new OcrEngineError(
+        'engine-unavailable',
+        translateMain('ocr.error.paddleFailed', { message }),
+        'paddle'
+      )
     } finally {
       if (tempPath) {
         await this.deps.unlink(tempPath)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 import {
   DEFAULT_SETTINGS,
   SETTINGS_SCHEMA_VERSION,
@@ -69,7 +70,7 @@ test('设置页应提供开机自启动开关并通过普通设置接口保存',
 
   assert.match(html, /id="auto-launch"[^>]+type="checkbox"/u)
   assert.match(html, /for="auto-launch"/u)
-  assert.match(html, /开机自启动/u)
+  assert.match(html, new RegExp(`data-i18n="settings\\.launch\\.autoLaunch">${tForTest('en-US', 'settings.launch.autoLaunch')}`, 'u'))
   assert.match(source, /getElementById\('auto-launch'\)/u)
   assert.match(source, /autoLaunch\.checked\s*=\s*settings\.autoLaunch/u)
   assert.match(source, /autoLaunch\.addEventListener\('change', saveAutoLaunch\)/u)

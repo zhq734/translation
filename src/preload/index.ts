@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { Locale } from '../shared/i18n/locale'
 import type {
   Api,
   LogEntry,
@@ -20,6 +21,7 @@ import type {
   OcrSelectionFailedPayload,
   OcrSelectionSnapshotPayload,
   OcrStatus,
+  ScreenshotToastKind,
   ScreenshotOcrActionRequest,
   ScreenshotOcrActionResult,
   ScreenshotAnnotatedExportRequest,
@@ -35,6 +37,19 @@ import type {
   WebViewBounds,
   CaptureDiagnosticsSummary
 } from '../shared/types'
+
+/** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
+function getSelectionTranslatorLocale(): Locale {
+  try {
+    const locale = ipcRenderer.sendSync('i18n:get-current-locale')
+    return locale === 'zh-CN' ? 'zh-CN' : 'en-US'
+  } catch {
+    // 同步通道不可用时保持英文兜底，避免 preload 异常导致整个 API 未暴露。
+    return 'en-US'
+  }
+}
+
+contextBridge.exposeInMainWorld('getSelectionTranslatorLocale', getSelectionTranslatorLocale)
 
 const api: Api = {
   /**
@@ -425,7 +440,7 @@ const api: Api = {
    * @returns 无返回值。
    * @author zhenghq
    */
-  showScreenshotToast(payload: { message: string; displayTimeMs?: number }) {
+  showScreenshotToast(payload: { message: string; kind?: ScreenshotToastKind; displayTimeMs?: number }) {
     ipcRenderer.send('screenshot-toast:show', payload)
   },
   /**
@@ -443,8 +458,8 @@ const api: Api = {
    * @returns 取消订阅方法。
    * @author zhenghq
    */
-  onShowScreenshotToast(callback: (payload: { message: string; displayTimeMs: number }) => void) {
-    const listener = (_event: unknown, payload: { message: string; displayTimeMs: number }): void =>
+  onShowScreenshotToast(callback: (payload: { message: string; kind: ScreenshotToastKind; displayTimeMs: number }) => void) {
+    const listener = (_event: unknown, payload: { message: string; kind: ScreenshotToastKind; displayTimeMs: number }): void =>
       callback(payload)
     ipcRenderer.on('screenshot-toast:show', listener)
     return () => ipcRenderer.removeListener('screenshot-toast:show', listener)

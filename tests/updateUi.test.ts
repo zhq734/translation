@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 test('共享类型和预加载层应只暴露受限的自动更新接口', () => {
   const typesSource = readFileSync('src/shared/types.ts', 'utf8')
@@ -63,7 +64,7 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
 
   assert.match(html, /id="settings-tab-about"/u)
   assert.match(html, /id="settings-panel-about"/u)
-  assert.match(html, /<h2>版本与更新<\/h2>/u)
+  assert.match(html, new RegExp(`<h2 data-i18n="settings\\.update\\.title">${tForTest('en-US', 'settings.update.title')}<\\/h2>`, 'u'))
   assert.match(html, /id="current-version"/u)
   assert.match(html, /id="latest-version"/u)
   assert.match(html, /id="update-progress"/u)
@@ -86,7 +87,7 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
   assert.match(source, /status\.manualDownloadAvailable === true/u)
   assert.match(source, /const manualDownloadActionAvailable = hasManualDownload/u)
   assert.doesNotMatch(source, /status\.installMode === 'manual'\) await removeMacOSQuarantine\(\)/u)
-  assert.match(source, /已下载到“下载”文件夹/u)
+  assert.match(source, /t\('settings\.update\.hint\.manualDownloaded'\)/u)
 
   assert.match(css, /\.update-actions\s*\{[\s\S]*display:\s*flex/u)
   assert.match(css, /\.update-progress/u)

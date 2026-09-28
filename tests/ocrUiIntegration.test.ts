@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readTextI18nKey, tForTest } from './helpers/i18n.ts'
 
 const main = readFileSync('src/main/index.ts', 'utf8')
 const popupMain = readFileSync('src/main/popup.ts', 'utf8')
@@ -24,8 +25,8 @@ const benchmarkDoc = readFileSync('docs/ocr-model-benchmark.md', 'utf8')
 test('OCR 应提供截图、剪贴板图片和独立快捷键入口', () => {
   assert.match(main, /registerOcrShortcut\(settings\.ocrHotkey\)/u)
   assert.match(main, /onOcrHotkey\(\)/u)
-  assert.match(main, /label:\s*'截图 OCR 翻译…'/u)
-  assert.match(main, /label:\s*'剪贴板图片 OCR 翻译…'/u)
+  assert.match(main, /label:\s*t\.t\('menu\.screenshotOcr'\)/u)
+  assert.match(main, /label:\s*t\.t\('menu\.clipboardImageOcr'\)/u)
   assert.match(preload, /openOcrSelection/u)
   assert.match(preload, /translateClipboardImage/u)
   assert.match(types, /openOcrSelection\(\): void/u)
@@ -51,13 +52,13 @@ test('剪贴板图片翻译应区分无图片并复用 OCR 管线', () => {
  * @author zhenghq
  */
 test('OCR loading 状态应展示识别中提示和 OCR 原文区域', () => {
-  // loading 提示文案已参数化：识别路径用默认值，命中会话识别结果缓存时改为「正在翻译识别结果…」。
-  assert.match(main, /original = '正在识别屏幕区域…'/u)
+  // 主进程 loading 的默认文案尚未迁移到 i18n，仅保留结构断言，避免测试锁定中文动态字符串。
+  assert.match(main, /const showLoadingPopup = \(original = /u)
   assert.match(main, /loading:\s*true,\s*\n\s*original,/u)
-  assert.match(main, /loading:\s*true,\s*\n\s*original:\s*'正在识别剪贴板图片…'/u)
+  assert.match(main, /loading:\s*true,\s*\n\s*original:/u)
   assert.match(popupRenderer, /function renderOcrLoading\(payload: TranslatePayload\): void/u)
   assert.match(popupRenderer, /if \(payload\.origin === 'ocr'\) \{\s*\n\s*renderOcrLoading\(payload\)/u)
-  assert.match(popupRenderer, /ocrSourceTextEl\.textContent = payload\.original \?\? '正在识别图片文字…'/u)
+  assert.match(popupRenderer, /ocrSourceTextEl\.textContent = payload\.original \?\? t\('popup\.ocrRecognizing'\)/u)
 })
 
 /**
@@ -372,7 +373,7 @@ test('OCR 识别只裁内存快照，不重新截屏', () => {
 
   assert.match(submitSource, /hideOcrSelectionWindow\(\)/u)
   assert.ok(submitSource.includes('cropOcrSnapshotSelection'), '应裁剪已采集快照')
-  assert.ok(submitSource.includes("original = '正在识别屏幕区域…'"), '应展示 OCR loading')
+  assert.match(submitSource, /showLoadingPopup\(/u, '应展示 OCR loading')
   assert.match(cropSource, /const snapshot = latestOcrSnapshot/u, '裁剪必须读内存快照')
   assert.doesNotMatch(
     cropSource,
@@ -382,10 +383,10 @@ test('OCR 识别只裁内存快照，不重新截屏', () => {
   // macOS 先显示弹窗接管 key window 再收起覆盖窗口，避免系统把设置页提升到最前。
   assert.match(
     submitSource,
-    /if \(isMac\) showLoadingPopup\([^)]*\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
+    /if \(isMac\) showLoadingPopup\([\s\S]*?\)\s*\n\s*hideOcrSelectionWindow\(\)/u,
     'macOS 必须先显示弹窗再收起覆盖窗口'
   )
-  assert.match(submitSource, /if \(!isMac\) showLoadingPopup\([^)]*\)/u, '其它平台保持裁剪完成后再显示弹窗')
+  assert.match(submitSource, /if \(!isMac\) showLoadingPopup\([\s\S]*?\)/u, '其它平台保持裁剪完成后再显示弹窗')
 })
 
 /**
@@ -456,9 +457,17 @@ test('设置页应提供 OCR 分组和模型资产状态', () => {
  * @author zhenghq
  */
 test('设置页应说明 OCR 最大尝试倍率并保持配置兼容', () => {
-  assert.match(settingsHtml, /<label for="ocr-scale">最大尝试倍率<\/label>/u)
-  assert.match(settingsHtml, /首轮固定使用 1×/u)
-  assert.match(settingsHtml, /仅限制低质量回退/u)
+  const scaleLabel = settingsHtml.match(/<label for="ocr-scale"[^>]*>/u)?.[0]
+  assert.ok(scaleLabel)
+  const scaleKey = readTextI18nKey(scaleLabel)
+  assert.equal(scaleKey, 'settings.ocr.scale')
+  assert.ok(settingsHtml.includes(`${scaleLabel}${tForTest('en-US', scaleKey!)}</label>`))
+
+  const scaleHint = settingsHtml.match(/<p class="field-hint" data-i18n="settings\.ocr\.scaleHint"[^>]*>[^<]*<\/p>/u)?.[0]
+  assert.ok(scaleHint)
+  const scaleHintKey = readTextI18nKey(scaleHint)
+  assert.equal(scaleHintKey, 'settings.ocr.scaleHint')
+  assert.ok(scaleHint.includes(tForTest('en-US', scaleHintKey!)))
   for (const value of ['1', '1.25', '1.5', '2', '3']) {
     assert.match(settingsHtml, new RegExp(`<option value="${value}">`, 'u'))
   }

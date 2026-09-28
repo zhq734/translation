@@ -8,7 +8,9 @@ import {
   type UsageReportEnvironment
 } from '../src/main/usageReporter.ts'
 import { resolveIpLocation } from '../src/main/ipLocation.ts'
+import { formatLocaleDate } from '../src/main/localeFormat.ts'
 import type { UsageStatsData } from '../src/main/usageStats.ts'
+import { tForTest, translatorForTest } from './helpers/i18n.ts'
 
 /** 测试用统计快照。 */
 const stats: UsageStatsData = {
@@ -63,16 +65,41 @@ test('邮件正文应包含系统、版本与昨日和今日快照', () => {
   assert.match(body, /24\.6\.0/)
   assert.match(body, /0\.1\.0/)
   assert.match(body, /20260831001/)
-  assert.match(body, /2026-08-30/)
-  assert.match(body, /2026-08-31/)
-  assert.match(body, /划词翻译：45/)
-  assert.match(body, /快捷键翻译：12/)
-  assert.match(body, /网页翻译：8/)
-  assert.match(body, /截图翻译：3/)
-  assert.match(body, /钉钉：30/)
-  assert.match(body, /AI 翻译：27/)
-  assert.match(body, /微软：8/)
-  assert.match(body, /谷歌：3/)
+  assert.match(body, new RegExp(formatLocaleDate(new Date('2026-08-30T00:00:00'), 'zh-CN'), 'u'))
+  assert.match(body, new RegExp(formatLocaleDate(new Date('2026-08-31T00:00:00'), 'zh-CN'), 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.channel.selection')}：45`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.channel.hotkey')}：12`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.channel.webpage')}：8`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.channel.screenshot')}：3`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.provider.dingtalk')}：30`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.provider.ai')}：27`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.provider.microsoft')}：8`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.provider.google')}：3`, 'u'))
+})
+
+test('统计日报应按界面语言生成英文正文与复数', () => {
+  const body = buildReportBody(
+    {
+      days: {
+        '2026-08-31': {
+          channels: { selection: 1, webpage: 2 },
+          providers: { ai: 1 }
+        }
+      },
+      report: { lastSentDate: null }
+    },
+    environment,
+    '2026-08-31',
+    '2026-08-30',
+    {},
+    translatorForTest('en-US')
+  )
+
+  assert.match(body, /Daily Usage Report/u)
+  assert.match(body, /Selection translation: 1 time/u)
+  assert.match(body, /Web page translation: 2 times/u)
+  assert.match(body, /AI translation: 1 time/u)
+  assert.match(body, /No translation activity recorded for this day/u)
 })
 
 test('邮件正文应包含访问公网 IP 与归属地信息', () => {
@@ -80,22 +107,25 @@ test('邮件正文应包含访问公网 IP 与归属地信息', () => {
     ip: '203.0.113.8',
     location: '中国 广东省 深圳市 电信'
   })
-  assert.match(body, /访问公网IP：203\.0\.113\.8/u)
-  assert.match(body, /IP归属地：中国 广东省 深圳市 电信/u)
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.ip')}：203\\.0\\.113\\.8`, 'u'))
+  assert.match(
+    body,
+    new RegExp(`${tForTest('zh-CN', 'usage.location')}：中国 广东省 深圳市 电信`, 'u')
+  )
   // 新增字段不得破坏原有统计内容
-  assert.match(body, /划词翻译：45/u)
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.channel.selection')}：45`, 'u'))
 })
 
 test('IP 或归属地缺失时正文应降级显示未知', () => {
   const body = buildReportBody(stats, environment, '2026-08-31', '2026-08-30', { ip: '203.0.113.8' })
-  assert.match(body, /访问公网IP：203\.0\.113\.8/u)
-  assert.match(body, /IP归属地：未知/u)
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.ip')}：203\\.0\\.113\\.8`, 'u'))
+  assert.match(body, new RegExp(`${tForTest('zh-CN', 'usage.location')}：未知`, 'u'))
 
   const emptyBody = buildReportBody(stats, environment, '2026-08-31', '2026-08-30')
-  assert.match(emptyBody, /访问公网IP：未知/u)
-  assert.match(emptyBody, /IP归属地：未知/u)
+  assert.match(emptyBody, new RegExp(`${tForTest('zh-CN', 'usage.ip')}：未知`, 'u'))
+  assert.match(emptyBody, new RegExp(`${tForTest('zh-CN', 'usage.location')}：未知`, 'u'))
   // 页脚隐私说明需要与新字段保持一致
-  assert.match(emptyBody, /访问公网IP与归属地/u)
+  assert.ok(emptyBody.includes(tForTest('zh-CN', 'usage.footer')))
 })
 
 test('应解析 IP 归属地为中文位置描述并支持服务回退', async () => {
@@ -192,9 +222,14 @@ test('配置完整时应发送邮件并返回 true', async () => {
   })
   assert.equal(ok, true)
   assert.equal(sent.length, 1)
-  assert.equal(sent[0]?.from, '"划词翻译" <sender@qq.com>')
+  assert.equal(sent[0]?.from, `"${tForTest('zh-CN', 'usage.brand')}" <sender@qq.com>`)
   assert.equal(sent[0]?.to, 'receiver@qq.com')
-  assert.match(String(sent[0]?.subject), /2026-08-31/)
+  assert.equal(
+    sent[0]?.subject,
+    tForTest('zh-CN', 'usage.subject', {
+      date: formatLocaleDate(new Date('2026-08-31T00:00:00'), 'zh-CN')
+    })
+  )
 })
 
 test('发送邮件应携带 IP 与归属地信息', async () => {
@@ -209,8 +244,14 @@ test('发送邮件应携带 IP 与归属地信息', async () => {
     transporter
   })
   assert.equal(ok, true)
-  assert.match(String(sent[0]?.text), /访问公网IP：203\.0\.113\.8/u)
-  assert.match(String(sent[0]?.text), /IP归属地：中国 广东省 深圳市 电信/u)
+  assert.match(
+    String(sent[0]?.text),
+    new RegExp(`${tForTest('zh-CN', 'usage.ip')}：203\\.0\\.113\\.8`, 'u')
+  )
+  assert.match(
+    String(sent[0]?.text),
+    new RegExp(`${tForTest('zh-CN', 'usage.location')}：中国 广东省 深圳市 电信`, 'u')
+  )
 })
 
 test('IP 获取失败时应降级为未知并照常发送', async () => {
@@ -224,8 +265,8 @@ test('IP 获取失败时应降级为未知并照常发送', async () => {
     transporter
   })
   assert.equal(ok, true)
-  assert.match(String(sent[0]?.text), /访问公网IP：未知/u)
-  assert.match(String(sent[0]?.text), /IP归属地：未知/u)
+  assert.match(String(sent[0]?.text), new RegExp(`${tForTest('zh-CN', 'usage.ip')}：未知`, 'u'))
+  assert.match(String(sent[0]?.text), new RegExp(`${tForTest('zh-CN', 'usage.location')}：未知`, 'u'))
 })
 
 test('配置缺失时应跳过发送并返回 false', async () => {

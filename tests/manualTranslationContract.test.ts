@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  readTextI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
 
 const html = readFileSync('src/renderer/index.html', 'utf8')
 const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
@@ -39,7 +45,7 @@ test('划词结果在手动模式下只更新划词会话且不得覆盖手动�
 
 test('手动结果在划词模式下只更新手动会话且不得覆盖划词状态提示', () => {
   assert.match(renderer, /const manualVisible = mode === 'manual'/u)
-  assert.match(renderer, /if \(manualVisible\) statusEl\.textContent = '翻译失败'/u)
+  assert.match(renderer, /if \(manualVisible\) statusEl\.textContent = t\('popup\.translationFailed'\)/u)
   assert.match(renderer, /if \(manualVisible\) renderTranslationProviderResult\(payload\.provider\)/u)
 })
 
@@ -57,11 +63,11 @@ test('preload 和主进程应使用独立手动翻译 IPC 与来源标识', () =
   assert.match(main, /origin:\s*'manual'/u)
   assert.match(main, /origin:\s*TranslationOrigin\s*=\s*'selection'/u)
   assert.match(main, /if \(origin === 'selection'\) \{\s*lastSelectedText = text/su)
-  assert.match(main, /validateManualTranslationText\(text\)/u)
+  assert.match(main, /validateManualTranslationText\(text,\s*mainI18n\?\.translator\)/u)
 })
 
 test('托盘入口和悬浮窗打开流程应自动固定并通知 Renderer', () => {
-  assert.match(main, /label:\s*'手动翻译…'/u)
+  assert.match(main, /label:\s*t\.t\('menu\.manualTranslation'\)/u)
   assert.match(main, /function openManualTranslation/u)
   const start = main.indexOf('function openManualTranslation')
   const source = main.slice(start, main.indexOf('\n}', start) + 2)
@@ -81,10 +87,20 @@ test('OCR 翻译结果应在弹窗展示 OCR 内容、引擎来源并复用复�
   assert.match(html, /id="ocr-source"[^>]*hidden/u)
   assert.doesNotMatch(html, /id="ocr-source-tabs"/u)
   assert.doesNotMatch(html, /id="ocr-source-tab-/u)
-  assert.match(html, /id="ocr-source-label"[\s\S]*?OCR 内容/u)
+  const ocrSourceLabelTag = findOpeningTagById(html, 'ocr-source-label')
+  assert.ok(ocrSourceLabelTag)
+  assert.equal(readTextI18nKey(ocrSourceLabelTag), 'popup.ocrContent')
+  assert.match(html, new RegExp(`id="ocr-source-label"[^>]*>${tForTest('en-US', 'popup.ocrContent')}<`, 'u'))
   assert.match(html, /id="ocr-source-text"[^>]*aria-live=/u)
-  assert.match(html, /id="ocr-engine-badge"[^>]*aria-label="OCR 引擎"/u)
-  assert.match(html, /id="ocr-copy"[\s\S]*?复制 OCR 内容/u)
+  const ocrEngineBadgeTag = findOpeningTagById(html, 'ocr-engine-badge')
+  assert.ok(ocrEngineBadgeTag)
+  assert.equal(readAttributeI18nKey(ocrEngineBadgeTag, 'aria-label'), 'popup.ocrEngine')
+  assert.match(html, new RegExp(`id="ocr-engine-badge"[^>]*aria-label="${tForTest('en-US', 'popup.ocrEngine')}"`, 'u'))
+  const ocrCopyTag = findOpeningTagById(html, 'ocr-copy')
+  assert.ok(ocrCopyTag)
+  assert.equal(readTextI18nKey(ocrCopyTag), 'popup.copyOcrContent')
+  assert.equal(readAttributeI18nKey(ocrCopyTag, 'aria-label'), 'popup.copyOcrContent')
+  assert.match(html, new RegExp(`id="ocr-copy"[^>]*>${tForTest('en-US', 'popup.copyOcrContent')}<`, 'u'))
   assert.match(renderer, /function renderOcrSource\(payload: TranslatePayload\): void/u)
   assert.match(renderer, /payload\.ocrRawText \?\? payload\.ocrText/u)
   assert.match(renderer, /const ocrText = getOcrRawText\(payload\)/u)

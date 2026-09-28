@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { EdgeSpeechResult } from '../shared/types'
+import { translateMain } from './messages'
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
 const EDGE_BASE_URL = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1'
@@ -253,8 +254,8 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
     language: string,
     signal?: AbortSignal
   ): Promise<EdgeSpeechResult> {
-    if (!text.trim()) return { ok: false, error: '朗读文本为空' }
-    if (signal?.aborted) return { ok: false, error: 'Edge 语音请求已取消' }
+    if (!text.trim()) return { ok: false, error: translateMain('speech.error.emptyText') }
+    if (signal?.aborted) return { ok: false, error: translateMain('speech.error.cancelled') }
 
     const currentDate = now()
     console.log('[edge-speech] WebSocket 请求开始', {
@@ -270,7 +271,7 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
       socket = socketResult instanceof Promise ? await socketResult : socketResult
     } catch {
       console.error('[edge-speech] WebSocket 创建失败')
-      return { ok: false, error: 'Edge 语音服务连接失败' }
+      return { ok: false, error: translateMain('speech.error.connectionFailed') }
     }
     const requestId = randomBytes(16).toString('hex')
     const timestamp = edgeTimestamp(currentDate)
@@ -298,9 +299,9 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
         resolve(result)
       }
 
-      const abort = (): void => finish({ ok: false, error: 'Edge 语音请求已取消' })
+      const abort = (): void => finish({ ok: false, error: translateMain('speech.error.cancelled') })
       signal?.addEventListener('abort', abort, { once: true })
-      timer = setTimeout(() => finish({ ok: false, error: 'Edge 语音请求超时' }), timeoutMs)
+      timer = setTimeout(() => finish({ ok: false, error: translateMain('speech.error.timeout') }), timeoutMs)
       socket.onopen = (): void => {
         console.log('[edge-speech] WebSocket 已连接，发送 speech.config 和 ssml')
         socket.send(edgeCommand(
@@ -326,18 +327,18 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
               : new Uint8Array()
             finish(audio.length > 0
               ? { ok: true, audio, mimeType: 'audio/mpeg' }
-              : { ok: false, error: 'Edge 语音服务未返回音频' })
+              : { ok: false, error: translateMain('speech.error.noAudio') })
           }
           return
         }
         const audio = parseAudioFrame(event.data)
         if (audio && audio.length > 0) chunks.push(audio)
       }
-      socket.onerror = (): void => finish({ ok: false, error: 'Edge 语音服务连接失败' })
+      socket.onerror = (): void => finish({ ok: false, error: translateMain('speech.error.connectionFailed') })
       socket.onclose = (): void => {
         if (!settled) finish(chunks.length > 0
           ? { ok: true, audio: concatBytes(chunks), mimeType: 'audio/mpeg' }
-          : { ok: false, error: 'Edge 语音服务连接已关闭' })
+          : { ok: false, error: translateMain('speech.error.connectionClosed') })
       }
     })
   }

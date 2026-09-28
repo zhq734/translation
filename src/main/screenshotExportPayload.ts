@@ -2,6 +2,7 @@ import type {
   ScreenshotAnnotatedExportAction,
   ScreenshotAnnotatedExportRequest
 } from '../shared/types'
+import { translateMain } from './messages'
 
 /** 带标注 PNG 导出负载在主进程侧允许的最大尺寸与体积。 */
 export const SCREENSHOT_EXPORT_LIMITS = {
@@ -70,20 +71,40 @@ function isValidBounds(value: unknown): boolean {
  */
 export function validateAnnotatedExportPayload(value: unknown): ValidateAnnotatedExportPayloadResult {
   if (!value || typeof value !== 'object') {
-    return { ok: false, code: 'invalid-export-payload', error: '导出图片请求无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportRequestInvalid')
+    }
   }
   const raw = value as Partial<ScreenshotAnnotatedExportRequest>
   if (!isExportAction(raw.action)) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出动作类型无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportActionInvalid')
+    }
   }
   if (typeof raw.requestId !== 'string' || !raw.requestId.trim()) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出请求 ID 无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportRequestIdInvalid')
+    }
   }
   if (!Number.isInteger(raw.sessionId) || (raw.sessionId as number) <= 0) {
-    return { ok: false, code: 'invalid-export-payload', error: '截图会话无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportSessionInvalid')
+    }
   }
   if (!isValidBounds(raw.bounds)) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出选区无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportBoundsInvalid')
+    }
   }
   if (
     !Number.isFinite(raw.width) ||
@@ -93,7 +114,11 @@ export function validateAnnotatedExportPayload(value: unknown): ValidateAnnotate
     (raw.width as number) > SCREENSHOT_EXPORT_LIMITS.maxWidth ||
     (raw.height as number) > SCREENSHOT_EXPORT_LIMITS.maxHeight
   ) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出图片尺寸无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportDimensionsInvalid')
+    }
   }
   const png = Buffer.isBuffer(raw.png)
     ? raw.png
@@ -101,10 +126,18 @@ export function validateAnnotatedExportPayload(value: unknown): ValidateAnnotate
       ? Buffer.from(raw.png)
       : null
   if (!png || png.length < PNG_SIGNATURE.length || png.length > SCREENSHOT_EXPORT_LIMITS.maxBytes) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出图片数据无效' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportDataInvalid')
+    }
   }
   if (!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-    return { ok: false, code: 'invalid-export-payload', error: '导出图片必须是 PNG 格式' }
+    return {
+      ok: false,
+      code: 'invalid-export-payload',
+      error: translateMain('capture.error.exportPngRequired')
+    }
   }
   return {
     ok: true,

@@ -5,6 +5,7 @@ import {
   normalizeDingTalkNetworkError
 } from './dingtalkErrors'
 import { runDingTalkRequestWithTimeout } from './dingtalkRequest'
+import { translateMain } from './messages'
 
 /** 可注入的翻译网络请求函数。 */
 export type DingTalkFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -123,7 +124,7 @@ export class DingTalkTokenManager {
         const token = typeof payload.access_token === 'string' ? payload.access_token.trim() : ''
         const expiresIn = Number(payload.expires_in)
         if (!token || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-          throw new DingTalkError('service', '钉钉 Token 响应格式无效')
+          throw new DingTalkError('service', translateMain('dingtalk.error.tokenResponseInvalid'))
         }
         if (generation === this.generation && key === this.credentialKey) {
           this.cachedToken = token
@@ -146,7 +147,11 @@ export class DingTalkTokenManager {
     try {
       return (await response.json()) as TokenResponse
     } catch (error) {
-      throw new DingTalkError('service', '钉钉 Token 响应无法解析', { cause: error })
+      throw new DingTalkError(
+        'service',
+        translateMain('dingtalk.error.tokenResponseParse'),
+        { cause: error }
+      )
     }
   }
 

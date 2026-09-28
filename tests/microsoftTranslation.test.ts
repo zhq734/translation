@@ -3,8 +3,13 @@ import test from 'node:test'
 import { MicrosoftError } from '../src/main/microsoftErrors.ts'
 import { resolveMicrosoftLanguagePair } from '../src/main/microsoftLanguage.ts'
 import { MicrosoftTranslationClient } from '../src/main/microsoftTranslation.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
 import { TranslationRuntime } from '../src/main/translate.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 const BING_AUTH_HTML = `
 <html>
@@ -163,7 +168,7 @@ test('Bing 页面重定向到非微软域名时应拒绝发送临时鉴权参数
     (error: Error) => {
       assert.ok(error instanceof MicrosoftError)
       assert.equal((error as MicrosoftError).kind, 'service')
-      assert.equal(error.message, '微软翻译网页重定向地址无效')
+      assert.equal(error.message, tForTest('zh-CN', 'microsoft.error.redirectInvalid'))
       return true
     }
   )
@@ -377,7 +382,7 @@ test('只启用微软通道且无需凭证即可在免费通道前翻译', async
   const result = await runtime.translate('hello', settings)
 
   assert.equal(result.translation, '微软结果')
-  assert.equal(result.channel, '微软翻译')
+  assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.microsoft'))
   assert.match(calls[0] || '', /www\.bing\.com\/translator/u)
   assert.match(calls[1] || '', /www\.bing\.com\/ttranslatev3/u)
 })
@@ -407,7 +412,7 @@ test('微软失败后应自动降级到自建 DeepLX', async () => {
   const result = await runtime.translate('hello', settings)
 
   assert.equal(result.translation, '降级结果')
-  assert.equal(result.channel, '自建 DeepLX')
+  assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.selfHostedDeepLx'))
   assert.match(calls[0] || '', /www\.bing\.com\/translator/u)
   assert.match(calls[1] || '', /www\.bing\.com\/ttranslatev3/u)
   assert.equal(calls[2], 'https://deeplx.example/translate')
@@ -448,7 +453,7 @@ test('微软运行时重置后应清理旧降级缓存、熔断和网页鉴权',
   const result = await runtime.translate('same text', settings)
 
   assert.equal(result.translation, '微软新结果')
-  assert.equal(result.channel, '微软翻译')
+  assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.microsoft'))
   assert.equal(microsoftCalls, 2)
   assert.equal(authCalls, 2)
 })
@@ -470,7 +475,7 @@ test('微软可用性检测应无需凭证且不使用普通翻译结果缓存',
   assert.deepEqual(await runtime.checkMicrosoft(), {
     ok: true,
     code: 'available',
-    message: '微软翻译在线且可用'
+    message: tForTest('zh-CN', 'translate.check.microsoftAvailable')
   })
 
   const settings = normalizeSettings({

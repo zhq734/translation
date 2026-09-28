@@ -11,6 +11,11 @@ body {
   padding: 0;
 }
 
+/* 首屏语言预应用期间隐藏静态英文兜底，待 locale runtime 完成翻译后移除标记。 */
+:root[data-i18n-pending='true'] body {
+  visibility: hidden;
+}
+
 body,
 button,
 input,

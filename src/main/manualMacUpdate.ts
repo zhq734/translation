@@ -3,7 +3,9 @@ import { createReadStream } from 'node:fs'
 import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { UpdateProgress } from '../shared/types'
+import { translateMain } from './messages'
 import { createUpdateProgressReporter } from './updateDownloadProgress'
+import { createUpdateDownloadError } from './updateDownloadError'
 import {
   clearDownloadResumeState,
   loadDownloadResumeState,
@@ -182,10 +184,16 @@ function validateHttpsUrl(rawUrl: string): URL {
   try {
     parsedUrl = new URL(rawUrl)
   } catch {
-    throw new Error('DMG 下载地址格式无效')
+    throw createUpdateDownloadError(
+      'invalid-url',
+      translateMain('update.downloadError.invalidUrl')
+    )
   }
   if (parsedUrl.protocol !== 'https:') {
-    throw new Error('DMG 下载只支持 HTTPS 地址')
+    throw createUpdateDownloadError(
+      'insecure-url',
+      translateMain('update.downloadError.insecureUrl')
+    )
   }
   return parsedUrl
 }
@@ -200,7 +208,10 @@ function validateHttpsUrl(rawUrl: string): URL {
 function validateDmgUrl(rawUrl: string): string {
   const parsedUrl = validateHttpsUrl(rawUrl)
   if (!parsedUrl.pathname.toLowerCase().endsWith('.dmg')) {
-    throw new Error('更新下载地址必须是 DMG 文件')
+    throw createUpdateDownloadError(
+      'not-dmg',
+      translateMain('update.downloadError.notDmg')
+    )
   }
   return parsedUrl.toString()
 }
@@ -287,12 +298,27 @@ async function requestWithRedirects(
     response = await fetcher(currentUrl, { redirect: 'manual', headers, signal })
     if (response.status < 300 || response.status >= 400) break
     const location = response.headers.get('location')
-    if (!location) throw new Error('DMG 下载重定向缺少目标地址')
+    if (!location) {
+      throw createUpdateDownloadError(
+        'redirect-missing-location',
+        translateMain('update.downloadError.redirectMissingLocation')
+      )
+    }
     currentUrl = validateHttpsUrl(new URL(location, currentUrl).toString()).toString()
-    if (redirectCount === 5) throw new Error('DMG 下载重定向次数过多')
+    if (redirectCount === 5) {
+      throw createUpdateDownloadError(
+        'too-many-redirects',
+        translateMain('update.downloadError.tooManyRedirects')
+      )
+    }
   }
   if (!response || !response.ok) {
-    throw new Error(`DMG 下载失败（HTTP ${response?.status ?? '未知状态'}）`)
+    throw createUpdateDownloadError(
+      'download-http-failed',
+      translateMain('update.downloadError.downloadHttpFailed', {
+        status: response?.status ?? translateMain('update.downloadError.unknownStatus')
+      })
+    )
   }
   return response
 }
@@ -320,7 +346,12 @@ async function writeResponseToTemporaryFile(
     if (response.body) {
       const reader = response.body.getReader()
       while (true) {
-        if (signal?.aborted) throw new Error('下载已取消')
+        if (signal?.aborted) {
+          throw createUpdateDownloadError(
+            'cancelled',
+            translateMain('update.downloadError.cancelled')
+          )
+        }
         const chunk = await reader.read()
         if (chunk.done) break
         if (!chunk.value) continue
@@ -403,7 +434,10 @@ async function finalizeDownload(params: {
     if (actualSha512 !== params.sha512) {
       await clearDownloadResumeState(params.destination)
       await rm(params.destination, { force: true }).catch(() => undefined)
-      throw new Error('更新包完整性校验失败，已删除下载文件；请重新下载或从发布页手动安装')
+      throw createUpdateDownloadError(
+        'integrity-failed',
+        translateMain('update.downloadError.integrityFailed')
+      )
     }
   }
 
@@ -411,7 +445,12 @@ async function finalizeDownload(params: {
   await clearDownloadResumeState(params.destination)
 
   const openError = await params.openPath(params.destination)
-  if (openError) throw new Error(`无法打开已下载的 DMG：${openError}`)
+  if (openError) {
+    throw createUpdateDownloadError(
+      'open-failed',
+      translateMain('update.downloadError.openFailed', { message: openError })
+    )
+  }
   return { path: params.destination, verified: Boolean(params.sha512) }
 }
 
@@ -447,7 +486,12 @@ export function createManualMacUpdateService(
     ): Promise<ManualMacUpdateResult> {
       // 取消信号到达时主动中断后续网络与写入流程。
       const throwIfAborted = (): void => {
-        if (signal?.aborted) throw new Error('下载已取消')
+        if (signal?.aborted) {
+          throw createUpdateDownloadError(
+            'cancelled',
+            translateMain('update.downloadError.cancelled')
+          )
+        }
       }
       throwIfAborted()
       const validatedUrl = validateDmgUrl(url)

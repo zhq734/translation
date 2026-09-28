@@ -7,6 +7,7 @@ import {
 import type { SupportedDingTalkLanguagePair } from './dingtalkLanguage'
 import { runDingTalkRequestWithTimeout } from './dingtalkRequest'
 import type { DingTalkFetch } from './dingtalkTokenManager'
+import { translateMain } from './messages'
 
 /** 翻译客户端所需的 Token 管理最小接口。 */
 export interface DingTalkTokenProvider {
@@ -76,7 +77,7 @@ export class DingTalkTranslationClient {
         throw normalized
       }
     }
-    throw new DingTalkError('authentication', '钉钉鉴权失败')
+    throw new DingTalkError('authentication', translateMain('dingtalk.error.authentication'))
   }
 
   /**
@@ -122,7 +123,9 @@ export class DingTalkTranslationClient {
         )
       }
       const translation = typeof payload.result === 'string' ? payload.result.trim() : ''
-      if (!translation) throw new DingTalkError('service', '钉钉翻译响应为空')
+      if (!translation) {
+        throw new DingTalkError('service', translateMain('dingtalk.error.translationResponseEmpty'))
+      }
       return {
         translation,
         detectedLang: pair.sourceLanguage.toUpperCase()
@@ -140,7 +143,11 @@ export class DingTalkTranslationClient {
     try {
       return (await response.json()) as DingTalkTranslationResponse
     } catch (error) {
-      throw new DingTalkError('service', '钉钉翻译响应无法解析', { cause: error })
+      throw new DingTalkError(
+        'service',
+        translateMain('dingtalk.error.translationResponseParse'),
+        { cause: error }
+      )
     }
   }
 }

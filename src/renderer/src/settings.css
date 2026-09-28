@@ -283,7 +283,8 @@ section:last-child {
 
 .theme-preset-card {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* 英文主题名称与描述明显长于中文，单列布局避免描述被压缩到窄列后频繁换行。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px 8px;
   min-width: 0;
   border: 1px solid var(--border-control);
@@ -328,6 +329,7 @@ section:last-child {
 
 .theme-preset-card strong,
 .theme-preset-card small {
+  grid-column: 1 / -1;
   min-width: 0;
   overflow-wrap: anywhere;
 }

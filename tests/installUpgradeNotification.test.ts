@@ -14,6 +14,7 @@ import {
   resolvePublicIpAddress,
   type InstallEventRecord
 } from '../src/main/installUpgradeNotification.ts'
+import { tForTest, translatorForTest } from './helpers/i18n.ts'
 
 const config = { smtpUser: 'sender@qq.com', smtpPass: 'auth-code', reportTo: 'receiver@qq.com' }
 
@@ -23,6 +24,18 @@ test('事件时间格式化应使用运行时兼容选项并包含日期时间',
   assert.doesNotThrow(() => formatInstallEventTime())
   assert.match(eventTime, /2026/u)
   assert.match(eventTime, /09:00:00|上午9:00|9:00:00/u)
+})
+
+test('事件时间应按界面语言格式化并固定东八区', () => {
+  const date = new Date('2026-09-02T01:00:00Z')
+  const english = formatInstallEventTime(date, 'en-US')
+  const chinese = formatInstallEventTime(date, 'zh-CN')
+
+  assert.match(english, /Sep/u)
+  assert.match(english, /9:00:00 AM|09:00:00/u)
+  assert.match(chinese, /9月|09月/u)
+  assert.match(chinese, /上午9:00|09:00:00/u)
+  assert.notEqual(english, chinese)
 })
 
 test('配置读取应兼容应用 build 目录并按顺序回退到本地 build 目录', () => {
@@ -91,17 +104,53 @@ test('邮件正文应包含事件类型、版本、IP、系统与本地时间', 
     }
   )
   for (const value of [
-    '升级',
+    tForTest('zh-CN', 'notification.event.upgrade'),
     '1.1.4',
     '1.2.0',
     '203.0.113.10',
-    'IP归属地：中国 广东省 深圳市 电信',
+    `${tForTest('zh-CN', 'notification.location')}：中国 广东省 深圳市 电信`,
     'darwin',
     '24.6.0',
     '2026-09-02 09:00:00 GMT+8'
   ]) {
     assert.match(body, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'u'))
   }
+})
+
+test('通知主题与正文应按界面语言生成英文内容', async () => {
+  const body = buildInstallEventBody(
+    { type: 'install', previousVersion: null, currentVersion: '1.2.0' },
+    {
+      ip: '203.0.113.10',
+      location: null,
+      platform: 'linux',
+      osRelease: '6.8.0',
+      eventTime: 'Sep 2, 2026, 9:00:00 AM GMT+8'
+    },
+    translatorForTest('en-US')
+  )
+  assert.match(body, /First install/u)
+  assert.match(body, /None \(fresh install\)/u)
+  assert.match(body, /IP location: Unknown/u)
+
+  const sent: Array<{ from?: string; subject?: string; text?: string }> = []
+  const service = createInstallEventService({
+    config,
+    filePath: join(mkdtempSync(join(tmpdir(), 'install-event-en-')), 'install-events.json'),
+    environment: {
+      platform: 'linux',
+      osRelease: '6.8.0',
+      eventTime: 'Sep 2, 2026, 9:00:00 AM GMT+8'
+    },
+    translator: translatorForTest('en-US'),
+    fetchIp: async () => '203.0.113.10',
+    fetchLocation: async () => null,
+    transporter: { sendMail: async (options) => { sent.push(options) } } as any
+  })
+
+  assert.equal(await service.processLaunch('1.2.0'), true)
+  assert.equal(sent[0]?.from, `"${tForTest('en-US', 'notification.brand')}" <sender@qq.com>`)
+  assert.equal(sent[0]?.subject, tForTest('en-US', 'notification.install.subject', { version: '1.2.0' }))
 })
 
 test('应采用有效公网 IPv4、按服务回退并拒绝无效响应', async () => {
@@ -142,10 +191,19 @@ test('首次安装发送成功后应确认版本且不再发送', async () => {
 
   assert.equal(first, true)
   assert.equal(sent.length, 1)
-  assert.equal(sent[0]!.from, '"划词翻译" <sender@qq.com>')
-  assert.match(sent[0]!.subject, /安装.*1\.2\.0/u)
+  assert.equal(
+    sent[0]!.from,
+    `"${tForTest('zh-CN', 'notification.brand')}" <sender@qq.com>`
+  )
+  assert.equal(
+    sent[0]!.subject,
+    tForTest('zh-CN', 'notification.install.subject', { version: '1.2.0' })
+  )
   assert.match(sent[0]!.text, /203\.0\.113\.8/u)
-  assert.match(sent[0]!.text, /IP归属地：中国 广东省 深圳市 电信/u)
+  assert.match(
+    sent[0]!.text,
+    new RegExp(`${tForTest('zh-CN', 'notification.location')}：中国 广东省 深圳市 电信`, 'u')
+  )
   assert.equal(service.readRecord()?.version, '1.2.0')
   assert.equal(second, false)
   assert.equal(sent.length, 1)

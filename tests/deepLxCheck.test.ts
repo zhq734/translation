@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DeepLxCheckService } from '../src/main/deepLxCheck.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 构造 DeepLX 检测响应。
@@ -29,7 +30,7 @@ test('多地址检测应逐个请求，部分地址 404 时只要存在可用地
   const result = await service.check('https://first.example/translate, https://second.example/translate')
 
   assert.equal(result.online, true)
-  assert.equal(result.message, '1/2 个服务在线')
+  assert.equal(result.message, tForTest('en-US', 'deepLx.check.summary', { online: 1, total: 2 }))
   assert.equal(result.url, '')
   assert.deepEqual(calls, [
     'https://first.example/translate',
@@ -43,7 +44,7 @@ test('全部地址可用时应返回汇总状态且不泄露地址', async () =>
   })
 
   const result = await service.check('https://a.example/translate，https://b.example/translate')
-  assert.deepEqual(result, { url: '', online: true, message: '2/2 个服务在线' })
+  assert.deepEqual(result, { url: '', online: true, message: tForTest('en-US', 'deepLx.check.summary', { online: 2, total: 2 }) })
   assert.equal(JSON.stringify(result).includes('a.example'), false)
 })
 
@@ -58,15 +59,15 @@ test('未配置、全部失败和超时应返回脱敏状态', async () => {
   assert.deepEqual(await service.check(''), {
     url: '',
     online: false,
-    message: '未配置地址'
+    message: tForTest('en-US', 'deepLx.check.notConfigured')
   })
   assert.deepEqual(await service.check('https://timeout.example/translate'), {
     url: '',
     online: false,
-    message: '0/1 个服务在线：连接超时'
+    message: `${tForTest('en-US', 'deepLx.check.summary', { online: 0, total: 1 })}：${tForTest('en-US', 'deepLx.check.timeout')}`
   })
   const failed = await service.check('https://private.example/translate')
   assert.equal(failed.online, false)
-  assert.equal(failed.message, '0/1 个服务在线：网络连接失败')
+  assert.equal(failed.message, `${tForTest('en-US', 'deepLx.check.summary', { online: 0, total: 1 })}：${tForTest('en-US', 'deepLx.check.network')}`)
   assert.equal(JSON.stringify(failed).includes('private.example'), false)
 })

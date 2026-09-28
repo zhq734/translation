@@ -349,7 +349,7 @@ test('点击“译”后应先显示读取中的翻译弹窗，再等待 Windows
   const popupHelperSource = source.slice(popupHelperStart, popupHelperEnd)
   assert.ok(popupHelperStart >= 0)
   assert.ok(popupHelperEnd > popupHelperStart)
-  assert.match(popupHelperSource, /loadingMessage:\s*'正在读取选中文字…'/u)
+  assert.match(popupHelperSource, /loadingMessage:\s*t\('selection\.loadingReading'\)/u)
   assert.match(popupHelperSource, /anchor,\s*false\s*\)/u)
   assert.match(popupSource, /activate\s*\?\s*win\.show\(\)\s*:\s*win\.showInactive\(\)/u)
 })

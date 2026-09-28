@@ -1,4 +1,5 @@
 import { ScreenCaptureError, type CaptureBounds } from './screenCapture'
+import { translateMain } from './messages'
 
 export { ScreenCaptureError } from './screenCapture'
 
@@ -385,7 +386,7 @@ export async function captureWindowsRegionAsPng(
   deps: WindowsScreenCaptureDeps
 ): Promise<Buffer> {
   if (deps.platform !== 'win32') {
-    throw new ScreenCaptureError('no-source', '仅 Windows 支持 GDI 原生截屏')
+    throw new ScreenCaptureError('no-source', translateMain('capture.error.windowsOnlyGdi'))
   }
   const path = makeTempPngPath(deps.tmpDir())
   const helperDllPath = makeHelperDllPath(deps.tmpDir())
@@ -405,7 +406,10 @@ export async function captureWindowsRegionAsPng(
         // exe 被清理、被安全软件拦截或缓存损坏：清掉存在性校验记录，
         // 下次采集重新校验并按需编译，避免一直复用失效缓存。
         verifiedHelperExePaths.delete(exePath)
-        throw new Error(`helper exe 退出码 ${result.exitCode}: ${result.stderr}`)
+        throw new Error(translateMain('capture.error.windowsHelperExit', {
+          exitCode: result.exitCode,
+          stderr: result.stderr
+        }))
       }
       return await deps.readFile(path)
     }
@@ -418,7 +422,10 @@ export async function captureWindowsRegionAsPng(
     return await deps.readFile(path)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new ScreenCaptureError('no-source', `无法获取屏幕截图: ${message}`)
+    throw new ScreenCaptureError(
+      'no-source',
+      translateMain('capture.error.windowsCaptureFailed', { message })
+    )
   } finally {
     await deps.unlink(path).catch(() => undefined)
   }

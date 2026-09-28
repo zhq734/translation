@@ -567,7 +567,7 @@ test('采集中态应提示正在获取屏幕画面', () => {
   assert.match(selectionRenderer, /const ocrTip = document\.getElementById\('ocr-tip'\) as HTMLElement/u)
   assert.match(selectionRenderer, /function renderOcrTip\(message\?: string\): void/u)
   const source = sliceFunction(selectionRenderer, 'function renderOcrTip(')
-  assert.match(source, /正在获取屏幕画面/u)
+  assert.match(source, /t\('selection\.tipLoading'\)/u)
   assert.match(source, /ocrSnapshotState/u)
   const enterSource = sliceFunction(selectionRenderer, 'function enterOcrSelectionMode(')
   assert.match(enterSource, /renderOcrTip\(\)/u)

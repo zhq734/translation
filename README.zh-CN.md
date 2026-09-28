@@ -192,7 +192,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 如果需要手动安装，可在 GitHub 的 [Releases](../../releases) 页面下载对应系统的文件：
 
 - **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，打开后将“划词翻译”拖入 `Applications`；
-- **Linux**：x64 下载 `SelectionTranslator-<版本>-linux-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-linux-arm64.AppImage`，添加执行权限后运行；
+- **Linux**：x64 下载 `SelectionTranslator-<版本>-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-arm64.AppImage`，添加执行权限后运行；
 - **Windows**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
 
 所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。当前支持 `x64` 与 `arm64`，详见[开发、测试与打包](#开发测试与打包)。

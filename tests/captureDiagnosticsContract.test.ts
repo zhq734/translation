@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 校验主进程注册诊断摘要与导出 IPC。
@@ -47,7 +48,7 @@ test('设置页应包含取词诊断卡片与导出按钮', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /id="diagnostics-summary"/u)
   assert.match(html, /id="diagnostics-export"/u)
-  assert.match(html, /取词诊断/u)
+  assert.match(html, new RegExp(`data-i18n="settings\\.diagnostics\\.title">${tForTest('en-US', 'settings.diagnostics.title')}`, 'u'))
 })
 
 /**
@@ -79,8 +80,8 @@ test('取词诊断面板应支持收起与展开', () => {
   assert.match(source, /diagnostics-collapsed/u)
   assert.match(source, /aria-expanded/u)
   assert.match(source, /localStorage/u)
-  assert.match(source, /收起/u)
-  assert.match(source, /展开/u)
+  assert.match(source, /t\('settings\.diagnostics\.collapse'\)/u)
+  assert.match(source, /t\('settings\.diagnostics\.expand'\)/u)
 
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
   assert.match(css, /\.diagnostics-header\s*\{[\s\S]*display:\s*flex/u)

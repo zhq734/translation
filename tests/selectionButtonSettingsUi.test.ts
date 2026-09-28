@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 test('设置页应提供划词后自动显示“译”按钮开关并与触发方式同步', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
@@ -8,7 +9,7 @@ test('设置页应提供划词后自动显示“译”按钮开关并与触发�
 
   assert.match(html, /id="auto-show-selection-button"[^>]+type="checkbox"/u)
   assert.match(html, /for="auto-show-selection-button"/u)
-  assert.match(html, /划词后自动显示“译”按钮/u)
+  assert.match(html, new RegExp(`data-i18n="settings\\.trigger\\.selectionButtonLabel">${tForTest('en-US', 'settings.trigger.selectionButtonLabel')}`, 'u'))
   assert.match(source, /getElementById\('auto-show-selection-button'\)/u)
   assert.match(
     source,

@@ -1,3 +1,4 @@
+import { createTranslator, type Locale, type Translator } from './i18n'
 import type { UpdateProgress } from './types'
 
 /** 字节数格式化时使用的单位序列。 */
@@ -26,11 +27,28 @@ export function formatUpdateBytes(bytes: number): string {
  * @author zhenghq
  */
 export function formatUpdateProgressText(progress: UpdateProgress): string {
+  return formatUpdateProgressTextForLocale(progress, 'en-US')
+}
+
+/**
+ * 按指定界面语言格式化下载进度。
+ * @param progress 当前更新下载进度。
+ * @param locale 当前界面语言或翻译器。
+ * @returns 本地化后的进度文本；总长度未知时只展示已下载量。
+ * @author zhenghq
+ */
+export function formatUpdateProgressTextForLocale(
+  progress: UpdateProgress,
+  locale: Locale | Translator = 'en-US'
+): string {
+  const translator: Translator = typeof locale === 'string' ? createTranslator(locale) : locale
   const speedText = progress.bytesPerSecond > 0
     ? ` · ${formatUpdateBytes(progress.bytesPerSecond)}/s`
     : ''
   if (progress.total <= 0) {
-    return `已下载 ${formatUpdateBytes(progress.transferred)}${speedText}`
+    return `${translator.t('update.progress.downloaded', {
+      size: formatUpdateBytes(progress.transferred)
+    })}${speedText}`
   }
   const percent = Math.max(0, Math.min(100, progress.percent))
   const sizeText = `${formatUpdateBytes(progress.transferred)} / ${formatUpdateBytes(progress.total)}`

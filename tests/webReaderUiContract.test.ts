@@ -1,6 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import {
+  readAttributeI18nKey,
+  readTextI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
+
+/**
+ * 从 HTML 中查找指定 value 的 option 开始标签。
+ * @param html 待搜索的 HTML 文本。
+ * @param value option 的 value 属性值。
+ * @returns 匹配的开始标签；未找到时返回 null。
+ * @author zhenghq
+ */
+function findOptionOpeningTag(html: string, value: string): string | null {
+  return html.match(new RegExp(`<option\\b[^>]*\\bvalue="${value}"[^>]*>`, 'u'))?.[0] ?? null
+}
 
 test('网页阅读器应提供原位翻译工具栏、原生 View 占位和自适应主题样式', () => {
   const html = readFileSync('src/renderer/web-reader.html', 'utf8')
@@ -25,7 +41,12 @@ test('网页阅读器应提供原位翻译工具栏、原生 View 占位和自�
     renderer.indexOf('/**\n * 根据翻译进度刷新状态栏')
   )
   assert.match(stateRenderer, /if \(translating\) return/u)
-  assert.ok(stateRenderer.indexOf('if (translating) return') < stateRenderer.indexOf("setStatus('正在加载网页…')"))
+  const translatingGuardIndex = stateRenderer.indexOf('if (translating) return')
+  const loadingStatusIndex = stateRenderer.indexOf("t('webReader.loadingPage')")
+  assert.ok(
+    translatingGuardIndex >= 0 && loadingStatusIndex > translatingGuardIndex,
+    '翻译进行中应优先保留翻译状态，不被普通网页加载状态覆盖'
+  )
   assert.doesNotMatch(html, /web-sidebar|web-sidebar-toggle|web-blocks/u)
   assert.doesNotMatch(renderer, /webTranslateScrollToBlock|sidebarBlocks/u)
   assert.match(css, /display:\s*(?:flex|grid)/u)
@@ -53,7 +74,7 @@ test('网页翻译 IPC、preload 与托盘入口应完整且受限', () => {
   assert.match(preload, /onWebTranslatePageUpdated/u)
   assert.match(types, /openWebReader/u)
   assert.match(popup, /id="open-web-reader"/u)
-  assert.match(main, /打开网页翻译/u)
+  assert.match(main, /t\.t\('menu\.openWebTranslation'\)/u)
 })
 
 test('网页阅读器应支持恢复并聚焦尚未关闭的窗口', () => {
@@ -147,16 +168,16 @@ test('网页阅读器界面应展示动态发现进度、窗口状态和缓存�
   )
   assert.match(progressMethod, /progress\.discovered/u)
   assert.match(progressMethod, /progress\.inputClosed/u)
-  assert.match(progressMethod, /边加载边翻译/u)
-  assert.match(progressMethod, /缓存命中/u)
-  assert.match(renderer, /初始加载收集已结束/u)
-  assert.match(renderer, /再次点击补译/u)
+  assert.match(progressMethod, /t\('webReader\.loadingAndTranslating'/u)
+  assert.match(progressMethod, /t\('webReader\.cacheHits'/u)
+  assert.match(renderer, /t\('webReader\.completedInputOpen'/u)
+  assert.match(renderer, /t\('webReader\.pageUpdated'\)/u)
 })
 
 test('网页翻译界面应净化 IPC 错误前缀', () => {
   const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
   assert.match(renderer, /normalizeWebTranslationError/u)
-  assert.match(renderer, /normalizeWebTranslationError\(error, '网页翻译失败'\)/u)
+  assert.match(renderer, /normalizeWebTranslationError\(error, t\('webReader\.translationFailed'\)\)/u)
 })
 
 test('远程 frame 导航销毁时增量写回应安全跳过', () => {
@@ -203,8 +224,8 @@ test('单个文本节点失配不应中断整页翻译或显示全部重译提�
   const translateMethod = renderer.slice(renderer.indexOf('async function translatePage('), renderer.indexOf('/**\n * 切换远程网页原文或译文'))
   const applyMethod = manager.slice(manager.indexOf('private async applyUnits('), manager.indexOf('/**\n   * 恢复当前快照原文'))
 
-  assert.match(translateMethod, /已完成译文仍保留/u)
-  assert.doesNotMatch(translateMethod, /result\.apply\.mismatched > 0\) setStatus\('页面内容已更新，请重新翻译'/u)
+  assert.match(translateMethod, /t\('webReader\.continuedWithMismatch'/u)
+  assert.match(translateMethod, /result\.apply\.mismatched > 0/u)
   assert.match(applyMethod, /if \(result\.mismatched > 0\) this\.markPageUpdated\(\)/u)
   assert.doesNotMatch(applyMethod, /invalidateActiveJob/u)
 })
@@ -222,8 +243,11 @@ test('设置页应提供网页翻译分组并明确显式提取的隐私边界',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`, 'u'))
   }
-  assert.match(html, /显式点击提取\/翻译/u)
-  assert.match(html, /不会读取系统浏览器/u)
+  const readHintTag = html.match(/<p[^>]*data-i18n="settings\.web\.readHint"[^>]*>/u)?.[0]
+  assert.ok(readHintTag, '缺少网页翻译隐私边界提示')
+  const readHintKey = readTextI18nKey(readHintTag)
+  assert.equal(readHintKey, 'settings.web.readHint')
+  assert.ok(html.includes(tForTest('en-US', readHintKey)))
   assert.match(renderer, /saveWebTranslationSettings/u)
 })
 
@@ -284,18 +308,36 @@ test('网页阅读器显示模式应提供对照选项并区分未对照与跳�
   const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
   const changeMode = renderer.slice(renderer.indexOf('async function changeMode('), renderer.indexOf('/**\n * 切换语言时取消旧任务'))
 
-  assert.match(html, /value="bilingual">对照</u)
+  const bilingualOption = findOptionOpeningTag(html, 'bilingual')
+  assert.ok(bilingualOption, '缺少网页阅读器对照选项')
+  const bilingualKey = readTextI18nKey(bilingualOption)
+  assert.equal(bilingualKey, 'webReader.mode.bilingual')
+  assert.match(
+    html,
+    new RegExp(`>${tForTest('en-US', bilingualKey)}<\\/option>`, 'u')
+  )
   assert.match(changeMode, /mode === 'bilingual'/u)
   assert.match(changeMode, /result\.unrendered/u)
   assert.match(changeMode, /result\.bilingualSkipped/u)
-  assert.match(changeMode, /未对照；可再次点击补译/u)
-  assert.match(changeMode, /按设计跳过对照/u)
+  assert.match(changeMode, /t\('webReader\.switchedUnrendered'/u)
+  assert.match(changeMode, /t\('webReader\.switchSkippedHint'/u)
   assert.match(renderer, /modeSelect\.value = settings\.webTranslationDefaultMode/u)
 })
 
 test('设置页默认显示应提供对照选项', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
-  assert.match(html, /id="web-translation-default-mode"[\s\S]*?value="bilingual">对照/u)
+  const modeSelect = html.slice(
+    html.indexOf('id="web-translation-default-mode"'),
+    html.indexOf('</select>', html.indexOf('id="web-translation-default-mode"'))
+  )
+  const bilingualOption = findOptionOpeningTag(modeSelect, 'bilingual')
+  assert.ok(bilingualOption, '设置页缺少默认对照选项')
+  const bilingualKey = readTextI18nKey(bilingualOption)
+  assert.equal(bilingualKey, 'settings.web.modeBilingual')
+  assert.match(
+    modeSelect,
+    new RegExp(`>${tForTest('en-US', bilingualKey)}<\\/option>`, 'u')
+  )
 })
 
 test('增量对照渲染应在块内全部单元完成后才注入且不虚增未对照', () => {

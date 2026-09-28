@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 获取指定元素的开始标签。
@@ -27,9 +28,9 @@ test('设置页应提供统一的可拖动自绘标题栏和固定顺序窗口�
   assert.ok(minimizeIndex > titlebarIndex)
   assert.ok(maximizeIndex > minimizeIndex)
   assert.ok(closeIndex > maximizeIndex)
-  assert.match(getOpeningTag(html, 'window-minimize'), /aria-label="最小化"/u)
-  assert.match(getOpeningTag(html, 'window-maximize'), /aria-label="最大化"/u)
-  assert.match(getOpeningTag(html, 'window-close'), /aria-label="关闭"/u)
+  assert.match(getOpeningTag(html, 'window-minimize'), new RegExp(`aria-label="${tForTest('en-US', 'common.minimize')}"`, 'u'))
+  assert.match(getOpeningTag(html, 'window-maximize'), new RegExp(`aria-label="${tForTest('en-US', 'common.maximize')}"`, 'u'))
+  assert.match(getOpeningTag(html, 'window-close'), new RegExp(`aria-label="${tForTest('en-US', 'common.close')}"`, 'u'))
   assert.match(html, /<svg[^>]+aria-hidden="true"/u)
   assert.match(css, /\.window-titlebar\s*\{[\s\S]*height:\s*40px/u)
   assert.match(css, /\.window-titlebar\s*\{[\s\S]*-webkit-app-region:\s*drag/u)
@@ -54,6 +55,9 @@ test('设置页标题栏应调用最小窗口 API并同步最大化状态', () =
   assert.match(source, /await window\.api\.windowIsMaximized\(\)/u)
   assert.match(source, /window\.api\.onWindowMaximizedChanged/u)
   assert.match(source, /settingsTitlebar\.addEventListener\('dblclick'/u)
-  assert.match(source, /ariaLabel\s*=\s*maximized\s*\?\s*'还原'\s*:\s*'最大化'/u)
+  assert.match(
+    source,
+    /ariaLabel\s*=\s*maximized\s*\?\s*t\('common\.restore'\)\s*:\s*t\('common\.maximize'\)/u
+  )
   assert.match(source, /document\.documentElement\.dataset\.maximized/u)
 })

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { tForTest } from './helpers/i18n.ts'
 
 test('主题运行时应支持五套主题、三种模式和本地缓存', () => {
   const source = readFileSync('src/renderer/src/theme.ts', 'utf8')
@@ -66,21 +67,36 @@ test('覆盖层提示胶囊应为反色胶囊并在五套主题与浅深模式�
 
 test('设置页应提供主题模式和五个可访问主题卡片', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
-  for (const [id, label] of [
-    ['sakura', '樱花粉'],
-    ['emerald', '祖母绿'],
-    ['sky', '天空蓝'],
-    ['navy', '藏青色'],
-    ['platinum-black', '铂金黑']
+  for (const [id, key] of [
+    ['sakura', 'settings.themePreset.sakura.name'],
+    ['emerald', 'settings.themePreset.emerald.name'],
+    ['sky', 'settings.themePreset.sky.name'],
+    ['navy', 'settings.themePreset.navy.name'],
+    ['platinum-black', 'settings.themePreset.platinumBlack.name']
   ]) {
     assert.match(html, new RegExp(`data-theme-preset=["']${id}["']`, 'u'))
-    assert.match(html, new RegExp(label, 'u'))
+    assert.match(html, new RegExp(`data-i18n="${key}">${tForTest('en-US', key)}<`, 'u'))
   }
   assert.match(html, /id="theme-mode"/u)
   assert.match(html, /aria-pressed="false"/u)
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
   assert.match(css, /\.theme-preset-grid\s*\{[\s\S]*display:\s*grid/u)
   assert.match(css, /repeat\(auto-fit/u)
+})
+
+test('主题卡片中的英文名称与描述应各占整行，避免被窄列挤压换行', () => {
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  // 英文描述明显长于中文，卡片必须使用单列布局，不能把描述固定放在窄的 auto 列中。
+  assert.match(
+    css,
+    /\.theme-preset-card\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/su,
+    '主题卡片应使用单列网格承载名称和描述'
+  )
+  assert.match(
+    css,
+    /\.theme-preset-card strong,\s*\.theme-preset-card small\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/su,
+    '主题名称与描述应跨越整行'
+  )
 })
 
 test('设置窗口必须等首帧就绪后再显示，避免启动时先闪默认主题', () => {

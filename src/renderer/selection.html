@@ -1,24 +1,25 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
     />
-    <title>翻译选中文字 / OCR 框选</title>
+    <title data-i18n="selection.windowTitle">Translate Selected Text / OCR Capture</title>
+    <script src="./localeBootstrap.js"></script>
     <script src="./themeBootstrap.js"></script>
     <link rel="stylesheet" href="./src/theme.css" />
     <link rel="stylesheet" href="./src/base.css" />
     <link rel="stylesheet" href="./src/selection.css" />
   </head>
   <body>
-    <button id="translate" title="翻译选中文字" aria-label="翻译选中文字">译</button>
-    <main id="ocr-overlay" class="ocr-overlay" aria-label="OCR 截图框选" hidden>
+    <button id="translate" data-i18n-attr="title:selection.translateSelected;aria-label:selection.translateSelected" title="Translate selected text" aria-label="Translate selected text">译</button>
+    <main id="ocr-overlay" class="ocr-overlay" data-i18n-attr="aria-label:selection.ocrCapture" aria-label="OCR screenshot capture" hidden>
       <canvas id="ocr-snapshot" class="ocr-snapshot" aria-hidden="true" hidden></canvas>
       <canvas id="ocr-annotation-canvas" class="ocr-annotation-canvas" aria-hidden="true"></canvas>
       <canvas id="ocr-annotation-preview" class="ocr-annotation-preview" aria-hidden="true"></canvas>
-      <div id="ocr-tip" class="ocr-tip" role="status" aria-live="polite">拖拽选择区域，可移动或拉伸，点击识别开始 OCR，按 Esc 取消</div>
+      <div id="ocr-tip" class="ocr-tip" role="status" aria-live="polite" data-i18n="selection.tip">Drag to select an area, move or resize it, then click Recognize to start OCR. Press Esc to cancel.</div>
       <div id="ocr-selection-box" class="ocr-selection-box" hidden>
         <span class="ocr-resize-handle" data-handle="nw" aria-hidden="true"></span>
         <span class="ocr-resize-handle" data-handle="n" aria-hidden="true"></span>
@@ -30,117 +31,117 @@
         <span class="ocr-resize-handle" data-handle="w" aria-hidden="true"></span>
       </div>
       <div id="ocr-toolbar" class="ocr-toolbar flat-overlay" hidden>
-        <div class="ocr-toolbar-group" data-group="annotation-tools" role="group" aria-label="标注工具">
-          <button id="ocr-tool-rect" type="button" title="矩形" aria-label="矩形" aria-pressed="false" data-annotation-tool="rect">
+        <div class="ocr-toolbar-group" data-group="annotation-tools" role="group" data-i18n-attr="aria-label:selection.annotationTools" aria-label="Annotation tools">
+          <button id="ocr-tool-rect" type="button" data-i18n-attr="title:selection.tool.rect;aria-label:selection.tool.rect" title="Rectangle" aria-label="Rectangle" aria-pressed="false" data-annotation-tool="rect">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">
               <rect x="3" y="4.5" width="14" height="11" rx="1.5"></rect>
             </svg>
           </button>
-          <button id="ocr-tool-ellipse" type="button" title="椭圆" aria-label="椭圆" aria-pressed="false" data-annotation-tool="ellipse">
+          <button id="ocr-tool-ellipse" type="button" data-i18n-attr="title:selection.tool.ellipse;aria-label:selection.tool.ellipse" title="Ellipse" aria-label="Ellipse" aria-pressed="false" data-annotation-tool="ellipse">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">
               <ellipse cx="10" cy="10" rx="7" ry="5.5"></ellipse>
             </svg>
           </button>
-          <button id="ocr-tool-arrow" type="button" title="箭头" aria-label="箭头" aria-pressed="false" data-annotation-tool="arrow">
+          <button id="ocr-tool-arrow" type="button" data-i18n-attr="title:selection.tool.arrow;aria-label:selection.tool.arrow" title="Arrow" aria-label="Arrow" aria-pressed="false" data-annotation-tool="arrow">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 16L16 4M9.5 4H16v6.5"></path>
             </svg>
           </button>
-          <button id="ocr-tool-brush" type="button" title="画笔" aria-label="画笔" aria-pressed="false" data-annotation-tool="brush">
+          <button id="ocr-tool-brush" type="button" data-i18n-attr="title:selection.tool.brush;aria-label:selection.tool.brush" title="Brush" aria-label="Brush" aria-pressed="false" data-annotation-tool="brush">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 16c2.5-.3 3.6-1.4 4.6-3.4l5.2-5.2a1.8 1.8 0 0 0-2.5-2.5L6 10.2C4.4 11.2 3.5 12.4 3.2 15z"></path>
               <path d="M12.6 5.6l1.8 1.8"></path>
             </svg>
           </button>
-          <button id="ocr-tool-text" type="button" title="文字" aria-label="文字" aria-pressed="false" data-annotation-tool="text">
+          <button id="ocr-tool-text" type="button" data-i18n-attr="title:selection.tool.text;aria-label:selection.tool.text" title="Text" aria-label="Text" aria-pressed="false" data-annotation-tool="text">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M5 5h10M10 5v10M7.5 15h5"></path>
             </svg>
           </button>
-          <button id="ocr-tool-mosaic" type="button" title="马赛克" aria-label="马赛克" aria-pressed="false" data-annotation-tool="mosaic">
+          <button id="ocr-tool-mosaic" type="button" data-i18n-attr="title:selection.tool.mosaic;aria-label:selection.tool.mosaic" title="Mosaic" aria-label="Mosaic" aria-pressed="false" data-annotation-tool="mosaic">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="currentColor">
               <rect x="3" y="3" width="4" height="4"></rect><rect x="8" y="3" width="4" height="4"></rect><rect x="13" y="3" width="4" height="4"></rect>
               <rect x="3" y="8" width="4" height="4"></rect><rect x="8" y="8" width="4" height="4"></rect><rect x="13" y="8" width="4" height="4"></rect>
               <rect x="3" y="13" width="4" height="4"></rect><rect x="8" y="13" width="4" height="4"></rect><rect x="13" y="13" width="4" height="4"></rect>
             </svg>
           </button>
-          <button id="ocr-undo" type="button" title="撤销标注" aria-label="撤销" disabled>
+          <button id="ocr-undo" type="button" data-i18n-attr="title:selection.undoAnnotation;aria-label:selection.undo" title="Undo annotation" aria-label="Undo" disabled>
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M7 5L3.5 8.5 7 12"></path><path d="M3.5 8.5H12a4.5 4.5 0 0 1 0 9H9"></path>
             </svg>
           </button>
-          <button id="ocr-redo" type="button" title="重做标注" aria-label="重做" disabled>
+          <button id="ocr-redo" type="button" data-i18n-attr="title:selection.redoAnnotation;aria-label:selection.redo" title="Redo annotation" aria-label="Redo" disabled>
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M13 5l3.5 3.5L13 12"></path><path d="M16.5 8.5H8a4.5 4.5 0 0 0 0 9h3"></path>
             </svg>
           </button>
-          <button id="ocr-clear-annotations" type="button" title="清空标注" aria-label="清空标注" disabled>
+          <button id="ocr-clear-annotations" type="button" data-i18n-attr="title:selection.clearAnnotations;aria-label:selection.clearAnnotations" title="Clear annotations" aria-label="Clear annotations" disabled>
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 7h12M8 7V5h4v2M6 7l.7 9h6.6L14 7"></path>
             </svg>
           </button>
         </div>
-        <div class="ocr-toolbar-group" data-group="annotation-style" role="group" aria-label="标注样式">
-          <button id="ocr-color-toggle" type="button" title="标注颜色" aria-label="标注颜色">
+        <div class="ocr-toolbar-group" data-group="annotation-style" role="group" data-i18n-attr="aria-label:selection.annotationStyle" aria-label="Annotation style">
+          <button id="ocr-color-toggle" type="button" data-i18n-attr="title:selection.annotationColor;aria-label:selection.annotationColor" title="Annotation color" aria-label="Annotation color">
             <span id="ocr-color-indicator" class="ocr-color-indicator"></span>
           </button>
-          <div id="ocr-color-panel" class="ocr-color-panel" hidden role="dialog" aria-label="选择标注颜色">
-            <button type="button" class="ocr-color-swatch" data-color="#ff3b30" title="红色" aria-label="红色"></button>
-            <button type="button" class="ocr-color-swatch" data-color="#ff9500" title="橙色" aria-label="橙色"></button>
-            <button type="button" class="ocr-color-swatch" data-color="#ffcc00" title="黄色" aria-label="黄色"></button>
-            <button type="button" class="ocr-color-swatch" data-color="#34c759" title="绿色" aria-label="绿色"></button>
-            <button type="button" class="ocr-color-swatch" data-color="#0a84ff" title="蓝色" aria-label="蓝色"></button>
-            <button type="button" class="ocr-color-swatch" data-color="#5e5ce6" title="紫色" aria-label="紫色"></button>
-            <input id="ocr-color-custom" type="color" value="#ff3b30" aria-label="自定义标注颜色" title="自定义标注颜色" />
+          <div id="ocr-color-panel" class="ocr-color-panel" hidden role="dialog" data-i18n-attr="aria-label:selection.chooseAnnotationColor" aria-label="Choose annotation color">
+            <button type="button" class="ocr-color-swatch" data-color="#ff3b30" data-i18n-attr="title:selection.color.red;aria-label:selection.color.red" title="Red" aria-label="Red"></button>
+            <button type="button" class="ocr-color-swatch" data-color="#ff9500" data-i18n-attr="title:selection.color.orange;aria-label:selection.color.orange" title="Orange" aria-label="Orange"></button>
+            <button type="button" class="ocr-color-swatch" data-color="#ffcc00" data-i18n-attr="title:selection.color.yellow;aria-label:selection.color.yellow" title="Yellow" aria-label="Yellow"></button>
+            <button type="button" class="ocr-color-swatch" data-color="#34c759" data-i18n-attr="title:selection.color.green;aria-label:selection.color.green" title="Green" aria-label="Green"></button>
+            <button type="button" class="ocr-color-swatch" data-color="#0a84ff" data-i18n-attr="title:selection.color.blue;aria-label:selection.color.blue" title="Blue" aria-label="Blue"></button>
+            <button type="button" class="ocr-color-swatch" data-color="#5e5ce6" data-i18n-attr="title:selection.color.purple;aria-label:selection.color.purple" title="Purple" aria-label="Purple"></button>
+            <input id="ocr-color-custom" type="color" value="#ff3b30" data-i18n-attr="aria-label:selection.customColor;title:selection.customColor" aria-label="Custom annotation color" title="Custom annotation color" />
           </div>
-          <input id="ocr-stroke-width" type="range" min="1" max="16" step="1" value="3" aria-label="线条粗细" title="线条粗细" />
-          <input id="ocr-font-size" type="range" min="12" max="48" step="1" value="18" aria-label="文字字号" title="文字字号" hidden />
-          <button id="ocr-text-bold" type="button" title="文字加粗" aria-label="文字加粗" aria-pressed="false" hidden><strong>B</strong></button>
-          <input id="ocr-mosaic-brush" type="range" min="12" max="80" step="1" value="28" aria-label="马赛克笔刷大小" title="马赛克笔刷大小" hidden />
-          <input id="ocr-mosaic-intensity" type="range" min="1" max="3" step="1" value="2" list="ocr-mosaic-intensity-levels" aria-label="马赛克强度" title="马赛克强度" hidden />
+          <input id="ocr-stroke-width" type="range" min="1" max="16" step="1" value="3" data-i18n-attr="aria-label:selection.strokeWidth;title:selection.strokeWidth" aria-label="Stroke width" title="Stroke width" />
+          <input id="ocr-font-size" type="range" min="12" max="48" step="1" value="18" data-i18n-attr="aria-label:selection.fontSize;title:selection.fontSize" aria-label="Font size" title="Font size" hidden />
+          <button id="ocr-text-bold" type="button" data-i18n-attr="title:selection.boldText;aria-label:selection.boldText" title="Bold text" aria-label="Bold text" aria-pressed="false" hidden><strong>B</strong></button>
+          <input id="ocr-mosaic-brush" type="range" min="12" max="80" step="1" value="28" data-i18n-attr="aria-label:selection.mosaicBrushSize;title:selection.mosaicBrushSize" aria-label="Mosaic brush size" title="Mosaic brush size" hidden />
+          <input id="ocr-mosaic-intensity" type="range" min="1" max="3" step="1" value="2" list="ocr-mosaic-intensity-levels" data-i18n-attr="aria-label:selection.mosaicIntensity;title:selection.mosaicIntensity" aria-label="Mosaic intensity" title="Mosaic intensity" hidden />
           <datalist id="ocr-mosaic-intensity-levels">
-            <option value="1" label="弱"></option>
-            <option value="2" label="中"></option>
-            <option value="3" label="强"></option>
+            <option value="1" data-i18n-attr="label:selection.mosaicLevel.low" label="Low"></option>
+            <option value="2" data-i18n-attr="label:selection.mosaicLevel.medium" label="Medium"></option>
+            <option value="3" data-i18n-attr="label:selection.mosaicLevel.high" label="High"></option>
           </datalist>
         </div>
-        <div class="ocr-toolbar-group" data-group="screenshot-actions" role="group" aria-label="截图动作">
-          <button id="ocr-recognize" type="button" title="文字识别" aria-label="文字识别">
+        <div class="ocr-toolbar-group" data-group="screenshot-actions" role="group" data-i18n-attr="aria-label:selection.screenshotActions" aria-label="Screenshot actions">
+          <button id="ocr-recognize" type="button" data-i18n-attr="title:selection.recognize;aria-label:selection.recognize" title="Recognize text" aria-label="Recognize text">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2.5" y="3" width="15" height="14" rx="2"></rect>
               <path d="M6 8h8M6 11.5h8M6 15h5"></path>
             </svg>
           </button>
-          <button id="ocr-translate" type="button" title="翻译" aria-label="翻译">
+          <button id="ocr-translate" type="button" data-i18n-attr="title:selection.translate;aria-label:selection.translate" title="Translate" aria-label="Translate">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 5h7M6.5 3v2M4.5 5c.8 2.8 2.8 5 5 6.2M8.5 5c-.8 2.8-2.8 5-5 6.2"></path>
               <path d="M11 17l3.2-7 3.3 7M12.2 14.6h4.1"></path>
             </svg>
           </button>
-          <button id="ocr-copy-image" type="button" title="复制图片" aria-label="复制图片">
+          <button id="ocr-copy-image" type="button" data-i18n-attr="title:selection.copyImage;aria-label:selection.copyImage" title="Copy image" aria-label="Copy image">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <rect x="6.5" y="6.5" width="10" height="10" rx="2"></rect>
               <path d="M13.5 4.5v-1a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h1"></path>
             </svg>
           </button>
-          <button id="ocr-save-image" type="button" title="保存到本地" aria-label="保存到本地">
+          <button id="ocr-save-image" type="button" data-i18n-attr="title:selection.saveImage;aria-label:selection.saveImage" title="Save to disk" aria-label="Save to disk">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M10 2.5v9M6.8 8.3L10 11.5l3.2-3.2"></path>
               <path d="M3.5 12.5v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"></path>
             </svg>
           </button>
-          <button id="ocr-cancel" type="button" title="取消" aria-label="取消">
+          <button id="ocr-cancel" type="button" data-i18n-attr="title:common.cancel;aria-label:common.cancel" title="Cancel" aria-label="Cancel">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M5 5l10 10M15 5L5 15"></path>
             </svg>
           </button>
         </div>
       </div>
-      <textarea id="ocr-text-input" class="ocr-text-input" aria-label="标注文字内容" maxlength="200" rows="1" hidden></textarea>
-      <aside id="ocr-panel" class="ocr-panel" hidden aria-label="OCR 识别结果">
+      <textarea id="ocr-text-input" class="ocr-text-input" data-i18n-attr="aria-label:selection.annotationText" aria-label="Annotation text" maxlength="200" rows="1" hidden></textarea>
+      <aside id="ocr-panel" class="ocr-panel" hidden data-i18n-attr="aria-label:selection.ocrResult" aria-label="OCR result">
         <div id="ocr-panel-status" class="ocr-panel-status" role="status"></div>
-        <textarea id="ocr-panel-text" class="ocr-panel-text" readonly aria-label="OCR 原文"></textarea>
-        <span id="ocr-panel-resize" class="ocr-panel-resize" role="separator" aria-label="调整识别结果区域大小" aria-hidden="true"></span>
+        <textarea id="ocr-panel-text" class="ocr-panel-text" readonly data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
+        <span id="ocr-panel-resize" class="ocr-panel-resize" role="separator" data-i18n-attr="aria-label:selection.resizeResult" aria-label="Resize OCR result area" aria-hidden="true"></span>
       </aside>
       <div id="ocr-tooltip" class="ocr-tooltip" role="tooltip" hidden></div>
     </main>

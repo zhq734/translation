@@ -9,6 +9,11 @@ import {
   resolveManualMacDmgTarget
 } from '../src/main/manualMacUpdate.ts'
 import { saveDownloadResumeState } from '../src/main/updateDownloadResume.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { translatorForTest } from './helpers/i18n.ts'
+
+// 更新下载错误文案默认跟随主进程界面语言；这里固定为中文以覆盖原有断言。
+setMainMessageTranslator(translatorForTest('zh-CN'))
 
 /**
  * 创建测试用临时下载目录。

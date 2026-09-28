@@ -5,6 +5,7 @@ export {
   recognizeWithTimeout,
   withOcrTimeout,
   type OcrEngine,
+  type OcrMessageResolver,
   type OcrRecognizeInput,
   type OcrRecognizeResult
 } from '../shared/ocrEngine'

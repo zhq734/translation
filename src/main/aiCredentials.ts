@@ -8,6 +8,7 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 import type { SafeStorageAdapter } from './dingtalkCredentials'
+import { translateMain } from './messages'
 
 /** AI 凭证文件读取结果，只在主进程内部携带 API Key。 */
 export interface AiApiKeyReadResult {
@@ -48,7 +49,7 @@ export class AiCredentialStore {
   readApiKey(): AiApiKeyReadResult {
     if (!existsSync(this.path)) return { configured: false, apiKey: null }
     if (!this.safeStorage.isEncryptionAvailable()) {
-      return { configured: false, apiKey: null, error: '当前系统无法使用安全存储，无法读取 AI 凭证' }
+      return { configured: false, apiKey: null, error: translateMain('ai.credentials.secureStorageReadUnavailable') }
     }
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<AiCredentialFile>
@@ -60,7 +61,7 @@ export class AiCredentialStore {
       if (!apiKey) throw new Error('empty api key')
       return { configured: true, apiKey }
     } catch {
-      return { configured: false, apiKey: null, error: '无法读取已保存的 AI 凭证，请重新配置' }
+      return { configured: false, apiKey: null, error: translateMain('ai.credentials.readFailed') }
     }
   }
 
@@ -74,7 +75,7 @@ export class AiCredentialStore {
     const normalized = apiKey.trim()
     if (!normalized) return
     if (!this.safeStorage.isEncryptionAvailable()) {
-      throw new Error('当前系统安全存储不可用，无法保存 AI 凭证')
+      throw new Error(translateMain('ai.credentials.secureStorageWriteUnavailable'))
     }
     const ciphertext = this.safeStorage.encryptString(normalized).toString('base64')
     const payload: AiCredentialFile = { version: 1, aiApiKey: ciphertext }

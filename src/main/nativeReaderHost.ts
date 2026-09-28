@@ -14,6 +14,7 @@ import {
   NATIVE_READER_REQUEST_TIMEOUT_MS,
   type NativeReaderResult
 } from '../shared/nativeReaderProtocol'
+import { translateMain } from './messages'
 
 /** 连续超时达到该次数后重启 helper。 */
 export const NATIVE_READER_RESTART_AFTER_TIMEOUTS = 3
@@ -297,7 +298,7 @@ function defaultSpawnWindowsUiaReader(): NativeReaderChildProcess {
   const resourcesPath = process.resourcesPath as string | undefined
   const helperPath = resolveWindowsUiaReaderPath(resourcesPath)
   if (!helperPath) {
-    throw new Error('缺少 windows-uia-reader helper 可执行文件')
+    throw new Error(translateMain('capture.error.nativeReaderHelperMissing'))
   }
   const child: ChildProcess = spawn(helperPath, [], { windowsHide: true })
   return {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 test('preload 应只暴露免配置微软可用性检测接口', () => {
   const preload = readFileSync('src/preload/index.ts', 'utf8')
@@ -19,11 +20,10 @@ test('普通设置 IPC 应允许保存微软启用状态且不再处理 Azure �
 
 test('设置页应包含免订阅微软翻译开关、检测按钮和稳定性提示', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
-  assert.match(html, /<h2>微软翻译<\/h2>/u)
+  assert.match(html, new RegExp(`<h2 data-i18n="settings\\.microsoft\\.title">${tForTest('en-US', 'settings.microsoft.title')}<\\/h2>`, 'u'))
   assert.match(html, /id="microsoft-enabled"/u)
-  assert.match(html, /无需(?:配置|订阅密钥)|免订阅/u)
-  assert.match(html, /Bing 在线翻译/u)
-  assert.match(html, /接口[^<]*可能[^<]*失效|服务调整[^<]*不可用/u)
+  assert.match(html, new RegExp(tForTest('en-US', 'settings.microsoft.hint'), 'u'))
+  assert.match(html, new RegExp(tForTest('en-US', 'settings.microsoft.warning'), 'u'))
   assert.match(html, /id="microsoft-check"/u)
   assert.match(html, /id="microsoft-status"/u)
   assert.doesNotMatch(html, /id="microsoft-region"/u)
@@ -43,9 +43,9 @@ test('微软设置交互应通过普通设置保存开关并保留独立可用�
 
 test('微软翻译应出现在钉钉之后、自建 DeepLX 之前的通道优先级说明中', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
-  const dingTalkIndex = html.indexOf('<li><b>钉钉翻译</b>')
-  const microsoftIndex = html.indexOf('<li><b>微软翻译</b>')
-  const deepLxIndex = html.indexOf('<li><b>自建 DeepLX</b>')
+  const dingTalkIndex = html.indexOf(`<b data-i18n="settings.channels.dingTalkName">${tForTest('en-US', 'settings.channels.dingTalkName')}</b>`)
+  const microsoftIndex = html.indexOf(`<b data-i18n="settings.channels.microsoftName">${tForTest('en-US', 'settings.channels.microsoftName')}</b>`)
+  const deepLxIndex = html.indexOf(`<b data-i18n="settings.channels.selfHostedName">${tForTest('en-US', 'settings.channels.selfHostedName')}</b>`)
 
   assert.ok(dingTalkIndex >= 0)
   assert.ok(microsoftIndex > dingTalkIndex)

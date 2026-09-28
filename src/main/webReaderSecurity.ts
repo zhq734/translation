@@ -1,4 +1,5 @@
 import type { Rectangle } from 'electron'
+import { translateMain } from './messages'
 
 /** 阅读器允许加载的远程协议。 */
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:'])
@@ -58,12 +59,12 @@ export function normalizeWebReaderUrl(value: string): string {
   try {
     parsed = new URL(candidate)
   } catch {
-    throw new Error('请输入有效的网页地址')
+    throw new Error(translateMain('webReader.error.invalidUrl'))
   }
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    throw new Error('网页阅读器仅支持 HTTP 或 HTTPS 地址')
+    throw new Error(translateMain('webReader.error.onlyHttp'))
   }
-  if (!parsed.hostname) throw new Error('请输入有效的网页地址')
+  if (!parsed.hostname) throw new Error(translateMain('webReader.error.invalidUrl'))
   return parsed.toString()
 }
 

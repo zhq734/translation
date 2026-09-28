@@ -6,6 +6,8 @@ import { lumaOf, type RgbaImage } from '../shared/imagePreprocess'
 import { OcrEngineError, type OcrEngine, type OcrRecognizeInput, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { joinOcrLines } from '../shared/ocrEngine'
 import type { OcrTextLine } from '../shared/types'
+import type { TranslationParams } from '../shared/i18n'
+import { translateMain } from './messages'
 
 /** 系统 OCR 可注入依赖，方便单元测试替换 execFile/writeFile。 */
 export interface SystemOcrDeps {
@@ -475,8 +477,11 @@ export class MacOsVisionOcrEngine implements OcrEngine {
   /** Swift OSA 组件可用性探测缓存。 */
   private availabilityCheck: Promise<boolean> | null = null
 
-  /** 最近一次不可用原因。 */
-  private unavailableReason: string | undefined
+  /** 最近一次不可用原因的语义化词条 key。 */
+  private unavailableReasonKey: string | undefined
+
+  /** 最近一次不可用原因的插值参数。 */
+  private unavailableReasonParams: TranslationParams | undefined
 
   /**
    * 创建 macOS Vision OCR 引擎。
@@ -508,17 +513,20 @@ export class MacOsVisionOcrEngine implements OcrEngine {
     if (!this.availabilityCheck) {
       const helperPath = this.resolveHelperPath()
       if (!helperPath) {
-        this.unavailableReason = 'macOS Vision OCR helper 未安装'
+        this.unavailableReasonKey = 'ocr.error.visionHelperMissing'
+        this.unavailableReasonParams = undefined
         this.availabilityCheck = Promise.resolve(false)
       } else {
         this.availabilityCheck = this.deps.execFile(helperPath, ['--version'], { timeout: 2000 })
           .then(() => {
-            this.unavailableReason = undefined
+            this.unavailableReasonKey = undefined
+            this.unavailableReasonParams = undefined
             return true
           })
           .catch((error) => {
             const message = error instanceof Error ? error.message : String(error)
-            this.unavailableReason = `macOS Vision OCR helper 不可用: ${message}`
+            this.unavailableReasonKey = 'ocr.error.visionHelperUnavailable'
+            this.unavailableReasonParams = { message }
             return false
           })
       }
@@ -532,7 +540,9 @@ export class MacOsVisionOcrEngine implements OcrEngine {
    * @author zhenghq
    */
   getUnavailableReason(): string | undefined {
-    return this.unavailableReason
+    return this.unavailableReasonKey
+      ? translateMain(this.unavailableReasonKey, this.unavailableReasonParams)
+      : undefined
   }
 
   /**
@@ -554,7 +564,11 @@ export class MacOsVisionOcrEngine implements OcrEngine {
    */
   async recognize(input: OcrRecognizeInput): Promise<OcrRecognizeResult> {
     if (this.deps.platform !== 'darwin') {
-      throw new OcrEngineError('engine-unavailable', 'macOS Vision OCR 仅在 macOS 上可用', 'system')
+      throw new OcrEngineError(
+        'engine-unavailable',
+        translateMain('ocr.error.visionUnsupportedPlatform'),
+        'system'
+      )
     }
 
     const lang = input.language ?? 'auto'
@@ -571,14 +585,16 @@ export class MacOsVisionOcrEngine implements OcrEngine {
     } else if (input.imagePath) {
       imagePath = input.imagePath
     } else {
-      throw new OcrEngineError('empty', 'Vision OCR 缺少图片输入', 'system')
+      throw new OcrEngineError('empty', translateMain('ocr.error.visionMissingInput'), 'system')
     }
 
     const timeoutMs = input.timeoutMs ?? 15000
     const helperPath = this.resolveHelperPath()
     if (!helperPath) {
-      this.unavailableReason = 'macOS Vision OCR helper 未安装'
-      throw new OcrEngineError('engine-unavailable', 'macOS Vision OCR helper 未安装', 'system')
+      const message = translateMain('ocr.error.visionHelperMissing')
+      this.unavailableReasonKey = 'ocr.error.visionHelperMissing'
+      this.unavailableReasonParams = undefined
+      throw new OcrEngineError('engine-unavailable', message, 'system')
     }
 
     try {
@@ -589,7 +605,11 @@ export class MacOsVisionOcrEngine implements OcrEngine {
       )
 
       if (stderr?.toLowerCase().includes('permission')) {
-        throw new OcrEngineError('permission', '屏幕录制权限缺失，请在系统设置中授权', 'system')
+        throw new OcrEngineError(
+          'permission',
+          translateMain('ocr.error.visionPermissionRequired'),
+          'system'
+        )
       }
 
       const lines = parseVisionOcrOutput(stdout)
@@ -599,13 +619,18 @@ export class MacOsVisionOcrEngine implements OcrEngine {
       if (error instanceof OcrEngineError) throw error
       const message = error instanceof Error ? error.message : String(error)
       if (/permission|tcc/i.test(message)) {
-        throw new OcrEngineError('permission', '屏幕录制权限缺失', 'system')
+        throw new OcrEngineError(
+          'permission',
+          translateMain('ocr.error.visionPermissionMissing'),
+          'system'
+        )
       }
       if (/timeout|signal/i.test(message)) {
-        throw new OcrEngineError('timeout', 'Vision OCR 超时', 'system')
+        throw new OcrEngineError('timeout', translateMain('ocr.error.visionTimeout'), 'system')
       }
-      const reason = `macOS Vision OCR 执行失败: ${message}`
-      this.unavailableReason = reason
+      const reason = translateMain('ocr.error.visionFailed', { message })
+      this.unavailableReasonKey = 'ocr.error.visionFailed'
+      this.unavailableReasonParams = { message }
       throw new OcrEngineError('engine-unavailable', reason, 'system')
     }
   }
@@ -623,8 +648,11 @@ export class WindowsSystemOcrEngine implements OcrEngine {
   /** win-ocr.ps1 在 userData 目录的缓存路径。 */
   private scriptPath: string | undefined
 
-  /** Windows system OCR 最近一次不可用原因。 */
-  private unavailableReason: string | undefined
+  /** Windows system OCR 最近一次不可用原因的语义化词条 key。 */
+  private unavailableReasonKey: string | undefined
+
+  /** Windows system OCR 最近一次不可用原因的插值参数。 */
+  private unavailableReasonParams: TranslationParams | undefined
 
   /** 可注入依赖。 */
   private readonly deps: SystemOcrDeps
@@ -662,7 +690,9 @@ export class WindowsSystemOcrEngine implements OcrEngine {
    * @author zhenghq
    */
   getUnavailableReason(): string | undefined {
-    return this.unavailableReason
+    return this.unavailableReasonKey
+      ? translateMain(this.unavailableReasonKey, this.unavailableReasonParams)
+      : undefined
   }
 
   /**
@@ -686,7 +716,11 @@ export class WindowsSystemOcrEngine implements OcrEngine {
    */
   async recognize(input: OcrRecognizeInput): Promise<OcrRecognizeResult> {
     if (!this.isAvailable()) {
-      throw new OcrEngineError('engine-unavailable', 'Windows 系统 OCR 仅在 Windows 上可用', 'system')
+      throw new OcrEngineError(
+        'engine-unavailable',
+        translateMain('ocr.error.windowsUnsupportedPlatform'),
+        'system'
+      )
     }
 
     const lang = input.language ?? 'auto'
@@ -703,7 +737,7 @@ export class WindowsSystemOcrEngine implements OcrEngine {
     } else if (input.imagePath) {
       imagePath = input.imagePath
     } else {
-      throw new OcrEngineError('empty', 'Windows OCR 缺少图片输入', 'system')
+      throw new OcrEngineError('empty', translateMain('ocr.error.windowsMissingInput'), 'system')
     }
 
     const scriptPath = await this.ensureScript()
@@ -718,7 +752,11 @@ export class WindowsSystemOcrEngine implements OcrEngine {
       )
 
       if (stderr?.includes('No Windows OCR language is available')) {
-        throw new OcrEngineError('engine-unavailable', 'Windows OCR 语言包未安装', 'system')
+        throw new OcrEngineError(
+          'engine-unavailable',
+          translateMain('ocr.error.windowsLanguagePackMissing'),
+          'system'
+        )
       }
 
       let lines: WindowsOcrStructuredLine[] = parseWindowsOcrStructuredOutput(stdout)
@@ -741,21 +779,24 @@ export class WindowsSystemOcrEngine implements OcrEngine {
         }
       }
       const text = joinOcrLines(lines)
-      this.unavailableReason = undefined
+      this.unavailableReasonKey = undefined
+      this.unavailableReasonParams = undefined
       return { lines, text, engine: 'system' }
     } catch (error) {
       if (error instanceof OcrEngineError) throw error
       const message = extractProcessErrorMessage(error)
       if (/timeout/i.test(message)) {
-        throw new OcrEngineError('timeout', 'Windows OCR 超时', 'system')
+        throw new OcrEngineError('timeout', translateMain('ocr.error.windowsTimeout'), 'system')
       }
       if (/No Windows OCR/i.test(message)) {
-        const reason = 'Windows OCR 语言包未安装'
-        this.unavailableReason = reason
+        const reason = translateMain('ocr.error.windowsLanguagePackMissing')
+        this.unavailableReasonKey = 'ocr.error.windowsLanguagePackMissing'
+        this.unavailableReasonParams = undefined
         throw new OcrEngineError('engine-unavailable', reason, 'system')
       }
-      const reason = `Windows OCR 执行失败: ${message}`
-      this.unavailableReason = reason
+      const reason = translateMain('ocr.error.windowsFailed', { message })
+      this.unavailableReasonKey = 'ocr.error.windowsFailed'
+      this.unavailableReasonParams = { message }
       throw new OcrEngineError('engine-unavailable', reason, 'system')
     }
   }

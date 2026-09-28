@@ -61,6 +61,7 @@ export interface SelectionGesture {
 import type { TriggerMode } from './types'
 import { normalizeReportedClicks } from './selectionInteraction'
 import type { NativeSelectionReadResult } from './platformCapture'
+import { createTranslator, type Locale, type Translator } from './i18n'
 import type { SelectionFailureReason } from './selectionCaptureCoordinator'
 
 /** 划词完成后主进程需要执行的动作。 */
@@ -117,26 +118,29 @@ export type SelectionPresence = 'present' | 'empty' | 'unknown'
  * 图片选区优先提示图片不可翻译；空选区沿用既有文案，超时与不支持分别给出新文案。
  * @param reason 取词失败原因（empty/timeout/unsupported/permission）。
  * @param hasImage 是否捕获到图片选区（仅图片、无可翻译文本）。
+ * @param locale 当前界面语言或翻译器。
  * @returns 对应的提示文案。
  * @author zhenghq
  */
 export function resolveSelectionCaptureFailureMessage(
   reason: SelectionFailureReason | undefined,
-  hasImage = false
+  hasImage = false,
+  locale: Locale | Translator = 'en-US'
 ): string {
-  if (hasImage) return '已识别到图片选区，暂不支持图片翻译'
+  const translator: Translator = typeof locale === 'string' ? createTranslator(locale) : locale
+  if (hasImage) return translator.t('selection.captureFailure.imageOnly')
   switch (reason) {
     case 'timeout':
-      return '取词超时，请重试或确认所选内容可复制'
+      return translator.t('selection.captureFailure.timeout')
     case 'unsupported':
-      return '当前应用不支持划词取词，请确认所选内容可复制'
+      return translator.t('selection.captureFailure.unsupported')
     case 'permission':
-      return '需要「辅助功能」权限才能读取选中文字，请授权后重试'
+      return translator.t('selection.captureFailure.permission')
     case 'clipboard-locked':
-      return '剪贴板被占用，请关闭其他剪贴板工具后重试'
+      return translator.t('selection.captureFailure.clipboardLocked')
     case 'empty':
     default:
-      return '未检测到选中文字，请重新划词后点击“译”按钮'
+      return translator.t('selection.captureFailure.empty')
   }
 }
 

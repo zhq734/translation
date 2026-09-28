@@ -1,5 +1,6 @@
 import type { DeepLxStatus } from '../shared/types'
 import { parseDeepLxUrls } from './translate'
+import { translateMain } from './messages'
 
 /** DeepLX 在线检测使用的网络请求类型。 */
 export type DeepLxCheckFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -39,11 +40,11 @@ export class DeepLxCheckService {
    */
   async check(value: string): Promise<DeepLxStatus> {
     const urls = parseDeepLxUrls(value)
-    if (urls.length === 0) return { url: '', online: false, message: '未配置地址' }
+    if (urls.length === 0) return { url: '', online: false, message: translateMain('deepLx.check.notConfigured') }
 
     const results = await Promise.all(urls.map((url) => this.checkEndpoint(url)))
     const onlineCount = results.filter((result) => result.online).length
-    const summary = `${onlineCount}/${urls.length} 个服务在线`
+    const summary = translateMain('deepLx.check.summary', { online: onlineCount, total: urls.length })
     if (onlineCount > 0) return { url: '', online: true, message: summary }
 
     const reason = results.find((result) => result.message)?.message
@@ -78,8 +79,8 @@ export class DeepLxCheckService {
       if (response.ok && code === 200) return { online: true }
       return { online: false, message: `HTTP ${response.status}` }
     } catch (error) {
-      if (this.isTimeoutError(error)) return { online: false, message: '连接超时' }
-      return { online: false, message: '网络连接失败' }
+      if (this.isTimeoutError(error)) return { online: false, message: translateMain('deepLx.check.timeout') }
+      return { online: false, message: translateMain('deepLx.check.network') }
     }
   }
 

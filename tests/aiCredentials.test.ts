@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { AiCredentialStore, type SafeStorageAdapter } from '../src/main/aiCredentials.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 创建仅用于测试的可逆安全存储实现。
@@ -76,7 +77,13 @@ test('安全存储不可用时应拒绝保存且不产生明文文件', () => {
   try {
     const path = join(dir, 'ai-credentials.json')
     const store = new AiCredentialStore(path, createFakeSafeStorage(false))
-    assert.throws(() => store.saveApiKey('sk-test'), /安全存储不可用/u)
+    assert.throws(
+      () => store.saveApiKey('sk-test'),
+      (error: unknown) => {
+        assert.equal((error as Error).message, tForTest('en-US', 'ai.credentials.secureStorageWriteUnavailable'))
+        return true
+      }
+    )
     assert.throws(() => readFileSync(path, 'utf8'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -92,7 +99,7 @@ test('密文损坏时应返回脱敏错误且视为未配置', () => {
     const loaded = store.readApiKey()
     assert.equal(loaded.configured, false)
     assert.equal(loaded.apiKey, null)
-    assert.match(loaded.error || '', /无法读取已保存的 AI 凭证/u)
+    assert.equal(loaded.error, tForTest('en-US', 'ai.credentials.readFailed'))
     assert.equal((loaded.error || '').includes('sk-'), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })

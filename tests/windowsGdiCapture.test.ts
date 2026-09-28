@@ -22,6 +22,11 @@ import {
 } from '../src/main/windowsGdiCapture.ts'
 import { ScreenCaptureError } from '../src/main/screenCapture'
 import { decodePng } from '../src/main/pngCodec'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 /**
  * 构造可注入依赖：注入 mock GDI 采集函数，返回预置 BGRA 像素数据。
@@ -420,11 +425,20 @@ test('captureWindowsOcrPngPreferGdi 双路径失败应归类 no-source', async (
         }
       }
     ),
-    (error: unknown) =>
-      error instanceof ScreenCaptureError &&
-      error.code === 'no-source' &&
-      /GDI 失败/.test(error.message) &&
-      /回退失败/.test(error.message)
+    (error: unknown) => {
+      assert.ok(error instanceof ScreenCaptureError)
+      assert.equal(error.code, 'no-source')
+      assert.equal(
+        error.message,
+        tForTest('zh-CN', 'capture.error.gdiAndFallbackFailed', {
+          gdiMessage: tForTest('zh-CN', 'capture.error.gdiCaptureFailed', {
+            message: 'BitBlt 失败'
+          }),
+          fallbackMessage: 'helper exe 退出码 1'
+        })
+      )
+      return true
+    }
   )
 })
 
@@ -444,16 +458,29 @@ test('GDI 绑定失败后应在冷却时间后允许重试', () => {
       attempts += 1
       throw new Error('首次绑定被杀毒软件拦截')
     }
-    assert.throws(() => getKoffiGdiCapture(failingLoader), /koffi 绑定加载失败/u)
+    const expectedMessage = tForTest('zh-CN', 'capture.error.gdiBindingLoadFailed', {
+      interval: KOFFI_BINDING_RETRY_INTERVAL_MS,
+      detail: '首次绑定被杀毒软件拦截'
+    })
+    assert.throws(
+      () => getKoffiGdiCapture(failingLoader),
+      (error: unknown) => error instanceof Error && error.message === expectedMessage
+    )
     assert.equal(attempts, 1)
 
     // 冷却期内保持快速失败，不重复付出加载失败代价。
-    assert.throws(() => getKoffiGdiCapture(failingLoader), /koffi 绑定加载失败/u)
+    assert.throws(
+      () => getKoffiGdiCapture(failingLoader),
+      (error: unknown) => error instanceof Error && error.message === expectedMessage
+    )
     assert.equal(attempts, 1)
 
     // 冷却期结束后必须重新尝试加载，而不是永久降级到 PowerShell 回退。
     setKoffiBindingClockForTests(() => now + KOFFI_BINDING_RETRY_INTERVAL_MS)
-    assert.throws(() => getKoffiGdiCapture(failingLoader), /koffi 绑定加载失败/u)
+    assert.throws(
+      () => getKoffiGdiCapture(failingLoader),
+      (error: unknown) => error instanceof Error && error.message === expectedMessage
+    )
     assert.equal(attempts, 2)
   } finally {
     setKoffiBindingClockForTests(null)
@@ -518,7 +545,16 @@ test('GDI 绑定重试不得重复注册具名类型', () => {
       return stub
     }
 
-    assert.throws(() => getKoffiGdiCapture(loader), /koffi 绑定加载失败/u)
+    assert.throws(
+      () => getKoffiGdiCapture(loader),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message ===
+          tForTest('zh-CN', 'capture.error.gdiBindingLoadFailed', {
+            interval: KOFFI_BINDING_RETRY_INTERVAL_MS,
+            detail: '首次绑定中断'
+          })
+    )
     setKoffiBindingClockForTests(() => now + KOFFI_BINDING_RETRY_INTERVAL_MS)
     // 重试必须成功：不能因为重复注册 HWND / BITMAPINFO 再次抛 Duplicate type name。
     assert.doesNotThrow(() => getKoffiGdiCapture(loader))

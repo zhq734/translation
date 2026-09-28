@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
+import { findOpeningTagById, readTextI18nKey, tForTest } from './helpers/i18n.ts'
 
 type PackageJson = {
   build?: {
@@ -48,7 +49,7 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
   assert.match(mainSource, /if \(icon\.isEmpty\(\)\)[\s\S]*?throw new Error/u)
   assert.match(mainSource, /if \(isMac\) icon\.setTemplateImage\(true\)/u)
   assert.doesNotMatch(mainSource, /tray\.setTitle\(/u)
-  assert.match(mainSource, /tray\.setToolTip\('划词翻译'\)/u)
+  assert.match(mainSource, /tray\.setToolTip\(t\('app\.name'\)/u)
   assert.match(
     mainSource,
     /if \(isMac\) \{[\s\S]*?tray\.on\('right-click', \(\) => tray\?\.popUpContextMenu\(buildTrayMenu\(\)\)\)/u
@@ -74,11 +75,11 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   assert.match(mainSource, /function stopApplicationService\(\): void/u)
   assert.match(
     mainSource,
-    /label:\s*'设置',[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
+    /label:\s*t\.t\('menu\.settings'\),[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
   )
   assert.match(
     mainSource,
-    /label:\s*'退出',[\s\S]*?click:\s*\(\)\s*=>\s*stopApplicationService\(\)/u
+    /label:\s*t\.t\('menu\.quit'\),[\s\S]*?click:\s*\(\)\s*=>\s*stopApplicationService\(\)/u
   )
   assert.ok(ipcIndex >= 0 && platformSettingsIndex > ipcIndex)
   assert.match(
@@ -107,14 +108,14 @@ test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
 
 test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快捷键触发模式', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
-  const toggleLabel = "label: '划词后自动显示“译”按钮'"
+  const toggleLabel = "label: t.t('menu.showSelectionButton')"
   const toggleIndex = mainSource.indexOf(toggleLabel)
-  const targetLanguageIndex = mainSource.indexOf("label: '目标语言'", toggleIndex)
+  const targetLanguageIndex = mainSource.indexOf("label: t.t('menu.targetLanguage')", toggleIndex)
 
   assert.ok(toggleIndex >= 0 && toggleIndex < targetLanguageIndex)
   assert.match(
     mainSource,
-    /label:\s*'划词后自动显示“译”按钮',[\s\S]*?type:\s*'checkbox',[\s\S]*?checked:\s*settings\.triggerMode\s*===\s*'button',[\s\S]*?click:\s*\(menuItem\)\s*=>[\s\S]*?triggerMode:\s*menuItem\.checked\s*\?\s*'button'\s*:\s*'hotkey'/u
+    /label:\s*t\.t\('menu\.showSelectionButton'\),[\s\S]*?type:\s*'checkbox',[\s\S]*?checked:\s*settings\.triggerMode\s*===\s*'button',[\s\S]*?click:\s*\(menuItem\)\s*=>[\s\S]*?triggerMode:\s*menuItem\.checked\s*\?\s*'button'\s*:\s*'hotkey'/u
   )
 })
 
@@ -123,7 +124,7 @@ test('macOS 托盘菜单应提供划词服务修复入口', () => {
 
   assert.match(
     mainSource,
-    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*'修复 macOS 划词服务…',[\s\S]*?click:\s*\(\)\s*=>\s*void\s+promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
+    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*t\.t\('menu\.repairMacSelectionService'\),[\s\S]*?click:\s*\(\)\s*=>\s*void\s+promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
   )
 })
 
@@ -162,7 +163,14 @@ test('关闭设置窗口应只释放窗口引用，停止服务必须通过受�
   assert.match(typesSource, /stopService\(\): void/u)
   assert.match(preloadSource, /stopService\(\)[\s\S]*?ipcRenderer\.send\('settings:stop-service'\)/u)
   assert.match(mainSource, /ipcMain\.on\('settings:stop-service',[\s\S]*?stopApplicationService\(\)/u)
-  assert.match(html, /id="stop-service"[^>]*>关闭并停止服务<\/button>/u)
+  const stopServiceTag = findOpeningTagById(html, 'stop-service')
+  assert.ok(stopServiceTag, '缺少停止服务按钮')
+  const stopServiceKey = readTextI18nKey(stopServiceTag)
+  assert.equal(stopServiceKey, 'settings.service.stop')
+  assert.match(
+    html,
+    new RegExp(`>${tForTest('en-US', stopServiceKey)}<\\/button>`, 'u')
+  )
   assert.match(rendererSource, /window\.confirm\([\s\S]*?window\.api\.stopService\(\)/u)
   assert.match(css, /\.btn\.danger[\s\S]*?var\(--status-error\)/u)
 })
