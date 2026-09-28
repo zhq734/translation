@@ -670,8 +670,9 @@ function loadMacOSDockIcon(): NativeImage {
 }
 
 /**
- * 根据用户设置和设置窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
- * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；仅在用户开启功能且设置窗口存在时显示图标。
+ * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；用户开启功能且任一常规窗口存在时显示图标。
+ * 设置窗口关闭但网页翻译窗口仍打开时必须保持当前激活策略，避免重排窗口层级把翻译页压到最下层。
  * @param showDockIcon 用户保存的 Dock 图标设置。
  * @returns 无返回值。
  * @author zhenghq
@@ -760,7 +761,7 @@ function applyAutoLaunch(enabled: boolean): void {
 }
 
 /**
- * 根据当前设置和设置窗口状态刷新 macOS Dock 图标。
+ * 根据当前设置和常规窗口状态刷新 macOS Dock 图标。
  * @returns 无返回值。
  * @author zhenghq
  */
