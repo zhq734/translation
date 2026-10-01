@@ -111,15 +111,9 @@
 
 ## 推广视频
 
-以下视频快速演示了划词翻译流程和主要功能，点击封面即可在 GitHub 中播放。
+以下视频快速演示了划词翻译流程和主要功能，可直接在 README 中播放。
 
-<p align="center">
-  <a href="./docs/videos/推广视频.mp4">
-    <img src="./docs/images/推广视频封面.png" alt="划词翻译推广视频" width="100%">
-  </a>
-  <br>
-  <a href="./docs/videos/推广视频.mp4">▶ 观看推广视频</a>
-</p>
+https://github.com/user-attachments/assets/b59a10b5-1090-4825-94a6-fb573a57d21b
 
 ## 工作流程
 
