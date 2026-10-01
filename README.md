@@ -18,6 +18,7 @@
 - [Overview](#overview)
 - [Features](#features)
 - [Screenshots](#screenshots)
+- [Promotional Video](#promotional-video)
 - [How It Works](#how-it-works)
 - [Download and Install](#download-and-install)
 - [Development Requirements](#development-requirements)
@@ -110,6 +111,18 @@ The following screenshots show the selection translation workflow, the translati
 
 <p align="center">
   <img src="./docs/images/截图5.png" alt="Menu-bar and tray controls" width="360">
+</p>
+
+## Promotional Video
+
+The following video provides a quick walkthrough of the selection translation workflow and the main features. Click the cover to play it on GitHub.
+
+<p align="center">
+  <a href="./docs/videos/推广视频.mp4">
+    <img src="./docs/images/推广视频封面.png" alt="Selection Translator promotional video" width="100%">
+  </a>
+  <br>
+  <a href="./docs/videos/推广视频.mp4">▶ Watch the promotional video</a>
 </p>
 
 ## How It Works
