@@ -117,7 +117,7 @@ The following screenshots show the selection translation workflow, the translati
 
 The following video provides a quick walkthrough of the selection translation workflow and the main features. It plays inline in the README.
 
-https://github.com/user-attachments/assets/b59a10b5-1090-4825-94a6-fb573a57d21b
+https://github.com/user-attachments/assets/c1fb77ad-1397-44ae-9641-c7e9f6cd53a8
 
 ## How It Works
 
