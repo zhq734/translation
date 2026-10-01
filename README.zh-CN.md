@@ -113,7 +113,7 @@
 
 以下视频快速演示了划词翻译流程和主要功能，可直接在 README 中播放。
 
-https://github.com/user-attachments/assets/b59a10b5-1090-4825-94a6-fb573a57d21b
+https://github.com/user-attachments/assets/c1fb77ad-1397-44ae-9641-c7e9f6cd53a8
 
 ## 工作流程
 
