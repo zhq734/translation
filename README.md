@@ -115,15 +115,9 @@ The following screenshots show the selection translation workflow, the translati
 
 ## Promotional Video
 
-The following video provides a quick walkthrough of the selection translation workflow and the main features. Click the cover to play it on GitHub.
+The following video provides a quick walkthrough of the selection translation workflow and the main features. It plays inline in the README.
 
-<p align="center">
-  <a href="./docs/videos/推广视频.mp4">
-    <img src="./docs/images/推广视频封面.png" alt="Selection Translator promotional video" width="100%">
-  </a>
-  <br>
-  <a href="./docs/videos/推广视频.mp4">▶ Watch the promotional video</a>
-</p>
+https://github.com/user-attachments/assets/b59a10b5-1090-4825-94a6-fb573a57d21b
 
 ## How It Works
 
