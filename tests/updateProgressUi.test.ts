@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { formatUpdateProgressText } from '../src/shared/updateProgressFormat.ts'
+import {
+  formatUpdateProgressText,
+  formatUpdateProgressTextForLocale
+} from '../src/shared/updateProgressFormat.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 test('更新进度文本应展示百分比、已下载量与瞬时速度', () => {
   assert.equal(
@@ -23,7 +27,19 @@ test('更新进度文本在缺少总长度时只展示百分比与已下载量',
       total: 0,
       bytesPerSecond: 512
     }),
-    '已下载 1.0 KB · 512 B/s'
+    tForTest('en-US', 'update.progress.downloaded', { size: '1.0 KB' }) + ' · 512 B/s'
+  )
+})
+
+test('更新进度文本应支持按当前界面语言本地化', () => {
+  assert.equal(
+    formatUpdateProgressTextForLocale({
+      percent: 0,
+      transferred: 1024,
+      total: 0,
+      bytesPerSecond: 512
+    }, 'zh-CN'),
+    `${tForTest('zh-CN', 'update.progress.downloaded', { size: '1.0 KB' })} · 512 B/s`
   )
 })
 
@@ -66,6 +82,6 @@ test('设置页更新面板应复用共享进度格式化函数', () => {
   assert.match(source, /formatUpdateProgressText/u)
   assert.match(
     source,
-    /updateProgressText\.textContent = formatUpdateProgressText\(progress\)/u
+    /updateProgressText\.textContent = formatUpdateProgressTextForLocale\(progress, localeRuntime\.translator\)/u
   )
 })

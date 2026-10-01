@@ -15,6 +15,11 @@ import {
   WindowsSystemOcrEngine,
   type SystemOcrDeps
 } from '../src/main/systemOcr.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 /**
  * 校验 macOS Vision OCR Swift 脚本包含关键 Vision API 调用。
@@ -143,7 +148,7 @@ test('MacOsVisionOcrEngine 缺少 Vision helper 时应提示不可用', async ()
   await assert.rejects(
     () => engine.recognize({ imageBytes: Buffer.from([1, 2, 3]), language: 'auto' }),
     (err: unknown) => {
-      assert.equal((err as Error).message, 'macOS Vision OCR helper 未安装')
+      assert.equal((err as Error).message, tForTest('zh-CN', 'ocr.error.visionHelperMissing'))
       return true
     }
   )
@@ -232,7 +237,16 @@ test('Windows OCR 失败应保留 PowerShell stderr 明细', async () => {
     () => engine.recognize({ imageBytes: new Uint8Array([1, 2, 3]), language: 'auto' }),
     (error: unknown) => {
       const message = (error as Error).message
-      assert.match(message, /Windows OCR 执行失败/u)
+      assert.match(
+        message,
+        new RegExp(
+          tForTest('zh-CN', 'ocr.error.windowsFailed', { message: '' })
+            .replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+            .replace('', '')
+            .replace('\\{\\{message\\}\\}', '.*'),
+          'u'
+        )
+      )
       assert.match(message, /禁止运行脚本/u)
       return true
     }

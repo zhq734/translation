@@ -4,8 +4,13 @@ import type { DingTalkCredentials } from '../src/main/dingtalkConfig.ts'
 import { DingTalkError } from '../src/main/dingtalkErrors.ts'
 import type { SupportedDingTalkLanguagePair } from '../src/main/dingtalkLanguage.ts'
 import { DingTalkTranslationClient } from '../src/main/dingtalkTranslation.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
 import { TranslationRuntime } from '../src/main/translate.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 const credentials: DingTalkCredentials = {
   corpId: 'corp-test',
@@ -135,7 +140,7 @@ test('配置完整且语言对受支持时应优先使用钉钉且不调用后�
     translation: 'DingTalk result',
     detectedLang: 'ZH',
     provider: 'dingtalk',
-    channel: '钉钉翻译'
+    channel: tForTest('zh-CN', 'translate.channel.dingtalk')
   })
   assert.equal(calls.length, 2)
 })
@@ -164,7 +169,7 @@ test('关闭、配置不完整或语言对不支持时不应产生钉钉网络�
     })
 
     const result = await runtime.translate('text', settings, scenario.credentials)
-    assert.equal(result.channel, '公共 DeepLX')
+    assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.publicDeepLx'))
     assert.equal(calls.some((url) => url.includes('dingtalk.com')), false)
   }
 })
@@ -245,7 +250,7 @@ test('钉钉配置变化重置应清理旧翻译缓存、Token 和熔断状态',
   const result = await runtime.translate('same text', settings, credentials)
 
   assert.equal(result.translation, 'fresh result')
-  assert.equal(result.channel, '钉钉翻译')
+  assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.dingtalk'))
   assert.equal(tokenCalls, 2)
   assert.equal(dingTalkCalls, 2)
 })
@@ -268,7 +273,7 @@ test('钉钉配置检测应在配置不完整时零请求，成功时不污染�
   assert.deepEqual(await runtime.checkDingTalk(null), {
     ok: false,
     code: 'incomplete',
-    message: '钉钉配置不完整，请填写 CorpId、ClientId 和 ClientSecret'
+    message: tForTest('zh-CN', 'dingtalk.error.configurationIncomplete')
   })
   assert.equal(calls, 0)
   assert.equal((await runtime.checkDingTalk(credentials)).ok, true)
@@ -284,7 +289,7 @@ test('钉钉配置检测应在配置不完整时零请求，成功时不污染�
   })
   const result = await runtime.translate('你好', settings, credentials)
   assert.equal(result.translation, 'normal result')
-  assert.equal(result.channel, '钉钉翻译')
+  assert.equal(result.channel, tForTest('zh-CN', 'translate.channel.dingtalk'))
   assert.equal(calls, 3)
 })
 

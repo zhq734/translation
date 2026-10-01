@@ -1,3 +1,5 @@
+import { translateMain } from './messages'
+
 /** AI 翻译内部错误分类。 */
 export type AiErrorKind =
   | 'authentication'
@@ -40,11 +42,11 @@ export class AiError extends Error {
  * @author zhenghq
  */
 export function createAiResponseError(status: number): AiError {
-  if (status === 401 || status === 403) return new AiError('authentication', 'AI 鉴权失败，请检查 API Key')
-  if (status === 429) return new AiError('rate-limit', 'AI 接口请求限流，请稍后重试')
-  if (status === 404) return new AiError('not-found', 'AI 模型不存在或路径错误')
-  if (status >= 500) return new AiError('service', 'AI 服务暂时不可用')
-  return new AiError('service', `AI 服务返回错误（HTTP ${status}）`)
+  if (status === 401 || status === 403) return new AiError('authentication', translateMain('ai.error.authentication'))
+  if (status === 429) return new AiError('rate-limit', translateMain('ai.error.rateLimit'))
+  if (status === 404) return new AiError('not-found', translateMain('ai.error.notFound'))
+  if (status >= 500) return new AiError('service', translateMain('ai.error.serviceUnavailable'))
+  return new AiError('service', translateMain('ai.error.httpStatus', { status }))
 }
 
 /**
@@ -57,7 +59,7 @@ export function normalizeAiNetworkError(error: unknown): AiError {
   if (error instanceof AiError) return error
   const name = error instanceof Error ? error.name : ''
   if (name === 'AbortError' || name === 'TimeoutError') {
-    return new AiError('timeout', 'AI 请求超时', { cause: error })
+    return new AiError('timeout', translateMain('ai.error.timeout'), { cause: error })
   }
-  return new AiError('network', 'AI 网络连接失败', { cause: error })
+  return new AiError('network', translateMain('ai.error.network'), { cause: error })
 }

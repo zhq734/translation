@@ -2,11 +2,13 @@ import type { AiProtocol, OcrEnginePreference, ProxyMode, Settings, SpeechProvid
 import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrScale } from './types'
 import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
+import { normalizeUiLocale } from './i18n/locale'
 
-export const SETTINGS_SCHEMA_VERSION = 19
+export const SETTINGS_SCHEMA_VERSION = 20
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
+  uiLocale: 'auto',
   themePreset: 'sky',
   themeMode: 'system',
   targetLang: 'auto',
@@ -180,6 +182,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
+    // 第二十版新增界面语言设置；缺失或非法值统一回退到跟随系统。
+    uiLocale: normalizeUiLocale(rawSettings.uiLocale),
     themePreset: isThemePreset(rawSettings.themePreset) ? rawSettings.themePreset : DEFAULT_SETTINGS.themePreset,
     themeMode: isThemeMode(rawSettings.themeMode) ? rawSettings.themeMode : DEFAULT_SETTINGS.themeMode,
     targetLang: schemaVersion < 2 ? 'auto' : String(merged.targetLang || 'auto'),

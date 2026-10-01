@@ -42,7 +42,7 @@ test('Renderer 应统一处理两种模式的有效译文和朗读状态', () =>
 test('Renderer 应按设置选择 Edge 或系统语音，并在 Edge 失败时回退', () => {
   assert.match(renderer, /speechProvider/u)
   assert.match(renderer, /synthesizeEdgeSpeech/u)
-  assert.match(renderer, /Edge 在线语音暂不可用[\s\S]*已切换到系统语音/u)
+  assert.match(renderer, /t\('popup\.edgeSpeechUnavailableWithError'/u)
   assert.match(renderer, /speechSynthesis/u)
 })
 
@@ -59,12 +59,12 @@ test('翻译弹窗应允许网络合成完成后自动播放 Edge 音频', () =>
 })
 
 test('Edge 朗读应向用户展示请求、音频返回和播放阶段', () => {
-  assert.match(renderer, /正在请求 Edge 语音/u)
-  assert.match(renderer, /已收到 Edge 音频/u)
-  assert.match(renderer, /正在播放 Edge 语音/u)
+  assert.match(renderer, /t\('popup\.edgeSpeechRequesting'\)/u)
+  assert.match(renderer, /t\('popup\.edgeAudioReceived'/u)
+  assert.match(renderer, /t\('popup\.edgeSpeechPlaying'\)/u)
   assert.match(renderer, /result\.error/u)
   assert.match(renderer, /function flashStatus\(message: string, durationMs = 1400\): void/u)
-  assert.match(renderer, /正在请求 Edge 语音…', 20_000/u)
-  assert.match(renderer, /已收到 Edge 音频（\$\{byteLength\} 字节）`, 5000\)/u)
-  assert.match(renderer, /正在播放 Edge 语音…', 5000/u)
+  assert.match(renderer, /t\('popup\.edgeSpeechRequesting'\), 20_000/u)
+  assert.match(renderer, /t\('popup\.edgeAudioReceived', \{ bytes: byteLength \}\), 5000\)/u)
+  assert.match(renderer, /t\('popup\.edgeSpeechPlaying'\), 5000/u)
 })

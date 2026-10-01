@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readTextI18nKey } from './helpers/i18n.ts'
 
 test('preload 应暴露钉钉配置保存、显式清除和配置检测接口', () => {
   const preload = readFileSync('src/preload/index.ts', 'utf8')
@@ -26,7 +27,10 @@ test('钉钉配置区域应具有独立 Tab，确保配置入口清晰可发现'
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /id="settings-tab-dingtalk"[^>]+aria-controls="settings-panel-dingtalk"/u)
   assert.match(html, /id="settings-panel-dingtalk"[^>]+aria-labelledby="settings-tab-dingtalk"/u)
-  assert.ok(html.indexOf('<h2>钉钉翻译</h2>') > html.indexOf('id="settings-panel-dingtalk"'))
+  const sectionStart = html.indexOf('id="translation-service-dingtalk"')
+  const headingTag = html.slice(sectionStart).match(/<h2\b[^>]*>/u)?.[0]
+  assert.ok(headingTag)
+  assert.equal(readTextI18nKey(headingTag), 'settings.dingTalk.title')
 })
 
 test('设置页交互应使用独立接口、留空保留 Secret 并显式清除', () => {

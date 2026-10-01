@@ -7,6 +7,7 @@ import {
   type OcrRecognizeInput,
   type OcrRecognizeResult
 } from '../shared/ocrEngine'
+import { translateMain } from './messages'
 import { normalizePaddleLines, type PaddleDetectItem } from './paddleOcr'
 
 /**
@@ -163,7 +164,7 @@ export class PaddleOcrFallbackEngine implements OcrEngine {
     if (!available) {
       throw new OcrEngineError(
         'engine-unavailable',
-        'PaddleOCR-json 可执行文件未找到，请先安装并确保在 PATH 中',
+        translateMain('ocr.error.paddleFallbackMissingExecutable'),
         'paddle'
       )
     }
@@ -182,7 +183,7 @@ export class PaddleOcrFallbackEngine implements OcrEngine {
     } else if (input.imagePath) {
       imagePath = input.imagePath
     } else {
-      throw new OcrEngineError('empty', 'PaddleOCR-json 缺少图片输入', 'paddle')
+      throw new OcrEngineError('empty', translateMain('ocr.error.paddleFallbackMissingInput'), 'paddle')
     }
 
     try {
@@ -192,12 +193,16 @@ export class PaddleOcrFallbackEngine implements OcrEngine {
           ['--image', imagePath],
           { timeout: timeoutMs, signal: input.signal }
         ),
-        { timeoutMs, signal: input.signal },
+        { timeoutMs, signal: input.signal, message: translateMain },
         'paddle'
       )
 
       if (stderr?.includes('No Windows OCR')) {
-        throw new OcrEngineError('engine-unavailable', 'PaddleOCR-json 不可用', 'paddle')
+        throw new OcrEngineError(
+          'engine-unavailable',
+          translateMain('ocr.error.paddleFallbackUnavailable'),
+          'paddle'
+        )
       }
 
       // 尝试解析 JSON 行格式输出
@@ -225,11 +230,11 @@ export class PaddleOcrFallbackEngine implements OcrEngine {
       if (error instanceof OcrEngineError) throw error
       const message = error instanceof Error ? error.message : String(error)
       if (/timeout/i.test(message)) {
-        throw new OcrEngineError('timeout', 'PaddleOCR-json 超时', 'paddle')
+        throw new OcrEngineError('timeout', translateMain('ocr.error.paddleFallbackTimeout'), 'paddle')
       }
       throw new OcrEngineError(
         'engine-unavailable',
-        `PaddleOCR-json 执行失败: ${message}`,
+        translateMain('ocr.error.paddleFallbackFailed', { message }),
         'paddle'
       )
     } finally {

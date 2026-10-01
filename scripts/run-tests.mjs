@@ -42,7 +42,9 @@ async function runTests() {
         'uiohook-napi',
         'koffi',
         '@gutenye/ocr-node',
-        'tesseract.js'
+        'tesseract.js',
+        // TypeScript 以 CommonJS 发布，测试内通过 createRequire 从项目根目录加载，避免打进 ESM 后动态 require 失败。
+        'typescript'
       ]
     })
     const outputFiles = entryPoints.map((entry) =>

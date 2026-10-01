@@ -7,7 +7,14 @@ import type {
   UpdateStatus
 } from '../shared/types'
 import { decideUpdateAvailability } from '../shared/updateAvailability'
+import { createTranslator, type Translator } from '../shared/i18n'
 import type { ManualMacUpdateService } from './manualMacUpdate'
+import {
+  getUpdateDownloadErrorCode,
+  isCancelledUpdateDownloadError,
+  isResumableUpdateDownloadError,
+  isTimeoutUpdateDownloadError
+} from './updateDownloadError'
 import type { ReleaseChecksumStatus } from './releaseChecksums'
 
 export type { ManualMacUpdateService } from './manualMacUpdate'
@@ -140,8 +147,23 @@ export interface UpdateManagerOptions {
   installMode: UpdateInstallMode
   /** GitHub Release 页面地址。 */
   releaseUrl: string
+  /**
+   * 当前是否具备网络连接；离线时跳过自动更新检查，避免无意义请求与错误日志。
+   * 未提供时按在线处理。
+   * @returns 在线返回 true，离线返回 false。
+   * @author zhenghq
+   */
+  isOnline?(): boolean
   /** 下载并打开手动 macOS 更新包的受限服务。 */
   manualUpdate?: ManualMacUpdateService
+  /**
+   * 获取当前界面语言翻译器；语言变化后返回新实例，用于状态文案热切换。
+   * @returns 当前界面语言翻译器。
+   * @author zhenghq
+   */
+  getTranslator?(): Translator
+  /** 更新状态文案翻译器；未提供时保持既有简体中文行为。 */
+  translator?: Translator
   /**
    * 使用系统默认浏览器打开外部页面。
    * @param url 需要打开的页面地址。
@@ -236,18 +258,19 @@ function isRetryableUpdateCheckError(error: unknown): boolean {
 /**
  * 将临时网络故障转换为用户可理解且可操作的提示。
  * @param rawMessage 底层更新器返回的原始错误文本。
- * @returns 匹配到网络故障时返回中文提示，否则返回 undefined。
+ * @param translator 当前界面语言翻译器。
+ * @returns 匹配到网络故障时返回当前语言的提示，否则返回 undefined。
  * @author zhenghq
  */
-function formatTransientNetworkErrorMessage(rawMessage: string): string | undefined {
+function formatTransientNetworkErrorMessage(rawMessage: string, translator: Translator): string | undefined {
   if (/ERR_(?:TIMED_OUT|CONNECTION_TIMED_OUT)|ETIMEDOUT|timeout/iu.test(rawMessage)) {
-    return '更新失败：网络请求超时，请检查网络或代理设置后重试'
+    return translator.t('update.error.networkTimeout')
   }
   if (/ERR_(?:NAME_NOT_RESOLVED|INTERNET_DISCONNECTED)|ENOTFOUND|EAI_AGAIN/iu.test(rawMessage)) {
-    return '更新失败：无法连接更新服务器，请检查网络或代理设置后重试'
+    return translator.t('update.error.networkUnavailable')
   }
   if (isRetryableUpdateCheckError(rawMessage)) {
-    return '更新失败：网络连接被中断，请检查网络或代理设置后重试'
+    return translator.t('update.error.networkInterrupted')
   }
   return undefined
 }
@@ -264,10 +287,19 @@ function formatTransientNetworkErrorMessage(rawMessage: string): string | undefi
  */
 function isResumableDownloadError(error: unknown): boolean {
   const rawMessage = error instanceof Error ? error.message : String(error)
-  if (/checksum mismatch|更新包长度校验失败|HTTP \d{3}/iu.test(rawMessage)) return false
+  const code = getUpdateDownloadErrorCode(error)
+  if (
+    code === 'length-mismatch' ||
+    code === 'checksum-mismatch' ||
+    code === 'http-error'
+  ) {
+    return false
+  }
+  if (/checksum mismatch|HTTP \d{3}/iu.test(rawMessage)) return false
   // 用户主动取消不是网络故障，不能触发自动续传重试。
   if (isDownloadCancelledError(error)) return false
-  return /分片(?:下载失败|请求超时|读取超时)|ERR_(?:CONNECTION_CLOSED|CONNECTION_RESET|CONNECTION_ABORTED|CONNECTION_REFUSED|CONNECTION_FAILED|TIMED_OUT|NETWORK_CHANGED|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|ABORTED)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|This operation was aborted|网络连接被中断/iu
+  if (isResumableUpdateDownloadError(error)) return true
+  return /分片(?:下载失败|请求超时|读取超时)|网络连接被中断|ERR_(?:CONNECTION_CLOSED|CONNECTION_RESET|CONNECTION_ABORTED|CONNECTION_REFUSED|CONNECTION_FAILED|TIMED_OUT|NETWORK_CHANGED|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|ABORTED)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|This operation was aborted/iu
     .test(rawMessage)
 }
 
@@ -283,62 +315,72 @@ function isResumableDownloadError(error: unknown): boolean {
  */
 function isDownloadCancelledError(error: unknown): boolean {
   const rawMessage = error instanceof Error ? error.message : String(error)
+  if (isCancelledUpdateDownloadError(error)) return true
   return /下载已取消|已取消下载|cancell?ed/iu.test(rawMessage)
 }
 
 /**
- * 将下载连接中断转换为说明断点已保留的中文提示。
- * @param rawMessage 底层更新器返回的原始错误文本。
- * @returns 属于可续传中断时返回中文提示，否则返回 undefined。
+ * 将下载连接中断转换为说明断点已保留的用户提示。
+ * @param error 底层更新器返回的异常。
+ * @param translator 当前界面语言翻译器。
+ * @returns 属于可续传中断时返回当前语言的提示，否则返回 undefined。
  * @author zhenghq
  */
-function formatResumableDownloadErrorMessage(rawMessage: string): string | undefined {
-  if (!isResumableDownloadError(rawMessage)) return undefined
-  return /超时|timed? out|ETIMEDOUT/iu.test(rawMessage)
-    ? '更新失败：下载连接超时，已保留断点，可重新点击升级继续'
-    : '更新失败：下载连接中断，已保留断点，可重新点击升级继续'
+function formatResumableDownloadErrorMessage(error: unknown, translator: Translator): string | undefined {
+  if (!isResumableDownloadError(error)) return undefined
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  return isTimeoutUpdateDownloadError(error) || /超时|timed? out|ETIMEDOUT/iu.test(rawMessage)
+    ? translator.t('update.error.downloadTimeout')
+    : translator.t('update.error.downloadInterrupted')
 }
 
 /**
  * 将 electron-updater 底层异常转换为简短、安全且可操作的用户提示。
  * @param error 自动更新异常。
+ * @param translator 当前界面语言翻译器。
  * @param phase 出错时所处的更新阶段，用于区分检查与下载的提示语义。
  * @returns 适合直接展示在设置页的错误信息。
  * @author zhenghq
  */
-function formatUpdateErrorMessage(error: unknown, phase?: UpdatePhase): string {
+function formatUpdateErrorMessage(error: unknown, translator: Translator, phase?: UpdatePhase): string {
   const rawMessage = error instanceof Error ? error.message : String(error)
   if (isMacOSCodeSignatureValidationError(rawMessage)) {
-    return '更新包签名与当前应用不兼容，已改用手动安装；请下载 DMG，拖入“应用程序”并覆盖旧版本'
+    return translator.t('update.error.signatureMismatch')
   }
   if (phase === 'downloading') {
-    const resumeMessage = formatResumableDownloadErrorMessage(rawMessage)
+    const resumeMessage = formatResumableDownloadErrorMessage(error, translator)
     if (resumeMessage) return resumeMessage
   }
-  const networkMessage = formatTransientNetworkErrorMessage(rawMessage)
+  const networkMessage = formatTransientNetworkErrorMessage(rawMessage, translator)
   if (networkMessage) return networkMessage
   const metadataMatch = rawMessage.match(/Cannot find\s+(latest(?:-[\w-]+)?\.yml)\b/iu)
   if (metadataMatch && /\b404\b/u.test(rawMessage)) {
-    return `当前 GitHub Release 缺少自动更新清单 ${metadataMatch[1]}，请稍后重新检查或打开发布页手动安装`
+    return translator.t('update.error.missingManifest', { manifest: metadataMatch[1] })
   }
 
   const firstLine = rawMessage.split(/\r?\n/u, 1)[0].replace(/\s+/gu, ' ').trim()
   const conciseMessage = firstLine.length > 240
     ? `${firstLine.slice(0, 239)}…`
     : firstLine
-  return `更新失败：${conciseMessage || '未知错误'}`
+  return translator.t('update.error.generic', {
+    message: conciseMessage || translator.t('common.unknownError')
+  })
 }
 
 /**
  * 将 SHA256SUMS 校验状态转换为附加在状态消息后的风险提示。
  * @param checksumStatus 安装包 SHA256SUMS 校验状态。
+ * @param translator 当前界面语言翻译器。
  * @returns 需要提示时返回以分号开头的说明，否则返回空字符串。
  * @author zhenghq
  */
-function formatChecksumNotice(checksumStatus: ReleaseChecksumStatus | undefined): string {
-  if (checksumStatus === 'missing') return '；Release 缺少当前安装包的 SHA256SUMS 校验值，建议升级'
-  if (checksumStatus === 'mismatch') return '；Release 的 SHA256SUMS 与安装包不一致，建议重新升级'
-  if (checksumStatus === 'unreachable') return '；无法读取 Release 的 SHA256SUMS 校验值，请确认安装包来源'
+function formatChecksumNotice(
+  checksumStatus: ReleaseChecksumStatus | undefined,
+  translator: Translator
+): string {
+  if (checksumStatus === 'missing') return translator.t('update.checksumMissing')
+  if (checksumStatus === 'mismatch') return translator.t('update.checksumMismatch')
+  if (checksumStatus === 'unreachable') return translator.t('update.checksumUnreachable')
   return ''
 }
 
@@ -348,6 +390,7 @@ function formatChecksumNotice(checksumStatus: ReleaseChecksumStatus | undefined)
  */
 export class UpdateManager {
   private status: UpdateStatus
+  private translator: Translator
   private manualDownloadUrl: string | undefined
   private manualDownloadIntegrity: { sha512?: string; size?: number } | undefined
   /** 手动 DMG 下载的取消控制器；仅下载期间存在。 */
@@ -359,22 +402,43 @@ export class UpdateManager {
    * @author zhenghq
    */
   constructor(private readonly options: UpdateManagerOptions) {
+    this.translator = options.translator ?? createTranslator('zh-CN')
+    const translator = this.currentTranslator()
     const disabled = !options.enabled || options.installMode === 'disabled'
     this.status = {
       phase: disabled ? 'disabled' : 'idle',
       currentVersion: options.currentVersion,
       installMode: disabled ? 'disabled' : options.installMode,
       releaseUrl: options.releaseUrl,
-      message: disabled ? '开发环境不会检查更新' : '尚未检查更新'
+      message: disabled ? translator.t('update.disabled') : translator.t('update.idle')
     }
     options.driver.initialize({
-      checking: () => this.setStatus({ phase: 'checking', message: '正在检查更新…' }),
+      checking: () => this.setStatus({ phase: 'checking', message: this.currentTranslator().t('update.checking') }),
       available: (info) => this.handleAvailable(info),
       notAvailable: (info) => this.handleNotAvailable(info),
       progress: (progress) => this.handleProgress(progress),
       downloaded: (info) => this.handleDownloaded(info),
       error: (error) => this.handleDriverError(error)
     })
+  }
+
+  /**
+   * 设置后续更新状态使用的翻译器，用于界面语言即时切换。
+   * @param translator 新的界面语言翻译器。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setTranslator(translator: Translator): void {
+    this.translator = translator
+  }
+
+  /**
+   * 获取当前应使用的翻译器；优先读取运行时提供的最新实例。
+   * @returns 当前界面语言翻译器。
+   * @author zhenghq
+   */
+  private currentTranslator(): Translator {
+    return this.options.getTranslator?.() ?? this.translator
   }
 
   /**
@@ -424,8 +488,11 @@ export class UpdateManager {
       return this.getStatus()
     }
     if (this.status.phase === 'checking') return this.getStatus()
+    // 离线时直接跳过检查：既避免必然失败的网络请求，也避免在日志里刷出
+    // net::ERR_INTERNET_DISCONNECTED 这类与用户无关的错误堆栈。
+    if (this.options.isOnline && !this.options.isOnline()) return this.getStatus()
 
-    this.setStatus({ phase: 'checking', message: '正在检查更新…', progress: undefined })
+    this.setStatus({ phase: 'checking', message: this.currentTranslator().t('update.checking'), progress: undefined })
     for (let attempt = 1; attempt <= UPDATE_CHECK_MAX_ATTEMPTS; attempt += 1) {
       try {
         await this.options.driver.checkForUpdates()
@@ -467,7 +534,7 @@ export class UpdateManager {
 
     this.setStatus({
       phase: 'downloading',
-      message: '正在下载更新…',
+      message: this.currentTranslator().t('update.downloadingInitial'),
       progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 }
     })
     for (let attempt = 1; attempt <= UPDATE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
@@ -486,7 +553,7 @@ export class UpdateManager {
         // “正在下载更新”状态，避免界面在续传过程中闪出失败提示。
         this.setStatus({
           phase: 'downloading',
-          message: `下载连接中断，正在从断点继续（第 ${attempt + 1} 次尝试）…`
+          message: this.currentTranslator().t('update.downloadingInitial')
         })
         await new Promise((resolve) => {
           setTimeout(resolve, UPDATE_DOWNLOAD_RETRY_BASE_DELAY_MS * attempt)
@@ -521,7 +588,7 @@ export class UpdateManager {
     this.manualDownloadAbort = undefined
     this.setStatus({
       phase: 'available',
-      message: '已取消下载，可重新点击升级继续',
+      message: this.currentTranslator().t('update.cancelled'),
       progress: undefined
     })
     return this.getStatus()
@@ -545,9 +612,11 @@ export class UpdateManager {
   private handleAvailable(info: UpdateDriverInfo): void {
     this.applyManualDownloadTarget(info)
     const decision = this.decide(info)
+    const translator = this.currentTranslator()
     const message = (this.status.installMode === 'automatic'
-      ? `发现新版本 ${info.version}，可以下载并安装`
-      : `发现新版本 ${info.version}，当前环境需要手动安装`) + formatChecksumNotice(info.checksumStatus)
+      ? translator.t('update.available', { version: info.version })
+      : translator.t('update.availableManual', { version: info.version })) +
+      formatChecksumNotice(info.checksumStatus, translator)
     this.setStatus({
       phase: 'available',
       latestVersion: info.version,
@@ -634,6 +703,7 @@ export class UpdateManager {
    * @author zhenghq
    */
   private handleNotAvailable(info: UpdateDriverInfo): void {
+    const translator = this.currentTranslator()
     const decision = this.decide(info)
     const checksumNeedsUpdate = info.checksumStatus === 'missing' || info.checksumStatus === 'mismatch'
     const sameVersionNewBuild = decision.outcome === 'same-version-new-build'
@@ -654,11 +724,13 @@ export class UpdateManager {
         ? this.formatSameVersionMessage(info, decision)
         : checksumNeedsUpdate
           ? info.checksumStatus === 'mismatch'
-            ? '当前版本的 SHA256SUMS 校验值不一致，建议升级'
-            : '当前版本没有 SHA256SUMS 校验值，建议升级'
+            ? translator.t('update.checksumNeedsUpdateMismatch')
+            : translator.t('update.checksumNeedsUpdateMissing')
           : identityFields.buildMetadataAvailable
-            ? `当前已经是最新构建（构建 ${identityFields.localBuildLabel}）`
-            : '当前已经是最新版本',
+            ? translator.t('update.notAvailableWithBuild', {
+                build: identityFields.localBuildLabel ?? ''
+              })
+            : translator.t('update.notAvailable'),
       progress: undefined,
       manualDownloadAvailable: needsUpdate && this.options.manualUpdate && info.manualDownloadUrl
         ? true
@@ -684,11 +756,16 @@ export class UpdateManager {
     const version = info.version || this.status.currentVersion
     const localLabel = formatBuildIdLabel(decision.localBuildId)
     const remoteLabel = formatBuildIdLabel(decision.remoteBuildId)
+    const translator = this.currentTranslator()
     const action = this.resolveManualUpdateAction(info) === 'verified-manual-download'
-      ? '可下载 DMG 覆盖安装'
-      : '请打开 GitHub Release 手动更新'
-    return `发现同版本的新构建 ${version}（当前构建 ${localLabel}，最新构建 ${remoteLabel}），${action}` +
-      formatChecksumNotice(info.checksumStatus)
+      ? translator.t('update.sameVersion.downloadAction')
+      : translator.t('update.sameVersion.releaseAction')
+    return translator.t('update.sameVersion.message', {
+      version,
+      localBuild: localLabel,
+      remoteBuild: remoteLabel,
+      action
+    }) + formatChecksumNotice(info.checksumStatus, translator)
   }
 
   /**
@@ -702,7 +779,9 @@ export class UpdateManager {
     if (this.status.phase !== 'downloading') return
     this.setStatus({
       phase: 'downloading',
-      message: `正在下载更新… ${Math.max(0, Math.min(100, progress.percent)).toFixed(1)}%`,
+      message: this.currentTranslator().t('update.downloading', {
+        percent: Math.max(0, Math.min(100, progress.percent)).toFixed(1)
+      }),
       progress: { ...progress }
     })
   }
@@ -719,7 +798,7 @@ export class UpdateManager {
     this.setStatus({
       phase: 'downloaded',
       latestVersion: info.version,
-      message: `版本 ${info.version} 已下载，重启后完成升级`,
+      message: this.currentTranslator().t('update.downloaded', { version: info.version }),
       progress: this.status.progress
         ? { ...this.status.progress, percent: 100 }
         : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 }
@@ -737,7 +816,7 @@ export class UpdateManager {
     }
     await this.openReleasePage()
     this.setStatus({
-      message: '已打开 GitHub Release，请手动下载对应平台的安装包覆盖安装'
+      message: this.currentTranslator().t('update.openRelease')
     })
     return this.getStatus()
   }
@@ -756,14 +835,14 @@ export class UpdateManager {
     if (!version || !this.manualDownloadUrl || !this.options.manualUpdate) {
       await this.openReleasePage()
       this.setStatus({
-        message: '当前更新清单没有可直接下载的 DMG，已打开 GitHub Release，请手动下载安装'
+        message: this.currentTranslator().t('update.noDmgFallback')
       })
       return this.getStatus()
     }
 
     this.setStatus({
       phase: 'downloading',
-      message: '正在下载 macOS DMG 更新包…',
+      message: this.currentTranslator().t('update.manualDmgDownloading'),
       progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 },
       manualDownloadPath: undefined
     })
@@ -787,12 +866,13 @@ export class UpdateManager {
       }
       // 下载期间用户取消时，迟到的下载完成结果不得覆盖已取消状态。
       if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
+      const translator = this.currentTranslator()
       const integrityNotice = result.verified
         ? ''
-        : '；本次更新清单未提供该 DMG 的校验值，安装包未经完整性校验'
+        : translator.t('update.integrityNoticeMissing')
       this.setStatus({
         phase: 'manual-downloaded',
-        message: '更新包已下载到“下载”文件夹并打开 DMG；请把“划词翻译”拖入“应用程序”覆盖旧版本，然后点击“解除 macOS 隔离属性”' +
+        message: translator.t('update.manualDownloaded') +
           integrityNotice,
         progress: this.status.progress
           ? { ...this.status.progress, percent: 100 }
@@ -820,7 +900,7 @@ export class UpdateManager {
     this.setStatus({
       phase: 'error',
       installMode: signatureValidationFailed ? 'manual' : this.status.installMode,
-      message: formatUpdateErrorMessage(error, errorPhase),
+      message: formatUpdateErrorMessage(error, this.currentTranslator(), errorPhase),
       progress: undefined,
       manualDownloadAvailable: signatureValidationFailed && this.options.manualUpdate &&
         this.manualDownloadUrl

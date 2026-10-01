@@ -5,6 +5,7 @@ import type {
   WebTextNodeAnchor,
   WebTranslationMode
 } from '../shared/webPageTranslation'
+import { translateMain } from './messages'
 
 /** 原位写回单元。 */
 export interface WebTextWriteOperation {
@@ -722,7 +723,6 @@ export function buildWebBilingualInjectScript(
       if (node.textContent !== operation.translation) node.textContent = operation.translation;
       node.setAttribute('lang', targetLang);
       node.setAttribute('dir', 'auto');
-      block.setAttribute('data-st-dimmed', 'true');
       stats.applied += 1;
     }
     setTimeout(() => { state.suppressed = false; }, 0);
@@ -758,8 +758,7 @@ export function buildWebBilingualStyleSheet(): string {
   return [
     '[data-st-translation] { display: block; color: inherit; font: inherit; line-height: inherit; }',
     "[data-st-translation][data-st-parent-display='flex'] { flex: 1 0 100%; }",
-    "[data-st-translation][data-st-parent-display='grid'] { grid-column: 1 / -1; }",
-    "[data-st-dimmed='true'] > *:not([data-st-translation]), [data-st-dimmed='true'] { opacity: 0.6; }"
+    "[data-st-translation][data-st-parent-display='grid'] { grid-column: 1 / -1; }"
   ].join('\n')
 }
 
@@ -805,6 +804,10 @@ export function buildWebImageOverlayInjectScript(operations: WebImageOverlayOper
           target.parentNode.insertBefore(node, target.nextSibling);
         }
       }
+      // Google Docs 这类页面把正文画在绝对定位的整页 canvas 上，父容器高度等于页面高度，
+      // 普通说明块会插到画布左上角遮住正文；此处标记为 canvas 说明块并由样式排到画布下方。
+      if (target.tagName === 'CANVAS') node.setAttribute('data-st-image-canvas', 'true');
+      else node.removeAttribute('data-st-image-canvas');
       node.setAttribute('data-st-image-placement', operation.placement === 'overlay' ? 'overlay' : 'below');
       const source = document.createElement('div');
       source.setAttribute('data-st-image-source', '');
@@ -848,6 +851,7 @@ export function buildWebImageOverlayClearScript(): string {
 export function buildWebImageOverlayStyleSheet(): string {
   return [
     '[data-st-image-translation] { display: block; box-sizing: border-box; margin: 6px 0; padding: 8px 10px; border-radius: 6px; font-size: 13px; line-height: 1.5; background: rgba(127,127,127,0.14); color: inherit; font-family: inherit; }',
+    "[data-st-image-canvas='true'][data-st-image-placement='below'] { position: absolute; top: 100%; left: 0; right: 0; margin: 0; }",
     "[data-st-image-placement='overlay'] { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0 0 6px 6px; background: rgba(0,0,0,0.62); color: #fff; max-height: 70%; overflow: auto; }",
     '[data-st-image-target] { display: block; }',
     '[data-st-image-source] { display: block; opacity: 0.7; font-size: 12px; margin-bottom: 4px; }'
@@ -883,6 +887,11 @@ export function buildWebPageChangeStatusScript(): string {
   return `(() => Boolean(window.__selectionTranslatorWebTranslation?.pageUpdated))()`
 }
 
+/** 网页文本提取超时哨兵，用于区分超时与页面脚本执行失败。
+ * @author zhenghq
+ */
+class WebTextExtractionTimeoutError extends Error {}
+
 /**
  * 带超时执行只读提取操作，避免远程页面脚本长期占用翻译流程。
  * @param execute 执行注入脚本的函数。
@@ -907,7 +916,7 @@ export async function executeWebTextExtraction(
     const result = await Promise.race([
       execute(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('网页文本提取超时')), timeoutMs)
+        timer = setTimeout(() => reject(new WebTextExtractionTimeoutError()), timeoutMs)
       })
     ])
     return {
@@ -916,8 +925,10 @@ export async function executeWebTextExtraction(
       pageMeta: result.pageMeta
     }
   } catch (error) {
-    if (error instanceof Error && error.message === '网页文本提取超时') throw error
-    throw new Error('网页文本提取失败，请检查页面是否已加载完成')
+    if (error instanceof WebTextExtractionTimeoutError) {
+      throw new Error(translateMain('webReader.error.extractionTimeout'))
+    }
+    throw new Error(translateMain('webReader.error.extractionFailed'))
   } finally {
     if (timer) clearTimeout(timer)
   }
@@ -952,5 +963,7 @@ export async function waitForWebDocumentReady(
     if (remaining <= 0) break
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(Math.max(0, intervalMs), remaining)))
   }
-  throw new Error(last?.hasRoot ? '网页主文档尚未准备好，请稍候再试' : '网页根节点尚未创建，请稍候再试')
+  throw new Error(translateMain(last?.hasRoot
+    ? 'webReader.error.documentNotReady'
+    : 'webReader.error.rootNotReady'))
 }

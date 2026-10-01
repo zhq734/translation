@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { DEFAULT_SETTINGS, normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 test('Dock 图标显示设置默认关闭并能从旧配置安全迁移', () => {
   assert.equal(DEFAULT_SETTINGS.showDockIcon, false)
@@ -16,7 +17,7 @@ test('设置页应提供 Dock 图标显示开关并通过普通设置接口保�
 
   assert.match(html, /id="show-dock-icon"[^>]+type="checkbox"/u)
   assert.match(html, /for="show-dock-icon"/u)
-  assert.match(html, /显示 Dock 栏图标/u)
+  assert.match(html, new RegExp(`data-i18n="settings\\.launch\\.showDock">${tForTest('en-US', 'settings.launch.showDock')}`, 'u'))
   assert.match(source, /getElementById\('show-dock-icon'\)/u)
   assert.match(source, /showDockIcon\.checked\s*=\s*settings\.showDockIcon/u)
   assert.match(source, /showDockIcon\.addEventListener\('change', saveDockIconVisibility\)/u)

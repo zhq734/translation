@@ -6,6 +6,11 @@ import { basename, dirname, join } from 'node:path'
 import type { DownloadOptions } from 'builder-util-runtime'
 import type { AppUpdater, ProgressInfo } from 'electron-updater'
 import type { UpdateDownloadFetch } from './manualMacUpdate'
+import { translateMain } from './messages'
+import {
+  createUpdateDownloadError,
+  isUpdateDownloadErrorCode
+} from './updateDownloadError'
 import {
   clearDownloadResumeState,
   loadDownloadResumeState,
@@ -186,7 +191,7 @@ async function ensureFileSize(
   } catch (error) {
     if (!isTransientWindowsLockError(error)) throw error
     logElectronUpdaterWarning(
-      `无法截断更新临时文件，将回退原生下载：${normalizeErrorMessage(error)}`
+      `Unable to truncate the update temporary file; falling back to native download: ${normalizeErrorMessage(error)}`
     )
     return false
   } finally {
@@ -288,7 +293,13 @@ async function verifyParallelDownload(
 ): Promise<void> {
   const actualSize = await stat(destination).then((info) => info.size).catch(() => 0)
   if (actualSize !== expectedSize) {
-    throw new Error(`更新包长度校验失败，期望 ${expectedSize} 字节，实际 ${actualSize} 字节`)
+    throw createUpdateDownloadError(
+      'length-mismatch',
+      translateMain('update.downloadError.lengthMismatch', {
+        expected: expectedSize,
+        actual: actualSize
+      })
+    )
   }
   if (options.sha512 != null) {
     const actual = await computeFileSha512(destination)
@@ -296,10 +307,18 @@ async function verifyParallelDownload(
     const matches = isHexSha512(expected)
       ? actual === Buffer.from(expected, 'hex').toString('base64')
       : actual === expected
-    if (!matches) throw new Error('sha512 checksum mismatch')
+    if (!matches) {
+      throw createUpdateDownloadError(
+        'checksum-mismatch',
+        translateMain('update.downloadError.checksumMismatch')
+      )
+    }
   } else if (options.sha2 != null) {
     if (await computeFileSha2(destination) !== options.sha2) {
-      throw new Error('sha256 checksum mismatch')
+      throw createUpdateDownloadError(
+        'checksum-mismatch',
+        translateMain('update.downloadError.checksumMismatch')
+      )
     }
   }
 }
@@ -420,7 +439,11 @@ export function installParallelUpdateDownload(
     } catch (error) {
       // 保留续传文件与进度记录，用户重试时从已完成偏移继续；校验失败说明
       // 已有字节不可信，此时必须整体丢弃后重新下载。
-      if (error instanceof Error && /checksum mismatch|更新包长度校验失败/u.test(error.message)) {
+      if (
+        isUpdateDownloadErrorCode(error, 'length-mismatch') ||
+        isUpdateDownloadErrorCode(error, 'checksum-mismatch') ||
+        (error instanceof Error && /checksum mismatch/iu.test(error.message))
+      ) {
         await clearDownloadResumeState(resumeBasePath)
       } else {
         await saveDownloadResumeState(resumeBasePath, resumeRecordForWrite()).catch(() => undefined)

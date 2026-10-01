@@ -1,4 +1,6 @@
 import { MANUAL_TRANSLATION_MAX_CHARS } from './types'
+import type { Locale, Translator } from './i18n'
+import { createTranslator } from './i18n'
 
 /** 手动翻译会话状态。 */
 export interface ManualTranslationState {
@@ -41,11 +43,15 @@ export function createManualTranslationState(): ManualTranslationState {
  * @returns 校验失败提示，合法时返回 null。
  * @author zhenghq
  */
-export function validateManualTranslationText(value: unknown): string | null {
-  if (typeof value !== 'string') return '原文格式无效'
-  if (!value.trim()) return '请输入要翻译的原文'
+export function validateManualTranslationText(
+  value: unknown,
+  locale: Locale | Translator = 'zh-CN'
+): string | null {
+  const translator = typeof locale === 'string' ? createTranslator(locale) : locale
+  if (typeof value !== 'string') return translator.t('popup.validation.invalidSource')
+  if (!value.trim()) return translator.t('popup.validation.emptySource')
   if (value.length > MANUAL_TRANSLATION_MAX_CHARS) {
-    return `原文不能超过${MANUAL_TRANSLATION_MAX_CHARS}个字符`
+    return translator.t('popup.validation.sourceTooLong', { max: MANUAL_TRANSLATION_MAX_CHARS })
   }
   return null
 }
@@ -56,8 +62,11 @@ export function validateManualTranslationText(value: unknown): string | null {
  * @returns 是否允许提交。
  * @author zhenghq
  */
-export function canSubmitManualTranslation(state: ManualTranslationState): boolean {
-  return !state.loading && validateManualTranslationText(state.draft) === null
+export function canSubmitManualTranslation(
+  state: ManualTranslationState,
+  locale: Locale | Translator = 'zh-CN'
+): boolean {
+  return !state.loading && validateManualTranslationText(state.draft, locale) === null
 }
 
 /**

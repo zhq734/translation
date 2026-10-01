@@ -46,6 +46,8 @@ interface EdgePlaybackOptions {
   createAudio(url: string): EdgeAudioLike
   createObjectUrl(blob: Blob): string
   revokeObjectUrl(url: string): void
+  /** 解析当前界面语言下的用户可见文案；缺省时回退英文。 */
+  getMessage?(key: string): string
   maxChunkLength?: number
   /** 当前片段之外最多提前请求的片段数。 */
   prefetchAhead?: number
@@ -83,6 +85,14 @@ export interface EdgePlaybackController {
  * @author zhenghq
  */
 export function createEdgePlaybackController(options: EdgePlaybackOptions): EdgePlaybackController {
+  /**
+   * 解析当前界面语言下的用户可见文案。
+   * @param key 语义化词条 key。
+   * @returns 当前界面语言下的文案。
+   * @author zhenghq
+   */
+  const msg = (key: string): string => options.getMessage?.(key) ?? key
+
   let speaking = false
   let sessionId = 0
   let currentPlayback: ActivePlayback | null = null
@@ -168,7 +178,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     language: string,
     activeSession: number
   ): Promise<EdgeSpeechResult> {
-    if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+    if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
     const abort = new AbortController()
     activeAborts.add(abort)
     currentAbort = abort
@@ -234,14 +244,14 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     activeSession: number
   ): Promise<{ playback: ActivePlayback | null; error?: string }> {
     const result = await synthesizeChunk(chunks[index], language, activeSession)
-    if (activeSession !== sessionId) return { playback: null, error: 'Edge 语音请求已取消' }
+    if (activeSession !== sessionId) return { playback: null, error: msg('rendererSpeech.edge.cancelled') }
     if (!result.ok || !result.audio || result.audio.length === 0) {
-      return { playback: null, error: result.error ?? 'Edge 在线语音暂不可用' }
+      return { playback: null, error: result.error ?? msg('rendererSpeech.edge.unavailable') }
     }
     const playback = preparePlayback(result, activeSession)
     return playback
       ? { playback }
-      : { playback: null, error: 'Edge 语音请求已取消' }
+      : { playback: null, error: msg('rendererSpeech.edge.cancelled') }
   }
 
   /**
@@ -257,8 +267,8 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       options.onPlaybackStart?.()
       await new Promise<void>((resolve, reject) => {
         playback.audio.onended = () => resolve()
-        playback.audio.onerror = () => reject(new Error('音频播放失败'))
-        playback.cancel = () => reject(new Error('音频播放已取消'))
+        playback.audio.onerror = () => reject(new Error(msg('rendererSpeech.audio.playFailed')))
+        playback.cancel = () => reject(new Error(msg('rendererSpeech.audio.playCancelled')))
         void playback.audio.play().catch(reject)
       })
       return activeSession === sessionId
@@ -316,15 +326,15 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       while (nextToRequest <= maxRequestedIndex) {
         const index = nextToRequest
         pending.set(index, synthesizeChunk(chunks[index], language, activeSession).then(async (result) => {
-          if (activeSession !== sessionId) return { error: 'Edge 语音请求已取消' }
+          if (activeSession !== sessionId) return { error: msg('rendererSpeech.edge.cancelled') }
           if (!result.ok || !result.audio || result.audio.length === 0) {
-            return { error: result.error ?? 'Edge 在线语音暂不可用' }
+            return { error: result.error ?? msg('rendererSpeech.edge.unavailable') }
           }
           options.onAudioReady?.(result.audio.byteLength)
           try {
             return { decoded: await decodeEdgeAudio(result.audio, context) }
           } catch {
-            return { error: 'Edge 音频解码失败' }
+            return { error: msg('rendererSpeech.edge.decodeFailed') }
           }
         }))
         nextToRequest += 1
@@ -334,17 +344,17 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     try {
       currentAudioContext = context
       await context.resume()
-      if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+      if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
       fillRequestWindow(0)
       let lastSourceEnded: Promise<void> | null = null
 
       for (let index = 0; index < chunks.length; index += 1) {
-        if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+        if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
         const preparedPromise = pending.get(index)
-        if (!preparedPromise) return fail(activeSession, 'Edge 在线语音暂不可用')
+        if (!preparedPromise) return fail(activeSession, msg('rendererSpeech.edge.unavailable'))
         const prepared = await preparedPromise
         pending.delete(index)
-        if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+        if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
         if ('error' in prepared) return fail(activeSession, prepared.error)
 
         const source = context.createBufferSource()
@@ -365,15 +375,15 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
         fillRequestWindow(index)
       }
 
-      if (!lastSourceEnded) return fail(activeSession, 'Edge 语音服务未返回音频')
+      if (!lastSourceEnded) return fail(activeSession, msg('rendererSpeech.edge.noAudio'))
       await lastSourceEnded
-      if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+      if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
       setSpeaking(false)
       options.onComplete?.()
       return { ok: true }
     } catch {
-      if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
-      return fail(activeSession, 'Edge 音频播放失败')
+      if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
+      return fail(activeSession, msg('rendererSpeech.edge.playFailed'))
     } finally {
       if (currentAudioContext === context) {
         releaseAudioContext()
@@ -389,7 +399,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @author zhenghq
    */
   function fail(activeSession: number, message: string): SpeechStartResult {
-    if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+    if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
     for (const abort of activeAborts) abort.abort()
     sessionId += 1
     releaseAllPlaybacks()
@@ -403,35 +413,35 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
   return {
     async start(text: string, language: string): Promise<SpeechStartResult> {
       const normalizedText = text.trim()
-      if (!normalizedText) return { ok: false, error: '暂无可朗读的译文' }
+      if (!normalizedText) return { ok: false, error: msg('rendererSpeech.error.noText') }
       this.stop()
       const activeSession = ++sessionId
       const chunks = splitSpeechText(normalizedText, options.maxChunkLength)
-      if (chunks.length === 0) return { ok: false, error: '暂无可朗读的译文' }
+      if (chunks.length === 0) return { ok: false, error: msg('rendererSpeech.error.noText') }
       setSpeaking(true)
       const audioContext = options.createAudioContext?.()
       if (audioContext) {
         return startAudioContextPlayback(chunks, language, activeSession, audioContext)
       }
       let prepared = await prepareChunk(chunks, 0, language, activeSession)
-      if (!prepared.playback) return fail(activeSession, prepared.error ?? 'Edge 在线语音暂不可用')
+      if (!prepared.playback) return fail(activeSession, prepared.error ?? msg('rendererSpeech.edge.unavailable'))
 
       for (let index = 0; index < chunks.length; index += 1) {
-        if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+        if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
         const nextPreparedPromise = index + 1 < chunks.length
           ? prepareChunk(chunks, index + 1, language, activeSession)
           : null
         const played = await playPlayback(prepared.playback, activeSession)
         if (!played) {
-          if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
-          return fail(activeSession, 'Edge 音频播放失败')
+          if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
+          return fail(activeSession, msg('rendererSpeech.edge.playFailed'))
         }
         if (!nextPreparedPromise) break
         prepared = await nextPreparedPromise
-        if (!prepared.playback) return fail(activeSession, prepared.error ?? 'Edge 在线语音暂不可用')
+        if (!prepared.playback) return fail(activeSession, prepared.error ?? msg('rendererSpeech.edge.unavailable'))
       }
 
-      if (activeSession !== sessionId) return { ok: false, error: 'Edge 语音请求已取消' }
+      if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
       setSpeaking(false)
       options.onComplete?.()
       return { ok: true }

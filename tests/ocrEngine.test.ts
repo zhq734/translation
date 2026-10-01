@@ -9,6 +9,7 @@ import {
   type OcrRecognizeResult
 } from '../src/shared/ocrEngine.ts'
 import type { OcrTextLine } from '../src/shared/types.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
 
 /**
  * 构造可注入的假 OCR 引擎，便于验证超时与取消语义。
@@ -145,4 +146,26 @@ test('正常识别应返回文本行与拼接文本', async () => {
   assert.equal(result.engine, 'system')
   assert.equal(result.text, '你好\n世界')
   assert.equal(result.lines.length, 2)
+})
+
+/**
+ * 校验 OCR 引擎用户可见错误文案支持注入当前界面语言翻译器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 引擎错误文案应支持注入翻译器', async () => {
+  const zhTranslator = createTranslator('zh-CN')
+  const engine = makeEngine('system', async () => ({
+    engine: 'system',
+    lines: [],
+    text: ''
+  }))
+  await assert.rejects(
+    () => recognizeWithTimeout(engine, { timeoutMs: 50 }, (key, params) => zhTranslator.t(key, params)),
+    (error: unknown) => {
+      assert.ok(error instanceof OcrEngineError)
+      assert.equal(error.message, zhTranslator.t('ocr.error.requestMissingInput'))
+      return true
+    }
+  )
 })

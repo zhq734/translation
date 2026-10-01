@@ -1,5 +1,6 @@
 import { deflateSync, inflateSync } from 'node:zlib'
 import type { RgbaImage } from '../shared/imagePreprocess'
+import { translateMain } from './messages'
 
 /** PNG 解码错误。 */
 export class PngDecodeError extends Error {
@@ -108,7 +109,7 @@ export function expandScanlines(
           break
         }
         default:
-          throw new PngDecodeError(`不支持的 PNG 滤镜类型：${filter}`)
+          throw new PngDecodeError(translateMain('ocr.error.pngUnsupportedFilter', { filter }))
       }
       line[x] = reconstructed & 0xff
     }
@@ -131,25 +132,31 @@ interface PngHeader {
  */
 function parseChunks(buffer: Uint8Array): { header: PngHeader; idat: Uint8Array } {
   if (buffer.length < 8 || PNG_SIGNATURE.some((byte, i) => buffer[i] !== byte)) {
-    throw new PngDecodeError('不是合法的 PNG 文件签名')
+    throw new PngDecodeError(translateMain('ocr.error.pngInvalidSignature'))
   }
   const header: PngHeader = { width: 0, height: 0, bitDepth: 0, colorType: 0 }
   const idatParts: Uint8Array[] = []
   let offset = 8
   while (offset < buffer.length) {
-    if (buffer.length < offset + 8) throw new PngDecodeError('PNG 块长度不完整')
+    if (buffer.length < offset + 8) {
+      throw new PngDecodeError(translateMain('ocr.error.pngChunkLengthIncomplete'))
+    }
     const length = Number(((buffer[offset] << 24) | (buffer[offset + 1] << 16) |
       (buffer[offset + 2] << 8) | buffer[offset + 3]) >>> 0)
     const type = String.fromCharCode(buffer[offset + 4], buffer[offset + 5], buffer[offset + 6], buffer[offset + 7])
     const dataStart = offset + 8
-    if (buffer.length < dataStart + length + 4) throw new PngDecodeError('PNG 数据块越界')
+    if (buffer.length < dataStart + length + 4) {
+      throw new PngDecodeError(translateMain('ocr.error.pngChunkOutOfBounds'))
+    }
     const data = buffer.subarray(dataStart, dataStart + length)
     if (type === 'IHDR') {
       header.width = Number((data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3]) >>> 0)
       header.height = Number((data[4] << 24 | data[5] << 16 | data[6] << 8 | data[7]) >>> 0)
       header.bitDepth = data[8]
       header.colorType = data[9]
-      if (data[12] !== 0) throw new PngDecodeError('不支持隔行扫描的 PNG')
+      if (data[12] !== 0) {
+        throw new PngDecodeError(translateMain('ocr.error.pngInterlacedUnsupported'))
+      }
     } else if (type === 'IDAT') {
       idatParts.push(data)
     }
@@ -186,15 +193,21 @@ function toEightBits(value: number, bitDepth: number): number {
 export function decodePng(buffer: Uint8Array): RgbaImage {
   const { header, idat } = parseChunks(buffer)
   const { width, height, bitDepth, colorType } = header
-  if (!width || !height) throw new PngDecodeError('PNG 尺寸非法')
-  if (bitDepth !== 8 && bitDepth !== 16) throw new PngDecodeError(`不支持的位深度：${bitDepth}`)
+  if (!width || !height) throw new PngDecodeError(translateMain('ocr.error.pngInvalidDimensions'))
+  if (bitDepth !== 8 && bitDepth !== 16) {
+    throw new PngDecodeError(translateMain('ocr.error.pngUnsupportedBitDepth', { bitDepth }))
+  }
   const channels = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : -1
-  if (channels < 0) throw new PngDecodeError(`不支持的颜色类型：${colorType}`)
+  if (channels < 0) {
+    throw new PngDecodeError(translateMain('ocr.error.pngUnsupportedColorType', { colorType }))
+  }
   const bytesPerPixel = channels * (bitDepth / 8)
   const stride = width * bytesPerPixel
   const inflated = new Uint8Array(inflateSync(Buffer.from(idat)))
   const expected = height * (stride + 1)
-  if (inflated.length < expected) throw new PngDecodeError('PNG 扫描线数据不完整')
+  if (inflated.length < expected) {
+    throw new PngDecodeError(translateMain('ocr.error.pngScanlineIncomplete'))
+  }
   const raw = inflated.subarray(0, expected)
   const pixels = expandScanlines(raw, width, height, bytesPerPixel)
   const data = new Uint8Array(width * height * 4)
@@ -293,7 +306,7 @@ function writeChunk(
 export function encodePng(image: RgbaImage, options: EncodePngOptions = {}): Buffer {
   const { width, height, data } = image
   if (!width || !height || data.length < width * height * 4) {
-    throw new PngDecodeError('无法编码空图像或数据不完整的图像')
+    throw new PngDecodeError(translateMain('ocr.error.pngEncodeInvalidImage'))
   }
   const stride = width * 4
   const raw = new Uint8Array(height * (stride + 1))

@@ -8,8 +8,21 @@ import type {
 } from '../../shared/types'
 import { normalizeWebTranslationError } from '../../shared/webTranslationErrors'
 import { startThemeRuntime } from './theme'
+import { startLocaleRuntime } from './locale'
 
 startThemeRuntime(window.api)
+const localeRuntime = startLocaleRuntime(window.api)
+
+/**
+ * 使用当前界面语言翻译词条。
+ * @param key 语义化词条 key。
+ * @param params 可选插值参数。
+ * @returns 当前语言下的词条文本。
+ * @author zhenghq
+ */
+function t(key: string, params?: Record<string, string | number>): string {
+  return localeRuntime.translator.t(key, params)
+}
 
 const addressForm = document.getElementById('web-address-form') as HTMLFormElement
 const address = document.getElementById('web-address') as HTMLInputElement
@@ -33,6 +46,10 @@ let currentState: WebReaderState | null = null
 let translating = false
 let extractedRevision = -1
 let translationGeneration = 0
+/** 当前状态文案的重算工厂，供界面语言切换后立即刷新。 */
+let statusFactory: (() => string) | null = null
+/** 最近一次读取到的完整设置，供界面语言切换后重建语言下拉。 */
+let currentSettings: Settings | null = null
 
 /**
  * 将原生 WebContentsView 位置同步到 Renderer 占位区域。
@@ -51,7 +68,7 @@ function syncViewBounds(): void {
  * @author zhenghq
  */
 function renderWindowMaximizedState(maximized: boolean): void {
-  const ariaLabel = maximized ? '还原' : '最大化'
+  const ariaLabel = maximized ? t('webReader.restore') : t('webReader.maximize')
   windowMaximizeButton.ariaLabel = ariaLabel
   windowMaximizeButton.title = ariaLabel
   windowMaximizeButton.dataset.maximized = String(maximized)
@@ -86,7 +103,21 @@ async function initializeWindowTitlebar(): Promise<void> {
  * @author zhenghq
  */
 function setStatus(message: string, error = false): void {
+  statusFactory = null
   status.textContent = message
+  status.dataset.state = error ? 'error' : 'normal'
+}
+
+/**
+ * 使用可按当前语言重算的工厂设置状态提示。
+ * @param factory 返回当前语言状态文案的函数。
+ * @param error 是否显示错误状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setLocalizedStatus(factory: () => string, error = false): void {
+  statusFactory = factory
+  status.textContent = factory()
   status.dataset.state = error ? 'error' : 'normal'
 }
 
@@ -99,10 +130,11 @@ function setStatus(message: string, error = false): void {
 function populateLanguages(settings: Settings): void {
   sourceLang.replaceChildren()
   targetLang.replaceChildren()
-  sourceLang.add(new Option('自动检测', 'auto'))
+  sourceLang.add(new Option(t('popup.autoDetect'), 'auto'))
   for (const language of LANGUAGES) {
-    sourceLang.add(new Option(language.label, language.code))
-    targetLang.add(new Option(language.label, language.code))
+    const label = langLabel(language.code, localeRuntime.locale)
+    sourceLang.add(new Option(label, language.code))
+    targetLang.add(new Option(label, language.code))
   }
   sourceLang.value = settings.sourceLang || 'auto'
   const configuredTarget = settings.targetLang?.trim()
@@ -133,11 +165,14 @@ function renderReaderState(state: WebReaderState): void {
   reloadButton.disabled = state.loading
   // 翻译进度属于当前前台操作，普通网页加载事件不能覆盖其状态文案。
   if (translating) return
-  if (state.pageUpdated) setStatus('页面有内容更新，已完成译文仍保留；可再次点击补译')
+  if (state.pageUpdated) setLocalizedStatus(() => t('webReader.pageUpdated'))
   else if (state.translationWindowActive) {
-    setStatus(`正在边加载边翻译：已完成 ${state.translationDone ?? 0} / 已发现 ${state.translationDiscovered ?? 0}`)
+    setLocalizedStatus(() => t('webReader.loadingAndTranslating', {
+      done: state.translationDone ?? 0,
+      discovered: state.translationDiscovered ?? 0
+    }))
   }
-  else if (state.loading) setStatus('正在加载网页…')
+  else if (state.loading) setLocalizedStatus(() => t('webReader.loadingPage'))
   else if (state.error) setStatus(state.error, true)
 }
 
@@ -149,10 +184,13 @@ function renderReaderState(state: WebReaderState): void {
  */
 function formatImageProgressHint(images?: WebTranslationProgressPayload['images']): string {
   if (!images || images.imageCandidates <= 0) return ''
-  const processed = `图片 ${images.imageProcessed}/${images.imageCandidates}`
-  const skipped = images.imageSkipped ? `，跳过 ${images.imageSkipped}` : ''
-  const failed = images.imageFailed ? `，失败 ${images.imageFailed}` : ''
-  return `，${processed}${skipped}${failed}`
+  const processed = t('webReader.imageProgress', {
+    processed: images.imageProcessed,
+    candidates: images.imageCandidates
+  })
+  const skipped = images.imageSkipped ? t('webReader.imageSkipped', { count: images.imageSkipped }) : ''
+  const failed = images.imageFailed ? t('webReader.imageFailed', { count: images.imageFailed }) : ''
+  return `${t('webReader.imageHintPrefix')}${processed}${skipped}${failed}`
 }
 
 /**
@@ -176,17 +214,23 @@ function renderProgress(progress: WebTranslationProgressPayload): void {
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
-    setStatus('翻译已取消')
+    setLocalizedStatus(() => t('webReader.cancelled'))
     return
   }
-  const cacheHint = progress.cacheHits ? `，缓存命中 ${progress.cacheHits} 项` : ''
-  const failureHint = progress.failed ? `，失败 ${progress.failed} 项` : ''
+  const cacheHint = progress.cacheHits ? t('webReader.cacheHits', { count: progress.cacheHits }) : ''
+  const failureHint = progress.failed ? t('webReader.failureCount', { count: progress.failed }) : ''
   const imageHint = formatImageProgressHint(progress.images)
   if (!progress.inputClosed) {
-    setStatus(`正在边加载边翻译：已完成 ${progress.done} / 已发现 ${progress.discovered}${cacheHint}${failureHint}${imageHint}`)
+    setLocalizedStatus(() => t('webReader.loadingAndTranslating', {
+      done: progress.done,
+      discovered: progress.discovered
+    }) + cacheHint + failureHint + imageHint)
     return
   }
-  setStatus(`正在翻译：已完成 ${progress.done}/${progress.total}${cacheHint}${failureHint}${imageHint}`)
+  setLocalizedStatus(() => t('webReader.translatingProgress', {
+    done: progress.done,
+    total: progress.total
+  }) + cacheHint + failureHint + imageHint)
 }
 
 /**
@@ -203,12 +247,14 @@ async function translatePage(extractFresh = true): Promise<void> {
   cancelButton.disabled = false
   try {
     if (extractFresh || extractedRevision < 0) {
-      setStatus('正在提取网页文本…')
+      setLocalizedStatus(() => t('webReader.extracting'))
       const extraction = await window.api.webTranslateExtract()
       if (generation !== translationGeneration) return
       extractedRevision = extraction.pageRevision
     }
-    setStatus(`正在翻译为${langLabel(targetLang.value)}…`)
+    setLocalizedStatus(() => t('popup.translatingInto', {
+      language: langLabel(targetLang.value, localeRuntime.locale)
+    }))
     const result = await window.api.webTranslateRun({
       sourceLang: sourceLang.value,
       targetLang: targetLang.value
@@ -218,25 +264,31 @@ async function translatePage(extractFresh = true): Promise<void> {
     translateButton.disabled = false
     cancelButton.disabled = true
     const imageHint = formatImageProgressHint(result.images ?? result.progress.images)
-    if (result.progress.cancelled) setStatus('翻译已取消')
+    if (result.progress.cancelled) setLocalizedStatus(() => t('webReader.cancelled'))
     else if (result.apply.mismatched > 0) {
-      setStatus(`翻译已继续完成，${result.apply.mismatched} 项因页面变化暂未写回；已完成译文仍保留，可再次点击补译${imageHint}`)
+      setLocalizedStatus(() => t('webReader.continuedWithMismatch', {
+        count: result.apply.mismatched
+      }) + imageHint)
     }
     else if (result.partial) {
-      const failedHint = result.progress.failed ? `，失败 ${result.progress.failed} 项` : ''
-      setStatus(`仅翻译了部分网页内容${failedHint}${imageHint}；初始加载收集已结束，可再次点击补译`)
+      const failedHint = result.progress.failed
+        ? t('webReader.failureCount', { count: result.progress.failed })
+        : ''
+      setLocalizedStatus(() => t('webReader.partialResult', { failed: failedHint, images: imageHint }))
     }
     else if (hasImagePartialResult(result.images ?? result.progress.images)) {
-      setStatus(`翻译完成，图片部分未处理${imageHint}`)
+      setLocalizedStatus(() => t('webReader.completedImagesPartial', { images: imageHint }))
     }
-    else if (!result.progress.inputClosed) setStatus(`翻译完成，初始加载收集仍在进行${imageHint}`)
-    else setStatus(`翻译完成${imageHint}`)
+    else if (!result.progress.inputClosed) {
+      setLocalizedStatus(() => t('webReader.completedInputOpen', { images: imageHint }))
+    }
+    else setLocalizedStatus(() => t('webReader.completed', { images: imageHint }))
   } catch (error) {
     if (generation !== translationGeneration) return
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
-    setStatus(normalizeWebTranslationError(error, '网页翻译失败'), true)
+    setStatus(normalizeWebTranslationError(error, t('webReader.translationFailed')), true)
   }
 }
 
@@ -252,17 +304,27 @@ async function changeMode(): Promise<void> {
     if (mode === 'bilingual') {
       const unrendered = result.unrendered ?? 0
       const skipped = result.bilingualSkipped ?? 0
-      const skippedHint = skipped > 0 ? `，另有 ${skipped} 个短文本/交互块按设计跳过对照` : ''
+      const skippedHint = skipped > 0
+        ? t('webReader.switchSkippedHint', { count: skipped })
+        : ''
       // 只有翻译失败或锚点失配的块才提示补译，跳过块不作为失败报告。
-      if (unrendered > 0) setStatus(`已切换对照显示，${unrendered} 个块未对照；可再次点击补译${skippedHint}`)
-      else if (result.mismatched > 0) setStatus(`已切换对照显示，${result.mismatched} 项因页面变化未对照；可再次点击补译${skippedHint}`)
-      else setStatus(`当前显示对照${skippedHint}`)
+      if (unrendered > 0) {
+        setLocalizedStatus(() => t('webReader.switchedUnrendered', {
+          count: unrendered
+        }) + skippedHint)
+      } else if (result.mismatched > 0) {
+        setLocalizedStatus(() => t('webReader.switchedMismatched', {
+          count: result.mismatched
+        }) + skippedHint)
+      } else {
+        setLocalizedStatus(() => t('webReader.currentBilingual') + skippedHint)
+      }
       return
     }
-    if (result.mismatched > 0) setStatus('部分内容已变化，未受影响的译文仍保留；可再次点击补译')
-    else setStatus(mode === 'source' ? '当前显示原文' : '当前显示译文')
+    if (result.mismatched > 0) setLocalizedStatus(() => t('webReader.partialContentChanged'))
+    else setLocalizedStatus(() => mode === 'source' ? t('webReader.showingSource') : t('webReader.showingTarget'))
   } catch (error) {
-    setStatus(normalizeWebTranslationError(error, '切换网页显示失败'), true)
+    setStatus(normalizeWebTranslationError(error, t('webReader.switchModeFailed')), true)
   }
 }
 
@@ -287,19 +349,19 @@ function cancelTranslation(): void {
   translateButton.disabled = false
   cancelButton.disabled = true
   window.api.webTranslateCancel()
-  setStatus('翻译已取消')
+  setLocalizedStatus(() => t('webReader.cancelled'))
 }
 
 addressForm.addEventListener('submit', (event) => {
   event.preventDefault()
   const value = address.value.trim()
   if (!value) {
-    setStatus('请输入网页地址', true)
+    setStatus(t('webReader.enterAddress'), true)
     return
   }
-  setStatus('正在加载网页…')
+  setLocalizedStatus(() => t('webReader.loadingPage'))
   void window.api.navigateWebReader(value).catch((error: unknown) => {
-    setStatus(normalizeWebTranslationError(error, '网页地址无效'), true)
+    setStatus(normalizeWebTranslationError(error, t('webReader.invalidAddress')), true)
   })
 })
 backButton.addEventListener('click', () => window.api.webViewBack())
@@ -319,12 +381,23 @@ void initializeWindowTitlebar()
 window.api.onWebReaderState(renderReaderState)
 window.api.onWebTranslateProgress(renderProgress)
 window.api.onWebTranslatePageUpdated((updated) => {
-  if (updated && !translating) setStatus('页面有内容更新，已完成译文仍保留；可再次点击补译')
+  if (updated && !translating) setLocalizedStatus(() => t('webReader.pageUpdated'))
 })
 void window.api.getSettings().then((settings) => {
+  currentSettings = settings
   populateLanguages(settings)
   modeSelect.value = settings.webTranslationDefaultMode
   // 把设置页的默认显示同步给主进程，避免默认“对照”仍按原位译文渲染。
   void window.api.webTranslateSetMode(settings.webTranslationDefaultMode).catch(() => undefined)
+})
+localeRuntime.onLocaleChanged(() => {
+  if (!currentSettings) return
+  const sourceValue = sourceLang.value
+  const targetValue = targetLang.value
+  populateLanguages(currentSettings)
+  sourceLang.value = sourceValue || 'auto'
+  targetLang.value = targetValue || 'ZH'
+  if (statusFactory) status.textContent = statusFactory()
+  void window.api.windowIsMaximized().then(renderWindowMaximizedState)
 })
 requestAnimationFrame(syncViewBounds)

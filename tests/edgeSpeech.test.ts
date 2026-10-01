@@ -7,6 +7,11 @@ import {
   edgeVoiceToSsmlName,
   type EdgeSpeechSocket
 } from '../src/main/edgeSpeech.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 test('Edge 语音应按目标语言使用固定神经网络音色', () => {
   assert.equal(edgeVoiceForLanguage('ZH'), 'zh-CN-XiaoxiaoNeural')
@@ -120,7 +125,7 @@ test('Edge 客户端超时、空音频和取消都应返回脱敏错误', async 
   })
   const timeoutResult = await timeoutClient.synthesize('不要出现在错误里的原文', 'ZH')
   assert.equal(timeoutResult.ok, false)
-  assert.match(timeoutResult.error ?? '', /超时/u)
+  assert.equal(timeoutResult.error, tForTest('zh-CN', 'speech.error.timeout'))
   assert.doesNotMatch(timeoutResult.error ?? '', /不要出现在错误里的原文/u)
 
   const emptySocket = new FakeSocket()
@@ -130,7 +135,7 @@ test('Edge 客户端超时、空音频和取消都应返回脱敏错误', async 
   emptySocket.onmessage?.({ data: 'Path:turn.end\r\n\r\n' })
   const emptyResult = await emptyPromise
   assert.equal(emptyResult.ok, false)
-  assert.match(emptyResult.error ?? '', /音频/u)
+  assert.equal(emptyResult.error, tForTest('zh-CN', 'speech.error.noAudio'))
 
   const cancelSocket = new FakeSocket()
   const cancelClient = createEdgeSpeechClient({ socketFactory: () => cancelSocket, timeoutMs: 1000 })
@@ -140,5 +145,5 @@ test('Edge 客户端超时、空音频和取消都应返回脱敏错误', async 
   controller.abort()
   const cancelResult = await cancelPromise
   assert.equal(cancelResult.ok, false)
-  assert.match(cancelResult.error ?? '', /取消/u)
+  assert.equal(cancelResult.error, tForTest('zh-CN', 'speech.error.cancelled'))
 })

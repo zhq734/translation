@@ -121,7 +121,7 @@ test('翻译快捷键应先显示读取中的弹窗再异步取词', () => {
   assert.ok(showReadingIndex >= 0, '快捷键触发后应立即显示读取状态')
   assert.ok(delayedCaptureIndex > showReadingIndex, '读取弹窗必须先于延迟取词显示')
   assert.match(popupSource, /loading:\s*true/u)
-  assert.match(popupSource, /loadingMessage:\s*'正在读取选中文字…'/u)
+  assert.match(popupSource, /loadingMessage:\s*t\('selection\.loadingReading'\)/u)
   assert.match(popupSource, /showPopup\([\s\S]*?anchor,\s*false\s*\)/u)
   assert.match(hotkeySource, /queueSelectionTranslation\([^)]*popupCloseVersion/u)
 })

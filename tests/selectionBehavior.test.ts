@@ -18,6 +18,7 @@ import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { buildProxyConfig } from '../src/shared/proxySettings.ts'
 import { SelectionCaptureCoordinator } from '../src/shared/selectionCaptureCoordinator.ts'
 import { shouldDismissPopupOnBlur } from '../src/shared/popupBehavior.ts'
+import { tForTest } from './helpers/i18n.ts'
 import {
   CopyShortcutGuard,
   hasClipboardCaptureCompleted,
@@ -213,24 +214,24 @@ test('原生直读应兼容 Windows CRLF 输出与仅空白的 PRESENT', () => {
  */
 test('取词失败提示应按原因细分：空选区、超时与应用不支持', () => {
   assert.equal(
-    resolveSelectionCaptureFailureMessage('empty'),
-    '未检测到选中文字，请重新划词后点击“译”按钮'
+    resolveSelectionCaptureFailureMessage('empty', false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.empty')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage(undefined),
-    '未检测到选中文字，请重新划词后点击“译”按钮'
+    resolveSelectionCaptureFailureMessage(undefined, false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.empty')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage('timeout'),
-    '取词超时，请重试或确认所选内容可复制'
+    resolveSelectionCaptureFailureMessage('timeout', false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.timeout')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage('unsupported'),
-    '当前应用不支持划词取词，请确认所选内容可复制'
+    resolveSelectionCaptureFailureMessage('unsupported', false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.unsupported')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage('permission'),
-    '需要「辅助功能」权限才能读取选中文字，请授权后重试'
+    resolveSelectionCaptureFailureMessage('permission', false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.permission')
   )
 })
 
@@ -241,16 +242,16 @@ test('取词失败提示应按原因细分：空选区、超时与应用不支�
  */
 test('图片选区失败提示应优先于空选区文案', () => {
   assert.equal(
-    resolveSelectionCaptureFailureMessage('empty', true),
-    '已识别到图片选区，暂不支持图片翻译'
+    resolveSelectionCaptureFailureMessage('empty', true, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.imageOnly')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage('timeout', true),
-    '已识别到图片选区，暂不支持图片翻译'
+    resolveSelectionCaptureFailureMessage('timeout', true, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.imageOnly')
   )
   assert.equal(
-    resolveSelectionCaptureFailureMessage(undefined, true),
-    '已识别到图片选区，暂不支持图片翻译'
+    resolveSelectionCaptureFailureMessage(undefined, true, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.imageOnly')
   )
 })
 
@@ -896,7 +897,7 @@ test('旧版设置升级后应默认启用选词按钮、自动中英互译、�
     autoTrigger: true
   })
 
-  assert.equal(settings.schemaVersion, 19)
+  assert.equal(settings.schemaVersion, 20)
   assert.equal(settings.targetLang, 'auto')
   assert.equal(settings.autoHideMs, 0)
   assert.equal(settings.triggerMode, 'button')
@@ -930,7 +931,7 @@ test('第三版自动模式配置升级后应回到按钮模式', () => {
     triggerMode: 'auto'
   })
 
-  assert.equal(settings.schemaVersion, 19)
+  assert.equal(settings.schemaVersion, 20)
   assert.equal(settings.triggerMode, 'button')
 })
 

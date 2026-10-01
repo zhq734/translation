@@ -6,6 +6,7 @@ import {
   type EdgeAudioContextLike,
   type EdgeAudioLike
 } from '../src/renderer/src/edgeSpeechPlayback.ts'
+import { zhMessage } from './helpers/i18n.ts'
 
 class FakeAudio implements EdgeAudioLike {
   onended: ((event: Event) => void) | null = null
@@ -109,6 +110,7 @@ test('Edge 长文本应按顺序合成播放并释放每个临时 URL', async ()
   const revoked: string[] = []
   let completed = 0
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     maxChunkLength: 4,
     synthesize: async (text) => {
       chunks.push(text)
@@ -144,6 +146,7 @@ test('Edge 播放当前片段时应提前合成并预加载下一个片段', asy
   const audios: FakeAudio[] = []
   let resolveSecond: ((result: { ok: true; audio: Uint8Array }) => void) | null = null
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     maxChunkLength: 4,
     synthesize: (text) => {
       chunks.push(text)
@@ -183,6 +186,7 @@ test('Edge AudioContext 应按时间轴连续调度多个已解码片段', async
   const context = new FakeAudioContext()
   const requested: string[] = []
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     maxChunkLength: 2,
     prefetchAhead: 2,
     synthesize: async (text) => {
@@ -214,6 +218,7 @@ test('Edge AudioContext 解码失败时应关闭上下文并返回脱敏错误',
     throw new Error('decode failed')
   }
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     prefetchAhead: 1,
     synthesize: async () => ({ ok: true, audio: new Uint8Array([1, 2, 3]) }),
     createAudioContext: () => context,
@@ -230,6 +235,7 @@ test('Edge AudioContext 解码失败时应关闭上下文并返回脱敏错误',
 test('Edge 音频开始播放前应主动加载音频资源', async () => {
   let audio: FakeAudio | null = null
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     synthesize: async () => ({ ok: true, audio: new Uint8Array([1]) }),
     createObjectUrl: () => 'blob:load',
     revokeObjectUrl: () => {},
@@ -246,6 +252,7 @@ test('Edge 音频开始播放前应主动加载音频资源', async () => {
 test('Edge 播放应依次报告网络请求、收到音频和开始播放阶段', async () => {
   const stages: string[] = []
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     synthesize: async () => ({ ok: true, audio: new Uint8Array([1, 2, 3]) }),
     createObjectUrl: () => 'blob:stages',
     revokeObjectUrl: () => {},
@@ -264,6 +271,7 @@ test('停止 Edge 播放应取消当前会话及预取请求', async () => {
   const audios: FakeAudio[] = []
   const states: boolean[] = []
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     maxChunkLength: 4,
     synthesize: async (text) => {
       chunks.push(text)
@@ -292,6 +300,7 @@ test('停止 Edge 播放应取消当前会话及预取请求', async () => {
 test('新 Edge 会话应替换旧会话且旧音频回调不影响新会话', async () => {
   const audios: FakeAudio[] = []
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     synthesize: async () => ({ ok: true, audio: new Uint8Array([1]) }),
     createObjectUrl: () => `blob:${audios.length + 1}`,
     revokeObjectUrl: () => {},
@@ -319,6 +328,7 @@ test('Edge 音频播放拒绝时应返回脱敏错误并释放资源', async () 
   const revoked: string[] = []
   const errors: string[] = []
   const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
     synthesize: async () => ({ ok: true, audio: new Uint8Array([1]) }),
     createObjectUrl: () => 'blob:failed',
     revokeObjectUrl: (url) => revoked.push(url),

@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
+import {
   ScreenshotAnnotationController,
   normalizeMosaicBlockSize,
   normalizeMosaicIntensity,
@@ -131,7 +136,14 @@ test('上下文样式矩阵应隐藏马赛克颜色控件', () => {
   assert.match(uiSource, /ocrFontSize\.hidden = tool !== 'text'/u)
   assert.match(uiSource, /ocrMosaicBrush\.hidden = tool !== 'mosaic'/u)
   assert.match(uiSource, /ocrMosaicIntensity\.hidden = tool !== 'mosaic'/u)
-  assert.match(selectionHtml, /aria-label="马赛克强度"/u)
+  const mosaicIntensity = findOpeningTagById(selectionHtml, 'ocr-mosaic-intensity')
+  assert.ok(mosaicIntensity, '缺少马赛克强度控件')
+  const mosaicIntensityKey = readAttributeI18nKey(mosaicIntensity, 'aria-label')
+  assert.equal(mosaicIntensityKey, 'selection.mosaicIntensity')
+  assert.match(
+    mosaicIntensity,
+    new RegExp(`aria-label="${tForTest('en-US', mosaicIntensityKey)}"`, 'u')
+  )
 })
 
 /**

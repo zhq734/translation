@@ -1,4 +1,5 @@
 import { cropRgba, resizeRgbaForOcr } from '../shared/imagePreprocess'
+import { translateMain } from './messages'
 import { decodePng, encodePng } from './pngCodec'
 
 /** 屏幕坐标矩形。 */
@@ -140,7 +141,7 @@ export function computeCropRect(
 ): CaptureBounds {
   const clipped = intersectBounds(bounds, displayBounds)
   if (clipped.width < 4 || clipped.height < 4) {
-    throw new ScreenCaptureError('out-of-bounds', '选区不在当前屏幕内')
+    throw new ScreenCaptureError('out-of-bounds', translateMain('capture.error.selectionOutOfBounds'))
   }
   const scaleX = displayBounds.width > 0 ? imageWidth / displayBounds.width : 1
   const scaleY = displayBounds.height > 0 ? imageHeight / displayBounds.height : 1
@@ -216,14 +217,19 @@ export async function captureRegionAsPng(
   if (!sources.length) {
     throw new ScreenCaptureError(
       (deps.platform ?? process.platform) === 'darwin' ? 'permission' : 'no-source',
-      '无法获取屏幕截图'
+      translateMain('capture.error.screenCaptureFailed')
     )
   }
   const source = pickDisplaySource(sources, display.id)
   if (!source || !source.thumbnail || source.thumbnail.isEmpty()) {
     const code: ScreenCaptureCode =
       (deps.platform ?? process.platform) === 'darwin' ? 'permission' : 'no-source'
-    throw new ScreenCaptureError(code, code === 'permission' ? '需要屏幕录制权限' : '无法获取屏幕截图')
+    throw new ScreenCaptureError(
+      code,
+      code === 'permission'
+        ? translateMain('capture.error.screenRecordingPermissionRequired')
+        : translateMain('capture.error.screenCaptureFailed')
+    )
   }
 
   const fullImage = decodePng(source.thumbnail.toPNG())

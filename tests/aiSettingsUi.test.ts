@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 
 const html = readFileSync('src/renderer/settings.html', 'utf8')
 const ts = readFileSync('src/renderer/src/settings.ts', 'utf8')
@@ -32,8 +33,8 @@ test('AI Tab 应包含协议选择、Base URL、API Key、模型输入与操作�
   const protocol = getOpeningTag(html, 'ai-protocol')
   assert.match(protocol, /<select/u)
   assert.match(html, /<option value="ollama">/u)
-  assert.match(html, /<option value="openai">/u)
-  assert.match(html, /<option value="claude-code">/u)
+  assert.match(html, new RegExp(`<option value="openai" data-i18n="settings\\.ai\\.protocolOpenai">${tForTest('en-US', 'settings.ai.protocolOpenai')}`, 'u'))
+  assert.match(html, new RegExp(`<option value="claude-code" data-i18n="settings\\.ai\\.protocolClaude">${tForTest('en-US', 'settings.ai.protocolClaude')}`, 'u'))
 
   // Base URL 输入
   assert.ok(html.includes('id="ai-base-url"'))

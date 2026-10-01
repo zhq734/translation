@@ -293,11 +293,24 @@ export function hidePopup(): void {
   // win.hide() 异步生效：必须等 hide 事件真正到达后再退出抑制期，
   // 否则 hide 生效瞬间派发的内部事件会看到抑制期已结束而被误放行。
   let teardownTarget: BrowserWindow | null = null
-  const hideAndEndTeardown = (): void => {
-    if (!win || win.isDestroyed() || !win.isVisible()) {
+  /**
+   * 隐藏弹窗并结束收尾抑制期。
+   * @param force 为 true 时无条件执行隐藏，不因 `isVisible()` 短路。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const hideAndEndTeardown = (force = false): void => {
+    // app.hide() 生效期间弹窗 isVisible() 同样为 false，若据此短路会跳过真正的
+    // win.hide()，随后的 app.show() 再把弹窗恢复可见，表现为「点关闭关不掉」。
+    // 安全让出分支必须传 force=true 走真实隐藏。
+    if (!win || win.isDestroyed() || (!force && !win.isVisible())) {
       finishPopupTeardown()
       return
     }
+    // win.hide() 只在可见性发生跳变时派发 hide 事件：安全让出期间窗口已被 app.hide()
+    // 置为不可见，强制隐藏不会产生跳变。此时必须立即收尾，否则要等 1500ms 兜底定时器，
+    // 期间用户对 Dock 的正常激活会被当成内部事件吞掉。
+    const wasVisible = win.isVisible()
     // 记住本次收尾的窗口对象：模块级 win 可能被后续 createPopup() 替换，
     // 摘监听器必须针对本次真正隐藏的窗口。
     teardownTarget = win
@@ -305,6 +318,10 @@ export function hidePopup(): void {
     // 窗口在 hide 事件前被销毁时也必须退出抑制期，避免状态永久卡住。
     win.once('closed', finishPopupTeardown)
     win?.hide()
+    if (!wasVisible) {
+      finishPopupTeardown()
+      return
+    }
     // 非 macOS 平台不存在「隐藏 key window 会提升应用内其它窗口」的问题，
     // 保持原有同步收尾语义，不引入额外的逻辑关闭窗口期。
     if (process.platform !== 'darwin') {
@@ -339,7 +356,7 @@ export function hidePopup(): void {
     // 不能直接隐藏：本应用此时仍是最前应用，隐藏应用内 key window 会让系统把应用内
     // 下一个窗口提升为 key window，正在后台打开的网页阅读器会被顶到用户应用之上。
     // 改用安全让出序列：隐藏应用等待失活后收尾，再非激活恢复应用内其它窗口。
-    void yieldFrontmostAppThen(hideAndEndTeardown).catch(() => {
+    void yieldFrontmostAppThen(() => hideAndEndTeardown(true)).catch(() => {
       // 让出序列自身失败时兜底退出抑制期，不能把状态永久留在收尾中。
       popupTeardownFinished = true
       endInternalWindowTeardown()

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  readTextI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
 
 const GROUP_IDS = ['general', 'ai', 'ocr', 'translation-services', 'advanced', 'logs', 'about'] as const
 
@@ -20,7 +26,14 @@ function getOpeningTag(html: string, id: string): string {
 test('设置页应展示七个可访问的左侧一级分组与稳定内容面板', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /class="settings-sidebar"/u)
-  assert.match(html, /role="tablist"[^>]+aria-label="设置分类"[^>]+aria-orientation="vertical"/u)
+  const tablist = html.match(/<nav class="settings-sidebar"[^>]*>/u)?.[0]
+  assert.ok(tablist)
+  assert.match(tablist, /role="tablist"/u)
+  const categoriesKey = readAttributeI18nKey(tablist, 'aria-label')
+  assert.ok(categoriesKey)
+  assert.equal(categoriesKey, 'settings.categories')
+  assert.match(tablist, new RegExp(`aria-label="${tForTest('en-US', categoriesKey)}"`, 'u'))
+  assert.match(tablist, /aria-orientation="vertical"/u)
 
   for (const [index, groupId] of GROUP_IDS.entries()) {
     const tab = getOpeningTag(html, `settings-tab-${groupId}`)
@@ -51,9 +64,16 @@ test('翻译服务应合并钉钉、微软和 DeepLX 并提供二级入口', () 
   assert.match(panel, /data-service-anchor="dingtalk"/u)
   assert.match(panel, /data-service-anchor="microsoft"/u)
   assert.match(panel, /data-service-anchor="deeplx"/u)
-  assert.match(panel, /<h2>钉钉翻译<\/h2>/u)
-  assert.match(panel, /<h2>微软翻译<\/h2>/u)
-  assert.match(panel, /<h2>自建 DeepLX<\/h2>/u)
+  for (const id of ['translation-service-dingtalk', 'translation-service-microsoft', 'translation-service-deeplx']) {
+    const tag = findOpeningTagById(panel, id)
+    assert.ok(tag, `缺少翻译服务区块 #${id}`)
+    const sectionStart = panel.indexOf(tag)
+    const headingTag = panel.slice(sectionStart).match(/<h2\b[^>]*>/u)?.[0]
+    assert.ok(headingTag, `#${id} 缺少标题`)
+    const key = readTextI18nKey(headingTag)
+    assert.ok(key, `#${id} 标题缺少 data-i18n`)
+    assert.ok(key.startsWith('settings.'), `#${id} 标题 key 不合法`)
+  }
 })
 
 test('分组导航应支持旧标识映射、hash 回退和纵向键盘导航', () => {
@@ -105,14 +125,27 @@ test('设置页菜单文字应使用主题语义色并保证选中项对比度',
 test('设置页一级菜单应靠左对齐并在文字前展示对应图标', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
-  const labels = ['常规', 'AI 翻译', 'OCR', '翻译服务', '高级', '日志', '关于']
+  const labels = [
+    'settings.tab.general',
+    'settings.tab.ai',
+    'settings.tab.ocr',
+    'settings.tab.translationServices',
+    'settings.tab.advanced',
+    'settings.tab.logs',
+    'settings.tab.about'
+  ]
 
   for (const [index, groupId] of GROUP_IDS.entries()) {
     const tabStart = html.indexOf(`id="settings-tab-${groupId}"`)
     const tabEnd = html.indexOf('</button>', tabStart)
     const tab = html.slice(tabStart, tabEnd)
     assert.match(tab, /<svg class="settings-tab-icon"[^>]+aria-hidden="true"[^>]+focusable="false"/u)
-    assert.match(tab, new RegExp(`<span class="settings-tab-label">${labels[index]}</span>`, 'u'))
+    const labelTag = tab.match(/<span class="settings-tab-label"[^>]*>/u)?.[0]
+    assert.ok(labelTag)
+    const key = readTextI18nKey(labelTag)
+    assert.ok(key)
+    assert.equal(key, labels[index])
+    assert.match(tab, new RegExp(`<span class="settings-tab-label" data-i18n="${key}">${tForTest('en-US', key)}<\\/span>`, 'u'))
     assert.ok(tab.indexOf('settings-tab-icon') < tab.indexOf('settings-tab-label'))
   }
 
@@ -132,11 +165,11 @@ test('设置页数字输入框应与下拉框使用统一控件高度和主题�
 test('关于页项目卡片应在右下角对齐展示作者与邮箱', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const aboutIndex = html.indexOf('id="settings-panel-about"')
-  const projectIndex = html.indexOf('<h2>项目</h2>', aboutIndex)
+  const projectIndex = html.indexOf('data-i18n="settings.about.project"', aboutIndex)
   const projectSection = html.slice(projectIndex)
   assert.match(projectSection, /class="project-meta"/u)
-  assert.match(projectSection, /<dt>作者<\/dt>\s*<dd>zhenghq<\/dd>/u)
-  assert.match(projectSection, /<dt>邮箱<\/dt>\s*<dd>734652567@qq\.com<\/dd>/u)
+  assert.match(projectSection, new RegExp(`<dt data-i18n="settings\\.about\\.author">${tForTest('en-US', 'settings.about.author')}<\\/dt>\\s*<dd>zhenghq<\\/dd>`, 'u'))
+  assert.match(projectSection, new RegExp(`<dt data-i18n="settings\\.about\\.email">${tForTest('en-US', 'settings.about.email')}<\\/dt>\\s*<dd>734652567@qq\\.com<\\/dd>`, 'u'))
 })
 
 test('设置操作反馈应使用脱离内容布局的主题气泡提示', () => {

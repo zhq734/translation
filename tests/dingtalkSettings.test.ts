@@ -9,7 +9,12 @@ import {
   type SafeStorageAdapter
 } from '../src/main/dingtalkCredentials.ts'
 import { DingTalkConfigurationService } from '../src/main/dingtalkConfig.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
 import type { Settings } from '../src/shared/types.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 /**
  * 创建仅用于测试的可逆安全存储实现。
@@ -43,7 +48,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
     proxyBypassRules: '<local>;localhost'
   })
 
-  assert.equal(settings.schemaVersion, 19)
+  assert.equal(settings.schemaVersion, 20)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')
@@ -60,7 +65,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
 test('更早版本升级后也应初始化脱敏的钉钉公开字段', () => {
   const settings = normalizeSettings({ schemaVersion: 2, autoTrigger: true })
 
-  assert.equal(settings.schemaVersion, 19)
+  assert.equal(settings.schemaVersion, 20)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')
@@ -129,7 +134,12 @@ test('安全存储不可用时应拒绝写入且不产生明文文件', () => {
     const path = join(directory, 'credentials.json')
     const store = new DingTalkCredentialStore(path, createFakeSafeStorage(false))
 
-    assert.throws(() => store.saveSecret('secret-test'), /安全存储不可用/u)
+    assert.throws(
+      () => store.saveSecret('secret-test'),
+      (error: Error) =>
+        error.message ===
+        tForTest('zh-CN', 'dingtalk.credential.secureStorageUnavailableSave')
+    )
     assert.throws(() => readFileSync(path, 'utf8'))
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -146,7 +156,10 @@ test('密文损坏时应返回脱敏错误且视为未配置', () => {
     const loaded = store.readSecret()
     assert.equal(loaded.configured, false)
     assert.equal(loaded.secret, null)
-    assert.match(loaded.error || '', /无法读取已保存的钉钉凭证/u)
+    assert.equal(
+      loaded.error,
+      tForTest('zh-CN', 'dingtalk.credential.readFailed')
+    )
     assert.equal((loaded.error || '').includes('secret-test'), false)
     assert.equal((loaded.error || '').includes('broken'), false)
   } finally {

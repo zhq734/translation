@@ -9,7 +9,7 @@ const windowStates = [
   { settingsOpen: true, webReaderOpen: true }
 ]
 
-test('开启 Dock 图标后仅设置窗口存在时使用 regular 策略并显示图标', () => {
+test('开启 Dock 图标后任一常规窗口存在时都必须保持 regular 策略并显示图标', () => {
   assert.deepEqual(
     resolveMacOSDockPresentation({
       showDockIcon: true,
@@ -22,26 +22,28 @@ test('开启 Dock 图标后仅设置窗口存在时使用 regular 策略并显�
     resolveMacOSDockPresentation({
       showDockIcon: true,
       settingsOpen: true,
+      webReaderOpen: true
+    }),
+    { policy: 'regular', dockVisible: true }
+  )
+  // 关闭设置页时若网页翻译窗口仍在打开，不能把应用降为 accessory：
+  // 激活策略切换会重新排列应用内窗口，把仍在最前的翻译页压到其它窗口之后。
+  assert.deepEqual(
+    resolveMacOSDockPresentation({
+      showDockIcon: true,
+      settingsOpen: false,
       webReaderOpen: true
     }),
     { policy: 'regular', dockVisible: true }
   )
 })
 
-test('开启 Dock 图标但设置窗口不存在时必须隐藏图标', () => {
+test('开启 Dock 图标但所有常规窗口都关闭时才隐藏图标', () => {
   assert.deepEqual(
     resolveMacOSDockPresentation({
       showDockIcon: true,
       settingsOpen: false,
       webReaderOpen: false
-    }),
-    { policy: 'accessory', dockVisible: false }
-  )
-  assert.deepEqual(
-    resolveMacOSDockPresentation({
-      showDockIcon: true,
-      settingsOpen: false,
-      webReaderOpen: true
     }),
     { policy: 'accessory', dockVisible: false }
   )

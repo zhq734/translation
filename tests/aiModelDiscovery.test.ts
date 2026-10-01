@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AiModelDiscoveryService, type AiModelFetch } from '../src/main/aiModelDiscovery.ts'
 import type { AiProtocol } from '../src/shared/types.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 /**
  * 构造一个 JSON 响应。
@@ -83,6 +84,7 @@ test('鉴权失败应返回脱敏 error 状态', async () => {
   const service = makeService(async () => jsonResponse({ error: 'invalid api key sk-leak' }, 401))
   const result = await service.listModels({ protocol: 'openai', baseUrl: 'https://api.example.com', apiKey: 'sk-test' })
   assert.equal(result.state, 'error')
+  assert.equal(result.message, tForTest('en-US', 'ai.modelDiscovery.authentication'))
   assert.equal((result.message || '').includes('sk-test'), false)
   assert.equal((result.message || '').includes('sk-leak'), false)
 })
@@ -91,13 +93,17 @@ test('超时应返回脱敏 error 状态', async () => {
   const service = makeService(async () => { await new Promise((r) => setTimeout(r, 1000)); return jsonResponse({ data: [] }) })
   const result = await service.listModels({ protocol: 'openai', baseUrl: 'https://api.example.com', apiKey: null })
   assert.equal(result.state, 'error')
-  assert.match(result.message || '', /超时|网络/u)
+  assert.ok([
+    tForTest('en-US', 'ai.error.timeout'),
+    tForTest('en-US', 'ai.error.network')
+  ].includes(result.message || ''))
 })
 
 test('网络失败或非 JSON 应返回脱敏 error 状态', async () => {
   const service = makeService(async () => { throw new TypeError('failed for https://api.example.com') })
   const result = await service.listModels({ protocol: 'openai', baseUrl: 'https://api.example.com', apiKey: null })
   assert.equal(result.state, 'error')
+  assert.equal(result.message, tForTest('en-US', 'ai.error.network'))
   assert.equal((result.message || '').includes('https://api.example.com'), false)
 })
 
@@ -105,6 +111,7 @@ test('Claude Code 不支持模型列表时应返回 unsupported 状态', async (
   const service = makeService(async () => new Response('not found', { status: 404, headers: { 'Content-Type': 'text/plain' } }))
   const result = await service.listModels({ protocol: 'claude-code', baseUrl: 'https://api.example.com', apiKey: null })
   assert.equal(result.state, 'unsupported')
+  assert.equal(result.message, tForTest('en-US', 'ai.modelDiscovery.unsupported'))
 })
 
 test('协议或 Base URL 变化应使用不同缓存，相同配置命中缓存', async () => {

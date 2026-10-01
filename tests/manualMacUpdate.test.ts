@@ -7,6 +7,11 @@ import {
   createManualMacUpdateService,
   resolveManualMacDmgUrl
 } from '../src/main/manualMacUpdate.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { translatorForTest } from './helpers/i18n.ts'
+
+// 更新下载错误文案默认跟随主进程界面语言；这里固定为中文以覆盖原有断言。
+setMainMessageTranslator(translatorForTest('zh-CN'))
 
 /**
  * 创建测试用临时下载目录，并在测试结束后清理。

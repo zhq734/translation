@@ -10,6 +10,7 @@ import {
   type OcrQualityEvaluation
 } from '../shared/ocrQuality'
 import type { OcrEngineId, OcrEnginePreference } from '../shared/types'
+import { translateMain } from './messages'
 
 /**
  * 自动 OCR 的粘滞引擎状态：记录最近一次成功引擎，供后续请求优先复用。
@@ -150,11 +151,11 @@ export class OcrDispatcher {
       try {
         available = await engine.isAvailable()
       } catch {
-        errors.push(`${engineId}: 可用性检测失败`)
+        errors.push(translateMain('ocr.dispatcher.availabilityCheckFailed', { engine: engineId }))
         continue
       }
       if (!available) {
-        const reason = engine.getUnavailableReason?.() ?? '不可用（平台或模型未就绪）'
+        const reason = engine.getUnavailableReason?.() ?? translateMain('ocr.dispatcher.engineUnavailable')
         errors.push(`${engineId}: ${reason}`)
         continue
       }
@@ -177,7 +178,7 @@ export class OcrDispatcher {
           // 疑似乱码或低质量结果不能直接锁定，保留为全部引擎失败后的兜底候选。
           validResults.push(result)
         } else {
-          errors.push(`${engineId}: 识别结果为空或疑似乱码`)
+          errors.push(translateMain('ocr.dispatcher.invalidResult', { engine: engineId }))
         }
       } catch (error) {
         if (error instanceof OcrEngineError && error.code === 'timeout') {
@@ -209,9 +210,12 @@ export class OcrDispatcher {
     if (attemptedCount === 0 || engineUnavailableCount === attemptedCount) {
       throw new OcrEngineError(
         'engine-unavailable',
-        `所有 OCR 引擎均不可用: ${errors.join('; ')}`
+        translateMain('ocr.dispatcher.allEnginesUnavailable', { errors: errors.join('; ') })
       )
     }
-    throw new OcrEngineError('empty', `所有 OCR 引擎均未识别到文字: ${errors.join('; ')}`)
+    throw new OcrEngineError(
+      'empty',
+      translateMain('ocr.dispatcher.noTextRecognized', { errors: errors.join('; ') })
+    )
   }
 }

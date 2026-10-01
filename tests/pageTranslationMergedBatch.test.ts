@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 import type { ExtractedWebTextUnit } from '../src/shared/webPageTranslation.ts'
 import {
   aggregatePageTranslationUnits,
@@ -156,12 +157,12 @@ test('合并批次内的分段必须保持原文顺序，不得因并发而错�
 test('同一批次结果应携带相同的翻译通道信息', async () => {
   const coordinator = new PageTranslationCoordinator({
     concurrency: 1,
-    translate: async (text) => ({ translation: text, channel: 'AI 翻译', provider: 'ai' })
+    translate: async (text) => ({ translation: text, channel: tForTest('en-US', 'translate.channel.ai'), provider: 'ai' })
   })
   const units = [unit('a', 'pa', 'First.'), unit('b', 'pb', 'Second.')]
   const output = await coordinator.run({ ...job(), mergeAcrossBlocks: true }, units)
   assert.equal(output.results.length, 2)
-  assert.ok(output.results.every((item) => item.channel === 'AI 翻译' && item.provider === 'ai'))
+  assert.ok(output.results.every((item) => item.channel === tForTest('en-US', 'translate.channel.ai') && item.provider === 'ai'))
 })
 
 test('拆分结果出现空译文时应回退逐段，不得写入空译文', async () => {

@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { release } from 'node:os'
 import type { Transporter } from 'nodemailer'
+import { createTranslator, type Locale, type Translator } from '../shared/i18n/index.ts'
 import { resolveIpLocation, resolvePublicIpAddress } from './ipLocation.ts'
-import { UsageStatsStore, type UsageStatsData } from './usageStats'
+import { detectMainProcessLocale, formatLocaleDate, localeFieldSeparator } from './localeFormat.ts'
+import { UsageStatsStore, type UsageStatsData } from './usageStats.ts'
 
 /** 翻译来源到统计渠道的映射输入类型。 */
 export type TranslationOriginLike = 'selection' | 'manual' | 'ocr' | undefined
@@ -50,23 +52,51 @@ export interface SendUsageReportOptions {
   /** 可注入的 transporter 工厂（测试用）；缺省惰性加载 nodemailer。 */
   createTransporter?: (config: UsageReportConfig) => Transporter
   transporter?: Transporter
+  /** 邮件文案翻译器；未提供时按 locale 或当前系统语言创建。 */
+  translator?: Translator
+  /** 邮件文案界面语言；显式传入时优先于系统语言。 */
+  locale?: Locale
 }
 
-/** 渠道标识的中文展示名。 */
-const CHANNEL_LABELS: Record<string, string> = {
-  hotkey: '快捷键翻译',
-  selection: '划词翻译',
-  screenshot: '截图翻译',
-  webpage: '网页翻译'
+/** 渠道标识到词条 key 的映射。 */
+const CHANNEL_KEYS: Record<string, string> = {
+  hotkey: 'usage.channel.hotkey',
+  selection: 'usage.channel.selection',
+  screenshot: 'usage.channel.screenshot',
+  webpage: 'usage.channel.webpage'
 }
 
-/** 服务提供方标识的中文展示名。 */
-const PROVIDER_LABELS: Record<string, string> = {
-  ai: 'AI 翻译',
-  dingtalk: '钉钉',
-  microsoft: '微软',
-  google: '谷歌',
-  'deeplx-self': 'DeepLX 自建'
+/** 服务提供方标识到词条 key 的映射。 */
+const PROVIDER_KEYS: Record<string, string> = {
+  ai: 'usage.provider.ai',
+  dingtalk: 'usage.provider.dingtalk',
+  microsoft: 'usage.provider.microsoft',
+  google: 'usage.provider.google',
+  'deeplx-self': 'usage.provider.deeplx-self'
+}
+
+/**
+ * 解析统计邮件应使用的翻译器，显式注入优先，未注入时保持简体中文兼容行为。
+ * @param options 发送选项或仅含语言信息的选项。
+ * @returns 当前界面语言翻译器。
+ * @author zhenghq
+ */
+function resolveUsageTranslator(options: { translator?: Translator; locale?: Locale }): Translator {
+  if (options.translator) return options.translator
+  if (options.locale) return createTranslator(options.locale)
+  return createTranslator('zh-CN')
+}
+
+/**
+ * 将 YYYY-MM-DD 日期字符串按界面语言格式化。
+ * @param dateText ISO 短日期字符串。
+ * @param locale 当前界面语言。
+ * @returns 与界面语言一致的日期文本。
+ * @author zhenghq
+ */
+function formatReportDate(dateText: string, locale: Locale): string {
+  const date = new Date(`${dateText}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? dateText : formatLocaleDate(date, locale)
 }
 
 /**
@@ -92,6 +122,7 @@ export function previousDate(today: string): string {
  * @param today 当天日期。
  * @param yesterday 前一天日期。
  * @param network 访问公网 IP 与归属地信息。
+ * @param translatorOrLocale 界面语言翻译器或 locale；缺省保持简体中文兼容行为。
  * @returns 格式化邮件正文。
  * @author zhenghq
  */
@@ -100,8 +131,13 @@ export function buildReportBody(
     environment: UsageReportEnvironment,
     today: string,
     yesterday: string,
-    network: UsageReportNetwork = {}
+    network: UsageReportNetwork = {},
+    translatorOrLocale?: Translator | Locale
 ): string {
+  const translator = typeof translatorOrLocale === 'string'
+    ? createTranslator(translatorOrLocale)
+    : translatorOrLocale ?? createTranslator('zh-CN')
+  const separator = localeFieldSeparator(translator.locale)
   // 统一分隔线，打造规整视觉层级
   const DIVIDER = '============================================================'
   const SUB_DIVIDER = '------------------------------------------------------------'
@@ -109,19 +145,19 @@ export function buildReportBody(
   const lines: string[] = [
     '',
     DIVIDER,
-    '                划词翻译 - 每日使用量统计日报',
+    `                ${translator.t('usage.title')}`,
     DIVIDER,
     '',
-    '【 运行环境信息 】',
+    `【 ${translator.t('usage.section.environment')} 】`,
     SUB_DIVIDER,
-    `  操作系统：${environment.platform} (内核版本：${environment.osRelease})`,
-    `  应用版本：${environment.appVersion}`,
-    `  构建编号：${environment.buildId}`,
-    `  🌐 访问公网IP：${network.ip || '未知'}`,
-    `  📍 IP归属地：${network.location || '未知'}`,
+    `  💻 ${translator.t('usage.platform')}${separator}${environment.platform} (${translator.t('usage.kernel')}${separator}${environment.osRelease})`,
+    `  📦 ${translator.t('usage.appVersion')}${separator}${environment.appVersion}`,
+    `  🔖 ${translator.t('usage.buildId')}${separator}${environment.buildId}`,
+    `  🌐 ${translator.t('usage.ip')}${separator}${network.ip || translator.t('usage.unknown')}`,
+    `  📍 ${translator.t('usage.location')}${separator}${network.location || translator.t('usage.unknown')}`,
     '',
     DIVIDER,
-    '【 每日使用数据统计 】',
+    `【 ${translator.t('usage.section.daily')} 】`,
     DIVIDER,
     ''
   ]
@@ -129,26 +165,30 @@ export function buildReportBody(
   // 遍历昨日、今日数据，分层渲染
   for (const date of [yesterday, today]) {
     const bucket = stats.days[date]
-    lines.push(`📅 统计日期：${date}`)
+    lines.push(`📅 ${translator.t('usage.date')}${separator}${formatReportDate(date, translator.locale)}`)
     lines.push(SUB_DIVIDER)
 
     if (!bucket) {
-      lines.push('  ✅ 当日无翻译使用记录')
+      lines.push(`  ✅ ${translator.t('usage.noRecords')}`)
       lines.push('')
       continue
     }
 
     // 翻译方式统计
-    lines.push('  📝 翻译方式使用次数：')
+    lines.push(`  📝 ${translator.t('usage.channel.title')}${separator}`)
     for (const [channel, count] of Object.entries(bucket.channels)) {
-      lines.push(`    • ${CHANNEL_LABELS[channel] ?? channel}：${count} 次`)
+      const channelKey = CHANNEL_KEYS[channel]
+      const channelLabel = channelKey ? translator.t(channelKey) : channel
+      lines.push(`    • ${channelLabel}${separator}${translator.plural('usage.count.plural', count)}`)
     }
 
     // 翻译服务统计
     lines.push('')
-    lines.push('  🔧 翻译服务使用次数：')
+    lines.push(`  🔧 ${translator.t('usage.provider.title')}${separator}`)
     for (const [provider, count] of Object.entries(bucket.providers)) {
-      lines.push(`    • ${PROVIDER_LABELS[provider] ?? provider}：${count} 次`)
+      const providerKey = PROVIDER_KEYS[provider]
+      const providerLabel = providerKey ? translator.t(providerKey) : provider
+      lines.push(`    • ${providerLabel}${separator}${translator.plural('usage.count.plural', count)}`)
     }
 
     lines.push('')
@@ -156,7 +196,7 @@ export function buildReportBody(
 
   // 页脚备注
   lines.push(DIVIDER)
-  lines.push('  说明：本报表为自动化统计数据，仅记录使用次数、访问公网IP与归属地，不含用户翻译文本')
+  lines.push(`  ${translator.t('usage.footer')}`)
   lines.push(DIVIDER)
   lines.push('')
 
@@ -173,12 +213,13 @@ export async function sendUsageReport(options: SendUsageReportOptions): Promise<
   const { config, stats, environment, network, today, yesterday } = options
   if (!config.smtpUser || !config.smtpPass || !config.reportTo) return false
   try {
+    const translator = resolveUsageTranslator(options)
     const transporter = options.transporter ?? (options.createTransporter ?? defaultCreateTransporter)(config)
     await transporter.sendMail({
-      from: `"划词翻译" <${config.smtpUser}>`,
+      from: `"${translator.t('usage.brand')}" <${config.smtpUser}>`,
       to: config.reportTo,
-      subject: `【划词翻译】每日使用量统计报表 - ${today}`,
-      text: buildReportBody(stats, environment, today, yesterday, network)
+      subject: translator.t('usage.subject', { date: formatReportDate(today, translator.locale) }),
+      text: buildReportBody(stats, environment, today, yesterday, network, translator)
     })
     return true
   } catch {
@@ -296,6 +337,7 @@ export async function maybeSendUsageReport(): Promise<void> {
     const todayString = `${today.getFullYear()}-${month}-${day}`
     // IP 与归属地查询失败时不阻断上报，正文按「未知」降级展示
     const ip = await resolvePublicIpAddress()
+    const translator = createTranslator(detectMainProcessLocale())
     const ok = await sendUsageReport({
       config,
       stats: statsStore.snapshot(),
@@ -307,7 +349,8 @@ export async function maybeSendUsageReport(): Promise<void> {
       },
       network: { ip, location: ip ? await resolveIpLocation(ip) : null },
       today: todayString,
-      yesterday: previousDate(todayString)
+      yesterday: previousDate(todayString),
+      translator
     })
     if (ok) statsStore.markReportSent(todayString)
   } catch {

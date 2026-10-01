@@ -92,7 +92,7 @@ jobs:
             command: dist:linux
             artifact_name: packages-linux
             artifact_path: |
-              dist/SelectionTranslator-*-linux-*.AppImage
+              dist/SelectionTranslator-*.AppImage
               dist/latest*.yml
               dist/*.blockmap
     runs-on: ${{ matrix.os }}

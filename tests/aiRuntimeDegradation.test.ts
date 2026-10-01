@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { tForTest } from './helpers/i18n.ts'
 import { TranslationRuntime } from '../src/main/translate.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import type { Settings } from '../src/shared/types.ts'
@@ -54,7 +55,7 @@ test('配置完整且启用时降级顺序应为 AI -> 钉钉 -> 微软 -> 自�
   })
   const result = await runtime.translate('hello', settings, { corpId: 'c', clientId: 'i', clientSecret: 's' }, 'sk-ai')
   assert.equal(result.provider, 'ai')
-  assert.equal(result.channel, 'AI 翻译')
+  assert.equal(result.channel, tForTest('en-US', 'translate.channel.ai'))
   assert.equal(calls.length, 1)
   assert.match(calls[0], /chat\/completions/u)
 })

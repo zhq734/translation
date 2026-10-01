@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
 import { TranslationRuntime } from '../src/main/translate.ts'
 import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
 
@@ -29,7 +34,7 @@ test('旧设置升级后应默认自动选择翻译 API，并仅保留合法首�
     preferredTranslationProvider: 'unknown-api' as 'google'
   })
 
-  assert.equal(legacy.schemaVersion, 19)
+  assert.equal(legacy.schemaVersion, 20)
   assert.equal(legacy.preferredTranslationProvider, 'auto')
   assert.equal(preferred.preferredTranslationProvider, 'google')
   assert.equal(invalid.preferredTranslationProvider, 'auto')
@@ -63,7 +68,7 @@ test('切换首选 API 后相同文本应优先请求新 API，而不是复用�
   const first = await runtime.translate('same text', automatic)
   const second = await runtime.translate('same text', googlePreferred)
 
-  assert.equal(first.channel, '公共 DeepLX')
+  assert.equal(first.channel, tForTest('en-US', 'translate.channel.publicDeepLx'))
   assert.equal(first.provider, 'deeplx-public')
   assert.equal(second.translation, '谷歌结果')
   assert.equal(second.channel, 'Google')
@@ -140,7 +145,7 @@ test('首选 API 熔断恢复后相同文本应重新尝试首选项，而不是
   const recovered = await runtime.translate('same text', settings)
 
   assert.equal(recovered.translation, '首选恢复结果')
-  assert.equal(recovered.channel, '公共 DeepLX')
+  assert.equal(recovered.channel, tForTest('en-US', 'translate.channel.publicDeepLx'))
   assert.equal(recovered.provider, 'deeplx-public')
   assert.deepEqual(calls.map((url) => url.includes('api.deeplx.org') ? 'public' : 'google'), [
     'public',
@@ -154,7 +159,15 @@ test('悬浮窗底部应提供翻译 API 下拉框，并在切换后持久化和
   const source = readFileSync('src/renderer/src/popup.ts', 'utf8')
   const css = readFileSync('src/renderer/src/style.css', 'utf8')
 
-  assert.match(html, /<select id="translation-provider"[^>]*aria-label="翻译 API"/u)
+  const providerSelect = findOpeningTagById(html, 'translation-provider')
+  assert.ok(providerSelect, '缺少翻译 API 下拉框')
+  assert.equal(providerSelect.startsWith('<select'), true)
+  const providerLabelKey = readAttributeI18nKey(providerSelect, 'aria-label')
+  assert.equal(providerLabelKey, 'popup.translationApi')
+  assert.match(
+    providerSelect,
+    new RegExp(`aria-label="${tForTest('en-US', providerLabelKey)}"`, 'u')
+  )
   assert.match(source, /preferredTranslationProvider/u)
   assert.match(source, /window\.api\.setSettings\(\{\s*preferredTranslationProvider:/u)
   assert.match(source, /translationProviderEl\.addEventListener\('change'/u)

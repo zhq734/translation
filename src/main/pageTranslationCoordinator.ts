@@ -12,6 +12,7 @@ import type {
   WebTranslationScope
 } from '../shared/webPageTranslation'
 import { createWebTextUnitKey } from '../shared/webPageTranslation'
+import { translateMain } from './messages'
 
 /** 可注入的单段翻译函数。 */
 export type PageTranslator = (text: string, sourceLang: string, targetLang: string) => Promise<{ translation: string; detectedLang?: string; provider?: string; channel?: string }>
@@ -390,7 +391,12 @@ export class PageTranslationCoordinator {
           output.push(this.success(segment, single))
         } catch (error) {
           if (isStale()) return []
-          output.push({ ...segment, error: error instanceof Error ? error.message : '翻译失败' })
+          output.push({
+            ...segment,
+            error: error instanceof Error
+              ? error.message
+              : translateMain('webReader.error.translationFailed')
+          })
         }
       }
       return output
@@ -438,7 +444,9 @@ export class PageTranslationCoordinator {
             completedResults = fallback
           } else {
             failed += 1
-            const message = error instanceof Error ? error.message : '翻译失败'
+            const message = error instanceof Error
+              ? error.message
+              : translateMain('webReader.error.translationFailed')
             completedResults = item.segments.map((segment) => ({ ...segment, error: message }))
           }
         }

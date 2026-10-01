@@ -1,12 +1,13 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:"
     />
-    <title>划词翻译</title>
+    <title data-i18n="app.name">Selection Translator</title>
+    <script src="./localeBootstrap.js"></script>
     <script src="./themeBootstrap.js"></script>
     <link rel="stylesheet" href="./src/theme.css" />
     <link rel="stylesheet" href="./src/base.css" />
@@ -14,22 +15,22 @@
   </head>
   <body>
     <div id="popup">
-      <div class="drag-handle" title="拖动弹窗" aria-label="拖动翻译弹窗"></div>
+      <div class="drag-handle" data-i18n-attr="title:popup.dragHandle.title;aria-label:popup.dragHandle.ariaLabel" title="Drag window" aria-label="Drag translation window"></div>
       <div class="header">
-        <div class="language-picker" aria-label="翻译语言工具栏">
-          <select id="source-lang" title="源语言"></select>
+        <div class="language-picker" data-i18n-attr="aria-label:popup.languageToolbar" aria-label="Translation language toolbar">
+          <select id="source-lang" data-i18n-attr="title:menu.sourceLanguage" title="Source Language"></select>
           <span class="language-arrow" aria-hidden="true">→</span>
-          <select id="target-lang" title="目标语言"></select>
+          <select id="target-lang" data-i18n-attr="title:menu.targetLanguage" title="Target Language"></select>
         </div>
         <div class="header-actions">
-          <button id="manual-mode" class="header-action-button" type="button" title="切换手动翻译" aria-label="切换手动翻译" aria-pressed="false">
+          <button id="manual-mode" class="header-action-button" type="button" data-i18n-attr="title:popup.manualMode;aria-label:popup.manualMode" title="Toggle manual translation" aria-label="Toggle manual translation" aria-pressed="false">
             <svg class="header-action-icon manual-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
               <path d="M14 3v6h6" />
               <path d="M8 13h8M8 17h5" />
             </svg>
           </button>
-          <button id="speak" class="header-action-button" type="button" title="暂无可朗读的译文" aria-label="暂无可朗读的译文" aria-pressed="false" disabled>
+          <button id="speak" class="header-action-button" type="button" data-i18n-attr="title:popup.speakUnavailable;aria-label:popup.speakUnavailable" title="No translation to read aloud" aria-label="No translation to read aloud" aria-pressed="false" disabled>
             <svg class="header-action-icon speak-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path class="speak-play-icon" d="M4 9v6h4l5 4V5L8 9H4Z" />
               <path class="speak-play-icon" d="M16 9.5a4 4 0 0 1 0 5" />
@@ -37,66 +38,66 @@
               <path class="speak-stop-icon" d="M7 7h10v10H7z" hidden />
             </svg>
           </button>
-          <button id="pin" class="header-action-button" type="button" title="固定弹窗" aria-label="固定弹窗" aria-pressed="false">
+          <button id="pin" class="header-action-button" type="button" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window" aria-pressed="false">
             <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M12 17v5" />
               <path d="M5 17h14" />
               <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
             </svg>
           </button>
-          <button id="open-web-reader" class="header-action-button" type="button" title="打开网页翻译" aria-label="打开网页翻译">
+          <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
             <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <circle cx="12" cy="12" r="9" />
               <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
             </svg>
           </button>
-          <button id="open-settings" class="header-action-button" type="button" title="打开设置" aria-label="打开设置">
+          <button id="open-settings" class="header-action-button" type="button" data-i18n-attr="title:popup.openSettings;aria-label:popup.openSettings" title="Open settings" aria-label="Open settings">
             <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
             </svg>
           </button>
-          <button id="close" title="关闭" aria-label="关闭">×</button>
+          <button id="close" data-i18n-attr="title:common.close;aria-label:common.close" title="Close" aria-label="Close">×</button>
         </div>
       </div>
-      <section id="selection-view" class="selection-view" aria-label="划词翻译结果">
+      <section id="selection-view" class="selection-view" data-i18n-attr="aria-label:popup.selectionResult" aria-label="Selection translation result">
         <div id="result" class="result" aria-live="polite"></div>
         <div id="original" class="original"></div>
         <div id="ocr-source" class="ocr-source" hidden>
           <div class="ocr-source-header">
-            <span class="ocr-source-label" id="ocr-source-label">OCR 内容</span>
-            <span class="ocr-engine-badge" id="ocr-engine-badge" aria-label="OCR 引擎" hidden></span>
-            <button id="ocr-copy" class="text-action" type="button" aria-label="复制 OCR 内容" hidden>复制 OCR 内容</button>
+            <span class="ocr-source-label" id="ocr-source-label" data-i18n="popup.ocrContent">OCR content</span>
+            <span class="ocr-engine-badge" id="ocr-engine-badge" data-i18n-attr="aria-label:popup.ocrEngine" aria-label="OCR engine" hidden></span>
+            <button id="ocr-copy" class="text-action" type="button" data-i18n="popup.copyOcrContent" data-i18n-attr="aria-label:popup.copyOcrContent" aria-label="Copy OCR content" hidden>Copy OCR content</button>
           </div>
           <div id="ocr-source-text" class="ocr-source-text" aria-live="polite"></div>
         </div>
       </section>
-      <section id="manual-view" class="manual-view" aria-label="手动翻译" hidden>
+      <section id="manual-view" class="manual-view" data-i18n-attr="aria-label:popup.manualTranslation" aria-label="Manual translation" hidden>
         <div class="manual-source-header">
-          <label for="manual-source">翻译原文</label>
-          <button id="manual-clear" class="text-action" type="button" aria-label="清空手动翻译原文">清空</button>
+          <label for="manual-source" data-i18n="popup.translateOriginal">Source text</label>
+          <button id="manual-clear" class="text-action" type="button" data-i18n="popup.clear" data-i18n-attr="aria-label:popup.clearManualSource" aria-label="Clear manual source text">Clear</button>
         </div>
-        <textarea id="manual-source" maxlength="5000" placeholder="输入或粘贴要翻译的内容" aria-describedby="manual-count manual-hint"></textarea>
+        <textarea id="manual-source" maxlength="5000" data-i18n-attr="placeholder:popup.manualPlaceholder" placeholder="Enter or paste text to translate" aria-describedby="manual-count manual-hint"></textarea>
         <div class="manual-source-footer">
-          <span id="manual-hint">⌘/Ctrl + Enter 翻译</span>
+          <span id="manual-hint" data-i18n="popup.manualHint">⌘/Ctrl + Enter to translate</span>
           <span id="manual-count" aria-live="polite">0 / 5000</span>
-          <button id="manual-submit" type="button">翻译</button>
+          <button id="manual-submit" type="button" data-i18n="popup.translate">Translate</button>
         </div>
         <div class="manual-result-section">
           <div class="manual-result-header">
-            <span>翻译结果</span>
-            <span id="manual-stale" class="manual-stale" hidden>原文或设置已变化，请重新翻译</span>
+            <span data-i18n="popup.translationResult">Translation</span>
+            <span id="manual-stale" class="manual-stale" data-i18n="popup.manualStale" hidden>The source text or settings changed. Translate again.</span>
           </div>
           <div id="manual-result" class="manual-result" aria-live="polite"></div>
         </div>
       </section>
-      <div class="footer popup-status-actions" aria-label="翻译状态和操作">
+      <div class="footer popup-status-actions" data-i18n-attr="aria-label:popup.statusActions" aria-label="Translation status and actions">
         <div class="footer-meta">
           <span id="status"></span>
-          <select id="translation-provider" aria-label="翻译 API" title="选择首选翻译 API"></select>
+          <select id="translation-provider" data-i18n-attr="aria-label:popup.translationApi;title:popup.chooseProvider" aria-label="Translation API" title="Choose preferred translation API"></select>
         </div>
-        <button id="copy" type="button">复制</button>
-        <button id="manual-copy" type="button" hidden disabled>复制译文</button>
+        <button id="copy" type="button" data-i18n="popup.copy">Copy</button>
+        <button id="manual-copy" type="button" data-i18n="popup.copyTranslation" hidden disabled>Copy translation</button>
       </div>
     </div>
     <script type="module" src="./src/popup.ts"></script>

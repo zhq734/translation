@@ -14,13 +14,14 @@ import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
 import { BoundedLruCache } from './boundedLruCache'
+import { translateMain } from './messages'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
 const GOOGLE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
 const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get'
-const DINGTALK_CHANNEL = '钉钉翻译'
-const MICROSOFT_CHANNEL = '微软翻译'
-const AI_CHANNEL = 'AI 翻译'
+const DINGTALK_CHANNEL = 'dingtalk'
+const MICROSOFT_CHANNEL = 'microsoft'
+const AI_CHANNEL = 'ai'
 const AI_CHECK_TEXT = 'hello'
 
 const MAX_CHARS = 5000
@@ -137,7 +138,7 @@ export class TranslationRuntime {
     aiApiKey: string | null = null
   ): Promise<TranslateOutput> {
     if (text.length > MAX_CHARS) {
-      throw new Error(`单次翻译最多支持 ${MAX_CHARS} 个字符，请先分段`)
+      throw new Error(translateMain('translate.error.tooLong', { max: MAX_CHARS }))
     }
     const input = text
     const key = this.cacheKey(
@@ -151,10 +152,10 @@ export class TranslationRuntime {
       settings.aiModel
     )
     const hit = this.cache.get(key)
-    if (hit) return { ...hit, channel: '缓存' }
+    if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
 
     const channels = this.createChannels(input, settings, dingTalkCredentials, aiApiKey)
-    let lastError = '所有翻译通道均失败'
+    let lastError = translateMain('translate.error.allChannelsFailed')
     for (const channel of channels) {
       if (input.length > channel.maxChars) {
         console.warn(`[translate] 跳过 ${channel.name}（输入超过 ${channel.maxChars} 字符）`)
@@ -179,7 +180,7 @@ export class TranslationRuntime {
         console.log(`[translate] 成功，通道 = ${channel.name}`)
         return successful
       } catch (error) {
-        const message = error instanceof Error ? error.message : '未知错误'
+        const message = error instanceof Error ? error.message : translateMain('translate.error.unknown')
         lastError = `${channel.name}: ${message}`
         this.trip(channel.breakerKey, channel.cooldownMs)
         console.warn(`[translate] ${lastError}`)
@@ -196,15 +197,15 @@ export class TranslationRuntime {
    */
   async checkDingTalk(credentials: DingTalkCredentials | null): Promise<DingTalkCheckStatus> {
     if (!credentials) {
-      return toDingTalkCheckStatus(new DingTalkError('configuration', '钉钉配置不完整'))
+      return toDingTalkCheckStatus(new DingTalkError('configuration', translateMain('translate.check.dingtalkIncomplete')))
     }
     try {
-      await this.dingTalkClient.translate('你好', {
+      await this.dingTalkClient.translate(translateMain('translate.check.sampleText'), {
         supported: true,
         sourceLanguage: 'zh',
         targetLanguage: 'en'
       }, credentials)
-      return { ok: true, code: 'available', message: '钉钉翻译在线且可用' }
+      return { ok: true, code: 'available', message: translateMain('translate.check.dingtalkAvailable') }
     } catch (error) {
       return toDingTalkCheckStatus(error)
     }
@@ -217,12 +218,12 @@ export class TranslationRuntime {
    */
   async checkMicrosoft(): Promise<MicrosoftCheckStatus> {
     try {
-      await this.microsoftClient.translate('你好', {
+      await this.microsoftClient.translate(translateMain('translate.check.sampleText'), {
         supported: true,
         sourceLanguage: 'zh-Hans',
         targetLanguage: 'en'
       })
-      return { ok: true, code: 'available', message: '微软翻译在线且可用' }
+      return { ok: true, code: 'available', message: translateMain('translate.check.microsoftAvailable') }
     } catch (error) {
       return toMicrosoftCheckStatus(error)
     }
@@ -284,7 +285,7 @@ export class TranslationRuntime {
         settings.aiModel.trim()) {
       channels.push({
         id: 'ai',
-        name: AI_CHANNEL,
+        name: translateMain('translate.channel.ai'),
         breakerKey: AI_CHANNEL,
         cooldownMs: 60_000,
         maxChars: MAX_CHARS,
@@ -300,7 +301,7 @@ export class TranslationRuntime {
       if (pair.supported) {
         channels.push({
           id: 'dingtalk',
-          name: DINGTALK_CHANNEL,
+          name: translateMain('translate.channel.dingtalk'),
           breakerKey: DINGTALK_CHANNEL,
           cooldownMs: 60_000,
           maxChars: MAX_CHARS,
@@ -314,7 +315,7 @@ export class TranslationRuntime {
       if (pair.supported) {
         channels.push({
           id: 'microsoft',
-          name: MICROSOFT_CHANNEL,
+          name: translateMain('translate.channel.microsoft'),
           breakerKey: MICROSOFT_CHANNEL,
           cooldownMs: 60_000,
           maxChars: MAX_CHARS,
@@ -331,7 +332,9 @@ export class TranslationRuntime {
       orderedHosts.forEach((selfHost, index) => {
       channels.push({
         id: 'deeplx-self',
-        name: selfHosts.length === 1 ? '自建 DeepLX' : `自建 DeepLX ${index + 1}`,
+        name: selfHosts.length === 1
+          ? translateMain('translate.channel.selfHostedDeepLx')
+          : translateMain('translate.channel.selfHostedDeepLxIndexed', { index: index + 1 }),
         breakerKey: `deeplx-self:${selfHost}`,
         cooldownMs: 15_000,
         maxChars: MAX_CHARS,
@@ -341,8 +344,8 @@ export class TranslationRuntime {
     }
     channels.push({
       id: 'deeplx-public',
-      name: '公共 DeepLX',
-      breakerKey: '公共 DeepLX',
+      name: translateMain('translate.channel.publicDeepLx'),
+      breakerKey: 'deeplx-public',
       cooldownMs: 120_000,
       maxChars: MAX_CHARS,
       run: () => this.deepLxChannel(PUBLIC_DEEPLX, text, settings, 3000)
@@ -444,7 +447,9 @@ export class TranslationRuntime {
     if (json.code === 200 && json.data) {
       return { translation: json.data, detectedLang: json.source_lang || undefined }
     }
-    throw new Error(json.code === 429 ? '限流 (429)' : json.message || `HTTP ${response.status}`)
+    throw new Error(json.code === 429
+      ? translateMain('translate.deepLx.rateLimited')
+      : json.message || `HTTP ${response.status}`)
   }
 
   /**
@@ -460,7 +465,7 @@ export class TranslationRuntime {
     const url = `${GOOGLE_ENDPOINT}?client=gtx&sl=${source}&tl=${target}&dt=t&q=${encodeURIComponent(text)}`
     const response = await this.fetchWithTimeout(url, { method: 'GET' }, 3500)
     const contentType = response.headers.get('content-type') || ''
-    if (!contentType.includes('json')) throw new Error('被拦截（非 JSON 响应）')
+    if (!contentType.includes('json')) throw new Error(translateMain('translate.google.blocked'))
 
     const data = (await response.json()) as unknown[]
     const segments = Array.isArray(data?.[0]) ? (data[0] as unknown[][]) : []
@@ -468,7 +473,7 @@ export class TranslationRuntime {
       .map((segment) => (segment?.[0] ? String(segment[0]) : ''))
       .join('')
       .trim()
-    if (!translation) throw new Error('返回为空')
+    if (!translation) throw new Error(translateMain('translate.google.empty'))
     const detected = data?.[2] ? String(data[2]) : ''
     return { translation, detectedLang: this.normalizeDetected(detected) }
   }
@@ -489,9 +494,9 @@ export class TranslationRuntime {
     const response = await this.fetchWithTimeout(url, { method: 'GET' }, 6000)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = (await response.json()) as MyMemoryResponse
-    if (data.quotaFinished) throw new Error('免费额度已用完')
+    if (data.quotaFinished) throw new Error(translateMain('translate.myMemory.quotaExceeded'))
     const translation = data.responseData?.translatedText?.trim()
-    if (!translation) throw new Error(data.responseDetails || '无结果')
+    if (!translation) throw new Error(data.responseDetails || translateMain('translate.myMemory.noResult'))
     const detected = data.responseData?.detectedLanguage || data.matches?.[0]?.source
     return {
       translation,

@@ -52,10 +52,16 @@ import {
   WebPageTranslationCache,
   type WebPageTranslationCacheContext
 } from './webPageTranslationCache'
-import { normalizeWebReaderUrl, isAllowedWebReaderUrl, sanitizeWebViewBounds } from './webReaderSecurity'
+import {
+  normalizeWebReaderUrl,
+  toWebReaderHtmlViewUrl,
+  isAllowedWebReaderUrl,
+  sanitizeWebViewBounds
+} from './webReaderSecurity'
 import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
 import { sendToAliveWebContents } from './webContentsMessaging'
 import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
+import { translateMain } from './messages'
 import {
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
@@ -171,7 +177,9 @@ export class WebReaderManager {
    * @author zhenghq
    */
   async open(url?: string): Promise<void> {
-    if (!this.options.getSettings().webTranslationEnabled) throw new Error('网页全文翻译已在设置中关闭')
+    if (!this.options.getSettings().webTranslationEnabled) {
+      throw new Error(translateMain('webReader.error.disabled'))
+    }
     // 正在交还前台并关闭时不再复用即将销毁的窗口，避免关闭回调把新请求一起关掉。
     if (this.closingWindow) return
     // 必须在窗口 show()/focus() 之前等待源应用快照，否则读到的会是本应用自己，
@@ -278,7 +286,9 @@ export class WebReaderManager {
    */
   async navigate(url: string): Promise<WebReaderState> {
     await this.ensureWindow()
-    const normalized = normalizeWebReaderUrl(url)
+    // Google Docs 编辑器正文绘制在 canvas 上，DOM 无可写文本节点；
+    // 统一转换为服务端 HTML 视图后再加载，使正文以真实文本节点呈现。
+    const normalized = toWebReaderHtmlViewUrl(normalizeWebReaderUrl(url))
     this.clearError()
     await this.view?.webContents.loadURL(normalized)
     return this.getState()
@@ -352,7 +362,9 @@ export class WebReaderManager {
     const raw = await executeWebTextExtraction(() =>
       view.webContents.executeJavaScript(buildWebIncrementalCollectorStartScript(WEB_INCREMENTAL_DEBOUNCE_MS), true)
     )
-    if (navigationRevision !== this.pageRevision) throw new Error('网页已变化，请重新提取')
+    if (navigationRevision !== this.pageRevision) {
+      throw new Error(translateMain('webReader.error.pageChanged'))
+    }
     const result = extractWebTextBlocks(raw.snapshot, raw.pageMeta)
     const settings = this.options.getSettings()
     const imageFilter = settings.webTranslationImageOcrEnabled
@@ -400,7 +412,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   async run(request: WebTranslationRunRequest = {}): Promise<WebTranslationRunPayload> {
-    if (!this.hasExtractedSnapshot) throw new Error('请先提取当前网页文本')
+    if (!this.hasExtractedSnapshot) throw new Error(translateMain('webReader.error.extractFirst'))
     // run 只失效旧翻译任务，不停止本次 extract 已启动的增量收集器。
     this.invalidateActiveJob(false)
     // 语言或任务切换时先清理旧语言对照节点，避免迟到结果与新语言叠加。
@@ -1311,7 +1323,7 @@ export class WebReaderManager {
       height: 780,
       minWidth: 760,
       minHeight: 520,
-      title: '划词翻译 · 网页翻译',
+      title: translateMain('webReader.mainWindowTitle'),
       frame: false,
       resizable: true,
       maximizable: true,
@@ -1365,7 +1377,17 @@ export class WebReaderManager {
     const contents = view.webContents
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
     contents.on('will-navigate', (event, url) => {
-      if (!isAllowedWebReaderUrl(url)) event.preventDefault()
+      if (!isAllowedWebReaderUrl(url)) {
+        event.preventDefault()
+        return
+      }
+      // 页面内点击进入 Google Docs 编辑器时同样切换到服务端 HTML 视图，
+      // 否则正文重新变成 canvas 绘制，已提取的文本节点会全部失效。
+      const htmlViewUrl = toWebReaderHtmlViewUrl(url)
+      if (htmlViewUrl !== url) {
+        event.preventDefault()
+        void this.view?.webContents.loadURL(htmlViewUrl)
+      }
     })
     contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return
@@ -1387,7 +1409,12 @@ export class WebReaderManager {
     })
     contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
       if (!isMainFrame || code === -3) return
-      this.state = { ...this.state, url, loading: false, error: `网页加载失败：${description || code}` }
+      this.state = {
+        ...this.state,
+        url,
+        loading: false,
+        error: translateMain('webReader.error.loadFailed', { description: description || code })
+      }
       this.syncNavigationState()
       this.emitState()
     })
@@ -1590,8 +1617,12 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private requireLoadedView(): WebContentsView {
-    if (!this.view || this.view.webContents.isDestroyed()) throw new Error('网页阅读器尚未打开')
-    if (!isAllowedWebReaderUrl(this.state.url)) throw new Error('请先打开一个 HTTP 或 HTTPS 网页')
+    if (!this.view || this.view.webContents.isDestroyed()) {
+      throw new Error(translateMain('webReader.error.notOpen'))
+    }
+    if (!isAllowedWebReaderUrl(this.state.url)) {
+      throw new Error(translateMain('webReader.error.urlRequired'))
+    }
     return this.view
   }
 

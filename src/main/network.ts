@@ -5,6 +5,7 @@ import type { Settings } from '../shared/types'
 import type { EdgeSpeechSocket, EdgeSpeechSocketHeaders } from './edgeSpeech'
 import { edgeSpeechProxyUrl } from './networkProxy'
 import { applyProxyToSessions } from './proxySessionApply'
+import { translateMain } from './messages'
 
 export { edgeSpeechProxyUrl } from './networkProxy'
 
@@ -87,7 +88,7 @@ export async function createTranslationWebSocket(
 ): Promise<EdgeSpeechSocket> {
   const proxyResult = await getTranslationSession().resolveProxy(url.replace(/^wss:/u, 'https:'))
   const proxyUrl = edgeSpeechProxyUrl(proxyResult)
-  if (proxyUrl === undefined) throw new Error('当前代理类型不支持 Edge 在线语音')
+  if (proxyUrl === undefined) throw new Error(translateMain('speech.error.proxyUnsupported'))
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : null
   const socket = new WebSocket(url, dispatcher ? { dispatcher, headers } : { headers })
   socket.binaryType = 'arraybuffer'

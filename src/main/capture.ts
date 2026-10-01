@@ -16,6 +16,7 @@ import {
 } from '../shared/selectionBehavior'
 import { copyShortcutGuard } from './copyShortcutState'
 import { isAutoTriggerRunning } from './autoTrigger'
+import { translateMain } from './messages'
 import {
   getSelectionCapturePlan,
   resolveSelectionCaptureStrategy,
@@ -495,7 +496,9 @@ async function tryWmCopyPoll(
 export async function simulateCopy(): Promise<void> {
   const strategy = resolveSelectionCaptureStrategy(process.platform)
   if (strategy === 'linux-primary-selection') return
-  if (strategy === 'unsupported') throw new Error(`暂不支持当前平台：${process.platform}`)
+  if (strategy === 'unsupported') {
+    throw new Error(translateMain('capture.error.unsupportedPlatform', { platform: process.platform }))
+  }
 
   try {
     if (strategy === 'macos-command-copy') {
@@ -518,9 +521,9 @@ export async function simulateCopy(): Promise<void> {
     const err = e as Error & { stderr?: string }
     const msg = String(err?.stderr ?? err?.message ?? err)
     if (/assistive|not allowed|-25211|-1719|1002/i.test(msg)) {
-      throw new PermissionError('需要「辅助功能」权限才能模拟复制')
+      throw new PermissionError(translateMain('capture.error.accessibilityPermissionRequired'))
     }
-    throw new Error(`模拟复制失败: ${msg}`)
+    throw new Error(translateMain('capture.error.copySimulationFailed', { message: msg }))
   }
 }
 

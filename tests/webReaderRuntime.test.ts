@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   buildWebDocumentReadyScript,
   buildWebIncrementalCollectorDrainScript,
@@ -18,13 +19,73 @@ import {
   executeWebTextExtraction,
   waitForWebDocumentReady
 } from '../src/main/webTextExtractionScript'
-import { normalizeWebReaderUrl, sanitizeWebViewBounds } from '../src/main/webReaderSecurity'
+import { normalizeWebReaderUrl, sanitizeWebViewBounds, toWebReaderHtmlViewUrl } from '../src/main/webReaderSecurity'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 test('阅读器 URL 只允许 HTTP(S) 且可为普通域名补全 HTTPS', () => {
   assert.equal(normalizeWebReaderUrl('example.com/path'), 'https://example.com/path')
   assert.equal(normalizeWebReaderUrl('http://example.com'), 'http://example.com/')
-  assert.throws(() => normalizeWebReaderUrl('file:///etc/passwd'), /仅支持 HTTP 或 HTTPS/u)
-  assert.throws(() => normalizeWebReaderUrl('javascript:alert(1)'), /仅支持 HTTP 或 HTTPS/u)
+  assert.throws(
+    () => normalizeWebReaderUrl('file:///etc/passwd'),
+    new RegExp(tForTest('zh-CN', 'webReader.error.onlyHttp'), 'u')
+  )
+  assert.throws(
+    () => normalizeWebReaderUrl('javascript:alert(1)'),
+    new RegExp(tForTest('zh-CN', 'webReader.error.onlyHttp'), 'u')
+  )
+})
+
+test('Google Docs 编辑器地址应转换为服务端 HTML 视图以便提取真实正文文本', () => {
+  // 编辑器视图正文绘制在 canvas 上，DOM 内没有正文字符节点，必须换成 mobilebasic HTML 视图。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/document/d/ABC123/edit?pli=1&tab=t.0#heading=h.x'),
+    'https://docs.google.com/document/d/ABC123/mobilebasic?pli=1&tab=t.0#h.x'
+  )
+  // 用户账号路径需要保留。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/document/u/0/d/ABC123/edit'),
+    'https://docs.google.com/document/u/0/d/ABC123/mobilebasic'
+  )
+  // 已经是 HTML 视图时不重复转换。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/document/d/ABC123/mobilebasic?pli=1'),
+    'https://docs.google.com/document/d/ABC123/mobilebasic?pli=1'
+  )
+  // 非 Google Docs 地址保持原样。
+  assert.equal(toWebReaderHtmlViewUrl('https://example.com/a/edit'), 'https://example.com/a/edit')
+  // Google Docs 的其他类型（表格、幻灯片）不做转换。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/spreadsheets/d/ABC123/edit'),
+    'https://docs.google.com/spreadsheets/d/ABC123/edit'
+  )
+  // 非文档 ID 的编辑路径不应被改写。
+  assert.equal(toWebReaderHtmlViewUrl('https://docs.google.com/document/u/0/'), 'https://docs.google.com/document/u/0/')
+})
+
+test('阅读器导航与页面内跳转都应把 Google Docs 编辑器地址转换为 HTML 视图', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const navigate = manager.slice(manager.indexOf('async navigate(url: string)'), manager.indexOf('back(): void'))
+  assert.match(navigate, /toWebReaderHtmlViewUrl\(normalizeWebReaderUrl\(url\)\)/u)
+  const bind = manager.slice(manager.indexOf('private bindRemoteEvents'), manager.indexOf('private advancePage'))
+  assert.match(bind, /const htmlViewUrl = toWebReaderHtmlViewUrl\(url\)/u)
+  assert.match(bind, /event\.preventDefault\(\)[\s\S]*?loadURL\(htmlViewUrl\)/u)
+})
+
+test('Google Docs 编辑器锚点应映射为 HTML 视图的标题 id', () => {
+  // 编辑器用 #heading=h.xxx，HTML 视图对应元素的 id 是 h.xxx。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/document/d/ABC123/edit#heading=h.i5r46zcqmek7'),
+    'https://docs.google.com/document/d/ABC123/mobilebasic#h.i5r46zcqmek7'
+  )
+  // 非 heading 锚点无法在 HTML 视图中定位，直接丢弃。
+  assert.equal(
+    toWebReaderHtmlViewUrl('https://docs.google.com/document/d/ABC123/edit#bookmark=id.abc'),
+    'https://docs.google.com/document/d/ABC123/mobilebasic'
+  )
 })
 
 test('原生 View bounds 应取整、过滤负值并限制在窗口内容区', () => {
@@ -73,6 +134,11 @@ test('图片覆盖层脚本应幂等注入、支持两种展示位置并可完�
   assert.match(inject, /data-st-image-placement/u)
   assert.match(inject, /overlay/u)
   assert.match(inject, /insertBefore/u)
+  // canvas 宿主是绝对定位元素，说明块必须显式排到画布下方，否则会盖住页面首行正文。
+  assert.match(inject, /CANVAS/u)
+  assert.match(inject, /data-st-image-canvas/u)
+  assert.match(style, /data-st-image-canvas/u)
+  assert.match(style, /top: 100%/u)
   assert.match(clear, /data-st-image-translation/u)
   assert.match(clear, /removeChild/u)
   assert.match(style, /data-st-image-translation/u)
@@ -109,7 +175,7 @@ test('提取执行器应返回快照并将超时转换为细分错误', async ()
 
   await assert.rejects(
     executeWebTextExtraction(() => new Promise(() => undefined), 5),
-    /网页文本提取超时/u
+    new RegExp(tForTest('zh-CN', 'webReader.error.extractionTimeout'), 'u')
   )
 })
 
@@ -187,7 +253,7 @@ test('对照注入脚本应幂等 upsert 并写入语言方向与布局标记', 
   assert.match(script, /createElement\('span'\)/u)
   assert.match(script, /appendChild/u)
   assert.match(script, /data-st-parent-display/u)
-  assert.match(script, /data-st-dimmed/u)
+  assert.doesNotMatch(script, /data-st-dimmed/u)
   assert.match(script, /setAttribute\('lang', targetLang\)/u)
   assert.match(script, /setAttribute\('dir', 'auto'\)/u)
   assert.match(script, /state\.suppressed = true/u)
@@ -212,7 +278,7 @@ test('对照样式表应继承页面排版并为 flex/grid 父元素独占整行
   assert.match(css, /line-height: inherit/u)
   assert.match(css, /flex: 1 0 100%/u)
   assert.match(css, /grid-column: 1 \/ -1/u)
-  assert.match(css, /opacity: 0\.6/u)
+  assert.doesNotMatch(css, /opacity/u)
   assert.doesNotMatch(css, /var\(--/u)
 })
 

@@ -255,3 +255,86 @@ test('会话返回的位图内容类型仍应优先直接使用', async () => {
   assert.equal(result.strategy, 'session')
   assert.equal(calls.captured, 0)
 })
+
+test('Canvas 候选应优先直接导出页面内位图，避免整页超出视口被截断', async () => {
+  const { deps: injected, calls } = deps({
+    readCanvasImage: async () => ({ bytes: Buffer.from([9, 9, 9]) })
+  })
+  const source = createWebImageSource(injected)
+  const result = await source.fetch(candidate({ kind: 'canvas', src: undefined }))
+
+  assert.equal(result.ok, true)
+  assert.equal(result.strategy, 'capture')
+  assert.deepEqual(Array.from(result.bytes ?? []), [9, 9, 9])
+  assert.equal(calls.captured, 0)
+})
+
+test('Canvas 位图导出失败或超限时应回退区域截图', async () => {
+  const { deps: tainted, calls: taintedCalls } = deps({
+    readCanvasImage: async () => {
+      throw new Error('SecurityError')
+    }
+  })
+  const taintedResult = await createWebImageSource(tainted).fetch(candidate({ kind: 'canvas', src: undefined }))
+  assert.equal(taintedResult.ok, true)
+  assert.equal(taintedResult.strategy, 'capture')
+  assert.equal(taintedCalls.captured, 1)
+
+  const { deps: oversized, calls: oversizedCalls } = deps({
+    readCanvasImage: async () => ({ bytes: Buffer.alloc(64) }),
+    maxBytes: 8
+  })
+  const oversizedResult = await createWebImageSource(oversized).fetch(candidate({ kind: 'canvas', src: undefined }))
+  assert.equal(oversizedResult.ok, true)
+  assert.equal(oversizedResult.strategy, 'capture')
+  assert.equal(oversizedCalls.captured, 1)
+})
+
+test('提供页面内可见矩形时应按视口坐标截图并在结束后恢复滚动', async () => {
+  const captured: unknown[] = []
+  let restored = 0
+  const { deps: injected, calls } = deps({
+    resolveViewport: async () => ({ scrollX: 0, scrollY: 0, width: 1000, height: 800 }),
+    revealVisibleRect: async () => ({ x: 20, y: 30, width: 100, height: 50 }),
+    restoreRevealed: async () => {
+      restored += 1
+    },
+    captureRegion: async (rect) => {
+      captured.push(rect)
+      calls.captured += 1
+      return Buffer.from([1])
+    }
+  })
+  const source = createWebImageSource(injected)
+  const result = await source.fetch(candidate({
+    kind: 'canvas',
+    src: undefined,
+    rect: { x: 10, y: 5000, width: 100, height: 50 }
+  }))
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(captured[0], { x: 20, y: 30, width: 100, height: 50 })
+  assert.equal(restored, 1)
+})
+
+test('页面内无法把候选滚动到可见区域时应返回截图失败并恢复滚动', async () => {
+  let restored = 0
+  const { deps: injected, calls } = deps({
+    resolveViewport: async () => ({ scrollX: 0, scrollY: 0, width: 1000, height: 800 }),
+    revealVisibleRect: async () => null,
+    restoreRevealed: async () => {
+      restored += 1
+    }
+  })
+  const source = createWebImageSource(injected)
+  const result = await source.fetch(candidate({
+    kind: 'canvas',
+    src: undefined,
+    rect: { x: 10, y: 5000, width: 100, height: 50 }
+  }))
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'capture-failed')
+  assert.equal(restored, 1)
+  assert.equal(calls.captured, 0)
+})

@@ -1,43 +1,93 @@
+import { createTranslator, type Locale, type Translator } from './i18n'
+
 export interface Lang {
+  /** 翻译服务使用的语言代码。 */
   code: string
+  /** 英文兜底名称；界面展示请使用 langLabel 或 localizedLanguages。 */
   label: string
 }
 
-// DeepL 支持的语言子集（大写代码，DeepLX 兼容）
+// DeepL 支持的语言子集（大写代码，DeepLX 兼容），label 仅作英文兜底。
 export const LANGUAGES: Lang[] = [
-  { code: 'ZH', label: '中文' },
-  { code: 'EN', label: '英语' },
-  { code: 'JA', label: '日语' },
-  { code: 'KO', label: '韩语' },
-  { code: 'FR', label: '法语' },
-  { code: 'DE', label: '德语' },
-  { code: 'ES', label: '西班牙语' },
-  { code: 'PT', label: '葡萄牙语' },
-  { code: 'IT', label: '意大利语' },
-  { code: 'NL', label: '荷兰语' },
-  { code: 'PL', label: '波兰语' },
-  { code: 'RU', label: '俄语' },
-  { code: 'TR', label: '土耳其语' },
-  { code: 'ID', label: '印尼语' },
-  { code: 'UK', label: '乌克兰语' },
-  { code: 'AR', label: '阿拉伯语' },
-  { code: 'SV', label: '瑞典语' },
-  { code: 'DA', label: '丹麦语' },
-  { code: 'CS', label: '捷克语' },
-  { code: 'EL', label: '希腊语' },
-  { code: 'FI', label: '芬兰语' },
-  { code: 'HU', label: '匈牙利语' },
-  { code: 'RO', label: '罗马尼亚语' },
-  { code: 'SK', label: '斯洛伐克语' },
-  { code: 'BG', label: '保加利亚语' },
-  { code: 'LT', label: '立陶宛语' },
-  { code: 'LV', label: '拉脱维亚语' },
-  { code: 'ET', label: '爱沙尼亚语' },
-  { code: 'SL', label: '斯洛文尼亚语' }
+  { code: 'ZH', label: 'Chinese' },
+  { code: 'EN', label: 'English' },
+  { code: 'JA', label: 'Japanese' },
+  { code: 'KO', label: 'Korean' },
+  { code: 'FR', label: 'French' },
+  { code: 'DE', label: 'German' },
+  { code: 'ES', label: 'Spanish' },
+  { code: 'PT', label: 'Portuguese' },
+  { code: 'IT', label: 'Italian' },
+  { code: 'NL', label: 'Dutch' },
+  { code: 'PL', label: 'Polish' },
+  { code: 'RU', label: 'Russian' },
+  { code: 'TR', label: 'Turkish' },
+  { code: 'ID', label: 'Indonesian' },
+  { code: 'UK', label: 'Ukrainian' },
+  { code: 'AR', label: 'Arabic' },
+  { code: 'SV', label: 'Swedish' },
+  { code: 'DA', label: 'Danish' },
+  { code: 'CS', label: 'Czech' },
+  { code: 'EL', label: 'Greek' },
+  { code: 'FI', label: 'Finnish' },
+  { code: 'HU', label: 'Hungarian' },
+  { code: 'RO', label: 'Romanian' },
+  { code: 'SK', label: 'Slovak' },
+  { code: 'BG', label: 'Bulgarian' },
+  { code: 'LT', label: 'Lithuanian' },
+  { code: 'LV', label: 'Latvian' },
+  { code: 'ET', label: 'Estonian' },
+  { code: 'SL', label: 'Slovenian' }
 ]
 
-export function langLabel(code: string): string {
+/**
+ * 解析翻译目标语言的词条 key。
+ * @param code 语言代码。
+ * @returns 对应的语义化词条 key。
+ * @author zhenghq
+ */
+function langKey(code: string): string {
+  return `lang.${code.toUpperCase()}`
+}
+
+/**
+ * 把界面语言或翻译器统一解析为翻译器实例。
+ * @param locale 当前界面语言或翻译器。
+ * @returns 可执行 t 与 has 的翻译器。
+ * @author zhenghq
+ */
+function resolveTranslator(locale: Locale | Translator): Translator {
+  return typeof locale === 'string' ? createTranslator(locale) : locale
+}
+
+/**
+ * 按当前界面语言获取语言名称。
+ * @param code 语言代码，auto 表示自动检测。
+ * @param locale 当前界面语言或翻译器。
+ * @returns 本地化后的语言名称，未知代码回退为原始代码。
+ * @author zhenghq
+ */
+export function langLabel(code: string, locale: Locale | Translator = 'en-US'): string {
   if (!code) return ''
-  if (code.toLowerCase() === 'auto') return '自动检测'
-  return LANGUAGES.find((l) => l.code === code.toUpperCase())?.label ?? code
+  const translator = resolveTranslator(locale)
+  if (code.toLowerCase() === 'auto') return translator.t('settings.sourceLang.auto')
+  const normalized = code.toUpperCase()
+  const key = langKey(normalized)
+  return translator.has(key) ? translator.t(key) : normalized
+}
+
+/**
+ * 生成按当前界面语言本地化的语言下拉选项。
+ * @param locale 当前界面语言或翻译器。
+ * @returns 含 code 与本地化 label 的语言列表。
+ * @author zhenghq
+ */
+export function localizedLanguages(locale: Locale | Translator = 'en-US'): Lang[] {
+  const translator = resolveTranslator(locale)
+  return LANGUAGES.map((language) => ({
+    code: language.code,
+    label: translator.has(langKey(language.code))
+      ? translator.t(langKey(language.code))
+      : language.label
+  }))
 }

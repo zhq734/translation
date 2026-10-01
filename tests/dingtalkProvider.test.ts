@@ -7,6 +7,11 @@ import {
   toDingTalkCheckStatus
 } from '../src/main/dingtalkErrors.ts'
 import type { DingTalkCredentials } from '../src/main/dingtalkConfig.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 const credentials: DingTalkCredentials = {
   corpId: 'corp-test',
@@ -138,16 +143,20 @@ test('钉钉错误应分类并生成不含 Secret、Token 或完整鉴权 URL �
   const raw = new Error(
     'secret-test token-test https://oapi.dingtalk.com/topapi/ai/mt/translate?access_token=token-test'
   )
-  const error = new DingTalkError('authentication', '钉钉鉴权失败', {
-    cause: raw,
-    authenticationInvalid: true
-  })
+  const error = new DingTalkError(
+    'authentication',
+    tForTest('zh-CN', 'dingtalk.error.authentication'),
+    {
+      cause: raw,
+      authenticationInvalid: true
+    }
+  )
   const status = toDingTalkCheckStatus(error)
 
   assert.deepEqual(status, {
     ok: false,
     code: 'authentication',
-    message: '钉钉鉴权失败，请检查 CorpId、ClientId 和 ClientSecret'
+    message: tForTest('zh-CN', 'dingtalk.error.authenticationStatus')
   })
   const serialized = JSON.stringify(status)
   assert.equal(serialized.includes('secret-test'), false)

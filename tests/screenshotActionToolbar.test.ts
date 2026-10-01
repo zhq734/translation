@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
 
 const main = readFileSync('src/main/index.ts', 'utf8')
 const preload = readFileSync('src/preload/index.ts', 'utf8')
@@ -23,12 +28,21 @@ test('截图工具条应提供文字识别、翻译、复制图片、保存到�
   const toolbarEnd = selectionHtml.indexOf('</div>', toolbarStart2)
   const toolbarSource = selectionHtml.slice(toolbarStart2, toolbarEnd)
 
-  // 五个按钮齐全且均提供中文 title 与 aria-label
-  assert.match(toolbarSource, /id="ocr-recognize"[^>]*title="文字识别"[^>]*aria-label="文字识别"/u)
-  assert.match(toolbarSource, /id="ocr-translate"[^>]*title="翻译"[^>]*aria-label="翻译"/u)
-  assert.match(toolbarSource, /id="ocr-copy-image"[^>]*title="复制图片"[^>]*aria-label="复制图片"/u)
-  assert.match(toolbarSource, /id="ocr-save-image"[^>]*title="保存到本地"[^>]*aria-label="保存到本地"/u)
-  assert.match(toolbarSource, /id="ocr-cancel"[^>]*title="取消"[^>]*aria-label="取消"/u)
+  // 五个按钮齐全，title 与 aria-label 均从 data-i18n-attr 读取并按当前兜底语言生成期望值。
+  for (const [id, key] of [
+    ['ocr-recognize', 'selection.recognize'],
+    ['ocr-translate', 'selection.translate'],
+    ['ocr-copy-image', 'selection.copyImage'],
+    ['ocr-save-image', 'selection.saveImage'],
+    ['ocr-cancel', 'common.cancel']
+  ]) {
+    const tag = findOpeningTagById(toolbarSource, id)
+    assert.ok(tag, `缺少截图动作按钮 #${id}`)
+    assert.equal(readAttributeI18nKey(tag, 'title'), key)
+    assert.equal(readAttributeI18nKey(tag, 'aria-label'), key)
+    assert.match(tag, new RegExp(`title="${tForTest('en-US', key)}"`, 'u'))
+    assert.match(tag, new RegExp(`aria-label="${tForTest('en-US', key)}"`, 'u'))
+  }
 
   // 按钮使用内联 SVG 图标表达，不再依赖第三方图标库
   const svgCount = (toolbarSource.match(/<svg/gu) ?? []).length
@@ -225,8 +239,8 @@ test('主进程应实现独立的截图动作提示窗口', () => {
   assert.match(main, /ipcMain\.on\('screenshot-toast:show'/u)
   assert.match(main, /ipcMain\.on\('screenshot-toast:show-window'/u)
   // 复制/保存成功后通过独立 toast 窗口展示提示
-  assert.match(main, /showScreenshotToast\('已添加到剪贴板', 1500\)/u)
-  assert.match(main, /showScreenshotToast\('已保存到本地', 1500\)/u)
+  assert.match(main, /showScreenshotToast\(t\('toast\.copiedToClipboard'\)[\s\S]*?,\s*1500\)/u)
+  assert.match(main, /showScreenshotToast\(t\('toast\.savedToDisk'\)[\s\S]*?,\s*1500\)/u)
   // 提示窗口注册为独立渲染入口
   assert.match(toastHtml, /id="toast"/u)
   assert.match(toastRenderer, /window\.api\.onShowScreenshotToast/u)
@@ -298,8 +312,9 @@ test('Renderer 应在复制/保存成功后仅关闭窗口，失败时经独立�
   assert.doesNotMatch(selectionHtml, /id="ocr-toast"/u)
   assert.doesNotMatch(selectionCss, /\.ocr-toast/u)
   // 失败时通过主进程独立提示窗口展示错误
-  assert.match(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: result\.error \|\| '复制图片失败'/u)
-  assert.doesNotMatch(selectionRenderer, /window\.api\.showScreenshotToast\(\{ message: '已保存到本地'/u)
+  assert.match(selectionRenderer, /message: result\.error \|\| t\('selection\.copyImageFailed'\)/u)
+  assert.match(selectionRenderer, /message: result\.error \|\| t\('selection\.saveImageFailed'\)/u)
+  assert.doesNotMatch(selectionRenderer, /message: t\('toast\.savedToDisk'\)/u)
   assert.match(selectionRenderer, /function scheduleScreenshotAutoClose\(\)/u)
   assert.match(selectionRenderer, /ocrOverlay\.classList\.add\('closing'\)/u)
 })
@@ -357,8 +372,8 @@ test('Renderer 应提供 OCR 结果侧栏并支持选取复制', () => {
   assert.match(selectionHtml, /<textarea[^>]*id="ocr-panel-text"[^>]*readonly/u)
   assert.match(selectionRenderer, /function renderOcrPanel\(/u)
   // 处理中、成功、空结果与错误状态
-  assert.match(selectionRenderer, /'正在识别选区文字…'/u)
-  assert.match(selectionRenderer, /'未识别到文字'/u)
+  assert.match(selectionRenderer, /t\('selection\.recognizing'\)/u)
+  assert.match(selectionRenderer, /t\('selection\.noTextRecognized'\)/u)
   // 侧栏定位：优先选区右侧，空间不足时回退左侧或覆盖层内部
   assert.match(selectionRenderer, /function layoutOcrPanel\(/u)
 })
@@ -404,12 +419,12 @@ test('复制和保存点击应先显示处理中提示并立即建立重复提�
   const saveEnd = selectionRenderer.indexOf('/**', saveStart + 1)
   const saveSource = selectionRenderer.slice(saveStart, saveEnd)
 
-  for (const [source, message, exportCall] of [
-    [copySource, '正在复制图片…', 'buildAnnotatedExportPayload'],
-    [saveSource, '正在准备保存…', 'buildAnnotatedExportPayload']
+  for (const [source, key, exportCall] of [
+    [copySource, 'selection.copyingImage', 'buildAnnotatedExportPayload'],
+    [saveSource, 'selection.preparingSave', 'buildAnnotatedExportPayload']
   ]) {
     const pendingIndex = source.indexOf('screenshotActionPending =')
-    const tipIndex = source.indexOf(`renderOcrTip('${message}')`)
+    const tipIndex = source.indexOf(`renderOcrTip(t('${key}'))`)
     const exportIndex = source.indexOf(`await ${exportCall}`)
     assert.ok(pendingIndex >= 0 && pendingIndex < exportIndex, '应在导出前建立动作状态')
     assert.ok(tipIndex >= 0 && tipIndex < exportIndex, '应在导出前显示处理中提示')
@@ -430,14 +445,14 @@ test('保存取消应恢复交互且 Renderer 不发送保存成功 Toast', () =
   const resultEnd = selectionRenderer.indexOf('/**', resultStart + 1)
   const resultSource = selectionRenderer.slice(resultStart, resultEnd)
   assert.match(resultSource, /if \(result\.canceled\) \{[\s\S]*?renderOcrTip\(\)/u)
-  assert.doesNotMatch(selectionRenderer, /showScreenshotToast\(\{ message: '已保存到本地'/u)
+  assert.doesNotMatch(selectionRenderer, /showScreenshotToast\(\{ message: t\('toast\.savedToDisk'\)/u)
 
   const saveStart = main.indexOf('async function saveOcrSelectionImageAction')
   const saveEnd = main.indexOf('/**', saveStart + 1)
   const saveSource = main.slice(saveStart, saveEnd)
   assert.match(saveSource, /result\.canceled/u)
   assert.match(saveSource, /canceled:\s*true/u)
-  assert.match(saveSource, /showScreenshotToast\('已保存到本地', 1500\)/u)
+  assert.match(saveSource, /showScreenshotToast\(t\('toast\.savedToDisk'\)[\s\S]*?,\s*1500\)/u)
 })
 
 /**
@@ -497,8 +512,10 @@ test('工具条按钮应在窗口内提供自定义悬停提示', () => {
  */
 test('OCR 结果侧栏应支持手动调整大小', () => {
   // 侧栏右下角提供可拖拽的调整手柄，具备无障碍名称
-  assert.match(selectionHtml, /id="ocr-panel-resize"/u)
-  assert.match(selectionHtml, /id="ocr-panel-resize"[^>]*aria-label="调整识别结果区域大小"/u)
+  const resizeHandle = findOpeningTagById(selectionHtml, 'ocr-panel-resize')
+  assert.ok(resizeHandle)
+  assert.equal(readAttributeI18nKey(resizeHandle, 'aria-label'), 'selection.resizeResult')
+  assert.match(resizeHandle, new RegExp(`aria-label="${tForTest('en-US', 'selection.resizeResult')}"`, 'u'))
   // Renderer 实现手柄拖拽调整：更新用户自定义尺寸并在移动中实时应用
   assert.match(selectionRenderer, /function handleOcrPanelResizeStart\(/u)
   assert.match(selectionRenderer, /function handleOcrPanelResizeMove\(/u)

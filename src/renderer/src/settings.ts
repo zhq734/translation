@@ -1,7 +1,7 @@
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
 import { formatKeyboardAccelerator } from '../../shared/keyboardAccelerator'
-import { formatUpdateProgressText } from '../../shared/updateProgressFormat'
+import { formatUpdateProgressTextForLocale } from '../../shared/updateProgressFormat'
 import { nextDiagnosticsExpandedState } from '../../shared/diagnosticsPanelState'
 import type {
   AiCheckStatus,
@@ -18,11 +18,27 @@ import type {
   UpdateStatus
 } from '../../shared/types'
 import { startThemeRuntime } from './theme'
+import { startLocaleRuntime } from './locale'
+import { localizedLanguages } from '../../shared/langs'
 import type { ThemeMode, ThemePreset } from '../../shared/types'
+import type { Locale, UiLocale } from '../../shared/i18n/locale'
 
 startThemeRuntime(window.api)
+const localeRuntime = startLocaleRuntime(window.api)
+
+/**
+ * 使用当前界面语言翻译词条。
+ * @param key 语义化词条 key。
+ * @param params 可选插值参数。
+ * @returns 当前语言下的词条文本。
+ * @author zhenghq
+ */
+function t(key: string, params?: Record<string, string | number>): string {
+  return localeRuntime.translator.t(key, params)
+}
 
 const targetLang = document.getElementById('target-lang') as HTMLSelectElement
+const uiLocale = document.getElementById('ui-locale') as HTMLSelectElement
 const themeMode = document.getElementById('theme-mode') as HTMLSelectElement
 const themePresetCards = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-preset]')]
 const sourceLang = document.getElementById('source-lang') as HTMLSelectElement
@@ -144,6 +160,8 @@ const settingsTabPanels = [
 
 let flashTimer: ReturnType<typeof setTimeout> | null = null
 let latestUpdateStatus: UpdateStatus | null = null
+let latestOcrStatus: OcrStatus | null = null
+let latestSettings: Settings | null = null
 
 /**
  * 判断字符串是否为受支持的设置页 Tab 标识。
@@ -328,7 +346,7 @@ function initializeSettingsTabs(): void {
  * @author zhenghq
  */
 function renderWindowMaximizedState(maximized: boolean): void {
-  const ariaLabel = maximized ? '还原' : '最大化'
+  const ariaLabel = maximized ? t('common.restore') : t('common.maximize')
   windowMaximizeButton.ariaLabel = ariaLabel
   windowMaximizeButton.title = ariaLabel
   windowMaximizeButton.dataset.maximized = String(maximized)
@@ -358,12 +376,13 @@ async function initializeWindowTitlebar(): Promise<void> {
 /**
  * 短暂显示设置操作反馈气泡。
  * @param message 提示内容。
+ * @param state 反馈级别，默认为成功；用于避免依赖文案内容判断样式。
  * @returns 无返回值。
  * @author zhenghq
  */
-function flash(message: string): void {
-  const isError = /失败|错误|无法|离线/u.test(message)
-  const isWarning = /警告|注意|冲突|重试/u.test(message)
+function flash(message: string, state: 'success' | 'warning' | 'error' = 'success'): void {
+  const isError = state === 'error'
+  const isWarning = state === 'warning'
   savedEl.dataset.state = isError ? 'error' : isWarning ? 'warning' : 'success'
   savedIconEl.textContent = isError || isWarning ? '!' : '✓'
   savedMessageEl.textContent = message
@@ -377,16 +396,32 @@ function flash(message: string): void {
 /**
  * 保存设置补丁并显示结果。
  * @param patch 设置补丁。
+ * @returns 保存成功返回 true，失败返回 false。
+ * @author zhenghq
+ */
+async function save(patch: Partial<Settings>): Promise<boolean> {
+  try {
+    await window.api.setSettings(patch)
+    flash(t('settings.saved'))
+    return true
+  } catch (error) {
+    flash(t('settings.saveFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
+    return false
+  }
+}
+
+/** 保存界面语言，失败时回滚到保存前选项。
  * @returns 保存完成后的 Promise。
  * @author zhenghq
  */
-async function save(patch: Partial<Settings>): Promise<void> {
-  try {
-    await window.api.setSettings(patch)
-    flash('已保存并生效')
-  } catch (error) {
-    flash(`保存失败：${(error as Error).message || '未知错误'}`)
+async function saveUiLocale(): Promise<void> {
+  const nextLocale = uiLocale.value as UiLocale
+  const previousLocale = uiLocale.dataset.currentLocale as UiLocale | undefined
+  if (await save({ uiLocale: uiLocale.value as UiLocale })) {
+    uiLocale.dataset.currentLocale = nextLocale
+    return
   }
+  uiLocale.value = previousLocale ?? 'auto'
 }
 
 /**
@@ -396,12 +431,12 @@ async function save(patch: Partial<Settings>): Promise<void> {
  * @author zhenghq
  */
 function updateTriggerHint(mode: TriggerMode): void {
-  const hints: Record<TriggerMode, string> = {
-    auto: '选中文字后自动打开翻译弹窗；需要 macOS 辅助功能权限。',
-    button: '每次划词都显示“译”按钮；只有点击按钮后才会打开或更新翻译弹窗。',
-    hotkey: '划词后不会自动弹出内容，需要按下下方配置的全局快捷键。'
+  const hintKeys: Record<TriggerMode, string> = {
+    auto: 'settings.trigger.hint.auto',
+    button: 'settings.trigger.hint.button',
+    hotkey: 'settings.trigger.hint.hotkey'
   }
-  triggerHint.textContent = hints[mode]
+  triggerHint.textContent = t(hintKeys[mode])
 }
 
 /**
@@ -423,9 +458,9 @@ function updateProxyFields(mode: string): void {
  * @author zhenghq
  */
 function updateSpeechProviderHint(provider: SpeechProvider): void {
-  speechProviderHint.textContent = provider === 'edge'
-    ? '需要网络，朗读文本会发送到微软在线服务；该免费非官方接口可能随服务调整失效，失败时会自动回退系统语音。'
-    : '免费、无需网络，音质取决于操作系统已安装的语音；不会将朗读文本发送到在线服务。'
+  speechProviderHint.textContent = t(
+    provider === 'edge' ? 'settings.speech.hint.edge' : 'settings.speech.hint.system'
+  )
 }
 
 /**
@@ -435,6 +470,9 @@ function updateSpeechProviderHint(provider: SpeechProvider): void {
  * @author zhenghq
  */
 function renderSettings(settings: Settings): void {
+  latestSettings = settings
+  uiLocale.value = settings.uiLocale
+  uiLocale.dataset.currentLocale = settings.uiLocale
   themeMode.value = settings.themeMode
   for (const card of themePresetCards) {
     card.setAttribute('aria-pressed', String(card.dataset.themePreset === settings.themePreset))
@@ -467,8 +505,8 @@ function renderSettings(settings: Settings): void {
   dingTalkClientId.value = settings.dingTalkClientId
   dingTalkClientSecret.value = ''
   dingTalkSecretStatus.textContent = settings.dingTalkSecretConfigured
-    ? 'Secret 已安全配置；留空保存将保留原值'
-    : 'Secret 未配置'
+    ? t('settings.dingTalk.secretConfigured')
+    : t('settings.dingTalk.secretMissing')
   dingTalkSecretStatus.className = settings.dingTalkSecretConfigured
     ? 'field-hint dingtalk-secret-status configured'
     : 'field-hint dingtalk-secret-status'
@@ -479,8 +517,8 @@ function renderSettings(settings: Settings): void {
   aiModel.value = settings.aiModel
   aiApiKey.value = ''
   aiApiKeyStatus.textContent = settings.aiApiKeyConfigured
-    ? 'API Key 已安全配置；留空保存将保留原值'
-    : 'API Key 未配置'
+    ? t('settings.ai.secretConfigured')
+    : t('settings.ai.apiKeyMissing')
   aiApiKeyStatus.className = settings.aiApiKeyConfigured
     ? 'field-hint ai-api-key-status configured'
     : 'field-hint ai-api-key-status'
@@ -494,10 +532,10 @@ function renderSettings(settings: Settings): void {
   }
   ocrScale.value = String(settings.ocrScale)
   ocrTesseractEnabled.checked = settings.ocrTesseractEnabled
-  schemaVersion.textContent = `配置 v${settings.schemaVersion}`
+  schemaVersion.textContent = `${t('settings.schemaVersion')} v${settings.schemaVersion}`
 
   if (![...autohide.options].some((option) => option.value === String(settings.autoHideMs))) {
-    autohide.add(new Option(`自定义 (${settings.autoHideMs}ms)`, String(settings.autoHideMs)))
+    autohide.add(new Option(t('settings.autoHide.custom', { ms: settings.autoHideMs }), String(settings.autoHideMs)))
   }
   autohide.value = String(settings.autoHideMs)
   updateTriggerHint(settings.triggerMode)
@@ -525,20 +563,39 @@ function saveThemePreset(card: HTMLButtonElement): void {
 }
 
 /**
+ * 按当前界面语言重建源语言、目标语言与 OCR 语言下拉选项。
+ * 重建前记录已选值，重建后恢复，避免语言切换丢失用户选择。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function populateLanguageSelects(): void {
+  const previousTarget = targetLang.value
+  const previousSource = sourceLang.value
+  const previousOcr = ocrLang.value
+  const languages = localizedLanguages(localeRuntime.locale)
+
+  targetLang.textContent = ''
+  targetLang.add(new Option(t('settings.targetLang.auto'), 'auto'))
+  for (const language of languages) targetLang.add(new Option(language.label, language.code))
+  if (previousTarget) targetLang.value = previousTarget
+
+  sourceLang.textContent = ''
+  sourceLang.add(new Option(t('settings.sourceLang.auto'), 'auto'))
+  for (const language of languages) sourceLang.add(new Option(language.label, language.code))
+  if (previousSource) sourceLang.value = previousSource
+
+  ocrLang.textContent = ''
+  for (const language of languages) ocrLang.add(new Option(language.label, language.code))
+  if (previousOcr) ocrLang.value = previousOcr
+}
+
+/**
  * 初始化设置页语言选项、当前设置和 Docker 命令。
  * @returns 初始化完成后的 Promise。
  * @author zhenghq
  */
 async function initialize(): Promise<void> {
-  for (const language of [{ code: 'auto', label: '自动中英互译' }, ...LANGUAGES]) {
-    targetLang.add(new Option(language.label, language.code))
-  }
-  for (const language of [{ code: 'auto', label: '自动检测' }, ...LANGUAGES]) {
-    sourceLang.add(new Option(language.label, language.code))
-  }
-  for (const language of LANGUAGES) {
-    ocrLang.add(new Option(language.label, language.code))
-  }
+  populateLanguageSelects()
 
   renderSettings(await window.api.getSettings())
   renderOcrStatus(await window.api.getOcrStatus())
@@ -553,15 +610,19 @@ async function initialize(): Promise<void> {
  * @author zhenghq
  */
 function renderOcrStatus(status: OcrStatus): void {
+  latestOcrStatus = status
   ocrModelName.textContent = status.modelName
   ocrModelVersion.textContent = status.modelVersion
   ocrModelLicense.textContent = status.license
   const enabledEngines = [
-    status.systemAvailable ? '系统 OCR' : '',
+    status.systemAvailable ? t('settings.ocr.engineSystemShort') : '',
     status.paddleAvailable ? 'PaddleOCR' : '',
     status.tesseractAvailable ? 'Tesseract' : ''
   ].filter(Boolean)
-  ocrModelStatus.textContent = `${status.message}；可用引擎：${enabledEngines.join('、') || '暂无'}`
+  ocrModelStatus.textContent = t('settings.ocr.availableEngines', {
+    message: status.message,
+    engines: enabledEngines.join(localeRuntime.locale === 'zh-CN' ? '、' : ', ') || t('settings.ocr.noEngines')
+  })
   ocrModelStatus.className = status.paddleAvailable || status.systemAvailable || status.tesseractAvailable
     ? 'status ocr-model-status online'
     : 'status ocr-model-status offline'
@@ -576,7 +637,7 @@ function renderOcrStatus(status: OcrStatus): void {
 function renderUpdateStatus(status: UpdateStatus): void {
   latestUpdateStatus = status
   currentVersion.textContent = `v${status.currentVersion}`
-  latestVersion.textContent = status.latestVersion ? `v${status.latestVersion}` : '尚未检查'
+  latestVersion.textContent = status.latestVersion ? `v${status.latestVersion}` : t('settings.update.notChecked')
   updateStatus.textContent = status.message
   updateStatus.className = status.phase === 'error'
     ? 'status update-status offline'
@@ -589,13 +650,13 @@ function renderUpdateStatus(status: UpdateStatus): void {
   const sameVersionNewBuild = status.updateReason === 'same-version-new-build'
   const openReleaseOnly = status.updateAction === 'open-release'
   const buildLabels = [
-    status.localBuildLabel ? `当前 ${status.localBuildLabel}` : '',
+    status.localBuildLabel ? `${t('settings.update.currentVersion')} ${status.localBuildLabel}` : '',
     status.remoteBuildLabel && status.remoteBuildLabel !== status.localBuildLabel
-      ? `最新 ${status.remoteBuildLabel}`
+      ? `${t('settings.update.latestVersion')} ${status.remoteBuildLabel}`
       : ''
   ].filter(Boolean)
   buildIdentityRow.hidden = buildLabels.length === 0
-  buildIdentity.textContent = buildLabels.join(' → ') || '尚未检查'
+  buildIdentity.textContent = buildLabels.join(' → ') || t('settings.update.notChecked')
 
   const busy = status.phase === 'checking' || status.phase === 'downloading'
   const hasManualDownload = status.manualDownloadAvailable === true && (
@@ -619,13 +680,15 @@ function renderUpdateStatus(status: UpdateStatus): void {
   updateCancelButton.hidden = status.phase !== 'downloading'
   removeQuarantineButton.hidden = !manualDownloadReady
   if (status.phase === 'downloaded' && !sameVersionNewBuild) {
-    updateActionButton.textContent = '立即重启升级'
+    updateActionButton.textContent = t('settings.update.restartToInstall')
   } else if (openReleaseOnly) {
-    updateActionButton.textContent = '打开 GitHub Release 手动更新'
+    updateActionButton.textContent = t('settings.update.openReleaseManual')
   } else if (hasManualDownload) {
-    updateActionButton.textContent = manualDownloadReady ? '重新下载 DMG' : '下载并打开 DMG'
+    updateActionButton.textContent = manualDownloadReady
+      ? t('settings.update.redownloadDmg')
+      : t('settings.update.downloadAndOpenDmg')
   } else {
-    updateActionButton.textContent = '下载并安装'
+    updateActionButton.textContent = t('settings.update.downloadAndInstall')
   }
 
   const progress = status.progress
@@ -637,23 +700,23 @@ function renderUpdateStatus(status: UpdateStatus): void {
   if (progress) {
     const percent = Math.max(0, Math.min(100, progress.percent))
     updateProgressBar.value = percent
-    updateProgressText.textContent = formatUpdateProgressText(progress)
+    updateProgressText.textContent = formatUpdateProgressTextForLocale(progress, localeRuntime.translator)
   }
 
   if (status.phase === 'disabled') {
-    updateInstallHint.textContent = '开发环境不会访问更新服务，请使用正式安装包验证自动更新。'
+    updateInstallHint.textContent = t('settings.update.hint.dev')
   } else if (sameVersionNewBuild && openReleaseOnly) {
-    updateInstallHint.textContent = '发现同版本的新构建；当前平台不支持应用内自动安装，请打开 GitHub Release 手动下载覆盖安装。'
+    updateInstallHint.textContent = t('settings.update.hint.sameVersionOpenRelease')
   } else if (sameVersionNewBuild) {
-    updateInstallHint.textContent = '发现同版本的新构建；点击后会下载并校验对应架构的 DMG，仍由你确认拖入“应用程序”覆盖旧版本。'
+    updateInstallHint.textContent = t('settings.update.hint.sameVersionManualDmg')
   } else if (openReleaseOnly) {
-    updateInstallHint.textContent = '当前更新需要在 GitHub Release 手动下载安装包并覆盖安装。'
+    updateInstallHint.textContent = t('settings.update.hint.openReleaseOnly')
   } else if (hasManualDownload) {
     updateInstallHint.textContent = manualDownloadReady
-      ? '更新包已下载到“下载”文件夹并打开 DMG；请手动拖入“应用程序”覆盖旧版本，再点击“解除 macOS 隔离属性”。'
-      : '点击升级后，更新包会下载到“下载”文件夹并自动打开 DMG。'
+      ? t('settings.update.hint.manualDownloaded')
+      : t('settings.update.hint.manualDownload')
   } else {
-    updateInstallHint.textContent = '检测到新版本后由你确认下载；下载完成后可立即重启并完成升级。'
+    updateInstallHint.textContent = t('settings.update.hint.automatic')
   }
 }
 
@@ -666,7 +729,7 @@ async function checkApplicationUpdate(): Promise<void> {
   try {
     renderUpdateStatus(await window.api.checkForUpdates())
   } catch (error) {
-    updateStatus.textContent = `检查更新失败：${(error as Error).message || '未知错误'}`
+    updateStatus.textContent = t('settings.update.checkFailed', { message: (error as Error).message || t('common.unknownError') })
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -687,7 +750,7 @@ async function runUpdateAction(): Promise<void> {
     const status = await window.api.downloadUpdate()
     renderUpdateStatus(status)
   } catch (error) {
-    updateStatus.textContent = `更新操作失败：${(error as Error).message || '未知错误'}`
+    updateStatus.textContent = t('settings.update.actionFailed', { message: (error as Error).message || t('common.unknownError') })
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -701,7 +764,7 @@ async function cancelUpdateDownload(): Promise<void> {
   try {
     renderUpdateStatus(await window.api.cancelUpdateDownload())
   } catch (error) {
-    updateStatus.textContent = `取消下载失败：${(error as Error).message || '未知错误'}`
+    updateStatus.textContent = t('settings.update.cancelFailed', { message: (error as Error).message || t('common.unknownError') })
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -720,7 +783,7 @@ async function removeMacOSQuarantine(): Promise<void> {
       ? 'status update-status online'
       : 'status update-status offline'
   } catch (error) {
-    updateStatus.textContent = `解除隔离属性失败：${(error as Error).message || '未知错误'}`
+    updateStatus.textContent = t('settings.update.quarantineFailed', { message: (error as Error).message || t('common.unknownError') })
     updateStatus.className = 'status update-status offline'
   } finally {
     const status = latestUpdateStatus
@@ -740,7 +803,7 @@ async function openApplicationRelease(): Promise<void> {
   try {
     await window.api.openUpdatePage()
   } catch (error) {
-    updateStatus.textContent = `无法打开发布页：${(error as Error).message || '未知错误'}`
+    updateStatus.textContent = t('settings.update.openReleaseFailed', { message: (error as Error).message || t('common.unknownError') })
     updateStatus.className = 'status update-status offline'
   }
 }
@@ -806,7 +869,7 @@ function saveDoubleClickSelectionButtonEnabled(): void {
 function saveHotkey(): void {
   const accelerator = hotkey.value.trim()
   if (isCopyShortcut(accelerator)) {
-    flash('Ctrl+C / Command+C 保留给系统复制，请换一个翻译快捷键')
+    flash(t('error.copyShortcutAsTranslationHotkey'), 'warning')
     hotkey.focus()
     hotkey.select()
     return
@@ -895,7 +958,7 @@ function saveWebTranslationSettings(): void {
 function saveOcrSettings(): void {
   const accelerator = ocrHotkey.value.trim()
   if (isCopyShortcut(accelerator)) {
-    flash('Ctrl+C / Command+C 保留给系统复制，请换一个 OCR 快捷键')
+    flash(t('error.copyShortcutAsOcrHotkey'), 'warning')
     ocrHotkey.focus()
     ocrHotkey.select()
     return
@@ -1007,7 +1070,9 @@ function renderAiModelOptions(): void {
   if (aiModelVisibleOptions.length === 0) {
     const empty = document.createElement('li')
     empty.className = 'model-combobox-empty'
-    empty.textContent = aiModelCandidates.length === 0 ? '暂无模型，请刷新或手动输入' : '无匹配模型，可直接手动输入'
+    empty.textContent = aiModelCandidates.length === 0
+      ? t('settings.ai.modelsEmpty')
+      : t('settings.ai.modelsNoMatch')
     aiModelOptions.appendChild(empty)
     aiModelActiveIndex = -1
     return
@@ -1183,14 +1248,14 @@ function renderAiModelListResult(result: AiModelListResult): void {
   setAiModelCandidates(result.models)
   if (result.state === 'success') {
     aiModelStatus.textContent = result.models.length > 0
-      ? `已加载 ${result.models.length} 个模型`
-      : '服务端未返回模型，请手动输入'
+      ? t('settings.ai.modelsLoaded', { count: result.models.length })
+      : t('settings.ai.modelsEmpty')
     aiModelStatus.className = 'status ai-model-status online'
   } else if (result.state === 'unsupported') {
-    aiModelStatus.textContent = result.message || '当前协议不支持模型列表'
+    aiModelStatus.textContent = result.message || t('settings.ai.modelsUnsupported')
     aiModelStatus.className = 'status ai-model-status'
   } else {
-    aiModelStatus.textContent = result.message || '模型列表加载失败'
+    aiModelStatus.textContent = result.message || t('settings.ai.modelsLoadFailed')
     aiModelStatus.className = 'status ai-model-status offline'
   }
   aiModelStatus.dataset.state = result.state
@@ -1213,10 +1278,10 @@ async function saveAiConfig(): Promise<void> {
       apiKey: aiApiKey.value
     })
     renderSettings(settings)
-    flash('AI 配置已保存并生效')
+    flash(t('settings.ai.saved'))
     await listAiModels()
   } catch (error) {
-    flash(`AI 配置保存失败：${(error as Error).message || '未知错误'}`)
+    flash(t('settings.ai.saveFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
   } finally {
     setAiBusy(false)
   }
@@ -1228,18 +1293,18 @@ async function saveAiConfig(): Promise<void> {
  * @author zhenghq
  */
 async function clearAiApiKey(): Promise<void> {
-  if (!window.confirm('确定清除已保存的 AI API Key 吗？清除后需要鉴权的协议将无法使用。')) return
+  if (!window.confirm(t('settings.ai.clearConfirm'))) return
 
   setAiBusy(true)
   try {
     const settings = await window.api.clearAiApiKey()
     renderSettings(settings)
-    aiStatus.textContent = 'API Key 已清除，请重新配置后检测'
+    aiStatus.textContent = t('settings.ai.clearedHint')
     aiStatus.className = 'status ai-status'
     delete aiStatus.dataset.code
-    flash('AI API Key 已清除')
+    flash(t('settings.ai.clearedFlash'))
   } catch (error) {
-    flash(`清除失败：${(error as Error).message || '未知错误'}`)
+    flash(t('settings.ai.clearFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
   } finally {
     setAiBusy(false)
   }
@@ -1260,7 +1325,7 @@ async function refreshAiModels(): Promise<void> {
  * @author zhenghq
  */
 async function listAiModels(): Promise<void> {
-  aiModelStatus.textContent = '加载模型列表中…'
+  aiModelStatus.textContent = t('settings.ai.modelsLoading')
   aiModelStatus.className = 'status ai-model-status'
   delete aiModelStatus.dataset.state
   try {
@@ -1275,7 +1340,7 @@ async function listAiModels(): Promise<void> {
     renderAiModelListResult({
       state: 'error',
       models: [],
-      message: (error as Error).message || '模型列表加载失败，可手动输入'
+      message: (error as Error).message || t('settings.ai.modelsLoadFailedManual')
     })
   }
 }
@@ -1300,7 +1365,7 @@ async function checkAi(): Promise<void> {
   } catch {
     // 保存失败时仍允许尝试检测
   }
-  aiStatus.textContent = '检测中…'
+  aiStatus.textContent = t('settings.ai.checking')
   aiStatus.className = 'status ai-status'
   delete aiStatus.dataset.code
   try {
@@ -1309,7 +1374,7 @@ async function checkAi(): Promise<void> {
     renderAiStatus({
       ok: false,
       code: 'service',
-      message: (error as Error).message || '检测失败，请稍后重试'
+      message: (error as Error).message || t('settings.ai.checkFailed')
     })
   } finally {
     setAiBusy(false)
@@ -1357,9 +1422,9 @@ async function saveDingTalkConfig(): Promise<void> {
       clientSecret: dingTalkClientSecret.value
     })
     renderSettings(settings)
-    flash('钉钉配置已保存并生效')
+    flash(t('settings.dingTalk.saved'))
   } catch (error) {
-    flash(`钉钉配置保存失败：${(error as Error).message || '未知错误'}`)
+    flash(t('settings.dingTalk.saveFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
   } finally {
     setDingTalkBusy(false)
   }
@@ -1371,18 +1436,18 @@ async function saveDingTalkConfig(): Promise<void> {
  * @author zhenghq
  */
 async function clearDingTalkClientSecret(): Promise<void> {
-  if (!window.confirm('确定清除已保存的钉钉 ClientSecret 吗？清除后钉钉翻译将暂停使用。')) return
+  if (!window.confirm(t('settings.dingTalk.clearConfirm'))) return
 
   setDingTalkBusy(true)
   try {
     const settings = await window.api.clearDingTalkSecret()
     renderSettings(settings)
-    dingTalkStatus.textContent = 'Secret 已清除，请重新配置后检测'
+    dingTalkStatus.textContent = t('settings.dingTalk.secretCleared')
     dingTalkStatus.className = 'status dingtalk-status'
     delete dingTalkStatus.dataset.code
-    flash('钉钉 ClientSecret 已清除')
+    flash(t('settings.dingTalk.clearedFlash'))
   } catch (error) {
-    flash(`清除失败：${(error as Error).message || '未知错误'}`)
+    flash(t('settings.dingTalk.clearFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
   } finally {
     setDingTalkBusy(false)
   }
@@ -1395,7 +1460,7 @@ async function clearDingTalkClientSecret(): Promise<void> {
  */
 async function checkDingTalkConfig(): Promise<void> {
   setDingTalkBusy(true)
-  dingTalkStatus.textContent = '检测中…'
+  dingTalkStatus.textContent = t('settings.dingTalk.checking')
   dingTalkStatus.className = 'status dingtalk-status'
   delete dingTalkStatus.dataset.code
   try {
@@ -1404,7 +1469,7 @@ async function checkDingTalkConfig(): Promise<void> {
     renderDingTalkStatus({
       ok: false,
       code: 'service',
-      message: (error as Error).message || '检测失败，请稍后重试'
+      message: (error as Error).message || t('settings.dingTalk.checkFailed')
     })
   } finally {
     setDingTalkBusy(false)
@@ -1446,13 +1511,15 @@ async function saveMicrosoftEnabled(): Promise<void> {
   try {
     const settings = await window.api.setSettings({ microsoftEnabled: microsoftEnabled.checked })
     renderSettings(settings)
-    microsoftStatus.textContent = settings.microsoftEnabled ? '已启用，建议检测当前可用性' : '通道已关闭'
+    microsoftStatus.textContent = settings.microsoftEnabled
+      ? t('settings.microsoft.enabledHint')
+      : t('settings.microsoft.disabled')
     microsoftStatus.className = 'status microsoft-status'
     delete microsoftStatus.dataset.code
-    flash('微软翻译启用状态已保存并生效')
+    flash(t('settings.microsoft.saved'))
   } catch (error) {
     renderSettings(await window.api.getSettings())
-    flash(`微软翻译启用状态保存失败：${(error as Error).message || '未知错误'}`)
+    flash(t('settings.microsoft.saveFailed', { message: (error as Error).message || t('common.unknownError') }), 'error')
   } finally {
     setMicrosoftBusy(false)
   }
@@ -1465,7 +1532,7 @@ async function saveMicrosoftEnabled(): Promise<void> {
  */
 async function checkMicrosoftConfig(): Promise<void> {
   setMicrosoftBusy(true)
-  microsoftStatus.textContent = '检测中…'
+  microsoftStatus.textContent = t('settings.microsoft.checking')
   microsoftStatus.className = 'status microsoft-status'
   delete microsoftStatus.dataset.code
   try {
@@ -1474,7 +1541,7 @@ async function checkMicrosoftConfig(): Promise<void> {
     renderMicrosoftStatus({
       ok: false,
       code: 'service',
-      message: (error as Error).message || '检测失败，请稍后重试'
+      message: (error as Error).message || t('settings.microsoft.checkFailed')
     })
   } finally {
     setMicrosoftBusy(false)
@@ -1505,14 +1572,14 @@ async function saveDeepLxConfig(showFeedback = true): Promise<boolean> {
       url: deeplxUrl.value.trim()
     })
     renderSettings(settings)
-    if (showFeedback) flash('DeepLX 配置已保存并生效')
+    if (showFeedback) flash(t('settings.deepLx.saved'))
     return true
   } catch (error) {
-    const message = (error as Error).message || '未知错误'
+    const message = (error as Error).message || t('common.unknownError')
     if (showFeedback) {
-      flash(`DeepLX 配置保存失败：${message}`)
+      flash(t('settings.deepLx.saveFailed', { message }), 'error')
     } else {
-      deeplxStatus.textContent = `✗ 配置保存失败：${message}`
+      deeplxStatus.textContent = t('settings.deepLx.statusSaveFailed', { message })
       deeplxStatus.className = 'status offline'
     }
     return false
@@ -1528,7 +1595,7 @@ async function saveDeepLxConfig(showFeedback = true): Promise<boolean> {
  */
 async function checkDeepLxStatus(): Promise<void> {
   setDeepLxBusy(true)
-  deeplxStatus.textContent = '检测中…'
+  deeplxStatus.textContent = t('settings.deepLx.checking')
   deeplxStatus.className = 'status'
   try {
     const saved = await saveDeepLxConfig(false)
@@ -1536,14 +1603,14 @@ async function checkDeepLxStatus(): Promise<void> {
     setDeepLxBusy(true)
     const status = await window.api.checkDeepLx()
     if (status.online) {
-      deeplxStatus.textContent = `✓ ${status.message || '服务在线'}`
+      deeplxStatus.textContent = `✓ ${status.message || t('settings.deepLx.online')}`
       deeplxStatus.className = 'status online'
     } else {
-      deeplxStatus.textContent = `✗ ${status.message || '无法连接'}`
+      deeplxStatus.textContent = `✗ ${status.message || t('settings.deepLx.offline')}`
       deeplxStatus.className = 'status offline'
     }
   } catch (error) {
-    deeplxStatus.textContent = `✗ 检测失败：${(error as Error).message || '未知错误'}`
+    deeplxStatus.textContent = t('settings.deepLx.checkFailed', { message: (error as Error).message || t('common.unknownError') })
     deeplxStatus.className = 'status offline'
   } finally {
     setDeepLxBusy(false)
@@ -1557,7 +1624,7 @@ async function checkDeepLxStatus(): Promise<void> {
  */
 async function copyDockerCommand(): Promise<void> {
   window.api.copy(dockerCmd.value)
-  flash('已复制命令')
+  flash(t('settings.deepLx.copied'))
 }
 
 /**
@@ -1575,9 +1642,7 @@ function openDeployDocument(): void {
  * @author zhenghq
  */
 function requestStopService(): void {
-  const confirmed = window.confirm(
-    '停止服务后，托盘图标和划词翻译功能都会退出。需要使用时请重新启动应用。确定停止吗？'
-  )
+  const confirmed = window.confirm(t('settings.service.stopConfirm'))
   if (!confirmed) return
   window.api.stopService()
 }
@@ -1586,6 +1651,11 @@ void initializeWindowTitlebar()
 initializeSettingsTabs()
 
 themeMode.addEventListener('change', saveThemeMode)
+uiLocale.addEventListener('change', () => void saveUiLocale())
+window.api.onSettingsChanged((settings) => {
+  uiLocale.value = settings.uiLocale
+  uiLocale.dataset.currentLocale = settings.uiLocale
+})
 for (const card of themePresetCards) card.addEventListener('click', () => saveThemePreset(card))
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
@@ -1665,7 +1735,10 @@ updateActionButton.addEventListener('click', () => void runUpdateAction())
 updateCancelButton.addEventListener('click', () => void cancelUpdateDownload())
 openReleaseButton.addEventListener('click', () => void openApplicationRelease())
 removeQuarantineButton.addEventListener('click', () => void removeMacOSQuarantine())
-window.api.onSettingsChanged(renderSettings)
+window.api.onSettingsChanged((settings) => {
+  renderSettings(settings)
+  if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
+})
 window.api.onUpdateStatusChanged(renderUpdateStatus)
 
 void initialize()
@@ -1820,7 +1893,7 @@ async function initializeLogsPanel(): Promise<void> {
   })
   logsTogglePauseButton.addEventListener('click', () => {
     logsPaused = !logsPaused
-    logsTogglePauseButton.textContent = logsPaused ? '恢复' : '暂停'
+    logsTogglePauseButton.textContent = logsPaused ? t('settings.logs.resume') : t('settings.logs.pause')
     if (!logsPaused && logsPendingEntries.length > 0) {
       const pending = logsPendingEntries
       logsPendingEntries = []
@@ -1838,7 +1911,7 @@ async function initializeLogsPanel(): Promise<void> {
     void (async () => {
       const savedPath = await window.api.exportLogs()
       if (savedPath === null) return
-      logsStatus.textContent = `日志已导出到 ${savedPath}`
+      logsStatus.textContent = t('settings.logs.exportedTo', { path: savedPath })
       setTimeout(() => { logsStatus.textContent = '' }, 4000)
     })()
   })
@@ -1865,28 +1938,28 @@ const diagnosticsToggle = document.getElementById('diagnostics-toggle') as HTMLB
 const DIAGNOSTICS_COLLAPSED_STORAGE_KEY = 'selection-translator.settings.diagnostics-collapsed'
 let diagnosticsInitialized = false
 
-/** 入口中文展示名。 */
-const DIAGNOSTIC_ENTRY_LABELS: Record<string, string> = {
-  button: '按钮',
-  hotkey: '快捷键',
-  auto: '自动'
+/** 入口展示名对应的词条 key。 */
+const DIAGNOSTIC_ENTRY_KEYS: Record<string, string> = {
+  button: 'settings.diagnostics.entry.button',
+  hotkey: 'settings.diagnostics.entry.hotkey',
+  auto: 'settings.diagnostics.entry.auto'
 }
 
-/** 命中级别中文展示名。 */
-const DIAGNOSTIC_LEVEL_LABELS: Record<string, string> = {
-  'native-read': '原生直读',
-  'copy-polled': '复制轮询',
-  'copy-late': '稳定期命中',
-  failed: '失败'
+/** 命中级别展示名对应的词条 key。 */
+const DIAGNOSTIC_LEVEL_KEYS: Record<string, string> = {
+  'native-read': 'settings.diagnostics.level.nativeRead',
+  'copy-polled': 'settings.diagnostics.level.copyPolled',
+  'copy-late': 'settings.diagnostics.level.copyLate',
+  failed: 'settings.diagnostics.level.failed'
 }
 
-/** 失败原因中文展示名。 */
-const DIAGNOSTIC_REASON_LABELS: Record<string, string> = {
-  empty: '空选区',
-  timeout: '超时',
-  unsupported: '不支持',
-  permission: '权限',
-  unknown: '未知'
+/** 失败原因展示名对应的词条 key。 */
+const DIAGNOSTIC_REASON_KEYS: Record<string, string> = {
+  empty: 'settings.diagnostics.reason.empty',
+  timeout: 'settings.diagnostics.reason.timeout',
+  unsupported: 'settings.diagnostics.reason.unsupported',
+  permission: 'settings.diagnostics.reason.permission',
+  unknown: 'settings.diagnostics.reason.unknown'
 }
 
 /**
@@ -1908,7 +1981,7 @@ function renderDiagnosticDay(date: string, summary: {
 
   const title = document.createElement('div')
   title.className = 'diagnostics-day-title'
-  title.textContent = `${date}（共 ${summary.total} 次）`
+  title.textContent = t('settings.diagnostics.dayTitle', { date, count: summary.total })
   day.appendChild(title)
 
   // 入口 × 级别矩阵
@@ -1919,7 +1992,7 @@ function renderDiagnosticDay(date: string, summary: {
     item.className = 'diagnostics-matrix-item'
     const label = document.createElement('span')
     label.className = 'diagnostics-matrix-label'
-    label.textContent = DIAGNOSTIC_ENTRY_LABELS[entry] ?? entry
+    label.textContent = DIAGNOSTIC_ENTRY_KEYS[entry] ? t(DIAGNOSTIC_ENTRY_KEYS[entry]!) : entry
     const value = document.createElement('span')
     value.className = 'diagnostics-matrix-value'
     value.textContent = String(count)
@@ -1937,7 +2010,7 @@ function renderDiagnosticDay(date: string, summary: {
     item.className = 'diagnostics-matrix-item'
     const label = document.createElement('span')
     label.className = 'diagnostics-matrix-label'
-    label.textContent = DIAGNOSTIC_LEVEL_LABELS[level] ?? level
+    label.textContent = DIAGNOSTIC_LEVEL_KEYS[level] ? t(DIAGNOSTIC_LEVEL_KEYS[level]!) : level
     const value = document.createElement('span')
     value.className = 'diagnostics-matrix-value'
     value.textContent = String(count)
@@ -1954,12 +2027,13 @@ function renderDiagnosticDay(date: string, summary: {
     reasons.className = 'diagnostics-reasons'
     const subtitle = document.createElement('div')
     subtitle.className = 'diagnostics-subtitle'
-    subtitle.textContent = '失败原因'
+    subtitle.textContent = t('settings.diagnostics.failureReasons')
     reasons.appendChild(subtitle)
     for (const reason of reasonKeys) {
       const tag = document.createElement('span')
       tag.className = 'diagnostics-tag'
-      tag.textContent = `${DIAGNOSTIC_REASON_LABELS[reason] ?? reason} ${summary.byReason[reason]}`
+      const reasonLabel = DIAGNOSTIC_REASON_KEYS[reason] ? t(DIAGNOSTIC_REASON_KEYS[reason]!) : reason
+      tag.textContent = `${reasonLabel} ${summary.byReason[reason]}`
       reasons.appendChild(tag)
     }
     day.appendChild(reasons)
@@ -1971,7 +2045,7 @@ function renderDiagnosticDay(date: string, summary: {
     apps.className = 'diagnostics-apps'
     const subtitle = document.createElement('div')
     subtitle.className = 'diagnostics-subtitle'
-    subtitle.textContent = '失败应用 Top 5'
+    subtitle.textContent = t('settings.diagnostics.topApps')
     apps.appendChild(subtitle)
     for (const item of summary.topApps) {
       const tag = document.createElement('span')
@@ -2000,7 +2074,7 @@ function restoreDiagnosticsCollapsedState(): void {
   diagnosticsSection.classList.toggle('diagnostics-collapsed', collapsed)
   diagnosticsBody.hidden = collapsed
   diagnosticsToggle.ariaExpanded = String(!collapsed)
-  diagnosticsToggle.textContent = collapsed ? '展开' : '收起'
+  diagnosticsToggle.textContent = collapsed ? t('settings.diagnostics.expand') : t('settings.diagnostics.collapse')
 }
 
 /**
@@ -2013,11 +2087,33 @@ function toggleDiagnosticsCollapsed(): void {
   diagnosticsSection.classList.toggle('diagnostics-collapsed', !expanded)
   diagnosticsBody.hidden = !expanded
   diagnosticsToggle.ariaExpanded = String(expanded)
-  diagnosticsToggle.textContent = expanded ? '收起' : '展开'
+  diagnosticsToggle.textContent = expanded ? t('settings.diagnostics.collapse') : t('settings.diagnostics.expand')
   try {
     window.localStorage.setItem(DIAGNOSTICS_COLLAPSED_STORAGE_KEY, expanded ? '0' : '1')
   } catch {
     // 本地缓存不可用时仍允许用户手动切换。
+  }
+}
+
+/**
+ * 按当前界面语言重新拉取并渲染取词诊断摘要。
+ * @returns 刷新完成后的 Promise。
+ * @author zhenghq
+ */
+async function refreshDiagnosticsSummary(): Promise<void> {
+  const summary = await window.api.getCaptureDiagnosticsSummary()
+  diagnosticsSummary.textContent = ''
+
+  const dates = Object.keys(summary.days).sort()
+  if (dates.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'diagnostics-empty'
+    empty.textContent = t('settings.diagnostics.empty')
+    diagnosticsSummary.appendChild(empty)
+  } else {
+    for (const date of dates) {
+      diagnosticsSummary.appendChild(renderDiagnosticDay(date, summary.days[date]!))
+    }
   }
 }
 
@@ -2030,27 +2126,13 @@ async function initializeDiagnosticsPanel(): Promise<void> {
   if (diagnosticsInitialized) return
   diagnosticsInitialized = true
   restoreDiagnosticsCollapsedState()
-
-  const summary = await window.api.getCaptureDiagnosticsSummary()
-  diagnosticsSummary.textContent = ''
-
-  const dates = Object.keys(summary.days).sort()
-  if (dates.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'diagnostics-empty'
-    empty.textContent = '近两天暂无取词诊断记录'
-    diagnosticsSummary.appendChild(empty)
-  } else {
-    for (const date of dates) {
-      diagnosticsSummary.appendChild(renderDiagnosticDay(date, summary.days[date]!))
-    }
-  }
+  await refreshDiagnosticsSummary()
 
   diagnosticsExportButton.addEventListener('click', () => {
     void (async () => {
       const savedPath = await window.api.exportCaptureDiagnostics()
       if (savedPath === null) return
-      diagnosticsStatus.textContent = `诊断已导出到 ${savedPath}`
+      diagnosticsStatus.textContent = t('settings.diagnostics.exportedTo', { path: savedPath })
       setTimeout(() => { diagnosticsStatus.textContent = '' }, 4000)
     })()
   })
@@ -2064,3 +2146,37 @@ for (const button of settingsTabButtons) {
   })
 }
 if (readSettingsTabFromHash() === 'logs') void initializeDiagnosticsPanel()
+
+/**
+ * 界面语言切换后刷新所有动态文案，同时保留表单值、当前 Tab、滚动位置与面板展开状态。
+ * @param locale 切换后的界面语言。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleLocaleChanged(locale: Locale): void {
+  // 语言名称与提示属于词条内容，按新语言重渲染并恢复当前表单值。
+  if (latestSettings) {
+    renderSettings(latestSettings)
+  } else {
+    populateLanguageSelects()
+  }
+  updateTriggerHint(triggerMode.value as TriggerMode)
+  updateSpeechProviderHint(speechProvider.value as SpeechProvider)
+
+  // 更新区与 OCR 状态由主进程消息驱动，使用缓存状态按新语言重渲染。
+  if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
+  if (latestOcrStatus) renderOcrStatus(latestOcrStatus)
+
+  if (logsInitialized) {
+    logsTogglePauseButton.textContent = logsPaused ? t('settings.logs.resume') : t('settings.logs.pause')
+  }
+  if (diagnosticsInitialized) {
+    restoreDiagnosticsCollapsedState()
+    void refreshDiagnosticsSummary()
+  }
+
+  // 保存反馈与状态提示属于动态文本，切换后清空，避免残留旧语言。
+  savedEl.classList.remove('visible')
+}
+
+localeRuntime.onLocaleChanged(handleLocaleChanged)

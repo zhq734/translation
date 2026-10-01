@@ -42,7 +42,7 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第
   const initializationIndex = source.indexOf('const initialization = app.whenReady()')
 
   assert.match(source, /dialog\.showMessageBox/u)
-  assert.match(source, /请先将“划词翻译”复制到“应用程序”文件夹/u)
+  assert.match(source, /detail:\s*t\('dialog\.installFromDiskImage\.detail'\)/u)
   assert.ok(warningIndex >= 0 && warningIndex < applyListenerIndex)
   assert.match(
     source,

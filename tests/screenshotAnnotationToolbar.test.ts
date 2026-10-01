@@ -1,34 +1,54 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  findOpeningTagById,
+  readAttributeI18nKey,
+  tForTest
+} from './helpers/i18n.ts'
 
 const selectionHtml = readFileSync('src/renderer/selection.html', 'utf8')
 const selectionRenderer = readFileSync('src/renderer/src/selection.ts', 'utf8')
 const selectionCss = readFileSync('src/renderer/src/selection.css', 'utf8')
 
-/** 六种标注工具按钮的 DOM id 与中文无障碍名称。 */
+/** 六种标注工具按钮的 DOM id 与无障碍名称词条 key。 */
 const annotationTools: ReadonlyArray<[string, string]> = [
-  ['ocr-tool-rect', '矩形'],
-  ['ocr-tool-ellipse', '椭圆'],
-  ['ocr-tool-arrow', '箭头'],
-  ['ocr-tool-brush', '画笔'],
-  ['ocr-tool-text', '文字'],
-  ['ocr-tool-mosaic', '马赛克']
+  ['ocr-tool-rect', 'selection.tool.rect'],
+  ['ocr-tool-ellipse', 'selection.tool.ellipse'],
+  ['ocr-tool-arrow', 'selection.tool.arrow'],
+  ['ocr-tool-brush', 'selection.tool.brush'],
+  ['ocr-tool-text', 'selection.tool.text'],
+  ['ocr-tool-mosaic', 'selection.tool.mosaic']
 ]
 
 /**
- * 校验截图工具栏提供六种标注工具按钮及中文无障碍属性。
+ * 校验指定元素的无障碍属性声明并匹配英文词条文本。
+ * @param id 元素 DOM id。
+ * @param attribute 需要校验的属性名。
+ * @param key 期望的 i18n 词条 key。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function assertI18nAttribute(id: string, attribute: string, key: string): void {
+  const tag = findOpeningTagById(selectionHtml, id)
+  assert.ok(tag, `缺少元素 ${id}`)
+  assert.equal(readAttributeI18nKey(tag, attribute), key, `${id} 的 ${attribute} i18n key 不匹配`)
+  assert.match(tag, new RegExp(`${attribute}="${tForTest('en-US', key)}"`, 'u'))
+}
+
+/**
+ * 校验截图工具栏提供六种标注工具按钮及本地化无障碍属性。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('截图工具栏应提供六种标注工具按钮', () => {
-  for (const [id, label] of annotationTools) {
-    const pattern = new RegExp(`id="${id}"[^>]*`, 'u')
-    const match = selectionHtml.match(pattern)
-    assert.ok(match, `缺少标注按钮 ${id}`)
-    const tag = match[0]
-    assert.match(tag, new RegExp(`title="${label}[^"]*"`, 'u'))
-    assert.match(tag, new RegExp(`aria-label="${label}[^"]*"`, 'u'))
+  for (const [id, key] of annotationTools) {
+    const tag = findOpeningTagById(selectionHtml, id)
+    assert.ok(tag, `缺少标注按钮 ${id}`)
+    assert.equal(readAttributeI18nKey(tag, 'title'), key)
+    assert.equal(readAttributeI18nKey(tag, 'aria-label'), key)
+    assert.match(tag, new RegExp(`title="${tForTest('en-US', key)}"`, 'u'))
+    assert.match(tag, new RegExp(`aria-label="${tForTest('en-US', key)}"`, 'u'))
     assert.match(tag, /aria-pressed="false"/u)
     assert.match(tag, new RegExp(`data-annotation-tool="${id.replace('ocr-tool-', '')}"`, 'u'))
   }
@@ -39,31 +59,31 @@ test('截图工具栏应提供六种标注工具按钮', () => {
 })
 
 /**
- * 校验颜色与粗细等样式控件、撤销/重做/清空按钮存在且具备中文无障碍名称。
+ * 校验颜色与粗细等样式控件、撤销/重做/清空按钮存在且具备本地化无障碍名称。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('截图工具栏应提供样式控件与编辑历史按钮', () => {
   // 颜色选择：预置颜色面板 + 浏览器自定义颜色输入
-  assert.match(selectionHtml, /id="ocr-color-toggle"[^>]*aria-label="标注颜色"/u)
+  assertI18nAttribute('ocr-color-toggle', 'aria-label', 'selection.annotationColor')
   assert.match(selectionHtml, /id="ocr-color-panel"/u)
   assert.match(selectionHtml, /id="ocr-color-custom"[^>]*type="color"/u)
-  assert.match(selectionHtml, /id="ocr-color-custom"[^>]*aria-label="自定义标注颜色"/u)
+  assertI18nAttribute('ocr-color-custom', 'aria-label', 'selection.customColor')
   assert.match(selectionHtml, /id="ocr-color-indicator"/u)
 
   // 线宽 / 字号 / 粗体 / 马赛克笔刷与像素块大小
   assert.match(selectionHtml, /id="ocr-stroke-width"[^>]*type="range"/u)
-  assert.match(selectionHtml, /id="ocr-stroke-width"[^>]*aria-label="线条粗细"/u)
+  assertI18nAttribute('ocr-stroke-width', 'aria-label', 'selection.strokeWidth')
   assert.match(selectionHtml, /id="ocr-font-size"[^>]*type="range"/u)
-  assert.match(selectionHtml, /id="ocr-font-size"[^>]*aria-label="文字字号"/u)
-  assert.match(selectionHtml, /id="ocr-text-bold"[^>]*aria-label="文字加粗"/u)
-  assert.match(selectionHtml, /id="ocr-mosaic-brush"[^>]*aria-label="马赛克笔刷大小"/u)
-  assert.match(selectionHtml, /id="ocr-mosaic-intensity"[^>]*aria-label="马赛克强度"/u)
+  assertI18nAttribute('ocr-font-size', 'aria-label', 'selection.fontSize')
+  assertI18nAttribute('ocr-text-bold', 'aria-label', 'selection.boldText')
+  assertI18nAttribute('ocr-mosaic-brush', 'aria-label', 'selection.mosaicBrushSize')
+  assertI18nAttribute('ocr-mosaic-intensity', 'aria-label', 'selection.mosaicIntensity')
 
   // 撤销 / 重做 / 清空标注
-  assert.match(selectionHtml, /id="ocr-undo"[^>]*aria-label="撤销"/u)
-  assert.match(selectionHtml, /id="ocr-redo"[^>]*aria-label="重做"/u)
-  assert.match(selectionHtml, /id="ocr-clear-annotations"[^>]*aria-label="清空标注"/u)
+  assertI18nAttribute('ocr-undo', 'aria-label', 'selection.undo')
+  assertI18nAttribute('ocr-redo', 'aria-label', 'selection.redo')
+  assertI18nAttribute('ocr-clear-annotations', 'aria-label', 'selection.clearAnnotations')
 })
 
 /**
@@ -76,7 +96,7 @@ test('截图覆盖层应提供标注画布与文字编辑框', () => {
   assert.match(selectionHtml, /id="ocr-annotation-preview"[^>]*aria-hidden="true"/u)
   assert.match(selectionHtml, /<canvas[^>]*id="ocr-annotation-canvas"/u)
   assert.match(selectionHtml, /<canvas[^>]*id="ocr-annotation-preview"/u)
-  assert.match(selectionHtml, /id="ocr-text-input"[^>]*aria-label="标注文字内容"/u)
+  assertI18nAttribute('ocr-text-input', 'aria-label', 'selection.annotationText')
 })
 
 /**

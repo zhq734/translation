@@ -11,6 +11,11 @@ import {
   MINIMUM_SEGMENT_SIZE
 } from '../src/main/updateRangeDownload.ts'
 import type { DownloadResumeSegment } from '../src/main/updateDownloadResume.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { translatorForTest } from './helpers/i18n.ts'
+
+// 更新下载错误文案默认跟随主进程界面语言；这里固定为中文以覆盖原有断言。
+setMainMessageTranslator(translatorForTest('zh-CN'))
 
 test('Range 探测在返回 206 且声明支持字节范围时应启用分片', () => {
   assert.deepEqual(

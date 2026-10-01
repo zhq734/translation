@@ -5,6 +5,7 @@ import {
 } from './microsoftErrors'
 import type { SupportedMicrosoftLanguagePair } from './microsoftLanguage'
 import type { DingTalkFetch } from './dingtalkTokenManager'
+import { translateMain } from './messages'
 
 const BING_TRANSLATOR_PAGE = 'https://www.bing.com/translator'
 const AUTH_EXPIRY_SAFETY_MARGIN_MS = 60_000
@@ -116,11 +117,15 @@ export class MicrosoftTranslationClient {
     pair: SupportedMicrosoftLanguagePair
   ): Promise<MicrosoftTranslationResult> {
     const chunks = this.splitText(text)
-    if (chunks.length === 0) throw new MicrosoftError('parameter', '微软翻译文本不能为空')
+    if (chunks.length === 0) {
+      throw new MicrosoftError('parameter', translateMain('microsoft.error.textEmpty'))
+    }
 
     const results = await Promise.all(chunks.map((chunk) => this.requestTranslation(chunk, pair)))
     const translation = results.map((result) => result.translation).join('')
-    if (!translation) throw new MicrosoftError('service', '微软翻译响应为空')
+    if (!translation) {
+      throw new MicrosoftError('service', translateMain('microsoft.error.responseEmpty'))
+    }
     return {
       translation,
       detectedLang: results.find((result) => result.detectedLang)?.detectedLang
@@ -182,7 +187,11 @@ export class MicrosoftTranslationClient {
     try {
       html = await response.text()
     } catch (error) {
-      throw new MicrosoftError('service', '微软翻译网页响应无法读取', { cause: error })
+      throw new MicrosoftError(
+        'service',
+        translateMain('microsoft.error.pageReadFailed'),
+        { cause: error }
+      )
     }
     const pageContext = this.resolvePageContext(response.url)
     return this.parseAuthentication(html, pageContext)
@@ -199,12 +208,12 @@ export class MicrosoftTranslationClient {
     try {
       parsed = new URL(responseUrl || BING_TRANSLATOR_PAGE)
     } catch {
-      throw new MicrosoftError('service', '微软翻译网页重定向地址无效')
+      throw new MicrosoftError('service', translateMain('microsoft.error.redirectInvalid'))
     }
     const hostname = parsed.hostname.toLowerCase()
     const trustedHost = hostname === 'bing.com' || hostname.endsWith('.bing.com')
     if (parsed.protocol !== 'https:' || !trustedHost) {
-      throw new MicrosoftError('service', '微软翻译网页重定向地址无效')
+      throw new MicrosoftError('service', translateMain('microsoft.error.redirectInvalid'))
     }
     return {
       origin: parsed.origin,
@@ -227,12 +236,15 @@ export class MicrosoftTranslationClient {
     const ig = /IG\s*:\s*"([A-Fa-f0-9]+)"/u.exec(html)?.[1]
     const iid = /data-iid\s*=\s*"([^"]+)"/u.exec(html)?.[1]
     if (!prevention || !ig || !iid) {
-      throw new MicrosoftError('service', '微软翻译网页鉴权参数无法解析')
+      throw new MicrosoftError(
+        'service',
+        translateMain('microsoft.error.authParametersParse')
+      )
     }
 
     const ttlMs = Number(prevention[3])
     if (!Number.isFinite(ttlMs) || ttlMs < 0) {
-      throw new MicrosoftError('service', '微软翻译网页鉴权有效期无效')
+      throw new MicrosoftError('service', translateMain('microsoft.error.authExpiryInvalid'))
     }
     return {
       ...pageContext,
@@ -317,14 +329,20 @@ export class MicrosoftTranslationClient {
     try {
       payload = (await response.json()) as MicrosoftTranslationResponseItem[]
     } catch (error) {
-      throw new MicrosoftError('service', '微软翻译响应无法解析', { cause: error })
+      throw new MicrosoftError(
+        'service',
+        translateMain('microsoft.error.responseParse'),
+        { cause: error }
+      )
     }
 
     const item = Array.isArray(payload) ? payload[0] : undefined
     const translation = typeof item?.translations?.[0]?.text === 'string'
       ? item.translations[0].text
       : ''
-    if (!translation) throw new MicrosoftError('service', '微软翻译响应为空')
+    if (!translation) {
+      throw new MicrosoftError('service', translateMain('microsoft.error.responseEmpty'))
+    }
 
     const detected = typeof item?.detectedLanguage?.language === 'string'
       ? item.detectedLanguage.language

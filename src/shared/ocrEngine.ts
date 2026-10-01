@@ -1,4 +1,11 @@
+import { createTranslator, type TranslationParams } from './i18n'
 import type { OcrEngineId, OcrErrorCode, OcrTextLine } from './types'
+
+/** OCR 共享层默认英文翻译器，供未注入主进程翻译器时兜底。 */
+const defaultTranslator = createTranslator('en-US')
+
+/** OCR 共享层用户可见文案的翻译函数签名。 */
+export type OcrMessageResolver = (key: string, params?: TranslationParams) => string
 
 /** OCR 引擎识别输入：图片字节或路径二选一。 */
 export interface OcrRecognizeInput {
@@ -124,19 +131,20 @@ export function joinOcrLines(lines: OcrTextLine[]): string {
  */
 export function normalizeOcrRecognizeInput(
   input: OcrRecognizeInput,
-  engine?: OcrEngineId
+  engine?: OcrEngineId,
+  message: OcrMessageResolver = (key, params) => defaultTranslator.t(key, params)
 ): OcrRecognizeInput {
   const hasBytes = Boolean(input.imageBytes && input.imageBytes.length > 0)
   const hasPath = typeof input.imagePath === 'string' && input.imagePath.trim() !== ''
   if (!hasBytes && !hasPath) {
-    throw new OcrEngineError('engine-unavailable', 'OCR 请求缺少图片字节或路径', engine)
+    throw new OcrEngineError('engine-unavailable', message('ocr.error.requestMissingInput'), engine)
   }
   if (input.signal?.aborted) {
-    throw new OcrEngineError('timeout', 'OCR 请求已取消', engine)
+    throw new OcrEngineError('timeout', message('ocr.error.requestCancelled'), engine)
   }
   const timeoutMs = input.timeoutMs
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new OcrEngineError('timeout', 'OCR 超时时间必须为正数', engine)
+    throw new OcrEngineError('timeout', message('ocr.error.invalidTimeout'), engine)
   }
   return {
     imageBytes: hasBytes ? input.imageBytes : undefined,
@@ -159,12 +167,18 @@ export function normalizeOcrRecognizeInput(
  */
 export async function withOcrTimeout<T>(
   task: Promise<T>,
-  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  options: {
+    timeoutMs?: number
+    signal?: AbortSignal
+    message?: OcrMessageResolver
+  } = {},
   engine?: OcrEngineId
 ): Promise<T> {
   const { timeoutMs, signal } = options
+  const message = options.message ?? ((key: string, params?: TranslationParams) =>
+    defaultTranslator.t(key, params))
   if (signal?.aborted) {
-    throw new OcrEngineError('timeout', 'OCR 请求已取消', engine)
+    throw new OcrEngineError('timeout', message('ocr.error.requestCancelled'), engine)
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -175,14 +189,18 @@ export async function withOcrTimeout<T>(
       ? null
       : new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
-          reject(new OcrEngineError('timeout', `OCR 识别超时（${timeoutMs}ms）`, engine))
+          reject(new OcrEngineError(
+            'timeout',
+            message('ocr.error.recognizeTimeout', { timeout: timeoutMs }),
+            engine
+          ))
         }, timeoutMs)
       })
 
     const abortPromise = signal
       ? new Promise<T>((_, reject) => {
         onAbort = (): void => {
-          reject(new OcrEngineError('timeout', 'OCR 请求已取消', engine))
+          reject(new OcrEngineError('timeout', message('ocr.error.requestCancelled'), engine))
         }
         signal.addEventListener('abort', onAbort, { once: true })
       })
@@ -207,12 +225,13 @@ export async function withOcrTimeout<T>(
  */
 export async function recognizeWithTimeout(
   engine: OcrEngine,
-  input: OcrRecognizeInput
+  input: OcrRecognizeInput,
+  message?: OcrMessageResolver
 ): Promise<OcrRecognizeResult> {
-  const normalized = normalizeOcrRecognizeInput(input, engine.id)
+  const normalized = normalizeOcrRecognizeInput(input, engine.id, message)
   return withOcrTimeout(
     engine.recognize(normalized),
-    { timeoutMs: normalized.timeoutMs, signal: normalized.signal },
+    { timeoutMs: normalized.timeoutMs, signal: normalized.signal, message },
     engine.id
   )
 }

@@ -7,6 +7,7 @@ import {
   splitSpeechText,
   type SpeechUtteranceLike
 } from '../src/renderer/src/speech.ts'
+import { zhMessage } from './helpers/i18n.ts'
 
 test('项目语言代码应映射为常用语音语言代码', () => {
   assert.equal(languageToSpeechCode('ZH'), 'zh-CN')
@@ -209,6 +210,7 @@ test('语音 API 或系统语音不可用时应返回可展示错误', () => {
   const unsupportedMessages: string[] = []
   const unsupported = createSpeechController({
     synthesis: null,
+    getMessage: zhMessage,
     createUtterance(text) {
       return { text, lang: '', voice: null, onend: null, onerror: null }
     },
@@ -221,6 +223,7 @@ test('语音 API 或系统语音不可用时应返回可展示错误', () => {
   assert.deepEqual(unsupportedMessages, ['当前环境不支持语音播放'])
 
   const noVoice = createSpeechController({
+    getMessage: zhMessage,
     synthesis: {
       speak(): void {},
       cancel(): void {},

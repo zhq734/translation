@@ -7,6 +7,11 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { installParallelUpdateDownload } from '../src/main/updateHttpExecutor.ts'
 import { MAX_DOWNLOAD_CONCURRENCY } from '../src/main/updateRangeDownload.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { translatorForTest } from './helpers/i18n.ts'
+
+// 更新下载错误文案默认跟随主进程界面语言；这里固定为中文以覆盖原有断言。
+setMainMessageTranslator(translatorForTest('zh-CN'))
 
 /** 测试用 electron-updater 下载选项，避免测试包引入 CommonJS 运行时依赖。 */
 interface DownloadOptions {
@@ -330,7 +335,7 @@ test('并行下载的 sha512 校验失败时应删除损坏的更新包', async 
           sha512: createHash('sha512').update('wrong content').digest('base64')
         }
       ),
-      /sha512 checksum mismatch/u
+      /更新包校验失败/u
     )
     assert.equal(await stat(destination).then((info) => info.size).catch(() => 0), 0)
   } finally {

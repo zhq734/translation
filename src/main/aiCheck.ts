@@ -1,6 +1,7 @@
 import type { AiCheckStatus, Settings } from '../shared/types'
 import { AiError } from './aiErrors'
 import { AiTranslationClient, type AiFetch } from './aiTranslationClient'
+import { translateMain } from './messages'
 
 /** 配置检测网络请求函数签名。 */
 export type AiCheckFetch = AiFetch
@@ -43,7 +44,7 @@ export class AiCheckService {
   async check(input: AiCheckInput): Promise<AiCheckStatus> {
     const { settings, apiKey } = input
     if (!settings.aiBaseUrl.trim() || !settings.aiModel.trim()) {
-      return { ok: false, code: 'incomplete', message: 'AI 配置不完整，请填写 Base URL 和模型' }
+      return { ok: false, code: 'incomplete', message: translateMain('ai.check.incomplete') }
     }
     try {
       const translation = await this.client.translate({
@@ -56,9 +57,9 @@ export class AiCheckService {
         targetLang: 'ZH'
       })
       if (!translation) {
-        return { ok: false, code: 'service', message: 'AI 返回译文为空' }
+        return { ok: false, code: 'service', message: translateMain('ai.error.emptyTranslation') }
       }
-      return { ok: true, code: 'available', message: 'AI 翻译配置可用' }
+      return { ok: true, code: 'available', message: translateMain('ai.check.available') }
     } catch (error) {
       return this.toCheckStatus(error)
     }
@@ -73,15 +74,15 @@ export class AiCheckService {
   private toCheckStatus(error: unknown): AiCheckStatus {
     if (error instanceof AiError) {
       switch (error.kind) {
-        case 'authentication': return { ok: false, code: 'authentication', message: 'AI 鉴权失败，请检查 API Key' }
-        case 'permission': return { ok: false, code: 'permission', message: 'AI 应用权限不足' }
-        case 'rate-limit': return { ok: false, code: 'rate-limit', message: 'AI 接口请求过于频繁，请稍后重试' }
-        case 'not-found': return { ok: false, code: 'not-found', message: 'AI 模型不存在或路径错误' }
+        case 'authentication': return { ok: false, code: 'authentication', message: translateMain('ai.error.authentication') }
+        case 'permission': return { ok: false, code: 'permission', message: translateMain('ai.check.permission') }
+        case 'rate-limit': return { ok: false, code: 'rate-limit', message: translateMain('ai.check.rateLimit') }
+        case 'not-found': return { ok: false, code: 'not-found', message: translateMain('ai.error.notFound') }
         case 'network': return { ok: false, code: 'network', message: error.message }
         case 'timeout': return { ok: false, code: 'timeout', message: error.message }
-        default: return { ok: false, code: 'service', message: 'AI 服务暂时不可用，请稍后重试' }
+        default: return { ok: false, code: 'service', message: translateMain('ai.check.serviceUnavailable') }
       }
     }
-    return { ok: false, code: 'network', message: 'AI 网络连接失败' }
+    return { ok: false, code: 'network', message: translateMain('ai.error.network') }
   }
 }

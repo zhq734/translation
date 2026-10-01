@@ -28,6 +28,8 @@ import { loadSettings, saveSettings, getSettings } from './settings'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
 import { maybeSendInstallUpgradeNotification } from './installUpgradeNotification'
 import { createAppLogger, type LogEntry } from './logging'
+import { createMainI18nRuntime, type MainI18nRuntime } from './i18n'
+import { createTranslator } from '../shared/i18n'
 import {
   captureSelection,
   captureSelectionByNativeOnly,
@@ -147,6 +149,7 @@ import type {
   TranslatePayload
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
+import type { WebImageCandidate } from '../shared/webPageTranslation'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
@@ -213,6 +216,7 @@ import type {
   ScreenshotExportImageRequest,
   ScreenshotOcrActionRequest,
   ScreenshotOcrErrorCode,
+  ScreenshotToastKind,
   WebTranslationMode,
   WebTranslationRunRequest,
   WebViewBounds
@@ -307,6 +311,33 @@ let aiModelDiscovery: AiModelDiscoveryService | null = null
 let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let webReader: WebReaderManager | null = null
+/** 主进程当前界面语言运行时；应用设置加载后初始化。 */
+let mainI18n: MainI18nRuntime | null = null
+
+/**
+ * 注册首屏语言同步 IPC，供 preload 在页面脚本执行前取得当前语言。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function registerLocaleIpc(): void {
+  ipcMain.on('i18n:get-current-locale', (event) => {
+    event.returnValue = mainI18n?.locale ?? 'en-US'
+  })
+}
+
+/**
+ * 使用当前界面语言翻译主进程用户可见文案。
+ * 初始化完成前回退到英文目录，保证启动早期对话框不会出现中文硬编码。
+ * @param key 语义化词条 key。
+ * @param params 可选插值参数。
+ * @returns 当前语言下的词条文本。
+ * @author zhenghq
+ */
+function t(key: string, params?: Record<string, string | number>): string {
+  if (mainI18n) return mainI18n.translator.t(key, params)
+  return createTranslator('en-US').t(key, params)
+}
+
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
 const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
@@ -400,7 +431,7 @@ const ocrEnginePreferenceState: OcrEnginePreferenceState = {}
  * @author zhenghq
  */
 function getDingTalkConfiguration(): DingTalkConfigurationService {
-  if (!dingTalkConfiguration) throw new Error('钉钉配置服务尚未初始化')
+  if (!dingTalkConfiguration) throw new Error(t('app.serviceNotInitialized.dingtalk'))
   return dingTalkConfiguration
 }
 
@@ -410,7 +441,7 @@ function getDingTalkConfiguration(): DingTalkConfigurationService {
  * @author zhenghq
  */
 function getAiConfiguration(): AiConfigurationService {
-  if (!aiConfiguration) throw new Error('AI 配置服务尚未初始化')
+  if (!aiConfiguration) throw new Error(t('app.serviceNotInitialized.aiConfig'))
   return aiConfiguration
 }
 
@@ -420,7 +451,7 @@ function getAiConfiguration(): AiConfigurationService {
  * @author zhenghq
  */
 function getDeepLxConfiguration(): DeepLxConfigurationService {
-  if (!deepLxConfiguration) throw new Error('DeepLX 配置服务尚未初始化')
+  if (!deepLxConfiguration) throw new Error(t('app.serviceNotInitialized.deepLx'))
   return deepLxConfiguration
 }
 
@@ -430,7 +461,7 @@ function getDeepLxConfiguration(): DeepLxConfigurationService {
  * @author zhenghq
  */
 function getUpdateManager(): UpdateManager {
-  if (!updateManager) throw new Error('自动更新服务尚未初始化')
+  if (!updateManager) throw new Error(t('app.serviceNotInitialized.update'))
   return updateManager
 }
 
@@ -440,7 +471,7 @@ function getUpdateManager(): UpdateManager {
  * @author zhenghq
  */
 function getWebReader(): WebReaderManager {
-  if (!webReader) throw new Error('网页阅读器尚未初始化')
+  if (!webReader) throw new Error(t('app.serviceNotInitialized.webReader'))
   return webReader
 }
 
@@ -458,7 +489,7 @@ async function synthesizeEdgeSpeech(
   language: string
 ): Promise<EdgeSpeechResult> {
   const normalizedText = String(text ?? '').trim()
-  if (!normalizedText) return { ok: false, error: '朗读文本为空' }
+  if (!normalizedText) return { ok: false, error: t('error.edgeSpeechEmptyText') }
   console.log('[edge-speech] IPC 请求开始', {
     requestId,
     language,
@@ -477,7 +508,7 @@ async function synthesizeEdgeSpeech(
     return result
   } catch {
     console.error('[edge-speech] IPC 请求异常', { requestId })
-    return { ok: false, error: 'Edge 语音服务暂不可用' }
+    return { ok: false, error: t('error.edgeSpeechUnavailable') }
   } finally {
     edgeSpeechRequests.delete(requestId)
   }
@@ -647,7 +678,10 @@ if (!gotLock) {
 function handleApplicationInitializationFailure(error: unknown): false {
   const message = error instanceof Error ? error.message : String(error)
   console.error('[main] 应用初始化失败:', error)
-  dialog.showErrorBox('划词翻译启动失败', `应用无法完成启动：${message}`)
+  dialog.showErrorBox(
+    t('app.startupFailed.title'),
+    t('app.startupFailed.message', { message })
+  )
   app.quit()
   return false
 }
@@ -663,14 +697,15 @@ function loadMacOSDockIcon(): NativeImage {
     : join(app.getAppPath(), 'build', 'icon.png')
   const icon = nativeImage.createFromPath(iconPath)
   if (icon.isEmpty()) {
-    throw new Error(`无法加载 macOS Dock 图标: ${iconPath}`)
+    throw new Error(t('error.dockIconLoadFailed', { message: iconPath }))
   }
   return icon
 }
 
 /**
- * 根据用户设置和设置窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
- * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；仅在用户开启功能且设置窗口存在时显示图标。
+ * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；用户开启功能且任一常规窗口存在时显示图标。
+ * 设置窗口关闭但网页翻译窗口仍打开时必须保持当前激活策略，避免重排窗口层级把翻译页压到最下层。
  * @param showDockIcon 用户保存的 Dock 图标设置。
  * @returns 无返回值。
  * @author zhenghq
@@ -759,7 +794,7 @@ function applyAutoLaunch(enabled: boolean): void {
 }
 
 /**
- * 根据当前设置和设置窗口状态刷新 macOS Dock 图标。
+ * 根据当前设置和常规窗口状态刷新 macOS Dock 图标。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -795,10 +830,10 @@ async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
 
   const result = await dialog.showMessageBox({
     type: 'warning',
-    title: '请先安装划词翻译',
-    message: '当前应用正在从磁盘镜像运行',
-    detail: '请先将“划词翻译”复制到“应用程序”文件夹，再从“应用程序”启动，避免重装后旧实例持续运行。',
-    buttons: ['退出应用', '仍然运行'],
+    title: t('dialog.installFromDiskImage.title'),
+    message: t('dialog.installFromDiskImage.message'),
+    detail: t('dialog.installFromDiskImage.detail'),
+    buttons: [t('dialog.installFromDiskImage.exit'), t('dialog.installFromDiskImage.continue')],
     defaultId: 0,
     cancelId: 0,
     noLink: true
@@ -848,6 +883,18 @@ async function onReady(): Promise<boolean> {
   }
 
   loadSettings()
+  mainI18n = createMainI18nRuntime({
+    getUiLocale: () => getSettings().uiLocale,
+    localeSources: {
+      preferredSystemLanguages: app.getPreferredSystemLanguages(),
+      systemLocale: app.getSystemLocale(),
+      appLocale: app.getLocale(),
+      env: process.env
+    },
+    onLocaleChanged: () => refreshLocalizedApplicationChrome()
+  })
+  // 窗口创建早于 registerIpc，必须在这里先注册同步语言通道，保证 preload 首屏可用。
+  registerLocaleIpc()
   const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch(process.platform)
   await configureMacOSMenuBarApplication(
     getSettings().showDockIcon,
@@ -947,9 +994,15 @@ async function onReady(): Promise<boolean> {
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
   })
-  updateManager = await createApplicationUpdateManager((status) => {
-    broadcast('updater:status', status)
-  })
+  updateManager = await createApplicationUpdateManager(
+    (status) => {
+      broadcast('updater:status', status)
+    },
+    // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
+    // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
+    // @author zhenghq
+    { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
+  )
   console.log(
     '[main] 启动完成 autoTrigger =',
     getSettings().triggerMode === 'auto',
@@ -1359,7 +1412,7 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
       ok: true,
       origin: 'selection',
       loading: true,
-      loadingMessage: '正在读取选中文字…',
+      loadingMessage: t('selection.loadingReading'),
       sourcePreference: settings.sourceLang,
       targetPreference: settings.targetLang,
       targetLang: settings.targetLang
@@ -1483,7 +1536,11 @@ function handleSelectionCaptureResult(
     showPopup(
       {
         ok: false,
-        error: resolveSelectionCaptureFailureMessage(result.reason, result.hasImage),
+        error: resolveSelectionCaptureFailureMessage(
+          result.reason,
+          result.hasImage,
+          mainI18n?.translator
+        ),
         sourcePreference: settings.sourceLang,
         targetPreference: settings.targetLang,
         targetLang: settings.targetLang
@@ -1638,7 +1695,7 @@ function handleTranslateError(
     showPopup(
       {
         ok: false,
-        error: '需要「辅助功能」权限。请在弹出的系统设置中勾选本应用后重试。',
+        error: t('error.accessibilityPermission'),
         ...common
       },
       8000,
@@ -1647,7 +1704,7 @@ function handleTranslateError(
     openAccessibilitySettings()
   } else {
     showPopup(
-      { ok: false, error: err.message || '翻译失败', ...common },
+      { ok: false, error: err.message || t('error.translationFailed'), ...common },
       5000,
       anchor
     )
@@ -1808,7 +1865,7 @@ function isOcrSelectionVisible(): boolean {
  * @author zhenghq
  */
 function whenOcrSelectionWindowReady(win: BrowserWindow): Promise<void> {
-  if (win.isDestroyed()) return Promise.reject(new Error('OCR 覆盖窗口已销毁'))
+  if (win.isDestroyed()) return Promise.reject(new Error('ocr-overlay-destroyed'))
   if (!win.webContents.isLoading()) return Promise.resolve()
   const existing = ocrSelectionWindowReadyPromises.get(win)
   if (existing) return existing
@@ -1835,9 +1892,9 @@ function whenOcrSelectionWindowReady(win: BrowserWindow): Promise<void> {
     }
     const onFinish = (): void => succeed()
     const onFail = (_event: Electron.Event, errorCode: number, errorDescription: string): void => {
-      fail(new Error(`OCR 覆盖窗口加载失败（${errorCode}）：${errorDescription}`))
+      fail(new Error(`ocr-overlay-load-failed:${errorCode}:${errorDescription}`))
     }
-    const onClosed = (): void => fail(new Error('OCR 覆盖窗口已关闭'))
+    const onClosed = (): void => fail(new Error('ocr-overlay-closed'))
 
     win.webContents.once('did-finish-load', onFinish)
     win.webContents.once('did-fail-load', onFail)
@@ -1903,15 +1960,20 @@ function getScreenshotToastWindow(): BrowserWindow {
  * 由渲染进程完成尺寸测量后再通过 `screenshot-toast:show-window` 居中显示。
  * @param message 提示文本。
  * @param displayTimeMs 停留时长（毫秒）。
+ * @param kind 语义状态，供提示窗口选择图标与配色。
  * @returns 无返回值。
  * @author zhenghq
  */
-function showScreenshotToast(message: string, displayTimeMs = 1500): void {
+function showScreenshotToast(
+  message: string,
+  displayTimeMs = 1500,
+  kind: ScreenshotToastKind = 'success'
+): void {
   // 在异步 Toast 渲染和尺寸测量前立即暂停，避免截图窗口关闭时“译”图标闪现。
   selectionListenerController.pause('screenshot-toast')
   const win = getScreenshotToastWindow()
   const show = (): void => {
-    win.webContents.send('screenshot-toast:show', { message, displayTimeMs })
+    win.webContents.send('screenshot-toast:show', { message, kind, displayTimeMs })
   }
   if (win.webContents.isLoading()) {
     win.webContents.once('did-finish-load', show)
@@ -2042,7 +2104,7 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
   if (!isCurrentOcrCapture(interactionToken)) return
   const settings = getSettings()
   const code = resolveOcrErrorCode(error)
-  const message = error instanceof Error ? error.message : '无法获取屏幕截图'
+  const message = error instanceof Error ? error.message : t('error.screenCaptureFailed')
   const failedPayload: OcrSelectionFailedPayload = {
     sessionId: ocrSelectionSessionSeq,
     message,
@@ -2167,7 +2229,7 @@ async function openOcrSelection(): Promise<void> {
       timedOut = true
       failOcrSelectionCapture(
         interactionToken,
-        new ScreenCaptureError('no-source', '屏幕采集超时，请重试'),
+        new ScreenCaptureError('no-source', t('error.screenCaptureTimeout')),
         anchor
       )
     }, OCR_PREVIEW_CAPTURE_TIMEOUT_MS)
@@ -2404,13 +2466,13 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
     return await new Promise<WebImageResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         request.abort()
-        reject(new Error('图片请求超时'))
+        reject(new Error(t('error.imageRequestTimeout')))
       }, WEB_IMAGE_REQUEST_TIMEOUT_MS)
       const finish = (): void => { clearTimeout(timer) }
       requestSignal?.addEventListener('abort', () => {
         finish()
         request.abort()
-        reject(new Error('图片请求已取消'))
+        reject(new Error(t('error.imageRequestCancelled')))
       }, { once: true })
       request.on('error', (error) => { finish(); reject(error) })
       request.on('response', (response) => {
@@ -2442,14 +2504,177 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
     }))()`, true) as { scrollX: number; scrollY: number; width: number; height: number }
   }
 
+  /**
+   * 直接导出页面内 canvas 位图。
+   *
+   * Google Docs 等应用把整页正文画在 canvas 上，canvas 高度通常大于视口，
+   * 区域截图只能截到可见的一小段；直接读取 canvas 位图可以拿到完整页面。
+   * 跨域污染导致导出失败时返回 null，由调用方回退区域截图。
+   *
+   * @param candidate 图片候选。
+   * @returns 位图字节与像素尺寸；无法导出时返回 null。
+   * @author zhenghq
+   */
+  const readCanvasImage = async (candidate: WebImageCandidate): Promise<WebImageResponse | null> => {
+    const anchor = JSON.stringify({
+      selector: candidate.selector,
+      shadowPath: candidate.shadowPath ?? []
+    })
+    const exported = await view.webContents.executeJavaScript(`(() => {
+      const anchor = ${anchor};
+      let element = null;
+      try { element = document.querySelector(anchor.selector); } catch {}
+      if (element && anchor.shadowPath.length > 0) {
+        let current = element.shadowRoot;
+        for (const index of anchor.shadowPath) {
+          if (!current?.childNodes?.[index]) { current = null; break; }
+          current = current.childNodes[index];
+        }
+        element = current;
+      }
+      if (!element || element.tagName !== 'CANVAS') return null;
+      try {
+        const dataUrl = element.toDataURL('image/png');
+        if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image/png;base64,') !== 0) return null;
+        return { base64: dataUrl.slice('data:image/png;base64,'.length), width: element.width, height: element.height };
+      } catch {
+        return null;
+      }
+    })()`, true) as { base64: string; width: number; height: number } | null
+    if (!exported?.base64) return null
+    const bytes = Buffer.from(exported.base64, 'base64')
+    if (bytes.length === 0) return null
+    return { bytes, contentType: 'image/png', width: exported.width, height: exported.height }
+  }
+
+  /**
+   * 把候选滚动到页面内任意可滚动祖先的可见区域。
+   *
+   * `window.scrollTo` 只能影响文档滚动，Google Docs 这类应用的正文位于内层
+   * `overflow: auto` 容器中，必须滚动真正的滚动祖先才能让候选进入可见区域。
+   * 原始滚动位置保存在页面全局变量中，由 `restoreRevealed` 恢复。
+   *
+   * @param candidate 图片候选。
+   * @returns 可见矩形（视口坐标）；无法进入可见区域时返回 null。
+   * @author zhenghq
+   */
+  const revealVisibleRect = async (candidate: WebImageCandidate): Promise<{ x: number; y: number; width: number; height: number } | null> => {
+    const anchor = JSON.stringify({
+      selector: candidate.selector,
+      shadowPath: candidate.shadowPath ?? [],
+      x: Math.round(candidate.rect.x),
+      y: Math.round(candidate.rect.y),
+      width: Math.round(candidate.rect.width),
+      height: Math.round(candidate.rect.height)
+    })
+    return await view.webContents.executeJavaScript(`(async () => {
+      const anchor = ${anchor};
+      const resolve = () => {
+        let element = null;
+        try { element = document.querySelector(anchor.selector); } catch {}
+        if (element && anchor.shadowPath.length > 0) {
+          let current = element.shadowRoot;
+          for (const index of anchor.shadowPath) {
+            if (!current?.childNodes?.[index]) return null;
+            current = current.childNodes[index];
+          }
+          element = current;
+        }
+        return element?.nodeType === Node.ELEMENT_NODE ? element : null;
+      };
+      const scrollableAncestors = (element) => {
+        const list = [];
+        let current = element.parentElement;
+        while (current && current !== document.documentElement) {
+          const style = getComputedStyle(current);
+          if (/(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 1) list.push(current);
+          current = current.parentElement;
+        }
+        return list;
+      };
+      const restore = [];
+      const element = resolve();
+      if (!element) return null;
+      for (const scroller of scrollableAncestors(element)) {
+        restore.push({ scroller, scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft });
+      }
+      // 同时记录文档滚动位置，避免无内层滚动容器时 window.scrollTo 无法还原。
+      window.__selectionTranslatorWebImageReveal = {
+        windowScroll: { scrollX: window.scrollX, scrollY: window.scrollY },
+        scrollers: restore
+      };
+      const viewport = { scrollX: window.scrollX, scrollY: window.scrollY };
+      if (restore.length === 0) {
+        const targetY = Math.max(0, anchor.y - Math.round(window.innerHeight / 3));
+        window.scrollTo({ left: viewport.scrollX, top: targetY, behavior: 'instant' });
+      } else {
+        // 逐层把候选对齐到各自滚动容器顶部，外层容器同样需要滚动。
+        for (const scroller of restore) {
+          const scrollerRect = scroller.scroller.getBoundingClientRect();
+          const elementRect = element.getBoundingClientRect();
+          scroller.scroller.scrollTop += Math.round(elementRect.top - scrollerRect.top);
+        }
+      }
+      // 页面被隐藏时 requestAnimationFrame 可能永不触发，改用定时器等待合成器提交新画面。
+      await new Promise((resolve) => setTimeout(resolve, 32));
+      const rect = element.getBoundingClientRect();
+      let clip = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+      let current = element.parentElement;
+      while (current) {
+        const style = getComputedStyle(current);
+        if (/(auto|scroll|overlay|hidden)/.test(style.overflowY) || /(auto|scroll|overlay|hidden)/.test(style.overflowX)) {
+          const clipRect = current.getBoundingClientRect();
+          clip = {
+            top: Math.max(clip.top, clipRect.top),
+            left: Math.max(clip.left, clipRect.left),
+            right: Math.min(clip.right, clipRect.right),
+            bottom: Math.min(clip.bottom, clipRect.bottom)
+          };
+        }
+        current = current.parentElement;
+      }
+      const top = Math.max(rect.top, clip.top);
+      const left = Math.max(rect.left, clip.left);
+      const right = Math.min(rect.right, clip.right);
+      const bottom = Math.min(rect.bottom, clip.bottom);
+      if (right - left < 1 || bottom - top < 1) return null;
+      return { x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top) };
+    })()`, true) as { x: number; y: number; width: number; height: number } | null
+  }
+
+  /**
+   * 恢复 `revealVisibleRect` 改变的滚动位置。
+   * @returns 恢复完成后的 Promise。
+   * @author zhenghq
+   */
+  const restoreRevealed = async (): Promise<void> => {
+    await view.webContents.executeJavaScript(`(() => {
+      const restore = window.__selectionTranslatorWebImageReveal;
+      window.__selectionTranslatorWebImageReveal = null;
+      if (!restore) return;
+      for (const item of restore.scrollers || []) {
+        if (!item?.scroller) continue;
+        item.scroller.scrollTop = item.scrollTop;
+        item.scroller.scrollLeft = item.scrollLeft;
+      }
+      const windowScroll = restore.windowScroll;
+      if (windowScroll) {
+        window.scrollTo({ left: windowScroll.scrollX, top: windowScroll.scrollY, behavior: 'instant' });
+      }
+    })()`, true)
+  }
+
   return createWebImageSource({
     requestImage,
     captureRegion: async (rect, captureSignal) => {
-      if (captureSignal?.aborted) throw new Error('图片截图已取消')
+      if (captureSignal?.aborted) throw new Error(t('error.imageCaptureCancelled'))
       const image = await view.webContents.capturePage(rect)
       return image.toPNG()
     },
     resolveViewport,
+    readCanvasImage,
+    revealVisibleRect,
+    restoreRevealed,
     scrollIntoView: async (rect) => {
       return await view.webContents.executeJavaScript(`(async () => {
         const targetY = Math.max(0, ${JSON.stringify(Math.round(rect.y))} - Math.round(window.innerHeight / 3));
@@ -2530,9 +2755,9 @@ async function getOcrStatus(): Promise<OcrStatus> {
     distribution: paddleModelAssets.ready ? 'bundled' : 'unavailable',
     message: paddleModelAssets.ready
       ? (paddleAvailable
-          ? `${paddleModelAssets.metadata.name} 兼容模型资产已就绪，PaddleOCR 主链路可用`
-          : `${paddleModelAssets.metadata.name} 兼容模型资产已就绪，但 PaddleOCR runtime 暂不可用`)
-      : `${paddleModelAssets.message}，将优先使用系统 OCR 或 Tesseract 兜底`
+          ? t('ocr.assetsReady', { name: paddleModelAssets.metadata.name })
+          : t('ocr.assetsRuntimeUnavailable', { name: paddleModelAssets.metadata.name }))
+      : t('ocr.assetsFallback', { message: paddleModelAssets.message })
   }
 }
 
@@ -2565,7 +2790,7 @@ function showOcrTranslationResult(
       origin: 'ocr',
       requestId,
       original: result.ocrText,
-      error: result.error ?? '未识别到可翻译文字',
+      error: result.error ?? t('error.noTranslatableText'),
       ocrText: result.ocrText,
       ocrRawText: result.ocrRawText,
       ocrEngine: result.ocrEngine,
@@ -2698,9 +2923,9 @@ async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/permission|privacy|denied|not authorized/i.test(message)) {
-      throw new ScreenCaptureError('permission', '需要屏幕录制权限')
+      throw new ScreenCaptureError('permission', t('error.screenRecordingPermission'))
     }
-    throw new ScreenCaptureError('no-source', `无法获取屏幕截图: ${message}`)
+    throw new ScreenCaptureError('no-source', t('error.screenCaptureFailedDetail', { message }))
   } finally {
     await unlink(path).catch(() => undefined)
   }
@@ -3004,7 +3229,7 @@ async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings)
 async function cropOcrSnapshotSelection(bounds: CaptureBounds): Promise<Buffer> {
   const snapshot = latestOcrSnapshot
   if (!snapshot) {
-    throw new ScreenCaptureError('no-source', '截图已失效，请重新截图')
+    throw new ScreenCaptureError('no-source', t('error.screenshotExpired'))
   }
   // 只裁选区再编码：整屏 decodePng / encodePng 在 2K/4K 上各要数百毫秒，属于纯浪费。
   const png = cropSnapshotSelectionPng(snapshot, bounds)
@@ -3067,11 +3292,11 @@ function isCurrentScreenshotRequest(request: ScreenshotOcrActionRequest): boolea
 function cropCurrentOcrSelectionPng(value: unknown): Buffer {
   const bounds = normalizeOcrSelectionBounds(value)
   if (!bounds) {
-    throw new ScreenshotSelectionError('invalid-selection', '选区无效，请重新框选')
+    throw new ScreenshotSelectionError('invalid-selection', t('error.invalidSelection'))
   }
   const snapshot = latestOcrSnapshot
   if (!snapshot) {
-    throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
+    throw new ScreenshotSelectionError('snapshot-expired', t('error.screenshotExpired'))
   }
   return cropSnapshotSelectionPng(snapshot, bounds)
 }
@@ -3087,11 +3312,11 @@ function cropCurrentOcrSelectionPng(value: unknown): Buffer {
 function cropCurrentOcrSelectionPngFast(value: unknown): Buffer {
   const bounds = normalizeOcrSelectionBounds(value)
   if (!bounds) {
-    throw new ScreenshotSelectionError('invalid-selection', '选区无效，请重新框选')
+    throw new ScreenshotSelectionError('invalid-selection', t('error.invalidSelection'))
   }
   const snapshot = latestOcrSnapshot
   if (!snapshot) {
-    throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
+    throw new ScreenshotSelectionError('snapshot-expired', t('error.screenshotExpired'))
   }
   const { width, height } = snapshot.image.getSize()
   const cropRect = resolveSnapshotCropRect(snapshot.source, bounds, snapshot.bounds, width, height)
@@ -3214,7 +3439,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
     sendScreenshotRecognizeResult(
       text
         ? { requestId: request.requestId, sessionId: request.sessionId, ok: true, text, engine: ocr.engine }
-        : { requestId: request.requestId, sessionId: request.sessionId, ok: false, code: 'empty', error: '未识别到文字' }
+        : { requestId: request.requestId, sessionId: request.sessionId, ok: false, code: 'empty', error: t('error.noRecognizedText') }
     )
   } catch (error) {
     sendScreenshotRecognizeResult({
@@ -3222,7 +3447,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
       sessionId: request.sessionId,
       ok: false,
       code: resolveScreenshotActionErrorCode(error),
-      error: error instanceof Error ? error.message : 'OCR 识别失败'
+      error: error instanceof Error ? error.message : t('error.ocrFailed')
     })
   } finally {
     activeScreenshotOcrRequests.delete(request.requestId)
@@ -3263,7 +3488,7 @@ async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
     })
     // 复制成功后结束截图会话：先释放快照与全局划词监听，
     // 提示由独立 toast 窗口展示，覆盖窗口由 Renderer 收到回执后淡出关闭。
-    showScreenshotToast('已添加到剪贴板', 1500)
+    showScreenshotToast(t('toast.copiedToClipboard'), 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -3274,7 +3499,7 @@ async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
       code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
         ? resolveScreenshotActionErrorCode(error)
         : 'clipboard-write-failed',
-      error: error instanceof Error ? error.message : '复制图片失败'
+      error: error instanceof Error ? error.message : t('error.copyImageFailed')
     })
   } finally {
     activeScreenshotOcrRequests.delete(request.requestId)
@@ -3289,7 +3514,7 @@ async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
 function buildScreenshotSaveFileName(): string {
   const now = new Date()
   const pad = (n: number): string => String(n).padStart(2, '0')
-  return `截图-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`
+  return `${t('screenshot.defaultFileNamePrefix')}-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`
 }
 
 /**
@@ -3307,11 +3532,11 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
     const result = win
       ? await dialog.showSaveDialog(win, {
           defaultPath: buildScreenshotSaveFileName(),
-          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+          filters: [{ name: t('screenshot.pngFilter'), extensions: ['png'] }]
         })
       : await dialog.showSaveDialog({
           defaultPath: buildScreenshotSaveFileName(),
-        filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        filters: [{ name: t('screenshot.pngFilter'), extensions: ['png'] }]
       })
     // 保存对话框阻塞期间窗口可能已关闭或请求已失效，仅写回仍有效的请求。
     if (result.canceled || !result.filePath) {
@@ -3338,7 +3563,7 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
     })
     // 保存成功后结束截图会话：先释放快照与全局划词监听，
     // 提示由独立 toast 窗口展示，覆盖窗口由 Renderer 收到回执后淡出关闭。
-    showScreenshotToast('已保存到本地', 1500)
+    showScreenshotToast(t('toast.savedToDisk'), 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -3349,7 +3574,7 @@ async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
       code: error instanceof ScreenshotSelectionError || error instanceof ScreenCaptureError
         ? resolveScreenshotActionErrorCode(error)
         : 'save-failed',
-      error: error instanceof Error ? error.message : '保存图片失败'
+      error: error instanceof Error ? error.message : t('error.saveImageFailed')
     })
   } finally {
     activeScreenshotOcrRequests.delete(request.requestId)
@@ -3386,7 +3611,7 @@ async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
       action: 'copy-image',
       ok: true
     })
-    showScreenshotToast('已添加到剪贴板', 1500)
+    showScreenshotToast(t('toast.copiedToClipboard'), 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -3395,7 +3620,7 @@ async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
       action: 'copy-image',
       ok: false,
       code: 'clipboard-write-failed',
-      error: error instanceof Error ? error.message : '复制图片失败'
+      error: error instanceof Error ? error.message : t('error.copyImageFailed')
     })
   } finally {
     activeScreenshotOcrRequests.delete(request.requestId)
@@ -3429,11 +3654,11 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     const result = win
       ? await dialog.showSaveDialog(win, {
           defaultPath: buildScreenshotSaveFileName(),
-          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+          filters: [{ name: t('screenshot.pngFilter'), extensions: ['png'] }]
         })
       : await dialog.showSaveDialog({
           defaultPath: buildScreenshotSaveFileName(),
-          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+          filters: [{ name: t('screenshot.pngFilter'), extensions: ['png'] }]
         })
     if (result.canceled || !result.filePath) {
       sendScreenshotActionResult({
@@ -3454,7 +3679,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
       ok: true,
       filePath: result.filePath
     })
-    showScreenshotToast('已保存到本地', 1500)
+    showScreenshotToast(t('toast.savedToDisk'), 1500)
     finishScreenshotSession()
   } catch (error) {
     sendScreenshotActionResult({
@@ -3463,7 +3688,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
       action: 'save-image',
       ok: false,
       code: 'save-failed',
-      error: error instanceof Error ? error.message : '保存图片失败'
+      error: error instanceof Error ? error.message : t('error.saveImageFailed')
     })
   } finally {
     activeScreenshotOcrRequests.delete(request.requestId)
@@ -3500,7 +3725,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
   const cached = ocrSessionResultCache.get(
     buildOcrSessionResultKey(sessionId, bounds, settings)
   )
-  const showLoadingPopup = (original = '正在识别屏幕区域…'): void => {
+  const showLoadingPopup = (original = t('selection.loadingRecognizing')): void => {
     showPopup({
       ok: true,
       origin: 'ocr',
@@ -3517,7 +3742,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
   // 因此先显示「正在识别」弹窗接管 key window，再收起覆盖窗口；
   // 弹窗层级低于覆盖窗口（floating < screen-saver），先显示不会在覆盖层上露出。
   // 其它平台保持原顺序：立即收起覆盖窗口，采集完成后再显示弹窗。
-  if (isMac) showLoadingPopup(cached ? '正在翻译识别结果…' : undefined)
+  if (isMac) showLoadingPopup(cached ? t('selection.loadingTranslating') : undefined)
   hideOcrSelectionWindow()
   try {
     // 命中会话识别结果时直接进入翻译管道：同一会话、同一选区、同一 OCR 设置下
@@ -3532,7 +3757,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
       restoreSelectionListener()
       // 未命中路径在裁剪完成后为 Windows 显示 loading 弹窗；命中路径跳过了裁剪，
       // 这里补上同样的反馈，避免翻译期间界面上没有任何进度提示。
-      if (!isMac) showLoadingPopup('正在翻译识别结果…')
+      if (!isMac) showLoadingPopup(t('selection.loadingTranslating'))
       const cachedResult = await translateRecognizedOcrResult(cached, settings)
       if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
       showOcrTranslationResult(cachedResult, settings, requestId, anchor)
@@ -3550,7 +3775,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
     restoreSelectionListener()
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     const code = resolveOcrErrorCode(error)
-    const message = error instanceof Error ? error.message : 'OCR 识别失败'
+    const message = error instanceof Error ? error.message : t('error.ocrFailed')
     showPopup({
       ok: false,
       origin: 'ocr',
@@ -3587,7 +3812,7 @@ async function translateClipboardImage(): Promise<void> {
       origin: 'ocr',
       requestId,
       original: '',
-      error: '剪贴板中没有图片',
+      error: t('error.noClipboardImage'),
       ocrCode: 'no-clipboard-image',
       sourcePreference: settings.sourceLang,
       targetPreference: settings.targetLang,
@@ -3601,7 +3826,7 @@ async function translateClipboardImage(): Promise<void> {
     origin: 'ocr',
     requestId,
     loading: true,
-    original: '正在识别剪贴板图片…',
+    original: t('selection.loadingClipboardImage'),
     sourcePreference: settings.sourceLang,
     targetPreference: settings.targetLang,
     targetLang: settings.targetLang
@@ -3614,7 +3839,7 @@ async function translateClipboardImage(): Promise<void> {
   } catch (error) {
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     const code = resolveOcrErrorCode(error)
-    const message = error instanceof Error ? error.message : 'OCR 识别失败'
+    const message = error instanceof Error ? error.message : t('error.ocrFailed')
     showPopup({
       ok: false,
       origin: 'ocr',
@@ -3640,7 +3865,7 @@ async function translateManualRequest(request: unknown): Promise<void> {
     ? request as Partial<ManualTranslateRequest>
     : {}
   const text = raw.text
-  const validationError = validateManualTranslationText(text)
+  const validationError = validateManualTranslationText(text, mainI18n?.translator)
   const settings = getSettings()
   const sourceLang = typeof raw.sourceLang === 'string' && raw.sourceLang
     ? raw.sourceLang
@@ -3696,7 +3921,7 @@ async function warnIfNoAccessibility(): Promise<void> {
     showPopup(
       {
         ok: false,
-        error: '需要「辅助功能」权限才能划词取词与自动翻译。请在系统设置中勾选本应用（开发模式为 Electron）后重启。',
+        error: t('error.accessibilityPermissionAuto'),
         sourcePreference: settings.sourceLang,
         targetPreference: settings.targetLang,
         targetLang: settings.targetLang
@@ -3757,11 +3982,10 @@ async function promptHiServicesRepair(anchor?: { x: number; y: number }): Promis
   await rememberFrontmostAppIfInactiveAsync()
   const { response } = await dialog.showMessageBox({
     type: 'warning',
-    title: '划词取词服务异常',
-    message: '划词按钮未出现或取词连续失败',
-    detail: '检测到 macOS 的按键注入服务（hiservices）可能已故障，导致模拟复制无法送达前台应用。' +
-      '点击下方按钮可立即重启该服务，系统会自动重新拉起，通常可恢复划词翻译。',
-    buttons: ['一键修复', '稍后'],
+    title: t('dialog.hiServices.title'),
+    message: t('dialog.hiServices.message'),
+    detail: t('dialog.hiServices.detail'),
+    buttons: [t('dialog.hiServices.repair'), t('dialog.hiServices.later')],
     defaultId: 0,
     cancelId: 1
   })
@@ -3778,14 +4002,14 @@ async function promptHiServicesRepair(anchor?: { x: number; y: number }): Promis
             ok: true,
             loading: false,
             original: '',
-            translation: '已重启系统按键注入服务并刷新划词监听，请再划词试一次。',
+            translation: t('dialog.hiServices.repaired'),
             sourcePreference: settings.sourceLang,
             targetPreference: settings.targetLang,
             targetLang: settings.targetLang
           }
         : {
             ok: false,
-            error: '自动修复失败，请在终端执行 sudo pkill -9 -f hiservices 后重试。',
+            error: t('dialog.hiServices.failed'),
             sourcePreference: settings.sourceLang,
             targetPreference: settings.targetLang,
             targetLang: settings.targetLang
@@ -3870,7 +4094,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     height: 820,
     minWidth: 640,
     minHeight: 600,
-    title: '划词翻译 · 设置',
+    title: t('settings.windowTitle'),
     frame: false,
     resizable: true,
     minimizable: true,
@@ -3946,7 +4170,7 @@ async function openSettings(options: { bringToFront?: boolean } = {}): Promise<v
  * @author zhenghq
  */
 function checkDeepLx(): Promise<DeepLxStatus> {
-  if (!deepLxCheckService) throw new Error('DeepLX 检测服务尚未初始化')
+  if (!deepLxCheckService) throw new Error(t('app.serviceNotInitialized.deepLxCheck'))
   return deepLxCheckService.check(getSettings().deepLxUrl)
 }
 
@@ -3973,7 +4197,7 @@ function buildDockerCommand(port: number): string {
     '  --name deeplx \\',
     '  --restart unless-stopped \\',
     `  -p ${normalizedPort}:1188 \\`,
-    '  -e TOKEN=你的dl_session值 \\',
+    '  -e TOKEN=' + t('deepLx.dockerPlaceholder') + ' \\',
     `  ${DOCKER_IMAGE}`
   ].join('\n')
 }
@@ -4049,16 +4273,16 @@ async function removeApplicationQuarantine(): Promise<MacOSQuarantineResult> {
 
   const result = await dialog.showMessageBox({
     type: 'warning',
-    title: '确认解除 macOS 隔离属性',
-    message: '请先下载 DMG 并将“划词翻译”拖入“应用程序”覆盖旧版本',
-    detail: '确认已完成覆盖安装后继续。此操作只处理 /Applications/划词翻译.app，不会调用 sudo，也不能修复代码签名不匹配。',
-    buttons: ['取消', '已完成安装，继续'],
+    title: t('dialog.quarantine.title'),
+    message: t('dialog.quarantine.message'),
+    detail: t('dialog.quarantine.detail'),
+    buttons: [t('common.cancel'), t('dialog.quarantine.confirm')],
     defaultId: 0,
     cancelId: 0,
     noLink: true
   })
   if (result.response !== 1) {
-    return { ok: false, message: '已取消解除 macOS 隔离属性' }
+    return { ok: false, message: t('dialog.quarantine.cancelled') }
   }
   return removeMacOSApplicationQuarantine()
 }
@@ -4093,7 +4317,7 @@ function checkDingTalk(): Promise<DingTalkCheckStatus> {
     return Promise.resolve({
       ok: false,
       code: 'storage-unavailable',
-      message: '钉钉凭证无法安全读取，请重新配置'
+      message: t('error.dingTalkCredentialsUnavailable')
     })
   }
   return checkDingTalkTranslation(configuration.getCredentialsSnapshot(false))
@@ -4133,7 +4357,7 @@ function clearAiApiKey(): Settings {
  * @author zhenghq
  */
 async function listAiModels(): Promise<AiModelListResult> {
-  if (!aiModelDiscovery) throw new Error('AI 模型发现服务尚未初始化')
+  if (!aiModelDiscovery) throw new Error(t('app.serviceNotInitialized.aiModelDiscovery'))
   const settings = getSettings()
   return aiModelDiscovery.listModels({
     protocol: settings.aiProtocol,
@@ -4148,7 +4372,7 @@ async function listAiModels(): Promise<AiModelListResult> {
  * @author zhenghq
  */
 function checkAi(): Promise<AiCheckStatus> {
-  if (!aiCheckService) throw new Error('AI 检测服务尚未初始化')
+  if (!aiCheckService) throw new Error(t('app.serviceNotInitialized.aiCheck'))
   return aiCheckService.check({
     settings: getSettings(),
     apiKey: getAiConfiguration().getApiKey()
@@ -4216,10 +4440,10 @@ function isWebTranslationMode(value: unknown): value is WebTranslationMode {
  */
 async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.hotkey !== undefined && isCopyShortcut(String(patch.hotkey))) {
-    throw new Error('Ctrl+C / Command+C 是系统复制快捷键，不能设为翻译快捷键')
+    throw new Error(t('error.copyShortcutAsTranslationHotkey'))
   }
   if (patch.ocrHotkey !== undefined && isCopyShortcut(String(patch.ocrHotkey))) {
-    throw new Error('Ctrl+C / Command+C 是系统复制快捷键，不能设为 OCR 快捷键')
+    throw new Error(t('error.copyShortcutAsOcrHotkey'))
   }
 
   const previous = getSettings()
@@ -4271,7 +4495,8 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     resetAiTranslationRuntime()
     aiModelDiscovery?.clearCache()
   }
-  refreshTrayMenu()
+  mainI18n?.refresh()
+  refreshLocalizedApplicationChrome()
   broadcast('settings:changed', settings)
   return settings
 }
@@ -4306,13 +4531,13 @@ function registerIpc(): void {
     void getWebReader()
       .open(typeof url === 'string' && url.trim() ? url : undefined)
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : '无法打开网页阅读器'
-        dialog.showErrorBox('网页翻译', message)
+        const message = error instanceof Error ? error.message : t('error.openWebReader')
+        dialog.showErrorBox(t('error.webTranslation'), message)
       })
   })
   ipcMain.on('webview:close', () => getWebReader().close())
   ipcMain.handle('webview:navigate', (_event, url: unknown) => {
-    if (typeof url !== 'string' || !url.trim()) throw new Error('请输入有效的网页地址')
+    if (typeof url !== 'string' || !url.trim()) throw new Error(t('error.invalidWebUrl'))
     return getWebReader().navigate(url)
   })
   ipcMain.on('webview:back', () => getWebReader().back())
@@ -4327,7 +4552,7 @@ function registerIpc(): void {
   )
   ipcMain.on('web-translate:cancel', () => getWebReader().cancel())
   ipcMain.handle('web-translate:set-mode', (_event, mode: unknown) => {
-    if (!isWebTranslationMode(mode)) throw new Error('网页展示模式无效')
+    if (!isWebTranslationMode(mode)) throw new Error(t('error.invalidWebMode'))
     return getWebReader().setMode(mode)
   })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
@@ -4379,7 +4604,7 @@ function registerIpc(): void {
   ipcMain.handle('ocr-selection:export-image', (_event, request: unknown) => {
     const normalized = normalizeScreenshotExportImageRequest(request)
     if (!normalized || normalized.sessionId !== ocrSelectionSessionSeq) {
-      throw new ScreenshotSelectionError('snapshot-expired', '截图已失效，请重新截图')
+      throw new ScreenshotSelectionError('snapshot-expired', t('error.screenshotExpired'))
     }
     // 导出必须与 OCR 共用同一条原始像素通道：Windows 上 cropCurrentOcrSelectionPng 会
     // 优先使用 GDI BGRA 原始字节，绕开 nativeImage 的平台相关通道契约，避免红蓝颠倒。
@@ -4387,9 +4612,9 @@ function registerIpc(): void {
     return { dataUrl: `data:image/png;base64,${png.toString('base64')}` }
   })
   ipcMain.on('screenshot-toast:show', (_event, payload: unknown) => {
-    const raw = payload as { message?: string; displayTimeMs?: number }
+    const raw = payload as { message?: string; kind?: ScreenshotToastKind; displayTimeMs?: number }
     if (typeof raw?.message === 'string' && raw.message.trim()) {
-      showScreenshotToast(raw.message, raw.displayTimeMs)
+      showScreenshotToast(raw.message, raw.displayTimeMs, raw.kind)
     }
   })
   ipcMain.on('screenshot-toast:show-window', (_event, payload: unknown) => {
@@ -4436,7 +4661,7 @@ function registerIpc(): void {
   ipcMain.handle('logs:export', async (): Promise<string | null> => {
     const source = appLogger.getLogFilePath()
     const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '导出日志',
+      title: t('dialog.exportLogs.title'),
       defaultPath: `main-${new Date().toISOString().slice(0, 10)}.log`
     })
     if (canceled || !filePath) return null
@@ -4464,7 +4689,7 @@ function registerIpc(): void {
   ipcMain.handle('capture-diagnostics:export', async (): Promise<string | null> => {
     const data = getCaptureDiagnosticsStore().getExportData()
     const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '导出取词诊断',
+      title: t('dialog.exportDiagnostics.title'),
       defaultPath: `capture-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
@@ -4520,7 +4745,7 @@ function loadTrayIcon(): NativeImage {
   const filename = isMac ? 'trayTemplate.png' : 'tray.png'
   const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build', filename))
   if (icon.isEmpty()) {
-    throw new Error(`无法加载托盘图标: ${filename}`)
+    throw new Error(t('error.trayIconLoadFailed', { message: filename }))
   }
   if (isMac) icon.setTemplateImage(true)
   return icon
@@ -4534,7 +4759,7 @@ function loadTrayIcon(): NativeImage {
  */
 function createTray(): void {
   tray = new Tray(loadTrayIcon())
-  tray.setToolTip('划词翻译')
+  tray.setToolTip(t('app.name'))
   if (isMac) {
     // macOS 上 setContextMenu 会让左键点击也弹出菜单，因此改为右键事件时动态弹出
     tray.on('right-click', () => tray?.popUpContextMenu(buildTrayMenu()))
@@ -4552,8 +4777,11 @@ function createTray(): void {
  */
 function buildTrayMenu(): Menu {
   const settings = getSettings()
+  const t = mainI18n?.translator ?? {
+    t: (key: string) => key
+  }
 
-  const targetOptions = [{ code: 'auto', label: '自动中英互译' }, ...LANGUAGES]
+  const targetOptions = [{ code: 'auto', label: t.t('menu.autoBilingual') }, ...LANGUAGES]
   const targetSubmenu = targetOptions.map((language) => ({
     label: language.label,
     type: 'radio' as const,
@@ -4561,7 +4789,7 @@ function buildTrayMenu(): Menu {
     click: () => void applySettingsPatch({ targetLang: language.code })
   }))
 
-  const sourceOptions = [{ code: 'auto', label: '自动检测' }, ...LANGUAGES]
+  const sourceOptions = [{ code: 'auto', label: t.t('settings.sourceLang.auto') }, ...LANGUAGES]
   const sourceSubmenu = sourceOptions.map((language) => ({
     label: language.label,
     type: 'radio' as const,
@@ -4570,36 +4798,49 @@ function buildTrayMenu(): Menu {
   }))
 
   return Menu.buildFromTemplate([
-    { label: `划词翻译   ${settings.hotkey}`, enabled: false },
+    { label: `${t.t('app.name')}   ${settings.hotkey}`, enabled: false },
     { type: 'separator' },
-    { label: '手动翻译…', click: () => void openManualTranslation() },
-    { label: '打开网页翻译…', enabled: settings.webTranslationEnabled, click: () => {
+    { label: t.t('menu.manualTranslation'), click: () => void openManualTranslation() },
+    { label: t.t('menu.openWebTranslation'), enabled: settings.webTranslationEnabled, click: () => {
       void getWebReader().open().catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : '无法打开网页阅读器'
-        dialog.showErrorBox('网页翻译', message)
+        const message = error instanceof Error ? error.message : t.t('error.openWebReader')
+        dialog.showErrorBox(t.t('error.webTranslation'), message)
       })
     } },
-    { label: '截图 OCR 翻译…', click: () => openOcrSelection() },
-    { label: '剪贴板图片 OCR 翻译…', click: () => void translateClipboardImage() },
+    { label: t.t('menu.screenshotOcr'), click: () => openOcrSelection() },
+    { label: t.t('menu.clipboardImageOcr'), click: () => void translateClipboardImage() },
     { type: 'separator' },
     {
-      label: '划词后自动显示“译”按钮',
+      label: t.t('menu.showSelectionButton'),
       type: 'checkbox',
       checked: settings.triggerMode === 'button',
       click: (menuItem) =>
         void applySettingsPatch({ triggerMode: menuItem.checked ? 'button' : 'hotkey' })
     },
     ...(isMac ? [{
-      label: '修复 macOS 划词服务…',
+      label: t.t('menu.repairMacSelectionService'),
       click: () => void promptHiServicesRepair()
     }] : []),
     { type: 'separator' },
-    { label: '目标语言', submenu: targetSubmenu },
-    { label: '源语言', submenu: sourceSubmenu },
+    { label: t.t('menu.targetLanguage'), submenu: targetSubmenu },
+    { label: t.t('menu.sourceLanguage'), submenu: sourceSubmenu },
     { type: 'separator' },
-    { label: '设置', click: () => void openSettings() },
-    { label: '退出', click: () => stopApplicationService() }
+    { label: t.t('menu.settings'), click: () => void openSettings() },
+    { label: t.t('menu.quit'), click: () => stopApplicationService() }
   ])
+}
+
+/**
+ * 在界面语言变化后同步主进程菜单、托盘和已打开窗口标题。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function refreshLocalizedApplicationChrome(): void {
+  const title = t('app.name')
+  tray?.setToolTip(title)
+  refreshTrayMenu()
+  const settingsTitle = t('settings.windowTitle')
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setTitle(settingsTitle)
 }
 
 /**

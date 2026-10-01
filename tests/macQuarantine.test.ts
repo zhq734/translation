@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import {
   MACOS_APPLICATION_PATH,
   removeMacOSApplicationQuarantine
 } from '../src/main/macQuarantine.ts'
+import { resetMainMessageTranslator, setMainMessageTranslator } from '../src/main/messages.ts'
+import { translatorForTest } from './helpers/i18n.ts'
+
+afterEach(() => {
+  resetMainMessageTranslator()
+})
 
 test('macOS 解除隔离属性应只执行固定路径的 xattr 命令', async () => {
   const calls: Array<{ command: string; args: string[] }> = []
@@ -22,6 +28,7 @@ test('macOS 解除隔离属性应只执行固定路径的 xattr 命令', async (
 })
 
 test('非 macOS 环境不得执行 xattr', async () => {
+  setMainMessageTranslator(translatorForTest('zh-CN'))
   let called = false
   const result = await removeMacOSApplicationQuarantine({
     platform: 'win32',
@@ -36,6 +43,7 @@ test('非 macOS 环境不得执行 xattr', async () => {
 })
 
 test('不是固定应用路径时不得执行 xattr', async () => {
+  setMainMessageTranslator(translatorForTest('zh-CN'))
   let called = false
   const result = await removeMacOSApplicationQuarantine({
     platform: 'darwin',
@@ -64,6 +72,7 @@ test('xattr 执行失败时应保留手动命令提示且不得调用 sudo', asy
 })
 
 test('应用本来没有隔离属性时应视为成功', async () => {
+  setMainMessageTranslator(translatorForTest('zh-CN'))
   const result = await removeMacOSApplicationQuarantine({
     platform: 'darwin',
     runCommand: async () => {

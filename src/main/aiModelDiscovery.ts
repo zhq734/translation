@@ -1,6 +1,7 @@
 import type { AiModelListResult, AiProtocol } from '../shared/types'
 import { normalizeAiNetworkError } from './aiErrors'
 import { normalizeAiBaseUrl } from './aiProtocol'
+import { translateMain } from './messages'
 
 /** 模型发现网络请求函数签名。 */
 export type AiModelFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -78,7 +79,7 @@ export class AiModelDiscoveryService {
 
     if (!response.ok) {
       if (input.protocol === 'claude-code' && response.status === 404) {
-        return { state: 'unsupported', models: [], message: '当前服务不支持模型列表，请手动输入模型名称' }
+        return { state: 'unsupported', models: [], message: translateMain('ai.modelDiscovery.unsupported') }
       }
       return { state: 'error', models: [], message: this.statusMessage(response.status) }
     }
@@ -86,16 +87,16 @@ export class AiModelDiscoveryService {
     const contentType = response.headers.get('content-type') || ''
     if (!contentType.includes('json')) {
       if (input.protocol === 'claude-code') {
-        return { state: 'unsupported', models: [], message: '当前服务不支持模型列表，请手动输入模型名称' }
+        return { state: 'unsupported', models: [], message: translateMain('ai.modelDiscovery.unsupported') }
       }
-      return { state: 'error', models: [], message: '模型列表响应格式不受支持' }
+      return { state: 'error', models: [], message: translateMain('ai.modelDiscovery.unsupportedResponse') }
     }
 
     let data: Record<string, unknown>
     try {
       data = (await response.json()) as Record<string, unknown>
     } catch {
-      return { state: 'error', models: [], message: '模型列表解析失败' }
+      return { state: 'error', models: [], message: translateMain('ai.modelDiscovery.parseFailed') }
     }
 
     const models = this.extractModels(input.protocol, data)
@@ -179,8 +180,8 @@ export class AiModelDiscoveryService {
  * @author zhenghq
    */
   private statusMessage(status: number): string {
-    if (status === 401 || status === 403) return '模型列表鉴权失败，请检查 API Key'
-    if (status === 429) return '模型列表请求过于频繁，请稍后重试'
-    return '模型列表加载失败'
+    if (status === 401 || status === 403) return translateMain('ai.modelDiscovery.authentication')
+    if (status === 429) return translateMain('ai.modelDiscovery.rateLimit')
+    return translateMain('ai.modelDiscovery.loadFailed')
   }
 }

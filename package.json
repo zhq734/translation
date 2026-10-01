@@ -22,7 +22,7 @@
     "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
     "test": "node scripts/run-tests.mjs",
     "dist:win": "npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never",
-    "dist:linux": "npm run build && node scripts/prepare-linux-ocr-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never",
+    "dist:linux": "npm run build && node scripts/prepare-linux-ocr-runtime.mjs && node scripts/prepare-linux-uiohook-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never",
     "release:checksums": "node scripts/generate-checksums.mjs",
     "icons:generate": "node scripts/generate-icons.mjs"
   },
@@ -39,6 +39,9 @@
     "appId": "com.selection.translator",
     "productName": "划词翻译",
     "npmRebuild": false,
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "directories": {
       "output": "dist"
     },
@@ -166,7 +169,7 @@
           "to": "build-info.json"
         }
       ],
-      "artifactName": "SelectionTranslator-${version}-linux-${arch}.${ext}",
+      "artifactName": "SelectionTranslator-${version}-${arch}.${ext}",
       "icon": "build/icon.png"
     },
     "icon": "build/icon.png"

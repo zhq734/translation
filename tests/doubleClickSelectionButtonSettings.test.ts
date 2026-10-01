@@ -6,9 +6,10 @@ import {
   SETTINGS_SCHEMA_VERSION,
   normalizeSettings
 } from '../src/shared/settingsDefaults.ts'
+import { tForTest } from './helpers/i18n.ts'
 
 test('双击选词“译”按钮设置应默认开启并支持持久化关闭', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 19)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 20)
   assert.equal(DEFAULT_SETTINGS.doubleClickSelectionButtonEnabled, true)
   assert.equal(
     normalizeSettings({ schemaVersion: 15 }).doubleClickSelectionButtonEnabled,
@@ -28,7 +29,7 @@ test('设置页应提供双击选词显示“译”按钮开关并自动保存',
   const source = readFileSync('src/renderer/src/settings.ts', 'utf8')
 
   assert.match(html, /id="double-click-selection-button-enabled"[^>]+type="checkbox"/u)
-  assert.match(html, /双击选词显示“译”按钮/u)
+  assert.match(html, new RegExp(`data-i18n="settings\\.trigger\\.doubleClickLabel">${tForTest('en-US', 'settings.trigger.doubleClickLabel')}`, 'u'))
   assert.match(
     source,
     /doubleClickSelectionButtonEnabled\.checked\s*=\s*settings\.doubleClickSelectionButtonEnabled/u

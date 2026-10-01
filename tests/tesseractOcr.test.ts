@@ -9,7 +9,12 @@ import {
   normalizeTesseractLines,
   type TesseractOcrDeps
 } from '../src/main/tesseractOcr.ts'
+import { setMainMessageTranslator } from '../src/main/messages.ts'
+import { createTranslator } from '../src/shared/i18n/index.ts'
 import { OcrEngineError } from '../src/shared/ocrEngine.ts'
+import { tForTest } from './helpers/i18n.ts'
+
+setMainMessageTranslator(createTranslator('zh-CN'))
 
 /**
  * 校验语言映射：中文 auto/zh-hans 映射为 chi_sim+eng。
@@ -199,7 +204,7 @@ test('TesseractOcrEngine worker terminated 应转换为引擎不可用错误', a
     (err: unknown) => {
       assert.ok(err instanceof OcrEngineError)
       assert.equal(err.code, 'engine-unavailable')
-      assert.equal(err.message, 'Tesseract OCR 已中断，请重新截图识别')
+      assert.equal(err.message, tForTest('zh-CN', 'ocr.error.tesseractInterrupted'))
       return true
     }
   )
