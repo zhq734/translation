@@ -4,6 +4,7 @@ import type {
   Api,
   LogEntry,
   TranslatePayload,
+  PopupAutoSizeRequest,
   ManualTranslateRequest,
   Settings,
   DeepLxStatus,
@@ -141,6 +142,15 @@ const api: Api = {
    */
   hide() {
     ipcRenderer.send('popup:hide')
+  },
+  /**
+   * 请求主进程按内容自然尺寸调整弹窗大小。
+   * @param size 目标尺寸。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resizePopup(size: PopupAutoSizeRequest) {
+    ipcRenderer.send('popup:resize', size)
   },
   /**
    * 从翻译弹窗打开设置窗口。

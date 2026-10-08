@@ -16,6 +16,7 @@ import {
 } from '../../shared/manualTranslationBehavior'
 import type { Settings, TranslatePayload } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
+import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
 import {
   createSpeechController,
   type SpeechController,
@@ -58,6 +59,7 @@ const manualModeBtn = document.getElementById('manual-mode') as HTMLButtonElemen
 const speakBtn = document.getElementById('speak') as HTMLButtonElement
 const speakPlayIcon = speakBtn.querySelector('.speak-play-icon') as SVGElement
 const speakStopIcon = speakBtn.querySelector('.speak-stop-icon') as SVGElement
+const speakLabelEl = document.getElementById('speak-label') as HTMLElement
 const manualSourceEl = document.getElementById('manual-source') as HTMLTextAreaElement
 const manualClearBtn = document.getElementById('manual-clear') as HTMLButtonElement
 const manualCountEl = document.getElementById('manual-count') as HTMLElement
@@ -70,6 +72,7 @@ const ocrSourceTextEl = document.getElementById('ocr-source-text') as HTMLElemen
 const ocrEngineBadgeEl = document.getElementById('ocr-engine-badge') as HTMLElement
 const ocrCopyBtn = document.getElementById('ocr-copy') as HTMLButtonElement
 const pinBtn = document.getElementById('pin') as HTMLButtonElement
+const pinLabelEl = document.getElementById('pin-label') as HTMLElement
 const webReaderBtn = document.getElementById('open-web-reader') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
 const closeBtn = document.getElementById('close') as HTMLButtonElement
@@ -94,6 +97,8 @@ let manualState: ManualTranslationState = createManualTranslationState()
 let selectionSpeechLanguage = ''
 let manualSpeechLanguage = ''
 let speechOperationId = 0
+let autoResizeTimer: ReturnType<typeof setTimeout> | null = null
+let lastRequestedAutoSize = { width: 0, height: 0 }
 
 const speechSynthesisApi: SpeechSynthesisLike | null = 'speechSynthesis' in window
   ? window.speechSynthesis as unknown as SpeechSynthesisLike
@@ -296,6 +301,8 @@ function syncSpeechButton(): void {
   const disabled = !translation
   speakBtn.disabled = disabled
   speakBtn.setAttribute('aria-pressed', String(speaking))
+  // 按钮文字保持简短稳定，禁用或需要系统语音等细节通过 title 与 aria-label 表达。
+  speakLabelEl.textContent = speaking ? t('popup.speechStop') : t('popup.speechRead')
   const label = speaking
     ? t('popup.speechStop')
     : disabled
@@ -525,6 +532,7 @@ function renderSelection(payload: TranslatePayload): void {
     }
     if (visible) statusEl.textContent = selectionStatus
     syncSpeechButton()
+    requestAutoResize()
     return
   }
   resultEl.classList.remove('loading')
@@ -547,6 +555,7 @@ function renderSelection(payload: TranslatePayload): void {
     }
     if (visible) statusEl.textContent = selectionStatus
     syncSpeechButton()
+    requestAutoResize()
     return
   }
   stopSpeech()
@@ -573,6 +582,7 @@ function renderSelection(payload: TranslatePayload): void {
     renderOcrSource({} as TranslatePayload)
   }
   syncSpeechButton()
+  requestAutoResize()
 }
 
 /**
@@ -614,6 +624,7 @@ function renderManualState(): void {
     || manualState.stale
   manualCopyBtn.disabled = manualCopyBtn.hidden
   syncSpeechButton()
+  requestAutoResize()
 }
 
 /**
@@ -635,6 +646,105 @@ function renderMode(): void {
   renderTranslationProviderResult(manual ? manualProvider : selectionProvider)
   renderManualState()
   syncSpeechButton()
+  requestAutoResize()
+}
+
+/**
+ * 拼接元素的计算字体，供离屏画布测量文本行宽。
+ * @param style 元素的计算样式。
+ * @returns 可直接赋给 Canvas 上下文的 font 字符串。
+ * @author zhenghq
+ */
+function buildCanvasFont(style: CSSStyleDeclaration): string {
+  const weight = style.fontWeight || '400'
+  const size = style.fontSize || '14px'
+  const family = style.fontFamily || 'sans-serif'
+  return `${weight} ${size} ${family}`
+}
+
+/**
+ * 测量一段文本在指定字体下的最大单行宽度。
+ * @param text 待测量文本，可包含换行。
+ * @param font Canvas 使用的字体描述。
+ * @returns 最宽一行的像素宽度。
+ * @author zhenghq
+ */
+function measureTextLineWidth(text: string, font: string): number {
+  if (!text) return 0
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return 0
+  context.font = font
+  let widest = 0
+  for (const line of text.split('\n')) {
+    widest = Math.max(widest, context.measureText(line).width)
+  }
+  return widest
+}
+
+/**
+ * 测量当前内容需要的弹窗自然尺寸。
+ * 宽度取可见文本最宽单行加内边距，并限制在舒适阅读宽度内；
+ * 高度则在临时套用目标宽度后放开高度约束读取，保证换行结果与最终窗口一致。
+ * @returns 测量得到的宽高，单位逻辑像素。
+ * @author zhenghq
+ */
+function measureAutoSize(): { width: number; height: number } {
+  const popupEl = document.getElementById('popup') as HTMLElement
+  const sourceTexts = mode === 'manual'
+    ? [manualState.draft, manualState.translation ?? '']
+    : [lastOriginal, lastTranslation, lastOcrText]
+  const sourceFont = buildCanvasFont(getComputedStyle(originalEl))
+  const resultFont = buildCanvasFont(getComputedStyle(resultEl))
+  const widestText = sourceTexts.reduce((widest, text) => Math.max(
+    widest,
+    measureTextLineWidth(text, sourceFont),
+    measureTextLineWidth(text, resultFont)
+  ), 0)
+  // 水平方向额外预留左右内边距、透明宿主边距与边框。
+  const horizontalChrome = 60
+  // 文本过长时不再继续撑宽窗口，避免出现难以阅读的超长行。
+  const comfortMaxWidth = Math.min(POPUP_AUTO_SIZE_LIMITS.maxWidth, 640)
+  const desiredWidth = Math.max(
+    POPUP_AUTO_SIZE_LIMITS.minWidth,
+    Math.min(comfortMaxWidth, Math.ceil(widestText + horizontalChrome))
+  )
+
+  const previousWidth = popupEl.style.width
+  // 窗口比 #popup 多出透明宿主左右内边距，测量宽度需扣除后才能与最终换行一致。
+  const bodyStyle = getComputedStyle(document.body)
+  const hostHorizontalPadding =
+    Number.parseFloat(bodyStyle.paddingLeft || '0') +
+    Number.parseFloat(bodyStyle.paddingRight || '0')
+  popupEl.style.width = `${Math.max(0, desiredWidth - hostHorizontalPadding)}px`
+  popupEl.classList.add('auto-size-measuring')
+  // scrollHeight 不含弹窗边框与透明宿主的上下内边距，需一并计入窗口高度。
+  const verticalChrome =
+    popupEl.offsetHeight - popupEl.clientHeight +
+    Number.parseFloat(bodyStyle.paddingTop || '0') +
+    Number.parseFloat(bodyStyle.paddingBottom || '0')
+  const naturalHeight = popupEl.scrollHeight + verticalChrome
+  popupEl.classList.remove('auto-size-measuring')
+  popupEl.style.width = previousWidth
+  return {
+    width: desiredWidth,
+    height: Math.max(naturalHeight, POPUP_AUTO_SIZE_LIMITS.minHeight)
+  }
+}
+
+/**
+ * 在内容或模式变化后去抖上报自适应尺寸，避免频繁触发布局。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function requestAutoResize(): void {
+  if (autoResizeTimer) clearTimeout(autoResizeTimer)
+  autoResizeTimer = setTimeout(() => {
+    autoResizeTimer = null
+    const size = measureAutoSize()
+    if (size.width === lastRequestedAutoSize.width && size.height === lastRequestedAutoSize.height) return
+    lastRequestedAutoSize = size
+    window.api.resizePopup(size)
+  }, 60)
 }
 
 /**
@@ -876,6 +986,7 @@ function renderPinnedState(value: boolean): void {
   pinBtn.setAttribute('aria-pressed', String(value))
   pinBtn.title = value ? t('popup.unpinWindow') : t('popup.pin')
   pinBtn.setAttribute('aria-label', pinBtn.title)
+  pinLabelEl.textContent = pinBtn.title
 }
 
 /**

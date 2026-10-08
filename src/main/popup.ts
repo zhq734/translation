@@ -1,6 +1,10 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
-import type { TranslatePayload } from '../shared/types'
+import type { PopupAutoSizeRequest, TranslatePayload } from '../shared/types'
+import {
+  resolvePopupAutoSize,
+  resolvePopupResizeBounds
+} from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
@@ -51,10 +55,10 @@ export function createPopup(preloadPath: string): BrowserWindow {
   hidingAfterFrontReturn = false
   restoringForegroundUntil = 0
   win = new BrowserWindow({
-    width: 460,
+    width: 520,
     height: 360,
-    minWidth: 360,
-    minHeight: 260,
+    minWidth: 520,
+    minHeight: 320,
     show: false,
     frame: false,
     transparent: true,
@@ -164,6 +168,25 @@ function positionNearAnchor(anchor?: { x: number; y: number }): void {
   )
 
   win.setPosition(Math.round(x), Math.round(y))
+}
+
+/**
+ * 按 Renderer 上报的内容自然尺寸调整弹窗，并保证新窗口仍完整落在当前显示器工作区内。
+ * @param size 渲染进程测量得到的目标尺寸。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resizePopup(size: PopupAutoSizeRequest): void {
+  if (!win || win.isDestroyed()) return
+  const bounds = win.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const resolved = resolvePopupAutoSize(size, display.workArea, { edgeGap: WINDOW_EDGE_GAP })
+  const next = resolvePopupResizeBounds(bounds, resolved, display.workArea)
+  if (next.width === bounds.width && next.height === bounds.height &&
+      next.x === bounds.x && next.y === bounds.y) {
+    return
+  }
+  win.setBounds(next)
 }
 
 /**

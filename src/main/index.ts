@@ -64,7 +64,8 @@ import {
   getPopupCloseVersion,
   setPopupPinned,
   showManualTranslationPopup,
-  whenPopupHidden
+  whenPopupHidden,
+  resizePopup
 } from './popup'
 import {
   forgetFrontmostApp,
@@ -151,6 +152,7 @@ import type {
 import type { EdgeSpeechResult } from '../shared/types'
 import type { WebImageCandidate } from '../shared/webPageTranslation'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
+import { isPopupAutoSizeRequest } from '../shared/popupAutoSize'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
 import { AiCredentialStore } from './aiCredentials'
@@ -4523,6 +4525,9 @@ function registerIpc(): void {
     clipboard.writeText(String(text ?? ''))
   })
   ipcMain.on('popup:hide', () => hidePopup())
+  ipcMain.on('popup:resize', (_event, size: unknown) => {
+    if (isPopupAutoSizeRequest(size)) resizePopup(size)
+  })
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
   })

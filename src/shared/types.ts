@@ -186,6 +186,14 @@ export interface MacOSQuarantineResult {
   message: string
 }
 
+/** 弹窗根据内容自然尺寸请求的自适应尺寸负载。 */
+export interface PopupAutoSizeRequest {
+  /** 目标宽度（逻辑像素）。 */
+  width: number
+  /** 目标高度（逻辑像素）。 */
+  height: number
+}
+
 export interface TranslatePayload {
   ok: boolean
   /** 本次结果属于划词还是手动翻译。 */
@@ -995,6 +1003,8 @@ export interface Api {
   openManualTranslate(): void
   copy(text: string): void
   hide(): void
+  /** 请求主进程按内容自然尺寸调整弹窗大小。 */
+  resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
   /** 打开内置网页翻译阅读器。 */

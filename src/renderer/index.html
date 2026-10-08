@@ -16,53 +16,50 @@
   <body>
     <div id="popup">
       <div class="drag-handle" data-i18n-attr="title:popup.dragHandle.title;aria-label:popup.dragHandle.ariaLabel" title="Drag window" aria-label="Drag translation window"></div>
-      <div class="header">
-        <div class="language-picker" data-i18n-attr="aria-label:popup.languageToolbar" aria-label="Translation language toolbar">
-          <select id="source-lang" data-i18n-attr="title:menu.sourceLanguage" title="Source Language"></select>
-          <span class="language-arrow" aria-hidden="true">→</span>
-          <select id="target-lang" data-i18n-attr="title:menu.targetLanguage" title="Target Language"></select>
-        </div>
-        <div class="header-actions">
-          <button id="manual-mode" class="header-action-button" type="button" data-i18n-attr="title:popup.manualMode;aria-label:popup.manualMode" title="Toggle manual translation" aria-label="Toggle manual translation" aria-pressed="false">
-            <svg class="header-action-icon manual-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
-              <path d="M14 3v6h6" />
-              <path d="M8 13h8M8 17h5" />
-            </svg>
-          </button>
-          <button id="speak" class="header-action-button" type="button" data-i18n-attr="title:popup.speakUnavailable;aria-label:popup.speakUnavailable" title="No translation to read aloud" aria-label="No translation to read aloud" aria-pressed="false" disabled>
-            <svg class="header-action-icon speak-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path class="speak-play-icon" d="M4 9v6h4l5 4V5L8 9H4Z" />
-              <path class="speak-play-icon" d="M16 9.5a4 4 0 0 1 0 5" />
-              <path class="speak-play-icon" d="M18.5 7a7.5 7.5 0 0 1 0 10" />
-              <path class="speak-stop-icon" d="M7 7h10v10H7z" hidden />
-            </svg>
-          </button>
-          <button id="pin" class="header-action-button" type="button" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window" aria-pressed="false">
-            <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M12 17v5" />
-              <path d="M5 17h14" />
-              <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
-            </svg>
-          </button>
-          <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
-            <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
-            </svg>
-          </button>
-          <button id="open-settings" class="header-action-button" type="button" data-i18n-attr="title:popup.openSettings;aria-label:popup.openSettings" title="Open settings" aria-label="Open settings">
-            <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
-            </svg>
-          </button>
+      <header class="header">
+        <div class="header-top">
+          <span id="status" class="popup-title" role="status" aria-live="polite"></span>
+          <div class="header-actions">
+            <div class="provider-bar">
+              <span class="provider-label" data-i18n="popup.translationApi">Translation API</span>
+              <select id="translation-provider" data-i18n-attr="aria-label:popup.translationApi;title:popup.chooseProvider" aria-label="Translation API" title="Choose preferred translation API"></select>
+            </div>
+            <button id="manual-mode" class="header-action-button" type="button" data-i18n-attr="title:popup.manualMode;aria-label:popup.manualMode" title="Toggle manual translation" aria-label="Toggle manual translation" aria-pressed="false">
+              <svg class="header-action-icon manual-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+                <path d="M14 3v6h6" />
+                <path d="M8 13h8M8 17h5" />
+              </svg>
+            </button>
+            <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
+              <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+              </svg>
+            </button>
+            <button id="open-settings" class="header-action-button" type="button" data-i18n-attr="title:popup.openSettings;aria-label:popup.openSettings" title="Open settings" aria-label="Open settings">
+              <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
+              </svg>
+            </button>
+          </div>
           <button id="close" data-i18n-attr="title:common.close;aria-label:common.close" title="Close" aria-label="Close">×</button>
         </div>
-      </div>
+      </header>
       <section id="selection-view" class="selection-view" data-i18n-attr="aria-label:popup.selectionResult" aria-label="Selection translation result">
-        <div id="result" class="result" aria-live="polite"></div>
-        <div id="original" class="original"></div>
+        <div class="translation-section translation-section-source">
+          <div class="section-head">
+            <span class="section-label" data-i18n="popup.translateOriginal">Source text</span>
+          </div>
+          <div id="original" class="original"></div>
+        </div>
+        <div class="translation-section translation-section-target">
+          <div class="section-head">
+            <span class="section-label section-label-accent" data-i18n="popup.translationResult">Translation</span>
+          </div>
+          <div id="result" class="result" aria-live="polite"></div>
+        </div>
         <div id="ocr-source" class="ocr-source" hidden>
           <div class="ocr-source-header">
             <span class="ocr-source-label" id="ocr-source-label" data-i18n="popup.ocrContent">OCR content</span>
@@ -92,12 +89,37 @@
         </div>
       </section>
       <div class="footer popup-status-actions" data-i18n-attr="aria-label:popup.statusActions" aria-label="Translation status and actions">
-        <div class="footer-meta">
-          <span id="status"></span>
-          <select id="translation-provider" data-i18n-attr="aria-label:popup.translationApi;title:popup.chooseProvider" aria-label="Translation API" title="Choose preferred translation API"></select>
+        <button id="speak" class="header-action-button" type="button" data-i18n-attr="title:popup.speakUnavailable;aria-label:popup.speakUnavailable" title="No translation to read aloud" aria-label="No translation to read aloud" aria-pressed="false" disabled>
+          <svg class="header-action-icon speak-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path class="speak-play-icon" d="M4 9v6h4l5 4V5L8 9H4Z" />
+            <path class="speak-play-icon" d="M16 9.5a4 4 0 0 1 0 5" />
+            <path class="speak-play-icon" d="M18.5 7a7.5 7.5 0 0 1 0 10" />
+            <path class="speak-stop-icon" d="M7 7h10v10H7z" hidden />
+          </svg>
+          <span class="toolbar-action-label" id="speak-label" data-i18n="popup.speechRead">Read translation aloud</span>
+        </button>
+        <div class="language-picker" data-i18n-attr="aria-label:popup.languageToolbar" aria-label="Translation language toolbar">
+          <select id="source-lang" data-i18n-attr="title:menu.sourceLanguage" title="Source Language"></select>
+          <span class="language-arrow" aria-hidden="true">→</span>
+          <select id="target-lang" data-i18n-attr="title:menu.targetLanguage" title="Target Language"></select>
         </div>
-        <button id="copy" type="button" data-i18n="popup.copy">Copy</button>
-        <button id="manual-copy" type="button" data-i18n="popup.copyTranslation" hidden disabled>Copy translation</button>
+        <div class="footer-spacer"></div>
+        <button id="copy" class="toolbar-action" type="button" data-i18n-attr="title:popup.copy;aria-label:popup.copy" title="Copy" aria-label="Copy" hidden>
+          <svg class="header-action-icon copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <rect x="9" y="9" width="11" height="11" rx="2" />
+            <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+          </svg>
+          <span class="toolbar-action-label" data-i18n="popup.copy">Copy</span>
+        </button>
+        <button id="manual-copy" class="toolbar-action toolbar-action-primary" type="button" data-i18n="popup.copyTranslation" hidden disabled>Copy translation</button>
+        <button id="pin" class="header-action-button" type="button" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window" aria-pressed="false">
+          <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 17v5" />
+            <path d="M5 17h14" />
+            <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
+          </svg>
+          <span class="toolbar-action-label" id="pin-label" data-i18n="popup.pin">Pin window</span>
+        </button>
       </div>
     </div>
     <script type="module" src="./src/popup.ts"></script>

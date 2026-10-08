@@ -1318,3 +1318,33 @@ test('划词监听启动失败应记录可诊断日志，避免手势失效时�
   assert.match(controllerSource, /this\.running = started/u)
   assert.match(controllerSource, /后续 refresh 可重试/u)
 })
+
+/**
+ * 校验弹窗内固定窗口、网页翻译、复制、朗读等操作图标均具备悬停动画，
+ * 且动画复用统一的 transform 过渡，保证与设置图标交互一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('翻译弹窗的操作图标应统一支持光标悬停动画', () => {
+  const popupStyles = readFileSync('src/renderer/src/style.css', 'utf8')
+
+  for (const selector of [
+    '#manual-mode:hover .manual-icon',
+    '#open-web-reader:hover .web-reader-icon',
+    '#open-settings:hover .settings-icon',
+    '#speak:hover:not([disabled]) .speak-icon',
+    '#copy:hover .copy-icon',
+    '#pin:hover .pin-icon',
+    '#close:hover:not(:active)'
+  ]) {
+    assert.ok(
+      popupStyles.includes(selector),
+      `缺少悬停动画选择器：${selector}`
+    )
+  }
+
+  assert.match(
+    popupStyles,
+    /\.header-action-icon\s*\{[^}]*transition:\s*transform[^;]*;/su
+  )
+})
