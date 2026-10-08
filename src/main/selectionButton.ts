@@ -30,11 +30,24 @@ function showReadySelectionButton(anchor: { x: number; y: number }): void {
     Math.min(preferredY, workArea.y + workArea.height - BUTTON_SIZE - EDGE_GAP)
   )
 
-  pendingAnchor = null
   win.setPosition(Math.round(x), Math.round(y))
   win.showInactive()
   win.setAlwaysOnTop(true, 'pop-up-menu')
   win.moveTop()
+}
+
+/**
+ * 按最近一次待处理的选区锚点恢复显示“译”图标。
+ *
+ * macOS 安全让出前台时会调用 app.hide() 隐藏整个应用，按钮窗口随之被隐藏；
+ * 若此时划词刚触发 showInactive，显示动作会被整应用隐藏吞掉。待处理锚点保留到
+ * 用户真正点击“译”或取消划词为止，应用恢复可见后据此重放显示。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function restoreSelectionButtonIfPending(): void {
+  if (!pendingAnchor) return
+  showReadySelectionButton(pendingAnchor)
 }
 
 /**

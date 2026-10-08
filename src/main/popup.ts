@@ -39,6 +39,13 @@ let hidingAfterFrontReturn = false
 /** 正在为取词主动归还前台焦点的截止时间；此窗口内的 blur 属于内部动作，不关闭弹窗。 */
 let restoringForegroundUntil = 0
 /**
+ * 按钮取词交还前台期间是否处于失焦抑制。
+ * macOS 点击“译”按钮后本应用是最前应用，open -b 源应用会让刚非激活显示的
+ * 读取弹窗收到 blur；此时不能用固定毫秒窗口兜底，否则慢速前台切换仍会
+ * 被误判为用户点击外部并关闭弹窗。此标记覆盖整个交还与取词准备阶段。
+ */
+let captureForegroundRestoreActive = false
+/**
  * 源应用前台窗口跟踪器：弹窗激活前记录源窗口，取词前精确交还焦点。
  * Chromium 的 win.blur() 由系统按 Z-order 挑下一个前台窗口，不保证回到源应用。
  */
@@ -55,6 +62,7 @@ export function createPopup(preloadPath: string): BrowserWindow {
   shownInactive = false
   hidingAfterFrontReturn = false
   restoringForegroundUntil = 0
+  captureForegroundRestoreActive = false
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -121,7 +129,7 @@ function handlePopupBlur(): void {
  * @author zhenghq
  */
 function isRestoringForeground(): boolean {
-  return Date.now() <= restoringForegroundUntil
+  return captureForegroundRestoreActive || Date.now() <= restoringForegroundUntil
 }
 
 /**
@@ -145,6 +153,28 @@ export function deactivatePopupForCapture(): boolean {
   // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，至少弹窗不再持有焦点。
   if (!restored) win.blur()
   return true
+}
+
+/**
+ * 进入按钮取词的弹窗失焦抑制，覆盖 macOS 交还前台与随后取词的整个阶段。
+ *
+ * 点击“译”按钮会让本应用成为最前应用，读取弹窗以非激活方式显示后，
+ * 精确交还源应用会触发弹窗 blur。若不抑制，handlePopupBlur 会误判为用户
+ * 点击外部并调用 hidePopup，表现为弹窗一闪即关。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function beginPopupForegroundRestoreForCapture(): void {
+  captureForegroundRestoreActive = true
+}
+
+/**
+ * 解除按钮取词的弹窗失焦抑制，恢复点击外部自动关闭的语义。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function endPopupForegroundRestoreForCapture(): void {
+  captureForegroundRestoreActive = false
 }
 
 /**

@@ -18,6 +18,7 @@
 import { app, BrowserWindow } from 'electron'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
+import { restoreSelectionButtonIfPending } from './selectionButton'
 
 const execFileP = promisify(execFile)
 
@@ -616,6 +617,9 @@ export function yieldFrontmostAppThen(run: () => void): Promise<boolean> {
       // 跳过真正的 win.hide()，必须先非激活恢复应用再收尾，否则随后的整体恢复
       // 会把弹窗重新显示出来，用户表现为「点关闭后弹窗关不掉」。
       run()
+      // app.hide() 会连“译”按钮一起隐藏；若划词发生在这段窗口期，showInactive
+      // 会被整体隐藏吞掉。恢复应用可见性后按待处理锚点重放一次按钮显示。
+      restoreSelectionButtonIfPending()
       resolve(true)
     }
     logFrontDiagnostic('开始安全让出前台：app.hide() → 等待失活 → app.show() → 收尾')

@@ -60,6 +60,8 @@ import {
   isPopupHandingBackFront,
   isPopupActivated,
   deactivatePopupForCapture,
+  beginPopupForegroundRestoreForCapture,
+  endPopupForegroundRestoreForCapture,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
@@ -77,6 +79,7 @@ import {
   rememberFrontmostApp,
   rememberFrontmostAppIfInactive,
   rememberFrontmostAppIfInactiveAsync,
+  restoreFrontmostAppForCapture,
   waitForFrontmostAppReturn
 } from './macForeground'
 import {
@@ -1270,6 +1273,9 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
 
   if (action === 'show-button') {
     selectionInteraction.showButton()
+    // 划词阶段本应用通常还在后台，此时记录源应用才能拿到真实目标；
+    // 等用户点击“译”按钮后再读只会读到已经占据前台的自身。
+    rememberFrontmostAppIfInactive()
     showSelectionButton(anchor)
     // Windows UIA 需要冷启动 PowerShell，且串行预取会拖慢点击后的复制取词，因此直接跳过。
     if (shouldPrefetchSelectionForButton(process.platform)) {
@@ -1494,8 +1500,22 @@ async function translateSelectionButton(): Promise<void> {
     process.platform,
     isPopupActivated()
   )
-  const popupCloseVersion = showSelectionReadingPopup(anchor)
+  // macOS 点击“译”按钮后本应用已是最前应用，读取弹窗一旦显示就可能因随后
+  // 交还源应用收到 blur；抑制必须早于弹窗显示，避免显示瞬间的失焦漏抑制。
+  const captureForegroundRestoreBegun = process.platform === 'darwin'
   try {
+    if (captureForegroundRestoreBegun) beginPopupForegroundRestoreForCapture()
+    const popupCloseVersion = showSelectionReadingPopup(anchor)
+    // macOS 点击“译”按钮时本应用已经因窗口交互成为最前应用，注入的复制键
+    // 会打在弹窗而不是浏览器上，导致剪贴板哨兵不变而报取词超时。这里必须
+    // 在消费预取与复制取词之前，用划词阶段记录的源应用精确交还前台并等待
+    // 系统真正完成焦点切换。
+    if (process.platform === 'darwin') {
+      restoreFrontmostAppForCapture()
+      await waitForFrontmostAppReturn()
+      if (!selectionInteraction.isCurrent(interactionToken) ||
+          popupCloseVersion !== getPopupCloseVersion()) return
+    }
     // 弹窗刚从前台失活时，Windows 需要几十毫秒才把焦点交回源应用；
     // 不等待就注入复制键会打在旧焦点上，导致剪贴板哨兵不变而报取词超时。
     if (popupWasActivated) {
@@ -1519,6 +1539,7 @@ async function translateSelectionButton(): Promise<void> {
     if (result) handleSelectionCaptureResult(result, interactionToken, true)
     else hidePopup()
   } finally {
+    if (captureForegroundRestoreBegun) endPopupForegroundRestoreForCapture()
     if (selectionInteraction.isCurrent(interactionToken) &&
         selectionInteraction.snapshot().state === 'capturing' &&
         pendingPopupReleaseToken !== interactionToken) {
@@ -1628,7 +1649,10 @@ async function translateText(
       ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
     },
     0,
-    anchor
+    anchor,
+    // 选区取词刚通过 open -b 交还前台，加载态若立即 win.show() 会与交还动作
+    // 竞争并产生迟到的 blur；等最终翻译结果到达后再激活，避免弹窗一闪即关。
+    origin !== 'selection'
   )
 
   try {
