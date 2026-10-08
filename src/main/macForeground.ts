@@ -335,6 +335,61 @@ export function forgetFrontmostApp(): void {
 }
 
 /**
+ * 取词前把 macOS 前台交还给记录的源应用。
+ *
+ * 第一次取词成功后翻译结果弹窗会被 `win.show()` 激活，本应用成为最前应用；
+ * 第二次按快捷键时若不让出前台，注入的复制键与 AX 焦点读取都会落在弹窗上，
+ * 剪贴板哨兵不变而报「取词超时」。这里复用待交还记录做精确交还，
+ * 交还请求发出后立即返回，由调用方等待前台焦点稳定再取词。
+ * @returns 已发出交还请求时返回 true；无记录或目标已退出时返回 false。
+ * @author zhenghq
+ */
+export function restoreFrontmostAppForCapture(): boolean {
+  if (process.platform !== 'darwin') return false
+  const target = pendingReturnApp
+  if (!target || !isProcessAlive(target.pid)) return false
+  if (!activateFrontmostApp(target)) return false
+  logFrontDiagnostic(`取词前精确交还前台：open -b ${target.bundleId} pid=${target.pid}`)
+  return true
+}
+
+/**
+ * 等待本应用真正失去 macOS 最前状态，确认取词目标已回到源应用。
+ *
+ * `open -b` 是异步生效的：调用返回时前台应用未必已经切换完成。
+ * 若立刻取词，AX 焦点读取与注入的复制键仍可能落在翻译弹窗上而再次超时，
+ * 因此按应用激活事件轮询，直到确认失活或到达有界超时。
+ * @param timeoutMs 最长等待时间（毫秒）。
+ * @returns 已确认本应用不再处于最前时返回 true；无需等待或超时返回 false。
+ * @author zhenghq
+ */
+export function waitForFrontmostAppReturn(timeoutMs = FRONT_RETURN_TIMEOUT_MS): Promise<boolean> {
+  if (process.platform !== 'darwin') return Promise.resolve(false)
+  if (!isMacAppActiveByEvents()) return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    /**
+     * 轮询应用激活事件，确认前台交还完成。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    const poll = (): void => {
+      if (!isMacAppActiveByEvents()) {
+        resolve(true)
+        return
+      }
+      if (Date.now() >= deadline) {
+        logFrontDiagnostic(`取词前等待前台交还超时（${timeoutMs}ms）`)
+        resolve(false)
+        return
+      }
+      setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
+    }
+    poll()
+  })
+}
+
+/**
  * 在隐藏「本应用当前 key window」前把 macOS 前台交还出去，随后执行收尾动作。
  *
  * 顺序不能颠倒：先激活源应用、确认本应用确实失去最前状态，再隐藏窗口。

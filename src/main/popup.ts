@@ -14,6 +14,7 @@ import {
   endInternalWindowTeardown,
   handBackFrontmostThen,
   rememberFrontmostAppBeforeActivation,
+  restoreFrontmostAppForCapture,
   yieldFrontmostAppThen
 } from './macForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
@@ -126,6 +127,8 @@ function isRestoringForeground(): boolean {
 /**
  * 让已激活的翻译弹窗主动退出前台，把焦点归还给源应用以便随后取词。
  * Windows 对已处于前台的窗口调用 showInactive 不会交还焦点，必须显式 blur；
+ * macOS 上翻译结果弹窗同样会激活本应用，需按记录的源应用精确交还前台，
+ * 否则第二次快捷键取词的复制键与 AX 焦点读取都会落在弹窗上。
  * 归还期间的失焦事件由 handlePopupBlur 短路，不会关闭弹窗。
  * @returns 实际执行了失活时返回 true；弹窗不可见或本就非激活时返回 false。
  * @author zhenghq
@@ -134,8 +137,11 @@ export function deactivatePopupForCapture(): boolean {
   if (!win || !win.isVisible() || shownInactive) return false
   restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
   shownInactive = true
-  // 先把焦点精确交还给记录的源应用窗口；SetForegroundWindow 成功时源应用立即回到前台。
-  const restored = foregroundTracker.restore()
+  // 先把焦点精确交还给记录的源应用：Windows 用 SetForegroundWindow 恢复 HWND，
+  // macOS 用 open -b 重新激活源应用（blur 只放弃焦点，不保证系统挑回源应用）。
+  const restored = process.platform === 'darwin'
+    ? restoreFrontmostAppForCapture()
+    : foregroundTracker.restore()
   // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，至少弹窗不再持有焦点。
   if (!restored) win.blur()
   return true

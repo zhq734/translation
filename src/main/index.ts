@@ -76,7 +76,8 @@ import {
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
   rememberFrontmostAppIfInactive,
-  rememberFrontmostAppIfInactiveAsync
+  rememberFrontmostAppIfInactiveAsync,
+  waitForFrontmostAppReturn
 } from './macForeground'
 import {
   createSelectionButton,
@@ -103,6 +104,7 @@ import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
 import {
   POPUP_FOREGROUND_RESTORE_SETTLE_MS,
   shouldActivatePopupForCaptureFailure,
+  shouldDeactivatePopupBeforeMacCapture,
   shouldRestoreForegroundBeforeCapture
 } from '../shared/popupForeground'
 import {
@@ -1109,6 +1111,9 @@ function onHotkey(): void {
   selectionCapture.markEntry('hotkey')
   selectionInteraction.invalidateSelectionFlow()
   hideSelectionButton()
+  // 第二次按快捷键时上一轮结果弹窗可能已激活本应用：先判定是否需要主动失活，
+  // 让随后注入的复制键与 AX 焦点读取重新落在源应用上。
+  const popupWasActivated = isPopupActivated()
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
   const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
@@ -1127,6 +1132,14 @@ function onHotkey(): void {
       () => queueSelectionTranslation(undefined, undefined, true, popupCloseVersion),
       captureDelay
     )
+    return
+  }
+  // macOS 刚把前台交还给源应用时必须等系统真正完成焦点切换，否则紧随其后的
+  // AX 直读与注入复制键仍可能落在弹窗上而报取词超时。
+  if (shouldDeactivatePopupBeforeMacCapture(process.platform, popupWasActivated)) {
+    void waitForFrontmostAppReturn().then(() => {
+      queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
+    })
     return
   }
   queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
@@ -1398,11 +1411,12 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   // 记录用户原本在用的应用：此刻本应用还不是前台应用，读到的就是源应用。
   // 弹窗最终隐藏时要把前台交还给它，否则 macOS 会把设置页提升到最前。
   rememberFrontmostAppIfInactive()
-  // Windows 上弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口，
-  // 对已在前台的窗口再调用 showInactive 不会交还焦点，随后的 WM_COPY 与
-  // Ctrl+C 全部发往弹窗，剪贴板哨兵不变而报取词超时。这里先显式让弹窗
+  // 弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口：
+  // Windows 上 WM_COPY 与注入的 Ctrl+C 会发往弹窗；macOS 上注入的复制键与
+  // AX 焦点读取同样落在弹窗，剪贴板哨兵不变而报取词超时。这里先显式让弹窗
   // 退出前台把焦点还给源应用，归还期间的 blur 不会关闭弹窗。
-  if (shouldRestoreForegroundBeforeCapture(process.platform, isPopupActivated())) {
+  if (shouldRestoreForegroundBeforeCapture(process.platform, isPopupActivated()) ||
+      shouldDeactivatePopupBeforeMacCapture(process.platform, isPopupActivated())) {
     deactivatePopupForCapture()
   }
   // 以非激活方式显示读取状态弹窗。弹窗已可见且已被激活（上次翻译结果调用了

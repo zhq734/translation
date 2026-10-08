@@ -43,3 +43,22 @@ export function shouldRestoreForegroundBeforeCapture(
 export function shouldActivatePopupForCaptureFailure(platform: NodeJS.Platform): boolean {
   return platform !== 'darwin'
 }
+
+/**
+ * 判断 macOS 取词前是否需要让已激活的结果弹窗主动退出前台。
+ *
+ * 第一次取词成功后，翻译结果弹窗通过 `win.show()` 激活本应用并成为最前应用；
+ * 此时再次按快捷键，注入的复制键与 AX 焦点读取都会落在弹窗上而非源应用，
+ * 剪贴板哨兵始终不变，最终报「取词超时」。这与 Windows 的回归是同一根因，
+ * 区别只是 macOS 需要把前台精确交还给记录的源应用（`open -b`），而不是 blur。
+ * @param platform 当前 Node.js 平台标识。
+ * @param popupActivated 弹窗当前是否可见且处于激活状态。
+ * @returns 需要先让结果弹窗退出前台时返回 true。
+ * @author zhenghq
+ */
+export function shouldDeactivatePopupBeforeMacCapture(
+  platform: NodeJS.Platform,
+  popupActivated: boolean
+): boolean {
+  return platform === 'darwin' && popupActivated
+}
