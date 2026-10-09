@@ -172,6 +172,78 @@ test('带缩进的普通文本仍应合并软换行', () => {
 })
 
 /**
+ * 校验终端中带时间戳与日志级别的多行日志不会被当成视觉软换行合并。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('带时间戳的终端日志选区换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText(
+      '2026-10-09 15:41:42.123 INFO [main] com.example.Foo - started\n' +
+        '2026-10-09 15:41:43.456 WARN [main] com.example.Foo - slow\n' +
+        '2026-10-09 15:41:44.789 ERROR [main] com.example.Foo - failed'
+    ),
+    '2026-10-09 15:41:42.123 INFO [main] com.example.Foo - started\n' +
+      '2026-10-09 15:41:43.456 WARN [main] com.example.Foo - slow\n' +
+      '2026-10-09 15:41:44.789 ERROR [main] com.example.Foo - failed'
+  )
+})
+
+/**
+ * 校验无时间戳但带方括号级别的终端日志换行也应完整保留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('方括号级别的终端日志选区换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('[INFO] application starting\n[WARN] cache miss\n[ERROR] startup failed'),
+    '[INFO] application starting\n[WARN] cache miss\n[ERROR] startup failed'
+  )
+})
+
+/**
+ * 校验应用自身输出的模块前缀结构化日志（如 [capture] key=value）换行应完整保留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('模块前缀的 key=value 终端日志选区换行应完整保留', () => {
+  const logText = [
+    '[macForeground] 记录源应用 bundleId=com.google.Chrome pid=27547',
+    '[capture] button-prefetch status=empty waitedMs=0',
+    '[capture] button-capture-start platform=darwin copyFallback=true',
+    '[capture] copy-start platform=darwin timeoutMs=800',
+    '[capture] copy-shortcut-sent attempt=1 observed=true elapsedMs=256',
+    '[capture] copy-retry elapsedMs=428',
+    '[capture] copy-shortcut-sent attempt=2 observed=true elapsedMs=552',
+    '[capture] copy-finish status=timeout elapsedMs=1188',
+    '[macForeground] 跳过交还：应用已不在最前，丢弃过期记录 bundleId=com.google.Chrome'
+  ].join('\n')
+
+  assert.equal(normalizeSelectedText(logText), logText)
+})
+
+/**
+ * 校验模块前缀但没有 key=value 的终端日志（如启动提示、中文状态）换行应完整保留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('模块前缀的中文状态日志选区换行应完整保留', () => {
+  const logText = [
+    '[autoLaunch] 当前环境不写入自启动配置: skipped',
+    '[network] 代理模式已应用: custom',
+    '[main] 启动完成 autoTrigger = false triggerMode = button hotkey = Alt + 1 proxyMode = custom',
+    '[selectionListener] 模式切换为 button mode=button running=false pauseReasons=[]',
+    '[autoTrigger] 划词监听已启动',
+    '[selectionListener] 划词监听已启动 mode=button running=true pauseReasons=[]',
+    '[autoTrigger] 设置窗口失焦发生在外部 mousedown 之后，保留当前划词起点',
+    '[autoTrigger] 设置窗口失焦发生在外部 mousedown 之后，保留当前划词起点',
+    '[autoTrigger] 检测到选区 clicks=1 distance=611 duration=937ms button=1'
+  ].join('\n')
+
+  assert.equal(normalizeSelectedText(logText), logText)
+})
+
+/**
  * 校验选区协调器会在缓存和翻译前统一规范化捕获文本。
  * @returns 测试完成后的 Promise。
  * @author zhenghq

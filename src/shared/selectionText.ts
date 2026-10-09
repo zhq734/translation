@@ -24,6 +24,22 @@ const SQL_KEYWORD_PATTERN =
   /^\s*(?:SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|JOIN|GROUP|ORDER|HAVING|LIMIT|OFFSET|VALUES|UNION|DISTINCT|TABLE|INDEX|CASE|WHEN)\b/u
 /** SQL 附加特征：逗号、等号、星号、括号或数字，用于降低英文散文误判概率。 */
 const SQL_CONTEXT_PATTERN = /[,=*()\d]/u
+/** 日志级别关键字：终端日志行通常以级别或带方括号的级别开头。 */
+const LOG_LEVEL_PATTERN = /\b(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|VERBOSE)\b/iu
+/** 行首方括号级别：如 `[INFO] application starting`。 */
+const BRACKETED_LOG_LEVEL_PATTERN =
+  /^\s*\[(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|VERBOSE)\]/iu
+/** 行首级别加冒号或横线：如 `INFO: started`、`ERROR - failed`。 */
+const PREFIXED_LOG_LEVEL_PATTERN =
+  /^\s*(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|VERBOSE)\b\s*[:|-]/iu
+/** 行首级别后跟线程名或进程号：如 `INFO [main]`、`INFO 12345 ---`。 */
+const LOG_LEVEL_WITH_CONTEXT_PATTERN =
+  /^\s*(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|VERBOSE)\b\s+(?:\[|\d+\s+---)/iu
+/** 行首日期或时间戳：支持 ISO、日期时间、方括号时间与仅时间格式。 */
+const LOG_TIMESTAMP_PATTERN =
+  /^\s*\[?(?:\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,9})?)\]?/iu
+/** 行首小驼峰模块前缀：如 `[capture]`、`[macForeground]`、`[autoLaunch]`。 */
+const LOG_MODULE_PREFIX_PATTERN = /^\s*\[[a-z][A-Za-z0-9.-]*\]\s+\S/u
 
 /**
  * 判断捕获文本中的一行属于普通段落、列表还是需要独立保留的块级内容。
@@ -110,6 +126,37 @@ function looksLikeCodeSelection(lines: string[]): boolean {
 }
 
 /**
+ * 判断单行文本是否具备终端日志特征。
+ * 命中方括号日志级别、行首级别、级别加线程/进程上下文，或时间戳加级别时返回 true。
+ * @param rawLine 尚未清理首尾空格的原始行。
+ * @returns 当前行具备终端日志特征时返回 true。
+ * @author zhenghq
+ */
+function isLogLikeLine(rawLine: string): boolean {
+  const line = rawLine.trim()
+  if (!line) return false
+  if (BRACKETED_LOG_LEVEL_PATTERN.test(line)) return true
+  if (PREFIXED_LOG_LEVEL_PATTERN.test(line)) return true
+  if (LOG_LEVEL_WITH_CONTEXT_PATTERN.test(line)) return true
+  if (LOG_MODULE_PREFIX_PATTERN.test(line)) return true
+  return LOG_TIMESTAMP_PATTERN.test(line) && LOG_LEVEL_PATTERN.test(line)
+}
+
+/**
+ * 判断一次多行选区是否整体更像终端日志而非自然语言段落。
+ * 至少两行具备日志特征，且日志行占比过半时才认定，避免普通文本中的级别单词误伤散文。
+ * @param lines 已完成基础规范化、按换行拆分后的文本行。
+ * @returns 选区整体呈现终端日志特征时返回 true。
+ * @author zhenghq
+ */
+function looksLikeLogSelection(lines: string[]): boolean {
+  const meaningfulLines = lines.filter((line) => line.trim().length > 0)
+  if (meaningfulLines.length < 2) return false
+  const logLineCount = meaningfulLines.filter(isLogLikeLine).length
+  return logLineCount >= 2 && logLineCount / meaningfulLines.length >= 0.5
+}
+
+/**
  * 规范化系统剪贴板捕获的选中文字，将浏览器或文档中的单个视觉硬换行合并，
  * 同时保留空行分隔的段落、列表和块级内容，避免完整句子被逐行翻译。
  * @param text 系统剪贴板返回的原始选中文字。
@@ -127,12 +174,13 @@ export function normalizeSelectedText(text: string): string {
     .replace(/\r|[\u2028\u2029]/gu, '\n')
   if (!normalizedText.includes('\n')) return normalizedText
 
-  // 编辑器（如 IDEA）通过原生直读返回的代码选区使用 LF 换行，不能套用浏览器
-  // 视觉软换行合并规则，否则代码行会被压成一行。这里先移除仅用于 Windows 判断
-  // 的私有区标记，再对整体选区做代码特征识别，命中时保留换行与行首缩进。
-  const codeCandidateText = normalizedText.split(WINDOWS_LINE_BREAK_MARKER).join('')
-  if (looksLikeCodeSelection(codeCandidateText.split('\n'))) {
-    return codeCandidateText
+  // 编辑器（如 IDEA）和终端通过原生直读返回的代码/日志选区使用 LF 换行，不能套用
+  // 浏览器视觉软换行合并规则，否则每一行会被压成一行。这里先移除仅用于 Windows
+  // 判断的私有区标记，再对整体选区做代码或日志特征识别，命中时保留换行与行首缩进。
+  const candidateText = normalizedText.split(WINDOWS_LINE_BREAK_MARKER).join('')
+  const candidateLines = candidateText.split('\n')
+  if (looksLikeCodeSelection(candidateLines) || looksLikeLogSelection(candidateLines)) {
+    return candidateText
       .split('\n')
       .map((line) => line.replace(/[ \t]+$/u, ''))
       .join('\n')
