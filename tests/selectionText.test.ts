@@ -96,6 +96,82 @@ test('空行分隔的段落和列表项换行应保留', () => {
 })
 
 /**
+ * 校验 IDEA 等编辑器选中的无缩进代码不会被当成浏览器视觉软换行合并。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('无缩进代码选区的换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('function foo() {\nconst a = 1\nconst b = 2\nreturn a + b\n}'),
+    'function foo() {\nconst a = 1\nconst b = 2\nreturn a + b\n}'
+  )
+})
+
+/**
+ * 校验两空格缩进的 JSON / 脚本代码换行与缩进都应保留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('两空格缩进代码选区的换行与缩进应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('if (ready) {\n  start()\n} else {\n  stop()\n}'),
+    'if (ready) {\n  start()\n} else {\n  stop()\n}'
+  )
+  assert.equal(
+    normalizeSelectedText('{\n  "name": "demo",\n  "version": 1\n}'),
+    '{\n  "name": "demo",\n  "version": 1\n}'
+  )
+})
+
+/**
+ * 校验多行 SQL 选区的换行应完整保留。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('SQL 多行选区的换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('SELECT id, name\nFROM users\nWHERE id = 1'),
+    'SELECT id, name\nFROM users\nWHERE id = 1'
+  )
+})
+
+/**
+ * 校验带类型声明的代码行（如 Java / C# 局部变量）也会被识别为代码选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('带类型声明的两行代码选区换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('String name = "demo"\nint count = 1'),
+    'String name = "demo"\nint count = 1'
+  )
+})
+
+/**
+ * 校验 Windows CRLF 代码选区不会因换行标记而漏判，且结果使用 LF 换行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows CRLF 代码选区的换行应完整保留', () => {
+  assert.equal(
+    normalizeSelectedText('public class Foo {\r\n    private int a;\r\n    private int b;\r\n}'),
+    'public class Foo {\n    private int a;\n    private int b;\n}'
+  )
+})
+
+/**
+ * 校验带缩进的普通文本仍会按浏览器视觉软换行合并，避免代码识别误伤散文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('带缩进的普通文本仍应合并软换行', () => {
+  assert.equal(
+    normalizeSelectedText('  A sentence can be\n  wrapped across\nseveral visual lines.  '),
+    'A sentence can be wrapped across several visual lines.'
+  )
+})
+
+/**
  * 校验选区协调器会在缓存和翻译前统一规范化捕获文本。
  * @returns 测试完成后的 Promise。
  * @author zhenghq

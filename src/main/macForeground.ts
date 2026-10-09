@@ -188,6 +188,64 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
 let pendingReturnApp: FrontmostAppSnapshot | null = null
 
 /**
+ * 正在执行的原生对话框前台交还数量。
+ *
+ * `handBackFrontmostApp()` 内部走 `open -b` 或安全让出，期间设置页焦点恢复若
+ * 同时调用 `yieldFrontmostAppThen()`，两路 `app.hide()/app.show()` 会互相穿插，
+ * 最终把设置页重新顶到最前。用计数而不是布尔值，兼容异常路径下的重入收尾。
+ */
+let frontmostHandBackInFlightCount = 0
+
+/** 等待原生对话框前台交还收尾的回调集合。 */
+const frontmostHandBackWaiters = new Set<() => void>()
+
+/**
+ * 判断原生对话框前台交还是否仍在进行。
+ * @returns 存在在途交还时返回 true。
+ * @author zhenghq
+ */
+export function isFrontmostHandBackInFlight(): boolean {
+  return frontmostHandBackInFlightCount > 0
+}
+
+/**
+ * 等待当前原生对话框前台交还收尾。
+ *
+ * 设置页焦点恢复不能在交还进行中并发启动安全让出；调用方等待此 Promise 后，
+ * 再根据应用激活状态决定是否恢复可聚焦性。
+ * @returns 在途交还全部结束时完成的 Promise；当前没有在途交还时立即完成。
+ * @author zhenghq
+ */
+export function whenFrontmostHandBackSettled(): Promise<void> {
+  if (frontmostHandBackInFlightCount === 0) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    frontmostHandBackWaiters.add(resolve)
+  })
+}
+
+/**
+ * 标记一次原生对话框前台交还开始。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginFrontmostHandBack(): void {
+  frontmostHandBackInFlightCount += 1
+}
+
+/**
+ * 标记一次原生对话框前台交还结束，并唤醒全部等待者。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function endFrontmostHandBack(): void {
+  frontmostHandBackInFlightCount = Math.max(0, frontmostHandBackInFlightCount - 1)
+  if (frontmostHandBackInFlightCount > 0) return
+  const waiters = Array.from(frontmostHandBackWaiters)
+  frontmostHandBackWaiters.clear()
+  for (const resolve of waiters) resolve()
+}
+
+/**
  * 待交还应用记录的刷新请求序号。
  *
  * 允许刷新覆盖旧记录后，可能出现两次异步读取并发：先发起的读取若后返回，
@@ -460,13 +518,17 @@ export function waitForFrontmostAppReturn(timeoutMs = FRONT_RETURN_TIMEOUT_MS): 
  * @param keyWindow 即将隐藏的窗口。
  * @param run 交还成功后的收尾动作（通常就是隐藏窗口）。
  * @param onHandBackFailed 交还未能完成（拿不到源应用、激活无效或超时）时的退化动作，缺省与 run 相同。
+ * @param keyWindowIsPopup 即将隐藏的是否为翻译弹窗；弹窗以 showInactive 显示时
+ *   不会持有 key window，但本应用仍可能因点击“译”处于最前，必须走交还/让出路径，
+ *   不能与原生对话框持有 key window 的场景混为一谈。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function handBackFrontmostThen(
   keyWindow: BrowserWindow | null,
   run: () => void,
-  onHandBackFailed?: () => void
+  onHandBackFailed?: () => void,
+  keyWindowIsPopup = false
 ): void {
   const fallback = onHandBackFailed ?? run
   if (process.platform !== 'darwin') {
@@ -476,30 +538,53 @@ export function handBackFrontmostThen(
   const focused = BrowserWindow.getFocusedWindow()
   // 本应用已不在最前：隐藏窗口不会提升应用内其它窗口，记录也已失效。
   if (focused === null) {
-    // 原生对话框（如 dialog.showMessageBox）不是 BrowserWindow：对话框存在时
-    // getFocusedWindow() 同样返回 null，但应用仍处于最前，对话框自身持有 key window。
-    // 此时隐藏弹窗不会提升其它窗口，必须保留记录，供对话框关闭后 handBackFrontmostApp 消费；
-    // 若在这里丢弃记录，对话框关闭时网页翻译窗口就会被系统提升到最前。
-    if (isMacAppActive()) {
+    // 弹窗以非激活方式显示且设置页被临时设为不可聚焦时，getFocusedWindow() 同样
+    // 返回 null，但本应用仍可能是最前应用。若按原生对话框分支直接 run()，失败提示
+    // 隐藏后本应用仍在最前，恢复设置页可聚焦性时它会被系统提升到最前（必现）。
+    // 该场景必须继续走下方交还/安全让出逻辑，不能落进原生对话框分支。
+    if (keyWindowIsPopup && isMacAppActive()) {
+      logFrontDiagnostic('弹窗隐藏前检测到本应用仍最前，继续交还前台')
+    } else {
+      // 原生对话框（如 dialog.showMessageBox）不是 BrowserWindow：对话框存在时
+      // getFocusedWindow() 同样返回 null，但应用仍处于最前，对话框自身持有 key window。
+      // 此时隐藏弹窗不会提升其它窗口，必须保留记录，供对话框关闭后 handBackFrontmostApp 消费；
+      // 若在这里丢弃记录，对话框关闭时网页翻译窗口就会被系统提升到最前。
+      if (isMacAppActive()) {
+        run()
+        logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
+        return
+      }
+      // 该分支每次隐藏窗口都会走到，但 pendingReturnApp 多数时候本就是 null
+      // （例如非激活显示的弹窗从未记录源应用）。只有确实丢弃了记录才输出日志，
+      // 否则「丢弃过期记录」会变成误导性的空操作噪声，掩盖真实诊断信息。
+      const discarded = pendingReturnApp
+      forgetFrontmostApp()
       run()
-      logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
+      if (discarded) {
+        logFrontDiagnostic(
+          `跳过交还：应用已不在最前，丢弃过期记录 bundleId=${discarded.bundleId}`
+        )
+      }
       return
     }
-    // 该分支每次隐藏窗口都会走到，但 pendingReturnApp 多数时候本就是 null
-    // （例如非激活显示的弹窗从未记录源应用）。只有确实丢弃了记录才输出日志，
-    // 否则「丢弃过期记录」会变成误导性的空操作噪声，掩盖真实诊断信息。
-    const discarded = pendingReturnApp
-    forgetFrontmostApp()
-    run()
-    if (discarded) {
-      logFrontDiagnostic(
-        `跳过交还：应用已不在最前，丢弃过期记录 bundleId=${discarded.bundleId}`
-      )
-    }
-    return
   }
   // 隐藏的不是当前 key window：不会触发提升，记录留给随后真正隐藏 key window 的调用消费。
-  if (!keyWindow || keyWindow.isDestroyed() || focused !== keyWindow) {
+  // 弹窗场景有两个必须继续交还的例外：
+  // 1) focused 为 null（弹窗以非激活方式显示，本应用仍最前）；
+  // 2) focused 是本应用内不可聚焦的残留焦点窗口。点击“译”后设置页会被临时
+  //    setFocusable(false)，但 macOS 仍可能让它在弹窗隐藏时持有 key window；
+  //    此时 focused 非 null 且不等于弹窗，旧逻辑会命中下方跳过分支，既不交还
+  //    前台也不消费记录，随后恢复设置页可聚焦性时应用仍最前，只能走
+  //    app.hide()→app.show() 兜底，app.show() 会把设置页重新顶到最前。
+  // 用户主动点击了其它可聚焦自有窗口时，该窗口是用户的目标焦点，必须保留跳过分支。
+  const focusedIsResidualUnfocusableWindow = focused !== null &&
+    !focused.isDestroyed() &&
+    focused !== keyWindow &&
+    !focused.isFocusable()
+  const popupClosingWithoutKeyWindow = keyWindowIsPopup &&
+    (focused === null || focusedIsResidualUnfocusableWindow)
+  if (!popupClosingWithoutKeyWindow &&
+      (!keyWindow || keyWindow.isDestroyed() || focused !== keyWindow)) {
     logFrontDiagnostic('跳过交还：即将隐藏的窗口不是当前 key window')
     run()
     return
@@ -580,6 +665,24 @@ export function handBackFrontmostApp(): Promise<boolean> {
     logFrontDiagnostic('原生对话框收尾跳过交还：应用激活事件表明本应用不在最前')
     return Promise.resolve(false)
   }
+  beginFrontmostHandBack()
+  /**
+   * 启动一次交还并在其结束后统一释放「交还在途」状态。
+   *
+   * 用 thunk 而不是已构造的 Promise：`yieldFrontmostAppThen()` 内部若同步抛错，
+   * 直接在外部构造会导致在途计数永久泄漏，后续设置页恢复被永久阻塞。
+   * @param start 返回本次交还 Promise 的启动函数。
+   * @returns 与本次交还相同的 Promise。
+   * @author zhenghq
+   */
+  const trackHandBack = (start: () => Promise<boolean>): Promise<boolean> => {
+    try {
+      return start().finally(() => endFrontmostHandBack())
+    } catch (error) {
+      endFrontmostHandBack()
+      return Promise.reject(error)
+    }
+  }
   const target = pendingReturnApp
   pendingReturnApp = null
   // 没有可交还的目标（快照读取失败、源应用已退出，或本应用占用前台前就是自己）时
@@ -589,15 +692,15 @@ export function handBackFrontmostApp(): Promise<boolean> {
     logFrontDiagnostic(
       `原生对话框收尾退化为安全让出：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
     )
-    return yieldFrontmostAppThen(() => {})
+    return trackHandBack(() => yieldFrontmostAppThen(() => {}))
   }
   if (!activateFrontmostApp(target)) {
     logFrontDiagnostic(`原生对话框收尾退化为安全让出：无法激活 bundleId=${target.bundleId}`)
-    return yieldFrontmostAppThen(() => {})
+    return trackHandBack(() => yieldFrontmostAppThen(() => {}))
   }
   logFrontDiagnostic(`原生对话框收尾开始精确交还：open -b ${target.bundleId} pid=${target.pid}`)
 
-  return new Promise<boolean>((resolve) => {
+  const handBack = new Promise<boolean>((resolve) => {
     let finished = false
     const finish = (handedBack: boolean): void => {
       if (finished) return
@@ -630,6 +733,7 @@ export function handBackFrontmostApp(): Promise<boolean> {
     }
     pollDeactivated()
   })
+  return trackHandBack(() => handBack)
 }
 
 /**

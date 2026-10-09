@@ -8,6 +8,22 @@ const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—]$/u
 const NO_SPACE_BEFORE_PATTERN = /^[,.;:!?，。！？；：、)\]}”’]/u
 const SENTENCE_END_PATTERN = /[.!?。！？]["'”’）)\]}]*$/u
 const WINDOWS_LINE_BREAK_MARKER = '\uE000'
+/**
+ * 强编程语言关键字：基本只出现在代码中，命中即认为当前行具备代码特征。
+ * 刻意不包含 if/for/return/new/try 等英文常用词，避免普通散文被误判为代码。
+ */
+const STRONG_CODE_KEYWORD_PATTERN =
+  /\b(?:function|const|let|var|import|export|class|extends|def|public|private|protected|static|void|package|namespace|struct|enum|interface|impl|fn|func|async|await|yield)\b/u
+/**
+ * 弱编程语言关键字：英文中也可能出现，只有同时具备代码标点时才认为具备代码特征。
+ */
+const WEAK_CODE_KEYWORD_PATTERN =
+  /\b(?:return|if|else|elif|for|while|switch|case|default|break|continue|new|try|catch|finally|throw|using|with)\b/u
+/** SQL 关键字：仅在整行以大写关键字开头且具备额外 SQL 特征时才命中。 */
+const SQL_KEYWORD_PATTERN =
+  /^\s*(?:SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|JOIN|GROUP|ORDER|HAVING|LIMIT|OFFSET|VALUES|UNION|DISTINCT|TABLE|INDEX|CASE|WHEN)\b/u
+/** SQL 附加特征：逗号、等号、星号、括号或数字，用于降低英文散文误判概率。 */
+const SQL_CONTEXT_PATTERN = /[,=*()\d]/u
 
 /**
  * 判断捕获文本中的一行属于普通段落、列表还是需要独立保留的块级内容。
@@ -53,6 +69,47 @@ function endsCompleteSentence(line: string): boolean {
 }
 
 /**
+ * 判断单行文本是否具备代码特征，用于区分编辑器代码选区与浏览器视觉软换行。
+ * 命中花括号、代码运算符、注释、HTML 标签、语言关键字、JSON 键值或函数调用等
+ * 任一特征即视为代码行；判定保持保守，避免把普通散文误判为代码。
+ * @param rawLine 尚未清理首尾空格的原始行。
+ * @returns 当前行具备代码特征时返回 true。
+ * @author zhenghq
+ */
+function isCodeLikeLine(rawLine: string): boolean {
+  const line = rawLine.trim()
+  if (!line) return false
+  if (/^[{}();,[\]]+$/u.test(line)) return true
+  if (/[{}]/u.test(line)) return true
+  if (/(?:=>|->|::|==|!=|<=|>=|&&|\|\||\+=|-=|\*=|\/=|\+\+|--)/u.test(line)) return true
+  if (/\/\/|\/\*|\*\/|^#\s|^<!--/u.test(line)) return true
+  if (/^<\/?[A-Za-z][\w:-]*(?:\s[^>]*)?\/?>$/u.test(line)) return true
+  if (STRONG_CODE_KEYWORD_PATTERN.test(line)) return true
+  if (WEAK_CODE_KEYWORD_PATTERN.test(line) && /[();:{}]/u.test(line)) return true
+  if (SQL_KEYWORD_PATTERN.test(line) && SQL_CONTEXT_PATTERN.test(line)) return true
+  if (/^["'][\w.$-]+["']\s*:/u.test(line)) return true
+  if (/^\s*[A-Za-z_$][\w$.\[\]]*\s*=\s*[^=]/u.test(line)) return true
+  // 带类型声明的赋值（如 Java / C# / TypeScript 的 String name = "x"）。
+  if (/^[A-Za-z_$][\w$.<>\[\]]*\s+[A-Za-z_$][\w$]*\s*=\s*[^=]/u.test(line)) return true
+  if (/^[A-Za-z_$][\w$.]*\s*\([^)]*\)\s*[;{]?\s*$/u.test(line)) return true
+  return false
+}
+
+/**
+ * 判断一次多行选区是否整体更像代码而非自然语言段落。
+ * 至少两行具备代码特征，且代码行占比过半时才认定，避免少量代码符号误伤散文。
+ * @param lines 已完成基础规范化、按换行拆分后的文本行。
+ * @returns 选区整体呈现代码特征时返回 true。
+ * @author zhenghq
+ */
+function looksLikeCodeSelection(lines: string[]): boolean {
+  const meaningfulLines = lines.filter((line) => line.trim().length > 0)
+  if (meaningfulLines.length < 2) return false
+  const codeLineCount = meaningfulLines.filter(isCodeLikeLine).length
+  return codeLineCount >= 2 && codeLineCount / meaningfulLines.length >= 0.5
+}
+
+/**
  * 规范化系统剪贴板捕获的选中文字，将浏览器或文档中的单个视觉硬换行合并，
  * 同时保留空行分隔的段落、列表和块级内容，避免完整句子被逐行翻译。
  * @param text 系统剪贴板返回的原始选中文字。
@@ -69,6 +126,17 @@ export function normalizeSelectedText(text: string): string {
     .replace(/\r\n/gu, `${WINDOWS_LINE_BREAK_MARKER}\n`)
     .replace(/\r|[\u2028\u2029]/gu, '\n')
   if (!normalizedText.includes('\n')) return normalizedText
+
+  // 编辑器（如 IDEA）通过原生直读返回的代码选区使用 LF 换行，不能套用浏览器
+  // 视觉软换行合并规则，否则代码行会被压成一行。这里先移除仅用于 Windows 判断
+  // 的私有区标记，再对整体选区做代码特征识别，命中时保留换行与行首缩进。
+  const codeCandidateText = normalizedText.split(WINDOWS_LINE_BREAK_MARKER).join('')
+  if (looksLikeCodeSelection(codeCandidateText.split('\n'))) {
+    return codeCandidateText
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+$/u, ''))
+      .join('\n')
+  }
 
   const lines = normalizedText.split('\n')
   let result = ''

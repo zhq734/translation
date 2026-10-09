@@ -82,6 +82,8 @@ let captureForegroundRestoreActive = false
  * 真实的外部点击由全局按下兜底关闭，不依赖 blur。
  */
 let selectionCaptureLoading = false
+/** 等待弹窗真正完成收尾（含前台交还）的隐藏回调。 */
+const popupHiddenWaiters = new Set<() => void>()
 /**
  * 按钮点击后的外部按下关闭抑制截止时间。
  *
@@ -156,8 +158,23 @@ export function createPopup(preloadPath: string): BrowserWindow {
   // 默认点击弹窗外部时关闭；顶部原生拖拽与钉住状态均忽略失焦事件。
   win.on('blur', handlePopupBlur)
   win.on('focus', handlePopupFocus)
+  win.once('closed', () => {
+    // 窗口被销毁时 hide 事件可能不再派发，必须主动唤醒等待者，避免交互状态悬挂。
+    notifyPopupHiddenWaiters()
+  })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   return win
+}
+
+/**
+ * 通知等待弹窗完成收尾的调用方。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function notifyPopupHiddenWaiters(): void {
+  const waiters = [...popupHiddenWaiters]
+  popupHiddenWaiters.clear()
+  for (const waiter of waiters) waiter()
 }
 
 /**
@@ -567,7 +584,12 @@ export function hidePopup(): void {
   resultActivationBlurAbsorbed = false
   clearResultActivationRefocus()
   win?.webContents.send('popup:pinned', false)
-  if (!win || win.isDestroyed() || hidingAfterFrontReturn) return
+  if (!win || win.isDestroyed()) {
+    // 窗口已不存在时后续不会再有收尾回调，必须立即唤醒等待者，避免状态悬挂。
+    notifyPopupHiddenWaiters()
+    return
+  }
+  if (hidingAfterFrontReturn) return
   hidingAfterFrontReturn = true
   // 进入收尾抑制期：覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。
   // 期间到达的 macOS activate 属于内部窗口显隐引发的事件，不能被当成 Dock 启动
@@ -634,6 +656,9 @@ export function hidePopup(): void {
     }
     endInternalWindowTeardown()
     hidingAfterFrontReturn = false
+    // 必须在前台交还收尾真正完成后通知等待者：hide 事件可能早于应用失活到达，
+    // 设置窗口若按 hide 立即恢复可聚焦性，仍会被系统提升到最前。
+    notifyPopupHiddenWaiters()
   }
 
   handBackFrontmostThen(win, () => {
@@ -648,8 +673,9 @@ export function hidePopup(): void {
       popupTeardownFinished = true
       endInternalWindowTeardown()
       hidingAfterFrontReturn = false
+      notifyPopupHiddenWaiters()
     })
-  })
+  }, true)
 }
 
 /**
@@ -662,16 +688,17 @@ export function hidePopup(): void {
  * @author zhenghq
  */
 export function whenPopupHidden(callback: () => void): () => void {
-  if (!win || win.isDestroyed() || !win.isVisible()) {
+  // 收尾抑制期结束才算真正隐藏：hide 事件到达时可能仍在交还前台，
+  // 此时恢复设置窗口可聚焦性会把设置页顶到最前。
+  if (!win || win.isDestroyed() || (!win.isVisible() && !hidingAfterFrontReturn)) {
     callback()
     return () => {}
   }
-  const target = win
-  target.once('hide', callback)
+  popupHiddenWaiters.add(callback)
   // 取词失败可能连续发生：调用方需要能撤销注册，
   // 否则长期复用的弹窗会不断累积 hide 监听器。
   return () => {
-    if (!target.isDestroyed()) target.removeListener('hide', callback)
+    popupHiddenWaiters.delete(callback)
   }
 }
 

@@ -32,8 +32,8 @@ test('点击菜单栏“译”图标必须把已打开的设置页带到最前',
   // 最小化窗口的 isVisible() 仍为 true，必须先恢复再聚焦。
   assert.match(
     createSource,
-    /if \(settingsWin\.isMinimized\(\)\) \{[\s\S]*?settingsWin\.restore\(\)[\s\S]*?settingsWin\.focus\(\)/u,
-    '最小化的设置页必须先恢复'
+    /if \(settingsWin\.isMinimized\(\)\) \{[\s\S]*?resumeSettingsWindowFocusAfterSelection\(\)[\s\S]*?settingsWin\.restore\(\)[\s\S]*?settingsWin\.focus\(\)/u,
+    '最小化的设置页必须先解除划词焦点保护再恢复'
   )
   // 窗口可能在 await 期间被销毁，复用前必须校验，避免访问已销毁窗口。
   assert.match(

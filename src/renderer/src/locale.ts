@@ -184,20 +184,30 @@ export function startLocaleRuntime(api: LocaleApi): LocaleRuntime {
     for (const listener of listeners) listener(nextLocale)
   }
 
+  // 首屏先按同步注入或缓存预翻译静态文案，但保留 data-i18n-pending 隐藏标记。
+  // 只有拿到主进程设置（权威来源）或设置变更广播后，才释放隐藏标记，避免先显示英文再切中文。
   applyDocumentLocale(locale)
   translator = createTranslator(locale)
-  translateDocument(document, translator)
+  applyStaticTranslations(document, translator)
+
+  const confirmLocale = (nextLocale: Locale): void => {
+    if (nextLocale !== locale) {
+      notify(nextLocale)
+      return
+    }
+    // 语言未变化时也必须释放首屏隐藏标记，让页面在权威设置确认后显示。
+    translateDocument(document, translator)
+  }
 
   const unsubscribeSettings = api.onSettingsChanged((settings) => {
-    const nextLocale = resolveRendererLocale(settings)
-    if (nextLocale !== locale) notify(nextLocale)
+    confirmLocale(resolveRendererLocale(settings))
   })
 
   void api.getSettings().then((settings) => {
-    const nextLocale = resolveRendererLocale(settings)
-    if (nextLocale !== locale) notify(nextLocale)
+    confirmLocale(resolveRendererLocale(settings))
   }).catch(() => {
-    // 主进程设置暂不可用时保留首屏缓存语言或英文兜底。
+    // 主进程设置暂不可用时保留首屏缓存语言或英文兜底，并释放隐藏标记避免页面永久不可见。
+    translateDocument(document, translator)
   })
 
   return {

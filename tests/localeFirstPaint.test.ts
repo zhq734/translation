@@ -50,16 +50,17 @@ function runLocaleBootstrap(
 /**
  * 创建可手动触发设置广播的 Renderer 本地化测试环境。
  * @param injectedLocale preload 暴露的同步界面语言。
+ * @param uiLocale 主进程权威设置中的界面语言。
  * @returns 运行时与语言变化记录。
  * @author zhenghq
  */
-function createHarness(injectedLocale: unknown): {
+function createHarness(injectedLocale: unknown, uiLocale: Settings['uiLocale'] = 'en-US'): {
   runtime: LocaleRuntime
   changes: string[]
 } {
   const listeners = new Set<(settings: Settings) => void>()
   const api = {
-    getSettings: async () => ({ ...DEFAULT_SETTINGS, uiLocale: 'en-US' }),
+    getSettings: async () => ({ ...DEFAULT_SETTINGS, uiLocale }),
     onSettingsChanged: (listener: (settings: Settings) => void) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -87,16 +88,22 @@ test('首屏 bootstrap 应在同步注入不可用时回退到缓存与英文兜
     dataLocale: 'zh-CN',
     pending: true
   })
-  assert.deepEqual(runLocaleBootstrap(undefined, null), {
-    lang: 'en-US',
-    dataLocale: 'en-US',
-    pending: false
-  })
   assert.deepEqual(runLocaleBootstrap('en-US', 'zh-CN'), {
     lang: 'en-US',
     dataLocale: 'en-US',
-    pending: false
+    pending: true
   })
+})
+
+test('首屏 bootstrap 在语言未确认前不得先放行英文兜底', () => {
+  assert.deepEqual(runLocaleBootstrap(undefined, null), {
+    lang: 'en-US',
+    dataLocale: 'en-US',
+    pending: true
+  })
+  const bootstrap = readFileSync('src/renderer/public/localeBootstrap.js', 'utf8')
+  const fallbackMs = Number(bootstrap.match(/LOCALE_PENDING_FALLBACK_MS\s*=\s*(\d+)/u)?.[1])
+  assert.ok(fallbackMs >= 3000, `兜底释放时间过短（${fallbackMs}ms），冷启动可能先显示英文`)
 })
 
 test('preload 应通过同步 IPC 暴露主进程已解析语言', () => {
@@ -143,9 +150,59 @@ test('Renderer locale runtime 应优先采用 preload 同步注入语言', async
     dispatchEvent: () => true
   }
   Object.assign(globalThis, { window, document })
+  // 模拟首屏 bootstrap 已按缓存语言预应用并设置隐藏标记。
+  documentElement.setAttribute('data-i18n-pending', 'true')
 
   try {
     const { runtime } = createHarness('zh-CN')
+    assert.equal(runtime.locale, 'zh-CN')
+    assert.equal(documentElement.lang, 'zh-CN')
+    // 主进程设置确认前保留隐藏标记，避免先显示英文兜底。
+    assert.equal(documentElement.attributes.has('data-i18n-pending'), true)
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.equal(documentElement.attributes.has('data-i18n-pending'), false)
+  } finally {
+    Object.assign(globalThis, { window: previousWindow, document: previousDocument })
+  }
+})
+
+test('同步注入仍是英文兜底时应等主进程权威设置确认后再显示中文首屏', async () => {
+  const previousWindow = globalThis.window
+  const previousDocument = globalThis.document
+  const documentElement = {
+    lang: 'en',
+    attributes: new Map<string, string>(),
+    setAttribute(name: string, value: string) {
+      this.attributes.set(name, value)
+    },
+    removeAttribute(name: string) {
+      this.attributes.delete(name)
+    }
+  }
+  const window = {
+    // 模拟主进程 i18n 运行时尚未就绪时同步 IPC 返回的英文兜底值。
+    getSelectionTranslatorLocale: () => 'en-US',
+    localStorage: {
+      getItem: () => null,
+      setItem: () => undefined
+    },
+    navigator: { language: 'en-US', languages: ['en-US'] }
+  }
+  const document = {
+    documentElement,
+    querySelectorAll: () => [],
+    dispatchEvent: () => true
+  }
+  Object.assign(globalThis, { window, document })
+  documentElement.setAttribute('data-i18n-pending', 'true')
+
+  try {
+    const { runtime } = createHarness('en-US', 'zh-CN')
+    // 权威设置返回前必须保持隐藏，不能先把英文兜底显示出来。
+    assert.equal(documentElement.attributes.has('data-i18n-pending'), true)
+    await Promise.resolve()
+    await Promise.resolve()
     assert.equal(runtime.locale, 'zh-CN')
     assert.equal(documentElement.lang, 'zh-CN')
     assert.equal(documentElement.attributes.has('data-i18n-pending'), false)

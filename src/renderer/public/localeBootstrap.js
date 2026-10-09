@@ -25,13 +25,14 @@
 
   document.documentElement.lang = locale
   root.setAttribute('data-locale', locale)
-  // 静态 HTML 是英文兜底：仅当目标语言不是英文时先隐藏，等模块脚本完成翻译再显示，
-  // 避免首次启动在中文环境下先绘制英文再替换成中文，也不让英文环境无谓白屏。
-  if (locale !== DEFAULT_LOCALE) {
-    root.setAttribute('data-i18n-pending', 'true')
-    // 模块脚本异常时也要恢复可见，避免页面永久停留在隐藏状态。
-    window.setTimeout(function releaseLocalePendingFallback() {
-      root.removeAttribute('data-i18n-pending')
-    }, 1200)
-  }
+  // 静态 HTML 是英文兜底，但首屏语言必须由 locale runtime 依据主进程设置确认后再显示。
+  // 同步注入可能只是主进程尚未就绪时的英文兜底，若此时直接放行，会先绘制英文再切换成中文。
+  root.setAttribute('data-i18n-pending', 'true')
+  // 模块脚本异常时也要恢复可见，避免页面永久停留在隐藏状态。
+  // 冷启动首次加载模块脚本可能明显超过 1 秒，兜底时间必须足够长，
+  // 否则会在中文环境下先露出英文静态兜底，再切换成中文。
+  var LOCALE_PENDING_FALLBACK_MS = 5000
+  window.setTimeout(function releaseLocalePendingFallback() {
+    root.removeAttribute('data-i18n-pending')
+  }, LOCALE_PENDING_FALLBACK_MS)
 })()
