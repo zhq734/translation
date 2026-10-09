@@ -7,7 +7,11 @@ import {
 } from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
-import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
+import {
+  POPUP_FOREGROUND_RESTORE_SETTLE_MS,
+  POPUP_RESULT_ACTIVATION_REFOCUS_DELAY_MS,
+  POPUP_RESULT_ACTIVATION_SETTLE_MS
+} from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import {
   beginInternalWindowTeardown,
@@ -39,6 +43,18 @@ let hidingAfterFrontReturn = false
 /** 正在为取词主动归还前台焦点的截止时间；此窗口内的 blur 属于内部动作，不关闭弹窗。 */
 let restoringForegroundUntil = 0
 /**
+ * 程序化激活弹窗后的迟到失焦宽限截止时间。
+ *
+ * 结果弹窗激活时，之前交还前台的 `open -b` 可能尚未完全收尾，源应用接管
+ * key window 会让弹窗收到一次迟到的 blur。宽限窗口内这次失焦属于内部动作，
+ * 必须吸收而不是关闭弹窗。
+ */
+let resultActivationSettleUntil = 0
+/** 宽限窗口内是否已吸收过一次迟到失焦；吸收后重新聚焦即恢复关闭语义。 */
+let resultActivationBlurAbsorbed = false
+/** 吸收迟到失焦后安排的重新聚焦定时器。 */
+let resultActivationRefocusTimer: ReturnType<typeof setTimeout> | null = null
+/**
  * 按钮取词交还前台期间是否处于失焦抑制。
  * macOS 点击“译”按钮后本应用是最前应用，open -b 源应用会让刚非激活显示的
  * 读取弹窗收到 blur；此时不能用固定毫秒窗口兜底，否则慢速前台切换仍会
@@ -62,6 +78,9 @@ export function createPopup(preloadPath: string): BrowserWindow {
   shownInactive = false
   hidingAfterFrontReturn = false
   restoringForegroundUntil = 0
+  resultActivationSettleUntil = 0
+  resultActivationBlurAbsorbed = false
+  clearResultActivationRefocus()
   captureForegroundRestoreActive = false
   win = new BrowserWindow({
     width: 520,
@@ -102,8 +121,97 @@ export function createPopup(preloadPath: string): BrowserWindow {
 
   // 默认点击弹窗外部时关闭；顶部原生拖拽与钉住状态均忽略失焦事件。
   win.on('blur', handlePopupBlur)
+  win.on('focus', handlePopupFocus)
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   return win
+}
+
+/**
+ * 清除尚未触发的迟到失焦重新聚焦定时器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearResultActivationRefocus(): void {
+  if (resultActivationRefocusTimer) {
+    clearTimeout(resultActivationRefocusTimer)
+    resultActivationRefocusTimer = null
+  }
+}
+
+/**
+ * 在程序化激活弹窗前开启迟到失焦宽限。
+ *
+ * 仅 macOS 的划词翻译结果存在「交还前台 → 激活弹窗」的异步竞态：手动翻译、
+ * OCR 等其它来源没有这段前台交还，必须保持原有「激活后失焦即关闭」语义，
+ * 否则会吞掉用户真实的点击外部。
+ * @param enabled 本次激活是否来自 macOS 划词翻译结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function armResultActivationSettle(enabled: boolean): void {
+  clearResultActivationRefocus()
+  resultActivationBlurAbsorbed = false
+  if (!enabled || process.platform !== 'darwin') {
+    resultActivationSettleUntil = 0
+    return
+  }
+  resultActivationSettleUntil = Date.now() + POPUP_RESULT_ACTIVATION_SETTLE_MS
+}
+
+/**
+ * 判断本次激活的负载是否需要开启迟到失焦宽限。
+ * 只有 macOS 上由划词取词触发的结果/错误弹窗才会与前台交还竞争。
+ * @param payload 即将展示的翻译负载。
+ * @returns 需要开启宽限时返回 true。
+ * @author zhenghq
+ */
+function shouldArmResultActivationSettle(payload: TranslatePayload): boolean {
+  return process.platform === 'darwin' && payload.origin === 'selection'
+}
+
+/**
+ * 判断当前失焦是否属于程序化激活弹窗后的迟到内部失焦。
+ * 宽限窗口内一律按内部失焦处理并重新聚焦；窗口结束后恢复正常关闭语义。
+ * @returns 应当吸收时返回 true。
+ * @author zhenghq
+ */
+function shouldAbsorbResultActivationBlur(): boolean {
+  if (Date.now() > resultActivationSettleUntil) return false
+  if (resultActivationBlurAbsorbed) return false
+  resultActivationBlurAbsorbed = true
+  return true
+}
+
+/**
+ * 吸收迟到失焦后重新聚焦弹窗，恢复后续点击外部自动关闭的能力。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleResultActivationRefocus(): void {
+  clearResultActivationRefocus()
+  resultActivationRefocusTimer = setTimeout(() => {
+    resultActivationRefocusTimer = null
+    if (!win || win.isDestroyed() || !win.isVisible() || win.isFocused()) return
+    win.show()
+  }, POPUP_RESULT_ACTIVATION_REFOCUS_DELAY_MS)
+  resultActivationRefocusTimer.unref?.()
+}
+
+/**
+ * 处理弹窗重新获得焦点：结束迟到失焦宽限，恢复正常的失焦关闭语义。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupFocus(): void {
+  // 只有吸收过迟到失焦后的这次重新聚焦才结束宽限窗口：首次 win.show()
+  // 也会触发 focus，若一并结束宽限，迟到失焦仍会把弹窗关闭。
+  if (!resultActivationBlurAbsorbed) return
+  // 弹窗重新拿到焦点后，取词读取阶段的「非激活显示」标记同步失效，
+  // 否则用户点击弹窗后再点击外部时不会触发自动关闭。
+  shownInactive = false
+  resultActivationSettleUntil = 0
+  resultActivationBlurAbsorbed = false
+  clearResultActivationRefocus()
 }
 
 /**
@@ -117,8 +225,17 @@ function handlePopupBlur(): void {
     screen.getCursorScreenPoint(),
     win.getBounds()
   )
-  if (!cursorInsideDragRegion &&
-      shouldDismissPopupOnBlur(pinned, isRestoringForeground())) {
+  if (cursorInsideDragRegion) return
+  // 取词读取阶段弹窗以 showInactive 显示，本就不持有 key window；此时任何
+  // blur 都属于内部动作（交还前台、结果切换），不能误判为点击外部。
+  if (shownInactive) return
+  // 结果弹窗刚激活时，之前的 open -b 可能仍在收尾，源应用接管 key window
+  // 会产生一次迟到失焦；宽限窗口内吸收并重新聚焦，避免弹窗一闪即关。
+  if (shouldAbsorbResultActivationBlur()) {
+    scheduleResultActivationRefocus()
+    return
+  }
+  if (shouldDismissPopupOnBlur(pinned, isRestoringForeground())) {
     hidePopup()
   }
 }
@@ -129,7 +246,8 @@ function handlePopupBlur(): void {
  * @author zhenghq
  */
 function isRestoringForeground(): boolean {
-  return captureForegroundRestoreActive || Date.now() <= restoringForegroundUntil
+  return captureForegroundRestoreActive ||
+    Date.now() <= restoringForegroundUntil
 }
 
 /**
@@ -278,12 +396,14 @@ export function showPopup(
     // 导致本次收尾没有可交还目标，只能落到不稳定的 app.hide()→app.show() 兜底。
     if (activate) rememberFrontmostAppBeforeActivation()
     if (activate) foregroundTracker.remember()
+    if (activate) armResultActivationSettle(shouldArmResultActivationSettle(payload))
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
     if (activate) restoringForegroundUntil = 0
   } else if (activate && shownInactive) {
     rememberFrontmostAppBeforeActivation()
     foregroundTracker.remember()
+    armResultActivationSettle(shouldArmResultActivationSettle(payload))
     win.show()
     shownInactive = false
     restoringForegroundUntil = 0
@@ -338,6 +458,9 @@ export function hidePopup(): void {
   pinned = false
   shownInactive = false
   restoringForegroundUntil = 0
+  resultActivationSettleUntil = 0
+  resultActivationBlurAbsorbed = false
+  clearResultActivationRefocus()
   win?.webContents.send('popup:pinned', false)
   if (!win || win.isDestroyed() || hidingAfterFrontReturn) return
   hidingAfterFrontReturn = true
