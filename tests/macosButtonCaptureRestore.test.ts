@@ -116,6 +116,90 @@ test('安全让出前台恢复应用后必须重放待显示的“译”按钮',
 })
 
 /**
+ * 校验点击弹窗外部时必须主动关闭可见弹窗，触发前台归还。
+ *
+ * 用户反馈：划词后偶发不出现“译”按钮，点一下翻译弹窗的关闭按钮又能自动恢复。
+ * 根因是读取状态弹窗以 showInactive 显示，`shownInactive` 期间 blur 被短路，
+ * 用户点击空白处不会关闭弹窗，也就不会交还前台；弹窗长期留在屏上后，
+ * 后续划词手势一旦落在弹窗矩形内就被静默吞掉，表现为“译”按钮不出现。
+ * 只依赖窗口 blur 在读取状态会漏触发，必须在全局鼠标按下时对弹窗与“译”按钮
+ * 之外的点击主动收尾，保证归还流程一定执行；固定弹窗与弹窗内部点击不受影响。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('点击弹窗外部必须主动关闭可见弹窗并触发前台归还', () => {
+  const src = stripComments(
+    extractFunction(indexSource, 'function handleSelectionPointerDown(')
+  )
+
+  assert.match(
+    src,
+    /dismissPopupOnExternalPointerDown\(\)/u,
+    '外部点击必须主动关闭弹窗，不能只依赖 blur'
+  )
+  assert.ok(
+    src.indexOf('dismissPopupOnExternalPointerDown()') > src.indexOf("result === 'track'"),
+    '外部点击关闭必须发生在按 track 继续跟踪的分支内，弹窗内部点击不触发'
+  )
+
+  const dismissSource = stripComments(
+    extractFunction(popupSource, 'export function dismissPopupOnExternalPointerDown(')
+  )
+  assert.match(
+    dismissSource,
+    /isPopupVisible\(\)/u,
+    '读取状态弹窗同样可见，必须按可见性判断而不能只看是否持有前台'
+  )
+  assert.match(dismissSource, /pinned/u, '固定弹窗不得被外部点击关闭')
+  assert.match(dismissSource, /hidePopup\(\)/u, '外部点击必须触发弹窗关闭以归还前台')
+})
+
+/**
+ * 校验正在交还前台的弹窗不得再被当成划词起点命中。
+ *
+ * 外部点击会同步进入「先交还前台、再隐藏」的收尾流程，此时窗口仍然可见。
+ * 若命中判定只看 isVisible()，紧接着的划词手势会被判定为落在弹窗内而被吞掉，
+ * 用户仍然看不到“译”按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('正在交还前台的弹窗不得再吞掉新的划词手势', () => {
+  const src = stripComments(
+    extractFunction(popupSource, 'export function isPointInsidePopup(')
+  )
+
+  assert.match(
+    src,
+    /isPopupVisible\(\)/u,
+    '命中判定必须复用逻辑可见性，排除正在交还前台的弹窗'
+  )
+})
+
+/**
+ * 校验取词结果为 null（被取消或新请求覆盖）时必须关闭读取状态弹窗。
+ *
+ * 读取状态弹窗以 showInactive 显示且不设自动隐藏；只有拿到结果才会被
+ * handleSelectionCaptureResult 收尾。若结果被取消直接 return，弹窗会永久
+ * 留在屏上、前台不归还，后续划词命中弹窗矩形就被静默吞掉。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取词结果被取消时必须关闭读取状态弹窗', () => {
+  const src = stripComments(
+    extractFunction(indexSource, 'function queueSelectionTranslation(')
+  )
+
+  const nullBranchStart = src.indexOf('if (result) {')
+  assert.ok(nullBranchStart >= 0, '必须显式区分取词成功与取词失败')
+  const nullBranch = src.slice(nullBranchStart)
+  assert.match(
+    nullBranch,
+    /hidePopup\(\)/u,
+    '取词结果为空时必须关闭读取状态弹窗，避免残留后吞掉后续划词'
+  )
+})
+
+/**
  * 校验 macOS 按钮取词主动交还前台期间必须抑制弹窗失焦自动关闭。
  * 点击“译”按钮会让本应用成为最前应用，随后 open -b 源应用会让刚显示的
  * 读取弹窗收到 blur；若不标记为内部动作，handlePopupBlur 会误判为用户

@@ -191,7 +191,10 @@ function scheduleResultActivationRefocus(): void {
   clearResultActivationRefocus()
   resultActivationRefocusTimer = setTimeout(() => {
     resultActivationRefocusTimer = null
-    if (!win || win.isDestroyed() || !win.isVisible() || win.isFocused()) return
+    // 必须按逻辑可见性判断：正在「先交还前台、再隐藏」的弹窗窗口仍然物理可见，
+    // 若只看 win.isVisible() 会在这里把它重新 show() 出来，导致外部点击关不掉。
+    // 用户真的点了外部时，全局按下已同步进入关闭收尾，这里自然会跳过。
+    if (!win || win.isDestroyed() || !isPopupVisible() || win.isFocused()) return
     win.show()
   }, POPUP_RESULT_ACTIVATION_REFOCUS_DELAY_MS)
   resultActivationRefocusTimer.unref?.()
@@ -443,6 +446,27 @@ export function showManualTranslationPopup(): void {
 }
 
 /**
+ * 处理全局鼠标按下判定的外部点击：主动关闭可见且未固定的弹窗。
+ *
+ * 只依赖窗口 blur 存在漏触发场景：读取状态与失败提示以 showInactive 显示，
+ * 本就不持有 key window，此后用户点击外部不会再产生 blur，弹窗会一直留在屏上、
+ * 前台也一直不归还，后续划词显示的“译”按钮会被应用级状态吞掉
+ * （点弹窗关闭按钮才能恢复）。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
+ * 固定弹窗与取词主动交还前台的短窗口内不受影响。
+ * @returns 本次是否已发起弹窗关闭。
+ * @author zhenghq
+ */
+export function dismissPopupOnExternalPointerDown(): boolean {
+  // 读取状态弹窗与失败提示以 showInactive 显示，不持有 key window，也不会再产生
+  // blur；只看 isPopupActivated() 会漏掉这类弹窗，点击外部后它会一直留在屏上。
+  if (!isPopupVisible()) return false
+  if (pinned || isRestoringForeground()) return false
+  console.log('[popup] 外部点击主动关闭弹窗并归还前台')
+  hidePopup()
+  return true
+}
+
+/**
  * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
  *
  * macOS 上弹窗通常是应用内最后一个 key window：直接隐藏会让系统把应用内下一个窗口
@@ -643,8 +667,11 @@ export function getPopupCloseVersion(): number {
  * @author zhenghq
  */
 export function isPointInsidePopup(point: { x: number; y: number }): boolean {
-  if (!win?.isVisible()) return false
-  const bounds = win.getBounds()
+  // 复用逻辑可见性：正在「先交还前台、再隐藏」的弹窗仍处于物理可见状态，
+  // 但它已经在关闭收尾中，不能再把随后的划词手势判定为落在弹窗内部而吞掉。
+  const target = win
+  if (!target || !isPopupVisible()) return false
+  const bounds = target.getBounds()
   return point.x >= bounds.x &&
     point.x <= bounds.x + bounds.width &&
     point.y >= bounds.y &&

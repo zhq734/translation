@@ -56,6 +56,7 @@ import {
   createPopup,
   showPopup,
   hidePopup,
+  dismissPopupOnExternalPointerDown,
   isPopupVisible,
   isPopupHandingBackFront,
   isPopupActivated,
@@ -1354,6 +1355,9 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 外部应用的正常按下是绝对多数，不逐条记录；只有按 track 继续跟踪、
   // 却落在已失活自有窗口矩形内的场景需要留痕，用于实机确认门禁生效。
   if (result === 'track') {
+    // 弹窗已经失去 key window 时，用户点击外部不会再产生 blur，弹窗会一直
+    // 留在屏上且前台不归还。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
+    dismissPopupOnExternalPointerDown()
     // 应用失活却落在自有窗口矩形内，正是修复前划词被静默吞掉的场景；
     // 这里按 track 继续跟踪说明门禁生效，记录一行便于实机确认。
     const suppressedDetail = describeSuppressedOwnWindowHit(point)
@@ -1476,8 +1480,15 @@ function queueSelectionTranslation(
       releaseSelectionInteraction(token)
       return
     }
-    if (result) handleSelectionCaptureResult(result, token)
-    else releaseSelectionInteraction(token)
+    if (result) {
+      handleSelectionCaptureResult(result, token)
+      return
+    }
+    // 取词被取消或覆盖时结果为 null：读取状态弹窗没有后续结果可以收尾，
+    // 若不在这里显式关闭，它会一直留在屏上且前台不归还，后续划词的“译”按钮
+    // 会被应用级状态吞掉（与外部点击漏关是同一类残留）。
+    hidePopup()
+    releaseSelectionInteraction(token)
   })
 }
 
