@@ -134,11 +134,11 @@ test('点击弹窗外部必须主动关闭可见弹窗并触发前台归还', ()
 
   assert.match(
     src,
-    /dismissPopupOnExternalPointerDown\(\)/u,
+    /dismissPopupOnExternalPointerDown\(point\)/u,
     '外部点击必须主动关闭弹窗，不能只依赖 blur'
   )
   assert.ok(
-    src.indexOf('dismissPopupOnExternalPointerDown()') > src.indexOf("result === 'track'"),
+    src.indexOf('dismissPopupOnExternalPointerDown(point)') > src.indexOf("result === 'track'"),
     '外部点击关闭必须发生在按 track 继续跟踪的分支内，弹窗内部点击不触发'
   )
 
@@ -265,5 +265,175 @@ test('选区取词加载弹窗不得在交还前台完成前重新激活', () =>
     loadingCall,
     /origin !== 'selection'/u,
     '选区取词的加载态必须以非激活方式显示，避免与前台交还竞争'
+  )
+})
+
+/**
+ * 校验点击“译”按钮后的迟到全局按下不得关闭刚显示的读取弹窗。
+ *
+ * macOS 全局鼠标钩子可能把按钮点击的按下事件重放或延迟派发：主进程处理第一次
+ * 按下后会立即隐藏按钮并显示读取弹窗，迟到事件再分类时按钮已不可见，于是被当作
+ * 弹窗外部点击，触发 `[popup] 外部点击主动关闭弹窗并归还前台`，用户看到“译”
+ * 按钮没有出来或翻译弹窗瞬间消失。点击“译”开始取词后必须有一个很短的迟到事件
+ * 抑制窗口，只吞掉同一次点击产生的按下，窗口过期后真实外部点击仍可关闭弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('点击“译”后的迟到全局按下不得关闭读取弹窗', () => {
+  assert.match(
+    popupSource,
+    /suppressExternalPointerDismissForButtonClick/u,
+    'popup 模块必须提供按钮点击后的外部按下抑制入口'
+  )
+  assert.match(
+    popupSource,
+    /suppressExternalPointerDismissUntil/u,
+    '必须记录外部按下抑制截止时间'
+  )
+
+  const translateSource = stripComments(
+    extractFunction(
+      indexSource,
+      'async function translateSelectionButton(): Promise<void> {'
+    )
+  )
+  assert.match(
+    translateSource,
+    /suppressExternalPointerDismissForButtonClick\(/u,
+    '按钮点击入口必须先开启迟到按下抑制，再隐藏按钮/显示弹窗'
+  )
+  const suppressIndex = translateSource.indexOf('suppressExternalPointerDismissForButtonClick(')
+  const showIndex = translateSource.indexOf('showSelectionReadingPopup(anchor)')
+  assert.ok(
+    suppressIndex >= 0 && showIndex > suppressIndex,
+    '抑制必须早于读取弹窗显示，否则迟到按下仍会命中关闭兜底'
+  )
+
+  const dismissSource = stripComments(
+    extractFunction(popupSource, 'export function dismissPopupOnExternalPointerDown(')
+  )
+  assert.match(
+    dismissSource,
+    /isSuppressedExternalPointerDismiss\(point\)/u,
+    '抑制判定必须结合本次按下的坐标，避免吞掉其它位置的真实点击'
+  )
+  assert.ok(
+    dismissSource.indexOf('isSuppressedExternalPointerDismiss(point)') <
+      dismissSource.indexOf('hidePopup()'),
+    '抑制判断必须早于真正关闭弹窗'
+  )
+
+  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(): void {'))
+  assert.match(
+    hideSource,
+    /suppressExternalPointerDismissUntil = 0/u,
+    '关闭弹窗时必须复位抑制状态，避免影响下一轮交互'
+  )
+})
+
+/**
+ * 校验 macOS 按钮取词仅在点击“译”确实抢占了前台时才交还源应用。
+ *
+ * 用户反馈点击“译”后浏览器会切到另一个窗口/页面再取词。根因是本应用以
+ * accessory 方式显示按钮时通常并未抢占 macOS 前台，但按钮取词路径仍无条件
+ * 执行 `open -b Chrome`；Chrome 多窗口时会按自己的最近活跃窗口重新置顶，
+ * 于是取词落在错误窗口，用户看到“切到其他页面”。只有本应用确实成为最前应用
+ * 时才需要交还，否则源应用焦点本就还在，重复 open -b 反而会切错窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 按钮取词只在应用确实抢占前台时交还源应用', () => {
+  const src = stripComments(
+    extractFunction(
+      indexSource,
+      'async function translateSelectionButton(): Promise<void> {'
+    )
+  )
+  assert.match(
+    src,
+    /isMacAppActiveByEvents\(\)/u,
+    '必须依据应用激活事件判断本应用是否确实抢占了前台'
+  )
+  const restoreIndex = src.indexOf('restoreFrontmostAppForCapture()')
+  const guardIndex = src.indexOf('isMacAppActiveByEvents()')
+  assert.ok(
+    guardIndex >= 0 && restoreIndex > guardIndex,
+    '交还前台必须受「本应用确实在前台」条件保护，不能无条件 open -b'
+  )
+})
+
+/**
+ * 校验选区加载态不得让全局外部点击无法关闭弹窗。
+ *
+ * 加载态只应用于吸收迟到的 blur；若 `dismissPopupOnExternalPointerDown()` 也
+ * 在加载期间短路，用户真实点击弹窗外部时弹窗不会关闭、前台也不会归还，
+ * 残留弹窗会吞掉后续划词，表现为“译”按钮偶发不出现。真实全局按下必须始终
+ * 保持关闭能力，仅同一次按钮点击的迟到按下由短抑制窗口吸收。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('选区加载态不得吞掉真实外部点击关闭', () => {
+  const dismissSource = stripComments(
+    extractFunction(popupSource, 'export function dismissPopupOnExternalPointerDown(')
+  )
+  assert.doesNotMatch(
+    dismissSource,
+    /selectionCaptureLoading/u,
+    '加载态不能成为全局外部点击的短路条件，否则真实点击无法关闭弹窗'
+  )
+})
+
+/**
+ * 校验按钮点击的迟到按下抑制窗口必须覆盖复制兜底的最长耗时。
+ *
+ * 真机日志显示点击“译”后约 970ms 仍会到达一次全局按下，恰好落在
+ * `copy-finish`（约 300ms）与翻译结果返回之间。若抑制窗口只有 300ms，
+ * 这次尾随按下会被当成外部点击关闭弹窗，用户表现为“译”按钮刚出现就消失。
+ * 复制兜底超时为 800ms，抑制窗口必须不小于该值并留出余量。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮点击迟到按下抑制窗口必须覆盖复制兜底超时', () => {
+  const match = /EXTERNAL_POINTER_DISMISS_SUPPRESS_MS\s*=\s*(\d+)/u.exec(popupSource)
+  assert.ok(match, '必须定义迟到按下抑制窗口常量')
+  const suppressMs = Number(match[1])
+  assert.ok(
+    suppressMs >= 900,
+    `抑制窗口必须覆盖 800ms 复制兜底并留余量，当前为 ${suppressMs}ms`
+  )
+})
+
+/**
+ * 校验迟到按下抑制必须按按钮原位置做坐标匹配。
+ *
+ * 把抑制窗口拉长到覆盖复制兜底后，若仍只按时间短路，用户在这段时间内点击
+ * 弹窗之外的任意位置都会被吞掉，重新出现「点空白一次不消失」。因此抑制判定
+ * 必须同时校验本次按下是否落在按钮原位置附近，其它位置的真实点击立即关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('迟到按下抑制必须按按钮原位置做坐标匹配', () => {
+  assert.match(
+    popupSource,
+    /suppressExternalPointerDismissOrigin/u,
+    '必须记录触发抑制的按钮中心坐标'
+  )
+  const helperSource = stripComments(
+    extractFunction(popupSource, 'function isSuppressedExternalPointerDismiss(')
+  )
+  assert.match(
+    helperSource,
+    /Math\.abs\(point\.x - origin\.x\)/u,
+    '必须按横坐标比对按钮原位置'
+  )
+  assert.match(
+    helperSource,
+    /Math\.abs\(point\.y - origin\.y\)/u,
+    '必须按纵坐标比对按钮原位置'
+  )
+  assert.match(
+    helperSource,
+    /Date\.now\(\) > suppressExternalPointerDismissUntil/u,
+    '超出抑制窗口后必须立即恢复正常关闭语义'
   )
 })

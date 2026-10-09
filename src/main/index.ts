@@ -63,6 +63,7 @@ import {
   deactivatePopupForCapture,
   beginPopupForegroundRestoreForCapture,
   endPopupForegroundRestoreForCapture,
+  suppressExternalPointerDismissForButtonClick,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
@@ -77,6 +78,7 @@ import {
   isInternalWindowTeardownActive,
   isMacAppActiveByEvents,
   readFrontmostAppSnapshot,
+  refreshFrontmostAppForSelection,
   rememberFrontmostApp,
   rememberFrontmostAppIfInactive,
   rememberFrontmostAppIfInactiveAsync,
@@ -1357,7 +1359,7 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   if (result === 'track') {
     // 弹窗已经失去 key window 时，用户点击外部不会再产生 blur，弹窗会一直
     // 留在屏上且前台不归还。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
-    dismissPopupOnExternalPointerDown()
+    dismissPopupOnExternalPointerDown(point)
     // 应用失活却落在自有窗口矩形内，正是修复前划词被静默吞掉的场景；
     // 这里按 track 继续跟踪说明门禁生效，记录一行便于实机确认。
     const suppressedDetail = describeSuppressedOwnWindowHit(point)
@@ -1420,6 +1422,9 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
   // 记录用户原本在用的应用：此刻本应用还不是前台应用，读到的就是源应用。
   // 弹窗最终隐藏时要把前台交还给它，否则 macOS 会把设置页提升到最前。
+  // 同步刷新优先：快捷键取词可能在用户切换到其它应用后触发，异步刷新尚未
+  // 返回时 deactivatePopupForCapture 会交还给旧应用；同步读取保证记录即时有效。
+  refreshFrontmostAppForSelection()
   rememberFrontmostAppIfInactive()
   // 弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口：
   // Windows 上 WM_COPY 与注入的 Ctrl+C 会发往弹窗；macOS 上注入的复制键与
@@ -1499,6 +1504,12 @@ function queueSelectionTranslation(
  */
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
+  // 按钮点击的全局按下可能被钩子重放 / 延迟派发：第一次事件已隐藏按钮并显示
+  // 读取弹窗，迟到事件分类时按钮不可见，会被当成外部点击关闭弹窗。必须在隐藏
+  // 按钮和显示弹窗前开启很短的抑制窗口，只吞掉同一次点击的迟到按下。
+  // 记录按钮点击坐标：只抑制落在按钮原位置附近的迟到 / 重放按下，
+  // 用户在其它位置的真实点击仍会立即关闭弹窗。
+  suppressExternalPointerDismissForButtonClick(screen.getCursorScreenPoint())
   setPendingMacOSCommandWasDown(false)
   selectionCapture.markEntry('button')
   const interactionToken = selectionInteraction.beginButtonCapture()
@@ -1511,18 +1522,22 @@ async function translateSelectionButton(): Promise<void> {
     process.platform,
     isPopupActivated()
   )
-  // macOS 点击“译”按钮后本应用已是最前应用，读取弹窗一旦显示就可能因随后
+  // macOS 点击“译”按钮后本应用可能已是最前应用，读取弹窗一旦显示就可能因随后
   // 交还源应用收到 blur；抑制必须早于弹窗显示，避免显示瞬间的失焦漏抑制。
   const captureForegroundRestoreBegun = process.platform === 'darwin'
   try {
     if (captureForegroundRestoreBegun) beginPopupForegroundRestoreForCapture()
     const popupCloseVersion = showSelectionReadingPopup(anchor)
-    // macOS 点击“译”按钮时本应用已经因窗口交互成为最前应用，注入的复制键
-    // 会打在弹窗而不是浏览器上，导致剪贴板哨兵不变而报取词超时。这里必须
-    // 在消费预取与复制取词之前，用划词阶段记录的源应用精确交还前台并等待
-    // 系统真正完成焦点切换。
+    // macOS 点击“译”按钮时，只有本应用确实抢占了前台才需要交还；按钮窗口本身
+    // 是 focusable=false 的非激活窗口，多数情况下源应用仍持有焦点。若无条件
+    // open -b，Chrome 等多窗口应用会按自己的最近窗口重新置顶，用户会看到
+    // 「切到其他页面」并在错误窗口取词。已有结果弹窗激活的场景由
+    // showSelectionReadingPopup 内部的 deactivatePopupForCapture 负责交还，
+    // 这里只处理按钮点击后本应用意外成为最前应用的残留场景。
     if (process.platform === 'darwin') {
-      restoreFrontmostAppForCapture()
+      if (!popupWasActivated && isMacAppActiveByEvents()) {
+        restoreFrontmostAppForCapture()
+      }
       await waitForFrontmostAppReturn()
       if (!selectionInteraction.isCurrent(interactionToken) ||
           popupCloseVersion !== getPopupCloseVersion()) return

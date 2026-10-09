@@ -27,6 +27,19 @@ const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
 /** hide 事件未按预期派发时，强制结束内部窗口收尾抑制期的最长等待时间。 */
 const POPUP_TEARDOWN_FALLBACK_MS = 1500
+/**
+ * 点击“译”按钮后忽略迟到外部按下的最长毫秒数。
+ *
+ * macOS 全局鼠标钩子可能重放或延迟派发同一次按钮按下的 mousedown：第一次事件
+ * 已隐藏按钮并显示读取弹窗，迟到事件分类时按钮不可见，就会被当成外部点击关闭
+ * 刚显示的弹窗。复制兜底超时为 800ms，抑制窗口必须覆盖该时长并留出余量，
+ * 否则取词结果返回前到达的尾随按下仍会误关弹窗。抑制只对按钮原位置附近的
+ * 按下生效，用户在其它位置的真实点击不受影响，仍会立即关闭弹窗。
+ */
+const EXTERNAL_POINTER_DISMISS_SUPPRESS_MS = 1000
+
+/** 判定迟到按下是否仍属于同一次按钮点击的坐标容差（屏幕像素）。 */
+const EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS = 48
 
 let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
@@ -50,7 +63,7 @@ let restoringForegroundUntil = 0
  * 必须吸收而不是关闭弹窗。
  */
 let resultActivationSettleUntil = 0
-/** 宽限窗口内是否已吸收过一次迟到失焦；吸收后重新聚焦即恢复关闭语义。 */
+/** 宽限窗口内是否已吸收过迟到失焦；用于安排重新聚焦并识别后续 focus 事件。 */
 let resultActivationBlurAbsorbed = false
 /** 吸收迟到失焦后安排的重新聚焦定时器。 */
 let resultActivationRefocusTimer: ReturnType<typeof setTimeout> | null = null
@@ -61,6 +74,24 @@ let resultActivationRefocusTimer: ReturnType<typeof setTimeout> | null = null
  * 被误判为用户点击外部并关闭弹窗。此标记覆盖整个交还与取词准备阶段。
  */
 let captureForegroundRestoreActive = false
+/**
+ * 选区取词是否处于加载态。
+ *
+ * 点击“译”后读取弹窗会切换为翻译加载态，此时结果尚未返回；macOS 的前台
+ * 交还与输入法切换可能在此阶段派发迟到失焦。加载态期间不能按失焦关闭弹窗，
+ * 真实的外部点击由全局按下兜底关闭，不依赖 blur。
+ */
+let selectionCaptureLoading = false
+/**
+ * 按钮点击后的外部按下关闭抑制截止时间。
+ *
+ * 只用于吞掉同一次按钮点击可能产生的迟到 / 重放全局按下，不改变弹窗正常的
+ * blur 关闭语义。必须同时匹配按钮原位置附近的坐标：仅按时间窗口抑制会把
+ * 用户在这段时间内其它位置的真实点击一并吞掉，重新引入“点空白不消失”。
+ */
+let suppressExternalPointerDismissUntil = 0
+/** 触发抑制的按钮中心坐标；未记录时为 null，表示不做坐标匹配。 */
+let suppressExternalPointerDismissOrigin: { x: number; y: number } | null = null
 /**
  * 源应用前台窗口跟踪器：弹窗激活前记录源窗口，取词前精确交还焦点。
  * Chromium 的 win.blur() 由系统按 Z-order 挑下一个前台窗口，不保证回到源应用。
@@ -82,6 +113,9 @@ export function createPopup(preloadPath: string): BrowserWindow {
   resultActivationBlurAbsorbed = false
   clearResultActivationRefocus()
   captureForegroundRestoreActive = false
+  selectionCaptureLoading = false
+  suppressExternalPointerDismissUntil = 0
+  suppressExternalPointerDismissOrigin = null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -172,12 +206,13 @@ function shouldArmResultActivationSettle(payload: TranslatePayload): boolean {
 /**
  * 判断当前失焦是否属于程序化激活弹窗后的迟到内部失焦。
  * 宽限窗口内一律按内部失焦处理并重新聚焦；窗口结束后恢复正常关闭语义。
+ * 源应用接管 key window 与输入法切换可能连续派发多次失焦，因此同一宽限
+ * 窗口内不能只吸收一次，否则后续失焦仍会关闭刚显示的弹窗。
  * @returns 应当吸收时返回 true。
  * @author zhenghq
  */
 function shouldAbsorbResultActivationBlur(): boolean {
   if (Date.now() > resultActivationSettleUntil) return false
-  if (resultActivationBlurAbsorbed) return false
   resultActivationBlurAbsorbed = true
   return true
 }
@@ -201,18 +236,21 @@ function scheduleResultActivationRefocus(): void {
 }
 
 /**
- * 处理弹窗重新获得焦点：结束迟到失焦宽限，恢复正常的失焦关闭语义。
+ * 处理弹窗重新获得焦点：记录迟到失焦后的重新聚焦，但保留宽限窗口。
+ *
+ * 重新聚焦只说明弹窗暂时夺回 key window；源应用或输入法切换仍可能在随后
+ * 再次派发失焦。宽限窗口必须按截止时间自然结束，否则后续失焦会关闭弹窗。
+ * 真实的外部点击由全局按下兜底关闭，不依赖提前结束宽限。
  * @returns 无返回值。
  * @author zhenghq
  */
 function handlePopupFocus(): void {
-  // 只有吸收过迟到失焦后的这次重新聚焦才结束宽限窗口：首次 win.show()
-  // 也会触发 focus，若一并结束宽限，迟到失焦仍会把弹窗关闭。
+  // 只有吸收过迟到失焦后的这次重新聚焦才结束重新聚焦任务：首次 win.show()
+  // 也会触发 focus，此时宽限窗口仍需保留以覆盖后续迟到失焦。
   if (!resultActivationBlurAbsorbed) return
   // 弹窗重新拿到焦点后，取词读取阶段的「非激活显示」标记同步失效，
   // 否则用户点击弹窗后再点击外部时不会触发自动关闭。
   shownInactive = false
-  resultActivationSettleUntil = 0
   resultActivationBlurAbsorbed = false
   clearResultActivationRefocus()
 }
@@ -232,6 +270,9 @@ function handlePopupBlur(): void {
   // 取词读取阶段弹窗以 showInactive 显示，本就不持有 key window；此时任何
   // blur 都属于内部动作（交还前台、结果切换），不能误判为点击外部。
   if (shownInactive) return
+  // 选区取词加载期间翻译结果尚未返回，前台交还与输入法切换可能派发迟到失焦；
+  // 若据此关闭，用户表现为弹窗一闪即关。真实外部点击由全局按下兜底关闭。
+  if (selectionCaptureLoading) return
   // 结果弹窗刚激活时，之前的 open -b 可能仍在收尾，源应用接管 key window
   // 会产生一次迟到失焦；宽限窗口内吸收并重新聚焦，避免弹窗一闪即关。
   if (shouldAbsorbResultActivationBlur()) {
@@ -287,6 +328,20 @@ export function deactivatePopupForCapture(): boolean {
  */
 export function beginPopupForegroundRestoreForCapture(): void {
   captureForegroundRestoreActive = true
+}
+
+/**
+ * 开启点击“译”按钮后的迟到外部按下抑制。
+ *
+ * 点击按钮会立即隐藏按钮并显示读取弹窗；全局钩子若随后再次派发同一次按下的
+ * mousedown，按钮已经不可见，会被误分类为外部点击并关闭刚显示的弹窗。这里用
+ * 一个很短的截止时间吞掉这类迟到事件，保证弹窗至少存活到取词流程接管。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function suppressExternalPointerDismissForButtonClick(origin?: { x: number; y: number }): void {
+  suppressExternalPointerDismissUntil = Date.now() + EXTERNAL_POINTER_DISMISS_SUPPRESS_MS
+  suppressExternalPointerDismissOrigin = origin ?? null
 }
 
 /**
@@ -387,6 +442,7 @@ export function showPopup(
 ): void {
   if (!win) return
   currentAutoHideMs = Math.max(0, autoHideMs)
+  selectionCaptureLoading = payload.origin === 'selection' && payload.loading === true
   const alreadyVisible = win.isVisible() && !hidingAfterFrontReturn
   deliverPopupPayload(payload)
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
@@ -425,6 +481,7 @@ export function showPopup(
  */
 export function showManualTranslationPopup(): void {
   if (!win) return
+  selectionCaptureLoading = false
   currentAutoHideMs = 0
   clearHide()
   const alreadyVisible = win.isVisible()
@@ -456,14 +513,36 @@ export function showManualTranslationPopup(): void {
  * @returns 本次是否已发起弹窗关闭。
  * @author zhenghq
  */
-export function dismissPopupOnExternalPointerDown(): boolean {
+export function dismissPopupOnExternalPointerDown(point?: { x: number; y: number }): boolean {
   // 读取状态弹窗与失败提示以 showInactive 显示，不持有 key window，也不会再产生
   // blur；只看 isPopupActivated() 会漏掉这类弹窗，点击外部后它会一直留在屏上。
   if (!isPopupVisible()) return false
-  if (pinned || isRestoringForeground()) return false
+  // 按钮点击的迟到按下属于同一次交互，会被误分类为外部点击关闭读取弹窗；
+  // 必须同时匹配抑制窗口与按钮原位置附近坐标，只吞掉同一次点击的迟到事件。
+  // 仅按时间窗口短路会吞掉用户在这段时间内其它位置的真实点击，重新引入
+  // “点空白不消失”；加载态只用于吸收迟到的 blur，不能在全局按下阶段短路。
+  if (pinned || isRestoringForeground() ||
+      isSuppressedExternalPointerDismiss(point)) return false
   console.log('[popup] 外部点击主动关闭弹窗并归还前台')
   hidePopup()
   return true
+}
+
+/**
+ * 判断一次全局按下是否属于按钮点击的迟到 / 重放事件。
+ *
+ * 时间窗口保证只覆盖同一次交互；坐标匹配保证只有按钮原位置附近的按下被吞掉，
+ * 用户在弹窗之外其它位置的真实点击不会被误抑制。
+ * @param point 本次全局按下的屏幕坐标；省略时退化为仅按时间窗口判定。
+ * @returns 属于迟到按钮按下时返回 true。
+ * @author zhenghq
+ */
+function isSuppressedExternalPointerDismiss(point?: { x: number; y: number }): boolean {
+  if (Date.now() > suppressExternalPointerDismissUntil) return false
+  const origin = suppressExternalPointerDismissOrigin
+  if (!point || !origin) return true
+  return Math.abs(point.x - origin.x) <= EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS &&
+    Math.abs(point.y - origin.y) <= EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS
 }
 
 /**
@@ -481,6 +560,8 @@ export function hidePopup(): void {
   closeVersion += 1
   pinned = false
   shownInactive = false
+  selectionCaptureLoading = false
+  suppressExternalPointerDismissUntil = 0
   restoringForegroundUntil = 0
   resultActivationSettleUntil = 0
   resultActivationBlurAbsorbed = false

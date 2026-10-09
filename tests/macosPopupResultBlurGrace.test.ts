@@ -80,13 +80,15 @@ test('程序化激活弹窗时必须开启结果失焦宽限', () => {
 })
 
 /**
- * 校验迟到失焦在宽限期内只被吸收一次，并触发一次重新聚焦。
+ * 校验迟到失焦在宽限期内可被多次吸收，并触发重新聚焦。
+ * 程序化激活结果弹窗后，源应用接管前台与输入法切换可能连续派发多次失焦；
+ * 若只吸收一次，后续失焦仍会关闭刚显示的弹窗，表现为「一闪即关」。
  * 若不重新聚焦，弹窗会保持可见但失焦，后续点击外部不再产生 blur，
  * 未固定弹窗将无法再自动关闭；因此吸收迟到失焦后必须重新聚焦一次。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('宽限期内迟到失焦必须吸收一次并重新聚焦', () => {
+test('宽限期内迟到失焦必须可多次吸收并重新聚焦', () => {
   const blurStart = popupSource.indexOf('function handlePopupBlur()')
   const blurSource = popupSource.slice(blurStart, blurStart + 1200)
   assert.match(blurSource, /shouldAbsorbResultActivationBlur\(\)/u, '失焦处理必须先判断是否应吸收迟到失焦')
@@ -95,7 +97,11 @@ test('宽限期内迟到失焦必须吸收一次并重新聚焦', () => {
   const absorbStart = popupSource.indexOf('function shouldAbsorbResultActivationBlur()')
   const absorbSource = popupSource.slice(absorbStart, absorbStart + 600)
   assert.match(absorbSource, /Date\.now\(\) > resultActivationSettleUntil/u, '超过宽限窗口后不得再吸收失焦')
-  assert.match(absorbSource, /if \(resultActivationBlurAbsorbed\) return false/u, '同一次激活只允许吸收一次迟到失焦')
+  assert.doesNotMatch(
+    absorbSource,
+    /if \(resultActivationBlurAbsorbed\) return false/u,
+    '宽限期内不得因已吸收过一次而放行后续迟到失焦'
+  )
 
   const refocusStart = popupSource.indexOf('function scheduleResultActivationRefocus()')
   const refocusSource = popupSource.slice(refocusStart, refocusStart + 900)
@@ -104,16 +110,24 @@ test('宽限期内迟到失焦必须吸收一次并重新聚焦', () => {
 })
 
 /**
- * 校验重新聚焦成功后恢复正常的点击外部关闭语义。
+ * 校验重新聚焦后仍保留迟到失焦宽限，直到窗口自然结束。
+ *
+ * 重新聚焦只代表弹窗暂时夺回 key window，源应用与输入法切换仍可能在随后
+ * 再派发失焦；若 focus 时立即清零宽限截止时间，后续失焦会关闭弹窗。
+ * 真实点击外部由全局按下兜底关闭，不依赖 focus 提前结束宽限。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('重新聚焦后必须恢复正常的点击外部关闭语义', () => {
+test('重新聚焦后必须保留迟到失焦宽限', () => {
   const focusStart = popupSource.indexOf('function handlePopupFocus()')
   assert.ok(focusStart >= 0, '必须注册弹窗 focus 处理函数')
   const focusSource = popupSource.slice(focusStart, focusStart + 600)
   assert.match(focusSource, /resultActivationBlurAbsorbed/u, '只有吸收过迟到失焦后的重新聚焦才应结束宽限')
-  assert.match(focusSource, /resultActivationSettleUntil = 0/u, '重新聚焦成功后必须结束宽限窗口')
+  assert.doesNotMatch(
+    focusSource,
+    /resultActivationSettleUntil = 0/u,
+    '重新聚焦后不得提前结束宽限窗口，否则后续迟到失焦仍会关闭弹窗'
+  )
 })
 
 /**
@@ -130,5 +144,33 @@ test('非激活显示的读取弹窗不得因失焦被关闭', () => {
   assert.ok(
     blurSource.indexOf('if (shownInactive) return') < blurSource.indexOf('hidePopup()'),
     '忽略失焦必须发生在关闭判断之前'
+  )
+})
+
+/**
+ * 校验选区取词加载期间不得因失焦关闭弹窗。
+ *
+ * 点击“译”后读取弹窗会切换为翻译加载态，此时翻译结果尚未返回；
+ * macOS 的前台交还与输入法切换可能在此阶段派发迟到失焦，若据此关闭，
+ * 用户表现为弹窗一闪即关。真实的外部点击由全局按下兜底关闭，不依赖 blur。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('选区取词加载期间失焦不得关闭弹窗', () => {
+  assert.match(
+    popupSource,
+    /selectionCaptureLoading/u,
+    '必须记录选区取词加载态，供失焦处理区分内部切换'
+  )
+  const blurStart = popupSource.indexOf('function handlePopupBlur()')
+  const blurSource = popupSource.slice(blurStart, blurStart + 1200)
+  assert.match(
+    blurSource,
+    /if \(selectionCaptureLoading\) return/u,
+    '选区取词加载期间必须忽略失焦，避免翻译结果返回前弹窗被关闭'
+  )
+  assert.ok(
+    blurSource.indexOf('if (selectionCaptureLoading) return') < blurSource.indexOf('hidePopup()'),
+    '加载态短路必须发生在关闭判断之前'
   )
 })

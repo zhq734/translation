@@ -188,6 +188,16 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
 let pendingReturnApp: FrontmostAppSnapshot | null = null
 
 /**
+ * 待交还应用记录的刷新请求序号。
+ *
+ * 允许刷新覆盖旧记录后，可能出现两次异步读取并发：先发起的读取若后返回，
+ * 会用旧应用覆盖新记录，重新引入「交还给上一个应用」的问题。每次刷新分配
+ * 单调递增序号，返回时只有仍是最新请求才允许写入；显式丢弃记录也会自增序号，
+ * 使在途读取失效，避免被丢弃的旧记录复活。
+ */
+let frontmostRecordRequestId = 0
+
+/**
  * 是否处于「内部窗口收尾抑制期」。
  *
  * 覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。此期间到达的 activate
@@ -272,6 +282,41 @@ export function rememberFrontmostAppBeforeActivation(): void {
 }
 
 /**
+ * 同步刷新待交还源应用（仅 macOS）。
+ *
+ * 异步刷新存在竞态：用户划词后立刻点击“译”，子进程快照可能尚未返回，
+ * `restoreFrontmostAppForCapture()` 会读到上一轮应用并执行 `open -b 旧应用`。
+ * 公共取词入口必须在交还前台之前同步读取当前系统最前应用并覆盖旧记录。
+ * 本应用已是最前时 `parseFrontmostAppSnapshot` 会排除自身返回 null，
+ * 此时保留既有记录，避免把用户当前正在用的应用换掉。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function refreshFrontmostAppForSelection(): void {
+  if (process.platform !== 'darwin') return
+  try {
+    const asn = execFileSync('lsappinfo', ['front'], {
+      encoding: 'utf8',
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    }).trim()
+    if (!asn) return
+    const info = execFileSync('lsappinfo', ['info', asn], {
+      encoding: 'utf8',
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    })
+    const snapshot = parseFrontmostAppSnapshot(info, process.pid)
+    if (!snapshot) return
+    // 用当前系统最前应用覆盖旧记录，并自增序号使在途的异步读取失效：
+    // 否则较早发起、较晚返回的异步快照会把这里刚刷新的新应用覆盖回旧值。
+    frontmostRecordRequestId += 1
+    pendingReturnApp = snapshot
+    logFrontDiagnostic(`刷新源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
+  } catch {
+    // 同步读取失败时保留既有记录，交还路径会自行判断目标是否仍有效。
+  }
+}
+
+/**
  * 记录待交还的前台应用（仅 macOS）。
  * @param snapshot 本应用占用前台前的最前应用快照；为 null 时忽略。
  * @returns 无返回值。
@@ -279,6 +324,9 @@ export function rememberFrontmostAppBeforeActivation(): void {
  */
 export function rememberFrontmostApp(snapshot: FrontmostAppSnapshot | null): void {
   if (process.platform !== 'darwin' || !snapshot) return
+  // 显式写入视为最新权威记录：自增序号使仍在途的异步读取失效，
+  // 避免较慢的旧快照随后覆盖这次写入。
+  frontmostRecordRequestId += 1
   pendingReturnApp = snapshot
 }
 
@@ -287,17 +335,21 @@ export function rememberFrontmostApp(snapshot: FrontmostAppSnapshot | null): voi
  *
  * 调用点必须在任何窗口激活之前、且此刻本应用确实不在最前：
  * 读取走子进程，晚于同一 tick 内的 win.show() 就只会读到本应用自己。
- * 已有待交还记录时不覆盖：一次前台占用期间只认第一次记下的源应用。
+ * 每次调用都会读取系统当前最前应用并覆盖旧记录：用户可能在应用 A 划词后切到
+ * 应用 B 再划词，若保留上一轮的 A，点击“译”会执行 `open -b A`，表现为
+ * 「回到之前的应用页面取词」。本应用仍是最前时快照会返回 null，天然不会覆盖。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function rememberFrontmostAppIfInactive(): void {
   if (process.platform !== 'darwin') return
-  if (pendingReturnApp) return
   // 不使用焦点 / 激活判定作为跳过理由：应用内存在焦点窗口不代表本应用占用 macOS 前台，
   // 而漏记会让收尾失去可靠的 open -b 交还目标。
+  const requestId = ++frontmostRecordRequestId
   void readFrontmostAppSnapshot().then((snapshot) => {
     if (!snapshot) return
+    // 已有更新的刷新请求或显式写入时，本次读取结果已过期，必须丢弃。
+    if (requestId !== frontmostRecordRequestId) return
     rememberFrontmostApp(snapshot)
     logFrontDiagnostic(`记录源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
   })
@@ -309,16 +361,19 @@ export function rememberFrontmostAppIfInactive(): void {
  * 打开网页阅读器等会立刻调用 `show()/focus()` 的窗口前必须等待本函数返回：
  * 快照读取走子进程，若不等它结束，`show()` 已经把本应用激活成最前应用，
  * 读到的就是本应用自己，关闭窗口时便没有可交还的目标。
- * 已有待交还记录时不覆盖：一次前台占用期间只认第一次记下的源应用。
+ * 每次调用都会读取系统当前最前应用并覆盖旧记录，语义同同步入口：
+ * 跨应用切换后必须把前台交还给用户当前正在使用的应用，而不是上一轮的源应用。
  * @returns 记录流程完成时结束的 Promise。
  * @author zhenghq
  */
 export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {
   if (process.platform !== 'darwin') return
-  if (pendingReturnApp) return
   // 同同步入口：不得以应用级激活状态或应用内焦点作为跳过记录的理由。
+  const requestId = ++frontmostRecordRequestId
   const snapshot = await readFrontmostAppSnapshot()
   if (!snapshot) return
+  // 同同步入口：本次读取已被更新请求取代时不得覆盖最新记录。
+  if (requestId !== frontmostRecordRequestId) return
   rememberFrontmostApp(snapshot)
   logFrontDiagnostic(`记录源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
 }
@@ -332,6 +387,8 @@ export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {
  * @author zhenghq
  */
 export function forgetFrontmostApp(): void {
+  // 自增序号使在途读取失效，避免刚丢弃的旧记录随后被异步结果重新写回。
+  frontmostRecordRequestId += 1
   pendingReturnApp = null
 }
 
