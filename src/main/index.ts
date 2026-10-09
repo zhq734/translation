@@ -85,6 +85,7 @@ import {
   rememberFrontmostAppIfInactiveAsync,
   restoreFrontmostAppForCapture,
   waitForFrontmostAppReturn,
+  wasFrontmostAppSelf,
   whenFrontmostHandBackSettled,
   yieldFrontmostAppThen
 } from './macForeground'
@@ -1795,7 +1796,14 @@ async function translateSelectionButton(): Promise<void> {
     // showSelectionReadingPopup 内部的 deactivatePopupForCapture 负责交还，
     // 这里只处理按钮点击后本应用意外成为最前应用的残留场景。
     if (process.platform === 'darwin') {
-      if (!popupWasActivated && isMacAppActiveByEvents()) {
+      // 不能只信应用激活事件：点击“译”引发的 did-become-active 可能晚于按钮
+      // 回调到达，此刻事件标记仍为 false，交还守卫被跳过，随后注入的 Command+C
+      // 落回本应用，剪贴板哨兵不变并报取词超时（真机日志中表现为无任何交还记录）。
+      // 同步刷新的系统快照若显示最前应用就是本应用，则必须据此触发精确交还。
+      // 这里不使用窗口焦点信号：macOS 失活后可能残留过期的 key window 焦点，
+      // 据此触发 open -b 会在源应用本就最前时把它重新置顶，切到错误窗口。
+      if (!popupWasActivated &&
+          (isMacAppActiveByEvents() || wasFrontmostAppSelf())) {
         restoreFrontmostAppForCapture()
       }
       await waitForFrontmostAppReturn()

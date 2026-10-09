@@ -437,3 +437,101 @@ test('迟到按下抑制必须按按钮原位置做坐标匹配', () => {
     '超出抑制窗口后必须立即恢复正常关闭语义'
   )
 })
+
+/**
+ * 校验 macOS 按钮取词必须覆盖「本应用失活但仍持有残留 key window」的场景。
+ *
+ * 真机日志中点击“译”取词超时时，既没有「取词前精确交还前台」也没有
+ * 「开始精确交还」，说明交还守卫 `isMacAppActiveByEvents()` 返回了 false。
+ * 但 macOS 在应用失活后仍可能让设置页等自有窗口保持 key window，注入的
+ * Command+C 会打在该窗口上而不是 Chrome，剪贴板哨兵不变并最终报取词超时。
+ * 因此交还守卫必须同时覆盖「本应用仍持有焦点窗口」这一残留状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 按钮取词必须覆盖残留焦点窗口的交还场景', () => {
+  const src = stripComments(
+    extractFunction(
+      indexSource,
+      'async function translateSelectionButton(): Promise<void> {'
+    )
+  )
+
+  assert.match(
+    src,
+    /isMacAppActiveByEvents\(\)\s*\|\|\s*wasFrontmostAppSelf\(\)/u,
+    '必须结合应用激活事件与系统自身快照判定是否占用前台'
+  )
+  const guardIndex = src.indexOf('wasFrontmostAppSelf()')
+  const restoreIndex = src.indexOf('restoreFrontmostAppForCapture()')
+  assert.ok(
+    guardIndex >= 0 && restoreIndex > guardIndex,
+    '系统快照表明本应用在最前时也必须先交还源应用'
+  )
+})
+
+/**
+ * 校验同步刷新识别出「最前应用是本应用」时必须留下诊断日志。
+ *
+ * 真机取词超时的日志里既没有「刷新源应用」也没有「取词前精确交还前台」，
+ * 无法判断到底是快照解析失败、还是快照显示本应用抢占前台后走了静默分支。
+ * 该分支必须打印一条可区分来源的日志，避免下次排查继续只能靠推断。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('同步刷新识别自身抢占前台时必须记录诊断日志', () => {
+  const refreshSrc = stripComments(
+    extractFunction(macForegroundSource, 'export function refreshFrontmostAppForSelection(')
+  )
+
+  assert.match(
+    refreshSrc,
+    /frontmostAppWasSelf\s*=\s*frontPid\s*===\s*process\.pid/u,
+    '必须记录最前应用是否为本应用'
+  )
+  assert.match(
+    refreshSrc,
+    /if \(frontmostAppWasSelf\)[\s\S]*?logFrontDiagnostic\(/u,
+    '识别出本应用抢占前台后必须打印诊断日志'
+  )
+})
+
+/**
+ * 校验点击“译”引发本应用抢占前台时，必须依据系统快照而不是事件标记交还。
+ *
+ * 用户点击“译”按钮会让 macOS 开始激活本应用，但 did-become-active 事件可能
+ * 晚于按钮回调到达：此刻 `isMacAppActiveByEvents()` 仍为 false，交还被跳过，
+ * 随后注入的 Command+C 落回本应用，剪贴板哨兵不变并报取词超时。真机日志中
+ * 表现为点击后没有任何「取词前精确交还前台」记录。同步读取系统最前应用得到的
+ * 「最前应用是自己」信号必须参与交还判定，消除这一竞态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 按钮取词必须依据系统快照识别自身抢占前台', () => {
+  assert.match(
+    macForegroundSource,
+    /export function wasFrontmostAppSelf\(\)/u,
+    '必须暴露最近一次系统快照是否显示最前应用为本应用'
+  )
+  const refreshSrc = stripComments(
+    extractFunction(macForegroundSource, 'export function refreshFrontmostAppForSelection(')
+  )
+  assert.match(
+    refreshSrc,
+    /frontmostAppWasSelf\s*=\s*frontPid\s*===\s*process\.pid/u,
+    '同步刷新检测到最前应用为本应用时必须记录该状态'
+  )
+
+  const translateSrc = stripComments(
+    extractFunction(
+      indexSource,
+      'async function translateSelectionButton(): Promise<void> {'
+    )
+  )
+  const guardIndex = translateSrc.indexOf('wasFrontmostAppSelf()')
+  const restoreIndex = translateSrc.indexOf('restoreFrontmostAppForCapture()')
+  assert.ok(
+    guardIndex >= 0 && restoreIndex > guardIndex,
+    '系统快照表明本应用在最前时也必须先交还源应用'
+  )
+})

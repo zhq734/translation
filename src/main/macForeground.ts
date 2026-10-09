@@ -148,6 +148,34 @@ export async function readFrontmostAppSnapshot(): Promise<FrontmostAppSnapshot |
 }
 
 /**
+ * 异步判断系统当前最前应用是否为本应用。
+ *
+ * 用于取词前的交还确认：点击“译”引发的激活事件可能尚未到达，`macAppActive`
+ * 仍为 false，此时不能据此认为交还已经完成。只有系统快照显示最前应用不再是
+ * 本应用时，注入的复制键才确定会落在源应用上。
+ * @returns 最前应用是本应用时返回 true；是其它应用返回 false；读取失败返回 null。
+ * @author zhenghq
+ */
+export async function isFrontmostAppSelf(): Promise<boolean | null> {
+  if (process.platform !== 'darwin') return false
+  try {
+    const { stdout: frontStdout } = await execFileP('lsappinfo', ['front'], {
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    })
+    const asn = frontStdout.trim()
+    if (!asn) return null
+    const { stdout: infoStdout } = await execFileP('lsappinfo', ['info', asn], {
+      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
+    })
+    const pid = Number(/pid = (\d+)/u.exec(infoStdout)?.[1])
+    if (!Number.isInteger(pid) || pid <= 0) return null
+    return pid === process.pid
+  } catch {
+    return null
+  }
+}
+
+/**
  * 判断指定进程是否仍在运行。
  * @param pid 进程号。
  * @returns 进程仍存在时返回 true。
@@ -186,6 +214,25 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
  * 跨覆盖窗口与翻译弹窗共享：截图流程先记下源应用，弹窗最后隐藏时再交还。
  */
 let pendingReturnApp: FrontmostAppSnapshot | null = null
+
+/**
+ * 最近一次系统前台快照是否显示本应用自己。
+ *
+ * 点击“译”按钮时 macOS 已开始激活本应用，但 did-become-active 事件可能晚于
+ * 按钮回调到达，此时应用激活事件仍为 false，交还守卫会被跳过。同步刷新时若
+ * 发现最前应用就是本应用，说明本应用已经抢占前台，必须据此触发交还。
+ * 该标记在每次系统快照刷新时重写，避免陈旧状态长期生效。
+ */
+let frontmostAppWasSelf = false
+
+/**
+ * 返回最近一次系统前台快照是否显示最前应用为本应用。
+ * @returns 最近一次同步刷新发现本应用在最前时返回 true。
+ * @author zhenghq
+ */
+export function wasFrontmostAppSelf(): boolean {
+  return frontmostAppWasSelf
+}
 
 /**
  * 正在执行的原生对话框前台交还数量。
@@ -353,6 +400,9 @@ export function rememberFrontmostAppBeforeActivation(): void {
 export function refreshFrontmostAppForSelection(): void {
   if (process.platform !== 'darwin') return
   try {
+    // 每次刷新先按「不是本应用」重置：读取失败时不会把上一次的自身快照
+    // 长期残留，避免后续取词误触发无谓的 open -b。
+    frontmostAppWasSelf = false
     const asn = execFileSync('lsappinfo', ['front'], {
       encoding: 'utf8',
       timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
@@ -362,8 +412,21 @@ export function refreshFrontmostAppForSelection(): void {
       encoding: 'utf8',
       timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
     })
+    const frontPid = Number(/pid = (\d+)/u.exec(info)?.[1])
     const snapshot = parseFrontmostAppSnapshot(info, process.pid)
-    if (!snapshot) return
+    if (!snapshot) {
+      // parseFrontmostAppSnapshot 返回 null 有两种含义：解析失败，或最前应用就是
+      // 本应用。后者说明点击“译”已经让本应用抢占前台，只是 did-become-active
+      // 事件尚未到达；必须显式记录该状态，交还守卫才能据此触发精确交还。
+      // 解析失败时不得置位，否则会把「本应用不在最前」误判为抢占前台并触发
+      // 无谓的 open -b，重新引入「切到其他页面」的问题。
+      frontmostAppWasSelf = frontPid === process.pid
+      if (frontmostAppWasSelf) {
+        logFrontDiagnostic('刷新源应用：最前应用为本应用，保留既有记录')
+      }
+      return
+    }
+    frontmostAppWasSelf = false
     // 用当前系统最前应用覆盖旧记录，并自增序号使在途的异步读取失效：
     // 否则较早发起、较晚返回的异步快照会把这里刚刷新的新应用覆盖回旧值。
     frontmostRecordRequestId += 1
@@ -463,7 +526,14 @@ export function forgetFrontmostApp(): void {
 export function restoreFrontmostAppForCapture(): boolean {
   if (process.platform !== 'darwin') return false
   const target = pendingReturnApp
-  if (!target || !isProcessAlive(target.pid)) return false
+  if (!target || !isProcessAlive(target.pid)) {
+    // 无记录时静默返回会让真机日志只剩「取词超时」，无法判断是记录丢失还是
+    // 激活未生效。这里补一条诊断，便于区分并定位源应用记录缺失的根因。
+    logFrontDiagnostic(
+      `取词前交还跳过：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
+    )
+    return false
+  }
   if (!activateFrontmostApp(target)) return false
   logFrontDiagnostic(`取词前精确交还前台：open -b ${target.bundleId} pid=${target.pid}`)
   return true
@@ -481,16 +551,22 @@ export function restoreFrontmostAppForCapture(): boolean {
  */
 export function waitForFrontmostAppReturn(timeoutMs = FRONT_RETURN_TIMEOUT_MS): Promise<boolean> {
   if (process.platform !== 'darwin') return Promise.resolve(false)
-  if (!isMacAppActiveByEvents()) return Promise.resolve(true)
+  // 应用激活事件与同步快照都表明本应用不在最前时，取词键本就会落在源应用上，
+  // 无需再查询系统快照，避免在「按钮窗口未抢占前台」的常见路径上增加子进程开销。
+  if (!isMacAppActiveByEvents() && !wasFrontmostAppSelf()) return Promise.resolve(true)
   return new Promise<boolean>((resolve) => {
     const deadline = Date.now() + Math.max(0, timeoutMs)
     /**
-     * 轮询应用激活事件，确认前台交还完成。
+     * 轮询应用激活事件与系统前台快照，确认前台交还完成。
+     *
+     * 不能只看应用激活事件：点击“译”引发的 did-become-active 可能晚于按钮
+     * 回调到达，此刻事件标记仍为 false，但它并不代表交还已完成。只有系统快照
+     * 也确认最前应用不再是本应用时，注入的复制键才确定会落在源应用上。
      * @returns 无返回值。
      * @author zhenghq
      */
-    const poll = (): void => {
-      if (!isMacAppActiveByEvents()) {
+    const check = async (): Promise<void> => {
+      if (!isMacAppActiveByEvents() && (await isFrontmostAppSelf()) !== true) {
         resolve(true)
         return
       }
@@ -500,6 +576,14 @@ export function waitForFrontmostAppReturn(timeoutMs = FRONT_RETURN_TIMEOUT_MS): 
         return
       }
       setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
+    }
+    /**
+     * 触发一次异步前台状态检查，不阻塞事件循环。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    function poll(): void {
+      void check()
     }
     poll()
   })
