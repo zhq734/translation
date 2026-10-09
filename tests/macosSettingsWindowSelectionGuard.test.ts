@@ -458,3 +458,55 @@ test('弹窗仍可见时兜底恢复不得把设置页安全让出到最前', ()
     '弹窗仍可见时必须保留延迟恢复路径'
   )
 })
+
+test('恢复设置页可聚焦性时必须优先精确交还，避免隐藏整个应用造成设置页闪烁', () => {
+  const resumeSource = extractFunction(mainSource, 'function resumeSettingsWindowFocusAfterSelection(')
+
+  // app.hide() 会把应用内所有窗口（含用户之前打开、此刻仍在后台可见的设置页）
+  // 一起隐藏，app.show() 再把它显示回来。设置页在这一次显隐中会短暂重新上屏，
+  // 用户表现为「划词点击“译”时设置页闪一下又自动消失」。只要仍持有源应用记录，
+  // 恢复可聚焦性前就必须先用 open -b 精确交还（不隐藏任何本应用窗口），
+  // 确认本应用失活后再恢复；只有拿不到源应用时才允许退化为安全让出。
+  assert.match(
+    resumeSource,
+    /if\s*\(\s*restoreFrontmostAppForCapture\(\)\s*\)/u,
+    '恢复设置页可聚焦性前必须提供精确交还成功分支'
+  )
+  const preciseIndex = resumeSource.indexOf('if (restoreFrontmostAppForCapture())')
+  const waitIndex = resumeSource.indexOf('waitForFrontmostAppReturn()', preciseIndex)
+  assert.ok(waitIndex > preciseIndex, '精确交还后必须等待本应用真正失活再恢复可聚焦性')
+  assert.match(
+    resumeSource.slice(preciseIndex, waitIndex),
+    /logSettingsWindowFocusDiagnostic\(/u,
+    '精确交还分支必须留下诊断日志便于真机排查'
+  )
+  // 精确交还分支必须位于兜底安全让出之前：成功路径不得再执行 app.hide()→app.show()。
+  const fallbackYieldIndex = resumeSource.lastIndexOf('void yieldFrontmostAppThen(')
+  assert.ok(
+    fallbackYieldIndex > preciseIndex,
+    '精确交还分支必须在安全让出之前返回，成功时不得隐藏整个应用'
+  )
+})
+
+test('无源应用记录时恢复设置页可聚焦性前必须等待自然失活', () => {
+  const resumeSource = extractFunction(mainSource, 'function resumeSettingsWindowFocusAfterSelection(')
+
+  // 前台交还刚完成时应用激活事件可能尚未翻转，此时 pendingReturnApp 已被消费。
+  // 若恢复函数立刻走 app.hide()→app.show() 兜底，可见设置页会随之隐藏再显示，
+  // 仍然表现为「设置页闪一下」。无记录分支必须先有界等待自然失活，只有确认
+  // 应用仍处于最前时才允许安全让出。
+  const noRecordIndex = resumeSource.lastIndexOf('restoreFrontmostAppForCapture()')
+  assert.ok(noRecordIndex >= 0, '必须存在精确交还判断')
+  const tail = resumeSource.slice(noRecordIndex)
+  assert.match(
+    tail,
+    /waitForFrontmostAppReturn\(\)/u,
+    '无记录兜底前必须有界等待应用自然失活'
+  )
+  const waitIndex = tail.indexOf('waitForFrontmostAppReturn()')
+  const yieldIndex = tail.indexOf('yieldFrontmostAppThen(')
+  assert.ok(
+    waitIndex >= 0 && yieldIndex > waitIndex,
+    '无记录时必须先等待自然失活，确认仍最前才允许安全让出'
+  )
+})

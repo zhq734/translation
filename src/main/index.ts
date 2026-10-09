@@ -836,8 +836,8 @@ function resumeSettingsWindowFocusAfterSelection(ownerToken?: number): void {
   // 确认失活后再恢复。用应用激活事件状态而非 isMacAppActive()：后者会因失活后
   // 残留的窗口焦点误报。
   if (ownerToken !== undefined && isMacAppActiveByEvents()) {
-    logSettingsWindowFocusDiagnostic('应用仍最前，恢复设置页可聚焦性前先安全让出前台')
-    // 让出是异步的：期间用户可能已开始新一轮划词并重新挂起同一个设置窗口。
+    logSettingsWindowFocusDiagnostic('应用仍最前，恢复设置页可聚焦性前先交还前台')
+    // 交还是异步的：期间用户可能已开始新一轮划词并重新挂起同一个设置窗口。
     // 恢复动作必须确认这一轮挂起没有被更新的交互接管，避免旧回调提前撤销保护。
     // 同理，期间弹窗可能被重新打开；此时恢复可聚焦性会让新弹窗收尾再次把设置页顶到最前。
     const resumeGeneration = ++settingsWindowFocusResumeGeneration
@@ -853,6 +853,62 @@ function resumeSettingsWindowFocusAfterSelection(ownerToken?: number): void {
           if (!target.isDestroyed()) target.setFocusable(true)
           return
         }
+    // 在途交还结束后本应用仍最前：优先再走一次精确交还，成功时不会隐藏
+    // 任何本应用窗口；只有拿不到源应用记录时才退回安全让出。该分支与下方
+    // 非在途分支结构相同，但必须分别保留：在途分支只有等 whenFrontmostHandBackSettled
+    // 结算后才能读取最新记录，不能合并，否则会再次并发两路前台操作。
+        if (restoreFrontmostAppForCapture()) {
+          logSettingsWindowFocusDiagnostic('原生对话框交还收尾后仍最前，改为精确交还源应用')
+          void waitForFrontmostAppReturn().then((returned) => {
+            if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+            if (isPopupVisible()) return
+            if (returned) {
+              if (!target.isDestroyed()) target.setFocusable(true)
+              return
+            }
+            void yieldFrontmostAppThen(() => {
+              if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+              if (isPopupVisible()) return
+              if (!target.isDestroyed()) target.setFocusable(true)
+            })
+          })
+          return
+        }
+        // 无可用记录时不能立刻 app.hide()/app.show()：前台交还可能刚刚完成，
+        // 应用激活事件尚未翻转，立即隐藏整个应用会让可见设置页闪一下。
+        // 先在有界窗口内等待自然失活，确认仍最前才退化为安全让出。
+        logSettingsWindowFocusDiagnostic('无可用源应用记录，先等待应用自然失活再决定是否安全让出')
+        void waitForFrontmostAppReturn().then((returned) => {
+          if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+          if (isPopupVisible()) return
+          if (returned) {
+            if (!target.isDestroyed()) target.setFocusable(true)
+            return
+          }
+          void yieldFrontmostAppThen(() => {
+            if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+            if (isPopupVisible()) return
+            if (!target.isDestroyed()) target.setFocusable(true)
+          })
+        })
+      })
+      return
+    }
+    // app.hide() 会连同用户此前打开、此刻仍在后台可见的设置页一起隐藏，随后
+    // app.show() 再把它显示回来，用户表现为「点击“译”时设置页闪一下又消失」。
+    // 只要仍持有源应用记录，就必须优先用 open -b 精确交还：本应用所有窗口
+    // 全程留在屏上，确认失活后仅恢复设置页可聚焦性，不会产生任何显隐跳变。
+    if (restoreFrontmostAppForCapture()) {
+      logSettingsWindowFocusDiagnostic('已发起精确交还源应用，避免隐藏整个应用造成设置页闪烁')
+      void waitForFrontmostAppReturn().then((returned) => {
+        if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+        if (isPopupVisible()) return
+        if (returned) {
+          if (!target.isDestroyed()) target.setFocusable(true)
+          return
+        }
+        // 精确交还超时才允许退化为安全让出：此时仍无窗口显隐跳变以外的选择，
+        // 但已把「可用记录时绝不隐藏应用」作为首选路径。
         void yieldFrontmostAppThen(() => {
           if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
           if (isPopupVisible()) return
@@ -861,10 +917,22 @@ function resumeSettingsWindowFocusAfterSelection(ownerToken?: number): void {
       })
       return
     }
-    void yieldFrontmostAppThen(() => {
+    // 拿不到源应用记录时同样不能立刻安全让出：前台交还可能刚刚消费掉记录、
+    // 但应用激活事件尚未翻转，此时 app.hide()/app.show() 会让可见设置页闪一下。
+    // 先有界等待自然失活，只有确认应用仍最前时才走隐藏整个应用的兜底路径。
+    logSettingsWindowFocusDiagnostic('无可用源应用记录，先等待应用自然失活再决定是否安全让出')
+    void waitForFrontmostAppReturn().then((returned) => {
       if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
       if (isPopupVisible()) return
-      if (!target.isDestroyed()) target.setFocusable(true)
+      if (returned) {
+        if (!target.isDestroyed()) target.setFocusable(true)
+        return
+      }
+      void yieldFrontmostAppThen(() => {
+        if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+        if (isPopupVisible()) return
+        if (!target.isDestroyed()) target.setFocusable(true)
+      })
     })
     return
   }
