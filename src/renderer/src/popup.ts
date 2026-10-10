@@ -49,6 +49,7 @@ const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement
 const selectionViewEl = document.getElementById('selection-view') as HTMLElement
 const manualViewEl = document.getElementById('manual-view') as HTMLElement
+const sourceSectionHeadEl = document.getElementById('source-section-head') as HTMLElement
 const resultEl = document.getElementById('result') as HTMLElement
 const originalEl = document.getElementById('original') as HTMLElement
 const statusEl = document.getElementById('status') as HTMLElement
@@ -503,6 +504,7 @@ function renderSelection(payload: TranslatePayload): void {
   const visible = mode === 'selection'
   if (visible) syncLanguageSelectors(payload)
   currentSelectionOrigin = payload.origin ?? 'selection'
+  sourceSectionHeadEl.hidden = payload.origin === 'ocr'
   if (payload.origin !== 'ocr' && payload.original !== undefined) lastOriginal = payload.original
   if (payload.origin === 'ocr') {
     const ocrText = payload.ocrText ?? payload.ocrRawText

@@ -49,24 +49,24 @@
       </header>
       <section id="selection-view" class="selection-view" data-i18n-attr="aria-label:popup.selectionResult" aria-label="Selection translation result">
         <div class="translation-section translation-section-source">
-          <div class="section-head">
+          <div id="source-section-head" class="section-head">
             <span class="section-label" data-i18n="popup.translateOriginal">Source text</span>
           </div>
           <div id="original" class="original"></div>
+          <div id="ocr-source" class="ocr-source" hidden>
+            <div class="ocr-source-header">
+              <span class="ocr-source-label" id="ocr-source-label" data-i18n="popup.ocrContent">OCR content</span>
+              <span class="ocr-engine-badge" id="ocr-engine-badge" data-i18n-attr="aria-label:popup.ocrEngine" aria-label="OCR engine" hidden></span>
+              <button id="ocr-copy" class="text-action" type="button" data-i18n="popup.copyOcrContent" data-i18n-attr="aria-label:popup.copyOcrContent" aria-label="Copy OCR content" hidden>Copy OCR content</button>
+            </div>
+            <div id="ocr-source-text" class="ocr-source-text" aria-live="polite"></div>
+          </div>
         </div>
         <div class="translation-section translation-section-target">
           <div class="section-head">
             <span class="section-label section-label-accent" data-i18n="popup.translationResult">Translation</span>
           </div>
           <div id="result" class="result" aria-live="polite"></div>
-        </div>
-        <div id="ocr-source" class="ocr-source" hidden>
-          <div class="ocr-source-header">
-            <span class="ocr-source-label" id="ocr-source-label" data-i18n="popup.ocrContent">OCR content</span>
-            <span class="ocr-engine-badge" id="ocr-engine-badge" data-i18n-attr="aria-label:popup.ocrEngine" aria-label="OCR engine" hidden></span>
-            <button id="ocr-copy" class="text-action" type="button" data-i18n="popup.copyOcrContent" data-i18n-attr="aria-label:popup.copyOcrContent" aria-label="Copy OCR content" hidden>Copy OCR content</button>
-          </div>
-          <div id="ocr-source-text" class="ocr-source-text" aria-live="polite"></div>
         </div>
       </section>
       <section id="manual-view" class="manual-view" data-i18n-attr="aria-label:popup.manualTranslation" aria-label="Manual translation" hidden>

@@ -630,10 +630,8 @@ body {
   color: var(--text-secondary);
 }
 
-/* OCR 原始识别内容折叠在译文下方，仅在 OCR 翻译时展示。 */
+/* OCR 原始识别内容占用原文区域，仅在 OCR 翻译时展示。 */
 .ocr-source {
-  border-top: 1px solid var(--divider);
-  padding: 8px 0 0;
   display: flex;
   flex-direction: column;
   gap: 4px;

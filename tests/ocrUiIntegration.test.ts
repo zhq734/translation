@@ -116,6 +116,19 @@ test('OCR 翻译成功时应显示 OCR 内容并隐藏划词内容区域', () =>
 })
 
 /**
+ * 校验 OCR 内容占用原文位置，并在 OCR 模式下隐藏原文标题。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 翻译应在原文位置展示 OCR 内容并隐藏原文标题', () => {
+  assert.match(
+    popupRenderer,
+    /const sourceSectionHeadEl = document\.getElementById\('source-section-head'\) as HTMLElement/u
+  )
+  assert.match(popupRenderer, /sourceSectionHeadEl\.hidden = payload\.origin === 'ocr'/u)
+})
+
+/**
  * 校验 OCR 结果切换翻译语言时使用最近 OCR 文本，而不是普通划词缓存。
  * @returns 无返回值。
  * @author zhenghq
