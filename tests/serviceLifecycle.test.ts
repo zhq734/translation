@@ -67,7 +67,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   )
   const ipcIndex = mainSource.indexOf('\n  registerIpc()\n')
   const platformSettingsIndex = mainSource.indexOf(
-    'if (openSettingsOnInitialLaunch) await openSettings({ explicit: false })',
+    'if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true })',
     ipcIndex
   )
 
@@ -84,7 +84,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   assert.ok(ipcIndex >= 0 && platformSettingsIndex > ipcIndex)
   assert.match(
     onReadyBlock[1],
-    /loadSettings\(\)[\s\S]*?const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch\(process\.platform\)[\s\S]*?configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)[\s\S]*?if \(openSettingsOnInitialLaunch\) await openSettings\(\{ explicit: false \}\)/u
+    /loadSettings\(\)[\s\S]*?const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch\(process\.platform\)[\s\S]*?configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)[\s\S]*?if \(openSettingsOnInitialLaunch\) await openSettings\(\{ bringToFront: true \}\)/u
   )
   assert.doesNotMatch(mainSource, /function showTrayMenu\(\): void/u)
   assert.match(
@@ -124,7 +124,7 @@ test('macOS 托盘菜单应提供划词服务修复入口', () => {
 
   assert.match(
     mainSource,
-    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*t\.t\('menu\.repairMacSelectionService'\),[\s\S]*?click:\s*\(\)\s*=>\s*void\s+promptHiServicesRepair\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
+    /\.\.\.\(isMac\s*\?\s*\[\{[\s\S]*?label:\s*t\.t\('menu\.repairMacSelectionService'\),[\s\S]*?click:\s*\(\)\s*=>\s*void\s+repairMacHiServicesManually\(\)[\s\S]*?\}\]\s*:\s*\[\]\)/u
   )
 })
 

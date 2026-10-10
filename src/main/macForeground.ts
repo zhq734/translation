@@ -79,24 +79,11 @@ if (process.platform === 'darwin') {
 }
 
 /**
- * 返回本应用当前是否为 macOS 最前应用。
- * @returns 本应用仍持有最前状态时返回 true。
- * @author zhenghq
- */
-export function isMacAppActive(): boolean {
-  // 有自有窗口持有焦点时应用必然处于最前，优先采信这个同步信号；
-  // 其余情况（例如 key window 是原生对话框）回退到事件跟踪的激活状态。
-  if (BrowserWindow.getFocusedWindow() !== null) return true
-  return macAppActive
-}
-
-/**
  * 返回仅由 macOS 应用激活事件跟踪的最前状态。
  *
- * 与 `isMacAppActive()` 的区别：后者会优先采信 `BrowserWindow.getFocusedWindow()`，
- * 而应用失活后系统可能仍让 key window 保持焦点，导致该信号误报为 true。
- * 判断「自有窗口的矩形能否吞掉这次全局鼠标事件」时不能容忍这种误报，
- * 必须使用不带窗口焦点回退的纯事件状态。
+ * 不使用 `BrowserWindow.getFocusedWindow()` 回退：应用失活后系统可能仍让
+ * key window 保持焦点，导致该信号误报为 true。判断「自有窗口的矩形能否
+ * 吞掉这次全局鼠标事件」时不能容忍这种误报，必须使用纯事件状态。
  * @returns 最近一次应用激活事件表明本应用处于最前时返回 true。
  * @author zhenghq
  */
@@ -148,34 +135,6 @@ export async function readFrontmostAppSnapshot(): Promise<FrontmostAppSnapshot |
 }
 
 /**
- * 异步判断系统当前最前应用是否为本应用。
- *
- * 用于取词前的交还确认：点击“译”引发的激活事件可能尚未到达，`macAppActive`
- * 仍为 false，此时不能据此认为交还已经完成。只有系统快照显示最前应用不再是
- * 本应用时，注入的复制键才确定会落在源应用上。
- * @returns 最前应用是本应用时返回 true；是其它应用返回 false；读取失败返回 null。
- * @author zhenghq
- */
-export async function isFrontmostAppSelf(): Promise<boolean | null> {
-  if (process.platform !== 'darwin') return false
-  try {
-    const { stdout: frontStdout } = await execFileP('lsappinfo', ['front'], {
-      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
-    })
-    const asn = frontStdout.trim()
-    if (!asn) return null
-    const { stdout: infoStdout } = await execFileP('lsappinfo', ['info', asn], {
-      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
-    })
-    const pid = Number(/pid = (\d+)/u.exec(infoStdout)?.[1])
-    if (!Number.isInteger(pid) || pid <= 0) return null
-    return pid === process.pid
-  } catch {
-    return null
-  }
-}
-
-/**
  * 判断指定进程是否仍在运行。
  * @param pid 进程号。
  * @returns 进程仍存在时返回 true。
@@ -216,83 +175,6 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
 let pendingReturnApp: FrontmostAppSnapshot | null = null
 
 /**
- * 最近一次系统前台快照是否显示本应用自己。
- *
- * 点击“译”按钮时 macOS 已开始激活本应用，但 did-become-active 事件可能晚于
- * 按钮回调到达，此时应用激活事件仍为 false，交还守卫会被跳过。同步刷新时若
- * 发现最前应用就是本应用，说明本应用已经抢占前台，必须据此触发交还。
- * 该标记在每次系统快照刷新时重写，避免陈旧状态长期生效。
- */
-let frontmostAppWasSelf = false
-
-/**
- * 返回最近一次系统前台快照是否显示最前应用为本应用。
- * @returns 最近一次同步刷新发现本应用在最前时返回 true。
- * @author zhenghq
- */
-export function wasFrontmostAppSelf(): boolean {
-  return frontmostAppWasSelf
-}
-
-/**
- * 正在执行的原生对话框前台交还数量。
- *
- * `handBackFrontmostApp()` 内部走 `open -b` 或安全让出，期间设置页焦点恢复若
- * 同时调用 `yieldFrontmostAppThen()`，两路 `app.hide()/app.show()` 会互相穿插，
- * 最终把设置页重新顶到最前。用计数而不是布尔值，兼容异常路径下的重入收尾。
- */
-let frontmostHandBackInFlightCount = 0
-
-/** 等待原生对话框前台交还收尾的回调集合。 */
-const frontmostHandBackWaiters = new Set<() => void>()
-
-/**
- * 判断原生对话框前台交还是否仍在进行。
- * @returns 存在在途交还时返回 true。
- * @author zhenghq
- */
-export function isFrontmostHandBackInFlight(): boolean {
-  return frontmostHandBackInFlightCount > 0
-}
-
-/**
- * 等待当前原生对话框前台交还收尾。
- *
- * 设置页焦点恢复不能在交还进行中并发启动安全让出；调用方等待此 Promise 后，
- * 再根据应用激活状态决定是否恢复可聚焦性。
- * @returns 在途交还全部结束时完成的 Promise；当前没有在途交还时立即完成。
- * @author zhenghq
- */
-export function whenFrontmostHandBackSettled(): Promise<void> {
-  if (frontmostHandBackInFlightCount === 0) return Promise.resolve()
-  return new Promise<void>((resolve) => {
-    frontmostHandBackWaiters.add(resolve)
-  })
-}
-
-/**
- * 标记一次原生对话框前台交还开始。
- * @returns 无返回值。
- * @author zhenghq
- */
-function beginFrontmostHandBack(): void {
-  frontmostHandBackInFlightCount += 1
-}
-
-/**
- * 标记一次原生对话框前台交还结束，并唤醒全部等待者。
- * @returns 无返回值。
- * @author zhenghq
- */
-function endFrontmostHandBack(): void {
-  frontmostHandBackInFlightCount = Math.max(0, frontmostHandBackInFlightCount - 1)
-  if (frontmostHandBackInFlightCount > 0) return
-  const waiters = Array.from(frontmostHandBackWaiters)
-  frontmostHandBackWaiters.clear()
-  for (const resolve of waiters) resolve()
-}
-
-/**
  * 待交还应用记录的刷新请求序号。
  *
  * 允许刷新覆盖旧记录后，可能出现两次异步读取并发：先发起的读取若后返回，
@@ -301,41 +183,6 @@ function endFrontmostHandBack(): void {
  * 使在途读取失效，避免被丢弃的旧记录复活。
  */
 let frontmostRecordRequestId = 0
-
-/**
- * 是否处于「内部窗口收尾抑制期」。
- *
- * 覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。此期间到达的 activate
- * 属于内部窗口显隐引发的事件，必须按内部激活抑制，不能命中 Dock 入口把后台窗口顶到最前。
- */
-let internalWindowTeardownActive = false
-
-/**
- * 进入内部窗口收尾抑制期。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function beginInternalWindowTeardown(): void {
-  internalWindowTeardownActive = true
-}
-
-/**
- * 退出内部窗口收尾抑制期。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function endInternalWindowTeardown(): void {
-  internalWindowTeardownActive = false
-}
-
-/**
- * 返回当前是否处于内部窗口收尾抑制期。
- * @returns 处于抑制期时返回 true。
- * @author zhenghq
- */
-export function isInternalWindowTeardownActive(): boolean {
-  return internalWindowTeardownActive
-}
 
 /**
  * 读取系统当前最前应用并写入待交还记录。
@@ -373,71 +220,6 @@ function recordFrontmostAppFromSystem(): void {
 }
 
 /**
- * 在会激活本应用的窗口 `show()` 之前同步记录源应用。
- *
- * `rememberFrontmostAppIfInactive()` 是异步读子进程的，无法在同步的 `showPopup()` 内使用；
- * 而「上一轮结果弹窗已经把本应用激活」时，本轮取词再调用它可能因焦点残留而跳过，
- * 收尾便没有可交还目标。因此在激活显示前同步补一次快照。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function rememberFrontmostAppBeforeActivation(): void {
-  if (process.platform !== 'darwin') return
-  recordFrontmostAppFromSystem()
-}
-
-/**
- * 同步刷新待交还源应用（仅 macOS）。
- *
- * 异步刷新存在竞态：用户划词后立刻点击“译”，子进程快照可能尚未返回，
- * `restoreFrontmostAppForCapture()` 会读到上一轮应用并执行 `open -b 旧应用`。
- * 公共取词入口必须在交还前台之前同步读取当前系统最前应用并覆盖旧记录。
- * 本应用已是最前时 `parseFrontmostAppSnapshot` 会排除自身返回 null，
- * 此时保留既有记录，避免把用户当前正在用的应用换掉。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function refreshFrontmostAppForSelection(): void {
-  if (process.platform !== 'darwin') return
-  try {
-    // 每次刷新先按「不是本应用」重置：读取失败时不会把上一次的自身快照
-    // 长期残留，避免后续取词误触发无谓的 open -b。
-    frontmostAppWasSelf = false
-    const asn = execFileSync('lsappinfo', ['front'], {
-      encoding: 'utf8',
-      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
-    }).trim()
-    if (!asn) return
-    const info = execFileSync('lsappinfo', ['info', asn], {
-      encoding: 'utf8',
-      timeout: FRONTMOST_APP_SNAPSHOT_TIMEOUT_MS
-    })
-    const frontPid = Number(/pid = (\d+)/u.exec(info)?.[1])
-    const snapshot = parseFrontmostAppSnapshot(info, process.pid)
-    if (!snapshot) {
-      // parseFrontmostAppSnapshot 返回 null 有两种含义：解析失败，或最前应用就是
-      // 本应用。后者说明点击“译”已经让本应用抢占前台，只是 did-become-active
-      // 事件尚未到达；必须显式记录该状态，交还守卫才能据此触发精确交还。
-      // 解析失败时不得置位，否则会把「本应用不在最前」误判为抢占前台并触发
-      // 无谓的 open -b，重新引入「切到其他页面」的问题。
-      frontmostAppWasSelf = frontPid === process.pid
-      if (frontmostAppWasSelf) {
-        logFrontDiagnostic('刷新源应用：最前应用为本应用，保留既有记录')
-      }
-      return
-    }
-    frontmostAppWasSelf = false
-    // 用当前系统最前应用覆盖旧记录，并自增序号使在途的异步读取失效：
-    // 否则较早发起、较晚返回的异步快照会把这里刚刷新的新应用覆盖回旧值。
-    frontmostRecordRequestId += 1
-    pendingReturnApp = snapshot
-    logFrontDiagnostic(`刷新源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
-  } catch {
-    // 同步读取失败时保留既有记录，交还路径会自行判断目标是否仍有效。
-  }
-}
-
-/**
  * 记录待交还的前台应用（仅 macOS）。
  * @param snapshot 本应用占用前台前的最前应用快照；为 null 时忽略。
  * @returns 无返回值。
@@ -449,31 +231,6 @@ export function rememberFrontmostApp(snapshot: FrontmostAppSnapshot | null): voi
   // 避免较慢的旧快照随后覆盖这次写入。
   frontmostRecordRequestId += 1
   pendingReturnApp = snapshot
-}
-
-/**
- * 在「本应用尚未占用前台」时异步记录待交还应用（仅 macOS）。
- *
- * 调用点必须在任何窗口激活之前、且此刻本应用确实不在最前：
- * 读取走子进程，晚于同一 tick 内的 win.show() 就只会读到本应用自己。
- * 每次调用都会读取系统当前最前应用并覆盖旧记录：用户可能在应用 A 划词后切到
- * 应用 B 再划词，若保留上一轮的 A，点击“译”会执行 `open -b A`，表现为
- * 「回到之前的应用页面取词」。本应用仍是最前时快照会返回 null，天然不会覆盖。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function rememberFrontmostAppIfInactive(): void {
-  if (process.platform !== 'darwin') return
-  // 不使用焦点 / 激活判定作为跳过理由：应用内存在焦点窗口不代表本应用占用 macOS 前台，
-  // 而漏记会让收尾失去可靠的 open -b 交还目标。
-  const requestId = ++frontmostRecordRequestId
-  void readFrontmostAppSnapshot().then((snapshot) => {
-    if (!snapshot) return
-    // 已有更新的刷新请求或显式写入时，本次读取结果已过期，必须丢弃。
-    if (requestId !== frontmostRecordRequestId) return
-    rememberFrontmostApp(snapshot)
-    logFrontDiagnostic(`记录源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
-  })
 }
 
 /**
@@ -514,82 +271,6 @@ export function forgetFrontmostApp(): void {
 }
 
 /**
- * 取词前把 macOS 前台交还给记录的源应用。
- *
- * 第一次取词成功后翻译结果弹窗会被 `win.show()` 激活，本应用成为最前应用；
- * 第二次按快捷键时若不让出前台，注入的复制键与 AX 焦点读取都会落在弹窗上，
- * 剪贴板哨兵不变而报「取词超时」。这里复用待交还记录做精确交还，
- * 交还请求发出后立即返回，由调用方等待前台焦点稳定再取词。
- * @returns 已发出交还请求时返回 true；无记录或目标已退出时返回 false。
- * @author zhenghq
- */
-export function restoreFrontmostAppForCapture(): boolean {
-  if (process.platform !== 'darwin') return false
-  const target = pendingReturnApp
-  if (!target || !isProcessAlive(target.pid)) {
-    // 无记录时静默返回会让真机日志只剩「取词超时」，无法判断是记录丢失还是
-    // 激活未生效。这里补一条诊断，便于区分并定位源应用记录缺失的根因。
-    logFrontDiagnostic(
-      `取词前交还跳过：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
-    )
-    return false
-  }
-  if (!activateFrontmostApp(target)) return false
-  logFrontDiagnostic(`取词前精确交还前台：open -b ${target.bundleId} pid=${target.pid}`)
-  return true
-}
-
-/**
- * 等待本应用真正失去 macOS 最前状态，确认取词目标已回到源应用。
- *
- * `open -b` 是异步生效的：调用返回时前台应用未必已经切换完成。
- * 若立刻取词，AX 焦点读取与注入的复制键仍可能落在翻译弹窗上而再次超时，
- * 因此按应用激活事件轮询，直到确认失活或到达有界超时。
- * @param timeoutMs 最长等待时间（毫秒）。
- * @returns 已确认本应用不再处于最前时返回 true；无需等待或超时返回 false。
- * @author zhenghq
- */
-export function waitForFrontmostAppReturn(timeoutMs = FRONT_RETURN_TIMEOUT_MS): Promise<boolean> {
-  if (process.platform !== 'darwin') return Promise.resolve(false)
-  // 应用激活事件与同步快照都表明本应用不在最前时，取词键本就会落在源应用上，
-  // 无需再查询系统快照，避免在「按钮窗口未抢占前台」的常见路径上增加子进程开销。
-  if (!isMacAppActiveByEvents() && !wasFrontmostAppSelf()) return Promise.resolve(true)
-  return new Promise<boolean>((resolve) => {
-    const deadline = Date.now() + Math.max(0, timeoutMs)
-    /**
-     * 轮询应用激活事件与系统前台快照，确认前台交还完成。
-     *
-     * 不能只看应用激活事件：点击“译”引发的 did-become-active 可能晚于按钮
-     * 回调到达，此刻事件标记仍为 false，但它并不代表交还已完成。只有系统快照
-     * 也确认最前应用不再是本应用时，注入的复制键才确定会落在源应用上。
-     * @returns 无返回值。
-     * @author zhenghq
-     */
-    const check = async (): Promise<void> => {
-      if (!isMacAppActiveByEvents() && (await isFrontmostAppSelf()) !== true) {
-        resolve(true)
-        return
-      }
-      if (Date.now() >= deadline) {
-        logFrontDiagnostic(`取词前等待前台交还超时（${timeoutMs}ms）`)
-        resolve(false)
-        return
-      }
-      setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
-    }
-    /**
-     * 触发一次异步前台状态检查，不阻塞事件循环。
-     * @returns 无返回值。
-     * @author zhenghq
-     */
-    function poll(): void {
-      void check()
-    }
-    poll()
-  })
-}
-
-/**
  * 在隐藏「本应用当前 key window」前把 macOS 前台交还出去，随后执行收尾动作。
  *
  * 顺序不能颠倒：先激活源应用、确认本应用确实失去最前状态，再隐藏窗口。
@@ -626,14 +307,14 @@ export function handBackFrontmostThen(
     // 返回 null，但本应用仍可能是最前应用。若按原生对话框分支直接 run()，失败提示
     // 隐藏后本应用仍在最前，恢复设置页可聚焦性时它会被系统提升到最前（必现）。
     // 该场景必须继续走下方交还/安全让出逻辑，不能落进原生对话框分支。
-    if (keyWindowIsPopup && isMacAppActive()) {
+    if (keyWindowIsPopup && isMacAppActiveByEvents()) {
       logFrontDiagnostic('弹窗隐藏前检测到本应用仍最前，继续交还前台')
     } else {
       // 原生对话框（如 dialog.showMessageBox）不是 BrowserWindow：对话框存在时
       // getFocusedWindow() 同样返回 null，但应用仍处于最前，对话框自身持有 key window。
       // 此时隐藏弹窗不会提升其它窗口，必须保留记录，供对话框关闭后 handBackFrontmostApp 消费；
       // 若在这里丢弃记录，对话框关闭时网页翻译窗口就会被系统提升到最前。
-      if (isMacAppActive()) {
+      if (isMacAppActiveByEvents()) {
         run()
         logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
         return
@@ -749,24 +430,6 @@ export function handBackFrontmostApp(): Promise<boolean> {
     logFrontDiagnostic('原生对话框收尾跳过交还：应用激活事件表明本应用不在最前')
     return Promise.resolve(false)
   }
-  beginFrontmostHandBack()
-  /**
-   * 启动一次交还并在其结束后统一释放「交还在途」状态。
-   *
-   * 用 thunk 而不是已构造的 Promise：`yieldFrontmostAppThen()` 内部若同步抛错，
-   * 直接在外部构造会导致在途计数永久泄漏，后续设置页恢复被永久阻塞。
-   * @param start 返回本次交还 Promise 的启动函数。
-   * @returns 与本次交还相同的 Promise。
-   * @author zhenghq
-   */
-  const trackHandBack = (start: () => Promise<boolean>): Promise<boolean> => {
-    try {
-      return start().finally(() => endFrontmostHandBack())
-    } catch (error) {
-      endFrontmostHandBack()
-      return Promise.reject(error)
-    }
-  }
   const target = pendingReturnApp
   pendingReturnApp = null
   // 没有可交还的目标（快照读取失败、源应用已退出，或本应用占用前台前就是自己）时
@@ -776,11 +439,11 @@ export function handBackFrontmostApp(): Promise<boolean> {
     logFrontDiagnostic(
       `原生对话框收尾退化为安全让出：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
     )
-    return trackHandBack(() => yieldFrontmostAppThen(() => {}))
+    return yieldFrontmostApp(() => {})
   }
   if (!activateFrontmostApp(target)) {
     logFrontDiagnostic(`原生对话框收尾退化为安全让出：无法激活 bundleId=${target.bundleId}`)
-    return trackHandBack(() => yieldFrontmostAppThen(() => {}))
+    return yieldFrontmostApp(() => {})
   }
   logFrontDiagnostic(`原生对话框收尾开始精确交还：open -b ${target.bundleId} pid=${target.pid}`)
 
@@ -793,7 +456,7 @@ export function handBackFrontmostApp(): Promise<boolean> {
       // 避免随后隐藏失败提示时把应用内其它窗口（网页阅读器）顶到最前。
       if (!handedBack && isMacAppActiveByEvents()) {
         logFrontDiagnostic('原生对话框收尾交还超时，改用安全让出')
-        void yieldFrontmostAppThen(() => {}).then(() => resolve(false))
+        void yieldFrontmostApp(() => {}).then(() => resolve(false))
         return
       }
       logFrontDiagnostic(
@@ -817,7 +480,7 @@ export function handBackFrontmostApp(): Promise<boolean> {
     }
     pollDeactivated()
   })
-  return trackHandBack(() => handBack)
+  return handBack
 }
 
 /**
@@ -836,13 +499,13 @@ export function handBackFrontmostApp(): Promise<boolean> {
  * @returns 实际执行了安全让出流程时返回 true；无需让出时返回 false。
  * @author zhenghq
  */
-export function yieldFrontmostAppThen(run: () => void): Promise<boolean> {
+function yieldFrontmostApp(run: () => void): Promise<boolean> {
   if (process.platform !== 'darwin') {
     run()
     return Promise.resolve(false)
   }
   // 本应用不在最前时隐藏窗口不会提升其它窗口，直接收尾即可，避免整应用闪烁。
-  // 用应用激活事件状态而非 isMacAppActive()：后者会因失活后残留的 key window 焦点误报，
+  // 用应用激活事件状态而非窗口焦点：窗口焦点会因失活后残留的 key window 而误报，
   // 使收尾被判定为「仍需让出」，白白走一遍整应用隐藏。
   if (!isMacAppActiveByEvents()) {
     logFrontDiagnostic('无需让出前台：应用激活事件表明本应用不在最前')
@@ -873,7 +536,7 @@ export function yieldFrontmostAppThen(run: () => void): Promise<boolean> {
     app.hide()
     const deadline = Date.now() + FRONT_YIELD_TIMEOUT_MS
     const poll = (): void => {
-      // 必须用事件状态：app.hide() 后残留的窗口焦点会让 isMacAppActive() 持续误报 true，
+      // 必须用事件状态：app.hide() 后残留的窗口焦点会让窗口焦点判断持续误报 true，
       // 轮询会一路走到 400ms 超时，收尾时序退化为不确定。
       if (!isMacAppActiveByEvents()) {
         logFrontDiagnostic(`确认本应用失活，耗时 ${Date.now() - startedAt}ms`)

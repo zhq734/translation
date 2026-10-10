@@ -191,41 +191,37 @@ test('框选提交时 macOS 先显示识别弹窗再收起覆盖窗口', () => {
   )
 })
 
-test('取词失败分支不得在弹窗隐藏完成前清零内部激活租约', () => {
+test('取词失败分支必须直接释放交互状态，不得依赖补偿性延迟释放', () => {
   const start = mainSource.indexOf('if (!result.text) {')
-  const end = mainSource.indexOf('if (shouldPromptHiServicesRepair)', start)
+  const end = mainSource.indexOf('if (shouldAutoRepairHiServices)', start)
   assert.ok(start >= 0 && end > start, '应能定位取词失败分支')
   const failureSource = mainSource.slice(start, end)
 
-  // releaseSelectionInteraction() 会清零 internalActivationLeaseUntil，
-  // 等于在失败提示弹窗的隐藏收尾开始前就拆掉唯一的时间维度防线。
-  assert.doesNotMatch(
+  // panel 落地后弹窗隐藏不再触发应用级窗口提升，失败分支无需把释放推迟到
+  // 弹窗隐藏收尾之后；直接释放交互状态即可。
+  assert.match(
     failureSource,
     /if \(interactionToken !== undefined\) releaseSelectionInteraction\(interactionToken\)/u,
-    '失败分支不得直接调用会清零租约的 releaseSelectionInteraction'
+    '失败分支必须直接释放交互状态'
   )
-  assert.match(
+  assert.doesNotMatch(
     failureSource,
     /releaseSelectionInteractionAfterPopupHidden/u,
-    '失败分支必须改用不提前清零租约的释放方式'
+    '失败分支不得再依赖已删除的延迟释放入口'
   )
 })
 
-test('延迟释放入口必须把租约清零绑定到弹窗隐藏收尾之后', () => {
-  assert.match(
+test('补偿性延迟释放入口与内部激活租约必须整体删除', () => {
+  assert.doesNotMatch(
     mainSource,
     /function releaseSelectionInteractionAfterPopupHidden\(/u,
-    '必须提供与弹窗收尾绑定的延迟释放入口'
+    '延迟释放入口必须删除'
   )
-  const releaseSource = extractFunction(mainSource, 'function releaseSelectionInteractionAfterPopupHidden(')
-  assert.match(releaseSource, /internalActivationLeaseUntil/u, '释放入口负责清零内部激活租约')
-  assert.ok(
-    releaseSource.indexOf('releaseSelectionInteraction(') > releaseSource.indexOf('internalActivationLeaseUntil'),
-    '必须先解除租约覆盖再释放交互状态'
-  )
+  assert.doesNotMatch(mainSource, /internalActivationLeaseUntil/u, '内部激活租约必须删除')
+  assert.doesNotMatch(mainSource, /pendingPopupReleaseToken/u, '待释放 token 标记必须删除')
 })
 
-test('按钮取词流程的 finally 兜底不得抢在弹窗隐藏前清零租约', () => {
+test('按钮取词流程的 finally 兜底直接释放交互状态', () => {
   const buttonSource = extractFunction(
     mainSource,
     'async function translateSelectionButton(): Promise<void> {'
@@ -234,11 +230,10 @@ test('按钮取词流程的 finally 兜底不得抢在弹窗隐藏前清零租�
   assert.ok(finallyStart > 0, '按钮取词流程必须保留 finally 兜底')
   const finallySource = buttonSource.slice(finallyStart)
 
-  // 失败分支把释放推迟到弹窗隐藏之后，但交互状态在延迟期间仍是 capturing；
-  // 若 finally 兜底照旧释放，租约会在弹窗收尾开始前就被清零，延迟释放形同虚设。
   assert.match(
     finallySource,
-    /pendingPopupReleaseToken/u,
-    'finally 兜底必须先排除正在等待弹窗隐藏收尾的 token'
+    /releaseSelectionInteraction\(interactionToken\)/u,
+    'finally 兜底必须直接释放交互状态'
   )
+  assert.doesNotMatch(finallySource, /pendingPopupReleaseToken/u, 'finally 不得再维护延迟释放标记')
 })

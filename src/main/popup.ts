@@ -7,7 +7,6 @@ import {
 } from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
-import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 
@@ -60,6 +59,14 @@ let suppressExternalPointerDismissUntil = 0
 /** 触发抑制的按钮中心坐标；未记录时为 null，表示不做坐标匹配。 */
 let suppressExternalPointerDismissOrigin: { x: number; y: number } | null = null
 /**
+ * 翻译弹窗自身显示 / 聚焦时的内部窗口通知回调。
+ *
+ * macOS 上弹窗 show() 会让该 panel 成为 key window，系统可能随之派发一次
+ * 应用级 activate。该 activate 属于划词内部流程，调用方必须据此续期
+ * “非 Dock 激活”抑制窗口，避免异步翻译结果上屏时把设置页误判为 Dock 激活。
+ */
+let onInternalWindowShown: (() => void) | null = null
+/**
  * 源应用前台窗口跟踪器：弹窗激活前记录源窗口，取词前精确交还焦点。
  * Chromium 的 win.blur() 由系统按 Z-order 挑下一个前台窗口，不保证回到源应用。
  */
@@ -67,37 +74,22 @@ const foregroundTracker = createWindowsForegroundTracker({ platform: process.pla
 const pendingPayloads: TranslatePayload[] = []
 
 /**
- * 输出翻译弹窗在 macOS panel spike 阶段的窗口状态，用于真机验证键盘焦点与层级。
- * @param phase 当前所处的创建/显示阶段。
- * @returns 无返回值。
- * @author zhenghq
- */
-function logPopupPanelDiagnostic(phase: string): void {
-  if (process.platform !== 'darwin' || !win || win.isDestroyed()) return
-  console.log(
-    '[panel-spike][popup]',
-    phase,
-    JSON.stringify({
-      isVisible: win.isVisible(),
-      isFocused: win.isFocused(),
-      isAlwaysOnTop: win.isAlwaysOnTop(),
-      isVisibleOnAllWorkspaces: win.isVisibleOnAllWorkspaces()
-    })
-  )
-}
-
-/**
  * 创建翻译弹窗。
  * @param preloadPath 预加载脚本路径。
+ * @param onWindowShown 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。
  * @returns 创建后的翻译弹窗。
  * @author zhenghq
  */
-export function createPopup(preloadPath: string): BrowserWindow {
+export function createPopup(
+  preloadPath: string,
+  onWindowShown?: () => void
+): BrowserWindow {
   shownInactive = false
   settingsOpenGuardActive = false
   selectionCaptureLoading = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
+  onInternalWindowShown = onWindowShown ?? null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -131,7 +123,6 @@ export function createPopup(preloadPath: string): BrowserWindow {
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
   win.webContents.setAudioMuted(false)
-  logPopupPanelDiagnostic('created')
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -147,6 +138,18 @@ export function createPopup(preloadPath: string): BrowserWindow {
 }
 
 /**
+ * 通知调用方翻译弹窗刚完成一次自身显示或聚焦。
+ *
+ * 只用于内部 activate 抑制续期，不触发任何窗口置前、聚焦或应用级激活动作，
+ * 因此不会把同应用其它窗口一起带到最前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function notifyInternalWindowShown(): void {
+  onInternalWindowShown?.()
+}
+
+/**
  * 处理弹窗重新获得焦点。
  *
  * 弹窗重新拿到焦点后，取词读取阶段的「非激活显示」标记同步失效，
@@ -155,8 +158,8 @@ export function createPopup(preloadPath: string): BrowserWindow {
  * @author zhenghq
  */
 function handlePopupFocus(): void {
-  logPopupPanelDiagnostic('focus')
   shownInactive = false
+  notifyInternalWindowShown()
 }
 
 /**
@@ -165,7 +168,6 @@ function handlePopupFocus(): void {
  * @author zhenghq
  */
 function handlePopupBlur(): void {
-  logPopupPanelDiagnostic('blur')
   if (!win?.isVisible()) return
   // 设置窗口抢焦点属于应用内部窗口切换，不能按“点击弹窗外部”关闭翻译弹窗。
   if (settingsOpenGuardActive) return
@@ -340,18 +342,18 @@ export function showPopup(
     // 因此不再需要记录/交还应用级前台；Windows 仍按原有 show/showInactive 语义处理。
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
-    logPopupPanelDiagnostic(activate ? 'show' : 'showInactive')
   } else if (activate && shownInactive) {
     foregroundTracker.remember()
     win.show()
     shownInactive = false
-    logPopupPanelDiagnostic('show-after-inactive')
   } else if (!activate && !shownInactive && alreadyVisible) {
     // 弹窗已可见且已被激活，需要降级为非激活以归还前台焦点给源应用。
     win.showInactive()
     shownInactive = true
-    logPopupPanelDiagnostic('showInactive-after-show')
   }
+  // 弹窗每次自身显隐 / 聚焦都可能让 macOS 派发一次应用级 activate；
+  // 无条件续期抑制，确保该内部 activate 不会被误判为 Dock 点击。
+  notifyInternalWindowShown()
   scheduleHide(autoHideMs)
 }
 
@@ -374,6 +376,7 @@ export function showManualTranslationPopup(): void {
   }
   shownInactive = false
   win.webContents.send('popup:pinned', pinned)
+  notifyInternalWindowShown()
   if (win.webContents.isLoadingMainFrame()) {
     win.webContents.once('did-finish-load', () => {
       win?.webContents.send('manual-translate:open')
@@ -450,6 +453,9 @@ export function hidePopup(): void {
   }
   shownInactive = false
   win.hide()
+  // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
+  // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
+  notifyInternalWindowShown()
 }
 
 /**
@@ -507,6 +513,26 @@ export function isPopupVisible(): boolean {
  */
 export function isPopupActivated(): boolean {
   return Boolean(win?.isVisible()) && !shownInactive
+}
+
+/**
+ * 取词前把前台焦点归还给源应用（仅 Windows 生效）。
+ *
+ * Windows 上弹窗被上一次翻译结果的 show() 激活后会成为前台窗口，随后注入的
+ * Ctrl+C 会落在弹窗上导致取词超时；必须在取词前用 SetForegroundWindow 精确
+ * 交还给记录的源窗口。macOS panel 不激活应用，不存在该问题，直接返回 false。
+ * @returns 本次是否实际交还了前台焦点。
+ * @author zhenghq
+ */
+export function deactivatePopupForCapture(): boolean {
+  if (process.platform !== 'win32') return false
+  if (!win || !win.isVisible() || shownInactive) return false
+  shownInactive = true
+  // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，
+  // 至少弹窗不再持有焦点，避免复制键继续打在弹窗上。
+  const restored = foregroundTracker.restore()
+  if (!restored) win.blur()
+  return true
 }
 
 /**

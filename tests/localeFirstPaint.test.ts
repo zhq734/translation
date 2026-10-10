@@ -118,7 +118,7 @@ test('主进程应在创建任何窗口前注册同步语言 IPC，并在运行�
   assert.match(source, /event\.returnValue\s*=\s*mainI18n\?\.locale\s*\?\?\s*'en-US'/u)
   const runtimeIndex = source.indexOf('mainI18n = createMainI18nRuntime(')
   const ipcIndex = source.indexOf('\n  registerLocaleIpc()')
-  const popupIndex = source.indexOf('createPopup(PRELOAD_PATH)')
+  const popupIndex = source.indexOf('createPopup(PRELOAD_PATH,')
   assert.ok(runtimeIndex >= 0 && ipcIndex > runtimeIndex && popupIndex > ipcIndex,
     '同步语言 IPC 必须在运行时创建后、窗口创建前注册')
 })

@@ -75,6 +75,10 @@ export function createSelectionButton(preloadPath: string): BrowserWindow {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
+    // macOS 上使用 nonactivating panel：点击“译”按钮不应激活整个应用，
+    // 否则系统会把同应用内可聚焦的可见设置页提升为 key window 带到最前。
+    // 按钮本就 focusable:false + showInactive()，panel 只补齐“不激活应用”语义。
+    ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,

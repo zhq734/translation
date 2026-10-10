@@ -2,13 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
-  shouldDeactivatePopupBeforeMacCapture,
+  shouldActivatePopupForCaptureFailure,
   shouldRestoreForegroundBeforeCapture
 } from '../src/shared/popupForeground.ts'
 
 const indexSource = readFileSync('src/main/index.ts', 'utf8')
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
-const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
 /**
  * 截取 index.ts 中 showSelectionReadingPopup 的函数体源码。
@@ -37,40 +36,40 @@ function deactivateSource(): string {
 }
 
 /**
- * 校验 macOS 弹窗已激活时同样需要在取词前主动归还前台焦点。
- * 第一次取词成功后结果弹窗会用 win.show() 激活本应用，第二次按快捷键时
- * 注入的复制键会打在弹窗上，剪贴板哨兵不变而报取词超时。
+ * 校验 Windows 取词归还前台判定保持原行为，macOS 不再交还应用前台。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 弹窗已激活时取词前必须主动归还前台焦点', () => {
-  assert.equal(shouldDeactivatePopupBeforeMacCapture('darwin', true), true)
-  assert.equal(shouldDeactivatePopupBeforeMacCapture('darwin', false), false)
-  assert.equal(shouldDeactivatePopupBeforeMacCapture('win32', true), false)
-  assert.equal(shouldDeactivatePopupBeforeMacCapture('linux', true), false)
-})
-
-/**
- * 校验原有 Windows 判定不受影响。
- * @returns 无返回值。
- * @author zhenghq
- */
-test('Windows 取词归还前台判定保持原行为', () => {
+test('取词归还前台判定只保留 Windows 语义', () => {
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', true), true)
+  assert.equal(shouldRestoreForegroundBeforeCapture('win32', false), false)
   assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), false)
+  assert.equal(shouldRestoreForegroundBeforeCapture('linux', true), false)
 })
 
 /**
- * 校验读取弹窗在 macOS 弹窗已激活时调用主动失活，把焦点交还给源应用。
+ * 校验 macOS 失败提示不需要激活弹窗，避免 panel 下抢键盘焦点。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('showSelectionReadingPopup 应在 macOS 上先让结果弹窗退出前台', () => {
+test('macOS 失败提示不激活弹窗，Windows 保持原行为', () => {
+  assert.equal(shouldActivatePopupForCaptureFailure('darwin'), false)
+  assert.equal(shouldActivatePopupForCaptureFailure('win32'), true)
+  assert.equal(shouldActivatePopupForCaptureFailure('linux'), true)
+})
+
+/**
+ * 校验读取弹窗在需要归还前台的平台（Windows）先调用失活，再显示读取弹窗。
+ * macOS panel 下该判定返回 false，不会调用失活。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('showSelectionReadingPopup 应在需要归还前台时先让弹窗退出前台', () => {
   const src = readingPopupSource()
   assert.match(
     src,
-    /shouldDeactivatePopupBeforeMacCapture\(\s*process\.platform\s*,\s*isPopupActivated\(\)\s*\)/u,
-    '必须按平台与弹窗激活状态判定是否需要主动失活'
+    /shouldRestoreForegroundBeforeCapture\(\s*process\.platform\s*,\s*isPopupActivated\(\)\s*\)/u,
+    '必须按平台与弹窗激活状态判定是否需要归还前台'
   )
   const deactivateIndex = src.indexOf('deactivatePopupForCapture()')
   const showIndex = src.indexOf('showPopup(')
@@ -79,45 +78,27 @@ test('showSelectionReadingPopup 应在 macOS 上先让结果弹窗退出前台',
 })
 
 /**
- * 校验 macOS 主动失活走前台交还而非仅 blur：blur 不保证回到源应用。
+ * 校验 deactivatePopupForCapture 仅 Windows 生效，macOS panel 直接跳过。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 主动失活必须优先精确交还前台应用', () => {
+test('主动失活仅在 Windows 生效', () => {
   const src = deactivateSource()
-  assert.match(src, /restoreFrontmostAppForCapture/u, 'macOS 必须调用前台交还逻辑')
-  assert.match(src, /process\.platform === 'darwin'/u, '必须按平台选择交还实现')
-  assert.match(src, /win\.blur\(\)/u, '非 macOS 或交还失败时仍应保留 blur 兜底')
+  assert.match(src, /process\.platform !== 'win32'/u, '必须限定仅 Windows 生效')
+  assert.match(src, /foregroundTracker\.restore\(\)/u, 'Windows 必须精确交还前台窗口')
+  assert.match(src, /win\.blur\(\)/u, '交还失败时仍应保留 blur 兜底')
 })
 
 /**
- * 校验快捷键在交还前台后按应用失活轮询，而不是只等固定延时。
+ * 校验 macOS 二次取词不再等待应用级前台交还，直接取词。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 二次取词必须等前台真正交还后再取词', () => {
+test('macOS 二次取词不得再等待应用级前台交还', () => {
   const start = indexSource.indexOf('function onHotkey')
   const end = indexSource.indexOf('/**\n * 响应全局 OCR 快捷键', start)
   assert.ok(start >= 0 && end > start, 'onHotkey 应有结束边界')
   const src = indexSource.slice(start, end)
-  assert.match(src, /waitForFrontmostAppReturn\(\)/u, '必须等待前台真正交还')
-  assert.ok(
-    src.indexOf('waitForFrontmostAppReturn()') < src.indexOf('queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)'),
-    '等待必须发生在取词之前'
-  )
-})
-
-/**
- * 校验前台交还等待按应用失活轮询且带超时兜底，不会永久挂起取词。
- * @returns 无返回值。
- * @author zhenghq
- */
-test('前台交还等待必须按应用失活轮询并有超时兜底', () => {
-  const start = macForegroundSource.indexOf('export function waitForFrontmostAppReturn')
-  assert.ok(start >= 0, 'waitForFrontmostAppReturn 应存在')
-  const end = macForegroundSource.indexOf('\n}', start)
-  const src = macForegroundSource.slice(start, end + 2)
-  assert.match(src, /isMacAppActiveByEvents\(\)/u, '必须依据应用激活事件判断是否已失活')
-  assert.match(src, /setTimeout\(poll, FRONT_RETURN_POLL_INTERVAL_MS\)/u, '必须轮询')
-  assert.match(src, /resolve\(false\)/u, '超时后必须返回 false 继续取词')
+  assert.doesNotMatch(src, /waitForFrontmostAppReturn\(\)/u, 'panel 下不得等待应用级前台交还')
+  assert.match(src, /queueSelectionTranslation\(/u, '取词必须继续正常触发')
 })

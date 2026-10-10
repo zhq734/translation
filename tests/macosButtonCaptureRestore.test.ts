@@ -39,22 +39,21 @@ function stripComments(source: string): string {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词必须先交还前台再取词', () => {
-  const src = extractFunction(
+test('macOS 按钮取词不得再走应用级前台交还', () => {
+  const src = stripComments(extractFunction(
     indexSource,
     'async function translateSelectionButton(): Promise<void> {'
-  )
+  ))
 
-  assert.match(src, /restoreFrontmostAppForCapture\(\)/u, '按钮取词必须尝试精确交还前台')
-  assert.match(src, /waitForFrontmostAppReturn\(\)/u, '交还后必须等待前台真正切换完成')
-  assert.ok(
-    src.indexOf('restoreFrontmostAppForCapture()') < src.indexOf('consumePreparedBounded()'),
-    '交还必须发生在消费预取与复制取词之前'
-  )
-  assert.ok(
-    src.indexOf('waitForFrontmostAppReturn()') < src.indexOf('consumePreparedBounded()'),
-    '等待前台交还必须发生在消费预取与复制取词之前'
-  )
+  // 翻译弹窗与设置窗口在 macOS 上都是 nonactivating panel：显示/聚焦只影响
+  // 目标窗口自身，不激活应用，因此不存在「复制键打在弹窗上」的应用级前台占用，
+  // 按钮取词无需再精确交还前台或等待前台切换。
+  assert.doesNotMatch(src, /restoreFrontmostAppForCapture/u)
+  assert.doesNotMatch(src, /waitForFrontmostAppReturn/u)
+  assert.doesNotMatch(src, /isMacAppActiveByEvents/u)
+  assert.doesNotMatch(src, /wasFrontmostAppSelf/u)
+  // 直接进入消费预取与复制取词即可。
+  assert.match(src, /consumePreparedBounded\(\)/u, '按钮取词必须直接消费预取')
 })
 
 /**
@@ -63,14 +62,13 @@ test('macOS 按钮取词必须先交还前台再取词', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('划词显示按钮前必须记录源应用', () => {
-  const src = extractFunction(indexSource, 'function scheduleSelectionAction(')
+test('划词显示按钮不再需要记录源应用交还目标', () => {
+  const src = stripComments(extractFunction(indexSource, 'function scheduleSelectionAction('))
 
-  assert.match(src, /rememberFrontmostAppIfInactive\(\)/u, '划词阶段必须记录源应用')
-  assert.ok(
-    src.indexOf('rememberFrontmostAppIfInactive()') < src.indexOf('showSelectionButton('),
-    '记录源应用必须发生在显示“译”按钮之前'
-  )
+  // panel 不占用应用级前台，划词与取词收尾都不再需要 `open -b` 交还目标，
+  // 记录源应用只会留下无消费方的补偿状态。
+  assert.doesNotMatch(src, /rememberFrontmostAppIfInactive/u)
+  assert.match(src, /showSelectionButton\(/u, '划词仍需显示“译”按钮')
 })
 
 /**
@@ -98,21 +96,16 @@ test('“译”按钮必须支持按待处理锚点恢复显示', () => {
 })
 
 /**
- * 校验安全让出前台后必须恢复被 app.hide() 隐藏的“译”按钮。
+ * 校验翻译弹窗路径不得再依赖安全让出入口，仅 OCR / 原生对话框保留内部退化链路。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('安全让出前台恢复应用后必须重放待显示的“译”按钮', () => {
-  const src = extractFunction(
-    macForegroundSource,
-    'export function yieldFrontmostAppThen('
-  )
-
-  assert.match(src, /restoreSelectionButtonIfPending\(\)/u, 'app.show() 后必须恢复待显示的按钮')
-  assert.ok(
-    src.indexOf('app.show()') < src.indexOf('restoreSelectionButtonIfPending()'),
-    '恢复按钮必须发生在 app.show() 之后'
-  )
+test('macOS 前台交还模块不得再导出安全让出入口', () => {
+  // panel 落地后翻译弹窗直接 win.hide()，不再需要 app.hide()→app.show() 的
+  // 整应用让出；但 OCR 覆盖层与原生修复对话框仍保留内部 handBack 退化链路，
+  // 因此只要求不再导出 yieldFrontmostAppThen，且弹窗路径不得引用它。
+  assert.doesNotMatch(macForegroundSource, /export function yieldFrontmostAppThen\(/u)
+  assert.doesNotMatch(popupSource, /yieldFrontmostAppThen/u)
 })
 
 /**
@@ -207,42 +200,20 @@ test('取词结果被取消时必须关闭读取状态弹窗', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词交还前台期间必须抑制弹窗失焦关闭', () => {
-  assert.match(
-    popupSource,
-    /export function beginPopupForegroundRestoreForCapture\(/u,
-    '必须提供进入交还失焦抑制的入口'
-  )
-  assert.match(
-    popupSource,
-    /export function endPopupForegroundRestoreForCapture\(/u,
-    '必须提供解除交还失焦抑制的入口'
-  )
+test('按钮取词的失焦抑制补偿状态必须整体删除', () => {
+  // panel 不激活应用后，显示读取弹窗不会再收到「前台交还」引发的迟到失焦，
+  // 对应的失焦抑制开关失去存在前提。
+  assert.doesNotMatch(popupSource, /beginPopupForegroundRestoreForCapture/u)
+  assert.doesNotMatch(popupSource, /endPopupForegroundRestoreForCapture/u)
+  assert.doesNotMatch(popupSource, /captureForegroundRestoreActive/u)
+  assert.doesNotMatch(popupSource, /function isRestoringForeground\(/u)
 
-  const src = extractFunction(
+  const src = stripComments(extractFunction(
     indexSource,
     'async function translateSelectionButton(): Promise<void> {'
-  )
-  const beginIndex = src.indexOf('beginPopupForegroundRestoreForCapture()')
-  const popupIndex = src.indexOf('showSelectionReadingPopup(anchor)')
-  const restoreIndex = src.indexOf('restoreFrontmostAppForCapture()')
-  const endIndex = src.indexOf('endPopupForegroundRestoreForCapture()')
-  assert.ok(beginIndex >= 0 && beginIndex < popupIndex,
-    '必须在显示读取弹窗前进入失焦抑制，避免显示瞬间的 blur 漏抑制')
-  assert.ok(popupIndex < restoreIndex,
-    '必须先显示读取弹窗再交还前台')
-  assert.ok(endIndex > restoreIndex,
-    '取词流程结束后必须解除失焦抑制，避免后续点击外部无法关闭弹窗')
-
-  const guardSource = extractFunction(
-    popupSource,
-    'function isRestoringForeground(): boolean {'
-  )
-  assert.match(
-    guardSource,
-    /captureForegroundRestoreActive/u,
-    '失焦抑制判定必须覆盖按钮取词的整个交还窗口'
-  )
+  ))
+  assert.doesNotMatch(src, /beginPopupForegroundRestoreForCapture/u)
+  assert.doesNotMatch(src, /endPopupForegroundRestoreForCapture/u)
 })
 
 /**
@@ -332,34 +303,24 @@ test('点击“译”后的迟到全局按下不得关闭读取弹窗', () => {
 })
 
 /**
- * 校验 macOS 按钮取词仅在点击“译”确实抢占了前台时才交还源应用。
+ * 校验 macOS 按钮取词不再做取词前的应用级失活处理。
  *
- * 用户反馈点击“译”后浏览器会切到另一个窗口/页面再取词。根因是本应用以
- * accessory 方式显示按钮时通常并未抢占 macOS 前台，但按钮取词路径仍无条件
- * 执行 `open -b Chrome`；Chrome 多窗口时会按自己的最近活跃窗口重新置顶，
- * 于是取词落在错误窗口，用户看到“切到其他页面”。只有本应用确实成为最前应用
- * 时才需要交还，否则源应用焦点本就还在，重复 open -b 反而会切错窗口。
+ * 旧实现会在点击“译”后把本应用前台交还给源应用再注入复制键；panel 落地后
+ * 弹窗显示不会激活应用，复制键天然落在源应用上，该补偿路径必须整体删除。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词只在应用确实抢占前台时交还源应用', () => {
+test('macOS 按钮取词不得再做取词前应用级失活', () => {
   const src = stripComments(
     extractFunction(
       indexSource,
       'async function translateSelectionButton(): Promise<void> {'
     )
   )
-  assert.match(
-    src,
-    /isMacAppActiveByEvents\(\)/u,
-    '必须依据应用激活事件判断本应用是否确实抢占了前台'
-  )
-  const restoreIndex = src.indexOf('restoreFrontmostAppForCapture()')
-  const guardIndex = src.indexOf('isMacAppActiveByEvents()')
-  assert.ok(
-    guardIndex >= 0 && restoreIndex > guardIndex,
-    '交还前台必须受「本应用确实在前台」条件保护，不能无条件 open -b'
-  )
+
+  assert.doesNotMatch(src, /deactivatePopupForCapture/u, 'macOS 按钮取词不得再主动失活弹窗')
+  assert.doesNotMatch(src, /isMacAppActiveByEvents/u, 'macOS 不得再依据应用激活事件交还前台')
+  assert.doesNotMatch(src, /waitForFrontmostAppReturn/u, 'macOS 不得再等待应用级前台交还')
 })
 
 /**
@@ -439,17 +400,31 @@ test('迟到按下抑制必须按按钮原位置做坐标匹配', () => {
 })
 
 /**
- * 校验 macOS 按钮取词必须覆盖「本应用失活但仍持有残留 key window」的场景。
+ * 校验取词专用系统快照与自身抢占识别补偿状态必须整体删除。
  *
- * 真机日志中点击“译”取词超时时，既没有「取词前精确交还前台」也没有
- * 「开始精确交还」，说明交还守卫 `isMacAppActiveByEvents()` 返回了 false。
- * 但 macOS 在应用失活后仍可能让设置页等自有窗口保持 key window，注入的
- * Command+C 会打在该窗口上而不是 Chrome，剪贴板哨兵不变并最终报取词超时。
- * 因此交还守卫必须同时覆盖「本应用仍持有焦点窗口」这一残留状态。
+ * 旧实现为消除「点击“译”后应用激活事件迟到」的竞态，引入了同步读取系统最前
+ * 应用的 `refreshFrontmostAppForSelection()` 与 `wasFrontmostAppSelf()` 判定。
+ * panel 不激活应用后该竞态不存在，这些补偿 API 必须删除，避免残留死代码
+ * 让后续维护者误以为仍需要应用级前台交还。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词必须覆盖残留焦点窗口的交还场景', () => {
+test('取词专用系统快照补偿状态必须整体删除', () => {
+  const code = stripComments(macForegroundSource)
+
+  assert.doesNotMatch(code, /wasFrontmostAppSelf/u, '不得再保留自身抢占前台快照判定')
+  assert.doesNotMatch(code, /refreshFrontmostAppForSelection/u, '不得再保留取词专用同步刷新入口')
+  assert.doesNotMatch(code, /restoreFrontmostAppForCapture/u, '不得再保留取词前精确交还入口')
+  assert.doesNotMatch(code, /waitForFrontmostAppReturn/u, '不得再保留前台交还等待入口')
+  assert.doesNotMatch(code, /rememberFrontmostAppIfInactive\b/u, '不得再保留按激活状态记录源应用入口')
+})
+
+/**
+ * 校验翻译弹窗路径不得再引用取词专用系统快照补偿 API。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮取词不得再依赖取词专用系统快照补偿 API', () => {
   const src = stripComments(
     extractFunction(
       indexSource,
@@ -457,81 +432,8 @@ test('macOS 按钮取词必须覆盖残留焦点窗口的交还场景', () => {
     )
   )
 
-  assert.match(
-    src,
-    /isMacAppActiveByEvents\(\)\s*\|\|\s*wasFrontmostAppSelf\(\)/u,
-    '必须结合应用激活事件与系统自身快照判定是否占用前台'
-  )
-  const guardIndex = src.indexOf('wasFrontmostAppSelf()')
-  const restoreIndex = src.indexOf('restoreFrontmostAppForCapture()')
-  assert.ok(
-    guardIndex >= 0 && restoreIndex > guardIndex,
-    '系统快照表明本应用在最前时也必须先交还源应用'
-  )
-})
-
-/**
- * 校验同步刷新识别出「最前应用是本应用」时必须留下诊断日志。
- *
- * 真机取词超时的日志里既没有「刷新源应用」也没有「取词前精确交还前台」，
- * 无法判断到底是快照解析失败、还是快照显示本应用抢占前台后走了静默分支。
- * 该分支必须打印一条可区分来源的日志，避免下次排查继续只能靠推断。
- * @returns 无返回值。
- * @author zhenghq
- */
-test('同步刷新识别自身抢占前台时必须记录诊断日志', () => {
-  const refreshSrc = stripComments(
-    extractFunction(macForegroundSource, 'export function refreshFrontmostAppForSelection(')
-  )
-
-  assert.match(
-    refreshSrc,
-    /frontmostAppWasSelf\s*=\s*frontPid\s*===\s*process\.pid/u,
-    '必须记录最前应用是否为本应用'
-  )
-  assert.match(
-    refreshSrc,
-    /if \(frontmostAppWasSelf\)[\s\S]*?logFrontDiagnostic\(/u,
-    '识别出本应用抢占前台后必须打印诊断日志'
-  )
-})
-
-/**
- * 校验点击“译”引发本应用抢占前台时，必须依据系统快照而不是事件标记交还。
- *
- * 用户点击“译”按钮会让 macOS 开始激活本应用，但 did-become-active 事件可能
- * 晚于按钮回调到达：此刻 `isMacAppActiveByEvents()` 仍为 false，交还被跳过，
- * 随后注入的 Command+C 落回本应用，剪贴板哨兵不变并报取词超时。真机日志中
- * 表现为点击后没有任何「取词前精确交还前台」记录。同步读取系统最前应用得到的
- * 「最前应用是自己」信号必须参与交还判定，消除这一竞态。
- * @returns 无返回值。
- * @author zhenghq
- */
-test('macOS 按钮取词必须依据系统快照识别自身抢占前台', () => {
-  assert.match(
-    macForegroundSource,
-    /export function wasFrontmostAppSelf\(\)/u,
-    '必须暴露最近一次系统快照是否显示最前应用为本应用'
-  )
-  const refreshSrc = stripComments(
-    extractFunction(macForegroundSource, 'export function refreshFrontmostAppForSelection(')
-  )
-  assert.match(
-    refreshSrc,
-    /frontmostAppWasSelf\s*=\s*frontPid\s*===\s*process\.pid/u,
-    '同步刷新检测到最前应用为本应用时必须记录该状态'
-  )
-
-  const translateSrc = stripComments(
-    extractFunction(
-      indexSource,
-      'async function translateSelectionButton(): Promise<void> {'
-    )
-  )
-  const guardIndex = translateSrc.indexOf('wasFrontmostAppSelf()')
-  const restoreIndex = translateSrc.indexOf('restoreFrontmostAppForCapture()')
-  assert.ok(
-    guardIndex >= 0 && restoreIndex > guardIndex,
-    '系统快照表明本应用在最前时也必须先交还源应用'
-  )
+  assert.doesNotMatch(src, /refreshFrontmostAppForSelection/u)
+  assert.doesNotMatch(src, /wasFrontmostAppSelf/u)
+  assert.doesNotMatch(src, /restoreFrontmostAppForCapture/u)
+  assert.match(src, /consumePreparedBounded\(\)/u, '按钮取词必须直接消费预取结果')
 })

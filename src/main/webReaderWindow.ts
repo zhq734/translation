@@ -108,6 +108,8 @@ export interface WebReaderManagerOptions {
   onWindowStateChanged?: (open: boolean) => void
   /** 阅读器窗口失去焦点、隐藏或关闭时通知主进程解除弹窗保护。 */
   onInternalWindowFocusLost?: () => void
+  /** 判断当前是否存在可见设置页；存在时关闭阅读器不得触发应用级隐藏。 */
+  hasVisibleSettingsWindow?: () => boolean
 }
 
 /** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
@@ -256,6 +258,16 @@ export class WebReaderManager {
     this.cancel()
     if (this.closingWindow) return
     this.closingWindow = true
+    // 设置页仍可见时关闭阅读器属于应用内部窗口切换：只需销毁阅读器自身，
+    // 不能再走 handBackFrontmostThen 的安全让出兜底（app.hide()/app.show()），
+    // 否则设置页会被整应用隐藏一起带走。应用级交还仅在阅读器是最后一个
+    // 需要前台的常规窗口时使用。
+    if (this.options.hasVisibleSettingsWindow?.()) {
+      this.closingWindow = false
+      this.allowWindowClose = true
+      window.close()
+      return
+    }
     // 阅读器通常是应用内最后一个 key window：直接关闭会让 macOS 把设置页提升为
     // key window 并顶到其它应用之上，因此先交还前台、确认失活后再销毁窗口。
     handBackFrontmostThen(window, () => {

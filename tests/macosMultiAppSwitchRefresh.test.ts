@@ -30,34 +30,26 @@ function stripComments(source: string): string {
 }
 
 /**
- * 校验异步记录源应用必须允许覆盖上一轮残留记录。
+ * 校验同步记录源应用入口必须整体删除。
  *
- * 用户可能在应用 A 划词但未点击“译”，随后切到应用 B 再划词：此时待交还记录
- * 仍是 A，点击“译”会执行 `open -b A`，表现为「回到之前的应用页面取词」。
- * 划词 / 取词入口会调用本函数，因此它必须在本应用非最前时用当前系统最前应用
- * 覆盖旧记录；本应用仍是最前时 `readFrontmostAppSnapshot()` 会返回 null，
- * 天然不会覆盖正确记录。
+ * panel 落地后翻译弹窗与设置窗口不再占用应用级前台，划词路径不再需要
+ * `rememberFrontmostAppIfInactive()` 记录交还目标；仅网页阅读器等仍会激活
+ * 应用的路径保留可等待的异步入口。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('异步记录源应用必须允许覆盖上一轮残留记录', () => {
-  const src = stripComments(
-    extractFunction(
-      macForegroundSource,
-      'export function rememberFrontmostAppIfInactive(): void {'
-    )
-  )
+test('划词同步记录源应用入口必须整体删除', () => {
+  const code = stripComments(macForegroundSource)
 
   assert.doesNotMatch(
-    src,
-    /if \(pendingReturnApp\) return/u,
-    '不得因已有旧记录而短路，否则多应用切换后仍会交还给旧应用'
+    code,
+    /export function rememberFrontmostAppIfInactive\(/u,
+    '不得再导出同步记录源应用入口'
   )
-  assert.match(src, /readFrontmostAppSnapshot\(\)/u, '必须重新读取系统当前最前应用')
-  assert.match(
-    src,
-    /rememberFrontmostApp\(snapshot\)|pendingReturnApp = snapshot/u,
-    '必须用当前最前应用覆盖旧的待交还记录'
+  assert.doesNotMatch(
+    code,
+    /refreshFrontmostAppForSelection/u,
+    '不得再保留取词专用同步刷新入口'
   )
 })
 
@@ -100,12 +92,6 @@ test('可等待的异步记录源应用同样必须允许覆盖旧记录', () =>
  * @author zhenghq
  */
 test('异步刷新待交还记录必须丢弃过期读取结果', () => {
-  const syncSrc = stripComments(
-    extractFunction(
-      macForegroundSource,
-      'export function rememberFrontmostAppIfInactive(): void {'
-    )
-  )
   const asyncSrc = stripComments(
     extractFunction(
       macForegroundSource,
@@ -116,14 +102,12 @@ test('异步刷新待交还记录必须丢弃过期读取结果', () => {
     extractFunction(macForegroundSource, 'export function forgetFrontmostApp(): void {')
   )
 
-  for (const [name, src] of [['同步', syncSrc], ['可等待', asyncSrc]] as const) {
-    assert.match(src, /\+\+frontmostRecordRequestId/u, `${name}入口必须为每次刷新分配新序号`)
-    assert.match(
-      src,
-      /requestId !== frontmostRecordRequestId/u,
-      `${name}入口必须丢弃已被更新请求取代的读取结果`
-    )
-  }
+  assert.match(asyncSrc, /\+\+frontmostRecordRequestId/u, '可等待入口必须为每次刷新分配新序号')
+  assert.match(
+    asyncSrc,
+    /requestId !== frontmostRecordRequestId/u,
+    '可等待入口必须丢弃已被更新请求取代的读取结果'
+  )
   assert.match(
     forgetSrc,
     /frontmostRecordRequestId \+= 1/u,
@@ -132,41 +116,21 @@ test('异步刷新待交还记录必须丢弃过期读取结果', () => {
 })
 
 /**
- * 校验公共取词入口必须在交还前台之前同步刷新源应用，消除异步竞态。
+ * 校验公共取词入口不得再做应用级前台交还或同步刷新。
  *
- * 仅靠异步刷新时，用户划词后立刻点击“译”，子进程快照可能尚未返回，
- * `restoreFrontmostAppForCapture()` 会读到上一轮应用并执行 `open -b 旧应用`。
- * `showSelectionReadingPopup` 是按钮取词与快捷键取词的公共入口，必须在此
- * 同步读取当前系统最前应用并覆盖旧记录，且早于 `deactivatePopupForCapture()`
- * 交还前台；本应用已是最前时同步读取返回 null，不会覆盖已有的正确记录。
- * 只在公共入口刷新一次，避免在多个热路径重复 spawn `lsappinfo` 拖慢取词。
+ * panel 下弹窗显示不激活应用，取词前的精确交还、同步刷新源应用都属于旧补偿
+ * 机制；公共取词入口只需在 Windows 上按既有策略让弹窗退出前台。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('公共取词入口必须同步刷新源应用以消除异步竞态', () => {
+test('公共取词入口不得再同步刷新或交还应用级前台', () => {
   const indexSource = readFileSync('src/main/index.ts', 'utf8')
   const readingSrc = stripComments(
     extractFunction(indexSource, 'function showSelectionReadingPopup(')
   )
 
-  assert.match(
-    macForegroundSource,
-    /export function refreshFrontmostAppForSelection\(\): void/u,
-    '必须提供同步刷新入口'
-  )
-  assert.match(
-    readingSrc,
-    /refreshFrontmostAppForSelection\(\)/u,
-    '公共取词入口必须同步刷新源应用'
-  )
-  assert.ok(
-    readingSrc.indexOf('refreshFrontmostAppForSelection()') <
-      readingSrc.indexOf('deactivatePopupForCapture()'),
-    '同步刷新必须发生在交还前台之前'
-  )
-  assert.ok(
-    readingSrc.indexOf('refreshFrontmostAppForSelection()') <
-      readingSrc.indexOf('showPopup('),
-    '同步刷新必须发生在显示读取弹窗（可能激活本应用）之前'
-  )
+  assert.doesNotMatch(readingSrc, /refreshFrontmostAppForSelection/u, '不得再同步刷新源应用')
+  assert.doesNotMatch(readingSrc, /restoreFrontmostAppForCapture/u, '不得再交还应用级前台')
+  assert.doesNotMatch(readingSrc, /rememberFrontmostAppIfInactive\(/u, '不得再记录弹窗交还目标')
+  assert.match(readingSrc, /showPopup\(/u, '公共取词入口仍需显示读取弹窗')
 })
