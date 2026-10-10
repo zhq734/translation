@@ -48,6 +48,14 @@ let pinned = false
 let currentAutoHideMs = 0
 let shownInactive = false
 /**
+ * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
+ *
+ * 从翻译弹窗点击设置后，设置窗口会调用 show()/focus() 抢走焦点，弹窗因此收到
+ * 一次 blur。该失焦来自应用内部窗口切换，不属于用户点击弹窗外部的自动关闭语义，
+ * 必须抑制，否则用户会看到「打开设置时翻译弹窗一起关闭」。
+ */
+let settingsOpenGuardActive = false
+/**
  * 正在「先交还前台、再隐藏窗口」的过程中。
  * macOS 上弹窗是应用内最后一个 key window，交还前台需要等待系统确认失活（数十毫秒），
  * 此期间弹窗仍可见但逻辑上已关闭：新请求必须按「未显示」处理，否则会复用即将隐藏的窗口。
@@ -109,6 +117,7 @@ const pendingPayloads: TranslatePayload[] = []
  */
 export function createPopup(preloadPath: string): BrowserWindow {
   shownInactive = false
+  settingsOpenGuardActive = false
   hidingAfterFrontReturn = false
   restoringForegroundUntil = 0
   resultActivationSettleUntil = 0
@@ -279,6 +288,8 @@ function handlePopupFocus(): void {
  */
 function handlePopupBlur(): void {
   if (!win?.isVisible()) return
+  // 设置窗口抢焦点属于应用内部窗口切换，不能按“点击弹窗外部”关闭翻译弹窗。
+  if (settingsOpenGuardActive) return
   const cursorInsideDragRegion = isPointInPopupDragRegion(
     screen.getCursorScreenPoint(),
     win.getBounds()
@@ -299,6 +310,43 @@ function handlePopupBlur(): void {
   if (shouldDismissPopupOnBlur(pinned, isRestoringForeground())) {
     hidePopup()
   }
+}
+
+/**
+ * 开启设置窗口打开期间的弹窗失焦保护。
+ *
+ * 必须在调用设置窗口 show()/focus() 之前开启，以覆盖 blur 事件早于 focus 事件
+ * 到达的平台事件顺序；保护期间设置窗口导致的内部失焦不会关闭翻译弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function beginPopupSettingsOpenGuard(): void {
+  settingsOpenGuardActive = true
+}
+
+/**
+ * 解除设置窗口打开期间的弹窗失焦保护。
+ *
+ * 设置窗口失焦、隐藏、销毁或打开失败时必须解除，恢复正常的点击弹窗外部
+ * 自动关闭语义。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function endPopupSettingsOpenGuard(): void {
+  settingsOpenGuardActive = false
+}
+
+/**
+ * 返回设置窗口打开期间的弹窗失焦保护是否处于激活状态。
+ *
+ * 主进程的全局鼠标按下判定需要复用同一份保护状态：设置窗口的 focus 事件
+ * 可能晚于全局 mousedown 到达，仅依赖窗口焦点会把点击设置页误判为点击
+ * 弹窗外部，从而错误关闭翻译弹窗。
+ * @returns 处于设置打开保护期时返回 true。
+ * @author zhenghq
+ */
+export function isPopupSettingsOpenGuardActive(): boolean {
+  return settingsOpenGuardActive
 }
 
 /**

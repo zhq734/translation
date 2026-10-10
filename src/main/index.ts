@@ -64,6 +64,9 @@ import {
   deactivatePopupForCapture,
   beginPopupForegroundRestoreForCapture,
   endPopupForegroundRestoreForCapture,
+  beginPopupSettingsOpenGuard,
+  endPopupSettingsOpenGuard,
+  isPopupSettingsOpenGuardActive,
   suppressExternalPointerDismissForButtonClick,
   isPointInsidePopup,
   getPopupCloseVersion,
@@ -123,6 +126,7 @@ import {
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   isSelectionGestureInsideOwnWindows,
+  isPointInsideBounds,
   type ScreenBounds,
   type SelectionGesture
 } from '../shared/selectionBehavior'
@@ -1552,6 +1556,22 @@ function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean
 }
 
 /**
+ * 判断屏幕坐标是否落在当前可见的设置窗口内部。
+ *
+ * 该判定不依赖窗口焦点：设置窗口的 focus 事件可能晚于全局 mousedown 到达，
+ * 此时 `isFocused()` 仍为 false，但点击确实发生在应用内部，不能按弹窗外部点击
+ * 处理。调用方必须同时确认处于设置打开保护期；保护期会在设置窗口失焦、隐藏或
+ * 销毁时解除，因此后台设置窗口不会长期吞掉其它应用里的真实点击。
+ * @param point 待判断的屏幕坐标。
+ * @returns 坐标位于可见设置窗口内部时返回 true。
+ * @author zhenghq
+ */
+function isPointInsideVisibleSettingsWindow(point: { x: number; y: number }): boolean {
+  if (!settingsWin || settingsWin.isDestroyed() || !settingsWin.isVisible()) return false
+  return isPointInsideBounds(point, settingsWin.getBounds())
+}
+
+/**
  * 描述自有窗口命中详情，定位划词被内部窗口矩形静默吞掉的具体来源。
  * 仅矩形判定无法区分是设置页还是网页阅读器，也无法确认应用是否真的在最前，
  * 因此日志需要同时给出窗口名、边界与应用激活状态。
@@ -1671,7 +1691,15 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
   const selectionButtonHit = isPointInsideSelectionButton(point)
   const popupHit = isPointInsidePopup(point)
-  const focusedOwnWindowHit = isPointInsideFocusedOwnWindow(point)
+  // 设置窗口的 focus 事件可能晚于全局 mousedown 到达，此时 isFocused() 仍为 false，
+  // 点击设置页会被误分类为弹窗外部点击并关闭翻译弹窗。处于设置打开保护期时，
+  // 直接按可见矩形把这次按下识别为应用内点击。这里不能叠加应用激活事件门禁：
+  // macOS 的 did-become-active 可能晚于全局 mousedown，设置窗口已经获得焦点时
+  // 事件状态仍为 false，会把点击设置页误判为外部点击并触发 hidePopup 交还前台。
+  // 保护期由设置窗口失焦/隐藏/销毁解除，因此后台设置窗口不会长期吞掉其它应用点击。
+  const settingsWindowHit = isPopupSettingsOpenGuardActive() &&
+    isPointInsideVisibleSettingsWindow(point)
+  const focusedOwnWindowHit = settingsWindowHit || isPointInsideFocusedOwnWindow(point)
   const result = classifySelectionPointerDown({
     ocrActive,
     selectionButtonHit,
@@ -4533,24 +4561,34 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
   // 设置页切换 Tab、拖拽滚动条或输入控件时，macOS 可能在窗口边界切换处漏发 mouseup。
   // 焦点事件可能晚于外部应用的 mousedown 到达，清理必须限定为起始于设置窗口内部的手势。
   settingsWin.on('focus', () => {
+    // 从翻译弹窗打开设置时，必须保证设置窗口取得焦点后仍处于保护期：
+    // 复用已可见窗口可能不再派发 focus，因此 IPC 入口已提前开启保护，
+    // 这里再次开启用于重置状态，确保随后到达的弹窗 blur 一定被吸收。
+    beginPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('blur', () => {
+    // 设置窗口失焦说明焦点已经离开应用内部窗口切换阶段，恢复弹窗正常的外部点击语义。
+    endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('hide', () => {
+    // 隐藏后设置窗口不再接收点击，必须解除保护，避免弹窗永久忽略失焦。
+    endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('closed', () => {
+    // 窗口销毁后不会再有失焦/隐藏事件，必须在此解除保护。
+    endPopupSettingsOpenGuard()
     resetAutoTriggerPointerState()
     // 设置窗口在划词保护期间被销毁时必须清理挂起引用，避免后续恢复操作已销毁对象。
     if (settingsWindowFocusSuspendedForSelection === createdWindow) {
@@ -4581,6 +4619,27 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
  */
 async function openSettings(options: { bringToFront?: boolean } = {}): Promise<void> {
   await createSettingsWindow(options.bringToFront ?? true)
+}
+
+/**
+ * 处理从翻译弹窗发起的打开设置请求。
+ *
+ * 设置窗口 show()/focus() 会抢走翻译弹窗焦点，弹窗因此收到一次 blur。
+ * 必须在创建/聚焦设置窗口之前开启失焦保护，覆盖 blur 早于设置窗口 focus
+ * 到达的平台事件顺序，避免翻译弹窗把这次应用内部窗口切换误判为点击外部
+ * 并自动关闭。保护由设置窗口的 focus/blur/hide/closed 生命周期解除；
+ * 打开失败时不会产生这些事件，必须在此显式解除，避免弹窗永久忽略失焦。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openSettingsFromPopup(): void {
+  beginPopupSettingsOpenGuard()
+  void openSettings().catch((error: unknown) => {
+    endPopupSettingsOpenGuard()
+    // 打开设置失败时无需打断用户当前翻译：保护已解除，后续失焦恢复既有语义；
+    // 记录错误便于排查窗口创建失败（例如渲染进程加载异常）。
+    console.error('[settings] 打开设置窗口失败:', error)
+  })
 }
 
 // ---- 自建 DeepLX 集成 ----
@@ -4950,7 +5009,7 @@ function registerIpc(): void {
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
   })
-  ipcMain.on('settings:open', () => void openSettings())
+  ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('webview:open', (_event, url: unknown) => {
     void getWebReader()
       .open(typeof url === 'string' && url.trim() ? url : undefined)
