@@ -701,3 +701,34 @@ test('Windows 采集辅助函数应优先 GDI 并接入回退路径', () => {
   assert.match(ioSource, /spawn:\s*spawnP/u)
   assert.match(source, /GDI 截屏失败，回退 helper exe \/ PowerShell/u)
 })
+
+/**
+ * 校验 macOS 屏幕采集前先检查「屏幕录制」权限，未授权时立即按权限错误收尾。
+ *
+ * 缺少该预检时，screencapture 会被系统授权弹窗阻塞，直到 5 秒预览采集超时兜底，
+ * 用户只会看到「屏幕采集超时」而拿不到真正的授权引导。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 屏幕采集前应预检屏幕录制权限', () => {
+  assert.match(main, /hasScreenRecordingPermission/u)
+  const start = main.indexOf('async function openOcrSelection')
+  assert.notStrictEqual(start, -1, '未找到 openOcrSelection')
+  const source = main.slice(start, main.indexOf('\n}\n', start))
+  const permissionIndex = source.indexOf('hasScreenRecordingPermission')
+  const captureIndex = source.indexOf('captureOcrPreviewSnapshot(')
+  assert.ok(permissionIndex >= 0, 'openOcrSelection 应在采集前调用权限预检')
+  assert.ok(captureIndex >= 0, 'openOcrSelection 应采集预览快照')
+  assert.ok(permissionIndex < captureIndex, '权限预检必须早于屏幕采集')
+  assert.match(source, /new ScreenCaptureError\('permission'/u)
+})
+
+/**
+ * 校验权限预检读取的是 macOS 屏幕录制状态。
+ * @returns 无返回值。
+ */
+test('屏幕录制权限预检应读取 macOS 屏幕录制状态', () => {
+  const capture = readFileSync('src/main/capture.ts', 'utf8')
+  assert.match(capture, /getMediaAccessStatus\('screen'\)/u)
+  assert.match(main, /hasScreenRecordingPermission/u)
+})

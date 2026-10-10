@@ -865,3 +865,16 @@ export async function captureSelection(
   }
   return { text: '', reason: 'unsupported', diagnostics: { level: 'failed', reason: 'unsupported' } }
 }
+
+/**
+ * 检测当前应用是否已获得 macOS「屏幕录制」权限。
+ *
+ * 未授权时系统 screencapture 会被授权弹窗阻塞，直到 OCR 预览采集超时兜底，
+ * 用户只能看到「屏幕采集超时」而拿不到真正的授权引导；因此采集前必须先判断状态。
+ * @returns 非 macOS 平台或已授权时返回 true。
+ * @author zhenghq
+ */
+export function hasScreenRecordingPermission(): boolean {
+  if (process.platform !== 'darwin') return true
+  return systemPreferences.getMediaAccessStatus('screen') === 'granted'
+}

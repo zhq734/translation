@@ -36,6 +36,7 @@ import {
   captureSelectionAfterButtonClick,
   PermissionError,
   checkAccessibilityPermission,
+  hasScreenRecordingPermission,
   setPendingCopyModifierRelease,
   setPendingMacOSCommandWasDown
 } from './capture'
@@ -2607,6 +2608,11 @@ async function openOcrSelection(): Promise<void> {
     if (!isCurrentOcrCapture(interactionToken)) {
       restoreSelectionListenerAfterOcr(interactionToken)
       return
+    }
+    // macOS 未授予「屏幕录制」权限时，screencapture 会被系统授权弹窗阻塞到 5 秒超时，
+    // 只能报出误导性的「屏幕采集超时」。这里先做同步预检，立即按权限错误收尾并引导授权。
+    if (!hasScreenRecordingPermission()) {
+      throw new ScreenCaptureError('permission', t('error.screenRecordingPermission'))
     }
     // 复用窗口时必须先让 Renderer 清空上一轮选区、截图和面板内容，
     // 再显示窗口，避免旧画面在新一轮截图开始时短暂闪现。
