@@ -51,7 +51,7 @@ test('macOS 跨工作区窗口必须跳过会隐藏窗口与 Dock 图标的进�
  * @author zhenghq
  */
 test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
-  const expectedCallSites = 4
+  const expectedCallSites = 5
   let callSites = 0
 
   for (const file of listMainSourceFiles()) {
@@ -61,7 +61,8 @@ test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
 
     callSites += calls
     assert.equal(
-      countOccurrences(source, 'setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)'),
+      countOccurrences(source, 'setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)') +
+        countOccurrences(source, 'setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)'),
       calls,
       `${file} 的每个 setVisibleOnAllWorkspaces 调用都应传入 ALL_WORKSPACES_VISIBILITY_OPTIONS`
     )

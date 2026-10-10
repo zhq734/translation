@@ -37,14 +37,16 @@ test('设置页应提供统一的可拖动自绘标题栏和固定顺序窗口�
   assert.match(css, /\.window-controls[\s\S]*-webkit-app-region:\s*no-drag/u)
 })
 
-test('设置窗口不应启用 alwaysOnTop，以便其他应用可以正常覆盖', () => {
+test('设置窗口不应启用 alwaysOnTop(true)，以便其他应用可以正常覆盖', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = mainSource.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
   assert.ok(settingsWindowBlock)
-  assert.doesNotMatch(settingsWindowBlock[1], /alwaysOnTop/u)
-  assert.doesNotMatch(settingsWindowBlock[1], /setAlwaysOnTop/u)
+  assert.doesNotMatch(settingsWindowBlock[1], /alwaysOnTop\s*:\s*true/u)
+  assert.doesNotMatch(settingsWindowBlock[1], /setAlwaysOnTop\(true/u)
+  // macOS panel 默认浮层，创建后允许显式降回普通层级。
+  assert.match(settingsWindowBlock[1], /setAlwaysOnTop\(false\)/u)
 })
 
 test('设置页标题栏应调用最小窗口 API并同步最大化状态', () => {

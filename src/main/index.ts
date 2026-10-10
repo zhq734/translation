@@ -4584,6 +4584,26 @@ function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
 }
 
 /**
+ * 输出设置窗口在 macOS panel spike 阶段的窗口状态，用于真机验证键盘焦点与层级。
+ * @param phase 当前所处的创建/显示阶段。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function logSettingsPanelDiagnostic(phase: string): void {
+  if (!isMac || !settingsWin || settingsWin.isDestroyed()) return
+  console.log(
+    '[panel-spike][settings]',
+    phase,
+    JSON.stringify({
+      isVisible: settingsWin.isVisible(),
+      isFocused: settingsWin.isFocused(),
+      isAlwaysOnTop: settingsWin.isAlwaysOnTop(),
+      isVisibleOnAllWorkspaces: settingsWin.isVisibleOnAllWorkspaces()
+    })
+  )
+}
+
+/**
  * 创建或复用设置窗口。
  * @param bringToFront 复用已可见窗口时是否重新激活应用并置顶；内部 activate 必须传 false。
  * @returns 设置窗口实例。
@@ -4592,6 +4612,7 @@ function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
 async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindow> {
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
+    logSettingsPanelDiagnostic('reuse-enter')
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
     // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
@@ -4601,6 +4622,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
       if (isMac) app.focus({ steal: true })
       settingsWin.restore()
       settingsWin.focus()
+      logSettingsPanelDiagnostic('restore-focus')
       return settingsWin
     }
     if (settingsWin.isVisible()) {
@@ -4613,6 +4635,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
       if (isMac) app.focus({ steal: true })
       settingsWin.show()
       settingsWin.focus()
+      logSettingsPanelDiagnostic('show-focus')
       return settingsWin
     }
     // 窗口可能被用户隐藏后重新打开：隐藏期间若仍残留划词焦点保护，
@@ -4621,6 +4644,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     if (isMac) app.focus({ steal: true })
     settingsWin.show()
     settingsWin.focus()
+    logSettingsPanelDiagnostic('reshow-focus')
     return settingsWin
   }
 
@@ -4637,6 +4661,9 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     fullscreenable: false,
     show: false,
     backgroundColor: '#f5f7fa',
+    // macOS 上使用 nonactivating panel：show()/focus() 只让设置窗口自身成为 key window，
+    // 不激活整个应用，从而避免把翻译弹窗等其它可见窗口一起带到最前。
+    ...(isMac ? { type: 'panel' } : {}),
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
@@ -4644,6 +4671,13 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     }
   })
   settingsWin = createdWindow
+  if (isMac) {
+    // panel 默认带浮层层级与跨桌面行为，设置窗口需要显式尝试归一化为普通窗口语义；
+    // ElectronNSPanel 会强制保留 CanJoinAllSpaces，实际生效情况由真机 spike 记录。
+    createdWindow.setAlwaysOnTop(false)
+    createdWindow.setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)
+    logSettingsPanelDiagnostic('created')
+  }
   // 必须在 loadRendererHtml 之前挂载监听，否则页面加载过快会漏掉 ready-to-show。
   const readyToShow = whenWindowReadyToShow(createdWindow)
 
@@ -4652,6 +4686,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
   // 设置页切换 Tab、拖拽滚动条或输入控件时，macOS 可能在窗口边界切换处漏发 mouseup。
   // 焦点事件可能晚于外部应用的 mousedown 到达，清理必须限定为起始于设置窗口内部的手势。
   settingsWin.on('focus', () => {
+    logSettingsPanelDiagnostic('focus-event')
     // 从翻译弹窗打开设置时，必须保证设置窗口取得焦点后仍处于保护期：
     // 复用已可见窗口可能不再派发 focus，因此 IPC 入口已提前开启保护，
     // 这里再次开启用于重置状态，确保随后到达的弹窗 blur 一定被吸收。
@@ -4662,6 +4697,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('blur', () => {
+    logSettingsPanelDiagnostic('blur-event')
     // 设置窗口失焦说明焦点已经离开应用内部窗口切换阶段，恢复弹窗正常的外部点击语义。
     endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
@@ -4702,6 +4738,7 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
   if (isMac) app.focus({ steal: true })
   settingsWin.show()
   settingsWin.focus()
+  logSettingsPanelDiagnostic('first-show-focus')
   return settingsWin
 }
 
@@ -4733,10 +4770,11 @@ async function openSettings(options: { bringToFront?: boolean; explicit?: boolea
  * @author zhenghq
  */
 function openSettingsFromPopup(): void {
-  // 恢复 V1.2.1 的行为：从翻译弹窗打开设置页时，弹窗先自动关闭。弹窗保持
-  // 可见会让后续点击设置页落入全局按下关闭兜底，而 hidePopup() 的前台交还
-  // 退化路径可能把设置页一起隐藏。只隐藏弹窗自身，再让设置窗口正常接管焦点。
-  hidePopupForInternalWindowSwitch()
+  // 未固定时沿用「打开设置页后弹窗自动关闭」的既有行为：弹窗保持可见会让后续
+  // 点击设置页落入全局按下关闭兜底，而 hidePopup() 的前台交还退化路径可能把
+  // 设置页一起隐藏。固定（图钉）表示用户显式要求弹窗保持可见，内部窗口切换
+  // 不得清掉 pinned 并关闭弹窗，只让设置窗口自身置前即可。
+  if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
   // 第二次打开时设置页已经可见，复用窗口的 show()/focus() 不保证再次派发
   // focus 事件；必须在隐藏弹窗后重新开启保护，覆盖复用窗口路径上的迟到 blur。
   beginPopupSettingsOpenGuard()
@@ -4759,7 +4797,9 @@ function openSettingsFromPopup(): void {
  * @author zhenghq
  */
 function openWebReaderFromPopup(url?: string): void {
-  hidePopupForInternalWindowSwitch()
+  // 与打开设置页一致：固定弹窗在打开阅读器时必须保持可见且保持 pinned，
+  // 仅未固定时沿用内部窗口切换自动关闭弹窗的既有行为。
+  if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
   // 第二次打开时阅读器已经可见，复用窗口同样不保证再次派发 focus 事件。
   // 必须在隐藏弹窗后开启保护，避免阅读器接管焦点时的迟到 blur 关闭弹窗。
   beginPopupSettingsOpenGuard()

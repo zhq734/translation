@@ -205,6 +205,33 @@ test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
   )
 })
 
+test('固定弹窗时从弹窗内打开设置页或阅读器不得关闭弹窗', () => {
+  const openSettingsSource = stripComments(
+    extractFunction(indexSource, 'function openSettingsFromPopup()')
+  )
+  const openWebReaderSource = stripComments(
+    extractFunction(indexSource, 'function openWebReaderFromPopup(')
+  )
+
+  // 固定（图钉）是用户显式表达的“保持可见”意图。此后从弹窗内打开设置页或
+  // 网页阅读器属于应用内部窗口切换，只能让目标窗口置前，不得清掉 pinned 并
+  // 隐藏翻译弹窗；否则用户会看到固定窗口在内部跳转时被自动关闭。
+  for (const [name, source] of [
+    ['设置页', openSettingsSource],
+    ['网页阅读器', openWebReaderSource]
+  ] as const) {
+    const pinnedIndex = source.indexOf('isPopupPinned()')
+    const hideIndex = source.indexOf('hidePopupForInternalWindowSwitch()')
+    assert.ok(pinnedIndex >= 0, `打开${name}前必须判断弹窗是否已固定`)
+    assert.ok(hideIndex > pinnedIndex, `打开${name}时固定判断必须早于隐藏动作`)
+    assert.match(
+      source,
+      /if\s*\(!isPopupPinned\(\)\)[\s\S]*?hidePopupForInternalWindowSwitch\(\)/u,
+      `打开${name}时只能在弹窗未固定时隐藏弹窗自身`
+    )
+  }
+})
+
 test('保护状态失效后点击可见设置页也不得走整应用关闭路径', () => {
   const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
 
