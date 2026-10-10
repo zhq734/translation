@@ -22,6 +22,16 @@ function extractFunction(source: string, signature: string): string {
   return source.slice(start, end + 2)
 }
 
+/**
+ * 去掉源码中的块注释与行注释，避免注释里出现的函数名干扰“不得调用”断言。
+ * @param source 源码。
+ * @returns 移除注释后的源码。
+ * @author zhenghq
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '')
+}
+
 test('从翻译弹窗打开设置时，弹窗失焦不得自动关闭', () => {
   assert.match(
     popupSource,
@@ -143,5 +153,109 @@ test('设置窗口失焦后再次获得焦点必须重新进入保护期', () =>
     focusBlock,
     /beginPopupSettingsOpenGuard\(\)/u,
     '设置窗口每次获得焦点都必须重新进入保护期'
+  )
+})
+
+test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
+  // V1.2.1 的行为是打开设置页后翻译弹窗自动关闭，不会留下一个仍可见的
+  // 弹窗等待用户点击设置页。当前版本为了让弹窗保持打开引入了设置窗口保护，
+  // 但点击设置页时全局按下仍可能落入弹窗关闭路径，而 hidePopup() 会先交还
+  // 前台，拿不到源应用记录时退化为 app.hide()→app.show()，把设置页一起隐藏。
+  // 因此打开设置页必须走“只隐藏弹窗自身”的入口，禁止复用会隐藏整个应用的
+  // hidePopup()。
+  assert.match(
+    popupSource,
+    /export function hidePopupForInternalWindowSwitch\(/u,
+    'popup 模块必须提供只隐藏弹窗自身、不交还前台的入口'
+  )
+
+  const hideOnlySource = extractFunction(
+    popupSource,
+    'export function hidePopupForInternalWindowSwitch('
+  )
+  assert.match(hideOnlySource, /win\?\.hide\(\)|win\.hide\(\)/u, '只隐藏弹窗自身时仍必须真正隐藏窗口')
+  assert.doesNotMatch(
+    hideOnlySource,
+    /handBackFrontmostThen\(/u,
+    '只隐藏弹窗自身时不得走前台交还，否则会抢走设置页焦点'
+  )
+  assert.doesNotMatch(
+    hideOnlySource,
+    /yieldFrontmostAppThen\(/u,
+    '只隐藏弹窗自身时不得走 app.hide()/app.show() 整应用让出'
+  )
+
+  const openSettingsSource = stripComments(
+    extractFunction(indexSource, 'function openSettingsFromPopup()')
+  )
+  assert.match(
+    openSettingsSource,
+    /hidePopupForInternalWindowSwitch\(\)/u,
+    '打开设置页前必须先只隐藏翻译弹窗自身'
+  )
+  assert.ok(
+    openSettingsSource.indexOf('hidePopupForInternalWindowSwitch()') <
+      openSettingsSource.indexOf('openSettings()'),
+    '必须先关闭翻译弹窗，再打开设置页，避免弹窗关闭路径影响设置页'
+  )
+  assert.doesNotMatch(
+    openSettingsSource,
+    /hidePopup\(\)/u,
+    '打开设置页时不得调用会交还前台并可能隐藏整个应用的 hidePopup()'
+  )
+})
+
+test('保护状态失效后点击可见设置页也不得走整应用关闭路径', () => {
+  const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
+
+  // 设置窗口 focus/blur 事件顺序并不稳定：guard 可能在全局按下之前被 blur 解除，
+  // 此时点击设置页会被分类为 track。若直接调用 dismissPopupOnExternalPointerDown()，
+  // 弹窗仍持有 key window 时会走前台交还，最终 app.hide()/app.show() 会把设置页
+  // 一起隐藏。命中可见设置窗口时必须改用只隐藏弹窗自身的入口。
+  const visibleHitIndex = pointerSource.indexOf('isPointInsideVisibleSettingsWindow(point)')
+  const dismissIndex = pointerSource.indexOf('dismissPopupOnExternalPointerDown(point)')
+  assert.ok(visibleHitIndex >= 0, '全局按下必须按可见设置窗口矩形识别设置页点击')
+  assert.ok(dismissIndex > visibleHitIndex, '设置页命中判断必须早于外部点击关闭兜底')
+  assert.match(
+    pointerSource,
+    /isPointInsideVisibleSettingsWindow\(point\)[\s\S]*?hidePopupForInternalWindowSwitch\(\)/u,
+    '点击可见设置窗口时必须只隐藏弹窗自身'
+  )
+  assert.match(
+    pointerSource,
+    /if \(result === 'track'\) \{[\s\S]*?isPointInsideVisibleSettingsWindow\(point\)[\s\S]*?return 'ignore'/u,
+    '即使保护状态已失效，点击可见设置窗口也不得继续按外部点击处理'
+  )
+})
+
+test('设置窗口可见时恢复焦点不得走整应用隐藏', () => {
+  const resumeSource = extractFunction(
+    indexSource,
+    'function resumeSettingsWindowFocusAfterSelection('
+  )
+
+  // app.hide() 会连用户此前打开、此刻仍在屏上的设置页一起隐藏，app.show() 再把它
+  // 显示回来，用户表现为「打开设置页后划词点击“译”，设置页闪一下然后消失」。
+  // 设置窗口可见时必须提前返回：仍最前且持有源应用记录时只做 open -b 精确交还，
+  // 否则直接恢复可聚焦性；无论如何都不能落到下方会隐藏整个应用的兜底分支。
+  const visibleIndex = resumeSource.indexOf('target.isVisible()')
+  assert.ok(visibleIndex >= 0, '恢复函数必须先判断设置窗口是否仍然可见')
+  const visibleBlockEnd = resumeSource.indexOf('// 省略 ownerToken', visibleIndex)
+  assert.ok(visibleBlockEnd > visibleIndex, '可见设置窗口分支必须位于显式打开语义之前')
+  const visibleBlock = resumeSource.slice(visibleIndex, visibleBlockEnd)
+  assert.match(
+    visibleBlock,
+    /restoreFrontmostAppForCapture\(\)/u,
+    '设置窗口可见且本应用仍最前时只允许精确交还源应用'
+  )
+  assert.match(
+    visibleBlock,
+    /return/u,
+    '可见设置窗口分支必须提前返回，避免落入整应用安全让出'
+  )
+  assert.doesNotMatch(
+    visibleBlock,
+    /yieldFrontmostAppThen\(/u,
+    '可见设置窗口分支不得调用 app.hide()/app.show() 整应用让出'
   )
 })

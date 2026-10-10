@@ -57,6 +57,7 @@ import {
   createPopup,
   showPopup,
   hidePopup,
+  hidePopupForInternalWindowSwitch,
   dismissPopupOnExternalPointerDown,
   isPopupVisible,
   isPopupHandingBackFront,
@@ -834,6 +835,33 @@ function resumeSettingsWindowFocusAfterSelection(ownerToken?: number): void {
   settingsWindowFocusSuspendedForSelection = null
   settingsWindowFocusSuspensionOwnerToken = undefined
   if (!target || target.isDestroyed()) return
+  // 设置窗口仍可见时，恢复路径绝不能走 app.hide()→app.show() 的整应用安全让出：
+  // 该退化路径会把用户此前打开、此刻仍在屏上的设置页一起隐藏再显示，用户表现为
+  // 「打开设置页后划词点击“译”，设置页闪一下然后消失」。V1.2.1 没有这层整应用
+  // 隐藏逻辑，这里保持相同的可见窗口语义：本应用仍最前时只做精确交还源应用
+  // （open -b 不隐藏任何窗口）或等待自然失活，绝不隐藏整应用连累设置页。
+  if (target.isVisible()) {
+    if (ownerToken !== undefined && isMacAppActiveByEvents()) {
+      // 仍持有源应用记录时优先 open -b 精确交还；记录已被弹窗隐藏流程消费时，
+      // 等待有界时间让应用自然失活，再恢复设置页可聚焦性。两条路径都不隐藏
+      // 任何窗口，因此不会出现「设置页闪一下然后消失」。
+      const resumeGeneration = ++settingsWindowFocusResumeGeneration
+      if (restoreFrontmostAppForCapture()) {
+        logSettingsWindowFocusDiagnostic('设置窗口可见，精确交还源应用，避免整应用隐藏造成闪烁')
+      } else {
+        logSettingsWindowFocusDiagnostic('设置窗口可见且无源应用记录，等待自然失活后恢复，避免隐藏整应用')
+      }
+      void waitForFrontmostAppReturn().then(() => {
+        if (resumeGeneration !== settingsWindowFocusResumeGeneration) return
+        if (isPopupVisible()) return
+        if (!target.isDestroyed()) target.setFocusable(true)
+      })
+      return
+    }
+    logSettingsWindowFocusDiagnostic('设置窗口可见，直接恢复可聚焦性，避免整应用隐藏造成闪烁')
+    target.setFocusable(true)
+    return
+  }
   // 省略 ownerToken 表示用户显式打开设置页触发的强制恢复：此时用户本就要把
   // 设置页带到最前，不能安全让出前台，直接恢复可聚焦性由调用方接管激活。
   // 其余情况是划词流程自动收尾：本应用仍最前时直接恢复可聚焦性，系统会立刻
@@ -1711,6 +1739,13 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 外部应用的正常按下是绝对多数，不逐条记录；只有按 track 继续跟踪、
   // 却落在已失活自有窗口矩形内的场景需要留痕，用于实机确认门禁生效。
   if (result === 'track') {
+    // 保护状态可能因设置窗口 blur 提前解除，但此时弹窗仍可见且用户点击的是
+    // 可见设置页。只能关闭弹窗自身，不能调用会交还前台并可能隐藏整个应用的
+    // dismissPopupOnExternalPointerDown()，否则设置页会被一起隐藏。
+    if (isPopupVisible() && isPointInsideVisibleSettingsWindow(point)) {
+      hidePopupForInternalWindowSwitch()
+      return 'ignore'
+    }
     // 弹窗已经失去 key window 时，用户点击外部不会再产生 blur，弹窗会一直
     // 留在屏上且前台不归还。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
     dismissPopupOnExternalPointerDown(point)
@@ -4633,6 +4668,10 @@ async function openSettings(options: { bringToFront?: boolean } = {}): Promise<v
  * @author zhenghq
  */
 function openSettingsFromPopup(): void {
+  // 恢复 V1.2.1 的行为：从翻译弹窗打开设置页时，弹窗先自动关闭。弹窗保持
+  // 可见会让后续点击设置页落入全局按下关闭兜底，而 hidePopup() 的前台交还
+  // 退化路径可能把设置页一起隐藏。只隐藏弹窗自身，再让设置窗口正常接管焦点。
+  hidePopupForInternalWindowSwitch()
   beginPopupSettingsOpenGuard()
   void openSettings().catch((error: unknown) => {
     endPopupSettingsOpenGuard()

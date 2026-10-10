@@ -727,6 +727,41 @@ export function hidePopup(): void {
 }
 
 /**
+ * 只隐藏翻译弹窗自身，不交还前台，也不隐藏应用内其它窗口。
+ *
+ * 从翻译弹窗打开设置页时，设置窗口会接管应用内焦点；此时若复用 hidePopup()，
+ * 弹窗关闭前的前台交还在拿不到源应用记录时会退化为 app.hide()→app.show()，
+ * 把用户刚打开、仍在后台可见的设置页一起隐藏。该入口只关闭弹窗，保持其它窗口
+ * 的显隐状态不变。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function hidePopupForInternalWindowSwitch(): void {
+  clearHide()
+  closeVersion += 1
+  pinned = false
+  shownInactive = false
+  selectionCaptureLoading = false
+  suppressExternalPointerDismissUntil = 0
+  suppressExternalPointerDismissOrigin = null
+  restoringForegroundUntil = 0
+  resultActivationSettleUntil = 0
+  resultActivationBlurAbsorbed = false
+  clearResultActivationRefocus()
+  win?.webContents.send('popup:pinned', false)
+  if (!win || win.isDestroyed()) {
+    notifyPopupHiddenWaiters()
+    return
+  }
+  // 已进入前台交还收尾时不再重复操作；该收尾只针对弹窗自身，不会影响设置页。
+  if (hidingAfterFrontReturn) return
+  win.hide()
+  // hide() 会同步把 isVisible() 置为 false，但 hide 事件异步派发；这里直接唤醒
+  // 等待者，避免设置窗口焦点保护等待一个不会走前台交还的弹窗隐藏事件。
+  notifyPopupHiddenWaiters()
+}
+
+/**
  * 在翻译弹窗真正隐藏之后执行回调；弹窗已隐藏或已销毁时立即执行。
  *
  * 取词失败提示的交互租约必须在弹窗隐藏收尾完成后才释放：提前清零会让
