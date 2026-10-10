@@ -106,6 +106,8 @@ export interface WebReaderManagerOptions {
   recognizeImage?(bytes: Buffer, candidate: WebImageCandidate): Promise<WebImageRecognition>
   /** 阅读器窗口打开或关闭时通知主进程。 */
   onWindowStateChanged?: (open: boolean) => void
+  /** 阅读器窗口失去焦点、隐藏或关闭时通知主进程解除弹窗保护。 */
+  onInternalWindowFocusLost?: () => void
 }
 
 /** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
@@ -1347,7 +1349,14 @@ export class WebReaderManager {
       event.preventDefault()
       this.close()
     })
-    window.on('closed', () => this.disposeWindow(window, view))
+    // 阅读器失焦时通知主进程判断焦点是否离开所有自有窗口；只有真正切到外部应用
+    // 才解除弹窗保护。不能监听 hide：既有前台交还契约要求最小化/隐藏阅读器
+    // 不得触发任何前台动作。
+    window.on('blur', () => this.options.onInternalWindowFocusLost?.())
+    window.on('closed', () => {
+      this.options.onInternalWindowFocusLost?.()
+      this.disposeWindow(window, view)
+    })
     window.webContents.once('did-finish-load', () => this.emitState())
     this.mode = this.options.getSettings().webTranslationDefaultMode
     this.options.loadRenderer(window, 'web-reader.html')

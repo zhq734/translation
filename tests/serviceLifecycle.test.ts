@@ -67,7 +67,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   )
   const ipcIndex = mainSource.indexOf('\n  registerIpc()\n')
   const platformSettingsIndex = mainSource.indexOf(
-    'if (openSettingsOnInitialLaunch) await openSettings()',
+    'if (openSettingsOnInitialLaunch) await openSettings({ explicit: false })',
     ipcIndex
   )
 
@@ -84,7 +84,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   assert.ok(ipcIndex >= 0 && platformSettingsIndex > ipcIndex)
   assert.match(
     onReadyBlock[1],
-    /loadSettings\(\)[\s\S]*?const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch\(process\.platform\)[\s\S]*?configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)[\s\S]*?if \(openSettingsOnInitialLaunch\) await openSettings\(\)/u
+    /loadSettings\(\)[\s\S]*?const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch\(process\.platform\)[\s\S]*?configureMacOSMenuBarApplication\([\s\S]*?getSettings\(\)\.showDockIcon,[\s\S]*?openSettingsOnInitialLaunch[\s\S]*?\)[\s\S]*?if \(openSettingsOnInitialLaunch\) await openSettings\(\{ explicit: false \}\)/u
   )
   assert.doesNotMatch(mainSource, /function showTrayMenu\(\): void/u)
   assert.match(

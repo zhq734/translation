@@ -60,6 +60,7 @@ import {
   hidePopupForInternalWindowSwitch,
   dismissPopupOnExternalPointerDown,
   isPopupVisible,
+  isPopupPinned,
   isPopupHandingBackFront,
   isPopupActivated,
   deactivatePopupForCapture,
@@ -330,6 +331,15 @@ let appliedMacOSDockPresentation: MacOSDockPresentation | null = null
  * 临时设为不可聚焦即可让它不具备被提升的资格，取词结束后再恢复。
  */
 let settingsWindowFocusSuspendedForSelection: BrowserWindow | null = null
+/**
+ * 标记当前设置窗口是否由用户显式打开。
+ *
+ * 启动时自动打开的设置页只是后台驻留窗口，划词收尾时可以精确交还源应用，
+ * 避免它突然顶到最前；用户显式打开的设置页必须保留当前前台状态，不能在
+ * 划词收尾时被 `open -b` 拉走源应用，否则用户会看到设置页像被一起关闭。
+ * @author zhenghq
+ */
+let settingsWindowExplicitlyOpened = false
 /**
  * 输出设置窗口焦点保护相关诊断日志。
  * @param message 日志内容。
@@ -703,6 +713,8 @@ function releaseSelectionInteractionAfterPopupHidden(token: number): void {
  */
 function activateExistingPageOrOpenSettings(): void {
   if (webReader?.focusExistingWindow()) return
+  // 内部 activate 只复用已打开的设置页，不主动置顶，也不改变该窗口
+  // 原本由哪个入口打开：用户显式打开的设置页仍应保持显式语义。
   void openSettings({ bringToFront: false })
 }
 
@@ -841,6 +853,13 @@ function resumeSettingsWindowFocusAfterSelection(ownerToken?: number): void {
   // 隐藏逻辑，这里保持相同的可见窗口语义：本应用仍最前时只做精确交还源应用
   // （open -b 不隐藏任何窗口）或等待自然失活，绝不隐藏整应用连累设置页。
   if (target.isVisible()) {
+    if (settingsWindowExplicitlyOpened) {
+      // 用户显式打开的设置页应当保持当前前台状态。此时只恢复可聚焦性，
+      // 不调用 open -b 交还源应用，避免把设置页从用户眼前“拉走”。
+      logSettingsWindowFocusDiagnostic('设置窗口由用户显式打开，直接恢复可聚焦性，不交还前台')
+      target.setFocusable(true)
+      return
+    }
     if (ownerToken !== undefined && isMacAppActiveByEvents()) {
       // 仍持有源应用记录时优先 open -b 精确交还；记录已被弹窗隐藏流程消费时，
       // 等待有界时间让应用自然失活，再恢复设置页可聚焦性。两条路径都不隐藏
@@ -1346,6 +1365,13 @@ async function onReady(): Promise<boolean> {
       webReaderWindowOpen = open
       void refreshMacOSDockVisibility()
     },
+    onInternalWindowFocusLost: () => {
+      const focusedWindow = BrowserWindow.getFocusedWindow()
+      // 阅读器 blur 可能只是把焦点交给设置页或另一个自有窗口，这仍属于应用内部
+      // 切换，不能解除保护。只有焦点为空或已离开全部自有窗口时才恢复弹窗失焦语义。
+      if (focusedWindow && (focusedWindow === settingsWin || webReader?.ownsWindow(focusedWindow))) return
+      endPopupSettingsOpenGuard()
+    },
     translate: async (text, sourceLang, targetLang) => {
       const settings = { ...getSettings(), sourceLang, targetLang }
       const dingTalkCredentials = settings.dingTalkEnabled
@@ -1386,7 +1412,7 @@ async function onReady(): Promise<boolean> {
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
-  if (openSettingsOnInitialLaunch) await openSettings()
+  if (openSettingsOnInitialLaunch) await openSettings({ explicit: false })
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
@@ -1600,6 +1626,21 @@ function isPointInsideVisibleSettingsWindow(point: { x: number; y: number }): bo
 }
 
 /**
+ * 判断屏幕坐标是否落在当前可见的网页阅读器窗口内部。
+ *
+ * 阅读器的 focus 事件可能晚于全局 mousedown 到达，此时 `isFocused()` 仍为 false，
+ * 但点击确实发生在应用内部，不能按翻译弹窗外部点击处理。否则弹窗的关闭收尾
+ * 可能走前台交还退化路径，把刚打开的阅读器一起隐藏。
+ * @param point 待判断的屏幕坐标。
+ * @returns 坐标位于可见网页阅读器窗口内部时返回 true。
+ * @author zhenghq
+ */
+function isPointInsideVisibleWebReaderWindow(point: { x: number; y: number }): boolean {
+  const bounds = webReader?.getVisibleBounds()
+  return bounds !== null && bounds !== undefined && isPointInsideBounds(point, bounds)
+}
+
+/**
  * 描述自有窗口命中详情，定位划词被内部窗口矩形静默吞掉的具体来源。
  * 仅矩形判定无法区分是设置页还是网页阅读器，也无法确认应用是否真的在最前，
  * 因此日志需要同时给出窗口名、边界与应用激活状态。
@@ -1719,6 +1760,11 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
   const selectionButtonHit = isPointInsideSelectionButton(point)
   const popupHit = isPointInsidePopup(point)
+  // 第二次从翻译弹窗点击“设置/翻译页面”时，设置页或阅读器窗口可能已经
+  // 可见并与弹窗坐标区域重叠。全局 mousedown 会先于按钮 IPC 到达；若继续
+  // 进入分类或内部窗口兜底，弹窗可能被提前隐藏，后续 IPC 失去宿主窗口，
+  // 表现为第二次点击直接关闭。弹窗自身命中必须在分类前短路。
+  if (popupHit && primaryButton) return 'ignore'
   // 设置窗口的 focus 事件可能晚于全局 mousedown 到达，此时 isFocused() 仍为 false，
   // 点击设置页会被误分类为弹窗外部点击并关闭翻译弹窗。处于设置打开保护期时，
   // 直接按可见矩形把这次按下识别为应用内点击。这里不能叠加应用激活事件门禁：
@@ -1743,7 +1789,17 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
     // 可见设置页。只能关闭弹窗自身，不能调用会交还前台并可能隐藏整个应用的
     // dismissPopupOnExternalPointerDown()，否则设置页会被一起隐藏。
     if (isPopupVisible() && isPointInsideVisibleSettingsWindow(point)) {
-      hidePopupForInternalWindowSwitch()
+      // 固定弹窗只允许用户显式关闭（关闭按钮/Escape）。点击设置页属于隐式
+      // 外部点击，命中矩形仍按应用内交互忽略，但不得清掉 pinned 并隐藏弹窗。
+      if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
+      return 'ignore'
+    }
+    // 网页阅读器与设置页同属应用内部窗口切换，且其 focus 事件也可能晚于全局
+    // mousedown 到达。命中可见阅读器时同样只能隐藏弹窗自身，禁止继续走外部
+    // 点击关闭兜底，否则 hidePopup() 的前台交还退化路径会让阅读器闪一下。
+    if (isPopupVisible() && isPointInsideVisibleWebReaderWindow(point)) {
+      // 阅读器区域与设置页同理：固定弹窗时只忽略这次应用内点击，不自动关闭。
+      if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
       return 'ignore'
     }
     // 弹窗已经失去 key window 时，用户点击外部不会再产生 blur，弹窗会一直
@@ -4630,7 +4686,10 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
       settingsWindowFocusSuspendedForSelection = null
       settingsWindowFocusSuspensionOwnerToken = undefined
     }
-    if (settingsWin === createdWindow) settingsWin = null
+    if (settingsWin === createdWindow) {
+      settingsWin = null
+      settingsWindowExplicitlyOpened = false
+    }
     void refreshMacOSDockVisibility()
   })
   await refreshMacOSDockVisibility()
@@ -4648,11 +4707,17 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
 
 /**
  * 打开设置窗口。
- * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
+ * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶，
+ * `explicit` 为 false 时表示启动或内部 activate 触发的后台打开，不标记为用户显式打开。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function openSettings(options: { bringToFront?: boolean } = {}): Promise<void> {
+async function openSettings(options: { bringToFront?: boolean; explicit?: boolean } = {}): Promise<void> {
+  // 启动自动打开显式传 false，必须降级为后台设置页语义；内部 activate 只传
+  // bringToFront: false，用于复用已打开窗口，不能覆盖此前的显式打开标记；
+  // 其余用户可见入口（托盘、菜单、第二实例、弹窗内打开等）都视为显式打开。
+  if (options.explicit === false) settingsWindowExplicitlyOpened = false
+  else if (options.bringToFront !== false) settingsWindowExplicitlyOpened = true
   await createSettingsWindow(options.bringToFront ?? true)
 }
 
@@ -4672,12 +4737,36 @@ function openSettingsFromPopup(): void {
   // 可见会让后续点击设置页落入全局按下关闭兜底，而 hidePopup() 的前台交还
   // 退化路径可能把设置页一起隐藏。只隐藏弹窗自身，再让设置窗口正常接管焦点。
   hidePopupForInternalWindowSwitch()
+  // 第二次打开时设置页已经可见，复用窗口的 show()/focus() 不保证再次派发
+  // focus 事件；必须在隐藏弹窗后重新开启保护，覆盖复用窗口路径上的迟到 blur。
   beginPopupSettingsOpenGuard()
   void openSettings().catch((error: unknown) => {
     endPopupSettingsOpenGuard()
     // 打开设置失败时无需打断用户当前翻译：保护已解除，后续失焦恢复既有语义；
     // 记录错误便于排查窗口创建失败（例如渲染进程加载异常）。
     console.error('[settings] 打开设置窗口失败:', error)
+  })
+}
+
+/**
+ * 处理从翻译弹窗发起的打开网页阅读器请求。
+ *
+ * 网页阅读器 show()/focus() 会抢走翻译弹窗焦点，与打开设置页一样属于应用内部
+ * 窗口切换。必须先只隐藏翻译弹窗自身，避免后续点击阅读器落入弹窗的全局按下
+ * 关闭兜底，并防止 hidePopup() 的前台交还退化路径把阅读器一起隐藏。
+ * @param url 可选的初始网页地址。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openWebReaderFromPopup(url?: string): void {
+  hidePopupForInternalWindowSwitch()
+  // 第二次打开时阅读器已经可见，复用窗口同样不保证再次派发 focus 事件。
+  // 必须在隐藏弹窗后开启保护，避免阅读器接管焦点时的迟到 blur 关闭弹窗。
+  beginPopupSettingsOpenGuard()
+  void getWebReader().open(url).catch((error: unknown) => {
+    endPopupSettingsOpenGuard()
+    const message = error instanceof Error ? error.message : t('error.openWebReader')
+    dialog.showErrorBox(t('error.webTranslation'), message)
   })
 }
 
@@ -5050,12 +5139,7 @@ function registerIpc(): void {
   })
   ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('webview:open', (_event, url: unknown) => {
-    void getWebReader()
-      .open(typeof url === 'string' && url.trim() ? url : undefined)
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : t('error.openWebReader')
-        dialog.showErrorBox(t('error.webTranslation'), message)
-      })
+    openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)
   })
   ipcMain.on('webview:close', () => getWebReader().close())
   ipcMain.handle('webview:navigate', (_event, url: unknown) => {

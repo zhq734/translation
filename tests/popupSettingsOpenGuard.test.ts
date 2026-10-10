@@ -259,3 +259,262 @@ test('设置窗口可见时恢复焦点不得走整应用隐藏', () => {
     '可见设置窗口分支不得调用 app.hide()/app.show() 整应用让出'
   )
 })
+
+test('从翻译弹窗打开网页阅读器时必须只隐藏弹窗自身', () => {
+  // 网页阅读器与设置页同属应用内部窗口切换：打开阅读器时阅读器会 show()/focus()
+  // 抢走翻译弹窗焦点，若弹窗保持可见，后续点击阅读器会落入全局按下关闭兜底，
+  // 而 hidePopup() 的前台交还退化路径可能把阅读器一起隐藏。因此必须复用
+  // “只隐藏弹窗自身”的入口，禁止调用会隐藏整个应用的 hidePopup()。
+  const openWebReaderSource = stripComments(
+    extractFunction(indexSource, 'function openWebReaderFromPopup(')
+  )
+  assert.match(
+    openWebReaderSource,
+    /hidePopupForInternalWindowSwitch\(\)/u,
+    '打开网页阅读器前必须先只隐藏翻译弹窗自身'
+  )
+  assert.ok(
+    openWebReaderSource.indexOf('hidePopupForInternalWindowSwitch()') <
+      openWebReaderSource.indexOf('getWebReader()'),
+    '必须先隐藏翻译弹窗，再打开网页阅读器，避免弹窗关闭路径影响阅读器'
+  )
+  assert.doesNotMatch(
+    openWebReaderSource,
+    /hidePopup\(\)/u,
+    '打开网页阅读器时不得调用会交还前台并可能隐藏整个应用的 hidePopup()'
+  )
+})
+
+test('webview:open IPC 必须复用只隐藏弹窗自身的入口', () => {
+  const start = indexSource.indexOf("ipcMain.on('webview:open'")
+  assert.ok(start >= 0, '必须注册 webview:open IPC')
+  const end = indexSource.indexOf("ipcMain.on('webview:close'", start)
+  assert.ok(end > start, 'webview:open 处理器必须位于 webview:close 之前')
+  const handlerSource = indexSource.slice(start, end)
+  assert.match(
+    handlerSource,
+    /openWebReaderFromPopup\(/u,
+    'webview:open 必须通过只隐藏弹窗自身的入口打开阅读器'
+  )
+  assert.doesNotMatch(
+    stripComments(handlerSource),
+    /hidePopup\(\)/u,
+    'webview:open 不得调用会隐藏整个应用的 hidePopup()'
+  )
+})
+
+test('点击可见网页阅读器不得走整应用关闭路径', () => {
+  const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
+
+  // 打开阅读器后翻译弹窗已隐藏，但阅读器仍可能先派发全局 mousedown 再更新焦点。
+  // 此时点击阅读器不能被当作外部点击并调用 dismissPopupOnExternalPointerDown()，
+  // 否则 hidePopup() 的前台交还退化路径仍可能隐藏整个应用，让阅读器闪一下。
+  const webReaderHitIndex = pointerSource.indexOf('isPointInsideVisibleWebReaderWindow(point)')
+  const dismissIndex = pointerSource.indexOf('dismissPopupOnExternalPointerDown(point)')
+  assert.ok(webReaderHitIndex >= 0, '全局按下必须识别可见网页阅读器矩形')
+  assert.ok(dismissIndex > webReaderHitIndex, '阅读器命中判断必须早于外部点击关闭兜底')
+  assert.match(
+    pointerSource,
+    /isPointInsideVisibleWebReaderWindow\(point\)[\s\S]*?hidePopupForInternalWindowSwitch\(\)/u,
+    '点击可见网页阅读器时必须只隐藏弹窗自身'
+  )
+  assert.match(
+    pointerSource,
+    /if \(result === 'track'\) \{[\s\S]*?isPointInsideVisibleWebReaderWindow\(point\)[\s\S]*?return 'ignore'/u,
+    '点击可见网页阅读器时不得继续按外部点击处理'
+  )
+})
+
+test('弹窗自身命中必须优先于已打开设置页或阅读器的内部窗口兜底', () => {
+  const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
+
+  // 第二次从翻译弹窗点击“设置/翻译页面”时，设置页或阅读器窗口可能已经可见，
+  // 且与弹窗坐标区域重叠。全局 mousedown 会先于 IPC 到达，如果先判断可见设置页/
+  // 阅读器矩形并调用 hidePopupForInternalWindowSwitch()，弹窗会被提前隐藏，
+  // 表现为第二次点击直接关闭、窗口打不开。必须保证点击弹窗自身时先 return，
+  // 让按钮 IPC 正常发出。
+  const popupHitIndex = pointerSource.indexOf('const popupHit = isPointInsidePopup(point)')
+  const popupReturnIndex = pointerSource.indexOf("if (popupHit && primaryButton) return 'ignore'", popupHitIndex)
+  const classifyIndex = pointerSource.indexOf('classifySelectionPointerDown(')
+  const settingsHitIndex = pointerSource.indexOf('isPointInsideVisibleSettingsWindow(point)', popupReturnIndex)
+  const webReaderHitIndex = pointerSource.indexOf('isPointInsideVisibleWebReaderWindow(point)', popupReturnIndex)
+  assert.ok(popupHitIndex >= 0, '必须计算弹窗命中状态')
+  assert.ok(popupReturnIndex > popupHitIndex, '弹窗命中后必须立即短路')
+  assert.ok(classifyIndex > popupReturnIndex, '弹窗自身短路必须早于按下分类')
+  assert.ok(settingsHitIndex > popupReturnIndex, '弹窗自身命中必须早于设置页内部窗口兜底')
+  assert.ok(webReaderHitIndex > popupReturnIndex, '弹窗自身命中必须早于阅读器内部窗口兜底')
+})
+
+test('连续第二次打开设置页或阅读器时，打开动作完成后仍必须维持内部窗口保护', () => {
+  const openSettingsSource = stripComments(
+    extractFunction(indexSource, 'function openSettingsFromPopup()')
+  )
+  const openWebReaderSource = stripComments(
+    extractFunction(indexSource, 'function openWebReaderFromPopup(')
+  )
+
+  // 第二次打开时设置页/阅读器已经可见，复用窗口的 show()/focus() 不保证再次派发
+  // focus 事件；同时弹窗隐藏引发的 blur 可能把 guard 清掉，随后全局按下会把
+  // 刚打开的窗口再次当成外部点击关闭。两个入口都必须在隐藏弹窗后重新开启保护，
+  // 且保护开启必须早于异步打开动作。
+  assert.ok(
+    openSettingsSource.indexOf('beginPopupSettingsOpenGuard()') > openSettingsSource.indexOf('hidePopupForInternalWindowSwitch()'),
+    '打开设置页后必须重新开启内部窗口保护'
+  )
+  assert.ok(
+    openSettingsSource.indexOf('beginPopupSettingsOpenGuard()') < openSettingsSource.indexOf('openSettings()'),
+    '设置页保护必须早于异步打开动作'
+  )
+  assert.ok(
+    openWebReaderSource.indexOf('beginPopupSettingsOpenGuard()') > openWebReaderSource.indexOf('hidePopupForInternalWindowSwitch()'),
+    '打开阅读器后必须重新开启内部窗口保护'
+  )
+  assert.ok(
+    openWebReaderSource.indexOf('beginPopupSettingsOpenGuard()') < openWebReaderSource.indexOf('getWebReader()'),
+    '阅读器保护必须早于异步打开动作'
+  )
+})
+
+test('网页阅读器关闭时必须解除弹窗保护', () => {
+  const webReaderSource = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const ensureSource = extractFunction(webReaderSource, 'private async ensureWindow()')
+
+  assert.match(
+    webReaderSource,
+    /onInternalWindowFocusLost\?:/u,
+    '阅读器管理器必须提供内部窗口失焦生命周期回调'
+  )
+  assert.match(
+    ensureSource,
+    /on\('closed'[\s\S]*?onInternalWindowFocusLost/u,
+    '阅读器窗口关闭时必须通知主进程解除弹窗保护'
+  )
+  assert.match(
+    indexSource,
+    /onInternalWindowFocusLost:\s*\(\)\s*=>\s*\{[\s\S]*?BrowserWindow\.getFocusedWindow\(\)[\s\S]*?endPopupSettingsOpenGuard\(\)/u,
+    '主进程必须把阅读器生命周期回调接到弹窗保护解除入口'
+  )
+})
+
+test('网页阅读器失焦只有在焦点离开所有自有窗口时才解除弹窗保护', () => {
+  const webReaderSource = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const ensureSource = extractFunction(webReaderSource, 'private async ensureWindow()')
+
+  assert.match(
+    ensureSource,
+    /on\('blur'[\s\S]*?onInternalWindowFocusLost/u,
+    '阅读器失焦时必须通知主进程判断是否解除弹窗保护'
+  )
+  assert.match(
+    indexSource,
+    /onInternalWindowFocusLost:\s*\(\)\s*=>\s*\{[\s\S]*?BrowserWindow\.getFocusedWindow\(\)[\s\S]*?endPopupSettingsOpenGuard\(\)/u,
+    '主进程必须在焦点确实离开所有自有窗口后才解除弹窗保护'
+  )
+})
+
+test('固定弹窗时点击可见设置页或阅读器区域不得自动关闭弹窗', () => {
+  const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
+
+  // 固定弹窗的语义是隐式路径不再自动关闭。点击可见设置页/阅读器矩形属于
+  // 隐式外部点击兜底：若不判断 pinned 就调用 hidePopupForInternalWindowSwitch，
+  // 该入口会清掉 pinned 并隐藏弹窗，表现为“固定了窗口，点空白还是会自动关闭”。
+  // 注意：从弹窗内显式打开设置/阅读器仍应隐藏弹窗，因此固定判断只能加在
+  // 全局按下兜底分支，不能整体加进 hidePopupForInternalWindowSwitch。
+  assert.match(indexSource, /isPopupPinned/u, '主进程必须能查询翻译弹窗的固定状态')
+
+  const settingsBranchStart = pointerSource.indexOf(
+    'if (isPopupVisible() && isPointInsideVisibleSettingsWindow(point))'
+  )
+  const settingsHideIndex = pointerSource.indexOf(
+    'hidePopupForInternalWindowSwitch()',
+    settingsBranchStart
+  )
+  const webReaderBranchStart = pointerSource.indexOf(
+    'if (isPopupVisible() && isPointInsideVisibleWebReaderWindow(point))'
+  )
+  const webReaderHideIndex = pointerSource.indexOf(
+    'hidePopupForInternalWindowSwitch()',
+    webReaderBranchStart
+  )
+  assert.ok(settingsBranchStart >= 0 && settingsHideIndex > settingsBranchStart, '必须识别点击可见设置页')
+  assert.ok(webReaderBranchStart >= 0 && webReaderHideIndex > webReaderBranchStart, '必须识别点击可见阅读器')
+
+  const settingsBranch = pointerSource.slice(settingsBranchStart, settingsHideIndex)
+  const webReaderBranch = pointerSource.slice(webReaderBranchStart, webReaderHideIndex)
+  assert.match(
+    settingsBranch,
+    /!isPopupPinned\(\)/u,
+    '点击可见设置页时必须在固定状态下跳过隐式关闭'
+  )
+  assert.match(
+    webReaderBranch,
+    /!isPopupPinned\(\)/u,
+    '点击可见阅读器时必须在固定状态下跳过隐式关闭'
+  )
+})
+
+test('显式打开的设置窗口在划词收尾时不得抢回源应用前台', () => {
+  const resumeSource = extractFunction(
+    indexSource,
+    'function resumeSettingsWindowFocusAfterSelection('
+  )
+
+  // 启动时自动打开的设置页只是后台驻留窗口，划词收尾时交还源应用前台可以
+  // 避免它突然顶到最前；但用户显式打开的设置页必须保留在当前前台，否则
+  // 精确交还 `open -b` 会把源应用拉到最前，用户表现为设置页被一起关掉。
+  const explicitIndex = resumeSource.indexOf('settingsWindowExplicitlyOpened')
+  const restoreIndex = resumeSource.indexOf('restoreFrontmostAppForCapture()')
+  assert.ok(explicitIndex >= 0, '恢复设置页焦点时必须读取设置窗口的显式打开标记')
+  assert.ok(restoreIndex > explicitIndex, '显式打开判断必须早于源应用前台交还')
+  const explicitBranch = resumeSource.slice(explicitIndex, restoreIndex)
+  assert.match(
+    explicitBranch,
+    /setFocusable\(true\)/u,
+    '显式打开的设置窗口只恢复可聚焦性，不得抢回源应用前台'
+  )
+})
+
+test('启动自动打开必须保留后台设置页语义，内部 activate 不得改变显式标记', () => {
+  const readySource = extractFunction(indexSource, 'async function onReady(): Promise<boolean>')
+  assert.match(
+    readySource,
+    /openSettingsOnInitialLaunch[\s\S]*?openSettings\(\{[\s\S]*?explicit:\s*false/u,
+    '启动自动打开设置页不得标记为用户显式打开'
+  )
+
+  const activateSource = extractFunction(
+    indexSource,
+    'function activateExistingPageOrOpenSettings()'
+  )
+  assert.match(
+    activateSource,
+    /openSettings\(\{ bringToFront: false \}\)/u,
+    '内部 activate 不得传入 explicit，避免把用户显式打开的标记降级'
+  )
+  assert.doesNotMatch(
+    activateSource,
+    /explicit/u,
+    '内部 activate 只负责复用设置页，不应改写用户显式打开语义'
+  )
+})
+
+test('openSettings 必须按来源维护显式打开标记并在关闭时重置', () => {
+  const openSource = extractFunction(indexSource, 'async function openSettings(')
+  assert.match(
+    openSource,
+    /if \(options\.explicit === false\)[\s\S]*?settingsWindowExplicitlyOpened\s*=\s*false/u,
+    '只有启动自动打开显式传入 false 时才能降级为后台设置页语义'
+  )
+  assert.match(
+    openSource,
+    /else if \(options\.bringToFront !== false\)[\s\S]*?settingsWindowExplicitlyOpened\s*=\s*true/u,
+    '用户显式打开入口必须标记为显式打开'
+  )
+
+  const createSource = extractFunction(indexSource, 'async function createSettingsWindow(')
+  assert.match(
+    createSource,
+    /if \(settingsWin === createdWindow\)[\s\S]*?settingsWindowExplicitlyOpened\s*=\s*false/u,
+    '设置窗口销毁后必须重置显式打开标记，避免下一个窗口继承错误语义'
+  )
+})
