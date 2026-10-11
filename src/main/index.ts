@@ -605,7 +605,14 @@ function suppressSelectionActivationWindowGap(): void {
   selectionActivationSuppressUntil = Date.now() + SELECTION_ACTIVATION_SUPPRESS_MS
   // 弹窗隐藏时 popup.ts 会回调本函数。若上一次交互收尾时弹窗仍可见，
   // 设置页焦点恢复会被推迟到这里执行，确保恢复发生在 key window 重选之后。
-  if (settingsWindowFocusResumePending && !isPopupVisible()) {
+  // 只有带交互所有者的待恢复项才允许在这里自动执行。失效旧流程登记的是
+  // 无所有者待恢复（null），它必须等用户显式打开/点击设置页时再恢复；
+  // 否则下一次划词开始调用本函数时，仍会把设置页同步放回可聚焦状态并拉到最前。
+  if (
+    settingsWindowFocusResumePending &&
+    settingsWindowFocusResumePendingOwnerToken !== null &&
+    !isPopupVisible()
+  ) {
     settingsWindowFocusResumePending = false
     const pendingOwnerToken = settingsWindowFocusResumePendingOwnerToken
     settingsWindowFocusResumePendingOwnerToken = null
@@ -699,11 +706,13 @@ function invalidateSelectionFlowWithFocusCleanup(): number | null {
   const invalidatedToken = selectionInteraction.invalidateSelectionFlow()
   // 用户复制/粘贴、切换监听模式或开始新划词时，旧取词流程会被直接作废，
   // 不会走到 releaseSelectionInteraction()。此时若设置页仍处于不可聚焦状态，
-  // 必须登记恢复，否则设置页会永久无法接收键盘输入。弹窗仍可见时只登记，
-  // 若此处强制恢复，设置页会立刻重新进入 key window 候选集合，正好复现
-  // 连续划词时设置页浮到最前的问题。
-  if (invalidatedToken !== null) {
-    resumeSettingsWindowFocusAfterSelection(undefined, false)
+  // 必须登记恢复，否则设置页会永久无法接收键盘输入。这里只能登记无所有者
+  // 待恢复，绝不能调用恢复入口：弹窗恰好不可见时同步 setFocusable(true) 会
+  // 让设置页立刻重新进入 key window 候选集合，正是连续划词浮到最前的根因。
+  // 用户显式打开/点击设置页时，仍会通过强制恢复入口立即解除挂起。
+  if (invalidatedToken !== null && settingsWindowFocusSuspendedForSelection) {
+    settingsWindowFocusResumePending = true
+    settingsWindowFocusResumePendingOwnerToken = null
   }
   return invalidatedToken
 }
@@ -1248,8 +1257,16 @@ function onOcrHotkey(): void {
  * @author zhenghq
  */
 function collectOwnWindowCandidates(): OwnWindowCandidate[] {
+  // 划词焦点挂起期间，macOS 仍可能让设置窗口残留 isFocused()===true。此时用户
+  // 正在外部应用划词，设置页只是等待恢复可聚焦性，不能参与自有窗口排除；
+  // 否则新一轮划词落在设置页矩形内会被误判为应用内手势并静默吞掉，表现为
+  // 检测到选区却不出现“译”按钮。
   const settingsFocused = Boolean(
-    settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && settingsWin.isFocused()
+    settingsWindowFocusSuspendedForSelection === null &&
+    settingsWin &&
+    !settingsWin.isDestroyed() &&
+    settingsWin.isVisible() &&
+    settingsWin.isFocused()
   )
   const settingsBounds = settingsFocused && settingsWin ? settingsWin.getBounds() : null
   const webReaderFocused = Boolean(webReader?.isWindowFocused())

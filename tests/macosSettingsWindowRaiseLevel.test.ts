@@ -219,3 +219,39 @@ test('弹窗仍可见时不得提前恢复设置页可聚焦性', () => {
     '弹窗隐藏后必须真正恢复设置页可聚焦性'
   )
 })
+
+test('新一轮划词开始失效旧流程时不得同步恢复设置页焦点', () => {
+  const invalidateSource = stripComments(
+    extractFunction(mainSource, 'function invalidateSelectionFlowWithFocusCleanup(')
+  )
+
+  // 用户现象：连续划词时设置页会概率性被拉到最前。上一轮挂起的焦点保护
+  // 在新一轮划词开始时被失效清理；若此处直接调用可强制恢复的入口，且结果
+  // 弹窗恰好不可见，就会同步 setFocusable(true)，设置页立刻重新进入 key
+  // window 候选集合。失效旧流程只能登记待恢复，不能当场恢复可聚焦性。
+  assert.doesNotMatch(
+    invalidateSource,
+    /resumeSettingsWindowFocusAfterSelection\(undefined,\s*false\)/u,
+    '失效旧流程时不得调用带立即恢复语义的焦点恢复入口'
+  )
+  assert.match(
+    invalidateSource,
+    /settingsWindowFocusResumePending = true/u,
+    '失效旧流程只能登记待恢复，等显式入口或弹窗隐藏后再恢复'
+  )
+})
+
+test('失效旧流程登记的无所有者待恢复不得被下一次划词自动消费', () => {
+  const suppressSource = stripComments(
+    extractFunction(mainSource, 'function suppressSelectionActivationWindowGap(')
+  )
+
+  // 仅“登记待恢复”还不够：下一次划词开始时 scheduleSelectionAction() 会先调用
+  // suppressSelectionActivationWindowGap()。若无所有者待恢复项仍能在这里自动
+  // 恢复，设置页又会在新一轮划词一开始被放回 key window 候选集合。
+  assert.match(
+    suppressSource,
+    /settingsWindowFocusResumePendingOwnerToken !== null/u,
+    '自动恢复必须要求待恢复项带有交互所有者'
+  )
+})
