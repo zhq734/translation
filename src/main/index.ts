@@ -113,6 +113,13 @@ import {
 } from '../shared/hotkeyCaptureTiming'
 import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
 import {
+  ACTIVATE_DIAGNOSTIC_PREFIX,
+  captureSyncStack,
+  createActivateSourceRecord,
+  formatActivateDiagnosticLog,
+  logCandidateProbe
+} from '../shared/activateDiagnostics'
+import {
   POPUP_FOREGROUND_RESTORE_SETTLE_MS,
   shouldActivatePopupForCaptureFailure,
   shouldRestoreForegroundBeforeCapture
@@ -280,6 +287,20 @@ const SELECTION_SETTLE_DELAY_MS = 80
  * 的真实 Dock 点击。
  */
 const SELECTION_ACTIVATION_SUPPRESS_MS = 500
+
+/**
+ * activate 回调在进入异步边界前采集的同步来源指纹。
+ * @author zhenghq
+ */
+interface ActivateSourceProbe {
+  /** 同步调用栈。 */
+  stack: string
+  /** 精确到毫秒的本地时间戳。 */
+  timestampMs: number
+  /** Electron activate 回调提供的可见窗口标记。 */
+  hasVisibleWindows?: boolean
+}
+
 /**
  * 设置页临时提升到 screen-saver 层级后的自动回收时间（毫秒）。
  *
@@ -378,6 +399,20 @@ let latestSelectionGesture = 0
 let shortcutRegistrationStates: GlobalShortcutRegistrationState[] = []
 /** 最近一次划词相关内部动作的状态空档抑制截止时间戳；0 表示无抑制。 */
 let selectionActivationSuppressUntil = 0
+/**
+ * 设置页显式置前代际。
+ *
+ * 启动首开、Dock、托盘与弹窗内打开设置都属于显式置前，但新建/复用分支需要
+ * 等待页面就绪、Dock 策略刷新与事件循环让出，最终 moveTop()/focus() 往往在
+ * 数十到数百毫秒之后才执行。若用户在这段窗口期内已经开始下一次划词，延迟到达
+ * 的置前会把设置页（以及 app.dock.show() 激活的整个应用）顶到划词应用之上。
+ * 每次划词内部动作开始时递增本代际，使尚未收尾的置前动作自动失效。
+ */
+let settingsBringToFrontEpoch = 0
+/** 保护期内被延后的 macOS Dock 显示定时器；重复请求时重置。 */
+let pendingMacOSDockShowTimer: ReturnType<typeof setTimeout> | null = null
+/** 保护期内被延后的 macOS Dock 呈现重放定时器；与仅显示 Dock 的定时器分开，避免互相取消。 */
+let pendingMacOSDockVisibilityTimer: ReturnType<typeof setTimeout> | null = null
 let latestOcrSnapshot: OcrSnapshot | null = null
 // OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
 let ocrSelectionSessionSeq = 0
@@ -551,14 +586,24 @@ function cancelEdgeSpeech(requestId: string): void {
 }
 
 /**
+ * 采集设置窗口当前的可见性布尔值，供 activate 来源诊断打点使用。
+ * @returns 设置窗口存在、未销毁且可见时返回 true，否则返回 false。
+ * @author zhenghq
+ */
+function isSettingsWindowVisibleForProbe(): boolean {
+  return Boolean(settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible())
+}
+
+/**
  * 判断本次 activate 事件是否为用户真正的 Dock 激活操作。
  * macOS 的 activate 会在应用内任意窗口被激活时触发，包括划词过程中显示的
  * “译”按钮与翻译弹窗。若不加区分就打开设置窗口，会在用户划词时突然抢走
  * 前台应用焦点，导致原生选区失效、随后取词失败。
+ * @param probe activate 回调在进入异步边界前采集的同步指纹。
  * @returns 交互状态、内部窗口、OCR 暂停和激活租约均为空闲时返回 true。
  * @author zhenghq
  */
-function shouldTreatActivateAsDockLaunch(): boolean {
+function shouldTreatActivateAsDockLaunch(probe: ActivateSourceProbe): boolean {
   const decision = canTreatActivateAsDockLaunch({
     interactionState: selectionInteraction.snapshot().state,
     selectionButtonVisible: isSelectionButtonVisible(),
@@ -568,6 +613,27 @@ function shouldTreatActivateAsDockLaunch(): boolean {
     listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
     selectionActivationSuppressUntil
   })
+  // 来源取证必须先于判定日志输出：同步栈已经由调用方在事件回调入口采集，
+  // 这里只做校验与序列化；任何诊断异常都不得中断 activate 原有流程。
+  try {
+    const diagnostic = createActivateSourceRecord({
+      timestampMs: probe.timestampMs,
+      decision: decision.allowed ? 'allow' : 'ignore',
+      reason: decision.allowed ? undefined : decision.reason ?? 'unknown',
+      stack: probe.stack,
+      event: { hasVisibleWindows: probe.hasVisibleWindows }
+    })
+    if (diagnostic.ok) {
+      console.log(formatActivateDiagnosticLog(diagnostic.record))
+    } else {
+      console.log(`${ACTIVATE_DIAGNOSTIC_PREFIX} dropped: ${diagnostic.error}`)
+    }
+  } catch (error) {
+    console.log(
+      '[activate-diagnostics] output failed:',
+      error instanceof Error ? error.message : String(error)
+    )
+  }
   if (decision.allowed) {
     // 放行路径也要留痕：只有记录判定依据，才能事后区分真实 Dock 启动
     // 与收尾窗口期漏网的内部 activate。
@@ -588,6 +654,23 @@ function shouldTreatActivateAsDockLaunch(): boolean {
  */
 function suppressSelectionActivationWindowGap(): void {
   selectionActivationSuppressUntil = Date.now() + SELECTION_ACTIVATION_SUPPRESS_MS
+  // 划词内部动作开始即宣告“当前用户交互属于划词”：任何仍在等待 await 收尾的
+  // 设置页显式置前都必须立即失效，不能在用户已经开始划词后再把窗口顶到最前。
+  settingsBringToFrontEpoch += 1
+}
+
+/**
+ * 判断当前是否处于划词置前保护期。
+ *
+ * 划词手势结束到按钮/弹窗状态生效之间存在短暂空档，activate 判定可能呈现
+ * “全空闲”而被误判为 Dock 点击；同时 Dock 策略刷新与设置页延迟置前都可能
+ * 在这个窗口期把整个应用激活到最前。保护期复用 activate 抑制租约，保证这些
+ * 内部动作被推迟而不是当作显式用户入口执行。
+ * @returns 保护期仍然有效时返回 true。
+ * @author zhenghq
+ */
+function isSelectionWindowRaiseGuardActive(): boolean {
+  return selectionActivationSuppressUntil > Date.now()
 }
 
 /**
@@ -624,6 +707,11 @@ function invalidateSelectionFlowWithFocusCleanup(): number | null {
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
+  // 记录显式入口：该函数此前完全静默，无法判断设置页置前是否由 activate 走到这里。
+  logCandidateProbe('settings-activate-entry', isSettingsWindowVisibleForProbe())
+  // activate 判定存在短暂状态空档：检查时可能刚好全空闲，但事件派发时用户
+  // 已经开始划词。此时若继续置前阅读器或设置页，就会把它们顶到划词应用之上。
+  if (isSelectionWindowRaiseGuardActive()) return
   // Dock 点击是显式入口：已有阅读器也要真正置前。focusExistingWindow()
   // 对已可见窗口只返回 true 不调整层级，阅读器被其它应用遮挡时用户会以为
   // Dock 点击没有反应。
@@ -639,6 +727,8 @@ function activateExistingPageOrOpenSettings(): void {
       // 缺少新建分支的最终置前；让出一轮事件循环再补一次，避免设置页随即失焦。
       await yieldToEventLoop()
       if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
+      // 等待期间用户可能已经开始下一次划词；此时补置前同样会抢走划词前台。
+      if (isSelectionWindowRaiseGuardActive()) return
       showOwnWindowForInteraction(target, { raiseLevel: true })
     })
     .catch((error: unknown) => {
@@ -680,11 +770,19 @@ if (!gotLock) {
   })
   if (isMac) {
     // macOS 通过 Finder 重新打开运行中的应用时通常只激活已有进程，不会创建第二实例。
-    app.on('activate', () => {
+    app.on('activate', (_event, hasVisibleWindows) => {
+      // 调用栈必须在进入任何异步边界之前采集：延迟到 then/await 之后再取栈，
+      // 派发者帧已经出栈，只剩事件循环帧，无法指认内部 activate 的来源。
+      const activateStack = captureSyncStack()
+      const activateTimestampMs = Date.now()
       void initialization.then((initialized) => {
         if (!initialized) return
         // 划词交互中的窗口激活也会触发 activate，此时不能打开设置窗口抢走选区。
-        if (!shouldTreatActivateAsDockLaunch()) return
+        if (!shouldTreatActivateAsDockLaunch({
+          stack: activateStack,
+          timestampMs: activateTimestampMs,
+          hasVisibleWindows
+        })) return
         activateExistingPageOrOpenSettings()
       })
     })
@@ -735,6 +833,13 @@ function loadMacOSDockIcon(): NativeImage {
 async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
+  // 划词保护期内必须完全推迟 Dock 呈现切换：setActivationPolicy()/dock.hide()
+  // 会重排窗口层级，dock.show() 会激活整个应用，而 showInactive() 恢复设置页
+  // 在 panel 上等价于 orderFrontRegardless，同样会把设置页顶到前台应用之上。
+  if (isSelectionWindowRaiseGuardActive()) {
+    scheduleMacOSDockVisibilityAfterSelectionGuard()
+    return
+  }
   const presentation = resolveMacOSDockPresentation({
     showDockIcon,
     settingsOpen: Boolean(settingsWin && !settingsWin.isDestroyed()),
@@ -753,7 +858,17 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (presentation.dockVisible) {
     try {
       app.dock?.setIcon(loadMacOSDockIcon())
-      await app.dock?.show()
+      // app.dock.show() 会把整个应用激活到最前，连带把设置页与阅读器顶到
+      // 划词应用之上。划词保护期内必须延后这次激活，等保护期结束再补执行。
+      if (isSelectionWindowRaiseGuardActive()) {
+        scheduleMacOSDockShowAfterSelectionGuard()
+      } else {
+        // 调用前后各打一条：用于区分“进入本次刷新前应用已被激活”与
+        // “dock.show() 本身激活应用”，打点不改变 await 顺序。
+        logCandidateProbe('dock-show-sync-before', isSettingsWindowVisibleForProbe())
+        await app.dock?.show()
+        logCandidateProbe('dock-show-sync-after', isSettingsWindowVisibleForProbe())
+      }
     } catch (error) {
       console.error('[main] 恢复 macOS Dock 图标失败:', error)
     }
@@ -825,6 +940,68 @@ function applyAutoLaunch(enabled: boolean): void {
  */
 async function refreshMacOSDockVisibility(): Promise<void> {
   await applyMacOSDockVisibility(dockIconEnabled)
+}
+
+/**
+ * 在划词置前保护期结束后补执行被延后的 macOS Dock 显示。
+ *
+ * `app.dock.show()` 会激活整个应用，是划词期间窗口被顶到最前的直接来源之一。
+ * 保护期内只能先把 Dock 呈现登记为已应用，等用户划词交互结束再真正显示，
+ * 避免内部刷新把整个应用拉到前台。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleMacOSDockShowAfterSelectionGuard(): void {
+  if (!isMac) return
+  if (pendingMacOSDockShowTimer) clearTimeout(pendingMacOSDockShowTimer)
+  const delayMs = Math.max(0, selectionActivationSuppressUntil - Date.now()) + 20
+  pendingMacOSDockShowTimer = setTimeout(() => {
+    pendingMacOSDockShowTimer = null
+    // 保护期被新的划词动作续期、或划词交互仍在进行时继续等待：
+    // 连续快速划词会在两次交互之间出现短暂空闲，只在保护期计时会过早重放并激活应用。
+    if (
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle'
+    ) {
+      scheduleMacOSDockShowAfterSelectionGuard()
+      return
+    }
+    logCandidateProbe('dock-show-delayed', isSettingsWindowVisibleForProbe())
+    const showPromise = app.dock?.show()
+    if (showPromise) {
+      void showPromise.catch((error: unknown) => {
+        console.error('[main] 划词结束后恢复 macOS Dock 图标失败:', error)
+      })
+    }
+  }, delayMs)
+}
+
+/**
+ * 在划词置前保护期结束后重新应用一次 macOS Dock 呈现。
+ *
+ * 保护期内 Dock 策略切换与窗口保留都会改变 z-order；这里只登记“稍后重放”，
+ * 不在划词过程中做任何激活、显示或置前动作。重放时会重新解析当前窗口状态，
+ * 因此期间设置页/阅读器的开关变化也不会丢失。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleMacOSDockVisibilityAfterSelectionGuard(): void {
+  if (!isMac) return
+  if (pendingMacOSDockVisibilityTimer) clearTimeout(pendingMacOSDockVisibilityTimer)
+  const delayMs = Math.max(0, selectionActivationSuppressUntil - Date.now()) + 20
+  pendingMacOSDockVisibilityTimer = setTimeout(() => {
+    pendingMacOSDockVisibilityTimer = null
+    if (
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle'
+    ) {
+      scheduleMacOSDockVisibilityAfterSelectionGuard()
+      return
+    }
+    void refreshMacOSDockVisibility().catch((error: unknown) => {
+      console.error('[main] 划词结束后刷新 macOS Dock 呈现失败:', error)
+    })
+  }, delayMs)
 }
 
 /**
@@ -1005,6 +1182,9 @@ async function onReady(): Promise<boolean> {
     },
     onInternalWindowFocusLost: () => {
       const focusedWindow = BrowserWindow.getFocusedWindow()
+      // 阅读器显式置前会临时提升到 screen-saver；一旦失焦就立即归还普通层级，
+      // 不能只依赖 400ms 定时器。统一回收器会忽略未被提升过的设置页。
+      lowerSettingsPanelRaiseLevel()
       // 阅读器 blur 可能只是把焦点交给设置页或另一个自有窗口，这仍属于应用内部
       // 切换，不能解除保护。只有焦点为空或已离开全部自有窗口时才恢复弹窗失焦语义。
       if (focusedWindow && (focusedWindow === settingsWin || webReader?.ownsWindow(focusedWindow))) return
@@ -1013,6 +1193,11 @@ async function onReady(): Promise<boolean> {
     hasVisibleSettingsWindow: () => Boolean(
       settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
     ),
+    bringToFrontToOwnWindow: (window) => {
+      // 阅读器显式置前与设置页共用窗口级入口：普通窗口下必须 show()/focus()
+      // 激活目标窗口自身，禁止调用 app.focus() 把同应用其它窗口一起带到最前。
+      showOwnWindowForInteraction(window, { raiseLevel: true })
+    },
     translate: async (text, sourceLang, targetLang) => {
       const settings = { ...getSettings(), sourceLang, targetLang }
       const dingTalkCredentials = settings.dingTalkEnabled
@@ -4161,9 +4346,10 @@ function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
  * 把自有窗口提升为可交互窗口，只影响目标窗口自身。
  *
  * macOS 上窗口层级单位是应用：调用 app.focus() 会把同应用所有可见窗口一起
- * 提到最前。设置窗口与翻译弹窗已改为 nonactivating panel，show()/focus()
- * 只让目标窗口自身成为 key window，因此内部窗口置前一律走本入口，
- * 禁止在窗口置前路径调用 app.focus()。非 macOS 保持原有窗口激活语义。
+ * 提到最前。内部窗口置前一律走本入口，禁止在窗口置前路径调用 app.focus()。
+ * 设置页与网页阅读器已回退普通 BrowserWindow，显式置前需要先 show() 让
+ * 目标窗口自身成为可交互窗口，再 moveTop()/focus()；翻译弹窗等非激活 panel
+ * 才继续使用 showInactive() 保持不激活应用的语义。
  * @param win 待提升的自有窗口。
  * @param options.focus 是否让目标窗口取得键盘焦点；缺省为 true。
  * @param options.restore 是否先恢复最小化窗口；缺省为 true。
@@ -4188,24 +4374,24 @@ function showOwnWindowForInteraction(
   // 提升到 screen-saver，确保不激活应用也能把目标窗口越过当前前台应用。
   if (isMac && raiseLevel) {
     win.setAlwaysOnTop(true, 'screen-saver')
+    // 设置页与网页阅读器共用本入口，回收器必须知道本次被提升的是哪个窗口；
+    // 否则阅读器提升后无法在定时器或划词入口降回普通层级。
+    raisedInteractionWindows.add(win)
     scheduleSettingsPanelRaiseLevelReset()
   }
-  // macOS 的 panel 使用 showInactive() 时走 orderFrontRegardless：
-  // 它会在不激活应用的前提下把目标窗口真正排到当前前台应用之上。
-  // show() 只调用 makeKeyAndOrderFront，应用未激活时窗口仍可能被前台
-  // 应用遮挡，因此显式置前必须先 orderFrontRegardless，再单独取得键盘焦点。
-  // 非 macOS 与旧实现一致，保持窗口原有激活行为。
-  if (isMac && moveTop) {
-    win.showInactive()
-  } else {
-    win.show()
-  }
-  // nonactivating panel 不激活应用，目标窗口可能仍排在当前前台应用之后。
+  // 当前统一入口只服务设置页与网页阅读器，两者都是普通 BrowserWindow。
+  // 普通窗口显式置前必须使用 show() 让目标窗口成为可交互窗口；showInactive()
+  // 不会取得键盘焦点，窗口会继续留在其它应用后面。翻译弹窗等非激活 panel
+  // 仍由各自模块直接 showInactive()，不经过本入口。
+  win.show()
   // moveTop() 只调整目标窗口自身的 z-order，不激活应用，也不会拉起同应用
-  // 其它可见窗口，因此能补齐“启动后设置页放到最前”的窗口级语义。
+  // 其它可见窗口，因此能补齐“显式打开窗口放到最前”的窗口级语义。
   if (isMac && moveTop) win.moveTop()
   if (focus) win.focus()
 }
+
+/** 曾通过统一入口临时提升到最高层级的自有窗口；回收后自动清空。 */
+const raisedInteractionWindows = new Set<BrowserWindow>()
 
 /**
  * 输出设置窗口在 macOS panel 置前流程中的状态，供真机排查层级与焦点问题。
@@ -4247,9 +4433,14 @@ function lowerSettingsPanelRaiseLevel(): void {
     clearTimeout(settingsPanelRaiseLevelTimer)
     settingsPanelRaiseLevelTimer = null
   }
-  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.isAlwaysOnTop()) {
-    settingsWin.setAlwaysOnTop(false)
+  for (const win of raisedInteractionWindows) {
+    if (win.isDestroyed()) {
+      raisedInteractionWindows.delete(win)
+      continue
+    }
+    if (win.isAlwaysOnTop()) win.setAlwaysOnTop(false)
   }
+  raisedInteractionWindows.clear()
 }
 
 /**
@@ -4266,34 +4457,75 @@ function scheduleSettingsPanelRaiseLevelReset(): void {
   if (settingsPanelRaiseLevelTimer) clearTimeout(settingsPanelRaiseLevelTimer)
   settingsPanelRaiseLevelTimer = setTimeout(() => {
     settingsPanelRaiseLevelTimer = null
-    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setAlwaysOnTop(false)
+    for (const win of raisedInteractionWindows) {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(false)
+    }
+    raisedInteractionWindows.clear()
   }, SETTINGS_PANEL_RAISE_LEVEL_TIMEOUT_MS)
 }
 
 /**
  * 创建或复用设置窗口。
  * @param bringToFront 是否把设置窗口置前并聚焦；仅后台建窗等非用户入口传 false。
+ * @param source 打开来源；弹窗内显式点击时传 `popup`，允许越过划词自动置前保护。
  * @returns 设置窗口实例。
  * @author zhenghq
  */
-async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindow> {
+async function createSettingsWindow(
+  bringToFront: boolean,
+  source?: 'popup'
+): Promise<BrowserWindow> {
+  // 弹窗内点击设置入口是显式用户操作。hidePopupForInternalWindowSwitch() 会续期
+  // 划词 activate 抑制，但该抑制只用于拦截划词流程的自动 activate；用户此刻主动
+  // 点击设置页必须豁免，否则设置窗口会保持后台层级，看起来“没有拉到最前”。
+  const explicitPopupSource = source === 'popup'
+  // 记录本次显式置前的代际：划词动作会在 suppressSelectionActivationWindowGap()
+  // 中递增代际，使已经进入 await 等待的旧置前动作在收尾时自动失效。
+  const bringToFrontEpochAtStart = settingsBringToFrontEpoch
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
     // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
     if (settingsWin.isMinimized()) {
+      // 划词已经开始（或本次置前已被新划词代际失效）时不得恢复并置前：
+      // restore() 会把窗口重新排到前台应用之上，连带把阅读器一起带上来。
+      if (
+        bringToFront &&
+        !explicitPopupSource &&
+        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+          isSelectionWindowRaiseGuardActive())
+      ) {
+        return settingsWin
+      }
       showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
       return settingsWin
     }
     if (settingsWin.isVisible()) {
       // 内部 activate 只负责让设置页存在，不把已可见窗口强制置前。
       if (!bringToFront) return settingsWin
+      // 用户已经开始划词时，本次置前已经过期：只保持可见，不 moveTop/focus。
+      if (
+        !explicitPopupSource &&
+        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+          isSelectionWindowRaiseGuardActive())
+      ) {
+        return settingsWin
+      }
       // 只提升设置窗口自身，不激活整个应用，避免把翻译弹窗一起带到最前。
+      logCandidateProbe('settings-reuse-raise', settingsWin.isVisible())
       showOwnWindowForInteraction(settingsWin, { raiseLevel: true })
       return settingsWin
     }
     // 窗口可能被用户隐藏后重新打开，只提升设置窗口自身。
+    if (
+      bringToFront &&
+      !explicitPopupSource &&
+      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        isSelectionWindowRaiseGuardActive())
+    ) {
+      return settingsWin
+    }
     showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
     return settingsWin
   }
@@ -4311,9 +4543,6 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     fullscreenable: false,
     show: false,
     backgroundColor: '#f5f7fa',
-    // macOS 上使用 nonactivating panel：show()/focus() 只让设置窗口自身成为 key window，
-    // 不激活整个应用，从而避免把翻译弹窗等其它可见窗口一起带到最前。
-    ...(isMac ? { type: 'panel' } : {}),
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
@@ -4321,12 +4550,6 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     }
   })
   settingsWin = createdWindow
-  if (isMac) {
-    // panel 默认带浮层层级与跨桌面行为，设置窗口需要显式尝试归一化为普通窗口语义；
-    // ElectronNSPanel 会强制保留 CanJoinAllSpaces，实际生效情况由真机 spike 记录。
-    createdWindow.setAlwaysOnTop(false)
-    createdWindow.setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)
-  }
   // 必须在 loadRendererHtml 之前挂载监听，否则页面加载过快会漏掉 ready-to-show。
   const readyToShow = whenWindowReadyToShow(createdWindow)
 
@@ -4379,6 +4602,21 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
   // 再切回已保存主题。等待首帧就绪让页面带着持久化主题一次性上屏。
   await readyToShow
   if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
+  // 首帧就绪等待期间用户可能已经开始划词。此时禁止走显式置前：macOS panel 的
+  // showInactive()/moveTop()/focus() 都会把设置页排到当前前台应用之上，进而把
+  // 同应用的阅读器一起带上来。改用不提升层级、不聚焦的 show()，panel 既不激活
+  // 应用也不会越过前台应用，只让设置窗口安静上屏；后续 Dock 刷新与最终置前同样
+  // 受保护期约束，不会再把窗口顶到最前。
+  if (
+    !explicitPopupSource &&
+    (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle')
+  ) {
+    showOwnWindowForInteraction(settingsWin, { focus: false, moveTop: false, raiseLevel: false })
+    await refreshMacOSDockVisibility()
+    return createdWindow
+  }
   // panel 的 show()/focus() 只让设置窗口自身成为 key window，不激活应用。
   // 非显式后台建窗时 bringToFront 为 false：只让窗口存在，不抢焦点、
   // 不用 moveTop 越过用户当前正在使用的应用；启动首开等显式入口才置前。
@@ -4399,6 +4637,15 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     // 才完全生效。让出一轮事件循环后做最终置前，避免紧随其后的 moveTop 被系统覆盖。
     await yieldToEventLoop()
     if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
+    // 等待期间用户可能已经开始划词。此时绝不能再 moveTop()/focus()，否则会把
+    // 设置页顶到用户正在划词的其它应用之上，正是本变更要消除的偶现根因。
+    if (
+      !explicitPopupSource &&
+      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        isSelectionWindowRaiseGuardActive())
+    ) {
+      return createdWindow
+    }
     showOwnWindowForInteraction(settingsWin, { raiseLevel: true })
     logSettingsPanelBringToFront('initial-launch-final')
   }
@@ -4408,11 +4655,12 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
 /**
  * 打开设置窗口。
  * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
+ * @param options.source 打开来源；弹窗内显式点击时传 `popup`。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function openSettings(options: { bringToFront?: boolean } = {}): Promise<void> {
-  await createSettingsWindow(options.bringToFront ?? true)
+async function openSettings(options: { bringToFront?: boolean; source?: 'popup' } = {}): Promise<void> {
+  await createSettingsWindow(options.bringToFront ?? true, options.source)
 }
 
 /**
@@ -4435,7 +4683,7 @@ function openSettingsFromPopup(): void {
   // 第二次打开时设置页已经可见，复用窗口的 show()/focus() 不保证再次派发
   // focus 事件；必须在隐藏弹窗后重新开启保护，覆盖复用窗口路径上的迟到 blur。
   beginPopupSettingsOpenGuard()
-  void openSettings().catch((error: unknown) => {
+  void openSettings({ bringToFront: true, source: 'popup' }).catch((error: unknown) => {
     endPopupSettingsOpenGuard()
     // 打开设置失败时无需打断用户当前翻译：保护已解除，后续失焦恢复既有语义；
     // 记录错误便于排查窗口创建失败（例如渲染进程加载异常）。
@@ -4460,7 +4708,7 @@ function openWebReaderFromPopup(url?: string): void {
   // 第二次打开时阅读器已经可见，复用窗口同样不保证再次派发 focus 事件。
   // 必须在隐藏弹窗后开启保护，避免阅读器接管焦点时的迟到 blur 关闭弹窗。
   beginPopupSettingsOpenGuard()
-  void getWebReader().open(url).catch((error: unknown) => {
+  void getWebReader().open(url, { bringToFront: true }).catch((error: unknown) => {
     endPopupSettingsOpenGuard()
     const message = error instanceof Error ? error.message : t('error.openWebReader')
     dialog.showErrorBox(t('error.webTranslation'), message)

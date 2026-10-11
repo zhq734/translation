@@ -84,9 +84,12 @@ test('划词交互期间的 activate 事件不应打开设置窗口', () => {
   assert.match(guardSource, /hiServicesRepairRunning/u)
   assert.match(guardSource, /isOcrSelectionVisible\(\)/u)
 
-  const activateStart = source.indexOf("app.on('activate'")
-  const activateSource = source.slice(activateStart, source.indexOf('})', activateStart))
-  assert.match(activateSource, /if\s*\(!shouldTreatActivateAsDockLaunch\(\)\)\s*return/u)
+  const activateSource = extractActivateCallback(source)
+  assert.match(
+    activateSource,
+    /if\s*\(!shouldTreatActivateAsDockLaunch\(\{[\s\S]*?\}\)\)\s*return/u,
+    'activate 回调必须携带同步指纹调用判定函数'
+  )
 })
 
 test('“译”按钮窗口不应因激活自身而抢走前台应用焦点', () => {
@@ -120,4 +123,48 @@ test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补
     /openSettings\(\{ bringToFront: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?showOwnWindowForInteraction\(target,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
     'Dock 打开设置页后必须等待激活事件落定并再次窗口级置前'
   )
+})
+
+/**
+ * 从主进程源码中截取 macOS activate 事件回调。
+ * @param source 主进程源码。
+ * @returns activate 回调源码片段。
+ * @author zhenghq
+ */
+function extractActivateCallback(source: string): string {
+  const start = source.indexOf("app.on('activate'")
+  assert.ok(start >= 0, '应注册 macOS activate 事件')
+  const end = source.indexOf('\n  }\n}', start)
+  assert.ok(end > start, 'activate 回调应有结束边界')
+  return source.slice(start, end)
+}
+
+test('activate 回调必须在任何异步边界之前采集同步调用栈与毫秒时间戳', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const callbackSource = extractActivateCallback(source)
+
+  // 调用栈一旦延迟到 await/then 之后采集，就只剩事件循环帧，无法指认派发者。
+  const stackIndex = callbackSource.indexOf('captureSyncStack(')
+  const timestampIndex = callbackSource.indexOf('Date.now()')
+  const asyncIndex = callbackSource.indexOf('initialization.then(')
+
+  assert.ok(stackIndex >= 0, 'activate 回调必须采集同步调用栈')
+  assert.ok(timestampIndex >= 0, 'activate 回调必须采集毫秒时间戳')
+  assert.ok(asyncIndex >= 0, 'activate 回调仍应等待初始化完成')
+  assert.ok(stackIndex < asyncIndex, '调用栈必须在进入异步边界之前采集')
+  assert.ok(timestampIndex < asyncIndex, '时间戳必须在进入异步边界之前采集')
+})
+
+test('activate 放行与拦截分支都必须输出含判定、原因与调用栈的取证日志', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const guardStart = source.indexOf('function shouldTreatActivateAsDockLaunch')
+  assert.ok(guardStart >= 0, '应存在 activate 判定函数')
+  const guardSource = source.slice(guardStart, source.indexOf('\n}', guardStart))
+
+  // 两类判定都要留痕：放行分支此前只有 checks，拦截分支此前没有派发者信息。
+  assert.match(guardSource, /decision\.allowed\s*\?\s*'allow'\s*:\s*'ignore'/u,
+    '取证记录必须按判定结果写入 allow 或 ignore')
+  assert.match(guardSource, /reason:/u, '拦截分支必须记录拦截原因')
+  assert.match(guardSource, /stack:\s*probe\.stack/u, '两条分支都必须记录同步调用栈')
+  assert.match(guardSource, /hasVisibleWindows/u, '必须记录白名单事件字段')
 })

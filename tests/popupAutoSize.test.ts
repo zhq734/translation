@@ -110,7 +110,8 @@ test('弹窗自适应尺寸应贯通渲染进程、preload 与主进程', () => 
   const popupMain = readFileSync('src/main/popup.ts', 'utf8')
 
   assert.match(renderer, /function measureAutoSize/u)
-  assert.match(renderer, /function requestAutoResize/u)
+  assert.match(renderer, /const requestAutoResize = createThrottledScheduler/u)
+  assert.match(renderer, /createThrottledScheduler\(/u)
   assert.match(renderer, /window\.api\.resizePopup\(/u)
   assert.match(preload, /resizePopup\(size: PopupAutoSizeRequest\)/u)
   assert.match(preload, /ipcRenderer\.send\('popup:resize', size\)/u)
@@ -119,4 +120,24 @@ test('弹窗自适应尺寸应贯通渲染进程、preload 与主进程', () => 
   assert.match(main, /isPopupAutoSizeRequest/u)
   assert.match(popupMain, /export function resizePopup\(/u)
   assert.match(popupMain, /resolvePopupResizeBounds\(/u)
+})
+
+/**
+ * 校验流式返回过程中弹窗会周期性重新测量尺寸，而不是等全部返回结束才变化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('流式返回期间弹窗应周期性随内容增长自适应放大', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const scheduler = readFileSync('src/shared/throttledScheduler.ts', 'utf8')
+
+  // 测量宽度必须纳入流式展示中的可见译文前缀，否则宽度只会在最终结果落库后变化。
+  assert.match(renderer, /selectionRevealText/u)
+  assert.match(renderer, /manualRevealText/u)
+  assert.match(renderer, /selectionReveal\.visibleLength/u)
+  assert.match(renderer, /manualReveal\.visibleLength/u)
+
+  // 调度必须是节流而非去抖：连续请求不能重置计时器。
+  assert.match(scheduler, /export function createThrottledScheduler/u)
+  assert.doesNotMatch(renderer, /function requestAutoResize\(\): void \{\s*if \(autoResizeTimer\) clearTimeout/u)
 })

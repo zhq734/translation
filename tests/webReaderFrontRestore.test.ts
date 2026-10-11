@@ -85,7 +85,10 @@ test('网页翻译标题栏关闭不得绕过阅读器关闭逻辑', () => {
 })
 
 test('打开网页翻译前记录源应用，供关闭时交还前台', () => {
-  const openSource = extractFunction(webReaderSource, 'async open(url?: string): Promise<void> {')
+  const openSource = extractFunction(
+    webReaderSource,
+    'async open(url?: string, options: { bringToFront?: boolean } = {}): Promise<void> {'
+  )
 
   assert.match(openSource, /await rememberFrontmostAppIfInactiveAsync\(\)/u, '必须等待源应用快照后再显示阅读器')
   assert.ok(
@@ -183,5 +186,50 @@ test('已可见的设置页仅在需要置顶时才重新置顶，且不得激�
     createSource,
     /showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*bringToFront,\s*moveTop:\s*bringToFront,\s*raiseLevel:\s*bringToFront\s*\}\)/u,
     '不可见设置页仍必须显示并聚焦'
+  )
+})
+
+test('翻译弹窗内打开网页阅读器必须显式置前且复用统一入口', () => {
+  const openSource = extractFunction(mainSource, 'function openWebReaderFromPopup(')
+  const managerSource = webReaderSource
+
+  // 弹窗内点击“翻译页面”与点击设置页一样是显式用户入口：hidePopup() 续期的
+  // 划词抑制不得阻止阅读器真正置前。阅读器管理器必须提供显式打开入口，并由
+  // 主进程注入统一的窗口级置前回调，禁止在 manager 内直接调用 app.focus()。
+  assert.match(
+    openSource,
+    /getWebReader\(\)\.open\([^)]*\)/u,
+    '弹窗内打开阅读器必须调用阅读器打开入口'
+  )
+  assert.match(
+    openSource,
+    /bringToFront:\s*true|source:\s*'popup'/u,
+    '弹窗内打开阅读器必须标记显式置前来源'
+  )
+  assert.match(
+    managerSource,
+    /bringToFrontToOwnWindow\?:/u,
+    '阅读器管理器必须支持注入统一窗口级置前回调'
+  )
+  assert.match(
+    mainSource,
+    /bringToFrontToOwnWindow:\s*\(window\)\s*=>[\s\S]*?showOwnWindowForInteraction\(window,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
+    '阅读器显式置前必须复用统一入口'
+  )
+  assert.doesNotMatch(managerSource, /app\.focus\(/u, '阅读器管理器不得激活整个应用')
+})
+
+test('网页阅读器失焦时必须立即回收临时置前层级', () => {
+  const focusLostSource = mainSource.slice(
+    mainSource.indexOf('onInternalWindowFocusLost: () => {'),
+    mainSource.indexOf('hasVisibleSettingsWindow:')
+  )
+
+  // 阅读器与设置页共用统一置前入口，失焦后必须立即降回普通层级，
+  // 不能只依赖 400ms 定时器，否则阅读器会在短时间内持续悬浮在最前。
+  assert.match(
+    focusLostSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '阅读器失焦时必须立即回收统一入口提升的层级'
   )
 })

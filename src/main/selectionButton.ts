@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
+import { logCandidateProbe } from '../shared/activateDiagnostics'
 
 const BUTTON_SIZE = 36
 const EDGE_GAP = 8
@@ -31,6 +32,7 @@ function showReadySelectionButton(anchor: { x: number; y: number }): void {
   )
 
   win.setPosition(Math.round(x), Math.round(y))
+  logCandidateProbe('selection-button-show-inactive', win.isVisible())
   win.showInactive()
   win.setAlwaysOnTop(true, 'pop-up-menu')
   win.moveTop()
@@ -127,6 +129,7 @@ export function showSelectionButton(anchor: { x: number; y: number }): void {
  */
 export function hideSelectionButton(): void {
   pendingAnchor = null
+  logCandidateProbe('selection-button-hide', Boolean(win?.isVisible()))
   win?.hide()
 }
 

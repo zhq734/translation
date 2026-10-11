@@ -17,6 +17,7 @@ import {
 import type { Settings, TranslateDeltaPayload, TranslatePayload } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
 import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
+import { createThrottledScheduler } from '../../shared/throttledScheduler'
 import {
   appendProgressiveText,
   createProgressiveRevealState,
@@ -108,7 +109,6 @@ let manualState: ManualTranslationState = createManualTranslationState()
 let selectionSpeechLanguage = ''
 let manualSpeechLanguage = ''
 let speechOperationId = 0
-let autoResizeTimer: ReturnType<typeof setTimeout> | null = null
 let lastRequestedAutoSize = { width: 0, height: 0 }
 /** 划词结果的渐进展示状态。 */
 let selectionReveal: ProgressiveRevealState = createProgressiveRevealState()
@@ -845,9 +845,13 @@ function measureTextLineWidth(text: string, font: string): number {
  */
 function measureAutoSize(): { width: number; height: number } {
   const popupEl = document.getElementById('popup') as HTMLElement
+  // 流式展示期间最终译文尚未写回 lastTranslation/manualState.translation，
+  // 宽度测量必须纳入当前已揭示的译文前缀，否则窗口宽度只会等全部返回后才变化。
+  const selectionRevealText = selectionReveal.fullText.slice(0, selectionReveal.visibleLength)
+  const manualRevealText = manualReveal.fullText.slice(0, manualReveal.visibleLength)
   const sourceTexts = mode === 'manual'
-    ? [manualState.draft, manualState.translation ?? '']
-    : [lastOriginal, lastTranslation, lastOcrText]
+    ? [manualState.draft, manualState.translation ?? '', manualRevealText]
+    : [lastOriginal, lastTranslation, lastOcrText, selectionRevealText]
   const sourceFont = buildCanvasFont(getComputedStyle(originalEl))
   const resultFont = buildCanvasFont(getComputedStyle(resultEl))
   const widestText = sourceTexts.reduce((widest, text) => Math.max(
@@ -887,20 +891,20 @@ function measureAutoSize(): { width: number; height: number } {
 }
 
 /**
- * 在内容或模式变化后去抖上报自适应尺寸，避免频繁触发布局。
+ * 内容变化时测量并上报自适应尺寸。
+ *
+ * 使用节流（而非去抖）调度：流式打字机每 16ms 就触发一次尺寸请求，去抖会
+ * 被持续重置导致回调被无限推迟，只有流式结束才真正测量一次。节流保证在
+ * 流式过程中按固定间隔周期性测量，窗口随内容增长平滑变大。
  * @returns 无返回值。
  * @author zhenghq
  */
-function requestAutoResize(): void {
-  if (autoResizeTimer) clearTimeout(autoResizeTimer)
-  autoResizeTimer = setTimeout(() => {
-    autoResizeTimer = null
-    const size = measureAutoSize()
-    if (size.width === lastRequestedAutoSize.width && size.height === lastRequestedAutoSize.height) return
-    lastRequestedAutoSize = size
-    window.api.resizePopup(size)
-  }, 60)
-}
+const requestAutoResize = createThrottledScheduler((): void => {
+  const size = measureAutoSize()
+  if (size.width === lastRequestedAutoSize.width && size.height === lastRequestedAutoSize.height) return
+  lastRequestedAutoSize = size
+  window.api.resizePopup(size)
+}, 60)
 
 /**
  * 进入手动模式并请求主进程固定弹窗。

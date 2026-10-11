@@ -68,11 +68,23 @@ test('统一窗口级置前入口必须用 moveTop 越过其它应用窗口', ()
   )
 })
 
-test('设置窗口与翻译弹窗在 macOS 上都是 nonactivating panel', () => {
+test('设置窗口不得使用会跨所有桌面的 nonactivating panel', () => {
   const createSource = extractFunction(indexSource, 'async function createSettingsWindow(')
   const popupCreateSource = extractFunction(popupSource, 'export function createPopup(')
 
-  assert.match(createSource, /isMac\s*\?\s*\{\s*type:\s*'panel'\s*\}/u)
+  // Electron 33 的 ElectronNSPanel 会在 setCollectionBehavior: 中无条件追加
+  // CanJoinAllSpaces | FullScreenAuxiliary，setVisibleOnAllWorkspaces(false)
+  // 无法清除 CanJoinAllSpaces。设置窗口若继续使用 panel，就必然跑到所有桌面。
+  assert.doesNotMatch(
+    createSource,
+    /type:\s*'panel'/u,
+    '设置窗口必须保持普通窗口类型，不能跨所有桌面'
+  )
+  assert.doesNotMatch(
+    createSource,
+    /setVisibleOnAllWorkspaces\(/u,
+    '设置窗口既然不是 panel，就不需要依赖无法生效的跨桌面归一化调用'
+  )
   assert.match(popupCreateSource, /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u)
 })
 
@@ -201,7 +213,7 @@ test('设置窗口只保留最小焦点挂起机制，复杂补偿链必须删�
 
 test('Dock 激活判定不得再依赖内部激活租约等补偿条件', () => {
   const guardSource = stripComments(
-    extractFunction(indexSource, 'function shouldTreatActivateAsDockLaunch(): boolean {')
+    extractFunction(indexSource, 'function shouldTreatActivateAsDockLaunch(')
   )
   assert.doesNotMatch(guardSource, /internalActivationLease|internalWindowTeardown|popupHandingBackFront/u)
   assert.doesNotMatch(selectionInteractionSource, /internalActivationLeaseUntil/u)

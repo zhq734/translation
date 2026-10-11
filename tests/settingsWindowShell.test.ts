@@ -45,8 +45,8 @@ test('设置窗口不应启用 alwaysOnTop(true)，以便其他应用可以正�
   assert.ok(settingsWindowBlock)
   assert.doesNotMatch(settingsWindowBlock[1], /alwaysOnTop\s*:\s*true/u)
   assert.doesNotMatch(settingsWindowBlock[1], /setAlwaysOnTop\(true/u)
-  // macOS panel 默认浮层，创建后允许显式降回普通层级。
-  assert.match(settingsWindowBlock[1], /setAlwaysOnTop\(false\)/u)
+  // 设置窗口是普通窗口，不应依赖 panel 归一化调用维持普通层级。
+  assert.doesNotMatch(settingsWindowBlock[1], /setAlwaysOnTop\(false\)/u)
 })
 
 test('设置页标题栏应调用最小窗口 API并同步最大化状态', () => {

@@ -66,10 +66,10 @@ test('打开设置请求必须先开启失焦保护，失败时立即解除', ()
     /beginPopupSettingsOpenGuard\(\)/u,
     '处理打开设置请求时必须先进入弹窗失焦保护'
   )
-  assert.match(handlerSource, /openSettings\(\)/u, '打开设置请求必须调用 openSettings')
+  assert.match(handlerSource, /openSettings\(/u, '打开设置请求必须调用 openSettings')
   assert.ok(
     handlerSource.indexOf('beginPopupSettingsOpenGuard()') <
-      handlerSource.indexOf('openSettings()'),
+      handlerSource.indexOf('openSettings('),
     '必须先开启保护再打开设置窗口'
   )
   // 打开失败时设置窗口不会产生 focus/blur 生命周期事件，保护必须自行解除，
@@ -103,6 +103,32 @@ test('设置窗口生命周期必须正确开关弹窗失焦保护', () => {
   assert.match(blurBlock, /endPopupSettingsOpenGuard\(\)/u, '设置窗口失焦时必须解除保护')
   assert.match(hideBlock, /endPopupSettingsOpenGuard\(\)/u, '设置窗口隐藏时必须解除保护')
   assert.match(closedBlock, /endPopupSettingsOpenGuard\(\)/u, '设置窗口销毁时必须解除保护')
+})
+
+test('弹窗内显式打开设置页必须豁免划词抑制并强制置前', () => {
+  const handlerSource = stripComments(
+    extractFunction(indexSource, 'function openSettingsFromPopup()')
+  )
+
+  // 弹窗内点击设置入口是显式用户操作。hidePopupForInternalWindowSwitch() 会续期
+  // 划词 activate 抑制；若复用 createSettingsWindow 的普通显式置前分支，用户这次
+  // 点击会被抑制窗口吞掉，设置页保持后台层级。来源必须随打开请求透传，使统一入口
+  // 能区分“划词内部自动置前”和“弹窗内用户显式点击”。
+  assert.match(
+    handlerSource,
+    /openSettings\(\{[^}]*bringToFront:\s*true[^}]*source:\s*'popup'[^}]*\}\)/u,
+    '弹窗内打开设置必须显式标记 popup 来源'
+  )
+  assert.match(
+    indexSource,
+    /async function openSettings\(options:[^)]*source\?:[^)]*'popup'[^)]*\)/u,
+    'openSettings 必须接收来源标记'
+  )
+  assert.match(
+    indexSource,
+    /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
+    'openSettings 必须把来源传给 createSettingsWindow'
+  )
 })
 
 test('保护期内点击设置窗口不得被判定为弹窗外部点击', () => {
@@ -193,7 +219,7 @@ test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
   )
   assert.ok(
     openSettingsSource.indexOf('hidePopupForInternalWindowSwitch()') <
-      openSettingsSource.indexOf('openSettings()'),
+      openSettingsSource.indexOf('openSettings('),
     '必须先关闭翻译弹窗，再打开设置页，避免弹窗关闭路径影响设置页'
   )
   assert.doesNotMatch(openSettingsSource, /handBackFrontmostThen|yieldFrontmostAppThen/u,
@@ -354,7 +380,7 @@ test('连续第二次打开设置页或阅读器时，打开动作完成后仍�
     '打开设置页后必须重新开启内部窗口保护'
   )
   assert.ok(
-    openSettingsSource.indexOf('beginPopupSettingsOpenGuard()') < openSettingsSource.indexOf('openSettings()'),
+    openSettingsSource.indexOf('beginPopupSettingsOpenGuard()') < openSettingsSource.indexOf('openSettings('),
     '设置页保护必须早于异步打开动作'
   )
   assert.ok(
@@ -456,7 +482,7 @@ test('openSettings 必须按来源决定是否置顶且不得再维护显式打�
 
   assert.match(
     openSource,
-    /createSettingsWindow\(options\.bringToFront \?\? true\)/u,
+    /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
     'openSettings 必须把是否置顶透传给 createSettingsWindow'
   )
   assert.doesNotMatch(openSource, /settingsWindowExplicitlyOpened/u,

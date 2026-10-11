@@ -72,7 +72,10 @@ test('复用设置窗口先刷新策略再置前，新建设置窗口先置前�
     assert.doesNotMatch(path, /app\.focus\(/u)
   }
   // 用户显式入口默认请求把设置页带到最前，内部 activate 才显式传 false 复用。
-  assert.match(source, /async function openSettings\(options[\s\S]*?await createSettingsWindow\(options\.bringToFront \?\? true\)/u)
+  assert.match(
+    source,
+    /async function openSettings\(options[\s\S]*?await createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u
+  )
   const openSettingsBlock = source.match(
     /async function openSettings\([\s\S]*?\): Promise<void> \{([\s\S]*?)\n\}/u
   )
@@ -104,7 +107,7 @@ test('设置页关闭 Dock 图标后只恢复可见性，不得把设置页置�
   )
 })
 
-test('启动首开设置页在 Dock 策略刷新后必须再次置前', () => {
+test('启动首开设置页在 Dock 策略刷新后仅在未进入划词时再次置前', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const settingsWindowBlock = source.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
@@ -123,6 +126,19 @@ test('启动首开设置页在 Dock 策略刷新后必须再次置前', () => {
   assert.ok(
     finalShowIndex > refreshIndex,
     '启动首开在 Dock 策略刷新后必须再次通过统一入口置前，避免窗口被重新压到其它应用之后'
+  )
+  // 最终置前发生在多个 await 之后，用户可能已经开始划词；必须先校验本次
+  // 置前代际未被划词失效，且不处于划词置前保护期，才能 moveTop()/focus()。
+  const finalShowSource = createPath.slice(refreshIndex, finalShowIndex + 80)
+  assert.match(
+    finalShowSource,
+    /bringToFrontEpochAtStart !== settingsBringToFrontEpoch/u,
+    '最终置前前必须校验划词代际'
+  )
+  assert.match(
+    finalShowSource,
+    /isSelectionWindowRaiseGuardActive\(\)/u,
+    '最终置前前必须校验划词保护期'
   )
 })
 

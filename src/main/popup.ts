@@ -9,6 +9,7 @@ import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
+import { logCandidateProbe } from '../shared/activateDiagnostics'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -352,14 +353,17 @@ export function showPopup(
     if (activate) foregroundTracker.remember()
     // macOS panel 的 show()/focus() 只让弹窗自身成为 key window，不激活整个应用，
     // 因此不再需要记录/交还应用级前台；Windows 仍按原有 show/showInactive 语义处理。
+    logCandidateProbe(activate ? 'popup-show' : 'popup-show-inactive', alreadyVisible)
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
   } else if (activate && shownInactive) {
     foregroundTracker.remember()
+    logCandidateProbe('popup-show', alreadyVisible)
     win.show()
     shownInactive = false
   } else if (!activate && !shownInactive && alreadyVisible) {
     // 弹窗已可见且已被激活，需要降级为非激活以归还前台焦点给源应用。
+    logCandidateProbe('popup-show-inactive', alreadyVisible)
     win.showInactive()
     shownInactive = true
   }
@@ -464,6 +468,7 @@ export function hidePopup(): void {
     foregroundTracker.restore()
   }
   shownInactive = false
+  logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
   win.hide()
   // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
   // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。

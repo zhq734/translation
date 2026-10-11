@@ -91,26 +91,25 @@ test('网页阅读器应支持恢复并聚焦尚未关闭的窗口', () => {
   assert.match(focusMethod, /return true/u)
 })
 
-test('macOS 网页阅读器必须以 nonactivating panel 创建并归一化 panel 副作用', () => {
+test('macOS 网页阅读器必须保持普通窗口并留在当前桌面', () => {
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const ensureSource = manager.slice(
     manager.indexOf('private async ensureWindow()'),
     manager.indexOf('/** 返回或创建隔离的阅读器 Session。')
   )
 
-  // macOS 上普通 BrowserWindow 始终是可聚焦的 key window 候选；翻译弹窗显隐时
-  // 系统会把它选为下一个 key window 并拉到最前。阅读器必须与设置页、翻译弹窗
-  // 一样采用 nonactivating panel，从候选集合层面消除该时序。
-  assert.match(
+  // Electron 33 的 ElectronNSPanel 会强制 CanJoinAllSpaces | FullScreenAuxiliary，
+  // setVisibleOnAllWorkspaces(false) 无法清除 CanJoinAllSpaces。网页阅读器属于
+  // 普通窗口语义，必须保持普通 BrowserWindow，才能留在创建它的当前桌面。
+  assert.doesNotMatch(
     ensureSource,
     /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u,
-    'macOS 阅读器必须以 panel 类型创建'
+    'macOS 阅读器不得使用会跨所有桌面的 panel 类型'
   )
-  // panel 默认带浮层层级与跨桌面行为，必须显式归一化，避免变成“永远置顶”。
-  assert.match(
+  assert.doesNotMatch(
     ensureSource,
-    /if \(process\.platform\s*===\s*'darwin'\) \{[\s\S]*?setAlwaysOnTop\(false\)[\s\S]*?setVisibleOnAllWorkspaces\(false,\s*ALL_WORKSPACES_VISIBILITY_OPTIONS\)/u,
-    'macOS 阅读器创建后必须归一化 panel 副作用'
+    /setAlwaysOnTop\(false\)|setVisibleOnAllWorkspaces\(/u,
+    '阅读器既然不是 panel，就不得再依赖无效的 panel 副作用归一化'
   )
   assert.doesNotMatch(
     manager,

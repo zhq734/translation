@@ -62,7 +62,6 @@ import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
 import { sendToAliveWebContents } from './webContentsMessaging'
 import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
 import { translateMain } from './messages'
-import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import {
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
@@ -112,6 +111,8 @@ export interface WebReaderManagerOptions {
   onInternalWindowFocusLost?: () => void
   /** 判断当前是否存在可见设置页；存在时关闭阅读器不得触发应用级隐藏。 */
   hasVisibleSettingsWindow?: () => boolean
+  /** 通过统一窗口级入口把阅读器置前；不得由管理器直接激活整个应用。 */
+  bringToFrontToOwnWindow?: (window: BrowserWindow) => void
 }
 
 /** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
@@ -179,10 +180,11 @@ export class WebReaderManager {
 
   /** 打开或聚焦阅读器。
    * @param url 可选初始 URL。
+   * @param options 打开选项；`bringToFront` 为 true 时走统一窗口级置前入口。
    * @returns 无返回值。
    * @author zhenghq
    */
-  async open(url?: string): Promise<void> {
+  async open(url?: string, options: { bringToFront?: boolean } = {}): Promise<void> {
     if (!this.options.getSettings().webTranslationEnabled) {
       throw new Error(translateMain('webReader.error.disabled'))
     }
@@ -192,8 +194,17 @@ export class WebReaderManager {
     // 关闭阅读器时就没有可交还的目标，macOS 会把设置页提升为 key window 顶到最前。
     await rememberFrontmostAppIfInactiveAsync()
     await this.ensureWindow()
-    this.window?.show()
-    this.window?.focus()
+    const window = this.window
+    if (window && !window.isDestroyed()) {
+      if (options.bringToFront && this.options.bringToFrontToOwnWindow) {
+        // 弹窗内点击阅读器属于显式用户入口：hidePopup() 会续期划词 activate 抑制，
+        // 但该抑制只针对划词内部自动动作；用户这次点击必须真正把阅读器置前。
+        this.options.bringToFrontToOwnWindow(window)
+      } else {
+        window.show()
+        window.focus()
+      }
+    }
     if (url) await this.navigate(url)
   }
 
@@ -1389,17 +1400,8 @@ export class WebReaderManager {
       maximizable: true,
       fullscreenable: false,
       backgroundColor: '#f5f7fa',
-      // macOS 上普通 BrowserWindow 始终是可聚焦的 key window 候选，翻译弹窗
-      // 显隐时系统会把它提升到最前。采用 nonactivating panel 与设置页、
-      // 翻译弹窗保持一致，从候选集合层面消除该时序。
-      ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
       webPreferences: { preload: this.options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
-    if (process.platform === 'darwin') {
-      // panel 默认带浮层层级与跨桌面行为，必须显式归一化，避免阅读器长期置顶。
-      window.setAlwaysOnTop(false)
-      window.setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)
-    }
     const view = new WebContentsView({
       webPreferences: { session: this.getSession(), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })

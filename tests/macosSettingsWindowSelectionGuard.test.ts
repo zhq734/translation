@@ -31,13 +31,14 @@ const mainSource = readFileSync('src/main/index.ts', 'utf8')
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 const macSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
-test('设置窗口与翻译弹窗在 macOS 上都是 nonactivating panel', () => {
+test('设置窗口保持普通窗口，翻译弹窗保留 nonactivating panel', () => {
   const createSource = extractFunction(mainSource, 'async function createSettingsWindow(')
   const popupCreateSource = extractFunction(popupSource, 'export function createPopup(')
 
-  // panel 的 show()/focus() 只让目标窗口自身成为 key window，不激活整个应用；
-  // 这是消除「打开一个窗口把同应用其它窗口一起带到最前」闪现的根因修复。
-  assert.match(createSource, /isMac\s*\?\s*\{\s*type:\s*'panel'\s*\}/u)
+  // 设置窗口曾尝试用 panel 避免激活整个应用，但 Electron 33 的 ElectronNSPanel
+  // 强制 CanJoinAllSpaces，导致设置页跑到所有桌面。设置窗口必须改回普通窗口；
+  // 翻译弹窗仍需要跨桌面的浮层语义，因此保留 panel。
+  assert.doesNotMatch(createSource, /type:\s*'panel'/u)
   assert.match(popupCreateSource, /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u)
 })
 
