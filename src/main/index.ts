@@ -725,11 +725,30 @@ function invalidateSelectionFlowWithFocusCleanup(): number | null {
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
-  if (webReader?.focusExistingWindow()) return
+  // 划词期间设置页可能被临时设为不可聚焦；Dock 点击是显式入口，必须先解除
+  // 挂起。该恢复不能放在后面的设置页分支里：阅读器存在时会在复用后直接
+  // return，设置页将一直保持不可聚焦，用户表现为窗口打开后立即关闭/无法输入。
+  resumeSettingsWindowFocusAfterSelection()
+  // Dock 点击是显式入口：已有阅读器也要真正置前。focusExistingWindow()
+  // 对已可见窗口只返回 true 不调整层级，阅读器被其它应用遮挡时用户会以为
+  // Dock 点击没有反应。
+  if (webReader?.focusOrOpenExistingWindow()) return
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
   // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
   // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
   void openSettings({ bringToFront: true })
+    .then(async () => {
+      const target = settingsWin
+      if (!target || target.isDestroyed() || !target.isVisible()) return
+      // Dock 激活事件可能在第一次 show/focus 之后才完成系统窗口重排，复用分支
+      // 缺少新建分支的最终置前；让出一轮事件循环再补一次，避免设置页随即失焦。
+      await yieldToEventLoop()
+      if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
+      showOwnWindowForInteraction(target, { raiseLevel: true })
+    })
+    .catch((error: unknown) => {
+      console.error('[settings] Dock 激活打开设置窗口失败:', error)
+    })
 }
 
 // ---- 主进程日志层 ----
