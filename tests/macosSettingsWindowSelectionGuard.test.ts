@@ -41,28 +41,26 @@ test('设置窗口与翻译弹窗在 macOS 上都是 nonactivating panel', () =>
   assert.match(popupCreateSource, /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u)
 })
 
-test('设置窗口只保留最小焦点挂起机制，复杂补偿链必须删除', () => {
+test('划词焦点挂起与恢复机制必须整体移除', () => {
   const code = stripComments(mainSource)
 
-  // 真机验证表明 nonactivating panel 只阻止激活整个应用，并不能阻止系统在
-  // 应用内部把可聚焦的设置页选为 key window。因此必须保留最小焦点挂起机制：
-  // 划词期间关闭设置页可聚焦性，结果弹窗隐藏后再恢复。以下为上一版补偿性
-  // 实现遗留的定时器、代际号与显式打开标记，必须继续删除，避免与新机制竞态。
+  // setFocusable(false) 会让 macOS 的 BrowserWindow.getFocusedWindow() 返回 null，
+  // 弹窗隐藏时会把场景误判为需要整应用让出并触发 app.hide()，用户表现为从 Dock
+  // 打开设置页后窗口闪一下消失。该机制已被真机证明无效且有害，必须彻底删除。
   for (const removed of [
-    'settingsWindowExplicitlyOpened',
-    'settingsWindowFocusResumeTimer',
-    'clearSettingsWindowFocusResume',
-    'finishSettingsWindowFocusSuspension',
-    'scheduleSettingsWindowFocusResume',
-    'logSettingsWindowFocusDiagnostic',
-    'SETTINGS_WINDOW_FOCUS_RESUME_FALLBACK_MS'
+    'settingsWindowFocusSuspendedForSelection',
+    'settingsWindowFocusResumePending',
+    'settingsWindowFocusResumePendingOwnerToken',
+    'settingsWindowFocusSuspensionOwnerToken',
+    'webReaderFocusResumePending',
+    'webReaderFocusResumePendingOwnerToken',
+    'webReaderFocusSuspensionOwnerToken',
+    'suspendSettingsWindowFocusForSelection',
+    'resumeSettingsWindowFocusAfterSelection'
   ]) {
     assert.ok(!code.includes(removed), `index.ts 不应再包含 ${removed}`)
   }
-  assert.match(code, /function suspendSettingsWindowFocusForSelection\(/u,
-    '划词期间必须提供设置页焦点挂起入口')
-  assert.match(code, /function resumeSettingsWindowFocusAfterSelection\(/u,
-    '交互收尾或显式打开设置页时必须提供恢复入口')
+  assert.doesNotMatch(code, /\.setFocusable\(/u, 'index.ts 不得再通过 setFocusable 挂起自有窗口')
 })
 
 test('内部激活租约与延迟释放补偿必须整体删除', () => {
@@ -80,18 +78,58 @@ test('内部激活租约与延迟释放补偿必须整体删除', () => {
   }
 })
 
-test('取词流程必须挂起设置窗口可聚焦性，但不得恢复内部激活租约', () => {
+test('取词流程不得再挂起设置窗口或阅读器焦点', () => {
   const translateSource = stripComments(
     extractFunction(mainSource, 'async function translateSelectionButton(')
   )
 
-  assert.match(translateSource, /suspendSettingsWindowFocusForSelection\(interactionToken\)/u,
-    '按钮取词开始前必须挂起设置页焦点，避免其被选为 key window')
+  assert.doesNotMatch(translateSource, /suspendSettingsWindowFocusForSelection/u,
+    '按钮取词不得再挂起设置页焦点')
+  assert.doesNotMatch(translateSource, /setFocusable\(/u,
+    '按钮取词不得再直接切换窗口可聚焦性')
   assert.doesNotMatch(translateSource, /renewInternalActivationLease/u)
   assert.doesNotMatch(translateSource, /waitForFrontmostAppReturn/u)
   assert.doesNotMatch(translateSource, /restoreFrontmostAppForCapture/u)
-  // 释放交互状态不再需要等弹窗隐藏收尾。
   assert.doesNotMatch(translateSource, /pendingPopupReleaseToken/u)
+})
+
+test('快捷键自动取词与自动模式划词也不得挂起窗口焦点', () => {
+  const hotkeySource = stripComments(
+    extractFunction(mainSource, 'function onHotkey(): void {')
+  )
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
+
+  // 阅读器与设置页都已是 nonactivating panel，不再需要任何焦点挂起补偿。
+  assert.doesNotMatch(hotkeySource, /suspendSettingsWindowFocusForSelection|setFocusable\(/u,
+    '快捷键取词不得挂起自有窗口焦点')
+  assert.doesNotMatch(scheduleSource, /suspendSettingsWindowFocusForSelection|setFocusable\(/u,
+    '自动模式划词不得挂起自有窗口焦点')
+})
+
+test('快捷键延迟取词必须在启动旧流程前校验交互 token', () => {
+  const hotkeySource = stripComments(
+    extractFunction(mainSource, 'function onHotkey(): void {')
+  )
+  const timeoutStart = hotkeySource.indexOf('setTimeout(')
+  const timeoutEnd = hotkeySource.indexOf('captureDelay', timeoutStart)
+
+  // Windows 快捷键取词会先等待 300ms 释放修饰键。等待期间用户可能复制/粘贴、
+  // 切换触发模式或开始新一轮划词，旧定时器若仍进入 queueSelectionTranslation()，
+  // 会在 token 校验前启动一次取词并干扰新流程。回调必须先确认本次 token 仍是
+  // 当前交互，再启动取词。
+  assert.ok(timeoutStart >= 0, '快捷键应保留延迟取词定时器')
+  assert.ok(timeoutEnd > timeoutStart, '延迟取词定时器应使用 captureDelay')
+  const delayedCaptureSource = hotkeySource.slice(timeoutStart, timeoutEnd)
+  const currentCheckIndex = delayedCaptureSource.indexOf(
+    'selectionInteraction.isCurrent(interactionToken)'
+  )
+  const queueIndex = delayedCaptureSource.indexOf(
+    'queueSelectionTranslation(undefined, interactionToken, true, popupCloseVersion)'
+  )
+  assert.ok(currentCheckIndex >= 0, '延迟回调必须校验本次交互 token 是否仍有效')
+  assert.ok(queueIndex > currentCheckIndex, 'token 校验必须位于延迟取词启动之前')
 })
 
 test('macOS 前台交还模块不得再导出补偿性 API', () => {
@@ -165,11 +203,28 @@ test('窗口级置前入口不得激活整个应用', () => {
   assert.match(helperSource, /win\.focus\(\)/u, '统一置前入口必须让目标窗口取得键盘焦点')
 })
 
-test('设置窗口创建与复用路径不得激活整个应用', () => {
+test('设置窗口创建与复用路径不得激活整个应用或恢复焦点挂起', () => {
   const createSource = stripComments(
     extractFunction(mainSource, 'async function createSettingsWindow(')
   )
 
   assert.doesNotMatch(createSource, /app\.focus\(/u, '创建/复用设置窗口不得激活整个应用')
+  assert.doesNotMatch(createSource, /resumeSettingsWindowFocusAfterSelection|setFocusable\(/u,
+    '创建/复用设置窗口不得依赖已删除的焦点恢复机制')
   assert.match(createSource, /showOwnWindowForInteraction\(/u, '设置窗口必须走统一窗口级置前入口')
+})
+
+test('Dock 激活路径不得依赖焦点恢复入口', () => {
+  const activateSource = stripComments(
+    extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
+  )
+
+  // Dock 是显式用户入口，只需复用并置前已有阅读器或打开设置页；焦点挂起机制
+  // 删除后，路径中不得再残留任何恢复调用，避免继续触发 app.hide() 类回归。
+  assert.doesNotMatch(activateSource, /resumeSettingsWindowFocusAfterSelection|setFocusable\(/u,
+    'Dock 激活路径不得依赖已删除的焦点恢复机制')
+  assert.match(activateSource, /webReader\?\.focusOrOpenExistingWindow\(\)/u,
+    'Dock 激活已有阅读器时必须显式置前')
+  assert.match(activateSource, /openSettings\(\{ bringToFront: true \}\)/u,
+    '没有阅读器时 Dock 激活必须置前设置页')
 })

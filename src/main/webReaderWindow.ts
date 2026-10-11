@@ -62,6 +62,7 @@ import { isDisposedWebFrameError } from '../shared/webTranslationErrors'
 import { sendToAliveWebContents } from './webContentsMessaging'
 import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
 import { translateMain } from './messages'
+import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import {
   buildWebPageChangeObserverScript,
   buildWebPageChangeStatusScript,
@@ -1388,8 +1389,17 @@ export class WebReaderManager {
       maximizable: true,
       fullscreenable: false,
       backgroundColor: '#f5f7fa',
+      // macOS 上普通 BrowserWindow 始终是可聚焦的 key window 候选，翻译弹窗
+      // 显隐时系统会把它提升到最前。采用 nonactivating panel 与设置页、
+      // 翻译弹窗保持一致，从候选集合层面消除该时序。
+      ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
       webPreferences: { preload: this.options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
+    if (process.platform === 'darwin') {
+      // panel 默认带浮层层级与跨桌面行为，必须显式归一化，避免阅读器长期置顶。
+      window.setAlwaysOnTop(false)
+      window.setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)
+    }
     const view = new WebContentsView({
       webPreferences: { session: this.getSession(), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })

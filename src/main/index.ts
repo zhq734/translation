@@ -317,21 +317,6 @@ function yieldToEventLoop(): Promise<void> {
 
 let tray: Tray | null = null
 let settingsWin: BrowserWindow | null = null
-/**
- * 划词交互期间被临时挂起可聚焦性的设置窗口。
- *
- * macOS 的 nonactivating panel 只阻止激活整个应用，并不会阻止系统在应用内部
- * 选择下一个可聚焦窗口作为 key window。翻译弹窗隐藏或降级为 showInactive 时，
- * 若设置窗口仍可聚焦，系统就会把它提升为 key window 并排到最前。这里记录
- * 被挂起的窗口，待结果弹窗隐藏后再恢复其可聚焦性。
- */
-let settingsWindowFocusSuspendedForSelection: BrowserWindow | null = null
-/** 结果弹窗仍可见时收到恢复请求，需等弹窗真正隐藏后再恢复设置页可聚焦性。 */
-let settingsWindowFocusResumePending = false
-/** 被推迟恢复的交互 token；无所有者（显式打开设置页）时为 null。 */
-let settingsWindowFocusResumePendingOwnerToken: number | null = null
-/** 当前持有设置页焦点保护所有权的选区交互 token；无保护时为 null。 */
-let settingsWindowFocusSuspensionOwnerToken: number | null = null
 let ocrSelectionWin: BrowserWindow | null = null
 const ocrSelectionWindowReadyPromises = new WeakMap<BrowserWindow, Promise<void>>()
 let pendingOcrSelectionReady: {
@@ -603,81 +588,6 @@ function shouldTreatActivateAsDockLaunch(): boolean {
  */
 function suppressSelectionActivationWindowGap(): void {
   selectionActivationSuppressUntil = Date.now() + SELECTION_ACTIVATION_SUPPRESS_MS
-  // 弹窗隐藏时 popup.ts 会回调本函数。若上一次交互收尾时弹窗仍可见，
-  // 设置页焦点恢复会被推迟到这里执行，确保恢复发生在 key window 重选之后。
-  // 只有带交互所有者的待恢复项才允许在这里自动执行。失效旧流程登记的是
-  // 无所有者待恢复（null），它必须等用户显式打开/点击设置页时再恢复；
-  // 否则下一次划词开始调用本函数时，仍会把设置页同步放回可聚焦状态并拉到最前。
-  if (
-    settingsWindowFocusResumePending &&
-    settingsWindowFocusResumePendingOwnerToken !== null &&
-    !isPopupVisible()
-  ) {
-    settingsWindowFocusResumePending = false
-    const pendingOwnerToken = settingsWindowFocusResumePendingOwnerToken
-    settingsWindowFocusResumePendingOwnerToken = null
-    // 此处弹窗已经隐藏，必须绕过“弹窗可见则继续推迟”的判定真正完成恢复。
-    resumeSettingsWindowFocusAfterSelection(pendingOwnerToken ?? undefined, true)
-  }
-}
-
-/**
- * 划词取词开始前临时关闭可见设置窗口的可聚焦性。
- *
- * macOS 的 nonactivating panel 只阻止激活整个应用，并不会阻止系统在应用内部
- * 选择下一个可聚焦窗口作为 key window。取词期间弹窗以 showInactive 显示或隐藏
- * 时，设置页若仍可聚焦就会被系统提升到最前。这里从根源上取消它的候选资格，
- * 由本次交互 token 持有保护所有权，避免上一轮流程提前撤销新一轮保护。
- * @param token 当前取得设置窗口焦点保护所有权的选区交互 token。
- * @returns 无返回值。
- * @author zhenghq
- */
-function suspendSettingsWindowFocusForSelection(token: number): void {
-  if (!isMac) return
-  const target = settingsWin
-  if (!target || target.isDestroyed() || !target.isVisible()) return
-  settingsWindowFocusResumePending = false
-  settingsWindowFocusResumePendingOwnerToken = null
-  settingsWindowFocusSuspensionOwnerToken = token
-  // 已处于挂起状态时不重复设置窗口属性，但必须更新所有者 token：
-  // 旧流程随后释放时不能提前撤销新一轮交互的保护。
-  if (settingsWindowFocusSuspendedForSelection === target) return
-  settingsWindowFocusSuspendedForSelection = target
-  target.setFocusable(false)
-  // Electron 文档明确：macOS 上 setFocusable(false) 不会移除窗口已有焦点。
-  // 若设置窗口此刻已被系统提升为 key window，必须显式 blur 才能真正撤回。
-  if (BrowserWindow.getFocusedWindow() === target) target.blur()
-}
-
-/**
- * 划词取词结束后恢复设置窗口的可聚焦性。
- *
- * 结果弹窗仍可见时必须推迟恢复：弹窗隐藏会让系统重新挑选 key window，
- * 此时设置页若已可聚焦就会立刻被提升到最前。恢复只作用于本次挂起的同一个
- * 窗口，并在传入 token 时校验所有权，避免旧流程撤销新一轮保护。
- * @param ownerToken 正在释放的选区交互 token；省略表示用户显式操作触发的强制恢复。
- * @param force 是否忽略弹窗可见性立即恢复；省略 ownerToken 的显式入口默认强制恢复。
- * @returns 无返回值。
- * @author zhenghq
- */
-function resumeSettingsWindowFocusAfterSelection(
-  ownerToken?: number,
-  force = ownerToken === undefined
-): void {
-  if (!isMac) return
-  if (ownerToken !== undefined && settingsWindowFocusSuspensionOwnerToken !== ownerToken) return
-  if (!force && isPopupVisible()) {
-    settingsWindowFocusResumePending = true
-    settingsWindowFocusResumePendingOwnerToken = ownerToken ?? null
-    return
-  }
-  settingsWindowFocusResumePending = false
-  settingsWindowFocusResumePendingOwnerToken = null
-  settingsWindowFocusSuspensionOwnerToken = null
-  const target = settingsWindowFocusSuspendedForSelection
-  settingsWindowFocusSuspendedForSelection = null
-  if (!target || target.isDestroyed()) return
-  target.setFocusable(true)
 }
 
 /**
@@ -693,7 +603,6 @@ function releaseSelectionInteraction(token: number): void {
   // 否则它会被误判为 Dock 点击并把已打开的设置页拉到最前。
   if (released) {
     suppressSelectionActivationWindowGap()
-    resumeSettingsWindowFocusAfterSelection(token)
   }
 }
 
@@ -704,16 +613,6 @@ function releaseSelectionInteraction(token: number): void {
  */
 function invalidateSelectionFlowWithFocusCleanup(): number | null {
   const invalidatedToken = selectionInteraction.invalidateSelectionFlow()
-  // 用户复制/粘贴、切换监听模式或开始新划词时，旧取词流程会被直接作废，
-  // 不会走到 releaseSelectionInteraction()。此时若设置页仍处于不可聚焦状态，
-  // 必须登记恢复，否则设置页会永久无法接收键盘输入。这里只能登记无所有者
-  // 待恢复，绝不能调用恢复入口：弹窗恰好不可见时同步 setFocusable(true) 会
-  // 让设置页立刻重新进入 key window 候选集合，正是连续划词浮到最前的根因。
-  // 用户显式打开/点击设置页时，仍会通过强制恢复入口立即解除挂起。
-  if (invalidatedToken !== null && settingsWindowFocusSuspendedForSelection) {
-    settingsWindowFocusResumePending = true
-    settingsWindowFocusResumePendingOwnerToken = null
-  }
   return invalidatedToken
 }
 
@@ -725,10 +624,6 @@ function invalidateSelectionFlowWithFocusCleanup(): number | null {
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
-  // 划词期间设置页可能被临时设为不可聚焦；Dock 点击是显式入口，必须先解除
-  // 挂起。该恢复不能放在后面的设置页分支里：阅读器存在时会在复用后直接
-  // return，设置页将一直保持不可聚焦，用户表现为窗口打开后立即关闭/无法输入。
-  resumeSettingsWindowFocusAfterSelection()
   // Dock 点击是显式入口：已有阅读器也要真正置前。focusExistingWindow()
   // 对已可见窗口只返回 true 不调整层级，阅读器被其它应用遮挡时用户会以为
   // Dock 点击没有反应。
@@ -1233,6 +1128,7 @@ function onHotkey(): void {
   markHotkeyTrigger()
   selectionCapture.markEntry('hotkey')
   invalidateSelectionFlowWithFocusCleanup()
+  const interactionToken = selectionInteraction.beginTranslation()
   hideSelectionButton()
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
@@ -1249,12 +1145,18 @@ function onHotkey(): void {
   if (captureDelay > 0) {
     // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
     setTimeout(
-      () => queueSelectionTranslation(undefined, undefined, true, popupCloseVersion),
+      () => {
+        // 等待修饰键释放期间，用户可能复制/粘贴、切换触发模式或开始新一轮划词。
+        // 旧定时器必须先确认本次交互仍持有所有权，再启动取词；否则会绕过
+        // queueSelectionTranslation() 的延迟 token 校验，干扰新的取词流程。
+        if (!selectionInteraction.isCurrent(interactionToken)) return
+        queueSelectionTranslation(undefined, interactionToken, true, popupCloseVersion)
+      },
       captureDelay
     )
     return
   }
-  queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
+  queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
 }
 
 /**
@@ -1276,12 +1178,7 @@ function onOcrHotkey(): void {
  * @author zhenghq
  */
 function collectOwnWindowCandidates(): OwnWindowCandidate[] {
-  // 划词焦点挂起期间，macOS 仍可能让设置窗口残留 isFocused()===true。此时用户
-  // 正在外部应用划词，设置页只是等待恢复可聚焦性，不能参与自有窗口排除；
-  // 否则新一轮划词落在设置页矩形内会被误判为应用内手势并静默吞掉，表现为
-  // 检测到选区却不出现“译”按钮。
   const settingsFocused = Boolean(
-    settingsWindowFocusSuspendedForSelection === null &&
     settingsWin &&
     !settingsWin.isDestroyed() &&
     settingsWin.isVisible() &&
@@ -1495,12 +1392,6 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 进入分类或内部窗口兜底，弹窗可能被提前隐藏，后续 IPC 失去宿主窗口，
   // 表现为第二次点击直接关闭。弹窗自身命中必须在分类前短路。
   if (popupHit && primaryButton) return 'ignore'
-  // 用户显式点击可见设置页时，立即解除划词期间的焦点保护：结果弹窗被钉住时
-  // 恢复会被推迟，若不在此处放行，设置页将无法接收键盘输入。必须放在分类之前，
-  // 否则设置页已聚焦时分类结果不是 track，永远走不到后面的分支。
-  if (primaryButton && isPointInsideVisibleSettingsWindow(point)) {
-    resumeSettingsWindowFocusAfterSelection()
-  }
   // 设置窗口的 focus 事件可能晚于全局 mousedown 到达，此时 isFocused() 仍为 false，
   // 点击设置页会被误分类为弹窗外部点击并关闭翻译弹窗。处于设置打开保护期时，
   // 直接按可见矩形把这次按下识别为应用内点击。这里不能叠加应用激活事件门禁：
@@ -1680,9 +1571,6 @@ async function translateSelectionButton(): Promise<void> {
   selectionCapture.markEntry('button')
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
-  // 取词期间必须让设置页退出 key window 候选集合：弹窗以非激活方式显示或隐藏时，
-  // macOS 会从本应用可见窗口里挑选下一个可聚焦窗口，设置页若可聚焦就会浮到最前。
-  suspendSettingsWindowFocusForSelection(interactionToken)
   const anchor = lastSelectionAnchor
   latestSelectionGesture += 1
   hideSelectionButton()
@@ -4391,9 +4279,6 @@ function scheduleSettingsPanelRaiseLevelReset(): void {
 async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindow> {
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
-    // 显式打开设置页必须立即解除划词期间的焦点保护：用户要求需要键盘输入的
-    // 窗口正常可聚焦，不能被上一轮划词的延迟恢复窗口长期拖住。
-    resumeSettingsWindowFocusAfterSelection()
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
     // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
@@ -4436,8 +4321,6 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     }
   })
   settingsWin = createdWindow
-  // 新建设置窗口同样属于显式入口，若上一轮划词保护仍指向旧窗口，先强制解除。
-  resumeSettingsWindowFocusAfterSelection()
   if (isMac) {
     // panel 默认带浮层层级与跨桌面行为，设置窗口需要显式尝试归一化为普通窗口语义；
     // ElectronNSPanel 会强制保留 CanJoinAllSpaces，实际生效情况由真机 spike 记录。
@@ -4483,15 +4366,10 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('closed', () => {
-    // 窗口销毁后不会再有失焦/隐藏事件，必须在此解除保护。
+    // 窗口销毁后不会再有失焦/隐藏事件，必须在此清理窗口级状态。
     lowerSettingsPanelRaiseLevel()
     endPopupSettingsOpenGuard()
     resetAutoTriggerPointerState()
-    if (settingsWindowFocusSuspendedForSelection === createdWindow) {
-      settingsWindowFocusSuspendedForSelection = null
-      settingsWindowFocusResumePending = false
-      settingsWindowFocusSuspensionOwnerToken = null
-    }
     if (settingsWin === createdWindow) {
       settingsWin = null
     }

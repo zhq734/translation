@@ -98,26 +98,6 @@ test('“译”按钮窗口不应因激活自身而抢走前台应用焦点', ()
   assert.doesNotMatch(source, /win\.focus\(\)/u)
 })
 
-test('Dock 激活时必须在任何早退分支前解除设置页划词焦点挂起', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
-  const activateStart = source.indexOf('function activateExistingPageOrOpenSettings(): void {')
-  const activateSource = source.slice(
-    activateStart,
-    source.indexOf('// ---- 主进程日志层 ----', activateStart)
-  )
-
-  // 用户现象：划词后点击 Dock 打开设置页，窗口闪一下便失焦，看起来像自动关闭。
-  // 划词期间设置页会被 setFocusable(false) 挂起；Dock 是显式入口，必须最先强制
-  // 解除挂起，不能被“阅读器已可见”的提前 return 绕过，否则设置页仍无法接收键盘焦点。
-  const resumeIndex = activateSource.indexOf('resumeSettingsWindowFocusAfterSelection()')
-  const webReaderIndex = activateSource.indexOf('webReader?.focusOrOpenExistingWindow()')
-  assert.ok(resumeIndex >= 0, 'Dock 显式入口必须强制恢复设置页可聚焦性')
-  assert.ok(
-    webReaderIndex >= 0 && resumeIndex < webReaderIndex,
-    '强制恢复必须早于阅读器复用分支，避免早退绕过'
-  )
-})
-
 test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补一次窗口级置前', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const activateStart = source.indexOf('function activateExistingPageOrOpenSettings(): void {')

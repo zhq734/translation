@@ -1033,13 +1033,12 @@ test('划词手势处理只应排除持有焦点的应用自有窗口，后台�
   assert.match(candidatesSource, /settingsWin/u)
   assert.match(candidatesSource, /isFocused\(\)/u)
   assert.match(candidatesSource, /webReader\?\.isWindowFocused\(\)/u)
-  // 划词焦点挂起期间设置页的 isFocused() 可能残留为 true；此时它不能被当作
-  // 用户正在操作的自有窗口，否则新一轮划词落在设置页矩形内会被吞掉，
-  // 表现为检测到选区却不出现“译”按钮。挂起状态必须参与候选过滤。
-  assert.match(
+  // 焦点挂起机制已删除，候选收集只依据实时 isFocused()；不得再依赖任何
+  // 挂起状态或所有者 token，否则会把已移除机制的残留状态重新引入。
+  assert.doesNotMatch(
     candidatesSource,
-    /settingsWindowFocusSuspendedForSelection/u,
-    '设置页焦点挂起期间不得参与自有窗口划词排除'
+    /settingsWindowFocusSuspendedForSelection|webReaderFocusSuspensionOwnerToken/u,
+    '自有窗口排除不得依赖已删除的焦点挂起状态'
   )
 
   const handlerStart = source.indexOf('function handleSelectionGesture')

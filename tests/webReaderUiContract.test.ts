@@ -91,6 +91,34 @@ test('网页阅读器应支持恢复并聚焦尚未关闭的窗口', () => {
   assert.match(focusMethod, /return true/u)
 })
 
+test('macOS 网页阅读器必须以 nonactivating panel 创建并归一化 panel 副作用', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const ensureSource = manager.slice(
+    manager.indexOf('private async ensureWindow()'),
+    manager.indexOf('/** 返回或创建隔离的阅读器 Session。')
+  )
+
+  // macOS 上普通 BrowserWindow 始终是可聚焦的 key window 候选；翻译弹窗显隐时
+  // 系统会把它选为下一个 key window 并拉到最前。阅读器必须与设置页、翻译弹窗
+  // 一样采用 nonactivating panel，从候选集合层面消除该时序。
+  assert.match(
+    ensureSource,
+    /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u,
+    'macOS 阅读器必须以 panel 类型创建'
+  )
+  // panel 默认带浮层层级与跨桌面行为，必须显式归一化，避免变成“永远置顶”。
+  assert.match(
+    ensureSource,
+    /if \(process\.platform\s*===\s*'darwin'\) \{[\s\S]*?setAlwaysOnTop\(false\)[\s\S]*?setVisibleOnAllWorkspaces\(false,\s*ALL_WORKSPACES_VISIBILITY_OPTIONS\)/u,
+    'macOS 阅读器创建后必须归一化 panel 副作用'
+  )
+  assert.doesNotMatch(
+    manager,
+    /suspendFocusForSelection|resumeFocusAfterSelection|setFocusable\(/u,
+    '阅读器不得再通过 setFocusable 挂起可聚焦性'
+  )
+})
+
 test('网页提取应等待主文档可交互，而不是被全局 loading 状态误拦截', () => {
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const extractMethod = manager.slice(manager.indexOf('async extract('), manager.indexOf('/** 按语言方向翻译'))

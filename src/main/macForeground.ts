@@ -336,11 +336,10 @@ export function handBackFrontmostThen(
   // 隐藏的不是当前 key window：不会触发提升，记录留给随后真正隐藏 key window 的调用消费。
   // 弹窗场景有两个必须继续交还的例外：
   // 1) focused 为 null（弹窗以非激活方式显示，本应用仍最前）；
-  // 2) focused 是本应用内不可聚焦的残留焦点窗口。点击“译”后设置页会被临时
-  //    setFocusable(false)，但 macOS 仍可能让它在弹窗隐藏时持有 key window；
-  //    此时 focused 非 null 且不等于弹窗，旧逻辑会命中下方跳过分支，既不交还
-  //    前台也不消费记录，随后恢复设置页可聚焦性时应用仍最前，只能走
-  //    app.hide()→app.show() 兜底，app.show() 会把设置页重新顶到最前。
+  // 2) focused 是本应用内不可聚焦的残留焦点窗口（例如仅负责展示的覆盖层）。
+  //    此时 focused 非 null 且不等于弹窗，若命中下方跳过分支，既不交还前台
+  //    也不消费记录，应用仍最前，只能走 app.hide()→app.show() 兜底，
+  //    app.show() 会把设置页等自有窗口重新顶到最前。
   // 用户主动点击了其它可聚焦自有窗口时，该窗口是用户的目标焦点，必须保留跳过分支。
   const focusedIsResidualUnfocusableWindow = focused !== null &&
     !focused.isDestroyed() &&

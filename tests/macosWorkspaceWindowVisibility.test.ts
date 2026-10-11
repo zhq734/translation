@@ -51,7 +51,8 @@ test('macOS 跨工作区窗口必须跳过会隐藏窗口与 Dock 图标的进�
  * @author zhenghq
  */
 test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
-  const expectedCallSites = 5
+  // 网页阅读器 panel 化后也需显式关闭跨工作区行为，因此调用点从 5 处增至 6 处。
+  const expectedCallSites = 6
   let callSites = 0
 
   for (const file of listMainSourceFiles()) {
@@ -101,4 +102,26 @@ test('「译」按钮、翻译弹窗、OCR 覆盖窗口与截图提示窗口都�
     const callIndex = source.indexOf('setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)', anchorIndex)
     assert.ok(callIndex > anchorIndex, `${file} 的 ${anchor} 之后应紧跟使用统一选项的跨工作区设置`)
   }
+})
+
+/**
+ * 校验网页阅读器 panel 化后显式归一化跨工作区与置顶行为。
+ * panel 默认带浮层层级与跨桌面行为，若不关闭会让阅读器长期置顶或跟随所有桌面。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('网页阅读器 panel 化后必须显式关闭跨工作区与置顶行为', () => {
+  const source = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const anchorIndex = source.indexOf("...(process.platform === 'darwin' ? { type: 'panel' } : {})")
+  assert.ok(anchorIndex >= 0, 'webReaderWindow.ts 应把 macOS 阅读器创建为 nonactivating panel')
+  assert.match(
+    source.slice(anchorIndex),
+    /setAlwaysOnTop\(false\)/u,
+    '阅读器 panel 化后必须关闭置顶'
+  )
+  assert.match(
+    source.slice(anchorIndex),
+    /setVisibleOnAllWorkspaces\(false, ALL_WORKSPACES_VISIBILITY_OPTIONS\)/u,
+    '阅读器 panel 化后必须关闭跨工作区行为'
+  )
 })
