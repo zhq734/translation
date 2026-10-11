@@ -14,9 +14,19 @@ import {
   validateManualTranslationText,
   type ManualTranslationState
 } from '../../shared/manualTranslationBehavior'
-import type { Settings, TranslatePayload } from '../../shared/types'
+import type { Settings, TranslateDeltaPayload, TranslatePayload } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
 import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
+import {
+  appendProgressiveText,
+  createProgressiveRevealState,
+  finalizeProgressiveText,
+  nextRevealLength,
+  resolveRevealStepMs,
+  settleProgressiveText,
+  shouldPreservePartialReveal,
+  type ProgressiveRevealState
+} from '../../shared/progressiveReveal'
 import {
   createSpeechController,
   type SpeechController,
@@ -100,6 +110,15 @@ let manualSpeechLanguage = ''
 let speechOperationId = 0
 let autoResizeTimer: ReturnType<typeof setTimeout> | null = null
 let lastRequestedAutoSize = { width: 0, height: 0 }
+/** 划词结果的渐进展示状态。 */
+let selectionReveal: ProgressiveRevealState = createProgressiveRevealState()
+/** 手动翻译结果的渐进展示状态。 */
+let manualReveal: ProgressiveRevealState = createProgressiveRevealState()
+let revealTimer: ReturnType<typeof setTimeout> | null = null
+let revealTarget: 'selection' | 'manual' | null = null
+let revealSequence = 0
+/** 当前划词渐进展示状态所属的请求序号，用于失败时只保留本请求的片段。 */
+let selectionRevealRequestId = 0
 
 const speechSynthesisApi: SpeechSynthesisLike | null = 'speechSynthesis' in window
   ? window.speechSynthesis as unknown as SpeechSynthesisLike
@@ -503,6 +522,7 @@ function renderOcrLoading(payload: TranslatePayload): void {
 function renderSelection(payload: TranslatePayload): void {
   const visible = mode === 'selection'
   if (visible) syncLanguageSelectors(payload)
+  if (payload.requestId !== undefined) latestSelectionRequestId = payload.requestId
   currentSelectionOrigin = payload.origin ?? 'selection'
   sourceSectionHeadEl.hidden = payload.origin === 'ocr'
   if (payload.origin !== 'ocr' && payload.original !== undefined) lastOriginal = payload.original
@@ -512,6 +532,8 @@ function renderSelection(payload: TranslatePayload): void {
   }
   if (payload.loading) {
     stopSpeech()
+    stopProgressiveReveal()
+    selectionReveal = createProgressiveRevealState()
     lastTranslation = ''
     selectionSpeechLanguage = ''
     selectionProvider = undefined
@@ -540,6 +562,30 @@ function renderSelection(payload: TranslatePayload): void {
   resultEl.classList.remove('loading')
   if (!payload.ok) {
     stopSpeech()
+    // 首个安全片段已经展示后当前通道失败：保留已揭示内容并提示重试，
+    // 不得静默清空用户已经看到的译文。
+    // 仅当失败属于当前请求且已经展示过安全片段时才保留，避免旧请求错误污染新结果。
+    if (payload.requestId !== undefined
+      && payload.requestId === selectionRevealRequestId
+      && shouldPreservePartialReveal(selectionReveal)) {
+      stopProgressiveReveal()
+      selectionReveal = settleProgressiveText(selectionReveal)
+      renderRevealText('selection')
+      copyBtn.hidden = true
+      selectionStatus = `${t('popup.translationFailed')}：${payload.error ?? t('common.unknownError')}`
+      originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
+      if (payload.origin === 'ocr') {
+        renderOcrSource(payload)
+      } else {
+        renderOcrSource({} as TranslatePayload)
+      }
+      if (visible) statusEl.textContent = selectionStatus
+      syncSpeechButton()
+      requestAutoResize()
+      return
+    }
+    stopProgressiveReveal()
+    selectionReveal = createProgressiveRevealState()
     lastTranslation = ''
     selectionSpeechLanguage = ''
     selectionProvider = undefined
@@ -572,9 +618,10 @@ function renderSelection(payload: TranslatePayload): void {
   selectionProvider = payload.provider
   selectionStatus = `${sourceName} → ${targetName}`
   if (visible) renderTranslationProviderResult(selectionProvider)
-  lastTranslation = payload.translation ?? ''
+  const finalTranslation = payload.translation ?? ''
+  lastTranslation = finalTranslation
   selectionSpeechLanguage = payload.targetLang ?? targetLangEl.value
-  resultEl.textContent = lastTranslation
+  startProgressiveReveal('selection', finalTranslation, payload.channel === t('translate.channel.cached'))
   originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
   copyBtn.hidden = !visible || !lastTranslation
   if (visible) statusEl.textContent = selectionStatus
@@ -584,6 +631,96 @@ function renderSelection(payload: TranslatePayload): void {
     renderOcrSource({} as TranslatePayload)
   }
   syncSpeechButton()
+  requestAutoResize()
+}
+
+/**
+ * 开始一次渐进展示；先立即显示已揭示前缀，再按计时器推进。
+ * @param target 展示目标区域。
+ * @param fullText 完整最终译文。
+ * @param cached 是否为缓存命中。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function startProgressiveReveal(target: 'selection' | 'manual', fullText: string, cached = false): void {
+  stopProgressiveReveal()
+  const state = target === 'selection' ? selectionReveal : manualReveal
+  const settled = finalizeProgressiveText(state, fullText, cached)
+  if (target === 'selection') selectionReveal = settled
+  else manualReveal = settled
+  renderRevealText(target)
+  revealTarget = target
+  const step = Math.max(1, Math.ceil(fullText.length / 400))
+  const stepMs = resolveRevealStepMs(fullText.length, cached)
+  revealSequence += 1
+  const sequence = revealSequence
+  const tick = (): void => {
+    if (sequence !== revealSequence || revealTarget !== target) return
+    const current = target === 'selection' ? selectionReveal : manualReveal
+    if (current.visibleLength >= current.fullText.length) {
+      revealTimer = null
+      renderRevealText(target)
+      return
+    }
+    const next = nextRevealLength(current, step)
+    if (target === 'selection') selectionReveal = next
+    else manualReveal = next
+    renderRevealText(target)
+    revealTimer = setTimeout(tick, stepMs)
+  }
+  revealTimer = setTimeout(tick, stepMs)
+}
+
+/**
+ * 停止当前渐进展示并递增序号，防止旧计时器继续修改界面。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function stopProgressiveReveal(): void {
+  revealSequence += 1
+  if (revealTimer) {
+    clearTimeout(revealTimer)
+    revealTimer = null
+  }
+  revealTarget = null
+}
+
+/**
+ * 立即结束当前正在进行的渐进展示，把已确定内容一次性完整揭示。
+ * 切换模式或关闭窗口前调用，避免切回时停留在中间态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function settleActiveReveal(): void {
+  if (revealTarget === 'selection') {
+    selectionReveal = settleProgressiveText(selectionReveal)
+    renderRevealText('selection')
+  } else if (revealTarget === 'manual') {
+    manualReveal = settleProgressiveText(manualReveal)
+    renderRevealText('manual')
+  }
+}
+
+/**
+ * 将渐进展示状态渲染到对应结果区域。
+ * @param target 展示目标区域。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderRevealText(target: 'selection' | 'manual'): void {
+  const state = target === 'selection' ? selectionReveal : manualReveal
+  const text = state.fullText.slice(0, state.visibleLength)
+  const element = target === 'selection' ? resultEl : manualResultEl
+  element.textContent = text
+  element.classList.toggle('streaming-cursor', state.visibleLength < state.fullText.length)
+  if (target === 'selection') {
+    copyBtn.hidden = !text || mode !== 'selection'
+    syncSpeechButton()
+  } else {
+    manualCopyBtn.hidden = !state.fullText || manualState.loading || Boolean(manualState.error) || manualState.stale
+    manualCopyBtn.disabled = manualCopyBtn.hidden
+    syncSpeechButton()
+  }
   requestAutoResize()
 }
 
@@ -607,13 +744,29 @@ function renderManualState(): void {
   manualSubmitBtn.textContent = manualState.loading ? t('popup.translating') : t('popup.translate')
   manualResultEl.className = 'manual-result'
   if (manualState.loading) {
-    manualResultEl.classList.add('loading')
-    manualResultEl.textContent = t('popup.translating')
+    // 流式片段已经到达时继续展示已揭示前缀，避免加载态重渲染清空正在生长的译文。
+    if (manualReveal.fullText) {
+      renderRevealText('manual')
+    } else {
+      manualResultEl.classList.add('loading')
+      manualResultEl.textContent = t('popup.translating')
+    }
   } else if (manualState.error) {
-    manualResultEl.classList.add('error')
-    manualResultEl.textContent = manualState.error
+    // 流式片段已经展示后当前请求失败：保留已收到的部分译文，
+    // 错误提示继续由状态行展示，避免整段译文被错误文本替换。
+    if (shouldPreservePartialReveal(manualReveal)) {
+      manualReveal = settleProgressiveText(manualReveal)
+      renderRevealText('manual')
+    } else {
+      manualResultEl.classList.add('error')
+      manualResultEl.textContent = manualState.error
+    }
   } else if (manualState.translation) {
-    manualResultEl.textContent = manualState.translation
+    if (manualReveal.fullText !== manualState.translation) {
+      startProgressiveReveal('manual', manualState.translation)
+    } else {
+      renderRevealText('manual')
+    }
   } else {
     manualResultEl.classList.add('empty')
     manualResultEl.textContent = t('popup.translationPlaceholder')
@@ -756,6 +909,8 @@ function requestAutoResize(): void {
  */
 function enterManualMode(): void {
   stopSpeech()
+  settleActiveReveal()
+  stopProgressiveReveal()
   mode = 'manual'
   renderMode()
   window.api.openManualTranslate()
@@ -768,6 +923,8 @@ function enterManualMode(): void {
  */
 function leaveManualMode(): void {
   stopSpeech()
+  settleActiveReveal()
+  stopProgressiveReveal()
   mode = 'selection'
   renderMode()
 }
@@ -800,6 +957,9 @@ async function submitManualTranslation(): Promise<void> {
   if (!canSubmitManualTranslation(manualState, localeRuntime.translator)) return
   stopSpeech()
   manualSpeechLanguage = ''
+  // 新请求必须丢弃上一次的流式累积与打字机状态，避免旧译文被追加到新结果前。
+  stopProgressiveReveal()
+  manualReveal = createProgressiveRevealState()
   manualState = beginManualTranslation(manualState)
   renderManualState()
   try {
@@ -1022,6 +1182,8 @@ function openWebReader(): void { window.api.openWebReader() }
  */
 function closePopup(): void {
   stopSpeech()
+  settleActiveReveal()
+  stopProgressiveReveal()
   window.api.hide()
 }
 
@@ -1073,6 +1235,7 @@ window.api.onResult((payload) => {
         manualState.requestId,
         payload.error ?? t('popup.translationFailed')
       )
+      manualStatus = t('popup.translationFailed')
       manualProvider = undefined
       manualSourceLangCode = null
       manualTargetLangCode = payload.targetLang ?? ''
@@ -1109,6 +1272,69 @@ window.api.onResult((payload) => {
   }
 })
 
+/**
+ * 处理主进程推送的流式翻译增量，将安全片段追加到对应渐进展示状态。
+ * @param payload 流式增量负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleTranslateDelta(payload: TranslateDeltaPayload): void {
+  if (payload.origin === 'manual') {
+    if (payload.requestId !== manualState.requestId) return
+    if (!manualState.loading) return
+    if (manualReveal.fullText.length === 0) {
+      stopProgressiveReveal()
+      manualReveal = createProgressiveRevealState()
+      manualState = { ...manualState, translation: '', error: '' }
+      renderManualState()
+      revealTarget = 'manual'
+      revealSequence += 1
+    }
+    manualReveal = appendProgressiveText(manualReveal, payload.delta)
+    scheduleStreamingReveal('manual')
+    return
+  }
+  if (payload.requestId !== latestSelectionRequestId) return
+  if (selectionReveal.fullText.length === 0) {
+    stopProgressiveReveal()
+    selectionReveal = createProgressiveRevealState()
+    selectionRevealRequestId = payload.requestId
+    resultEl.classList.remove('loading')
+    revealTarget = 'selection'
+    revealSequence += 1
+  }
+  selectionReveal = appendProgressiveText(selectionReveal, payload.delta)
+  scheduleStreamingReveal('selection')
+}
+
+/**
+ * 为流式片段安排下一帧渐进揭示，避免高频片段直接抖动界面。
+ * @param target 展示目标区域。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleStreamingReveal(target: 'selection' | 'manual'): void {
+  if (revealTarget !== target || revealTimer !== null) return
+  const sequence = revealSequence
+  const tick = (): void => {
+    if (sequence !== revealSequence || revealTarget !== target) return
+    const current = target === 'selection' ? selectionReveal : manualReveal
+    if (current.visibleLength >= current.fullText.length) {
+      revealTimer = null
+      return
+    }
+    const next = nextRevealLength(current, 1)
+    if (target === 'selection') selectionReveal = next
+    else manualReveal = next
+    renderRevealText(target)
+    revealTimer = setTimeout(tick, 16)
+  }
+  revealTimer = setTimeout(tick, 16)
+}
+
+/** 最近一次划词翻译请求序号，用于丢弃迟到增量。 */
+let latestSelectionRequestId = 0
+
 sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
 targetLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
 translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
@@ -1121,6 +1347,9 @@ manualSourceEl.addEventListener('input', () => {
 manualClearBtn.addEventListener('click', () => {
   stopSpeech()
   manualSpeechLanguage = ''
+  // 清空原文即取消当前会话，停止旧打字机并丢弃其累积状态。
+  stopProgressiveReveal()
+  manualReveal = createProgressiveRevealState()
   manualState = clearManualTranslation(manualState)
   renderManualState()
   manualSourceEl.focus()
@@ -1139,6 +1368,7 @@ settingsBtn.addEventListener('click', openSettings)
 closeBtn.addEventListener('click', closePopup)
 document.addEventListener('keydown', handleKeydown)
 window.api.onManualTranslateOpen(handleManualOpen)
+window.api.onTranslateDelta(handleTranslateDelta)
 window.api.onPinnedChanged(renderPinnedState)
 window.api.onSettingsChanged(syncSettings)
 localeRuntime.onLocaleChanged(handleLocaleChanged)

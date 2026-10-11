@@ -23,7 +23,7 @@ const benchmarkDoc = readFileSync('docs/ocr-model-benchmark.md', 'utf8')
  * @author zhenghq
  */
 test('OCR 应提供截图、剪贴板图片和独立快捷键入口', () => {
-  assert.match(main, /registerOcrShortcut\(settings\.ocrHotkey\)/u)
+  assert.match(main, /registerGlobalShortcuts\(settings\)/u)
   assert.match(main, /onOcrHotkey\(\)/u)
   assert.match(main, /label:\s*t\.t\('menu\.screenshotOcr'\)/u)
   assert.match(main, /label:\s*t\.t\('menu\.clipboardImageOcr'\)/u)

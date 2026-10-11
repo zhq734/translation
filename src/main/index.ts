@@ -49,13 +49,15 @@ import {
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
   resetDeepLxTranslationRuntime,
-  translate
+  translate,
+  translateStream
 } from './translate'
 import { applyTranslationProxy, createTranslationWebSocket, translationFetch } from './network'
 import { createEdgeSpeechClient } from './edgeSpeech'
 import {
   createPopup,
   showPopup,
+  sendPopupDelta,
   hidePopup,
   hidePopupForInternalWindowSwitch,
   dismissPopupOnExternalPointerDown,
@@ -98,6 +100,12 @@ import { SelectionListenerController } from './selectionListenerController'
 import { registerWindowControls } from './windowControls'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
+import {
+  collectShortcutRegistrationStates,
+  findShortcutConflict,
+  type GlobalShortcutId,
+  type GlobalShortcutRegistrationState
+} from './globalShortcutRegistry'
 import {
   resolveHotkeyCaptureDelay,
   resolveHotkeyModifiers,
@@ -152,7 +160,8 @@ import type {
   UpdateStatus,
   ManualTranslateRequest,
   TranslationOrigin,
-  TranslatePayload
+  TranslatePayload,
+  TranslateDeltaPayload
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
 import type { WebImageCandidate } from '../shared/webPageTranslation'
@@ -380,6 +389,8 @@ const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslati
 const edgeSpeechRequests = new Map<string, AbortController>()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
+/** 最近一次全局快捷键注册结果，供设置页查询和展示。 */
+let shortcutRegistrationStates: GlobalShortcutRegistrationState[] = []
 /** 最近一次划词相关内部动作的状态空档抑制截止时间戳；0 表示无抑制。 */
 let selectionActivationSuppressUntil = 0
 let latestOcrSnapshot: OcrSnapshot | null = null
@@ -1158,44 +1169,29 @@ function loadRendererHtml(win: BrowserWindow, html: string): void {
  * @author zhenghq
  */
 function registerGlobalShortcuts(settings: Settings): void {
-  globalShortcut.unregisterAll()
-  registerShortcut(settings.hotkey)
-  registerOcrShortcut(settings.ocrHotkey)
+  shortcutRegistrationStates = collectShortcutRegistrationStates(settings, {
+    unregisterAll: () => globalShortcut.unregisterAll(),
+    register: (accelerator) => globalShortcut.register(accelerator, () => onGlobalShortcut(accelerator))
+  })
+  broadcast('shortcuts:registration-changed', shortcutRegistrationStates)
 }
 
 /**
- * 注册全局划词翻译快捷键。
+ * 分发全局快捷键动作。
  * @param accelerator Electron 快捷键描述。
  * @returns 无返回值。
  * @author zhenghq
  */
-function registerShortcut(accelerator: string): void {
-  if (!accelerator) return
-  if (isCopyShortcut(accelerator)) {
-    console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为翻译快捷键')
-    return
-  }
-  const ok = globalShortcut.register(accelerator, onHotkey)
-  if (!ok) {
-    console.warn(`[selection-translator] 快捷键注册失败: ${accelerator}`)
-  }
-}
-
-/**
- * 注册全局 OCR 截图快捷键。
- * @param accelerator Electron 快捷键描述。
- * @returns 无返回值。
- * @author zhenghq
- */
-function registerOcrShortcut(accelerator: string): void {
-  if (!accelerator) return
-  if (isCopyShortcut(accelerator)) {
-    console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为 OCR 快捷键')
-    return
-  }
-  const ok = globalShortcut.register(accelerator, onOcrHotkey)
-  if (!ok) {
-    console.warn(`[selection-translator] OCR 快捷键注册失败: ${accelerator}`)
+function onGlobalShortcut(accelerator: string): void {
+  const settings = getSettings()
+  if (accelerator === settings.hotkey) {
+    onHotkey()
+  } else if (accelerator === settings.ocrHotkey) {
+    onOcrHotkey()
+  } else if (accelerator === settings.manualTranslationHotkey) {
+    void openManualTranslation()
+  } else if (accelerator === settings.webReaderHotkey) {
+    openWebReaderFromShortcut()
   }
 }
 
@@ -1800,11 +1796,26 @@ async function translateText(
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-    const output = await translate(
+    let deltaSequence = 0
+    const output = await translateStream(
       text,
       requestSettings,
       dingTalkCredentials,
-      aiApiKey
+      aiApiKey,
+      {
+        onDelta: (delta) => {
+          if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+          const payload: TranslateDeltaPayload = {
+            origin,
+            requestId,
+            delta,
+            sequence: deltaSequence,
+            final: false
+          }
+          deltaSequence += 1
+          sendPopupDelta(payload)
+        }
+      }
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(origin, output.provider)
@@ -4542,6 +4553,20 @@ function openWebReaderFromPopup(url?: string): void {
   })
 }
 
+/**
+ * 通过全局快捷键打开或聚焦空白网页翻译阅读器，不读取当前浏览器地址。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openWebReaderFromShortcut(): void {
+  const reader = getWebReader()
+  if (reader.focusOrOpenExistingWindow()) return
+  void reader.open().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : t('error.openWebReader')
+    dialog.showErrorBox(t('error.webTranslation'), message)
+  })
+}
+
 // ---- 自建 DeepLX 集成 ----
 
 /**
@@ -4827,6 +4852,20 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   }
 
   const previous = getSettings()
+  const shortcutPatch: Partial<Pick<Settings, GlobalShortcutId>> = {}
+  for (const id of ['hotkey', 'ocrHotkey', 'manualTranslationHotkey', 'webReaderHotkey'] as GlobalShortcutId[]) {
+    if (patch[id] !== undefined) shortcutPatch[id] = String(patch[id]).trim()
+  }
+  const shortcutCandidate = { ...previous, ...shortcutPatch }
+  for (const id of Object.keys(shortcutPatch) as GlobalShortcutId[]) {
+    const conflict = findShortcutConflict(id, shortcutCandidate[id], shortcutCandidate)
+    if (conflict?.kind === 'copy') {
+      throw new Error(t('error.shortcutConflictCopy'))
+    }
+    if (conflict?.kind === 'duplicate') {
+      throw new Error(t('error.shortcutConflictDuplicate'))
+    }
+  }
   const safePatch = { ...patch }
   delete safePatch.deepLxUrl
   delete safePatch.dingTalkEnabled
@@ -4844,7 +4883,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   const settings = saveSettings(safePatch)
   if (
     (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) ||
-    (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey)
+    (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey) ||
+    (patch.manualTranslationHotkey !== undefined && settings.manualTranslationHotkey !== previous.manualTranslationHotkey) ||
+    (patch.webReaderHotkey !== undefined && settings.webReaderHotkey !== previous.webReaderHotkey)
   ) {
     registerGlobalShortcuts(settings)
   }
@@ -5025,6 +5066,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings:get', () => getSettings())
+  ipcMain.handle('shortcuts:get-registration', () => shortcutRegistrationStates)
   /**
    * 返回内存环形缓冲中的全部近期日志，供日志查看界面初始化展示。
    * @returns 按时间升序排列的结构化日志条目。

@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
-import type { PopupAutoSizeRequest, TranslatePayload } from '../shared/types'
+import type { PopupAutoSizeRequest, TranslateDeltaPayload, TranslatePayload } from '../shared/types'
 import {
   resolvePopupAutoSize,
   resolvePopupResizeBounds
@@ -310,6 +310,18 @@ function deliverPopupPayload(payload: TranslatePayload): void {
   }
   win.webContents.send('translate:result', payload)
   win.webContents.send('popup:pinned', pinned)
+}
+
+/**
+ * 向弹窗 Renderer 投递流式增量；窗口尚未创建或正在加载时直接丢弃。
+ * 增量只是展示提示，最终结果仍由完整负载校正，因此无需排队。
+ * @param payload 流式增量负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function sendPopupDelta(payload: TranslateDeltaPayload): void {
+  if (!win || win.isDestroyed() || win.webContents.isLoadingMainFrame()) return
+  win.webContents.send('translate:delta', payload)
 }
 
 /**

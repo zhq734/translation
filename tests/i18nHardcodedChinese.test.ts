@@ -48,6 +48,15 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
     // 不可达的内部协议兜底错误，调用方已包装为本地化错误。
     '不支持的 AI 协议：'
   ],
+  'src/shared/aiTranslationStreamSanitize.ts': [
+    // 模型可能输出的协议级译文标签前缀，用于流式暂存判断，不直接展示给用户。
+    '译文：',
+    '译文:',
+    '翻译结果：',
+    '翻译结果:',
+    '翻译：',
+    '翻译:'
+  ],
   // 安装到“应用程序”目录后的固定真实路径，必须与打包后的应用名一致。
   'src/main/macQuarantine.ts': ['/Applications/划词翻译.app'],
   // 仅用于内部校验结果的占位安装包名，不会直接展示给用户。

@@ -358,6 +358,22 @@ h2 {
   margin-bottom: 0;
 }
 
+.hotkey-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hotkey-control input {
+  flex: 1;
+  min-width: 0;
+}
+
+.hotkey-control .btn {
+  flex: 0 0 auto;
+}
+
 .row label {
   color: var(--text-secondary);
 }

@@ -6,6 +6,7 @@ import type {
   WebTranslationMode
 } from '../shared/webPageTranslation'
 import { translateMain } from './messages'
+import { buildWebTypewriterRuntimeSnippet, resolveWebTypewriterTuning } from './webTypewriterScript'
 
 /** 原位写回单元。 */
 export interface WebTextWriteOperation {
@@ -617,13 +618,36 @@ export function buildWebIncrementalCollectorStopScript(): string {
  */
 export function buildWebTextApplyScript(
   operations: WebTextWriteOperation[],
-  mode: WebTranslationMode
+  mode: WebTranslationMode,
+  options: { typewriter?: boolean; cached?: boolean } = {}
 ): string {
   const serialized = JSON.stringify(operations)
   const serializedMode = JSON.stringify(mode)
+  const serializedOptions = JSON.stringify({
+    typewriter: mode === 'target' && options.typewriter === true,
+    cached: options.cached === true
+  })
+  const tuning = resolveWebTypewriterTuning(
+    operations.reduce((total, operation) => total + (operation.translation?.length ?? 0), 0),
+    options.cached === true
+  )
+  const serializedTuning = JSON.stringify(tuning)
+  const typewriterDurationMs = options.typewriter === true && mode === 'target'
+    ? operations.reduce((longest, operation) => {
+      const length = operation.translation?.length ?? 0
+      const duration = Math.ceil(length / Math.max(1, tuning.step)) * Math.max(1, tuning.intervalMs)
+      return Math.max(longest, duration)
+    }, 0)
+    : 0
+  const typewriterRuntime = options.typewriter === true && mode === 'target'
+    ? buildWebTypewriterRuntimeSnippet()
+    : ''
   return `(() => {
     const operations = ${serialized};
     const mode = ${serializedMode};
+    const options = ${serializedOptions};
+    const tuning = ${serializedTuning};
+    ${typewriterRuntime}
     const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
     const hash = (value) => {
       let result = 2166136261;
@@ -663,7 +687,9 @@ export function buildWebTextApplyScript(
         const current = String(parent.getAttribute(operation.anchor.semanticAttribute) || '');
         const currentFingerprint = hash(current);
         if (currentFingerprint !== sourceFingerprint && currentFingerprint !== targetFingerprint) { stats.mismatched += 1; continue; }
-        if (current !== desired) parent.setAttribute(operation.anchor.semanticAttribute, desired);
+        if (options.typewriter && desired !== current) {
+          scheduleTypewriter('text:' + operation.unitId, (text) => parent.setAttribute(operation.anchor.semanticAttribute, text), desired, tuning);
+        } else if (current !== desired) parent.setAttribute(operation.anchor.semanticAttribute, desired);
         stats.applied += 1;
         continue;
       }
@@ -672,10 +698,19 @@ export function buildWebTextApplyScript(
       const current = String(node.nodeValue || '');
       const currentFingerprint = hash(current);
       if (currentFingerprint !== sourceFingerprint && currentFingerprint !== targetFingerprint) { stats.mismatched += 1; continue; }
-      if (current !== desired) node.nodeValue = desired;
+      if (options.typewriter && desired !== current) {
+        scheduleTypewriter('text:' + operation.unitId, (text) => { node.nodeValue = text; }, desired, tuning);
+      } else if (current !== desired) node.nodeValue = desired;
       stats.applied += 1;
     }
-    setTimeout(() => { state.suppressed = false; }, 0);
+    if (!options.typewriter) setTimeout(() => { state.suppressed = false; }, 0);
+    else {
+      if (typewriter.restoreTimer) clearTimeout(typewriter.restoreTimer);
+      typewriter.restoreTimer = setTimeout(() => {
+        typewriter.restoreTimer = null;
+        state.suppressed = false;
+      }, ${typewriterDurationMs} + 1);
+    }
     return stats;
   })()`
 }
@@ -689,13 +724,30 @@ export function buildWebTextApplyScript(
  */
 export function buildWebBilingualInjectScript(
   operations: WebBilingualInjectionOperation[],
-  targetLang: string
+  targetLang: string,
+  options: { typewriter?: boolean; cached?: boolean } = {}
 ): string {
   const serialized = JSON.stringify(operations)
   const serializedLang = JSON.stringify(targetLang)
+  const serializedOptions = JSON.stringify({
+    typewriter: options.typewriter === true,
+    cached: options.cached === true
+  })
+  const totalLength = operations.reduce((total, operation) => total + operation.translation.length, 0)
+  const tuning = resolveWebTypewriterTuning(totalLength, options.cached === true)
+  const serializedTuning = JSON.stringify(tuning)
+  const typewriterDurationMs = operations.reduce((longest, operation) => {
+    const duration = Math.ceil(operation.translation.length / Math.max(1, tuning.step)) *
+      Math.max(1, tuning.intervalMs)
+    return Math.max(longest, duration)
+  }, 0)
+  const typewriterRuntime = options.typewriter === true ? buildWebTypewriterRuntimeSnippet() : ''
   return `(() => {
     const operations = ${serialized};
     const targetLang = ${serializedLang};
+    const options = ${serializedOptions};
+    const tuning = ${serializedTuning};
+    ${typewriterRuntime}
     const state = window.__selectionTranslatorWebTranslation || (window.__selectionTranslatorWebTranslation = { pageUpdated: false, suppressed: false });
     const stats = { applied: 0, mismatched: 0, skipped: 0 };
     const resolveParent = (selector) => {
@@ -720,12 +772,21 @@ export function buildWebBilingualInjectScript(
       } else {
         node.setAttribute('data-st-parent-display', display.indexOf('flex') >= 0 ? 'flex' : display.indexOf('grid') >= 0 ? 'grid' : 'block');
       }
-      if (node.textContent !== operation.translation) node.textContent = operation.translation;
+      if (options.typewriter && node.textContent !== operation.translation) {
+        scheduleTypewriter('bilingual:' + operation.blockId, (text) => { node.textContent = text; }, operation.translation, tuning);
+      } else if (node.textContent !== operation.translation) node.textContent = operation.translation;
       node.setAttribute('lang', targetLang);
       node.setAttribute('dir', 'auto');
       stats.applied += 1;
     }
-    setTimeout(() => { state.suppressed = false; }, 0);
+    if (!options.typewriter) setTimeout(() => { state.suppressed = false; }, 0);
+    else {
+      if (typewriter.restoreTimer) clearTimeout(typewriter.restoreTimer);
+      typewriter.restoreTimer = setTimeout(() => {
+        typewriter.restoreTimer = null;
+        state.suppressed = false;
+      }, ${typewriterDurationMs} + 1);
+    }
     return stats;
   })()`
 }

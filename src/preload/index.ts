@@ -4,6 +4,7 @@ import type {
   Api,
   LogEntry,
   TranslatePayload,
+  TranslateDeltaPayload,
   PopupAutoSizeRequest,
   ManualTranslateRequest,
   Settings,
@@ -36,7 +37,8 @@ import type {
   WebTranslationRunPayload,
   WebTranslationRunRequest,
   WebViewBounds,
-  CaptureDiagnosticsSummary
+  CaptureDiagnosticsSummary,
+  GlobalShortcutRegistrationState
 } from '../shared/types'
 
 /** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
@@ -106,6 +108,17 @@ const api: Api = {
     const listener = (_event: unknown, payload: TranslatePayload): void => callback(payload)
     ipcRenderer.on('translate:result', listener)
     return () => ipcRenderer.removeListener('translate:result', listener)
+  },
+  /**
+   * 订阅流式翻译增量。
+   * @param callback 增量负载回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onTranslateDelta(callback: (payload: TranslateDeltaPayload) => void) {
+    const listener = (_event: unknown, payload: TranslateDeltaPayload): void => callback(payload)
+    ipcRenderer.on('translate:delta', listener)
+    return () => ipcRenderer.removeListener('translate:delta', listener)
   },
   /**
    * 订阅主进程打开手动翻译模式的通知。
@@ -530,6 +543,24 @@ const api: Api = {
    * @author zhenghq
    */
   setSettings: (patch: Partial<Settings>) => ipcRenderer.invoke('settings:set', patch),
+  /**
+   * 查询全局快捷键最近一次注册状态。
+   * @returns 各快捷键的注册状态。
+   * @author zhenghq
+   */
+  getShortcutRegistrationStates: (): Promise<GlobalShortcutRegistrationState[]> =>
+    ipcRenderer.invoke('shortcuts:get-registration'),
+  /**
+   * 订阅全局快捷键注册状态变化。
+   * @param callback 注册状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShortcutRegistrationChanged(callback: (states: GlobalShortcutRegistrationState[]) => void) {
+    const listener = (_event: unknown, states: GlobalShortcutRegistrationState[]): void => callback(states)
+    ipcRenderer.on('shortcuts:registration-changed', listener)
+    return () => ipcRenderer.removeListener('shortcuts:registration-changed', listener)
+  },
   /**
    * 订阅设置变化。
    * @param callback 设置变化回调。

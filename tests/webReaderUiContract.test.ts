@@ -128,7 +128,7 @@ test('网页翻译应按段落合并请求，单请求不超过 5000 字并按�
   assert.match(splitter, /unitsByBlock/u)
   assert.match(manager, /maxCharsPerSegment: WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT/u)
   assert.match(runMethod, /const blockUnitIds = this\.blockUnitIds\.get\(completedUnit\.blockId\)/u)
-  assert.match(runMethod, /this\.applyUnits\('target', new Set\(blockUnitIds\)\)/u)
+  assert.match(runMethod, /this\.applyUnits\('target', new Set\(blockUnitIds\), \{ typewriter: true \}\)/u)
   assert.match(runMethod, /this\.isBlockComplete\(completedUnit\.blockId, units\)/u)
 })
 
@@ -268,7 +268,7 @@ test('网页对照模式应按块聚合渲染并保持增量分组', () => {
   const applyBilingual = manager.slice(manager.indexOf('private async applyBilingual('), manager.indexOf('private async ensureBilingualStyles'))
   const drainMethod = manager.slice(manager.indexOf('private drainIncrementalUnits('), manager.indexOf('private scheduleIncrementalQuietStop'))
 
-  assert.match(runMethod, /applyBilingual\(new Set\(\[completedUnit\.blockId\]\)\)/u)
+  assert.match(runMethod, /applyBilingual\(new Set\(\[completedUnit\.blockId\]\), \{ typewriter: true \}\)/u)
   assert.match(applyBilingual, /buildWebBilingualOperations/u)
   assert.match(applyBilingual, /bilingualSkipped: built\.skipped/u)
   assert.match(applyBilingual, /unrendered: built\.unrendered/u)

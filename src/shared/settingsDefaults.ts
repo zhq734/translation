@@ -14,6 +14,8 @@ export const DEFAULT_SETTINGS: Settings = {
   targetLang: 'auto',
   sourceLang: 'auto',
   hotkey: 'Alt+T',
+  manualTranslationHotkey: 'Alt+M',
+  webReaderHotkey: 'Alt+P',
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
@@ -150,6 +152,19 @@ function normalizeAiBaseUrl(baseUrl: string): string {
 }
 
 /**
+ * 规范化可清空的全局快捷键设置。
+ * @param value 磁盘中的原始值。
+ * @param fallback 字段缺失时使用的默认快捷键。
+ * @returns 去除首尾空白后的快捷键；显式空值保留为空，非法类型回退默认值。
+ * @author zhenghq
+ */
+function normalizeShortcutSetting(value: unknown, fallback: string): string {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string') return fallback
+  return value.trim()
+}
+
+/**
  * 将磁盘中的设置规范化为当前版本，并兼容旧版 autoTrigger 配置。
  * @param rawSettings 磁盘读取到的未知版本设置。
  * @returns 当前版本的完整设置。
@@ -189,6 +204,15 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     targetLang: schemaVersion < 2 ? 'auto' : String(merged.targetLang || 'auto'),
     sourceLang: String(merged.sourceLang || 'auto'),
     hotkey: String(merged.hotkey || ''),
+    // 新增两个独立全局快捷键：缺失时补默认值，显式清空必须原样保留。
+    manualTranslationHotkey: normalizeShortcutSetting(
+      rawSettings.manualTranslationHotkey,
+      DEFAULT_SETTINGS.manualTranslationHotkey
+    ),
+    webReaderHotkey: normalizeShortcutSetting(
+      rawSettings.webReaderHotkey,
+      DEFAULT_SETTINGS.webReaderHotkey
+    ),
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),
     triggerMode,

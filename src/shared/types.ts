@@ -226,6 +226,20 @@ export interface TranslatePayload {
   error?: string
 }
 
+/** 流式翻译增量事件负载，用于划词与手动翻译的渐进展示。 */
+export interface TranslateDeltaPayload {
+  /** 本次增量属于划词、手动还是 OCR 翻译。 */
+  origin: TranslationOrigin
+  /** 当前请求序号，用于丢弃迟到片段。 */
+  requestId: number
+  /** 本次新增的安全译文片段。 */
+  delta: string
+  /** 片段在本次请求中的序号，从 0 开始。 */
+  sequence: number
+  /** 是否为最终校正片段。 */
+  final: boolean
+}
+
 /** 用户可选择的 OCR 引擎偏好，auto 表示按平台自动调度。 */
 export type OcrEnginePreference = 'auto' | 'system' | 'paddle' | 'tesseract'
 
@@ -621,6 +635,10 @@ export interface Settings {
   targetLang: string
   sourceLang: string
   hotkey: string
+  /** 全局手动翻译快捷键，空字符串表示不注册。 */
+  manualTranslationHotkey: string
+  /** 全局网页阅读器快捷键，空字符串表示不注册。 */
+  webReaderHotkey: string
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
@@ -692,6 +710,24 @@ export interface Settings {
   webTranslationImageOcrMinSize: number
   /** 图片译文渲染位置：below 表示图片下方，overlay 表示覆盖在图片上。 */
   webTranslationImageOcrOverlay: WebImageOverlayPlacement
+}
+
+/** 可注册的全局快捷键字段标识。 */
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey'
+
+/** 单个全局快捷键的注册状态。 */
+export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
+
+/** 单个全局快捷键的注册结果。 */
+export interface GlobalShortcutRegistrationState {
+  /** 快捷键字段标识。 */
+  id: GlobalShortcutId
+  /** 本次尝试注册的快捷键。 */
+  accelerator: string
+  /** 注册结果状态。 */
+  status: GlobalShortcutRegistrationStatus
+  /** 面向设置页的失败原因；成功和空值通常为空。 */
+  message?: string
 }
 
 /** Renderer 上报给原生 WebContentsView 的窗口内容区矩形。 */
@@ -997,6 +1033,8 @@ export interface Api {
   onWindowMaximizedChanged(cb: (maximized: boolean) => void): () => void
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
+  /** 订阅流式翻译增量，用于划词与手动翻译的渐进展示。 */
+  onTranslateDelta(cb: (p: TranslateDeltaPayload) => void): () => void
   /** 订阅主进程打开手动翻译模式的通知。 */
   onManualTranslateOpen(cb: () => void): () => void
   /** 请求主进程显示并固定手动翻译模式。 */
@@ -1116,6 +1154,19 @@ export interface Api {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void
+  /**
+   * 查询各全局快捷键最近一次注册结果。
+   * @returns 按固定字段顺序排列的注册状态。
+   * @author zhenghq
+   */
+  getShortcutRegistrationStates(): Promise<GlobalShortcutRegistrationState[]>
+  /**
+   * 订阅全局快捷键注册结果变化。
+   * @param cb 注册状态变化回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShortcutRegistrationChanged(cb: (states: GlobalShortcutRegistrationState[]) => void): () => void
   /** 获取内存缓冲中的近期主进程日志（时间升序）。 */
   getLogHistory(): Promise<LogEntry[]>
   /** 订阅主进程日志增量推送，返回取消订阅方法。 */

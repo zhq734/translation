@@ -780,9 +780,11 @@ test('全局监听不应监听 Ctrl+A 或 Command+A 全选快捷键', () => {
 
 test('主进程不得注册系统复制快捷键，选区按钮也不得抢占输入焦点', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const registrySource = readFileSync('src/main/globalShortcutRegistry.ts', 'utf8')
   const buttonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
 
-  assert.match(mainSource, /if\s*\(isCopyShortcut\(accelerator\)\)\s*\{/u)
+  assert.match(registrySource, /if\s*\(isCopyShortcut\(accelerator\)\)\s*\{/u)
+  assert.match(mainSource, /registerGlobalShortcuts\(settings\)/u)
   assert.match(buttonSource, /focusable:\s*false/u)
   assert.match(buttonSource, /webContents\.once\('did-finish-load'/u)
   assert.match(buttonSource, /win\.showInactive\(\)/u)

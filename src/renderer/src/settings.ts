@@ -15,6 +15,8 @@ import type {
   SpeechProvider,
   TriggerMode,
   MacOSQuarantineResult,
+  GlobalShortcutId,
+  GlobalShortcutRegistrationState,
   UpdateStatus
 } from '../../shared/types'
 import { startThemeRuntime } from './theme'
@@ -47,6 +49,11 @@ const triggerHint = document.getElementById('trigger-hint') as HTMLElement
 const autoShowSelectionButton = document.getElementById('auto-show-selection-button') as HTMLInputElement
 const doubleClickSelectionButtonEnabled = document.getElementById('double-click-selection-button-enabled') as HTMLInputElement
 const hotkey = document.getElementById('hotkey') as HTMLInputElement
+const manualTranslationHotkey = document.getElementById('manual-translation-hotkey') as HTMLInputElement
+const manualTranslationHotkeyClear = document.getElementById('manual-translation-hotkey-clear') as HTMLButtonElement
+const webReaderHotkey = document.getElementById('web-reader-hotkey') as HTMLInputElement
+const webReaderHotkeyClear = document.getElementById('web-reader-hotkey-clear') as HTMLButtonElement
+const shortcutRegistrationStatus = document.getElementById('shortcut-registration-status') as HTMLElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
 const autoLaunch = document.getElementById('auto-launch') as HTMLInputElement
@@ -162,6 +169,8 @@ let flashTimer: ReturnType<typeof setTimeout> | null = null
 let latestUpdateStatus: UpdateStatus | null = null
 let latestOcrStatus: OcrStatus | null = null
 let latestSettings: Settings | null = null
+/** 最近一次快捷键注册结果，用于语言切换后重新渲染提示。 */
+let latestShortcutRegistrationStates: GlobalShortcutRegistrationState[] = []
 
 /**
  * 判断字符串是否为受支持的设置页 Tab 标识。
@@ -483,6 +492,8 @@ function renderSettings(settings: Settings): void {
   autoShowSelectionButton.checked = settings.triggerMode === 'button'
   doubleClickSelectionButtonEnabled.checked = settings.doubleClickSelectionButtonEnabled
   hotkey.value = settings.hotkey
+  manualTranslationHotkey.value = settings.manualTranslationHotkey
+  webReaderHotkey.value = settings.webReaderHotkey
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
   speechProvider.value = settings.speechProvider
@@ -598,9 +609,41 @@ async function initialize(): Promise<void> {
   populateLanguageSelects()
 
   renderSettings(await window.api.getSettings())
+  renderShortcutRegistrationStates(await window.api.getShortcutRegistrationStates())
   renderOcrStatus(await window.api.getOcrStatus())
   dockerCmd.value = await window.api.getDockerCommand(1189)
   renderUpdateStatus(await window.api.getUpdateStatus())
+}
+
+/**
+ * 将全局快捷键注册结果渲染为设置页状态提示。
+ * @param states 主进程返回的注册状态列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderShortcutRegistrationStates(states: GlobalShortcutRegistrationState[]): void {
+  latestShortcutRegistrationStates = states
+  const failed = states.find((state) => state.status === 'occupied' || state.status === 'invalid' || state.status === 'failed')
+  if (!failed) {
+    shortcutRegistrationStatus.textContent = ''
+    shortcutRegistrationStatus.className = 'field-hint'
+    return
+  }
+  const labels: Record<GlobalShortcutId, string> = {
+    hotkey: t('settings.trigger.globalHotkey'),
+    ocrHotkey: t('settings.ocr.hotkey'),
+    manualTranslationHotkey: t('settings.trigger.manualHotkey'),
+    webReaderHotkey: t('settings.trigger.webReaderHotkey')
+  }
+  const reason = failed.status === 'occupied'
+    ? t('error.shortcutOccupied')
+    : failed.status === 'invalid'
+      ? t('error.shortcutInvalid')
+      : (failed.message || t('common.unknownError'))
+  shortcutRegistrationStatus.textContent = t('settings.trigger.hotkeyRegistrationFailed', {
+    message: `${labels[failed.id]}（${failed.accelerator}）：${reason}`
+  })
+  shortcutRegistrationStatus.className = 'field-hint error'
 }
 
 /**
@@ -890,6 +933,74 @@ function handleTranslationHotkeyKeydown(event: KeyboardEvent): void {
   if (!accelerator) return
   hotkey.value = accelerator
   saveHotkey()
+}
+
+/**
+ * 保存手动翻译全局快捷键。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveManualTranslationHotkey(): void {
+  void save({ manualTranslationHotkey: manualTranslationHotkey.value.trim() })
+}
+
+/**
+ * 保存网页阅读器全局快捷键。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveWebReaderHotkey(): void {
+  void save({ webReaderHotkey: webReaderHotkey.value.trim() })
+}
+
+/**
+ * 将键盘事件录入为手动翻译快捷键并立即保存。
+ * @param event 用户按下的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleManualTranslationHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  manualTranslationHotkey.value = accelerator
+  saveManualTranslationHotkey()
+}
+
+/**
+ * 将键盘事件录入为网页阅读器快捷键并立即保存。
+ * @param event 用户按下的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleWebReaderHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  webReaderHotkey.value = accelerator
+  saveWebReaderHotkey()
+}
+
+/**
+ * 清空手动翻译快捷键并立即保存空值。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearManualTranslationHotkey(): void {
+  manualTranslationHotkey.value = ''
+  saveManualTranslationHotkey()
+}
+
+/**
+ * 清空网页阅读器快捷键并立即保存空值。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearWebReaderHotkey(): void {
+  webReaderHotkey.value = ''
+  saveWebReaderHotkey()
 }
 
 /**
@@ -1656,6 +1767,7 @@ window.api.onSettingsChanged((settings) => {
   uiLocale.value = settings.uiLocale
   uiLocale.dataset.currentLocale = settings.uiLocale
 })
+window.api.onShortcutRegistrationChanged((states) => renderShortcutRegistrationStates(states))
 for (const card of themePresetCards) card.addEventListener('click', () => saveThemePreset(card))
 targetLang.addEventListener('change', saveTargetLanguage)
 sourceLang.addEventListener('change', saveSourceLanguage)
@@ -1664,6 +1776,12 @@ autoShowSelectionButton.addEventListener('change', saveAutoShowSelectionButton)
 doubleClickSelectionButtonEnabled.addEventListener('change', saveDoubleClickSelectionButtonEnabled)
 hotkey.addEventListener('change', saveHotkey)
 hotkey.addEventListener('keydown', handleTranslationHotkeyKeydown)
+manualTranslationHotkey.addEventListener('change', saveManualTranslationHotkey)
+manualTranslationHotkey.addEventListener('keydown', handleManualTranslationHotkeyKeydown)
+manualTranslationHotkeyClear.addEventListener('click', clearManualTranslationHotkey)
+webReaderHotkey.addEventListener('change', saveWebReaderHotkey)
+webReaderHotkey.addEventListener('keydown', handleWebReaderHotkeyKeydown)
+webReaderHotkeyClear.addEventListener('click', clearWebReaderHotkey)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 autoLaunch.addEventListener('change', saveAutoLaunch)
@@ -2166,6 +2284,7 @@ function handleLocaleChanged(locale: Locale): void {
   // 更新区与 OCR 状态由主进程消息驱动，使用缓存状态按新语言重渲染。
   if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
   if (latestOcrStatus) renderOcrStatus(latestOcrStatus)
+  renderShortcutRegistrationStates(latestShortcutRegistrationStates)
 
   if (logsInitialized) {
     logsTogglePauseButton.textContent = logsPaused ? t('settings.logs.resume') : t('settings.logs.pause')

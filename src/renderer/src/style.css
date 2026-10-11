@@ -423,6 +423,24 @@ body {
   font-size: 14px;
 }
 
+/* 流式增量展示期间在译文末尾显示光标，动画与主题均使用全局 token。 */
+.result.streaming-cursor::after,
+.manual-result.streaming-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.1em;
+  background: var(--accent-start);
+  animation: streaming-cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes streaming-cursor-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
 /* 底部操作栏：左侧朗读、右侧固定，复制按钮在结果可用时出现。 */
 .footer {
   display: flex;
