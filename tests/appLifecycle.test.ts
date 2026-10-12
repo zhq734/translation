@@ -61,7 +61,7 @@ test('macOS 点击 Dock 图标时应优先恢复网页阅读器，没有可恢�
 
   assert.match(
     source,
-    /function activateExistingPageOrOpenSettings\(\): void \{[\s\S]*?webReader\?\.focusOrOpenExistingWindow\(\)[\s\S]*?openSettings\(\)/u
+    /function activateExistingPageOrOpenSettings\(\): void \{[\s\S]*?webReader\?\.focusExistingWindow\(\)[\s\S]*?openSettings\(\)/u
   )
   assert.match(
     source,
@@ -109,19 +109,21 @@ test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补
     source.indexOf('// ---- 主进程日志层 ----', activateStart)
   )
 
-  // Dock 点击是显式入口：已可见阅读器被其它应用遮挡时，仅返回 true 会让用户
-  // 觉得“点击 Dock 没反应”；必须走 focusOrOpenExistingWindow() 真正置前。
+  // activate 判定存在短暂状态空档，可能把内部动作误放行。已可见且未最小化的
+  // 阅读器必须走 focusExistingWindow()：它只返回 true、不重新 show()+focus()，
+  // 因此即便误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会
+  // 正常恢复，保证真实 Dock 启动可用。被遮挡时的强制置前由显式快捷键入口负责。
   assert.match(
     activateSource,
-    /webReader\?\.focusOrOpenExistingWindow\(\)/u,
-    'Dock 激活已有阅读器时必须显式置前'
+    /webReader\?\.focusExistingWindow\(\)/u,
+    'Dock 激活已有阅读器时必须走不会强制置前的恢复入口'
   )
   // Dock 点击的激活事件可能晚于第一次 show/focus 到达并覆盖焦点；设置页复用
   // 分支缺少新建分支的最终置前，需在打开完成后让出一轮事件循环再补一次。
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?showOwnWindowForInteraction\(target,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
-    'Dock 打开设置页后必须等待激活事件落定并再次窗口级置前'
+    /openSettings\(\{ bringToFront: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?showOwnWindowForInteraction\(target,\s*\{\s*raiseLevel:\s*false\s*\}\)/u,
+    'Dock 打开设置页后必须等待激活事件落定并再次窗口级置前，但不得提升到 screen-saver'
   )
 })
 

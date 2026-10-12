@@ -224,8 +224,10 @@ test('Dock 激活路径不得依赖焦点恢复入口', () => {
   // 删除后，路径中不得再残留任何恢复调用，避免继续触发 app.hide() 类回归。
   assert.doesNotMatch(activateSource, /resumeSettingsWindowFocusAfterSelection|setFocusable\(/u,
     'Dock 激活路径不得依赖已删除的焦点恢复机制')
-  assert.match(activateSource, /webReader\?\.focusOrOpenExistingWindow\(\)/u,
-    'Dock 激活已有阅读器时必须显式置前')
+  // 已可见且未最小化的阅读器只走 focusExistingWindow()：即便内部 activate 被
+  // 误放行，也只返回 true、不重新 show()+focus()，不会把后台阅读器顶到最前。
+  assert.match(activateSource, /webReader\?\.focusExistingWindow\(\)/u,
+    'Dock 激活已有阅读器时必须走不会强制置前的恢复入口')
   assert.match(activateSource, /openSettings\(\{ bringToFront: true \}\)/u,
     '没有阅读器时 Dock 激活必须置前设置页')
 })

@@ -712,10 +712,11 @@ function activateExistingPageOrOpenSettings(): void {
   // activate 判定存在短暂状态空档：检查时可能刚好全空闲，但事件派发时用户
   // 已经开始划词。此时若继续置前阅读器或设置页，就会把它们顶到划词应用之上。
   if (isSelectionWindowRaiseGuardActive()) return
-  // Dock 点击是显式入口：已有阅读器也要真正置前。focusExistingWindow()
-  // 对已可见窗口只返回 true 不调整层级，阅读器被其它应用遮挡时用户会以为
-  // Dock 点击没有反应。
-  if (webReader?.focusOrOpenExistingWindow()) return
+  // activate 判定存在短暂状态空档，可能把内部动作误放行。focusExistingWindow()
+  // 对已可见且未最小化的阅读器只返回 true、不重新 show()+focus()，因此即便
+  // 误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会正常恢复，
+  // 保证真实 Dock 启动可用。被其它应用遮挡时的强制置前改由显式快捷键入口负责。
+  if (webReader?.focusExistingWindow()) return
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
   // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
   // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
@@ -729,7 +730,9 @@ function activateExistingPageOrOpenSettings(): void {
       if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
       // 等待期间用户可能已经开始下一次划词；此时补置前同样会抢走划词前台。
       if (isSelectionWindowRaiseGuardActive()) return
-      showOwnWindowForInteraction(target, { raiseLevel: true })
+      // activate 路径复用已可见设置页时不得提升到 screen-saver：普通窗口的
+      // moveTop() 已足以把设置页放到最前，最高层级提升只会放大误判后果。
+      showOwnWindowForInteraction(target, { raiseLevel: false })
     })
     .catch((error: unknown) => {
       console.error('[settings] Dock 激活打开设置窗口失败:', error)
@@ -1234,7 +1237,7 @@ async function onReady(): Promise<boolean> {
     getSettings().proxyMode
   )
   createPopup(PRELOAD_PATH, suppressSelectionActivationWindowGap)
-  createSelectionButton(PRELOAD_PATH)
+  createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
@@ -4513,8 +4516,13 @@ async function createSettingsWindow(
         return settingsWin
       }
       // 只提升设置窗口自身，不激活整个应用，避免把翻译弹窗一起带到最前。
+      // activate 路径（非弹窗内显式点击）不得把已可见设置页提升到 screen-saver：
+      // 真机日志显示迟到 activate 误放行后，正是这里对普通窗口执行
+      // show()+moveTop()+focus()+screen-saver，把设置页顶到划词应用之上。最高
+      // 层级只保留给弹窗内显式点击等真实用户入口，activate 路径改用窗口级
+      // moveTop() 表达“放到最前”，不再越过整个前台应用。
       logCandidateProbe('settings-reuse-raise', settingsWin.isVisible())
-      showOwnWindowForInteraction(settingsWin, { raiseLevel: true })
+      showOwnWindowForInteraction(settingsWin, { raiseLevel: explicitPopupSource })
       return settingsWin
     }
     // 窗口可能被用户隐藏后重新打开，只提升设置窗口自身。
