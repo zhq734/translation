@@ -947,6 +947,24 @@ function handleManualOpen(): void {
 }
 
 /**
+ * 响应主进程划词 / OCR 打开通知，把界面切回划词视图。
+ *
+ * 手动模式不会因划词流程自动退出：用户可能先在手动翻译里输入了内容，
+ * 再按划词快捷键。此时必须显式切回划词视图，否则翻译负载虽已到达，
+ * 界面仍停留在手动输入区，表现为「划词快捷键打开的依旧是手动翻译」。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleSelectionOpen(): void {
+  if (mode === 'selection') return
+  stopSpeech()
+  settleActiveReveal()
+  stopProgressiveReveal()
+  mode = 'selection'
+  renderMode()
+}
+
+/**
  * 提交手动翻译请求，避免空文本和加载期间重复提交。
  * @returns 翻译请求完成后的 Promise。
  * @author zhenghq
@@ -1192,7 +1210,33 @@ function closePopup(): void {
 }
 
 /**
- * 处理 Escape 关闭和手动模式 Command/Ctrl+Enter 提交。
+ * 处理手动原文输入框的键盘操作：Enter 直接提交，Shift+Enter 等仍保留换行。
+ *
+ * 手动翻译全程使用键盘输入，用户输完后顺手按回车是最自然的提交方式；
+ * 要求移动鼠标去点翻译按钮会打断输入节奏。带修饰键的组合也一并支持，
+ * 方便习惯 ⌘/Ctrl + Enter 的用户。
+ * @param event 当前键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleManualSourceKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Enter') return
+  // 修饰键组合交给通用快捷键处理，避免与浏览器 / 系统快捷键抢键。
+  if (event.metaKey || event.ctrlKey) {
+    if (document.activeElement === manualSourceEl) {
+      event.preventDefault()
+      void submitManualTranslation()
+    }
+    return
+  }
+  // Shift + Enter 退化为换行，其余组合键同样保留默认行为。
+  if (event.shiftKey || event.altKey) return
+  event.preventDefault()
+  void submitManualTranslation()
+}
+
+/**
+ * 处理弹窗级 Escape 关闭。
  * @param event 当前键盘事件。
  * @returns 无返回值。
  * @author zhenghq
@@ -1201,10 +1245,6 @@ function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     closePopup()
     return
-  }
-  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && document.activeElement === manualSourceEl) {
-    event.preventDefault()
-    void submitManualTranslation()
   }
 }
 
@@ -1359,6 +1399,7 @@ manualClearBtn.addEventListener('click', () => {
   manualSourceEl.focus()
 })
 manualSubmitBtn.addEventListener('click', () => void submitManualTranslation())
+manualSourceEl.addEventListener('keydown', handleManualSourceKeydown)
 copyBtn.addEventListener('click', copyTranslation)
 manualCopyBtn.addEventListener('click', copyTranslation)
 ocrCopyBtn.addEventListener('click', () => {
@@ -1372,6 +1413,7 @@ settingsBtn.addEventListener('click', openSettings)
 closeBtn.addEventListener('click', closePopup)
 document.addEventListener('keydown', handleKeydown)
 window.api.onManualTranslateOpen(handleManualOpen)
+window.api.onSelectionMode(handleSelectionOpen)
 window.api.onTranslateDelta(handleTranslateDelta)
 window.api.onPinnedChanged(renderPinnedState)
 window.api.onSettingsChanged(syncSettings)

@@ -59,7 +59,7 @@ export const zhCNBase = defineCatalog({
   'popup.dragHandle.ariaLabel': '拖动翻译窗口',
   'popup.dragHandle.title': '拖动窗口',
   'popup.languageToolbar': '翻译语言工具栏',
-  'popup.manualHint': '⌘/Ctrl + Enter 翻译',
+  'popup.manualHint': 'Enter / ⌘+Ctrl + Enter 翻译',
   'popup.manualMode': '切换手动翻译',
   'popup.manualPlaceholder': '输入或粘贴要翻译的文字',
   'popup.manualStale': '原文或设置已变化，请重新翻译。',

@@ -59,7 +59,7 @@ export const enUSBase = defineCatalog({
   'popup.dragHandle.ariaLabel': 'Drag translation window',
   'popup.dragHandle.title': 'Drag window',
   'popup.languageToolbar': 'Translation language toolbar',
-  'popup.manualHint': '⌘/Ctrl + Enter to translate',
+  'popup.manualHint': 'Enter / ⌘+Ctrl + Enter to translate',
   'popup.manualMode': 'Toggle manual translation',
   'popup.manualPlaceholder': 'Enter or paste text to translate',
   'popup.manualStale': 'The source text or settings changed. Translate again.',

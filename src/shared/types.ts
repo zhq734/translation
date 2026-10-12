@@ -1037,6 +1037,8 @@ export interface Api {
   onTranslateDelta(cb: (p: TranslateDeltaPayload) => void): () => void
   /** 订阅主进程打开手动翻译模式的通知。 */
   onManualTranslateOpen(cb: () => void): () => void
+  /** 订阅主进程切回划词翻译模式的通知。 */
+  onSelectionMode(cb: () => void): () => void
   /** 请求主进程显示并固定手动翻译模式。 */
   openManualTranslate(): void
   copy(text: string): void

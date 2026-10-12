@@ -329,6 +329,8 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 ### Popup controls
 
 - **Manual translation**: use the document icon to switch between selection translation and manual text input;
+  - if the popup is currently in manual mode, selecting text and using the selection shortcut (or clicking the `译` button) switches it back to the selection view automatically;
+  - press `Enter` inside the input to start translating immediately; `Shift+Enter` (or other modifier combinations) keeps the newline so multi-line source text stays easy to type;
 - **Read translation aloud**: use the speaker icon to play the current translation with the configured speech engine, then click it again to stop; playback never starts automatically, and Edge failures automatically fall back to a system voice;
 - **Pin**: pin or unpin the popup;
 - **Copy**: copy the current translation to the system clipboard;

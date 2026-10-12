@@ -132,6 +132,17 @@ const api: Api = {
     return () => ipcRenderer.removeListener('manual-translate:open', listener)
   },
   /**
+   * 订阅主进程切回划词翻译模式的通知。
+   * @param callback 划词模式打开回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onSelectionMode(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('popup:selection-mode', listener)
+    return () => ipcRenderer.removeListener('popup:selection-mode', listener)
+  },
+  /**
    * 请求主进程显示并固定手动翻译模式。
    * @returns 无返回值。
    * @author zhenghq

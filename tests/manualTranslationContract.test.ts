@@ -26,7 +26,13 @@ test('悬浮窗应包含手动翻译入口、输入区、计数、提交和复�
 })
 
 test('Renderer 应支持手动模式快捷提交、显式提交和安全复制', () => {
-  assert.match(renderer, /event\.key === 'Enter'.*(event\.metaKey \|\| event\.ctrlKey)/su)
+  // 裸 Enter 直接提交，⌘/Ctrl + Enter 组合键同时保留。
+  assert.match(renderer, /function handleManualSourceKeydown\(event: KeyboardEvent\): void/u)
+  assert.match(
+    renderer,
+    /manualSourceEl\.addEventListener\('keydown', handleManualSourceKeydown\)/u
+  )
+  assert.match(renderer, /event\.key !== 'Enter'[\s\S]{0,200}event\.metaKey \|\| event\.ctrlKey/su)
   assert.match(renderer, /window\.api\.translateManual\(/u)
   assert.match(renderer, /manualState\.translation/u)
   assert.match(renderer, /manualState\.loading/u)

@@ -345,6 +345,12 @@ export function showPopup(
   selectionCaptureLoading = payload.origin === 'selection' && payload.loading === true
   const alreadyVisible = win.isVisible()
   deliverPopupPayload(payload)
+  // 手动模式是显式状态：用户从手动翻译切到划词时，若只投递翻译负载，
+  // Renderer 仍停留在手动视图，表现为「按了划词快捷键打开的却是手动翻译」。
+  // 非手动来源一律广播模式切换，让界面跟随本次交互真正回到划词视图。
+  if (payload.origin !== 'manual') {
+    win.webContents.send('popup:selection-mode')
+  }
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
     positionNearAnchor(anchor)
