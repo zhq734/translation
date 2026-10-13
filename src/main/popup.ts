@@ -539,17 +539,50 @@ export function isPopupActivated(): boolean {
 }
 
 /**
- * 取词前把前台焦点归还给源应用（仅 Windows 生效）。
+ * 返回翻译弹窗当前是否真的持有 macOS key window。
+ *
+ * `shownInactive` 只记录调用方是否以非激活方式显示过窗口，不能证明 panel 没有
+ * 拿到 key window：nonactivating panel 的 showInactive() 仍可能让自身成为 key
+ * window。取词前必须读取 BrowserWindow 的真实焦点状态，否则会在
+ * `popup-show-inactive` 路径上误判为「已让出焦点」，导致 Cmd+C 打在弹窗上。
+ * @returns 弹窗可见且确实持有 key window 时返回 true。
+ * @author zhenghq
+ */
+export function isPopupHoldingKeyWindow(): boolean {
+  return Boolean(win && !win.isDestroyed() && win.isVisible() && win.isFocused())
+}
+
+/**
+ * 取词前让自有弹窗退出 key window，把焦点交还给源应用。
  *
  * Windows 上弹窗被上一次翻译结果的 show() 激活后会成为前台窗口，随后注入的
- * Ctrl+C 会落在弹窗上导致取词超时；必须在取词前用 SetForegroundWindow 精确
- * 交还给记录的源窗口。macOS panel 不激活应用，不存在该问题，直接返回 false。
- * @returns 本次是否实际交还了前台焦点。
+ * Ctrl+C 会落在弹窗上导致取词超时；必须用 SetForegroundWindow 精确交还给
+ * 记录的源窗口，记录缺失或交还失败时退回 blur。
+ *
+ * macOS 上弹窗是 nonactivating panel：show()/focus() 不会激活整个应用，但会让
+ * 弹窗自身成为 key window；此时注入的 Command+C 仍会打在弹窗上，剪贴板哨兵
+ * 不变并报「取词超时」。因此取词前必须 blur 让系统把 key window 交还给源应用。
+ *
+ * Linux 无复制兜底，不做任何焦点干预。
+ * @returns 本次是否实际让弹窗退出了 key window / 前台焦点。
  * @author zhenghq
  */
 export function deactivatePopupForCapture(): boolean {
-  if (process.platform !== 'win32') return false
-  if (!win || !win.isVisible() || shownInactive) return false
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return false
+  if (!win || win.isDestroyed() || !win.isVisible()) return false
+  if (process.platform === 'darwin') {
+    // 以真实 key window 状态判定：shownInactive 只代表「曾以非激活方式显示」，
+    // 不能代表 panel 已经让出焦点。只有确实持有 key window 时才需要交还。
+    if (!win.isFocused()) return false
+    // 交还前先登记非激活状态，blur 触发的失焦处理据此短路，避免弹窗被误关。
+    shownInactive = true
+    win.blur()
+    // 个别 panel 在 blur 后仍可能保留 key 状态，再以 showInactive 兜底一次，
+    // 确保后续注入的 Command+C 不会继续打在弹窗上。
+    if (win.isFocused()) win.showInactive()
+    return true
+  }
+  if (shownInactive) return false
   shownInactive = true
   // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，
   // 至少弹窗不再持有焦点，避免复制键继续打在弹窗上。

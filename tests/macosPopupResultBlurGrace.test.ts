@@ -16,16 +16,16 @@ function stripComments(source: string): string {
 }
 
 /**
- * 校验共享前台策略只保留 Windows 取词归还语义。
- * macOS 上翻译弹窗是 nonactivating panel，show()/focus() 不激活应用，
- * 不存在结果弹窗激活后需要交还前台的竞态，因此不应再有 darwin 特判。
+ * 校验共享前台策略覆盖 Windows 与 macOS：
+ * Windows 归还前台窗口，macOS 归还 key window；Linux 不干预。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('共享前台策略只保留 Windows 取词归还语义', () => {
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', true), true)
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', false), false)
-  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), false)
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), true)
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', false), false)
   assert.equal(shouldRestoreForegroundBeforeCapture('linux', true), false)
 })
 

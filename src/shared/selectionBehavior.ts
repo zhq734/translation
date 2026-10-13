@@ -244,6 +244,27 @@ export function parseNativeSelectionReadOutput(output: unknown): NativeSelection
   return { status: 'unknown', text: '' }
 }
 
+/** macOS AX helper 输出的状态分类。 */
+export type MacosAxHelperStatus = 'PRESENT' | 'EMPTY' | 'UNKNOWN' | 'PERMISSION'
+
+/**
+ * 将 macOS AX helper 的原始输出归类为可记录的稳定状态标签。
+ *
+ * `parseNativeSelectionReadOutput` 会把 PERMISSION 归一化为 unknown，导致日志无法
+ * 区分「AX 对网页选区返回 EMPTY」与「缺少辅助功能权限」。这里只读取首行状态标记，
+ * 不解析也不返回任何选中文字内容，确保日志不泄露文本。
+ * @param output helper 的标准输出。
+ * @returns 状态分类；无法识别时返回 UNKNOWN。
+ * @author zhenghq
+ */
+export function classifyMacosAxHelperStatus(output: unknown): MacosAxHelperStatus {
+  const firstLine = String(output ?? '').replace(/\r\n?/gu, '\n').trim().split('\n')[0]?.trim().toUpperCase()
+  if (firstLine === 'PRESENT') return 'PRESENT'
+  if (firstLine === 'EMPTY') return 'EMPTY'
+  if (firstLine === 'PERMISSION') return 'PERMISSION'
+  return 'UNKNOWN'
+}
+
 /**
  * 根据触发方式决定本次划词是显示按钮、直接翻译还是等待快捷键。
  * 按钮模式不受翻译弹窗可见状态影响，每次划词都必须等待用户点击“译”按钮。

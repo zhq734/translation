@@ -303,14 +303,16 @@ test('点击“译”后的迟到全局按下不得关闭读取弹窗', () => {
 })
 
 /**
- * 校验 macOS 按钮取词不再做取词前的应用级失活处理。
+ * 校验 macOS 按钮取词会基于真实 key window 状态做取词前交还。
  *
- * 旧实现会在点击“译”后把本应用前台交还给源应用再注入复制键；panel 落地后
- * 弹窗显示不会激活应用，复制键天然落在源应用上，该补偿路径必须整体删除。
+ * 真机日志证明：`popup-show-inactive` 不代表 panel 没有持有 key window，
+ * 旧实现只信 shownInactive 记账标志，导致 Command+C 持续打在自家弹窗上。
+ * 按钮路径必须改为读取真实焦点状态并在注入复制键前交还 key window；
+ * 但不得再依据应用激活事件做应用级前台交还。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词不得再做取词前应用级失活', () => {
+test('macOS 按钮取词必须基于真实焦点交还 key window，且不做应用级交还', () => {
   const src = stripComments(
     extractFunction(
       indexSource,
@@ -318,7 +320,8 @@ test('macOS 按钮取词不得再做取词前应用级失活', () => {
     )
   )
 
-  assert.doesNotMatch(src, /deactivatePopupForCapture/u, 'macOS 按钮取词不得再主动失活弹窗')
+  assert.match(src, /isPopupHoldingKeyWindow\(\)/u, '必须读取真实 key window 状态')
+  assert.match(src, /deactivatePopupForCapture\(\)/u, '按钮路径必须在注入复制键前交还 key window')
   assert.doesNotMatch(src, /isMacAppActiveByEvents/u, 'macOS 不得再依据应用激活事件交还前台')
   assert.doesNotMatch(src, /waitForFrontmostAppReturn/u, 'macOS 不得再等待应用级前台交还')
 })

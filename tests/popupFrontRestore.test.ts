@@ -17,7 +17,8 @@ const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 function extractFunction(source: string, signature: string): string {
   const start = source.indexOf(signature)
   assert.ok(start >= 0, `应存在函数 ${signature}`)
-  const end = source.indexOf('\n}', start)
+  // 顶格闭合花括号才能代表函数结束，避免嵌套块被误判为结束边界。
+  const end = source.indexOf('\n}\n', start)
   assert.ok(end > start, `函数 ${signature} 应有结束边界`)
   return source.slice(start, end)
 }
@@ -225,5 +226,93 @@ test('应用已不在最前时只在真的丢弃了记录才输出日志', () =>
     branchSource,
     /bundleId=\$\{(?:discarded|stale)\.bundleId\}/u,
     '丢弃日志必须带上被丢弃的目标应用'
+  )
+})
+
+/**
+ * 校验 macOS 取词前在自有 panel 仍持有 key window 时必须交还 key window。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 取词前必须让自有 panel 退出 key window', () => {
+  const src = stripComments(
+    extractFunction(popupSource, 'export function deactivatePopupForCapture(): boolean {')
+  )
+  assert.match(src, /process\.platform === 'darwin'/u, '必须显式处理 macOS 分支')
+  assert.match(src, /win\.blur\(\)|showInactive/u, 'macOS 分支必须让 panel 退出 key 状态')
+  assert.match(src, /win\.isFocused\(\)/u, 'macOS 必须读取真实 key window 状态，不能只信 shownInactive 记账标志')
+  const macBranch = src.slice(src.indexOf("process.platform === 'darwin'"), src.indexOf('const restored'))
+  const focusCheckIndex = macBranch.indexOf('win.isFocused()')
+  const markInactiveIndex = macBranch.indexOf('shownInactive = true')
+  assert.ok(focusCheckIndex >= 0, 'macOS 分支必须先读取真实 key window 状态')
+  assert.ok(
+    markInactiveIndex < 0 || focusCheckIndex < markInactiveIndex,
+    '必须先用 win.isFocused() 判定是否持有 key window，再登记非激活状态；不得反过来用 shownInactive 判定'
+  )
+  assert.match(src, /return true/u, '实际交还时返回 true')
+})
+
+/**
+ * 校验 deactivatePopupForCapture 已不再对 macOS 直接短路返回 false。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('deactivatePopupForCapture 不得再对 macOS 直接短路', () => {
+  const src = stripComments(
+    extractFunction(popupSource, 'export function deactivatePopupForCapture(): boolean {')
+  )
+  assert.doesNotMatch(
+    src,
+    /if \(process\.platform !== 'win32'\) return false/u,
+    '不得再以仅 Windows 生效的硬编码短路 macOS'
+  )
+})
+
+/**
+ * 校验取词入口统一调用交还逻辑，保证按钮 / 快捷键 / 自动模式都在注入复制键前交还 key window。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取词入口必须在注入复制键前统一交还 key window', () => {
+  const readingSource = stripComments(
+    extractFunction(mainSource, 'function showSelectionReadingPopup(')
+  )
+  assert.match(readingSource, /deactivatePopupForCapture\(\)/u, '读取弹窗入口必须调用交还逻辑')
+  assert.match(readingSource, /showPopup\(/u, '交还后仍需显示读取弹窗')
+  const showIndex = readingSource.indexOf('showPopup(')
+  const postShowDeactivateIndex = readingSource.indexOf('deactivatePopupForCapture()', showIndex)
+  assert.ok(showIndex >= 0, '必须显示读取弹窗')
+  assert.ok(
+    postShowDeactivateIndex > showIndex,
+    '读取弹窗显示后、注入复制键前必须再次交还 key window，覆盖 showPopup 造成 panel 成为 key window 的时序空窗'
+  )
+})
+
+/**
+ * 校验自动模式取词入口也必须先交还 key window。
+ *
+ * 自动模式不经过 showSelectionReadingPopup()，而是直接走
+ * queueSelectionTranslation() → selectionCapture.capture()。若只在读取弹窗入口
+ * 做交还，上一个常驻弹窗仍持有 key window 时，自动模式的复制兜底仍会把 Cmd+C
+ * 打在弹窗上导致取词超时。因此共用取词入口必须在启动 capture 前按真实焦点
+ * 状态交还 key window。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('自动模式取词入口必须在启动 capture 前交还 key window', () => {
+  const queueSource = stripComments(
+    extractFunction(mainSource, 'function queueSelectionTranslation(')
+  )
+  assert.match(
+    queueSource,
+    /deactivatePopupForCapture\(\)/u,
+    '自动模式共用取词入口必须调用交还逻辑'
+  )
+  const deactivateIndex = queueSource.indexOf('deactivatePopupForCapture()')
+  const captureIndex = queueSource.indexOf('selectionCapture.capture')
+  assert.ok(captureIndex >= 0, '取词入口必须启动 capture')
+  assert.ok(
+    deactivateIndex >= 0 && deactivateIndex < captureIndex,
+    '必须在启动 capture（注入复制键）之前交还 key window'
   )
 })

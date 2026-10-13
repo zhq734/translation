@@ -10,6 +10,7 @@ import {
   type ResolvedClipboardCapture
 } from '../shared/copyShortcutBehavior'
 import {
+  classifyMacosAxHelperStatus,
   parseNativeSelectionReadOutput,
   parseSelectionPresenceOutput,
   type SelectionPresence
@@ -29,6 +30,7 @@ import {
 } from './nativeReaderHost'
 import { parseNativeReaderResponseLine, type NativeReaderResult } from '../shared/nativeReaderProtocol'
 import {
+  resolveCopyRetryPlan,
   shouldReleaseHotkeyModifiersBeforeCopy,
   shouldRetryCopyInjection,
   type HotkeyModifier
@@ -108,15 +110,27 @@ async function readSelectionViaMacosHelper(signal?: AbortSignal): Promise<Native
       ? process.resourcesPath
       : undefined
   })
-  if (!helperPath) return null
+  if (!helperPath) {
+    console.log('[capture] macos-ax-helper status=UNAVAILABLE elapsedMs=0 fallback=true reason=helper-missing')
+    return null
+  }
+  const startedAt = Date.now()
   try {
     const { stdout } = await execFileP(
       helperPath,
       [],
       { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
     )
+    console.log(
+      `[capture] macos-ax-helper status=${classifyMacosAxHelperStatus(stdout)} ` +
+      `elapsedMs=${Date.now() - startedAt} fallback=false`
+    )
     return parseNativeSelectionReadOutput(stdout)
-  } catch {
+  } catch (error) {
+    console.log(
+      `[capture] macos-ax-helper status=UNKNOWN elapsedMs=${Date.now() - startedAt} ` +
+      `fallback=true reason=${signal?.aborted ? 'aborted' : 'helper-error'}`
+    )
     return null
   }
 }
@@ -621,6 +635,8 @@ async function captureByCopy(
   let captureStatus: ResolvedClipboardCapture['status'] = 'timeout'
   // 已发送的复制快捷键次数，用于在首次注入无响应时限次重投。
   let copyAttempts = 0
+  // 已完成的独立重试轮次数，用于诊断日志与重试上限判定。
+  let copyRetries = 0
 
   /**
    * 发送一次复制快捷键，并在观测窗口内区分内部模拟复制与用户主动复制。
@@ -678,21 +694,57 @@ async function captureByCopy(
     }
 
     if (!text) {
-    await injectCopyShortcut()
-
-    const start = Date.now()
-    while (!signal?.aborted && Date.now() - start < timeoutMs) {
-      text = clipboard.readText()
-      hasImage = !clipboard.readImage().isEmpty()
-      if (hasClipboardCaptureCompleted(text, hasImage, sentinel)) break
-      // 首次注入可能因修饰键仍被按住或前台应用尚未就绪而丢失，等待间隔后补发一次。
-      if (shouldRetryCopyInjection(Date.now() - start, copyAttempts)) {
-        console.log(`[capture] copy-retry elapsedMs=${Date.now() - captureStartedAt}`)
-        await injectCopyShortcut()
-        continue
+      /**
+       * 在给定时限内轮询剪贴板，直到捕获到有效内容、超时或被中止。
+       * @param pollTimeoutMs 本轮的轮询时限（毫秒）。
+       * @returns 轮询结束后的 Promise。
+       * @author zhenghq
+       */
+      const pollForCapture = async (pollTimeoutMs: number): Promise<void> => {
+        const start = Date.now()
+        while (!signal?.aborted && Date.now() - start < pollTimeoutMs) {
+          text = clipboard.readText()
+          hasImage = !clipboard.readImage().isEmpty()
+          if (hasClipboardCaptureCompleted(text, hasImage, sentinel)) return
+          // 首次注入可能因修饰键仍被按住或前台应用尚未就绪而丢失，等待间隔后补发一次。
+          if (shouldRetryCopyInjection(Date.now() - start, copyAttempts)) {
+            console.log(`[capture] copy-retry elapsedMs=${Date.now() - captureStartedAt}`)
+            await injectCopyShortcut()
+            continue
+          }
+          await sleep(40)
+        }
       }
-      await sleep(40)
-    }
+
+      await injectCopyShortcut()
+      await pollForCapture(timeoutMs)
+
+      // 首次轮询超时后追加一次独立、有界的重试轮次：重写哨兵、重新注入复制键。
+      // 仅在未中止、未观测到用户主动复制且重试次数未耗尽时才进入，避免无限重试。
+      if (!hasClipboardCaptureCompleted(text, hasImage, sentinel)) {
+        const plan = resolveCopyRetryPlan({
+          attempts: copyAttempts,
+          retries: copyRetries,
+          elapsedMs: Date.now() - captureStartedAt,
+          timeoutMs,
+          aborted: Boolean(signal?.aborted),
+          externalCopyObserved: copyShortcutGuard.hasExternalCopySince(externalCopyVersion)
+        })
+        if (plan.retry) {
+          copyRetries += 1
+          console.log(
+            `[capture] copy-fallback-retry retry=${copyRetries} ` +
+            `timeoutMs=${plan.retryTimeoutMs} elapsedMs=${Date.now() - captureStartedAt}`
+          )
+          // 重写哨兵：确保上一轮的残留内容不会让重试误判为已捕获。
+          clipboard.clear()
+          clipboard.writeText(sentinel)
+          const retrySentinelFailure = verifySentinelWrite()
+          if (retrySentinelFailure) return retrySentinelFailure
+          await injectCopyShortcut()
+          await pollForCapture(plan.retryTimeoutMs)
+        }
+      }
     }
   } finally {
     try {
@@ -752,7 +804,10 @@ async function captureByCopy(
     return { text: '', hasImage: true, diagnostics: { level } }
   }
   if (!text) {
-    console.log(`[capture] copy-finish status=timeout elapsedMs=${Date.now() - captureStartedAt}`)
+    console.log(
+      `[capture] copy-finish status=timeout attempts=${copyAttempts} retries=${copyRetries} ` +
+      `elapsedMs=${Date.now() - captureStartedAt}`
+    )
     return { text: '', reason: 'timeout', diagnostics: { level: 'failed', reason: 'timeout' } }
   }
   console.log(

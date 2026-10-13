@@ -64,6 +64,7 @@ import {
   isPopupVisible,
   isPopupPinned,
   isPopupActivated,
+  isPopupHoldingKeyWindow,
   deactivatePopupForCapture,
   beginPopupSettingsOpenGuard,
   endPopupSettingsOpenGuard,
@@ -1338,13 +1339,13 @@ function onHotkey(): void {
         // 旧定时器必须先确认本次交互仍持有所有权，再启动取词；否则会绕过
         // queueSelectionTranslation() 的延迟 token 校验，干扰新的取词流程。
         if (!selectionInteraction.isCurrent(interactionToken)) return
-        queueSelectionTranslation(undefined, interactionToken, true, popupCloseVersion)
+        void queueSelectionTranslation(undefined, interactionToken, true, popupCloseVersion)
       },
       captureDelay
     )
     return
   }
-  queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
+  void queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
 }
 
 /**
@@ -1522,7 +1523,7 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   const interactionToken = selectionInteraction.beginTranslation()
   setTimeout(() => {
     if (gestureId !== latestSelectionGesture || !selectionInteraction.isCurrent(interactionToken)) return
-    queueSelectionTranslation(anchor, interactionToken)
+    void queueSelectionTranslation(anchor, interactionToken)
   }, SELECTION_SETTLE_DELAY_MS)
 }
 
@@ -1672,10 +1673,13 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
-  // 记录用户原本在用的应用：此刻本应用还不是前台应用，读到的就是源应用。
-  // Windows 取词前需要把焦点交还给源应用；macOS panel 不激活应用，无需交还，
-  // deactivatePopupForCapture 在非 Windows 平台直接返回 false。
-  if (shouldRestoreForegroundBeforeCapture(process.platform, isPopupActivated())) {
+  // 显示读取弹窗之前，若旧弹窗已经激活，先让出前台焦点，避免弹窗保持最前。
+  // Windows 需要把前台焦点交还源窗口；macOS 需要让 panel 退出 key window。
+  // Linux 无复制兜底，不干预焦点。
+  const popupHoldingKeyWindow = process.platform === 'darwin'
+    ? isPopupHoldingKeyWindow()
+    : isPopupActivated()
+  if (shouldRestoreForegroundBeforeCapture(process.platform, popupHoldingKeyWindow)) {
     deactivatePopupForCapture()
   }
   // 以非激活方式显示读取状态弹窗。弹窗已可见且已被激活（上次翻译结果调用了
@@ -1696,6 +1700,13 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
     anchor,
     false
   )
+  // showPopup(activate=false) 之后 panel 仍可能成为 key window：shownInactive
+  // 记账标志只代表调用方式，不能证明焦点已经交还。必须在显示完成后按真实焦点
+  // 状态再确认一次，确保随后注入的 Command+C 落到源应用而不是自有弹窗。
+  // 该时序空窗仅存在于 macOS nonactivating panel，Windows 保持既有行为不变。
+  if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
+    deactivatePopupForCapture()
+  }
   return popupCloseVersion
 }
 
@@ -1705,19 +1716,37 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
  * @param interactionToken 已经取得所有权的交互 token；省略时创建新的翻译流程。
  * @param directCapture 是否跳过原生直读并直接执行复制取词。
  * @param popupCloseVersion 读取弹窗显示时的关闭版本；变化后丢弃异步结果。
- * @returns 无返回值。
+ * @returns 取词与翻译流程安排完成后的 Promise。
  * @author zhenghq
  */
-function queueSelectionTranslation(
+async function queueSelectionTranslation(
   anchor?: { x: number; y: number },
   interactionToken?: number,
   directCapture = false,
   popupCloseVersion?: number
-): void {
+): Promise<void> {
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   if (popupCloseVersion !== undefined &&
       popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
+  // 自动模式取词不经过 showSelectionReadingPopup()：上一个常驻翻译弹窗可能仍
+  // 持有 macOS key window，此时注入的 Command+C 会打在弹窗上而不是源应用，导致
+  // 剪贴板哨兵不变并报取词超时。共用取词入口在启动 capture（注入复制键）之前
+  // 再按真实焦点状态交还一次；Windows / Linux 既有行为保持不变。
+  if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
+    deactivatePopupForCapture()
+    // key window 交还是异步生效的：等待系统把焦点真正还给源应用后再启动取词，
+    // 避免复制键仍落在自有弹窗上。等待期间交互可能被取消或关闭，必须复核后再继续。
+    await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
+    if (!selectionInteraction.isCurrent(token)) return
+    if (popupCloseVersion !== undefined &&
+        popupCloseVersion !== getPopupCloseVersion()) {
+      // 等待期间弹窗被关闭：本次取词已失效，按既有取消语义释放交互 token，
+      // 避免读取弹窗已关闭却仍残留 capturing 状态。
+      releaseSelectionInteraction(token)
+      return
+    }
+  }
   const capture = directCapture
     ? selectionCapture.captureDirect(anchor)
     : selectionCapture.capture(anchor)
@@ -1764,13 +1793,22 @@ async function translateSelectionButton(): Promise<void> {
   hideSelectionButton()
   const popupWasActivated = shouldRestoreForegroundBeforeCapture(
     process.platform,
-    isPopupActivated()
+    process.platform === 'darwin' ? isPopupHoldingKeyWindow() : isPopupActivated()
   )
   try {
     const popupCloseVersion = showSelectionReadingPopup(anchor)
     // 弹窗刚从前台失活时，Windows 需要几十毫秒才把焦点交回源应用；
     // 不等待就注入复制键会打在旧焦点上，导致剪贴板哨兵不变而报取词超时。
     if (popupWasActivated) {
+      await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
+      if (!selectionInteraction.isCurrent(interactionToken) ||
+          popupCloseVersion !== getPopupCloseVersion()) return
+    }
+    // macOS 的 key window 切换是异步的：showInactive() 返回时 panel 可能仍短暂
+    // 持有焦点。等待窗口结束后再按真实焦点状态复核一次，确保注入 Command+C 前
+    // 焦点已经真正回到源应用，而不是打在自有弹窗上。
+    if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
+      deactivatePopupForCapture()
       await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
       if (!selectionInteraction.isCurrent(interactionToken) ||
           popupCloseVersion !== getPopupCloseVersion()) return

@@ -30,20 +30,23 @@ function readingPopupSource(): string {
 function deactivateSource(): string {
   const start = popupSource.indexOf('export function deactivatePopupForCapture')
   assert.ok(start >= 0, 'deactivatePopupForCapture 应存在')
-  const end = popupSource.indexOf('\n}', start)
+  // 函数内包含多个嵌套块，必须用顶格闭合花括号定位函数结束。
+  const end = popupSource.indexOf('\n}\n', start)
   assert.ok(end > start, 'deactivatePopupForCapture 应有结束边界')
   return popupSource.slice(start, end + 2)
 }
 
 /**
- * 校验 Windows 取词归还前台判定保持原行为，macOS 不再交还应用前台。
+ * 校验 Windows 与 macOS 取词前都需要归还焦点：Windows 归还前台窗口，
+ * macOS 归还 key window；Linux 无复制兜底不干预。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('取词归还前台判定只保留 Windows 语义', () => {
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', true), true)
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', false), false)
-  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), false)
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), true)
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', false), false)
   assert.equal(shouldRestoreForegroundBeforeCapture('linux', true), false)
 })
 
@@ -68,23 +71,30 @@ test('showSelectionReadingPopup 应在需要归还前台时先让弹窗退出前
   const src = readingPopupSource()
   assert.match(
     src,
-    /shouldRestoreForegroundBeforeCapture\(\s*process\.platform\s*,\s*isPopupActivated\(\)\s*\)/u,
-    '必须按平台与弹窗激活状态判定是否需要归还前台'
+    /shouldRestoreForegroundBeforeCapture\(\s*process\.platform\s*,\s*popupHoldingKeyWindow\s*\)/u,
+    '必须按平台与真实焦点状态判定是否需要归还前台'
   )
+  assert.match(src, /isPopupHoldingKeyWindow\(\)/u, 'macOS 必须读取真实 key window 状态')
   const deactivateIndex = src.indexOf('deactivatePopupForCapture()')
   const showIndex = src.indexOf('showPopup(')
   assert.ok(deactivateIndex >= 0, '必须调用 deactivatePopupForCapture')
   assert.ok(showIndex > deactivateIndex, '失活必须发生在显示读取弹窗之前')
+  assert.ok(
+    src.indexOf('deactivatePopupForCapture()', showIndex) > showIndex,
+    '显示读取弹窗后必须再次按真实焦点状态确认交还，避免 panel 在显示过程中成为 key window'
+  )
 })
 
 /**
- * 校验 deactivatePopupForCapture 仅 Windows 生效，macOS panel 直接跳过。
+ * 校验 deactivatePopupForCapture 在 Windows 与 macOS 都生效：
+ * Windows 精确交还前台窗口，macOS 让 panel 退出 key window。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('主动失活仅在 Windows 生效', () => {
+test('主动失活在 Windows 与 macOS 都生效', () => {
   const src = deactivateSource()
-  assert.match(src, /process\.platform !== 'win32'/u, '必须限定仅 Windows 生效')
+  assert.match(src, /process\.platform !== 'win32' && process\.platform !== 'darwin'/u,
+    '仅 Linux 等平台跳过')
   assert.match(src, /foregroundTracker\.restore\(\)/u, 'Windows 必须精确交还前台窗口')
   assert.match(src, /win\.blur\(\)/u, '交还失败时仍应保留 blur 兜底')
 })
