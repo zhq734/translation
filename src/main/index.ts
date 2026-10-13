@@ -79,8 +79,10 @@ import {
 import {
   forgetFrontmostApp,
   handBackFrontmostApp,
+  handBackKeyWindowToFrontmostApp,
   handBackFrontmostThen,
   isMacAppActiveByEvents,
+  isOwnWindowHoldingKeyWindow,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
   rememberFrontmostAppIfInactiveAsync
@@ -718,6 +720,14 @@ function activateExistingPageOrOpenSettings(): void {
   // 误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会正常恢复，
   // 保证真实 Dock 启动可用。被其它应用遮挡时的强制置前改由显式快捷键入口负责。
   if (webReader?.focusExistingWindow()) return
+  // 设置页分支必须与阅读器分支对称：已可见且未最小化的设置页不得再执行
+  // show()+moveTop()+focus()。真机日志显示 6 次迟到 activate 误放行后都走到
+  // settings-reuse-raise，把已可见设置页重新顶到划词应用之上。activate 判定
+  // 存在状态空档，无法与真实 Dock 点击区分，因此这里对已可见窗口只保留其现有
+  // 层级，不再主动置前；被其它应用遮挡时的强制置前改由托盘/弹窗内显式入口负责。
+  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && !settingsWin.isMinimized()) {
+    return
+  }
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
   // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
   // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
@@ -1319,6 +1329,10 @@ function onHotkey(): void {
   invalidateSelectionFlowWithFocusCleanup()
   const interactionToken = selectionInteraction.beginTranslation()
   hideSelectionButton()
+  // 快捷键取词与按钮取词一样：结果弹窗会以 show() 激活本应用，隐藏时必须把
+  // 前台交还给用户触发快捷键时正在使用的应用。记录必须早于显示读取弹窗，
+  // 否则弹窗已激活本应用，快照只能读到自身而失去精确交还目标。
+  void rememberFrontmostAppIfInactiveAsync()
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
   const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
@@ -1508,6 +1522,12 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   lastSelectionAnchor = anchor
   const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
   if (action === 'ignore') return
+
+  // 记录本次划词时用户正在使用的源应用：结果弹窗在 macOS 上会以 show() 激活
+  // 本应用，隐藏时必须把前台交还给这个应用，否则下一次取词的 Command+C 会
+  // 打在本应用上而超时。必须在显示“译”按钮 / 读取弹窗之前读取，此时本应用
+  // 尚未抢占前台，读到的才是真实源应用。
+  void rememberFrontmostAppIfInactiveAsync()
 
   if (action === 'show-button') {
     selectionInteraction.showButton()
@@ -1729,12 +1749,15 @@ async function queueSelectionTranslation(
   if (popupCloseVersion !== undefined &&
       popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
-  // 自动模式取词不经过 showSelectionReadingPopup()：上一个常驻翻译弹窗可能仍
-  // 持有 macOS key window，此时注入的 Command+C 会打在弹窗上而不是源应用，导致
-  // 剪贴板哨兵不变并报取词超时。共用取词入口在启动 capture（注入复制键）之前
-  // 再按真实焦点状态交还一次；Windows / Linux 既有行为保持不变。
-  if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
-    deactivatePopupForCapture()
+  // 自动模式取词不经过 showSelectionReadingPopup()：上一个常驻翻译弹窗、设置页
+  // 或网页阅读器等任意自有窗口都可能仍持有 macOS key window，此时注入的
+  // Command+C 会打在自家窗口而不是源应用，导致剪贴板哨兵不变并报取词超时。
+  // 共用取词入口在启动 capture（注入复制键）之前按真实 key window 归属再交还
+  // 一次；Windows / Linux 既有行为保持不变。
+  if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
+    // 弹窗持有 key window 时先走弹窗专用失活，同时覆盖设置页等普通自有窗口。
+    if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
+    await handBackKeyWindowToFrontmostApp()
     // key window 交还是异步生效的：等待系统把焦点真正还给源应用后再启动取词，
     // 避免复制键仍落在自有弹窗上。等待期间交互可能被取消或关闭，必须复核后再继续。
     await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
@@ -1805,10 +1828,12 @@ async function translateSelectionButton(): Promise<void> {
           popupCloseVersion !== getPopupCloseVersion()) return
     }
     // macOS 的 key window 切换是异步的：showInactive() 返回时 panel 可能仍短暂
-    // 持有焦点。等待窗口结束后再按真实焦点状态复核一次，确保注入 Command+C 前
-    // 焦点已经真正回到源应用，而不是打在自有弹窗上。
-    if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
-      deactivatePopupForCapture()
+    // 持有焦点；设置页、网页阅读器等任意自有窗口也可能持有 key window。等待窗口
+    // 结束后按真实 key window 归属复核一次，确保注入 Command+C 前焦点已经真正
+    // 回到源应用，而不是打在自家窗口上。
+    if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
+      if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
+      await handBackKeyWindowToFrontmostApp()
       await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
       if (!selectionInteraction.isCurrent(interactionToken) ||
           popupCloseVersion !== getPopupCloseVersion()) return

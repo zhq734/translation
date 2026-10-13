@@ -7,6 +7,7 @@ import {
 } from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
+import { handBackFrontmostThen } from './macForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import { logCandidateProbe } from '../shared/activateDiagnostics'
@@ -453,13 +454,18 @@ function isSuppressedExternalPointerDismiss(point?: { x: number; y: number }): b
 /**
  * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
  *
- * macOS 上弹窗是 nonactivating panel：隐藏窗口不会激活应用，也不会把同应用
- * 其它窗口提升到最前，因此直接 win.hide() 即可。Windows 仍保留弹窗失活以
- * 归还前台焦点，避免下一次取词的复制键落在弹窗上。
+ * macOS 上结果弹窗通过 show() 激活后，本应用会成为系统最前应用；此时若只
+ * win.hide()，下一次取词注入的 Command+C 仍会打在自家窗口上，源应用不消费
+ * 剪贴板哨兵，最终报「取词超时」。因此隐藏前必须复用共享前台交还链路，把前台
+ * 交还给划词阶段记录的源应用，并等其确认失活后再隐藏窗口。打开设置页、网页
+ * 阅读器等内部窗口切换场景由 hidePopupForInternalWindowSwitch 显式豁免。
+ *
+ * Windows 仍保留弹窗失活以归还前台焦点，避免下一次取词的复制键落在弹窗上。
+ * @param handBackFrontmost 是否在隐藏前交还 macOS 应用级前台；内部窗口切换传 false。
  * @returns 无返回值。
  * @author zhenghq
  */
-export function hidePopup(): void {
+export function hidePopup(handBackFrontmost = true): void {
   clearHide()
   closeVersion += 1
   pinned = false
@@ -468,30 +474,41 @@ export function hidePopup(): void {
   suppressExternalPointerDismissOrigin = null
   win?.webContents.send('popup:pinned', false)
   if (!win || win.isDestroyed()) return
+  // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
+  // 后再执行，否则系统会先把同应用下一个可见窗口提升为 key window 顶到最前。
+  const run = (): void => {
+    shownInactive = false
+    logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
+    win?.hide()
+    // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
+    // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
+    notifyInternalWindowShown()
+  }
+  if (process.platform === 'darwin' && handBackFrontmost) {
+    // 结果弹窗可能以 showInactive 显示：它自身不是 key window，但应用仍可能
+    // 因点击“译”处于最前，必须让 handBackFrontmostThen 走弹窗专用判定。
+    handBackFrontmostThen(win, run, undefined, true)
+    return
+  }
   // Windows 上弹窗处于激活状态时必须先让出前台，否则下一次取词的 WM_COPY
-  // 与注入的 Ctrl+C 会打在弹窗上；macOS panel 不存在应用级前台占用，直接隐藏。
+  // 与注入的 Ctrl+C 会打在弹窗上。
   if (process.platform === 'win32' && !shownInactive) {
     foregroundTracker.restore()
   }
-  shownInactive = false
-  logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
-  win.hide()
-  // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
-  // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
-  notifyInternalWindowShown()
+  run()
 }
 
 /**
  * 只隐藏翻译弹窗自身，不影响应用内其它窗口。
  *
  * 从翻译弹窗打开设置页时，设置窗口会接管焦点；关闭弹窗不能触发任何应用级
- * 前台交还或整应用隐藏，否则用户已打开的设置页会被一起隐藏。panel 落地后
- * hidePopup() 已直接隐藏窗口，本入口保留独立语义以便调用方明确意图。
+ * 前台交还或整应用隐藏，否则用户已打开的设置页会被一起隐藏。因此本入口显式
+ * 传 false 豁免前台交还，只隐藏弹窗自身。
  * @returns 无返回值。
  * @author zhenghq
  */
 export function hidePopupForInternalWindowSwitch(): void {
-  hidePopup()
+  hidePopup(false)
 }
 
 /**

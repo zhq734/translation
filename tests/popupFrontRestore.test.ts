@@ -46,13 +46,13 @@ function selectionCaptureFailureSource(): string {
   return mainSource.slice(start, end)
 }
 
-test('翻译弹窗隐藏必须直接隐藏，不得再做应用级前台交还', () => {
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(): void {'))
+test('翻译弹窗隐藏必须交还 macOS 前台，且不得整应用隐藏', () => {
+  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {'))
 
-  // macOS panel 的 show()/focus() 不激活应用，隐藏弹窗不会把同应用其它窗口
-  // 提升到最前，因此 hidePopup 只允许直接隐藏窗口自身。
-  assert.match(hideSource, /win\.hide\(\)/u, '隐藏弹窗必须直接调用 win.hide()')
-  assert.doesNotMatch(hideSource, /handBackFrontmostThen/u, '不得再复用应用级前台交还')
+  // 真机日志：结果弹窗激活后若只 win.hide()，本应用仍是 macOS 最前应用，
+  // 下一次取词注入的 Command+C 不会落到源应用，剪贴板哨兵不变而超时。
+  assert.match(hideSource, /handBackFrontmostThen\(/u, '隐藏前必须复用共享前台交还链路')
+  assert.match(hideSource, /win\?\.hide\(\)/u, '隐藏弹窗最终仍必须调用 win.hide()')
   assert.doesNotMatch(hideSource, /yieldFrontmostAppThen/u, '不得再走整应用安全让出')
   assert.doesNotMatch(hideSource, /hidingAfterFrontReturn/u, '不得再维护交还期间的逻辑关闭标记')
   assert.doesNotMatch(hideSource, /beginInternalWindowTeardown|endInternalWindowTeardown/u,
@@ -70,7 +70,6 @@ test('翻译弹窗不得再维护补偿性前台交还状态', () => {
     'captureForegroundRestoreActive',
     'beginInternalWindowTeardown',
     'endInternalWindowTeardown',
-    'handBackFrontmostThen',
     'yieldFrontmostAppThen',
     'rememberFrontmostAppBeforeActivation'
   ]) {
@@ -98,6 +97,26 @@ test('划词弹窗显示前不得再记录应用级交还目标', () => {
   assert.doesNotMatch(readingSource, /rememberFrontmostAppIfInactive/u, '不得再记录源应用交还目标')
   assert.doesNotMatch(readingSource, /restoreFrontmostAppForCapture/u, '不得再走取词前精确交还')
   assert.match(readingSource, /showPopup\(/u, '公共取词入口仍需显示读取弹窗')
+})
+
+test('快捷键取词必须在显示读取弹窗前记录源应用交还目标', () => {
+  const hotkeySource = stripComments(extractFunction(mainSource, 'function onHotkey(): void {'))
+
+  // 快捷键取词与按钮取词一样会以 show() 显示结果弹窗并激活本应用；若不在显示
+  // 弹窗前记录源应用，隐藏弹窗时没有可交还目标，只能退化为安全让出，下一次
+  // 注入的 Command+C 仍可能打回自家窗口而超时。记录必须早于显示读取弹窗。
+  assert.match(
+    hotkeySource,
+    /rememberFrontmostAppIfInactiveAsync\(\)/u,
+    '快捷键取词必须记录源应用交还目标'
+  )
+  const rememberIndex = hotkeySource.indexOf('rememberFrontmostAppIfInactiveAsync()')
+  const showIndex = hotkeySource.indexOf('showSelectionReadingPopup(')
+  assert.ok(showIndex >= 0, '快捷键取词必须显示读取弹窗')
+  assert.ok(
+    rememberIndex >= 0 && rememberIndex < showIndex,
+    '记录源应用必须早于显示读取弹窗，否则本应用已抢到前台只能读到自身'
+  )
 })
 
 test('macOS 上取词失败提示必须以非激活方式显示，避免设置页被顶到最前', () => {
@@ -175,6 +194,33 @@ test('原生修复对话框显示期间不得丢弃待交还记录', () => {
     handBackThenSource,
     /isMacAppActiveByEvents\(\)[\s\S]*?forgetFrontmostApp\(\)/u,
     '只有应用确实失活时才能丢弃待交还记录'
+  )
+})
+
+test('结果弹窗隐藏时即使焦点在自有可聚焦窗口也必须交还前台', () => {
+  const handBackThenSource = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+
+  // 真机日志（2026-10-13）：hidePopup() 时 BrowserWindow.getFocusedWindow() 返回
+  // 设置页等自有可聚焦窗口（非 null、可聚焦、不等于弹窗），旧逻辑命中
+  // 「即将隐藏的窗口不是当前 key window」跳过分支；本应用继续占据最前，
+  // 下一次注入的 Command+C 打回自家窗口，剪贴板哨兵不变而报取词超时。
+  // 弹窗场景必须按应用激活状态决定是否交还，不能只按 key window 归属判定。
+  assert.match(
+    handBackThenSource,
+    /const popupNeedsHandBack\s*=\s*keyWindowIsPopup\s*&&\s*isMacAppActiveByEvents\(\)/u,
+    '弹窗场景必须先按应用激活状态计算是否需要交还'
+  )
+  assert.match(
+    handBackThenSource,
+    /!popupNeedsHandBack\s*&&/u,
+    '跳过分支必须受 popupNeedsHandBack 保护，不得拦住仍需交还的弹窗'
+  )
+  assert.doesNotMatch(
+    handBackThenSource,
+    /popupClosingWithoutKeyWindow/u,
+    '不得再用「弹窗未持有 key window」作为跳过交还的条件'
   )
 })
 

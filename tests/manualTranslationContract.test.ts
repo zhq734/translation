@@ -124,7 +124,7 @@ test('OCR 翻译结果应在弹窗展示 OCR 内容、引擎来源并复用复�
 })
 
 test('关闭、取消固定和模式切换应沿用明确的固定状态语义', () => {
-  assert.match(popup, /export function hidePopup\(\)[\s\S]*?pinned = false/u)
+  assert.match(popup, /export function hidePopup\(handBackFrontmost = true\)[\s\S]*?pinned = false/u)
   assert.match(renderer, /function leaveManualMode\(\)[\s\S]*?mode = 'selection'/u)
   const leaveStart = renderer.indexOf('function leaveManualMode')
   const leaveSource = renderer.slice(leaveStart, renderer.indexOf('\n}', leaveStart) + 2)

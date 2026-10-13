@@ -66,10 +66,10 @@ test('主进程创建选区按钮时必须注入 activate 抑制续期回调', (
 
 test('翻译弹窗隐藏必须在真实 win.hide() 后续期 activate 抑制', () => {
   const hideSource = stripComments(
-    extractFunction(popupSource, 'export function hidePopup(): void {')
+    extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
   )
   const notifyIndex = hideSource.indexOf('notifyInternalWindowShown()')
-  const hideIndex = hideSource.indexOf('win.hide()')
+  const hideIndex = hideSource.indexOf('win?.hide()')
 
   assert.ok(notifyIndex >= 0, '隐藏弹窗必须续期 activate 抑制')
   assert.ok(hideIndex >= 0, '隐藏弹窗必须保留真实 win.hide() 调用')

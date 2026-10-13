@@ -39,15 +39,14 @@ function stripComments(source: string): string {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS 按钮取词不得再走应用级前台交还', () => {
+test('macOS 按钮取词不得再在取词入口做应用级前台交还', () => {
   const src = stripComments(extractFunction(
     indexSource,
     'async function translateSelectionButton(): Promise<void> {'
   ))
 
-  // 翻译弹窗与设置窗口在 macOS 上都是 nonactivating panel：显示/聚焦只影响
-  // 目标窗口自身，不激活应用，因此不存在「复制键打在弹窗上」的应用级前台占用，
-  // 按钮取词无需再精确交还前台或等待前台切换。
+  // 取词前的应用级交还统一收敛到弹窗隐藏收尾；按钮入口只负责消费预取与复制，
+  // 避免取词瞬间再次执行 open -b 抢焦点。
   assert.doesNotMatch(src, /restoreFrontmostAppForCapture/u)
   assert.doesNotMatch(src, /waitForFrontmostAppReturn/u)
   assert.doesNotMatch(src, /isMacAppActiveByEvents/u)
@@ -62,12 +61,13 @@ test('macOS 按钮取词不得再走应用级前台交还', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('划词显示按钮不再需要记录源应用交还目标', () => {
+test('划词显示按钮必须记录源应用交还目标', () => {
   const src = stripComments(extractFunction(indexSource, 'function scheduleSelectionAction('))
 
-  // panel 不占用应用级前台，划词与取词收尾都不再需要 `open -b` 交还目标，
-  // 记录源应用只会留下无消费方的补偿状态。
-  assert.doesNotMatch(src, /rememberFrontmostAppIfInactive/u)
+  // 结果弹窗隐藏时需要把前台交还给用户划词时的源应用，因此必须在划词阶段
+  // 记录目标；点击“译”后本应用已可能成为最前，再读取快照会读到自身。
+  assert.match(src, /rememberFrontmostAppIfInactiveAsync\(\)/u,
+    '划词显示按钮前必须异步记录源应用交还目标')
   assert.match(src, /showSelectionButton\(/u, '划词仍需显示“译”按钮')
 })
 
@@ -294,7 +294,9 @@ test('点击“译”后的迟到全局按下不得关闭读取弹窗', () => {
     '抑制判断必须早于真正关闭弹窗'
   )
 
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(): void {'))
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
+  )
   assert.match(
     hideSource,
     /suppressExternalPointerDismissUntil = 0/u,

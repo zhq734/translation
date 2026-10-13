@@ -155,12 +155,16 @@ test('macOS 前台交还模块不得再导出补偿性 API', () => {
   }
 })
 
-test('翻译弹窗隐藏必须直接隐藏，不得再交还前台或隐藏整个应用', () => {
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(): void {'))
+test('翻译弹窗隐藏必须交还前台后再隐藏，且不得隐藏整个应用', () => {
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
+  )
 
-  assert.match(hideSource, /win\.hide\(\)/u, '隐藏弹窗必须直接调用 win.hide()')
-  assert.doesNotMatch(hideSource, /handBackFrontmostThen|yieldFrontmostAppThen|app\.hide\(\)/u,
-    'panel 落地后隐藏弹窗不得走前台交还或整应用隐藏')
+  assert.match(hideSource, /win\?\.hide\(\)/u, '隐藏弹窗必须最终调用 win.hide()')
+  assert.match(hideSource, /handBackFrontmostThen\(/u,
+    '结果弹窗隐藏前必须复用共享前台交还链路')
+  assert.doesNotMatch(hideSource, /yieldFrontmostAppThen|app\.hide\(\)/u,
+    '隐藏弹窗不得直接隐藏整个应用')
   assert.doesNotMatch(hideSource, /hidingAfterFrontReturn|beginInternalWindowTeardown/u,
     '隐藏弹窗不得再维护前台交还收尾状态')
 })
@@ -230,4 +234,23 @@ test('Dock 激活路径不得依赖焦点恢复入口', () => {
     'Dock 激活已有阅读器时必须走不会强制置前的恢复入口')
   assert.match(activateSource, /openSettings\(\{ bringToFront: true \}\)/u,
     '没有阅读器时 Dock 激活必须置前设置页')
+})
+
+test('activate 复用已可见且未最小化的设置页时不得再次强制置前', () => {
+  const activateSource = stripComments(
+    extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
+  )
+
+  // 真机日志：6 次 activate 放行全部触发 settings-reuse-raise，且 6 次设置页都已
+  // 可见。设置页分支此前与阅读器分支不对称——阅读器用 focusExistingWindow() 对
+  // 已可见窗口只返回 true、不重新 show()+focus()，而设置页却对已可见窗口执行
+  // show()+moveTop()+focus()，把后台设置页重新顶到划词应用之上。
+  // 修复后：已可见且未最小化时，activate 路径必须先短路返回，不得走到强制置前。
+  const visibleGuardIndex = activateSource.indexOf('isVisible()')
+  const openSettingsIndex = activateSource.indexOf('openSettings(')
+  assert.ok(visibleGuardIndex >= 0, 'activate 路径必须显式判断设置页是否已可见')
+  assert.ok(
+    visibleGuardIndex < openSettingsIndex,
+    '已可见设置页短路必须发生在 openSettings() 置前之前'
+  )
 })

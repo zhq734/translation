@@ -135,17 +135,21 @@ test('点击可见设置页或阅读器区域不得关闭翻译弹窗', () => {
     '真正的外部点击必须走全局按下兜底入口')
 })
 
-test('翻译弹窗隐藏必须直接隐藏，不得再交还前台或隐藏整个应用', () => {
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(): void {'))
+test('翻译弹窗隐藏必须交还前台后再隐藏，且不得隐藏整个应用', () => {
+  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {'))
 
-  assert.match(hideSource, /win\.hide\(\)/u, '隐藏弹窗必须直接调用 win.hide()')
-  assert.doesNotMatch(hideSource, /handBackFrontmostThen|yieldFrontmostAppThen|app\.hide\(\)/u,
-    'panel 落地后隐藏弹窗不得走前台交还或整应用隐藏')
+  // 真机日志：结果弹窗以 show() 激活后，hidePopup() 只隐藏窗口会让本应用
+  // 继续占据 macOS 前台，下一次注入的 Command+C 仍打在本应用上而取词超时。
+  assert.match(hideSource, /handBackFrontmostThen\(/u,
+    '结果弹窗隐藏前必须复用共享前台交还链路')
+  assert.match(hideSource, /win\?\.hide\(\)/u, '隐藏弹窗最终仍必须调用 win.hide()')
+  assert.doesNotMatch(hideSource, /yieldFrontmostAppThen|app\.hide\(\)/u,
+    '弹窗隐藏不得直接隐藏整个应用')
   assert.doesNotMatch(hideSource, /hidingAfterFrontReturn|beginInternalWindowTeardown/u,
     '隐藏弹窗不得再维护前台交还收尾状态')
 })
 
-test('翻译弹窗不得再维护补偿性前台交还状态', () => {
+test('翻译弹窗不得再维护临时补偿性前台交还状态', () => {
   const code = stripComments(popupSource)
 
   for (const removed of [
@@ -156,7 +160,6 @@ test('翻译弹窗不得再维护补偿性前台交还状态', () => {
     'captureForegroundRestoreActive',
     'beginInternalWindowTeardown',
     'endInternalWindowTeardown',
-    'handBackFrontmostThen',
     'yieldFrontmostAppThen',
     'isPopupHandingBackFront'
   ]) {

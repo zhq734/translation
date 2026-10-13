@@ -92,6 +92,101 @@ export function isMacAppActiveByEvents(): boolean {
 }
 
 /**
+ * 判断当前 macOS key window 是否由本应用的自有窗口持有。
+ *
+ * 取词前只检查翻译弹窗是不够的：设置页、网页阅读器等自有普通窗口同样可能
+ * 持有 key window。此时注入的 Command+C 会打在自家窗口上，源应用收不到复制
+ * 指令，剪贴板哨兵不变，最终表现为「取词超时」。因此必须在注入复制键前读取
+ * 真实 key window 归属，只要属于本应用的任意可见窗口就需要先交还。
+ * @returns 自有可见窗口当前持有 key window 时返回 true。
+ * @author zhenghq
+ */
+export function isOwnWindowHoldingKeyWindow(): boolean {
+  if (process.platform !== 'darwin') return false
+  const focused = BrowserWindow.getFocusedWindow()
+  const ownWindowFocused = Boolean(focused && !focused.isDestroyed() && focused.isVisible())
+  // 真机日志（2026-10-13）：读取弹窗以 showInactive 显示后，
+  // BrowserWindow.getFocusedWindow() 可能返回 null，但本应用仍在最前且
+  // pendingReturnApp 已记录源应用。此时注入的 Command+C 仍可能被应用内
+  // panel 或迟到的焦点状态吞掉，必须按记录把源应用重新激活后再取词。
+  return ownWindowFocused || Boolean(pendingReturnApp)
+}
+
+/**
+ * 在取词前把 macOS key window 交还给源应用。
+ *
+ * 优先使用记录的源应用快照精确激活；没有记录、目标已退出或激活未确认时，
+ * 对当前持有 key window 的自有窗口执行 blur 作为兜底，至少保证随后注入的
+ * Command+C 不会继续打在自家窗口上。本函数只交还 key window，不消费
+ * pendingReturnApp：记录仍需留给窗口隐藏时的应用级前台交还流程。
+ * @returns 已确认自有窗口不再持有 key window 时返回 true；无需处理或无法确认时返回 false。
+ * @author zhenghq
+ */
+export async function handBackKeyWindowToFrontmostApp(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  const focusedBefore = BrowserWindow.getFocusedWindow()
+  const ownWindowFocusedBefore = Boolean(
+    focusedBefore && !focusedBefore.isDestroyed() && focusedBefore.isVisible()
+  )
+  const appActiveBefore = isMacAppActiveByEvents()
+  const target = pendingReturnApp
+  // 没有自有 key window、没有应用级前台占用、也没有源应用记录时无需交还。
+  if (!ownWindowFocusedBefore && !appActiveBefore && !target) return false
+  if (target && isProcessAlive(target.pid) && activateFrontmostApp(target)) {
+    logFrontDiagnostic(`取词前开始精确交还 key window：open -b ${target.bundleId} pid=${target.pid}`)
+    // 原本没有自有 key window 时只需发出激活请求，调用方随后统一等待焦点稳定；
+    // 继续轮询 BrowserWindow 没有意义，反而会因为初始 null 立即误判成功。
+    if (!ownWindowFocusedBefore) {
+      logFrontDiagnostic(`取词前精确交还 key window 成功：bundleId=${target.bundleId}`)
+      return true
+    }
+    const handedBack = await new Promise<boolean>((resolve) => {
+      let finished = false
+      const finish = (confirmed: boolean): void => {
+        if (finished) return
+        finished = true
+        resolve(confirmed)
+      }
+      const deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
+      const poll = (): void => {
+        const focused = BrowserWindow.getFocusedWindow()
+        const ownWindowFocused = Boolean(
+          focused && !focused.isDestroyed() && focused.isVisible()
+        )
+        // 应用级失活是比 BrowserWindow 焦点更权威的信号；但只有本次开始前
+        // 应用确实处于最前时才要求它失活，避免启动阶段事件状态未就绪造成误判。
+        const appHandedBack = !appActiveBefore || !isMacAppActiveByEvents()
+        if (!ownWindowFocused && appHandedBack) {
+          finish(true)
+          return
+        }
+        if (Date.now() >= deadline) {
+          finish(false)
+          return
+        }
+        setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
+      }
+      poll()
+    })
+    if (handedBack) {
+      logFrontDiagnostic(`取词前精确交还 key window 成功：bundleId=${target.bundleId}`)
+      return true
+    }
+    logFrontDiagnostic(`取词前精确交还 key window 超时，退化为 blur：bundleId=${target.bundleId}`)
+  } else if (target) {
+    logFrontDiagnostic(`取词前无法激活源应用，退化为 blur：bundleId=${target.bundleId}`)
+  } else {
+    logFrontDiagnostic('取词前没有源应用记录，退化为 blur 自有 key window')
+  }
+  const focusedNow = BrowserWindow.getFocusedWindow()
+  if (focusedNow && !focusedNow.isDestroyed() && focusedNow.isVisible()) {
+    focusedNow.blur()
+  }
+  const focusedAfter = BrowserWindow.getFocusedWindow()
+  return !focusedAfter || focusedAfter.isDestroyed() || !focusedAfter.isVisible()
+}
+
+/**
  * 从 `lsappinfo info <asn>` 的输出解析应用快照。
  *
  * 注意 `-only bundleID` 打印的键名是 `CFBundleIdentifier`，与完整输出的 `bundleID=` 不同，
@@ -279,6 +374,9 @@ export function forgetFrontmostApp(): void {
  *
  * 只有「即将隐藏的窗口正是本应用当前 key window」才交还：
  * 隐藏非 key window 不会触发系统提升，此时交还反而会抢走用户正在使用的窗口。
+ * 弹窗是例外：结果弹窗可能以非激活方式显示，它自身不是 key window，但本应用
+ * 仍可能因点击“译”处于最前；此时即使焦点落在设置页等自有窗口，也必须把
+ * 应用级前台交还源应用，否则下一次取词的 Command+C 会打回自家窗口。
  * 兜底定时器保证激活未生效时也会继续收尾，不会让窗口一直留在屏上。
  * @param keyWindow 即将隐藏的窗口。
  * @param run 交还成功后的收尾动作（通常就是隐藏窗口）。
@@ -334,20 +432,13 @@ export function handBackFrontmostThen(
     }
   }
   // 隐藏的不是当前 key window：不会触发提升，记录留给随后真正隐藏 key window 的调用消费。
-  // 弹窗场景有两个必须继续交还的例外：
-  // 1) focused 为 null（弹窗以非激活方式显示，本应用仍最前）；
-  // 2) focused 是本应用内不可聚焦的残留焦点窗口（例如仅负责展示的覆盖层）。
-  //    此时 focused 非 null 且不等于弹窗，若命中下方跳过分支，既不交还前台
-  //    也不消费记录，应用仍最前，只能走 app.hide()→app.show() 兜底，
-  //    app.show() 会把设置页等自有窗口重新顶到最前。
-  // 用户主动点击了其它可聚焦自有窗口时，该窗口是用户的目标焦点，必须保留跳过分支。
-  const focusedIsResidualUnfocusableWindow = focused !== null &&
-    !focused.isDestroyed() &&
-    focused !== keyWindow &&
-    !focused.isFocusable()
-  const popupClosingWithoutKeyWindow = keyWindowIsPopup &&
-    (focused === null || focusedIsResidualUnfocusableWindow)
-  if (!popupClosingWithoutKeyWindow &&
+  // 弹窗是例外：它可能以非激活方式显示，focused 既可能为 null，也可能落在
+  // 设置页等自有可聚焦窗口。真机日志（2026-10-13）显示后一种情况会被旧跳过
+  // 分支拦下，本应用继续占据最前，下一次注入的 Command+C 打回自家窗口而超时。
+  // 因此弹窗场景只要应用激活事件表明本应用仍最前，就必须继续走交还 / 安全让出；
+  // 非弹窗场景仍保留 key window 归属判定，避免隐藏后台窗口时抢走用户焦点。
+  const popupNeedsHandBack = keyWindowIsPopup && isMacAppActiveByEvents()
+  if (!popupNeedsHandBack &&
       (!keyWindow || keyWindow.isDestroyed() || focused !== keyWindow)) {
     logFrontDiagnostic('跳过交还：即将隐藏的窗口不是当前 key window')
     run()

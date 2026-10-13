@@ -183,8 +183,8 @@ test('设置窗口失焦后再次获得焦点必须重新进入保护期', () =>
 })
 
 test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
-  // panel 落地后 hidePopup() 本身已只隐藏窗口自身，但仍保留显式语义入口，
-  // 避免后续维护者把内部窗口切换误接到别的收尾路径。
+  // 结果弹窗隐藏默认需要交还应用级前台；内部窗口切换（设置页 / 阅读器）
+  // 必须显式豁免，否则会把刚打开的设置页一起顶到最前。
   assert.match(
     popupSource,
     /export function hidePopupForInternalWindowSwitch\(/u,
@@ -195,12 +195,13 @@ test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
     popupSource,
     'export function hidePopupForInternalWindowSwitch('
   )
-  // hidePopup() 在 panel 语义下已只隐藏窗口自身，委托入口不得再引入任何
-  // 应用级收尾；断言委托关系与 hidePopup 的直接隐藏实现。
-  assert.match(hideOnlySource, /hidePopup\(\)/u, '只隐藏弹窗自身时必须委托 hidePopup')
+  // 内部窗口切换必须以 handBackFrontmost=false 委托 hidePopup，不得走
+  // 应用级前台交还或整应用让出。
+  assert.match(hideOnlySource, /hidePopup\(false\)/u,
+    '只隐藏弹窗自身时必须委托 hidePopup(false)')
   assert.match(
-    stripComments(extractFunction(popupSource, 'export function hidePopup(): void {')),
-    /win\.hide\(\)/u,
+    stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')),
+    /win\?\.hide\(\)/u,
     'hidePopup 必须真正隐藏窗口'
   )
   assert.doesNotMatch(
