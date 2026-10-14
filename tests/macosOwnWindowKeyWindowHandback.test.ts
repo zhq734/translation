@@ -48,13 +48,11 @@ test('macForeground 必须覆盖「焦点窗口为空但应用仍最前」的取
     extractFunction(macForegroundSource, 'export function isOwnWindowHoldingKeyWindow(')
   )
   // 真机日志（2026-10-13）：读取弹窗以 showInactive 显示后
-  // BrowserWindow.getFocusedWindow() 可能返回 null，但 did-become-active
-  // 表明本应用仍处于最前；此时 Cmd+C 仍可能被应用内 panel 吞掉并超时。
-  // 判定必须把「应用仍最前」纳入交还条件，不能只依赖 focused window。
-  assert.match(ownSource, /isMacAppActiveByEvents\(\)/u,
-    '焦点窗口为空但应用仍最前时也必须判定需要交还')
+  // BrowserWindow.getFocusedWindow() 可能返回 null，此时仍可能已有源应用记录。
+  // 判定必须把「存在待交还源应用记录」纳入条件，不能只依赖 focused window，
+  // 否则取词前会静默跳过交还，Cmd+C 被应用内 panel 吞掉而超时。
   assert.match(ownSource, /pendingReturnApp/u,
-    '应用仍最前但无源应用记录时不得盲目交还，必须有记录才触发')
+    '焦点窗口为空但存在源应用记录时也必须判定需要交还')
 })
 
 test('取词前交还必须覆盖任意自有窗口，并在无记录时退化为 blur', () => {
