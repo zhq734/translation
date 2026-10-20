@@ -56,18 +56,18 @@ test('macOS 按钮取词不得再在取词入口做应用级前台交还', () =>
 })
 
 /**
- * 校验划词阶段就记录源应用，避免用户点击“译”按钮后本应用已成最前应用，
+ * 校验划词阶段就记录源窗口，避免用户点击“译”按钮后本应用已成最前应用，
  * 此时再读取快照只会读到自身，导致没有可交还目标、复制取词超时。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('划词显示按钮必须记录源应用交还目标', () => {
+test('划词显示按钮必须记录源窗口交还目标', () => {
   const src = stripComments(extractFunction(indexSource, 'function scheduleSelectionAction('))
 
-  // 结果弹窗隐藏时需要把前台交还给用户划词时的源应用，因此必须在划词阶段
-  // 记录目标；点击“译”后本应用已可能成为最前，再读取快照会读到自身。
-  assert.match(src, /rememberFrontmostAppIfInactiveAsync\(\)/u,
-    '划词显示按钮前必须异步记录源应用交还目标')
+  // 结果弹窗隐藏时需要把前台交还给用户划词时的源窗口，因此必须在划词阶段
+  // 按锚点记录目标；点击“译”后本应用已可能成为最前，再读取快照会读到自身。
+  assert.match(src, /rememberFrontmostWindowAtPoint\(anchor\)/u,
+    '划词显示按钮前必须按锚点记录源窗口交还目标')
   assert.match(src, /showSelectionButton\(/u, '划词仍需显示“译”按钮')
 })
 
@@ -144,7 +144,8 @@ test('点击弹窗外部必须主动关闭可见弹窗并触发前台归还', ()
     '读取状态弹窗同样可见，必须按可见性判断而不能只看是否持有前台'
   )
   assert.match(dismissSource, /pinned/u, '固定弹窗不得被外部点击关闭')
-  assert.match(dismissSource, /hidePopup\(\)/u, '外部点击必须触发弹窗关闭以归还前台')
+  assert.match(dismissSource, /hidePopup\(true, 'external-pointer'\)/u,
+    '外部点击必须触发弹窗关闭以归还前台')
 })
 
 /**
@@ -187,7 +188,7 @@ test('取词结果被取消时必须关闭读取状态弹窗', () => {
   const nullBranch = src.slice(nullBranchStart)
   assert.match(
     nullBranch,
-    /hidePopup\(\)/u,
+    /hidePopup\(true, 'stale-token'\)/u,
     '取词结果为空时必须关闭读取状态弹窗，避免残留后吞掉后续划词'
   )
 })
@@ -290,12 +291,12 @@ test('点击“译”后的迟到全局按下不得关闭读取弹窗', () => {
   )
   assert.ok(
     dismissSource.indexOf('isSuppressedExternalPointerDismiss(point)') <
-      dismissSource.indexOf('hidePopup()'),
+      dismissSource.indexOf('hidePopup('),
     '抑制判断必须早于真正关闭弹窗'
   )
 
   const hideSource = stripComments(
-    extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
+    extractFunction(popupSource, 'export function hidePopup(')
   )
   assert.match(
     hideSource,

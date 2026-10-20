@@ -61,7 +61,7 @@ test('非激活显示的读取弹窗不得因失焦被关闭', () => {
   const blurSource = popupSource.slice(blurStart, blurStart + 1200)
   assert.match(blurSource, /if \(shownInactive\) return/u, '非激活显示期间必须忽略失焦')
   assert.ok(
-    blurSource.indexOf('if (shownInactive) return') < blurSource.indexOf('hidePopup()'),
+    blurSource.indexOf('if (shownInactive) return') < blurSource.indexOf('hidePopup('),
     '忽略失焦必须发生在关闭判断之前'
   )
 })
@@ -89,7 +89,7 @@ test('选区取词加载期间失焦不得关闭弹窗', () => {
     '选区取词加载期间必须忽略失焦，避免翻译结果返回前弹窗被关闭'
   )
   assert.ok(
-    blurSource.indexOf('if (selectionCaptureLoading) return') < blurSource.indexOf('hidePopup()'),
+    blurSource.indexOf('if (selectionCaptureLoading) return') < blurSource.indexOf('hidePopup('),
     '加载态短路必须发生在关闭判断之前'
   )
 })
@@ -108,5 +108,6 @@ test('外部点击关闭必须由全局按下兜底承担', () => {
   assert.match(dismissSource, /if \(!isPopupVisible\(\)\) return false/u, '不可见时不得处理')
   assert.match(dismissSource, /if \(pinned \|\| isSuppressedExternalPointerDismiss\(point\)\) return false/u,
     '固定弹窗与迟到按钮按下必须豁免')
-  assert.match(dismissSource, /hidePopup\(\)/u, '真正的外部点击必须关闭弹窗')
+  assert.match(dismissSource, /hidePopup\(true, 'external-pointer'\)/u,
+    '真正的外部点击必须关闭弹窗')
 })

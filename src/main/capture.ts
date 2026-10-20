@@ -20,6 +20,7 @@ import { isAutoTriggerRunning } from './autoTrigger'
 import { translateMain } from './messages'
 import {
   getSelectionCapturePlan,
+  parseMacosAxReaderWindowDiagnostic,
   resolveSelectionCaptureStrategy,
   type NativeSelectionReadResult
 } from '../shared/platformCapture'
@@ -41,6 +42,13 @@ import {
   WL_PASTE_TIMEOUT_MS
 } from '../shared/waylandSelection'
 import type { SelectionCaptureOutcome, CaptureDiagnosticLevel, SelectionFailureReason } from '../shared/selectionCaptureCoordinator'
+import type { SelectionCaptureContext } from '../shared/selectionCaptureCoordinator'
+import type { FrontmostWindowSnapshot } from '../shared/macosWindowSnapshot'
+import {
+  activateMacosWindowSnapshot,
+  isFailedWindowActivation,
+  type MacosWindowActivationResult
+} from './macosWindowActivation'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -62,6 +70,64 @@ const NATIVE_DIRECT_READ_TIMEOUT_MS = 300
 const WM_COPY_TIMEOUT_MS = 500
 /** 哨兵回读校验不一致时的重试次数。 */
 const SENTINEL_VERIFY_RETRY_COUNT = 1
+
+/**
+ * 将取词上下文转换为窗口激活模块可消费的快照。
+ * 缺少应用标识或进程号时返回 null，保持旧的应用级复制行为。
+ * @param context 当前取词窗口上下文。
+ * @returns 窗口快照；上下文不足时返回 null。
+ * @author zhenghq
+ */
+function toWindowSnapshot(context?: SelectionCaptureContext): FrontmostWindowSnapshot | null {
+  if (!context?.bundleId || context.pid === undefined) return null
+  return {
+    bundleId: context.bundleId,
+    pid: context.pid,
+    windowNumber: context.windowNumber,
+    bounds: context.bounds,
+    titleFingerprint: context.titleFingerprint,
+    capturedAt: Date.now(),
+    windowLocate: context.windowLocate
+  }
+}
+
+/**
+ * 在注入复制快捷键前精确激活源窗口。
+ * 应用级快照仍由窗口模块执行 open -b；窗口定位明确失败时返回固定 failed，
+ * 由复制链路在写入剪贴板哨兵和注入复制键前安全终止。
+ * @param context 当前取词窗口上下文。
+ * @returns 激活结果；没有可用窗口上下文时返回 null。
+ * @author zhenghq
+ */
+async function activateWindowBeforeCopy(
+  context?: SelectionCaptureContext
+): Promise<MacosWindowActivationResult | null> {
+  if (process.platform !== 'darwin') return null
+  // 入口层 handBackKeyWindowToFrontmostApp() 已完成本轮源窗口激活时，
+  // 复制链路必须复用该结果，避免对同一微信多窗口再次 raise/open -b。
+  if (context?.windowActivationSettled) {
+    console.log('[capture] window-activate skipped=entry-settled')
+    return null
+  }
+  const snapshot = toWindowSnapshot(context)
+  if (!snapshot) return null
+  try {
+    const result = await activateMacosWindowSnapshot(snapshot)
+    console.log(
+      `[capture] window-activate outcome=${result.outcome} ` +
+      `windowCount=${result.windowCount ?? 'unknown'} windowMatched=${result.windowMatched}`
+    )
+    return result
+  } catch {
+    console.log('[capture] window-activate outcome=failed windowCount=unknown windowMatched=false')
+    return {
+      activated: false,
+      confirmed: false,
+      outcome: 'failed',
+      windowMatched: false
+    }
+  }
+}
 
 /**
  * Windows 常驻 UIA helper 宿主单例；非 Windows 平台或 helper 不存在时为 null。
@@ -99,12 +165,42 @@ function convertHelperResult(result: NativeReaderResult): NativeSelectionReadRes
 }
 
 /**
+ * 为原生直读结果补齐窗口定位诊断。
+ *
+ * helper 明确返回诊断时直接采用；没有诊断但本次请求携带窗口编号时，
+ * 只能保守标记为应用级退化，不能仅凭“请求了窗口”就推断精确命中。
+ * @param native 原生直读结果。
+ * @param context 本次取词的源窗口上下文。
+ * @returns 带窗口诊断字段的原生直读结果。
+ * @author zhenghq
+ */
+function withWindowDiagnostics(
+  native: NativeSelectionReadResult,
+  context?: SelectionCaptureContext
+): NativeSelectionReadResult {
+  const hasWindowContext = context?.windowNumber !== undefined || context?.bounds !== undefined
+  if (native.windowLocate !== undefined || !hasWindowContext) return native
+  return {
+    ...native,
+    windowLocate: 'app-fallback',
+    windowMatched: false
+  }
+}
+
+/**
  * macOS 常驻 AX helper 直读：调用预编译的 macos-ax-reader 二进制读取选区文本。
+ * 传入窗口编号时优先读取该窗口内焦点元素的选区；无效窗口由 helper 回退旧路径。
  * @param signal 用于在请求失效后中止子进程的取消信号。
+ * @param windowNumber 可选目标窗口编号；缺失时保持无参数旧调用。
+ * @param pid 可选目标进程号；与窗口编号同时传入时绕过短暂焦点漂移。
  * @returns 直读结果；helper 不存在或不可用时返回 null 以触发降级。
  * @author zhenghq
  */
-async function readSelectionViaMacosHelper(signal?: AbortSignal): Promise<NativeSelectionReadResult | null> {
+async function readSelectionViaMacosHelper(
+  signal?: AbortSignal,
+  windowNumber?: number,
+  pid?: number
+): Promise<NativeSelectionReadResult | null> {
   const helperPath = resolveMacosAxReaderPath({
     resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
       ? process.resourcesPath
@@ -116,16 +212,28 @@ async function readSelectionViaMacosHelper(signal?: AbortSignal): Promise<Native
   }
   const startedAt = Date.now()
   try {
-    const { stdout } = await execFileP(
+    const args = windowNumber === undefined
+      ? []
+      : pid === undefined
+        ? [String(windowNumber)]
+        : [String(windowNumber), String(pid)]
+    const { stdout, stderr } = await execFileP(
       helperPath,
-      [],
+      args,
       { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
     )
+    const windowDiagnostics = parseMacosAxReaderWindowDiagnostic(stderr)
     console.log(
       `[capture] macos-ax-helper status=${classifyMacosAxHelperStatus(stdout)} ` +
-      `elapsedMs=${Date.now() - startedAt} fallback=false`
+      `elapsedMs=${Date.now() - startedAt} fallback=false ` +
+      `windowLocate=${windowDiagnostics.windowLocate ?? 'unknown'} ` +
+      `windowCount=${windowDiagnostics.windowCount ?? 'unknown'} ` +
+      `windowMatched=${windowDiagnostics.windowMatched ?? 'unknown'}`
     )
-    return parseNativeSelectionReadOutput(stdout)
+    return {
+      ...parseNativeSelectionReadOutput(stdout),
+      ...windowDiagnostics
+    }
   } catch (error) {
     console.log(
       `[capture] macos-ax-helper status=UNKNOWN elapsedMs=${Date.now() - startedAt} ` +
@@ -287,7 +395,8 @@ export async function inspectSelectedTextPresence(): Promise<SelectionPresence> 
  * @author zhenghq
  */
 export async function readSelectionByNative(
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context?: SelectionCaptureContext
 ): Promise<NativeSelectionReadResult> {
   try {
     if (signal?.aborted) return { status: 'unknown', text: '', reason: 'unknown' }
@@ -299,14 +408,18 @@ export async function readSelectionByNative(
 
     if (process.platform === 'darwin') {
       // 优先调用常驻 AX helper（毫秒级冷启动），不可用时降级到 osascript 脚本。
-      const helperResult = await readSelectionViaMacosHelper(signal)
-      if (helperResult) return helperResult
+      const helperResult = await readSelectionViaMacosHelper(
+        signal,
+        context?.windowNumber,
+        context?.pid
+      )
+      if (helperResult) return withWindowDiagnostics(helperResult, context)
       const { stdout } = await execFileP(
         'osascript',
         ['-e', MACOS_SELECTION_PRESENCE],
         { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
       )
-      return parseNativeSelectionReadOutput(stdout)
+      return withWindowDiagnostics(parseNativeSelectionReadOutput(stdout), context)
     }
 
     if (process.platform === 'win32') {
@@ -342,14 +455,15 @@ export async function readSelectionByNative(
  * @author zhenghq
  */
 async function readSelectionByNativeWithRetry(
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context?: SelectionCaptureContext
 ): Promise<NativeSelectionReadResult> {
-  let result = await readSelectionByNative(signal)
+  let result = await readSelectionByNative(signal, context)
   for (let attempt = 1; attempt < NATIVE_SELECTION_RETRY_COUNT; attempt += 1) {
     if (signal?.aborted || (result.status === 'present' && result.text.trim())) return result
     await sleep(NATIVE_SELECTION_RETRY_DELAY_MS)
     if (signal?.aborted) return result
-    result = await readSelectionByNative(signal)
+    result = await readSelectionByNative(signal, context)
   }
   return result
 }
@@ -551,9 +665,35 @@ export async function simulateCopy(): Promise<void> {
  */
 async function captureByCopy(
   signal?: AbortSignal,
-  timeoutMs = 800
+  timeoutMs = 800,
+  context?: SelectionCaptureContext
 ): Promise<SelectionCaptureOutcome> {
   const captureStartedAt = Date.now()
+  const windowActivation = await activateWindowBeforeCopy(context)
+  if (signal?.aborted) return { text: '' }
+  // 无法再次确认源窗口时不得继续写哨兵或注入 Cmd+C：同进程的微信/Chrome
+  // 窗口可能已经切换，复制键会落到错误窗口。此处安全失败，不修改剪贴板，
+  // 也不触发复制重试。
+  if (isFailedWindowActivation(windowActivation)) {
+    console.log(
+      `[capture] copy-finish status=window-activation-failed ` +
+      `windowLocate=${windowActivation?.outcome ?? 'failed'} ` +
+      `windowCount=${windowActivation?.windowCount ?? 'unknown'} ` +
+      `windowMatched=${windowActivation?.windowMatched ?? false} ` +
+      `elapsedMs=${Date.now() - captureStartedAt}`
+    )
+    return {
+      text: '',
+      reason: 'unknown',
+      diagnostics: {
+        level: 'failed',
+        reason: 'unknown',
+        windowLocate: windowActivation?.outcome,
+        windowCount: windowActivation?.windowCount,
+        windowMatched: windowActivation?.windowMatched
+      }
+    }
+  }
   const originalImage = clipboard.readImage()
   const hadImage = !originalImage.isEmpty()
   const originalText = clipboard.readText()
@@ -801,14 +941,33 @@ async function captureByCopy(
       `elapsedMs=${Date.now() - captureStartedAt}`
     )
     const level: CaptureDiagnosticLevel = captureStatus === 'late' ? 'copy-late' : 'copy-polled'
-    return { text: '', hasImage: true, diagnostics: { level } }
+    return {
+      text: '',
+      hasImage: true,
+      diagnostics: {
+        level,
+        windowLocate: windowActivation?.outcome,
+        windowCount: windowActivation?.windowCount,
+        windowMatched: windowActivation?.windowMatched
+      }
+    }
   }
   if (!text) {
     console.log(
       `[capture] copy-finish status=timeout attempts=${copyAttempts} retries=${copyRetries} ` +
       `elapsedMs=${Date.now() - captureStartedAt}`
     )
-    return { text: '', reason: 'timeout', diagnostics: { level: 'failed', reason: 'timeout' } }
+  return {
+    text: '',
+    reason: 'timeout',
+    diagnostics: {
+      level: 'failed',
+      reason: 'timeout',
+      windowLocate: windowActivation?.outcome,
+      windowCount: windowActivation?.windowCount,
+      windowMatched: windowActivation?.windowMatched
+    }
+  }
   }
   console.log(
     `[capture] copy-finish status=${captureStatus === 'late' ? 'text-late' : 'text'} ` +
@@ -816,7 +975,15 @@ async function captureByCopy(
     `elapsedMs=${Date.now() - captureStartedAt}`
   )
   const level: CaptureDiagnosticLevel = captureStatus === 'late' ? 'copy-late' : 'copy-polled'
-  return { text, diagnostics: { level } }
+  return {
+    text,
+    diagnostics: {
+      level,
+      windowLocate: windowActivation?.outcome,
+      windowCount: windowActivation?.windowCount,
+      windowMatched: windowActivation?.windowMatched
+    }
+  }
 }
 
 /**
@@ -829,21 +996,37 @@ async function captureByCopy(
  * @author zhenghq
  */
 export async function captureSelectionByNativeOnly(
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context?: SelectionCaptureContext
 ): Promise<SelectionCaptureOutcome> {
   if (signal?.aborted) return { text: '' }
 
   // “译”按钮显示期间的后台预取：只做原生直读，不注入复制键、不写剪贴板，
   // 避免在用户尚未点击按钮时干扰前台应用或占用剪贴板。
-  const native = await readSelectionByNativeWithRetry(signal)
+  const native = await readSelectionByNativeWithRetry(signal, context)
   if (native.status === 'present' && native.text.trim()) {
-    return { text: native.text, diagnostics: { level: 'native-read' } }
+    return {
+      text: native.text,
+      diagnostics: {
+        level: 'native-read',
+        windowLocate: native.windowLocate,
+        windowCount: native.windowCount,
+        windowMatched: native.windowMatched
+      }
+    }
   }
   const reason = native.status === 'empty' ? 'empty' : 'unsupported'
   return {
     text: '',
     reason,
-    diagnostics: { level: 'failed', reason }
+      diagnostics: {
+        level: 'failed',
+        reason,
+        windowLocate: native.windowLocate ??
+          (context?.windowNumber === undefined ? 'app-fallback' : 'failed'),
+      windowCount: native.windowCount,
+      windowMatched: native.windowMatched ?? false
+    }
   }
 }
 
@@ -857,20 +1040,24 @@ export async function captureSelectionByNativeOnly(
  */
 export async function captureSelectionAfterButtonClick(
   signal?: AbortSignal,
-  timeoutMs = 800
+  timeoutMs: number | SelectionCaptureContext = 800,
+  context?: SelectionCaptureContext
 ): Promise<SelectionCaptureOutcome> {
   if (signal?.aborted) return { text: '' }
+
+  const resolvedContext = typeof timeoutMs === 'number' ? context : timeoutMs
+  const resolvedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : timeoutMs.timeoutMs ?? 800
 
   const plan = getSelectionCapturePlan(process.platform)
   console.log(
     `[capture] button-capture-start platform=${process.platform} copyFallback=${plan.copyFallback}`
   )
   if (plan.copyFallback) {
-    return captureByCopy(signal, timeoutMs)
+    return captureByCopy(signal, resolvedTimeoutMs, resolvedContext)
   }
 
   if (plan.supportsNativeRead) {
-    return captureSelectionByNativeOnly(signal)
+    return captureSelectionByNativeOnly(signal, resolvedContext)
   }
 
   return { text: '', reason: 'unsupported', diagnostics: { level: 'failed', reason: 'unsupported' } }
@@ -887,22 +1074,34 @@ export async function captureSelectionAfterButtonClick(
  */
 export async function captureSelection(
   signal?: AbortSignal,
-  timeoutMs = 800
+  timeoutMs: number | SelectionCaptureContext = 800,
+  context?: SelectionCaptureContext
 ): Promise<SelectionCaptureOutcome> {
   if (signal?.aborted) return { text: '' }
+
+  const resolvedContext = typeof timeoutMs === 'number' ? context : timeoutMs
+  const resolvedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : timeoutMs.timeoutMs ?? 800
 
   const plan = getSelectionCapturePlan(process.platform)
 
   // 第一级：平台原生直读，不触碰剪贴板。
   if (plan.supportsNativeRead) {
-    const native = await readSelectionByNative(signal)
+    const native = await readSelectionByNative(signal, resolvedContext)
     if (native.status === 'present' && native.text.trim()) {
-      return { text: native.text, diagnostics: { level: 'native-read' } }
+      return {
+        text: native.text,
+        diagnostics: {
+          level: 'native-read',
+          windowLocate: native.windowLocate,
+          windowCount: native.windowCount,
+          windowMatched: native.windowMatched
+        }
+      }
     }
 
     // 第二级：复制兜底（macOS/Windows 注入复制键）。
     if (plan.copyFallback) {
-      return captureByCopy(signal, timeoutMs)
+      return captureByCopy(signal, resolvedTimeoutMs, resolvedContext)
     }
 
     // 无复制兜底（Linux）：直接按直读状态返回。
@@ -910,13 +1109,20 @@ export async function captureSelection(
     return {
       text: '',
       reason,
-      diagnostics: { level: 'failed', reason }
+      diagnostics: {
+        level: 'failed',
+        reason,
+        windowLocate: native.windowLocate ??
+          (resolvedContext?.windowNumber === undefined ? 'app-fallback' : 'failed'),
+        windowCount: native.windowCount,
+        windowMatched: native.windowMatched ?? false
+      }
     }
   }
 
   // 不支持原生直读的平台：仅尝试复制兜底。
   if (plan.copyFallback) {
-    return captureByCopy(signal, timeoutMs)
+    return captureByCopy(signal, resolvedTimeoutMs, resolvedContext)
   }
   return { text: '', reason: 'unsupported', diagnostics: { level: 'failed', reason: 'unsupported' } }
 }

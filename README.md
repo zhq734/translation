@@ -565,7 +565,13 @@ Full-page web translation follows an additional explicit-consent boundary: the a
 
 ### Selection Capture Diagnostics
 
-The app records local diagnostic metadata for each selection capture to help troubleshoot "cannot get text" issues. The diagnostic record includes only: timestamp, entry point (button/hotkey/auto), platform, capture level (native-read/copy-polled/copy-late/failed), failure reason, elapsed time, and frontmost app identifier. **It never records selected text, clipboard content, window titles, file paths, or text length.** Data is stored locally in `userData/capture-diagnostics.json` with a two-day rolling window and is never sent to any remote server. You can view the summary in Settings → Logs and export it as JSON for feedback.
+The app records local diagnostic metadata for each selection capture to help troubleshoot "cannot get text" issues. The diagnostic record includes only: timestamp, entry point (button/hotkey/auto), platform, capture level (native-read/copy-polled/copy-late/failed), failure reason, elapsed time, and frontmost app identifier. Window-aware capture on macOS may also record these sanitized fields:
+
+- `windowLocate`: `exact`, `app-fallback`, or `failed`;
+- `windowCount`: the number of ordinary windows owned by the target app, used only to identify multi-window scenarios; it is omitted when window enumeration fails (shown as `unknown` in logs) and must not be confused with a successful enumeration returning `0`;
+- `windowMatched`: whether the source window was matched exactly by window number or bounds.
+
+Diagnostic exports are rebuilt from a strict field allowlist and may contain only the fields above. **They never export plaintext window titles, chat/contact names, selected text, clipboard content, file paths, or text length.** Window-title fingerprints are used only for local matching and never enter diagnostic records or exported files. Data is stored locally in `userData/capture-diagnostics.json` with a two-day rolling window and is never sent to any remote server. You can view the summary in Settings → Logs and export it as JSON for feedback.
 
 This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. Edge online speech also requires no user credential: only the selected engine is stored, while read-aloud text is not logged and generated audio is not persisted. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 

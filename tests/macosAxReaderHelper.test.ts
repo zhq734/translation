@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { resolveMacosAxReaderPath } from '../src/main/nativeReaderHost.ts'
 import { parseNativeSelectionReadOutput } from '../src/shared/selectionBehavior.ts'
+import { parseMacosAxReaderWindowDiagnostic } from '../src/shared/platformCapture.ts'
 
 const HELPER_PATH = 'helpers/macos-ax-reader/main.m'
 
@@ -186,4 +187,131 @@ test('capture.ts macOS 直读应使用解析后的 helper 路径', () => {
     !/execFileP\(\s*'build\/macos-ax-reader'/u.test(source),
     'macOS 直读不得硬编码 build/macos-ax-reader 相对路径'
   )
+})
+
+/**
+ * 校验 helper 支持可选窗口编号参数，同时无参数调用仍保持原有读取路径。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX helper 应支持可选窗口编号且无参数时保持旧协议', () => {
+  const source = readHelperSource()
+  assert.match(source, /argc\s*>\s*1/u, 'helper 必须检查可选窗口参数')
+  assert.match(source, /argv\[1\]/u, 'helper 必须从 argv[1] 读取窗口编号')
+  assert.match(source, /AXWindowNumber/u, 'helper 必须按 AX 窗口编号定位目标窗口')
+  assert.match(source, /kAXFocusedWindowAttribute/u, 'helper 应读取目标窗口的 focused window')
+  assert.match(source, /kAXRaiseAction/u, 'helper 应能提升目标窗口后读取')
+  assert.match(source, /PRESENT/u, '窗口读取路径仍必须输出 PRESENT 状态')
+  assert.match(source, /UNKNOWN/u, '无效窗口必须回退并输出 UNKNOWN')
+})
+
+/**
+ * 校验 Node 侧把窗口编号作为可选参数传入，同时保留无参数调用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('capture.ts macOS helper 调用应可选传入窗口编号', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('async function readSelectionViaMacosHelper')
+  const end = source.indexOf('async function readSelectionViaWindowsHelper', start)
+  const fnSource = source.slice(start, end)
+  assert.match(fnSource, /windowNumber/u, 'helper 调用必须接收可选窗口编号')
+  assert.match(fnSource, /String\(windowNumber\)|\[\s*windowNumber/u, '窗口编号必须作为 argv 参数传入')
+  assert.match(fnSource, /\[\]/u, '无窗口上下文时必须保留空参数调用')
+})
+
+/**
+ * 校验 helper 在 stderr 输出固定窗口诊断，且诊断不包含标题或选区文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX helper 应输出固定窗口诊断且不泄露标题与选区文本', () => {
+  const source = readHelperSource()
+  const diagnosticStart = source.indexOf('WriteWindowDiagnostic')
+  const diagnosticEnd = source.indexOf('\n}', diagnosticStart)
+  assert.ok(diagnosticStart >= 0, 'helper 应定义窗口诊断输出函数')
+  assert.ok(diagnosticEnd > diagnosticStart, '窗口诊断输出函数应有明确边界')
+  const diagnosticSource = source.slice(diagnosticStart, diagnosticEnd)
+
+  assert.match(diagnosticSource, /StandardError/u, '窗口诊断必须写入 stderr，避免污染 stdout 文本协议')
+  assert.match(source, /WINDOW %@ count=/u, '诊断格式必须由固定模板生成')
+  assert.match(source, /WriteWindowDiagnostic\(@"exact"/u, '精确命中必须写入 exact 诊断')
+  assert.match(source, /WriteWindowDiagnostic\(@"fallback"/u, '应用级退化必须写入 fallback 诊断')
+  assert.match(source, /WriteWindowDiagnostic\(@"failed"/u, '定位失败必须写入 failed 诊断')
+  assert.doesNotMatch(diagnosticSource, /title|标题/iu, '诊断不得输出窗口标题')
+  assert.doesNotMatch(diagnosticSource, /selectedText|选区文本/iu, '诊断不得输出选区文本')
+})
+
+/**
+ * 校验 helper 可选接收 pid，并通过 AXUIElementCreateApplication(pid) 定向定位应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX helper 应支持可选 pid 并定向读取目标应用窗口', () => {
+  const source = readHelperSource()
+  assert.match(source, /argc\s*>\s*2/u, 'helper 应检查可选 pid 参数')
+  assert.match(source, /argv\[2\]/u, 'helper 应从 argv[2] 读取 pid')
+  assert.match(source, /AXUIElementCreateApplication\(/u, '传入 pid 时应直接创建目标应用 AX 元素')
+  assert.match(source, /CopyWindowCount\(/u, 'helper 应统计目标应用窗口数量')
+  assert.match(source, /WriteWindowDiagnostic\(@"exact"/u, '精确命中时应写入 exact 诊断')
+  assert.match(source, /WriteWindowDiagnostic\(@"fallback"/u, '旧路径命中时应写入 fallback 诊断')
+  assert.match(source, /WriteWindowDiagnostic\(@"failed"/u, '定位失败时应写入 failed 诊断')
+})
+
+/**
+ * 校验 Node 侧同时读取 helper stderr，并按固定诊断行解析窗口定位结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('capture.ts macOS helper 调用应解析 stderr 窗口诊断', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('async function readSelectionViaMacosHelper')
+  const end = source.indexOf('async function readSelectionViaWindowsHelper', start)
+  const fnSource = source.slice(start, end)
+
+  assert.match(fnSource, /stderr/u, '必须读取 helper stderr')
+  assert.match(fnSource, /parseMacosAxReaderWindowDiagnostic/u, '必须按固定诊断行解析窗口定位结果')
+  assert.match(fnSource, /windowLocate/u, '解析结果必须透传到 NativeSelectionReadResult')
+  assert.match(fnSource, /windowCount/u, '解析结果必须透传窗口数量')
+  assert.match(fnSource, /windowMatched/u, '解析结果必须透传窗口命中状态')
+})
+
+/**
+ * 校验窗口诊断解析器区分精确命中、应用级退化与定位失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口诊断解析器应区分 exact、fallback 与 failed', () => {
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW exact count=2'), {
+    windowLocate: 'exact',
+    windowCount: 2,
+    windowMatched: true
+  })
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW fallback count=2'), {
+    windowLocate: 'app-fallback',
+    windowCount: 2,
+    windowMatched: false
+  })
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW failed count=0'), {
+    windowLocate: 'failed',
+    windowCount: 0,
+    windowMatched: false
+  })
+})
+
+/**
+ * 校验窗口诊断解析器忽略未知行、非法计数与敏感内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口诊断解析器应忽略未知或非法行', () => {
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic(''), {})
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('hello\nWINDOW unknown count=2'), {})
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW exact count=-1'), {})
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW exact count=abc'), {})
+  assert.deepEqual(parseMacosAxReaderWindowDiagnostic('WINDOW exact count=2\n张三 - 微信'), {
+    windowLocate: 'exact',
+    windowCount: 2,
+    windowMatched: true
+  })
 })

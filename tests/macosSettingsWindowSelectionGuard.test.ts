@@ -157,7 +157,7 @@ test('macOS 前台交还模块不得再导出补偿性 API', () => {
 
 test('翻译弹窗隐藏必须交还前台后再隐藏，且不得隐藏整个应用', () => {
   const hideSource = stripComments(
-    extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
+    extractFunction(popupSource, 'export function hidePopup(')
   )
 
   assert.match(hideSource, /win\?\.hide\(\)/u, '隐藏弹窗必须最终调用 win.hide()')

@@ -51,7 +51,7 @@ test('从翻译弹窗打开设置时，弹窗失焦不得自动关闭', () => {
 
   const blurSource = extractFunction(popupSource, 'function handlePopupBlur()')
   const guardIndex = blurSource.indexOf('settingsOpenGuardActive')
-  const hideIndex = blurSource.indexOf('hidePopup()')
+  const hideIndex = blurSource.indexOf('hidePopup(')
   assert.ok(guardIndex >= 0, '失焦处理必须识别设置打开保护状态')
   assert.ok(guardIndex < hideIndex, '设置打开保护必须发生在自动关闭判断之前')
 })
@@ -197,10 +197,10 @@ test('从翻译弹窗打开设置时必须只隐藏弹窗自身', () => {
   )
   // 内部窗口切换必须以 handBackFrontmost=false 委托 hidePopup，不得走
   // 应用级前台交还或整应用让出。
-  assert.match(hideOnlySource, /hidePopup\(false\)/u,
-    '只隐藏弹窗自身时必须委托 hidePopup(false)')
+  assert.match(hideOnlySource, /hidePopup\(false, 'internal-window-switch'\)/u,
+    '只隐藏弹窗自身时必须委托 hidePopup(false, internal-window-switch)')
   assert.match(
-    stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')),
+    stripComments(extractFunction(popupSource, 'export function hidePopup(')),
     /win\?\.hide\(\)/u,
     'hidePopup 必须真正隐藏窗口'
   )

@@ -136,7 +136,9 @@ test('点击可见设置页或阅读器区域不得关闭翻译弹窗', () => {
 })
 
 test('翻译弹窗隐藏必须交还前台后再隐藏，且不得隐藏整个应用', () => {
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {'))
+  const hideSource = stripComments(extractFunction(
+    popupSource, 'export function hidePopup('
+  ))
 
   // 真机日志：结果弹窗以 show() 激活后，hidePopup() 只隐藏窗口会让本应用
   // 继续占据 macOS 前台，下一次注入的 Command+C 仍打在本应用上而取词超时。
@@ -189,7 +191,7 @@ test('macOS 前台交还模块不得再导出补偿性 API', () => {
   }
   // OCR/阅读器/原生对话框仍需保留非补偿链路。
   assert.match(code, /export function handBackFrontmostThen\(/u)
-  assert.match(code, /export function handBackFrontmostApp\(/u)
+  assert.match(code, /export (?:async )?function handBackFrontmostApp\(/u)
   assert.match(code, /export function isMacAppActiveByEvents\(/u)
 })
 

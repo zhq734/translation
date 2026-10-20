@@ -47,7 +47,9 @@ function selectionCaptureFailureSource(): string {
 }
 
 test('翻译弹窗隐藏必须交还 macOS 前台，且不得整应用隐藏', () => {
-  const hideSource = stripComments(extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {'))
+  const hideSource = stripComments(extractFunction(
+    popupSource, 'export function hidePopup('
+  ))
 
   // 真机日志：结果弹窗激活后若只 win.hide()，本应用仍是 macOS 最前应用，
   // 下一次取词注入的 Command+C 不会落到源应用，剪贴板哨兵不变而超时。
@@ -103,14 +105,14 @@ test('快捷键取词必须在显示读取弹窗前记录源应用交还目标',
   const hotkeySource = stripComments(extractFunction(mainSource, 'function onHotkey(): void {'))
 
   // 快捷键取词与按钮取词一样会以 show() 显示结果弹窗并激活本应用；若不在显示
-  // 弹窗前记录源应用，隐藏弹窗时没有可交还目标，只能退化为安全让出，下一次
-  // 注入的 Command+C 仍可能打回自家窗口而超时。记录必须早于显示读取弹窗。
+  // 弹窗前按鼠标位置记录源窗口，隐藏弹窗时没有可交还目标，只能退化为安全让出，
+  // 下一次注入的 Command+C 仍可能打回自家窗口而超时。记录必须早于显示读取弹窗。
   assert.match(
     hotkeySource,
-    /rememberFrontmostAppIfInactiveAsync\(\)/u,
-    '快捷键取词必须记录源应用交还目标'
+    /rememberFrontmostWindowAtPoint\(screen\.getCursorScreenPoint\(\)\)/u,
+    '快捷键取词必须按鼠标位置记录源窗口交还目标'
   )
-  const rememberIndex = hotkeySource.indexOf('rememberFrontmostAppIfInactiveAsync()')
+  const rememberIndex = hotkeySource.indexOf('rememberFrontmostWindowAtPoint(screen.getCursorScreenPoint())')
   const showIndex = hotkeySource.indexOf('showSelectionReadingPopup(')
   assert.ok(showIndex >= 0, '快捷键取词必须显示读取弹窗')
   assert.ok(
@@ -137,7 +139,7 @@ test('macOS 上取词失败提示必须以非激活方式显示，避免设置�
 test('原生修复对话框关闭后仍必须交还其记录的源应用', () => {
   const handBackAppSource = extractFunction(
     macForegroundSource,
-    'export function handBackFrontmostApp(): Promise<boolean> {'
+    'export async function handBackFrontmostApp(): Promise<boolean> {'
   )
   // dialog.showMessageBox 是原生对话框而不是 BrowserWindow：对话框存在时
   // BrowserWindow.getFocusedWindow() 返回 null，但本应用仍然处于最前。
@@ -167,14 +169,14 @@ test('OCR 覆盖层与原生对话框仍保留前台交还链路', () => {
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
   const handBackAppSource = stripComments(
-    extractFunction(macForegroundSource, 'export function handBackFrontmostApp(): Promise<boolean> {')
+    extractFunction(macForegroundSource, 'export async function handBackFrontmostApp(): Promise<boolean> {')
   )
 
   // 这两条链路会显示原生对话框 / OCR 覆盖层并真实激活应用，仍必须把前台
   // 交还给用户原本在用的应用；它们不属于本次 panel 删除范围。
-  assert.match(handBackThenSource, /activateFrontmostApp/u, '覆盖层收尾必须尝试精确交还源应用')
+  assert.match(handBackThenSource, /activateFrontmostSnapshot/u, '覆盖层收尾必须通过统一入口尝试精确交还源窗口')
   assert.match(handBackThenSource, /handBackFrontmostThen|forgetFrontmostApp/u, '必须维护待交还记录生命周期')
-  assert.match(handBackAppSource, /activateFrontmostApp/u, '原生对话框收尾必须尝试精确交还源应用')
+  assert.match(handBackAppSource, /activateFrontmostSnapshot/u, '原生对话框收尾必须通过统一入口尝试精确交还源窗口')
 })
 
 test('原生修复对话框显示期间不得丢弃待交还记录', () => {
@@ -244,7 +246,7 @@ test('前台交还链路必须输出可诊断日志', () => {
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
   const handBackAppSource = stripComments(
-    extractFunction(macForegroundSource, 'export function handBackFrontmostApp(): Promise<boolean> {')
+    extractFunction(macForegroundSource, 'export async function handBackFrontmostApp(): Promise<boolean> {')
   )
 
   assert.match(handBackSource, /logFrontDiagnostic\(|console\.(log|warn)/u, '覆盖层交还路径必须输出日志')

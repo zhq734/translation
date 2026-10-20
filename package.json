@@ -7,9 +7,9 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
+    "dev": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/build-macos-window-helper.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && electron-vite dev",
     "dev:notify-test": "node --experimental-strip-types scripts/test-install-notification.mts",
-    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
+    "build": "node scripts/build-macos-vision-ocr.mjs && node scripts/build-macos-ax-reader.mjs && node scripts/build-macos-window-helper.mjs && node scripts/generate-build-info.mjs --output build/build-info.json --allow-local-fallback && node scripts/generate-usage-report-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
@@ -100,6 +100,10 @@
         {
           "from": "build/macos-ax-reader",
           "to": "macos-ax-reader"
+        },
+        {
+          "from": "build/macos-window-helper",
+          "to": "macos-window-helper"
         },
         {
           "from": "build/build-info.json",

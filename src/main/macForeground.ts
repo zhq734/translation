@@ -18,6 +18,19 @@
 import { app, BrowserWindow } from 'electron'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
+import type { FrontmostWindowSnapshot, WindowBounds } from '../shared/macosWindowSnapshot'
+import {
+  activateMacosWindowSnapshot,
+  enumerateMacosWindows,
+  isExactWindowActivationConfirmed,
+  type MacosWindowActivationResult
+} from './macosWindowActivation'
+import {
+  buildFrontmostWindowSnapshot,
+  resolveWindowCaptureTarget,
+  type ScreenPoint,
+  type WindowLocateOutcome
+} from '../shared/macosWindowSnapshot'
 import { restoreSelectionButtonIfPending } from './selectionButton'
 
 const execFileP = promisify(execFile)
@@ -56,6 +69,40 @@ export interface FrontmostAppSnapshot {
   bundleId: string
   /** 应用进程号，用于确认它到交还时仍在运行。 */
   pid: number
+  /** 窗口编号；应用级快照时缺失。 */
+  windowNumber?: number
+  /** 窗口边界；应用级快照时缺失。 */
+  bounds?: WindowBounds
+  /** 窗口标题哈希指纹；只用于本地匹配，不得写入诊断导出。 */
+  titleFingerprint?: string
+  /** 快照采集时间戳（毫秒）；应用级快照可缺失。 */
+  capturedAt?: number
+  /** 入口记录阶段的窗口定位结果；failed 表示不得退化为 open -b。 */
+  windowLocate?: WindowLocateOutcome
+}
+
+/**
+ * 判断快照是否携带可用于精确窗口激活的定位信息。
+ * @param snapshot 前台应用或窗口快照。
+ * @returns 存在窗口编号或边界时返回 true。
+ * @author zhenghq
+ */
+function hasWindowLocator(snapshot: FrontmostAppSnapshot | null): boolean {
+  return Boolean(snapshot && (snapshot.windowNumber !== undefined || snapshot.bounds))
+}
+
+/**
+ * 将可选的窗口字段补齐为窗口激活模块要求的快照类型。
+ * `capturedAt` 仅用于快照语义，不参与窗口匹配；旧调用缺失时以当前时间补齐。
+ * @param snapshot 前台应用或窗口快照。
+ * @returns 窗口激活模块可直接使用的快照。
+ * @author zhenghq
+ */
+function toFrontmostWindowSnapshot(snapshot: FrontmostAppSnapshot): FrontmostWindowSnapshot {
+  return {
+    ...snapshot,
+    capturedAt: snapshot.capturedAt ?? Date.now()
+  }
 }
 
 /**
@@ -105,11 +152,12 @@ export function isOwnWindowHoldingKeyWindow(): boolean {
   if (process.platform !== 'darwin') return false
   const focused = BrowserWindow.getFocusedWindow()
   const ownWindowFocused = Boolean(focused && !focused.isDestroyed() && focused.isVisible())
-  // 真机日志（2026-10-13）：读取弹窗以 showInactive 显示后，
-  // BrowserWindow.getFocusedWindow() 可能返回 null，但本应用仍在最前且
-  // pendingReturnApp 已记录源应用。此时注入的 Command+C 仍可能被应用内
-  // panel 或迟到的焦点状态吞掉，必须按记录把源应用重新激活后再取词。
-  return ownWindowFocused || Boolean(pendingReturnApp)
+  if (ownWindowFocused) return true
+  // 存在待交还记录本身不代表需要再次激活源应用：微信仍在前台时，记录只是
+  // 结果弹窗关闭后的收尾目标。此时再调用 open -b 会把同进程的另一个窗口
+  // 带到最前，随后 Cmd+C 落在错误窗口并超时。只有应用激活事件表明本应用
+  // 仍占用前台、却没有可聚焦的自有窗口时，才需要走交还兜底。
+  return isMacAppActiveByEvents()
 }
 
 /**
@@ -119,7 +167,7 @@ export function isOwnWindowHoldingKeyWindow(): boolean {
  * 对当前持有 key window 的自有窗口执行 blur 作为兜底，至少保证随后注入的
  * Command+C 不会继续打在自家窗口上。本函数只交还 key window，不消费
  * pendingReturnApp：记录仍需留给窗口隐藏时的应用级前台交还流程。
- * @returns 已确认自有窗口不再持有 key window 时返回 true；无需处理或无法确认时返回 false。
+ * @returns 源窗口已精确确认取得前台时返回 true；仅 blur 兜底、无需处理或无法确认时返回 false。
  * @author zhenghq
  */
 export async function handBackKeyWindowToFrontmostApp(): Promise<boolean> {
@@ -132,47 +180,65 @@ export async function handBackKeyWindowToFrontmostApp(): Promise<boolean> {
   const target = pendingReturnApp
   // 没有自有 key window、没有应用级前台占用、也没有源应用记录时无需交还。
   if (!ownWindowFocusedBefore && !appActiveBefore && !target) return false
-  if (target && isProcessAlive(target.pid) && activateFrontmostApp(target)) {
-    logFrontDiagnostic(`取词前开始精确交还 key window：open -b ${target.bundleId} pid=${target.pid}`)
-    // 原本没有自有 key window 时只需发出激活请求，调用方随后统一等待焦点稳定；
-    // 继续轮询 BrowserWindow 没有意义，反而会因为初始 null 立即误判成功。
-    if (!ownWindowFocusedBefore) {
-      logFrontDiagnostic(`取词前精确交还 key window 成功：bundleId=${target.bundleId}`)
-      return true
-    }
-    const handedBack = await new Promise<boolean>((resolve) => {
-      let finished = false
-      const finish = (confirmed: boolean): void => {
-        if (finished) return
-        finished = true
-        resolve(confirmed)
+  let activationOutcome: MacosWindowActivationResult['outcome'] | undefined
+  if (target && isProcessAlive(target.pid)) {
+    const activation = await activateFrontmostSnapshot(target)
+    activationOutcome = activation.outcome
+    const activationRequested = activation.activated
+    // activated 只代表已发出动作；确认超时时仍必须继续 blur，不能把未确认
+    // 的 raise 当成 key window 已经交还。
+    const confirmed = activation.confirmed
+    if (!activationRequested) {
+      logFrontDiagnostic(`取词前无法激活源应用，退化为 blur：bundleId=${target.bundleId}`)
+    } else {
+      logFrontDiagnostic(
+        `取词前开始交还 key window：bundleId=${target.bundleId} pid=${target.pid} ` +
+        `windowLocate=${activationOutcome}`
+      )
+      // 精确窗口激活已确认目标窗口在前台时可直接返回；应用级 open -b 只有
+      // 发出动作，没有可跨进程确认的结果，仍需继续走下方失活轮询。
+      if (!ownWindowFocusedBefore && isExactWindowActivationConfirmed(activation)) {
+        logFrontDiagnostic(`取词前精确交还 key window 成功：bundleId=${target.bundleId}`)
+        return true
       }
-      const deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
-      const poll = (): void => {
-        const focused = BrowserWindow.getFocusedWindow()
-        const ownWindowFocused = Boolean(
-          focused && !focused.isDestroyed() && focused.isVisible()
+      const handedBack = await new Promise<boolean>((resolve) => {
+        let finished = false
+        const finish = (confirmed: boolean): void => {
+          if (finished) return
+          finished = true
+          resolve(confirmed)
+        }
+        const deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
+        const poll = (): void => {
+          const focused = BrowserWindow.getFocusedWindow()
+          const ownWindowFocused = Boolean(
+            focused && !focused.isDestroyed() && focused.isVisible()
+          )
+          // 应用级失活是比 BrowserWindow 焦点更权威的信号；但只有本次开始前
+          // 应用确实处于最前时才要求它失活，避免启动阶段事件状态未就绪造成误判。
+          const appHandedBack = !appActiveBefore || !isMacAppActiveByEvents()
+          if (!ownWindowFocused && appHandedBack) {
+            finish(true)
+            return
+          }
+          if (Date.now() >= deadline) {
+            finish(false)
+            return
+          }
+          setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
+        }
+        poll()
+      })
+      // 应用级 open -b 后的失活轮询只能证明本应用已让出前台，不能证明源应用
+      // 的目标窗口已成为 key window。此处不能返回 true，否则调用方会设置
+      // windowActivationSettled，让复制链路跳过自己的窗口确认。
+      if (handedBack) {
+        logFrontDiagnostic(
+          `取词前已让出前台但未精确确认源窗口：bundleId=${target.bundleId}`
         )
-        // 应用级失活是比 BrowserWindow 焦点更权威的信号；但只有本次开始前
-        // 应用确实处于最前时才要求它失活，避免启动阶段事件状态未就绪造成误判。
-        const appHandedBack = !appActiveBefore || !isMacAppActiveByEvents()
-        if (!ownWindowFocused && appHandedBack) {
-          finish(true)
-          return
-        }
-        if (Date.now() >= deadline) {
-          finish(false)
-          return
-        }
-        setTimeout(poll, FRONT_RETURN_POLL_INTERVAL_MS)
       }
-      poll()
-    })
-    if (handedBack) {
-      logFrontDiagnostic(`取词前精确交还 key window 成功：bundleId=${target.bundleId}`)
-      return true
+      logFrontDiagnostic(`取词前精确交还 key window 超时，退化为 blur：bundleId=${target.bundleId}`)
     }
-    logFrontDiagnostic(`取词前精确交还 key window 超时，退化为 blur：bundleId=${target.bundleId}`)
   } else if (target) {
     logFrontDiagnostic(`取词前无法激活源应用，退化为 blur：bundleId=${target.bundleId}`)
   } else {
@@ -183,7 +249,10 @@ export async function handBackKeyWindowToFrontmostApp(): Promise<boolean> {
     focusedNow.blur()
   }
   const focusedAfter = BrowserWindow.getFocusedWindow()
-  return !focusedAfter || focusedAfter.isDestroyed() || !focusedAfter.isVisible()
+  // blur 只保证自有窗口不再持有 key window，不能证明源窗口已成为前台。
+  // 调用方若据此设置 windowActivationSettled，会跳过复制前的窗口确认。
+  void focusedAfter
+  return false
 }
 
 /**
@@ -259,6 +328,41 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
   if (!snapshot || !isProcessAlive(snapshot.pid)) return false
   execFile('open', ['-b', snapshot.bundleId], () => {})
   return true
+}
+
+/**
+ * 激活源应用；有窗口定位信息时优先精确激活对应窗口。
+ *
+ * 只有不带窗口编号或边界的纯应用级快照才允许退化为 `open -b`。只要快照带有
+ * 窗口定位信息，即使当前只枚举到一个窗口也必须精确确认或 raise 目标窗口，
+ * 避免 Chrome for Testing 被额外拉起应用入口、微信被切到同进程其它窗口。
+ * 入口已尝试窗口定位且结果为 failed 时，应用级激活同样会切错窗口，因此必须
+ * 返回 failed，由调用方的失活轮询、安全让出或 blur 兜底。
+ * 该辅助函数保持同步函数 `activateFrontmostApp` 的源码契约不变，同时让异步
+ * 交还路径统一消费完整的窗口激活结果。
+ * @param snapshot 源应用或源窗口快照。
+ * @returns 是否发出激活、是否确认前台以及窗口定位结果。
+ * @author zhenghq
+ */
+async function activateFrontmostSnapshot(
+  snapshot: FrontmostAppSnapshot
+): Promise<MacosWindowActivationResult> {
+  if (!isProcessAlive(snapshot.pid)) {
+    return { activated: false, confirmed: false, outcome: 'failed', windowMatched: false }
+  }
+  if (!hasWindowLocator(snapshot)) {
+    if (snapshot.windowLocate === 'failed') {
+      return { activated: false, confirmed: false, outcome: 'failed', windowMatched: false }
+    }
+    const activated = activateFrontmostApp(snapshot)
+    return {
+      activated,
+      confirmed: activated,
+      outcome: activated ? 'app-fallback' : 'failed',
+      windowMatched: false
+    }
+  }
+  return activateMacosWindowSnapshot(toFrontmostWindowSnapshot(snapshot))
 }
 
 /**
@@ -349,6 +453,64 @@ export async function rememberFrontmostAppIfInactiveAsync(): Promise<void> {
   if (requestId !== frontmostRecordRequestId) return
   rememberFrontmostApp(snapshot)
   logFrontDiagnostic(`记录源应用 bundleId=${snapshot.bundleId} pid=${snapshot.pid}`)
+}
+
+/**
+ * 按屏幕坐标记录待交还应用的源窗口快照。
+ *
+ * 在应用尚未占用前台时读取最前应用，再枚举其普通窗口并按坐标匹配。
+ * 单窗口坐标未命中时可写入应用级快照；多窗口坐标未命中、窗口枚举失败或
+ * 快照失效时必须保留 failed 语义，禁止后续用 open -b 猜测同进程窗口。
+ * 枚举失败时窗口数量保持未知，不能伪装成成功枚举得到的 0。
+ * @param point 划词锚点或快捷键触发时的鼠标坐标。
+ * @returns 记录结果；非 macOS 或最前应用读取失败时返回 null。
+ * @author zhenghq
+ */
+export async function rememberFrontmostWindowAtPoint(
+  point: ScreenPoint
+): Promise<{
+  snapshot: FrontmostWindowSnapshot
+  windowLocate: WindowLocateOutcome
+  windowCount?: number
+  windowMatched: boolean
+} | null> {
+  if (process.platform !== 'darwin') return null
+  const requestId = ++frontmostRecordRequestId
+  const appSnapshot = await readFrontmostAppSnapshot()
+  if (!appSnapshot || requestId !== frontmostRecordRequestId) return null
+
+  let windowList: Awaited<ReturnType<typeof enumerateMacosWindows>> | null
+  try {
+    windowList = await enumerateMacosWindows(appSnapshot.pid)
+  } catch {
+    windowList = null
+  }
+  if (requestId !== frontmostRecordRequestId) return null
+
+  const target = resolveWindowCaptureTarget({
+    windows: windowList?.windows ?? null,
+    pid: appSnapshot.pid,
+    point
+  })
+  const snapshot = buildFrontmostWindowSnapshot({
+    bundleId: appSnapshot.bundleId,
+    pid: appSnapshot.pid,
+    window: target.window,
+    capturedAt: Date.now(),
+    windowLocate: target.outcome
+  })
+  pendingReturnApp = snapshot
+  logFrontDiagnostic(
+    `记录源窗口 bundleId=${snapshot.bundleId} pid=${snapshot.pid} ` +
+    `windowLocate=${target.outcome} windowCount=${target.windowCount ?? 'unknown'} ` +
+    `windowMatched=${target.windowMatched}`
+  )
+  return {
+    snapshot,
+    windowLocate: target.outcome,
+    windowCount: target.windowCount,
+    windowMatched: target.windowMatched
+  }
 }
 
 /**
@@ -473,13 +635,8 @@ export function handBackFrontmostThen(
   }
   // 兜底：激活未生效、目标应用是无窗口的后台应用或轮询异常时也必须收尾，
   // 不能把窗口一直留在屏上拦截鼠标。
-  setTimeout(() => finish(false), FRONT_RETURN_TIMEOUT_MS)
-  if (!activateFrontmostApp(target)) {
-    finish(false)
-    return
-  }
-  logFrontDiagnostic(`开始精确交还：open -b ${target.bundleId} pid=${target.pid}`)
-  const deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
+  let fallbackTimer: NodeJS.Timeout | undefined
+  let deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
   const pollDeactivated = (): void => {
     // 应用级失活是最权威的「可以安全隐藏」信号：应用失活后系统可能仍让 key window
     // 保持焦点，仅按 getFocusedWindow() 轮询会误判为「仍需等待」，200ms 后
@@ -499,7 +656,25 @@ export function handBackFrontmostThen(
     }
     setTimeout(pollDeactivated, FRONT_RETURN_POLL_INTERVAL_MS)
   }
-  pollDeactivated()
+  // 精确窗口激活可能包含最多 200ms 枚举与 200ms 确认，不能在发出请求后
+  // 立刻开始 200ms 兜底计时，否则确认轮询会被提前截断。先等待完整激活结果，
+  // 再以统一的应用失活条件确认交还。只有纯应用级快照允许 open -b；
+  // 带窗口定位信息的快照必须精确激活，窗口定位失败时不能再猜测同进程窗口。
+  void activateFrontmostSnapshot(target).then((activation) => {
+    if (!activation.activated) {
+      finish(false)
+      return
+    }
+    // 激活结果返回后才开始前台失活确认与硬超时，避免精确窗口激活的
+    // 枚举/确认耗时挤占交还等待窗口。
+    fallbackTimer = setTimeout(() => finish(false), FRONT_RETURN_TIMEOUT_MS)
+    deadline = Date.now() + FRONT_RETURN_TIMEOUT_MS
+    logFrontDiagnostic(
+      `开始交还：bundleId=${target.bundleId} pid=${target.pid} ` +
+      `windowLocate=${activation.outcome}`
+    )
+    pollDeactivated()
+  }).catch(() => finish(false))
 }
 
 /**
@@ -511,7 +686,7 @@ export function handBackFrontmostThen(
  * @returns 已确认本应用失去最前状态时返回 true；无需交还或交还超时时返回 false。
  * @author zhenghq
  */
-export function handBackFrontmostApp(): Promise<boolean> {
+export async function handBackFrontmostApp(): Promise<boolean> {
   if (process.platform !== 'darwin') return Promise.resolve(false)
   // 原生对话框不是 BrowserWindow，关闭后 getFocusedWindow() 可能仍为 null，
   // 但应用仍处于最前；必须依据应用激活状态判断是否真的还需要交还前台。
@@ -531,11 +706,16 @@ export function handBackFrontmostApp(): Promise<boolean> {
     )
     return yieldFrontmostApp(() => {})
   }
-  if (!activateFrontmostApp(target)) {
+  const activation = await activateFrontmostSnapshot(target)
+  if (!activation.activated) {
     logFrontDiagnostic(`原生对话框收尾退化为安全让出：无法激活 bundleId=${target.bundleId}`)
     return yieldFrontmostApp(() => {})
   }
-  logFrontDiagnostic(`原生对话框收尾开始精确交还：open -b ${target.bundleId} pid=${target.pid}`)
+  const handBackStartedAt = Date.now()
+  logFrontDiagnostic(
+    `原生对话框收尾开始交还：bundleId=${target.bundleId} pid=${target.pid} ` +
+    `windowLocate=${activation.outcome}`
+  )
 
   const handBack = new Promise<boolean>((resolve) => {
     let finished = false
@@ -551,7 +731,7 @@ export function handBackFrontmostApp(): Promise<boolean> {
       }
       logFrontDiagnostic(
         handedBack
-          ? `原生对话框收尾精确交还成功：bundleId=${target.bundleId}`
+          ? `原生对话框收尾精确交还成功：bundleId=${target.bundleId} 耗时 ${Date.now() - handBackStartedAt}ms`
           : '原生对话框收尾未确认失活且本应用已不在最前，按交还完成处理'
       )
       resolve(handedBack)

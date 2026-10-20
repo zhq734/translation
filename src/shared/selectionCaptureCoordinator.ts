@@ -1,4 +1,5 @@
 import { normalizeSelectedText } from './selectionText'
+import type { WindowBounds } from './macosWindowSnapshot'
 
 /** 选区按钮或快捷键翻译时使用的屏幕锚点。 */
 export interface SelectionAnchor {
@@ -27,6 +28,32 @@ export interface CaptureDiagnosticMeta {
   level: CaptureDiagnosticLevel
   /** 失败原因（仅失败时存在）。 */
   reason?: SelectionFailureReason
+  /** 窗口定位结果（仅 macOS 窗口级取词时存在）。 */
+  windowLocate?: 'exact' | 'app-fallback' | 'failed'
+  /** 目标应用普通窗口数量。 */
+  windowCount?: number
+  /** 是否按窗口编号或边界精确匹配到源窗口。 */
+  windowMatched?: boolean
+}
+
+/** 一次取词使用的源窗口上下文；字段缺失时保持应用级取词行为。 */
+export interface SelectionCaptureContext {
+  /** 源应用 bundle id。 */
+  bundleId?: string
+  /** 源应用进程号。 */
+  pid?: number
+  /** CGWindow 窗口编号。 */
+  windowNumber?: number
+  /** 窗口边界。 */
+  bounds?: WindowBounds
+  /** 窗口标题哈希指纹，仅用于本地匹配。 */
+  titleFingerprint?: string
+  /** 入口记录阶段的窗口定位结果；failed 表示不得退化为 open -b。 */
+  windowLocate?: 'exact' | 'app-fallback' | 'failed'
+  /** 本轮取词入口是否已完成源窗口激活；为 true 时复制链路不得重复激活。 */
+  windowActivationSettled?: boolean
+  /** 复制兜底等待剪贴板写入的最长时间（毫秒）。 */
+  timeoutMs?: number
 }
 
 /** 底层取词函数返回的结构化结果，包含文本、失败原因与图片选区标志。 */
@@ -70,9 +97,18 @@ export interface CaptureDiagnosticInput {
   elapsedMs: number
   /** 前台应用标识。 */
   app: string
+  /** 窗口定位结果（仅 macOS 窗口级取词时存在）。 */
+  windowLocate?: 'exact' | 'app-fallback' | 'failed'
+  /** 目标应用普通窗口数量。 */
+  windowCount?: number
+  /** 是否精确匹配到源窗口。 */
+  windowMatched?: boolean
 }
 
-type CaptureSelection = (signal: AbortSignal) => Promise<SelectionCaptureOutcome>
+type CaptureSelection = (
+  signal: AbortSignal,
+  context?: SelectionCaptureContext
+) => Promise<SelectionCaptureOutcome | string>
 
 /**
  * 点击“译”按钮后等待尚未完成的只读预取的最长时间（毫秒）。
@@ -197,6 +233,7 @@ export class SelectionCaptureCoordinator {
   private pendingPreparation: Promise<SelectionCaptureResult | null> | null = null
   private activeCaptureController: AbortController | null = null
   private currentEntry: CaptureDiagnosticEntry | undefined
+  private windowContext: SelectionCaptureContext | undefined
 
   /**
    * 创建选中文字捕获协调器。
@@ -223,6 +260,17 @@ export class SelectionCaptureCoordinator {
    */
   markEntry(entry: CaptureDiagnosticEntry): void {
     this.currentEntry = entry
+  }
+
+  /**
+   * 设置后续取词使用的源窗口上下文。
+   * 传入 undefined 可显式清除上一轮窗口信息，避免窗口已失效时继续使用旧快照。
+   * @param context 源窗口上下文；缺失时退化为应用级取词。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setWindowContext(context?: SelectionCaptureContext): void {
+    this.windowContext = context ? { ...context } : undefined
   }
 
   /**
@@ -378,6 +426,7 @@ export class SelectionCaptureCoordinator {
     useButtonCapture = false
   ): Promise<SelectionCaptureResult | null> {
     const requestId = ++this.latestRequestId
+    const windowContext = this.windowContext ? { ...this.windowContext } : undefined
     this.abortActiveCapture()
     const task = this.captureChain
       .catch(() => undefined)
@@ -397,7 +446,7 @@ export class SelectionCaptureCoordinator {
             : useButtonCapture && this.buttonCaptureSelection
               ? this.buttonCaptureSelection
               : this.captureSelection
-          const raw = await capture(controller.signal)
+          const raw = await capture(controller.signal, windowContext)
           // 兼容返回纯字符串的底层实现，同时支持携带失败原因的结构化结果。
           if (typeof raw === 'string') {
             outcome = { text: normalizeSelectedText(raw) }
@@ -437,7 +486,10 @@ export class SelectionCaptureCoordinator {
             level,
             reason: outcome.diagnostics?.reason ?? outcome.reason,
             elapsedMs: Date.now() - captureStartedAt,
-            app: 'unknown'
+            app: 'unknown',
+            windowLocate: outcome.diagnostics?.windowLocate,
+            windowCount: outcome.diagnostics?.windowCount,
+            windowMatched: outcome.diagnostics?.windowMatched
           })
         }
         return result

@@ -47,21 +47,52 @@ test('macForeground 必须覆盖「焦点窗口为空但应用仍最前」的取
   const ownSource = stripComments(
     extractFunction(macForegroundSource, 'export function isOwnWindowHoldingKeyWindow(')
   )
-  // 真机日志（2026-10-13）：读取弹窗以 showInactive 显示后
-  // BrowserWindow.getFocusedWindow() 可能返回 null，此时仍可能已有源应用记录。
-  // 判定必须把「存在待交还源应用记录」纳入条件，不能只依赖 focused window，
-  // 否则取词前会静默跳过交还，Cmd+C 被应用内 panel 吞掉而超时。
-  assert.match(ownSource, /pendingReturnApp/u,
-    '焦点窗口为空但存在源应用记录时也必须判定需要交还')
+  // 读取弹窗以 showInactive 显示后 BrowserWindow.getFocusedWindow() 可能返回 null；
+  // 此时必须依据应用激活事件判断本应用是否仍占用前台，而不能依据源应用记录。
+  assert.match(ownSource, /isMacAppActiveByEvents\(\)/u,
+    '焦点窗口为空但应用仍最前时也必须判定需要交还')
+  assert.doesNotMatch(ownSource, /pendingReturnApp/u,
+    '源应用记录不能作为再次激活源应用的依据')
+})
+
+/**
+ * 校验存在源窗口记录本身不会触发取词前的重复激活。
+ * 微信仍在前台时，记录只用于结果弹窗收尾；此时再次 open -b 会切换微信窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('源应用仍在最前时不得仅因存在交还记录而重复激活', () => {
+  const ownSource = stripComments(
+    extractFunction(macForegroundSource, 'export function isOwnWindowHoldingKeyWindow(')
+  )
+  assert.doesNotMatch(ownSource, /return ownWindowFocused \|\| Boolean\(pendingReturnApp\)/u,
+    '应用激活事件表明源应用仍在最前时，不能把 pendingReturnApp 当作自有窗口持焦')
+  assert.match(ownSource, /isMacAppActiveByEvents\(\)/u,
+    '是否真的需要交还必须结合应用激活事件判断')
+})
+
+/**
+ * 校验一次取词只允许入口层完成一次源窗口激活。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮取词不得在入口交还后由复制链路再次激活源窗口', () => {
+  const buttonSource = stripComments(
+    extractFunction(indexSource, 'async function translateSelectionButton(): Promise<void> {')
+  )
+  assert.doesNotMatch(buttonSource, /captureByCopy|activateWindowBeforeCopy/u,
+    '按钮入口负责激活时，复制链路不得再次激活')
 })
 
 test('取词前交还必须覆盖任意自有窗口，并在无记录时退化为 blur', () => {
   const handBackSource = stripComments(
     extractFunction(macForegroundSource, 'export async function handBackKeyWindowToFrontmostApp(')
   )
-  // 有源应用记录时优先精确激活源应用；没有记录时只能 blur，避免复制键继续打在自有窗口。
-  assert.match(handBackSource, /activateFrontmostApp\(/u,
-    '有源应用记录时必须精确激活源应用')
+  // 有源应用记录时优先通过统一入口精确激活源窗口；没有记录时只能 blur，
+  // 避免复制键继续打在自有窗口。统一入口会拒绝把窗口定位失败误退化为
+  // 应用级 open -b，从而避免同进程的另一个窗口被切到最前。
+  assert.match(handBackSource, /activateFrontmostSnapshot\(/u,
+    '有源应用记录时必须通过统一入口精确激活源窗口')
   assert.match(handBackSource, /\.blur\(\)/u,
     '无源应用记录或激活失败时必须退化为 blur 自有窗口')
   assert.match(handBackSource, /BrowserWindow\.getFocusedWindow\(\)/u,

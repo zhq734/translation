@@ -86,6 +86,42 @@ test('翻译弹窗显隐真实调用点都必须打点且不插入 await', () =>
   assert.match(showSource, /win\.isVisible\(\)/u, '弹窗显示必须记录可见性布尔值')
 })
 
+test('翻译弹窗隐藏必须输出固定原因枚举，所有调用点显式传因', () => {
+  const hideSource = extractFunction(popupSource, 'export function hidePopup(')
+  assert.match(hideSource, /\[popup\] hide reason=\$\{reason\}/u,
+    '隐藏日志必须输出固定原因枚举')
+  assert.match(popupSource, /export type PopupHideReason/u,
+    '隐藏原因必须收敛为受控联合类型')
+
+  for (const reason of [
+    'external-pointer',
+    'blur',
+    'auto-hide',
+    'capture-null',
+    'renderer-ipc',
+    'internal-window-switch',
+    'stale-token',
+    'unknown'
+  ]) {
+    assert.match(popupSource, new RegExp(`'${reason}'`, 'u'), `缺少隐藏原因 ${reason}`)
+  }
+
+  assert.doesNotMatch(popupSource, /hidePopup\(\s*\)/u,
+    '所有真实调用点都必须显式传入关闭原因')
+  assert.match(popupSource, /hidePopup\(true, 'blur'\)/u, 'blur 关闭必须显式传因')
+  assert.match(popupSource, /hidePopup\(true, 'external-pointer'\)/u,
+    '外部指针关闭必须显式传因')
+  assert.match(popupSource, /hidePopup\(false, 'internal-window-switch'\)/u,
+    '内部窗口切换必须显式传因')
+
+  assert.match(mainSource, /hidePopup\(true, 'stale-token'\)/u,
+    '异步结果过期关闭必须显式传因')
+  assert.match(mainSource, /hidePopup\(true, 'capture-null'\)/u,
+    '取词结果为空关闭必须显式传因')
+  assert.match(mainSource, /hidePopup\(true, 'renderer-ipc'\)/u,
+    'renderer 主动关闭必须显式传因')
+})
+
 test('选区按钮显隐真实调用点都必须打点且不插入 await', () => {
   const showSource = extractFunction(selectionButtonSource, 'function showReadySelectionButton(')
   const hideSource = extractFunction(selectionButtonSource, 'export function hideSelectionButton(')

@@ -28,6 +28,22 @@ const EXTERNAL_POINTER_DISMISS_SUPPRESS_MS = 1000
 /** 判定迟到按下是否仍属于同一次按钮点击的坐标容差（屏幕像素）。 */
 const EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS = 48
 
+/**
+ * 翻译弹窗关闭原因。
+ *
+ * 只允许固定枚举进入日志，避免把窗口标题、选区文本或其它用户数据带进诊断。
+ * `unknown` 仅保留给尚未接入显式原因的兼容调用，实际入口应尽量全部显式传因。
+ */
+export type PopupHideReason =
+  | 'external-pointer'
+  | 'blur'
+  | 'auto-hide'
+  | 'capture-null'
+  | 'renderer-ipc'
+  | 'internal-window-switch'
+  | 'stale-token'
+  | 'unknown'
+
 let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
@@ -187,7 +203,7 @@ function handlePopupBlur(): void {
   // panel 下窗口切换不再激活应用，blur 只可能是用户真的点了弹窗外或弹窗内
   // 的其它控件；拖拽区域与固定状态仍由 shouldDismissPopupOnBlur 过滤。
   if (shouldDismissPopupOnBlur(pinned, false)) {
-    hidePopup()
+    hidePopup(true, 'blur')
   }
 }
 
@@ -430,7 +446,7 @@ export function dismissPopupOnExternalPointerDown(point?: { x: number; y: number
   // “点空白不消失”；加载态只用于吸收迟到的 blur，不能在全局按下阶段短路。
   if (pinned || isSuppressedExternalPointerDismiss(point)) return false
   console.log('[popup] 外部点击主动关闭弹窗并归还前台')
-  hidePopup()
+  hidePopup(true, 'external-pointer')
   return true
 }
 
@@ -462,10 +478,15 @@ function isSuppressedExternalPointerDismiss(point?: { x: number; y: number }): b
  *
  * Windows 仍保留弹窗失活以归还前台焦点，避免下一次取词的复制键落在弹窗上。
  * @param handBackFrontmost 是否在隐藏前交还 macOS 应用级前台；内部窗口切换传 false。
+ * @param reason 关闭原因固定枚举，仅用于诊断，不包含任何用户数据。
  * @returns 无返回值。
  * @author zhenghq
  */
-export function hidePopup(handBackFrontmost = true): void {
+export function hidePopup(
+  handBackFrontmost = true,
+  reason: PopupHideReason = 'unknown'
+): void {
+  console.log(`[popup] hide reason=${reason}`)
   clearHide()
   closeVersion += 1
   pinned = false
@@ -508,7 +529,7 @@ export function hidePopup(handBackFrontmost = true): void {
  * @author zhenghq
  */
 export function hidePopupForInternalWindowSwitch(): void {
-  hidePopup(false)
+  hidePopup(false, 'internal-window-switch')
 }
 
 /**
@@ -641,7 +662,9 @@ export function isPointInsidePopup(point: { x: number; y: number }): boolean {
  */
 function scheduleHide(milliseconds: number): void {
   clearHide()
-  if (!pinned && milliseconds > 0) hideTimer = setTimeout(hidePopup, milliseconds)
+  if (!pinned && milliseconds > 0) {
+    hideTimer = setTimeout(() => hidePopup(true, 'auto-hide'), milliseconds)
+  }
 }
 
 /**

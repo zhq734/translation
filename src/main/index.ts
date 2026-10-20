@@ -85,7 +85,8 @@ import {
   isOwnWindowHoldingKeyWindow,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
-  rememberFrontmostAppIfInactiveAsync
+  rememberFrontmostAppIfInactiveAsync,
+  rememberFrontmostWindowAtPoint
 } from './macForeground'
 import {
   createSelectionButton,
@@ -150,6 +151,7 @@ import {
 } from '../shared/selectionInteraction'
 import {
   SelectionCaptureCoordinator,
+  type SelectionCaptureContext,
   type SelectionCaptureResult
 } from '../shared/selectionCaptureCoordinator'
 import {
@@ -327,6 +329,23 @@ function waitFor(ms: number): Promise<void> {
 }
 
 /**
+ * 等待源窗口快照任务完成。
+ *
+ * 窗口读取包含 lsappinfo 与 CGWindowList 子进程调用，任务本身对每一步都设置了
+ * 硬超时，因此这里直接等待任务即可保持整体有界；不能再叠加更短的入口超时，
+ * 否则慢枚举会被提前截断，后续 AX 读取与复制激活只能拿到应用级上下文。
+ * @param task 正在执行的窗口快照任务。
+ * @returns 任务成功完成时返回 true；无任务或任务失败时返回 false。
+ * @author zhenghq
+ */
+async function waitForSelectionWindowSnapshot(
+  task: Promise<unknown> | undefined
+): Promise<boolean> {
+  if (!task) return false
+  return task.then(() => true, () => false)
+}
+
+/**
  * 让出一次事件循环。
  *
  * Windows 上 win.show() 只是向系统投递显示请求，窗口真正上屏与合成需要主进程
@@ -463,7 +482,10 @@ const selectionCapture = new SelectionCaptureCoordinator(
           level: input.level,
           reason: input.reason,
           elapsedMs: input.elapsedMs,
-          app
+          app,
+          windowLocate: input.windowLocate,
+          windowCount: input.windowCount,
+          windowMatched: input.windowMatched
         })
       })
     }
@@ -481,6 +503,12 @@ const selectionListenerController = new SelectionListenerController({
 })
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
+/** 最近一次划词或快捷键记录的源窗口上下文，供按钮与自动路径复用。 */
+let lastSelectionWindowContext: SelectionCaptureContext | undefined
+/** 最近一次源窗口快照任务；按钮与自动入口在取词前做有界等待。 */
+let selectionWindowSnapshotTask: Promise<unknown> | undefined
+/** 源窗口快照任务对应的划词手势序号，防止旧任务覆盖新一轮上下文。 */
+let selectionWindowSnapshotGestureId = 0
 let lastOcrText = ''
 let lastOcrAnchor: { x: number; y: number } | undefined
 let lastOcrEngine: TranslatePayload['ocrEngine'] | undefined
@@ -1332,7 +1360,31 @@ function onHotkey(): void {
   // 快捷键取词与按钮取词一样：结果弹窗会以 show() 激活本应用，隐藏时必须把
   // 前台交还给用户触发快捷键时正在使用的应用。记录必须早于显示读取弹窗，
   // 否则弹窗已激活本应用，快照只能读到自身而失去精确交还目标。
-  void rememberFrontmostAppIfInactiveAsync()
+  lastSelectionWindowContext = undefined
+  selectionCapture.setWindowContext(undefined)
+  const interactionSnapshot = selectionInteraction.snapshot()
+  const windowSnapshotGestureId = latestSelectionGesture
+  const windowSnapshotTask = rememberFrontmostWindowAtPoint(screen.getCursorScreenPoint())
+  selectionWindowSnapshotTask = windowSnapshotTask
+  selectionWindowSnapshotGestureId = windowSnapshotGestureId
+  void windowSnapshotTask.then((recorded) => {
+    if (windowSnapshotGestureId !== latestSelectionGesture) return
+    const current = selectionInteraction.snapshot()
+    if (!recorded ||
+        current.state !== interactionSnapshot.state ||
+        current.token !== interactionSnapshot.token) return
+    lastSelectionWindowContext = {
+      bundleId: recorded.snapshot.bundleId,
+      pid: recorded.snapshot.pid,
+      windowNumber: recorded.snapshot.windowNumber,
+      bounds: recorded.snapshot.bounds,
+      titleFingerprint: recorded.snapshot.titleFingerprint,
+      windowLocate: recorded.snapshot.windowLocate,
+      // 入口层若已执行精确交还，复制链路不得再次激活同一窗口。
+      windowActivationSettled: false
+    }
+    selectionCapture.setWindowContext(lastSelectionWindowContext)
+  })
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
   const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
@@ -1344,6 +1396,17 @@ function onHotkey(): void {
   // 先登记这些修饰键，模拟复制前会显式释放左右两侧按键。
   if (shouldReleaseHotkeyModifiersBeforeCopy(process.platform)) {
     setPendingCopyModifierRelease(hotkeyModifiers)
+  }
+  // 快捷键在 macOS 上无修饰键释放等待；若窗口枚举尚未完成就开始取词，
+  // AX helper 会拿不到窗口编号。只等待有硬超时的窗口快照任务，不阻塞弹窗显示。
+  if (captureDelay === 0 && process.platform === 'darwin') {
+    void windowSnapshotTask.then(() => {
+      if (!selectionInteraction.isCurrent(interactionToken)) return
+      if (popupCloseVersion !== getPopupCloseVersion()) return
+      selectionCapture.setWindowContext(lastSelectionWindowContext)
+      void queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
+    })
+    return
   }
   if (captureDelay > 0) {
     // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
@@ -1523,19 +1586,38 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
   if (action === 'ignore') return
 
-  // 记录本次划词时用户正在使用的源应用：结果弹窗在 macOS 上会以 show() 激活
-  // 本应用，隐藏时必须把前台交还给这个应用，否则下一次取词的 Command+C 会
-  // 打在本应用上而超时。必须在显示“译”按钮 / 读取弹窗之前读取，此时本应用
-  // 尚未抢占前台，读到的才是真实源应用。
-  void rememberFrontmostAppIfInactiveAsync()
+  // 记录本次划词时用户正在使用的源应用与源窗口：结果弹窗在 macOS 上会以
+  // show() 激活本应用，隐藏时必须把前台交还给这个应用/窗口，否则下一次取词的
+  // Command+C 会打在本应用或微信错误窗口上而超时。必须在显示“译”按钮 /
+  // 读取弹窗之前读取，此时本应用尚未抢占前台，读到的才是真实源窗口。
+  lastSelectionWindowContext = undefined
+  selectionCapture.setWindowContext(undefined)
+  const windowSnapshotTask = rememberFrontmostWindowAtPoint(anchor)
+  selectionWindowSnapshotTask = windowSnapshotTask
+  selectionWindowSnapshotGestureId = gestureId
+  void windowSnapshotTask.then((recorded) => {
+    if (!recorded || gestureId !== latestSelectionGesture) return
+    lastSelectionWindowContext = {
+      bundleId: recorded.snapshot.bundleId,
+      pid: recorded.snapshot.pid,
+      windowNumber: recorded.snapshot.windowNumber,
+      bounds: recorded.snapshot.bounds,
+      titleFingerprint: recorded.snapshot.titleFingerprint,
+      windowLocate: recorded.snapshot.windowLocate,
+      // 入口层若已执行精确交还，复制链路不得再次激活同一窗口。
+      windowActivationSettled: false
+    }
+    selectionCapture.setWindowContext(lastSelectionWindowContext)
+    // 按钮预取会锁定启动时的窗口上下文，必须等快照写入后再开始，否则首轮
+    // AX helper 与复制前激活都只能拿到应用级信息，微信多窗口仍会读错窗口。
+    if (action === 'show-button' && shouldPrefetchSelectionForButton(process.platform)) {
+      void selectionCapture.prepare(anchor)
+    }
+  })
 
   if (action === 'show-button') {
     selectionInteraction.showButton()
     showSelectionButton(anchor)
-    // Windows UIA 需要冷启动 PowerShell，且串行预取会拖慢点击后的复制取词，因此直接跳过。
-    if (shouldPrefetchSelectionForButton(process.platform)) {
-      void selectionCapture.prepare(anchor)
-    }
     return
   }
 
@@ -1749,6 +1831,13 @@ async function queueSelectionTranslation(
   if (popupCloseVersion !== undefined &&
       popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
+  // 按钮/自动入口可能在窗口快照尚未完成时启动：有界等待最新任务，并把快照
+  // 重新写入协调器。协调器会在 enqueue 时复制上下文，晚到的异步写入不能
+  // 自动修复已排队请求，因此必须在 capture 前完成同步。
+  if (selectionWindowSnapshotGestureId === latestSelectionGesture) {
+    await waitForSelectionWindowSnapshot(selectionWindowSnapshotTask)
+  }
+  selectionCapture.setWindowContext(lastSelectionWindowContext)
   // 自动模式取词不经过 showSelectionReadingPopup()：上一个常驻翻译弹窗、设置页
   // 或网页阅读器等任意自有窗口都可能仍持有 macOS key window，此时注入的
   // Command+C 会打在自家窗口而不是源应用，导致剪贴板哨兵不变并报取词超时。
@@ -1757,7 +1846,15 @@ async function queueSelectionTranslation(
   if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
     // 弹窗持有 key window 时先走弹窗专用失活，同时覆盖设置页等普通自有窗口。
     if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
-    await handBackKeyWindowToFrontmostApp()
+    const handedBack = await handBackKeyWindowToFrontmostApp()
+    if (handedBack && lastSelectionWindowContext) {
+      // 入口层已经完成源窗口激活；同一轮复制兜底不得再次切换微信窗口。
+      lastSelectionWindowContext = {
+        ...lastSelectionWindowContext,
+        windowActivationSettled: true
+      }
+      selectionCapture.setWindowContext(lastSelectionWindowContext)
+    }
     // key window 交还是异步生效的：等待系统把焦点真正还给源应用后再启动取词，
     // 避免复制键仍落在自有弹窗上。等待期间交互可能被取消或关闭，必须复核后再继续。
     await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
@@ -1787,7 +1884,7 @@ async function queueSelectionTranslation(
     // 取词被取消或覆盖时结果为 null：读取状态弹窗没有后续结果可以收尾，
     // 若不在这里显式关闭，它会一直留在屏上且前台不归还，后续划词的“译”按钮
     // 会被应用级状态吞掉（与外部点击漏关是同一类残留）。
-    hidePopup()
+    hidePopup(true, 'stale-token')
     releaseSelectionInteraction(token)
   })
 }
@@ -1812,6 +1909,10 @@ async function translateSelectionButton(): Promise<void> {
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
   const anchor = lastSelectionAnchor
+  // 快速点击按钮时窗口快照可能仍在读取；等待任务按自身硬超时结束，随后复用
+  // 已记录的窗口上下文，确保 AX 直读与复制前窗口激活使用同一目标窗口。
+  await waitForSelectionWindowSnapshot(selectionWindowSnapshotTask)
+  selectionCapture.setWindowContext(lastSelectionWindowContext)
   latestSelectionGesture += 1
   hideSelectionButton()
   const popupWasActivated = shouldRestoreForegroundBeforeCapture(
@@ -1833,7 +1934,15 @@ async function translateSelectionButton(): Promise<void> {
     // 回到源应用，而不是打在自家窗口上。
     if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
       if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
-      await handBackKeyWindowToFrontmostApp()
+      const handedBack = await handBackKeyWindowToFrontmostApp()
+      if (handedBack && lastSelectionWindowContext) {
+        // 入口层已经激活过源窗口；把结果写回上下文，复制兜底不得再次激活。
+        lastSelectionWindowContext = {
+          ...lastSelectionWindowContext,
+          windowActivationSettled: true
+        }
+        selectionCapture.setWindowContext(lastSelectionWindowContext)
+      }
       await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
       if (!selectionInteraction.isCurrent(interactionToken) ||
           popupCloseVersion !== getPopupCloseVersion()) return
@@ -1852,7 +1961,7 @@ async function translateSelectionButton(): Promise<void> {
         popupCloseVersion !== getPopupCloseVersion()) return
     selectionCapture.invalidate()
     if (result) handleSelectionCaptureResult(result, interactionToken, true)
-    else hidePopup()
+    else hidePopup(true, 'capture-null')
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
         selectionInteraction.snapshot().state === 'capturing') {
@@ -5176,7 +5285,7 @@ function registerIpc(): void {
   ipcMain.on('popup:copy', (_event, text: unknown) => {
     clipboard.writeText(String(text ?? ''))
   })
-  ipcMain.on('popup:hide', () => hidePopup())
+  ipcMain.on('popup:hide', () => hidePopup(true, 'renderer-ipc'))
   ipcMain.on('popup:resize', (_event, size: unknown) => {
     if (isPopupAutoSizeRequest(size)) resizePopup(size)
   })

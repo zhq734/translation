@@ -148,7 +148,9 @@ test('结果弹窗显示与关闭都必须续期抑制，防止下一轮划词�
     readFileSync('src/main/popup.ts', 'utf8')
   )
   const showSource = extractFunction(popupSource, 'export function showPopup(')
-  const hideSource = extractFunction(popupSource, 'export function hidePopup(handBackFrontmost = true): void {')
+  const hideSource = extractFunction(
+    popupSource, 'export function hidePopup('
+  )
 
   // 用户现象：翻译结果上屏后点击空白页，下一轮划词就会把设置页拉到最前。
   // 结果弹窗的 show()/hide() 都会让 macOS 派发内部 activate，两处都必须续期。

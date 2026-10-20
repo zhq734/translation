@@ -456,6 +456,40 @@ test('点击“译”按钮应取消未完成预取并立即开始按钮专用�
 })
 
 /**
+ * 校验按钮专用取词会把入口层已完成的窗口激活标记传给底层取词函数。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('captureFromButton 应透传窗口激活已完成标记', async () => {
+  let receivedContext: unknown
+  const coordinator = new SelectionCaptureCoordinator(
+    async (_signal, context) => {
+      receivedContext = context
+      return '入口已激活'
+    },
+    async () => '不应使用预取',
+    async (_signal, context) => {
+      receivedContext = context
+      return '入口已激活'
+    }
+  )
+  coordinator.setWindowContext({
+    bundleId: 'com.tencent.xinwechat',
+    pid: 1044,
+    windowNumber: 1592,
+    windowActivationSettled: true
+  })
+  const captured = await coordinator.captureFromButton({ x: 10, y: 20 })
+  assert.equal(captured?.text, '入口已激活')
+  assert.deepEqual(receivedContext, {
+    bundleId: 'com.tencent.xinwechat',
+    pid: 1044,
+    windowNumber: 1592,
+    windowActivationSettled: true
+  })
+})
+
+/**
  * 校验图标可以先展示，而后台取词仍等待前台应用完成选区更新。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
@@ -629,8 +663,11 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
 
   assert.match(
     scheduleSource,
-    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?selectionCapture\.prepare\(anchor\)[\s\S]*?return/u
+    /rememberFrontmostWindowAtPoint\(anchor\)[\s\S]*?selectionCapture\.setWindowContext\(lastSelectionWindowContext\)[\s\S]*?selectionCapture\.prepare\(anchor\)/u,
+    '只读预取必须在源窗口上下文写入后启动'
   )
+  assert.match(scheduleSource, /if\s*\(action === 'show-button'\)[\s\S]*?showSelectionButton\(anchor\)/u,
+    '按钮模式仍需显示“译”按钮')
   // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
   assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
   assert.match(translateSource, /selectionCapture\.consumePreparedBounded\(\)/u)

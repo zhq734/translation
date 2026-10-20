@@ -108,7 +108,11 @@ test('交还前台优先激活截图前的应用，确认失活后才收起覆�
   assert.match(handBackSource, /if \(focused === null\) \{/u, '应用不在最前时必须直接收尾')
   assert.match(handBackSource, /forgetFrontmostApp\(\)/u, '应用不在最前时记录已失效，必须丢弃')
   assert.match(handBackSource, /focused !== keyWindow/u, '只有隐藏 key window 才需要交还前台')
-  assert.match(handBackSource, /activateFrontmostApp\(target\)/u, '必须激活待交还的应用')
+  assert.match(
+    handBackSource,
+    /activateFrontmost(?:App|Snapshot)\(target\)/u,
+    '必须激活待交还的应用，并允许窗口级快照优先'
+  )
   // 激活是异步生效的：必须先确认本应用失去最前状态再隐藏窗口，否则设置页会闪一下。
   assert.match(
     handBackSource,
