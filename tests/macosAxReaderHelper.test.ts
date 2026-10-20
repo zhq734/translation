@@ -17,6 +17,21 @@ function readHelperSource(): string {
 }
 
 /**
+ * 从源码中截取指定函数定义，避免断言命中其它函数或注释。
+ * @param source 待检索源码。
+ * @param signature 函数签名起始片段。
+ * @returns 从函数签名到函数结束的源码片段。
+ * @author zhenghq
+ */
+function extractFunction(source: string, signature: string): string {
+  const start = source.indexOf(signature)
+  assert.ok(start >= 0, `应存在函数 ${signature}`)
+  const end = source.indexOf('\n}\n', start)
+  assert.ok(end > start, `函数 ${signature} 应有结束边界`)
+  return source.slice(start, end)
+}
+
+/**
  * 校验 helper 输出协议与现有 parseNativeSelectionReadOutput 完全兼容：
  * 首行状态标记，其余行作为选中文本。
  * @returns 无返回值。
@@ -206,6 +221,128 @@ test('AX helper 应支持可选窗口编号且无参数时保持旧协议', () =
 })
 
 /**
+ * 校验 AXWindowNumber 缺失时仍能用窗口边界与标题指纹定位目标 AX 窗口。
+ * Chrome 普通多窗口场景中窗口编号可能不暴露在 AX 窗口上，仅按编号会直接失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口级 AX 读取应按编号优先并用 bounds 与标题指纹二级定位', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static AXUIElementRef CopyWindowByContext')
+  const boundsReader = extractFunction(source, 'static BOOL CopyAXWindowBounds')
+
+  assert.match(body, /CopyWindowNumber\(window\) == context\.windowNumber/u, '必须优先按 AXWindowNumber 精确匹配')
+  assert.match(boundsReader, /kAXPositionAttribute/u, '编号未命中时必须读取 AXPosition 做二级匹配')
+  assert.match(boundsReader, /kAXSizeAttribute/u, '编号未命中时必须读取 AXSize 做二级匹配')
+  assert.match(body, /kAXTitleAttribute/u, '多个相同边界窗口必须用标题指纹消除歧义')
+  assert.match(source, /CC_SHA256/u, '标题只能在 helper 内计算哈希，不得比较或输出标题明文')
+  assert.match(source, /kWindowBoundsTolerance/u, 'bounds 比较必须允许系统坐标系取整误差')
+
+  const numberMatchAt = body.indexOf('CopyWindowNumber(window) == context.windowNumber')
+  const boundsMatchAt = body.indexOf('CopyAXWindowBounds')
+  assert.ok(numberMatchAt >= 0 && boundsMatchAt > numberMatchAt,
+    '窗口编号匹配必须排在 bounds 二级匹配之前')
+})
+
+/**
+ * 校验无标题指纹时只有唯一 bounds 候选才可采用。
+ * 同尺寸重叠窗口若直接取第一个，会把取词目标切到同进程的另一个窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('无标题指纹时 bounds 匹配必须要求唯一候选', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static AXUIElementRef CopyWindowByContext')
+
+  assert.match(body, /boundsCandidateCount/u, '必须统计 bounds 命中的候选数量')
+  assert.match(body, /boundsCandidateCount\s*==\s*1/u, '只有唯一 bounds 候选时才允许返回窗口')
+  assert.match(body, /boundsCandidateCount\s*>\s*1/u, '多个 bounds 候选必须拒绝匹配')
+  assert.match(body, /if \(boundsMatched\) CFRelease\(boundsMatched\);\s*boundsMatched = \(AXUIElementRef\)CFRetain\(window\);/u,
+    '每个新的 bounds 候选都必须接管并释放上一个候选，避免长循环泄漏')
+})
+
+/**
+ * 校验 helper 的标题指纹计算先 trim，与 Node 侧 createWindowTitleFingerprint 保持一致。
+ * 否则带首尾空白的 AX 标题永远无法命中入口快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('helper 标题指纹必须与 Node 侧一样先 trim', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static NSString *CopyTitleFingerprint')
+
+  assert.match(body, /stringByTrimmingCharactersInSet/u, 'helper 必须先去除标题首尾空白')
+  assert.match(body, /NSCharacterSet\.whitespaceAndNewlineCharacterSet/u,
+    'helper 应去除空白与换行后再计算 SHA-256')
+})
+
+/**
+ * 校验 bounds JSON 根节点非字典时先判断类型再取键，避免 Objective-C 异常退出。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('bounds JSON 解析必须先校验字典类型再读取字段', () => {
+  const source = readHelperSource()
+  const body = source.slice(source.indexOf('int main'))
+  const typeCheckAt = body.indexOf('[parsedBounds isKindOfClass:[NSDictionary class]]')
+  const firstFieldAt = body.indexOf('boundsObject[@"x"]')
+
+  assert.ok(typeCheckAt >= 0, '必须校验 bounds JSON 根节点类型')
+  assert.ok(firstFieldAt > typeCheckAt, '类型校验必须早于任何 bounds 字段读取')
+})
+
+/**
+ * 校验 application focused UI element 只能在 focused window 已确认属于目标窗口后读取。
+ * 否则同一进程的另一个 Chrome/微信窗口仍可能把错误选区返回给调用方。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('application 焦点元素读取前必须确认 focused window 属于目标窗口', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+
+  assert.match(source, /kAXFocusedWindowAttribute/u, '必须读取 application 的 focused window')
+  assert.match(body, /FocusedWindowBelongsToTarget/u, '必须显式校验 focused window 是否属于目标窗口')
+  assert.match(
+    body,
+    /if \([^\n]*FocusedWindowBelongsToTarget[\s\S]*?kAXFocusedUIElementAttribute/u,
+    '只有归属校验通过后才允许读取 application 焦点元素'
+  )
+  assert.match(body, /CopySelectedTextFromAncestry\(\(AXUIElementRef\)focusedValue/u,
+    '窗口焦点元素也必须复用祖先链读取，保留 marker range 回退')
+})
+
+/**
+ * 校验 helper 接收 Node 侧记录的 bounds 与标题指纹，同时保持旧参数和无窗口调用兼容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX helper 应可选接收 bounds 与标题指纹并保持旧参数兼容', () => {
+  const source = readHelperSource()
+  assert.match(source, /argc\s*>\s*3/u, 'helper 应检查可选 bounds 参数')
+  assert.match(source, /argv\[3\]/u, 'helper 应从 argv[3] 读取 bounds JSON')
+  assert.match(source, /argc\s*>\s*4/u, 'helper 应检查可选标题指纹参数')
+  assert.match(source, /argv\[4\]/u, 'helper 应从 argv[4] 读取标题指纹')
+})
+
+/**
+ * 校验窗口级读取失败后仍按既有顺序回退 application 焦点与鼠标位置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口级 AX 读取失败后应保留原有应用级与鼠标位置兜底', () => {
+  const source = readHelperSource()
+  const mainBody = source.slice(source.indexOf('int main'))
+  const windowReadAt = mainBody.indexOf('CopySelectedTextFromWindow(application')
+  const systemFocusedAt = mainBody.indexOf('kAXFocusedUIElementAttribute', windowReadAt)
+  const mouseReadAt = mainBody.indexOf('CopyElementAtMousePosition', systemFocusedAt)
+
+  assert.ok(windowReadAt >= 0, 'main 应先执行窗口级读取')
+  assert.ok(systemFocusedAt > windowReadAt, '窗口级失败后才进入 application 焦点读取')
+  assert.ok(mouseReadAt > systemFocusedAt, '最后才进入鼠标位置兜底')
+})
+
+/**
  * 校验 Node 侧把窗口编号作为可选参数传入，同时保留无参数调用。
  * @returns 无返回值。
  * @author zhenghq
@@ -218,6 +355,22 @@ test('capture.ts macOS helper 调用应可选传入窗口编号', () => {
   assert.match(fnSource, /windowNumber/u, 'helper 调用必须接收可选窗口编号')
   assert.match(fnSource, /String\(windowNumber\)|\[\s*windowNumber/u, '窗口编号必须作为 argv 参数传入')
   assert.match(fnSource, /\[\]/u, '无窗口上下文时必须保留空参数调用')
+})
+
+/**
+ * 校验 Node 侧把入口记录的窗口边界与标题指纹传给 helper，供编号缺失时二级定位。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('capture.ts macOS helper 调用应可选传入 bounds 与标题指纹', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const fnSource = extractFunction(source, 'async function readSelectionViaMacosHelper')
+
+  assert.match(fnSource, /bounds/u, 'helper 调用参数应包含可选窗口边界')
+  assert.match(fnSource, /titleFingerprint/u, 'helper 调用参数应包含可选标题指纹')
+  assert.match(fnSource, /JSON\.stringify\(bounds\)/u, '窗口边界应以 JSON 参数传入 helper')
+  assert.match(fnSource, /windowNumber === undefined && bounds === undefined/u,
+    '只有窗口编号和边界都缺失时才允许使用无参数旧调用')
 })
 
 /**

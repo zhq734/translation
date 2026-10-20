@@ -16,9 +16,20 @@
  */
 #import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
+#import <CommonCrypto/CommonDigest.h>
 
 /** 鼠标位置兜底允许沿 AXParent 上溯的最大祖先层数。 */
 static const NSInteger kMaxAncestorLevels = 4;
+/** AX 与 CGWindow 边界比较允许的像素误差，覆盖系统坐标系取整与阴影差异。 */
+static const CGFloat kWindowBoundsTolerance = 2.0;
+
+/** 调用方记录的窗口上下文，用于 AXWindowNumber 缺失时做二级匹配。 */
+typedef struct {
+  long windowNumber;
+  BOOL hasBounds;
+  CGRect bounds;
+  NSString *titleFingerprint;
+} WindowCaptureContext;
 
 /**
  * 向 stdout 输出状态标记与可选文本，协议为“状态行 + 可选文本行”。
@@ -178,13 +189,84 @@ static long CopyWindowNumber(AXUIElementRef window) {
 }
 
 /**
- * 在目标应用的 AX 窗口列表中按窗口编号查找窗口。
+ * 读取 AX 窗口的位置与尺寸。
+ * @param window 目标 AX 窗口。
+ * @param bounds 输出的窗口边界。
+ * @return 成功读取位置与尺寸时返回 true。
+ * @author zhenghq
+ */
+static BOOL CopyAXWindowBounds(AXUIElementRef window, CGRect *bounds) {
+  if (!window || !bounds) return NO;
+  CFTypeRef positionValue = NULL;
+  CFTypeRef sizeValue = NULL;
+  if (AXUIElementCopyAttributeValue(window, kAXPositionAttribute, &positionValue) !=
+        kAXErrorSuccess || !positionValue ||
+      AXUIElementCopyAttributeValue(window, kAXSizeAttribute, &sizeValue) !=
+        kAXErrorSuccess || !sizeValue) {
+    if (positionValue) CFRelease(positionValue);
+    if (sizeValue) CFRelease(sizeValue);
+    return NO;
+  }
+  CGPoint position = CGPointZero;
+  CGSize size = CGSizeZero;
+  BOOL ok = CFGetTypeID(positionValue) == AXValueGetTypeID() &&
+    CFGetTypeID(sizeValue) == AXValueGetTypeID() &&
+    AXValueGetValue((AXValueRef)positionValue, kAXValueCGPointType, &position) &&
+    AXValueGetValue((AXValueRef)sizeValue, kAXValueCGSizeType, &size);
+  CFRelease(positionValue);
+  CFRelease(sizeValue);
+  if (!ok) return NO;
+  *bounds = CGRectMake(position.x, position.y, size.width, size.height);
+  return YES;
+}
+
+/**
+ * 计算窗口标题的 SHA-256 前 12 位指纹。
+ * @param title 窗口标题。
+ * @return 十六进制指纹；空标题返回 nil。
+ * @author zhenghq
+ */
+static NSString *CopyTitleFingerprint(NSString *title) {
+  NSString *normalizedTitle = [title stringByTrimmingCharactersInSet:
+    NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (normalizedTitle.length == 0) return nil;
+  NSData *data = [normalizedTitle dataUsingEncoding:NSUTF8StringEncoding];
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+  NSMutableString *result = [NSMutableString stringWithCapacity:12];
+  for (NSInteger index = 0; index < 6; index += 1) {
+    [result appendFormat:@"%02x", digest[index]];
+  }
+  return result;
+}
+
+/**
+ * 判断 AX 窗口边界是否与记录边界匹配。
+ * @param left 左侧边界。
+ * @param right 右侧边界。
+ * @return 四边均在容差内时返回 true。
+ * @author zhenghq
+ */
+static BOOL WindowBoundsMatch(CGRect left, CGRect right) {
+  return fabs(left.origin.x - right.origin.x) <= kWindowBoundsTolerance &&
+    fabs(left.origin.y - right.origin.y) <= kWindowBoundsTolerance &&
+    fabs(left.size.width - right.size.width) <= kWindowBoundsTolerance &&
+    fabs(left.size.height - right.size.height) <= kWindowBoundsTolerance;
+}
+
+/**
+ * 在目标应用的 AX 窗口列表中按窗口上下文查找窗口。
+ * 先按 AXWindowNumber 精确匹配；Chrome 普通多窗口可能不暴露该属性，
+ * 此时再用 CGWindow 记录下来的 bounds 与标题指纹做二级匹配。
  * @param application 目标应用 AX 元素。
- * @param windowNumber 目标窗口编号。
+ * @param context 目标窗口上下文。
  * @return 命中的 AX 窗口；未命中返回 nil。调用方负责 CFRelease。
  * @author zhenghq
  */
-static AXUIElementRef CopyWindowByNumber(AXUIElementRef application, long windowNumber) {
+static AXUIElementRef CopyWindowByContext(
+  AXUIElementRef application,
+  WindowCaptureContext context
+) {
   CFTypeRef windowsValue = NULL;
   AXError error = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windowsValue);
   if (error != kAXErrorSuccess || !windowsValue ||
@@ -194,17 +276,78 @@ static AXUIElementRef CopyWindowByNumber(AXUIElementRef application, long window
   }
   CFArrayRef windows = (CFArrayRef)windowsValue;
   AXUIElementRef matched = nil;
+  AXUIElementRef boundsMatched = nil;
+  CFIndex boundsCandidateCount = 0;
   CFIndex count = CFArrayGetCount(windows);
   for (CFIndex index = 0; index < count; index += 1) {
     AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
     if (!window || CFGetTypeID(window) != AXUIElementGetTypeID()) continue;
-    if (CopyWindowNumber(window) == windowNumber) {
+    if (context.windowNumber > 0 && CopyWindowNumber(window) == context.windowNumber) {
       matched = (AXUIElementRef)CFRetain(window);
       break;
     }
+    if (!context.hasBounds) continue;
+    CGRect windowBounds = CGRectZero;
+    if (!CopyAXWindowBounds(window, &windowBounds) || !WindowBoundsMatch(windowBounds, context.bounds)) {
+      continue;
+    }
+    NSString *title = CopyStringAttribute(window, kAXTitleAttribute);
+    NSString *fingerprint = CopyTitleFingerprint(title);
+    BOOL fingerprintMatches = context.titleFingerprint.length > 0 &&
+      fingerprint && [fingerprint isEqualToString:context.titleFingerprint];
+    // 标题指纹存在时必须同时匹配；标题为空时只允许唯一 bounds 候选，避免误读同尺寸窗口。
+    if (context.titleFingerprint.length > 0 && !fingerprintMatches) continue;
+    boundsCandidateCount += 1;
+    if (boundsMatched) CFRelease(boundsMatched);
+    boundsMatched = (AXUIElementRef)CFRetain(window);
   }
+  BOOL hasUniqueBoundsMatch = boundsCandidateCount == 1;
+  if (!matched && hasUniqueBoundsMatch && boundsMatched) {
+    matched = boundsMatched;
+    boundsMatched = nil;
+  }
+  if (!matched && boundsCandidateCount > 1 && boundsMatched) {
+    CFRelease(boundsMatched);
+    boundsMatched = nil;
+  }
+  if (boundsMatched) CFRelease(boundsMatched);
   CFRelease(windowsValue);
   return matched;
+}
+
+/**
+ * 判断 application 当前 focused window 是否就是目标窗口。
+ * @param application 目标应用 AX 元素。
+ * @param context 目标窗口上下文。
+ * @param targetWindow 已定位的目标 AX 窗口。
+ * @return focused window 可按编号或边界确认属于目标窗口时返回 true。
+ * @author zhenghq
+ */
+static BOOL FocusedWindowBelongsToTarget(
+  AXUIElementRef application,
+  WindowCaptureContext context,
+  AXUIElementRef targetWindow
+) {
+  CFTypeRef focusedWindowValue = NULL;
+  if (AXUIElementCopyAttributeValue(
+        application, kAXFocusedWindowAttribute, &focusedWindowValue) != kAXErrorSuccess ||
+      !focusedWindowValue || CFGetTypeID(focusedWindowValue) != AXUIElementGetTypeID()) {
+    if (focusedWindowValue) CFRelease(focusedWindowValue);
+    return NO;
+  }
+  AXUIElementRef focusedWindow = (AXUIElementRef)focusedWindowValue;
+  BOOL matches = NO;
+  if (context.windowNumber > 0 && CopyWindowNumber(focusedWindow) == context.windowNumber) {
+    matches = YES;
+  } else if (context.hasBounds) {
+    CGRect focusedBounds = CGRectZero;
+    CGRect targetBounds = CGRectZero;
+    matches = CopyAXWindowBounds(focusedWindow, &focusedBounds) &&
+      CopyAXWindowBounds(targetWindow, &targetBounds) &&
+      WindowBoundsMatch(focusedBounds, targetBounds);
+  }
+  CFRelease(focusedWindowValue);
+  return matches;
 }
 
 /**
@@ -228,51 +371,57 @@ static CFIndex CopyWindowCount(AXUIElementRef application) {
 }
 
 /**
- * 按窗口编号读取目标窗口内 focused element 的选中文本。
- * 先提升目标窗口再读取，确保微信等多窗口应用把输入焦点切回源窗口；
- * 窗口不存在、AX 属性不可读或没有选区时返回 nil，由调用方回退旧路径。
+ * 按窗口上下文读取目标窗口内 focused element 的选中文本。
+ * 先提升目标窗口再读取，优先从 application 的 focused UI element 读取；
+ * 但只有 focused window 已确认属于目标窗口时才允许这样做，避免同进程其它
+ * 窗口的焦点元素污染结果。窗口不存在、AX 属性不可读或没有选区时返回 nil。
  * @param application 目标应用 AX 元素。
- * @param windowNumber 目标窗口编号。
+ * @param context 目标窗口上下文。
  * @return 命中的非空选中文本；无法命中返回 nil。
  * @author zhenghq
  */
-static NSString *CopySelectedTextFromWindow(AXUIElementRef application, long windowNumber) {
+static NSString *CopySelectedTextFromWindow(
+  AXUIElementRef application,
+  WindowCaptureContext context
+) {
   if (!application) return nil;
-  AXUIElementRef window = CopyWindowByNumber(application, windowNumber);
+  AXUIElementRef window = CopyWindowByContext(application, context);
   if (!window) {
     return nil;
   }
-  // 优先使用应用当前的 focused window，但仅当它的窗口编号与记录一致时采用。
-  // 这样既能覆盖微信把焦点切回源窗口后的状态，也能避免误读另一个微信窗口。
-  AXUIElementRef readWindow = window;
-  CFTypeRef focusedWindowValue = NULL;
-  if (AXUIElementCopyAttributeValue(
-        application, kAXFocusedWindowAttribute, &focusedWindowValue) == kAXErrorSuccess &&
-      focusedWindowValue && CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID() &&
-      CopyWindowNumber((AXUIElementRef)focusedWindowValue) == windowNumber) {
-    readWindow = (AXUIElementRef)CFRetain(focusedWindowValue);
-  }
-  if (focusedWindowValue) CFRelease(focusedWindowValue);
   // raise 失败不阻断读取：部分应用不支持 kAXRaiseAction，但仍可读取窗口内焦点元素。
-  AXUIElementPerformAction(readWindow, kAXRaiseAction);
-  CFTypeRef focusedValue = NULL;
+  AXUIElementPerformAction(window, kAXRaiseAction);
   NSString *result = nil;
-  if (AXUIElementCopyAttributeValue(
-        readWindow, kAXFocusedUIElementAttribute, &focusedValue) == kAXErrorSuccess &&
-      focusedValue && CFGetTypeID(focusedValue) == AXUIElementGetTypeID()) {
-    AXUIElementRef focusedElement = (AXUIElementRef)focusedValue;
-    result = CopyStringAttribute(focusedElement, kAXSelectedTextAttribute);
-    if (!result) result = CopySelectedTextViaMarkerRange(focusedElement);
+  // Chrome 等应用的选区挂在 application 的 focused UI element 上，而不是
+  // window 元素本身。只有 focused window 已确认属于目标窗口时才读取，
+  // 防止同一进程的另一个窗口把错误选区返回给调用方。
+  if (FocusedWindowBelongsToTarget(application, context, window)) {
+    CFTypeRef focusedValue = NULL;
+    if (AXUIElementCopyAttributeValue(
+          application, kAXFocusedUIElementAttribute, &focusedValue) == kAXErrorSuccess &&
+        focusedValue && CFGetTypeID(focusedValue) == AXUIElementGetTypeID()) {
+      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, 1);
+    }
+    if (focusedValue) CFRelease(focusedValue);
   }
-  if (focusedValue) CFRelease(focusedValue);
-  if (readWindow != window) CFRelease(readWindow);
+  // 兼容仍把 focused UI element 暴露在窗口元素上的应用。
+  if (!result) {
+    CFTypeRef focusedValue = NULL;
+    if (AXUIElementCopyAttributeValue(
+          window, kAXFocusedUIElementAttribute, &focusedValue) == kAXErrorSuccess &&
+        focusedValue && CFGetTypeID(focusedValue) == AXUIElementGetTypeID()) {
+      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, 1);
+    }
+    if (focusedValue) CFRelease(focusedValue);
+  }
   CFRelease(window);
   return result;
 }
 
 /**
  * 入口：校验 Accessibility 授权后按三级顺序直读选区并输出协议结果。
- * @param argc 参数个数；可选 argv[1] 为目标窗口编号，argv[2] 为目标进程号。
+ * @param argc 参数个数；可选 argv[1] 为目标窗口编号，argv[2] 为目标进程号，
+ *             argv[3] 为窗口边界 JSON，argv[4] 为标题哈希指纹。
  * @param argv 参数列表。
  * @return 进程退出码，恒为 0；状态通过 stdout 协议表达。
  * @author zhenghq
@@ -290,14 +439,43 @@ int main(int argc, const char *argv[]) {
       return 0;
     }
 
-    // 可选窗口级读取：仅在调用方明确传入窗口编号时执行。传入 pid 时直接
+    // 可选窗口级读取：调用方可传窗口编号和/或窗口边界。传入 pid 时直接
     // 创建目标应用 AX 元素，避免短暂焦点漂移导致读到另一个应用；参数非法或
     // 窗口不存在时回退原有三级读取，保持旧调用与跨应用兼容。
     CFIndex targetWindowCount = 0;
     if (argc > 1 && argv[1]) {
-      char *end = NULL;
-      long windowNumber = strtol(argv[1], &end, 10);
-      if (end && *end == '\0' && windowNumber > 0) {
+      WindowCaptureContext context = {0};
+      if (strcmp(argv[1], "-") != 0) {
+        char *end = NULL;
+        long parsedWindowNumber = strtol(argv[1], &end, 10);
+        if (end && *end == '\0' && parsedWindowNumber > 0) {
+          context.windowNumber = parsedWindowNumber;
+        }
+      }
+      if (argc > 3 && argv[3] && strcmp(argv[3], "-") != 0) {
+        NSString *boundsJSON = [NSString stringWithUTF8String:argv[3]];
+        NSData *boundsData = [boundsJSON dataUsingEncoding:NSUTF8StringEncoding];
+        id parsedBounds = boundsData
+          ? [NSJSONSerialization JSONObjectWithData:boundsData options:0 error:nil]
+          : nil;
+        if ([parsedBounds isKindOfClass:[NSDictionary class]]) {
+          NSDictionary *boundsObject = (NSDictionary *)parsedBounds;
+          NSNumber *x = boundsObject[@"x"];
+          NSNumber *y = boundsObject[@"y"];
+          NSNumber *width = boundsObject[@"width"];
+          NSNumber *height = boundsObject[@"height"];
+          if (x && y && width && height &&
+            width.doubleValue > 0 && height.doubleValue > 0) {
+            context.hasBounds = YES;
+            context.bounds = CGRectMake(x.doubleValue, y.doubleValue,
+                                        width.doubleValue, height.doubleValue);
+          }
+        }
+      }
+      if (argc > 4 && argv[4] && strcmp(argv[4], "-") != 0) {
+        context.titleFingerprint = [NSString stringWithUTF8String:argv[4]];
+      }
+      if (context.windowNumber > 0 || context.hasBounds) {
         AXUIElementRef application = NULL;
         if (argc > 2 && argv[2]) {
           char *pidEnd = NULL;
@@ -319,7 +497,7 @@ int main(int argc, const char *argv[]) {
           }
         }
         targetWindowCount = CopyWindowCount(application);
-        NSString *windowText = CopySelectedTextFromWindow(application, windowNumber);
+        NSString *windowText = CopySelectedTextFromWindow(application, context);
         if (windowText) {
           WriteWindowDiagnostic(@"exact", targetWindowCount);
           WriteResult(@"PRESENT", windowText);

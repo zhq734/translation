@@ -189,17 +189,21 @@ function withWindowDiagnostics(
 
 /**
  * macOS 常驻 AX helper 直读：调用预编译的 macos-ax-reader 二进制读取选区文本。
- * 传入窗口编号时优先读取该窗口内焦点元素的选区；无效窗口由 helper 回退旧路径。
+ * 传入窗口编号或边界时优先读取该窗口内焦点元素的选区；无效窗口由 helper 回退旧路径。
  * @param signal 用于在请求失效后中止子进程的取消信号。
- * @param windowNumber 可选目标窗口编号；缺失时保持无参数旧调用。
+ * @param windowNumber 可选目标窗口编号。
  * @param pid 可选目标进程号；与窗口编号同时传入时绕过短暂焦点漂移。
+ * @param bounds 可选目标窗口边界；窗口编号在 AX 中缺失时用于二级匹配。
+ * @param titleFingerprint 可选窗口标题哈希指纹；用于消除同边界窗口歧义。
  * @returns 直读结果；helper 不存在或不可用时返回 null 以触发降级。
  * @author zhenghq
  */
 async function readSelectionViaMacosHelper(
   signal?: AbortSignal,
   windowNumber?: number,
-  pid?: number
+  pid?: number,
+  bounds?: SelectionCaptureContext['bounds'],
+  titleFingerprint?: string
 ): Promise<NativeSelectionReadResult | null> {
   const helperPath = resolveMacosAxReaderPath({
     resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
@@ -212,11 +216,14 @@ async function readSelectionViaMacosHelper(
   }
   const startedAt = Date.now()
   try {
-    const args = windowNumber === undefined
+    const args = windowNumber === undefined && bounds === undefined
       ? []
-      : pid === undefined
-        ? [String(windowNumber)]
-        : [String(windowNumber), String(pid)]
+      : [
+          windowNumber === undefined ? '-' : String(windowNumber),
+          pid === undefined ? '-' : String(pid),
+          bounds === undefined ? '-' : JSON.stringify(bounds),
+          titleFingerprint ?? '-'
+        ]
     const { stdout, stderr } = await execFileP(
       helperPath,
       args,
@@ -411,7 +418,9 @@ export async function readSelectionByNative(
       const helperResult = await readSelectionViaMacosHelper(
         signal,
         context?.windowNumber,
-        context?.pid
+        context?.pid,
+        context?.bounds,
+        context?.titleFingerprint
       )
       if (helperResult) return withWindowDiagnostics(helperResult, context)
       const { stdout } = await execFileP(
