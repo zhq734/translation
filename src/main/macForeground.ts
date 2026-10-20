@@ -613,7 +613,7 @@ export function handBackFrontmostThen(
     logFrontDiagnostic(
       `交还退化为安全让出：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
     )
-    fallback()
+    void yieldFrontmostApp(fallback)
     return
   }
   let finished = false
@@ -631,7 +631,7 @@ export function handBackFrontmostThen(
     logFrontDiagnostic(
       `交还退化为安全让出：激活源应用 bundleId=${target.bundleId} 未在 ${FRONT_RETURN_TIMEOUT_MS}ms 内确认失活`
     )
-    fallback()
+    void yieldFrontmostApp(fallback)
   }
   // 兜底：激活未生效、目标应用是无窗口的后台应用或轮询异常时也必须收尾，
   // 不能把窗口一直留在屏上拦截鼠标。
@@ -645,11 +645,10 @@ export function handBackFrontmostThen(
       finish(true)
       return
     }
-    // getFocusedWindow() 在本应用失去最前状态后返回 null，正是可以安全隐藏窗口的时刻。
-    if (BrowserWindow.getFocusedWindow() === null) {
-      finish(true)
-      return
-    }
+    // getFocusedWindow() 为 null 只能说明没有 BrowserWindow 持有焦点，不能证明本应用
+    // 已经失活：设置页失焦、弹窗非激活显示或原生面板持有 key window 时都会出现该状态。
+    // 若据此提前隐藏弹窗，系统可能把同应用的设置页提升为 key window。必须继续等待
+    // 应用级 did-resign-active 信号，超时后由安全让出兜底。
     if (Date.now() >= deadline) {
       finish(false)
       return
@@ -785,12 +784,32 @@ function yieldFrontmostApp(run: () => void): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let finished = false
     const startedAt = Date.now()
+    // app.hide() 会隐藏整个应用，app.show() 又会恢复应用内全部窗口。
+    // 必须先记录每个窗口原本是否可见，避免安全让出把已关闭的弹窗或后台窗口
+    // 重新显示出来；恢复过程也不得调用 focus()/moveTop() 抢占用户前台。
+    const visibilitySnapshots = BrowserWindow.getAllWindows().map((window) => ({
+      window,
+      wasVisible: !window.isDestroyed() && window.isVisible()
+    }))
     const finish = (): void => {
       if (finished) return
       finished = true
       // app.show() 走 unhideWithoutActivation：只恢复窗口可见性，不激活应用，
       // 也不会把窗口提到用户当前应用之上。
       app.show()
+      for (const snapshot of visibilitySnapshots) {
+        if (snapshot.window.isDestroyed()) continue
+        if (!snapshot.wasVisible) {
+          // 原本隐藏的窗口必须无条件再次隐藏，不能只在其当前仍可见时才处理。
+          // app.show() 的可见性变化可能异步生效，条件式 hide 会漏掉随后重新显示的窗口。
+          snapshot.window.hide()
+          continue
+        }
+        if (!snapshot.window.isVisible()) {
+          // 原本可见的设置页/阅读器必须恢复，但只能非激活显示，不能取得 key window。
+          snapshot.window.showInactive()
+        }
+      }
       // 整应用隐藏期间弹窗的 isVisible() 同样为 false，收尾函数会因可见性短路
       // 跳过真正的 win.hide()，必须先非激活恢复应用再收尾，否则随后的整体恢复
       // 会把弹窗重新显示出来，用户表现为「点关闭后弹窗关不掉」。

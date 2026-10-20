@@ -22,7 +22,7 @@ export type MacosWindowHelperFailureReason =
   | 'window-list-unavailable'
 
 /** 窗口 helper 执行结果。 */
-type MacosWindowHelperRunResult =
+export type MacosWindowHelperRunResult =
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: MacosWindowHelperFailureReason }
 
@@ -77,6 +77,15 @@ function logWindowHelperFailure(operation: string, reason: MacosWindowHelperFail
  * 放宽到 200ms 仍保持有界等待，同时覆盖正常启动抖动。
  */
 export const MACOS_WINDOW_ENUMERATION_TIMEOUT_MS = 200
+
+/**
+ * 窗口枚举冷启动重试硬超时（毫秒）。
+ *
+ * 首次 200ms 超时说明 helper 很可能仍在冷启动。第二次若继续使用同一上限，
+ * 会再次被进程启动开销截断，导致启动后的第一次取词稳定失败。800ms 仍为
+ * 有界等待，只用于无副作用的 `list` 冷启动重试，不影响正常枚举路径。
+ */
+export const MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS = 800
 
 /** 窗口激活确认硬超时（毫秒）。 */
 export const MACOS_WINDOW_ACTIVATION_TIMEOUT_MS = 200
@@ -173,6 +182,65 @@ export function resolveMacosWindowHelperPath(options?: {
 }
 
 /**
+ * 执行一次窗口 helper 请求并解析 JSON 输出。
+ * @param helperPath helper 可执行文件路径。
+ * @param args helper 参数。
+ * @returns helper 输出对象或固定失败原因。
+ * @author zhenghq
+ */
+async function executeWindowHelper(
+  helperPath: string,
+  args: string[],
+  timeout: number
+): Promise<MacosWindowHelperRunResult> {
+  try {
+    const { stdout } = await execFileP(helperPath, args, {
+      timeout
+    })
+    try {
+      const parsed = JSON.parse(stdout) as unknown
+      if (!parsed || typeof parsed !== 'object') {
+        return { ok: false, reason: 'invalid-json' }
+      }
+      return { ok: true, value: parsed as Record<string, unknown> }
+    } catch {
+      return { ok: false, reason: 'invalid-json' }
+    }
+  } catch (error) {
+    const record = error && typeof error === 'object'
+      ? error as Record<string, unknown>
+      : {}
+    const stdout = typeof record.stdout === 'string' ? record.stdout : ''
+    const reason = classifyMacosWindowHelperFailure(error, stdout)
+    return { ok: false, reason }
+  }
+}
+
+/**
+ * 执行窗口 helper 请求，并为 `list` 冷启动超时提供一次有界重试。
+ *
+ * 首次调用时 helper 进程和 CGWindowList 都可能尚未预热，实测会偶发超过
+ * 200ms。只允许无副作用的 `list` 重试；`raise` / `focused` 重试会再次改变
+ * 同进程窗口顺序，因此超时后必须直接失败。
+ * @param args helper 参数。
+ * @param run 单次 helper 执行函数，便于测试注入；第二个参数为本次硬超时。
+ * @returns 首次成功或重试后的最终结果。
+ * @author zhenghq
+ */
+export async function runWindowHelperWithListRetry(
+  args: string[],
+  run: (args: string[], timeoutMs: number) => Promise<MacosWindowHelperRunResult>
+): Promise<MacosWindowHelperRunResult> {
+  const timeoutMs = args[0] === 'list'
+    ? MACOS_WINDOW_ENUMERATION_TIMEOUT_MS
+    : MACOS_WINDOW_ACTIVATION_TIMEOUT_MS
+  const first = await run(args, timeoutMs)
+  if (args[0] !== 'list' || first.ok || first.reason !== 'timeout') return first
+  console.log('[macForeground] window-helper op=list status=retry reason=timeout')
+  return run(args, MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS)
+}
+
+/**
  * 执行窗口 helper 并解析 JSON 输出。
  * @param args helper 参数。
  * @returns helper 输出对象或固定失败原因。
@@ -188,33 +256,12 @@ async function runWindowHelper(args: string[]): Promise<MacosWindowHelperRunResu
     logWindowHelperFailure(args[0] ?? 'unknown', 'helper-missing')
     return { ok: false, reason: 'helper-missing' }
   }
-  const timeout = args[0] === 'list'
-    ? MACOS_WINDOW_ENUMERATION_TIMEOUT_MS
-    : MACOS_WINDOW_ACTIVATION_TIMEOUT_MS
-  try {
-    const { stdout } = await execFileP(helperPath, args, {
-      timeout
-    })
-    try {
-      const parsed = JSON.parse(stdout) as unknown
-      if (!parsed || typeof parsed !== 'object') {
-        logWindowHelperFailure(args[0] ?? 'unknown', 'invalid-json')
-        return { ok: false, reason: 'invalid-json' }
-      }
-      return { ok: true, value: parsed as Record<string, unknown> }
-    } catch {
-      logWindowHelperFailure(args[0] ?? 'unknown', 'invalid-json')
-      return { ok: false, reason: 'invalid-json' }
-    }
-  } catch (error) {
-    const record = error && typeof error === 'object'
-      ? error as Record<string, unknown>
-      : {}
-    const stdout = typeof record.stdout === 'string' ? record.stdout : ''
-    const reason = classifyMacosWindowHelperFailure(error, stdout)
-    logWindowHelperFailure(args[0] ?? 'unknown', reason)
-    return { ok: false, reason }
-  }
+  const result = await runWindowHelperWithListRetry(
+    args,
+    (attemptArgs, timeoutMs) => executeWindowHelper(helperPath, attemptArgs, timeoutMs)
+  )
+  if (!result.ok) logWindowHelperFailure(args[0] ?? 'unknown', result.reason)
+  return result
 }
 
 /**

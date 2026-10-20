@@ -226,6 +226,31 @@ test('结果弹窗隐藏时即使焦点在自有可聚焦窗口也必须交还�
   )
 })
 
+/**
+ * 校验弹窗隐藏交还成功必须同时满足「自有窗口已失焦」与「应用已失活」。
+ *
+ * 真机日志中设置页与弹窗均不持有 key window 时 `getFocusedWindow()` 返回 null，
+ * 但本应用仍是 macOS 最前应用。旧逻辑仅凭该 null 就执行 win.hide()，系统随即
+ * 把设置页提升为 key window，表现为启动后首次划词把设置页拉到最前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗交还不得仅凭焦点窗口为空就提前完成', () => {
+  const handBackThenSource = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  assert.doesNotMatch(
+    handBackThenSource,
+    /BrowserWindow\.getFocusedWindow\(\)\s*===\s*null\s*\)\s*\{\s*finish\(true\)/u,
+    '焦点窗口为空不得单独作为交还成功条件'
+  )
+  assert.match(
+    handBackThenSource,
+    /if \(!isMacAppActiveByEvents\(\)\)\s*\{\s*finish\(true\)/u,
+    '交还成功必须由应用激活事件失活确认'
+  )
+})
+
 test('macOS 连续取词超时自动修复必须完全静默，不得弹框或置前窗口', () => {
   const repairSource = extractFunction(mainSource, 'async function autoRepairMacHiServices(): Promise<void> {')
 

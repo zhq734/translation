@@ -12,7 +12,8 @@ import test from 'node:test'
 function extractFunction(source: string, signature: string): string {
   const start = source.indexOf(signature)
   assert.ok(start >= 0, `应存在函数 ${signature}`)
-  const end = source.indexOf('\n}', start)
+  // 顶格闭合花括号才能代表函数结束，避免嵌套块被误判为结束边界。
+  const end = source.indexOf('\n}\n', start)
   assert.ok(end > start, `函数 ${signature} 应有结束边界`)
   return source.slice(start, end)
 }
@@ -167,6 +168,41 @@ test('翻译弹窗隐藏必须交还前台后再隐藏，且不得隐藏整个�
     '隐藏弹窗不得直接隐藏整个应用')
   assert.doesNotMatch(hideSource, /hidingAfterFrontReturn|beginInternalWindowTeardown/u,
     '隐藏弹窗不得再维护前台交还收尾状态')
+})
+
+test('安全让出前台恢复应用后必须保持原本隐藏窗口的隐藏状态', () => {
+  const yieldSource = stripComments(
+    extractFunction(macSource, 'function yieldFrontmostApp(')
+  )
+
+  // app.hide() 会隐藏整个应用，app.show() 又会恢复应用内窗口。若不在隐藏前记录
+  // 每个窗口的可见性，原本关闭的弹窗或后台窗口会被重新显示；设置页也可能因此
+  // 重新出现在用户当前应用之上。恢复后必须只保留隐藏前已经可见的窗口。
+  const snapshotIndex = yieldSource.indexOf('BrowserWindow.getAllWindows()')
+  // 注释里也会出现 app.hide()/app.show() 文本，必须从实际调用点开始定位。
+  const hideIndex = yieldSource.indexOf('\n    app.hide()', snapshotIndex)
+  const showIndex = yieldSource.indexOf('\n      app.show()', snapshotIndex)
+  const restoreIndex = yieldSource.indexOf('!snapshot.wasVisible', showIndex)
+
+  assert.ok(snapshotIndex >= 0, '安全让出前必须采集自有窗口可见性快照')
+  assert.ok(hideIndex > snapshotIndex, '必须先采集可见性再隐藏应用')
+  assert.ok(showIndex > snapshotIndex, '等待失活后仍需恢复应用可见性')
+  assert.ok(restoreIndex > showIndex, 'app.show() 后必须恢复隐藏窗口的原状态')
+  assert.match(
+    yieldSource,
+    /if \(!snapshot\.wasVisible[\s\S]*?snapshot\.window\.hide\(\)/u,
+    '原本隐藏的窗口不得因 app.show() 被重新显示'
+  )
+  assert.match(
+    yieldSource,
+    /showInactive\(\)/u,
+    '原本可见但 app.show() 未恢复的窗口必须非激活恢复，不得重新置前'
+  )
+  assert.doesNotMatch(
+    yieldSource,
+    /\.focus\(\)|\.moveTop\(\)/u,
+    '安全让出收尾不得主动聚焦或置前设置页'
+  )
 })
 
 test('共享前台策略只保留 Windows 语义', () => {

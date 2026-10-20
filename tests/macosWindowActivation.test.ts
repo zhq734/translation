@@ -7,8 +7,11 @@ import {
   isExactWindowActivationConfirmed,
   isFailedWindowActivation,
   MACOS_WINDOW_ENUMERATION_TIMEOUT_MS,
+  MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS,
+  runWindowHelperWithListRetry,
   type MacosWindowActivationResult,
-  type MacosWindowActivationDeps
+  type MacosWindowActivationDeps,
+  type MacosWindowHelperRunResult
 } from '../src/main/macosWindowActivation.ts'
 import type { FrontmostWindowSnapshot, MacosWindowInfo } from '../src/shared/macosWindowSnapshot.ts'
 
@@ -101,6 +104,94 @@ function makeDeps(overrides: Partial<MacosWindowActivationDeps> = {}): MacosWind
 test('窗口枚举硬超时应覆盖 helper 实测启动开销', () => {
   assert.ok(MACOS_WINDOW_ENUMERATION_TIMEOUT_MS >= 150,
     '50ms 会周期性截断实测 50-90ms 的 helper 启动，至少应放宽到 150ms')
+})
+
+/**
+ * 校验窗口枚举冷启动超时后只重试一次，并允许第二次成功返回。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口 list 冷启动超时后应重试一次并返回成功结果', async () => {
+  const calls: Array<{ args: string[]; timeoutMs: number }> = []
+  const results: MacosWindowHelperRunResult[] = [
+    { ok: false, reason: 'timeout' },
+    { ok: true, value: { ok: true, windows: [] } }
+  ]
+  const result = await runWindowHelperWithListRetry(['list', '4242'], async (args, timeoutMs) => {
+    calls.push({ args, timeoutMs })
+    return results.shift() ?? { ok: false, reason: 'timeout' }
+  })
+
+  assert.deepEqual(result, { ok: true, value: { ok: true, windows: [] } })
+  assert.equal(calls.length, 2, 'list 超时后应恰好重试一次')
+  assert.deepEqual(calls[0]?.args, ['list', '4242'])
+  assert.deepEqual(calls[1]?.args, ['list', '4242'])
+  assert.deepEqual(
+    calls.map((call) => call.timeoutMs),
+    [MACOS_WINDOW_ENUMERATION_TIMEOUT_MS, MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS],
+    '首次使用常规枚举超时，冷启动重试必须使用更长的有界超时'
+  )
+  assert.ok(
+    MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS > MACOS_WINDOW_ENUMERATION_TIMEOUT_MS,
+    '第二次重试仍使用 200ms 会再次撞上冷启动开销，无法消除首次取词失败'
+  )
+})
+
+/**
+ * 校验 list 连续两次超时仍保留失败语义，不能伪报成功空列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口 list 连续超时后必须保留失败结果', async () => {
+  let calls = 0
+  const timeouts: number[] = []
+  const result = await runWindowHelperWithListRetry(['list', '4242'], async (_args, timeoutMs) => {
+    calls += 1
+    timeouts.push(timeoutMs)
+    return { ok: false, reason: 'timeout' }
+  })
+
+  assert.deepEqual(result, { ok: false, reason: 'timeout' })
+  assert.equal(calls, 2, 'list 最多只允许一次冷启动重试')
+  assert.deepEqual(timeouts, [
+    MACOS_WINDOW_ENUMERATION_TIMEOUT_MS,
+    MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS
+  ])
+})
+
+/**
+ * 校验 raise/focused 等窗口激活子命令不得因超时重试，避免重复切换窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口激活子命令超时不得重试', async () => {
+  let calls = 0
+  const timeouts: number[] = []
+  const result = await runWindowHelperWithListRetry(['raise', '4242', '102'], async (_args, timeoutMs) => {
+    calls += 1
+    timeouts.push(timeoutMs)
+    return { ok: false, reason: 'timeout' }
+  })
+
+  assert.deepEqual(result, { ok: false, reason: 'timeout' })
+  assert.equal(calls, 1, 'raise 重复执行会让同进程窗口再次切换')
+  assert.deepEqual(timeouts, [200], '激活子命令必须继续使用原有 200ms 超时')
+})
+
+/**
+ * 校验非超时失败不会被误当成冷启动问题重试。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口 list 非超时失败不得重试', async () => {
+  let calls = 0
+  const result = await runWindowHelperWithListRetry(['list', '4242'], async () => {
+    calls += 1
+    return { ok: false, reason: 'invalid-json' }
+  })
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid-json' })
+  assert.equal(calls, 1, '只有冷启动超时才允许重试')
 })
 
 /**
@@ -943,6 +1034,36 @@ test('弹窗交还日志必须输出真实 windowLocate 结果', () => {
 })
 
 /**
+ * 校验弹窗交还失败时真正安全让出前台，而不是只执行收尾回调。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗交还失败时必须真正安全让出前台', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+
+  // 真机日志中的「交还退化为安全让出」此前只调用 fallback()，没有 app.hide()/show()，
+  // 设置页仍可能持有 key window。没有源应用记录、源应用已退出以及激活/失活失败
+  // 三条退化路径都必须进入 yieldFrontmostApp，并把 fallback 作为收尾动作。
+  assert.match(
+    source,
+    /if \(!target \|\| !isProcessAlive\(target\.pid\)\)[\s\S]*?yieldFrontmostApp\(fallback\)/u,
+    '没有可交还目标时必须执行安全让出'
+  )
+  assert.match(
+    source,
+    /if \(handedBack\)[\s\S]*?return[\s\S]*?yieldFrontmostApp\(fallback\)/u,
+    '激活或失活确认失败时必须执行安全让出'
+  )
+  assert.doesNotMatch(
+    source,
+    /交还退化为安全让出[\s\S]{0,120}?fallback\(\)\s*\n\s*return/u,
+    '安全让出日志不能对应只执行 fallback() 的空操作'
+  )
+})
+
+/**
  * 校验交还结果区分“已发出激活”与“已确认交还”。
  * 确认超时只能用于避免复制链路重复激活，不能声明 key window 已经交还。
  * @returns 无返回值。
@@ -1061,6 +1182,33 @@ test('窗口 list 枚举不得同步依赖 AX 窗口列表或 AX 标题', () => 
   assert.match(enumerateSource, /@"windowNumber": windowNumber/u, '仍必须返回窗口编号')
   assert.match(enumerateSource, /@"layer": layer/u, '仍必须返回窗口层级')
   assert.match(enumerateSource, /@"bounds"/u, '仍必须返回窗口边界')
+})
+
+/**
+ * 校验 list 只查询一次 CGWindowList，并从同一结果同时生成目标进程窗口与全局最前窗口。
+ *
+ * 真机日志中 list 连续两次超时。若目标窗口与最前窗口各调用一次
+ * CGWindowListCopyWindowInfo，WindowServer 繁忙时会把一次阻塞放大为两次；
+ * 同一快照内的两个结果也可能来自不同时刻，导致窗口定位自相矛盾。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口 list 必须复用一次 CGWindowList 结果同时生成窗口列表与最前窗口', () => {
+  const source = readFileSync('helpers/macos-window-helper/main.m', 'utf8')
+  assert.equal(
+    (source.match(/CGWindowListCopyWindowInfo/gu) ?? []).length,
+    1,
+    'list 路径只能调用一次 CGWindowListCopyWindowInfo'
+  )
+  assert.doesNotMatch(source, /static NSDictionary \*ReadFrontmostWindow\(/u,
+    '不得再启动第二次窗口枚举读取最前窗口')
+  const start = source.indexOf('static NSArray<NSDictionary *> *EnumerateWindows(')
+  const end = source.indexOf('\n}', start)
+  const enumerateSource = source.slice(start, end)
+  assert.match(enumerateSource, /frontmostWindowNumber/u,
+    '最前窗口编号必须从同一次枚举结果推导')
+  assert.match(enumerateSource, /frontmostPid/u,
+    '最前窗口进程号必须从同一次枚举结果推导')
 })
 
 /**

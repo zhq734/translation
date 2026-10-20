@@ -114,9 +114,11 @@ test('交还前台优先激活截图前的应用，确认失活后才收起覆�
     '必须激活待交还的应用，并允许窗口级快照优先'
   )
   // 激活是异步生效的：必须先确认本应用失去最前状态再隐藏窗口，否则设置页会闪一下。
+  // getFocusedWindow() 为 null 不能证明应用已失活（非激活 panel 也可能出现该状态），
+  // 必须继续以应用激活事件确认，避免提前隐藏后把设置页提升为 key window。
   assert.match(
     handBackSource,
-    /if \(BrowserWindow\.getFocusedWindow\(\) === null\) \{\s*\n\s*finish\(true\)/u,
+    /if \(!isMacAppActiveByEvents\(\)\) \{\s*\n\s*finish\(true\)/u,
     '必须轮询确认本应用已失活后才执行收尾动作'
   )
   // 激活未生效时必须仍然收尾，不能把窗口一直留在屏上。

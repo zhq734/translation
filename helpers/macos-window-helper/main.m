@@ -52,15 +52,19 @@ static NSNumber *CopyWindowNumber(AXUIElementRef element) {
 }
 
 /**
- * 通过 CGWindowList 枚举指定进程的普通窗口。
+ * 通过一次 CG 窗口快照枚举指定进程的普通窗口，并记录全局最前普通窗口。
  *
  * 微信等应用在 AXWindows/AXTitle 上可能阻塞数百毫秒，窗口枚举必须只依赖
  * CGWindowList；窗口编号与边界已足够完成精确匹配，标题缺失只影响二级指纹匹配。
  * @param pid 目标进程号。
+ * @param frontmost 用于写入最前普通窗口编号与所属进程号的可变字典。
  * @return 窗口字典数组；CGWindowList 不可用时返回 nil。
  * @author zhenghq
  */
-static NSArray<NSDictionary *> *EnumerateWindows(pid_t pid) {
+static NSArray<NSDictionary *> *EnumerateWindows(
+  pid_t pid,
+  NSMutableDictionary *frontmost
+) {
   CFArrayRef windowList = CGWindowListCopyWindowInfo(
     kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
     kCGNullWindowID
@@ -68,6 +72,7 @@ static NSArray<NSDictionary *> *EnumerateWindows(pid_t pid) {
   if (!windowList) return nil;
 
   NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+  BOOL foundFrontmost = frontmost[@"frontmostWindowNumber"] != nil;
   CFArrayRef cgWindows = windowList;
   for (CFIndex index = 0; index < CFArrayGetCount(cgWindows); index += 1) {
     NSDictionary *window = (__bridge NSDictionary *)CFArrayGetValueAtIndex(cgWindows, index);
@@ -75,14 +80,20 @@ static NSArray<NSDictionary *> *EnumerateWindows(pid_t pid) {
     NSNumber *windowNumber = window[(NSString *)kCGWindowNumber];
     NSNumber *layer = window[(NSString *)kCGWindowLayer];
     NSDictionary *bounds = window[(NSString *)kCGWindowBounds];
-    if (!ownerPid || ownerPid.intValue != pid || !windowNumber || !layer || !bounds) continue;
-    if (layer.intValue != 0) continue;
+    if (!ownerPid || !windowNumber || !layer || !bounds || layer.intValue != 0) continue;
     // 使用字符串键读取 CGWindow bounds，避免依赖不同 SDK 的常量导出。
     NSNumber *x = bounds[@"X"];
     NSNumber *y = bounds[@"Y"];
     NSNumber *width = bounds[@"Width"];
     NSNumber *height = bounds[@"Height"];
     if (!x || !y || !width || !height || width.doubleValue <= 0 || height.doubleValue <= 0) continue;
+    // CG 窗口列表顺序为从前到后，首个合法普通窗口即全局最前窗口。
+    if (!foundFrontmost) {
+      frontmost[@"frontmostWindowNumber"] = windowNumber;
+      frontmost[@"frontmostPid"] = ownerPid;
+      foundFrontmost = YES;
+    }
+    if (ownerPid.intValue != pid) continue;
     // CGWindowName 是可选字段：屏幕录制权限不足或应用未提供时为空串，
     // 不影响按窗口编号和边界定位，也不得回退到同步 AX 标题读取。
     id titleValue = window[(NSString *)kCGWindowName];
@@ -99,45 +110,6 @@ static NSArray<NSDictionary *> *EnumerateWindows(pid_t pid) {
         @"height": height
       }
     }];
-  }
-
-  CFRelease(windowList);
-  return result;
-}
-
-/**
- * 从 CGWindowList 读取全局最前普通窗口。
- *
- * CGWindowListCopyWindowInfo 返回顺序为从前到后；第一个 layer=0 且具有
- * 有效边界与窗口编号的窗口，就是当前最前普通窗口。这里不读取 AX，
- * 避免微信 AXFocusedWindow 返回 -25201 或阻塞时污染窗口枚举。
- * @return 包含 frontmostWindowNumber 与 frontmostPid 的字典；列表不可用或无法确定时为空字典。
- * @author zhenghq
- */
-static NSDictionary *ReadFrontmostWindow() {
-  CFArrayRef windowList = CGWindowListCopyWindowInfo(
-    kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-    kCGNullWindowID
-  );
-  if (!windowList) return @{};
-
-  NSDictionary *result = @{};
-  CFArrayRef cgWindows = windowList;
-  for (CFIndex index = 0; index < CFArrayGetCount(cgWindows); index += 1) {
-    NSDictionary *window = (__bridge NSDictionary *)CFArrayGetValueAtIndex(cgWindows, index);
-    NSNumber *ownerPid = window[(NSString *)kCGWindowOwnerPID];
-    NSNumber *windowNumber = window[(NSString *)kCGWindowNumber];
-    NSNumber *layer = window[(NSString *)kCGWindowLayer];
-    NSDictionary *bounds = window[(NSString *)kCGWindowBounds];
-    if (!ownerPid || !windowNumber || !layer || !bounds || layer.intValue != 0) continue;
-    NSNumber *width = bounds[@"Width"];
-    NSNumber *height = bounds[@"Height"];
-    if (!width || !height || width.doubleValue <= 0 || height.doubleValue <= 0) continue;
-    result = @{
-      @"frontmostWindowNumber": windowNumber,
-      @"frontmostPid": ownerPid
-    };
-    break;
   }
 
   CFRelease(windowList);
@@ -250,7 +222,8 @@ int main(int argc, const char *argv[]) {
       return 2;
     }
     if ([command isEqualToString:@"list"]) {
-      NSArray<NSDictionary *> *windows = EnumerateWindows(pid);
+      NSMutableDictionary *frontmost = [NSMutableDictionary dictionary];
+      NSArray<NSDictionary *> *windows = EnumerateWindows(pid, frontmost);
       // 空数组代表“成功枚举但没有普通窗口”，nil 代表 CGWindowList 本身不可用；
       // 两者不能混用，否则 Node 侧会把系统查询失败误报为 windowCount=0。
       if (!windows) {
@@ -258,7 +231,7 @@ int main(int argc, const char *argv[]) {
         return 1;
       }
       NSMutableDictionary *response = [@{@"ok": @YES, @"windows": windows} mutableCopy];
-      [response addEntriesFromDictionary:ReadFrontmostWindow()];
+      [response addEntriesFromDictionary:frontmost];
       WriteJSON(response);
       return 0;
     }
