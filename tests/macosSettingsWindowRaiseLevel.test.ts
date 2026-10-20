@@ -116,8 +116,8 @@ test('划词流程收尾与结果弹窗显示时必须续期 activate 抑制，�
   )
   assert.match(
     mainSource,
-    /createPopup\(PRELOAD_PATH,\s*suppressSelectionActivationWindowGap\)/u,
-    '翻译弹窗显示时必须回调续期抑制，覆盖异步翻译结果上屏'
+    /createPopup\(PRELOAD_PATH,\s*suppressSelectionActivationWindowGap,\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\)\s*\)/u,
+    '翻译弹窗显示时必须回调续期抑制，隐藏时必须清理音标请求'
   )
 })
 
@@ -128,8 +128,8 @@ test('翻译弹窗在显示或聚焦自身时通知调用方，不激活应用�
 
   assert.match(
     popupSource,
-    /createPopup\(\s*preloadPath:\s*string,\s*onWindowShown\?:\s*\(\)\s*=>\s*void\s*\)/u,
-    '翻译弹窗创建入口必须接收内部窗口显示回调'
+    /createPopup\(\s*preloadPath:\s*string,\s*onWindowShown\?:\s*\(\)\s*=>\s*void,\s*onPopupHidden\?:\s*\(\)\s*=>\s*void\s*\)/u,
+    '翻译弹窗创建入口必须接收显示通知与隐藏清理回调'
   )
   assert.match(
     popupSource,

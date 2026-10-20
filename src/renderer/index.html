@@ -51,8 +51,16 @@
         <div class="translation-section translation-section-source">
           <div id="source-section-head" class="section-head">
             <span class="section-label" data-i18n="popup.translateOriginal">Source text</span>
+            <button id="read-original" class="text-action pronunciation-read-source" type="button" data-i18n="popup.readOriginal" data-i18n-attr="title:popup.readOriginal;aria-label:popup.readOriginal" title="Read source text aloud" aria-label="Read source text aloud" aria-pressed="false" hidden>Read source text aloud</button>
           </div>
           <div id="original" class="original"></div>
+          <section id="pronunciation-card" class="pronunciation-card" data-i18n-attr="aria-label:popup.pronunciationCard" aria-label="Word pronunciation" hidden>
+            <div class="pronunciation-card-header">
+              <span id="pronunciation-word" class="pronunciation-word"></span>
+              <button id="pronunciation-close" class="pronunciation-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">×</button>
+            </div>
+            <div id="pronunciation-variants" class="pronunciation-variants" aria-live="polite"></div>
+          </section>
           <div id="ocr-source" class="ocr-source" hidden>
             <div class="ocr-source-header">
               <span class="ocr-source-label" id="ocr-source-label" data-i18n="popup.ocrContent">OCR content</span>
@@ -67,6 +75,7 @@
             <span class="section-label section-label-accent" data-i18n="popup.translationResult">Translation</span>
           </div>
           <div id="result" class="result" aria-live="polite"></div>
+          <div id="translation-pronunciation-card" class="translation-pronunciation-card"></div>
         </div>
       </section>
       <section id="manual-view" class="manual-view" data-i18n-attr="aria-label:popup.manualTranslation" aria-label="Manual translation" hidden>

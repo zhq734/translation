@@ -54,6 +54,9 @@ import {
 } from './translate'
 import { applyTranslationProxy, createTranslationWebSocket, translationFetch } from './network'
 import { createEdgeSpeechClient } from './edgeSpeech'
+import { PronunciationService } from './pronunciationService'
+import { iscorevocDictionary } from './iscorevocDictionary'
+import { PronunciationRequestRegistry } from './pronunciationRequests'
 import {
   createPopup,
   showPopup,
@@ -73,6 +76,7 @@ import {
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
+  setPronunciationInteraction,
   showManualTranslationPopup,
   resizePopup
 } from './popup'
@@ -415,6 +419,13 @@ function t(key: string, params?: Record<string, string | number>): string {
 
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
 const edgeSpeechRequests = new Map<string, AbortController>()
+/** 主进程音标查询与受信任音频代理；网络请求复用现有翻译代理配置。 */
+const pronunciationService = new PronunciationService({
+  fetch: translationFetch,
+  ieltsDictionary: iscorevocDictionary
+})
+/** 当前 Renderer 发起且尚未完成的音标查询与音频请求。 */
+const pronunciationRequests = new PronunciationRequestRegistry()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
 /** 最近一次全局快捷键注册结果，供设置页查询和展示。 */
@@ -614,6 +625,18 @@ async function synthesizeEdgeSpeech(
 function cancelEdgeSpeech(requestId: string): void {
   edgeSpeechRequests.get(String(requestId))?.abort()
   edgeSpeechRequests.delete(String(requestId))
+}
+
+/**
+ * 规范化 Renderer 传入的音标请求 ID，避免异常长值或非字符串进入主进程注册表。
+ * @param value 未信任请求 ID。
+ * @returns 合法请求 ID；非法时返回空字符串。
+ * @author zhenghq
+ */
+function normalizePronunciationRequestId(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const normalized = value.trim()
+  return normalized.length > 0 && normalized.length <= 128 ? normalized : ''
 }
 
 /**
@@ -1275,7 +1298,10 @@ async function onReady(): Promise<boolean> {
     'proxyMode =',
     getSettings().proxyMode
   )
-  createPopup(PRELOAD_PATH, suppressSelectionActivationWindowGap)
+  createPopup(PRELOAD_PATH,
+    suppressSelectionActivationWindowGap,
+    () => pronunciationRequests.cancelAll()
+  )
   createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
@@ -5291,6 +5317,77 @@ function registerIpc(): void {
   })
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
+  })
+  /**
+   * 查询单个英文单词的音标；主进程再次校验输入，避免 Renderer 绕过词形边界。
+   * @param _event IPC 事件对象。
+   * @param word Renderer 传入的待查询单词。
+   * @returns 脱敏音标结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('pronunciation:lookup', (_event, word: unknown, requestId: unknown) => {
+    const normalized = typeof word === 'string' ? word.trim() : ''
+    if (!normalized || normalized.length > 64) {
+      return {
+        status: 'unsupported',
+        word: normalized.slice(0, 64),
+        language: 'en',
+        variants: [],
+        source: 'dictionaryapi'
+      }
+    }
+    const normalizedRequestId = normalizePronunciationRequestId(requestId)
+    if (!normalizedRequestId) return pronunciationService.lookup(normalized)
+    const controller = new AbortController()
+    return pronunciationRequests.run(
+      normalizedRequestId,
+      controller,
+      pronunciationService.lookup(normalized, controller.signal)
+    )
+  })
+  /**
+   * 下载当前已缓存音标变体的音频；变体 ID 必须由主进程查询结果生成。
+   * @param _event IPC 事件对象。
+   * @param word 当前查询词。
+   * @param variantId 已登记的变体标识。
+   * @returns 临时音频字节或脱敏错误。
+   * @author zhenghq
+   */
+  ipcMain.handle('pronunciation:audio', (_event, word: unknown, variantId: unknown, requestId: unknown) => {
+    const normalizedWord = typeof word === 'string' ? word.trim() : ''
+    const normalizedVariantId = typeof variantId === 'string' ? variantId.trim() : ''
+    if (!normalizedWord || normalizedWord.length > 64 || !normalizedVariantId) {
+      return { ok: false, error: 'Pronunciation audio is unavailable' }
+    }
+    const normalizedRequestId = normalizePronunciationRequestId(requestId)
+    if (!normalizedRequestId) return pronunciationService.getAudio(normalizedWord, normalizedVariantId)
+    const controller = new AbortController()
+    return pronunciationRequests.run(
+      normalizedRequestId,
+      controller,
+      pronunciationService.getAudio(normalizedWord, normalizedVariantId, controller.signal)
+    )
+  })
+  /**
+   * 取消 Renderer 尚未完成的音标查询或音频下载。
+   * @param _event IPC 事件对象。
+   * @param requestId Renderer 生成的请求 ID。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('pronunciation:cancel', (_event, requestId: unknown) => {
+    const normalized = normalizePronunciationRequestId(requestId)
+    if (normalized) pronunciationRequests.cancel(normalized)
+  })
+  /**
+   * 接收音标交互状态，仅暂停或恢复自动隐藏，不改变弹窗固定状态。
+   * @param _event IPC 事件对象。
+   * @param active Renderer 上报的交互状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('pronunciation:interaction', (_event, active: unknown) => {
+    setPronunciationInteraction(active === true)
   })
   ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('webview:open', (_event, url: unknown) => {

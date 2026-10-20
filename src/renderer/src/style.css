@@ -406,6 +406,216 @@ body {
   display: none;
 }
 
+/* 原文单词保持行内文本语义，不创建按钮焦点，也不破坏选择与复制。 */
+.pronunciation-word-token {
+  display: inline;
+  border-radius: 3px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--border-default);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  transition: background-color 140ms ease, text-decoration-color 140ms ease;
+}
+
+.pronunciation-word-token:hover {
+  background: var(--focus-ring);
+  text-decoration-color: var(--button-bg);
+}
+
+/* 音标卡固定在原文下方，采用可换行布局适配窄窗口与长单词。 */
+.pronunciation-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.pronunciation-card[hidden] {
+  display: none;
+}
+
+.pronunciation-card-header {
+  display: flex;
+  align-items: center;
+  flex: 1 1 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pronunciation-word {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pronunciation-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--control-height-compact);
+  height: var(--control-height-compact);
+  min-height: var(--control-height-compact);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.pronunciation-close:hover {
+  background: var(--control-disabled-bg);
+  color: var(--text-primary);
+}
+
+.pronunciation-close:focus-visible,
+.pronunciation-play:focus-visible,
+.pronunciation-read-source:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 1px;
+}
+
+.pronunciation-variants {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.pronunciation-empty-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.pronunciation-definitions {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle, var(--border-default));
+}
+
+.pronunciation-definition {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.pronunciation-definition-pos {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.pronunciation-definition-text {
+  min-width: 0;
+}
+
+.translation-pronunciation-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.translation-pronunciation-card:empty {
+  display: none;
+}
+
+.pronunciation-variant {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: var(--control-bg);
+}
+
+.pronunciation-accent {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--focus-ring);
+  color: var(--button-bg);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pronunciation-ipa {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.pronunciation-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--control-height-compact);
+  height: var(--control-height-compact);
+  min-height: var(--control-height-compact);
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--button-bg);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.pronunciation-play:hover {
+  background: var(--focus-ring);
+}
+
+.pronunciation-status {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pronunciation-read-source {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .result {
   flex: 1;
   min-height: 0;

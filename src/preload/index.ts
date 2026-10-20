@@ -17,6 +17,8 @@ import type {
   MacOSQuarantineResult,
   UpdateStatus,
   EdgeSpeechResult,
+  PronunciationAudioResult,
+  PronunciationResult,
   OcrSelectionBeginPayload,
   OcrSelectionReadyPayload,
   OcrSelectionBounds,
@@ -160,6 +162,45 @@ const api: Api = {
     ipcRenderer.send('popup:copy', text)
   },
   /**
+   * 查询单个英文单词的 IPA 音标。
+   * @param word 已由 Renderer 识别出的英文单词。
+   * @returns 主进程返回的脱敏音标结果。
+   * @author zhenghq
+   */
+  lookupPronunciation: (word: string, requestId?: string): Promise<PronunciationResult> =>
+    ipcRenderer.invoke('pronunciation:lookup', word, requestId),
+  /**
+   * 下载当前音标结果中已登记的词典音频。
+   * @param word 当前查询词。
+   * @param variantId 主进程返回的变体标识。
+   * @returns 临时音频字节或脱敏错误。
+   * @author zhenghq
+   */
+  fetchPronunciationAudio: (
+    word: string,
+    variantId: string,
+    requestId?: string
+  ): Promise<PronunciationAudioResult> =>
+    ipcRenderer.invoke('pronunciation:audio', word, variantId, requestId),
+  /**
+   * 取消当前音标查询或音频下载。
+   * @param requestId Renderer 生成的请求 ID。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelPronunciationRequest(requestId: string): void {
+    ipcRenderer.send('pronunciation:cancel', requestId)
+  },
+  /**
+   * 通知主进程暂停或恢复音标交互期间的自动隐藏。
+   * @param active 是否处于音标交互状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setPronunciationInteraction(active: boolean): void {
+    ipcRenderer.send('pronunciation:interaction', active)
+  },
+  /**
    * 关闭翻译弹窗。
    * @returns 无返回值。
    * @author zhenghq
@@ -295,6 +336,17 @@ const api: Api = {
     const listener = (_event: unknown, pinned: boolean): void => callback(pinned)
     ipcRenderer.on('popup:pinned', listener)
     return () => ipcRenderer.removeListener('popup:pinned', listener)
+  },
+  /**
+   * 订阅主进程完成弹窗隐藏的通知。
+   * @param callback 弹窗隐藏后的清理回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onPopupHidden(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('popup:hidden', listener)
+    return () => ipcRenderer.removeListener('popup:hidden', listener)
   },
   /**
    * 翻译当前选中文字。

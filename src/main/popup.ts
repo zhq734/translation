@@ -7,6 +7,10 @@ import {
 } from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
+import {
+  resolvePronunciationInteractionTransition,
+  shouldSchedulePopupHide
+} from './popupAutoHideState'
 import { handBackFrontmostThen } from './macForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
@@ -49,6 +53,10 @@ let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
 let pinned = false
 let currentAutoHideMs = 0
+/** 音标卡或原文发音交互期间是否暂停自动隐藏；不改变用户固定状态。 */
+let pronunciationInteractionActive = false
+/** 弹窗真正隐藏时通知主进程清理音标查询与音频下载。 */
+let onPopupHiddenCallback: (() => void) | null = null
 let shownInactive = false
 /**
  * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
@@ -95,12 +103,14 @@ const pendingPayloads: TranslatePayload[] = []
  * 创建翻译弹窗。
  * @param preloadPath 预加载脚本路径。
  * @param onWindowShown 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。
+ * @param onPopupHidden 弹窗隐藏后清理临时请求的回调。
  * @returns 创建后的翻译弹窗。
  * @author zhenghq
  */
 export function createPopup(
   preloadPath: string,
-  onWindowShown?: () => void
+  onWindowShown?: () => void,
+  onPopupHidden?: () => void
 ): BrowserWindow {
   shownInactive = false
   settingsOpenGuardActive = false
@@ -108,6 +118,7 @@ export function createPopup(
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
   onInternalWindowShown = onWindowShown ?? null
+  onPopupHiddenCallback = onPopupHidden ?? null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -490,6 +501,7 @@ export function hidePopup(
   clearHide()
   closeVersion += 1
   pinned = false
+  pronunciationInteractionActive = false
   selectionCaptureLoading = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
@@ -500,7 +512,13 @@ export function hidePopup(
   const run = (): void => {
     shownInactive = false
     logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
+    // Renderer 的关闭按钮会主动清理播放资源，但失焦、外部点击和自动隐藏
+    // 不经过 Renderer；统一广播隐藏事件，确保所有关闭路径都会停止语音。
+    // 必须在 win.hide() 之前广播：隐藏后窗口不再渲染，IPC 消息可能无法及时
+    // 送达 Renderer，导致系统语音或音频在后台继续播放。
+    win?.webContents.send('popup:hidden')
     win?.hide()
+    onPopupHiddenCallback?.()
     // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
     // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
     notifyInternalWindowShown()
@@ -662,9 +680,37 @@ export function isPointInsidePopup(point: { x: number; y: number }): boolean {
  */
 function scheduleHide(milliseconds: number): void {
   clearHide()
-  if (!pinned && milliseconds > 0) {
+  if (shouldSchedulePopupHide({
+    pinned,
+    autoHideMs: milliseconds,
+    pronunciationInteractionActive
+  })) {
     hideTimer = setTimeout(() => hidePopup(true, 'auto-hide'), milliseconds)
   }
+}
+
+/**
+ * 设置音标交互状态，并暂停或恢复弹窗自动隐藏计时。
+ *
+ * 该状态与用户固定状态相互独立：打开音标卡只清除当前计时，不会把弹窗标记为
+ * 固定；关闭音标卡后仍按原有自动隐藏配置恢复，固定弹窗也不会因此新增计时器。
+ * @param active 音标卡或原文发音交互是否处于激活状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setPronunciationInteraction(active: boolean): void {
+  const transition = resolvePronunciationInteractionTransition(active, pronunciationInteractionActive)
+  if (transition === 'unchanged') return
+  pronunciationInteractionActive = active
+  if (!win || win.isDestroyed() || !win.isVisible()) {
+    if (transition === 'pause') clearHide()
+    return
+  }
+  if (transition === 'pause') {
+    clearHide()
+    return
+  }
+  scheduleHide(currentAutoHideMs)
 }
 
 /**
