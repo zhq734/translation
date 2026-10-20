@@ -44,6 +44,9 @@ const FRONT_RETURN_POLL_INTERVAL_MS = 16
 /** 交还前台的兜底超时（毫秒）：激活未生效时也必须继续后续动作，不能卡住窗口隐藏。 */
 const FRONT_RETURN_TIMEOUT_MS = 200
 
+/** 隐藏窗口后复核源应用是否仍在前台的有界延迟（毫秒）。 */
+const POST_HIDE_FRONT_RECHECK_DELAY_MS = 48
+
 /** 安全让出前台的兜底超时（毫秒）：app.hide() 生效较慢时最长等待时间，超时也必须收尾。 */
 const FRONT_YIELD_TIMEOUT_MS = 400
 
@@ -626,6 +629,21 @@ export function handBackFrontmostThen(
         `精确交还成功：bundleId=${target.bundleId} 耗时 ${Date.now() - startedAt}ms`
       )
       run()
+      // 隐藏窗口本身会触发 macOS 重新选择 key window。即使隐藏前已确认源应用
+      // 在前台，系统也可能把同应用的设置页重新提升为 key window，并让本应用
+      // 再次成为最前应用。这里保留本次 target 做一次短延迟复核，避免把恢复
+      // 动作无限轮询或依赖已被消费的 pendingReturnApp。
+      // 只对翻译弹窗做该复核：OCR 覆盖层与阅读器的关闭可能发生在用户主动
+      // 切换应用之后，延迟恢复会错误抢回新焦点。
+      if (keyWindowIsPopup) {
+        setTimeout(() => {
+          if (!isMacAppActiveByEvents()) return
+          logFrontDiagnostic(`隐藏后复核到本应用重新置前，再次精确恢复：bundleId=${target.bundleId}`)
+          void activateFrontmostSnapshot(target).catch(() => {
+            logFrontDiagnostic(`隐藏后再次精确恢复失败：bundleId=${target.bundleId}`)
+          })
+        }, POST_HIDE_FRONT_RECHECK_DELAY_MS)
+      }
       return
     }
     logFrontDiagnostic(

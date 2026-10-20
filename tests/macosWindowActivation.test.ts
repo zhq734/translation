@@ -1330,3 +1330,45 @@ test('窗口级激活结果应提供白名单诊断字段', () => {
     'windowMatched'
   ])
 })
+
+/**
+ * 校验弹窗隐藏后必须复核源窗口是否仍在前台。
+ *
+ * 真机日志（2026-10-20）显示：源应用已精确交还成功，但紧接着 win.hide()
+ * 后本应用重新成为最前，设置页被 macOS 重新选为 key window。现有成功路径
+ * 只调用 run() 后立即结束，没有在隐藏完成后复核，导致设置页再次浮到最前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗隐藏完成后必须复核并恢复被抢回的源窗口', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+
+  // 必须保留本次 target，不能只依赖已被消费的 pendingReturnApp。
+  assert.match(
+    source,
+    /if \(handedBack\)[\s\S]*?run\(\)[\s\S]*?setTimeout/u,
+    '隐藏完成后必须安排一次有界复核'
+  )
+  assert.match(
+    source,
+    /if \(keyWindowIsPopup\)\s*\{\s*setTimeout/u,
+    '延迟复核只能用于翻译弹窗，不能误抢 OCR 或阅读器场景的新焦点'
+  )
+  assert.match(
+    source,
+    /isMacAppActiveByEvents\(\)/u,
+    '复核必须依据应用激活事件判断本应用是否重新成为最前'
+  )
+  assert.match(
+    source,
+    /activateFrontmostSnapshot\(target\)/u,
+    '被抢回时必须再次精确恢复同一源窗口'
+  )
+  assert.doesNotMatch(
+    source,
+    /\.focus\(\)|\.moveTop\(\)/u,
+    '复核与恢复不得聚焦或置前设置页'
+  )
+})
