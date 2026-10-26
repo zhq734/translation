@@ -429,6 +429,8 @@ export const zhCNBase = defineCatalog({
   'update.checksumNeedsUpdateMissing': '当前版本没有 SHA256SUMS 校验值，建议升级',
   'update.checksumUnreachable': '；无法读取 Release 的 SHA256SUMS 校验值，请确认安装包来源',
   'update.disabled': '开发环境不会检查更新',
+  'windows7.ocrUnavailable': 'Windows 7 兼容版暂不支持 OCR',
+  'windows7.updateDisabled': 'Windows 7 兼容版不提供自动更新，请从 GitHub Release 手动下载',
   'update.downloaded': '版本 {{version}} 已下载，重启后完成升级',
   'update.progress.downloaded': '已下载 {{size}}',
   'update.downloading': '正在下载更新… {{percent}}%',

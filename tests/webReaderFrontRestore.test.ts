@@ -121,7 +121,7 @@ test('阅读器关闭刷新 Dock 可见性时不得重复切换激活策略', ()
 })
 
 test('网页翻译窗口销毁回调保留资源清理，且隐藏事件不触发前台交还', () => {
-  const disposeSource = extractFunction(webReaderSource, 'private disposeWindow(window: BrowserWindow, view: WebContentsView): void {')
+  const disposeSource = extractFunction(webReaderSource, 'private disposeWindow(window: BrowserWindow, view: BrowserView): void {')
 
   assert.doesNotMatch(disposeSource, /handBackFrontmostThen/u, 'closed 回调只做资源清理，前台交还必须在关闭前完成')
   assert.doesNotMatch(webReaderSource, /window\.on\('hide'/u, '最小化或隐藏阅读器不得触发前台交还')

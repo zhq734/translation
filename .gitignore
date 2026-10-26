@@ -3,6 +3,7 @@ node_modules/
 .electron-cache/
 out/
 dist/
+dist-win7/
 .DS_Store
 *.log
 

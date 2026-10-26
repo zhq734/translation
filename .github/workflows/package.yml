@@ -86,6 +86,13 @@ jobs:
               dist/SelectionTranslator-*-Setup-*.exe
               dist/latest*.yml
               dist/*.blockmap
+          - name: Windows 7 x64
+            platform: windows
+            os: windows-2025
+            command: dist:win:win7
+            artifact_name: packages-windows7
+            artifact_path: |
+              dist-win7/SelectionTranslator-*-Setup-win7-x64.exe
           - name: Linux
             platform: linux
             os: ubuntu-24.04

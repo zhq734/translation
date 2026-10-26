@@ -1,7 +1,7 @@
 import { clipboard, systemPreferences } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { uIOhook, UiohookKey } from './uiohookRuntime'
 import {
   hasClipboardCaptureCompleted,
   shouldRestoreClipboardAfterAbort,

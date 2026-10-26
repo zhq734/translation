@@ -429,6 +429,8 @@ export const enUSBase = defineCatalog({
   'update.checksumNeedsUpdateMissing': 'This version has no SHA256SUMS checksum; upgrading is recommended',
   'update.checksumUnreachable': '; unable to read the release SHA256SUMS checksum, so verify the package source',
   'update.disabled': 'Updates are not checked in the development environment',
+  'windows7.ocrUnavailable': 'OCR is unavailable in the Windows 7 compatibility build',
+  'windows7.updateDisabled': 'The Windows 7 compatibility build does not support automatic updates; download updates manually from GitHub Releases',
   'update.downloaded': 'Version {{version}} has been downloaded and will be installed after restart',
   'update.progress.downloaded': 'Downloaded {{size}}',
   'update.downloading': 'Downloading update… {{percent}}%',

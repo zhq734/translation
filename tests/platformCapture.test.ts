@@ -106,7 +106,7 @@ test('Windows 复制取词应使用已加载的原生模块直接发送 Ctrl+C',
 
   assert.ok(copyStart >= 0)
   assert.ok(copyEnd > copyStart)
-  assert.match(source, /import \{ uIOhook, UiohookKey \} from 'uiohook-napi'/u)
+  assert.match(source, /import \{ uIOhook, UiohookKey \} from '\.\/uiohookRuntime'/u)
   assert.match(copySource, /uIOhook\.keyTap\(UiohookKey\.C,\s*\[UiohookKey\.Ctrl\]\)/u)
   assert.doesNotMatch(copySource, /powershell\.exe|Add-Type|keybd_event/u)
 })

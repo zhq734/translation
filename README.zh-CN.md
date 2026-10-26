@@ -218,15 +218,19 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 
 - **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，打开后将“划词翻译”拖入 `Applications`；
 - **Linux**：x64 下载 `SelectionTranslator-<版本>-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-arm64.AppImage`，添加执行权限后运行；
-- **Windows**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
+- **Windows 10/11**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
+- **Windows 7 SP1 x64**：下载专用包 `SelectionTranslator-<版本>-Setup-win7-x64.exe`，运行安装向导。
 
-所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。当前支持 `x64` 与 `arm64`，详见[开发、测试与打包](#开发测试与打包)。
+所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。现代 Windows 支持 `x64` 与 `arm64`；Windows 7 仅支持 64 位，不提供 32 位安装包。Win7 包使用 Electron 22 兼容运行时，并禁用 OCR 与自动更新，只能从 GitHub Release 手动下载新版本。Electron 22 已停止安全更新，建议仅在无法升级系统时使用。详见[开发、测试与打包](#开发测试与打包)。
+
+> Windows 7 需为 SP1 x64，并安装 SHA-2 代码签名支持更新、Universal C Runtime 与所需 Visual C++ 运行库。由于旧系统与 Electron 22 均已停止维护，Win7 兼容包无法获得现代 Windows 包同等的安全更新保障。
 
 ### 应用内检查与升级
 
 - 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
 - 可在 **设置 → 关于** 查看当前版本、手动检查更新和观察下载进度；支持自动安装的平台可在下载完成后点击“立即重启升级”；
 - Windows NSIS 安装包支持应用内下载与重启安装；Linux 仅在从 AppImage 运行时支持自动替换，其他 Linux 安装方式会打开 GitHub Release；
+- Windows 7 专用包不加载 `electron-updater`，不会自动检查、下载或安装更新；请在 **设置 → 关于** 打开 GitHub Release 手动下载新版 `Setup-win7-x64.exe` 覆盖安装；
 - macOS 只有通过代码签名校验的 `.app` 才启用自动安装。手动安装模式下，点击升级会把当前架构的 DMG 下载到系统“下载”文件夹并自动打开；用户将“划词翻译”拖入“应用程序”覆盖旧版本后，再回到设置页点击“解除 macOS 隔离属性”；
 - 更新检查与更新包下载都走应用统一的代理会话，与翻译请求使用同一套代理配置；
 - 更新包下载会先探测下载源是否支持 Range：支持时按最多 4 个分片并发下载，不支持或探测失败则自动回退单连接下载；
@@ -269,7 +273,7 @@ npm run dev
 
 | 项目 | 要求 |
 | --- | --- |
-| 操作系统 | macOS、Windows 10/11 或 Linux；发布跨平台安装包建议使用对应平台构建机 |
+| 操作系统 | macOS、Windows 10/11、Windows 7 SP1 x64 或 Linux；发布跨平台安装包建议使用对应平台构建机 |
 | Node.js | `>= 18`，建议使用 Node.js 20 或更高版本 |
 | 包管理器 | npm |
 | 桌面框架 | Electron 33 |
@@ -811,6 +815,9 @@ npm run dist:linux
 # 构建 Windows x64/arm64 NSIS 安装程序
 npm run dist:win
 
+# 构建 Windows 7 SP1 x64 专用 NSIS 安装程序（Electron 22，禁用 OCR 与自动更新）
+npm run dist:win:win7
+
 # 为 dist/ 中的安装包生成 SHA256SUMS
 npm run release:checksums
 ```
@@ -821,7 +828,8 @@ npm run release:checksums
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
 - `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；打包前会准备并校验两个架构的 `sharp`/`libvips` OCR 运行时；
 - `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；打包前会准备并校验两个架构的 `sharp` OCR 运行时；
-- 各平台打包会生成 `latest*.yml` 更新清单；macOS/Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；
+- `npm run dist:win:win7`：生成 Windows 7 SP1 x64 专用包 `dist-win7/SelectionTranslator-<版本>-Setup-win7-x64.exe`，固定 Electron `22.3.27`，排除 OCR、Sharp、ONNX、Tesseract 等原生依赖，不生成 `app-update.yml`、`latest*.yml` 或 `.blockmap`，并在打包前编译、校验 `windows-uia-reader.exe`；
+- 现代平台打包会生成 `latest*.yml` 更新清单；macOS/现代 Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；Windows 7 兼容包按设计不生成这两类文件；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；
 - 打包输出目录统一为 `dist/`；
@@ -833,7 +841,7 @@ npm run release:checksums
 
 仓库内置 `.github/workflows/package.yml`，可在 GitHub 的 **Actions → 多平台打包 → Run workflow** 中手动执行。手动执行时可以填写版本号，例如 `V1.0.3`；留空则使用 `package.json` 中的版本。
 
-工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建 x64/arm64 安装包，并把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-14`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
+工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建现代 x64/arm64 安装包，并在 Windows 运行器额外构建 Win7 x64 兼容包，最后把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-14`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
 
 1. 使用标签中的版本号同步安装包版本；
 2. 汇总三个平台的安装包；
@@ -995,6 +1003,7 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
 - GitHub Actions 在缺少全部 Apple 发布凭据时会生成未签名 macOS 测试包；该产物以及尚未签名的 Windows 安装包仍可能显示系统安全警告，正式 macOS 发布仍要求签名和公证；
 - 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，本地未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
+- Windows 7 兼容包仅支持 SP1 x64，不支持 32 位 Win7；为保证在 Electron 22 / Node 16 上稳定启动，Win7 包禁用 OCR、自动更新和 `electron-updater`，只能从 GitHub Release 手动更新。Electron 22 已停止安全更新，长期使用仍建议升级到 Windows 10/11。
 
 ## 后续方向
 

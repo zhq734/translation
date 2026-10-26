@@ -15,7 +15,7 @@ import {
   dialog,
   type NativeImage,
   type SourcesOptions,
-  type WebContentsView
+  type BrowserView
 } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -195,7 +195,6 @@ import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
 } from './appLifecycle'
-import { createApplicationUpdateManager } from './updater'
 import type { UpdateManager } from './updateManager'
 import { removeMacOSApplicationQuarantine } from './macQuarantine'
 import {
@@ -219,15 +218,11 @@ import {
   cropBgraSelectionPng,
   resolveSnapshotCropRect
 } from './ocrSnapshotImage'
-import { OcrDispatcher, type OcrEnginePreferenceState } from './ocrDispatcher'
+import type { OcrDispatcher, OcrEnginePreferenceState } from './ocrDispatcher'
 import {
   handleOcrSelectionWindowClosed,
   handleOcrSelectionWindowHide
 } from './ocrSelectionWindowEvents'
-import { createSystemOcrEngine } from './systemOcr'
-import { PaddleOcrEngine } from './paddleOcr'
-import { resolveBundledOcrModelAssets } from './ocrModelAssets'
-import { TesseractOcrEngine } from './tesseractOcr'
 import { recognizeAdaptiveOcr } from './adaptiveOcr'
 import { createWebImageSource, type WebImageResponse, type WebImageSource } from './webImageSource'
 import { evaluateOcrQuality } from '../shared/ocrQuality'
@@ -238,6 +233,7 @@ import {
 import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
+import { isWindows7CompatibilityRuntime } from './platformCompatibility'
 import { OcrEngineError, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { cleanOcrText } from '../shared/ocrText'
 import type {
@@ -1117,6 +1113,7 @@ async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
  * @author zhenghq
  */
 function prewarmScreenshotRuntime(): void {
+  if (isWindows7CompatibilityRuntime()) return
   setTimeout(() => {
     try {
       // 预创建保持隐藏；openOcrSelection 会复用同一实例。
@@ -1217,8 +1214,11 @@ async function onReady(): Promise<boolean> {
     getSettings,
     createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
     recognizeImage: async (bytes, candidate) => {
+      if (isWindows7CompatibilityRuntime()) {
+        throw new OcrEngineError('engine-unavailable', t('windows7.ocrUnavailable'))
+      }
       const settings = getSettings()
-      const dispatcher = createOcrDispatcher(settings)
+      const dispatcher = await createOcrDispatcher(settings)
       const ocr = await recognizeAdaptiveOcr(
         {
           imageBytes: bytes,
@@ -1279,15 +1279,41 @@ async function onReady(): Promise<boolean> {
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
   })
-  updateManager = await createApplicationUpdateManager(
-    (status) => {
-      broadcast('updater:status', status)
-    },
-    // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
-    // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
-    // @author zhenghq
-    { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
-  )
+  if (isWindows7CompatibilityRuntime()) {
+    // Win7 包不加载 electron-updater，避免其现代 Node 依赖在 Electron 22 启动阶段崩溃。
+    const { UpdateManager } = await import('./updateManager')
+    updateManager = new UpdateManager({
+      driver: {
+        initialize: () => undefined,
+        checkForUpdates: async () => undefined,
+        downloadUpdate: async () => undefined,
+        cancelDownload: () => undefined,
+        installUpdate: () => undefined
+      },
+      currentVersion: app.getVersion(),
+      enabled: false,
+      installMode: 'disabled',
+      disabledMessage: t('windows7.updateDisabled'),
+      releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+      openExternal: async (url) => {
+        await shell.openExternal(url)
+      },
+      onStatusChanged: (status) => {
+        broadcast('updater:status', status)
+      }
+    })
+  } else {
+    const { createApplicationUpdateManager } = await import('./updater')
+    updateManager = await createApplicationUpdateManager(
+      (status) => {
+        broadcast('updater:status', status)
+      },
+      // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
+      // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
+      // @author zhenghq
+      { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
+    )
+  }
   console.log(
     '[main] 启动完成 autoTrigger =',
     getSettings().triggerMode === 'auto',
@@ -1311,7 +1337,9 @@ async function onReady(): Promise<boolean> {
   if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true })
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
-  setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
+  if (!isWindows7CompatibilityRuntime()) {
+    setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
+  }
 
   // 提前创建 Toast 窗口，避免首次复制/保存时临时创建窗口和加载页面造成提示延迟。
   getScreenshotToastWindow()
@@ -1457,6 +1485,7 @@ function onHotkey(): void {
  * @author zhenghq
  */
 function onOcrHotkey(): void {
+  if (isWindows7CompatibilityRuntime()) return
   latestSelectionGesture += 1
   hideSelectionButton()
   void openOcrSelection()
@@ -2656,6 +2685,7 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
  * @author zhenghq
  */
 async function openOcrSelection(): Promise<void> {
+  if (isWindows7CompatibilityRuntime()) return
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   // 覆盖窗口显示后应用会成为前台应用，这里先记录截图前的状态，供收尾时决定是否归还前台。
@@ -2965,7 +2995,7 @@ const WEB_IMAGE_REQUEST_TIMEOUT_MS = 15_000
  * @returns 图片取图器。
  * @author zhenghq
  */
-function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal): WebImageSource {
+function createWebReaderImageSource(view: BrowserView, signal?: AbortSignal): WebImageSource {
   const requestImage = async (url: string, requestSignal?: AbortSignal): Promise<WebImageResponse> => {
     const request = net.request({ url, session: view.webContents.session, useSessionCookies: true })
     return await new Promise<WebImageResponse>((resolve, reject) => {
@@ -3214,7 +3244,15 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
  * @returns OCR 调度器。
  * @author zhenghq
  */
-function createOcrDispatcher(settings: Settings): OcrDispatcher {
+async function createOcrDispatcher(settings: Settings): Promise<OcrDispatcher> {
+  // 仅在现代包中按需加载 OCR 原生依赖，Win7 包完全不触碰这些模块。
+  const [{ OcrDispatcher }, { createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
+    import('./ocrDispatcher'),
+    import('./systemOcr'),
+    import('./paddleOcr'),
+    import('./ocrModelAssets'),
+    import('./tesseractOcr')
+  ])
   const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
   return new OcrDispatcher({
     platform: process.platform,
@@ -3237,6 +3275,24 @@ function createOcrDispatcher(settings: Settings): OcrDispatcher {
  * @author zhenghq
  */
 async function getOcrStatus(): Promise<OcrStatus> {
+  if (isWindows7CompatibilityRuntime()) {
+    return {
+      systemAvailable: false,
+      paddleAvailable: false,
+      tesseractAvailable: false,
+      modelName: '',
+      modelVersion: '',
+      license: '',
+      distribution: 'unavailable',
+      message: t('windows7.ocrUnavailable')
+    }
+  }
+  const [{ createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
+    import('./systemOcr'),
+    import('./paddleOcr'),
+    import('./ocrModelAssets'),
+    import('./tesseractOcr')
+  ])
   const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
   const systemEngine = createSystemOcrEngine()
   const paddleEngine = paddleModelAssets.ready
@@ -3368,7 +3424,10 @@ async function processOcrImageBytes(
   imageBytes: Buffer,
   settings: Settings
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
-  const dispatcher = createOcrDispatcher(settings)
+  if (isWindows7CompatibilityRuntime()) {
+    throw new OcrEngineError('engine-unavailable', t('windows7.ocrUnavailable'))
+  }
+  const dispatcher = await createOcrDispatcher(settings)
   const ocr = await recognizeAdaptiveOcr(
     {
       imageBytes,
@@ -3904,6 +3963,7 @@ function sendScreenshotActionResult(result: {
  * @author zhenghq
  */
 async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
+  if (isWindows7CompatibilityRuntime()) return
   const request = normalizeScreenshotActionRequest(value)
   if (!request || !isCurrentScreenshotRequest(request)) return
   const settings = getSettings()
@@ -3912,7 +3972,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
     // 若等到识别结束后再归一化，期间窗口移动会让两边键不一致而永远无法命中。
     const sessionBounds = normalizeOcrSelectionBounds(request.bounds)
     const png = cropCurrentOcrSelectionPng(request.bounds)
-    const dispatcher = createOcrDispatcher(settings)
+    const dispatcher = await createOcrDispatcher(settings)
     const ocr = await recognizeAdaptiveOcr(
       {
         imageBytes: png,
@@ -4207,6 +4267,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
  * @author zhenghq
  */
 async function submitOcrSelection(value: unknown): Promise<void> {
+  if (isWindows7CompatibilityRuntime()) return
   const bounds = normalizeOcrSelectionBounds(value)
   // 恢复自身幂等且不依赖窗口可见状态，避免任何早退路径把全局钩子留在停用状态。
   const restoreSelectionListener = (): void => {
@@ -4304,6 +4365,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
  * @author zhenghq
  */
 async function translateClipboardImage(): Promise<void> {
+  if (isWindows7CompatibilityRuntime()) return
   // 与手动翻译一致：显示弹窗前先记录源应用，供弹窗隐藏时交还前台。
   await rememberFrontmostAppIfInactiveAsync()
   const settings = getSettings()
@@ -5666,8 +5728,16 @@ function buildTrayMenu(): Menu {
         dialog.showErrorBox(t.t('error.webTranslation'), message)
       })
     } },
-    { label: t.t('menu.screenshotOcr'), click: () => openOcrSelection() },
-    { label: t.t('menu.clipboardImageOcr'), click: () => void translateClipboardImage() },
+    {
+      label: t.t('menu.screenshotOcr'),
+      enabled: !isWindows7CompatibilityRuntime(),
+      click: () => openOcrSelection()
+    },
+    {
+      label: t.t('menu.clipboardImageOcr'),
+      enabled: !isWindows7CompatibilityRuntime(),
+      click: () => void translateClipboardImage()
+    },
     { type: 'separator' },
     {
       label: t.t('menu.showSelectionButton'),

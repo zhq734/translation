@@ -444,9 +444,8 @@ export class PronunciationService {
     if (signal?.aborted) controller.abort()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
-      // 使用 Request 传递取消信号，避免把音频 URL 与词典查询输入混淆。
-      const request = new Request(audioUrl, { signal: controller.signal })
-      const response = await this.fetchImpl(request, { signal: controller.signal })
+      // Electron 22 的 Node 16 运行时没有全局 Request；取消信号直接交给 fetch。
+      const response = await this.fetchImpl(audioUrl, { signal: controller.signal })
       if (!response.ok) return { ok: false, error: 'Pronunciation audio is unavailable' }
       const mimeType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
       if (!isAudioMimeType(mimeType)) return { ok: false, error: 'Pronunciation audio type is unsupported' }

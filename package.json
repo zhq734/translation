@@ -22,6 +22,7 @@
     "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
     "test": "node scripts/run-tests.mjs",
     "dist:win": "npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never",
+    "dist:win:win7": "node scripts/build-win7.mjs",
     "dist:linux": "npm run build && node scripts/prepare-linux-ocr-runtime.mjs && node scripts/prepare-linux-uiohook-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never",
     "release:checksums": "node scripts/generate-checksums.mjs",
     "icons:generate": "node scripts/generate-icons.mjs"
@@ -185,7 +186,7 @@
     "nodemailer": "^9.0.6",
     "tesseract.js": "^7.0.0",
     "uiohook-napi": "^1.5.5",
-    "undici": "^6.28.0"
+    "undici": "^5.29.0"
   },
   "overrides": {
     "sharp": "0.34.2"

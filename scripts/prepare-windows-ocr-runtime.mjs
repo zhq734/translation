@@ -10,6 +10,23 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const expectedSharpVersion = '0.34.2'
 
 /**
+ * 编译 Windows UIA 选区直读 helper，确保安装包不会静默缺少原生取词组件。
+ * @returns 无返回值；编译失败时抛出异常。
+ * @author zhenghq
+ */
+function buildWindowsUiaReader() {
+  const result = spawnSync(process.execPath, [join(projectRoot, 'scripts', 'build-windows-uia-reader.mjs')], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+    env: process.env
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`Windows UIA helper 构建失败，退出码 ${result.status}`)
+  }
+}
+
+/**
  * 返回当前项目安装的 sharp 版本。
  * @returns sharp 的 package.json 版本号。
  * @author zhenghq
@@ -137,6 +154,8 @@ function verifyWindowsSharp(arch) {
  * @author zhenghq
  */
 function main() {
+  buildWindowsUiaReader()
+
   const installedSharpVersion = readSharpVersion()
   if (installedSharpVersion !== expectedSharpVersion) {
     throw new Error(

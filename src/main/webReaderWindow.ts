@@ -1,6 +1,6 @@
 import {
   BrowserWindow,
-  WebContentsView,
+  BrowserView,
   session,
   type Rectangle,
   type Session
@@ -102,7 +102,7 @@ export interface WebReaderManagerOptions {
   /** 调用现有 TranslationRuntime 翻译单段文本。 */
   translate(text: string, sourceLang: string, targetLang: string): Promise<{ translation: string; provider?: string; channel?: string }>
   /** 为远程页面创建取图器；未注入时跳过图片 OCR。 */
-  createImageSource?(view: WebContentsView, signal?: AbortSignal): WebImageSource
+  createImageSource?(view: BrowserView, signal?: AbortSignal): WebImageSource
   /** 对图片字节执行 OCR 识别；未注入时跳过图片 OCR。 */
   recognizeImage?(bytes: Buffer, candidate: WebImageCandidate): Promise<WebImageRecognition>
   /** 阅读器窗口打开或关闭时通知主进程。 */
@@ -115,7 +115,7 @@ export interface WebReaderManagerOptions {
   bringToFrontToOwnWindow?: (window: BrowserWindow) => void
 }
 
-/** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
+/** 管理网页阅读器窗口、远程 BrowserView、原位写回与任务代次。 */
 export class WebReaderManager {
   private readonly readerId = randomUUID()
   private readonly options: WebReaderManagerOptions
@@ -123,7 +123,7 @@ export class WebReaderManager {
   private readonly pageCache = new WebPageTranslationCache()
   private readerSession: Session | null = null
   private window: BrowserWindow | null = null
-  private view: WebContentsView | null = null
+  private view: BrowserView | null = null
   private pageRevision = 0
   private extractedUnits: ExtractedWebTextUnit[] = []
   private extractedBlocks: ExtractedWebTextBlock[] = []
@@ -334,7 +334,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   back(): void {
-    if (this.view?.webContents.navigationHistory.canGoBack()) this.view.webContents.navigationHistory.goBack()
+    if (this.view?.webContents.canGoBack()) this.view.webContents.goBack()
   }
 
   /** 在历史记录中前进。
@@ -342,7 +342,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   forward(): void {
-    if (this.view?.webContents.navigationHistory.canGoForward()) this.view.webContents.navigationHistory.goForward()
+    if (this.view?.webContents.canGoForward()) this.view.webContents.goForward()
   }
 
   /** 刷新当前网页。
@@ -368,7 +368,7 @@ export class WebReaderManager {
    * 计算远程网页视图的安全可用区域，确保标题栏和本地工具栏不被覆盖。
    * @param bounds Renderer 占位区矩形。
    * @param contentSize 当前窗口内容区尺寸。
-   * @returns 裁剪后的 WebContentsView 矩形。
+   * @returns 裁剪后的 BrowserView 矩形。
    * @author zhenghq
    */
   private calculateViewBounds(
@@ -510,7 +510,7 @@ export class WebReaderManager {
       const canFetch = Boolean(createSource && recognizeImage && view && !view.webContents.isDestroyed())
       let processedCandidates: WebImageCandidate[]
       if (canFetch) {
-        const source = (createSource as NonNullable<typeof createSource>).call(this.options, view as WebContentsView, controller.signal)
+        const source = (createSource as NonNullable<typeof createSource>).call(this.options, view as BrowserView, controller.signal)
         const processed = await processWebImageCandidates(batch, {
           source,
           recognize: (bytes, candidate) => (recognizeImage as NonNullable<typeof recognizeImage>).call(this.options, bytes, candidate),
@@ -1211,7 +1211,7 @@ export class WebReaderManager {
    * @returns 注入完成后的 Promise。
    * @author zhenghq
    */
-  private async ensureBilingualStyles(view: WebContentsView): Promise<void> {
+  private async ensureBilingualStyles(view: BrowserView): Promise<void> {
     if (this.bilingualCssKey) return
     this.bilingualCssKey = await view.webContents.insertCSS(buildWebBilingualStyleSheet())
   }
@@ -1288,7 +1288,7 @@ export class WebReaderManager {
    * @returns 注入完成后的 Promise。
    * @author zhenghq
    */
-  private async ensureImageOverlayStyles(view: WebContentsView): Promise<void> {
+  private async ensureImageOverlayStyles(view: BrowserView): Promise<void> {
     if (this.imageOverlayCssKey) return
     this.imageOverlayCssKey = await view.webContents.insertCSS(buildWebImageOverlayStyleSheet())
   }
@@ -1402,10 +1402,10 @@ export class WebReaderManager {
       backgroundColor: '#f5f7fa',
       webPreferences: { preload: this.options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
-    const view = new WebContentsView({
+    const view = new BrowserView({
       webPreferences: { session: this.getSession(), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
-    window.contentView.addChildView(view)
+    window.setBrowserView(view)
     this.window = window
     this.view = view
     this.options.onWindowStateChanged?.(true)
@@ -1451,7 +1451,7 @@ export class WebReaderManager {
    * @returns 无返回值。
    * @author zhenghq
    */
-  private bindRemoteEvents(view: WebContentsView): void {
+  private bindRemoteEvents(view: BrowserView): void {
     const contents = view.webContents
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
     contents.on('will-navigate', (event, url) => {
@@ -1612,9 +1612,8 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private syncNavigationState(): void {
-    const history = this.view?.webContents.navigationHistory
-    this.state.canGoBack = history?.canGoBack() ?? false
-    this.state.canGoForward = history?.canGoForward() ?? false
+    this.state.canGoBack = this.view?.webContents.canGoBack() ?? false
+    this.state.canGoForward = this.view?.webContents.canGoForward() ?? false
   }
 
   /**
@@ -1661,7 +1660,7 @@ export class WebReaderManager {
    * @returns 无返回值。
    * @author zhenghq
    */
-  private disposeWindow(window: BrowserWindow, view: WebContentsView): void {
+  private disposeWindow(window: BrowserWindow, view: BrowserView): void {
     if (this.window !== window) return
     // BrowserWindow 的 closed 事件触发时其 WebContents 已进入销毁流程，先断开引用，
     // 避免取消增量任务时 emitState 继续向已销毁的壳窗口发送消息。
@@ -1695,7 +1694,7 @@ export class WebReaderManager {
    * @returns 可执行提取与写回的远程网页视图。
    * @author zhenghq
    */
-  private requireLoadedView(): WebContentsView {
+  private requireLoadedView(): BrowserView {
     if (!this.view || this.view.webContents.isDestroyed()) {
       throw new Error(translateMain('webReader.error.notOpen'))
     }

@@ -1,4 +1,4 @@
-import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { uIOhook, UiohookKey } from './uiohookRuntime'
 import { screen } from 'electron'
 import {
   createObservedPointerSample,

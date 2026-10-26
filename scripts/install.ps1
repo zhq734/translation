@@ -156,10 +156,20 @@ function Install-SelectionTranslator {
         throw 'install.ps1 仅支持 Windows，请在 Linux 或 macOS 上使用 install.sh。'
     }
 
+    # Windows 7 只提供 x64 兼容包；[Environment]::OSVersion 在 Win7 上返回 6.1。
+    $OSVersion = [Environment]::OSVersion.Version
+    $IsWindows7 = $OSVersion.Major -eq 6 -and $OSVersion.Minor -eq 1
     $Architecture = Resolve-Architecture
     $Version = Resolve-Version
     $AssetVersion = $Version.Substring(1)
-    $AssetName = "SelectionTranslator-$AssetVersion-Setup-$Architecture.exe"
+    if ($IsWindows7 -and $Architecture -ne 'x64') {
+        throw 'Windows 7 仅支持 64 位（x64）安装包，不提供 32 位版本。'
+    }
+    $AssetName = if ($IsWindows7) {
+        "SelectionTranslator-$AssetVersion-Setup-win7-x64.exe"
+    } else {
+        "SelectionTranslator-$AssetVersion-Setup-$Architecture.exe"
+    }
     $ReleaseBaseUrl = "https://github.com/$Repository/releases/download/$Version"
 
     $script:TemporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "selection-translator-$([Guid]::NewGuid().ToString('N'))"

@@ -7,6 +7,8 @@
  * @author zhenghq
  */
 
+import { createTimeoutSignal } from './abortCompatibility.ts'
+
 /** 默认公网 IP 服务，按顺序回退。 */
 export const PUBLIC_IP_URLS = [
   'https://api.ipify.org',
@@ -60,13 +62,16 @@ export async function resolvePublicIpAddress(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch
 ): Promise<string | null> {
   for (const url of PUBLIC_IP_URLS) {
+    const timeout = createTimeoutSignal(PUBLIC_IP_TIMEOUT_MS)
     try {
-      const response = await fetchImpl(url, { signal: AbortSignal.timeout(PUBLIC_IP_TIMEOUT_MS) })
+      const response = await fetchImpl(url, { signal: timeout.signal })
       if (!response.ok) continue
       const value = (await response.text()).trim()
       if (IPV4_PATTERN.test(value)) return value
     } catch {
       // 单个服务失败继续尝试下一个服务
+    } finally {
+      timeout.dispose()
     }
   }
   return null
@@ -135,15 +140,18 @@ export async function resolveIpLocation(
 ): Promise<string | null> {
   if (!isValidIpAddress(ip)) return null
   for (const buildUrl of IP_LOCATION_URLS) {
+    const timeout = createTimeoutSignal(IP_LOCATION_TIMEOUT_MS)
     try {
       const response = await fetchImpl(buildUrl(ip), {
-        signal: AbortSignal.timeout(IP_LOCATION_TIMEOUT_MS)
+        signal: timeout.signal
       })
       if (!response.ok) continue
       const location = formatIpLocation(await response.json())
       if (location) return location
     } catch {
       // 单个服务失败继续尝试下一个服务
+    } finally {
+      timeout.dispose()
     }
   }
   return null

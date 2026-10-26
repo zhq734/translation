@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PronunciationService } from '../src/main/pronunciationService.ts'
 
+const dictionaryUrlPrefix = 'https://api.dictionaryapi.dev/api/v2/entries/en/'
 const dictionaryPayload = [
   {
     phonetics: [
@@ -58,7 +59,7 @@ test('音频代理应拒绝未缓存单词、非音频 MIME、超大响应和下
   const oversizedService = new PronunciationService({
     maxAudioBytes: 2,
     fetch: async (input) => {
-      if (String(input).includes('/hello')) return jsonResponse(dictionaryPayload)
+      if (String(input).startsWith(dictionaryUrlPrefix)) return jsonResponse(dictionaryPayload)
       return new Response(new Uint8Array([1, 2, 3]), {
         status: 200,
         headers: { 'content-type': 'audio/mpeg', 'content-length': '3' }
@@ -70,7 +71,7 @@ test('音频代理应拒绝未缓存单词、非音频 MIME、超大响应和下
 
   const htmlService = new PronunciationService({
     fetch: async (input) => {
-      if (String(input).includes('/hello')) return jsonResponse(dictionaryPayload)
+      if (String(input).startsWith(dictionaryUrlPrefix)) return jsonResponse(dictionaryPayload)
       return new Response('<html>not audio</html>', {
         status: 200,
         headers: { 'content-type': 'text/html' }
@@ -82,7 +83,7 @@ test('音频代理应拒绝未缓存单词、非音频 MIME、超大响应和下
 
   const failingService = new PronunciationService({
     fetch: async (input) => {
-      if (String(input).includes('/hello')) return jsonResponse(dictionaryPayload)
+      if (String(input).startsWith(dictionaryUrlPrefix)) return jsonResponse(dictionaryPayload)
       throw new Error('download failed with secret')
     }
   })
@@ -99,7 +100,7 @@ test('音频代理应支持取消并停止继续下载', async () => {
   let aborted = false
   const service = new PronunciationService({
     fetch: async (input, init) => {
-      if (String(input).includes('/hello')) return jsonResponse(dictionaryPayload)
+      if (String(input).startsWith(dictionaryUrlPrefix)) return jsonResponse(dictionaryPayload)
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
           aborted = true

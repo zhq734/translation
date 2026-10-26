@@ -4,16 +4,25 @@
 
 ## 编译
 
-需要 .NET Framework 4.7.2+（Windows 系统自带 `csc.exe`）。
+需要 .NET Framework 4.7.2+（Windows 系统自带 `csc.exe`）。源码保持 C# 5 语法，
+以兼容 Windows 7 SP1 上常见的旧版 `csc.exe`。构建机必须为 64 位 Windows。
 
 ```cmd
 :: 查找 csc.exe（路径随 .NET Framework 版本而异）
-C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:exe /out:windows-uia-reader.exe /reference:UIAutomationClient.dll /reference:UIAutomationTypes.dll Program.cs
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /codepage:65001 /out:windows-uia-reader.exe /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:UIAutomationClient.dll /reference:UIAutomationTypes.dll Program.cs
 ```
 
-如果 `csc.exe` 不在 PATH 中，可从以下目录查找：
-- `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`（64 位）
-- `C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe`（32 位）
+构建脚本会依次查找 `Framework64`、`Framework`、`Reference Assemblies`、
+`GAC_MSIL`、`GAC_32` 与 `GAC_64` 中的编译器或程序集，兼容 32 位和 64 位
+Windows 构建机。
+
+仓库脚本会自动完成查找、编译与 SHA-256 生成：
+
+```cmd
+node scripts\build-windows-uia-reader.mjs
+```
+
+Windows 安装包构建前必须成功执行该脚本；非 Windows 构建机会明确跳过。
 
 ## 通信协议
 
@@ -36,13 +45,11 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:exe /out:windows
 
 ## SHA-256 校验
 
-提交预编译 `windows-uia-reader.exe` 后，在同目录运行：
+构建脚本会在同目录生成 `SHA256.txt`。也可手动复核：
 
 ```cmd
 certutil -hashfile windows-uia-reader.exe SHA256
 ```
-
-将输出的哈希值记录在 `SHA256.txt` 中。
 
 ## 依赖
 
