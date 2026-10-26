@@ -72,17 +72,57 @@ test('网页阅读器必须使用 Electron 22 与 33 都支持的 BrowserView', 
   assert.match(source, /webContents\.canGoForward\(\)/u)
 })
 
-test('Win7 兼容包必须禁用 OCR 且不加载 OCR 原生链路', () => {
+test('Win7 兼容包必须仅使用 Tesseract OCR 且不加载 OCR 原生链路', () => {
   const source = read('src/main/index.ts')
   assert.match(source, /isWindows7CompatibilityRuntime/u)
-  assert.match(source, /windows7\.ocrUnavailable/u)
-  assert.match(source, /if \(isWindows7CompatibilityRuntime\(\)\) return/u)
+  assert.match(source, /windows7\.ocrTesseractOnly/u)
+  assert.match(source, /bundledLangPath: join\(process\.resourcesPath, 'tessdata'\)/u)
+  assert.match(source, /workerPath: resolveTesseractWorkerPath\(process\.resourcesPath, app\.isPackaged\)/u)
+  assert.match(
+    source,
+    /if \(isWindows7CompatibilityRuntime\(\)\) \{\s*const \[\{ OcrDispatcher \}, \{ TesseractOcrEngine \}\] = await Promise\.all\(\[\s*import\('\.\/ocrDispatcher'\),\s*import\('\.\/tesseractOcr'\)\s*\]\)/u
+  )
+  assert.match(source, /function resolveOcrEnginePreference\(settings: Settings\): OcrEnginePreference/u)
+  assert.match(source, /return isWindows7CompatibilityRuntime\(\) \? 'tesseract' : settings\.ocrEnginePreference/u)
+  assert.doesNotMatch(source, /windows7\.ocrUnavailable/u)
+  assert.doesNotMatch(source, /if \(isWindows7CompatibilityRuntime\(\)\) return\s*\n\s*latestSelectionGesture/u)
 })
 
-test('Win7 兼容包必须禁用自动更新但保留 Release 页面入口', () => {
+test('Win7 设置页应固定使用 Tesseract 并禁用无效的 OCR 引擎配置', () => {
+  const types = read('src/shared/types.ts')
+  const main = read('src/main/index.ts')
+  const html = read('src/renderer/settings.html')
+  const renderer = read('src/renderer/src/settings.ts')
+
+  assert.match(types, /win7Compatibility\?: boolean/u)
+  assert.match(
+    main,
+    /if \(isWindows7CompatibilityRuntime\(\)\) \{\s*return \{\s*win7Compatibility: true,\s*systemAvailable: false,[\s\S]*?\}\s*\}/u
+  )
+  assert.match(
+    html,
+    /id="ocr-win7-hint"[^>]*data-i18n="settings\.ocr\.win7FixedEngine"/u
+  )
+  assert.match(renderer, /const ocrWin7Hint = document\.getElementById\('ocr-win7-hint'\) as HTMLElement/u)
+  assert.match(renderer, /const win7 = status\.win7Compatibility === true/u)
+  assert.match(renderer, /ocrWin7Hint\.hidden = !win7/u)
+  assert.match(renderer, /ocrEnginePreference\.disabled = win7/u)
+  assert.match(renderer, /ocrTesseractEnabled\.disabled = win7/u)
+  assert.match(renderer, /ocrEnginePreference\.value = 'tesseract'/u)
+  assert.match(renderer, /ocrTesseractEnabled\.checked = true/u)
+  assert.match(renderer, /const win7 = latestOcrStatus\?\.win7Compatibility === true/u)
+  assert.match(renderer, /ocrEnginePreference: win7 \? 'tesseract' : ocrEnginePreference\.value as OcrEnginePreference/u)
+  assert.match(renderer, /ocrTesseractEnabled: win7 \? true : ocrTesseractEnabled\.checked/u)
+})
+
+test('Win7 兼容包必须使用轻量 Release 检查并保留手动更新入口', () => {
   const source = read('src/main/index.ts')
-  assert.match(source, /windows7\.updateDisabled/u)
-  assert.match(source, /if \(!isWindows7CompatibilityRuntime\(\)\)\s*\{\s*setTimeout\(\(\) => void checkForApplicationUpdates/u)
+  assert.match(source, /const \{ Win7UpdateDriver \} = await import\('\.\/win7UpdateDriver'\)/u)
+  assert.match(source, /new Win7UpdateDriver\(\{/u)
+  assert.match(source, /installMode: 'manual'/u)
+  assert.match(source, /updateAction: 'open-release'/u)
+  assert.match(source, /setTimeout\(\(\) => void checkForApplicationUpdates\(\), UPDATE_CHECK_DELAY_MS\)/u)
+  assert.doesNotMatch(source, /windows7\.updateDisabled/u)
   assert.match(source, /openApplicationReleasePage/u)
 })
 
@@ -116,7 +156,7 @@ test('Win7 构建配置固定 Electron 22、仅 x64 且不生成更新清单', (
   assert.match(config, /asarUnpack:[\s\S]*uiohook-napi/u)
 })
 
-test('Win7 打包配置只保留 x64 运行时并排除更新与 OCR 代码块', () => {
+test('Win7 打包配置保留 Tesseract WASM 运行时并排除原生 OCR 与 electron-updater', () => {
   const config = read('electron-builder-win7.yml')
 
   assert.match(config, /node_modules\/@koromix\/koffi-win32-x64\/\*\*\/\*/u)
@@ -130,12 +170,52 @@ test('Win7 打包配置只保留 x64 运行时并排除更新与 OCR 代码块',
   assert.match(config, /!node_modules\/electron-updater\/\*\*\/\*/u)
   assert.match(config, /!node_modules\/builder-util-runtime\/\*\*\/\*/u)
   assert.match(config, /!out\/main\/updater-\*\.js/u)
-  assert.match(config, /!out\/main\/ocrDispatcher-\*\.js/u)
   assert.match(config, /!out\/main\/ocrModelAssets-\*\.js/u)
   assert.match(config, /!out\/main\/paddleOcr-\*\.js/u)
   assert.match(config, /!out\/main\/systemOcr-\*\.js/u)
-  assert.match(config, /!out\/main\/tesseractOcr-\*\.js/u)
   assert.doesNotMatch(config, /!out\/main\/updateManager-\*\.js/u)
+  assert.doesNotMatch(config, /!node_modules\/tesseract\.js\/\*\*\/\*/u)
+  assert.doesNotMatch(config, /!node_modules\/tesseract\.js-core\/\*\*\/\*/u)
+  assert.doesNotMatch(config, /!out\/main\/ocrDispatcher-\*\.js/u)
+  assert.doesNotMatch(config, /!out\/main\/tesseractOcr-\*\.js/u)
+  assert.match(config, /node_modules\/tesseract\.js\/\*\*\/\*/u)
+  assert.match(config, /node_modules\/tesseract\.js-core\/\*\*\/\*/u)
+  assert.match(config, /node_modules\/node-fetch\/\*\*\/\*/u)
+  assert.match(config, /node_modules\/whatwg-url\/\*\*\/\*/u)
+  const asarUnpackBlock = config.split('asarUnpack:')[1]?.split('afterPack:')[0] ?? ''
+  for (const dependency of [
+    'node-fetch',
+    'whatwg-url',
+    'tr46',
+    'webidl-conversions',
+    'wasm-feature-detect',
+    'is-url',
+    'bmp-js',
+    'zlibjs',
+    'regenerator-runtime',
+    'idb-keyval'
+  ]) {
+    assert.ok(
+      asarUnpackBlock.includes(`node_modules/${dependency}/**/*`),
+      `asarUnpack 必须解包 ${dependency}`
+    )
+  }
+  assert.match(config, /asarUnpack:[\s\S]*node_modules\/tesseract\.js\/\*\*\/\*/u)
+  assert.match(config, /asarUnpack:[\s\S]*node_modules\/tesseract\.js-core\/\*\*\/\*/u)
+  assert.match(config, /from: build\/win7-tessdata[\s\S]*to: tessdata/u)
+})
+
+test('Win7 构建必须下载并校验内置中英繁 OCR 模型', () => {
+  const script = read('scripts/build-win7.mjs')
+  assert.match(script, /chi_sim\.traineddata\.gz/u)
+  assert.match(script, /eng\.traineddata\.gz/u)
+  assert.match(script, /chi_tra\.traineddata\.gz/u)
+  assert.match(script, /b8a23f10c7de500891eb458a8adc9cc58ab7f242f08b7d149f5e9aea4ad5db7c/u)
+  assert.match(script, /45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91/u)
+  assert.match(script, /11fe2610dab05d8a880d02f193ce70203f4c4bbe061b987d5529a2c038a22743/u)
+  assert.match(script, /createHash\('sha256'\)/u)
+  assert.match(script, /prepareWin7Tessdata/u)
+  assert.match(script, /resources[\s\S]*tessdata/u)
 })
 
 test('Win7 构建必须提前拒绝非 Windows 主机并在失败时清理产物', () => {
@@ -145,8 +225,9 @@ test('Win7 构建必须提前拒绝非 Windows 主机并在失败时清理产物
   assert.match(script, /catch\s*\(error\)[\s\S]*rmSync\(outputDirectory/u)
 })
 
-test('Win7 产物校验必须覆盖 x64 原生绑定、更新文件与 helper 大小', () => {
+test('Win7 产物校验必须覆盖 x64 原生绑定、Tesseract 运行时与 helper 大小', () => {
   const script = read('scripts/build-win7.mjs')
+  const afterPack = read('scripts/win7-after-pack.cjs')
   assert.match(script, /app\.asar\.unpacked/u)
   assert.match(script, /uiohook-napi\/prebuilds\/win32-x64\/uiohook-napi\.node/u)
   assert.match(script, /@koromix\/koffi-win32-x64\/win32_x64\/koffi\.node/u)
@@ -154,6 +235,31 @@ test('Win7 产物校验必须覆盖 x64 原生绑定、更新文件与 helper �
   assert.match(script, /updater-/u)
   assert.match(script, /electron-updater/u)
   assert.match(script, /builder-util-runtime/u)
+  assert.match(script, /tesseract\.js\/src\/worker-script\/node\/index\.js/u)
+  assert.match(script, /tesseract\.js-core\/package\.json/u)
+  assert.match(script, /tesseract\.js-core\/tesseract-core-simd-lstm\.wasm/u)
+  assert.match(script, /win7UpdateDriver-/u)
+  assert.match(script, /ocrDispatcher-/u)
+  assert.match(script, /tesseractOcr-/u)
+  assert.match(afterPack, /requiredUnpackedDirectories/u)
+  for (const dependency of [
+    'tesseract.js',
+    'tesseract.js-core',
+    'node-fetch',
+    'whatwg-url',
+    'tr46',
+    'webidl-conversions',
+    'wasm-feature-detect',
+    'is-url',
+    'bmp-js',
+    'zlibjs',
+    'regenerator-runtime',
+    'idb-keyval'
+  ]) {
+    assert.match(afterPack, new RegExp(`node_modules/${dependency.replaceAll('.', '\\.')}`, 'u'))
+  }
+  assert.doesNotMatch(afterPack, /ocrDispatcher-\[\^\/\]\+\\\.js/u)
+  assert.doesNotMatch(afterPack, /tesseractOcr-\[\^\/\]\+\\\.js/u)
   assert.match(script, /statSync\(helperPath\)\.size/u)
 })
 
@@ -210,9 +316,23 @@ test('中英文 README 必须说明 Win7 限制', () => {
   const chinese = read('README.zh-CN.md')
   const english = read('README.md')
   assert.match(chinese, /Windows 7 SP1 x64/u)
-  assert.match(chinese, /OCR/u)
+  assert.match(chinese, /Tesseract\.js/u)
+  assert.match(chinese, /WebAssembly/u)
+  assert.match(chinese, /不加载 `electron-updater`/u)
+  assert.match(chinese, /手动下载/u)
+  assert.match(chinese, /内置简体中文、繁体中文和英文/u)
+  assert.match(chinese, /其他语言首次使用才可能需要联网下载/u)
+  assert.match(chinese, /TESSERACT_LANG_PATH/u)
+  assert.match(chinese, /本地绝对目录或 HTTP\(S\) 镜像/u)
   assert.match(chinese, /32 位/u)
   assert.match(english, /Windows 7 SP1 x64/u)
-  assert.match(english, /OCR/u)
+  assert.match(english, /Tesseract\.js/u)
+  assert.match(english, /WebAssembly/u)
+  assert.match(english, /does not load `electron-updater`/u)
+  assert.match(english, /manual(?:ly)? download/iu)
+  assert.match(english, /Simplified Chinese, Traditional Chinese, and English language models are bundled/iu)
+  assert.match(english, /only other languages may need to download language data on first use/iu)
+  assert.match(english, /TESSERACT_LANG_PATH/u)
+  assert.match(english, /absolute local directory or an HTTP\(S\) mirror/iu)
   assert.match(english, /32-bit/u)
 })

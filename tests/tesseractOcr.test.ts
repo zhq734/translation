@@ -4,9 +4,14 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  buildTesseractWorkerOptions,
   ensureTessDataDirectory,
+  resolveTesseractLangPath,
+  resolveTesseractLangPathForLanguage,
+  resolveTesseractWorkerPath,
   tesseractLanguageTag,
   normalizeTesseractLines,
+  TesseractOcrEngine,
   type TesseractOcrDeps
 } from '../src/main/tesseractOcr.ts'
 import { setMainMessageTranslator } from '../src/main/messages.ts'
@@ -88,6 +93,73 @@ test('ensureTessDataDirectory 应递归创建缺失的缓存目录', () => {
 })
 
 /**
+ * 校验 Tesseract 语言模型地址只接受 HTTP(S) 或本地绝对路径，并去除尾部斜杠。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('resolveTesseractLangPath 应规范化镜像地址并忽略空值', () => {
+  assert.equal(resolveTesseractLangPath(''), undefined)
+  assert.equal(resolveTesseractLangPath('   '), undefined)
+  assert.equal(resolveTesseractLangPath('https://mirror.example/tessdata/'), 'https://mirror.example/tessdata')
+  assert.equal(resolveTesseractLangPath('http://mirror.example/tessdata'), 'http://mirror.example/tessdata')
+  assert.equal(resolveTesseractLangPath('/opt/tessdata/'), '/opt/tessdata')
+  assert.equal(resolveTesseractLangPath('C:\\tessdata\\'), 'C:\\tessdata')
+  assert.equal(resolveTesseractLangPath('file:///opt/tessdata'), undefined)
+  assert.equal(resolveTesseractLangPath('javascript:alert(1)'), undefined)
+})
+
+/**
+ * 校验显式配置的语言模型目录始终优先于安装包内置模型。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('resolveTesseractLangPathForLanguage 应优先使用显式配置目录', () => {
+  const selected = resolveTesseractLangPathForLanguage({
+    lang: 'chi_sim+eng',
+    configuredPath: 'D:\\ocr-mirror\\',
+    bundledPath: '/resources/tessdata',
+    fileExists: () => true
+  })
+
+  assert.equal(selected, 'D:\\ocr-mirror')
+})
+
+/**
+ * 校验内置模型完整时，中文和英文识别不依赖 CDN。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('resolveTesseractLangPathForLanguage 应使用包含全部语言的内置目录', () => {
+  const existing = new Set([
+    join('/resources/tessdata', 'chi_sim.traineddata.gz'),
+    join('/resources/tessdata', 'eng.traineddata.gz')
+  ])
+  const selected = resolveTesseractLangPathForLanguage({
+    lang: 'chi_sim+eng',
+    bundledPath: '/resources/tessdata/',
+    fileExists: (path) => existing.has(path)
+  })
+
+  assert.equal(selected, '/resources/tessdata')
+})
+
+/**
+ * 校验未内置的 OCR 语言会回退到 Tesseract 默认 CDN。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('resolveTesseractLangPathForLanguage 缺少任一内置模型时应回退 CDN', () => {
+  const existing = new Set([join('/resources/tessdata', 'eng.traineddata.gz')])
+  const selected = resolveTesseractLangPathForLanguage({
+    lang: 'jpn+eng',
+    bundledPath: '/resources/tessdata',
+    fileExists: (path) => existing.has(path)
+  })
+
+  assert.equal(selected, undefined)
+})
+
+/**
  * 校验 Tesseract 原始输出规范化为文本行数组。
  * @returns 无返回值。
  * @author zhenghq
@@ -117,6 +189,7 @@ test('normalizeTesseractLines 空输出应返回空数组', () => {
 test('TesseractOcrDeps 接口应可构造', () => {
   const deps: TesseractOcrDeps = {
     tessDataPath: '/tmp/tessdata',
+    workerPath: '/tmp/app.asar.unpacked/node_modules/tesseract.js/src/worker-script/node/index.js',
     createWorker: async () => ({
       recognize: async () => ({ data: { text: '' } }),
       setParameters: async () => undefined,
@@ -125,6 +198,54 @@ test('TesseractOcrDeps 接口应可构造', () => {
     onProgress: () => undefined
   }
   assert.equal(deps.tessDataPath, '/tmp/tessdata')
+  assert.equal(deps.workerPath, '/tmp/app.asar.unpacked/node_modules/tesseract.js/src/worker-script/node/index.js')
+})
+
+/**
+ * 校验自定义 worker 路径会被传给 tesseract.js，避免打包后从 app.asar 内启动 worker。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('Tesseract worker 选项应传入 workerPath、内置模型与缓存目录', () => {
+  const workerPath = '/tmp/app.asar.unpacked/node_modules/tesseract.js/src/worker-script/node/index.js'
+  const existing = new Set([
+    join('/resources/tessdata', 'chi_sim.traineddata.gz'),
+    join('/resources/tessdata', 'eng.traineddata.gz')
+  ])
+  const options = buildTesseractWorkerOptions({
+    lang: 'chi_sim+eng',
+    tessDataPath: '/tmp/tessdata',
+    bundledLangPath: '/resources/tessdata',
+    workerPath,
+    fileExists: (path) => existing.has(path)
+  })
+
+  assert.equal(options.cachePath, '/tmp/tessdata')
+  assert.equal(options.langPath, '/resources/tessdata')
+  assert.equal(options.workerPath, workerPath)
+  assert.equal(typeof options.logger, 'function')
+})
+
+/**
+ * 校验打包后的 worker 路径指向 asar.unpacked，开发环境不覆盖默认路径。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('resolveTesseractWorkerPath 应仅对打包应用返回 asar.unpacked 路径', () => {
+  assert.equal(resolveTesseractWorkerPath('/resources', false), undefined)
+  assert.equal(
+    resolveTesseractWorkerPath('/resources', true),
+    join(
+      '/resources',
+      'app.asar.unpacked',
+      'node_modules',
+      'tesseract.js',
+      'src',
+      'worker-script',
+      'node',
+      'index.js'
+    )
+  )
 })
 
 /**

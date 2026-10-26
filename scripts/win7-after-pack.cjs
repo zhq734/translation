@@ -15,8 +15,27 @@ const { createPackageFromStreams, extractAll, getRawHeader } = require('@electro
 
 const requiredUnpackedFiles = new Set([
   'node_modules/uiohook-napi/prebuilds/win32-x64/uiohook-napi.node',
-  'node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node'
+  'node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',
+  'node_modules/tesseract.js/src/worker-script/node/index.js',
+  'node_modules/tesseract.js-core/tesseract-core-lstm.wasm',
+  'node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm',
+  'node_modules/tesseract.js-core/tesseract-core-relaxedsimd-lstm.wasm'
 ])
+
+const requiredUnpackedDirectories = [
+  'node_modules/tesseract.js',
+  'node_modules/tesseract.js-core',
+  'node_modules/node-fetch',
+  'node_modules/whatwg-url',
+  'node_modules/tr46',
+  'node_modules/webidl-conversions',
+  'node_modules/wasm-feature-detect',
+  'node_modules/is-url',
+  'node_modules/bmp-js',
+  'node_modules/zlibjs',
+  'node_modules/regenerator-runtime',
+  'node_modules/idb-keyval'
+]
 
 const forbiddenAsarPatterns = [
   /^\/node_modules\/electron-updater(?:\/|$)/u,
@@ -24,14 +43,24 @@ const forbiddenAsarPatterns = [
   /^\/node_modules\/@koromix\/koffi-(?!win32-x64(?:\/|$))/u,
   /^\/node_modules\/uiohook-napi\/prebuilds\/(?!win32-x64(?:\/|$))/u,
   /^\/out\/main\/updater-[^/]+\.js$/u,
-  /^\/out\/main\/ocrDispatcher-[^/]+\.js$/u,
   /^\/out\/main\/ocrModelAssets-[^/]+\.js$/u,
   /^\/out\/main\/paddleOcr-[^/]+\.js$/u,
   /^\/out\/main\/systemOcr-[^/]+\.js$/u,
-  /^\/out\/main\/tesseractOcr-[^/]+\.js$/u,
-  /^\/node_modules\/(?:@gutenye|@techstark|@img|onnxruntime-common|onnxruntime-node|sharp|tesseract\.js|tesseract\.js-core)(?:\/|$)/u,
+  /^\/node_modules\/(?:@gutenye|@techstark|@img|onnxruntime-common|onnxruntime-node|sharp)(?:\/|$)/u,
   /^\/assets\/ocr(?:\/|$)/u
 ]
+
+/**
+ * 判断文件是否需要从 asar 解包到 app.asar.unpacked。
+ * Tesseract worker 会按真实文件路径加载 WASM 与语言数据，asar 内路径无法直接工作。
+ * @param path asar 内的相对路径。
+ * @returns 需要解包时返回 true。
+ * @author zhenghq
+ */
+function shouldUnpack(path) {
+  return requiredUnpackedFiles.has(path) ||
+    requiredUnpackedDirectories.some((directory) => path === directory || path.startsWith(`${directory}/`))
+}
 
 /**
  * 判断 asar 条目是否必须从 Win7 包中移除。
@@ -84,7 +113,7 @@ function createAsarStreams(root) {
     return {
       path: entry.path,
       type: 'file',
-      unpacked: requiredUnpackedFiles.has(entry.path),
+      unpacked: shouldUnpack(entry.path),
       stat: statSync(fullPath),
       streamGenerator: () => createReadStream(fullPath)
     }
@@ -92,7 +121,7 @@ function createAsarStreams(root) {
 }
 
 /**
- * 验证重建后的 asar 和解包目录只保留 Win7 所需的两个原生绑定。
+ * 验证重建后的 asar 和解包目录只保留 Win7 所需的原生绑定与 Tesseract WASM 运行时。
  * @param {string} asarPath 临时 asar 路径。
  * @returns {void}
  * @author zhenghq
@@ -117,7 +146,7 @@ function verifyTemporaryAsar(asarPath) {
   if (forbidden.length > 0) {
     throw new Error(`Win7 afterPack 裁剪失败：\n${forbidden.slice(0, 20).join('\n')}`)
   }
-  const unexpectedUnpacked = unpacked.filter((entry) => !requiredUnpackedFiles.has(entry))
+  const unexpectedUnpacked = unpacked.filter((entry) => !shouldUnpack(entry))
   const missingUnpacked = [...requiredUnpackedFiles].filter((entry) => !unpacked.includes(entry))
   if (unexpectedUnpacked.length > 0 || missingUnpacked.length > 0) {
     throw new Error(
@@ -129,6 +158,12 @@ function verifyTemporaryAsar(asarPath) {
     const fullPath = join(`${asarPath}.unpacked`, path)
     if (!existsSync(fullPath) || lstatSync(fullPath).size === 0) {
       throw new Error(`Win7 afterPack 缺少原生文件：${fullPath}`)
+    }
+  }
+  for (const directory of requiredUnpackedDirectories) {
+    const fullPath = join(`${asarPath}.unpacked`, directory)
+    if (!existsSync(fullPath)) {
+      throw new Error(`Win7 afterPack 缺少解包目录：${fullPath}`)
     }
   }
 }
@@ -166,7 +201,7 @@ function replaceAsar(temporaryAsar, asarPath) {
 }
 
 /**
- * 根据 asar 头部重建不含禁止条目的归档，并只解包两个 x64 原生文件。
+ * 根据 asar 头部重建不含禁止条目的归档，并解包 x64 原生文件与 Tesseract WASM 运行时。
  * @param {string} appOutDir electron-builder 的应用输出目录。
  * @returns {Promise<void>} 重建与替换完成后的 Promise。
  * @author zhenghq

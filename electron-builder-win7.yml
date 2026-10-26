@@ -15,6 +15,18 @@ files:
   - node_modules/nodemailer/**/*
   - node_modules/undici/**/*
   - node_modules/@fastify/busboy/**/*
+  - node_modules/tesseract.js/**/*
+  - node_modules/tesseract.js-core/**/*
+  - node_modules/bmp-js/**/*
+  - node_modules/idb-keyval/**/*
+  - node_modules/is-url/**/*
+  - node_modules/node-fetch/**/*
+  - node_modules/whatwg-url/**/*
+  - node_modules/tr46/**/*
+  - node_modules/webidl-conversions/**/*
+  - node_modules/regenerator-runtime/**/*
+  - node_modules/wasm-feature-detect/**/*
+  - node_modules/zlibjs/**/*
   - build/usage-report-config.json
   - build/tray*.png
   - '!assets/ocr/**/*'
@@ -24,8 +36,6 @@ files:
   - '!node_modules/onnxruntime-common/**/*'
   - '!node_modules/onnxruntime-node/**/*'
   - '!node_modules/sharp/**/*'
-  - '!node_modules/tesseract.js/**/*'
-  - '!node_modules/tesseract.js-core/**/*'
   - '!node_modules/@koromix/koffi-win32-arm64/**/*'
   - '!node_modules/@koromix/koffi-win32-ia32/**/*'
   - '!node_modules/@koromix/koffi-darwin-*/**/*'
@@ -36,14 +46,24 @@ files:
   - '!node_modules/electron-updater/**/*'
   - '!node_modules/builder-util-runtime/**/*'
   - '!out/main/updater-*.js'
-  - '!out/main/ocrDispatcher-*.js'
   - '!out/main/ocrModelAssets-*.js'
   - '!out/main/paddleOcr-*.js'
   - '!out/main/systemOcr-*.js'
-  - '!out/main/tesseractOcr-*.js'
 asarUnpack:
   - node_modules/uiohook-napi/prebuilds/win32-x64/**/*
   - node_modules/@koromix/koffi-win32-x64/**/*
+  - node_modules/tesseract.js/**/*
+  - node_modules/tesseract.js-core/**/*
+  - node_modules/node-fetch/**/*
+  - node_modules/whatwg-url/**/*
+  - node_modules/tr46/**/*
+  - node_modules/webidl-conversions/**/*
+  - node_modules/wasm-feature-detect/**/*
+  - node_modules/is-url/**/*
+  - node_modules/bmp-js/**/*
+  - node_modules/zlibjs/**/*
+  - node_modules/regenerator-runtime/**/*
+  - node_modules/idb-keyval/**/*
 afterPack: scripts/win7-after-pack.cjs
 win:
   target:
@@ -59,6 +79,10 @@ win:
         - windows-uia-reader.exe
     - from: build/build-info.json
       to: build-info.json
+    - from: build/win7-tessdata
+      to: tessdata
+      filter:
+        - '*.traineddata.gz'
   icon: build/icon.ico
 nsis:
   differentialPackage: false

@@ -173,6 +173,7 @@ import type {
   Settings,
   DeepLxStatus,
   MacOSQuarantineResult,
+  OcrEnginePreference,
   UpdateStatus,
   ManualTranslateRequest,
   TranslationOrigin,
@@ -234,6 +235,7 @@ import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
 import { isWindows7CompatibilityRuntime } from './platformCompatibility'
+import { resolveTesseractLangPath, resolveTesseractWorkerPath } from './tesseractOcr'
 import { OcrEngineError, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { cleanOcrText } from '../shared/ocrText'
 import type {
@@ -1214,9 +1216,6 @@ async function onReady(): Promise<boolean> {
     getSettings,
     createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
     recognizeImage: async (bytes, candidate) => {
-      if (isWindows7CompatibilityRuntime()) {
-        throw new OcrEngineError('engine-unavailable', t('windows7.ocrUnavailable'))
-      }
       const settings = getSettings()
       const dispatcher = await createOcrDispatcher(settings)
       const ocr = await recognizeAdaptiveOcr(
@@ -1231,7 +1230,8 @@ async function onReady(): Promise<boolean> {
               imageBytes: preparedImageBytes,
               language: settings.ocrLang,
               timeoutMs: OCR_TIMEOUT_MS
-            }, settings.ocrEnginePreference)
+              // 现代平台继续使用 settings.ocrEnginePreference；Win7 由 resolveOcrEnginePreference 强制 Tesseract。
+            }, resolveOcrEnginePreference(settings))
         }
       )
       const text = cleanOcrText(ocr.text ?? '')
@@ -1280,21 +1280,21 @@ async function onReady(): Promise<boolean> {
     }
   })
   if (isWindows7CompatibilityRuntime()) {
-    // Win7 包不加载 electron-updater，避免其现代 Node 依赖在 Electron 22 启动阶段崩溃。
+    // Win7 包不加载 electron-updater，只用 GitHub Release API 检查是否有新版 Win7 安装包。
     const { UpdateManager } = await import('./updateManager')
+    const { Win7UpdateDriver } = await import('./win7UpdateDriver')
     updateManager = new UpdateManager({
-      driver: {
-        initialize: () => undefined,
-        checkForUpdates: async () => undefined,
-        downloadUpdate: async () => undefined,
-        cancelDownload: () => undefined,
-        installUpdate: () => undefined
-      },
+      driver: new Win7UpdateDriver({
+        currentVersion: app.getVersion(),
+        fetch: translationFetch
+      }),
       currentVersion: app.getVersion(),
-      enabled: false,
-      installMode: 'disabled',
-      disabledMessage: t('windows7.updateDisabled'),
+      enabled: app.isPackaged,
+      // manual 模式发现新版后由 UpdateManager 设置 updateAction: 'open-release'。
+      installMode: 'manual',
       releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+      isOnline: () => net.isOnline(),
+      getTranslator: () => mainI18n?.translator ?? createTranslator('zh-CN'),
       openExternal: async (url) => {
         await shell.openExternal(url)
       },
@@ -1337,9 +1337,7 @@ async function onReady(): Promise<boolean> {
   if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true })
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
-  if (!isWindows7CompatibilityRuntime()) {
-    setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
-  }
+  setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
 
   // 提前创建 Toast 窗口，避免首次复制/保存时临时创建窗口和加载页面造成提示延迟。
   getScreenshotToastWindow()
@@ -1485,7 +1483,6 @@ function onHotkey(): void {
  * @author zhenghq
  */
 function onOcrHotkey(): void {
-  if (isWindows7CompatibilityRuntime()) return
   latestSelectionGesture += 1
   hideSelectionButton()
   void openOcrSelection()
@@ -2685,7 +2682,6 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
  * @author zhenghq
  */
 async function openOcrSelection(): Promise<void> {
-  if (isWindows7CompatibilityRuntime()) return
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   // 覆盖窗口显示后应用会成为前台应用，这里先记录截图前的状态，供收尾时决定是否归还前台。
@@ -3239,12 +3235,42 @@ function createWebReaderImageSource(view: BrowserView, signal?: AbortSignal): We
 }
 
 /**
+ * 解析当前运行环境实际使用的 OCR 引擎偏好。
+ * Win7 兼容包只携带 Tesseract.js WASM 运行时，必须忽略用户选择的系统或 PaddleOCR 引擎。
+ * @param settings 当前设置。
+ * @returns Win7 固定返回 Tesseract，其它平台返回用户设置。
+ * @author zhenghq
+ */
+function resolveOcrEnginePreference(settings: Settings): OcrEnginePreference {
+  return isWindows7CompatibilityRuntime() ? 'tesseract' : settings.ocrEnginePreference
+}
+
+/**
  * 创建本次 OCR 调度器，按设置决定是否启用 Tesseract 兜底。
  * @param settings 当前设置。
  * @returns OCR 调度器。
  * @author zhenghq
  */
 async function createOcrDispatcher(settings: Settings): Promise<OcrDispatcher> {
+  // Win7 包只保留 Tesseract.js 与 WebAssembly 核心，避免加载任何 OCR 原生模块。
+  if (isWindows7CompatibilityRuntime()) {
+    const [{ OcrDispatcher }, { TesseractOcrEngine }] = await Promise.all([
+      import('./ocrDispatcher'),
+      import('./tesseractOcr')
+    ])
+    return new OcrDispatcher({
+      platform: process.platform,
+      enginePreferenceState: ocrEnginePreferenceState,
+      engines: {
+        tesseract: new TesseractOcrEngine({
+          tessDataPath: join(app.getPath('userData'), 'tessdata'),
+          langPath: resolveTesseractLangPath(process.env['TESSERACT_LANG_PATH']),
+          bundledLangPath: join(process.resourcesPath, 'tessdata'),
+          workerPath: resolveTesseractWorkerPath(process.resourcesPath, app.isPackaged)
+        })
+      }
+    })
+  }
   // 仅在现代包中按需加载 OCR 原生依赖，Win7 包完全不触碰这些模块。
   const [{ OcrDispatcher }, { createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
     import('./ocrDispatcher'),
@@ -3277,14 +3303,15 @@ async function createOcrDispatcher(settings: Settings): Promise<OcrDispatcher> {
 async function getOcrStatus(): Promise<OcrStatus> {
   if (isWindows7CompatibilityRuntime()) {
     return {
+      win7Compatibility: true,
       systemAvailable: false,
       paddleAvailable: false,
-      tesseractAvailable: false,
-      modelName: '',
-      modelVersion: '',
-      license: '',
-      distribution: 'unavailable',
-      message: t('windows7.ocrUnavailable')
+      tesseractAvailable: true,
+      modelName: 'Tesseract.js',
+      modelVersion: '7.x',
+      license: 'Apache-2.0',
+      distribution: 'bundled',
+      message: t('windows7.ocrTesseractOnly')
     }
   }
   const [{ createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
@@ -3424,9 +3451,6 @@ async function processOcrImageBytes(
   imageBytes: Buffer,
   settings: Settings
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
-  if (isWindows7CompatibilityRuntime()) {
-    throw new OcrEngineError('engine-unavailable', t('windows7.ocrUnavailable'))
-  }
   const dispatcher = await createOcrDispatcher(settings)
   const ocr = await recognizeAdaptiveOcr(
     {
@@ -3440,7 +3464,7 @@ async function processOcrImageBytes(
           imageBytes: preparedImageBytes,
           language: settings.ocrLang,
           timeoutMs: OCR_TIMEOUT_MS
-        }, settings.ocrEnginePreference)
+        }, resolveOcrEnginePreference(settings))
     }
   )
   return translateRecognizedOcrResult(ocr, settings)
@@ -3963,7 +3987,6 @@ function sendScreenshotActionResult(result: {
  * @author zhenghq
  */
 async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
-  if (isWindows7CompatibilityRuntime()) return
   const request = normalizeScreenshotActionRequest(value)
   if (!request || !isCurrentScreenshotRequest(request)) return
   const settings = getSettings()
@@ -3985,7 +4008,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
             imageBytes: preparedImageBytes,
             language: settings.ocrLang,
             timeoutMs: OCR_TIMEOUT_MS
-          }, settings.ocrEnginePreference)
+          }, resolveOcrEnginePreference(settings))
       }
     )
     const text = cleanOcrText(ocr.text ?? '')
@@ -4267,7 +4290,6 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
  * @author zhenghq
  */
 async function submitOcrSelection(value: unknown): Promise<void> {
-  if (isWindows7CompatibilityRuntime()) return
   const bounds = normalizeOcrSelectionBounds(value)
   // 恢复自身幂等且不依赖窗口可见状态，避免任何早退路径把全局钩子留在停用状态。
   const restoreSelectionListener = (): void => {
@@ -4365,7 +4387,6 @@ async function submitOcrSelection(value: unknown): Promise<void> {
  * @author zhenghq
  */
 async function translateClipboardImage(): Promise<void> {
-  if (isWindows7CompatibilityRuntime()) return
   // 与手动翻译一致：显示弹窗前先记录源应用，供弹窗隐藏时交还前台。
   await rememberFrontmostAppIfInactiveAsync()
   const settings = getSettings()
@@ -5730,12 +5751,12 @@ function buildTrayMenu(): Menu {
     } },
     {
       label: t.t('menu.screenshotOcr'),
-      enabled: !isWindows7CompatibilityRuntime(),
+      enabled: true,
       click: () => openOcrSelection()
     },
     {
       label: t.t('menu.clipboardImageOcr'),
-      enabled: !isWindows7CompatibilityRuntime(),
+      enabled: true,
       click: () => void translateClipboardImage()
     },
     { type: 'separator' },

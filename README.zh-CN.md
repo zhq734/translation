@@ -221,7 +221,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - **Windows 10/11**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
 - **Windows 7 SP1 x64**：下载专用包 `SelectionTranslator-<版本>-Setup-win7-x64.exe`，运行安装向导。
 
-所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。现代 Windows 支持 `x64` 与 `arm64`；Windows 7 仅支持 64 位，不提供 32 位安装包。Win7 包使用 Electron 22 兼容运行时，并禁用 OCR 与自动更新，只能从 GitHub Release 手动下载新版本。Electron 22 已停止安全更新，建议仅在无法升级系统时使用。详见[开发、测试与打包](#开发测试与打包)。
+所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。现代 Windows 支持 `x64` 与 `arm64`；Windows 7 仅支持 64 位，不提供 32 位安装包。Win7 包使用 Electron 22 兼容运行时，OCR 固定使用 Tesseract.js WebAssembly 引擎，不包含 PaddleOCR、系统 OCR 或其他 OCR 原生运行时；安装包已内置简体中文、繁体中文和英文语言模型，默认中英繁识别可离线完成，其他语言首次使用才可能需要联网下载模型。设置 `TESSERACT_LANG_PATH` 可覆盖内置模型来源，支持本地绝对目录或 HTTP(S) 镜像。应用内更新通过轻量 GitHub Release API 检查版本，不加载 `electron-updater`，也不会自动下载或安装；发现新版后会打开 Release 页面，由用户手动下载新版 `Setup-win7-x64.exe` 覆盖安装。Electron 22 已停止安全更新，建议仅在无法升级系统时使用。详见[开发、测试与打包](#开发测试与打包)。
 
 > Windows 7 需为 SP1 x64，并安装 SHA-2 代码签名支持更新、Universal C Runtime 与所需 Visual C++ 运行库。由于旧系统与 Electron 22 均已停止维护，Win7 兼容包无法获得现代 Windows 包同等的安全更新保障。
 
@@ -230,7 +230,7 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
 - 可在 **设置 → 关于** 查看当前版本、手动检查更新和观察下载进度；支持自动安装的平台可在下载完成后点击“立即重启升级”；
 - Windows NSIS 安装包支持应用内下载与重启安装；Linux 仅在从 AppImage 运行时支持自动替换，其他 Linux 安装方式会打开 GitHub Release；
-- Windows 7 专用包不加载 `electron-updater`，不会自动检查、下载或安装更新；请在 **设置 → 关于** 打开 GitHub Release 手动下载新版 `Setup-win7-x64.exe` 覆盖安装；
+- Windows 7 专用包通过 GitHub Release API 检查版本，不加载 `electron-updater`，不会自动下载或安装更新；发现新版后请在 **设置 → 关于** 打开 Release 页面，手动下载新版 `Setup-win7-x64.exe` 覆盖安装；
 - macOS 只有通过代码签名校验的 `.app` 才启用自动安装。手动安装模式下，点击升级会把当前架构的 DMG 下载到系统“下载”文件夹并自动打开；用户将“划词翻译”拖入“应用程序”覆盖旧版本后，再回到设置页点击“解除 macOS 隔离属性”；
 - 更新检查与更新包下载都走应用统一的代理会话，与翻译请求使用同一套代理配置；
 - 更新包下载会先探测下载源是否支持 Range：支持时按最多 4 个分片并发下载，不支持或探测失败则自动回退单连接下载；
@@ -424,7 +424,7 @@ npm test
 | 最大重试缩放 | 低质量回退时允许的最大放大倍数（首轮始终 1×） | 1.0× |
 | Tesseract | 是否启用 Tesseract 兜底识别 | 开启 |
 
-OCR 引擎按“系统 OCR → PaddleOCR → Tesseract”的顺序在自动模式下回退。系统 OCR 在 macOS 使用 Vision、在 Windows 使用系统 OCR；PaddleOCR 使用随包分发的 PP-OCRv6 ONNX 模型；Tesseract 作为最后的本地兜底。截图和剪贴板图片只在你显式触发时才被识别，本地 OCR 引擎不会上传图片；只有识别出的文字才会按当前通道发送给翻译服务。
+OCR 引擎按“系统 OCR → PaddleOCR → Tesseract”的顺序在自动模式下回退。系统 OCR 在 macOS 使用 Vision、在 Windows 使用系统 OCR；PaddleOCR 使用随包分发的 PP-OCRv6 ONNX 模型；Tesseract 作为最后的本地兜底。Windows 7 兼容包固定使用 Tesseract.js WebAssembly，并内置简体中文、繁体中文和英文模型；其他语言首次使用可能联网下载。可通过 `TESSERACT_LANG_PATH` 指定本地绝对目录或 HTTP(S) 模型镜像，该设置优先于内置模型。截图和剪贴板图片只在你显式触发时才被识别，本地 OCR 引擎不会上传图片；只有识别出的文字才会按当前通道发送给翻译服务。
 
 ## 网页全文翻译
 
@@ -815,7 +815,7 @@ npm run dist:linux
 # 构建 Windows x64/arm64 NSIS 安装程序
 npm run dist:win
 
-# 构建 Windows 7 SP1 x64 专用 NSIS 安装程序（Electron 22，禁用 OCR 与自动更新）
+# 构建 Windows 7 SP1 x64 专用 NSIS 安装程序（Electron 22，Tesseract.js WASM OCR，仅手动更新）
 npm run dist:win:win7
 
 # 为 dist/ 中的安装包生成 SHA256SUMS
@@ -828,7 +828,7 @@ npm run release:checksums
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
 - `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；打包前会准备并校验两个架构的 `sharp`/`libvips` OCR 运行时；
 - `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；打包前会准备并校验两个架构的 `sharp` OCR 运行时；
-- `npm run dist:win:win7`：生成 Windows 7 SP1 x64 专用包 `dist-win7/SelectionTranslator-<版本>-Setup-win7-x64.exe`，固定 Electron `22.3.27`，排除 OCR、Sharp、ONNX、Tesseract 等原生依赖，不生成 `app-update.yml`、`latest*.yml` 或 `.blockmap`，并在打包前编译、校验 `windows-uia-reader.exe`；
+- `npm run dist:win:win7`：生成 Windows 7 SP1 x64 专用包 `dist-win7/SelectionTranslator-<版本>-Setup-win7-x64.exe`，固定 Electron `22.3.27`，保留 Tesseract.js WebAssembly OCR 运行时，排除 PaddleOCR、系统 OCR、Sharp、ONNX 等 OCR 原生依赖，不生成 `app-update.yml`、`latest*.yml` 或 `.blockmap`，并在打包前编译、校验 `windows-uia-reader.exe`；
 - 现代平台打包会生成 `latest*.yml` 更新清单；macOS/现代 Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；Windows 7 兼容包按设计不生成这两类文件；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；
@@ -998,12 +998,12 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - macOS 是当前主要运行验证平台；Linux AppImage 与 Windows NSIS 安装包已纳入发行流程，但全局划词、权限和快捷键仍应在真实目标设备上完成发布前验证；
 - 应用内界面目前支持简体中文与 English；项目文档分别提供英文 `README.md` 与简体中文 `README.zh-CN.md`；
 - 取词依赖系统复制能力，不保证兼容所有自绘文本控件、远程桌面或受限应用；
-- 截图 OCR 需要本机具备可用的 OCR 引擎，系统 OCR 的可用语言取决于操作系统；识别质量受截图分辨率、字体和背景复杂度影响；
+- 截图 OCR 需要本机具备可用的 OCR 引擎，系统 OCR 的可用语言取决于操作系统；Windows 7 使用 Tesseract.js WebAssembly，并内置简体中文、繁体中文和英文模型，其他语言首次识别可能联网下载，识别质量受截图分辨率、字体和背景复杂度影响；
 - 翻译请求依赖网络和第三方服务，AI 通道、钉钉、微软翻译、自建/公共 DeepLX、Google 和 MyMemory 均可能受上游变更影响；其中微软通道使用非官方 Bing 网页接口，可能在没有通知的情况下变化或停止工作；
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
 - GitHub Actions 在缺少全部 Apple 发布凭据时会生成未签名 macOS 测试包；该产物以及尚未签名的 Windows 安装包仍可能显示系统安全警告，正式 macOS 发布仍要求签名和公证；
 - 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，本地未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
-- Windows 7 兼容包仅支持 SP1 x64，不支持 32 位 Win7；为保证在 Electron 22 / Node 16 上稳定启动，Win7 包禁用 OCR、自动更新和 `electron-updater`，只能从 GitHub Release 手动更新。Electron 22 已停止安全更新，长期使用仍建议升级到 Windows 10/11。
+- Windows 7 兼容包仅支持 SP1 x64，不支持 32 位 Win7；OCR 固定使用 Tesseract.js WebAssembly，并内置简体中文、繁体中文和英文模型，只有其他语言首次识别可能联网下载；应用内检查更新使用轻量 GitHub Release API，不加载 `electron-updater`，只支持手动下载安装包覆盖更新。Electron 22 已停止安全更新，长期使用仍建议升级到 Windows 10/11。
 
 ## 后续方向
 

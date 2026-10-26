@@ -651,6 +651,8 @@ export interface ScreenshotExportImageResult {
 
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
 export interface OcrStatus {
+  /** 当前是否为 Windows 7 兼容运行时；Win7 固定使用 Tesseract.js。 */
+  win7Compatibility?: boolean
   /** 系统 OCR 是否可在当前平台使用。 */
   systemAvailable: boolean
   /** PaddleOCR 主链路是否已安装可用。 */

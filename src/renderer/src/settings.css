@@ -524,6 +524,11 @@ input[type='number']:disabled {
   accent-color: var(--button-bg);
 }
 
+.checkbox-control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .dingtalk-secret-status.configured {
   color: var(--status-success);
 }

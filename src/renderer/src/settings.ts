@@ -97,6 +97,7 @@ const aiClearKey = document.getElementById('ai-clear-key') as HTMLButtonElement
 const aiModelStatus = document.getElementById('ai-model-status') as HTMLElement
 const aiStatus = document.getElementById('ai-status') as HTMLElement
 const ocrEnginePreference = document.getElementById('ocr-engine-preference') as HTMLSelectElement
+const ocrWin7Hint = document.getElementById('ocr-win7-hint') as HTMLElement
 const ocrHotkey = document.getElementById('ocr-hotkey') as HTMLInputElement
 const ocrLang = document.getElementById('ocr-lang') as HTMLSelectElement
 const ocrScale = document.getElementById('ocr-scale') as HTMLSelectElement
@@ -654,6 +655,14 @@ function renderShortcutRegistrationStates(states: GlobalShortcutRegistrationStat
  */
 function renderOcrStatus(status: OcrStatus): void {
   latestOcrStatus = status
+  const win7 = status.win7Compatibility === true
+  ocrWin7Hint.hidden = !win7
+  ocrEnginePreference.disabled = win7
+  ocrTesseractEnabled.disabled = win7
+  if (win7) {
+    ocrEnginePreference.value = 'tesseract'
+    ocrTesseractEnabled.checked = true
+  }
   ocrModelName.textContent = status.modelName
   ocrModelVersion.textContent = status.modelVersion
   ocrModelLicense.textContent = status.license
@@ -1074,12 +1083,13 @@ function saveOcrSettings(): void {
     ocrHotkey.select()
     return
   }
+  const win7 = latestOcrStatus?.win7Compatibility === true
   void save({
-    ocrEnginePreference: ocrEnginePreference.value as OcrEnginePreference,
+    ocrEnginePreference: win7 ? 'tesseract' : ocrEnginePreference.value as OcrEnginePreference,
     ocrHotkey: accelerator,
     ocrLang: ocrLang.value,
     ocrScale: Number(ocrScale.value),
-    ocrTesseractEnabled: ocrTesseractEnabled.checked
+    ocrTesseractEnabled: win7 ? true : ocrTesseractEnabled.checked
   })
 }
 
