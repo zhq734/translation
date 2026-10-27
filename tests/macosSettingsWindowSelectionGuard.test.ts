@@ -193,15 +193,10 @@ test('安全让出前台恢复应用后必须保持原本隐藏窗口的隐藏�
     /if \(!snapshot\.wasVisible[\s\S]*?snapshot\.window\.hide\(\)/u,
     '原本隐藏的窗口不得因 app.show() 被重新显示'
   )
-  assert.match(
-    yieldSource,
-    /showInactive\(\)/u,
-    '原本可见但 app.show() 未恢复的窗口必须非激活恢复，不得重新置前'
-  )
   assert.doesNotMatch(
     yieldSource,
-    /\.focus\(\)|\.moveTop\(\)/u,
-    '安全让出收尾不得主动聚焦或置前设置页'
+    /\.showInactive\(\)|\.focus\(\)|\.moveTop\(\)/u,
+    '安全让出必须依赖 app.show() 整体恢复，不得逐窗口置前'
   )
 })
 

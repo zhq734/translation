@@ -804,7 +804,8 @@ function yieldFrontmostApp(run: () => void): Promise<boolean> {
     const startedAt = Date.now()
     // app.hide() 会隐藏整个应用，app.show() 又会恢复应用内全部窗口。
     // 必须先记录每个窗口原本是否可见，避免安全让出把已关闭的弹窗或后台窗口
-    // 重新显示出来；恢复过程也不得调用 focus()/moveTop() 抢占用户前台。
+    // 重新显示出来；恢复过程也不得逐窗口调用 showInactive()/focus()/moveTop()，
+    // 否则 macOS 会把设置页重新排到用户当前应用之上。
     const visibilitySnapshots = BrowserWindow.getAllWindows().map((window) => ({
       window,
       wasVisible: !window.isDestroyed() && window.isVisible()
@@ -812,8 +813,9 @@ function yieldFrontmostApp(run: () => void): Promise<boolean> {
     const finish = (): void => {
       if (finished) return
       finished = true
-      // app.show() 走 unhideWithoutActivation：只恢复窗口可见性，不激活应用，
-      // 也不会把窗口提到用户当前应用之上。
+      // app.show() 走 unhideWithoutActivation：只整体恢复窗口可见性，不激活应用，
+      // 也不会把窗口提到用户当前应用之上。原本可见的窗口必须依赖这一步恢复，
+      // 不能再逐窗口非激活显示；showInactive() 在 macOS 上等价于置前。
       app.show()
       for (const snapshot of visibilitySnapshots) {
         if (snapshot.window.isDestroyed()) continue
@@ -822,10 +824,6 @@ function yieldFrontmostApp(run: () => void): Promise<boolean> {
           // app.show() 的可见性变化可能异步生效，条件式 hide 会漏掉随后重新显示的窗口。
           snapshot.window.hide()
           continue
-        }
-        if (!snapshot.window.isVisible()) {
-          // 原本可见的设置页/阅读器必须恢复，但只能非激活显示，不能取得 key window。
-          snapshot.window.showInactive()
         }
       }
       // 整应用隐藏期间弹窗的 isVisible() 同样为 false，收尾函数会因可见性短路
