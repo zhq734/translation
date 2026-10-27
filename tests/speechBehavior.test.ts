@@ -4,6 +4,9 @@ import {
   createSpeechController,
   findSpeechVoice,
   languageToSpeechCode,
+  resolveSpeechLanguage,
+  splitSpeechSegments,
+  splitSpeechSegmentsWithSingleVoice,
   splitSpeechText,
   type SpeechUtteranceLike
 } from '../src/renderer/src/speech.ts'
@@ -19,6 +22,20 @@ test('项目语言代码应映射为常用语音语言代码', () => {
   assert.equal(languageToSpeechCode('ES'), 'es-ES')
   assert.equal(languageToSpeechCode('PT'), 'pt-BR')
   assert.equal(languageToSpeechCode('IT'), 'it-IT')
+})
+
+test('自动语言应依据文本脚本解析，避免中文原文回退英文音色', () => {
+  assert.equal(resolveSpeechLanguage('这是一段中文原文。', 'auto'), 'ZH')
+  assert.equal(resolveSpeechLanguage('这是一段中文原文。', ''), 'ZH')
+  assert.equal(resolveSpeechLanguage('This is an English sentence.', 'auto'), 'EN')
+  assert.equal(resolveSpeechLanguage('こんにちは、世界。', 'auto'), 'JA')
+  assert.equal(resolveSpeechLanguage('안녕하세요.', 'auto'), 'KO')
+  assert.equal(resolveSpeechLanguage('Привет, мир.', 'auto'), 'RU')
+})
+
+test('明确检测到的语言应优先于文本脚本判断', () => {
+  assert.equal(resolveSpeechLanguage('这是一段中文原文。', 'EN'), 'EN')
+  assert.equal(resolveSpeechLanguage('This is an English sentence.', 'zh-CN'), 'zh-CN')
 })
 
 test('语音选择应优先完整语言代码，再匹配语言前缀', () => {
@@ -114,6 +131,104 @@ test('长文本应按句子和最大长度分段并保留顺序', () => {
   const chunks = splitSpeechText('第一句。第二句！\nThird sentence? Fourth sentence.', 8)
 
   assert.deepEqual(chunks, ['第一句。', '第二句！', 'Third', 'sentence?', 'Fourth', 'sentence.'])
+})
+
+test('中英文混排时应按脚本切成连续片段且不丢失空白和标点', () => {
+  const segments = splitSpeechSegments('使用 TypeScript 开发，Hello 世界！', 'ZH')
+
+  assert.deepEqual(segments, [
+    { text: '使用 ', language: 'ZH' },
+    { text: 'TypeScript ', language: 'EN' },
+    { text: '开发，', language: 'ZH' },
+    { text: 'Hello ', language: 'EN' },
+    { text: '世界！', language: 'ZH' }
+  ])
+  assert.equal(segments.map((segment) => segment.text).join(''), '使用 TypeScript 开发，Hello 世界！')
+})
+
+test('短中英混排不应拆成大量独立音频片段而应交给同一音色连续朗读', () => {
+  const text = '你好 world 再见'
+  const segments = splitSpeechSegments(text, 'ZH')
+
+  assert.deepEqual(segments, [{ text, language: 'ZH' }])
+})
+
+test('Edge 中英混排应按长度分段但始终保留主音色语言且不丢失文本', () => {
+  const text = '使用 TypeScript 开发。Hello 世界！'
+  const segments = splitSpeechSegmentsWithSingleVoice(text, 'ZH')
+
+  assert.deepEqual(segments.map((segment) => segment.language), ['ZH', 'ZH'])
+  assert.equal(segments.map((segment) => segment.text).join(''), text)
+})
+
+test('纯中文和纯英文文本应保持单段语言且明确语言优先于脚本判断', () => {
+  assert.deepEqual(splitSpeechSegments('这是中文。', 'auto'), [
+    { text: '这是中文。', language: 'ZH' }
+  ])
+  assert.deepEqual(splitSpeechSegments('This is English.', 'auto'), [
+    { text: 'This is English.', language: 'EN' }
+  ])
+  assert.deepEqual(splitSpeechSegments('Hello 世界', 'FR'), [
+    { text: 'Hello 世界', language: 'FR' }
+  ])
+})
+
+test('系统语音播放中英混排时应为每个片段切换对应音色', () => {
+  const utterances: SpeechUtteranceLike[] = []
+  const controller = createSpeechController({
+    synthesis: {
+      speak(utterance: SpeechUtteranceLike): void { utterances.push(utterance) },
+      cancel(): void {},
+      getVoices(): SpeechSynthesisVoice[] {
+        return [
+          { lang: 'zh-CN', name: 'Chinese Standard' },
+          { lang: 'en-US', name: 'English Standard' }
+        ] as SpeechSynthesisVoice[]
+      }
+    },
+    createUtterance(text) {
+      return { text, lang: '', voice: null, onend: null, onerror: null }
+    }
+  })
+
+  assert.equal(controller.start('使用 TypeScript 开发。', 'ZH').ok, true)
+  assert.equal(utterances[0]?.text, '使用 ')
+  assert.equal(utterances[0]?.lang, 'zh-CN')
+  assert.equal(utterances[0]?.voice?.name, 'Chinese Standard')
+
+  utterances[0].onend?.(new Event('end'))
+  assert.equal(utterances[1]?.text, 'TypeScript ')
+  assert.equal(utterances[1]?.lang, 'en-US')
+  assert.equal(utterances[1]?.voice?.name, 'English Standard')
+
+  utterances[1].onend?.(new Event('end'))
+  assert.equal(utterances[2]?.text, '开发。')
+  assert.equal(utterances[2]?.lang, 'zh-CN')
+  utterances[2].onend?.(new Event('end'))
+  assert.equal(controller.isSpeaking(), false)
+})
+
+test('混排片段缺少目标语言音色时应回退到当前可用音色而不丢弃文本', () => {
+  const utterances: SpeechUtteranceLike[] = []
+  const controller = createSpeechController({
+    synthesis: {
+      speak(utterance: SpeechUtteranceLike): void { utterances.push(utterance) },
+      cancel(): void {},
+      getVoices(): SpeechSynthesisVoice[] {
+        return [{ lang: 'zh-CN', name: 'Chinese Standard', default: true }] as SpeechSynthesisVoice[]
+      }
+    },
+    createUtterance(text) {
+      return { text, lang: '', voice: null, onend: null, onerror: null }
+    }
+  })
+
+  assert.equal(controller.start('使用 TypeScript 开发。', 'ZH').ok, true)
+  assert.equal(utterances[0]?.voice?.name, 'Chinese Standard')
+  utterances[0].onend?.(new Event('end'))
+  assert.equal(utterances[1]?.text, 'TypeScript ')
+  assert.equal(utterances[1]?.voice?.name, 'Chinese Standard')
+  assert.equal(utterances[1]?.lang, 'zh-CN')
 })
 
 test('播放会话应支持停止、完成和旧回调失效', () => {

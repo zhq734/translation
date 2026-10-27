@@ -290,6 +290,40 @@ test('复制链路应复用入口层窗口激活结果', () => {
 })
 
 /**
+ * 校验 macOS 窗口激活成功后、写入剪贴板前再次直读选区。
+ * Chrome 等应用在窗口未激活时 AX helper 可能返回 UNKNOWN，激活后同一选区才可读取；
+ * 命中时必须直接返回 native-read，未命中才允许继续复制兜底。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 复制兜底应在窗口激活后先尝试一次只读 AX 直读', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('async function captureByCopy')
+  const end = source.indexOf('/**\n * 捕获当前选中文字', start)
+  assert.ok(start >= 0 && end > start, '应存在 captureByCopy 实现')
+  const copySource = source.slice(start, end)
+  const activationCheck = copySource.indexOf('isFailedWindowActivation(windowActivation)')
+  const postActivateRead = copySource.indexOf('readSelectionViaMacosHelper(', activationCheck)
+  const clipboardRead = copySource.indexOf('const originalImage = clipboard.readImage()')
+  const sentinelWrite = copySource.indexOf('clipboard.writeText(sentinel)', activationCheck)
+  const copyInjection = copySource.indexOf('await injectCopyShortcut()', activationCheck)
+
+  assert.ok(activationCheck >= 0, '复制链路必须先检查窗口激活结果')
+  assert.ok(postActivateRead > activationCheck, '窗口激活成功后应再次调用 AX helper 直读')
+  assert.ok(postActivateRead < clipboardRead, 'AX 直读必须发生在读取原剪贴板之前')
+  assert.ok(postActivateRead < sentinelWrite, 'AX 直读必须发生在写入哨兵之前')
+  assert.ok(postActivateRead < copyInjection, 'AX 直读必须发生在注入 Cmd+C 之前')
+  assert.match(copySource, /process\.platform === 'darwin'/u, '仅 macOS 执行激活后的 AX 直读')
+  assert.match(copySource, /native\?\.status === 'present' && native\.text\.trim\(\)/u,
+    '只有 AX 直读得到非空文本时才可提前返回')
+  assert.match(copySource, /level:\s*'native-read'/u, 'AX 直读命中必须标记为 native-read')
+  assert.match(copySource, /windowLocate:\s*native\.windowLocate/u, 'AX 直读命中应透传窗口定位诊断')
+  assert.match(copySource, /post-activate-native-read status=/u, 'AX 直读应输出脱敏诊断日志')
+  assert.doesNotMatch(copySource, /readSelectionByNative\(/u,
+    '激活后应直接调用 AX helper，避免再次走包含 osascript 的完整直读链路')
+})
+
+/**
  * 校验窗口激活异常必须返回固定 failed，而不是让复制链路把异常当成无需确认。
  * @returns 无返回值。
  * @author zhenghq

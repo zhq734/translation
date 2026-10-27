@@ -36,6 +36,7 @@ test('Edge 简短音色应转换为服务要求的完整音色名称', () => {
 
 test('Edge SSML 应包含固定音色、正常一倍语速并转义用户文本', () => {
   const ssml = buildEdgeSpeechSsml('中文 <测试> & 内容', 'ZH')
+  assert.match(ssml, /<speak[^>]*xml:lang=['"]zh-CN['"]/u)
   assert.match(
     ssml,
     /voice name=['"]Microsoft Server Speech Text to Speech Voice \(zh-CN, XiaoxiaoNeural\)['"]/u
@@ -114,6 +115,50 @@ test('Edge 客户端应收集合成音频并在结束后返回临时音频数据
     Origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
     Cookie: 'muid=TEST-CONNECTION;'
   })
+})
+
+test('Edge 握手应使用当前 v2 校验版本和兼容 token', async () => {
+  const socket = new FakeSocket()
+  const socketArguments: unknown[][] = []
+  const client = createEdgeSpeechClient({
+    socketFactory: (...args: unknown[]) => {
+      socketArguments.push(args)
+      return socket
+    },
+    timeoutMs: 1000,
+    now: () => new Date('2026-08-20T00:00:00.000Z'),
+    connectionId: () => 'test-connection',
+    muid: () => 'TEST-CONNECTION'
+  })
+  const resultPromise = client.synthesize('hello', 'EN')
+  socket.open()
+  socket.onmessage?.({ data: 'Path:turn.end\r\n\r\n' })
+  await resultPromise
+
+  const socketUrl = new URL(String(socketArguments[0]?.[0]))
+  assert.equal(socketUrl.searchParams.get('Sec-MS-GEC-Version'), '2-143.0.3650.75')
+  assert.equal(
+    socketUrl.searchParams.get('Sec-MS-GEC'),
+    'DA42F6D0E2E13304-E014C022D4BC41E7AF169E527721E2B1EE1A16940DAC90D492E3FB22376C6BB1'
+  )
+})
+
+test('Edge 客户端应把多段音频按到达顺序完整拼接', async () => {
+  const socket = new FakeSocket()
+  const client = createEdgeSpeechClient({
+    socketFactory: () => socket,
+    timeoutMs: 1000,
+    now: () => new Date('2026-08-20T00:00:00.000Z')
+  })
+  const resultPromise = client.synthesize('中文 mixed English', 'ZH')
+  socket.open()
+  socket.onmessage?.({ data: audioFrame(new Uint8Array([1, 2])) })
+  socket.onmessage?.({ data: audioFrame(new Uint8Array([3, 4, 5])) })
+  socket.onmessage?.({ data: 'Path:turn.end\r\n\r\n' })
+  const result = await resultPromise
+
+  assert.equal(result.ok, true)
+  assert.deepEqual([...(result.audio ?? [])], [1, 2, 3, 4, 5])
 })
 
 test('Edge 客户端超时、空音频和取消都应返回脱敏错误', async () => {

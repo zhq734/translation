@@ -779,6 +779,39 @@ async function captureByCopy(
       }
     }
   }
+  // Chrome 等应用在源窗口尚未激活时，AX helper 可能返回 UNKNOWN；窗口确认完成后
+  // 再直读一次通常已能拿到同一选区。这里只调用 helper，不回退 osascript，也不
+  // 触碰剪贴板，避免为了兜底取词再次拉长取词链路或覆盖用户剪贴板。
+  if (process.platform === 'darwin' && !signal?.aborted) {
+    const nativeStartedAt = Date.now()
+    const native = await readSelectionViaMacosHelper(
+      signal,
+      context?.windowNumber,
+      context?.pid,
+      context?.bounds,
+      context?.titleFingerprint
+    )
+    const nativeStatus = native?.status ?? 'unknown'
+    console.log(
+      `[capture] post-activate-native-read status=${nativeStatus} ` +
+      `elapsedMs=${Date.now() - nativeStartedAt}`
+    )
+    if (native?.status === 'present' && native.text.trim()) {
+      console.log(
+        `[capture] copy-finish status=native-read textLength=${native.text.length} ` +
+        `elapsedMs=${Date.now() - captureStartedAt}`
+      )
+      return {
+        text: native.text,
+        diagnostics: {
+          level: 'native-read',
+          windowLocate: native.windowLocate,
+          windowCount: native.windowCount,
+          windowMatched: native.windowMatched
+        }
+      }
+    }
+  }
   const originalImage = clipboard.readImage()
   const hadImage = !originalImage.isEmpty()
   const originalText = clipboard.readText()

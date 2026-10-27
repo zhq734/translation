@@ -1,5 +1,5 @@
 import type { EdgeSpeechResult } from '../../shared/types'
-import { splitSpeechText, type SpeechStartResult } from './speech'
+import { splitSpeechSegmentsWithSingleVoice, type SpeechSegment, type SpeechStartResult } from './speech'
 
 /** 可注入测试的 HTML 音频对象接口。 */
 export interface EdgeAudioLike {
@@ -238,12 +238,13 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @author zhenghq
    */
   async function prepareChunk(
-    chunks: readonly string[],
+    chunks: readonly SpeechSegment[],
     index: number,
     language: string,
     activeSession: number
   ): Promise<{ playback: ActivePlayback | null; error?: string }> {
-    const result = await synthesizeChunk(chunks[index], language, activeSession)
+    const chunk = chunks[index]
+    const result = await synthesizeChunk(chunk.text, chunk.language, activeSession)
     if (activeSession !== sessionId) return { playback: null, error: msg('rendererSpeech.edge.cancelled') }
     if (!result.ok || !result.audio || result.audio.length === 0) {
       return { playback: null, error: result.error ?? msg('rendererSpeech.edge.unavailable') }
@@ -305,7 +306,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @author zhenghq
    */
   async function startAudioContextPlayback(
-    chunks: readonly string[],
+    chunks: readonly SpeechSegment[],
     language: string,
     activeSession: number,
     context: EdgeAudioContextLike
@@ -325,7 +326,8 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       const maxRequestedIndex = Math.min(chunks.length - 1, currentIndex + prefetchAhead)
       while (nextToRequest <= maxRequestedIndex) {
         const index = nextToRequest
-        pending.set(index, synthesizeChunk(chunks[index], language, activeSession).then(async (result) => {
+        const chunk = chunks[index]
+        pending.set(index, synthesizeChunk(chunk.text, chunk.language, activeSession).then(async (result) => {
           if (activeSession !== sessionId) return { error: msg('rendererSpeech.edge.cancelled') }
           if (!result.ok || !result.audio || result.audio.length === 0) {
             return { error: result.error ?? msg('rendererSpeech.edge.unavailable') }
@@ -416,7 +418,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       if (!normalizedText) return { ok: false, error: msg('rendererSpeech.error.noText') }
       this.stop()
       const activeSession = ++sessionId
-      const chunks = splitSpeechText(normalizedText, options.maxChunkLength)
+      const chunks = splitSpeechSegmentsWithSingleVoice(normalizedText, language, options.maxChunkLength)
       if (chunks.length === 0) return { ok: false, error: msg('rendererSpeech.error.noText') }
       setSpeaking(true)
       const audioContext = options.createAudioContext?.()

@@ -40,6 +40,7 @@ import {
 } from '../../shared/progressiveReveal'
 import {
   createSpeechController,
+  resolveSpeechLanguage,
   type SpeechController,
   type SpeechSynthesisLike,
   type SpeechUtteranceLike
@@ -172,8 +173,6 @@ let wordAudioUrl = ''
 let wordPlaybackLease: PronunciationPlaybackLease | null = null
 /** 当前正在播放的音标变体 ID，用于同步发音按钮的可访问状态。 */
 let activeVariantId: string | null = null
-/** 原文段落朗读是否处于播放态。 */
-let sourcePlaybackLease: PronunciationPlaybackLease | null = null
 /** 指针按下位置，用于区分单击与拖拽。 */
 let originalPointerStart: { x: number; y: number } | null = null
 /** 最近一次原文指针移动距离；超过阈值后禁止本次 click 触发查词。 */
@@ -329,8 +328,7 @@ const pronunciationPlayback = createPronunciationPlaybackCoordinator({
       renderPronunciationCard()
     }
     if (target === 'source') {
-      sourcePlaybackLease = null
-      systemSpeechController.stop()
+      stopTextPlayback()
     }
     if (target === 'translation') {
       stopSpeech()
@@ -478,7 +476,7 @@ function syncSpeechButton(): void {
   const speaking =
     pronunciationPlayback.activeTarget() === 'translation' &&
     isSpeechPlaying()
-  const disabled = !translation
+  const disabled = !translation && !speaking
   speakBtn.disabled = disabled
   speakBtn.setAttribute('aria-pressed', String(pronunciationPlayback.activeTarget() === 'translation'))
   // 按钮文字保持简短稳定，禁用或需要系统语音等细节通过 title 与 aria-label 表达。
@@ -534,14 +532,23 @@ function finishPronunciationPlayback(
 }
 
 /**
+ * 使当前文本朗读会话失效，并同时停止 Edge 与系统语音。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function stopTextPlayback(): void {
+  speechOperationId += 1
+  systemSpeechController.stop()
+  edgeSpeechController.stop()
+}
+
+/**
  * 停止当前语音会话并立即刷新朗读按钮状态。
  * @returns 无返回值。
  * @author zhenghq
  */
 function stopSpeech(): void {
-  speechOperationId += 1
-  systemSpeechController.stop()
-  edgeSpeechController.stop()
+  stopTextPlayback()
   syncSpeechButton()
 }
 
@@ -979,54 +986,60 @@ async function toggleSpeech(): Promise<void> {
  */
 async function startTranslationPlayback(text: string, lease: PronunciationPlaybackLease): Promise<void> {
   const language = getCurrentSpeechLanguage()
+  await startTextPlayback(text, language, 'translation', lease)
+}
+
+/**
+ * 按当前语音设置朗读文本；Edge 失败时回退系统语音，并同步结束对应播放会话。
+ * @param text 待朗读文本。
+ * @param language 文本实际语言。
+ * @param target 当前播放目标。
+ * @param lease 统一播放会话租约。
+ * @returns 播放完成后的 Promise。
+ * @author zhenghq
+ */
+async function startTextPlayback(
+  text: string,
+  language: string,
+  target: 'translation' | 'source',
+  lease: PronunciationPlaybackLease
+): Promise<void> {
   const operationId = ++speechOperationId
+  const resolvedLanguage = resolveSpeechLanguage(text, language)
   if (currentSettings?.speechProvider === 'edge') {
-    const result = await edgeSpeechController.start(text, language)
+    const result = await edgeSpeechController.start(text, resolvedLanguage)
     if (!lease.isCurrent()) return
     if (result.ok) {
-      finishPronunciationPlayback('translation', lease)
+      finishPronunciationPlayback(target, lease)
       return
     }
     if (result.error !== t('popup.edgeSpeechCancelled')) {
       flashStatus(t('popup.edgeSpeechUnavailableWithError', {
         error: result.error ?? t('common.unknownError')
       }), 8000)
-      if (operationId === speechOperationId) {
-        const fallback = systemSpeechController.start(text, language)
-        if (fallback.ok) {
-          const timer = window.setInterval(() => {
-            if (!lease.isCurrent()) {
-              window.clearInterval(timer)
-              return
-            }
-            if (!systemSpeechController.isSpeaking()) {
-              window.clearInterval(timer)
-              finishPronunciationPlayback('translation', lease)
-            }
-          }, 150)
-        } else if (lease.isCurrent()) {
-          pronunciationPlayback.stop()
-        }
-      }
-    }
-  } else {
-    const result = systemSpeechController.start(text, language)
-    if (result.ok) {
-      const timer = window.setInterval(() => {
-        if (!lease.isCurrent()) {
-          window.clearInterval(timer)
-          return
-        }
-        if (!systemSpeechController.isSpeaking()) {
-          window.clearInterval(timer)
-          finishPronunciationPlayback('translation', lease)
-        }
-      }, 150)
-    } else if (lease.isCurrent()) {
-      pronunciationPlayback.stop()
+      if (operationId !== speechOperationId) return
+    } else {
+      finishPronunciationPlayback(target, lease)
+      return
     }
   }
+  const result = systemSpeechController.start(text, resolvedLanguage)
+  if (result.ok) {
+    const timer = window.setInterval(() => {
+      if (!lease.isCurrent()) {
+        window.clearInterval(timer)
+        return
+      }
+      if (!systemSpeechController.isSpeaking()) {
+        window.clearInterval(timer)
+        finishPronunciationPlayback(target, lease)
+      }
+    }, 150)
+  } else if (lease.isCurrent()) {
+    pronunciationPlayback.stop()
+  }
   syncSpeechButton()
+  syncSourceSpeechButton()
 }
 
 /**
@@ -1041,24 +1054,9 @@ function toggleSourcePlayback(): void {
   if (toggle.action === 'stop') return
   const lease = toggle.lease
   if (!lease) return
-  sourcePlaybackLease = lease
   const language = selectionOriginalSpeechLanguage
-  const result = systemSpeechController.start(text, language)
-  if (!result.ok || !lease.isCurrent()) {
-    if (lease.isCurrent()) pronunciationPlayback.stop()
-    return
-  }
   syncSourceSpeechButton()
-  const timer = window.setInterval(() => {
-    if (!lease.isCurrent()) {
-      window.clearInterval(timer)
-      return
-    }
-    if (!systemSpeechController.isSpeaking()) {
-      window.clearInterval(timer)
-      finishPronunciationPlayback('source', lease)
-    }
-  }, 150)
+  void startTextPlayback(text, language, 'source', lease)
 }
 
 /**
@@ -1383,7 +1381,6 @@ function renderSelection(payload: TranslatePayload): void {
     if (ocrText) lastOcrText = ocrText
   }
   if (payload.loading) {
-    stopPronunciationPlayback()
     closePronunciation()
     stopProgressiveReveal()
     selectionReveal = createProgressiveRevealState()
@@ -1418,7 +1415,6 @@ function renderSelection(payload: TranslatePayload): void {
   }
   resultEl.classList.remove('loading')
   if (!payload.ok) {
-    stopPronunciationPlayback()
     closePronunciation()
     // 首个安全片段已经展示后当前通道失败：保留已揭示内容并提示重试，
     // 不得静默清空用户已经看到的译文。
@@ -1471,7 +1467,6 @@ function renderSelection(payload: TranslatePayload): void {
     requestAutoResize()
     return
   }
-  stopPronunciationPlayback()
   closePronunciation()
   const sourceName = payload.detectedLang
     ? langLabel(payload.detectedLang, localeRuntime.locale)
@@ -1613,7 +1608,6 @@ function renderManualState(): void {
     && !manualState.error
     && !manualState.stale
   )
-  if (mode === 'manual' && !manualTranslationValid) stopSpeech()
   if (manualSourceEl.value !== manualState.draft) manualSourceEl.value = manualState.draft
   manualCountEl.textContent = `${manualState.draft.length} / ${MANUAL_TRANSLATION_MAX_CHARS}`
   manualClearBtn.disabled = !manualState.draft && !manualState.translation && !manualState.error
@@ -1876,7 +1870,6 @@ async function submitManualTranslation(): Promise<void> {
     return
   }
   if (!canSubmitManualTranslation(manualState, localeRuntime.translator)) return
-  stopSpeech()
   manualSpeechLanguage = ''
   // 新请求必须丢弃上一次的流式累积与打字机状态，避免旧译文被追加到新结果前。
   stopProgressiveReveal()
@@ -2154,7 +2147,6 @@ window.api.onResult((payload) => {
     const manualVisible = mode === 'manual'
     if (payload.original !== undefined && payload.loading && payload.original !== manualState.submittedText) return
     if (payload.loading) {
-      stopSpeech()
       manualSpeechLanguage = ''
       manualState = {
         ...manualState,
@@ -2172,7 +2164,6 @@ window.api.onResult((payload) => {
     } else if (!payload.ok) {
       // 校验错误可能没有经过“加载中”负载；只要原文仍对应当前提交，就接受主进程返回的请求序号。
       if (payload.original !== undefined && payload.original !== manualState.submittedText) return
-      stopSpeech()
       manualSpeechLanguage = ''
       if (payload.requestId !== undefined) manualState = { ...manualState, requestId: payload.requestId }
       manualState = failManualTranslation(
@@ -2188,7 +2179,6 @@ window.api.onResult((payload) => {
       if (manualVisible) statusEl.textContent = t('popup.translationFailed')
     } else {
       if (payload.requestId !== undefined && payload.requestId !== manualState.requestId) return
-      stopSpeech()
       manualState = {
         ...manualState,
         loading: false,

@@ -65,7 +65,8 @@ test('Renderer 应把三种播放入口接入统一协调器并在关闭时清�
 test('Renderer 应在语音自然结束、模式切换和原文变化时清理旧播放会话', () => {
   const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
 
-  assert.match(renderer, /finishPronunciationPlayback\(['"]translation['"],\s*lease\)/u)
+  assert.match(renderer, /function startTranslationPlayback[\s\S]{0,300}startTextPlayback\([^)]*['"]translation['"]/u)
+  assert.match(renderer, /finishPronunciationPlayback\(target,\s*lease\)/u)
   assert.match(renderer, /function enterManualMode\(\): void \{[\s\S]{0,220}stopPronunciationPlayback\(\)/u)
   assert.match(renderer, /function leaveManualMode\(\): void \{[\s\S]{0,220}stopPronunciationPlayback\(\)/u)
   assert.match(renderer, /function handleManualOpen\(\): void \{[\s\S]{0,220}stopPronunciationPlayback\(\)/u)
@@ -79,6 +80,50 @@ test('原文朗读应严格使用 detectedLang ?? sourceLang，不读取译文�
   assert.match(renderer, /selectionOriginalSpeechLanguage\s*=\s*payload\.detectedLang\s*\?\?\s*payload\.sourceLang/u)
   assert.match(renderer, /function toggleSourcePlayback\(\)[\s\S]{0,500}const language = selectionOriginalSpeechLanguage/u)
   assert.doesNotMatch(renderer, /function toggleSourcePlayback\(\)[\s\S]{0,500}(?:selectionSpeechLanguage|targetLangEl\.value)/u)
+})
+
+test('原文整段朗读应与译文共用 Edge 优先、系统语音兜底的播放策略', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const toggleSourcePlayback = renderer.match(/function toggleSourcePlayback\(\)[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(toggleSourcePlayback, /void startTextPlayback\(/u)
+  assert.match(toggleSourcePlayback, /['"]source['"]/u)
+  assert.match(renderer, /async function startTextPlayback\(/u)
+  assert.match(renderer, /speechProvider\s*===\s*['"]edge['"][\s\S]{0,500}edgeSpeechController\.start/u)
+  assert.match(renderer, /edgeSpeechController\.start[\s\S]{0,900}systemSpeechController\.start/u)
+})
+
+test('Edge 朗读取消时应结束当前原文或译文播放会话', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const startTextPlayback = renderer.match(/async function startTextPlayback[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(
+    startTextPlayback,
+    /edgeSpeechCancelled[\s\S]{0,200}else\s*\{[\s\S]{0,120}finishPronunciationPlayback\(target,\s*lease\)/u
+  )
+})
+
+test('原文和译文停止朗读时应共用同一会话失效逻辑', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const sourceStop = renderer.match(/if \(target === ['"]source['"]\) \{[\s\S]*?\n\s*\}/u)?.[0] ?? ''
+  const stopTextPlayback = renderer.match(/function stopTextPlayback\(\)[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(sourceStop, /stopTextPlayback\(\)/u)
+  assert.match(renderer, /if \(target === ['"]translation['"]\) \{[\s\S]{0,120}stopSpeech\(\)/u)
+  assert.match(stopTextPlayback, /speechOperationId\s*\+=\s*1/u)
+  assert.match(stopTextPlayback, /systemSpeechController\.stop\(\)/u)
+  assert.match(stopTextPlayback, /edgeSpeechController\.stop\(\)/u)
+  assert.match(renderer, /function stopSpeech\(\)[\s\S]{0,220}stopTextPlayback\(\)/u)
+})
+
+test('原文和译文启动朗读时应统一解析语言并走同一播放函数', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const startTextPlayback = renderer.match(/async function startTextPlayback[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(renderer, /resolveSpeechLanguage/u)
+  assert.match(startTextPlayback, /resolveSpeechLanguage\(text,\s*language\)/u)
+  assert.match(startTextPlayback, /edgeSpeechController\.start\(text,\s*resolvedLanguage\)/u)
+  assert.match(startTextPlayback, /systemSpeechController\.start\(text,\s*resolvedLanguage\)/u)
 })
 
 test('Edge 语音偏好下，单词 TTS 应优先 Edge 且不重复启动系统语音', async () => {
