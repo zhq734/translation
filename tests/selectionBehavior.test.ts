@@ -315,6 +315,18 @@ test('内部模拟复制之后紧邻的第二次复制必须识别为用户复�
   assert.equal(guard.getExternalCopyVersion(), version + 1)
 })
 
+test('内部模拟复制观测结果应能区分事件到达与等待超时', async () => {
+  const observedGuard = new CopyShortcutGuard()
+  const observedExpectation = observedGuard.expectSyntheticCopyShortcut()
+
+  setTimeout(() => observedGuard.observeCopyShortcut(), 10)
+  assert.equal(await observedExpectation.finish(), true)
+
+  const timedOutGuard = new CopyShortcutGuard()
+  const timedOutExpectation = timedOutGuard.expectSyntheticCopyShortcut()
+  assert.equal(await timedOutExpectation.finish(), false)
+})
+
 test('剪贴板已变为非内部捕获文本时不得恢复旧内容', () => {
   const sentinel = '__sentinel__'
 

@@ -5,10 +5,10 @@
 export interface SyntheticCopyExpectation {
   /**
    * 等待内部模拟复制事件到达或观测窗口超时，然后结束本次观测。
-   * @returns 观测结束后的 Promise。
+   * @returns 事件到达返回 true，观测窗口内未到达返回 false。
    * @author zhenghq
    */
-  finish(): Promise<void>
+  finish(): Promise<boolean>
 }
 
 /**
@@ -23,8 +23,8 @@ const SYNTHETIC_COPY_OBSERVATION_TIMEOUT_MS = 120
  */
 interface PendingSyntheticCopy {
   observed: boolean
-  finishPromise?: Promise<void>
-  resolveFinish?: () => void
+  finishPromise?: Promise<boolean>
+  resolveFinish?: (observed: boolean) => void
   timeout?: ReturnType<typeof setTimeout>
 }
 
@@ -184,21 +184,21 @@ export class CopyShortcutGuard {
     return {
       finish: async () => {
         const active = this.pendingSyntheticCopies.get(expectationId)
-        if (!active) return
+        if (!active) return false
         if (active.observed) {
           this.pendingSyntheticCopies.delete(expectationId)
-          return
+          return true
         }
         if (!active.finishPromise) {
-          active.finishPromise = new Promise<void>((resolve) => {
+          active.finishPromise = new Promise<boolean>((resolve) => {
             active.resolveFinish = resolve
             active.timeout = setTimeout(() => {
               this.pendingSyntheticCopies.delete(expectationId)
-              resolve()
+              resolve(false)
             }, SYNTHETIC_COPY_OBSERVATION_TIMEOUT_MS)
           })
         }
-        await active.finishPromise
+        return active.finishPromise
       }
     }
   }
@@ -217,7 +217,7 @@ export class CopyShortcutGuard {
       if (pending.timeout) clearTimeout(pending.timeout)
       if (pending.resolveFinish) {
         this.pendingSyntheticCopies.delete(expectationId)
-        pending.resolveFinish()
+        pending.resolveFinish(true)
       }
       return false
     }

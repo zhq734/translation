@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { resolveMacosAxReaderPath } from '../src/main/nativeReaderHost.ts'
 import { parseNativeSelectionReadOutput } from '../src/shared/selectionBehavior.ts'
-import { parseMacosAxReaderWindowDiagnostic } from '../src/shared/platformCapture.ts'
+import {
+  parseMacosAxCopyOutput,
+  parseMacosAxReaderWindowDiagnostic
+} from '../src/shared/platformCapture.ts'
 
 const HELPER_PATH = 'helpers/macos-ax-reader/main.m'
 
@@ -467,4 +470,44 @@ test('窗口诊断解析器应忽略未知或非法行', () => {
     windowCount: 2,
     windowMatched: true
   })
+})
+
+/**
+ * 校验 AX helper 的复制动作模式只按 Command+C 菜单快捷键定位并执行 AXPress。
+ * 不能按菜单标题匹配，否则中文、英文及自定义本地化都会导致复制兜底失效。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX helper 应通过菜单快捷键执行受控复制动作', () => {
+  const source = readHelperSource()
+
+  assert.match(source, /strcmp\(argv\[1\], "--copy"\)/u, 'helper 应提供 --copy 模式')
+  assert.match(source, /kAXMenuBarAttribute/u, '复制动作必须从目标应用菜单栏查找')
+  assert.match(source, /kAXChildrenAttribute/u, '复制动作应递归遍历菜单子项')
+  assert.match(source, /kAXMenuItemCmdCharAttribute/u, '复制动作必须匹配菜单快捷键字符')
+  assert.match(source, /kAXMenuItemCmdModifiersAttribute/u, '复制动作必须校验快捷键修饰键')
+  assert.match(source, /kAXEnabledAttribute/u, '复制动作只能执行启用的菜单项')
+  assert.match(source, /kAXPressAction/u, '复制动作必须使用 AXPress 执行菜单项')
+  assert.match(source, /kAXMenuItemModifierShift/u, '复制动作必须排除 Shift 组合键')
+  assert.match(source, /kAXMenuItemModifierOption/u, '复制动作必须排除 Option 组合键')
+  assert.match(source, /kAXMenuItemModifierControl/u, '复制动作必须排除 Control 组合键')
+  assert.match(source, /kAXMenuItemModifierNoCommand/u, '复制动作必须排除不含 Command 的组合键')
+  assert.match(source, /PERFORMED/u, '执行成功应输出固定 PERFORMED 状态')
+  assert.match(source, /UNAVAILABLE/u, '找不到唯一复制菜单项应输出固定 UNAVAILABLE 状态')
+  assert.match(source, /kMaxMenuTraversalDepth|maxDepth/u, '菜单遍历必须有深度上限')
+  assert.match(source, /kMaxMenuNodeCount|maxNodes/u, '菜单遍历必须有节点数量上限')
+})
+
+/**
+ * 校验 AX 复制动作输出解析只接受固定状态，并忽略可能混入的敏感自由文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX 复制动作输出应只解析固定状态', () => {
+  assert.equal(parseMacosAxCopyOutput('PERFORMED'), 'performed')
+  assert.equal(parseMacosAxCopyOutput('UNAVAILABLE\n'), 'unavailable')
+  assert.equal(parseMacosAxCopyOutput('PERMISSION'), 'permission')
+  assert.equal(parseMacosAxCopyOutput('UNKNOWN'), 'unknown')
+  assert.equal(parseMacosAxCopyOutput('PERFORMED\n敏感菜单标题'), 'performed')
+  assert.equal(parseMacosAxCopyOutput(''), 'unknown')
 })

@@ -1212,32 +1212,37 @@ test('弹窗交还日志必须输出真实 windowLocate 结果', () => {
 })
 
 /**
- * 校验弹窗交还失败时真正安全让出前台，而不是只执行收尾回调。
+ * 校验弹窗交还失败时只隐藏弹窗自身，不得通过整应用显隐恢复后台设置页。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('弹窗交还失败时必须真正安全让出前台', () => {
+test('弹窗交还失败时不得执行整应用安全让出', () => {
   const source = stripComments(
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
 
-  // 真机日志中的「交还退化为安全让出」此前只调用 fallback()，没有 app.hide()/show()，
-  // 设置页仍可能持有 key window。没有源应用记录、源应用已退出以及激活/失活失败
-  // 三条退化路径都必须进入 yieldFrontmostApp，并把 fallback 作为收尾动作。
+  // 弹窗以非激活 panel 显示时，app.hide()→app.show() 会把原本在后台的
+  // 设置页重新恢复到用户当前应用之上。弹窗退化路径只能执行窗口自身收尾；
+  // 整应用安全让出仍仅供 OCR、阅读器与原生对话框等非弹窗场景使用。
   assert.match(
     source,
-    /if \(!target \|\| !isProcessAlive\(target\.pid\)\)[\s\S]*?yieldFrontmostApp\(fallback\)/u,
-    '没有可交还目标时必须执行安全让出'
+    /const finishPopupWithoutAppYield\s*=\s*\(reason: string\): void => \{[\s\S]*?fallback\(\)/u,
+    '弹窗退化收尾必须只执行 fallback 隐藏弹窗自身'
   )
   assert.match(
     source,
-    /if \(handedBack\)[\s\S]*?return[\s\S]*?yieldFrontmostApp\(fallback\)/u,
-    '激活或失活确认失败时必须执行安全让出'
+    /if \(!target \|\| !isProcessAlive\(target\.pid\)\)[\s\S]*?finishPopupWithoutAppYield/u,
+    '没有可交还目标时不得执行整应用安全让出'
   )
-  assert.doesNotMatch(
+  assert.match(
     source,
-    /交还退化为安全让出[\s\S]{0,120}?fallback\(\)\s*\n\s*return/u,
-    '安全让出日志不能对应只执行 fallback() 的空操作'
+    /if \(handedBack\)[\s\S]*?return[\s\S]*?finishPopupWithoutAppYield/u,
+    '激活或失活确认失败时不得执行整应用安全让出'
+  )
+  assert.match(
+    source,
+    /if \(keyWindowIsPopup\) \{\s*finishPopupWithoutAppYield\([\s\S]*?\} else \{\s*logFrontDiagnostic\([\s\S]*?yieldFrontmostApp\(fallback\)/u,
+    '只有非弹窗路径才允许落入整应用安全让出'
   )
 })
 
@@ -1269,7 +1274,7 @@ test('弹窗精确激活失败时应先按源进程激活并确认失活', () =>
 
   // 真机日志：Chrome 已匹配到目标窗口，但 AX focused/raise 均失败，随后
   // app.hide()→app.show() 把后台设置页恢复到了最前。进程级激活不要求 AX，
-  // 应先于整应用兜底执行；只有它也未确认失活时才允许安全让出。
+  // 必须先执行；即使仍未确认失活，弹窗也只能隐藏自身，不能再整应用显隐。
   assert.match(
     source,
     /restoreFrontmostForPopup\(target\)/u,
@@ -1278,7 +1283,7 @@ test('弹窗精确激活失败时应先按源进程激活并确认失活', () =>
   assert.match(
     source,
     /if \(restored\)[\s\S]*?finish\(true,\s*'popup-front-restored'\)[\s\S]*?finish\(false\)/u,
-    '统一恢复成功后才允许收尾，未确认成功时才允许进入安全让出'
+    '统一恢复成功后才允许按交还成功收尾，未确认成功时只收尾弹窗自身'
   )
   assert.doesNotMatch(
     source,

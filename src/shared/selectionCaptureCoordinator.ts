@@ -34,6 +34,8 @@ export interface CaptureDiagnosticMeta {
   windowCount?: number
   /** 是否按窗口编号或边界精确匹配到源窗口。 */
   windowMatched?: boolean
+  /** macOS 模拟复制事件是否至少被全局事件钩子观测到一次。 */
+  copyObserved?: boolean
 }
 
 /** 一次取词使用的源窗口上下文；字段缺失时保持应用级取词行为。 */
@@ -103,6 +105,8 @@ export interface CaptureDiagnosticInput {
   windowCount?: number
   /** 是否精确匹配到源窗口。 */
   windowMatched?: boolean
+  /** macOS 模拟复制事件是否至少被全局事件钩子观测到一次。 */
+  copyObserved?: boolean
 }
 
 type CaptureSelection = (
@@ -489,7 +493,8 @@ export class SelectionCaptureCoordinator {
             app: 'unknown',
             windowLocate: outcome.diagnostics?.windowLocate,
             windowCount: outcome.diagnostics?.windowCount,
-            windowMatched: outcome.diagnostics?.windowMatched
+            windowMatched: outcome.diagnostics?.windowMatched,
+            copyObserved: outcome.diagnostics?.copyObserved
           })
         }
         return result

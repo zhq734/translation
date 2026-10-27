@@ -33,6 +33,26 @@ export type MacosAxReaderWindowDiagnostic = Pick<
   'windowLocate' | 'windowCount' | 'windowMatched'
 >
 
+/** macOS AX helper 菜单复制动作的固定结果状态。 */
+export type MacosAxCopyStatus = 'performed' | 'unavailable' | 'permission' | 'unknown'
+
+/**
+ * 解析 macOS AX helper `--copy <pid>` 模式的固定状态输出。
+ *
+ * 只读取首行白名单状态，忽略后续任何自由文本，避免菜单标题或选区内容
+ * 进入日志或诊断数据。无法识别时统一返回 unknown。
+ * @param output helper 的标准输出。
+ * @returns 规范化的复制动作状态。
+ * @author zhenghq
+ */
+export function parseMacosAxCopyOutput(output: unknown): MacosAxCopyStatus {
+  const firstLine = String(output ?? '').replace(/\r\n?/gu, '\n').trim().split('\n')[0]?.trim().toUpperCase()
+  if (firstLine === 'PERFORMED') return 'performed'
+  if (firstLine === 'UNAVAILABLE') return 'unavailable'
+  if (firstLine === 'PERMISSION') return 'permission'
+  return 'unknown'
+}
+
 /**
  * 解析 macOS AX helper 写入 stderr 的固定窗口诊断行。
  *

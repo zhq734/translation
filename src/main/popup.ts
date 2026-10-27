@@ -66,17 +66,14 @@ let currentAutoHideMs = 0
 let pronunciationInteractionActive = false
 /** 弹窗真正隐藏时通知主进程清理音标查询与音频下载。 */
 let onPopupHiddenCallback: (() => void) | null = null
-/** 弹窗真实隐藏前撤销同应用后台窗口的 key window 候选资格。 */
-let onPopupBeforeHideCallback: (() => void) | null = null
-/** 弹窗真实隐藏后恢复隐藏前撤销的窗口焦点能力。 */
-let onPopupAfterHideCallback: (() => void) | null = null
 /**
  * 弹窗关闭开始及真实隐藏完成时通知主进程收尾。
  *
  * 外部点击关闭后，异步前台交还期间设置页可能仍保留临时最高层级；关闭入口与
  * win.hide() 完成后都必须同步回收该状态，避免迟到 activate 把设置页带到最前。
  */
-let onPopupClosingCallback: (() => void) | null = null
+let onPopupCloseStartCallback: (() => void) | null = null
+let onPopupCloseEndCallback: (() => void) | null = null
 let shownInactive = false
 /**
  * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
@@ -119,36 +116,38 @@ let onInternalWindowShown: (() => void) | null = null
 const foregroundTracker = createWindowsForegroundTracker({ platform: process.platform })
 const pendingPayloads: TranslatePayload[] = []
 
+/** 创建翻译弹窗时注入的生命周期回调。 */
+export interface CreatePopupOptions {
+  /** 预加载脚本路径。 */
+  preloadPath: string
+  /** 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。 */
+  onWindowShown?: () => void
+  /** 弹窗隐藏后清理临时请求的回调。 */
+  onPopupHidden?: () => void
+  /** 弹窗关闭开始、异步前台交还之前的同步收尾回调。 */
+  onPopupCloseStart?: () => void
+  /** 弹窗真实隐藏完成后的同步恢复回调。 */
+  onPopupCloseEnd?: () => void
+}
+
 /**
  * 创建翻译弹窗。
- * @param preloadPath 预加载脚本路径。
- * @param onWindowShown 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。
- * @param onPopupHidden 弹窗隐藏后清理临时请求的回调。
- * @param onPopupClosing 弹窗关闭开始及真实隐藏完成时的内部窗口收尾回调。
- * @param onPopupBeforeHide 弹窗真实隐藏前的同步窗口焦点保护回调。
- * @param onPopupAfterHide 弹窗真实隐藏后的同步窗口焦点恢复回调。
+ * @param options 弹窗创建参数及生命周期回调。
  * @returns 创建后的翻译弹窗。
  * @author zhenghq
  */
-export function createPopup(
-  preloadPath: string,
-  onWindowShown?: () => void,
-  onPopupHidden?: () => void,
-  onPopupClosing?: () => void,
-  onPopupBeforeHide?: () => void,
-  onPopupAfterHide?: () => void
-): BrowserWindow {
+export function createPopup(options: CreatePopupOptions): BrowserWindow {
+  const { preloadPath } = options
   popupCloseInFlight = false
   shownInactive = false
   settingsOpenGuardActive = false
   selectionCaptureLoading = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
-  onInternalWindowShown = onWindowShown ?? null
-  onPopupHiddenCallback = onPopupHidden ?? null
-  onPopupClosingCallback = onPopupClosing ?? null
-  onPopupBeforeHideCallback = onPopupBeforeHide ?? null
-  onPopupAfterHideCallback = onPopupAfterHide ?? null
+  onInternalWindowShown = options.onWindowShown ?? null
+  onPopupHiddenCallback = options.onPopupHidden ?? null
+  onPopupCloseStartCallback = options.onPopupCloseStart ?? null
+  onPopupCloseEndCallback = options.onPopupCloseEnd ?? null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -536,9 +535,10 @@ export function hidePopup(
   }
   popupCloseInFlight = true
   console.log(`[popup] hide reason=${reason}`)
-  // 关闭一开始就同步收尾：异步前台交还可能持续数十毫秒，期间设置页若残留
-  // screen-saver 层级，仍会被系统带到划词应用之前。不得在这里 await。
-  onPopupClosingCallback?.()
+  // 关闭一开始就同步收尾并挂起后台设置页的 key window 候选资格：异步前台交还
+  // 可能持续数十毫秒，期间设置页若残留最高层级，仍会被系统带到划词应用之前。
+  // 不得在这里 await。
+  onPopupCloseStartCallback?.()
   clearHide()
   closeVersion += 1
   pinned = false
@@ -548,7 +548,11 @@ export function hidePopup(
   suppressExternalPointerDismissOrigin = null
   win?.webContents.send('popup:pinned', false)
   if (!win || win.isDestroyed()) {
-    popupCloseInFlight = false
+    try {
+      onPopupCloseEndCallback?.()
+    } finally {
+      popupCloseInFlight = false
+    }
     return
   }
   // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
@@ -562,17 +566,16 @@ export function hidePopup(
     // 送达 Renderer，导致系统语音或音频在后台继续播放。
     win?.webContents.send('popup:hidden')
     try {
-      // macOS 在隐藏当前 key window 时会从同一应用内选择下一个可聚焦窗口。
-      // 保护仅覆盖 hide() 的同步调用栈，避免后台设置页被系统重新选为 key window。
-      onPopupBeforeHideCallback?.()
       win?.hide()
     } finally {
-      // hide() 抛错也必须恢复设置页，不能让它永久失去键盘输入能力。
-      onPopupAfterHideCallback?.()
+      // 真实隐藏完成后立即恢复关闭开始时挂起的设置页焦点能力。即使 hide()
+      // 抛错也必须恢复，不能让它永久失去键盘输入能力。
+      try {
+        onPopupCloseEndCallback?.()
+      } finally {
+        popupCloseInFlight = false
+      }
     }
-    // 真实隐藏后系统可能派发迟到 activate，再同步收尾一次覆盖该窗口期。
-    onPopupClosingCallback?.()
-    popupCloseInFlight = false
     onPopupHiddenCallback?.()
     // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
     // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。

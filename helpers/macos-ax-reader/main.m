@@ -22,6 +22,10 @@
 static const NSInteger kMaxAncestorLevels = 4;
 /** AX 与 CGWindow 边界比较允许的像素误差，覆盖系统坐标系取整与阴影差异。 */
 static const CGFloat kWindowBoundsTolerance = 2.0;
+/** 菜单栏复制动作允许遍历的最大深度，避免异常 AX 树导致无限递归。 */
+static const NSInteger kMaxMenuTraversalDepth = 8;
+/** 菜单栏复制动作允许检查的最大节点数，保证 helper 执行时间有界。 */
+static const NSInteger kMaxMenuNodeCount = 4096;
 
 /** 调用方记录的窗口上下文，用于 AXWindowNumber 缺失时做二级匹配。 */
 typedef struct {
@@ -30,6 +34,13 @@ typedef struct {
   CGRect bounds;
   NSString *titleFingerprint;
 } WindowCaptureContext;
+
+/** 菜单复制动作的遍历状态与唯一候选结果。 */
+typedef struct {
+  AXUIElementRef match;
+  NSInteger visitedCount;
+  NSInteger matchCount;
+} MenuCopySearchState;
 
 /**
  * 向 stdout 输出状态标记与可选文本，协议为“状态行 + 可选文本行”。
@@ -147,6 +158,132 @@ static NSString *CopySelectedTextFromAncestry(AXUIElementRef element, NSInteger 
   }
   if (current) CFRelease(current);
   return result;
+}
+
+/**
+ * 读取 AX 元素的布尔属性，失败或类型非法时返回 false。
+ * @param element 目标 AX 元素。
+ * @param attribute 属性名。
+ * @return 属性为真时返回 true。
+ * @author zhenghq
+ */
+static BOOL CopyBooleanAttribute(AXUIElementRef element, CFStringRef attribute) {
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(element, attribute, &value) != kAXErrorSuccess || !value) {
+    return NO;
+  }
+  BOOL result = CFGetTypeID(value) == CFBooleanGetTypeID() &&
+    CFBooleanGetValue((CFBooleanRef)value);
+  CFRelease(value);
+  return result;
+}
+
+/**
+ * 判断菜单项是否为唯一的 Command+C 复制命令。
+ *
+ * 仅按快捷键字符、修饰键与启用状态匹配，不依赖本地化菜单标题。
+ * 必须排除 Shift、Option、Control 以及无 Command 的变体，防止误触
+ * 剪切、粘贴或应用自定义快捷键。
+ * @param element 待检查的 AX 元素。
+ * @return 是可用 Command+C 菜单项时返回 true。
+ * @author zhenghq
+ */
+static BOOL IsCommandCopyMenuItem(AXUIElementRef element) {
+  NSString *commandCharacter = CopyStringAttribute(element, kAXMenuItemCmdCharAttribute);
+  if (!commandCharacter || ![commandCharacter.lowercaseString isEqualToString:@"c"]) {
+    return NO;
+  }
+  CFTypeRef modifiersValue = NULL;
+  if (AXUIElementCopyAttributeValue(
+        element, kAXMenuItemCmdModifiersAttribute, &modifiersValue) != kAXErrorSuccess ||
+      !modifiersValue || CFGetTypeID(modifiersValue) != CFNumberGetTypeID()) {
+    if (modifiersValue) CFRelease(modifiersValue);
+    return NO;
+  }
+  long modifiers = 0;
+  CFNumberGetValue((CFNumberRef)modifiersValue, kCFNumberLongType, &modifiers);
+  CFRelease(modifiersValue);
+  long forbiddenModifiers = kAXMenuItemModifierShift |
+    kAXMenuItemModifierOption |
+    kAXMenuItemModifierControl |
+    kAXMenuItemModifierNoCommand;
+  if ((modifiers & forbiddenModifiers) != 0) return NO;
+  return CopyBooleanAttribute(element, kAXEnabledAttribute);
+}
+
+/**
+ * 深度优先遍历菜单树，记录唯一启用的 Command+C 菜单项。
+ *
+ * 遍历深度与节点数量均有硬上限；发现第二个匹配项后停止继续搜索，
+ * 由调用方按“无法唯一定位”安全放弃，避免执行错误菜单命令。
+ * @param element 当前 AX 元素。
+ * @param depth 当前遍历深度。
+ * @param state 遍历状态与候选结果。
+ * @return 无返回值。
+ * @author zhenghq
+ */
+static void FindCommandCopyMenuItem(
+  AXUIElementRef element,
+  NSInteger depth,
+  MenuCopySearchState *state
+) {
+  if (!element || !state || depth > kMaxMenuTraversalDepth ||
+      state->visitedCount >= kMaxMenuNodeCount || state->matchCount > 1) {
+    return;
+  }
+  state->visitedCount += 1;
+  if (IsCommandCopyMenuItem(element)) {
+    state->matchCount += 1;
+    if (state->matchCount == 1) {
+      state->match = (AXUIElementRef)CFRetain(element);
+    } else if (state->match) {
+      CFRelease(state->match);
+      state->match = nil;
+    }
+    return;
+  }
+  CFTypeRef childrenValue = NULL;
+  if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &childrenValue) !=
+        kAXErrorSuccess || !childrenValue ||
+      CFGetTypeID(childrenValue) != CFArrayGetTypeID()) {
+    if (childrenValue) CFRelease(childrenValue);
+    return;
+  }
+  CFArrayRef children = (CFArrayRef)childrenValue;
+  CFIndex count = CFArrayGetCount(children);
+  for (CFIndex index = 0; index < count && state->matchCount <= 1; index += 1) {
+    AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, index);
+    if (child && CFGetTypeID(child) == AXUIElementGetTypeID()) {
+      FindCommandCopyMenuItem(child, depth + 1, state);
+    }
+  }
+  CFRelease(childrenValue);
+}
+
+/**
+ * 在目标应用中查找唯一启用的 Command+C 菜单项并执行 AXPress。
+ * @param pid 目标应用进程号。
+ * @return 成功执行返回 true；权限不足、菜单不可读、无候选或候选不唯一返回 false。
+ * @author zhenghq
+ */
+static BOOL PerformCommandCopyMenuAction(pid_t pid) {
+  AXUIElementRef application = AXUIElementCreateApplication(pid);
+  if (!application) return NO;
+  CFTypeRef menuBarValue = NULL;
+  BOOL performed = NO;
+  if (AXUIElementCopyAttributeValue(
+        application, kAXMenuBarAttribute, &menuBarValue) == kAXErrorSuccess &&
+      menuBarValue && CFGetTypeID(menuBarValue) == AXUIElementGetTypeID()) {
+    MenuCopySearchState state = {0};
+    FindCommandCopyMenuItem((AXUIElementRef)menuBarValue, 0, &state);
+    if (state.matchCount == 1 && state.match) {
+      performed = AXUIElementPerformAction(state.match, kAXPressAction) == kAXErrorSuccess;
+    }
+    if (state.match) CFRelease(state.match);
+  }
+  if (menuBarValue) CFRelease(menuBarValue);
+  CFRelease(application);
+  return performed;
 }
 
 /**
@@ -430,6 +567,20 @@ int main(int argc, const char *argv[]) {
   @autoreleasepool {
     if (!AXIsProcessTrusted()) {
       WriteResult(@"PERMISSION", nil);
+      return 0;
+    }
+
+    // 菜单复制动作模式：调用方传入目标进程号，helper 只在目标应用菜单栏中
+    // 查找唯一启用的 Command+C 项并执行 AXPress，不读取或输出任何菜单标题。
+    if (argc > 1 && argv[1] && strcmp(argv[1], "--copy") == 0) {
+      char *pidEnd = NULL;
+      long pid = argc > 2 && argv[2] ? strtol(argv[2], &pidEnd, 10) : 0;
+      if (!pidEnd || *pidEnd != '\0' || pid <= 0) {
+        WriteResult(@"UNAVAILABLE", nil);
+        return 0;
+      }
+      WriteResult(PerformCommandCopyMenuAction((pid_t)pid)
+                    ? @"PERFORMED" : @"UNAVAILABLE", nil);
       return 0;
     }
 

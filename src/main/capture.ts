@@ -20,8 +20,10 @@ import { isAutoTriggerRunning } from './autoTrigger'
 import { translateMain } from './messages'
 import {
   getSelectionCapturePlan,
+  parseMacosAxCopyOutput,
   parseMacosAxReaderWindowDiagnostic,
   resolveSelectionCaptureStrategy,
+  type MacosAxCopyStatus,
   type NativeSelectionReadResult
 } from '../shared/platformCapture'
 import {
@@ -566,26 +568,32 @@ async function releasePendingCopyModifiers(): Promise<void> {
 // 用户已按住左、右任一 Command 时只发送带修饰键标志的 C，避免误释放物理按键。
 // 已按住的修饰键状态由全局快捷键入口短时传递；不再在脚本内查询系统按键状态，
 // 该查询 API 在部分 macOS 环境会无限阻塞等待 hiservices XPC 回复，使复制键无法发出而取词超时。
+// 事件之间留出短间隔，避免 Electron 自绘编辑器丢弃同一 tick 内连续到达的瞬时 Cmd+C。
 const JXA_COPY = [
   "ObjC.import('CoreGraphics');",
   'var s=$.CGEventSourceCreate($.kCGEventSourceStateCombinedSessionState);',
   "var env=$.NSProcessInfo.processInfo.environment;",
   "var commandWasDown=env.objectForKey('commandWasDown')&&env.objectForKey('commandWasDown').js==='1';",
+  "var targetPid=Number(env.objectForKey('targetPid')&&env.objectForKey('targetPid').js||0);",
+  'var post=function(event){if(targetPid>0){$.CGEventPostToPid(targetPid,event);}else{$.CGEventPost($.kCGHIDEventTap,event);}};',
   'if(!commandWasDown){',
   'var commandDown=$.CGEventCreateKeyboardEvent(s,55,true);',
   '$.CGEventSetFlags(commandDown,$.kCGEventFlagMaskCommand);',
-  '$.CGEventPost($.kCGHIDEventTap,commandDown);',
+  'post(commandDown);',
+  '$.NSThread.sleepForTimeInterval(0.015);',
   '}',
   'var d=$.CGEventCreateKeyboardEvent(s,8,true);',
   '$.CGEventSetFlags(d,$.kCGEventFlagMaskCommand);',
-  '$.CGEventPost($.kCGHIDEventTap,d);',
+  'post(d);',
+  '$.NSThread.sleepForTimeInterval(0.015);',
   'var u=$.CGEventCreateKeyboardEvent(s,8,false);',
   '$.CGEventSetFlags(u,$.kCGEventFlagMaskCommand);',
-  '$.CGEventPost($.kCGHIDEventTap,u);',
+  'post(u);',
+  '$.NSThread.sleepForTimeInterval(0.015);',
   'if(!commandWasDown){',
   'var commandUp=$.CGEventCreateKeyboardEvent(s,55,false);',
   '$.CGEventSetFlags(commandUp,0);',
-  '$.CGEventPost($.kCGHIDEventTap,commandUp);',
+  'post(commandUp);',
   '}'
 ].join('')
 
@@ -646,10 +654,11 @@ async function tryWmCopyPoll(
  * 在 macOS 使用 CGEvent 注入 Cmd+C，在 Windows 使用已加载的 uiohook 原生模块注入 Ctrl+C。
  * Windows 不再为每次取词冷启动 PowerShell 和动态编译 P/Invoke，以缩短快捷键与按钮取词耗时。
  * macOS 需要「辅助功能」权限（Accessibility）。
+ * @param targetPid 可选的 macOS 目标进程号；重试时定向投递，首轮保持全局事件注入。
  * @returns 模拟复制完成后的 Promise。
  * @author zhenghq
  */
-export async function simulateCopy(): Promise<void> {
+export async function simulateCopy(targetPid?: number): Promise<void> {
   const strategy = resolveSelectionCaptureStrategy(process.platform)
   if (strategy === 'linux-primary-selection') return
   if (strategy === 'unsupported') {
@@ -665,7 +674,11 @@ export async function simulateCopy(): Promise<void> {
         'osascript',
         ['-l', 'JavaScript', '-e', JXA_COPY],
         {
-          env: { ...process.env, commandWasDown: commandWasDown ? '1' : '0' },
+          env: {
+            ...process.env,
+            commandWasDown: commandWasDown ? '1' : '0',
+            targetPid: targetPid && targetPid > 0 ? String(targetPid) : '0'
+          },
           timeout: MACOS_COPY_SCRIPT_TIMEOUT_MS
         }
       )
@@ -680,6 +693,50 @@ export async function simulateCopy(): Promise<void> {
       throw new PermissionError(translateMain('capture.error.accessibilityPermissionRequired'))
     }
     throw new Error(translateMain('capture.error.copySimulationFailed', { message: msg }))
+  }
+}
+
+/**
+ * 通过 macOS AX 菜单栏执行目标应用的原生“复制”命令。
+ *
+ * 部分应用（如 ynote）能观测到注入的 Cmd+C，却不会消费该快捷键。此时直接
+ * AXPress 唯一启用的 Command+C 菜单项，可以绕过快捷键消费链路触发复制，
+ * 且不会提升同应用的其它窗口。helper 只返回固定状态，日志不包含菜单标题。
+ * @param pid 目标应用进程号。
+ * @param signal 用于在取词失效后中止 helper 的取消信号。
+ * @returns AX 菜单复制动作的固定状态。
+ * @author zhenghq
+ */
+async function performMacosAxCopy(pid: number, signal?: AbortSignal): Promise<MacosAxCopyStatus> {
+  if (process.platform !== 'darwin' || !Number.isInteger(pid) || pid <= 0 || signal?.aborted) {
+    return 'unavailable'
+  }
+  const helperPath = resolveMacosAxReaderPath({
+    resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
+      ? process.resourcesPath
+      : undefined
+  })
+  if (!helperPath) {
+    console.log('[capture] ax-copy-menu status=unavailable elapsedMs=0 reason=helper-missing')
+    return 'unavailable'
+  }
+
+  const startedAt = Date.now()
+  try {
+    const { stdout } = await execFileP(
+      helperPath,
+      ["--copy", String(pid)],
+      { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
+    )
+    const status = parseMacosAxCopyOutput(stdout)
+    console.log(`[capture] ax-copy-menu status=${status} elapsedMs=${Date.now() - startedAt}`)
+    return status
+  } catch {
+    console.log(
+      `[capture] ax-copy-menu status=unknown elapsedMs=${Date.now() - startedAt} ` +
+      `reason=${signal?.aborted ? 'aborted' : 'helper-error'}`
+    )
+    return 'unknown'
   }
 }
 
@@ -805,13 +862,17 @@ async function captureByCopy(
   let copyAttempts = 0
   // 已完成的独立重试轮次数，用于诊断日志与重试上限判定。
   let copyRetries = 0
+  // 本轮模拟复制事件是否被全局事件钩子观测到。
+  // undefined 表示未启用事件观测，不能等同于“已观测但未收到事件”。
+  let syntheticCopyObserved: boolean | undefined
 
   /**
    * 发送一次复制快捷键，并在观测窗口内区分内部模拟复制与用户主动复制。
+   * @param retryTargetPid 重试时用于定向注入的源进程号；首轮省略以保持全局注入。
    * @returns 注入完成后的 Promise。
    * @author zhenghq
    */
-  const injectCopyShortcut = async (): Promise<void> => {
+  const injectCopyShortcut = async (retryTargetPid?: number): Promise<void> => {
     /**
      * 实际注入一次复制快捷键并记录诊断日志。
      * @param observed 本次注入是否登记了内部模拟复制观测。
@@ -820,7 +881,7 @@ async function captureByCopy(
      */
     const sendCopyShortcut = async (observed: boolean): Promise<void> => {
       try {
-        await simulateCopy()
+        await simulateCopy(retryTargetPid)
         copyAttempts += 1
         console.log(
           `[capture] copy-shortcut-sent attempt=${copyAttempts} observed=${observed} ` +
@@ -843,11 +904,14 @@ async function captureByCopy(
       return
     }
 
+    // 只有登记观测窗口后才能把状态视为已知；先置 false 可避免首次未收到事件时
+    // 仍保留 undefined，从而丢失真实的 event tap 故障信号。
+    syntheticCopyObserved = false
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
       await sendCopyShortcut(true)
     } finally {
-      await expectation.finish()
+      syntheticCopyObserved = (await expectation.finish()) || syntheticCopyObserved
     }
   }
 
@@ -877,7 +941,7 @@ async function captureByCopy(
           // 首次注入可能因修饰键仍被按住或前台应用尚未就绪而丢失，等待间隔后补发一次。
           if (shouldRetryCopyInjection(Date.now() - start, copyAttempts)) {
             console.log(`[capture] copy-retry elapsedMs=${Date.now() - captureStartedAt}`)
-            await injectCopyShortcut()
+            await injectCopyShortcut(context?.pid)
             continue
           }
           await sleep(40)
@@ -886,6 +950,19 @@ async function captureByCopy(
 
       await injectCopyShortcut()
       await pollForCapture(timeoutMs)
+
+      // 首次轮询超时后优先尝试 AX 菜单复制。ynote 等应用能观测到注入事件，
+      // 却不消费瞬时 Cmd+C；AXPress 可直接触发目标应用自己的复制命令。
+      let axCopyPerformed = false
+      if (!hasClipboardCaptureCompleted(text, hasImage, sentinel)) {
+        if (
+          !signal?.aborted &&
+          !copyShortcutGuard.hasExternalCopySince(externalCopyVersion) &&
+          context?.pid !== undefined
+        ) {
+          axCopyPerformed = (await performMacosAxCopy(context.pid, signal)) === 'performed'
+        }
+      }
 
       // 首次轮询超时后追加一次独立、有界的重试轮次：重写哨兵、重新注入复制键。
       // 仅在未中止、未观测到用户主动复制且重试次数未耗尽时才进入，避免无限重试。
@@ -904,12 +981,15 @@ async function captureByCopy(
             `[capture] copy-fallback-retry retry=${copyRetries} ` +
             `timeoutMs=${plan.retryTimeoutMs} elapsedMs=${Date.now() - captureStartedAt}`
           )
-          // 重写哨兵：确保上一轮的残留内容不会让重试误判为已捕获。
-          clipboard.clear()
-          clipboard.writeText(sentinel)
-          const retrySentinelFailure = verifySentinelWrite()
-          if (retrySentinelFailure) return retrySentinelFailure
-          await injectCopyShortcut()
+          if (!axCopyPerformed) {
+            // 盲重试前重写哨兵，确保上一轮残留内容不会让重试误判为已捕获。
+            // AX 已执行时不得重写，否则可能覆盖应用刚异步写入的复制结果。
+            clipboard.clear()
+            clipboard.writeText(sentinel)
+            const retrySentinelFailure = verifySentinelWrite()
+            if (retrySentinelFailure) return retrySentinelFailure
+            await injectCopyShortcut(context?.pid)
+          }
           await pollForCapture(plan.retryTimeoutMs)
         }
       }
@@ -983,6 +1063,7 @@ async function captureByCopy(
   if (!text) {
     console.log(
       `[capture] copy-finish status=timeout attempts=${copyAttempts} retries=${copyRetries} ` +
+      `${syntheticCopyObserved === undefined ? '' : `copyObserved=${syntheticCopyObserved} `}` +
       `elapsedMs=${Date.now() - captureStartedAt}`
     )
   return {
@@ -991,6 +1072,7 @@ async function captureByCopy(
     diagnostics: {
       level: 'failed',
       reason: 'timeout',
+      ...(syntheticCopyObserved === undefined ? {} : { copyObserved: syntheticCopyObserved }),
       windowLocate: windowActivation?.outcome,
       windowCount: windowActivation?.windowCount,
       windowMatched: windowActivation?.windowMatched

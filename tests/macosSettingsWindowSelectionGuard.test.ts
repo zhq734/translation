@@ -294,34 +294,29 @@ test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选�
   const hideSource = stripComments(
     extractFunction(popupSource, 'export function hidePopup(')
   )
-  const beforeIndex = hideSource.indexOf('onPopupBeforeHideCallback?.()')
   const hideIndex = hideSource.indexOf('win?.hide()')
-  const afterIndex = hideSource.indexOf('onPopupAfterHideCallback?.()')
+  const closeStartIndex = hideSource.indexOf('onPopupCloseStartCallback?.()')
+  const closeEndIndex = hideSource.indexOf('onPopupCloseEndCallback?.()', hideIndex)
 
-  assert.match(createSource, /onPopupBeforeHide\?:\s*\(\)\s*=>\s*void/u,
-    '弹窗创建入口必须接收隐藏前回调')
-  assert.match(createSource, /onPopupAfterHide\?:\s*\(\)\s*=>\s*void/u,
-    '弹窗创建入口必须接收隐藏后回调')
-  assert.match(createSource, /onPopupBeforeHideCallback = onPopupBeforeHide \?\? null/u,
-    '隐藏前回调必须保存到模块状态')
-  assert.match(createSource, /onPopupAfterHideCallback = onPopupAfterHide \?\? null/u,
-    '隐藏后回调必须保存到模块状态')
-  assert.ok(beforeIndex >= 0, '真实隐藏前必须撤销设置页焦点候选资格')
-  assert.ok(beforeIndex < hideIndex, '焦点保护必须早于 win.hide()')
-  assert.ok(afterIndex > hideIndex, '焦点恢复必须晚于 win.hide()')
-  assert.match(
-    hideSource,
-    /try\s*\{[\s\S]*?onPopupBeforeHideCallback\?\.\(\)[\s\S]*?win\?\.hide\(\)[\s\S]*?\}\s*finally\s*\{[\s\S]*?onPopupAfterHideCallback\?\.\(\)[\s\S]*?\}/u,
-    '焦点恢复必须放在 finally 中，确保隐藏异常时也能恢复设置页'
-  )
+  assert.match(popupSource, /onPopupCloseStart\?:\s*\(\)\s*=>\s*void/u,
+    '弹窗创建入口必须接收关闭开始回调')
+  assert.match(popupSource, /onPopupCloseEnd\?:\s*\(\)\s*=>\s*void/u,
+    '弹窗创建入口必须接收关闭结束回调')
+  assert.match(createSource, /onPopupCloseStartCallback = options\.onPopupCloseStart \?\? null/u,
+    '关闭开始回调必须保存到模块状态')
+  assert.match(createSource, /onPopupCloseEndCallback = options\.onPopupCloseEnd \?\? null/u,
+    '关闭结束回调必须保存到模块状态')
+  assert.ok(closeStartIndex >= 0, '关闭入口必须同步撤销设置页焦点候选资格')
+  assert.ok(closeStartIndex < hideIndex, '焦点保护必须早于 win.hide()')
+  assert.ok(closeEndIndex > hideIndex, '焦点恢复必须晚于 win.hide()')
   assert.match(
     mainSource,
-    /createPopup\(\s*PRELOAD_PATH,[\s\S]*?handlePopupInternalWindowTransition,\s*suspendSettingsWindowFocusBeforePopupHide,\s*restoreSettingsWindowFocusAfterPopupHideCallback\s*\)/u,
+    /createPopup\(\s*\{[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd\s*\}\s*\)/u,
     '主进程必须把弹窗隐藏前后焦点保护注入翻译弹窗'
   )
   assert.match(
     mainSource,
-    /suspendSettingsWindowFocusForPopupHide\(process\.platform,\s*settingsWin\)/u,
+    /suspendSettingsWindowFocusForPopupHide\(\s*process\.platform,\s*settingsWin\s*\)/u,
     '主进程必须仅在 macOS 可见设置页上启用焦点保护'
   )
 })

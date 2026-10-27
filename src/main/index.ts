@@ -754,6 +754,32 @@ function restoreSettingsWindowFocusAfterPopupHideCallback(): void {
 }
 
 /**
+ * 处理翻译弹窗关闭开始。
+ *
+ * 先回收设置页临时层级并挂起后台设置页的 key window 候选资格，再让弹窗进入
+ * 异步前台交还；两个动作都必须在关闭入口同步完成，不能等待 handBack。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupCloseStart(): void {
+  handlePopupInternalWindowTransition()
+  suspendSettingsWindowFocusBeforePopupHide()
+}
+
+/**
+ * 处理翻译弹窗真实隐藏完成。
+ *
+ * 先恢复设置页焦点能力，再续期内部 activate 抑制并回收层级，覆盖 hide() 后
+ * 可能迟到的系统激活事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupCloseEnd(): void {
+  restoreSettingsWindowFocusAfterPopupHideCallback()
+  handlePopupInternalWindowTransition()
+}
+
+/**
  * 判断当前是否处于划词置前保护期。
  *
  * 划词手势结束到按钮/弹窗状态生效之间存在短暂空档，activate 判定可能呈现
@@ -1353,13 +1379,13 @@ async function onReady(): Promise<boolean> {
     'proxyMode =',
     getSettings().proxyMode
   )
-  createPopup(PRELOAD_PATH,
-    suppressSelectionActivationWindowGap,
-    () => pronunciationRequests.cancelAll(),
-    handlePopupInternalWindowTransition,
-    suspendSettingsWindowFocusBeforePopupHide,
-    restoreSettingsWindowFocusAfterPopupHideCallback
-  )
+  createPopup({
+    preloadPath: PRELOAD_PATH,
+    onWindowShown: suppressSelectionActivationWindowGap,
+    onPopupHidden: () => pronunciationRequests.cancelAll(),
+    onPopupCloseStart: handlePopupCloseStart,
+    onPopupCloseEnd: handlePopupCloseEnd
+  })
   createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())
   applySelectionListener()

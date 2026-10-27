@@ -6,6 +6,8 @@ export interface SettingsWindowFocusTarget {
   isDestroyed(): boolean
   /** 返回窗口当前是否可见。 */
   isVisible(): boolean
+  /** 返回窗口当前是否持有键盘焦点。 */
+  isFocused(): boolean
   /** 设置窗口是否可作为 key window。 */
   setFocusable(focusable: boolean): void
 }
@@ -30,7 +32,10 @@ export function suspendSettingsWindowFocusForPopupHide(
     platform !== 'darwin' ||
     !target ||
     target.isDestroyed() ||
-    !target.isVisible()
+    !target.isVisible() ||
+    // 用户正在设置页输入时，窗口已经是当前 key window，不存在被系统重新
+    // 选中的问题；此时撤销可聚焦性会抢走键盘输入，必须保持原状。
+    target.isFocused()
   ) {
     return () => undefined
   }

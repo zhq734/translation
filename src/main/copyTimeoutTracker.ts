@@ -18,6 +18,11 @@ export interface TrackableCaptureOutcome {
   text: string
   /** 未取到文字时的失败原因。 */
   reason?: SelectionFailureReason
+  /** 诊断元数据；copyObserved 用于区分系统事件注入故障与目标应用忽略复制。 */
+  diagnostics?: {
+    /** macOS 模拟复制事件是否至少被全局事件钩子观测到一次。 */
+    copyObserved?: boolean
+  }
 }
 
 let consecutiveTimeouts = 0
@@ -45,6 +50,20 @@ export function recordCaptureOutcome(
   }
 
   if (outcome.reason !== 'timeout') return false
+
+  // 合成复制事件已进入系统事件钩子，说明 hiservices 与 CGEvent 注入链路正常。
+  // 此时剪贴板仍不变通常是目标应用忽略瞬时快捷键，属于应用级兼容问题；
+  // 必须清零历史系统故障计数，不能重启系统服务并触发新的内部窗口激活。
+  if (outcome.diagnostics?.copyObserved === true) {
+    consecutiveTimeouts = 0
+    lastTimeoutAt = 0
+    return false
+  }
+
+  // 未启用事件观测时 copyObserved 为 undefined，既不能证明注入链路正常，
+  // 也不能证明事件没有进入 event tap。该状态保持中性，不累计、不清零，
+  // 避免把纯快捷键模式的普通应用级超时误判为 hiservices 系统故障。
+  if (outcome.diagnostics?.copyObserved === undefined) return false
 
   if (now - lastTimeoutAt > TIMEOUT_RESET_WINDOW_MS) consecutiveTimeouts = 0
   lastTimeoutAt = now

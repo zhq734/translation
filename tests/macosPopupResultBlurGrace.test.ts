@@ -216,18 +216,27 @@ test('弹窗关闭开始与隐藏完成都必须通知主进程收尾', () => {
   )
   const handBackIndex = hideSource.indexOf('handBackFrontmostThen(')
   const hideIndex = hideSource.indexOf('win?.hide()')
-  const firstNotifyIndex = hideSource.indexOf('onPopupClosingCallback?.()')
-  const hiddenNotifyIndex = hideSource.indexOf('onPopupClosingCallback?.()', hideIndex)
+  const firstNotifyIndex = hideSource.indexOf('onPopupCloseStartCallback?.()')
+  const closeEndIndex = hideSource.indexOf('onPopupCloseEndCallback?.()', hideIndex)
 
-  assert.match(createSource, /onPopupClosing\?:\s*\(\)\s*=>\s*void/u,
-    'createPopup 必须接收关闭生命周期回调')
-  assert.match(createSource, /onPopupClosingCallback = onPopupClosing \?\? null/u,
-    '关闭生命周期回调必须保存到模块状态')
+  assert.match(popupSource, /onPopupCloseStart\?:\s*\(\)\s*=>\s*void/u,
+    'createPopup 必须接收关闭开始回调')
+  assert.match(popupSource, /onPopupCloseEnd\?:\s*\(\)\s*=>\s*void/u,
+    'createPopup 必须接收真实隐藏完成回调')
+  assert.match(createSource, /onPopupCloseStartCallback = options\.onPopupCloseStart \?\? null/u,
+    '关闭开始回调必须保存到模块状态')
+  assert.match(createSource, /onPopupCloseEndCallback = options\.onPopupCloseEnd \?\? null/u,
+    '真实隐藏完成回调必须保存到模块状态')
   assert.ok(firstNotifyIndex >= 0, '关闭开始必须通知主进程')
   assert.ok(firstNotifyIndex < handBackIndex,
     '关闭开始通知必须早于异步前台交还')
-  assert.ok(hiddenNotifyIndex > hideIndex,
+  assert.ok(closeEndIndex > hideIndex,
     '真实隐藏完成后必须再次通知主进程，覆盖迟到 activate')
+  assert.match(
+    hideSource,
+    /try\s*\{[\s\S]*?win\?\.hide\(\)[\s\S]*?\}\s*finally\s*\{[\s\S]*?onPopupCloseEndCallback\?\.\(\)[\s\S]*?\}/u,
+    '真实隐藏完成回调必须位于 finally 中，确保隐藏异常时也能恢复设置页焦点'
+  )
   assert.doesNotMatch(hideSource, /\bawait\b/u,
     '关闭生命周期通知不得引入 await，不能改变现有前台交还顺序')
   assert.match(transitionSource, /suppressSelectionActivationWindowGap\(\)/u,
@@ -236,7 +245,7 @@ test('弹窗关闭开始与隐藏完成都必须通知主进程收尾', () => {
     '关闭生命周期收尾必须回收设置页临时置顶层级')
   assert.match(
     mainSource,
-    /createPopup\(\s*PRELOAD_PATH,\s*suppressSelectionActivationWindowGap,\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),\s*handlePopupInternalWindowTransition\s*\)/u,
+    /createPopup\(\s*\{[\s\S]*?preloadPath:\s*PRELOAD_PATH,[\s\S]*?onWindowShown:\s*suppressSelectionActivationWindowGap,[\s\S]*?onPopupHidden:\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd\s*\}\s*\)/u,
     '主进程必须把关闭生命周期收尾回调注入翻译弹窗'
   )
 })

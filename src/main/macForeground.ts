@@ -640,12 +640,25 @@ export function handBackFrontmostThen(
   }
   const target = pendingReturnApp
   pendingReturnApp = null
+  /**
+   * 弹窗交还失败时只隐藏弹窗自身，绝不触发整应用显隐。
+   * @param reason 失败原因，用于诊断日志。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const finishPopupWithoutAppYield = (reason: string): void => {
+    logFrontDiagnostic(`popup-fallback-without-app-yield reason=${reason}`)
+    fallback()
+  }
   // 拿不到源应用（读取失败或截图前本应用已是最前）时没有可交还的目标，直接走退化动作。
   if (!target || !isProcessAlive(target.pid)) {
-    logFrontDiagnostic(
-      `交还退化为安全让出：${target ? `目标应用已退出 pid=${target.pid}` : '没有可交还的源应用记录'}`
-    )
-    void yieldFrontmostApp(fallback)
+    const reason = target ? `target-exited pid=${target.pid}` : 'missing-source-snapshot'
+    if (keyWindowIsPopup) {
+      finishPopupWithoutAppYield(`handback-failed reason=${reason}`)
+    } else {
+      logFrontDiagnostic(`交还退化为安全让出：${reason}`)
+      void yieldFrontmostApp(fallback)
+    }
     return
   }
   let finished = false
@@ -679,10 +692,13 @@ export function handBackFrontmostThen(
       }
       return
     }
-    logFrontDiagnostic(
-      `交还退化为安全让出：激活源应用 bundleId=${target.bundleId} 未在 ${FRONT_RETURN_TIMEOUT_MS}ms 内确认失活`
-    )
-    void yieldFrontmostApp(fallback)
+    const reason = `deactivation-timeout bundleId=${target.bundleId} timeoutMs=${FRONT_RETURN_TIMEOUT_MS}`
+    if (keyWindowIsPopup) {
+      finishPopupWithoutAppYield(`handback-failed reason=${reason}`)
+    } else {
+      logFrontDiagnostic(`交还退化为安全让出：${reason}`)
+      void yieldFrontmostApp(fallback)
+    }
   }
   // 兜底：激活未生效、目标应用是无窗口的后台应用或轮询异常时也必须收尾，
   // 不能把窗口一直留在屏上拦截鼠标。
