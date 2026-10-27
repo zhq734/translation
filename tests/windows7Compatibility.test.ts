@@ -81,8 +81,9 @@ test('Win7 兼容包必须仅使用 Tesseract OCR 且不加载 OCR 原生链路'
   assert.match(source, /workerPath: resolveTesseractWorkerPath\(process\.resourcesPath, app\.isPackaged\)/u)
   assert.match(
     source,
-    /if \(isWindows7CompatibilityRuntime\(\)\) \{\s*const \[\{ OcrDispatcher \}, \{ TesseractOcrEngine \}\] = await Promise\.all\(\[\s*import\('\.\/ocrDispatcher'\),\s*import\('\.\/tesseractOcr'\)\s*\]\)/u
+    /if \(isWindows7CompatibilityRuntime\(\)\) \{\s*const \[\{ OcrDispatcher \}, \{ TesseractOcrEngine, resolveTesseractLangPath, resolveTesseractWorkerPath \}\] = await Promise\.all\(\[\s*import\('\.\/ocrDispatcher'\),\s*import\('\.\/tesseractOcr'\)\s*\]\)/u
   )
+  assert.doesNotMatch(source, /^import\s+\{[^}]*\}\s+from\s+'\.\/tesseractOcr'$/mu)
   assert.match(source, /function resolveOcrEnginePreference\(settings: Settings\): OcrEnginePreference/u)
   assert.match(source, /return isWindows7CompatibilityRuntime\(\) \? 'tesseract' : settings\.ocrEnginePreference/u)
   assert.doesNotMatch(source, /windows7\.ocrUnavailable/u)

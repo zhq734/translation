@@ -235,7 +235,6 @@ import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
 import { isWindows7CompatibilityRuntime } from './platformCompatibility'
-import { resolveTesseractLangPath, resolveTesseractWorkerPath } from './tesseractOcr'
 import { OcrEngineError, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { cleanOcrText } from '../shared/ocrText'
 import type {
@@ -3254,7 +3253,7 @@ function resolveOcrEnginePreference(settings: Settings): OcrEnginePreference {
 async function createOcrDispatcher(settings: Settings): Promise<OcrDispatcher> {
   // Win7 包只保留 Tesseract.js 与 WebAssembly 核心，避免加载任何 OCR 原生模块。
   if (isWindows7CompatibilityRuntime()) {
-    const [{ OcrDispatcher }, { TesseractOcrEngine }] = await Promise.all([
+    const [{ OcrDispatcher }, { TesseractOcrEngine, resolveTesseractLangPath, resolveTesseractWorkerPath }] = await Promise.all([
       import('./ocrDispatcher'),
       import('./tesseractOcr')
     ])
