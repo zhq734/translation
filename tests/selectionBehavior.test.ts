@@ -315,6 +315,18 @@ test('内部模拟复制之后紧邻的第二次复制必须识别为用户复�
   assert.equal(guard.getExternalCopyVersion(), version + 1)
 })
 
+test('内部模拟复制观测结果应能区分事件到达与等待超时', async () => {
+  const observedGuard = new CopyShortcutGuard()
+  const observedExpectation = observedGuard.expectSyntheticCopyShortcut()
+
+  setTimeout(() => observedGuard.observeCopyShortcut(), 10)
+  assert.equal(await observedExpectation.finish(), true)
+
+  const timedOutGuard = new CopyShortcutGuard()
+  const timedOutExpectation = timedOutGuard.expectSyntheticCopyShortcut()
+  assert.equal(await timedOutExpectation.finish(), false)
+})
+
 test('剪贴板已变为非内部捕获文本时不得恢复旧内容', () => {
   const sentinel = '__sentinel__'
 
@@ -453,6 +465,40 @@ test('点击“译”按钮应取消未完成预取并立即开始按钮专用�
   assert.equal(prefetchAbortObserved, true)
   assert.deepEqual(captured, { text: '按钮立即复制到的文字', anchor })
   assert.equal(buttonCaptureCount, 1)
+})
+
+/**
+ * 校验按钮专用取词会把入口层已完成的窗口激活标记传给底层取词函数。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('captureFromButton 应透传窗口激活已完成标记', async () => {
+  let receivedContext: unknown
+  const coordinator = new SelectionCaptureCoordinator(
+    async (_signal, context) => {
+      receivedContext = context
+      return '入口已激活'
+    },
+    async () => '不应使用预取',
+    async (_signal, context) => {
+      receivedContext = context
+      return '入口已激活'
+    }
+  )
+  coordinator.setWindowContext({
+    bundleId: 'com.tencent.xinwechat',
+    pid: 1044,
+    windowNumber: 1592,
+    windowActivationSettled: true
+  })
+  const captured = await coordinator.captureFromButton({ x: 10, y: 20 })
+  assert.equal(captured?.text, '入口已激活')
+  assert.deepEqual(receivedContext, {
+    bundleId: 'com.tencent.xinwechat',
+    pid: 1044,
+    windowNumber: 1592,
+    windowActivationSettled: true
+  })
 })
 
 /**
@@ -629,8 +675,11 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
 
   assert.match(
     scheduleSource,
-    /if\s*\(action === 'show-button'\)\s*\{[\s\S]*?showSelectionButton\(anchor\)[\s\S]*?selectionCapture\.prepare\(anchor\)[\s\S]*?return/u
+    /rememberFrontmostWindowAtPoint\(anchor\)[\s\S]*?selectionCapture\.setWindowContext\(lastSelectionWindowContext\)[\s\S]*?selectionCapture\.prepare\(anchor\)/u,
+    '只读预取必须在源窗口上下文写入后启动'
   )
+  assert.match(scheduleSource, /if\s*\(action === 'show-button'\)[\s\S]*?showSelectionButton\(anchor\)/u,
+    '按钮模式仍需显示“译”按钮')
   // 按钮显示期间不得启动完整取词管线（直读 + 复制兜底），只允许只读预取。
   assert.doesNotMatch(scheduleSource, /selectionCapture\.capture/u)
   assert.match(translateSource, /selectionCapture\.consumePreparedBounded\(\)/u)
@@ -780,9 +829,11 @@ test('全局监听不应监听 Ctrl+A 或 Command+A 全选快捷键', () => {
 
 test('主进程不得注册系统复制快捷键，选区按钮也不得抢占输入焦点', () => {
   const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const registrySource = readFileSync('src/main/globalShortcutRegistry.ts', 'utf8')
   const buttonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
 
-  assert.match(mainSource, /if\s*\(isCopyShortcut\(accelerator\)\)\s*\{/u)
+  assert.match(registrySource, /if\s*\(isCopyShortcut\(accelerator\)\)\s*\{/u)
+  assert.match(mainSource, /registerGlobalShortcuts\(settings\)/u)
   assert.match(buttonSource, /focusable:\s*false/u)
   assert.match(buttonSource, /webContents\.once\('did-finish-load'/u)
   assert.match(buttonSource, /win\.showInactive\(\)/u)
@@ -1031,6 +1082,13 @@ test('划词手势处理只应排除持有焦点的应用自有窗口，后台�
   assert.match(candidatesSource, /settingsWin/u)
   assert.match(candidatesSource, /isFocused\(\)/u)
   assert.match(candidatesSource, /webReader\?\.isWindowFocused\(\)/u)
+  // 焦点挂起机制已删除，候选收集只依据实时 isFocused()；不得再依赖任何
+  // 挂起状态或所有者 token，否则会把已移除机制的残留状态重新引入。
+  assert.doesNotMatch(
+    candidatesSource,
+    /settingsWindowFocusSuspendedForSelection|webReaderFocusSuspensionOwnerToken/u,
+    '自有窗口排除不得依赖已删除的焦点挂起状态'
+  )
 
   const handlerStart = source.indexOf('function handleSelectionGesture')
   const handlerEnd = source.indexOf('/**', handlerStart + 1)
@@ -1317,4 +1375,34 @@ test('划词监听启动失败应记录可诊断日志，避免手势失效时�
   assert.match(controllerSource, /const started = this\.options\.start\(\)/u)
   assert.match(controllerSource, /this\.running = started/u)
   assert.match(controllerSource, /后续 refresh 可重试/u)
+})
+
+/**
+ * 校验弹窗内固定窗口、网页翻译、复制、朗读等操作图标均具备悬停动画，
+ * 且动画复用统一的 transform 过渡，保证与设置图标交互一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('翻译弹窗的操作图标应统一支持光标悬停动画', () => {
+  const popupStyles = readFileSync('src/renderer/src/style.css', 'utf8')
+
+  for (const selector of [
+    '#manual-mode:hover .manual-icon',
+    '#open-web-reader:hover .web-reader-icon',
+    '#open-settings:hover .settings-icon',
+    '#speak:hover:not([disabled]) .speak-icon',
+    '#copy:hover .copy-icon',
+    '#pin:hover .pin-icon',
+    '#close:hover:not(:active)'
+  ]) {
+    assert.ok(
+      popupStyles.includes(selector),
+      `缺少悬停动画选择器：${selector}`
+    )
+  }
+
+  assert.match(
+    popupStyles,
+    /\.header-action-icon\s*\{[^}]*transition:\s*transform[^;]*;/su
+  )
 })

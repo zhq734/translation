@@ -27,7 +27,7 @@ test('翻译请求应从主进程安全存储读取 AI API Key 并传入运行�
   assert.match(source, /const aiApiKey = settings\.aiEnabled \? getAiConfiguration\(\)\.getApiKey\(\) : null/u)
   assert.match(
     source,
-    /await translate\(\s*text,\s*requestSettings,\s*dingTalkCredentials,\s*aiApiKey\s*\)/u
+    /await translateStream\(\s*text,\s*requestSettings,\s*dingTalkCredentials,\s*aiApiKey/u
   )
 })
 

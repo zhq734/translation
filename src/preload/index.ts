@@ -4,6 +4,8 @@ import type {
   Api,
   LogEntry,
   TranslatePayload,
+  TranslateDeltaPayload,
+  PopupAutoSizeRequest,
   ManualTranslateRequest,
   Settings,
   DeepLxStatus,
@@ -15,6 +17,8 @@ import type {
   MacOSQuarantineResult,
   UpdateStatus,
   EdgeSpeechResult,
+  PronunciationAudioResult,
+  PronunciationResult,
   OcrSelectionBeginPayload,
   OcrSelectionReadyPayload,
   OcrSelectionBounds,
@@ -35,7 +39,8 @@ import type {
   WebTranslationRunPayload,
   WebTranslationRunRequest,
   WebViewBounds,
-  CaptureDiagnosticsSummary
+  CaptureDiagnosticsSummary,
+  GlobalShortcutRegistrationState
 } from '../shared/types'
 
 /** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
@@ -107,6 +112,17 @@ const api: Api = {
     return () => ipcRenderer.removeListener('translate:result', listener)
   },
   /**
+   * 订阅流式翻译增量。
+   * @param callback 增量负载回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onTranslateDelta(callback: (payload: TranslateDeltaPayload) => void) {
+    const listener = (_event: unknown, payload: TranslateDeltaPayload): void => callback(payload)
+    ipcRenderer.on('translate:delta', listener)
+    return () => ipcRenderer.removeListener('translate:delta', listener)
+  },
+  /**
    * 订阅主进程打开手动翻译模式的通知。
    * @param callback 手动翻译打开回调。
    * @returns 取消订阅方法。
@@ -116,6 +132,17 @@ const api: Api = {
     const listener = (): void => callback()
     ipcRenderer.on('manual-translate:open', listener)
     return () => ipcRenderer.removeListener('manual-translate:open', listener)
+  },
+  /**
+   * 订阅主进程切回划词翻译模式的通知。
+   * @param callback 划词模式打开回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onSelectionMode(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('popup:selection-mode', listener)
+    return () => ipcRenderer.removeListener('popup:selection-mode', listener)
   },
   /**
    * 请求主进程显示并固定手动翻译模式。
@@ -135,12 +162,60 @@ const api: Api = {
     ipcRenderer.send('popup:copy', text)
   },
   /**
+   * 查询单个英文单词的 IPA 音标。
+   * @param word 已由 Renderer 识别出的英文单词。
+   * @returns 主进程返回的脱敏音标结果。
+   * @author zhenghq
+   */
+  lookupPronunciation: (word: string, requestId?: string): Promise<PronunciationResult> =>
+    ipcRenderer.invoke('pronunciation:lookup', word, requestId),
+  /**
+   * 下载当前音标结果中已登记的词典音频。
+   * @param word 当前查询词。
+   * @param variantId 主进程返回的变体标识。
+   * @returns 临时音频字节或脱敏错误。
+   * @author zhenghq
+   */
+  fetchPronunciationAudio: (
+    word: string,
+    variantId: string,
+    requestId?: string
+  ): Promise<PronunciationAudioResult> =>
+    ipcRenderer.invoke('pronunciation:audio', word, variantId, requestId),
+  /**
+   * 取消当前音标查询或音频下载。
+   * @param requestId Renderer 生成的请求 ID。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelPronunciationRequest(requestId: string): void {
+    ipcRenderer.send('pronunciation:cancel', requestId)
+  },
+  /**
+   * 通知主进程暂停或恢复音标交互期间的自动隐藏。
+   * @param active 是否处于音标交互状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setPronunciationInteraction(active: boolean): void {
+    ipcRenderer.send('pronunciation:interaction', active)
+  },
+  /**
    * 关闭翻译弹窗。
    * @returns 无返回值。
    * @author zhenghq
    */
   hide() {
     ipcRenderer.send('popup:hide')
+  },
+  /**
+   * 请求主进程按内容自然尺寸调整弹窗大小。
+   * @param size 目标尺寸。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resizePopup(size: PopupAutoSizeRequest) {
+    ipcRenderer.send('popup:resize', size)
   },
   /**
    * 从翻译弹窗打开设置窗口。
@@ -261,6 +336,17 @@ const api: Api = {
     const listener = (_event: unknown, pinned: boolean): void => callback(pinned)
     ipcRenderer.on('popup:pinned', listener)
     return () => ipcRenderer.removeListener('popup:pinned', listener)
+  },
+  /**
+   * 订阅主进程完成弹窗隐藏的通知。
+   * @param callback 弹窗隐藏后的清理回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onPopupHidden(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('popup:hidden', listener)
+    return () => ipcRenderer.removeListener('popup:hidden', listener)
   },
   /**
    * 翻译当前选中文字。
@@ -520,6 +606,24 @@ const api: Api = {
    * @author zhenghq
    */
   setSettings: (patch: Partial<Settings>) => ipcRenderer.invoke('settings:set', patch),
+  /**
+   * 查询全局快捷键最近一次注册状态。
+   * @returns 各快捷键的注册状态。
+   * @author zhenghq
+   */
+  getShortcutRegistrationStates: (): Promise<GlobalShortcutRegistrationState[]> =>
+    ipcRenderer.invoke('shortcuts:get-registration'),
+  /**
+   * 订阅全局快捷键注册状态变化。
+   * @param callback 注册状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShortcutRegistrationChanged(callback: (states: GlobalShortcutRegistrationState[]) => void) {
+    const listener = (_event: unknown, states: GlobalShortcutRegistrationState[]): void => callback(states)
+    ipcRenderer.on('shortcuts:registration-changed', listener)
+    return () => ipcRenderer.removeListener('shortcuts:registration-changed', listener)
+  },
   /**
    * 订阅设置变化。
    * @param callback 设置变化回调。

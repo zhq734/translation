@@ -135,15 +135,18 @@ test('打包配置应允许 electron-builder 下载目标平台 Electron', () =>
 })
 
 /**
- * 校验 Windows helper 资源条目使用通配写法，使仓库尚未提交预编译 exe 时
- * `dist:win` 不会因缺少文件而整包失败（electron-builder 对无匹配的 glob 不报错）。
+ * 校验 Windows helper 资源在打包前必须由构建脚本编译生成，避免安装包静默缺少 UIA helper。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows helper 资源条目应容忍预编译 exe 缺失', () => {
+test('Windows helper 资源必须在打包前编译生成', () => {
   const winResources = packageJson.build?.win?.extraResources ?? []
   const helperEntry = winResources.find((entry) => entry.to === '.')
   assert.ok(helperEntry, 'win extraResources 应包含 windows-uia-reader helper 条目')
   assert.equal(helperEntry?.from, 'helpers/windows-uia-reader')
   assert.deepEqual(helperEntry?.filter, ['windows-uia-reader.exe'])
+
+  assert.equal(existsSync('scripts/build-windows-uia-reader.mjs'), true)
+  const prepareScript = readFileSync('scripts/prepare-windows-ocr-runtime.mjs', 'utf8')
+  assert.match(prepareScript, /build-windows-uia-reader/u)
 })

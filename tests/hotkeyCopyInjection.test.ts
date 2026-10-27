@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  COPY_FALLBACK_MAX_RETRIES,
+  COPY_FALLBACK_RETRY_TIMEOUT_MS,
   COPY_INJECTION_RETRY_DELAY_MS,
+  resolveCopyRetryPlan,
   resolveHotkeyModifiers,
   shouldReleaseHotkeyModifiersBeforeCopy,
   shouldRetryCopyInjection
@@ -115,4 +118,86 @@ test('全局钩子未运行时不应等待内部模拟复制的观测窗口', ()
     /if\s*\(!\s*shouldObserveSyntheticCopy\)\s*\{\s*await sendCopyShortcut\(false\)/u
   )
   assert.match(copySource, /expectSyntheticCopyShortcut\(\)[\s\S]*?sendCopyShortcut\(true\)/u)
+})
+
+/**
+ * 校验复制兜底在首次轮询超时后只允许一次独立、有界的重试，
+ * 且重试计划必须尊重中止信号与用户主动复制状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('复制兜底超时后应允许一次独立有界重试', () => {
+  assert.equal(typeof resolveCopyRetryPlan, 'function')
+  const plan = resolveCopyRetryPlan({
+    attempts: 1,
+    retries: 0,
+    elapsedMs: 800,
+    timeoutMs: 800,
+    aborted: false,
+    externalCopyObserved: false
+  })
+  assert.equal(plan.retry, true)
+  assert.ok(plan.retryTimeoutMs > 0, '重试必须带独立超时')
+  assert.ok(plan.retryTimeoutMs <= 600, '重试超时必须不超过硬上限')
+
+  // 一次复制键都没注入成功时无可重试内容，不得进入重试。
+  assert.equal(resolveCopyRetryPlan({
+    attempts: 0,
+    retries: 0,
+    elapsedMs: 800,
+    timeoutMs: 800,
+    aborted: false,
+    externalCopyObserved: false
+  }).retry, false)
+
+  // 重试次数耗尽后不得再重试。
+  assert.equal(resolveCopyRetryPlan({
+    attempts: 1,
+    retries: 1,
+    elapsedMs: 1600,
+    timeoutMs: 800,
+    aborted: false,
+    externalCopyObserved: false
+  }).retry, false)
+
+  // 取词被中止时不得重试。
+  assert.equal(resolveCopyRetryPlan({
+    attempts: 1,
+    retries: 0,
+    elapsedMs: 800,
+    timeoutMs: 800,
+    aborted: true,
+    externalCopyObserved: false
+  }).retry, false)
+
+  // 用户主动复制时不得重试，避免覆盖用户剪贴板。
+  assert.equal(resolveCopyRetryPlan({
+    attempts: 1,
+    retries: 0,
+    elapsedMs: 800,
+    timeoutMs: 800,
+    aborted: false,
+    externalCopyObserved: true
+  }).retry, false)
+
+  // 首次轮询尚未超时时不得提前进入独立重试轮次。
+  assert.equal(resolveCopyRetryPlan({
+    attempts: 1,
+    retries: 0,
+    elapsedMs: 200,
+    timeoutMs: 800,
+    aborted: false,
+    externalCopyObserved: false
+  }).retry, false)
+})
+
+/**
+ * 校验复制兜底重试常量语义：最多一次、超时有硬上限。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('复制兜底重试次数与超时必须受硬上限约束', () => {
+  assert.equal(COPY_FALLBACK_MAX_RETRIES, 1)
+  assert.ok(COPY_FALLBACK_RETRY_TIMEOUT_MS > 0)
+  assert.ok(COPY_FALLBACK_RETRY_TIMEOUT_MS <= 600)
 })

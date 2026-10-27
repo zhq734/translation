@@ -18,6 +18,11 @@ test('翻译弹窗应按标题、语言、内容和底部状态操作区组织�
   assert.match(popup, new RegExp(`class="footer popup-status-actions"[^>]*aria-label="${tForTest('en-US', 'popup.statusActions')}"`, 'u'))
   assert.ok(popup.indexOf('class="drag-handle"') < popup.indexOf('class="header"'))
   assert.ok(popup.indexOf('id="selection-view"') < popup.indexOf('class="footer popup-status-actions"'))
+  // 底部栏中朗读按钮应在语言下拉框左侧，保持最左位置。
+  assert.ok(popup.indexOf('id="speak"') < popup.indexOf('class="language-picker"'))
+  // 顶部栏中翻译 API 应位于操作图标组左侧，关闭按钮独占最右端。
+  assert.ok(popup.indexOf('class="provider-bar"') < popup.indexOf('id="manual-mode"'))
+  assert.ok(popup.indexOf('id="open-settings"') < popup.indexOf('id="close"'))
   assert.match(popupCss, /#popup\s*\{[\s\S]*box-shadow:\s*var\(--shadow-overlay\)/u)
   assert.match(popupCss, /\.header-action-button\s*\{[\s\S]*min-height:\s*var\(--control-height\)/u)
 })

@@ -358,6 +358,22 @@ h2 {
   margin-bottom: 0;
 }
 
+.hotkey-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hotkey-control input {
+  flex: 1;
+  min-width: 0;
+}
+
+.hotkey-control .btn {
+  flex: 0 0 auto;
+}
+
 .row label {
   color: var(--text-secondary);
 }
@@ -506,6 +522,11 @@ input[type='number']:disabled {
 
 .checkbox-control input {
   accent-color: var(--button-bg);
+}
+
+.checkbox-control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .dingtalk-secret-status.configured {

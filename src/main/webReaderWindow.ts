@@ -1,6 +1,6 @@
 import {
   BrowserWindow,
-  WebContentsView,
+  BrowserView,
   session,
   type Rectangle,
   type Session
@@ -83,6 +83,7 @@ import {
   type WebImageOverlayOperation,
   type WebTextWriteOperation
 } from './webTextExtractionScript'
+import { buildWebTypewriterCancelScript } from './webTypewriterScript'
 
 /** 阅读器专用持久化 Session 分区。 */
 export const WEB_READER_PARTITION = 'persist:web-page-translation'
@@ -101,14 +102,20 @@ export interface WebReaderManagerOptions {
   /** 调用现有 TranslationRuntime 翻译单段文本。 */
   translate(text: string, sourceLang: string, targetLang: string): Promise<{ translation: string; provider?: string; channel?: string }>
   /** 为远程页面创建取图器；未注入时跳过图片 OCR。 */
-  createImageSource?(view: WebContentsView, signal?: AbortSignal): WebImageSource
+  createImageSource?(view: BrowserView, signal?: AbortSignal): WebImageSource
   /** 对图片字节执行 OCR 识别；未注入时跳过图片 OCR。 */
   recognizeImage?(bytes: Buffer, candidate: WebImageCandidate): Promise<WebImageRecognition>
   /** 阅读器窗口打开或关闭时通知主进程。 */
   onWindowStateChanged?: (open: boolean) => void
+  /** 阅读器窗口失去焦点、隐藏或关闭时通知主进程解除弹窗保护。 */
+  onInternalWindowFocusLost?: () => void
+  /** 判断当前是否存在可见设置页；存在时关闭阅读器不得触发应用级隐藏。 */
+  hasVisibleSettingsWindow?: () => boolean
+  /** 通过统一窗口级入口把阅读器置前；不得由管理器直接激活整个应用。 */
+  bringToFrontToOwnWindow?: (window: BrowserWindow) => void
 }
 
-/** 管理网页阅读器窗口、远程 WebContentsView、原位写回与任务代次。 */
+/** 管理网页阅读器窗口、远程 BrowserView、原位写回与任务代次。 */
 export class WebReaderManager {
   private readonly readerId = randomUUID()
   private readonly options: WebReaderManagerOptions
@@ -116,7 +123,7 @@ export class WebReaderManager {
   private readonly pageCache = new WebPageTranslationCache()
   private readerSession: Session | null = null
   private window: BrowserWindow | null = null
-  private view: WebContentsView | null = null
+  private view: BrowserView | null = null
   private pageRevision = 0
   private extractedUnits: ExtractedWebTextUnit[] = []
   private extractedBlocks: ExtractedWebTextBlock[] = []
@@ -173,10 +180,11 @@ export class WebReaderManager {
 
   /** 打开或聚焦阅读器。
    * @param url 可选初始 URL。
+   * @param options 打开选项；`bringToFront` 为 true 时走统一窗口级置前入口。
    * @returns 无返回值。
    * @author zhenghq
    */
-  async open(url?: string): Promise<void> {
+  async open(url?: string, options: { bringToFront?: boolean } = {}): Promise<void> {
     if (!this.options.getSettings().webTranslationEnabled) {
       throw new Error(translateMain('webReader.error.disabled'))
     }
@@ -186,8 +194,17 @@ export class WebReaderManager {
     // 关闭阅读器时就没有可交还的目标，macOS 会把设置页提升为 key window 顶到最前。
     await rememberFrontmostAppIfInactiveAsync()
     await this.ensureWindow()
-    this.window?.show()
-    this.window?.focus()
+    const window = this.window
+    if (window && !window.isDestroyed()) {
+      if (options.bringToFront && this.options.bringToFrontToOwnWindow) {
+        // 弹窗内点击阅读器属于显式用户入口：hidePopup() 会续期划词 activate 抑制，
+        // 但该抑制只针对划词内部自动动作；用户这次点击必须真正把阅读器置前。
+        this.options.bringToFrontToOwnWindow(window)
+      } else {
+        window.show()
+        window.focus()
+      }
+    }
     if (url) await this.navigate(url)
   }
 
@@ -202,23 +219,31 @@ export class WebReaderManager {
   }
 
   /**
-   * 激活仍然存在的网页阅读器窗口。
+   * 激活仍然存在的网页阅读器窗口，供内部 activate 回调复用。
    * @returns 已成功激活时返回 true；窗口不存在或已销毁时返回 false。
    * @author zhenghq
    */
   focusExistingWindow(): boolean {
     if (!this.window || this.window.isDestroyed()) return false
-    // 最小化的窗口 isVisible() 仍为 true，必须单独处理，否则会命中下面的早退分支而无法恢复。
-    const wasMinimized = this.window.isMinimized()
+    // 最小化的窗口 isVisible() 仍为 true，必须先恢复再显示。
     if (this.window.isMinimized()) this.window.restore()
-    if (wasMinimized) {
-      this.window.show()
-      this.window.focus()
-      return true
-    }
-    // 已可见且未最小化时直接视为已处理：误放行的内部 activate 不得把后台
-    // 阅读器 show()+focus() 顶到用户应用之上。不可见时才真正恢复显示。
+    // 内部 activate 可能被系统误放行：已可见且未最小化时不得无条件置顶，
+    // 否则后台阅读器会抢走用户当前应用的前台焦点。
     if (this.window.isVisible() && !this.window.isMinimized()) return true
+    this.window.show()
+    this.window.focus()
+    return true
+  }
+
+  /**
+   * 通过显式用户入口打开或聚焦网页阅读器窗口。
+   * 即使窗口已可见也重新 show()+focus()，以处理被其它应用遮挡的场景。
+   * @returns 窗口存在并已尝试置前时返回 true；窗口不存在或已销毁时返回 false。
+   * @author zhenghq
+   */
+  focusOrOpenExistingWindow(): boolean {
+    if (!this.window || this.window.isDestroyed()) return false
+    if (this.window.isMinimized()) this.window.restore()
     this.window.show()
     this.window.focus()
     return true
@@ -254,6 +279,16 @@ export class WebReaderManager {
     this.cancel()
     if (this.closingWindow) return
     this.closingWindow = true
+    // 设置页仍可见时关闭阅读器属于应用内部窗口切换：只需销毁阅读器自身，
+    // 不能再走 handBackFrontmostThen 的安全让出兜底（app.hide()/app.show()），
+    // 否则设置页会被整应用隐藏一起带走。应用级交还仅在阅读器是最后一个
+    // 需要前台的常规窗口时使用。
+    if (this.options.hasVisibleSettingsWindow?.()) {
+      this.closingWindow = false
+      this.allowWindowClose = true
+      window.close()
+      return
+    }
     // 阅读器通常是应用内最后一个 key window：直接关闭会让 macOS 把设置页提升为
     // key window 并顶到其它应用之上，因此先交还前台、确认失活后再销毁窗口。
     handBackFrontmostThen(window, () => {
@@ -299,7 +334,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   back(): void {
-    if (this.view?.webContents.navigationHistory.canGoBack()) this.view.webContents.navigationHistory.goBack()
+    if (this.view?.webContents.canGoBack()) this.view.webContents.goBack()
   }
 
   /** 在历史记录中前进。
@@ -307,7 +342,7 @@ export class WebReaderManager {
    * @author zhenghq
    */
   forward(): void {
-    if (this.view?.webContents.navigationHistory.canGoForward()) this.view.webContents.navigationHistory.goForward()
+    if (this.view?.webContents.canGoForward()) this.view.webContents.goForward()
   }
 
   /** 刷新当前网页。
@@ -333,7 +368,7 @@ export class WebReaderManager {
    * 计算远程网页视图的安全可用区域，确保标题栏和本地工具栏不被覆盖。
    * @param bounds Renderer 占位区矩形。
    * @param contentSize 当前窗口内容区尺寸。
-   * @returns 裁剪后的 WebContentsView 矩形。
+   * @returns 裁剪后的 BrowserView 矩形。
    * @author zhenghq
    */
   private calculateViewBounds(
@@ -475,7 +510,7 @@ export class WebReaderManager {
       const canFetch = Boolean(createSource && recognizeImage && view && !view.webContents.isDestroyed())
       let processedCandidates: WebImageCandidate[]
       if (canFetch) {
-        const source = (createSource as NonNullable<typeof createSource>).call(this.options, view as WebContentsView, controller.signal)
+        const source = (createSource as NonNullable<typeof createSource>).call(this.options, view as BrowserView, controller.signal)
         const processed = await processWebImageCandidates(batch, {
           source,
           recognize: (bytes, candidate) => (recognizeImage as NonNullable<typeof recognizeImage>).call(this.options, bytes, candidate),
@@ -554,11 +589,20 @@ export class WebReaderManager {
       this.translatedUnits = this.mergeTranslatedUnits(latestResults, cachedTranslations)
       this.state = { ...this.state, translationCacheHits: cachedTranslations.size }
       this.emitState()
-      if (this.mode === 'bilingual') {
-        addApplyResult(await this.applyBilingual())
-      } else if (this.mode === 'target') {
-        addApplyResult(await this.applyUnits('target', new Set(units.map((unit) => unit.id))))
-      }
+      // 缓存命中同样进入统一写回队列，避免与翻译完成回调并发修改页面 DOM。
+      applyQueue = applyQueue.then(async () => {
+        if (!isCurrentJob()) return
+        if (this.mode === 'bilingual') {
+          addApplyResult(await this.applyBilingual(undefined, { typewriter: true, cached: true }))
+        } else if (this.mode === 'target') {
+          addApplyResult(await this.applyUnits(
+            'target',
+            new Set(units.map((unit) => unit.id)),
+            { typewriter: true, cached: true }
+          ))
+        }
+      })
+      await applyQueue
     }
     const initialHits = this.selectCompleteCacheHits(
       this.pageCache.match(cacheContext, this.extractedUnits),
@@ -612,13 +656,13 @@ export class WebReaderManager {
         if (isCurrentJob() && this.mode === 'bilingual') {
           // 块内仍有单元未完成时不渲染、也不计入未对照，等整块完成后一次性 upsert。
           if (this.isBlockComplete(completedUnit.blockId, units)) {
-            addApplyResult(await this.applyBilingual(new Set([completedUnit.blockId])))
+            addApplyResult(await this.applyBilingual(new Set([completedUnit.blockId]), { typewriter: true }))
           }
         } else if (isCurrentJob() && this.mode === 'target' && typeof completedUnit.translation === 'string') {
           // 段落级译文挂在首个单元，需整块写回并清空其余单元，避免残留多份原文。
           const blockUnitIds = this.blockUnitIds.get(completedUnit.blockId)
           if (blockUnitIds && this.isBlockComplete(completedUnit.blockId, units)) {
-            addApplyResult(await this.applyUnits('target', new Set(blockUnitIds)))
+            addApplyResult(await this.applyUnits('target', new Set(blockUnitIds), { typewriter: true }))
           }
         }
       })
@@ -709,6 +753,8 @@ export class WebReaderManager {
    * @author zhenghq
    */
   async setMode(mode: WebTranslationMode): Promise<WebTranslationApplyPayload> {
+    // 切换展示模式会重写同一批文本节点，先停止仍在进行的打字机动画，避免迟到帧覆盖新模式。
+    await this.cancelTypewriter()
     // D2 不变量：离开对照先清理注入；进入对照前先把文本节点还原为原文再注入。
     if (this.bilingualInjected && mode !== 'bilingual') await this.clearBilingualInjection()
     this.mode = mode
@@ -1114,7 +1160,10 @@ export class WebReaderManager {
    * @returns 对照注入统计。
    * @author zhenghq
    */
-  private async applyBilingual(onlyBlockIds?: ReadonlySet<string>): Promise<WebTranslationApplyPayload> {
+  private async applyBilingual(
+    onlyBlockIds?: ReadonlySet<string>,
+    options: { typewriter?: boolean; cached?: boolean } = {}
+  ): Promise<WebTranslationApplyPayload> {
     const view = this.view
     if (!view || view.webContents.isDestroyed()) {
       return { applied: 0, mismatched: 0, skipped: 0, bilingualSkipped: 0, unrendered: 0 }
@@ -1136,7 +1185,7 @@ export class WebReaderManager {
     try {
       await this.ensureBilingualStyles(view)
       const result = await view.webContents.executeJavaScript(
-        buildWebBilingualInjectScript(built.operations, targetLang),
+        buildWebBilingualInjectScript(built.operations, targetLang, options),
         true
       ) as { applied: number; mismatched: number; skipped: number }
       this.bilingualInjected = true
@@ -1162,7 +1211,7 @@ export class WebReaderManager {
    * @returns 注入完成后的 Promise。
    * @author zhenghq
    */
-  private async ensureBilingualStyles(view: WebContentsView): Promise<void> {
+  private async ensureBilingualStyles(view: BrowserView): Promise<void> {
     if (this.bilingualCssKey) return
     this.bilingualCssKey = await view.webContents.insertCSS(buildWebBilingualStyleSheet())
   }
@@ -1239,7 +1288,7 @@ export class WebReaderManager {
    * @returns 注入完成后的 Promise。
    * @author zhenghq
    */
-  private async ensureImageOverlayStyles(view: WebContentsView): Promise<void> {
+  private async ensureImageOverlayStyles(view: BrowserView): Promise<void> {
     if (this.imageOverlayCssKey) return
     this.imageOverlayCssKey = await view.webContents.insertCSS(buildWebImageOverlayStyleSheet())
   }
@@ -1276,7 +1325,11 @@ export class WebReaderManager {
    * @returns 写回统计。
    * @author zhenghq
    */
-  private async applyUnits(mode: WebTranslationMode, onlyUnitIds?: ReadonlySet<string>): Promise<WebTranslationApplyPayload> {
+  private async applyUnits(
+    mode: WebTranslationMode,
+    onlyUnitIds?: ReadonlySet<string>,
+    options: { typewriter?: boolean; cached?: boolean } = {}
+  ): Promise<WebTranslationApplyPayload> {
     const view = this.view
     if (!view || view.webContents.isDestroyed()) return { applied: 0, mismatched: 0, skipped: 0 }
     const translations = new Map(this.translatedUnits.map((unit) => [unit.id, unit]))
@@ -1290,7 +1343,10 @@ export class WebReaderManager {
       }))
     if (operations.length === 0) return { applied: 0, mismatched: 0, skipped: 0 }
     try {
-      const result = await view.webContents.executeJavaScript(buildWebTextApplyScript(operations, mode), true) as WebTranslationApplyPayload
+      const result = await view.webContents.executeJavaScript(
+        buildWebTextApplyScript(operations, mode, options),
+        true
+      ) as WebTranslationApplyPayload
       if (result.mismatched > 0) this.markPageUpdated()
       return result
     } catch (error) {
@@ -1308,6 +1364,21 @@ export class WebReaderManager {
   private async restoreSource(): Promise<WebTranslationApplyPayload> {
     await this.clearImageOverlays()
     return this.applyUnits('source')
+  }
+
+  /**
+   * 取消页面侧尚未完成的单元级打字机动画。
+   * @returns 取消完成后的 Promise。
+   * @author zhenghq
+   */
+  private async cancelTypewriter(): Promise<void> {
+    const view = this.view
+    if (!view || view.webContents.isDestroyed()) return
+    try {
+      await view.webContents.executeJavaScript(buildWebTypewriterCancelScript(), true)
+    } catch (error) {
+      if (!isDisposedWebFrameError(error)) throw error
+    }
   }
 
   /**
@@ -1331,10 +1402,10 @@ export class WebReaderManager {
       backgroundColor: '#f5f7fa',
       webPreferences: { preload: this.options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
-    const view = new WebContentsView({
+    const view = new BrowserView({
       webPreferences: { session: this.getSession(), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
-    window.contentView.addChildView(view)
+    window.setBrowserView(view)
     this.window = window
     this.view = view
     this.options.onWindowStateChanged?.(true)
@@ -1347,7 +1418,14 @@ export class WebReaderManager {
       event.preventDefault()
       this.close()
     })
-    window.on('closed', () => this.disposeWindow(window, view))
+    // 阅读器失焦时通知主进程判断焦点是否离开所有自有窗口；只有真正切到外部应用
+    // 才解除弹窗保护。不能监听 hide：既有前台交还契约要求最小化/隐藏阅读器
+    // 不得触发任何前台动作。
+    window.on('blur', () => this.options.onInternalWindowFocusLost?.())
+    window.on('closed', () => {
+      this.options.onInternalWindowFocusLost?.()
+      this.disposeWindow(window, view)
+    })
     window.webContents.once('did-finish-load', () => this.emitState())
     this.mode = this.options.getSettings().webTranslationDefaultMode
     this.options.loadRenderer(window, 'web-reader.html')
@@ -1373,7 +1451,7 @@ export class WebReaderManager {
    * @returns 无返回值。
    * @author zhenghq
    */
-  private bindRemoteEvents(view: WebContentsView): void {
+  private bindRemoteEvents(view: BrowserView): void {
     const contents = view.webContents
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
     contents.on('will-navigate', (event, url) => {
@@ -1473,6 +1551,7 @@ export class WebReaderManager {
    */
   private invalidateActiveJob(stopCollector = true): void {
     if (stopCollector) this.abortIncrementalWindow()
+    void this.cancelTypewriter()
     if (this.activeJobId) {
       this.coordinator.invalidate(
         this.readerId,
@@ -1533,9 +1612,8 @@ export class WebReaderManager {
    * @author zhenghq
    */
   private syncNavigationState(): void {
-    const history = this.view?.webContents.navigationHistory
-    this.state.canGoBack = history?.canGoBack() ?? false
-    this.state.canGoForward = history?.canGoForward() ?? false
+    this.state.canGoBack = this.view?.webContents.canGoBack() ?? false
+    this.state.canGoForward = this.view?.webContents.canGoForward() ?? false
   }
 
   /**
@@ -1582,7 +1660,7 @@ export class WebReaderManager {
    * @returns 无返回值。
    * @author zhenghq
    */
-  private disposeWindow(window: BrowserWindow, view: WebContentsView): void {
+  private disposeWindow(window: BrowserWindow, view: BrowserView): void {
     if (this.window !== window) return
     // BrowserWindow 的 closed 事件触发时其 WebContents 已进入销毁流程，先断开引用，
     // 避免取消增量任务时 emitState 继续向已销毁的壳窗口发送消息。
@@ -1616,7 +1694,7 @@ export class WebReaderManager {
    * @returns 可执行提取与写回的远程网页视图。
    * @author zhenghq
    */
-  private requireLoadedView(): WebContentsView {
+  private requireLoadedView(): BrowserView {
     if (!this.view || this.view.webContents.isDestroyed()) {
       throw new Error(translateMain('webReader.error.notOpen'))
     }

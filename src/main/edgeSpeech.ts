@@ -1,12 +1,61 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import type { EdgeSpeechResult } from '../shared/types'
 import { translateMain } from './messages'
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
 const EDGE_BASE_URL = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1'
-const EDGE_GEC_VERSION = '1-143.0.3650.75'
+const EDGE_GEC_VERSION = '2-143.0.3650.75'
 const EDGE_BROWSER_MAJOR_VERSION = '143'
 const DEFAULT_TIMEOUT_MS = 20_000
+
+const UINT32_MASK = 0xFFFF_FFFF
+const SHA256_INITIAL = [
+  0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+  0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+] as const
+const SHA256_STATE = [
+  0xFD9FBEA2, 0x91243CE7, 0xBE499094, 0xCD2E1E0A,
+  0x6C006F49, 0x04BD35AB, 0xFEB0A7E4, 0x03EFFBD2
+] as const
+const SHA256_SCHEDULE = [
+  0xEB24BF9E, 0x1558691F, 0xA0C09EE2, 0x0CFA32BA,
+  0xA622EE8C, 0xD1DD9491, 0xC0DD25A0, 0xF9E70AB6,
+  0xF0C31573, 0x7058CE4E, 0x7188E606, 0x00E5AB33,
+  0xD258B060, 0x72766564
+] as const
+const SHA256_ROUND_CONSTANTS = [
+  0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5,
+  0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
+  0xD807AA98, 0x12835B01, 0x243185BE, 0x550C7DC3,
+  0x72BE5D74, 0x80DEB1FE, 0x9BDC06A7, 0xC19BF174,
+  0xE49B69C1, 0xEFBE4786, 0x0FC19DC6, 0x240CA1CC,
+  0x2DE92C6F, 0x4A7484AA, 0x5CB0A9DC, 0x76F988DA,
+  0x983E5152, 0xA831C66D, 0xB00327C8, 0xBF597FC7,
+  0xC6E00BF3, 0xD5A79147, 0x06CA6351, 0x14292967,
+  0x27B70A85, 0x2E1B2138, 0x4D2C6DFC, 0x53380D13,
+  0x650A7354, 0x766A0ABB, 0x81C2C92E, 0x92722C85,
+  0xA2BFE8A1, 0xA81A664B, 0xC24B8B70, 0xC76C51A3,
+  0xD192E819, 0xD6990624, 0xF40E3585, 0x106AA070,
+  0x19A4C116, 0x1E376C08, 0x2748774C, 0x34B0BCB5,
+  0x391C0CB3, 0x4ED8AA4A, 0x5B9CCA4F, 0x682E6FF3,
+  0x748F82EE, 0x78A5636F, 0x84C87814, 0x8CC70208,
+  0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2
+] as const
+const SHA256_ADJUSTMENT = 0xC9DC06A7
+const SHA256_SIGMA0_ADJUSTMENT = 0x059C0B80
+const SHA256_SIGMA1_ADJUSTMENT = 0x000B92C0
+const CS64_COEFFICIENTS = [
+  [0xE82E91B1, 0xB32700D0], [0x44DE24C6, 0x88DFF51D],
+  [0x3BEB65BC, 0x29514038], [0xC89C5933, 0xB328CBDF],
+  [0x8D1EC211, 0xD405B4D5], [0x314EF5D5, 0x26E55F3C],
+  [0xE92491B1, 0x607801C6], [0xF0A5B9D5, 0x82B2C1FB],
+  [0x06064CF3, 0xFA51A3DA], [0xDA79FA60, 0x207CC464],
+  [0xBED20560, 0x3C3C74F3], [0x89F9C9F8, 0xD2D14B61],
+  [0x35FA38C6, 0xBB04A2C1], [0xCB49E3C6, 0xC5626167]
+] as const
+const CS64_FACTOR = 0x82893933
+const CS64_ADJUSTMENT0 = 0xF2F90B1A
+const CS64_ADJUSTMENT1 = 0x0B1A0000
 
 /** Edge WebSocket 握手使用的请求头。 */
 export type EdgeSpeechSocketHeaders = Record<string, string>
@@ -100,7 +149,11 @@ function escapeSsmlText(text: string): string {
  */
 export function buildEdgeSpeechSsml(text: string, language: string): string {
   const voice = edgeVoiceToSsmlName(edgeVoiceForLanguage(language))
-  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="${voice}"><prosody rate="+0%" volume="+0%" pitch="+0Hz">${escapeSsmlText(text)}</prosody></voice></speak>`
+  const languageCode = language.trim().split('-')[0].toLowerCase()
+  const xmlLanguage = EDGE_VOICE_BY_LANGUAGE[languageCode]
+    ? languageCode === 'zh' ? 'zh-CN' : `${languageCode}-${edgeVoiceForLanguage(language).split('-')[1]}`
+    : 'en-US'
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${xmlLanguage}"><voice name="${voice}"><prosody rate="+0%" volume="+0%" pitch="+0Hz">${escapeSsmlText(text)}</prosody></voice></speak>`
 }
 
 /**
@@ -114,18 +167,307 @@ function edgeTimestamp(date: Date): string {
 }
 
 /**
- * 生成 Edge 服务要求的 Sec-MS-GEC 校验值。
+ * 计算带服务端时间校正的 Windows 文件时间字符串。
  * @param date 当前时间。
- * @returns 大写 SHA-256 校验值。
+ * @returns 向下取整到五分钟的 100 纳秒时间戳。
+ * @author zhenghq
+ */
+function edgeWindowsTimestamp(date: Date): string {
+  const windowsSeconds = Math.floor(date.getTime() / 1000) + 11_644_473_600
+  const roundedSeconds = Math.floor(windowsSeconds / 300) * 300
+  return (BigInt(roundedSeconds) * 10_000_000n).toString()
+}
+
+/**
+ * 将 32 位无符号整数拆成小端十六进制文本。
+ * @param value 待编码整数。
+ * @returns 8 位大写十六进制文本。
+ * @author zhenghq
+ */
+function littleEndianHex(value: number): string {
+  const normalized = value >>> 0
+  const bytes = [
+    normalized & 0xFF,
+    (normalized >>> 8) & 0xFF,
+    (normalized >>> 16) & 0xFF,
+    (normalized >>> 24) & 0xFF
+  ]
+  return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase()
+}
+
+/**
+ * 将 32 位整数循环左移 16 位。
+ * @param value 待旋转整数。
+ * @returns 旋转后的 32 位无符号整数。
+ * @author zhenghq
+ */
+function rotateLeft16(value: number): number {
+  const normalized = value >>> 0
+  return (((normalized << 16) | (normalized >>> 16)) >>> 0)
+}
+
+/**
+ * 将 32 位整数循环右移指定位数。
+ * @param value 待旋转整数。
+ * @param shift 右移位数。
+ * @returns 旋转后的 32 位无符号整数。
+ * @author zhenghq
+ */
+function rotateRight(value: number, shift: number): number {
+  const normalized = value >>> 0
+  return ((normalized >>> shift) | (normalized << (32 - shift))) >>> 0
+}
+
+/**
+ * 按小端顺序把字节拆为 32 位整数，并在奇数长度时补零。
+ * @param data 待拆分的字节。
+ * @returns 32 位整数数组。
+ * @author zhenghq
+ */
+function littleEndianWords(data: Uint8Array): number[] {
+  const paddedLength = data.length + ((4 - (data.length % 4)) % 4)
+  const padded = new Uint8Array(paddedLength)
+  padded.set(data)
+  const words: number[] = []
+  for (let offset = 0; offset < padded.length; offset += 4) {
+    words.push(
+      (padded[offset] ?? 0)
+      | ((padded[offset + 1] ?? 0) << 8)
+      | ((padded[offset + 2] ?? 0) << 16)
+      | ((padded[offset + 3] ?? 0) << 24)
+    )
+  }
+  if (words.length % 2 === 1) words.push(0)
+  return words
+}
+
+/**
+ * 计算 Edge v2 token 的 SHA-256 小写 sigma0。
+ * @param value 输入整数。
+ * @returns 32 位小 sigma0 结果。
+ * @author zhenghq
+ */
+function sha256Sigma0(value: number): number {
+  return ((value >>> 7) ^ (value << 25) ^ (value >>> 18) ^ (value << 14) ^ (value >>> 3)) >>> 0
+}
+
+/**
+ * 计算 Edge v2 token 的 SHA-256 小 sigma1。
+ * @param value 输入整数。
+ * @returns 32 位小 sigma1 结果。
+ * @author zhenghq
+ */
+function sha256Sigma1(value: number): number {
+  return ((value >>> 17) ^ (value << 15) ^ (value >>> 19) ^ (value << 13) ^ (value >>> 10)) >>> 0
+}
+
+/**
+ * 扩展 SHA-256 消息字。
+ * @param words 消息字数组。
+ * @param firstWord 开始扩展的位置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function expandSha256Schedule(words: number[], firstWord = 16): void {
+  for (let index = firstWord; index < 64; index += 1) {
+    const x = words[index - 2] ?? 0
+    const y = words[index - 15] ?? 0
+    words.push(
+      (sha256Sigma1(x) + (words[index - 7] ?? 0) + sha256Sigma0(y) + (words[index - 16] ?? 0))
+      >>> 0
+    )
+  }
+}
+
+/**
+ * 执行 Edge v2 token 所需的 SHA-256 轮函数。
+ * @param state 初始状态。
+ * @param words 消息字。
+ * @param firstRound 开始轮次。
+ * @returns 更新后的八个工作寄存器。
+ * @author zhenghq
+ */
+function sha256Rounds(
+  state: readonly number[],
+  words: readonly number[],
+  firstRound = 0
+): number[] {
+  let [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0] = state
+  const constants = firstRound === 14
+    ? [...SHA256_ROUND_CONSTANTS.slice(0, 14), SHA256_ADJUSTMENT, ...SHA256_ROUND_CONSTANTS.slice(15)]
+    : [...SHA256_ROUND_CONSTANTS]
+  for (let index = firstRound; index < 64; index += 1) {
+    const t1 = (
+      h
+      + (rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25))
+      + (g ^ (e & (f ^ g)))
+      + (constants[index] ?? 0)
+      + (words[index] ?? 0)
+    ) >>> 0
+    const t2 = (
+      (rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22))
+      + ((a & b) | (c & (a | b)))
+    ) >>> 0
+    h = g
+    g = f
+    f = e
+    e = (d + t1) >>> 0
+    d = c
+    c = b
+    b = a
+    a = (t1 + t2) >>> 0
+  }
+  return [a, b, c, d, e, f, g, h]
+}
+
+/**
+ * 计算 Edge v2 token 的定制 SHA-256 初始状态。
+ * @param data token 原文前七个字节。
+ * @returns SHA-256 初始状态。
+ * @author zhenghq
+ */
+function sha256InitialState(data: Uint8Array): number[] {
+  const words: number[] = new Array(16).fill(0)
+  words[14] = ((data[0] ?? 0) << 16) | ((data[1] ?? 0) << 8) | (data[2] ?? 0)
+  words[15] = ((data[3] ?? 0) << 24) | ((data[4] ?? 0) << 16) | ((data[5] ?? 0) << 8) | (data[6] ?? 0)
+  for (let index = 16; index < 30; index += 1) {
+    let value = SHA256_SCHEDULE[index - 16] ?? 0
+    if (index - 2 >= 14) {
+      const sigma = sha256Sigma1(words[index - 2] ?? 0)
+      value += index === 16 ? (sigma ^ SHA256_SIGMA1_ADJUSTMENT) : sigma
+    }
+    if (index - 7 >= 14) value += words[index - 7] ?? 0
+    if (index - 15 >= 14) {
+      const sigma = sha256Sigma0(words[index - 15] ?? 0)
+      value += index === 29 ? (sigma ^ SHA256_SIGMA0_ADJUSTMENT) : sigma
+    }
+    words.push(value >>> 0)
+  }
+  words.push((
+    sha256Sigma1(words[28] ?? 0)
+    + (words[23] ?? 0)
+    + sha256Sigma0(words[15] ?? 0)
+    + (words[14] ?? 0)
+    + SHA256_ADJUSTMENT
+    - (SHA256_ROUND_CONSTANTS[14] ?? 0)
+  ) >>> 0)
+  expandSha256Schedule(words, 31)
+  const working = sha256Rounds(SHA256_STATE, words, 14)
+  return SHA256_INITIAL.map((value, index) => (value + (working[index] ?? 0)) >>> 0)
+}
+
+/**
+ * 计算 Edge v2 token 的定制 SHA-256 摘要。
+ * @param data token 原文。
+ * @returns 32 字节摘要。
+ * @author zhenghq
+ */
+function edgeTokenSha256(data: Uint8Array): Uint8Array {
+  if (data.length < 7) throw new Error('Edge token data is too short')
+  const length = 57 + data.length
+  const zeroPadding = ((55 - length) % 64 + 64) % 64
+  const paddedLength = data.length + 2 + zeroPadding
+  const padded = new Uint8Array(paddedLength)
+  padded.set(data.subarray(7))
+  padded[data.length - 7] = 0x80
+  const bitLength = BigInt(length * 8)
+  for (let index = 0; index < 8; index += 1) {
+    padded[padded.length - 1 - index] = Number((bitLength >> BigInt(index * 8)) & 0xFFn)
+  }
+  let state = sha256InitialState(data.subarray(0, 7))
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    const words: number[] = []
+    for (let index = 0; index < 16; index += 1) {
+      const position = offset + index * 4
+      words.push(
+        (((padded[position] ?? 0) << 24)
+        | ((padded[position + 1] ?? 0) << 16)
+        | ((padded[position + 2] ?? 0) << 8)
+        | (padded[position + 3] ?? 0)) >>> 0
+      )
+    }
+    expandSha256Schedule(words)
+    const working = sha256Rounds(state, words)
+    state = state.map((value, index) => (value + (working[index] ?? 0)) >>> 0)
+  }
+  const digest = new Uint8Array(32)
+  state.forEach((value, index) => {
+    digest[index * 4] = (value >>> 24) & 0xFF
+    digest[index * 4 + 1] = (value >>> 16) & 0xFF
+    digest[index * 4 + 2] = (value >>> 8) & 0xFF
+    digest[index * 4 + 3] = value & 0xFF
+  })
+  return digest
+}
+
+/**
+ * 计算 Edge v2 token 的 CS64 摘要。
+ * @param data token 原文。
+ * @param digest 已计算的 SHA-256 摘要。
+ * @returns 两个 32 位摘要字。
+ * @author zhenghq
+ */
+function edgeTokenCs64(data: Uint8Array, digest: Uint8Array): [number, number] {
+  const keyA = ((digest[0] ?? 0) | ((digest[1] ?? 0) << 8) | ((digest[2] ?? 0) << 16) | ((digest[3] ?? 0) << 24) | 1) >>> 0
+  const keyB = ((digest[4] ?? 0) | ((digest[5] ?? 0) << 8) | ((digest[6] ?? 0) << 16) | ((digest[7] ?? 0) << 24) | 1) >>> 0
+  const factors = [Math.imul(keyA, CS64_FACTOR) >>> 0, Math.imul(keyB, CS64_FACTOR) >>> 0]
+  const terms = CS64_COEFFICIENTS.map(([coefficient], index) => Math.imul(coefficient, factors[index % 2] ?? 0) >>> 0)
+  const offsets = CS64_COEFFICIENTS.map(([, offset]) => offset >>> 0)
+  const input = new Uint8Array(data.length + 1)
+  input[0] = 0
+  input.set(data, 1)
+  littleEndianWords(input).forEach((word, index) => {
+    let term = Math.imul(word, index % 2 === 0 ? keyA : keyB) >>> 0
+    let offset = Math.imul(rotateLeft16(word), index % 2 === 0 ? 0xEF0569FB : 0xC31713DB) >>> 0
+    if (index === 0) {
+      term = (term + Math.imul(CS64_ADJUSTMENT0, factors[0] ?? 0)) >>> 0
+      offset = (offset + CS64_ADJUSTMENT1) >>> 0
+    }
+    terms.push(term)
+    offsets.push(offset)
+  })
+  let swapAcc = 0
+  let swapLast = 0
+  let state = 0
+  let acc = 0
+  for (let index = 0; index < terms.length; index += 2) {
+    let x = terms[index] ?? 0
+    let y = terms[index + 1] ?? 0
+    let t = rotateLeft16(((offsets[index] ?? 0) + x) >>> 0)
+    let q = Math.imul(t, 0x76F50F34) >>> 0
+    swapAcc = (swapAcc + ((Math.imul(rotateLeft16(q), 0xC3EFEA97) + q) >>> 0)) >>> 0
+    t = rotateLeft16(((offsets[index + 1] ?? 0) + y) >>> 0)
+    q = Math.imul(t, 0x1881CE3C) >>> 0
+    swapLast = (Math.imul(rotateLeft16(q), 0x35BD1EC9) + q) >>> 0
+    swapAcc = (swapAcc + swapLast) >>> 0
+
+    state = (Math.imul(state, keyA) + x) >>> 0
+    state = Math.imul(rotateLeft16(state), 0xCF98B111) >>> 0
+    state = Math.imul(rotateLeft16(state), 0x87085B9F) >>> 0
+    state = Math.imul(rotateLeft16(state), 0x12CEB96D) >>> 0
+    state = Math.imul(rotateLeft16(state), 0x257E1D83) >>> 0
+    acc = (acc + state) >>> 0
+    t = (Math.imul(state, keyB) + y) >>> 0
+    t = Math.imul(rotateLeft16(t), 0xA27416F5) >>> 0
+    t = Math.imul(rotateLeft16(t), 0xD38396FF) >>> 0
+    state = Math.imul(rotateLeft16(Math.imul(rotateLeft16(t), 0x7C932B89) >>> 0), 0xBFA49F69) >>> 0
+    acc = (acc + state) >>> 0
+  }
+  return [(swapLast ^ state) >>> 0, (swapAcc ^ acc) >>> 0]
+}
+
+/**
+ * 生成 Edge 服务当前要求的 Sec-MS-GEC 校验值。
+ * @param date 当前时间。
+ * @returns 16 位 CS64 与 64 位 SHA-256 组成的 v2 校验值。
  * @author zhenghq
  */
 function generateSecMsGec(date: Date): string {
-  const windowsSeconds = Math.floor(date.getTime() / 1000) + 11_644_473_600
-  const roundedTicks = Math.floor(windowsSeconds / 300) * 300 * 10_000_000
-  return createHash('sha256')
-    .update(`${roundedTicks}${TRUSTED_CLIENT_TOKEN}`, 'ascii')
-    .digest('hex')
-    .toUpperCase()
+  const data = new TextEncoder().encode(`${edgeWindowsTimestamp(date)}${TRUSTED_CLIENT_TOKEN}`)
+  const digest = edgeTokenSha256(data)
+  const [first, second] = edgeTokenCs64(data, digest)
+  const sha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase()
+  return `${littleEndianHex(first)}${littleEndianHex(second)}-${sha256}`
 }
 
 /**

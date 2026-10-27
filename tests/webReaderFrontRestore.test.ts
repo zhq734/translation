@@ -26,11 +26,28 @@ test('网页翻译关闭前先把 macOS 前台交还给原应用', () => {
   const closeSource = extractFunction(webReaderSource, 'close(): void {')
 
   assert.match(closeSource, /handBackFrontmostThen\(window, \(\) => \{/u, '关闭阅读器必须复用共享交还逻辑')
-  assert.ok(
-    closeSource.indexOf('handBackFrontmostThen(') < closeSource.indexOf('window.close()'),
-    '必须先交还前台再关闭阅读器窗口'
-  )
+  const handBackIndex = closeSource.indexOf('handBackFrontmostThen(')
+  const handBackCloseIndex = closeSource.indexOf('window.close()', handBackIndex)
+  assert.ok(handBackIndex >= 0 && handBackCloseIndex > handBackIndex, '必须先交还前台再关闭阅读器窗口')
   assert.match(closeSource, /this\.closingWindow\) return/u, '交还进行中必须短路重复关闭')
+})
+
+test('设置页仍可见时关闭网页翻译不得走应用级隐藏', () => {
+  const closeSource = extractFunction(webReaderSource, 'close(): void {')
+
+  // 设置页可见时关闭阅读器属于应用内部窗口切换：阅读器 panel 只需隐藏自身，
+  // 不能再走 handBackFrontmostThen 的安全让出兜底（app.hide()/app.show()），
+  // 否则设置页会随整应用隐藏，用户表现为两个页面一起被关闭。
+  assert.match(
+    closeSource,
+    /options\.hasVisibleSettingsWindow\?\.\(\)/u,
+    '阅读器关闭前必须询问是否存在可见设置页'
+  )
+  assert.match(
+    closeSource,
+    /if \([^\n]*hasVisibleSettingsWindow[^\n]*\) \{[\s\S]*?window\.close\(\)[\s\S]*?return/u,
+    '设置页可见时必须直接关闭阅读器自身'
+  )
 })
 
 test('网页翻译窗口关闭事件统一走交还前台逻辑', () => {
@@ -68,7 +85,10 @@ test('网页翻译标题栏关闭不得绕过阅读器关闭逻辑', () => {
 })
 
 test('打开网页翻译前记录源应用，供关闭时交还前台', () => {
-  const openSource = extractFunction(webReaderSource, 'async open(url?: string): Promise<void> {')
+  const openSource = extractFunction(
+    webReaderSource,
+    'async open(url?: string, options: { bringToFront?: boolean } = {}): Promise<void> {'
+  )
 
   assert.match(openSource, /await rememberFrontmostAppIfInactiveAsync\(\)/u, '必须等待源应用快照后再显示阅读器')
   assert.ok(
@@ -101,7 +121,7 @@ test('阅读器关闭刷新 Dock 可见性时不得重复切换激活策略', ()
 })
 
 test('网页翻译窗口销毁回调保留资源清理，且隐藏事件不触发前台交还', () => {
-  const disposeSource = extractFunction(webReaderSource, 'private disposeWindow(window: BrowserWindow, view: WebContentsView): void {')
+  const disposeSource = extractFunction(webReaderSource, 'private disposeWindow(window: BrowserWindow, view: BrowserView): void {')
 
   assert.doesNotMatch(disposeSource, /handBackFrontmostThen/u, 'closed 回调只做资源清理，前台交还必须在关闭前完成')
   assert.doesNotMatch(webReaderSource, /window\.on\('hide'/u, '最小化或隐藏阅读器不得触发前台交还')
@@ -144,22 +164,72 @@ test('已可见的阅读器不得被 activate 无条件置顶，不可见或最�
   assert.match(focusSource, /isMinimized\(\)\) this\.window\.restore\(\)/u, '最小化阅读器仍必须恢复')
 })
 
-test('已可见的设置页仅在用户显式打开时才重新置顶', () => {
+test('已可见的设置页仅在需要置顶时才重新置顶，且不得激活整个应用', () => {
   const createSource = extractFunction(mainSource, 'async function createSettingsWindow(')
 
   // 已可见分支必须区分调用来源：内部 activate 传 bringToFront=false，不得把后台设置页顶到最前。
   assert.match(
     createSource,
     /if \(settingsWin\.isVisible\(\)\) \{[\s\S]*?if \(!bringToFront\) return settingsWin/u,
-    '已可见设置页在非用户显式入口时必须直接返回'
+    '已可见设置页在非置顶入口时必须直接返回'
   )
-  // 用户显式打开（菜单栏图标、托盘菜单、第二实例）时必须重新激活并聚焦，否则被遮挡时点图标无反应。
+  // 需要置顶时只能提升设置窗口自身：panel 的 show()/focus() 不激活应用，
+  // 不得调用 app.focus({ steal: true }) 把同应用其它窗口一起带到最前。
   assert.match(
     createSource,
-    /if \(!bringToFront\) return settingsWin[\s\S]*?app\.focus\(\{ steal: true \}\)[\s\S]*?settingsWin\.show\(\)[\s\S]*?settingsWin\.focus\(\)/u,
-    '用户显式打开设置页时必须把它带到最前'
+    /if \(!bringToFront\) return settingsWin[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
+    '需要置顶的设置页必须走统一窗口级置前入口'
   )
+  assert.doesNotMatch(createSource, /app\.focus\(/u, '设置窗口置前不得激活整个应用')
   // 不可见或最小化时仍必须显示并聚焦，保证真实 Dock 启动可用。
-  assert.match(createSource, /settingsWin\.show\(\)/u, '不可见设置页仍必须显示')
-  assert.match(createSource, /settingsWin\.focus\(\)/u, '不可见设置页仍必须聚焦')
+  assert.match(
+    createSource,
+    /showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*bringToFront,\s*moveTop:\s*bringToFront,\s*raiseLevel:\s*bringToFront\s*\}\)/u,
+    '不可见设置页仍必须显示并聚焦'
+  )
+})
+
+test('翻译弹窗内打开网页阅读器必须显式置前且复用统一入口', () => {
+  const openSource = extractFunction(mainSource, 'function openWebReaderFromPopup(')
+  const managerSource = webReaderSource
+
+  // 弹窗内点击“翻译页面”与点击设置页一样是显式用户入口：hidePopup() 续期的
+  // 划词抑制不得阻止阅读器真正置前。阅读器管理器必须提供显式打开入口，并由
+  // 主进程注入统一的窗口级置前回调，禁止在 manager 内直接调用 app.focus()。
+  assert.match(
+    openSource,
+    /getWebReader\(\)\.open\([^)]*\)/u,
+    '弹窗内打开阅读器必须调用阅读器打开入口'
+  )
+  assert.match(
+    openSource,
+    /bringToFront:\s*true|source:\s*'popup'/u,
+    '弹窗内打开阅读器必须标记显式置前来源'
+  )
+  assert.match(
+    managerSource,
+    /bringToFrontToOwnWindow\?:/u,
+    '阅读器管理器必须支持注入统一窗口级置前回调'
+  )
+  assert.match(
+    mainSource,
+    /bringToFrontToOwnWindow:\s*\(window\)\s*=>[\s\S]*?showOwnWindowForInteraction\(window,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
+    '阅读器显式置前必须复用统一入口'
+  )
+  assert.doesNotMatch(managerSource, /app\.focus\(/u, '阅读器管理器不得激活整个应用')
+})
+
+test('网页阅读器失焦时必须立即回收临时置前层级', () => {
+  const focusLostSource = mainSource.slice(
+    mainSource.indexOf('onInternalWindowFocusLost: () => {'),
+    mainSource.indexOf('hasVisibleSettingsWindow:')
+  )
+
+  // 阅读器与设置页共用统一置前入口，失焦后必须立即降回普通层级，
+  // 不能只依赖 400ms 定时器，否则阅读器会在短时间内持续悬浮在最前。
+  assert.match(
+    focusLostSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '阅读器失焦时必须立即回收统一入口提升的层级'
+  )
 })

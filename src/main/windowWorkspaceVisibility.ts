@@ -8,7 +8,9 @@
  * 「打开应用后设置页和 Dock 图标自动关闭」。应用已自行管理 macOS 激活策略
  * （见 `dockVisibility.ts`），窗口层级由各自的 `setAlwaysOnTop` 保证，故统一跳过该转换。
  *
- * 新增任何调用 `setVisibleOnAllWorkspaces` 的窗口都必须复用本选项。
+ * 新增任何调用 `setVisibleOnAllWorkspaces` 的窗口都必须复用本文件中的
+ * `ALL_WORKSPACES_VISIBILITY_OPTIONS`。设置页与网页阅读器已回退普通
+ * `BrowserWindow`，不再调用该 API。
  *
  * @author zhenghq
  */

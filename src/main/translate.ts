@@ -66,6 +66,14 @@ interface TranslationChannel {
   run: () => Promise<TranslateOutput>
 }
 
+/** 流式翻译增量回调。 */
+export interface TranslateStreamOptions {
+  /** 收到一个安全译文增量时回调。 */
+  onDelta: (delta: string) => void
+  /** 可选外部取消信号。 */
+  signal?: AbortSignal
+}
+
 interface CachedTranslation extends TranslateOutput {
   provider: TranslationProviderId
   channel: string
@@ -184,6 +192,75 @@ export class TranslationRuntime {
         lastError = `${channel.name}: ${message}`
         this.trip(channel.breakerKey, channel.cooldownMs)
         console.warn(`[translate] ${lastError}`)
+      }
+    }
+    throw new Error(lastError)
+  }
+
+  /**
+   * 按多通道顺序执行翻译，AI 通道使用真实流式回调；其它通道返回完整结果。
+   * 首个安全片段出现前允许继续降级，出现后失败则保留已展示内容并停止降级。
+   * @param text 待翻译文本。
+   * @param settings 当前公开设置快照。
+   * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+   * @param aiApiKey 主进程解密后的 AI API Key。
+   * @param options 增量回调与取消信号。
+   * @returns 首个成功通道的统一翻译结果。
+   * @author zhenghq
+   */
+  async translateStream(
+    text: string,
+    settings: Settings,
+    dingTalkCredentials: DingTalkCredentials | null,
+    aiApiKey: string | null,
+    options: TranslateStreamOptions
+  ): Promise<TranslateOutput> {
+    if (text.length > MAX_CHARS) {
+      throw new Error(translateMain('translate.error.tooLong', { max: MAX_CHARS }))
+    }
+    const input = text
+    const key = this.cacheKey(
+      input,
+      settings.sourceLang,
+      settings.targetLang,
+      settings.preferredTranslationProvider,
+      settings.aiEnabled,
+      settings.aiProtocol,
+      settings.aiBaseUrl,
+      settings.aiModel
+    )
+    const hit = this.cache.get(key)
+    if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
+
+    const channels = this.createChannels(input, settings, dingTalkCredentials, aiApiKey)
+    let lastError = translateMain('translate.error.allChannelsFailed')
+    for (const channel of channels) {
+      if (input.length > channel.maxChars) continue
+      if (this.isTripped(channel.breakerKey)) continue
+      let visibleDeltaCount = 0
+      try {
+        const output = channel.id === 'ai'
+          ? await this.aiStreamChannel(text, settings, aiApiKey, (delta) => {
+              visibleDeltaCount += 1
+              options.onDelta(delta)
+            }, options.signal)
+          : await channel.run()
+        this.resetBreaker(channel.breakerKey)
+        const successful: CachedTranslation = {
+          ...output,
+          channel: channel.name,
+          provider: channel.id
+        }
+        if (settings.preferredTranslationProvider === 'auto' ||
+            settings.preferredTranslationProvider === channel.id) {
+          this.cache.set(key, successful)
+        }
+        return successful
+      } catch (error) {
+        const message = error instanceof Error ? error.message : translateMain('translate.error.unknown')
+        lastError = `${channel.name}: ${message}`
+        this.trip(channel.breakerKey, channel.cooldownMs)
+        if (visibleDeltaCount > 0) throw error
       }
     }
     throw new Error(lastError)
@@ -391,6 +468,35 @@ export class TranslationRuntime {
       sourceLang: settings.sourceLang,
       targetLang: settings.targetLang
     })
+    return { translation, provider: 'ai' }
+  }
+
+  /**
+   * 执行 AI 流式翻译请求并返回最终清洗译文。
+   * @param text 待翻译文本。
+   * @param settings 当前公开设置。
+   * @param apiKey 主进程解密后的 AI API Key。
+   * @param onDelta 安全增量回调。
+   * @param signal 可选外部取消信号。
+   * @returns AI 翻译结果。
+   * @author zhenghq
+   */
+  private async aiStreamChannel(
+    text: string,
+    settings: Settings,
+    apiKey: string | null,
+    onDelta: (delta: string) => void,
+    signal?: AbortSignal
+  ): Promise<TranslateOutput> {
+    const translation = await this.aiClient.stream({
+      protocol: settings.aiProtocol,
+      baseUrl: settings.aiBaseUrl,
+      model: settings.aiModel,
+      apiKey,
+      text,
+      sourceLang: settings.sourceLang,
+      targetLang: settings.targetLang
+    }, { onDelta, signal })
     return { translation, provider: 'ai' }
   }
 
@@ -612,6 +718,26 @@ export function translate(
   aiApiKey: string | null = null
 ): Promise<TranslateOutput> {
   return defaultRuntime.translate(text, settings, dingTalkCredentials, aiApiKey)
+}
+
+/**
+ * 使用应用默认翻译运行时执行流式翻译。
+ * @param text 待翻译文本。
+ * @param settings 当前公开设置快照。
+ * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
+ * @param aiApiKey 主进程解密后的 AI API Key。
+ * @param options 增量回调与取消信号。
+ * @returns 翻译结果。
+ * @author zhenghq
+ */
+export function translateStream(
+  text: string,
+  settings: Settings,
+  dingTalkCredentials: DingTalkCredentials | null,
+  aiApiKey: string | null,
+  options: TranslateStreamOptions
+): Promise<TranslateOutput> {
+  return defaultRuntime.translateStream(text, settings, dingTalkCredentials, aiApiKey, options)
 }
 
 /**

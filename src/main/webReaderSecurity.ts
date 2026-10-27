@@ -47,7 +47,7 @@ export function toWebReaderHtmlViewUrl(value: string): string {
 }
 
 /**
- * 规范化并校验阅读器 URL，避免危险协议进入远程 WebContentsView。
+ * 规范化并校验阅读器 URL，避免危险协议进入远程 BrowserView。
  * @param value 用户输入的 URL。
  * @returns 可供 Electron 加载的绝对 URL。
  * @author zhenghq

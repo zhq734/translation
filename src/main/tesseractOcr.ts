@@ -1,4 +1,5 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   OcrEngineError,
   withOcrTimeout,
@@ -35,6 +36,14 @@ export interface TesseractWorker {
 export interface TesseractOcrDeps {
   /** tessdata 缓存目录路径。 */
   tessDataPath: string
+  /** 语言模型下载地址或本地目录；省略时使用 tesseract.js 默认 CDN。 */
+  langPath?: string
+  /** 安装包内置语言模型目录；目录包含所需全部模型时优先使用。 */
+  bundledLangPath?: string
+  /** 打包后 worker 脚本的真实文件路径；asar 内路径无法启动 worker。 */
+  workerPath?: string
+  /** 判断模型文件是否存在；供测试注入，省略时使用文件系统。 */
+  fileExists?(path: string): boolean
   /**
    * 创建 Tesseract worker（惰性加载 tesseract.js）。
    * @param lang Tesseract 语言字符串（如 chi_sim+eng）。
@@ -47,6 +56,18 @@ export interface TesseractOcrDeps {
    * @param progress 进度 0-100，可选。
    */
   onProgress?(status: string, progress?: number): void
+}
+
+/** 传给 tesseract.js createWorker 的最小选项。 */
+export interface TesseractWorkerOptions {
+  /** 语言模型缓存目录。 */
+  cachePath: string
+  /** 已解析的语言模型目录或镜像地址。 */
+  langPath?: string
+  /** 打包后 worker 脚本的真实文件路径。 */
+  workerPath?: string
+  /** Tesseract 运行进度回调。 */
+  logger(message: { status?: string; progress?: number }): void
 }
 
 /**
@@ -113,31 +134,143 @@ export function ensureTessDataDirectory(tessDataPath: string): void {
 }
 
 /**
+ * 规范化 Tesseract 语言模型地址，避免把无效协议或空值传给 worker。
+ * @param value 配置的模型地址或本地目录。
+ * @returns 可用的 HTTP(S)/本地绝对路径；无效时返回 undefined。
+ * @author zhenghq
+ */
+export function resolveTesseractLangPath(value: string | undefined): string | undefined {
+  const candidate = value?.trim()
+  if (!candidate) return undefined
+  if (/^https?:\/\//iu.test(candidate)) return candidate.replace(/\/+$/u, '')
+  if (/^[A-Za-z]:[\\/]/u.test(candidate) || candidate.startsWith('/')) {
+    return candidate.replace(/[\\/]+$/u, '')
+  }
+  return undefined
+}
+
+/**
+ * 为指定 Tesseract 语言选择模型目录。
+ * 显式配置始终优先；内置目录只有在包含全部所需语言模型时才使用，
+ * 否则返回 undefined，让 tesseract.js 回退到默认 CDN。
+ * @param options 语言、显式配置目录、内置目录与文件存在性检查。
+ * @returns 可传给 tesseract.js 的语言模型目录；需要回退 CDN 时返回 undefined。
+ * @author zhenghq
+ */
+export function resolveTesseractLangPathForLanguage(options: {
+  lang: string
+  configuredPath?: string
+  bundledPath?: string
+  fileExists?(path: string): boolean
+}): string | undefined {
+  const configuredPath = resolveTesseractLangPath(options.configuredPath)
+  if (configuredPath) return configuredPath
+
+  const bundledPath = resolveTesseractLangPath(options.bundledPath)
+  if (!bundledPath) return undefined
+  const fileExists = options.fileExists ?? existsSync
+  const languages = options.lang.split('+').map((lang) => lang.trim()).filter(Boolean)
+  if (languages.length === 0) return undefined
+  const hasAllModels = languages.every((lang) =>
+    fileExists(join(bundledPath, `${lang}.traineddata.gz`))
+  )
+  return hasAllModels ? bundledPath : undefined
+}
+
+/**
+ * 解析打包后的 Tesseract worker 脚本路径。
+ * worker_threads 只能从真实文件系统加载脚本，因此打包版本必须指向 asar.unpacked。
+ * @param resourcesPath Electron resources 目录。
+ * @param packaged 当前是否运行于打包应用。
+ * @returns 打包应用的 worker 绝对路径；开发环境返回 undefined。
+ * @author zhenghq
+ */
+export function resolveTesseractWorkerPath(
+  resourcesPath: string,
+  packaged: boolean
+): string | undefined {
+  if (!packaged) return undefined
+  return join(
+    resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    'tesseract.js',
+    'src',
+    'worker-script',
+    'node',
+    'index.js'
+  )
+}
+
+/**
+ * 构造 tesseract.js worker 选项，集中处理缓存目录、内置模型与 worker 路径。
+ * @param options 语言、缓存目录、模型来源、worker 路径与进度回调。
+ * @returns 可直接传给 tesseract.js createWorker 的选项。
+ * @author zhenghq
+ */
+export function buildTesseractWorkerOptions(options: {
+  lang: string
+  tessDataPath: string
+  langPath?: string
+  bundledLangPath?: string
+  workerPath?: string
+  fileExists?(path: string): boolean
+  onProgress?(status: string, progress?: number): void
+}): TesseractWorkerOptions {
+  const resolvedLangPath = resolveTesseractLangPathForLanguage({
+    lang: options.lang,
+    configuredPath: options.langPath,
+    bundledPath: options.bundledLangPath,
+    ...(options.fileExists ? { fileExists: options.fileExists } : {})
+  })
+  return {
+    cachePath: options.tessDataPath,
+    ...(resolvedLangPath ? { langPath: resolvedLangPath } : {}),
+    ...(options.workerPath ? { workerPath: options.workerPath } : {}),
+    logger: (message: { status?: string; progress?: number }) => {
+      if (!message?.status) return
+      if (!/loading language|recognizing text/iu.test(message.status)) return
+      const progress = Math.round((message.progress ?? 0) * 100)
+      options.onProgress?.(message.status, progress || undefined)
+    }
+  }
+}
+
+/**
  * 默认 Tesseract worker 创建函数，动态 import tesseract.js。
  * @param lang Tesseract 语言字符串。
  * @param tessDataPath tessdata 缓存目录。
  * @param onProgress 进度回调。
+ * @param langPath 显式配置的语言模型目录或镜像。
+ * @param bundledLangPath 安装包内置语言模型目录。
+ * @param fileExists 模型文件存在性检查。
+ * @param workerPath 打包后 worker 脚本的真实文件路径。
  * @returns worker 实例。
  * @author zhenghq
  */
 async function defaultCreateWorker(
   lang: string,
   tessDataPath: string,
-  onProgress?: (status: string, progress?: number) => void
+  onProgress?: (status: string, progress?: number) => void,
+  langPath?: string,
+  bundledLangPath?: string,
+  fileExists?: (path: string) => boolean,
+  workerPath?: string
 ): Promise<TesseractWorker> {
   ensureTessDataDirectory(tessDataPath)
+  const workerOptions = buildTesseractWorkerOptions({
+    lang,
+    tessDataPath,
+    ...(langPath ? { langPath } : {}),
+    ...(bundledLangPath ? { bundledLangPath } : {}),
+    ...(fileExists ? { fileExists } : {}),
+    ...(workerPath ? { workerPath } : {}),
+    ...(onProgress ? { onProgress } : {})
+  })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await import('tesseract.js' as string) as any
   const createWorker = mod.createWorker ?? mod.default?.createWorker
-  const worker = await createWorker(lang, 1, {
-    cachePath: tessDataPath,
-    logger: (message: { status?: string; progress?: number }) => {
-      if (!message?.status) return
-      if (!/loading language|recognizing text/iu.test(message.status)) return
-      const progress = Math.round((message.progress ?? 0) * 100)
-      onProgress?.(message.status, progress || undefined)
-    }
-  })
+  const worker = await createWorker(lang, 1, workerOptions)
   await worker.setParameters({
     tessedit_pageseg_mode: '6',
     preserve_interword_spaces: '1'
@@ -169,7 +302,15 @@ export class TesseractOcrEngine implements OcrEngine {
     this.deps = {
       tessDataPath: '',
       createWorker: (lang: string) =>
-        defaultCreateWorker(lang, this.deps.tessDataPath, this.deps.onProgress),
+        defaultCreateWorker(
+          lang,
+          this.deps.tessDataPath,
+          this.deps.onProgress,
+          this.deps.langPath,
+          this.deps.bundledLangPath,
+          this.deps.fileExists,
+          this.deps.workerPath
+        ),
       onProgress: undefined,
       ...deps
     }

@@ -26,7 +26,13 @@ test('悬浮窗应包含手动翻译入口、输入区、计数、提交和复�
 })
 
 test('Renderer 应支持手动模式快捷提交、显式提交和安全复制', () => {
-  assert.match(renderer, /event\.key === 'Enter'.*(event\.metaKey \|\| event\.ctrlKey)/su)
+  // 裸 Enter 直接提交，⌘/Ctrl + Enter 组合键同时保留。
+  assert.match(renderer, /function handleManualSourceKeydown\(event: KeyboardEvent\): void/u)
+  assert.match(
+    renderer,
+    /manualSourceEl\.addEventListener\('keydown', handleManualSourceKeydown\)/u
+  )
+  assert.match(renderer, /event\.key !== 'Enter'[\s\S]{0,200}event\.metaKey \|\| event\.ctrlKey/su)
   assert.match(renderer, /window\.api\.translateManual\(/u)
   assert.match(renderer, /manualState\.translation/u)
   assert.match(renderer, /manualState\.loading/u)
@@ -109,14 +115,16 @@ test('OCR 翻译结果应在弹窗展示 OCR 内容、引擎来源并复用复�
   assert.match(renderer, /ocrEngineBadgeEl\.textContent = ocrEngineLabel\(payload\.ocrEngine\)/u)
   assert.match(renderer, /const text = ocrSourceTextEl\.textContent \?\? ''[\s\S]*?if \(text\) window\.api\.copy\(text\)/u)
   assert.match(renderer, /syncSpeechButton\(\)/u)
-  assert.match(styles, /\.ocr-source\s*\{[^}]*border-top:\s*1px solid var\(--divider\)[^}]*min-height:\s*0;/su)
+  assert.match(html, /translation-section-source[\s\S]*id="ocr-source"[\s\S]*translation-section-target/u)
+  assert.doesNotMatch(styles, /\.ocr-source\s*\{[^}]*border-top:/su)
+  assert.match(styles, /\.ocr-source\s*\{[^}]*min-height:\s*0;/su)
   assert.match(styles, /\.ocr-source\[hidden\]\s*\{[^}]*display:\s*none/u)
   assert.match(styles, /\.ocr-source-text\s*\{[^}]*max-height:[^;]+;[^}]*overflow-y:\s*auto;/su)
   assert.doesNotMatch(styles, /\.ocr-source-tabs/u)
 })
 
 test('关闭、取消固定和模式切换应沿用明确的固定状态语义', () => {
-  assert.match(popup, /export function hidePopup\(\)[\s\S]*?pinned = false/u)
+  assert.match(popup, /export function hidePopup\([\s\S]*?pinned = false/u)
   assert.match(renderer, /function leaveManualMode\(\)[\s\S]*?mode = 'selection'/u)
   const leaveStart = renderer.indexOf('function leaveManualMode')
   const leaveSource = renderer.slice(leaveStart, renderer.indexOf('\n}', leaveStart) + 2)

@@ -41,7 +41,7 @@ test('手动草稿只能保存在 Renderer 会话内且不得写入持久化存�
   const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
   const settings = readFileSync('src/shared/settingsDefaults.ts', 'utf8')
   assert.doesNotMatch(renderer, /localStorage|sessionStorage/u)
-  assert.doesNotMatch(settings, /manual(?:Source|Translation|Draft)/u)
+  assert.doesNotMatch(settings, /manual(?:Source|Draft)|manualTranslation(?:Result|Draft|Source)/u)
 })
 
 test('翻译中禁止重复提交，失败后保留草稿并允许再次提交', () => {

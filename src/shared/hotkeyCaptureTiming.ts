@@ -84,3 +84,57 @@ export function shouldRetryCopyInjection(
   if (attempts > maxRetries) return false
   return elapsedMs >= COPY_INJECTION_RETRY_DELAY_MS * attempts
 }
+
+/** 复制兜底首次轮询超时后允许的独立重试轮次上限。 */
+export const COPY_FALLBACK_MAX_RETRIES = 1
+
+/**
+ * 复制兜底独立重试轮次的超时（毫秒）。
+ *
+ * 必须显著小于原轮询窗口（800ms），避免真正无选区时用户等待翻倍；
+ * 真机 A/B 后可在 400–600ms 区间内微调，但不得突破硬上限。
+ */
+export const COPY_FALLBACK_RETRY_TIMEOUT_MS = 500
+
+/** 复制兜底重试计划的输入状态。 */
+export interface CopyRetryPlanInput {
+  /** 已注入复制快捷键的总次数。 */
+  attempts: number
+  /** 已完成的独立重试轮次数。 */
+  retries: number
+  /** 本次取词从开始到首次轮询结束的耗时（毫秒）。 */
+  elapsedMs: number
+  /** 首次轮询窗口时长（毫秒）。 */
+  timeoutMs: number
+  /** 取词是否已被中止。 */
+  aborted: boolean
+  /** 取词期间是否观测到用户主动复制。 */
+  externalCopyObserved: boolean
+}
+
+/** 复制兜底重试计划。 */
+export interface CopyRetryPlan {
+  /** 是否应进入一次独立重试轮次。 */
+  retry: boolean
+  /** 重试轮次使用的独立超时（毫秒）；不重试时为 0。 */
+  retryTimeoutMs: number
+}
+
+/**
+ * 解析复制兜底首次轮询超时后的重试计划。
+ *
+ * 仅在首次轮询确实超时、未中止、未观测到用户主动复制且重试次数未耗尽时，
+ * 允许追加一次带独立超时的重试轮次，避免无限重试与覆盖用户剪贴板。
+ * @param input 当前取词状态。
+ * @returns 重试计划；不满足重试条件时 retry 为 false。
+ * @author zhenghq
+ */
+export function resolveCopyRetryPlan(input: CopyRetryPlanInput): CopyRetryPlan {
+  if (input.aborted) return { retry: false, retryTimeoutMs: 0 }
+  if (input.externalCopyObserved) return { retry: false, retryTimeoutMs: 0 }
+  // 一次复制键都没成功注入时不重试：没有可重试的轮次，重试只会白等。
+  if (input.attempts <= 0) return { retry: false, retryTimeoutMs: 0 }
+  if (input.retries >= COPY_FALLBACK_MAX_RETRIES) return { retry: false, retryTimeoutMs: 0 }
+  if (input.elapsedMs < input.timeoutMs) return { retry: false, retryTimeoutMs: 0 }
+  return { retry: true, retryTimeoutMs: COPY_FALLBACK_RETRY_TIMEOUT_MS }
+}

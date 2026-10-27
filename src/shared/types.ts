@@ -186,6 +186,14 @@ export interface MacOSQuarantineResult {
   message: string
 }
 
+/** 弹窗根据内容自然尺寸请求的自适应尺寸负载。 */
+export interface PopupAutoSizeRequest {
+  /** 目标宽度（逻辑像素）。 */
+  width: number
+  /** 目标高度（逻辑像素）。 */
+  height: number
+}
+
 export interface TranslatePayload {
   ok: boolean
   /** 本次结果属于划词还是手动翻译。 */
@@ -217,6 +225,91 @@ export interface TranslatePayload {
   ocrCode?: OcrErrorCode
   error?: string
 }
+
+/** 流式翻译增量事件负载，用于划词与手动翻译的渐进展示。 */
+export interface TranslateDeltaPayload {
+  /** 本次增量属于划词、手动还是 OCR 翻译。 */
+  origin: TranslationOrigin
+  /** 当前请求序号，用于丢弃迟到片段。 */
+  requestId: number
+  /** 本次新增的安全译文片段。 */
+  delta: string
+  /** 片段在本次请求中的序号，从 0 开始。 */
+  sequence: number
+  /** 是否为最终校正片段。 */
+  final: boolean
+}
+
+/** 音标变体的口音分类；无法从词典 URL 明确判断时使用 other。 */
+export type PronunciationAccent = 'US' | 'UK' | 'other'
+
+/** 可展示且可按需请求音频的音标变体。 */
+export interface PronunciationVariant {
+  /** 主进程生成并登记的稳定变体标识，不暴露远程音频地址。 */
+  id: string
+  /** 保守推断出的口音分类。 */
+  accent: PronunciationAccent
+  /** 词典返回的 IPA 音标文本。 */
+  ipa: string
+  /** 该变体是否关联可下载音频。 */
+  hasAudio: boolean
+}
+
+/** 音标卡中展示的一条单词释义。 */
+export interface PronunciationDefinition {
+  /** 释义正文。 */
+  text: string
+  /** 通用词典提供的词性，例如 noun、verb。 */
+  partOfSpeech?: string
+  /** 释义语言；通用词典为英文，本地雅思词表为中文。 */
+  language: 'zh' | 'en'
+  /** 释义来源。 */
+  source: 'dictionaryapi' | 'iscorevoc'
+}
+
+/** 单个英文单词的音标查询结果。 */
+export interface PronunciationResult {
+  /** 查询状态；unsupported 表示输入不符合英文单词规则。 */
+  status: 'available' | 'unavailable' | 'unsupported'
+  /** 用户当前查询或点击的单词。 */
+  word: string
+  /** 当前能力仅支持英文。 */
+  language: 'en'
+  /** 去重并排序后的音标变体。 */
+  variants: PronunciationVariant[]
+  /** 音标与释义数据的合并来源。 */
+  source: 'dictionaryapi' | 'iscorevoc' | 'mixed'
+  /** 按通用词典优先、雅思词表补充的顺序去重后的释义。 */
+  definitions?: PronunciationDefinition[]
+  /** 可选的词典许可归属信息。 */
+  attribution?: {
+    /** 词条来源页面。 */
+    sourceUrl?: string
+    /** 许可名称。 */
+    licenseName?: string
+    /** 许可地址。 */
+    licenseUrl?: string
+  }
+}
+
+/** 主进程代理下载后的词典音频结果。 */
+export type PronunciationAudioResult =
+  | {
+      /** 音频下载成功。 */
+      ok: true
+      /** 音频字节，仅在当前 IPC 调用中临时传输。 */
+      audio: Uint8Array
+      /** 上游返回或安全兜底的音频 MIME 类型。 */
+      mimeType: string
+      /** 音频字节数。 */
+      size: number
+    }
+  | {
+      /** 音频下载失败或被拒绝。 */
+      ok: false
+      /** 面向界面的脱敏错误提示。 */
+      error: string
+    }
 
 /** 用户可选择的 OCR 引擎偏好，auto 表示按平台自动调度。 */
 export type OcrEnginePreference = 'auto' | 'system' | 'paddle' | 'tesseract'
@@ -558,6 +651,8 @@ export interface ScreenshotExportImageResult {
 
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
 export interface OcrStatus {
+  /** 当前是否为 Windows 7 兼容运行时；Win7 固定使用 Tesseract.js。 */
+  win7Compatibility?: boolean
   /** 系统 OCR 是否可在当前平台使用。 */
   systemAvailable: boolean
   /** PaddleOCR 主链路是否已安装可用。 */
@@ -613,6 +708,10 @@ export interface Settings {
   targetLang: string
   sourceLang: string
   hotkey: string
+  /** 全局手动翻译快捷键，空字符串表示不注册。 */
+  manualTranslationHotkey: string
+  /** 全局网页阅读器快捷键，空字符串表示不注册。 */
+  webReaderHotkey: string
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
@@ -684,6 +783,24 @@ export interface Settings {
   webTranslationImageOcrMinSize: number
   /** 图片译文渲染位置：below 表示图片下方，overlay 表示覆盖在图片上。 */
   webTranslationImageOcrOverlay: WebImageOverlayPlacement
+}
+
+/** 可注册的全局快捷键字段标识。 */
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey'
+
+/** 单个全局快捷键的注册状态。 */
+export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
+
+/** 单个全局快捷键的注册结果。 */
+export interface GlobalShortcutRegistrationState {
+  /** 快捷键字段标识。 */
+  id: GlobalShortcutId
+  /** 本次尝试注册的快捷键。 */
+  accelerator: string
+  /** 注册结果状态。 */
+  status: GlobalShortcutRegistrationStatus
+  /** 面向设置页的失败原因；成功和空值通常为空。 */
+  message?: string
 }
 
 /** Renderer 上报给原生 WebContentsView 的窗口内容区矩形。 */
@@ -989,12 +1106,18 @@ export interface Api {
   onWindowMaximizedChanged(cb: (maximized: boolean) => void): () => void
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
+  /** 订阅流式翻译增量，用于划词与手动翻译的渐进展示。 */
+  onTranslateDelta(cb: (p: TranslateDeltaPayload) => void): () => void
   /** 订阅主进程打开手动翻译模式的通知。 */
   onManualTranslateOpen(cb: () => void): () => void
+  /** 订阅主进程切回划词翻译模式的通知。 */
+  onSelectionMode(cb: () => void): () => void
   /** 请求主进程显示并固定手动翻译模式。 */
   openManualTranslate(): void
   copy(text: string): void
   hide(): void
+  /** 请求主进程按内容自然尺寸调整弹窗大小。 */
+  resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
   /** 打开内置网页翻译阅读器。 */
@@ -1031,6 +1154,49 @@ export interface Api {
   setPinned(pinned: boolean): void
   /** 订阅翻译弹窗固定状态变化。 */
   onPinnedChanged(cb: (pinned: boolean) => void): () => void
+  /**
+   * 订阅翻译弹窗已被主进程隐藏的通知。
+   *
+   * 失焦、外部点击和自动隐藏不一定经过 Renderer 的关闭按钮；Renderer 必须
+   * 通过该事件停止仍在播放的语音并释放词典音频等临时资源。
+   * @param cb 弹窗隐藏后的清理回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onPopupHidden(cb: () => void): () => void
+  /**
+   * 查询单个英文单词的音标。
+   * @param word 已由界面识别出的英文单词。
+   * @returns 脱敏音标结果；失败时返回不可用状态。
+   * @author zhenghq
+   */
+  lookupPronunciation(word: string, requestId?: string): Promise<PronunciationResult>
+  /**
+   * 下载当前音标卡中已登记变体的音频。
+   * @param word 当前查询词。
+   * @param variantId 主进程返回的稳定变体标识。
+   * @returns 临时音频字节或脱敏错误。
+   * @author zhenghq
+   */
+  fetchPronunciationAudio(
+    word: string,
+    variantId: string,
+    requestId?: string
+  ): Promise<PronunciationAudioResult>
+  /**
+   * 取消当前音标查询或音频下载。
+   * @param requestId Renderer 生成的请求 ID。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelPronunciationRequest(requestId: string): void
+  /**
+   * 通知主进程当前是否正在查看或播放原文发音。
+   * @param active 是否暂停弹窗自动隐藏。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setPronunciationInteraction(active: boolean): void
   /** 点击选区旁的“译”按钮后请求翻译当前选中文字。 */
   translateSelection(): void
   /** 请求主进程打开 OCR 框选窗口。 */
@@ -1106,6 +1272,19 @@ export interface Api {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void
+  /**
+   * 查询各全局快捷键最近一次注册结果。
+   * @returns 按固定字段顺序排列的注册状态。
+   * @author zhenghq
+   */
+  getShortcutRegistrationStates(): Promise<GlobalShortcutRegistrationState[]>
+  /**
+   * 订阅全局快捷键注册结果变化。
+   * @param cb 注册状态变化回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShortcutRegistrationChanged(cb: (states: GlobalShortcutRegistrationState[]) => void): () => void
   /** 获取内存缓冲中的近期主进程日志（时间升序）。 */
   getLogHistory(): Promise<LogEntry[]>
   /** 订阅主进程日志增量推送，返回取消订阅方法。 */

@@ -151,6 +151,73 @@ test('诊断文件损坏时应静默重建为空结构', () => {
 })
 
 /**
+ * 校验导出只保留诊断白名单字段，并丢弃旧文件中可能存在的标题、选区与剪贴板内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('诊断导出应过滤敏感字段并保留窗口定位字段', () => {
+  const { store, file, cleanup } = createStore(() => '2026-09-07')
+  try {
+    writeFileSync(file, JSON.stringify({
+      days: {
+        '2026-09-07': {
+          records: [{
+            at: 1_700_000_000_000,
+            entry: 'hotkey',
+            platform: 'darwin',
+            level: 'failed',
+            reason: 'timeout',
+            elapsedMs: 800,
+            app: 'com.tencent.xinwechat',
+            windowLocate: 'app-fallback',
+            windowCount: 3,
+            windowMatched: false,
+            title: '张三 - 微信',
+            windowTitle: '张三 - 微信',
+            selectedText: '敏感选区内容',
+            text: '敏感选区内容',
+            clipboard: '敏感剪贴板内容',
+            content: '敏感内容'
+          }],
+          summary: {
+            total: 1,
+            byEntry: { hotkey: 1 },
+            byLevel: { failed: 1 },
+            byReason: { timeout: 1 },
+            topApps: [{ app: 'com.tencent.xinwechat', count: 1 }]
+          }
+        }
+      }
+    }), 'utf-8')
+
+    const exported = new CaptureDiagnosticsStore({
+      filePath: file,
+      today: () => '2026-09-07'
+    }).getExportData()
+    const record = exported.days['2026-09-07']?.records[0]
+    assert.ok(record)
+    assert.deepEqual(Object.keys(record).sort(), [
+      'app',
+      'at',
+      'elapsedMs',
+      'entry',
+      'level',
+      'platform',
+      'reason',
+      'windowCount',
+      'windowLocate',
+      'windowMatched'
+    ])
+    const serialized = JSON.stringify(exported)
+    assert.ok(!serialized.includes('张三'))
+    assert.ok(!serialized.includes('敏感选区内容'))
+    assert.ok(!serialized.includes('敏感剪贴板内容'))
+  } finally {
+    cleanup()
+  }
+})
+
+/**
  * 校验原子写入：临时文件在重命名后被清理。
  * @returns 无返回值。
  * @author zhenghq

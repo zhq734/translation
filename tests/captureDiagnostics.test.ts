@@ -74,6 +74,54 @@ test('buildCaptureDiagnosticRecord 应仅包含白名单字段', () => {
 })
 
 /**
+ * 校验窗口定位诊断字段被接受且保持白名单输出，不携带窗口标题明文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('buildCaptureDiagnosticRecord 应记录窗口定位字段且不含标题明文', () => {
+  const record = buildCaptureDiagnosticRecord({
+    at: 1_700_000_000_000,
+    entry: 'hotkey',
+    platform: 'darwin',
+    level: 'failed',
+    reason: 'timeout',
+    elapsedMs: 1800,
+    app: 'com.tencent.xinwechat',
+    windowLocate: 'app-fallback',
+    windowCount: 3,
+    windowMatched: false
+  })
+  assert.equal(record.windowLocate, 'app-fallback')
+  assert.equal(record.windowCount, 3)
+  assert.equal(record.windowMatched, false)
+  assert.ok(!JSON.stringify(record).includes('微信'))
+  assert.ok(!JSON.stringify(record).includes('张三'))
+})
+
+/**
+ * 校验非法窗口定位结果被丢弃，避免脏数据进入聚合。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('buildCaptureDiagnosticRecord 应丢弃非法窗口定位字段', () => {
+  const record = buildCaptureDiagnosticRecord({
+    at: 1_700_000_000_000,
+    entry: 'button',
+    platform: 'darwin',
+    level: 'failed',
+    reason: 'timeout',
+    elapsedMs: 800,
+    app: 'com.tencent.xinwechat',
+    windowLocate: 'other' as never,
+    windowCount: -1,
+    windowMatched: 'yes' as never
+  })
+  assert.equal(record.windowLocate, undefined)
+  assert.equal(record.windowCount, undefined)
+  assert.equal(record.windowMatched, undefined)
+})
+
+/**
  * 校验失败时记录包含 reason 字段。
  * @returns 无返回值。
  * @author zhenghq

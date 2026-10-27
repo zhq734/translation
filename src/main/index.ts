@@ -15,7 +15,7 @@ import {
   dialog,
   type NativeImage,
   type SourcesOptions,
-  type WebContentsView
+  type BrowserView
 } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -36,6 +36,7 @@ import {
   captureSelectionAfterButtonClick,
   PermissionError,
   checkAccessibilityPermission,
+  hasScreenRecordingPermission,
   setPendingCopyModifierRelease,
   setPendingMacOSCommandWasDown
 } from './capture'
@@ -48,34 +49,48 @@ import {
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
   resetDeepLxTranslationRuntime,
-  translate
+  translate,
+  translateStream
 } from './translate'
 import { applyTranslationProxy, createTranslationWebSocket, translationFetch } from './network'
 import { createEdgeSpeechClient } from './edgeSpeech'
+import { PronunciationService } from './pronunciationService'
+import { iscorevocDictionary } from './iscorevocDictionary'
+import { PronunciationRequestRegistry } from './pronunciationRequests'
 import {
   createPopup,
   showPopup,
+  sendPopupDelta,
   hidePopup,
+  hidePopupForInternalWindowSwitch,
+  dismissPopupOnExternalPointerDown,
   isPopupVisible,
-  isPopupHandingBackFront,
+  isPopupPinned,
   isPopupActivated,
+  isPopupHoldingKeyWindow,
   deactivatePopupForCapture,
+  beginPopupSettingsOpenGuard,
+  endPopupSettingsOpenGuard,
+  isPopupSettingsOpenGuardActive,
+  suppressExternalPointerDismissForButtonClick,
   isPointInsidePopup,
   getPopupCloseVersion,
   setPopupPinned,
+  setPronunciationInteraction,
   showManualTranslationPopup,
-  whenPopupHidden
+  resizePopup
 } from './popup'
 import {
   forgetFrontmostApp,
   handBackFrontmostApp,
+  handBackKeyWindowToFrontmostApp,
   handBackFrontmostThen,
-  isInternalWindowTeardownActive,
   isMacAppActiveByEvents,
+  isOwnWindowHoldingKeyWindow,
   readFrontmostAppSnapshot,
   rememberFrontmostApp,
-  rememberFrontmostAppIfInactive,
-  rememberFrontmostAppIfInactiveAsync
+  rememberFrontmostAppIfInactiveAsync,
+  rememberFrontmostWindowAtPoint
 } from './macForeground'
 import {
   createSelectionButton,
@@ -94,11 +109,24 @@ import { registerWindowControls } from './windowControls'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
+  collectShortcutRegistrationStates,
+  findShortcutConflict,
+  type GlobalShortcutId,
+  type GlobalShortcutRegistrationState
+} from './globalShortcutRegistry'
+import {
   resolveHotkeyCaptureDelay,
   resolveHotkeyModifiers,
   shouldReleaseHotkeyModifiersBeforeCopy
 } from '../shared/hotkeyCaptureTiming'
 import { shouldPrefetchSelectionForButton } from '../shared/platformCapture'
+import {
+  ACTIVATE_DIAGNOSTIC_PREFIX,
+  captureSyncStack,
+  createActivateSourceRecord,
+  formatActivateDiagnosticLog,
+  logCandidateProbe
+} from '../shared/activateDiagnostics'
 import {
   POPUP_FOREGROUND_RESTORE_SETTLE_MS,
   shouldActivatePopupForCaptureFailure,
@@ -109,6 +137,7 @@ import {
   resolveSelectionCaptureFailureMessage,
   resolveLanguagePair,
   isSelectionGestureInsideOwnWindows,
+  isPointInsideBounds,
   type ScreenBounds,
   type SelectionGesture
 } from '../shared/selectionBehavior'
@@ -126,6 +155,7 @@ import {
 } from '../shared/selectionInteraction'
 import {
   SelectionCaptureCoordinator,
+  type SelectionCaptureContext,
   type SelectionCaptureResult
 } from '../shared/selectionCaptureCoordinator'
 import {
@@ -143,14 +173,17 @@ import type {
   Settings,
   DeepLxStatus,
   MacOSQuarantineResult,
+  OcrEnginePreference,
   UpdateStatus,
   ManualTranslateRequest,
   TranslationOrigin,
-  TranslatePayload
+  TranslatePayload,
+  TranslateDeltaPayload
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
 import type { WebImageCandidate } from '../shared/webPageTranslation'
 import { validateManualTranslationText } from '../shared/manualTranslationBehavior'
+import { isPopupAutoSizeRequest } from '../shared/popupAutoSize'
 import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
 import { AiCredentialStore } from './aiCredentials'
@@ -163,7 +196,6 @@ import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
 } from './appLifecycle'
-import { createApplicationUpdateManager } from './updater'
 import type { UpdateManager } from './updateManager'
 import { removeMacOSApplicationQuarantine } from './macQuarantine'
 import {
@@ -187,15 +219,11 @@ import {
   cropBgraSelectionPng,
   resolveSnapshotCropRect
 } from './ocrSnapshotImage'
-import { OcrDispatcher, type OcrEnginePreferenceState } from './ocrDispatcher'
+import type { OcrDispatcher, OcrEnginePreferenceState } from './ocrDispatcher'
 import {
   handleOcrSelectionWindowClosed,
   handleOcrSelectionWindowHide
 } from './ocrSelectionWindowEvents'
-import { createSystemOcrEngine } from './systemOcr'
-import { PaddleOcrEngine } from './paddleOcr'
-import { resolveBundledOcrModelAssets } from './ocrModelAssets'
-import { TesseractOcrEngine } from './tesseractOcr'
 import { recognizeAdaptiveOcr } from './adaptiveOcr'
 import { createWebImageSource, type WebImageResponse, type WebImageSource } from './webImageSource'
 import { evaluateOcrQuality } from '../shared/ocrQuality'
@@ -206,6 +234,7 @@ import {
 import { validateAnnotatedExportPayload } from './screenshotExportPayload'
 import { translateOcrResult } from './ocrTranslate'
 import { readClipboardImage } from './clipboardImage'
+import { isWindows7CompatibilityRuntime } from './platformCompatibility'
 import { OcrEngineError, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { cleanOcrText } from '../shared/ocrText'
 import type {
@@ -224,6 +253,7 @@ import type {
 import { WebReaderManager } from './webReaderWindow'
 import { resolveMacOSDockPresentation, type MacOSDockPresentation } from './dockVisibility'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
+import { suspendSettingsWindowFocusForPopupHide } from './settingsWindowPopupHideGuard'
 import {
   buildLinuxAutostartEntry,
   buildLoginItemSettings,
@@ -255,6 +285,36 @@ const APP_ID = 'com.selection.translator'
 const DOCKER_IMAGE = 'ghcr.io/owo-network/deeplx:latest'
 /** 自动翻译与按钮定位等待选区稳定的时长（毫秒）。 */
 const SELECTION_SETTLE_DELAY_MS = 80
+/**
+ * 划词状态空档的 activate 抑制时长（毫秒）。
+ *
+ * 划词流程从手势结束到翻译结果上屏、再到结果弹窗关闭都可能让 macOS 派发
+ * 内部 activate；每次内部窗口动作都会把抑制截止时间向后顺延该时长，覆盖
+ * 事件派发延迟。取值只需覆盖单次派发延迟，不能过长，否则会吞掉用户紧接着
+ * 的真实 Dock 点击。
+ */
+const SELECTION_ACTIVATION_SUPPRESS_MS = 500
+
+/**
+ * activate 回调在进入异步边界前采集的同步来源指纹。
+ * @author zhenghq
+ */
+interface ActivateSourceProbe {
+  /** 同步调用栈。 */
+  stack: string
+  /** 精确到毫秒的本地时间戳。 */
+  timestampMs: number
+  /** Electron activate 回调提供的可见窗口标记。 */
+  hasVisibleWindows?: boolean
+}
+
+/**
+ * 设置页临时提升到 screen-saver 层级后的自动回收时间（毫秒）。
+ *
+ * nonactivating panel 在 macOS 上不保证派发 blur；若只依赖 blur 降级，
+ * 设置页会长期保持最高层级，划词时概率性浮到最前。显式置前后必须有界回收。
+ */
+const SETTINGS_PANEL_RAISE_LEVEL_TIMEOUT_MS = 400
 const UPDATE_CHECK_DELAY_MS = 5000
 const MIN_OCR_SELECTION_SIZE = 8
 const OCR_TIMEOUT_MS = 30000
@@ -268,6 +328,23 @@ const OCR_TIMEOUT_MS = 30000
 function waitFor(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 等待源窗口快照任务完成。
+ *
+ * 窗口读取包含 lsappinfo 与 CGWindowList 子进程调用，任务本身对每一步都设置了
+ * 硬超时，因此这里直接等待任务即可保持整体有界；不能再叠加更短的入口超时，
+ * 否则慢枚举会被提前截断，后续 AX 读取与复制激活只能拿到应用级上下文。
+ * @param task 正在执行的窗口快照任务。
+ * @returns 任务成功完成时返回 true；无任务或任务失败时返回 false。
+ * @author zhenghq
+ */
+async function waitForSelectionWindowSnapshot(
+  task: Promise<unknown> | undefined
+): Promise<boolean> {
+  if (!task) return false
+  return task.then(() => true, () => false)
 }
 
 /**
@@ -340,8 +417,33 @@ function t(key: string, params?: Record<string, string | number>): string {
 
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
 const edgeSpeechRequests = new Map<string, AbortController>()
+/** 主进程音标查询与受信任音频代理；网络请求复用现有翻译代理配置。 */
+const pronunciationService = new PronunciationService({
+  fetch: translationFetch,
+  ieltsDictionary: iscorevocDictionary
+})
+/** 当前 Renderer 发起且尚未完成的音标查询与音频请求。 */
+const pronunciationRequests = new PronunciationRequestRegistry()
 let latestTranslationRequest = 0
 let latestSelectionGesture = 0
+/** 最近一次全局快捷键注册结果，供设置页查询和展示。 */
+let shortcutRegistrationStates: GlobalShortcutRegistrationState[] = []
+/** 最近一次划词相关内部动作的状态空档抑制截止时间戳；0 表示无抑制。 */
+let selectionActivationSuppressUntil = 0
+/**
+ * 设置页显式置前代际。
+ *
+ * 启动首开、Dock、托盘与弹窗内打开设置都属于显式置前，但新建/复用分支需要
+ * 等待页面就绪、Dock 策略刷新与事件循环让出，最终 moveTop()/focus() 往往在
+ * 数十到数百毫秒之后才执行。若用户在这段窗口期内已经开始下一次划词，延迟到达
+ * 的置前会把设置页（以及 app.dock.show() 激活的整个应用）顶到划词应用之上。
+ * 每次划词内部动作开始时递增本代际，使尚未收尾的置前动作自动失效。
+ */
+let settingsBringToFrontEpoch = 0
+/** 保护期内被延后的 macOS Dock 显示定时器；重复请求时重置。 */
+let pendingMacOSDockShowTimer: ReturnType<typeof setTimeout> | null = null
+/** 保护期内被延后的 macOS Dock 呈现重放定时器；与仅显示 Dock 的定时器分开，避免互相取消。 */
+let pendingMacOSDockVisibilityTimer: ReturnType<typeof setTimeout> | null = null
 let latestOcrSnapshot: OcrSnapshot | null = null
 // OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
 let ocrSelectionSessionSeq = 0
@@ -353,17 +455,6 @@ const ocrSessionResultCache = new OcrSessionResultCache()
 // 统一记录普通选区、翻译与 OCR 的交互状态，避免窗口显隐和异步流程之间出现竞态。
 const selectionInteraction = new SelectionInteractionController()
 let ocrInteractionToken: number | null = null
-let internalActivationLeaseUntil = 0
-const INTERNAL_ACTIVATION_LEASE_MS = 300
-/** 取词失败提示弹窗未按时隐藏时，强制释放交互状态的最长等待时间。 */
-const POPUP_RELEASE_FALLBACK_MS = 5000
-/**
- * 已把释放动作推迟到翻译弹窗隐藏之后的交互 token。
- *
- * 取词失败提示弹窗的收尾期间仍需保留交互状态与内部激活租约；
- * 按钮取词流程的 finally 兜底必须跳过这类 token，否则会抢在弹窗隐藏前清零租约。
- */
-let pendingPopupReleaseToken: number | null = null
 /**
  * 本轮截图开始前应用是否已是 macOS 前台应用。
  * 覆盖窗口显示时会把应用激活到最前，隐藏时系统又把应用内下一个窗口（通常是设置页）
@@ -400,7 +491,10 @@ const selectionCapture = new SelectionCaptureCoordinator(
           level: input.level,
           reason: input.reason,
           elapsedMs: input.elapsedMs,
-          app
+          app,
+          windowLocate: input.windowLocate,
+          windowCount: input.windowCount,
+          windowMatched: input.windowMatched
         })
       })
     }
@@ -418,6 +512,12 @@ const selectionListenerController = new SelectionListenerController({
 })
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
+/** 最近一次划词或快捷键记录的源窗口上下文，供按钮与自动路径复用。 */
+let lastSelectionWindowContext: SelectionCaptureContext | undefined
+/** 最近一次源窗口快照任务；按钮与自动入口在取词前做有界等待。 */
+let selectionWindowSnapshotTask: Promise<unknown> | undefined
+/** 源窗口快照任务对应的划词手势序号，防止旧任务覆盖新一轮上下文。 */
+let selectionWindowSnapshotGestureId = 0
 let lastOcrText = ''
 let lastOcrAnchor: { x: number; y: number } | undefined
 let lastOcrEngine: TranslatePayload['ocrEngine'] | undefined
@@ -526,26 +626,66 @@ function cancelEdgeSpeech(requestId: string): void {
 }
 
 /**
+ * 规范化 Renderer 传入的音标请求 ID，避免异常长值或非字符串进入主进程注册表。
+ * @param value 未信任请求 ID。
+ * @returns 合法请求 ID；非法时返回空字符串。
+ * @author zhenghq
+ */
+function normalizePronunciationRequestId(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const normalized = value.trim()
+  return normalized.length > 0 && normalized.length <= 128 ? normalized : ''
+}
+
+/**
+ * 采集设置窗口当前的可见性布尔值，供 activate 来源诊断打点使用。
+ * @returns 设置窗口存在、未销毁且可见时返回 true，否则返回 false。
+ * @author zhenghq
+ */
+function isSettingsWindowVisibleForProbe(): boolean {
+  return Boolean(settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible())
+}
+
+/**
  * 判断本次 activate 事件是否为用户真正的 Dock 激活操作。
  * macOS 的 activate 会在应用内任意窗口被激活时触发，包括划词过程中显示的
  * “译”按钮与翻译弹窗。若不加区分就打开设置窗口，会在用户划词时突然抢走
  * 前台应用焦点，导致原生选区失效、随后取词失败。
+ * @param probe activate 回调在进入异步边界前采集的同步指纹。
  * @returns 交互状态、内部窗口、OCR 暂停和激活租约均为空闲时返回 true。
  * @author zhenghq
  */
-function shouldTreatActivateAsDockLaunch(): boolean {
+function shouldTreatActivateAsDockLaunch(probe: ActivateSourceProbe): boolean {
   const decision = canTreatActivateAsDockLaunch({
     interactionState: selectionInteraction.snapshot().state,
     selectionButtonVisible: isSelectionButtonVisible(),
     popupVisible: isPopupVisible(),
-    popupHandingBackFront: isPopupHandingBackFront(),
-    hiServicesRepairPromptVisible: hiServicesRepairPromptShowing,
+    hiServicesRepairRunning,
     ocrVisible: isOcrSelectionVisible(),
     listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
-    internalActivationLeaseUntil,
-    internalWindowTeardown: isInternalWindowTeardownActive(),
-    now: Date.now()
+    selectionActivationSuppressUntil
   })
+  // 来源取证必须先于判定日志输出：同步栈已经由调用方在事件回调入口采集，
+  // 这里只做校验与序列化；任何诊断异常都不得中断 activate 原有流程。
+  try {
+    const diagnostic = createActivateSourceRecord({
+      timestampMs: probe.timestampMs,
+      decision: decision.allowed ? 'allow' : 'ignore',
+      reason: decision.allowed ? undefined : decision.reason ?? 'unknown',
+      stack: probe.stack,
+      event: { hasVisibleWindows: probe.hasVisibleWindows }
+    })
+    if (diagnostic.ok) {
+      console.log(formatActivateDiagnosticLog(diagnostic.record))
+    } else {
+      console.log(`${ACTIVATE_DIAGNOSTIC_PREFIX} dropped: ${diagnostic.error}`)
+    }
+  } catch (error) {
+    console.log(
+      '[activate-diagnostics] output failed:',
+      error instanceof Error ? error.message : String(error)
+    )
+  }
   if (decision.allowed) {
     // 放行路径也要留痕：只有记录判定依据，才能事后区分真实 Dock 启动
     // 与收尾窗口期漏网的内部 activate。
@@ -557,71 +697,174 @@ function shouldTreatActivateAsDockLaunch(): boolean {
 }
 
 /**
- * 延长一次内部窗口激活租约，避免隐藏按钮到弹窗接管之间被误判为空闲。
+ * 续期划词内部动作的 activate 抑制。
+ *
+ * 只应在确实由划词流程引发的内部窗口显隐/焦点变化前后调用。每次调用只把
+ * 截止时间向后顺延一个短窗口，不会把用户紧接着点击 Dock 的真实激活永久拦截。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renewInternalActivationLease(): void {
-  internalActivationLeaseUntil = Date.now() + INTERNAL_ACTIVATION_LEASE_MS
+function suppressSelectionActivationWindowGap(): void {
+  selectionActivationSuppressUntil = Date.now() + SELECTION_ACTIVATION_SUPPRESS_MS
+  // 划词内部动作开始即宣告“当前用户交互属于划词”：任何仍在等待 await 收尾的
+  // 设置页显式置前都必须立即失效，不能在用户已经开始划词后再把窗口顶到最前。
+  settingsBringToFrontEpoch += 1
 }
 
 /**
- * 释放当前交互 token 并清除其内部激活租约。
+ * 处理翻译弹窗关闭生命周期的内部窗口收尾。
+ *
+ * 关闭开始与真实隐藏完成时都必须续期划词 activate 抑制，并立即回收设置页
+ * 临时提升的层级，防止异步前台交还期间或隐藏后的迟到 activate 把设置页置前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupInternalWindowTransition(): void {
+  suppressSelectionActivationWindowGap()
+  lowerSettingsPanelRaiseLevel()
+}
+
+/** 当前翻译弹窗隐藏期间持有的设置页焦点恢复函数；未启用保护时为 null。 */
+let restoreSettingsWindowFocusAfterPopupHide: (() => void) | null = null
+
+/**
+ * 在翻译弹窗真实隐藏前暂时撤销设置页的 key window 候选资格。
+ *
+ * 仅覆盖 win.hide() 前后的同步窗口期，避免 macOS 把同应用后台设置页提升到最前；
+ * 不参与取词生命周期，也不使用定时器或异步恢复。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function suspendSettingsWindowFocusBeforePopupHide(): void {
+  restoreSettingsWindowFocusAfterPopupHide?.()
+  restoreSettingsWindowFocusAfterPopupHide = suspendSettingsWindowFocusForPopupHide(
+    process.platform,
+    settingsWin
+  )
+}
+
+/**
+ * 在翻译弹窗真实隐藏后恢复设置页的 key window 候选资格。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreSettingsWindowFocusAfterPopupHideCallback(): void {
+  restoreSettingsWindowFocusAfterPopupHide?.()
+  restoreSettingsWindowFocusAfterPopupHide = null
+}
+
+/**
+ * 处理翻译弹窗关闭开始。
+ *
+ * 先回收设置页临时层级并挂起后台设置页的 key window 候选资格，再让弹窗进入
+ * 异步前台交还；两个动作都必须在关闭入口同步完成，不能等待 handBack。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupCloseStart(): void {
+  handlePopupInternalWindowTransition()
+  suspendSettingsWindowFocusBeforePopupHide()
+}
+
+/**
+ * 处理翻译弹窗真实隐藏完成。
+ *
+ * 先恢复设置页焦点能力，再续期内部 activate 抑制并回收层级，覆盖 hide() 后
+ * 可能迟到的系统激活事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupCloseEnd(): void {
+  restoreSettingsWindowFocusAfterPopupHideCallback()
+  handlePopupInternalWindowTransition()
+}
+
+/**
+ * 判断当前是否处于划词置前保护期。
+ *
+ * 划词手势结束到按钮/弹窗状态生效之间存在短暂空档，activate 判定可能呈现
+ * “全空闲”而被误判为 Dock 点击；同时 Dock 策略刷新与设置页延迟置前都可能
+ * 在这个窗口期把整个应用激活到最前。保护期复用 activate 抑制租约，保证这些
+ * 内部动作被推迟而不是当作显式用户入口执行。
+ * @returns 保护期仍然有效时返回 true。
+ * @author zhenghq
+ */
+function isSelectionWindowRaiseGuardActive(): boolean {
+  return selectionActivationSuppressUntil > Date.now()
+}
+
+/**
+ * 释放当前交互 token。
  * @param token 需要释放的交互 token。
  * @returns 无返回值。
  * @author zhenghq
  */
 function releaseSelectionInteraction(token: number): void {
-  if (!selectionInteraction.release(token)) return
-  internalActivationLeaseUntil = 0
+  const released = selectionInteraction.release(token)
+  // 翻译结果通常在划词手势 1~3 秒后才上屏，最初的短抑制窗口早已过期。
+  // 释放交互 token 后系统可能派发一次迟到 activate，必须在收尾处再次续期，
+  // 否则它会被误判为 Dock 点击并把已打开的设置页拉到最前。
+  if (released) {
+    suppressSelectionActivationWindowGap()
+  }
 }
 
 /**
- * 等翻译弹窗真正隐藏之后再释放交互 token 并清零内部激活租约。
- *
- * 取词失败提示弹窗的收尾（交还前台 → 隐藏 → hide 生效）期间仍可能收到
- * macOS 内部 activate：提前清零租约会让这段窗口期失去唯一的时间维度防线，
- * 误放行的 activate 会把后台设置页或网页阅读器顶到最前。
- * @param token 需要释放的交互 token。
- * @returns 无返回值。
+ * 使当前普通选区流程失效并返回新 token。
+ * @returns 交互流程被失效时返回新的 token；OCR 独占期间返回 null。
  * @author zhenghq
  */
-function releaseSelectionInteractionAfterPopupHidden(token: number): void {
-  pendingPopupReleaseToken = token
-  let cancelPopupHiddenWait: () => void = () => {}
-  // 兜底：失败提示被用户固定等情况下弹窗可能长时间不隐藏，
-  // 不能让交互状态与租约永久悬挂，超时后强制完成释放。
-  const fallbackTimer = setTimeout(() => {
-    if (pendingPopupReleaseToken !== token) return
-    pendingPopupReleaseToken = null
-    // 弹窗仍未隐藏：撤销这次注册，避免连续失败在同一个窗口上累积 hide 监听器。
-    cancelPopupHiddenWait()
-    if (!selectionInteraction.isCurrent(token)) return
-    internalActivationLeaseUntil = 0
-    releaseSelectionInteraction(token)
-  }, POPUP_RELEASE_FALLBACK_MS)
-  fallbackTimer.unref?.()
-  cancelPopupHiddenWait = whenPopupHidden(() => {
-    clearTimeout(fallbackTimer)
-    if (pendingPopupReleaseToken !== token) return
-    pendingPopupReleaseToken = null
-    // 收尾期间可能已经开始新一轮交互：旧 token 已失效时不能顺手清掉新流程刚续上的租约。
-    if (!selectionInteraction.isCurrent(token)) return
-    // 弹窗已真正隐藏、收尾抑制期已结束，此时清零租约不会留下无保护的窗口期。
-    internalActivationLeaseUntil = 0
-    releaseSelectionInteraction(token)
-  })
+function invalidateSelectionFlowWithFocusCleanup(): number | null {
+  const invalidatedToken = selectionInteraction.invalidateSelectionFlow()
+  return invalidatedToken
 }
 
 /**
  * 激活已有网页阅读器页面；没有尚未关闭的页面时打开设置窗口。
- * 该入口可能由误放行的内部 activate 触发，因此复用已可见设置页时不得强制置顶。
+ * 调用方已经通过 shouldTreatActivateAsDockLaunch() 排除内部窗口激活；
+ * 能走到这里的是用户点击 Dock 图标，属于显式入口。
  * @returns 无返回值。
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
+  // 记录显式入口：该函数此前完全静默，无法判断设置页置前是否由 activate 走到这里。
+  logCandidateProbe('settings-activate-entry', isSettingsWindowVisibleForProbe())
+  // activate 判定存在短暂状态空档：检查时可能刚好全空闲，但事件派发时用户
+  // 已经开始划词。此时若继续置前阅读器或设置页，就会把它们顶到划词应用之上。
+  if (isSelectionWindowRaiseGuardActive()) return
+  // activate 判定存在短暂状态空档，可能把内部动作误放行。focusExistingWindow()
+  // 对已可见且未最小化的阅读器只返回 true、不重新 show()+focus()，因此即便
+  // 误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会正常恢复，
+  // 保证真实 Dock 启动可用。被其它应用遮挡时的强制置前改由显式快捷键入口负责。
   if (webReader?.focusExistingWindow()) return
-  void openSettings({ bringToFront: false })
+  // 设置页分支必须与阅读器分支对称：已可见且未最小化的设置页不得再执行
+  // show()+moveTop()+focus()。真机日志显示 6 次迟到 activate 误放行后都走到
+  // settings-reuse-raise，把已可见设置页重新顶到划词应用之上。activate 判定
+  // 存在状态空档，无法与真实 Dock 点击区分，因此这里对已可见窗口只保留其现有
+  // 层级，不再主动置前；被其它应用遮挡时的强制置前改由托盘/弹窗内显式入口负责。
+  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && !settingsWin.isMinimized()) {
+    return
+  }
+  // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
+  // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
+  // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
+  void openSettings({ bringToFront: true })
+    .then(async () => {
+      const target = settingsWin
+      if (!target || target.isDestroyed() || !target.isVisible()) return
+      // Dock 激活事件可能在第一次 show/focus 之后才完成系统窗口重排，复用分支
+      // 缺少新建分支的最终置前；让出一轮事件循环再补一次，避免设置页随即失焦。
+      await yieldToEventLoop()
+      if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
+      // 等待期间用户可能已经开始下一次划词；此时补置前同样会抢走划词前台。
+      if (isSelectionWindowRaiseGuardActive()) return
+      // activate 路径复用已可见设置页时不得提升到 screen-saver：普通窗口的
+      // moveTop() 已足以把设置页放到最前，最高层级提升只会放大误判后果。
+      showOwnWindowForInteraction(target, { raiseLevel: false })
+    })
+    .catch((error: unknown) => {
+      console.error('[settings] Dock 激活打开设置窗口失败:', error)
+    })
 }
 
 // ---- 主进程日志层 ----
@@ -658,11 +901,19 @@ if (!gotLock) {
   })
   if (isMac) {
     // macOS 通过 Finder 重新打开运行中的应用时通常只激活已有进程，不会创建第二实例。
-    app.on('activate', () => {
+    app.on('activate', (_event, hasVisibleWindows) => {
+      // 调用栈必须在进入任何异步边界之前采集：延迟到 then/await 之后再取栈，
+      // 派发者帧已经出栈，只剩事件循环帧，无法指认内部 activate 的来源。
+      const activateStack = captureSyncStack()
+      const activateTimestampMs = Date.now()
       void initialization.then((initialized) => {
         if (!initialized) return
         // 划词交互中的窗口激活也会触发 activate，此时不能打开设置窗口抢走选区。
-        if (!shouldTreatActivateAsDockLaunch()) return
+        if (!shouldTreatActivateAsDockLaunch({
+          stack: activateStack,
+          timestampMs: activateTimestampMs,
+          hasVisibleWindows
+        })) return
         activateExistingPageOrOpenSettings()
       })
     })
@@ -703,7 +954,7 @@ function loadMacOSDockIcon(): NativeImage {
 }
 
 /**
- * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性。
  * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；用户开启功能且任一常规窗口存在时显示图标。
  * 设置窗口关闭但网页翻译窗口仍打开时必须保持当前激活策略，避免重排窗口层级把翻译页压到最下层。
  * @param showDockIcon 用户保存的 Dock 图标设置。
@@ -713,25 +964,40 @@ function loadMacOSDockIcon(): NativeImage {
 async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
+  // 划词保护期内必须完全推迟 Dock 呈现切换：setActivationPolicy()/dock.hide()
+  // 会重排窗口层级，dock.show() 会激活整个应用，均可能把设置页顶到前台应用之上。
+  if (isSelectionWindowRaiseGuardActive()) {
+    scheduleMacOSDockVisibilityAfterSelectionGuard()
+    return
+  }
   const presentation = resolveMacOSDockPresentation({
     showDockIcon,
     settingsOpen: Boolean(settingsWin && !settingsWin.isDestroyed()),
     webReaderOpen: webReaderWindowOpen
   })
   // 呈现方式没有变化时必须直接返回：关闭网页翻译等场景会重复刷新 Dock 状态，
-  // 重复切换激活策略会再次隐藏窗口，迫使下面的保留逻辑把设置页重新显示并聚焦。
+  // 重复切换激活策略会再次重排窗口层级，可能把设置页顶到前台应用之上。
   if (
     appliedMacOSDockPresentation?.policy === presentation.policy &&
     appliedMacOSDockPresentation.dockVisible === presentation.dockVisible
   ) {
     return
   }
-  const settingsWindowToPreserve = settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() ? settingsWin : null
   app.setActivationPolicy(presentation.policy)
   if (presentation.dockVisible) {
     try {
       app.dock?.setIcon(loadMacOSDockIcon())
-      await app.dock?.show()
+      // app.dock.show() 会把整个应用激活到最前，连带把设置页与阅读器顶到
+      // 划词应用之上。划词保护期内必须延后这次激活，等保护期结束再补执行。
+      if (isSelectionWindowRaiseGuardActive()) {
+        scheduleMacOSDockShowAfterSelectionGuard()
+      } else {
+        // 调用前后各打一条：用于区分“进入本次刷新前应用已被激活”与
+        // “dock.show() 本身激活应用”，打点不改变 await 顺序。
+        logCandidateProbe('dock-show-sync-before', isSettingsWindowVisibleForProbe())
+        await app.dock?.show()
+        logCandidateProbe('dock-show-sync-after', isSettingsWindowVisibleForProbe())
+      }
     } catch (error) {
       console.error('[main] 恢复 macOS Dock 图标失败:', error)
     }
@@ -740,14 +1006,6 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   }
   await app.dock?.hide()
   appliedMacOSDockPresentation = presentation
-  if (
-    settingsWindowToPreserve &&
-    settingsWin === settingsWindowToPreserve &&
-    !settingsWindowToPreserve.isDestroyed()
-  ) {
-    settingsWindowToPreserve.show()
-    settingsWindowToPreserve.focus()
-  }
 }
 
 /**
@@ -803,6 +1061,68 @@ async function refreshMacOSDockVisibility(): Promise<void> {
 }
 
 /**
+ * 在划词置前保护期结束后补执行被延后的 macOS Dock 显示。
+ *
+ * `app.dock.show()` 会激活整个应用，是划词期间窗口被顶到最前的直接来源之一。
+ * 保护期内只能先把 Dock 呈现登记为已应用，等用户划词交互结束再真正显示，
+ * 避免内部刷新把整个应用拉到前台。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleMacOSDockShowAfterSelectionGuard(): void {
+  if (!isMac) return
+  if (pendingMacOSDockShowTimer) clearTimeout(pendingMacOSDockShowTimer)
+  const delayMs = Math.max(0, selectionActivationSuppressUntil - Date.now()) + 20
+  pendingMacOSDockShowTimer = setTimeout(() => {
+    pendingMacOSDockShowTimer = null
+    // 保护期被新的划词动作续期、或划词交互仍在进行时继续等待：
+    // 连续快速划词会在两次交互之间出现短暂空闲，只在保护期计时会过早重放并激活应用。
+    if (
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle'
+    ) {
+      scheduleMacOSDockShowAfterSelectionGuard()
+      return
+    }
+    logCandidateProbe('dock-show-delayed', isSettingsWindowVisibleForProbe())
+    const showPromise = app.dock?.show()
+    if (showPromise) {
+      void showPromise.catch((error: unknown) => {
+        console.error('[main] 划词结束后恢复 macOS Dock 图标失败:', error)
+      })
+    }
+  }, delayMs)
+}
+
+/**
+ * 在划词置前保护期结束后重新应用一次 macOS Dock 呈现。
+ *
+ * 保护期内 Dock 策略切换与窗口保留都会改变 z-order；这里只登记“稍后重放”，
+ * 不在划词过程中做任何激活、显示或置前动作。重放时会重新解析当前窗口状态，
+ * 因此期间设置页/阅读器的开关变化也不会丢失。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleMacOSDockVisibilityAfterSelectionGuard(): void {
+  if (!isMac) return
+  if (pendingMacOSDockVisibilityTimer) clearTimeout(pendingMacOSDockVisibilityTimer)
+  const delayMs = Math.max(0, selectionActivationSuppressUntil - Date.now()) + 20
+  pendingMacOSDockVisibilityTimer = setTimeout(() => {
+    pendingMacOSDockVisibilityTimer = null
+    if (
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle'
+    ) {
+      scheduleMacOSDockVisibilityAfterSelectionGuard()
+      return
+    }
+    void refreshMacOSDockVisibility().catch((error: unknown) => {
+      console.error('[main] 划词结束后刷新 macOS Dock 呈现失败:', error)
+    })
+  }, delayMs)
+}
+
+/**
  * 将 macOS 应用配置为菜单栏应用，并按用户设置控制 Dock 栏图标。
  * 首次启动即将打开设置页且用户开启 Dock 图标时，延后到设置窗口创建后再切换，避免先隐藏再恢复导致窗口失焦或关闭。
  * @param showDockIcon 是否显示 Dock 栏图标。
@@ -850,6 +1170,7 @@ async function confirmMacOSInstalledApplicationLaunch(): Promise<boolean> {
  * @author zhenghq
  */
 function prewarmScreenshotRuntime(): void {
+  if (isWindows7CompatibilityRuntime()) return
   setTimeout(() => {
     try {
       // 预创建保持隐藏；openOcrSelection 会复用同一实例。
@@ -951,7 +1272,7 @@ async function onReady(): Promise<boolean> {
     createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
     recognizeImage: async (bytes, candidate) => {
       const settings = getSettings()
-      const dispatcher = createOcrDispatcher(settings)
+      const dispatcher = await createOcrDispatcher(settings)
       const ocr = await recognizeAdaptiveOcr(
         {
           imageBytes: bytes,
@@ -964,7 +1285,8 @@ async function onReady(): Promise<boolean> {
               imageBytes: preparedImageBytes,
               language: settings.ocrLang,
               timeoutMs: OCR_TIMEOUT_MS
-            }, settings.ocrEnginePreference)
+              // 现代平台继续使用 settings.ocrEnginePreference；Win7 由 resolveOcrEnginePreference 强制 Tesseract。
+            }, resolveOcrEnginePreference(settings))
         }
       )
       const text = cleanOcrText(ocr.text ?? '')
@@ -977,6 +1299,24 @@ async function onReady(): Promise<boolean> {
     onWindowStateChanged: (open) => {
       webReaderWindowOpen = open
       void refreshMacOSDockVisibility()
+    },
+    onInternalWindowFocusLost: () => {
+      const focusedWindow = BrowserWindow.getFocusedWindow()
+      // 阅读器显式置前会临时提升到 screen-saver；一旦失焦就立即归还普通层级，
+      // 不能只依赖 400ms 定时器。统一回收器会忽略未被提升过的设置页。
+      lowerSettingsPanelRaiseLevel()
+      // 阅读器 blur 可能只是把焦点交给设置页或另一个自有窗口，这仍属于应用内部
+      // 切换，不能解除保护。只有焦点为空或已离开全部自有窗口时才恢复弹窗失焦语义。
+      if (focusedWindow && (focusedWindow === settingsWin || webReader?.ownsWindow(focusedWindow))) return
+      endPopupSettingsOpenGuard()
+    },
+    hasVisibleSettingsWindow: () => Boolean(
+      settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
+    ),
+    bringToFrontToOwnWindow: (window) => {
+      // 阅读器显式置前与设置页共用窗口级入口：普通窗口下必须 show()/focus()
+      // 激活目标窗口自身，禁止调用 app.focus() 把同应用其它窗口一起带到最前。
+      showOwnWindowForInteraction(window, { raiseLevel: true })
     },
     translate: async (text, sourceLang, targetLang) => {
       const settings = { ...getSettings(), sourceLang, targetLang }
@@ -994,15 +1334,41 @@ async function onReady(): Promise<boolean> {
       return { translation: output.translation, provider: output.provider, channel: output.channel }
     }
   })
-  updateManager = await createApplicationUpdateManager(
-    (status) => {
-      broadcast('updater:status', status)
-    },
-    // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
-    // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
-    // @author zhenghq
-    { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
-  )
+  if (isWindows7CompatibilityRuntime()) {
+    // Win7 包不加载 electron-updater，只用 GitHub Release API 检查是否有新版 Win7 安装包。
+    const { UpdateManager } = await import('./updateManager')
+    const { Win7UpdateDriver } = await import('./win7UpdateDriver')
+    updateManager = new UpdateManager({
+      driver: new Win7UpdateDriver({
+        currentVersion: app.getVersion(),
+        fetch: translationFetch
+      }),
+      currentVersion: app.getVersion(),
+      enabled: app.isPackaged,
+      // manual 模式发现新版后由 UpdateManager 设置 updateAction: 'open-release'。
+      installMode: 'manual',
+      releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+      isOnline: () => net.isOnline(),
+      getTranslator: () => mainI18n?.translator ?? createTranslator('zh-CN'),
+      openExternal: async (url) => {
+        await shell.openExternal(url)
+      },
+      onStatusChanged: (status) => {
+        broadcast('updater:status', status)
+      }
+    })
+  } else {
+    const { createApplicationUpdateManager } = await import('./updater')
+    updateManager = await createApplicationUpdateManager(
+      (status) => {
+        broadcast('updater:status', status)
+      },
+      // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
+      // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
+      // @author zhenghq
+      { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
+    )
+  }
   console.log(
     '[main] 启动完成 autoTrigger =',
     getSettings().triggerMode === 'auto',
@@ -1013,12 +1379,20 @@ async function onReady(): Promise<boolean> {
     'proxyMode =',
     getSettings().proxyMode
   )
-  createPopup(PRELOAD_PATH)
-  createSelectionButton(PRELOAD_PATH)
+  createPopup({
+    preloadPath: PRELOAD_PATH,
+    onWindowShown: suppressSelectionActivationWindowGap,
+    onPopupHidden: () => pronunciationRequests.cancelAll(),
+    onPopupCloseStart: handlePopupCloseStart,
+    onPopupCloseEnd: handlePopupCloseEnd
+  })
+  createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())
   applySelectionListener()
   registerIpc()
-  if (openSettingsOnInitialLaunch) await openSettings()
+  // 应用启动是明确的用户入口：设置页必须主动放到最前，不能被其它应用遮挡。
+  // 该置前只通过统一窗口级入口影响设置窗口自身，不会拉起翻译弹窗等其它窗口。
+  if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true })
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
@@ -1055,44 +1429,29 @@ function loadRendererHtml(win: BrowserWindow, html: string): void {
  * @author zhenghq
  */
 function registerGlobalShortcuts(settings: Settings): void {
-  globalShortcut.unregisterAll()
-  registerShortcut(settings.hotkey)
-  registerOcrShortcut(settings.ocrHotkey)
+  shortcutRegistrationStates = collectShortcutRegistrationStates(settings, {
+    unregisterAll: () => globalShortcut.unregisterAll(),
+    register: (accelerator) => globalShortcut.register(accelerator, () => onGlobalShortcut(accelerator))
+  })
+  broadcast('shortcuts:registration-changed', shortcutRegistrationStates)
 }
 
 /**
- * 注册全局划词翻译快捷键。
+ * 分发全局快捷键动作。
  * @param accelerator Electron 快捷键描述。
  * @returns 无返回值。
  * @author zhenghq
  */
-function registerShortcut(accelerator: string): void {
-  if (!accelerator) return
-  if (isCopyShortcut(accelerator)) {
-    console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为翻译快捷键')
-    return
-  }
-  const ok = globalShortcut.register(accelerator, onHotkey)
-  if (!ok) {
-    console.warn(`[selection-translator] 快捷键注册失败: ${accelerator}`)
-  }
-}
-
-/**
- * 注册全局 OCR 截图快捷键。
- * @param accelerator Electron 快捷键描述。
- * @returns 无返回值。
- * @author zhenghq
- */
-function registerOcrShortcut(accelerator: string): void {
-  if (!accelerator) return
-  if (isCopyShortcut(accelerator)) {
-    console.warn('[selection-translator] Ctrl+C / Command+C 为系统复制快捷键，不注册为 OCR 快捷键')
-    return
-  }
-  const ok = globalShortcut.register(accelerator, onOcrHotkey)
-  if (!ok) {
-    console.warn(`[selection-translator] OCR 快捷键注册失败: ${accelerator}`)
+function onGlobalShortcut(accelerator: string): void {
+  const settings = getSettings()
+  if (accelerator === settings.hotkey) {
+    onHotkey()
+  } else if (accelerator === settings.ocrHotkey) {
+    onOcrHotkey()
+  } else if (accelerator === settings.manualTranslationHotkey) {
+    void openManualTranslation()
+  } else if (accelerator === settings.webReaderHotkey) {
+    openWebReaderFromShortcut()
   }
 }
 
@@ -1105,8 +1464,37 @@ function onHotkey(): void {
   latestSelectionGesture += 1
   markHotkeyTrigger()
   selectionCapture.markEntry('hotkey')
-  selectionInteraction.invalidateSelectionFlow()
+  invalidateSelectionFlowWithFocusCleanup()
+  const interactionToken = selectionInteraction.beginTranslation()
   hideSelectionButton()
+  // 快捷键取词与按钮取词一样：结果弹窗会以 show() 激活本应用，隐藏时必须把
+  // 前台交还给用户触发快捷键时正在使用的应用。记录必须早于显示读取弹窗，
+  // 否则弹窗已激活本应用，快照只能读到自身而失去精确交还目标。
+  lastSelectionWindowContext = undefined
+  selectionCapture.setWindowContext(undefined)
+  const interactionSnapshot = selectionInteraction.snapshot()
+  const windowSnapshotGestureId = latestSelectionGesture
+  const windowSnapshotTask = rememberFrontmostWindowAtPoint(screen.getCursorScreenPoint())
+  selectionWindowSnapshotTask = windowSnapshotTask
+  selectionWindowSnapshotGestureId = windowSnapshotGestureId
+  void windowSnapshotTask.then((recorded) => {
+    if (windowSnapshotGestureId !== latestSelectionGesture) return
+    const current = selectionInteraction.snapshot()
+    if (!recorded ||
+        current.state !== interactionSnapshot.state ||
+        current.token !== interactionSnapshot.token) return
+    lastSelectionWindowContext = {
+      bundleId: recorded.snapshot.bundleId,
+      pid: recorded.snapshot.pid,
+      windowNumber: recorded.snapshot.windowNumber,
+      bounds: recorded.snapshot.bounds,
+      titleFingerprint: recorded.snapshot.titleFingerprint,
+      windowLocate: recorded.snapshot.windowLocate,
+      // 入口层若已执行精确交还，复制链路不得再次激活同一窗口。
+      windowActivationSettled: false
+    }
+    selectionCapture.setWindowContext(lastSelectionWindowContext)
+  })
   const popupCloseVersion = showSelectionReadingPopup()
   const captureDelay = resolveHotkeyCaptureDelay(process.platform)
   const hotkeyModifiers = resolveHotkeyModifiers(getSettings().hotkey, process.platform)
@@ -1119,15 +1507,32 @@ function onHotkey(): void {
   if (shouldReleaseHotkeyModifiersBeforeCopy(process.platform)) {
     setPendingCopyModifierRelease(hotkeyModifiers)
   }
+  // 快捷键在 macOS 上无修饰键释放等待；若窗口枚举尚未完成就开始取词，
+  // AX helper 会拿不到窗口编号。只等待有硬超时的窗口快照任务，不阻塞弹窗显示。
+  if (captureDelay === 0 && process.platform === 'darwin') {
+    void windowSnapshotTask.then(() => {
+      if (!selectionInteraction.isCurrent(interactionToken)) return
+      if (popupCloseVersion !== getPopupCloseVersion()) return
+      selectionCapture.setWindowContext(lastSelectionWindowContext)
+      void queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
+    })
+    return
+  }
   if (captureDelay > 0) {
     // Windows 先非激活显示读取弹窗，再等待快捷键修饰键释放并直接发送 Ctrl+C 取词。
     setTimeout(
-      () => queueSelectionTranslation(undefined, undefined, true, popupCloseVersion),
+      () => {
+        // 等待修饰键释放期间，用户可能复制/粘贴、切换触发模式或开始新一轮划词。
+        // 旧定时器必须先确认本次交互仍持有所有权，再启动取词；否则会绕过
+        // queueSelectionTranslation() 的延迟 token 校验，干扰新的取词流程。
+        if (!selectionInteraction.isCurrent(interactionToken)) return
+        void queueSelectionTranslation(undefined, interactionToken, true, popupCloseVersion)
+      },
       captureDelay
     )
     return
   }
-  queueSelectionTranslation(undefined, undefined, false, popupCloseVersion)
+  void queueSelectionTranslation(undefined, interactionToken, false, popupCloseVersion)
 }
 
 /**
@@ -1150,7 +1555,10 @@ function onOcrHotkey(): void {
  */
 function collectOwnWindowCandidates(): OwnWindowCandidate[] {
   const settingsFocused = Boolean(
-    settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && settingsWin.isFocused()
+    settingsWin &&
+    !settingsWin.isDestroyed() &&
+    settingsWin.isVisible() &&
+    settingsWin.isFocused()
   )
   const settingsBounds = settingsFocused && settingsWin ? settingsWin.getBounds() : null
   const webReaderFocused = Boolean(webReader?.isWindowFocused())
@@ -1205,6 +1613,37 @@ function isPointInsideFocusedOwnWindow(point: { x: number; y: number }): boolean
 }
 
 /**
+ * 判断屏幕坐标是否落在当前可见的设置窗口内部。
+ *
+ * 该判定不依赖窗口焦点：设置窗口的 focus 事件可能晚于全局 mousedown 到达，
+ * 此时 `isFocused()` 仍为 false，但点击确实发生在应用内部，不能按弹窗外部点击
+ * 处理。调用方必须同时确认处于设置打开保护期；保护期会在设置窗口失焦、隐藏或
+ * 销毁时解除，因此后台设置窗口不会长期吞掉其它应用里的真实点击。
+ * @param point 待判断的屏幕坐标。
+ * @returns 坐标位于可见设置窗口内部时返回 true。
+ * @author zhenghq
+ */
+function isPointInsideVisibleSettingsWindow(point: { x: number; y: number }): boolean {
+  if (!settingsWin || settingsWin.isDestroyed() || !settingsWin.isVisible()) return false
+  return isPointInsideBounds(point, settingsWin.getBounds())
+}
+
+/**
+ * 判断屏幕坐标是否落在当前可见的网页阅读器窗口内部。
+ *
+ * 阅读器的 focus 事件可能晚于全局 mousedown 到达，此时 `isFocused()` 仍为 false，
+ * 但点击确实发生在应用内部，不能按翻译弹窗外部点击处理。否则弹窗的关闭收尾
+ * 可能走前台交还退化路径，把刚打开的阅读器一起隐藏。
+ * @param point 待判断的屏幕坐标。
+ * @returns 坐标位于可见网页阅读器窗口内部时返回 true。
+ * @author zhenghq
+ */
+function isPointInsideVisibleWebReaderWindow(point: { x: number; y: number }): boolean {
+  const bounds = webReader?.getVisibleBounds()
+  return bounds !== null && bounds !== undefined && isPointInsideBounds(point, bounds)
+}
+
+/**
  * 描述自有窗口命中详情，定位划词被内部窗口矩形静默吞掉的具体来源。
  * 仅矩形判定无法区分是设置页还是网页阅读器，也无法确认应用是否真的在最前，
  * 因此日志需要同时给出窗口名、边界与应用激活状态。
@@ -1245,30 +1684,58 @@ function describeSuppressedOwnWindowHit(point: { x: number; y: number }): string
  * @author zhenghq
  */
 function scheduleSelectionAction(anchor: { x: number; y: number }): void {
+  // 划词属于内部交互：先续期 activate 抑制租约并回收设置页临时置顶层级，
+  // 避免鼠标抬起后的内部 activate 或残留 screen-saver 层级把设置页顶到最前。
+  suppressSelectionActivationWindowGap()
+  lowerSettingsPanelRaiseLevel()
   const gestureId = ++latestSelectionGesture
-  selectionInteraction.invalidateSelectionFlow()
+  invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
   lastSelectionAnchor = anchor
   const action = decideSelectionAction(isPopupVisible(), getSettings().triggerMode)
   if (action === 'ignore') return
 
+  // 记录本次划词时用户正在使用的源应用与源窗口：结果弹窗在 macOS 上会以
+  // show() 激活本应用，隐藏时必须把前台交还给这个应用/窗口，否则下一次取词的
+  // Command+C 会打在本应用或微信错误窗口上而超时。必须在显示“译”按钮 /
+  // 读取弹窗之前读取，此时本应用尚未抢占前台，读到的才是真实源窗口。
+  lastSelectionWindowContext = undefined
+  selectionCapture.setWindowContext(undefined)
+  const windowSnapshotTask = rememberFrontmostWindowAtPoint(anchor)
+  selectionWindowSnapshotTask = windowSnapshotTask
+  selectionWindowSnapshotGestureId = gestureId
+  void windowSnapshotTask.then((recorded) => {
+    if (!recorded || gestureId !== latestSelectionGesture) return
+    lastSelectionWindowContext = {
+      bundleId: recorded.snapshot.bundleId,
+      pid: recorded.snapshot.pid,
+      windowNumber: recorded.snapshot.windowNumber,
+      bounds: recorded.snapshot.bounds,
+      titleFingerprint: recorded.snapshot.titleFingerprint,
+      windowLocate: recorded.snapshot.windowLocate,
+      // 入口层若已执行精确交还，复制链路不得再次激活同一窗口。
+      windowActivationSettled: false
+    }
+    selectionCapture.setWindowContext(lastSelectionWindowContext)
+    // 按钮预取会锁定启动时的窗口上下文，必须等快照写入后再开始，否则首轮
+    // AX helper 与复制前激活都只能拿到应用级信息，微信多窗口仍会读错窗口。
+    if (action === 'show-button' && shouldPrefetchSelectionForButton(process.platform)) {
+      void selectionCapture.prepare(anchor)
+    }
+  })
+
   if (action === 'show-button') {
     selectionInteraction.showButton()
     showSelectionButton(anchor)
-    // Windows UIA 需要冷启动 PowerShell，且串行预取会拖慢点击后的复制取词，因此直接跳过。
-    if (shouldPrefetchSelectionForButton(process.platform)) {
-      void selectionCapture.prepare(anchor)
-    }
     return
   }
 
   selectionCapture.markEntry('auto')
   const interactionToken = selectionInteraction.beginTranslation()
-  renewInternalActivationLease()
   setTimeout(() => {
     if (gestureId !== latestSelectionGesture || !selectionInteraction.isCurrent(interactionToken)) return
-    queueSelectionTranslation(anchor, interactionToken)
+    void queueSelectionTranslation(anchor, interactionToken)
   }, SELECTION_SETTLE_DELAY_MS)
 }
 
@@ -1321,7 +1788,20 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
   const selectionButtonHit = isPointInsideSelectionButton(point)
   const popupHit = isPointInsidePopup(point)
-  const focusedOwnWindowHit = isPointInsideFocusedOwnWindow(point)
+  // 第二次从翻译弹窗点击“设置/翻译页面”时，设置页或阅读器窗口可能已经
+  // 可见并与弹窗坐标区域重叠。全局 mousedown 会先于按钮 IPC 到达；若继续
+  // 进入分类或内部窗口兜底，弹窗可能被提前隐藏，后续 IPC 失去宿主窗口，
+  // 表现为第二次点击直接关闭。弹窗自身命中必须在分类前短路。
+  if (popupHit && primaryButton) return 'ignore'
+  // 设置窗口的 focus 事件可能晚于全局 mousedown 到达，此时 isFocused() 仍为 false，
+  // 点击设置页会被误分类为弹窗外部点击并关闭翻译弹窗。处于设置打开保护期时，
+  // 直接按可见矩形把这次按下识别为应用内点击。这里不能叠加应用激活事件门禁：
+  // macOS 的 did-become-active 可能晚于全局 mousedown，设置窗口已经获得焦点时
+  // 事件状态仍为 false，会把点击设置页误判为外部点击并触发 hidePopup 交还前台。
+  // 保护期由设置窗口失焦/隐藏/销毁解除，因此后台设置窗口不会长期吞掉其它应用点击。
+  const settingsWindowHit = isPopupSettingsOpenGuardActive() &&
+    isPointInsideVisibleSettingsWindow(point)
+  const focusedOwnWindowHit = settingsWindowHit || isPointInsideFocusedOwnWindow(point)
   const result = classifySelectionPointerDown({
     ocrActive,
     selectionButtonHit,
@@ -1333,6 +1813,19 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 外部应用的正常按下是绝对多数，不逐条记录；只有按 track 继续跟踪、
   // 却落在已失活自有窗口矩形内的场景需要留痕，用于实机确认门禁生效。
   if (result === 'track') {
+    // 点击可见设置页属于应用内交互，不是弹窗外部点击。全局按下必须直接忽略，
+    // 不得调用任何 hidePopup 入口：弹窗是否需要关闭由设置页打开流程的显式语义决定。
+    if (isPopupVisible() && isPointInsideVisibleSettingsWindow(point)) {
+      return 'ignore'
+    }
+    // 网页阅读器与设置页同属应用内部窗口，命中可见阅读器时同样只忽略本次按下，
+    // 不得继续走外部点击关闭兜底，否则阅读器会被一起隐藏。
+    if (isPopupVisible() && isPointInsideVisibleWebReaderWindow(point)) {
+      return 'ignore'
+    }
+    // 弹窗已经失去 key window 时，用户点击外部不会再产生 blur，弹窗会一直
+    // 留在屏上且前台不归还。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
+    dismissPopupOnExternalPointerDown(point)
     // 应用失活却落在自有窗口矩形内，正是修复前划词被静默吞掉的场景；
     // 这里按 track 继续跟踪说明门禁生效，记录一行便于实机确认。
     const suppressedDetail = describeSuppressedOwnWindowHit(point)
@@ -1344,7 +1837,6 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   }
   if (result === 'consume' && selectionButtonHit && primaryButton) {
     void translateSelectionButton()
-    renewInternalActivationLease()
   }
   // 非左键不参与“点击按钮”语义，但必须继续走下面的隐藏/取消逻辑，
   if (result === 'consume' && primaryButton) return result
@@ -1355,7 +1847,7 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 也不应清空当前已捕获的选区缓存，否则设置页操作会让划词结果丢失。
   if (result === 'ignore' && primaryButton) return result
   latestSelectionGesture += 1
-  selectionInteraction.invalidateSelectionFlow()
+  invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
   return primaryButton ? 'track' : 'ignore'
@@ -1368,7 +1860,7 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
  */
 function handleCopyShortcut(): void {
   latestSelectionGesture += 1
-  selectionInteraction.invalidateSelectionFlow()
+  invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
 }
@@ -1380,7 +1872,7 @@ function handleCopyShortcut(): void {
  */
 function handlePasteShortcut(): void {
   latestSelectionGesture += 1
-  selectionInteraction.invalidateSelectionFlow()
+  invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
 }
@@ -1393,14 +1885,13 @@ function handlePasteShortcut(): void {
  */
 function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
   const settings = getSettings()
-  // 记录用户原本在用的应用：此刻本应用还不是前台应用，读到的就是源应用。
-  // 弹窗最终隐藏时要把前台交还给它，否则 macOS 会把设置页提升到最前。
-  rememberFrontmostAppIfInactive()
-  // Windows 上弹窗被上一次翻译结果的 win.show() 激活后会成为前台窗口，
-  // 对已在前台的窗口再调用 showInactive 不会交还焦点，随后的 WM_COPY 与
-  // Ctrl+C 全部发往弹窗，剪贴板哨兵不变而报取词超时。这里先显式让弹窗
-  // 退出前台把焦点还给源应用，归还期间的 blur 不会关闭弹窗。
-  if (shouldRestoreForegroundBeforeCapture(process.platform, isPopupActivated())) {
+  // 显示读取弹窗之前，若旧弹窗已经激活，先让出前台焦点，避免弹窗保持最前。
+  // Windows 需要把前台焦点交还源窗口；macOS 需要让 panel 退出 key window。
+  // Linux 无复制兜底，不干预焦点。
+  const popupHoldingKeyWindow = process.platform === 'darwin'
+    ? isPopupHoldingKeyWindow()
+    : isPopupActivated()
+  if (shouldRestoreForegroundBeforeCapture(process.platform, popupHoldingKeyWindow)) {
     deactivatePopupForCapture()
   }
   // 以非激活方式显示读取状态弹窗。弹窗已可见且已被激活（上次翻译结果调用了
@@ -1421,6 +1912,13 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
     anchor,
     false
   )
+  // showPopup(activate=false) 之后 panel 仍可能成为 key window：shownInactive
+  // 记账标志只代表调用方式，不能证明焦点已经交还。必须在显示完成后按真实焦点
+  // 状态再确认一次，确保随后注入的 Command+C 落到源应用而不是自有弹窗。
+  // 该时序空窗仅存在于 macOS nonactivating panel，Windows 保持既有行为不变。
+  if (process.platform === 'darwin' && isPopupHoldingKeyWindow()) {
+    deactivatePopupForCapture()
+  }
   return popupCloseVersion
 }
 
@@ -1430,20 +1928,55 @@ function showSelectionReadingPopup(anchor?: { x: number; y: number }): number {
  * @param interactionToken 已经取得所有权的交互 token；省略时创建新的翻译流程。
  * @param directCapture 是否跳过原生直读并直接执行复制取词。
  * @param popupCloseVersion 读取弹窗显示时的关闭版本；变化后丢弃异步结果。
- * @returns 无返回值。
+ * @returns 取词与翻译流程安排完成后的 Promise。
  * @author zhenghq
  */
-function queueSelectionTranslation(
+async function queueSelectionTranslation(
   anchor?: { x: number; y: number },
   interactionToken?: number,
   directCapture = false,
   popupCloseVersion?: number
-): void {
+): Promise<void> {
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   if (popupCloseVersion !== undefined &&
       popupCloseVersion !== getPopupCloseVersion()) return
   const token = interactionToken ?? selectionInteraction.beginTranslation()
-  renewInternalActivationLease()
+  // 按钮/自动入口可能在窗口快照尚未完成时启动：有界等待最新任务，并把快照
+  // 重新写入协调器。协调器会在 enqueue 时复制上下文，晚到的异步写入不能
+  // 自动修复已排队请求，因此必须在 capture 前完成同步。
+  if (selectionWindowSnapshotGestureId === latestSelectionGesture) {
+    await waitForSelectionWindowSnapshot(selectionWindowSnapshotTask)
+  }
+  selectionCapture.setWindowContext(lastSelectionWindowContext)
+  // 自动模式取词不经过 showSelectionReadingPopup()：上一个常驻翻译弹窗、设置页
+  // 或网页阅读器等任意自有窗口都可能仍持有 macOS key window，此时注入的
+  // Command+C 会打在自家窗口而不是源应用，导致剪贴板哨兵不变并报取词超时。
+  // 共用取词入口在启动 capture（注入复制键）之前按真实 key window 归属再交还
+  // 一次；Windows / Linux 既有行为保持不变。
+  if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
+    // 弹窗持有 key window 时先走弹窗专用失活，同时覆盖设置页等普通自有窗口。
+    if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
+    const handedBack = await handBackKeyWindowToFrontmostApp()
+    if (handedBack && lastSelectionWindowContext) {
+      // 入口层已经完成源窗口激活；同一轮复制兜底不得再次切换微信窗口。
+      lastSelectionWindowContext = {
+        ...lastSelectionWindowContext,
+        windowActivationSettled: true
+      }
+      selectionCapture.setWindowContext(lastSelectionWindowContext)
+    }
+    // key window 交还是异步生效的：等待系统把焦点真正还给源应用后再启动取词，
+    // 避免复制键仍落在自有弹窗上。等待期间交互可能被取消或关闭，必须复核后再继续。
+    await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
+    if (!selectionInteraction.isCurrent(token)) return
+    if (popupCloseVersion !== undefined &&
+        popupCloseVersion !== getPopupCloseVersion()) {
+      // 等待期间弹窗被关闭：本次取词已失效，按既有取消语义释放交互 token，
+      // 避免读取弹窗已关闭却仍残留 capturing 状态。
+      releaseSelectionInteraction(token)
+      return
+    }
+  }
   const capture = directCapture
     ? selectionCapture.captureDirect(anchor)
     : selectionCapture.capture(anchor)
@@ -1454,8 +1987,15 @@ function queueSelectionTranslation(
       releaseSelectionInteraction(token)
       return
     }
-    if (result) handleSelectionCaptureResult(result, token)
-    else releaseSelectionInteraction(token)
+    if (result) {
+      handleSelectionCaptureResult(result, token)
+      return
+    }
+    // 取词被取消或覆盖时结果为 null：读取状态弹窗没有后续结果可以收尾，
+    // 若不在这里显式关闭，它会一直留在屏上且前台不归还，后续划词的“译”按钮
+    // 会被应用级状态吞掉（与外部点击漏关是同一类残留）。
+    hidePopup(true, 'stale-token')
+    releaseSelectionInteraction(token)
   })
 }
 
@@ -1466,23 +2006,53 @@ function queueSelectionTranslation(
  */
 async function translateSelectionButton(): Promise<void> {
   if (!isSelectionButtonVisible()) return
+  // 按钮点击的全局按下可能被钩子重放 / 延迟派发：第一次事件已隐藏按钮并显示
+  // 读取弹窗，迟到事件分类时按钮不可见，会被当成外部点击关闭弹窗。必须在隐藏
+  // 按钮和显示弹窗前开启很短的抑制窗口，只吞掉同一次点击的迟到按下。
+  // 记录按钮点击坐标：只抑制落在按钮原位置附近的迟到 / 重放按下，
+  // 用户在其它位置的真实点击仍会立即关闭弹窗。
+  suppressExternalPointerDismissForButtonClick(screen.getCursorScreenPoint())
   setPendingMacOSCommandWasDown(false)
+  // 点击“译”按钮同样属于划词内部流程，续期租约覆盖弹窗显隐带来的 activate。
+  suppressSelectionActivationWindowGap()
   selectionCapture.markEntry('button')
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
   const anchor = lastSelectionAnchor
+  // 快速点击按钮时窗口快照可能仍在读取；等待任务按自身硬超时结束，随后复用
+  // 已记录的窗口上下文，确保 AX 直读与复制前窗口激活使用同一目标窗口。
+  await waitForSelectionWindowSnapshot(selectionWindowSnapshotTask)
+  selectionCapture.setWindowContext(lastSelectionWindowContext)
   latestSelectionGesture += 1
-  renewInternalActivationLease()
   hideSelectionButton()
   const popupWasActivated = shouldRestoreForegroundBeforeCapture(
     process.platform,
-    isPopupActivated()
+    process.platform === 'darwin' ? isPopupHoldingKeyWindow() : isPopupActivated()
   )
-  const popupCloseVersion = showSelectionReadingPopup(anchor)
   try {
+    const popupCloseVersion = showSelectionReadingPopup(anchor)
     // 弹窗刚从前台失活时，Windows 需要几十毫秒才把焦点交回源应用；
     // 不等待就注入复制键会打在旧焦点上，导致剪贴板哨兵不变而报取词超时。
     if (popupWasActivated) {
+      await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
+      if (!selectionInteraction.isCurrent(interactionToken) ||
+          popupCloseVersion !== getPopupCloseVersion()) return
+    }
+    // macOS 的 key window 切换是异步的：showInactive() 返回时 panel 可能仍短暂
+    // 持有焦点；设置页、网页阅读器等任意自有窗口也可能持有 key window。等待窗口
+    // 结束后按真实 key window 归属复核一次，确保注入 Command+C 前焦点已经真正
+    // 回到源应用，而不是打在自家窗口上。
+    if (process.platform === 'darwin' && isOwnWindowHoldingKeyWindow()) {
+      if (isPopupHoldingKeyWindow()) deactivatePopupForCapture()
+      const handedBack = await handBackKeyWindowToFrontmostApp()
+      if (handedBack && lastSelectionWindowContext) {
+        // 入口层已经激活过源窗口；把结果写回上下文，复制兜底不得再次激活。
+        lastSelectionWindowContext = {
+          ...lastSelectionWindowContext,
+          windowActivationSettled: true
+        }
+        selectionCapture.setWindowContext(lastSelectionWindowContext)
+      }
       await waitFor(POPUP_FOREGROUND_RESTORE_SETTLE_MS)
       if (!selectionInteraction.isCurrent(interactionToken) ||
           popupCloseVersion !== getPopupCloseVersion()) return
@@ -1501,11 +2071,10 @@ async function translateSelectionButton(): Promise<void> {
         popupCloseVersion !== getPopupCloseVersion()) return
     selectionCapture.invalidate()
     if (result) handleSelectionCaptureResult(result, interactionToken, true)
-    else hidePopup()
+    else hidePopup(true, 'capture-null')
   } finally {
     if (selectionInteraction.isCurrent(interactionToken) &&
-        selectionInteraction.snapshot().state === 'capturing' &&
-        pendingPopupReleaseToken !== interactionToken) {
+        selectionInteraction.snapshot().state === 'capturing') {
       releaseSelectionInteraction(interactionToken)
     }
   }
@@ -1524,7 +2093,7 @@ function handleSelectionCaptureResult(
   interactionToken?: number,
   trackMacCopyTimeout = false
 ): void {
-  const shouldPromptHiServicesRepair = trackMacCopyTimeout && recordCaptureOutcome(result)
+  const shouldAutoRepairHiServices = trackMacCopyTimeout && recordCaptureOutcome(result)
   if (result.error) {
     handleTranslateError(result.error, getSettings(), result.anchor)
     if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
@@ -1549,10 +2118,8 @@ function handleSelectionCaptureResult(
       result.anchor,
       shouldActivatePopupForCaptureFailure(process.platform)
     )
-    // 必须等失败提示弹窗隐藏收尾完成后再释放：收尾期间的内部 activate
-    // 仍需要租约兜底，否则设置页或阅读器会被顶到最前。
-    if (interactionToken !== undefined) releaseSelectionInteractionAfterPopupHidden(interactionToken)
-    if (shouldPromptHiServicesRepair) void promptHiServicesRepair(result.anchor)
+    if (interactionToken !== undefined) releaseSelectionInteraction(interactionToken)
+    if (shouldAutoRepairHiServices) void autoRepairMacHiServices()
     return
   }
 
@@ -1612,7 +2179,10 @@ async function translateText(
       ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
     },
     0,
-    anchor
+    anchor,
+    // 选区取词刚通过 open -b 交还前台，加载态若立即 win.show() 会与交还动作
+    // 竞争并产生迟到的 blur；等最终翻译结果到达后再激活，避免弹窗一闪即关。
+    origin !== 'selection'
   )
 
   try {
@@ -1620,11 +2190,26 @@ async function translateText(
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-    const output = await translate(
+    let deltaSequence = 0
+    const output = await translateStream(
       text,
       requestSettings,
       dingTalkCredentials,
-      aiApiKey
+      aiApiKey,
+      {
+        onDelta: (delta) => {
+          if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+          const payload: TranslateDeltaPayload = {
+            origin,
+            requestId,
+            delta,
+            sequence: deltaSequence,
+            final: false
+          }
+          deltaSequence += 1
+          sendPopupDelta(payload)
+        }
+      }
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(origin, output.provider)
@@ -2173,7 +2758,6 @@ async function openOcrSelection(): Promise<void> {
   // Renderer 据此识别并丢弃上一次会话残留的选区与快照。
   ocrSelectionSessionSeq += 1
   const ocrSessionId = ocrSelectionSessionSeq
-  renewInternalActivationLease()
   selectionCapture.invalidate()
   suspendSelectionListenerForOcr()
   hideSelectionButton()
@@ -2205,6 +2789,11 @@ async function openOcrSelection(): Promise<void> {
     if (!isCurrentOcrCapture(interactionToken)) {
       restoreSelectionListenerAfterOcr(interactionToken)
       return
+    }
+    // macOS 未授予「屏幕录制」权限时，screencapture 会被系统授权弹窗阻塞到 5 秒超时，
+    // 只能报出误导性的「屏幕采集超时」。这里先做同步预检，立即按权限错误收尾并引导授权。
+    if (!hasScreenRecordingPermission()) {
+      throw new ScreenCaptureError('permission', t('error.screenRecordingPermission'))
     }
     // 复用窗口时必须先让 Renderer 清空上一轮选区、截图和面板内容，
     // 再显示窗口，避免旧画面在新一轮截图开始时短暂闪现。
@@ -2460,7 +3049,7 @@ const WEB_IMAGE_REQUEST_TIMEOUT_MS = 15_000
  * @returns 图片取图器。
  * @author zhenghq
  */
-function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal): WebImageSource {
+function createWebReaderImageSource(view: BrowserView, signal?: AbortSignal): WebImageSource {
   const requestImage = async (url: string, requestSignal?: AbortSignal): Promise<WebImageResponse> => {
     const request = net.request({ url, session: view.webContents.session, useSessionCookies: true })
     return await new Promise<WebImageResponse>((resolve, reject) => {
@@ -2704,12 +3293,50 @@ function createWebReaderImageSource(view: WebContentsView, signal?: AbortSignal)
 }
 
 /**
+ * 解析当前运行环境实际使用的 OCR 引擎偏好。
+ * Win7 兼容包只携带 Tesseract.js WASM 运行时，必须忽略用户选择的系统或 PaddleOCR 引擎。
+ * @param settings 当前设置。
+ * @returns Win7 固定返回 Tesseract，其它平台返回用户设置。
+ * @author zhenghq
+ */
+function resolveOcrEnginePreference(settings: Settings): OcrEnginePreference {
+  return isWindows7CompatibilityRuntime() ? 'tesseract' : settings.ocrEnginePreference
+}
+
+/**
  * 创建本次 OCR 调度器，按设置决定是否启用 Tesseract 兜底。
  * @param settings 当前设置。
  * @returns OCR 调度器。
  * @author zhenghq
  */
-function createOcrDispatcher(settings: Settings): OcrDispatcher {
+async function createOcrDispatcher(settings: Settings): Promise<OcrDispatcher> {
+  // Win7 包只保留 Tesseract.js 与 WebAssembly 核心，避免加载任何 OCR 原生模块。
+  if (isWindows7CompatibilityRuntime()) {
+    const [{ OcrDispatcher }, { TesseractOcrEngine, resolveTesseractLangPath, resolveTesseractWorkerPath }] = await Promise.all([
+      import('./ocrDispatcher'),
+      import('./tesseractOcr')
+    ])
+    return new OcrDispatcher({
+      platform: process.platform,
+      enginePreferenceState: ocrEnginePreferenceState,
+      engines: {
+        tesseract: new TesseractOcrEngine({
+          tessDataPath: join(app.getPath('userData'), 'tessdata'),
+          langPath: resolveTesseractLangPath(process.env['TESSERACT_LANG_PATH']),
+          bundledLangPath: join(process.resourcesPath, 'tessdata'),
+          workerPath: resolveTesseractWorkerPath(process.resourcesPath, app.isPackaged)
+        })
+      }
+    })
+  }
+  // 仅在现代包中按需加载 OCR 原生依赖，Win7 包完全不触碰这些模块。
+  const [{ OcrDispatcher }, { createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
+    import('./ocrDispatcher'),
+    import('./systemOcr'),
+    import('./paddleOcr'),
+    import('./ocrModelAssets'),
+    import('./tesseractOcr')
+  ])
   const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
   return new OcrDispatcher({
     platform: process.platform,
@@ -2732,6 +3359,25 @@ function createOcrDispatcher(settings: Settings): OcrDispatcher {
  * @author zhenghq
  */
 async function getOcrStatus(): Promise<OcrStatus> {
+  if (isWindows7CompatibilityRuntime()) {
+    return {
+      win7Compatibility: true,
+      systemAvailable: false,
+      paddleAvailable: false,
+      tesseractAvailable: true,
+      modelName: 'Tesseract.js',
+      modelVersion: '7.x',
+      license: 'Apache-2.0',
+      distribution: 'bundled',
+      message: t('windows7.ocrTesseractOnly')
+    }
+  }
+  const [{ createSystemOcrEngine }, { PaddleOcrEngine }, { resolveBundledOcrModelAssets }, { TesseractOcrEngine }] = await Promise.all([
+    import('./systemOcr'),
+    import('./paddleOcr'),
+    import('./ocrModelAssets'),
+    import('./tesseractOcr')
+  ])
   const paddleModelAssets = resolveBundledOcrModelAssets(app.getAppPath())
   const systemEngine = createSystemOcrEngine()
   const paddleEngine = paddleModelAssets.ready
@@ -2863,7 +3509,7 @@ async function processOcrImageBytes(
   imageBytes: Buffer,
   settings: Settings
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
-  const dispatcher = createOcrDispatcher(settings)
+  const dispatcher = await createOcrDispatcher(settings)
   const ocr = await recognizeAdaptiveOcr(
     {
       imageBytes,
@@ -2876,7 +3522,7 @@ async function processOcrImageBytes(
           imageBytes: preparedImageBytes,
           language: settings.ocrLang,
           timeoutMs: OCR_TIMEOUT_MS
-        }, settings.ocrEnginePreference)
+        }, resolveOcrEnginePreference(settings))
     }
   )
   return translateRecognizedOcrResult(ocr, settings)
@@ -3407,7 +4053,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
     // 若等到识别结束后再归一化，期间窗口移动会让两边键不一致而永远无法命中。
     const sessionBounds = normalizeOcrSelectionBounds(request.bounds)
     const png = cropCurrentOcrSelectionPng(request.bounds)
-    const dispatcher = createOcrDispatcher(settings)
+    const dispatcher = await createOcrDispatcher(settings)
     const ocr = await recognizeAdaptiveOcr(
       {
         imageBytes: png,
@@ -3420,7 +4066,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
             imageBytes: preparedImageBytes,
             language: settings.ocrLang,
             timeoutMs: OCR_TIMEOUT_MS
-          }, settings.ocrEnginePreference)
+          }, resolveOcrEnginePreference(settings))
       }
     )
     const text = cleanOcrText(ocr.text ?? '')
@@ -3899,7 +4545,8 @@ async function translateManualRequest(request: unknown): Promise<void> {
  */
 function applySelectionListener(): void {
   latestSelectionGesture += 1
-  selectionInteraction.invalidateSelectionFlow()
+  lowerSettingsPanelRaiseLevel()
+  invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
   selectionListenerController.setMode(getSettings().triggerMode)
@@ -3964,64 +4611,45 @@ function restartMacHiServices(): Promise<{ ok: true } | { ok: false; error: stri
   })
 }
 
-/** hiservices 修复提示是否正在显示，避免连续超时反复弹窗。 */
-let hiServicesRepairPromptShowing = false
+/** hiservices 修复流程是否正在执行，避免连续超时重复重启服务。 */
+let hiServicesRepairRunning = false
 
 /**
- * 在划词取词连续超时时提示用户一键重启 hiservices 服务。
- * @param anchor 弹窗定位锚点。
- * @returns 提示流程完成后的 Promise。
+ * 执行一次 macOS hiservices 自动修复。
+ *
+ * 该路径完全静默：不显示原生对话框，也不调用应用级前台交还，避免修复动作
+ * 本身把设置页或其它自有窗口提升到前台。执行期间只记录日志。
+ * @returns 修复流程完成后的 Promise。
  * @author zhenghq
  */
-async function promptHiServicesRepair(anchor?: { x: number; y: number }): Promise<void> {
-  if (hiServicesRepairPromptShowing || process.platform !== 'darwin') return
-  hiServicesRepairPromptShowing = true
+async function autoRepairMacHiServices(): Promise<void> {
+  if (hiServicesRepairRunning || process.platform !== 'darwin') return
+  hiServicesRepairRunning = true
   resetCopyTimeoutTracker()
-  // 原生消息框会激活本应用；必须先等待源应用快照完成，关闭后才有目标可以交还，
-  // 否则应用内下一个 key window（网页阅读器或设置页）会被系统顶到最前。
-  await rememberFrontmostAppIfInactiveAsync()
-  const { response } = await dialog.showMessageBox({
-    type: 'warning',
-    title: t('dialog.hiServices.title'),
-    message: t('dialog.hiServices.message'),
-    detail: t('dialog.hiServices.detail'),
-    buttons: [t('dialog.hiServices.repair'), t('dialog.hiServices.later')],
-    defaultId: 0,
-    cancelId: 1
-  })
   try {
-    // 消息框关闭后应用仍可能处于最前；先交还前台，再显示修复结果，
-    // 避免系统把应用内已有的阅读器窗口提升为 key window。
-    await handBackFrontmostApp()
-    if (response !== 0) return
+    console.warn('[main] 连续取词超时，自动重启 macOS hiservices 服务')
     const repairResult = await restartMacHiServices()
-    const settings = getSettings()
-    showPopup(
-      repairResult.ok
-        ? {
-            ok: true,
-            loading: false,
-            original: '',
-            translation: t('dialog.hiServices.repaired'),
-            sourcePreference: settings.sourceLang,
-            targetPreference: settings.targetLang,
-            targetLang: settings.targetLang
-          }
-        : {
-            ok: false,
-            error: t('dialog.hiServices.failed'),
-            sourcePreference: settings.sourceLang,
-            targetPreference: settings.targetLang,
-            targetLang: settings.targetLang
-          },
-      5000,
-      anchor,
-      shouldActivatePopupForCaptureFailure(process.platform)
-    )
+    if (repairResult.ok) {
+      console.log('[main] macOS hiservices 自动修复完成')
+    } else {
+      console.error('[main] macOS hiservices 自动修复失败:', repairResult.error)
+    }
   } finally {
     resetCopyTimeoutTracker()
-    hiServicesRepairPromptShowing = false
+    // 重启监听与系统服务重建可能派发迟到的内部 activate；修复结束前续期一次，
+    // 避免该 activate 在 hiServicesRepairRunning 复位后被误判为 Dock 点击。
+    suppressSelectionActivationWindowGap()
+    hiServicesRepairRunning = false
   }
+}
+
+/**
+ * 从托盘菜单手动执行一次 hiservices 修复。
+ * @returns 修复流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function repairMacHiServicesManually(): Promise<void> {
+  await autoRepairMacHiServices()
 }
 
 // ---- 设置窗口 ----
@@ -4057,35 +4685,195 @@ function whenWindowReadyToShow(win: BrowserWindow): Promise<void> {
 }
 
 /**
+ * 把自有窗口提升为可交互窗口，只影响目标窗口自身。
+ *
+ * macOS 上窗口层级单位是应用：调用 app.focus() 会把同应用所有可见窗口一起
+ * 提到最前。内部窗口置前一律走本入口，禁止在窗口置前路径调用 app.focus()。
+ * 设置页与网页阅读器已回退普通 BrowserWindow，显式置前需要先 show() 让
+ * 目标窗口自身成为可交互窗口，再 moveTop()/focus()；翻译弹窗等非激活 panel
+ * 才继续使用 showInactive() 保持不激活应用的语义。
+ * @param win 待提升的自有窗口。
+ * @param options.focus 是否让目标窗口取得键盘焦点；缺省为 true。
+ * @param options.restore 是否先恢复最小化窗口；缺省为 true。
+ * @param options.moveTop 是否在 macOS 上用 moveTop() 把目标窗口提到 z-order 最前；缺省为 true。
+ * @param options.raiseLevel 是否在 macOS 上临时把面板提升到 screen-saver 层级；缺省为 false。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showOwnWindowForInteraction(
+  win: BrowserWindow,
+  options: { focus?: boolean; restore?: boolean; moveTop?: boolean; raiseLevel?: boolean } = {}
+): void {
+  if (win.isDestroyed()) return
+  const focus = options.focus ?? true
+  const restore = options.restore ?? true
+  const moveTop = options.moveTop ?? true
+  const raiseLevel = options.raiseLevel ?? false
+  if (restore && win.isMinimized()) win.restore()
+  // nonactivating panel 的 show() 只让窗口成为 key window，不会激活应用。
+  // 若仍保持 normal level，它会排在当前前台应用窗口之后，用户看到 isFocused=true
+  // 却看不到窗口。floating 仍可能被当前前台应用的普通窗口压住，显式入口必须临时
+  // 提升到 screen-saver，确保不激活应用也能把目标窗口越过当前前台应用。
+  if (isMac && raiseLevel) {
+    win.setAlwaysOnTop(true, 'screen-saver')
+    // 设置页与网页阅读器共用本入口，回收器必须知道本次被提升的是哪个窗口；
+    // 否则阅读器提升后无法在定时器或划词入口降回普通层级。
+    raisedInteractionWindows.add(win)
+    scheduleSettingsPanelRaiseLevelReset()
+  }
+  // 当前统一入口只服务设置页与网页阅读器，两者都是普通 BrowserWindow。
+  // 普通窗口显式置前必须使用 show() 让目标窗口成为可交互窗口；showInactive()
+  // 不会取得键盘焦点，窗口会继续留在其它应用后面。翻译弹窗等非激活 panel
+  // 仍由各自模块直接 showInactive()，不经过本入口。
+  win.show()
+  // moveTop() 只调整目标窗口自身的 z-order，不激活应用，也不会拉起同应用
+  // 其它可见窗口，因此能补齐“显式打开窗口放到最前”的窗口级语义。
+  if (isMac && moveTop) win.moveTop()
+  if (focus) win.focus()
+}
+
+/** 曾通过统一入口临时提升到最高层级的自有窗口；回收后自动清空。 */
+const raisedInteractionWindows = new Set<BrowserWindow>()
+
+/**
+ * 输出设置窗口在 macOS panel 置前流程中的状态，供真机排查层级与焦点问题。
+ * @param phase 当前置前阶段。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function logSettingsPanelBringToFront(phase: string): void {
+  if (!isMac || !settingsWin || settingsWin.isDestroyed()) return
+  console.log(
+    '[main] 设置页置前阶段:',
+    phase,
+    JSON.stringify({
+      isVisible: settingsWin.isVisible(),
+      isFocused: settingsWin.isFocused(),
+      isMinimized: settingsWin.isMinimized(),
+      isAlwaysOnTop: settingsWin.isAlwaysOnTop(),
+      bounds: settingsWin.getBounds(),
+      appActive: isMacAppActiveByEvents()
+    })
+  )
+}
+
+/** 设置页临时置顶层级的自动回收定时器；重复显式置前时重置。 */
+let settingsPanelRaiseLevelTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 立即把设置页从临时置顶层级降回普通窗口语义。
+ *
+ * 显式置前会临时把设置页提升到 screen-saver，以保证 nonactivating panel
+ * 能越过当前前台应用；该层级只服务于一次显式置前，不能在划词等内部流程中残留。
+ * 本函数可被有界定时器、设置页失焦和划词入口共同调用，重复调用是幂等的。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function lowerSettingsPanelRaiseLevel(): void {
+  if (!isMac) return
+  if (settingsPanelRaiseLevelTimer) {
+    clearTimeout(settingsPanelRaiseLevelTimer)
+    settingsPanelRaiseLevelTimer = null
+  }
+  for (const win of raisedInteractionWindows) {
+    if (win.isDestroyed()) {
+      raisedInteractionWindows.delete(win)
+      continue
+    }
+    if (win.isAlwaysOnTop()) win.setAlwaysOnTop(false)
+  }
+  raisedInteractionWindows.clear()
+}
+
+/**
+ * 为设置页的临时置顶层级安排有界回收。
+ *
+ * 不能只依赖 blur：nonactivating panel 获得键盘焦点后，系统可能不会在切到
+ * 其它应用时派发 blur，导致设置页长期保持 screen-saver 层级，划词时浮到最前。
+ * 定时器到期后无条件降级，保证层级只服务于本次显式置前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleSettingsPanelRaiseLevelReset(): void {
+  if (!isMac) return
+  if (settingsPanelRaiseLevelTimer) clearTimeout(settingsPanelRaiseLevelTimer)
+  settingsPanelRaiseLevelTimer = setTimeout(() => {
+    settingsPanelRaiseLevelTimer = null
+    for (const win of raisedInteractionWindows) {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(false)
+    }
+    raisedInteractionWindows.clear()
+  }, SETTINGS_PANEL_RAISE_LEVEL_TIMEOUT_MS)
+}
+
+/**
  * 创建或复用设置窗口。
- * @param bringToFront 复用已可见窗口时是否重新激活应用并置顶；内部 activate 必须传 false。
+ * @param bringToFront 是否把设置窗口置前并聚焦；仅后台建窗等非用户入口传 false。
+ * @param source 打开来源；弹窗内显式点击时传 `popup`，允许越过划词自动置前保护。
  * @returns 设置窗口实例。
  * @author zhenghq
  */
-async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindow> {
+async function createSettingsWindow(
+  bringToFront: boolean,
+  source?: 'popup'
+): Promise<BrowserWindow> {
+  // 弹窗内点击设置入口是显式用户操作。hidePopupForInternalWindowSwitch() 会续期
+  // 划词 activate 抑制，但该抑制只用于拦截划词流程的自动 activate；用户此刻主动
+  // 点击设置页必须豁免，否则设置窗口会保持后台层级，看起来“没有拉到最前”。
+  const explicitPopupSource = source === 'popup'
+  // 记录本次显式置前的代际：划词动作会在 suppressSelectionActivationWindowGap()
+  // 中递增代际，使已经进入 await 等待的旧置前动作在收尾时自动失效。
+  const bringToFrontEpochAtStart = settingsBringToFrontEpoch
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
     // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
     if (settingsWin.isMinimized()) {
-      if (isMac) app.focus({ steal: true })
-      settingsWin.restore()
-      settingsWin.focus()
+      // 划词已经开始（或本次置前已被新划词代际失效）时不得恢复并置前：
+      // restore() 会把窗口重新排到前台应用之上，连带把阅读器一起带上来。
+      if (
+        bringToFront &&
+        !explicitPopupSource &&
+        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+          isSelectionWindowRaiseGuardActive())
+      ) {
+        return settingsWin
+      }
+      showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
       return settingsWin
     }
     if (settingsWin.isVisible()) {
-      // 用户显式打开设置页（菜单栏图标、托盘菜单、第二实例）时，设置页可能正被其它应用遮挡。
-      // 菜单栏图标点击不会像 Dock 图标那样激活应用，必须显式激活并聚焦才能把它带回最前。
+      // 内部 activate 只负责让设置页存在，不把已可见窗口强制置前。
       if (!bringToFront) return settingsWin
-      if (isMac) app.focus({ steal: true })
-      settingsWin.show()
-      settingsWin.focus()
+      // 用户已经开始划词时，本次置前已经过期：只保持可见，不 moveTop/focus。
+      if (
+        !explicitPopupSource &&
+        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+          isSelectionWindowRaiseGuardActive())
+      ) {
+        return settingsWin
+      }
+      // 只提升设置窗口自身，不激活整个应用，避免把翻译弹窗一起带到最前。
+      // activate 路径（非弹窗内显式点击）不得把已可见设置页提升到 screen-saver：
+      // 真机日志显示迟到 activate 误放行后，正是这里对普通窗口执行
+      // show()+moveTop()+focus()+screen-saver，把设置页顶到划词应用之上。最高
+      // 层级只保留给弹窗内显式点击等真实用户入口，activate 路径改用窗口级
+      // moveTop() 表达“放到最前”，不再越过整个前台应用。
+      logCandidateProbe('settings-reuse-raise', settingsWin.isVisible())
+      showOwnWindowForInteraction(settingsWin, { raiseLevel: explicitPopupSource })
       return settingsWin
     }
-    if (isMac) app.focus({ steal: true })
-    settingsWin.show()
-    settingsWin.focus()
+    // 窗口可能被用户隐藏后重新打开，只提升设置窗口自身。
+    if (
+      bringToFront &&
+      !explicitPopupSource &&
+      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        isSelectionWindowRaiseGuardActive())
+    ) {
+      return settingsWin
+    }
+    showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
     return settingsWin
   }
 
@@ -4117,49 +4905,175 @@ async function createSettingsWindow(bringToFront: boolean): Promise<BrowserWindo
   // 设置页切换 Tab、拖拽滚动条或输入控件时，macOS 可能在窗口边界切换处漏发 mouseup。
   // 焦点事件可能晚于外部应用的 mousedown 到达，清理必须限定为起始于设置窗口内部的手势。
   settingsWin.on('focus', () => {
+    // 从翻译弹窗打开设置时，必须保证设置窗口取得焦点后仍处于保护期：
+    // 复用已可见窗口可能不再派发 focus，因此 IPC 入口已提前开启保护，
+    // 这里再次开启用于重置状态，确保随后到达的弹窗 blur 一定被吸收。
+    beginPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('blur', () => {
+    // 显式置前时临时提升的 screen-saver 层级必须在失焦后归还普通窗口语义，
+    // 否则设置页会长期悬浮在其它应用之上。
+    if (isMac && !createdWindow.isDestroyed()) {
+      lowerSettingsPanelRaiseLevel()
+    }
+    // 设置窗口失焦说明焦点已经离开应用内部窗口切换阶段，恢复弹窗正常的外部点击语义。
+    endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('hide', () => {
+    // 隐藏后设置窗口不再接收点击，必须解除保护，避免弹窗永久忽略失焦。
+    endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('closed', () => {
+    // 窗口销毁后不会再有失焦/隐藏事件，必须在此清理窗口级状态。
+    lowerSettingsPanelRaiseLevel()
+    endPopupSettingsOpenGuard()
     resetAutoTriggerPointerState()
-    if (settingsWin === createdWindow) settingsWin = null
+    if (settingsWin === createdWindow) {
+      settingsWin = null
+    }
     void refreshMacOSDockVisibility()
   })
-  await refreshMacOSDockVisibility()
-  if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
   // 主题运行时需异步读取主进程设置，若在首帧渲染前 show()，用户会先看到默认主题
   // 再切回已保存主题。等待首帧就绪让页面带着持久化主题一次性上屏。
   await readyToShow
   if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
-  // 菜单栏应用新建窗口时不会自动成为前台应用，需显式显示并聚焦，否则首次打开会落在其他应用后面
-  if (isMac) app.focus({ steal: true })
-  settingsWin.show()
-  settingsWin.focus()
+  // 首帧就绪等待期间用户可能已经开始划词。此时禁止走显式置前：macOS panel 的
+  // showInactive()/moveTop()/focus() 都会把设置页排到当前前台应用之上，进而把
+  // 同应用的阅读器一起带上来。改用不提升层级、不聚焦的 show()，panel 既不激活
+  // 应用也不会越过前台应用，只让设置窗口安静上屏；后续 Dock 刷新与最终置前同样
+  // 受保护期约束，不会再把窗口顶到最前。
+  if (
+    !explicitPopupSource &&
+    (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+      isSelectionWindowRaiseGuardActive() ||
+      selectionInteraction.snapshot().state !== 'idle')
+  ) {
+    showOwnWindowForInteraction(settingsWin, { focus: false, moveTop: false, raiseLevel: false })
+    await refreshMacOSDockVisibility()
+    return createdWindow
+  }
+  // panel 的 show()/focus() 只让设置窗口自身成为 key window，不激活应用。
+  // 非显式后台建窗时 bringToFront 为 false：只让窗口存在，不抢焦点、
+  // 不用 moveTop 越过用户当前正在使用的应用；启动首开等显式入口才置前。
+  showOwnWindowForInteraction(settingsWin, {
+    focus: bringToFront,
+    moveTop: bringToFront,
+    raiseLevel: bringToFront
+  })
+  // 必须等设置窗口真正显示后再刷新 Dock 呈现：新建分支的 settingsWin 在首帧前
+  // 已非空但窗口不可见，若提前切到 accessory 并 dock.hide()，窗口会被系统吞掉，
+  // 启动时的设置页会因此一直不出现。显示后再刷新可让保留逻辑兜住可见窗口。
+  await refreshMacOSDockVisibility()
+  if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
+  // Dock 策略切换会重排窗口层级；刷新后必须再走一次统一置前入口，保证启动首开
+  // 的设置页最终位于 z-order 最前，而不是只恢复可见性。
+  if (bringToFront) {
+    // app.setActivationPolicy()/dock.hide() 对窗口层级的重排可能在当前 tick 之后
+    // 才完全生效。让出一轮事件循环后做最终置前，避免紧随其后的 moveTop 被系统覆盖。
+    await yieldToEventLoop()
+    if (settingsWin !== createdWindow || createdWindow.isDestroyed()) return createdWindow
+    // 等待期间用户可能已经开始划词。此时绝不能再 moveTop()/focus()，否则会把
+    // 设置页顶到用户正在划词的其它应用之上，正是本变更要消除的偶现根因。
+    if (
+      !explicitPopupSource &&
+      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        isSelectionWindowRaiseGuardActive())
+    ) {
+      return createdWindow
+    }
+    showOwnWindowForInteraction(settingsWin, { raiseLevel: true })
+    logSettingsPanelBringToFront('initial-launch-final')
+  }
   return settingsWin
 }
 
 /**
  * 打开设置窗口。
  * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
+ * @param options.source 打开来源；弹窗内显式点击时传 `popup`。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function openSettings(options: { bringToFront?: boolean } = {}): Promise<void> {
-  await createSettingsWindow(options.bringToFront ?? true)
+async function openSettings(options: { bringToFront?: boolean; source?: 'popup' } = {}): Promise<void> {
+  await createSettingsWindow(options.bringToFront ?? true, options.source)
+}
+
+/**
+ * 处理从翻译弹窗发起的打开设置请求。
+ *
+ * 设置窗口 show()/focus() 会抢走翻译弹窗焦点，弹窗因此收到一次 blur。
+ * 必须在创建/聚焦设置窗口之前开启失焦保护，覆盖 blur 早于设置窗口 focus
+ * 到达的平台事件顺序，避免翻译弹窗把这次应用内部窗口切换误判为点击外部
+ * 并自动关闭。保护由设置窗口的 focus/blur/hide/closed 生命周期解除；
+ * 打开失败时不会产生这些事件，必须在此显式解除，避免弹窗永久忽略失焦。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openSettingsFromPopup(): void {
+  // 未固定时沿用「打开设置页后弹窗自动关闭」的既有行为：弹窗保持可见会让后续
+  // 点击设置页落入全局按下关闭兜底，而 hidePopup() 的前台交还退化路径可能把
+  // 设置页一起隐藏。固定（图钉）表示用户显式要求弹窗保持可见，内部窗口切换
+  // 不得清掉 pinned 并关闭弹窗，只让设置窗口自身置前即可。
+  if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
+  // 第二次打开时设置页已经可见，复用窗口的 show()/focus() 不保证再次派发
+  // focus 事件；必须在隐藏弹窗后重新开启保护，覆盖复用窗口路径上的迟到 blur。
+  beginPopupSettingsOpenGuard()
+  void openSettings({ bringToFront: true, source: 'popup' }).catch((error: unknown) => {
+    endPopupSettingsOpenGuard()
+    // 打开设置失败时无需打断用户当前翻译：保护已解除，后续失焦恢复既有语义；
+    // 记录错误便于排查窗口创建失败（例如渲染进程加载异常）。
+    console.error('[settings] 打开设置窗口失败:', error)
+  })
+}
+
+/**
+ * 处理从翻译弹窗发起的打开网页阅读器请求。
+ *
+ * 网页阅读器 show()/focus() 会抢走翻译弹窗焦点，与打开设置页一样属于应用内部
+ * 窗口切换。必须先只隐藏翻译弹窗自身，避免后续点击阅读器落入弹窗的全局按下
+ * 关闭兜底，并防止 hidePopup() 的前台交还退化路径把阅读器一起隐藏。
+ * @param url 可选的初始网页地址。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openWebReaderFromPopup(url?: string): void {
+  // 与打开设置页一致：固定弹窗在打开阅读器时必须保持可见且保持 pinned，
+  // 仅未固定时沿用内部窗口切换自动关闭弹窗的既有行为。
+  if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
+  // 第二次打开时阅读器已经可见，复用窗口同样不保证再次派发 focus 事件。
+  // 必须在隐藏弹窗后开启保护，避免阅读器接管焦点时的迟到 blur 关闭弹窗。
+  beginPopupSettingsOpenGuard()
+  void getWebReader().open(url, { bringToFront: true }).catch((error: unknown) => {
+    endPopupSettingsOpenGuard()
+    const message = error instanceof Error ? error.message : t('error.openWebReader')
+    dialog.showErrorBox(t('error.webTranslation'), message)
+  })
+}
+
+/**
+ * 通过全局快捷键打开或聚焦空白网页翻译阅读器，不读取当前浏览器地址。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openWebReaderFromShortcut(): void {
+  const reader = getWebReader()
+  if (reader.focusOrOpenExistingWindow()) return
+  void reader.open().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : t('error.openWebReader')
+    dialog.showErrorBox(t('error.webTranslation'), message)
+  })
 }
 
 // ---- 自建 DeepLX 集成 ----
@@ -4447,6 +5361,20 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   }
 
   const previous = getSettings()
+  const shortcutPatch: Partial<Pick<Settings, GlobalShortcutId>> = {}
+  for (const id of ['hotkey', 'ocrHotkey', 'manualTranslationHotkey', 'webReaderHotkey'] as GlobalShortcutId[]) {
+    if (patch[id] !== undefined) shortcutPatch[id] = String(patch[id]).trim()
+  }
+  const shortcutCandidate = { ...previous, ...shortcutPatch }
+  for (const id of Object.keys(shortcutPatch) as GlobalShortcutId[]) {
+    const conflict = findShortcutConflict(id, shortcutCandidate[id], shortcutCandidate)
+    if (conflict?.kind === 'copy') {
+      throw new Error(t('error.shortcutConflictCopy'))
+    }
+    if (conflict?.kind === 'duplicate') {
+      throw new Error(t('error.shortcutConflictDuplicate'))
+    }
+  }
   const safePatch = { ...patch }
   delete safePatch.deepLxUrl
   delete safePatch.dingTalkEnabled
@@ -4464,7 +5392,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   const settings = saveSettings(safePatch)
   if (
     (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) ||
-    (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey)
+    (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey) ||
+    (patch.manualTranslationHotkey !== undefined && settings.manualTranslationHotkey !== previous.manualTranslationHotkey) ||
+    (patch.webReaderHotkey !== undefined && settings.webReaderHotkey !== previous.webReaderHotkey)
   ) {
     registerGlobalShortcuts(settings)
   }
@@ -4522,18 +5452,87 @@ function registerIpc(): void {
   ipcMain.on('popup:copy', (_event, text: unknown) => {
     clipboard.writeText(String(text ?? ''))
   })
-  ipcMain.on('popup:hide', () => hidePopup())
+  ipcMain.on('popup:hide', () => hidePopup(true, 'renderer-ipc'))
+  ipcMain.on('popup:resize', (_event, size: unknown) => {
+    if (isPopupAutoSizeRequest(size)) resizePopup(size)
+  })
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
   })
-  ipcMain.on('settings:open', () => void openSettings())
+  /**
+   * 查询单个英文单词的音标；主进程再次校验输入，避免 Renderer 绕过词形边界。
+   * @param _event IPC 事件对象。
+   * @param word Renderer 传入的待查询单词。
+   * @returns 脱敏音标结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('pronunciation:lookup', (_event, word: unknown, requestId: unknown) => {
+    const normalized = typeof word === 'string' ? word.trim() : ''
+    if (!normalized || normalized.length > 64) {
+      return {
+        status: 'unsupported',
+        word: normalized.slice(0, 64),
+        language: 'en',
+        variants: [],
+        source: 'dictionaryapi'
+      }
+    }
+    const normalizedRequestId = normalizePronunciationRequestId(requestId)
+    if (!normalizedRequestId) return pronunciationService.lookup(normalized)
+    const controller = new AbortController()
+    return pronunciationRequests.run(
+      normalizedRequestId,
+      controller,
+      pronunciationService.lookup(normalized, controller.signal)
+    )
+  })
+  /**
+   * 下载当前已缓存音标变体的音频；变体 ID 必须由主进程查询结果生成。
+   * @param _event IPC 事件对象。
+   * @param word 当前查询词。
+   * @param variantId 已登记的变体标识。
+   * @returns 临时音频字节或脱敏错误。
+   * @author zhenghq
+   */
+  ipcMain.handle('pronunciation:audio', (_event, word: unknown, variantId: unknown, requestId: unknown) => {
+    const normalizedWord = typeof word === 'string' ? word.trim() : ''
+    const normalizedVariantId = typeof variantId === 'string' ? variantId.trim() : ''
+    if (!normalizedWord || normalizedWord.length > 64 || !normalizedVariantId) {
+      return { ok: false, error: 'Pronunciation audio is unavailable' }
+    }
+    const normalizedRequestId = normalizePronunciationRequestId(requestId)
+    if (!normalizedRequestId) return pronunciationService.getAudio(normalizedWord, normalizedVariantId)
+    const controller = new AbortController()
+    return pronunciationRequests.run(
+      normalizedRequestId,
+      controller,
+      pronunciationService.getAudio(normalizedWord, normalizedVariantId, controller.signal)
+    )
+  })
+  /**
+   * 取消 Renderer 尚未完成的音标查询或音频下载。
+   * @param _event IPC 事件对象。
+   * @param requestId Renderer 生成的请求 ID。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('pronunciation:cancel', (_event, requestId: unknown) => {
+    const normalized = normalizePronunciationRequestId(requestId)
+    if (normalized) pronunciationRequests.cancel(normalized)
+  })
+  /**
+   * 接收音标交互状态，仅暂停或恢复自动隐藏，不改变弹窗固定状态。
+   * @param _event IPC 事件对象。
+   * @param active Renderer 上报的交互状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('pronunciation:interaction', (_event, active: unknown) => {
+    setPronunciationInteraction(active === true)
+  })
+  ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('webview:open', (_event, url: unknown) => {
-    void getWebReader()
-      .open(typeof url === 'string' && url.trim() ? url : undefined)
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : t('error.openWebReader')
-        dialog.showErrorBox(t('error.webTranslation'), message)
-      })
+    openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)
   })
   ipcMain.on('webview:close', () => getWebReader().close())
   ipcMain.handle('webview:navigate', (_event, url: unknown) => {
@@ -4647,6 +5646,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings:get', () => getSettings())
+  ipcMain.handle('shortcuts:get-registration', () => shortcutRegistrationStates)
   /**
    * 返回内存环形缓冲中的全部近期日志，供日志查看界面初始化展示。
    * @returns 按时间升序排列的结构化日志条目。
@@ -4807,8 +5807,16 @@ function buildTrayMenu(): Menu {
         dialog.showErrorBox(t.t('error.webTranslation'), message)
       })
     } },
-    { label: t.t('menu.screenshotOcr'), click: () => openOcrSelection() },
-    { label: t.t('menu.clipboardImageOcr'), click: () => void translateClipboardImage() },
+    {
+      label: t.t('menu.screenshotOcr'),
+      enabled: true,
+      click: () => openOcrSelection()
+    },
+    {
+      label: t.t('menu.clipboardImageOcr'),
+      enabled: true,
+      click: () => void translateClipboardImage()
+    },
     { type: 'separator' },
     {
       label: t.t('menu.showSelectionButton'),
@@ -4819,7 +5827,7 @@ function buildTrayMenu(): Menu {
     },
     ...(isMac ? [{
       label: t.t('menu.repairMacSelectionService'),
-      click: () => void promptHiServicesRepair()
+      click: () => void repairMacHiServicesManually()
     }] : []),
     { type: 'separator' },
     { label: t.t('menu.targetLanguage'), submenu: targetSubmenu },

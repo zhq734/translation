@@ -1,0 +1,99 @@
+appId: com.selection.translator
+productName: 划词翻译
+electronVersion: 22.3.27
+npmRebuild: false
+disableAsarIntegrity: true
+publish: null
+directories:
+  output: dist-win7
+  buildResources: build
+files:
+  - out/**/*
+  - node_modules/uiohook-napi/**/*
+  - node_modules/koffi/**/*
+  - node_modules/@koromix/koffi-win32-x64/**/*
+  - node_modules/nodemailer/**/*
+  - node_modules/undici/**/*
+  - node_modules/@fastify/busboy/**/*
+  - node_modules/tesseract.js/**/*
+  - node_modules/tesseract.js-core/**/*
+  - node_modules/bmp-js/**/*
+  - node_modules/idb-keyval/**/*
+  - node_modules/is-url/**/*
+  - node_modules/node-fetch/**/*
+  - node_modules/whatwg-url/**/*
+  - node_modules/tr46/**/*
+  - node_modules/webidl-conversions/**/*
+  - node_modules/regenerator-runtime/**/*
+  - node_modules/wasm-feature-detect/**/*
+  - node_modules/zlibjs/**/*
+  - build/usage-report-config.json
+  - build/tray*.png
+  - '!assets/ocr/**/*'
+  - '!node_modules/@gutenye/**/*'
+  - '!node_modules/@techstark/**/*'
+  - '!node_modules/@img/**/*'
+  - '!node_modules/onnxruntime-common/**/*'
+  - '!node_modules/onnxruntime-node/**/*'
+  - '!node_modules/sharp/**/*'
+  - '!node_modules/@koromix/koffi-win32-arm64/**/*'
+  - '!node_modules/@koromix/koffi-win32-ia32/**/*'
+  - '!node_modules/@koromix/koffi-darwin-*/**/*'
+  - '!node_modules/@koromix/koffi-linux-*/**/*'
+  - '!node_modules/uiohook-napi/prebuilds/win32-arm64/**/*'
+  - '!node_modules/uiohook-napi/prebuilds/darwin-*/**/*'
+  - '!node_modules/uiohook-napi/prebuilds/linux-*/**/*'
+  - '!node_modules/electron-updater/**/*'
+  - '!node_modules/builder-util-runtime/**/*'
+  - '!out/main/updater-*.js'
+  - '!out/main/ocrModelAssets-*.js'
+  - '!out/main/paddleOcr-*.js'
+  - '!out/main/systemOcr-*.js'
+asarUnpack:
+  - node_modules/uiohook-napi/prebuilds/win32-x64/**/*
+  - node_modules/@koromix/koffi-win32-x64/**/*
+  - node_modules/tesseract.js/**/*
+  - node_modules/tesseract.js-core/**/*
+  - node_modules/node-fetch/**/*
+  - node_modules/whatwg-url/**/*
+  - node_modules/tr46/**/*
+  - node_modules/webidl-conversions/**/*
+  - node_modules/wasm-feature-detect/**/*
+  - node_modules/is-url/**/*
+  - node_modules/bmp-js/**/*
+  - node_modules/zlibjs/**/*
+  - node_modules/regenerator-runtime/**/*
+  - node_modules/idb-keyval/**/*
+afterPack: scripts/win7-after-pack.cjs
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  extraResources:
+    - from: build/icon.ico
+      to: app-icon.ico
+    - from: helpers/windows-uia-reader
+      to: .
+      filter:
+        - windows-uia-reader.exe
+    - from: build/build-info.json
+      to: build-info.json
+    - from: build/win7-tessdata
+      to: tessdata
+      filter:
+        - '*.traineddata.gz'
+  icon: build/icon.ico
+nsis:
+  differentialPackage: false
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  shortcutName: 划词翻译
+  include: build/installer.nsh
+  artifactName: SelectionTranslator-${version}-Setup-win7-x64.${ext}

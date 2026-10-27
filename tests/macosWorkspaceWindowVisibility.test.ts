@@ -51,6 +51,8 @@ test('macOS 跨工作区窗口必须跳过会隐藏窗口与 Dock 图标的进�
  * @author zhenghq
  */
 test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
+  // 设置页与网页阅读器改回普通窗口后都不再调用 setVisibleOnAllWorkspaces，
+  // 仅剩需要跨桌面浮层语义的四个窗口调用点。
   const expectedCallSites = 4
   let callSites = 0
 
@@ -60,14 +62,17 @@ test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
     if (calls === 0) continue
 
     callSites += calls
+    const knownOptionCalls =
+      countOccurrences(source, 'setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)') +
+      countOccurrences(source, 'setVisibleOnAllWorkspaces(false, ALL_WORKSPACES_VISIBILITY_OPTIONS)')
     assert.equal(
-      countOccurrences(source, 'setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)'),
+      knownOptionCalls,
       calls,
-      `${file} 的每个 setVisibleOnAllWorkspaces 调用都应传入 ALL_WORKSPACES_VISIBILITY_OPTIONS`
+      `${file} 的每个 setVisibleOnAllWorkspaces 调用都应传入统一的可见性选项常量`
     )
     assert.match(
       source,
-      /import \{ ALL_WORKSPACES_VISIBILITY_OPTIONS \} from '\.\/windowWorkspaceVisibility'/u,
+      /from '\.\/windowWorkspaceVisibility'/u,
       `${file} 应显式导入统一选项`
     )
     assert.doesNotMatch(
@@ -100,4 +105,20 @@ test('「译」按钮、翻译弹窗、OCR 覆盖窗口与截图提示窗口都�
     const callIndex = source.indexOf('setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)', anchorIndex)
     assert.ok(callIndex > anchorIndex, `${file} 的 ${anchor} 之后应紧跟使用统一选项的跨工作区设置`)
   }
+})
+
+/**
+ * 校验网页阅读器保持普通窗口，不再依赖无效的跨工作区归一化。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('网页阅读器必须保持普通窗口并留在当前桌面', () => {
+  const source = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  assert.doesNotMatch(
+    source,
+    /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u,
+    '阅读器不得使用会强制 CanJoinAllSpaces 的 panel 类型'
+  )
+  assert.doesNotMatch(source, /setAlwaysOnTop\(false\)|setVisibleOnAllWorkspaces\(/u,
+    '普通阅读器窗口不得再依赖无效的 panel 副作用归一化')
 })

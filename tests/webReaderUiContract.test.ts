@@ -91,6 +91,33 @@ test('网页阅读器应支持恢复并聚焦尚未关闭的窗口', () => {
   assert.match(focusMethod, /return true/u)
 })
 
+test('macOS 网页阅读器必须保持普通窗口并留在当前桌面', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const ensureSource = manager.slice(
+    manager.indexOf('private async ensureWindow()'),
+    manager.indexOf('/** 返回或创建隔离的阅读器 Session。')
+  )
+
+  // Electron 33 的 ElectronNSPanel 会强制 CanJoinAllSpaces | FullScreenAuxiliary，
+  // setVisibleOnAllWorkspaces(false) 无法清除 CanJoinAllSpaces。网页阅读器属于
+  // 普通窗口语义，必须保持普通 BrowserWindow，才能留在创建它的当前桌面。
+  assert.doesNotMatch(
+    ensureSource,
+    /process\.platform\s*===\s*'darwin'\s*\?\s*\{\s*type:\s*'panel'\s*\}/u,
+    'macOS 阅读器不得使用会跨所有桌面的 panel 类型'
+  )
+  assert.doesNotMatch(
+    ensureSource,
+    /setAlwaysOnTop\(false\)|setVisibleOnAllWorkspaces\(/u,
+    '阅读器既然不是 panel，就不得再依赖无效的 panel 副作用归一化'
+  )
+  assert.doesNotMatch(
+    manager,
+    /suspendFocusForSelection|resumeFocusAfterSelection|setFocusable\(/u,
+    '阅读器不得再通过 setFocusable 挂起可聚焦性'
+  )
+})
+
 test('网页提取应等待主文档可交互，而不是被全局 loading 状态误拦截', () => {
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const extractMethod = manager.slice(manager.indexOf('async extract('), manager.indexOf('/** 按语言方向翻译'))
@@ -128,7 +155,7 @@ test('网页翻译应按段落合并请求，单请求不超过 5000 字并按�
   assert.match(splitter, /unitsByBlock/u)
   assert.match(manager, /maxCharsPerSegment: WEB_TRANSLATION_MAX_CHARS_PER_SEGMENT/u)
   assert.match(runMethod, /const blockUnitIds = this\.blockUnitIds\.get\(completedUnit\.blockId\)/u)
-  assert.match(runMethod, /this\.applyUnits\('target', new Set\(blockUnitIds\)\)/u)
+  assert.match(runMethod, /this\.applyUnits\('target', new Set\(blockUnitIds\), \{ typewriter: true \}\)/u)
   assert.match(runMethod, /this\.isBlockComplete\(completedUnit\.blockId, units\)/u)
 })
 
@@ -268,7 +295,7 @@ test('网页对照模式应按块聚合渲染并保持增量分组', () => {
   const applyBilingual = manager.slice(manager.indexOf('private async applyBilingual('), manager.indexOf('private async ensureBilingualStyles'))
   const drainMethod = manager.slice(manager.indexOf('private drainIncrementalUnits('), manager.indexOf('private scheduleIncrementalQuietStop'))
 
-  assert.match(runMethod, /applyBilingual\(new Set\(\[completedUnit\.blockId\]\)\)/u)
+  assert.match(runMethod, /applyBilingual\(new Set\(\[completedUnit\.blockId\]\), \{ typewriter: true \}\)/u)
   assert.match(applyBilingual, /buildWebBilingualOperations/u)
   assert.match(applyBilingual, /bilingualSkipped: built\.skipped/u)
   assert.match(applyBilingual, /unrendered: built\.unrendered/u)

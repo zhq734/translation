@@ -64,9 +64,13 @@ test('Windows 快捷键触发后应等待修饰键释放再取词，快捷键变
   assert.equal(resolveHotkeyCaptureDelay('darwin'), 0)
   assert.equal(resolveHotkeyCaptureDelay('linux'), 0)
   assert.match(source, /resolveHotkeyCaptureDelay\(process\.platform\)/u)
+  const hotkeyStart = source.indexOf('function onHotkey')
+  const hotkeyEnd = source.indexOf('/**\n * 响应全局 OCR 快捷键', hotkeyStart)
+  assert.ok(hotkeyStart >= 0 && hotkeyEnd > hotkeyStart, 'onHotkey 应有结束边界')
+  const hotkeySource = source.slice(hotkeyStart, hotkeyEnd)
   assert.match(
-    source,
-    /setTimeout\([\s\S]*?queueSelectionTranslation\([^)]*true[^)]*\),\s*captureDelay/u
+    hotkeySource,
+    /setTimeout\([\s\S]*?selectionInteraction\.isCurrent\(interactionToken\)[\s\S]*?queueSelectionTranslation\([^)]*true[^)]*\)[\s\S]*?captureDelay/u
   )
   assert.match(
     source,

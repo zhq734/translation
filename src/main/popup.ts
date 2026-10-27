@@ -1,38 +1,114 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
-import type { TranslatePayload } from '../shared/types'
+import type { PopupAutoSizeRequest, TranslateDeltaPayload, TranslatePayload } from '../shared/types'
+import {
+  resolvePopupAutoSize,
+  resolvePopupResizeBounds
+} from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
 import { isPointInPopupDragRegion } from '../shared/popupDragBehavior'
-import { POPUP_FOREGROUND_RESTORE_SETTLE_MS } from '../shared/popupForeground'
-import { createWindowsForegroundTracker } from './windowsForeground'
 import {
-  beginInternalWindowTeardown,
-  endInternalWindowTeardown,
-  handBackFrontmostThen,
-  rememberFrontmostAppBeforeActivation,
-  yieldFrontmostAppThen
-} from './macForeground'
+  resolvePronunciationInteractionTransition,
+  shouldSchedulePopupHide
+} from './popupAutoHideState'
+import { handBackFrontmostThen } from './macForeground'
+import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
+import { logCandidateProbe } from '../shared/activateDiagnostics'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
-/** hide 事件未按预期派发时，强制结束内部窗口收尾抑制期的最长等待时间。 */
-const POPUP_TEARDOWN_FALLBACK_MS = 1500
+/**
+ * 点击“译”按钮后忽略迟到外部按下的最长毫秒数。
+ *
+ * macOS 全局鼠标钩子可能重放或延迟派发同一次按钮按下的 mousedown：第一次事件
+ * 已隐藏按钮并显示读取弹窗，迟到事件分类时按钮不可见，就会被当成外部点击关闭
+ * 刚显示的弹窗。复制兜底超时为 800ms，抑制窗口必须覆盖该时长并留出余量，
+ * 否则取词结果返回前到达的尾随按下仍会误关弹窗。抑制只对按钮原位置附近的
+ * 按下生效，用户在其它位置的真实点击不受影响，仍会立即关闭弹窗。
+ */
+const EXTERNAL_POINTER_DISMISS_SUPPRESS_MS = 1000
+
+/** 判定迟到按下是否仍属于同一次按钮点击的坐标容差（屏幕像素）。 */
+const EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS = 48
+
+/**
+ * 翻译弹窗关闭原因。
+ *
+ * 只允许固定枚举进入日志，避免把窗口标题、选区文本或其它用户数据带进诊断。
+ * `unknown` 仅保留给尚未接入显式原因的兼容调用，实际入口应尽量全部显式传因。
+ */
+export type PopupHideReason =
+  | 'external-pointer'
+  | 'blur'
+  | 'auto-hide'
+  | 'capture-null'
+  | 'renderer-ipc'
+  | 'internal-window-switch'
+  | 'stale-token'
+  | 'unknown'
 
 let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
+/**
+ * 弹窗关闭是否正在进行中。
+ *
+ * macOS 外部点击与随后到达的 blur 可能在同一轮交互内连续触发关闭；前台交还是
+ * 异步的，若两次关闭都启动交还，会并发恢复同一源窗口并放大设置页置前风险。
+ * 该状态从 hidePopup 入口一直保持到真实 win.hide() 完成，只对关闭流程去重，
+ * 不参与可见性判断，也不得跨到下一轮弹窗显示。
+ */
+let popupCloseInFlight = false
 let pinned = false
 let currentAutoHideMs = 0
+/** 音标卡或原文发音交互期间是否暂停自动隐藏；不改变用户固定状态。 */
+let pronunciationInteractionActive = false
+/** 弹窗真正隐藏时通知主进程清理音标查询与音频下载。 */
+let onPopupHiddenCallback: (() => void) | null = null
+/**
+ * 弹窗关闭开始及真实隐藏完成时通知主进程收尾。
+ *
+ * 外部点击关闭后，异步前台交还期间设置页可能仍保留临时最高层级；关闭入口与
+ * win.hide() 完成后都必须同步回收该状态，避免迟到 activate 把设置页带到最前。
+ */
+let onPopupCloseStartCallback: (() => void) | null = null
+let onPopupCloseEndCallback: (() => void) | null = null
 let shownInactive = false
 /**
- * 正在「先交还前台、再隐藏窗口」的过程中。
- * macOS 上弹窗是应用内最后一个 key window，交还前台需要等待系统确认失活（数十毫秒），
- * 此期间弹窗仍可见但逻辑上已关闭：新请求必须按「未显示」处理，否则会复用即将隐藏的窗口。
+ * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
+ *
+ * 从翻译弹窗点击设置后，设置窗口会调用 show()/focus() 抢走焦点，弹窗因此收到
+ * 一次 blur。该失焦来自应用内部窗口切换，不属于用户点击弹窗外部的自动关闭语义，
+ * 必须抑制，否则用户会看到「打开设置时翻译弹窗一起关闭」。
  */
-let hidingAfterFrontReturn = false
-/** 正在为取词主动归还前台焦点的截止时间；此窗口内的 blur 属于内部动作，不关闭弹窗。 */
-let restoringForegroundUntil = 0
+let settingsOpenGuardActive = false
+/**
+ * 选区取词是否处于加载态。
+ *
+ * 点击“译”后读取弹窗会切换为翻译加载态，此时结果尚未返回；macOS 的前台
+ * 交还与输入法切换可能在此阶段派发迟到失焦。加载态期间不能按失焦关闭弹窗，
+ * 真实的外部点击由全局按下兜底关闭，不依赖 blur。
+ */
+let selectionCaptureLoading = false
+/**
+ * 按钮点击后的外部按下关闭抑制截止时间。
+ *
+ * 只用于吞掉同一次按钮点击可能产生的迟到 / 重放全局按下，不改变弹窗正常的
+ * blur 关闭语义。必须同时匹配按钮原位置附近的坐标：仅按时间窗口抑制会把
+ * 用户在这段时间内其它位置的真实点击一并吞掉，重新引入“点空白不消失”。
+ */
+let suppressExternalPointerDismissUntil = 0
+/** 触发抑制的按钮中心坐标；未记录时为 null，表示不做坐标匹配。 */
+let suppressExternalPointerDismissOrigin: { x: number; y: number } | null = null
+/**
+ * 翻译弹窗自身显示 / 聚焦时的内部窗口通知回调。
+ *
+ * macOS 上弹窗 show() 会让该 panel 成为 key window，系统可能随之派发一次
+ * 应用级 activate。该 activate 属于划词内部流程，调用方必须据此续期
+ * “非 Dock 激活”抑制窗口，避免异步翻译结果上屏时把设置页误判为 Dock 激活。
+ */
+let onInternalWindowShown: (() => void) | null = null
 /**
  * 源应用前台窗口跟踪器：弹窗激活前记录源窗口，取词前精确交还焦点。
  * Chromium 的 win.blur() 由系统按 Z-order 挑下一个前台窗口，不保证回到源应用。
@@ -40,21 +116,43 @@ let restoringForegroundUntil = 0
 const foregroundTracker = createWindowsForegroundTracker({ platform: process.platform })
 const pendingPayloads: TranslatePayload[] = []
 
+/** 创建翻译弹窗时注入的生命周期回调。 */
+export interface CreatePopupOptions {
+  /** 预加载脚本路径。 */
+  preloadPath: string
+  /** 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。 */
+  onWindowShown?: () => void
+  /** 弹窗隐藏后清理临时请求的回调。 */
+  onPopupHidden?: () => void
+  /** 弹窗关闭开始、异步前台交还之前的同步收尾回调。 */
+  onPopupCloseStart?: () => void
+  /** 弹窗真实隐藏完成后的同步恢复回调。 */
+  onPopupCloseEnd?: () => void
+}
+
 /**
  * 创建翻译弹窗。
- * @param preloadPath 预加载脚本路径。
+ * @param options 弹窗创建参数及生命周期回调。
  * @returns 创建后的翻译弹窗。
  * @author zhenghq
  */
-export function createPopup(preloadPath: string): BrowserWindow {
+export function createPopup(options: CreatePopupOptions): BrowserWindow {
+  const { preloadPath } = options
+  popupCloseInFlight = false
   shownInactive = false
-  hidingAfterFrontReturn = false
-  restoringForegroundUntil = 0
+  settingsOpenGuardActive = false
+  selectionCaptureLoading = false
+  suppressExternalPointerDismissUntil = 0
+  suppressExternalPointerDismissOrigin = null
+  onInternalWindowShown = options.onWindowShown ?? null
+  onPopupHiddenCallback = options.onPopupHidden ?? null
+  onPopupCloseStartCallback = options.onPopupCloseStart ?? null
+  onPopupCloseEndCallback = options.onPopupCloseEnd ?? null
   win = new BrowserWindow({
-    width: 460,
+    width: 520,
     height: 360,
-    minWidth: 360,
-    minHeight: 260,
+    minWidth: 520,
+    minHeight: 320,
     show: false,
     frame: false,
     transparent: true,
@@ -68,6 +166,9 @@ export function createPopup(preloadPath: string): BrowserWindow {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
+    // macOS 上使用 nonactivating panel：show()/focus() 只让弹窗自身成为 key window，
+    // 不激活整个应用，从而避免把同应用其它可见窗口一起带到最前。
+    ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -89,8 +190,34 @@ export function createPopup(preloadPath: string): BrowserWindow {
 
   // 默认点击弹窗外部时关闭；顶部原生拖拽与钉住状态均忽略失焦事件。
   win.on('blur', handlePopupBlur)
+  win.on('focus', handlePopupFocus)
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   return win
+}
+
+/**
+ * 通知调用方翻译弹窗刚完成一次自身显示或聚焦。
+ *
+ * 只用于内部 activate 抑制续期，不触发任何窗口置前、聚焦或应用级激活动作，
+ * 因此不会把同应用其它窗口一起带到最前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function notifyInternalWindowShown(): void {
+  onInternalWindowShown?.()
+}
+
+/**
+ * 处理弹窗重新获得焦点。
+ *
+ * 弹窗重新拿到焦点后，取词读取阶段的「非激活显示」标记同步失效，
+ * 否则用户点击弹窗后再点击外部时不会触发自动关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupFocus(): void {
+  shownInactive = false
+  notifyInternalWindowShown()
 }
 
 /**
@@ -100,41 +227,75 @@ export function createPopup(preloadPath: string): BrowserWindow {
  */
 function handlePopupBlur(): void {
   if (!win?.isVisible()) return
+  // 设置窗口抢焦点属于应用内部窗口切换，不能按“点击弹窗外部”关闭翻译弹窗。
+  if (settingsOpenGuardActive) return
   const cursorInsideDragRegion = isPointInPopupDragRegion(
     screen.getCursorScreenPoint(),
     win.getBounds()
   )
-  if (!cursorInsideDragRegion &&
-      shouldDismissPopupOnBlur(pinned, isRestoringForeground())) {
-    hidePopup()
+  if (cursorInsideDragRegion) return
+  // 取词读取阶段弹窗以 showInactive 显示，本就不持有 key window；此时任何
+  // blur 都属于内部动作（结果切换、窗口显隐），不能误判为点击外部。
+  if (shownInactive) return
+  // 选区取词加载期间翻译结果尚未返回，输入法切换等可能派发迟到失焦；
+  // 若据此关闭，用户表现为弹窗一闪即关。真实外部点击由全局按下兜底关闭。
+  if (selectionCaptureLoading) return
+  // panel 下窗口切换不再激活应用，blur 只可能是用户真的点了弹窗外或弹窗内
+  // 的其它控件；拖拽区域与固定状态仍由 shouldDismissPopupOnBlur 过滤。
+  if (shouldDismissPopupOnBlur(pinned, false)) {
+    hidePopup(true, 'blur')
   }
 }
 
 /**
- * 返回当前是否处于为取词主动归还前台焦点的短窗口内。
- * @returns 处于归还焦点窗口内时返回 true。
+ * 开启设置窗口打开期间的弹窗失焦保护。
+ *
+ * 必须在调用设置窗口 show()/focus() 之前开启，以覆盖 blur 事件早于 focus 事件
+ * 到达的平台事件顺序；保护期间设置窗口导致的内部失焦不会关闭翻译弹窗。
+ * @returns 无返回值。
  * @author zhenghq
  */
-function isRestoringForeground(): boolean {
-  return Date.now() <= restoringForegroundUntil
+export function beginPopupSettingsOpenGuard(): void {
+  settingsOpenGuardActive = true
 }
 
 /**
- * 让已激活的翻译弹窗主动退出前台，把焦点归还给源应用以便随后取词。
- * Windows 对已处于前台的窗口调用 showInactive 不会交还焦点，必须显式 blur；
- * 归还期间的失焦事件由 handlePopupBlur 短路，不会关闭弹窗。
- * @returns 实际执行了失活时返回 true；弹窗不可见或本就非激活时返回 false。
+ * 解除设置窗口打开期间的弹窗失焦保护。
+ *
+ * 设置窗口失焦、隐藏、销毁或打开失败时必须解除，恢复正常的点击弹窗外部
+ * 自动关闭语义。
+ * @returns 无返回值。
  * @author zhenghq
  */
-export function deactivatePopupForCapture(): boolean {
-  if (!win || !win.isVisible() || shownInactive) return false
-  restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
-  shownInactive = true
-  // 先把焦点精确交还给记录的源应用窗口；SetForegroundWindow 成功时源应用立即回到前台。
-  const restored = foregroundTracker.restore()
-  // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，至少弹窗不再持有焦点。
-  if (!restored) win.blur()
-  return true
+export function endPopupSettingsOpenGuard(): void {
+  settingsOpenGuardActive = false
+}
+
+/**
+ * 返回设置窗口打开期间的弹窗失焦保护是否处于激活状态。
+ *
+ * 主进程的全局鼠标按下判定需要复用同一份保护状态：设置窗口的 focus 事件
+ * 可能晚于全局 mousedown 到达，仅依赖窗口焦点会把点击设置页误判为点击
+ * 弹窗外部，从而错误关闭翻译弹窗。
+ * @returns 处于设置打开保护期时返回 true。
+ * @author zhenghq
+ */
+export function isPopupSettingsOpenGuardActive(): boolean {
+  return settingsOpenGuardActive
+}
+
+/**
+ * 开启点击“译”按钮后的迟到外部按下抑制。
+ *
+ * 点击按钮会立即隐藏按钮并显示读取弹窗；全局钩子若随后再次派发同一次按下的
+ * mousedown，按钮已经不可见，会被误分类为外部点击并关闭刚显示的弹窗。这里用
+ * 一个很短的截止时间吞掉这类迟到事件，保证弹窗至少存活到取词流程接管。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function suppressExternalPointerDismissForButtonClick(origin?: { x: number; y: number }): void {
+  suppressExternalPointerDismissUntil = Date.now() + EXTERNAL_POINTER_DISMISS_SUPPRESS_MS
+  suppressExternalPointerDismissOrigin = origin ?? null
 }
 
 /**
@@ -167,6 +328,25 @@ function positionNearAnchor(anchor?: { x: number; y: number }): void {
 }
 
 /**
+ * 按 Renderer 上报的内容自然尺寸调整弹窗，并保证新窗口仍完整落在当前显示器工作区内。
+ * @param size 渲染进程测量得到的目标尺寸。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resizePopup(size: PopupAutoSizeRequest): void {
+  if (!win || win.isDestroyed()) return
+  const bounds = win.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const resolved = resolvePopupAutoSize(size, display.workArea, { edgeGap: WINDOW_EDGE_GAP })
+  const next = resolvePopupResizeBounds(bounds, resolved, display.workArea)
+  if (next.width === bounds.width && next.height === bounds.height &&
+      next.x === bounds.x && next.y === bounds.y) {
+    return
+  }
+  win.setBounds(next)
+}
+
+/**
  * 向弹窗 Renderer 投递翻译负载；页面尚未加载完成时排队，避免首次打开丢消息。
  * @param payload 翻译状态或结果。
  * @returns 无返回值。
@@ -191,6 +371,18 @@ function deliverPopupPayload(payload: TranslatePayload): void {
 }
 
 /**
+ * 向弹窗 Renderer 投递流式增量；窗口尚未创建或正在加载时直接丢弃。
+ * 增量只是展示提示，最终结果仍由完整负载校正，因此无需排队。
+ * @param payload 流式增量负载。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function sendPopupDelta(payload: TranslateDeltaPayload): void {
+  if (!win || win.isDestroyed() || win.webContents.isLoadingMainFrame()) return
+  win.webContents.send('translate:delta', payload)
+}
+
+/**
  * 显示或更新翻译弹窗；弹窗已打开时保持原位置不跳动。
  * @param payload 翻译状态或结果。
  * @param autoHideMs 自动隐藏毫秒数，0 表示不自动关闭。
@@ -206,33 +398,44 @@ export function showPopup(
   activate = true
 ): void {
   if (!win) return
+  // 新一轮显示必须清除上一轮关闭状态；异步前台恢复异常时也不能让弹窗永久
+  // 无法关闭。重置发生在投递负载之前，保证本次显示立即恢复完整关闭语义。
+  popupCloseInFlight = false
   currentAutoHideMs = Math.max(0, autoHideMs)
-  const alreadyVisible = win.isVisible() && !hidingAfterFrontReturn
+  selectionCaptureLoading = payload.origin === 'selection' && payload.loading === true
+  const alreadyVisible = win.isVisible()
   deliverPopupPayload(payload)
+  // 手动模式是显式状态：用户从手动翻译切到划词时，若只投递翻译负载，
+  // Renderer 仍停留在手动视图，表现为「按了划词快捷键打开的却是手动翻译」。
+  // 非手动来源一律广播模式切换，让界面跟随本次交互真正回到划词视图。
+  if (payload.origin !== 'manual') {
+    win.webContents.send('popup:selection-mode')
+  }
   // 异步翻译结果到达时若弹窗已经显示，仅更新内容，避免重复显示操作打断拖拽与焦点。
   if (!alreadyVisible) {
     positionNearAnchor(anchor)
     // Windows 复制取词前使用非激活显示，避免弹窗抢走源应用焦点；取词完成后再激活。
     // 激活会让弹窗顶掉源应用的前台状态，激活前先记录源窗口以便取词时精确交还。
-    // 同步补记源应用：上一轮结果弹窗已激活本应用时，异步的
-    // rememberFrontmostAppIfInactive() 会因应用内已有焦点窗口而跳过，
-    // 导致本次收尾没有可交还目标，只能落到不稳定的 app.hide()→app.show() 兜底。
-    if (activate) rememberFrontmostAppBeforeActivation()
     if (activate) foregroundTracker.remember()
+    // macOS panel 的 show()/focus() 只让弹窗自身成为 key window，不激活整个应用，
+    // 因此不再需要记录/交还应用级前台；Windows 仍按原有 show/showInactive 语义处理。
+    logCandidateProbe(activate ? 'popup-show' : 'popup-show-inactive', alreadyVisible)
     activate ? win.show() : win.showInactive()
     shownInactive = !activate
-    if (activate) restoringForegroundUntil = 0
   } else if (activate && shownInactive) {
-    rememberFrontmostAppBeforeActivation()
     foregroundTracker.remember()
+    logCandidateProbe('popup-show', alreadyVisible)
     win.show()
     shownInactive = false
-    restoringForegroundUntil = 0
   } else if (!activate && !shownInactive && alreadyVisible) {
     // 弹窗已可见且已被激活，需要降级为非激活以归还前台焦点给源应用。
+    logCandidateProbe('popup-show-inactive', alreadyVisible)
     win.showInactive()
     shownInactive = true
   }
+  // 弹窗每次自身显隐 / 聚焦都可能让 macOS 派发一次应用级 activate；
+  // 无条件续期抑制，确保该内部 activate 不会被误判为 Dock 点击。
+  notifyInternalWindowShown()
   scheduleHide(autoHideMs)
 }
 
@@ -243,6 +446,7 @@ export function showPopup(
  */
 export function showManualTranslationPopup(): void {
   if (!win) return
+  selectionCaptureLoading = false
   currentAutoHideMs = 0
   clearHide()
   const alreadyVisible = win.isVisible()
@@ -254,6 +458,7 @@ export function showManualTranslationPopup(): void {
   }
   shownInactive = false
   win.webContents.send('popup:pinned', pinned)
+  notifyInternalWindowShown()
   if (win.webContents.isLoadingMainFrame()) {
     win.webContents.once('did-finish-load', () => {
       win?.webContents.send('manual-translate:open')
@@ -264,128 +469,143 @@ export function showManualTranslationPopup(): void {
 }
 
 /**
- * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
+ * 处理全局鼠标按下判定的外部点击：主动关闭可见且未固定的弹窗。
  *
- * macOS 上弹窗通常是应用内最后一个 key window：直接隐藏会让系统把应用内下一个窗口
- * （设置页）提升为 key window 并顶到其它应用之上，用户表现为「弹窗消失后设置页弹到最前」。
- * 因此先把前台交还给用户原本在用的应用，确认本应用失活后再隐藏窗口。
- * 交还期间弹窗逻辑上已关闭，新请求不会复用即将隐藏的窗口。
- * @returns 无返回值。
+ * 只依赖窗口 blur 存在漏触发场景：读取状态与失败提示以 showInactive 显示，
+ * 本就不持有 key window，此后用户点击外部不会再产生 blur，弹窗会一直留在屏上、
+ * 前台也一直不归还，后续划词显示的“译”按钮会被应用级状态吞掉
+ * （点弹窗关闭按钮才能恢复）。这里在全局按下阶段兜底关闭，保证归还流程一定执行。
+ * 固定弹窗与取词主动交还前台的短窗口内不受影响。
+ * @returns 本次是否已发起弹窗关闭。
  * @author zhenghq
  */
-export function hidePopup(): void {
-  clearHide()
-  closeVersion += 1
-  pinned = false
-  shownInactive = false
-  restoringForegroundUntil = 0
-  win?.webContents.send('popup:pinned', false)
-  if (!win || win.isDestroyed() || hidingAfterFrontReturn) return
-  hidingAfterFrontReturn = true
-  // 进入收尾抑制期：覆盖「交还前台 → 隐藏弹窗 → hide 真正生效」整段窗口期。
-  // 期间到达的 macOS activate 属于内部窗口显隐引发的事件，不能被当成 Dock 启动
-  // 去激活网页阅读器或设置页。
-  beginInternalWindowTeardown()
-  // 交还前把这段失焦标记为内部动作：激活源应用会让弹窗失焦，
-  // 不能被 handlePopupBlur 当成用户点击外部而重复关闭。
-  restoringForegroundUntil = Date.now() + POPUP_FOREGROUND_RESTORE_SETTLE_MS
-
-  // win.hide() 异步生效：必须等 hide 事件真正到达后再退出抑制期，
-  // 否则 hide 生效瞬间派发的内部事件会看到抑制期已结束而被误放行。
-  let teardownTarget: BrowserWindow | null = null
-  /**
-   * 隐藏弹窗并结束收尾抑制期。
-   * @param force 为 true 时无条件执行隐藏，不因 `isVisible()` 短路。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  const hideAndEndTeardown = (force = false): void => {
-    // app.hide() 生效期间弹窗 isVisible() 同样为 false，若据此短路会跳过真正的
-    // win.hide()，随后的 app.show() 再把弹窗恢复可见，表现为「点关闭关不掉」。
-    // 安全让出分支必须传 force=true 走真实隐藏。
-    if (!win || win.isDestroyed() || (!force && !win.isVisible())) {
-      finishPopupTeardown()
-      return
-    }
-    // win.hide() 只在可见性发生跳变时派发 hide 事件：安全让出期间窗口已被 app.hide()
-    // 置为不可见，强制隐藏不会产生跳变。此时必须立即收尾，否则要等 1500ms 兜底定时器，
-    // 期间用户对 Dock 的正常激活会被当成内部事件吞掉。
-    const wasVisible = win.isVisible()
-    // 记住本次收尾的窗口对象：模块级 win 可能被后续 createPopup() 替换，
-    // 摘监听器必须针对本次真正隐藏的窗口。
-    teardownTarget = win
-    win.once('hide', finishPopupTeardown)
-    // 窗口在 hide 事件前被销毁时也必须退出抑制期，避免状态永久卡住。
-    win.once('closed', finishPopupTeardown)
-    win?.hide()
-    if (!wasVisible) {
-      finishPopupTeardown()
-      return
-    }
-    // 非 macOS 平台不存在「隐藏 key window 会提升应用内其它窗口」的问题，
-    // 保持原有同步收尾语义，不引入额外的逻辑关闭窗口期。
-    if (process.platform !== 'darwin') {
-      finishPopupTeardown()
-      return
-    }
-    // 最后一道兜底：hide 事件因平台差异未派发时，抑制期必须自行结束，
-    // 否则 Dock 激活会被永久拦截。
-    const teardownFallback = setTimeout(finishPopupTeardown, POPUP_TEARDOWN_FALLBACK_MS)
-    teardownFallback.unref?.()
-  }
-
-  // hide 事件与 closed 事件共用同一收尾，且函数声明会提升，
-  // 保证「先隐藏窗口，再退出抑制期并解除逻辑关闭标记」的先后语义。
-  let popupTeardownFinished = false
-  function finishPopupTeardown(): void {
-    if (popupTeardownFinished) return
-    popupTeardownFinished = true
-    // 收尾完成后立即摘掉另一个事件的监听，避免窗口复用时累积监听器。
-    if (teardownTarget && !teardownTarget.isDestroyed()) {
-      teardownTarget.removeListener('hide', finishPopupTeardown)
-      teardownTarget.removeListener('closed', finishPopupTeardown)
-    }
-    endInternalWindowTeardown()
-    hidingAfterFrontReturn = false
-  }
-
-  handBackFrontmostThen(win, () => {
-    hideAndEndTeardown()
-  }, () => {
-    // 拿不到源应用（快照读取失败、源应用已退出，或弹窗激活前本应用已是最前）时
-    // 不能直接隐藏：本应用此时仍是最前应用，隐藏应用内 key window 会让系统把应用内
-    // 下一个窗口提升为 key window，正在后台打开的网页阅读器会被顶到用户应用之上。
-    // 改用安全让出序列：隐藏应用等待失活后收尾，再非激活恢复应用内其它窗口。
-    void yieldFrontmostAppThen(() => hideAndEndTeardown(true)).catch(() => {
-      // 让出序列自身失败时兜底退出抑制期，不能把状态永久留在收尾中。
-      popupTeardownFinished = true
-      endInternalWindowTeardown()
-      hidingAfterFrontReturn = false
-    })
-  })
+export function dismissPopupOnExternalPointerDown(point?: { x: number; y: number }): boolean {
+  // 读取状态弹窗与失败提示以 showInactive 显示，不持有 key window，也不会再产生
+  // blur；只看 isPopupActivated() 会漏掉这类弹窗，点击外部后它会一直留在屏上。
+  if (!isPopupVisible()) return false
+  // 按钮点击的迟到按下属于同一次交互，会被误分类为外部点击关闭读取弹窗；
+  // 必须同时匹配抑制窗口与按钮原位置附近坐标，只吞掉同一次点击的迟到事件。
+  // 仅按时间窗口短路会吞掉用户在这段时间内其它位置的真实点击，重新引入
+  // “点空白不消失”；加载态只用于吸收迟到的 blur，不能在全局按下阶段短路。
+  if (pinned || isSuppressedExternalPointerDismiss(point)) return false
+  console.log('[popup] 外部点击主动关闭弹窗并归还前台')
+  hidePopup(true, 'external-pointer')
+  return true
 }
 
 /**
- * 在翻译弹窗真正隐藏之后执行回调；弹窗已隐藏或已销毁时立即执行。
+ * 判断一次全局按下是否属于按钮点击的迟到 / 重放事件。
  *
- * 取词失败提示的交互租约必须在弹窗隐藏收尾完成后才释放：提前清零会让
- * 收尾期间到达的内部 activate 失去时间维度防线，把设置页或阅读器顶到最前。
- * @param callback 弹窗隐藏后执行的回调。
- * @returns 取消注册的函数；回调已立即执行时为空操作。
+ * 时间窗口保证只覆盖同一次交互；坐标匹配保证只有按钮原位置附近的按下被吞掉，
+ * 用户在弹窗之外其它位置的真实点击不会被误抑制。
+ * @param point 本次全局按下的屏幕坐标；省略时退化为仅按时间窗口判定。
+ * @returns 属于迟到按钮按下时返回 true。
  * @author zhenghq
  */
-export function whenPopupHidden(callback: () => void): () => void {
-  if (!win || win.isDestroyed() || !win.isVisible()) {
-    callback()
-    return () => {}
+function isSuppressedExternalPointerDismiss(point?: { x: number; y: number }): boolean {
+  if (Date.now() > suppressExternalPointerDismissUntil) return false
+  const origin = suppressExternalPointerDismissOrigin
+  if (!point || !origin) return true
+  return Math.abs(point.x - origin.x) <= EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS &&
+    Math.abs(point.y - origin.y) <= EXTERNAL_POINTER_DISMISS_SUPPRESS_RADIUS
+}
+
+/**
+ * 显式关闭翻译弹窗，并使正在进行的旧翻译结果失效。
+ *
+ * macOS 上结果弹窗通过 show() 激活后，本应用会成为系统最前应用；此时若只
+ * win.hide()，下一次取词注入的 Command+C 仍会打在自家窗口上，源应用不消费
+ * 剪贴板哨兵，最终报「取词超时」。因此隐藏前必须复用共享前台交还链路，把前台
+ * 交还给划词阶段记录的源应用，并等其确认失活后再隐藏窗口。打开设置页、网页
+ * 阅读器等内部窗口切换场景由 hidePopupForInternalWindowSwitch 显式豁免。
+ *
+ * Windows 仍保留弹窗失活以归还前台焦点，避免下一次取词的复制键落在弹窗上。
+ * @param handBackFrontmost 是否在隐藏前交还 macOS 应用级前台；内部窗口切换传 false。
+ * @param reason 关闭原因固定枚举，仅用于诊断，不包含任何用户数据。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function hidePopup(
+  handBackFrontmost = true,
+  reason: PopupHideReason = 'unknown'
+): void {
+  if (popupCloseInFlight) {
+    console.log(`[popup] ignore duplicate hide reason=${reason} while-closing`)
+    return
   }
-  const target = win
-  target.once('hide', callback)
-  // 取词失败可能连续发生：调用方需要能撤销注册，
-  // 否则长期复用的弹窗会不断累积 hide 监听器。
-  return () => {
-    if (!target.isDestroyed()) target.removeListener('hide', callback)
+  popupCloseInFlight = true
+  console.log(`[popup] hide reason=${reason}`)
+  // 关闭一开始就同步收尾并挂起后台设置页的 key window 候选资格：异步前台交还
+  // 可能持续数十毫秒，期间设置页若残留最高层级，仍会被系统带到划词应用之前。
+  // 不得在这里 await。
+  onPopupCloseStartCallback?.()
+  clearHide()
+  closeVersion += 1
+  pinned = false
+  pronunciationInteractionActive = false
+  selectionCaptureLoading = false
+  suppressExternalPointerDismissUntil = 0
+  suppressExternalPointerDismissOrigin = null
+  win?.webContents.send('popup:pinned', false)
+  if (!win || win.isDestroyed()) {
+    try {
+      onPopupCloseEndCallback?.()
+    } finally {
+      popupCloseInFlight = false
+    }
+    return
   }
+  // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
+  // 后再执行，否则系统会先把同应用下一个可见窗口提升为 key window 顶到最前。
+  const run = (): void => {
+    shownInactive = false
+    logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
+    // Renderer 的关闭按钮会主动清理播放资源，但失焦、外部点击和自动隐藏
+    // 不经过 Renderer；统一广播隐藏事件，确保所有关闭路径都会停止语音。
+    // 必须在 win.hide() 之前广播：隐藏后窗口不再渲染，IPC 消息可能无法及时
+    // 送达 Renderer，导致系统语音或音频在后台继续播放。
+    win?.webContents.send('popup:hidden')
+    try {
+      win?.hide()
+    } finally {
+      // 真实隐藏完成后立即恢复关闭开始时挂起的设置页焦点能力。即使 hide()
+      // 抛错也必须恢复，不能让它永久失去键盘输入能力。
+      try {
+        onPopupCloseEndCallback?.()
+      } finally {
+        popupCloseInFlight = false
+      }
+    }
+    onPopupHiddenCallback?.()
+    // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
+    // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
+    notifyInternalWindowShown()
+  }
+  if (process.platform === 'darwin' && handBackFrontmost) {
+    // 结果弹窗可能以 showInactive 显示：它自身不是 key window，但应用仍可能
+    // 因点击“译”处于最前，必须让 handBackFrontmostThen 走弹窗专用判定。
+    handBackFrontmostThen(win, run, undefined, true)
+    return
+  }
+  // Windows 上弹窗处于激活状态时必须先让出前台，否则下一次取词的 WM_COPY
+  // 与注入的 Ctrl+C 会打在弹窗上。
+  if (process.platform === 'win32' && !shownInactive) {
+    foregroundTracker.restore()
+  }
+  run()
+}
+
+/**
+ * 只隐藏翻译弹窗自身，不影响应用内其它窗口。
+ *
+ * 从翻译弹窗打开设置页时，设置窗口会接管焦点；关闭弹窗不能触发任何应用级
+ * 前台交还或整应用隐藏，否则用户已打开的设置页会被一起隐藏。因此本入口显式
+ * 传 false 豁免前台交还，只隐藏弹窗自身。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function hidePopupForInternalWindowSwitch(): void {
+  hidePopup(false, 'internal-window-switch')
 }
 
 /**
@@ -419,20 +639,7 @@ export function isPopupPinned(): boolean {
  * @author zhenghq
  */
 export function isPopupVisible(): boolean {
-  return Boolean(win?.isVisible()) && !hidingAfterFrontReturn
-}
-
-/**
- * 返回翻译弹窗是否正在执行「先交还前台、再隐藏」的收尾流程。
- *
- * 此期间弹窗窗口仍然可见，但逻辑上已关闭：既不能被当成普通可见弹窗参与交互判定，
- * 也要抑制 macOS 在交还前台过程中产生的内部 activate，
- * 否则应用会把网页翻译或设置页当作 Dock 启动重新激活并顶到最前。
- * @returns 正在交还前台时返回 true。
- * @author zhenghq
- */
-export function isPopupHandingBackFront(): boolean {
-  return hidingAfterFrontReturn
+  return Boolean(win?.isVisible())
 }
 
 /**
@@ -442,7 +649,60 @@ export function isPopupHandingBackFront(): boolean {
  * @author zhenghq
  */
 export function isPopupActivated(): boolean {
-  return Boolean(win?.isVisible()) && !shownInactive && !hidingAfterFrontReturn
+  return Boolean(win?.isVisible()) && !shownInactive
+}
+
+/**
+ * 返回翻译弹窗当前是否真的持有 macOS key window。
+ *
+ * `shownInactive` 只记录调用方是否以非激活方式显示过窗口，不能证明 panel 没有
+ * 拿到 key window：nonactivating panel 的 showInactive() 仍可能让自身成为 key
+ * window。取词前必须读取 BrowserWindow 的真实焦点状态，否则会在
+ * `popup-show-inactive` 路径上误判为「已让出焦点」，导致 Cmd+C 打在弹窗上。
+ * @returns 弹窗可见且确实持有 key window 时返回 true。
+ * @author zhenghq
+ */
+export function isPopupHoldingKeyWindow(): boolean {
+  return Boolean(win && !win.isDestroyed() && win.isVisible() && win.isFocused())
+}
+
+/**
+ * 取词前让自有弹窗退出 key window，把焦点交还给源应用。
+ *
+ * Windows 上弹窗被上一次翻译结果的 show() 激活后会成为前台窗口，随后注入的
+ * Ctrl+C 会落在弹窗上导致取词超时；必须用 SetForegroundWindow 精确交还给
+ * 记录的源窗口，记录缺失或交还失败时退回 blur。
+ *
+ * macOS 上弹窗是 nonactivating panel：show()/focus() 不会激活整个应用，但会让
+ * 弹窗自身成为 key window；此时注入的 Command+C 仍会打在弹窗上，剪贴板哨兵
+ * 不变并报「取词超时」。因此取词前必须 blur 让系统把 key window 交还给源应用。
+ *
+ * Linux 无复制兜底，不做任何焦点干预。
+ * @returns 本次是否实际让弹窗退出了 key window / 前台焦点。
+ * @author zhenghq
+ */
+export function deactivatePopupForCapture(): boolean {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return false
+  if (!win || win.isDestroyed() || !win.isVisible()) return false
+  if (process.platform === 'darwin') {
+    // 以真实 key window 状态判定：shownInactive 只代表「曾以非激活方式显示」，
+    // 不能代表 panel 已经让出焦点。只有确实持有 key window 时才需要交还。
+    if (!win.isFocused()) return false
+    // 交还前先登记非激活状态，blur 触发的失焦处理据此短路，避免弹窗被误关。
+    shownInactive = true
+    win.blur()
+    // 个别 panel 在 blur 后仍可能保留 key 状态，再以 showInactive 兜底一次，
+    // 确保后续注入的 Command+C 不会继续打在弹窗上。
+    if (win.isFocused()) win.showInactive()
+    return true
+  }
+  if (shownInactive) return false
+  shownInactive = true
+  // 记录缺失或交还失败时退回 blur，让系统挑选下一个前台窗口，
+  // 至少弹窗不再持有焦点，避免复制键继续打在弹窗上。
+  const restored = foregroundTracker.restore()
+  if (!restored) win.blur()
+  return true
 }
 
 /**
@@ -461,8 +721,9 @@ export function getPopupCloseVersion(): number {
  * @author zhenghq
  */
 export function isPointInsidePopup(point: { x: number; y: number }): boolean {
-  if (!win?.isVisible()) return false
-  const bounds = win.getBounds()
+  const target = win
+  if (!target || !isPopupVisible()) return false
+  const bounds = target.getBounds()
   return point.x >= bounds.x &&
     point.x <= bounds.x + bounds.width &&
     point.y >= bounds.y &&
@@ -477,7 +738,37 @@ export function isPointInsidePopup(point: { x: number; y: number }): boolean {
  */
 function scheduleHide(milliseconds: number): void {
   clearHide()
-  if (!pinned && milliseconds > 0) hideTimer = setTimeout(hidePopup, milliseconds)
+  if (shouldSchedulePopupHide({
+    pinned,
+    autoHideMs: milliseconds,
+    pronunciationInteractionActive
+  })) {
+    hideTimer = setTimeout(() => hidePopup(true, 'auto-hide'), milliseconds)
+  }
+}
+
+/**
+ * 设置音标交互状态，并暂停或恢复弹窗自动隐藏计时。
+ *
+ * 该状态与用户固定状态相互独立：打开音标卡只清除当前计时，不会把弹窗标记为
+ * 固定；关闭音标卡后仍按原有自动隐藏配置恢复，固定弹窗也不会因此新增计时器。
+ * @param active 音标卡或原文发音交互是否处于激活状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setPronunciationInteraction(active: boolean): void {
+  const transition = resolvePronunciationInteractionTransition(active, pronunciationInteractionActive)
+  if (transition === 'unchanged') return
+  pronunciationInteractionActive = active
+  if (!win || win.isDestroyed() || !win.isVisible()) {
+    if (transition === 'pause') clearHide()
+    return
+  }
+  if (transition === 'pause') {
+    clearHide()
+    return
+  }
+  scheduleHide(currentAutoHideMs)
 }
 
 /**

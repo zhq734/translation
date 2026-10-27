@@ -17,6 +17,8 @@ export interface AiTranslationRequestInput {
   sourceLang: string
   /** 已解析的目标语言。 */
   targetLang: string
+  /** 是否构造流式请求；省略或 false 时保持现有非流式行为。 */
+  stream?: boolean
 }
 
 /** 构造完成的 AI 请求。 */
@@ -67,6 +69,7 @@ function buildTranslationSystemPrompt(sourceLang: string, targetLang: string): s
  */
 export function buildAiTranslationRequest(input: AiTranslationRequestInput): AiBuiltRequest {
   const baseUrl = normalizeAiBaseUrl(input.baseUrl)
+  const stream = input.stream === true
   const systemPrompt = buildTranslationSystemPrompt(input.sourceLang, input.targetLang)
   const headers = new Map<string, string>([['Content-Type', 'application/json']])
 
@@ -74,7 +77,7 @@ export function buildAiTranslationRequest(input: AiTranslationRequestInput): AiB
     case 'ollama': {
       const body = JSON.stringify({
         model: input.model,
-        stream: false,
+        stream,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: input.text }
@@ -86,7 +89,7 @@ export function buildAiTranslationRequest(input: AiTranslationRequestInput): AiB
       if (input.apiKey) headers.set('Authorization', `Bearer ${input.apiKey}`)
       const body = JSON.stringify({
         model: input.model,
-        stream: false,
+        stream,
         temperature: 0,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -101,6 +104,7 @@ export function buildAiTranslationRequest(input: AiTranslationRequestInput): AiB
       const body = JSON.stringify({
         model: input.model,
         max_tokens: 1024,
+        stream,
         system: systemPrompt,
         messages: [
           { role: 'user', content: input.text }

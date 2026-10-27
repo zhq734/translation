@@ -218,6 +218,41 @@ test('快捷键直接取词应跳过原生直读并调用复制取词函数', as
 })
 
 /**
+ * 校验协调器会把本次取词的窗口上下文传给所有取词函数。
+ * 窗口编号是 AX helper 与复制前精确激活共同需要的上下文，不能在协调器层丢失。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('取词协调器应向底层传递窗口上下文', async () => {
+  const contexts: Array<{ windowNumber?: number } | undefined> = []
+  const coordinator = new SelectionCaptureCoordinator(
+    async (_signal, context) => {
+      contexts.push(context)
+      return '完整管线'
+    },
+    async (_signal, context) => {
+      contexts.push(context)
+      return '预取'
+    },
+    async (_signal, context) => {
+      contexts.push(context)
+      return '按钮复制'
+    }
+  )
+
+  coordinator.setWindowContext({ windowNumber: 101 })
+  await coordinator.prepare({ x: 10, y: 20 })
+  await coordinator.capture({ x: 10, y: 20 })
+  await coordinator.captureFromButton({ x: 10, y: 20 })
+
+  assert.deepEqual(contexts, [
+    { windowNumber: 101 },
+    { windowNumber: 101 },
+    { windowNumber: 101 }
+  ])
+})
+
+/**
  * 校验预取已完成但为空时不等待，直接判定未命中，由按钮专用取词兜底。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
@@ -324,6 +359,65 @@ test('按钮入口应有界等待预取并记录预取诊断日志', () => {
   assert.match(translateSource, /waitedMs=\$\{consumption\.waitedMs\}/u)
   // 诊断日志不得输出选中文字内容。
   assert.doesNotMatch(translateSource, /textPreview|\$\{prepared\?\.text\}|\$\{result\.text\}/u)
+})
+
+/**
+ * 校验划词预取在窗口快照完成后启动，避免协调器锁定应用级上下文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('划词预取应在窗口快照完成后启动', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const scheduleStart = source.indexOf('function scheduleSelectionAction(')
+  const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
+  const scheduleSource = source.slice(scheduleStart, scheduleEnd)
+
+  assert.ok(scheduleStart >= 0)
+  assert.ok(scheduleEnd > scheduleStart)
+  assert.match(
+    scheduleSource,
+    /rememberFrontmostWindowAtPoint\(anchor\)[\s\S]*?selectionCapture\.setWindowContext\(lastSelectionWindowContext\)[\s\S]*?shouldPrefetchSelectionForButton\(process\.platform\)[\s\S]*?selectionCapture\.prepare\(anchor\)/u,
+    '预取必须晚于窗口上下文写入'
+  )
+  assert.doesNotMatch(
+    scheduleSource,
+    /showSelectionButton\(anchor\)[\s\S]*?selectionCapture\.prepare\(anchor\)/u,
+    '不得在窗口快照完成前直接启动预取'
+  )
+})
+
+/**
+ * 校验按钮与自动取词入口在启动 capture 前等待窗口快照任务自身的有界超时，
+ * 不能用更短的入口等待提前放行应用级上下文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('按钮与自动取词入口应等待并同步窗口上下文', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const queueStart = source.indexOf('async function queueSelectionTranslation(')
+  const queueEnd = source.indexOf('/**\n * 响应“译”按钮点击', queueStart)
+  const translateStart = source.indexOf('async function translateSelectionButton')
+  const translateEnd = source.indexOf('/**\n * 处理取词结果', translateStart)
+  const queueSource = source.slice(queueStart, queueEnd)
+  const translateSource = source.slice(translateStart, translateEnd)
+
+  assert.ok(queueStart >= 0 && queueEnd > queueStart)
+  assert.ok(translateStart >= 0 && translateEnd > translateStart)
+  assert.match(
+    queueSource,
+    /waitForSelectionWindowSnapshot\(selectionWindowSnapshotTask\)[\s\S]*?selectionCapture\.setWindowContext\(lastSelectionWindowContext\)[\s\S]*?selectionCapture\.(?:captureDirect|capture)\(/u
+  )
+  assert.match(
+    translateSource,
+    /waitForSelectionWindowSnapshot\(selectionWindowSnapshotTask\)[\s\S]*?selectionCapture\.setWindowContext\(lastSelectionWindowContext\)[\s\S]*?consumePreparedBounded\(\)/u
+  )
+  assert.doesNotMatch(source, /SELECTION_WINDOW_SNAPSHOT_WAIT_MS\s*=\s*120/u,
+    '120ms 入口等待会在窗口枚举慢于该值时提前启动应用级取词')
+  assert.match(
+    source,
+    /waitForSelectionWindowSnapshot\([\s\S]*?task: Promise<unknown> \| undefined[\s\S]*?\): Promise<boolean>[\s\S]*?(?:return|await)\s+task\.then\(/u,
+    '入口应直接等待窗口快照任务，由任务自身的硬超时约束总耗时'
+  )
 })
 
 /**

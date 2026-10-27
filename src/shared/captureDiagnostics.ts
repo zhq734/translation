@@ -10,6 +10,9 @@ export type CaptureDiagnosticReason = 'empty' | 'timeout' | 'unsupported' | 'per
 /** 前台应用标识：macOS bundleId、Windows 进程名或 unknown。 */
 export type CaptureDiagnosticApp = string
 
+/** 窗口定位结果：精确命中、应用级退化或定位失败。 */
+export type CaptureDiagnosticWindowLocate = 'exact' | 'app-fallback' | 'failed'
+
 /** 单次取词的结构化诊断记录。 */
 export interface CaptureDiagnosticRecord {
   /** 结束时间戳（毫秒）。 */
@@ -26,6 +29,12 @@ export interface CaptureDiagnosticRecord {
   elapsedMs: number
   /** 前台应用标识。 */
   app: CaptureDiagnosticApp
+  /** 窗口定位结果（仅 macOS 窗口级取词时存在）。 */
+  windowLocate?: CaptureDiagnosticWindowLocate
+  /** 目标应用普通窗口数量（仅 macOS 窗口级取词时存在）。 */
+  windowCount?: number
+  /** 是否按窗口编号或边界精确匹配到源窗口。 */
+  windowMatched?: boolean
 }
 
 /** 失败应用 Top 统计项。 */
@@ -79,7 +88,10 @@ export const CAPTURE_DIAGNOSTIC_WHITELIST: readonly (keyof CaptureDiagnosticReco
   'level',
   'reason',
   'elapsedMs',
-  'app'
+  'app',
+  'windowLocate',
+  'windowCount',
+  'windowMatched'
 ]
 
 const VALID_REASONS: readonly CaptureDiagnosticReason[] = [
@@ -95,6 +107,12 @@ const VALID_LEVELS: readonly CaptureDiagnosticLevel[] = [
   'native-read',
   'copy-polled',
   'copy-late',
+  'failed'
+]
+
+const VALID_WINDOW_LOCATE: readonly CaptureDiagnosticWindowLocate[] = [
+  'exact',
+  'app-fallback',
   'failed'
 ]
 
@@ -143,6 +161,22 @@ export function resolveDiagnosticLevel(value: unknown): CaptureDiagnosticLevel {
 }
 
 /**
+ * 将输入值限制在合法窗口定位结果枚举内。
+ * @param value 待校验的窗口定位结果。
+ * @returns 合法结果；非法输入返回 undefined。
+ * @author zhenghq
+ */
+export function resolveDiagnosticWindowLocate(
+  value: unknown
+): CaptureDiagnosticWindowLocate | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase()
+  return VALID_WINDOW_LOCATE.includes(normalized as CaptureDiagnosticWindowLocate)
+    ? (normalized as CaptureDiagnosticWindowLocate)
+    : undefined
+}
+
+/**
  * 构建一条结构化的取词诊断记录，自动规范化应用标识。
  * @param input 原始诊断字段。
  * @returns 规范化后的诊断记录。
@@ -156,8 +190,11 @@ export function buildCaptureDiagnosticRecord(input: {
   reason?: CaptureDiagnosticReason
   elapsedMs: number
   app: string
+  windowLocate?: CaptureDiagnosticWindowLocate
+  windowCount?: number
+  windowMatched?: boolean
 }): CaptureDiagnosticRecord {
-  return {
+  const record: CaptureDiagnosticRecord = {
     at: input.at,
     entry: input.entry,
     platform: input.platform,
@@ -166,6 +203,15 @@ export function buildCaptureDiagnosticRecord(input: {
     elapsedMs: input.elapsedMs,
     app: normalizeAppIdentifier(input.app)
   }
+  const windowLocate = resolveDiagnosticWindowLocate(input.windowLocate)
+  if (windowLocate) record.windowLocate = windowLocate
+  if (typeof input.windowCount === 'number' &&
+      Number.isInteger(input.windowCount) &&
+      input.windowCount >= 0) {
+    record.windowCount = input.windowCount
+  }
+  if (typeof input.windowMatched === 'boolean') record.windowMatched = input.windowMatched
+  return record
 }
 
 /**

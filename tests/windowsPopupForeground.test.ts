@@ -31,20 +31,25 @@ function readingPopupSource(): string {
 function deactivateSource(): string {
   const start = popupSource.indexOf('export function deactivatePopupForCapture')
   assert.ok(start >= 0, 'deactivatePopupForCapture 应存在')
-  const end = popupSource.indexOf('\n}', start)
+  // 函数内包含多个嵌套块，必须用顶格闭合花括号定位函数结束，避免截断在分支内部。
+  const end = popupSource.indexOf('\n}\n', start)
   assert.ok(end > start, 'deactivatePopupForCapture 应有结束边界')
   return popupSource.slice(start, end + 2)
 }
 
 /**
- * 校验只有 Windows 且弹窗已激活时才需要在取词前归还前台焦点。
+ * 校验 Windows 与 macOS 在弹窗已激活时都需要在取词前归还焦点：
+ * Windows 归还前台窗口，macOS 归还 key window；Linux 无复制兜底不干预。
  * @returns 无返回值。
  * @author zhenghq
  */
 test('Windows 弹窗已激活时取词前必须归还前台焦点', () => {
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', true), true)
   assert.equal(shouldRestoreForegroundBeforeCapture('win32', false), false)
-  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), false)
+  // macOS 的 nonactivating panel 仍可能持有 key window，取词前同样必须交还，
+  // 否则注入的 Command+C 会打在弹窗上导致取词超时。
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', true), true)
+  assert.equal(shouldRestoreForegroundBeforeCapture('darwin', false), false)
   assert.equal(shouldRestoreForegroundBeforeCapture('linux', true), false)
 })
 
@@ -99,10 +104,12 @@ test('弹窗失焦处理应把归还焦点状态传入 shouldDismissPopupOnBlur'
  * @returns 无返回值。
  * @author zhenghq
  */
-test('showSelectionReadingPopup 应在取词前归还 Windows 前台焦点', () => {
+test('showSelectionReadingPopup 应在取词前按真实焦点状态归还前台焦点', () => {
   const src = readingPopupSource()
-  assert.match(src, /shouldRestoreForegroundBeforeCapture\(\s*process\.platform\s*,\s*isPopupActivated\(\)\s*\)/u,
-    '必须按平台与弹窗激活状态判定是否归还焦点')
+  assert.match(src, /shouldRestoreForegroundBeforeCapture\(\s*process\.platform\s*,\s*popupHoldingKeyWindow\s*\)/u,
+    '必须按平台与真实焦点状态判定是否归还焦点')
+  assert.match(src, /isPopupHoldingKeyWindow\(\)/u,
+    'macOS 必须读取 BrowserWindow 的真实 key window 状态')
   assert.match(src, /deactivatePopupForCapture\(\)/u, '必须调用 deactivatePopupForCapture')
   const restoreIndex = src.indexOf('deactivatePopupForCapture()')
   const showIndex = src.indexOf('showPopup(')
@@ -145,9 +152,14 @@ test('弹窗激活前必须记录源应用前台窗口', () => {
  */
 test('失活应优先精确交还焦点并在失败时退回 blur', () => {
   const src = deactivateSource()
-  const restoreIndex = src.indexOf('foregroundTracker.restore()')
-  const blurIndex = src.indexOf('win.blur()')
-  assert.ok(restoreIndex >= 0, '必须尝试精确交还焦点')
-  assert.ok(blurIndex > restoreIndex, 'blur 只能作为交还失败后的兜底')
-  assert.match(src, /if \(!restored\) win\.blur\(\)/u, 'blur 必须以交还失败为条件')
+  // Windows 分支：先精确交还，失败再 blur 兜底。
+  const windowsBranch = src.slice(src.indexOf('const restored = foregroundTracker.restore()'))
+  const restoreIndex = windowsBranch.indexOf('foregroundTracker.restore()')
+  const blurIndex = windowsBranch.indexOf('win.blur()')
+  assert.ok(restoreIndex >= 0, 'Windows 必须尝试精确交还焦点')
+  assert.ok(blurIndex > restoreIndex, 'Windows 的 blur 只能作为交还失败后的兜底')
+  assert.match(windowsBranch, /if \(!restored\) win\.blur\(\)/u, 'Windows 的 blur 必须以交还失败为条件')
+  // macOS 分支：blur 让 panel 退出 key window。
+  const macBranch = src.slice(src.indexOf("process.platform === 'darwin'"), src.indexOf('const restored'))
+  assert.match(macBranch, /win\.blur\(\)/u, 'macOS 必须 blur 让出 key window')
 })

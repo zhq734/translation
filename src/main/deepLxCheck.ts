@@ -1,6 +1,7 @@
 import type { DeepLxStatus } from '../shared/types'
 import { parseDeepLxUrls } from './translate'
 import { translateMain } from './messages'
+import { createTimeoutSignal } from './abortCompatibility.ts'
 
 /** DeepLX 在线检测使用的网络请求类型。 */
 export type DeepLxCheckFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -62,12 +63,13 @@ export class DeepLxCheckService {
    * @author zhenghq
    */
   private async checkEndpoint(url: string): Promise<DeepLxEndpointCheckResult> {
+    const timeout = createTimeoutSignal(this.timeoutMs)
     try {
       const response = await this.dependencies.fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: 'ping', source_lang: 'en', target_lang: 'zh' }),
-        signal: AbortSignal.timeout(this.timeoutMs)
+        signal: timeout.signal
       })
       let code: number | undefined
       try {
@@ -81,6 +83,8 @@ export class DeepLxCheckService {
     } catch (error) {
       if (this.isTimeoutError(error)) return { online: false, message: translateMain('deepLx.check.timeout') }
       return { online: false, message: translateMain('deepLx.check.network') }
+    } finally {
+      timeout.dispose()
     }
   }
 

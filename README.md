@@ -204,15 +204,19 @@ For manual installation, download the matching asset from GitHub [Releases](../.
 
 - **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`;
 - **Linux**: use `SelectionTranslator-<version>-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-arm64.AppImage` for ARM64;
-- **Windows**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
+- **Windows 10/11**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
+- **Windows 7 SP1 x64**: use the dedicated `SelectionTranslator-<version>-Setup-win7-x64.exe` installer.
 
-Publish `SHA256SUMS` alongside the installers in the same Release. Both `x64` and `arm64` are supported; see [Development, Testing, and Packaging](#development-testing-and-packaging).
+Publish `SHA256SUMS` alongside the installers in the same Release. Modern Windows builds support both `x64` and `arm64`; Windows 7 is supported only on 64-bit systems and has no 32-bit build. The Win7 package uses the Electron 22 compatibility runtime and Tesseract.js running in WebAssembly for OCR; it does not include PaddleOCR, system OCR, or native OCR runtimes. Simplified Chinese, Traditional Chinese, and English language models are bundled, so the default Chinese/English OCR works offline; only other languages may need to download language data on first use. Set `TESSERACT_LANG_PATH` to override the bundled model source with an absolute local directory or an HTTP(S) mirror. In-app update checks use a lightweight GitHub Release API request and does not load `electron-updater`; the package never downloads or installs updates automatically. When a newer version is found, the app opens the Release page so the user can manually download the new `Setup-win7-x64.exe` package. Electron 22 no longer receives security updates, so use this package only when the operating system cannot be upgraded. See [Development, Testing, and Packaging](#development-testing-and-packaging).
+
+> Windows 7 requires SP1 x64 plus SHA-2 code-signing support updates, the Universal C Runtime, and any required Visual C++ runtime. Because both Windows 7 and Electron 22 are end-of-life, the Win7 package cannot receive the same security-update guarantees as modern Windows builds.
 
 ### In-app update checks and upgrades
 
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
 - Open **Settings → About** to view the current version, check manually, and monitor download progress. Platforms that support automatic installation can restart into a downloaded update;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
+- Windows 7 packages use a lightweight GitHub Release API check and does not load `electron-updater`. They never download or install updates automatically; use **Settings → About** to open the Release page and manually download the latest `Setup-win7-x64.exe` package;
 - On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. In manual mode, clicking update downloads the DMG for the current architecture into Downloads and opens it. After dragging Selection Translator into Applications and replacing the old copy, return to Settings and click **Remove macOS quarantine attribute**;
 - Update checks and package downloads share the app's proxy session, using the same proxy configuration as translation requests;
 - Downloads probe the source for HTTP Range support: when supported, the package is fetched with up to 4 concurrent segments; otherwise the download falls back to a single connection;
@@ -250,7 +254,7 @@ npm run dev
 
 | Item | Requirement |
 | --- | --- |
-| Operating system | macOS, Windows 10/11, or Linux; use matching build hosts for release artifacts |
+| Operating system | macOS, Windows 10/11, Windows 7 SP1 x64, or Linux; use matching build hosts for release artifacts |
 | Node.js | `>= 18`; Node.js 20 or later is recommended |
 | Package manager | npm |
 | Desktop framework | Electron 33 |
@@ -329,6 +333,8 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 ### Popup controls
 
 - **Manual translation**: use the document icon to switch between selection translation and manual text input;
+  - if the popup is currently in manual mode, selecting text and using the selection shortcut (or clicking the `译` button) switches it back to the selection view automatically;
+  - press `Enter` inside the input to start translating immediately; `Shift+Enter` (or other modifier combinations) keeps the newline so multi-line source text stays easy to type;
 - **Read translation aloud**: use the speaker icon to play the current translation with the configured speech engine, then click it again to stop; playback never starts automatically, and Edge failures automatically fall back to a system voice;
 - **Pin**: pin or unpin the popup;
 - **Copy**: copy the current translation to the system clipboard;
@@ -563,7 +569,13 @@ Full-page web translation follows an additional explicit-consent boundary: the a
 
 ### Selection Capture Diagnostics
 
-The app records local diagnostic metadata for each selection capture to help troubleshoot "cannot get text" issues. The diagnostic record includes only: timestamp, entry point (button/hotkey/auto), platform, capture level (native-read/copy-polled/copy-late/failed), failure reason, elapsed time, and frontmost app identifier. **It never records selected text, clipboard content, window titles, file paths, or text length.** Data is stored locally in `userData/capture-diagnostics.json` with a two-day rolling window and is never sent to any remote server. You can view the summary in Settings → Logs and export it as JSON for feedback.
+The app records local diagnostic metadata for each selection capture to help troubleshoot "cannot get text" issues. The diagnostic record includes only: timestamp, entry point (button/hotkey/auto), platform, capture level (native-read/copy-polled/copy-late/failed), failure reason, elapsed time, and frontmost app identifier. Window-aware capture on macOS may also record these sanitized fields:
+
+- `windowLocate`: `exact`, `app-fallback`, or `failed`;
+- `windowCount`: the number of ordinary windows owned by the target app, used only to identify multi-window scenarios; it is omitted when window enumeration fails (shown as `unknown` in logs) and must not be confused with a successful enumeration returning `0`;
+- `windowMatched`: whether the source window was matched exactly by window number or bounds.
+
+Diagnostic exports are rebuilt from a strict field allowlist and may contain only the fields above. **They never export plaintext window titles, chat/contact names, selected text, clipboard content, file paths, or text length.** Window-title fingerprints are used only for local matching and never enter diagnostic records or exported files. Data is stored locally in `userData/capture-diagnostics.json` with a two-day rolling window and is never sent to any remote server. You can view the summary in Settings → Logs and export it as JSON for feedback.
 
 This project does not provide a cloud account system. DingTalk credentials are used only when that provider is enabled and configured; the Secret is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings. Microsoft translation stores only its enabled state in public settings; temporary Bing web parameters remain in memory and are not user credentials. Edge online speech also requires no user credential: only the selected engine is stored, while read-aloud text is not logged and generated audio is not persisted. AI translation stores protocol, Base URL, and model in public settings, while the API Key is persisted only in a separate `safeStorage`-encrypted credential file and never written in plaintext to public settings.
 
@@ -643,6 +655,9 @@ npm run dist:linux
 # Build Windows x64/arm64 NSIS installers
 npm run dist:win
 
+# Build the Windows 7 SP1 x64 installer (Electron 22, Tesseract.js WASM OCR, manual updates only)
+npm run dist:win:win7
+
 # Generate SHA256SUMS for release installers
 npm run release:checksums
 ```
@@ -653,7 +668,8 @@ npm run release:checksums
 - `npm run dist:mac` creates macOS x64/arm64 `dmg` and `zip` packages;
 - `npm run dist:linux` creates Linux x64/arm64 AppImage packages and prepares/validates the `sharp`/`libvips` OCR runtime for both architectures; the x64 artifact uses `x86_64` in its file name;
 - `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers and prepares/validates the `sharp` OCR runtime for both architectures;
-- Every platform package creates a `latest*.yml` update manifest. macOS and Windows also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data;
+- `npm run dist:win:win7` creates `dist-win7/SelectionTranslator-<version>-Setup-win7-x64.exe` for Windows 7 SP1 x64, pins Electron `22.3.27`, keeps the Tesseract.js WebAssembly OCR runtime, excludes PaddleOCR/system OCR/Sharp/ONNX native dependencies, emits no `app-update.yml`, `latest*.yml`, or `.blockmap`, and compiles/validates `windows-uia-reader.exe` before packaging;
+- Every modern platform package creates a `latest*.yml` update manifest. macOS and modern Windows also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data. The Windows 7 compatibility package intentionally creates neither;
 - `npm run release:checksums` creates `SHA256SUMS` for `.AppImage`, `.dmg`, `.zip`, and `.exe` files; upload it alongside all installers in the same Release;
 - All packaged files are written to `dist/`;
 - Platform packaging commands explicitly use `--publish never`, so electron-builder only creates local artifacts and cannot implicitly publish during a tag build;
@@ -663,7 +679,7 @@ npm run release:checksums
 
 The repository includes `.github/workflows/package.yml`. Run it manually from **Actions → Multi-Platform Packaging → Run workflow**. An optional version such as `V1.0.3` can be supplied; otherwise, the version from `package.json` is used.
 
-The workflow runs unit tests and type checking first, then builds x64/arm64 installers on native macOS, Windows, and Linux runners and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-14` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
+The workflow runs unit tests and type checking first, then builds modern x64/arm64 installers on native macOS, Windows, and Linux runners, additionally builds the Win7 x64 compatibility package on Windows, and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-14` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
 
 1. Synchronize the package version from the tag;
 2. Collect installers from all three platforms;
@@ -806,10 +822,12 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - macOS remains the primary runtime validation platform. Linux AppImage and Windows NSIS packaging are available, but global selection, permissions, and shortcuts should be verified on real target hardware before release;
 - The in-app UI is currently Simplified Chinese; English `README.md` and Simplified Chinese `README.zh-CN.md` are maintained separately;
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
+- Screenshot OCR requires a usable local OCR engine. On Windows 7 it uses Tesseract.js WebAssembly with bundled Simplified Chinese, Traditional Chinese, and English language models; only other languages may need network access to download language data on first use. Accuracy depends on screenshot resolution, fonts, and background complexity;
 - Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - GitHub Actions creates unsigned macOS test packages when all Apple release credentials are absent. Those packages and the currently unsigned Windows installers may still show system security warnings; production macOS releases still require signing and notarization;
-- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; locally unsigned macOS builds and non-AppImage Linux builds fall back to manual installation.
+- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; locally unsigned macOS builds and non-AppImage Linux builds fall back to manual installation;
+- Windows 7 compatibility is limited to SP1 x64 and has no 32-bit build. OCR uses Tesseract.js WebAssembly with bundled Simplified Chinese, Traditional Chinese, and English models; only other languages may download language data on first use. `TESSERACT_LANG_PATH` can override the model source. Update checks use the GitHub Release API without loading `electron-updater`, and updates require manually downloading and installing the new package. Electron 22 is end-of-life, so upgrading to Windows 10/11 is still recommended.
 
 ## Roadmap
 

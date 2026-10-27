@@ -141,6 +141,66 @@ test('Edge 长文本应按顺序合成播放并释放每个临时 URL', async ()
   assert.equal(controller.isSpeaking(), false)
 })
 
+test('Edge 中英文混排时应始终使用主音色语言合成且完整朗读', async () => {
+  const requests: Array<{ text: string; language: string }> = []
+  const audios: FakeAudio[] = []
+  const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
+    synthesize: async (text, language) => {
+      requests.push({ text, language })
+      return { ok: true, audio: new Uint8Array([requests.length]) }
+    },
+    createObjectUrl: () => `blob:mixed-${requests.length}`,
+    revokeObjectUrl: () => {},
+    createAudio: (url) => {
+      const audio = new FakeAudio(url)
+      audios.push(audio)
+      return audio
+    }
+  })
+
+  const resultPromise = controller.start('使用 TypeScript 开发。', 'ZH')
+  await flushMicrotasks()
+  assert.deepEqual(requests, [
+    { text: '使用 TypeScript 开发。', language: 'ZH' }
+  ])
+
+  audios[0].onended?.(new Event('ended'))
+
+  assert.deepEqual(await resultPromise, { ok: true })
+  assert.deepEqual(requests, [
+    { text: '使用 TypeScript 开发。', language: 'ZH' }
+  ])
+})
+
+test('Edge 短中英混排应只发起一次合成请求并完整连续朗读', async () => {
+  const requests: Array<{ text: string; language: string }> = []
+  const audios: FakeAudio[] = []
+  const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
+    synthesize: async (text, language) => {
+      requests.push({ text, language })
+      return { ok: true, audio: new Uint8Array([1]) }
+    },
+    createObjectUrl: () => 'blob:short-mixed',
+    revokeObjectUrl: () => {},
+    createAudio: (url) => {
+      const audio = new FakeAudio(url)
+      audios.push(audio)
+      return audio
+    }
+  })
+
+  const resultPromise = controller.start('你好 world 再见', 'ZH')
+  await flushMicrotasks()
+  assert.deepEqual(requests, [{ text: '你好 world 再见', language: 'ZH' }])
+  assert.equal(audios.length, 1)
+
+  audios[0].onended?.(new Event('ended'))
+  assert.deepEqual(await resultPromise, { ok: true })
+  assert.equal(requests.length, 1)
+})
+
 test('Edge 播放当前片段时应提前合成并预加载下一个片段', async () => {
   const chunks: string[] = []
   const audios: FakeAudio[] = []
@@ -206,6 +266,45 @@ test('Edge AudioContext 应按时间轴连续调度多个已解码片段', async
   assert.deepEqual(context.sources.map((source) => source.startTimes[0]), [10.02, 11.52, 13.02])
   assert.deepEqual(context.decodedByteLengths, [3, 3, 3])
   assert.equal(context.sources.every((source) => source.connectedTo === context.destination), true)
+
+  context.sources.at(-1)?.onended?.(new Event('ended'))
+  assert.deepEqual(await resultPromise, { ok: true })
+  assert.equal(context.closed, true)
+})
+
+/**
+ * 校验长文本超过预取窗口后仍按顺序合成、调度和结束每个片段。
+ * 原文与译文共用该播放器，避免长原文在分段播放时重复请求或重复播放同一片段。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Edge AudioContext 长文本应依次合成并播放每个片段且不重复', async () => {
+  const context = new FakeAudioContext()
+  const requested: string[] = []
+  const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
+    maxChunkLength: 2,
+    prefetchAhead: 2,
+    synthesize: async (text) => {
+      requested.push(text)
+      return { ok: true, audio: new Uint8Array([requested.length, 2, 3]) }
+    },
+    createAudioContext: () => context,
+    createAudio: () => new FakeAudio('unused'),
+    createObjectUrl: () => 'unused',
+    revokeObjectUrl: () => {}
+  })
+
+  const resultPromise = controller.start('一。二。三。四。五。', 'ZH')
+  for (let index = 0; index < 20; index += 1) await flushMicrotasks()
+
+  assert.deepEqual(requested, ['一。', '二。', '三。', '四。', '五。'])
+  assert.equal(context.sources.length, 5)
+  assert.equal(context.sources.every((source) => source.startTimes.length === 1), true)
+  assert.deepEqual(
+    context.sources.map((source) => source.startTimes[0]),
+    [10.02, 11.52, 13.02, 14.52, 16.02]
+  )
 
   context.sources.at(-1)?.onended?.(new Event('ended'))
   assert.deepEqual(await resultPromise, { ok: true })

@@ -145,6 +145,8 @@ export interface UpdateManagerOptions {
   enabled: boolean
   /** 当前平台采用的安装模式。 */
   installMode: UpdateInstallMode
+  /** 自动更新被禁用时向用户展示的原因；未提供时使用通用开发环境文案。 */
+  disabledMessage?: string
   /** GitHub Release 页面地址。 */
   releaseUrl: string
   /**
@@ -410,7 +412,9 @@ export class UpdateManager {
       currentVersion: options.currentVersion,
       installMode: disabled ? 'disabled' : options.installMode,
       releaseUrl: options.releaseUrl,
-      message: disabled ? translator.t('update.disabled') : translator.t('update.idle')
+      message: disabled
+        ? options.disabledMessage ?? translator.t('update.disabled')
+        : translator.t('update.idle')
     }
     options.driver.initialize({
       checking: () => this.setStatus({ phase: 'checking', message: this.currentTranslator().t('update.checking') }),

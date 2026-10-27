@@ -54,39 +54,27 @@ test('普通选区失效不得中断 OCR 所有权，但应取消按钮和翻译
   assert.deepEqual(controller.snapshot(), { state: 'ocr-selecting', token: ocrToken })
 })
 
-test('取词、翻译、OCR 和内部激活租约期间都不得按 Dock 激活处理', () => {
+test('取词、翻译与 OCR 交互期间都不得按 Dock 激活处理', () => {
+  // panel 落地后内部窗口显隐不再触发应用级 activate，判定只需覆盖仍会真实
+  // 抢占前台的内部动作：选区交互、取词按钮、翻译弹窗、OCR 与 hiservices 修复流程。
   const base = {
     selectionButtonVisible: false,
     popupVisible: false,
-    popupHandingBackFront: false,
-    hiServicesRepairPromptVisible: false,
+    hiServicesRepairRunning: false,
     ocrVisible: false,
     listenerPausedForOcr: false,
-    internalActivationLeaseUntil: 0,
     now: 1000
   }
 
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'capturing' }).allowed, false)
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'translating' }).allowed, false)
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'ocr-selecting' }).allowed, false)
+  // hiservices 自动修复执行期间仍可能有内部 activate，必须被抑制，
+  // 否则应用内已有的设置页或网页翻译窗口会被系统顶到最前。
   assert.equal(canTreatActivateAsDockLaunch({
     ...base,
     interactionState: 'idle',
-    internalActivationLeaseUntil: 1200
-  }).allowed, false)
-  // 弹窗正在把 macOS 前台交还给源应用时，其内部 activate 同样不能按 Dock 启动处理，
-  // 否则已有的网页翻译或设置页会被顶到最前。
-  assert.equal(canTreatActivateAsDockLaunch({
-    ...base,
-    interactionState: 'idle',
-    popupHandingBackFront: true
-  }).allowed, false)
-  // 连续取词超时的原生修复对话框会激活本应用，其内部 activate 同样必须被抑制，
-  // 否则应用内已有的网页翻译窗口会被系统顶到最前。
-  assert.equal(canTreatActivateAsDockLaunch({
-    ...base,
-    interactionState: 'idle',
-    hiServicesRepairPromptVisible: true
+    hiServicesRepairRunning: true
   }).allowed, false)
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'idle' }).allowed, true)
 })
@@ -166,27 +154,52 @@ test('设置窗口失焦只清理窗口内旧起点，不得清除先到达的�
   })
 })
 
-test('内部窗口收尾抑制期内的 activate 必须被抑制，真实 Dock 启动仍放行', () => {
+test('全部内部窗口与交互状态空闲时真实 Dock 启动必须放行', () => {
   const base = {
     interactionState: 'idle' as const,
     selectionButtonVisible: false,
     popupVisible: false,
-    popupHandingBackFront: false,
-    hiServicesRepairPromptVisible: false,
+    hiServicesRepairRunning: false,
     ocrVisible: false,
     listenerPausedForOcr: false,
-    internalActivationLeaseUntil: 0,
     now: 1000
   }
 
-  // 收尾抑制期覆盖「交还前台 → 隐藏弹窗 → hide 生效」整段窗口期，
-  // 期间到达的 activate 不能按 Dock 启动处理。
-  assert.deepEqual(
-    canTreatActivateAsDockLaunch({ ...base, internalWindowTeardown: true }),
-    { allowed: false, reason: 'internal-window-teardown' }
-  )
-  // 抑制期结束且其余检查空闲时，真实 Dock 启动必须放行。
-  assert.equal(canTreatActivateAsDockLaunch({ ...base, internalWindowTeardown: false }).allowed, true)
+  // 内部状态全部空闲时，activate 只能来自 Dock / 系统入口，必须放行。
+  assert.equal(canTreatActivateAsDockLaunch(base).allowed, true)
+  // 任一内部窗口或交互仍活跃时都必须拦截，避免内部 activate 误开设置页。
+  assert.equal(canTreatActivateAsDockLaunch({ ...base, selectionButtonVisible: true }).allowed, false)
+  assert.equal(canTreatActivateAsDockLaunch({ ...base, popupVisible: true }).allowed, false)
+  assert.equal(canTreatActivateAsDockLaunch({ ...base, ocrVisible: true }).allowed, false)
+  assert.equal(canTreatActivateAsDockLaunch({ ...base, listenerPausedForOcr: true }).allowed, false)
+})
+
+test('划词手势刚结束的内部 activate 必须被短租约拦截，真实 Dock 激活在租约过期后放行', () => {
+  const base = {
+    interactionState: 'idle' as const,
+    selectionButtonVisible: false,
+    popupVisible: false,
+    hiServicesRepairRunning: false,
+    ocrVisible: false,
+    listenerPausedForOcr: false,
+    now: 1000
+  }
+
+  // 划词手势已结束、按钮或弹窗尚未接管焦点时，activate 会短暂呈现全空闲。
+  // 该窗口期只能按最近一次内部激活时间拦截，否则会把内部激活误当成 Dock 点击，
+  // 从而打开/置前设置页。
+  const leased = canTreatActivateAsDockLaunch({
+    ...base,
+    selectionActivationSuppressUntil: 1400
+  })
+  assert.equal(leased.allowed, false)
+  assert.equal(leased.reason, 'selection-activation-suppressed')
+
+  const expired = canTreatActivateAsDockLaunch({
+    ...base,
+    selectionActivationSuppressUntil: 900
+  })
+  assert.equal(expired.allowed, true)
 })
 
 test('activate 放行时必须返回判定依据，供日志区分误放行与真实 Dock 启动', () => {
@@ -194,12 +207,9 @@ test('activate 放行时必须返回判定依据，供日志区分误放行与�
     interactionState: 'idle' as const,
     selectionButtonVisible: false,
     popupVisible: false,
-    popupHandingBackFront: false,
-    hiServicesRepairPromptVisible: false,
+    hiServicesRepairRunning: false,
     ocrVisible: false,
     listenerPausedForOcr: false,
-    internalActivationLeaseUntil: 0,
-    internalWindowTeardown: false,
     now: 1000
   }
 
@@ -210,12 +220,10 @@ test('activate 放行时必须返回判定依据，供日志区分误放行与�
     selectionInteractionActive: false,
     selectionButtonVisible: false,
     popupVisible: false,
-    popupHandingBackFront: false,
-    hiServicesRepairPromptVisible: false,
+    hiServicesRepairRunning: false,
     ocrVisible: false,
     listenerPausedForOcr: false,
-    internalActivationLeaseActive: false,
-    internalWindowTeardown: false
+    selectionActivationSuppressed: false
   })
 
   const blocked = canTreatActivateAsDockLaunch({ ...base, popupVisible: true })

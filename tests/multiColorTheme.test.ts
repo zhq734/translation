@@ -110,7 +110,7 @@ test('设置窗口必须等首帧就绪后再显示，避免启动时先闪默�
   )
   assert.match(
     createPath,
-    /await readyToShow[\s\S]*?settingsWin\.show\(\)[\s\S]*?settingsWin\.focus\(\)/u,
+    /await readyToShow[\s\S]*?showOwnWindowForInteraction\(settingsWin,/u,
     '设置窗口必须在首帧就绪后再显示，避免先渲染默认主题'
   )
   const helper = source.match(

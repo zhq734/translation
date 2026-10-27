@@ -5,6 +5,7 @@ import {
   shouldPrefetchSelectionForButton,
   getSelectionCapturePlan
 } from '../src/shared/platformCapture.ts'
+import { classifyMacosAxHelperStatus } from '../src/shared/selectionBehavior.ts'
 
 /**
  * 校验 readSelectionByNative 优先调用 nativeReaderHost（常驻 helper），
@@ -99,4 +100,37 @@ test('resolveSelectionCaptureFailureMessage 应处理 clipboard-locked', () => {
   assert.match(source, /clipboard-locked/u)
   // 应有对应的中文文案。
   assert.match(source, /剪贴板|clipboard.*锁|locked/u)
+})
+
+/**
+ * 校验 macOS AX helper 调用必须记录状态分类、耗时与降级标志，
+ * 且不得记录选中文字内容，便于区分 AX 不可见与 helper 调用失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS AX helper 必须记录状态分类与耗时且不泄露文本', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('async function readSelectionViaMacosHelper')
+  const end = source.indexOf('async function readSelectionViaWindowsHelper', start)
+  const fnSource = source.slice(start, end)
+
+  assert.ok(start >= 0 && end > start, 'readSelectionViaMacosHelper 应有明确边界')
+  assert.match(fnSource, /status=|status\b/u, '必须记录 helper 状态')
+  assert.match(fnSource, /elapsedMs|elapsed/u, '必须记录调用耗时')
+  assert.match(fnSource, /fallback/u, '必须记录是否降级到 osascript')
+  assert.match(fnSource, /classifyMacosAxHelperStatus/u, '必须用状态分类器区分权限状态')
+  assert.doesNotMatch(fnSource, /textLength|text\.length/u, '不得记录选区文本长度')
+})
+
+/**
+ * 校验 macOS AX helper 状态分类器能区分权限状态且不返回文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS AX helper 状态分类器应区分 PERMISSION 且不解析文本', () => {
+  assert.equal(classifyMacosAxHelperStatus('PRESENT\n选中文字'), 'PRESENT')
+  assert.equal(classifyMacosAxHelperStatus('EMPTY'), 'EMPTY')
+  assert.equal(classifyMacosAxHelperStatus('UNKNOWN'), 'UNKNOWN')
+  assert.equal(classifyMacosAxHelperStatus('PERMISSION'), 'PERMISSION')
+  assert.equal(classifyMacosAxHelperStatus('乱码'), 'UNKNOWN')
 })

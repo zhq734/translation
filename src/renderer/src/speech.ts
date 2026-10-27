@@ -119,6 +119,12 @@ export interface SpeechStartResult {
   error?: string
 }
 
+/** 带实际朗读语言的一段文本。 */
+export interface SpeechSegment {
+  text: string
+  language: string
+}
+
 interface SpeechControllerOptions {
   synthesis: SpeechSynthesisLike | null
   createUtterance(text: string): SpeechUtteranceLike
@@ -140,6 +146,189 @@ export function languageToSpeechCode(language: string): string {
   const normalized = language.trim()
   if (!normalized || normalized.toLowerCase() === 'auto') return ''
   return SPEECH_LANGUAGE_CODES[normalized.toUpperCase()] ?? normalized
+}
+
+/**
+ * 解析实际朗读语言；明确语言保持不变，自动检测时按文本脚本推断主要语言。
+ * @param text 待朗读文本。
+ * @param language 翻译结果提供的源语言或目标语言。
+ * @returns 可用于 Edge 和系统语音的稳定语言代码。
+ * @author zhenghq
+ */
+export function resolveSpeechLanguage(text: string, language: string): string {
+  const explicitLanguage = language.trim()
+  if (explicitLanguage && explicitLanguage.toLowerCase() !== 'auto') return explicitLanguage
+
+  const normalizedText = text.trim()
+  if (!normalizedText) return explicitLanguage || 'auto'
+  if (/[\u3040-\u30ff\u31f0-\u31ff]/u.test(normalizedText)) return 'JA'
+  if (/[\uac00-\ud7af\u1100-\u11ff]/u.test(normalizedText)) return 'KO'
+  if (/[\u0400-\u04ff]/u.test(normalizedText)) return 'RU'
+
+  const hanCount = (normalizedText.match(/[\u3400-\u9fff]/gu) ?? []).length
+  const latinCount = (normalizedText.match(/[A-Za-z]/gu) ?? []).length
+  if (hanCount > 0 && hanCount >= latinCount) return 'ZH'
+  if (/[\u0600-\u06ff]/u.test(normalizedText)) return 'AR'
+  if (/[\u0370-\u03ff]/u.test(normalizedText)) return 'EL'
+  if (latinCount > 0) return 'EN'
+  if (hanCount > 0) return 'ZH'
+  return 'auto'
+}
+
+/**
+ * 判断单个字符属于中文或英文的强脚本字符。
+ * @param character 待判断的单个字符。
+ * @returns 中文返回 ZH，拉丁字母返回 EN，标点、空白和数字返回 null。
+ * @author zhenghq
+ */
+function speechScriptForCharacter(character: string): 'ZH' | 'EN' | null {
+  if (/\p{Script=Han}/u.test(character)) return 'ZH'
+  if (/\p{Script=Latin}/u.test(character)) return 'EN'
+  return null
+}
+
+/**
+ * 将中英文混排文本切成连续脚本片段，标点和空白跟随其前一个片段。
+ * @param text 已清理首尾空白的待朗读文本。
+ * @returns 保持原顺序和完整字符的脚本片段。
+ * @author zhenghq
+ */
+function splitBilingualSpeechText(text: string): SpeechSegment[] {
+  const segments: SpeechSegment[] = []
+  let current: SpeechSegment | null = null
+  let pendingNeutralText = ''
+
+  for (const character of text) {
+    const script = speechScriptForCharacter(character)
+    if (!script) {
+      if (current) {
+        current.text += character
+      } else {
+        pendingNeutralText += character
+      }
+      continue
+    }
+    if (current && current.language === script) {
+      current.text += character
+      continue
+    }
+    current = { text: `${pendingNeutralText}${character}`, language: script }
+    pendingNeutralText = ''
+    segments.push(current)
+  }
+
+  if (segments.length === 0) return [{ text, language: 'auto' }]
+  return segments
+}
+
+/**
+ * 按实际语言切分朗读文本；中英文混排时为每个脚本片段选择对应语言。
+ * @param text 待朗读文本。
+ * @param language 翻译结果提供的源语言或目标语言。
+ * @param maxLength 单个语音片段最大字符数。
+ * @returns 带语言信息且保持原顺序的语音片段。
+ * @author zhenghq
+ */
+export function splitSpeechSegments(
+  text: string,
+  language: string,
+  maxLength = DEFAULT_MAX_CHUNK_LENGTH
+): SpeechSegment[] {
+  const normalizedText = text.trim()
+  if (!normalizedText) return []
+  const resolvedLanguage = resolveSpeechLanguage(normalizedText, language)
+  const speechPrefix = languageToSpeechCode(resolvedLanguage).split('-')[0].toLowerCase()
+  if (speechPrefix !== 'zh' && speechPrefix !== 'en') {
+    return [{ text: normalizedText, language: resolvedLanguage }]
+  }
+
+  const scriptSegments = splitBilingualSpeechText(normalizedText)
+  const hasFragmentedLanguageSwitch = scriptSegments.some((segment, index) => {
+    const previous = scriptSegments[index - 1]
+    const next = scriptSegments[index + 1]
+    const trimmed = segment.text.trim()
+    return segment.language === 'EN'
+      && previous?.language === 'ZH'
+      && next?.language === 'ZH'
+      && /^[A-Za-z]+$/u.test(trimmed)
+      && trimmed.length <= 8
+      && previous.text.trim().length <= 3
+      && next.text.trim().length <= 3
+  })
+  // 极短混排拆成多次请求会产生明显停顿和音色跳变，交给同一音色连续朗读更自然。
+  const shouldUseSingleVoice = scriptSegments.length >= 3
+    && normalizedText.length <= 16
+    && hasFragmentedLanguageSwitch
+    && !scriptSegments.some((segment) => (
+      segment.language !== (speechPrefix === 'zh' ? 'ZH' : 'EN')
+        && segment.text.trim().length > 8
+    ))
+  if (shouldUseSingleVoice) return [{ text: normalizedText, language: resolvedLanguage }]
+  const hasChinese = scriptSegments.some((segment) => segment.language === 'ZH')
+  const hasEnglish = scriptSegments.some((segment) => segment.language === 'EN')
+  const chineseLanguage = speechPrefix === 'zh'
+    ? resolvedLanguage
+    : hasEnglish ? 'ZH' : resolvedLanguage
+  const englishLanguage = speechPrefix === 'en'
+    ? resolvedLanguage
+    : hasChinese ? 'EN' : resolvedLanguage
+  const safeMaxLength = Math.max(1, Math.floor(maxLength))
+  return scriptSegments.flatMap((segment) => {
+    const segmentLanguage = segment.language === 'ZH'
+      ? chineseLanguage
+      : segment.language === 'EN' ? englishLanguage : resolvedLanguage
+    return splitSpeechChunkPreservingEdges(segment.text, safeMaxLength).map((chunk) => ({
+      text: chunk,
+      language: segmentLanguage
+    }))
+  })
+}
+
+/**
+ * 按句和长度切分 Edge 朗读文本，并让所有片段固定使用同一个主音色语言。
+ * @param text 待朗读文本。
+ * @param language 翻译结果提供的源语言或目标语言。
+ * @param maxLength 单个语音片段最大字符数。
+ * @returns 保持原顺序且语言一致的语音片段。
+ * @author zhenghq
+ */
+export function splitSpeechSegmentsWithSingleVoice(
+  text: string,
+  language: string,
+  maxLength = DEFAULT_MAX_CHUNK_LENGTH
+): SpeechSegment[] {
+  const normalizedText = text.trim()
+  if (!normalizedText) return []
+  const resolvedLanguage = resolveSpeechLanguage(normalizedText, language)
+  return splitSpeechText(normalizedText, maxLength).map((chunk) => ({
+    text: chunk,
+    language: resolvedLanguage
+  }))
+}
+
+/**
+ * 按最大长度切分脚本片段，同时保留首尾空白以维持原文本完整顺序。
+ * @param text 待切分的脚本片段。
+ * @param maxLength 单个片段允许的最大字符数。
+ * @returns 保持原文顺序和首尾空白的片段。
+ * @author zhenghq
+ */
+function splitSpeechChunkPreservingEdges(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text]
+  const chunks: string[] = []
+  let offset = 0
+  while (offset < text.length) {
+    let end = Math.min(text.length, offset + maxLength)
+    if (end < text.length) {
+      const candidate = text.slice(offset, end + 1)
+      const whitespaceIndex = Math.max(candidate.lastIndexOf(' '), candidate.lastIndexOf('\t'))
+      if (whitespaceIndex > 0 && whitespaceIndex <= maxLength) end = offset + whitespaceIndex + 1
+    }
+    const chunk = text.slice(offset, end)
+    if (chunk) chunks.push(chunk)
+    offset = end
+  }
+  return chunks
 }
 
 /**
@@ -414,17 +603,21 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
         options.onError?.(error)
         return { ok: false, error }
       }
-      const voice = findSpeechVoice(voices, language)
-      if (!voice) {
+      const resolvedLanguage = resolveSpeechLanguage(normalizedText, language)
+      const fallbackVoice = findSpeechVoice(voices, resolvedLanguage)
+      if (!fallbackVoice) {
         const error = message('rendererSpeech.error.noVoice')
         options.onError?.(error)
         return { ok: false, error }
       }
-      const chunks = splitSpeechText(normalizedText, options.maxChunkLength)
+      const defaultVoice: SpeechSynthesisVoice = fallbackVoice
+      const chunks = splitSpeechSegments(normalizedText, resolvedLanguage, options.maxChunkLength)
       if (chunks.length === 0) return { ok: false, error: message('rendererSpeech.error.noText') }
 
       const currentSession = ++sessionId
-      const speechCode = languageToSpeechCode(language) || voice.lang
+      const voicesByLanguage = new Map<string, SpeechSynthesisVoice>([
+        [resolvedLanguage, defaultVoice]
+      ])
       if (speaking) {
         try {
           options.synthesis.cancel()
@@ -452,7 +645,26 @@ export function createSpeechController(options: SpeechControllerOptions): Speech
         }
         let utterance: SpeechUtteranceLike
         try {
-          utterance = options.createUtterance(chunks[index])
+          const chunk = chunks[index]
+          const cachedVoice = voicesByLanguage.get(chunk.language)
+          const matchedVoice = findSpeechVoice(voices, chunk.language)
+          let voice: SpeechSynthesisVoice
+          if (cachedVoice) {
+            voice = cachedVoice
+          } else if (matchedVoice) {
+            voice = matchedVoice
+            voicesByLanguage.set(chunk.language, voice)
+          } else {
+            voice = defaultVoice
+            voicesByLanguage.set(chunk.language, voice)
+          }
+          const requestedSpeechCode = languageToSpeechCode(chunk.language)
+          const requestedPrefix = requestedSpeechCode.split('-')[0].toLowerCase()
+          const voicePrefix = voice.lang.toLowerCase().split('-')[0]
+          const speechCode = requestedPrefix && requestedPrefix === voicePrefix
+            ? requestedSpeechCode
+            : voice.lang
+          utterance = options.createUtterance(chunk.text)
           utterance.lang = speechCode
           utterance.voice = voice
           utterance.volume = DEFAULT_SPEECH_VOLUME

@@ -252,6 +252,21 @@
               <label for="hotkey" data-i18n="settings.trigger.globalHotkey">Global hotkey</label>
               <input id="hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.trigger.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
             </div>
+            <div class="row hotkey-row">
+              <label for="manual-translation-hotkey" data-i18n="settings.trigger.manualHotkey">Manual translation</label>
+              <div class="hotkey-control">
+                <input id="manual-translation-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.trigger.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
+                <button id="manual-translation-hotkey-clear" class="btn" type="button" data-i18n="settings.trigger.clearHotkey">Clear</button>
+              </div>
+            </div>
+            <div class="row hotkey-row">
+              <label for="web-reader-hotkey" data-i18n="settings.trigger.webReaderHotkey">Web reader</label>
+              <div class="hotkey-control">
+                <input id="web-reader-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.trigger.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
+                <button id="web-reader-hotkey-clear" class="btn" type="button" data-i18n="settings.trigger.clearHotkey">Clear</button>
+              </div>
+            </div>
+            <p id="shortcut-registration-status" class="field-hint" role="status" aria-live="polite"></p>
             <div class="row">
               <label for="autohide" data-i18n="settings.trigger.autoHide">Auto-hide result</label>
               <select id="autohide">
@@ -468,6 +483,9 @@
                 <option value="tesseract" data-i18n="settings.ocr.engineTesseract">Tesseract only</option>
               </select>
             </div>
+            <p id="ocr-win7-hint" class="field-hint" data-i18n="settings.ocr.win7FixedEngine" hidden>
+              The Windows 7 compatibility build always uses Tesseract.js WebAssembly OCR; engine selection and the Tesseract fallback switch cannot be changed in this build.
+            </p>
             <div class="row">
               <label for="ocr-hotkey" data-i18n="settings.ocr.hotkey">Screenshot hotkey</label>
               <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.ocr.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />

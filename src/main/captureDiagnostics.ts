@@ -6,6 +6,8 @@ import { createRequire } from 'node:module'
 import {
   appendDiagnosticRecord,
   buildCaptureDiagnosticRecord,
+  CAPTURE_DIAGNOSTIC_WHITELIST,
+  DIAGNOSTIC_EXPORT_SAMPLE_LIMIT,
   normalizeAppIdentifier,
   pruneDiagnosticDays,
   type CaptureDiagnosticRecord,
@@ -172,11 +174,32 @@ export class CaptureDiagnosticsStore {
 
   /**
    * 获取导出数据：两天聚合与原始样本。
+   * 原始样本逐字段按白名单重建，避免旧版本或损坏文件中的窗口标题、
+   * 选区文本与剪贴板内容随导出泄漏；每个日期桶只保留最近固定数量样本。
    * @returns 导出用诊断数据。
    * @author zhenghq
    */
   getExportData(): CaptureDiagnosticsData {
-    return this.snapshot()
+    const days: Record<string, DiagnosticDayBucket> = {}
+    for (const [day, bucket] of Object.entries(this.data.days)) {
+      const records = Array.isArray(bucket.records)
+        ? bucket.records.slice(-DIAGNOSTIC_EXPORT_SAMPLE_LIMIT).map((record) => {
+            const filtered: Partial<CaptureDiagnosticRecord> = {}
+            for (const field of CAPTURE_DIAGNOSTIC_WHITELIST) {
+              if (record[field] !== undefined) {
+                // 白名单字段均为原始值；逐字段复制可同时丢弃原型链与额外敏感字段。
+                ;(filtered as Record<string, unknown>)[field] = record[field]
+              }
+            }
+            return filtered as CaptureDiagnosticRecord
+          })
+        : []
+      days[day] = {
+        records,
+        summary: bucket.summary
+      }
+    }
+    return { days }
   }
 
   /**
@@ -257,6 +280,9 @@ export function recordCaptureDiagnostic(input: {
   reason?: CaptureDiagnosticReason
   elapsedMs: number
   app: string
+  windowLocate?: 'exact' | 'app-fallback' | 'failed'
+  windowCount?: number
+  windowMatched?: boolean
 }): void {
   getCaptureDiagnosticsStore().record(buildCaptureDiagnosticRecord(input))
 }

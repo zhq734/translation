@@ -19,6 +19,69 @@ export interface NativeSelectionReadResult {
   text: string
   /** 直读失败的具体原因，unknown 状态时可用于区分权限、超时或接口不可用。 */
   reason?: string
+  /** 窗口定位结果；仅 macOS 窗口感知读取提供。 */
+  windowLocate?: 'exact' | 'app-fallback' | 'failed'
+  /** 目标应用普通窗口数量；无法枚举时缺失。 */
+  windowCount?: number
+  /** 是否按窗口编号或边界精确匹配到目标窗口。 */
+  windowMatched?: boolean
+}
+
+/** 从 macOS AX helper stderr 中解析出的脱敏窗口诊断。 */
+export type MacosAxReaderWindowDiagnostic = Pick<
+  NativeSelectionReadResult,
+  'windowLocate' | 'windowCount' | 'windowMatched'
+>
+
+/** macOS AX helper 菜单复制动作的固定结果状态。 */
+export type MacosAxCopyStatus = 'performed' | 'unavailable' | 'permission' | 'unknown'
+
+/**
+ * 解析 macOS AX helper `--copy <pid>` 模式的固定状态输出。
+ *
+ * 只读取首行白名单状态，忽略后续任何自由文本，避免菜单标题或选区内容
+ * 进入日志或诊断数据。无法识别时统一返回 unknown。
+ * @param output helper 的标准输出。
+ * @returns 规范化的复制动作状态。
+ * @author zhenghq
+ */
+export function parseMacosAxCopyOutput(output: unknown): MacosAxCopyStatus {
+  const firstLine = String(output ?? '').replace(/\r\n?/gu, '\n').trim().split('\n')[0]?.trim().toUpperCase()
+  if (firstLine === 'PERFORMED') return 'performed'
+  if (firstLine === 'UNAVAILABLE') return 'unavailable'
+  if (firstLine === 'PERMISSION') return 'permission'
+  return 'unknown'
+}
+
+/**
+ * 解析 macOS AX helper 写入 stderr 的固定窗口诊断行。
+ *
+ * 仅接受 `WINDOW exact|fallback|failed count=<非负整数>` 这一种格式，
+ * 其他行（包括可能误写入的标题或选区文本）一律忽略，确保诊断字段始终
+ * 来自白名单而不是自由文本。
+ * @param stderr helper 的标准错误输出，可为 Buffer、字符串或未知值。
+ * @returns 解析出的窗口定位字段；没有合法诊断行时返回空对象。
+ * @author zhenghq
+ */
+export function parseMacosAxReaderWindowDiagnostic(
+  stderr: unknown
+): MacosAxReaderWindowDiagnostic {
+  const text = Buffer.isBuffer(stderr)
+    ? stderr.toString('utf8')
+    : typeof stderr === 'string'
+      ? stderr
+      : ''
+  const match = text.match(/(?:^|\n)\s*WINDOW\s+(exact|fallback|failed)\s+count=(\d+)\s*(?:\n|$)/u)
+  if (!match) return {}
+  const count = Number.parseInt(match[2], 10)
+  if (!Number.isSafeInteger(count) || count < 0) return {}
+  if (match[1] === 'exact') {
+    return { windowLocate: 'exact', windowCount: count, windowMatched: true }
+  }
+  if (match[1] === 'fallback') {
+    return { windowLocate: 'app-fallback', windowCount: count, windowMatched: false }
+  }
+  return { windowLocate: 'failed', windowCount: count, windowMatched: false }
 }
 
 /** 当前平台可用的选区取词能力组合。 */

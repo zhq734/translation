@@ -27,15 +27,18 @@ export interface DockActivationContext {
   interactionState: SelectionInteractionState
   selectionButtonVisible: boolean
   popupVisible: boolean
-  /** 弹窗是否正在交还 macOS 前台（可见但逻辑已关闭）。 */
-  popupHandingBackFront: boolean
-  /** macOS hiservices 修复原生对话框是否正在显示；其 activate 属于内部激活。 */
-  hiServicesRepairPromptVisible: boolean
+  /** macOS hiservices 自动修复是否正在执行；其 activate 属于内部激活。 */
+  hiServicesRepairRunning: boolean
   ocrVisible: boolean
   listenerPausedForOcr: boolean
-  internalActivationLeaseUntil: number
-  /** 是否处于内部窗口收尾抑制期（交还前台 → 隐藏弹窗 → hide 生效）。 */
-  internalWindowTeardown?: boolean
+  /**
+   * 最近一次划词内部动作的状态空档抑制截止时间戳。
+   *
+   * 划词手势结束到按钮/弹窗状态生效之间存在短暂空档，此时 activate 可能
+   * 呈现“全空闲”而被误判为 Dock 点击；用最近一次内部动作的短租约覆盖该空档。
+   * 未设置或已过期时不影响真实 Dock 激活。
+   */
+  selectionActivationSuppressUntil?: number
   now?: number
 }
 
@@ -44,12 +47,10 @@ export interface DockActivationChecks {
   selectionInteractionActive: boolean
   selectionButtonVisible: boolean
   popupVisible: boolean
-  popupHandingBackFront: boolean
-  hiServicesRepairPromptVisible: boolean
+  hiServicesRepairRunning: boolean
   ocrVisible: boolean
   listenerPausedForOcr: boolean
-  internalActivationLeaseActive: boolean
-  internalWindowTeardown: boolean
+  selectionActivationSuppressed: boolean
 }
 
 /** Dock 激活判定结果。 */
@@ -246,36 +247,34 @@ export function resetPointerTrackingForWindowBlur(
 
 /**
  * 判断 macOS activate 是否应继续执行 Dock 入口逻辑。
- * @param context 当前交互窗口、状态和内部激活租约。
+ *
+ * panel 落地后内部窗口显隐不再触发应用级 activate，判定只需覆盖仍会真实
+ * 抢占前台的内部动作：选区交互、取词按钮、翻译弹窗、OCR 与 hiservices 修复流程。
+ * @param context 当前交互窗口与状态。
  * @returns 是否允许按 Dock 激活处理及被抑制原因。
  * @author zhenghq
  */
 export function canTreatActivateAsDockLaunch(context: DockActivationContext): DockActivationDecision {
   const now = context.now ?? Date.now()
-  const internalWindowTeardown = context.internalWindowTeardown === true
-  // 收尾抑制期由内部窗口显隐确定性触发，是最高优先级的硬拦截：
-  // 此时无需再逐项判定，直接按内部激活忽略即可。
-  if (internalWindowTeardown) return { allowed: false, reason: 'internal-window-teardown' }
   const checks: DockActivationChecks = {
     selectionInteractionActive: context.interactionState !== 'idle',
     selectionButtonVisible: context.selectionButtonVisible,
     popupVisible: context.popupVisible,
-    popupHandingBackFront: context.popupHandingBackFront,
-    hiServicesRepairPromptVisible: context.hiServicesRepairPromptVisible,
+    hiServicesRepairRunning: context.hiServicesRepairRunning,
     ocrVisible: context.ocrVisible,
     listenerPausedForOcr: context.listenerPausedForOcr,
-    internalActivationLeaseActive: context.internalActivationLeaseUntil > now,
-    internalWindowTeardown
+    selectionActivationSuppressed: Boolean(
+      context.selectionActivationSuppressUntil && context.selectionActivationSuppressUntil > now
+    )
   }
   const blockers: Array<[boolean, string]> = [
     [checks.selectionInteractionActive, 'selection-interaction-active'],
     [checks.selectionButtonVisible, 'selection-button-visible'],
     [checks.popupVisible, 'translation-popup-visible'],
-    [checks.popupHandingBackFront, 'translation-popup-handing-back-front'],
-    [checks.hiServicesRepairPromptVisible, 'hiservices-repair-prompt-visible'],
+    [checks.hiServicesRepairRunning, 'hiservices-repair-running'],
     [checks.ocrVisible, 'ocr-selection-visible'],
     [checks.listenerPausedForOcr, 'ocr-listener-paused'],
-    [checks.internalActivationLeaseActive, 'internal-activation-lease']
+    [checks.selectionActivationSuppressed, 'selection-activation-suppressed']
   ]
   const blocked = blockers.find(([active]) => active)
   return blocked
