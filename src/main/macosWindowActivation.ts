@@ -346,6 +346,137 @@ export async function readFocusedMacosWindowNumber(pid: number): Promise<number 
 }
 
 /**
+ * 通过原生 helper 按进程激活源应用。
+ *
+ * 该入口不要求 AX 窗口能力，用于 Chrome 等多窗口应用在 AX raise 失败时
+ * 仍能把前台交还给源进程；helper 不传 AllWindows 选项，避免切换同进程窗口。
+ * @param pid 目标进程号。
+ * @returns helper 明确确认已发出激活请求时返回 true。
+ * @author zhenghq
+ */
+export async function activateMacosApplication(pid: number): Promise<boolean> {
+  const run = await runWindowHelper(['activate', String(pid)])
+  return run.ok && run.value.activated === true
+}
+
+/** 进程级激活后的应用失活确认依赖。 */
+export interface MacosApplicationActivationDeps {
+  /** 请求激活目标进程。 */
+  activateApplication: (pid: number) => Promise<boolean>
+  /** 读取本应用是否仍处于最前。 */
+  isAppActive: () => boolean
+  /** 当前时间源。 */
+  now: () => number
+  /** 等待函数。 */
+  sleep: (ms: number) => Promise<void>
+}
+
+/**
+ * 按进程激活源应用，并在有界时间内等待本应用失活。
+ *
+ * 激活请求本身成功不代表前台已经交还，必须继续轮询应用激活事件。轮询失败时
+ * 返回 false，让调用方保留现有的整应用安全让出兜底，不能把未确认状态当成成功。
+ * 依赖必须由调用方显式提供，避免默认实现漏接真实的应用激活事件后静默超时。
+ * @param pid 目标进程号。
+ * @param deps 激活请求、应用激活状态与时间依赖。
+ * @returns 激活请求成功且确认本应用失活时返回 true。
+ * @author zhenghq
+ */
+export async function activateMacosApplicationAndWaitForDeactivation(
+  pid: number,
+  deps: MacosApplicationActivationDeps
+): Promise<boolean> {
+  const activated = await deps.activateApplication(pid)
+  if (!activated) return false
+  const deadline = deps.now() + MACOS_WINDOW_ACTIVATION_TIMEOUT_MS
+  while (deps.now() <= deadline) {
+    if (!deps.isAppActive()) return true
+    if (deps.now() >= deadline) break
+    await deps.sleep(MACOS_WINDOW_ACTIVATION_POLL_MS)
+  }
+  return false
+}
+
+/** 进程级激活并重新确认目标窗口的依赖。 */
+export interface MacosApplicationWindowActivationDeps {
+  /** 请求激活目标进程。 */
+  activateApplication: (pid: number) => Promise<boolean>
+  /** 重新枚举目标进程窗口并读取全局最前窗口。 */
+  enumerateWindows: (pid: number) => Promise<MacosWindowListResult>
+  /** 当前时间源。 */
+  now: () => number
+  /** 等待函数。 */
+  sleep: (ms: number) => Promise<void>
+}
+
+/**
+ * 精确窗口激活失败后按进程激活，并确认同一目标窗口确实成为全局最前窗口。
+ *
+ * Chrome 的 AX focused/raise 可能不可用，但进程级激活不依赖 AX。由于同进程
+ * 可能有多个窗口，激活应用本身不能证明 Cmd+C 会落到入口记录的目标窗口；必须
+ * 重新枚举并通过 frontmostPid 与 frontmostWindowNumber 同时匹配目标窗口。
+ * 无法确认时返回 failed，调用方仍应保持复制前安全早退。
+ * @param snapshot 入口记录的源窗口快照。
+ * @param deps 激活、窗口枚举与时间依赖。
+ * @returns 已确认同一目标窗口位于最前时返回 exact，否则返回 failed。
+ * @author zhenghq
+ */
+export async function activateMacosApplicationAndConfirmWindow(
+  snapshot: FrontmostWindowSnapshot,
+  deps: MacosApplicationWindowActivationDeps
+): Promise<MacosWindowActivationResult> {
+  const activated = await deps.activateApplication(snapshot.pid)
+  if (!activated) {
+    return { activated: false, confirmed: false, outcome: 'failed', windowMatched: false }
+  }
+
+  const deadline = deps.now() + MACOS_WINDOW_ACTIVATION_TIMEOUT_MS
+  let lastWindowCount: number | undefined
+  let lastWindowMatched = false
+  while (deps.now() <= deadline) {
+    let windowList: MacosWindowListResult
+    try {
+      windowList = await deps.enumerateWindows(snapshot.pid)
+    } catch {
+      return {
+        activated: true,
+        confirmed: false,
+        outcome: 'failed',
+        windowCount: lastWindowCount,
+        windowMatched: lastWindowMatched
+      }
+    }
+    const windows = windowList.windows
+    lastWindowCount = windows.filter((window) =>
+      window.pid === snapshot.pid && window.layer === 0
+    ).length
+    const target = resolveTargetWindow({ windows, pid: snapshot.pid, snapshot })
+    lastWindowMatched = target !== null
+    if (target &&
+        windowList.frontmostPid === snapshot.pid &&
+        windowList.frontmostWindowNumber === target.windowNumber) {
+      return {
+        activated: true,
+        confirmed: true,
+        outcome: 'exact',
+        windowCount: lastWindowCount,
+        windowMatched: true
+      }
+    }
+    if (deps.now() >= deadline) break
+    await deps.sleep(MACOS_WINDOW_ACTIVATION_POLL_MS)
+  }
+
+  return {
+    activated: true,
+    confirmed: false,
+    outcome: 'failed',
+    windowCount: lastWindowCount,
+    windowMatched: lastWindowMatched
+  }
+}
+
+/**
  * 通过原生 helper 读取全局最前普通窗口编号。
  *
  * `list` 子命令只依赖 CGWindowList，返回顺序中的第一个普通窗口就是全局最前窗口。

@@ -83,27 +83,27 @@ test('复用设置窗口先刷新策略再置前，新建设置窗口先置前�
   assert.doesNotMatch(openSettingsBlock[1], /app\.focus/u)
 })
 
-test('设置页关闭 Dock 图标后只恢复可见性，不得把设置页置前', () => {
+test('Dock 策略切换后不得尝试恢复或置前设置页', () => {
   const source = readFileSync('src/main/index.ts', 'utf8')
   const applyStart = source.indexOf('async function applyMacOSDockVisibility')
   const applyEnd = source.indexOf('\nfunction applyAutoLaunch', applyStart)
   const applyBlock = source.slice(applyStart, applyEnd)
+  const executableBlock = applyBlock
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/\/\/[^\n]*/gu, '')
 
   assert.ok(applyStart >= 0 && applyEnd > applyStart)
-  assert.match(
-    applyBlock,
-    /const settingsWindowToPreserve\s*=\s*settingsWin[^\n]*isVisible\(\)/u
-  )
-  assert.match(
-    applyBlock,
-    /await app\.dock\?\.hide\(\)[\s\S]*?settingsWin\s*===\s*settingsWindowToPreserve[\s\S]*?settingsWindowToPreserve\.showInactive\(\)/u
-  )
-  // Dock 切换会重排窗口层级，但这是内部刷新，不是用户显式打开设置页。
-  // 只能恢复可见性，不得通过统一入口 moveTop()/focus() 把设置页拉到最前。
   assert.doesNotMatch(
-    applyBlock,
-    /showOwnWindowForInteraction\(settingsWindowToPreserve\)|settingsWindowToPreserve\.focus\(\)/u,
-    'Dock 策略切换后的内部保留路径不得置前或聚焦设置页'
+    executableBlock,
+    /settingsWindowToPreserve/u,
+    'Dock 策略切换是内部刷新，不得保留或恢复设置窗口'
+  )
+  // macOS 的 showInactive() 会走 orderFrontRegardless；show()/focus()/moveTop()
+  // 同样会把设置页越过用户当前应用拉到最前，内部 Dock 刷新不得调用其中任何一个。
+  assert.doesNotMatch(
+    executableBlock,
+    /\.showInactive\(\)|settingsWin\.show\(\)|settingsWin\.focus\(\)|settingsWin\.moveTop\(\)|showOwnWindowForInteraction\(/u,
+    'Dock 策略切换后不得置前、聚焦或非激活恢复设置页'
   )
 })
 

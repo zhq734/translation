@@ -45,7 +45,10 @@ import type { SelectionCaptureOutcome, CaptureDiagnosticLevel, SelectionFailureR
 import type { SelectionCaptureContext } from '../shared/selectionCaptureCoordinator'
 import type { FrontmostWindowSnapshot } from '../shared/macosWindowSnapshot'
 import {
+  activateMacosApplication,
+  activateMacosApplicationAndConfirmWindow,
   activateMacosWindowSnapshot,
+  enumerateMacosWindows,
   isFailedWindowActivation,
   type MacosWindowActivationResult
 } from './macosWindowActivation'
@@ -112,7 +115,23 @@ async function activateWindowBeforeCopy(
   const snapshot = toWindowSnapshot(context)
   if (!snapshot) return null
   try {
-    const result = await activateMacosWindowSnapshot(snapshot)
+    let result = await activateMacosWindowSnapshot(snapshot)
+    if (isFailedWindowActivation(result)) {
+      // Chrome 的 AX focused/raise 可能不可用。精确激活失败后允许按源进程
+      // 做一次不提升全部窗口的兜底，但必须重新确认同一目标窗口位于全局最前；
+      // 只确认应用在前台仍不足以保证 Cmd+C 不会落到同进程的其它窗口。
+      const fallback = await activateMacosApplicationAndConfirmWindow(snapshot, {
+        activateApplication: activateMacosApplication,
+        enumerateWindows: enumerateMacosWindows,
+        now: Date.now,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      })
+      console.log(
+        `[capture] window-activate fallback=${fallback.outcome} ` +
+        `windowCount=${fallback.windowCount ?? 'unknown'} windowMatched=${fallback.windowMatched}`
+      )
+      if (!isFailedWindowActivation(fallback)) result = fallback
+    }
     console.log(
       `[capture] window-activate outcome=${result.outcome} ` +
       `windowCount=${result.windowCount ?? 'unknown'} windowMatched=${result.windowMatched}`

@@ -20,6 +20,8 @@ import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { FrontmostWindowSnapshot, WindowBounds } from '../shared/macosWindowSnapshot'
 import {
+  activateMacosApplication,
+  activateMacosApplicationAndWaitForDeactivation,
   activateMacosWindowSnapshot,
   enumerateMacosWindows,
   isExactWindowActivationConfirmed,
@@ -369,6 +371,33 @@ async function activateFrontmostSnapshot(
 }
 
 /**
+ * 恢复翻译弹窗关闭后应交还的源应用。
+ *
+ * 精确窗口激活只有在目标窗口已确认时才可直接结束；若 AX raise 已发出但未确认，
+ * 或窗口定位失败，则继续按记录的应用进程执行不提升全部窗口的进程级激活。
+ * Chrome 多窗口场景下，进程级激活不依赖 AX，可避免直接进入 app.hide()/app.show()
+ * 后把后台设置页重新提升到最前。
+ * @param target 弹窗出现前记录的源应用快照。
+ * @returns 精确窗口已确认，或进程级激活并确认本应用失活时返回 true。
+ * @author zhenghq
+ */
+async function restoreFrontmostForPopup(target: FrontmostAppSnapshot): Promise<boolean> {
+  const activation = await activateFrontmostSnapshot(target)
+  if (isExactWindowActivationConfirmed(activation)) return true
+
+  logFrontDiagnostic(
+    `弹窗源应用恢复未精确确认，尝试进程级激活：bundleId=${target.bundleId} ` +
+    `pid=${target.pid} windowLocate=${activation.outcome}`
+  )
+  return activateMacosApplicationAndWaitForDeactivation(target.pid, {
+    activateApplication: activateMacosApplication,
+    isAppActive: isMacAppActiveByEvents,
+    now: Date.now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  })
+}
+
+/**
  * 待交还的前台应用。
  *
  * 只在「本应用尚未占用前台」时写入，隐藏应用内 key window 时消费一次。
@@ -621,12 +650,12 @@ export function handBackFrontmostThen(
   }
   let finished = false
   const startedAt = Date.now()
-  const finish = (handedBack: boolean): void => {
+  const finish = (handedBack: boolean, successKind = 'exact-window-handback'): void => {
     if (finished) return
     finished = true
     if (handedBack) {
       logFrontDiagnostic(
-        `精确交还成功：bundleId=${target.bundleId} 耗时 ${Date.now() - startedAt}ms`
+        `${successKind}：bundleId=${target.bundleId} 耗时 ${Date.now() - startedAt}ms`
       )
       run()
       // 隐藏窗口本身会触发 macOS 重新选择 key window。即使隐藏前已确认源应用
@@ -639,8 +668,12 @@ export function handBackFrontmostThen(
         setTimeout(() => {
           if (!isMacAppActiveByEvents()) return
           logFrontDiagnostic(`隐藏后复核到本应用重新置前，再次精确恢复：bundleId=${target.bundleId}`)
-          void activateFrontmostSnapshot(target).catch(() => {
-            logFrontDiagnostic(`隐藏后再次精确恢复失败：bundleId=${target.bundleId}`)
+          void restoreFrontmostForPopup(target).then((restored) => {
+            if (!restored) {
+              logFrontDiagnostic(`隐藏后再次恢复失败：bundleId=${target.bundleId}`)
+            }
+          }).catch(() => {
+            logFrontDiagnostic(`隐藏后再次恢复异常：bundleId=${target.bundleId}`)
           })
         }, POST_HIDE_FRONT_RECHECK_DELAY_MS)
       }
@@ -677,6 +710,17 @@ export function handBackFrontmostThen(
   // 立刻开始 200ms 兜底计时，否则确认轮询会被提前截断。先等待完整激活结果，
   // 再以统一的应用失活条件确认交还。只有纯应用级快照允许 open -b；
   // 带窗口定位信息的快照必须精确激活，窗口定位失败时不能再猜测同进程窗口。
+  if (keyWindowIsPopup) {
+    // 弹窗路径必须复用带进程级激活兜底的恢复入口，不能只看 AX 是否发出请求。
+    void restoreFrontmostForPopup(target).then((restored) => {
+      if (restored) {
+        finish(true, 'popup-front-restored')
+        return
+      }
+      finish(false)
+    }).catch(() => finish(false))
+    return
+  }
   void activateFrontmostSnapshot(target).then((activation) => {
     if (!activation.activated) {
       finish(false)

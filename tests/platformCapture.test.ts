@@ -331,6 +331,25 @@ test('窗口激活失败时复制链路必须在注入前早退', () => {
 })
 
 /**
+ * 校验复制前精确窗口激活失败时，只允许通过再次确认同一目标窗口的进程级兜底恢复。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('复制前精确激活失败应使用受窗口确认约束的进程级兜底', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const start = source.indexOf('async function activateWindowBeforeCopy(')
+  const end = source.indexOf('\n}\n', start)
+  assert.ok(start >= 0 && end > start, '应存在 activateWindowBeforeCopy 实现')
+  const activationSource = source.slice(start, end)
+
+  assert.match(
+    activationSource,
+    /isFailedWindowActivation\(result\)[\s\S]*?activateMacosApplicationAndConfirmWindow\(snapshot,\s*\{/u,
+    '精确激活失败后必须按源进程兜底，并重新确认同一目标窗口'
+  )
+})
+
+/**
  * 校验失效的旧预取可以中止原生命令，避免阻塞后续双击读取。
  * @returns 无返回值。
  * @author zhenghq

@@ -38,6 +38,7 @@ function buildHelper() {
     '-fmodules',
     '-fmodules-cache-path=' + moduleCachePath,
     '-framework', 'ApplicationServices',
+    '-framework', 'AppKit',
     '-framework', 'CoreGraphics',
     '-framework', 'Foundation',
     '-o', outputPath

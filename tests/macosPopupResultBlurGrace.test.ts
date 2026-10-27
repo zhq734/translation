@@ -4,6 +4,22 @@ import test from 'node:test'
 import { shouldRestoreForegroundBeforeCapture } from '../src/shared/popupForeground.ts'
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
+const mainSource = readFileSync('src/main/index.ts', 'utf8')
+
+/**
+ * 截取源码中指定顶层函数的完整片段。
+ * @param source 待检索源码。
+ * @param signature 函数签名起始片段。
+ * @returns 从签名到函数结束的源码。
+ * @author zhenghq
+ */
+function extractFunction(source: string, signature: string): string {
+  const start = source.indexOf(signature)
+  assert.ok(start >= 0, `应存在函数 ${signature}`)
+  const end = source.indexOf('\n}', start)
+  assert.ok(end > start, `函数 ${signature} 应有结束边界`)
+  return source.slice(start, end + 2)
+}
 
 /**
  * 去掉源码中的块注释与行注释，避免注释文本干扰行为断言。
@@ -110,4 +126,117 @@ test('外部点击关闭必须由全局按下兜底承担', () => {
     '固定弹窗与迟到按钮按下必须豁免')
   assert.match(dismissSource, /hidePopup\(true, 'external-pointer'\)/u,
     '真正的外部点击必须关闭弹窗')
+})
+
+/**
+ * 校验同一轮弹窗关闭在异步交还期间具备幂等保护。
+ *
+ * 真机日志显示外部按下与随后到达的 blur 会在数毫秒内各调用一次 hidePopup()，
+ * 从而并发启动两轮前台恢复。关闭流程必须只允许第一入口生效，迟到事件只记录
+ * 被忽略的诊断，不得再次清理状态或启动 handBackFrontmostThen()。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('同一轮弹窗关闭进行中不得被迟到失焦重复触发', () => {
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(')
+  )
+  const closingGuardIndex = hideSource.indexOf('popupCloseInFlight')
+  const versionIndex = hideSource.indexOf('closeVersion += 1')
+  const handBackIndex = hideSource.indexOf('handBackFrontmostThen(')
+
+  assert.match(popupSource, /let popupCloseInFlight = false/u,
+    '必须维护弹窗关闭进行中状态')
+  assert.ok(closingGuardIndex >= 0, 'hidePopup 必须检查关闭进行中状态')
+  assert.ok(closingGuardIndex < versionIndex,
+    '重复关闭保护必须早于 closeVersion 自增，避免旧异步结果版本再次失效')
+  assert.ok(closingGuardIndex < handBackIndex,
+    '重复关闭保护必须早于异步前台交还')
+  assert.match(
+    hideSource,
+    /if \(popupCloseInFlight\)[\s\S]*?ignore duplicate hide[\s\S]*?return/u,
+    '关闭进行中必须记录并忽略迟到关闭请求'
+  )
+})
+
+/**
+ * 校验新一轮弹窗显示会释放上一轮关闭状态。
+ *
+ * 关闭状态不能只依赖异步收尾释放：若上一轮恢复流程异常或新结果在收尾前到达，
+ * 后续弹窗将永久无法关闭。每次 showPopup() 都必须显式重置为可关闭状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('新一轮弹窗显示必须重置关闭进行中状态', () => {
+  const showSource = stripComments(
+    extractFunction(popupSource, 'export function showPopup(')
+  )
+  assert.match(showSource, /popupCloseInFlight = false/u,
+    'showPopup 必须重置关闭进行中状态，保证下一轮弹窗可以正常关闭')
+})
+
+/**
+ * 校验真实隐藏完成后释放关闭进行中状态。
+ *
+ * 关闭状态用于覆盖异步前台交还窗口，窗口真正 hide() 后必须释放，否则后续同一
+ * BrowserWindow 的再次显示与关闭会被误判为重复关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗真实隐藏完成后必须释放关闭进行中状态', () => {
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(')
+  )
+  const hideIndex = hideSource.indexOf('win?.hide()')
+  const releaseIndex = hideSource.indexOf('popupCloseInFlight = false', hideIndex)
+
+  assert.ok(hideIndex >= 0, '关闭流程必须保留真实 win.hide()')
+  assert.ok(releaseIndex > hideIndex, '关闭状态必须在真实隐藏完成后释放')
+})
+
+/**
+ * 校验弹窗关闭开始与真实隐藏完成都会通知主进程收尾。
+ *
+ * 真机日志显示外部点击关闭后，设置页在异步前台交还期间仍可能保留临时
+ * screen-saver 层级并被带到最前。关闭入口必须在启动 handBackFrontmostThen()
+ * 前回收该层级，真实 hide() 完成后还要再通知一次，覆盖隐藏后派发的迟到 activate。
+ * 通知必须同步执行，不能插入 await 改变现有前台交还顺序。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗关闭开始与隐藏完成都必须通知主进程收尾', () => {
+  const createSource = stripComments(
+    extractFunction(popupSource, 'export function createPopup(')
+  )
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(')
+  )
+  const transitionSource = stripComments(
+    extractFunction(mainSource, 'function handlePopupInternalWindowTransition(')
+  )
+  const handBackIndex = hideSource.indexOf('handBackFrontmostThen(')
+  const hideIndex = hideSource.indexOf('win?.hide()')
+  const firstNotifyIndex = hideSource.indexOf('onPopupClosingCallback?.()')
+  const hiddenNotifyIndex = hideSource.indexOf('onPopupClosingCallback?.()', hideIndex)
+
+  assert.match(createSource, /onPopupClosing\?:\s*\(\)\s*=>\s*void/u,
+    'createPopup 必须接收关闭生命周期回调')
+  assert.match(createSource, /onPopupClosingCallback = onPopupClosing \?\? null/u,
+    '关闭生命周期回调必须保存到模块状态')
+  assert.ok(firstNotifyIndex >= 0, '关闭开始必须通知主进程')
+  assert.ok(firstNotifyIndex < handBackIndex,
+    '关闭开始通知必须早于异步前台交还')
+  assert.ok(hiddenNotifyIndex > hideIndex,
+    '真实隐藏完成后必须再次通知主进程，覆盖迟到 activate')
+  assert.doesNotMatch(hideSource, /\bawait\b/u,
+    '关闭生命周期通知不得引入 await，不能改变现有前台交还顺序')
+  assert.match(transitionSource, /suppressSelectionActivationWindowGap\(\)/u,
+    '关闭生命周期收尾必须续期划词 activate 抑制')
+  assert.match(transitionSource, /lowerSettingsPanelRaiseLevel\(\)/u,
+    '关闭生命周期收尾必须回收设置页临时置顶层级')
+  assert.match(
+    mainSource,
+    /createPopup\(\s*PRELOAD_PATH,\s*suppressSelectionActivationWindowGap,\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),\s*handlePopupInternalWindowTransition\s*\)/u,
+    '主进程必须把关闭生命周期收尾回调注入翻译弹窗'
+  )
 })

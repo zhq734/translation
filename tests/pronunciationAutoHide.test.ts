@@ -65,11 +65,11 @@ test('弹窗被外部隐藏时应取消所有未完成的音标查询和音频�
 
   assert.match(
     popup,
-    /createPopup\(\s*preloadPath:\s*string,\s*onWindowShown\?:\s*\(\)\s*=>\s*void,\s*onPopupHidden\?:\s*\(\)\s*=>\s*void\s*\)/u
+    /createPopup\(\s*preloadPath:\s*string,\s*onWindowShown\?:\s*\(\)\s*=>\s*void,\s*onPopupHidden\?:\s*\(\)\s*=>\s*void,\s*onPopupClosing\?:\s*\(\)\s*=>\s*void\s*\)/u
   )
   assert.match(hidePopupBlock, /onPopupHiddenCallback\?\.\(\)/u)
   assert.match(
     main,
-    /createPopup\(\s*PRELOAD_PATH,\s*suppressSelectionActivationWindowGap,\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\)\s*,?\s*\)/u
+    /createPopup\(\s*PRELOAD_PATH,\s*suppressSelectionActivationWindowGap,\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),\s*handlePopupInternalWindowTransition\s*\)/u
   )
 })

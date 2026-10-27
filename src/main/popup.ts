@@ -51,12 +51,32 @@ export type PopupHideReason =
 let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
+/**
+ * 弹窗关闭是否正在进行中。
+ *
+ * macOS 外部点击与随后到达的 blur 可能在同一轮交互内连续触发关闭；前台交还是
+ * 异步的，若两次关闭都启动交还，会并发恢复同一源窗口并放大设置页置前风险。
+ * 该状态从 hidePopup 入口一直保持到真实 win.hide() 完成，只对关闭流程去重，
+ * 不参与可见性判断，也不得跨到下一轮弹窗显示。
+ */
+let popupCloseInFlight = false
 let pinned = false
 let currentAutoHideMs = 0
 /** 音标卡或原文发音交互期间是否暂停自动隐藏；不改变用户固定状态。 */
 let pronunciationInteractionActive = false
 /** 弹窗真正隐藏时通知主进程清理音标查询与音频下载。 */
 let onPopupHiddenCallback: (() => void) | null = null
+/** 弹窗真实隐藏前撤销同应用后台窗口的 key window 候选资格。 */
+let onPopupBeforeHideCallback: (() => void) | null = null
+/** 弹窗真实隐藏后恢复隐藏前撤销的窗口焦点能力。 */
+let onPopupAfterHideCallback: (() => void) | null = null
+/**
+ * 弹窗关闭开始及真实隐藏完成时通知主进程收尾。
+ *
+ * 外部点击关闭后，异步前台交还期间设置页可能仍保留临时最高层级；关闭入口与
+ * win.hide() 完成后都必须同步回收该状态，避免迟到 activate 把设置页带到最前。
+ */
+let onPopupClosingCallback: (() => void) | null = null
 let shownInactive = false
 /**
  * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
@@ -104,14 +124,21 @@ const pendingPayloads: TranslatePayload[] = []
  * @param preloadPath 预加载脚本路径。
  * @param onWindowShown 弹窗自身显示 / 聚焦 / 隐藏时的内部窗口通知回调。
  * @param onPopupHidden 弹窗隐藏后清理临时请求的回调。
+ * @param onPopupClosing 弹窗关闭开始及真实隐藏完成时的内部窗口收尾回调。
+ * @param onPopupBeforeHide 弹窗真实隐藏前的同步窗口焦点保护回调。
+ * @param onPopupAfterHide 弹窗真实隐藏后的同步窗口焦点恢复回调。
  * @returns 创建后的翻译弹窗。
  * @author zhenghq
  */
 export function createPopup(
   preloadPath: string,
   onWindowShown?: () => void,
-  onPopupHidden?: () => void
+  onPopupHidden?: () => void,
+  onPopupClosing?: () => void,
+  onPopupBeforeHide?: () => void,
+  onPopupAfterHide?: () => void
 ): BrowserWindow {
+  popupCloseInFlight = false
   shownInactive = false
   settingsOpenGuardActive = false
   selectionCaptureLoading = false
@@ -119,6 +146,9 @@ export function createPopup(
   suppressExternalPointerDismissOrigin = null
   onInternalWindowShown = onWindowShown ?? null
   onPopupHiddenCallback = onPopupHidden ?? null
+  onPopupClosingCallback = onPopupClosing ?? null
+  onPopupBeforeHideCallback = onPopupBeforeHide ?? null
+  onPopupAfterHideCallback = onPopupAfterHide ?? null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -369,6 +399,9 @@ export function showPopup(
   activate = true
 ): void {
   if (!win) return
+  // 新一轮显示必须清除上一轮关闭状态；异步前台恢复异常时也不能让弹窗永久
+  // 无法关闭。重置发生在投递负载之前，保证本次显示立即恢复完整关闭语义。
+  popupCloseInFlight = false
   currentAutoHideMs = Math.max(0, autoHideMs)
   selectionCaptureLoading = payload.origin === 'selection' && payload.loading === true
   const alreadyVisible = win.isVisible()
@@ -497,7 +530,15 @@ export function hidePopup(
   handBackFrontmost = true,
   reason: PopupHideReason = 'unknown'
 ): void {
+  if (popupCloseInFlight) {
+    console.log(`[popup] ignore duplicate hide reason=${reason} while-closing`)
+    return
+  }
+  popupCloseInFlight = true
   console.log(`[popup] hide reason=${reason}`)
+  // 关闭一开始就同步收尾：异步前台交还可能持续数十毫秒，期间设置页若残留
+  // screen-saver 层级，仍会被系统带到划词应用之前。不得在这里 await。
+  onPopupClosingCallback?.()
   clearHide()
   closeVersion += 1
   pinned = false
@@ -506,7 +547,10 @@ export function hidePopup(
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
   win?.webContents.send('popup:pinned', false)
-  if (!win || win.isDestroyed()) return
+  if (!win || win.isDestroyed()) {
+    popupCloseInFlight = false
+    return
+  }
   // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
   // 后再执行，否则系统会先把同应用下一个可见窗口提升为 key window 顶到最前。
   const run = (): void => {
@@ -517,7 +561,18 @@ export function hidePopup(
     // 必须在 win.hide() 之前广播：隐藏后窗口不再渲染，IPC 消息可能无法及时
     // 送达 Renderer，导致系统语音或音频在后台继续播放。
     win?.webContents.send('popup:hidden')
-    win?.hide()
+    try {
+      // macOS 在隐藏当前 key window 时会从同一应用内选择下一个可聚焦窗口。
+      // 保护仅覆盖 hide() 的同步调用栈，避免后台设置页被系统重新选为 key window。
+      onPopupBeforeHideCallback?.()
+      win?.hide()
+    } finally {
+      // hide() 抛错也必须恢复设置页，不能让它永久失去键盘输入能力。
+      onPopupAfterHideCallback?.()
+    }
+    // 真实隐藏后系统可能派发迟到 activate，再同步收尾一次覆盖该窗口期。
+    onPopupClosingCallback?.()
+    popupCloseInFlight = false
     onPopupHiddenCallback?.()
     // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
     // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。

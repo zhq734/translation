@@ -209,21 +209,22 @@ test('共享前台策略只保留 Windows 语义', () => {
   assert.match(code, /shouldRestoreForegroundBeforeCapture/u)
 })
 
-test('Dock 呈现切换等内部刷新不得置前或聚焦设置窗口', () => {
+test('Dock 呈现切换等内部刷新不得恢复、置前或聚焦设置窗口', () => {
   const applySource = extractFunction(mainSource, 'async function applyMacOSDockVisibility(')
+  const executableSource = stripComments(applySource)
 
   // 切换激活策略会重排窗口层级。内部刷新可能在交互状态短暂回到 idle 时触发，
-  // 因此只能恢复可见性，任何 showOwnWindowForInteraction()/focus()/moveTop()
-  // 都可能把设置页越过用户当前应用和翻译弹窗拉到最前。
-  assert.match(
-    applySource,
-    /settingsWindowToPreserve\.showInactive\(\)/u,
-    '内部刷新必须用非激活方式恢复设置窗口可见性'
+  // 且 macOS 的 showInactive() 仍会 orderFrontRegardless，因此不得尝试恢复设置页，
+  // 更不得通过 show()/focus()/moveTop() 把设置页越过用户当前应用拉到最前。
+  assert.doesNotMatch(
+    executableSource,
+    /settingsWindowToPreserve/u,
+    '内部刷新不得保留或恢复设置窗口'
   )
   assert.doesNotMatch(
-    stripComments(applySource),
-    /showOwnWindowForInteraction\(settingsWindowToPreserve\)|settingsWindowToPreserve\.focus\(\)/u,
-    '内部刷新不得置前或聚焦被保留的设置窗口'
+    executableSource,
+    /\.showInactive\(\)|settingsWin\.show\(\)|settingsWin\.focus\(\)|settingsWin\.moveTop\(\)|showOwnWindowForInteraction\(/u,
+    '内部刷新不得恢复、置前或聚焦设置窗口'
   )
 })
 
@@ -283,5 +284,44 @@ test('activate 复用已可见且未最小化的设置页时不得再次强制�
   assert.ok(
     visibleGuardIndex < openSettingsIndex,
     '已可见设置页短路必须发生在 openSettings() 置前之前'
+  )
+})
+
+test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选资格', () => {
+  const createSource = stripComments(
+    extractFunction(popupSource, 'export function createPopup(')
+  )
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(')
+  )
+  const beforeIndex = hideSource.indexOf('onPopupBeforeHideCallback?.()')
+  const hideIndex = hideSource.indexOf('win?.hide()')
+  const afterIndex = hideSource.indexOf('onPopupAfterHideCallback?.()')
+
+  assert.match(createSource, /onPopupBeforeHide\?:\s*\(\)\s*=>\s*void/u,
+    '弹窗创建入口必须接收隐藏前回调')
+  assert.match(createSource, /onPopupAfterHide\?:\s*\(\)\s*=>\s*void/u,
+    '弹窗创建入口必须接收隐藏后回调')
+  assert.match(createSource, /onPopupBeforeHideCallback = onPopupBeforeHide \?\? null/u,
+    '隐藏前回调必须保存到模块状态')
+  assert.match(createSource, /onPopupAfterHideCallback = onPopupAfterHide \?\? null/u,
+    '隐藏后回调必须保存到模块状态')
+  assert.ok(beforeIndex >= 0, '真实隐藏前必须撤销设置页焦点候选资格')
+  assert.ok(beforeIndex < hideIndex, '焦点保护必须早于 win.hide()')
+  assert.ok(afterIndex > hideIndex, '焦点恢复必须晚于 win.hide()')
+  assert.match(
+    hideSource,
+    /try\s*\{[\s\S]*?onPopupBeforeHideCallback\?\.\(\)[\s\S]*?win\?\.hide\(\)[\s\S]*?\}\s*finally\s*\{[\s\S]*?onPopupAfterHideCallback\?\.\(\)[\s\S]*?\}/u,
+    '焦点恢复必须放在 finally 中，确保隐藏异常时也能恢复设置页'
+  )
+  assert.match(
+    mainSource,
+    /createPopup\(\s*PRELOAD_PATH,[\s\S]*?handlePopupInternalWindowTransition,\s*suspendSettingsWindowFocusBeforePopupHide,\s*restoreSettingsWindowFocusAfterPopupHideCallback\s*\)/u,
+    '主进程必须把弹窗隐藏前后焦点保护注入翻译弹窗'
+  )
+  assert.match(
+    mainSource,
+    /suspendSettingsWindowFocusForPopupHide\(process\.platform,\s*settingsWin\)/u,
+    '主进程必须仅在 macOS 可见设置页上启用焦点保护'
   )
 })

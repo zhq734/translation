@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  activateMacosApplicationAndWaitForDeactivation,
+  activateMacosApplicationAndConfirmWindow,
   activateMacosWindowSnapshot,
   classifyMacosWindowHelperFailure,
   isExactWindowActivationConfirmed,
@@ -95,6 +97,182 @@ function makeDeps(overrides: Partial<MacosWindowActivationDeps> = {}): MacosWind
     ...overrides
   }
 }
+
+/**
+ * 校验进程级激活只在目标应用请求成功且本应用确实失活后报告成功。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活应等待本应用失活后才报告成功', async () => {
+  let now = 1_000
+  let activeChecks = 0
+  const activated = await activateMacosApplicationAndWaitForDeactivation(4242, {
+    activateApplication: async (pid) => {
+      assert.equal(pid, 4242)
+      return true
+    },
+    isAppActive: () => {
+      activeChecks += 1
+      return activeChecks < 2
+    },
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.equal(activated, true)
+  assert.equal(activeChecks, 2, '必须在第二次轮询确认失活后才能报告成功')
+})
+
+/**
+ * 校验进程级激活请求失败时不得继续等待或伪造成功。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活请求失败时不得报告交还成功', async () => {
+  let activeChecks = 0
+  const activated = await activateMacosApplicationAndWaitForDeactivation(4242, {
+    activateApplication: async () => false,
+    isAppActive: () => {
+      activeChecks += 1
+      return true
+    },
+    now: () => 1_000,
+    sleep: async () => undefined
+  })
+
+  assert.equal(activated, false)
+  assert.equal(activeChecks, 0, '激活请求失败后不得再轮询失活状态')
+})
+
+/**
+ * 校验进程级激活后本应用始终未失活时必须超时失败。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活后本应用未失活时必须超时失败', async () => {
+  let now = 1_000
+  const activated = await activateMacosApplicationAndWaitForDeactivation(4242, {
+    activateApplication: async () => true,
+    isAppActive: () => true,
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.equal(activated, false)
+})
+
+/**
+ * 校验进程级激活后只有再次确认同一目标窗口位于全局最前时才允许继续复制。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活后确认同一目标窗口位于最前时应报告精确成功', async () => {
+  let activated = false
+  let now = 1_000
+  let enumerationCount = 0
+  const windows = [
+    makeWindow({ windowNumber: 101, bounds: { x: 900, y: 0, width: 800, height: 600 } }),
+    makeWindow()
+  ]
+  const result = await activateMacosApplicationAndConfirmWindow(makeSnapshot(), {
+    activateApplication: async (pid) => {
+      assert.equal(pid, 4242)
+      activated = true
+      return true
+    },
+    enumerateWindows: async (pid) => {
+      assert.equal(pid, 4242)
+      enumerationCount += 1
+      return {
+        windows,
+        frontmostWindowNumber: activated ? 102 : 101,
+        frontmostPid: 4242
+      }
+    },
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.deepEqual(result, {
+    activated: true,
+    confirmed: true,
+    outcome: 'exact',
+    windowCount: 2,
+    windowMatched: true
+  })
+  assert.equal(enumerationCount, 1, '激活后必须重新枚举并确认同一目标窗口')
+})
+
+/**
+ * 校验进程级激活可能切换同进程其它窗口时不得把目标窗口误报为已确认。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活后目标窗口未位于最前时必须安全失败', async () => {
+  let now = 1_000
+  const windows = [
+    makeWindow({ windowNumber: 101, bounds: { x: 900, y: 0, width: 800, height: 600 } }),
+    makeWindow()
+  ]
+  const result = await activateMacosApplicationAndConfirmWindow(makeSnapshot(), {
+    activateApplication: async () => true,
+    enumerateWindows: async () => ({
+      windows,
+      frontmostWindowNumber: 101,
+      frontmostPid: 4242
+    }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.deepEqual(result, {
+    activated: true,
+    confirmed: false,
+    outcome: 'failed',
+    windowCount: 2,
+    windowMatched: true
+  })
+})
+
+/**
+ * 校验进程级激活后目标窗口已消失时，不得仅凭同进程其它窗口位于最前而继续复制。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活后目标窗口已消失时必须安全失败', async () => {
+  let now = 1_000
+  const result = await activateMacosApplicationAndConfirmWindow(makeSnapshot(), {
+    activateApplication: async () => true,
+    enumerateWindows: async () => ({
+      windows: [makeWindow({
+        windowNumber: 101,
+        bounds: { x: 900, y: 0, width: 800, height: 600 }
+      })],
+      frontmostWindowNumber: 101,
+      frontmostPid: 4242
+    }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.deepEqual(result, {
+    activated: true,
+    confirmed: false,
+    outcome: 'failed',
+    windowCount: 1,
+    windowMatched: false
+  })
+})
 
 /**
  * 校验窗口枚举超时足以覆盖 helper 进程冷启动与 CGWindowList 查询。
@@ -1064,6 +1242,83 @@ test('弹窗交还失败时必须真正安全让出前台', () => {
 })
 
 /**
+ * 校验进程级激活 helper 包装只在原生确认激活后返回成功。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活 helper 包装应解析原生激活结果', async () => {
+  const source = readFileSync('src/main/macosWindowActivation.ts', 'utf8')
+  const functionSource = stripComments(
+    extractFunction(source, 'export async function activateMacosApplication(')
+  )
+  assert.match(functionSource, /runWindowHelper\(\['activate', String\(pid\)\]\)/u,
+    '必须调用 helper 的 activate 子命令')
+  assert.match(functionSource, /run\.ok && run\.value\.activated === true/u,
+    '只有 helper 明确确认 activated 时才能返回成功')
+})
+
+/**
+ * 校验弹窗在 Chrome 多窗口 AX 激活失败时先尝试进程级激活，避免整应用恢复置前设置页。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗精确激活失败时应先按源进程激活并确认失活', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+
+  // 真机日志：Chrome 已匹配到目标窗口，但 AX focused/raise 均失败，随后
+  // app.hide()→app.show() 把后台设置页恢复到了最前。进程级激活不要求 AX，
+  // 应先于整应用兜底执行；只有它也未确认失活时才允许安全让出。
+  assert.match(
+    source,
+    /restoreFrontmostForPopup\(target\)/u,
+    '弹窗交还必须复用带进程级兜底的统一恢复入口'
+  )
+  assert.match(
+    source,
+    /if \(restored\)[\s\S]*?finish\(true,\s*'popup-front-restored'\)[\s\S]*?finish\(false\)/u,
+    '统一恢复成功后才允许收尾，未确认成功时才允许进入安全让出'
+  )
+  assert.doesNotMatch(
+    source,
+    /if \(!activation\.activated\)\s*\{\s*finish\(false\)\s*;?\s*return\s*\}\s*if \(!activation\.activated\)/u,
+    '精确激活失败不得立即进入 app.hide()/app.show() 兜底'
+  )
+})
+
+/**
+ * 校验弹窗 AX raise 已发出但未确认时仍必须执行进程级兜底。
+ *
+ * Chrome 真机日志只出现 `window-helper op=focused/raise failed`，但真实系统里
+ * AXRaise 也可能返回成功却迟迟没有确认 focused/frontmost。此时仅看
+ * `activation.activated` 会误以为交还正在进行，最终仍退化到 app.hide()/app.show()。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗 AX 已发出但未确认时必须执行进程级兜底', () => {
+  const restoreSource = stripComments(
+    extractFunction(macForegroundSource, 'async function restoreFrontmostForPopup(')
+  )
+
+  assert.match(
+    restoreSource,
+    /isExactWindowActivationConfirmed\(activation\)/u,
+    '只有精确窗口确认成功时才能跳过进程级兜底'
+  )
+  assert.match(
+    restoreSource,
+    /activateMacosApplicationAndWaitForDeactivation\(target\.pid,\s*\{[\s\S]*?activateApplication:\s*activateMacosApplication[\s\S]*?isAppActive:\s*isMacAppActiveByEvents[\s\S]*?now:\s*Date\.now[\s\S]*?sleep:/u,
+    '未精确确认时必须按源 pid 激活并显式注入失活确认依赖'
+  )
+  assert.doesNotMatch(
+    restoreSource,
+    /if \(!activation\.activated\)\s*\{[\s\S]*?activateMacosApplicationAndWaitForDeactivation/u,
+    '进程级兜底不能只覆盖 activated=false 的 AX 失败'
+  )
+})
+
+/**
  * 校验交还结果区分“已发出激活”与“已确认交还”。
  * 确认超时只能用于避免复制链路重复激活，不能声明 key window 已经交还。
  * @returns 无返回值。
@@ -1156,6 +1411,22 @@ test('窗口 helper 的 raise 不应在原生侧立即自证 focused window', ()
   const raiseSource = source.slice(raiseStart, raiseEnd)
   assert.doesNotMatch(raiseSource, /CopyFocusedWindowNumber/u,
     'focused window 确认应由 Node 侧在 200ms 内轮询完成')
+})
+
+/**
+ * 校验窗口 helper 提供不提升全部窗口的进程级激活子命令。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口 helper 应提供不提升全部窗口的进程级激活子命令', () => {
+  const source = readFileSync('helpers/macos-window-helper/main.m', 'utf8')
+  const code = stripComments(source)
+  assert.match(source, /activate <pid>/u, 'helper 说明必须声明 activate 子命令')
+  assert.match(code, /NSRunningApplication/u, '进程级激活必须定位已运行的源应用')
+  assert.match(code, /activateWithOptions:0/u, '必须使用不附带 AllWindows 选项的进程级激活')
+  assert.match(code, /\[command isEqualToString:@"activate"\]/u, 'helper 入口必须处理 activate 子命令')
+  assert.doesNotMatch(code, /NSApplicationActivateAllWindows/u,
+    '不得提升源进程全部窗口，否则 Chrome 多窗口仍会切错窗口')
 })
 
 /**
@@ -1344,6 +1615,9 @@ test('弹窗隐藏完成后必须复核并恢复被抢回的源窗口', () => {
   const source = stripComments(
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
+  const restoreSource = stripComments(
+    extractFunction(macForegroundSource, 'async function restoreFrontmostForPopup(')
+  )
 
   // 必须保留本次 target，不能只依赖已被消费的 pendingReturnApp。
   assert.match(
@@ -1363,12 +1637,54 @@ test('弹窗隐藏完成后必须复核并恢复被抢回的源窗口', () => {
   )
   assert.match(
     source,
-    /activateFrontmostSnapshot\(target\)/u,
-    '被抢回时必须再次精确恢复同一源窗口'
+    /restoreFrontmostForPopup\(target\)/u,
+    '被抢回时必须复用带进程级兜底的同一源应用恢复入口'
   )
   assert.doesNotMatch(
-    source,
+    restoreSource,
     /\.focus\(\)|\.moveTop\(\)/u,
     '复核与恢复不得聚焦或置前设置页'
+  )
+})
+
+/**
+ * 校验隐藏后复核不会退回只做 AX 重试。
+ *
+ * 进程级激活虽然不依赖 AX，但隐藏弹窗本身仍可能让本应用重新置前。复核阶段
+ * 若只重试 AX，会再次遇到 Chrome focused/raise 失败，设置页仍会被系统提升。
+ * 主交还路径与延迟复核必须共享同一个带进程级兜底的恢复函数。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗隐藏后复核必须复用带进程级兜底的恢复入口', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  const restoreSource = stripComments(
+    extractFunction(macForegroundSource, 'async function restoreFrontmostForPopup(')
+  )
+  const restoreCalls = source.match(/restoreFrontmostForPopup\(target\)/gu) ?? []
+  const recheckStart = source.indexOf('if (keyWindowIsPopup) {\n        setTimeout')
+  const recheckEnd = source.indexOf('}, POST_HIDE_FRONT_RECHECK_DELAY_MS)', recheckStart)
+  const recheckSource = recheckStart >= 0 && recheckEnd > recheckStart
+    ? source.slice(recheckStart, recheckEnd)
+    : ''
+
+  assert.ok(restoreCalls.length >= 2,
+    '首次交还与隐藏后复核都必须调用统一恢复入口')
+  assert.match(
+    restoreSource,
+    /activateMacosApplicationAndWaitForDeactivation\(/u,
+    '统一恢复入口必须包含进程级激活兜底'
+  )
+  assert.match(
+    recheckSource,
+    /restoreFrontmostForPopup\(target\)/u,
+    '延迟复核必须调用统一恢复入口'
+  )
+  assert.doesNotMatch(
+    recheckSource,
+    /void activateFrontmostSnapshot\(target\)/u,
+    '弹窗延迟复核不得绕过进程级兜底直接重试 AX'
   )
 })

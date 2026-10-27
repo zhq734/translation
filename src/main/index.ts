@@ -253,6 +253,7 @@ import type {
 import { WebReaderManager } from './webReaderWindow'
 import { resolveMacOSDockPresentation, type MacOSDockPresentation } from './dockVisibility'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
+import { suspendSettingsWindowFocusForPopupHide } from './settingsWindowPopupHideGuard'
 import {
   buildLinuxAutostartEntry,
   buildLoginItemSettings,
@@ -711,6 +712,48 @@ function suppressSelectionActivationWindowGap(): void {
 }
 
 /**
+ * 处理翻译弹窗关闭生命周期的内部窗口收尾。
+ *
+ * 关闭开始与真实隐藏完成时都必须续期划词 activate 抑制，并立即回收设置页
+ * 临时提升的层级，防止异步前台交还期间或隐藏后的迟到 activate 把设置页置前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupInternalWindowTransition(): void {
+  suppressSelectionActivationWindowGap()
+  lowerSettingsPanelRaiseLevel()
+}
+
+/** 当前翻译弹窗隐藏期间持有的设置页焦点恢复函数；未启用保护时为 null。 */
+let restoreSettingsWindowFocusAfterPopupHide: (() => void) | null = null
+
+/**
+ * 在翻译弹窗真实隐藏前暂时撤销设置页的 key window 候选资格。
+ *
+ * 仅覆盖 win.hide() 前后的同步窗口期，避免 macOS 把同应用后台设置页提升到最前；
+ * 不参与取词生命周期，也不使用定时器或异步恢复。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function suspendSettingsWindowFocusBeforePopupHide(): void {
+  restoreSettingsWindowFocusAfterPopupHide?.()
+  restoreSettingsWindowFocusAfterPopupHide = suspendSettingsWindowFocusForPopupHide(
+    process.platform,
+    settingsWin
+  )
+}
+
+/**
+ * 在翻译弹窗真实隐藏后恢复设置页的 key window 候选资格。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreSettingsWindowFocusAfterPopupHideCallback(): void {
+  restoreSettingsWindowFocusAfterPopupHide?.()
+  restoreSettingsWindowFocusAfterPopupHide = null
+}
+
+/**
  * 判断当前是否处于划词置前保护期。
  *
  * 划词手势结束到按钮/弹窗状态生效之间存在短暂空档，activate 判定可能呈现
@@ -885,7 +928,7 @@ function loadMacOSDockIcon(): NativeImage {
 }
 
 /**
- * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性，并保留当前可见的设置窗口。
+ * 根据用户设置和常规窗口状态成对切换 macOS 激活策略与 Dock 图标可见性。
  * regular 策略必须显示 Dock，accessory 策略必须隐藏 Dock；用户开启功能且任一常规窗口存在时显示图标。
  * 设置窗口关闭但网页翻译窗口仍打开时必须保持当前激活策略，避免重排窗口层级把翻译页压到最下层。
  * @param showDockIcon 用户保存的 Dock 图标设置。
@@ -896,8 +939,7 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
   // 划词保护期内必须完全推迟 Dock 呈现切换：setActivationPolicy()/dock.hide()
-  // 会重排窗口层级，dock.show() 会激活整个应用，而 showInactive() 恢复设置页
-  // 在 panel 上等价于 orderFrontRegardless，同样会把设置页顶到前台应用之上。
+  // 会重排窗口层级，dock.show() 会激活整个应用，均可能把设置页顶到前台应用之上。
   if (isSelectionWindowRaiseGuardActive()) {
     scheduleMacOSDockVisibilityAfterSelectionGuard()
     return
@@ -908,14 +950,13 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
     webReaderOpen: webReaderWindowOpen
   })
   // 呈现方式没有变化时必须直接返回：关闭网页翻译等场景会重复刷新 Dock 状态，
-  // 重复切换激活策略会再次隐藏窗口，迫使下面的保留逻辑把设置页重新显示并聚焦。
+  // 重复切换激活策略会再次重排窗口层级，可能把设置页顶到前台应用之上。
   if (
     appliedMacOSDockPresentation?.policy === presentation.policy &&
     appliedMacOSDockPresentation.dockVisible === presentation.dockVisible
   ) {
     return
   }
-  const settingsWindowToPreserve = settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() ? settingsWin : null
   app.setActivationPolicy(presentation.policy)
   if (presentation.dockVisible) {
     try {
@@ -939,17 +980,6 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
   }
   await app.dock?.hide()
   appliedMacOSDockPresentation = presentation
-  if (
-    settingsWindowToPreserve &&
-    settingsWin === settingsWindowToPreserve &&
-    !settingsWindowToPreserve.isDestroyed()
-  ) {
-    // 内部刷新只负责恢复窗口可见性，绝不置前或聚焦设置页。
-    // 划词监听、窗口状态变化等内部路径可能恰好在交互状态短暂回到 idle 时触发；
-    // 若这里调用统一置前入口，就会把设置页越过用户当前应用和翻译弹窗拉到最前。
-    // 显式入口（启动首开、Dock、托盘、弹窗内打开设置）会自行置前，不依赖本函数。
-    settingsWindowToPreserve.showInactive()
-  }
 }
 
 /**
@@ -1325,7 +1355,10 @@ async function onReady(): Promise<boolean> {
   )
   createPopup(PRELOAD_PATH,
     suppressSelectionActivationWindowGap,
-    () => pronunciationRequests.cancelAll()
+    () => pronunciationRequests.cancelAll(),
+    handlePopupInternalWindowTransition,
+    suspendSettingsWindowFocusBeforePopupHide,
+    restoreSettingsWindowFocusAfterPopupHideCallback
   )
   createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())

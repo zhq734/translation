@@ -5,6 +5,7 @@
  *   list <pid>               输出该进程普通窗口与全局最前普通窗口的 JSON 对象
  *   raise <pid> <windowNumber> 通过 AXRaise 提升指定窗口（焦点确认由 Node 侧轮询）
  *   focused <pid>            输出该进程当前 focused window 编号
+ *   activate <pid>           按进程激活源应用，不提升该应用的全部窗口
  *
  * 所有输出均为单行 JSON；失败时输出 {"ok":false} 并以非零退出码结束。
  * list 只读取 CGWindowList，不等待目标应用的 AX 响应；标题仅用于本地窗口匹配，
@@ -13,6 +14,7 @@
  * @author zhenghq
  */
 #import <ApplicationServices/ApplicationServices.h>
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
 /**
@@ -186,6 +188,23 @@ static BOOL RaiseWindow(pid_t pid, NSNumber *windowNumber) {
 }
 
 /**
+ * 按进程激活已运行的源应用。
+ *
+ * Chrome 多窗口场景下 AX focused/raise 可能不可用，但进程级激活仍可把前台
+ * 交还给源应用。这里刻意不传 NSApplicationActivateAllWindows，避免把源进程
+ * 的其它窗口一并提升到最前。
+ * @param pid 目标进程号。
+ * @return 已向系统发出激活请求时返回 true。
+ * @author zhenghq
+ */
+static BOOL ActivateApplication(pid_t pid) {
+  NSRunningApplication *application =
+    [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+  if (!application) return NO;
+  return [application activateWithOptions:0];
+}
+
+/**
  * 输出指定进程当前 focused window 编号。
  * @param pid 目标进程号。
  * @return 无返回值。
@@ -248,6 +267,11 @@ int main(int argc, const char *argv[]) {
     if ([command isEqualToString:@"focused"]) {
       WriteFocusedWindow(pid);
       return 0;
+    }
+    if ([command isEqualToString:@"activate"]) {
+      BOOL activated = ActivateApplication(pid);
+      WriteJSON(@{@"ok": @YES, @"activated": @(activated)});
+      return activated ? 0 : 1;
     }
     WriteJSON(@{@"ok": @NO});
     return 2;
