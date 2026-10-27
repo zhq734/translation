@@ -6,6 +6,7 @@ import {
   isWindows7CompatibilityRuntime
 } from '../src/main/platformCompatibility.ts'
 import { createTimeoutSignal } from '../src/main/abortCompatibility.ts'
+import { normalizeAsarEntries } from '../scripts/win7-asar-paths.mjs'
 
 /**
  * 读取项目内文本文件。
@@ -154,6 +155,23 @@ test('Win7 构建配置固定 Electron 22、仅 x64 且不生成更新清单', (
   assert.match(script, /dist-win7/u)
   assert.match(config, /files:[\s\S]*out\/\*\*\/\*[\s\S]*uiohook-napi/u)
   assert.match(config, /asarUnpack:[\s\S]*uiohook-napi/u)
+})
+
+test('Win7 产物校验必须把 Windows asar 路径统一为 POSIX 形式', () => {
+  assert.deepEqual(
+    normalizeAsarEntries([
+      '\\out\\main\\updateManager-abc.js',
+      '\\node_modules\\tesseract.js\\package.json'
+    ]),
+    [
+      '/out/main/updateManager-abc.js',
+      '/node_modules/tesseract.js/package.json'
+    ]
+  )
+  assert.deepEqual(
+    normalizeAsarEntries(['/out/main/index.js', 'out/main/ocrDispatcher-def.js']),
+    ['/out/main/index.js', '/out/main/ocrDispatcher-def.js']
+  )
 })
 
 test('Win7 打包配置保留 Tesseract WASM 运行时并排除原生 OCR 与 electron-updater', () => {

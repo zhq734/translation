@@ -13,6 +13,7 @@ import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { listPackage } from '@electron/asar'
+import { normalizeAsarEntries } from './win7-asar-paths.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outputDirectory = join(root, 'dist-win7')
@@ -235,7 +236,7 @@ function verifyWin7Package() {
     throw new Error(`Win7 包中的 Windows UIA helper 体积异常：${statSync(helperPath).size} 字节`)
   }
   verifyBundledTessdata()
-  const entries = listPackage(asarPath)
+  const entries = normalizeAsarEntries(listPackage(asarPath))
   const forbidden = entries.filter((entry) =>
     forbiddenAsarPrefixes.some((prefix) => entry === prefix || entry.startsWith(`${prefix}/`)) ||
     isForbiddenRuntimePath(entry)
