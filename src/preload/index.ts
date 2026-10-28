@@ -56,25 +56,6 @@ function getSelectionTranslatorLocale(): Locale {
 
 contextBridge.exposeInMainWorld('getSelectionTranslatorLocale', getSelectionTranslatorLocale)
 
-/**
- * 同步读取主进程是否启用 Windows 7 兼容外观。
- * @returns 当前运行时启用 Win7 兼容模式时返回 true。
- * @author zhenghq
- */
-function getSelectionTranslatorWin7Compatibility(): boolean {
-  try {
-    return ipcRenderer.sendSync('app:get-win7-compatibility') === true
-  } catch {
-    // 同步通道不可用时保持现代系统外观，避免 preload 异常阻断其余 API。
-    return false
-  }
-}
-
-contextBridge.exposeInMainWorld(
-  'getSelectionTranslatorWin7Compatibility',
-  getSelectionTranslatorWin7Compatibility
-)
-
 const api: Api = {
   /**
    * 最小化当前受信任窗口。
@@ -179,14 +160,6 @@ const api: Api = {
    */
   copy(text: string) {
     ipcRenderer.send('popup:copy', text)
-  },
-  /**
-   * 读取系统剪贴板中的纯文本。
-   * @returns 剪贴板文本；无文本时返回空字符串。
-   * @author zhenghq
-   */
-  readClipboardText(): Promise<string> {
-    return ipcRenderer.invoke('clipboard:read-text')
   },
   /**
    * 查询单个英文单词的 IPA 音标。

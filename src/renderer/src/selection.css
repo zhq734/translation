@@ -40,25 +40,6 @@ body {
   transform: scale(0.96);
 }
 
-/* Win7 透明窗口可能在小图标四周合成黑边，兼容模式改用不透明平面外观。 */
-:root[data-win7-compatibility='true'],
-:root[data-win7-compatibility='true'] html,
-:root[data-win7-compatibility='true'] body {
-  background: var(--panel-bg);
-}
-
-:root[data-win7-compatibility='true'] #translate {
-  border-radius: 0;
-  background: var(--panel-bg);
-}
-
-/* OCR 覆盖层需要透出屏幕快照；Win7 的不透明图标背景只服务于普通“译”按钮状态。 */
-:root[data-win7-compatibility='true'][data-ocr-mode='true'],
-:root[data-win7-compatibility='true'][data-ocr-mode='true'] html,
-:root[data-win7-compatibility='true'][data-ocr-mode='true'] body {
-  background: transparent;
-}
-
 .ocr-overlay {
   position: fixed;
   inset: 0;

@@ -1115,8 +1115,6 @@ export interface Api {
   /** 请求主进程显示并固定手动翻译模式。 */
   openManualTranslate(): void
   copy(text: string): void
-  /** 读取系统剪贴板中的纯文本，供手动翻译右键快速粘贴。 */
-  readClipboardText(): Promise<string>
   hide(): void
   /** 请求主进程按内容自然尺寸调整弹窗大小。 */
   resizePopup(size: PopupAutoSizeRequest): void

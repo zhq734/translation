@@ -6,7 +6,6 @@ import {
   completeManualTranslation,
   createManualTranslationState,
   failManualTranslation,
-  insertManualClipboardText,
   updateManualDraft,
   validateManualTranslationText
 } from '../src/shared/manualTranslationBehavior.ts'
@@ -52,30 +51,4 @@ test('翻译中禁止重复提交，失败后保留草稿并允许再次提交',
   assert.equal(state.draft, 'retry me')
   assert.equal(state.error, '网络失败')
   assert.equal(canSubmitManualTranslation(state), true)
-})
-
-test('右键粘贴文本应替换当前选区并把光标放到插入内容之后', () => {
-  assert.deepEqual(insertManualClipboardText('hello world', '翻译', 6, 11), {
-    value: 'hello 翻译',
-    cursor: 8,
-    changed: true
-  })
-  assert.deepEqual(insertManualClipboardText('前后', '中间', 1, 1), {
-    value: '前中间后',
-    cursor: 3,
-    changed: true
-  })
-})
-
-test('右键粘贴应忽略空剪贴板并把总长度截断到 5000 字符', () => {
-  assert.deepEqual(insertManualClipboardText('原文', '  ', 1, 1), {
-    value: '原文',
-    cursor: 1,
-    changed: false
-  })
-  const result = insertManualClipboardText('a'.repeat(4998), 'bcdef', 4998, 4998)
-  assert.equal(result.value.length, 5000)
-  assert.equal(result.value, `${'a'.repeat(4998)}bc`)
-  assert.equal(result.cursor, 5000)
-  assert.equal(result.changed, true)
 })

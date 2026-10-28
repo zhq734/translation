@@ -10,7 +10,6 @@ import {
   clearManualTranslation,
   createManualTranslationState,
   failManualTranslation,
-  insertManualClipboardText,
   updateManualDraft,
   validateManualTranslationText,
   type ManualTranslationState
@@ -54,7 +53,6 @@ import {
 } from './edgeSpeechPlayback'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
-import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 import {
   beginPronunciationLookup,
   closePronunciationCard,
@@ -74,7 +72,6 @@ import {
 } from './pronunciationPlayback'
 import { startPronunciationSpeechFallback } from './pronunciationSpeechFallback'
 
-applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 
@@ -2140,45 +2137,6 @@ function handleManualSourceKeydown(event: KeyboardEvent): void {
 }
 
 /**
- * 处理手动输入框右键：读取剪贴板、替换选区并自动提交翻译。
- *
- * 右键不展示原生菜单，避免用户还需要再点一次粘贴；空白剪贴板只恢复焦点，
- * 不覆盖已有草稿，也不发起无效请求。
- * @param event 当前鼠标事件。
- * @returns 剪贴板读取和处理完成后的 Promise。
- * @author zhenghq
- */
-async function handleManualSourceContextMenu(event: MouseEvent): Promise<void> {
-  event.preventDefault()
-  // 鼠标事件结束后焦点或选区可能变化，先固定本次右键位置，再异步读取剪贴板。
-  const selectionStart = manualSourceEl.selectionStart ?? manualSourceEl.value.length
-  const selectionEnd = manualSourceEl.selectionEnd ?? selectionStart
-  let clipboardText = ''
-  try {
-    clipboardText = await window.api.readClipboardText()
-  } catch {
-    manualSourceEl.focus()
-    return
-  }
-  const insertion = insertManualClipboardText(
-    manualSourceEl.value,
-    clipboardText,
-    selectionStart,
-    selectionEnd
-  )
-  if (!insertion.changed) {
-    manualSourceEl.focus()
-    manualSourceEl.setSelectionRange(insertion.cursor, insertion.cursor)
-    return
-  }
-  manualState = updateManualDraft(manualState, insertion.value)
-  renderManualState()
-  manualSourceEl.focus()
-  manualSourceEl.setSelectionRange(insertion.cursor, insertion.cursor)
-  void submitManualTranslation()
-}
-
-/**
  * 处理弹窗级 Escape 关闭。
  * @param event 当前键盘事件。
  * @returns 无返回值。
@@ -2362,7 +2320,6 @@ manualClearBtn.addEventListener('click', () => {
 })
 manualSubmitBtn.addEventListener('click', () => void submitManualTranslation())
 manualSourceEl.addEventListener('keydown', handleManualSourceKeydown)
-manualSourceEl.addEventListener('contextmenu', handleManualSourceContextMenu)
 copyBtn.addEventListener('click', copyTranslation)
 manualCopyBtn.addEventListener('click', copyTranslation)
 ocrCopyBtn.addEventListener('click', () => {
