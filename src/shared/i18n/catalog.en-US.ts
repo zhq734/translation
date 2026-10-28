@@ -10,6 +10,7 @@ import { ocrEnUS } from './catalog.en-US.ocr.ts'
 import { speechEnUS } from './catalog.en-US.speech.ts'
 import { rendererSpeechEnUS } from './catalog.en-US.rendererSpeech.ts'
 import { webReaderEnUS } from './catalog.en-US.webReader.ts'
+import { documentEnUS } from './catalog.en-US.document.ts'
 
 /**
  * 英文界面词条目录。
@@ -26,5 +27,6 @@ export const enUSCatalog = defineCatalog({
   ...ocrEnUS,
   ...speechEnUS,
   ...rendererSpeechEnUS,
-  ...webReaderEnUS
+  ...webReaderEnUS,
+  ...documentEnUS
 })

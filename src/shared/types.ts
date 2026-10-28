@@ -9,8 +9,77 @@ import type {
 } from './webPageTranslation'
 
 import type { UiLocale } from './i18n/locale'
+import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
+import type { DocumentPlatformCapability } from './documentPlatformCapability'
+import type {
+  DocumentAssetResult,
+  DocumentExportResult,
+  DocumentRunRequest,
+  DocumentRunResult,
+  DocumentSourceResult,
+  DocumentWorkspaceSnapshot
+} from './documentWorkspace'
 
 export type { ExtractedWebTextUnit, WebImageOverlayPlacement, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
+export type {
+  DocumentCapabilities,
+  DocumentFormat
+} from './documentTypes'
+export type { DocumentPlatformCapability } from './documentPlatformCapability'
+export type {
+  DocumentAssetResult,
+  DocumentExportResult,
+  DocumentRunRequest,
+  DocumentRunResult,
+  DocumentSourceResult,
+  DocumentWorkspaceSnapshot
+} from './documentWorkspace'
+
+/** 文档文件选择成功结果，只向 Renderer 暴露校验后的元数据。 */
+export interface DocumentFileSelectionSuccess {
+  /** 选择成功。 */
+  status: 'selected'
+  /** 用户选择的本地文件绝对路径。 */
+  path: string
+  /** 文件名，用于界面展示。 */
+  fileName: string
+  /** 文件字节数。 */
+  size: number
+  /** 已校验的文档格式。 */
+  format: DocumentFormat
+  /** 当前格式可用的解析、OCR 与导出能力。 */
+  capabilities: DocumentCapabilities
+}
+
+/** 用户取消文件选择。 */
+export interface DocumentFileSelectionCancelled {
+  /** 用户主动取消。 */
+  status: 'cancelled'
+}
+
+/** 文件在选择阶段被拒绝的稳定分类。 */
+export type DocumentFileSelectionRejectionCode =
+  | 'unsupported-format'
+  | 'invalid-header'
+  | 'empty-file'
+  | 'too-large'
+  | 'unreadable'
+
+/** 文件在选择阶段被拒绝；不得携带路径、文件对象或任务字段。 */
+export interface DocumentFileSelectionRejected {
+  /** 文件未通过校验。 */
+  status: 'rejected'
+  /** 可本地化的稳定错误分类。 */
+  code: DocumentFileSelectionRejectionCode
+  /** 扩展名可识别时返回的格式。 */
+  format?: DocumentFormat
+}
+
+/** 文档文件选择结果。 */
+export type DocumentFileSelectionResult =
+  | DocumentFileSelectionSuccess
+  | DocumentFileSelectionCancelled
+  | DocumentFileSelectionRejected
 
 /** 划词后的弹窗触发方式。 */
 export type TriggerMode = 'auto' | 'button' | 'hotkey'
@@ -712,6 +781,8 @@ export interface Settings {
   manualTranslationHotkey: string
   /** 全局网页阅读器快捷键，空字符串表示不注册。 */
   webReaderHotkey: string
+  /** 全局文档翻译快捷键，空字符串表示不注册。 */
+  documentTranslationHotkey: string
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
@@ -786,7 +857,7 @@ export interface Settings {
 }
 
 /** 可注册的全局快捷键字段标识。 */
-export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey'
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
 
 /** 单个全局快捷键的注册状态。 */
 export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
@@ -1115,11 +1186,39 @@ export interface Api {
   /** 请求主进程显示并固定手动翻译模式。 */
   openManualTranslate(): void
   copy(text: string): void
+  /** 读取系统剪贴板中的纯文本，供手动翻译右键快速粘贴。 */
+  readClipboardText(): Promise<string>
   hide(): void
   /** 请求主进程按内容自然尺寸调整弹窗大小。 */
   resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 打开或聚焦独立文档翻译工作台。 */
+  openDocumentWorkspace(): void
+  /** 通过主进程文件选择器导入并校验一个本地文档。 */
+  selectDocumentFile(): Promise<DocumentFileSelectionResult>
+  /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
+  approveDocumentFile(path: string): Promise<DocumentFileSelectionResult>
+  /** 查询当前平台是否允许启用文档翻译。 */
+  getDocumentPlatformCapability(): Promise<DocumentPlatformCapability>
+  /** 启动当前已批准文件的翻译任务。 */
+  runDocument(request: DocumentRunRequest): Promise<DocumentRunResult>
+  /** 使用新代际重新翻译当前文档中的失败项。 */
+  retryFailedDocument(generation: number): Promise<DocumentRunResult>
+  /** 取消当前文档翻译任务。 */
+  cancelDocument(jobId: string, generation: number): Promise<boolean>
+  /** 将当前译文导出为 PDF。 */
+  exportDocumentPdf(): Promise<DocumentExportResult>
+  /** 读取当前任务中的受控图片资源。 */
+  getDocumentAsset(assetId: string): Promise<DocumentAssetResult>
+  /** 读取当前活动 PDF 任务的原始字节，供 PDF.js 原生预览。 */
+  getDocumentSource(): Promise<DocumentSourceResult>
+  /** 订阅文档翻译进度。 */
+  onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
+  /** 订阅文档翻译终态。 */
+  onDocumentCompleted(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
+  /** 从 Electron 拖放 File 对象读取受信任的本地路径。 */
+  getDocumentDroppedFilePath(file: File): string
   /** 打开内置网页翻译阅读器。 */
   openWebReader(url?: string): void
   /** 关闭内置网页翻译阅读器。 */

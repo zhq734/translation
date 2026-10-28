@@ -20,6 +20,25 @@ test('顶部应使用统一的手动、朗读和钉住图标按钮顺序', () =>
   assert.doesNotMatch(html, /id="manual-mode"[\s\S]*?>\s*手动\s*<\/button>/u)
 })
 
+/**
+ * 校验手动翻译与文档翻译使用不同语义的线性图标，避免两个入口视觉混淆。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('手动翻译与文档翻译图标应使用不同语义且保持统一图标规范', () => {
+  const manual = html.match(/<svg class="header-action-icon manual-icon"[\s\S]*?<\/svg>/u)?.[0]
+  const document = html.match(/<svg class="header-action-icon document-translation-icon"[\s\S]*?<\/svg>/u)?.[0]
+
+  assert.ok(manual, '缺少手动翻译图标')
+  assert.ok(document, '缺少文档翻译图标')
+  assert.notEqual(manual, document)
+  assert.match(manual, /<rect[^>]+rx=/u, '手动翻译图标应使用键盘轮廓表达手动输入')
+  assert.doesNotMatch(manual, /M14 3H6/u, '手动翻译不应继续复用文档轮廓')
+  assert.match(document, /<path[^>]+M6 2\.5h7\.5L18\.5 7\.5v14h-12\.5Z/u, '文档翻译应保留文档轮廓')
+  assert.match(document, /<path[^>]+M8\.5 11\.5h7/u, '文档翻译应使用双向箭头表达翻译')
+  assert.match(document, /<path[^>]+M15\.5 17H8\.5/u, '文档翻译应使用双向箭头表达翻译')
+})
+
 test('语音按钮应复用统一图标尺寸和主题样式', () => {
   assert.match(styles, /\.header-action-button\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*border-radius:\s*9px;/su)
   assert.match(styles, /\.header-action-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*stroke:\s*currentColor;/su)

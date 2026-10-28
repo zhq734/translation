@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { Locale } from '../shared/i18n/locale'
 import type {
   Api,
@@ -41,6 +41,14 @@ import type {
   WebViewBounds,
   CaptureDiagnosticsSummary,
   GlobalShortcutRegistrationState
+  , DocumentFileSelectionResult
+  , DocumentPlatformCapability
+  , DocumentAssetResult
+  , DocumentExportResult
+  , DocumentRunRequest
+  , DocumentRunResult
+  , DocumentSourceResult
+  , DocumentWorkspaceSnapshot
 } from '../shared/types'
 
 /** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
@@ -55,6 +63,25 @@ function getSelectionTranslatorLocale(): Locale {
 }
 
 contextBridge.exposeInMainWorld('getSelectionTranslatorLocale', getSelectionTranslatorLocale)
+
+/**
+ * 同步读取主进程是否启用 Windows 7 兼容外观。
+ * @returns 当前运行时启用 Win7 兼容模式时返回 true。
+ * @author zhenghq
+ */
+function getSelectionTranslatorWin7Compatibility(): boolean {
+  try {
+    return ipcRenderer.sendSync('app:get-win7-compatibility') === true
+  } catch {
+    // 同步通道不可用时保持现代系统外观，避免 preload 异常阻断其余 API。
+    return false
+  }
+}
+
+contextBridge.exposeInMainWorld(
+  'getSelectionTranslatorWin7Compatibility',
+  getSelectionTranslatorWin7Compatibility
+)
 
 const api: Api = {
   /**
@@ -162,6 +189,14 @@ const api: Api = {
     ipcRenderer.send('popup:copy', text)
   },
   /**
+   * 读取系统剪贴板中的纯文本。
+   * @returns 剪贴板文本；无文本时返回空字符串。
+   * @author zhenghq
+   */
+  readClipboardText(): Promise<string> {
+    return ipcRenderer.invoke('clipboard:read-text')
+  },
+  /**
    * 查询单个英文单词的 IPA 音标。
    * @param word 已由 Renderer 识别出的英文单词。
    * @returns 主进程返回的脱敏音标结果。
@@ -224,6 +259,118 @@ const api: Api = {
    */
   openSettings() {
     ipcRenderer.send('settings:open')
+  },
+  /**
+   * 打开或聚焦独立文档翻译工作台。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  openDocumentWorkspace() {
+    ipcRenderer.send('document:open')
+  },
+  /**
+   * 通过主进程文件选择器导入并校验一个本地文档。
+   * @returns 选择、取消或拒绝结果。
+   * @author zhenghq
+   */
+  selectDocumentFile: (): Promise<DocumentFileSelectionResult> =>
+    ipcRenderer.invoke('document:select-file'),
+  /**
+   * 重新校验拖放得到的本地路径，并在主进程登记为当前窗口可运行文件。
+   * @param path 拖放文件对应的本地绝对路径。
+   * @returns 选择、取消或拒绝结果。
+   * @author zhenghq
+   */
+  approveDocumentFile: (path: string): Promise<DocumentFileSelectionResult> =>
+    ipcRenderer.invoke('document:approve-file', path),
+  /**
+   * 查询当前平台是否允许启用文档翻译。
+   * @returns 平台能力结果。
+   * @author zhenghq
+   */
+  getDocumentPlatformCapability: (): Promise<DocumentPlatformCapability> =>
+    ipcRenderer.invoke('document:get-platform-capability'),
+  /**
+   * 启动当前文档窗口已批准文件的翻译任务。
+   * @param request 文件路径、任务代际与可选语言偏好。
+   * @returns 主进程是否接受任务。
+   * @author zhenghq
+   */
+  runDocument: (request: DocumentRunRequest): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:run', request),
+  /**
+   * 使用新代际重新翻译当前文档中的失败项。
+   * @param generation Renderer 生成的新任务代际。
+   * @returns 主进程是否接受重试。
+   * @author zhenghq
+   */
+  retryFailedDocument: (generation: number): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:retry-failed', generation),
+  /**
+   * 取消当前文档翻译任务。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否实际发出了取消请求。
+   * @author zhenghq
+   */
+  cancelDocument: (jobId: string, generation: number): Promise<boolean> =>
+    ipcRenderer.invoke('document:cancel', jobId, generation),
+  /**
+   * 将当前译文导出为 PDF。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  exportDocumentPdf: (): Promise<DocumentExportResult> =>
+    ipcRenderer.invoke('document:export-pdf'),
+  /**
+   * 读取当前任务中的受控图片资源。
+   * @param assetId 解析阶段生成的资源标识。
+   * @returns 资源字节或稳定错误分类。
+   * @author zhenghq
+   */
+  getDocumentAsset: (assetId: string): Promise<DocumentAssetResult> =>
+    ipcRenderer.invoke('document:get-asset', assetId),
+  /**
+   * 读取当前活动 PDF 任务的原始字节，供 PDF.js 原生预览。
+   * @returns 受控源文件读取结果。
+   * @author zhenghq
+   */
+  getDocumentSource: (): Promise<DocumentSourceResult> =>
+    ipcRenderer.invoke('document:get-source'),
+  /**
+   * 订阅文档翻译进度事件。
+   * @param callback 进度快照回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void) {
+    const listener = (_event: unknown, snapshot: DocumentWorkspaceSnapshot): void => callback(snapshot)
+    ipcRenderer.on('document:progress', listener)
+    return () => ipcRenderer.removeListener('document:progress', listener)
+  },
+  /**
+   * 订阅文档翻译终态事件。
+   * @param callback 终态快照回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onDocumentCompleted(callback: (snapshot: DocumentWorkspaceSnapshot) => void) {
+    const listener = (_event: unknown, snapshot: DocumentWorkspaceSnapshot): void => callback(snapshot)
+    ipcRenderer.on('document:completed', listener)
+    return () => ipcRenderer.removeListener('document:completed', listener)
+  },
+  /**
+   * 从 Electron 拖放 File 对象读取受信任的本地路径。
+   * @param file Renderer 拖放事件中的文件对象。
+   * @returns 文件绝对路径；非本地文件返回空字符串。
+   * @author zhenghq
+   */
+  getDocumentDroppedFilePath(file: File): string {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
   },
   /**
    * 打开内置网页翻译阅读器。

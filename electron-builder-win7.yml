@@ -49,6 +49,15 @@ files:
   - '!out/main/ocrModelAssets-*.js'
   - '!out/main/paddleOcr-*.js'
   - '!out/main/systemOcr-*.js'
+  - '!node_modules/pdfjs-dist/**/*'
+  - '!node_modules/canvas/**/*'
+  - '!node_modules/pdf-lib/**/*'
+  - '!node_modules/@pdf-lib/fontkit/**/*'
+  - '!node_modules/jszip/**/*'
+  - '!node_modules/mammoth/**/*'
+  - '!node_modules/fast-xml-parser/**/*'
+  - '!node_modules/path2d-polyfill/**/*'
+  - '!assets/fonts/**/*'
 asarUnpack:
   - node_modules/uiohook-napi/prebuilds/win32-x64/**/*
   - node_modules/@koromix/koffi-win32-x64/**/*

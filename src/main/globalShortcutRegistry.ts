@@ -2,7 +2,7 @@ import type { Settings } from '../shared/types'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 
 /** 可注册的全局快捷键字段标识。 */
-export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey'
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
 
 /** 单个全局快捷键的注册状态。 */
 export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
@@ -36,7 +36,8 @@ const SHORTCUT_IDS: GlobalShortcutId[] = [
   'hotkey',
   'ocrHotkey',
   'manualTranslationHotkey',
-  'webReaderHotkey'
+  'webReaderHotkey',
+  'documentTranslationHotkey'
 ]
 
 /**
@@ -118,4 +119,3 @@ export function collectShortcutRegistrationStates(
     }
   })
 }
-

@@ -18,7 +18,9 @@ import {
 } from './screenshotAnnotation'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
+import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 
+applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 
@@ -1503,6 +1505,7 @@ function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
   resetOcrSessionUi()
   currentOcrSessionId = payload.sessionId
   ocrMode = true
+  document.documentElement.setAttribute('data-ocr-mode', 'true')
   translateButton.hidden = true
   // 采集尚未完成：清掉上一次的背景图，避免残留旧画面误导用户。
   ocrOverlay.hidden = false
@@ -1521,6 +1524,7 @@ function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
 function leaveOcrSelectionMode(): void {
   resetOcrSessionUi()
   ocrMode = false
+  document.documentElement.removeAttribute('data-ocr-mode')
   // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
   renderSelectionRect(null)
 }

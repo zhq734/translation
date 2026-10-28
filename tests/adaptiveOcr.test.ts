@@ -4,6 +4,7 @@ import {
   recognizeAdaptiveOcr,
   type AdaptiveOcrDiagnostic
 } from '../src/main/adaptiveOcr.ts'
+import { decodePng, encodePng } from '../src/main/pngCodec.ts'
 import { OcrEngineError, type OcrRecognizeResult } from '../src/shared/ocrEngine.ts'
 
 /**
@@ -320,4 +321,43 @@ test('自适应 OCR 回退识别异常诊断应保留候选策略信息', async 
   assert.equal(failed.actualScale, 2)
   assert.equal(failed.selected, 'baseline')
   assert.ok((failed.elapsedMs ?? 0) > 0)
+})
+
+/**
+ * 校验文档预处理配置不会使用截图 OCR 的通用像素预算降采样扫描页。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文档 OCR 配置应向识别器提供原始扫描页尺寸', async () => {
+  const width = 800
+  const height = 700
+  const data = new Uint8Array(width * height * 4)
+  for (let offset = 0; offset < data.length; offset += 4) {
+    data[offset] = 240
+    data[offset + 1] = 240
+    data[offset + 2] = 240
+    data[offset + 3] = 255
+  }
+  let baselineWidth = 0
+  let baselineHeight = 0
+  const output = await recognizeAdaptiveOcr(
+    {
+      imageBytes: encodePng({ width, height, data }),
+      maxScale: 3,
+      language: 'zh',
+      preprocessingProfile: 'document'
+    },
+    {
+      recognize: async (imageBytes) => {
+        const baseline = decodePng(imageBytes)
+        baselineWidth = baseline.width
+        baselineHeight = baseline.height
+        return result('文档扫描页中文内容', 0.95)
+      }
+    }
+  )
+
+  assert.equal(output.text, '文档扫描页中文内容')
+  assert.equal(baselineWidth, width)
+  assert.equal(baselineHeight, height)
 })

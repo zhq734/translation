@@ -88,6 +88,57 @@ export function updateManualDraft(
   }
 }
 
+/** 右键粘贴后的输入框更新结果。 */
+export interface ManualClipboardInsertion {
+  /** 合并剪贴板内容后的完整草稿。 */
+  value: string
+  /** 插入内容末尾对应的光标位置。 */
+  cursor: number
+  /** 是否实际改变了输入内容。 */
+  changed: boolean
+}
+
+/**
+ * 将剪贴板文本插入手动翻译输入框的当前选区。
+ *
+ * 空白剪贴板不会触发翻译；超出上限的部分会被截断，同时保留选区之后的文本。
+ * @param current 当前输入框内容。
+ * @param clipboardText 主进程读取到的剪贴板文本。
+ * @param selectionStart 当前选区起点。
+ * @param selectionEnd 当前选区终点。
+ * @returns 合并后的内容、光标位置和是否发生变更。
+ * @author zhenghq
+ */
+export function insertManualClipboardText(
+  current: string,
+  clipboardText: string,
+  selectionStart: number,
+  selectionEnd: number
+): ManualClipboardInsertion {
+  const source = String(current ?? '')
+  const pasted = String(clipboardText ?? '')
+  const normalizedStart = Math.max(0, Math.min(selectionStart, source.length))
+  const normalizedEnd = Math.max(normalizedStart, Math.min(selectionEnd, source.length))
+  if (!pasted.trim()) {
+    return { value: source, cursor: normalizedStart, changed: false }
+  }
+  const selectedLength = normalizedEnd - normalizedStart
+  const availableLength = Math.max(
+    0,
+    MANUAL_TRANSLATION_MAX_CHARS - (source.length - selectedLength)
+  )
+  const inserted = pasted.slice(0, availableLength)
+  if (!inserted) {
+    return { value: source, cursor: normalizedStart, changed: false }
+  }
+  const value = `${source.slice(0, normalizedStart)}${inserted}${source.slice(normalizedEnd)}`
+  return {
+    value,
+    cursor: normalizedStart + inserted.length,
+    changed: value !== source
+  }
+}
+
 /**
  * 清空手动翻译原文和译文状态。
  * @param state 当前状态，仅用于保持状态转换调用形式一致。

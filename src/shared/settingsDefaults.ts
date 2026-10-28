@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkey: 'Alt+T',
   manualTranslationHotkey: 'Alt+M',
   webReaderHotkey: 'Alt+P',
+  documentTranslationHotkey: 'Alt+D',
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
@@ -212,6 +213,10 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     webReaderHotkey: normalizeShortcutSetting(
       rawSettings.webReaderHotkey,
       DEFAULT_SETTINGS.webReaderHotkey
+    ),
+    documentTranslationHotkey: normalizeShortcutSetting(
+      rawSettings.documentTranslationHotkey,
+      DEFAULT_SETTINGS.documentTranslationHotkey
     ),
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),

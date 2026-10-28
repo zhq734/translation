@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="document.windowTitle">Document Translation</title>
+    <script src="./localeBootstrap.js"></script>
+    <script src="./themeBootstrap.js"></script>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
+    <link rel="stylesheet" href="./src/document.css" />
+  </head>
+  <body>
+    <main class="document-shell">
+      <header id="document-titlebar" class="window-titlebar" data-i18n-attr="aria-label:document.titlebar" aria-label="Document translation window title bar">
+        <div class="window-titlebar-brand" data-i18n-attr="aria-label:document.brand" aria-label="Selection Translator document translation">
+          <span class="window-titlebar-mark" aria-hidden="true">译</span>
+          <span class="window-titlebar-title" data-i18n="document.windowTitle">Document Translation</span>
+        </div>
+        <div class="window-controls" data-i18n-attr="aria-label:common.windowControls" aria-label="Window controls">
+          <button id="window-minimize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.minimize;title:common.minimize" aria-label="Minimize" title="Minimize">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+          </button>
+          <button id="window-maximize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.maximize;title:common.maximize" aria-label="Maximize" title="Maximize">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>
+          </button>
+          <button id="window-close" class="window-control-button window-control-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+        <div class="document-tabs" role="tablist" data-i18n-attr="aria-label:document.tabs" aria-label="Document translation modes">
+          <button id="document-tab-single" class="document-tab" type="button" role="tab" aria-selected="true" aria-controls="document-upload-panel" data-i18n="document.tab.single">Single file</button>
+          <button id="document-tab-batch" class="document-tab" type="button" role="tab" aria-selected="false" aria-disabled="true" aria-controls="document-batch-panel" disabled>
+            <span data-i18n="document.tab.batch">Batch</span>
+            <span class="document-coming-soon" data-i18n="document.upload.batchComingSoon">Coming soon</span>
+          </button>
+        </div>
+        <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+          <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
+            <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
+          </label>
+          <span class="document-language-arrow" aria-hidden="true">→</span>
+          <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
+            <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
+          </label>
+        </div>
+        <div class="document-toolbar-actions">
+          <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry failed items</button>
+          <button id="document-history-button" class="document-secondary-button" type="button" data-i18n="document.history">History</button>
+        </div>
+      </nav>
+
+      <section id="document-upload-panel" class="document-upload-panel" role="tabpanel" aria-labelledby="document-tab-single">
+        <div class="document-upload-card">
+          <div class="document-upload-heading">
+            <span class="document-upload-icon" aria-hidden="true">↥</span>
+            <h1 data-i18n="document.upload.title">Translate a local document</h1>
+            <p data-i18n="document.upload.description">Choose a file to create a side-by-side source and translation workspace.</p>
+          </div>
+          <div id="document-drop-zone" class="document-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.upload.dropHint" aria-label="Choose or drop a document here">
+            <span class="document-drop-zone-icon" aria-hidden="true">⇪</span>
+            <strong data-i18n="document.upload.dropHint">Choose or drop a document here</strong>
+            <span class="document-drop-zone-action" data-i18n="document.upload.chooseFile">Choose file</span>
+            <span class="document-format-hint" data-i18n="document.upload.formats">Supports PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT and VTT</span>
+            <span class="document-privacy-hint" data-i18n="document.upload.privacy">Files are processed locally. Only extracted text is sent to the translation service.</span>
+          </div>
+          <input id="document-file-input" class="document-file-input" type="file" accept=".pdf,.docx,.epub,.html,.htm,.md,.markdown,.txt,.json,.csv,.srt,.vtt" hidden />
+          <div id="document-file-summary" class="document-file-summary" aria-live="polite" hidden>
+            <span class="document-file-summary-icon" aria-hidden="true">▤</span>
+            <div class="document-file-summary-copy">
+              <strong id="document-file-name"></strong>
+              <span id="document-file-detail"></span>
+            </div>
+            <button id="document-file-replace" class="document-text-button" type="button" data-i18n="document.upload.replace">Replace</button>
+          </div>
+          <p id="document-upload-status" class="document-upload-status" role="status" aria-live="polite"></p>
+          <button id="document-start-button" class="document-primary-button" type="button" data-i18n="document.upload.start" disabled>Translate document</button>
+        </div>
+      </section>
+
+      <section id="document-batch-panel" class="document-batch-panel" role="tabpanel" aria-labelledby="document-tab-batch" hidden>
+        <p data-i18n="document.upload.batchComingSoon">Coming soon</p>
+      </section>
+
+      <section id="document-workbench" class="document-workbench" hidden>
+            <div class="document-workbench-header">
+              <div class="document-file-identity">
+                <strong id="document-workbench-name"></strong>
+                <span id="document-workbench-meta"></span>
+              </div>
+              <div class="document-workbench-actions">
+                <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
+                <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.replace">Replace</button>
+                <button id="document-cancel-button" class="document-secondary-button" type="button" data-i18n="document.cancel" hidden>Cancel conversion</button>
+                <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
+              </div>
+            </div>
+        <div class="document-columns" data-i18n-attr="aria-label:document.comparison" aria-label="Source and translation comparison">
+          <section class="document-column" data-i18n-attr="aria-label:document.source" aria-label="Source document">
+            <header class="document-column-header">
+              <span data-i18n="document.source">Source</span>
+              <span id="document-source-page-count" class="document-column-meta"></span>
+            </header>
+            <div class="document-page-scroll" id="document-source-content" tabindex="0"></div>
+          </section>
+          <section class="document-column" data-i18n-attr="aria-label:document.translation" aria-label="Translated document">
+            <header class="document-column-header">
+              <span data-i18n="document.translation">Translation</span>
+              <span id="document-translation-page-count" class="document-column-meta"></span>
+            </header>
+            <div class="document-page-scroll" id="document-translation-content" tabindex="0"></div>
+          </section>
+        </div>
+      </section>
+
+      <footer id="document-progress-panel" class="document-progress-panel" aria-live="polite">
+        <div class="document-progress-copy">
+          <span id="document-progress-stage" data-i18n="document.progress.ready">Ready</span>
+          <span id="document-progress-count"></span>
+        </div>
+        <div class="document-progress-track">
+          <div id="document-progressbar" class="document-progressbar" role="progressbar" aria-live="polite" data-i18n-attr="aria-label:document.progress.label" aria-label="Document conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+        </div>
+      </footer>
+    </main>
+    <script type="module" src="./src/document.ts"></script>
+  </body>
+</html>

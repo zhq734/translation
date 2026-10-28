@@ -117,4 +117,6 @@ test('翻译 Prompt 应包含源语言和目标语言并要求只输出译文', 
   assert.match(system.content as string, /译文/u)
   // 网页跨块合并依赖模型原样保留分段标记，提示词必须显式约束。
   assert.match(system.content as string, /ST-SEG/u)
+  // 文档表格行会在单元格之间插入内部标记，模型同样不能丢失或改写。
+  assert.match(system.content as string, /ST-DOC-CELL/u)
 })

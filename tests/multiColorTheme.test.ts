@@ -19,7 +19,7 @@ test('主题运行时应支持五套主题、三种模式和本地缓存', () =>
 })
 
 test('所有 Renderer 入口都应初始化并监听主题设置', () => {
-  for (const file of ['popup.ts', 'settings.ts', 'selection.ts', 'toast.ts', 'webReader.ts']) {
+  for (const file of ['popup.ts', 'settings.ts', 'selection.ts', 'toast.ts', 'webReader.ts', 'document.ts']) {
     const source = readFileSync(`src/renderer/src/${file}`, 'utf8')
     assert.match(source, /startThemeRuntime\(window\.api\)/u, `${file} 未初始化主题运行时`)
   }
@@ -144,7 +144,7 @@ test('所有 Renderer 入口必须在样式表前同步预应用缓存主题', (
     assert.ok(bootstrap.includes(`'${value}'`), `预应用脚本缺少白名单值 ${value}`)
   }
 
-  for (const file of ['index.html', 'selection.html', 'settings.html', 'toast.html', 'web-reader.html']) {
+  for (const file of ['index.html', 'selection.html', 'settings.html', 'toast.html', 'web-reader.html', 'document.html']) {
     const html = readFileSync(`src/renderer/${file}`, 'utf8')
     const scriptIndex = html.indexOf('themeBootstrap.js')
     const styleIndex = html.indexOf('theme.css')

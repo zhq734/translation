@@ -266,6 +266,13 @@
                 <button id="web-reader-hotkey-clear" class="btn" type="button" data-i18n="settings.trigger.clearHotkey">Clear</button>
               </div>
             </div>
+            <div class="row hotkey-row">
+              <label for="document-translation-hotkey" data-i18n="settings.trigger.documentHotkey">Document translation</label>
+              <div class="hotkey-control">
+                <input id="document-translation-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.trigger.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
+                <button id="document-translation-hotkey-clear" class="btn" type="button" data-i18n="settings.trigger.clearHotkey">Clear</button>
+              </div>
+            </div>
             <p id="shortcut-registration-status" class="field-hint" role="status" aria-live="polite"></p>
             <div class="row">
               <label for="autohide" data-i18n="settings.trigger.autoHide">Auto-hide result</label>
@@ -313,6 +320,14 @@
 
           <section>
             <h2 data-i18n="settings.web.title">Web Page Translation</h2>
+            <div class="row document-settings-row">
+              <div class="document-settings-copy">
+                <strong data-i18n="settings.document.title">Document Translation</strong>
+                <p class="field-hint document-settings-description" data-i18n="settings.document.description">Open a dedicated workspace to compare a local document with its translation and export a layout-preserving PDF.</p>
+              </div>
+              <button id="open-document-translation" class="btn" type="button" data-i18n="settings.document.open">Open document translation</button>
+            </div>
+            <p id="document-translation-unsupported" class="field-hint document-settings-unsupported" data-i18n="settings.document.unsupported" hidden>Document translation is not supported on this platform.</p>
             <div class="row">
               <label for="web-translation-enabled" data-i18n="settings.web.enabled">Enable web translation</label>
               <label class="checkbox-control">

@@ -358,6 +358,39 @@ h2 {
   margin-bottom: 0;
 }
 
+.document-settings-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.document-settings-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.document-settings-copy strong {
+  color: var(--text-primary);
+}
+
+.document-settings-row .document-settings-description {
+  max-width: 64ch;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.document-settings-row .btn {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.document-settings-unsupported {
+  max-width: 64ch;
+  margin: 8px 0 12px;
+}
+
 .hotkey-control {
   display: flex;
   align-items: center;
@@ -885,6 +918,17 @@ input[type='number']:disabled {
   .status-row {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .document-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .document-settings-row .btn {
+    justify-self: stretch;
+    width: 100%;
+    white-space: normal;
   }
 
   .field-hint {

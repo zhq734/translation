@@ -7,9 +7,14 @@ import {
 } from '../shared/ocrQuality'
 import {
   createAdaptiveOcrFallbackImageBytes,
+  createDocumentAdaptiveOcrFallbackImageBytes,
   preprocessOcrBaselineImageBytes,
+  preprocessDocumentOcrBaselineImageBytes,
   type AdaptiveOcrFallbackStrategy
 } from './ocrImagePreprocess'
+
+/** OCR 图片预处理配置；文档扫描页不使用截图 OCR 的通用像素预算。 */
+export type OcrPreprocessingProfile = 'screenshot' | 'document'
 
 /** 自适应 OCR 回退诊断事件。 */
 export interface AdaptiveOcrDiagnostic {
@@ -41,6 +46,8 @@ export interface AdaptiveOcrOptions {
   maxScale: number
   /** OCR 目标语言。 */
   language?: string
+  /** 图片预处理配置，默认沿用截图 OCR 的通用像素预算。 */
+  preprocessingProfile?: OcrPreprocessingProfile
 }
 
 /** 自适应 OCR 可注入依赖。 */
@@ -104,8 +111,15 @@ export async function recognizeAdaptiveOcr(
   options: AdaptiveOcrOptions,
   deps: AdaptiveOcrDeps
 ): Promise<OcrRecognizeResult> {
-  const createBaseline = deps.createBaseline ?? preprocessOcrBaselineImageBytes
-  const createFallback = deps.createFallback ?? createAdaptiveOcrFallbackImageBytes
+  const isDocumentProfile = options.preprocessingProfile === 'document'
+  const defaultCreateBaseline = isDocumentProfile
+    ? preprocessDocumentOcrBaselineImageBytes
+    : preprocessOcrBaselineImageBytes
+  const defaultCreateFallback = isDocumentProfile
+    ? createDocumentAdaptiveOcrFallbackImageBytes
+    : createAdaptiveOcrFallbackImageBytes
+  const createBaseline = deps.createBaseline ?? defaultCreateBaseline
+  const createFallback = deps.createFallback ?? defaultCreateFallback
   const logger = deps.logger ?? logAdaptiveOcrDiagnostic
   const now = deps.now ?? Date.now
   let baseline: OcrRecognizeResult | undefined

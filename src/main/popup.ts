@@ -15,6 +15,7 @@ import { handBackFrontmostThen } from './macForeground'
 import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import { logCandidateProbe } from '../shared/activateDiagnostics'
+import { isWindows7CompatibilityRuntime } from './platformCompatibility'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -138,6 +139,7 @@ export interface CreatePopupOptions {
  */
 export function createPopup(options: CreatePopupOptions): BrowserWindow {
   const { preloadPath } = options
+  const win7Compatibility = isWindows7CompatibilityRuntime()
   popupCloseInFlight = false
   shownInactive = false
   settingsOpenGuardActive = false
@@ -155,8 +157,8 @@ export function createPopup(options: CreatePopupOptions): BrowserWindow {
     minHeight: 320,
     show: false,
     frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
+    transparent: !win7Compatibility,
+    backgroundColor: win7Compatibility ? '#f5f5f7' : '#00000000',
     resizable: true,
     movable: true,
     minimizable: false,

@@ -21,6 +21,7 @@
     "dist:mac:arm64:unsigned": "npm run build && electron-builder --mac --arm64 --publish never --config.forceCodeSigning=false --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false",
     "dist:dmg": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
     "test": "node scripts/run-tests.mjs",
+    "document:smoke": "node scripts/document-capability-smoke.mjs",
     "dist:win": "npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never",
     "dist:win:win7": "node scripts/build-win7.mjs",
     "dist:linux": "npm run build && node scripts/prepare-linux-ocr-runtime.mjs && node scripts/prepare-linux-uiohook-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never",
@@ -39,7 +40,7 @@
   "build": {
     "appId": "com.selection.translator",
     "productName": "划词翻译",
-    "npmRebuild": false,
+    "npmRebuild": true,
     "toolsets": {
       "appimage": "1.0.3"
     },
@@ -56,6 +57,7 @@
     "files": [
       "out/**/*",
       "assets/ocr/**/*",
+      "assets/fonts/**/*",
       "node_modules/@gutenye/**/*",
       "node_modules/@techstark/**/*",
       "node_modules/@img/**/*",
@@ -65,12 +67,21 @@
       "node_modules/tesseract.js/**/*",
       "node_modules/tesseract.js-core/**/*",
       "node_modules/uiohook-napi/**/*",
+      "node_modules/canvas/**/*",
+      "node_modules/path2d-polyfill/**/*",
+      "node_modules/pdfjs-dist/**/*",
+      "node_modules/pdf-lib/**/*",
+      "node_modules/@pdf-lib/fontkit/**/*",
+      "node_modules/jszip/**/*",
+      "node_modules/mammoth/**/*",
+      "node_modules/fast-xml-parser/**/*",
       "build/usage-report-config.json",
       "build/tray*.png",
       "node_modules/koffi/**/*"
     ],
     "asarUnpack": [
       "assets/ocr/**/*",
+      "node_modules/canvas/**/*",
       "node_modules/@gutenye/**/*",
       "node_modules/@gutenye/ocr-models/assets/**/*",
       "node_modules/@img/**/*",
@@ -109,6 +120,10 @@
         {
           "from": "build/build-info.json",
           "to": "build-info.json"
+        },
+        {
+          "from": "assets/fonts",
+          "to": "assets/fonts"
         }
       ]
     },
@@ -140,6 +155,10 @@
         {
           "from": "build/build-info.json",
           "to": "build-info.json"
+        },
+        {
+          "from": "assets/fonts",
+          "to": "assets/fonts"
         }
       ],
       "icon": "build/icon.ico"
@@ -172,6 +191,10 @@
         {
           "from": "build/build-info.json",
           "to": "build-info.json"
+        },
+        {
+          "from": "assets/fonts",
+          "to": "assets/fonts"
         }
       ],
       "artifactName": "SelectionTranslator-${version}-${arch}.${ext}",
@@ -181,14 +204,23 @@
   },
   "dependencies": {
     "@gutenye/ocr-node": "^1.4.8",
+    "@pdf-lib/fontkit": "1.1.1",
+    "canvas": "3.2.0",
     "electron-updater": "^6.8.9",
+    "fast-xml-parser": "5.11.2",
+    "jszip": "3.10.2",
     "koffi": "^3.2.1",
+    "mammoth": "1.13.0",
     "nodemailer": "^9.0.6",
+    "path2d-polyfill": "2.0.1",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "3.11.174",
     "tesseract.js": "^7.0.0",
     "uiohook-napi": "^1.5.5",
     "undici": "^5.29.0"
   },
   "overrides": {
-    "sharp": "0.34.2"
+    "sharp": "0.34.2",
+    "canvas": "3.2.0"
   }
 }

@@ -14,6 +14,7 @@ const styles = readFileSync('src/renderer/src/style.css', 'utf8')
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 const main = readFileSync('src/main/index.ts', 'utf8')
 const popup = readFileSync('src/main/popup.ts', 'utf8')
+const types = readFileSync('src/shared/types.ts', 'utf8')
 
 test('悬浮窗应包含手动翻译入口、输入区、计数、提交和复制控件', () => {
   assert.match(html, /id="manual-mode"[^>]*aria-pressed=/u)
@@ -41,6 +42,31 @@ test('Renderer 应支持手动模式快捷提交、显式提交和安全复制',
     /if \(!manualState\.translation \|\| manualState\.loading \|\| manualState\.error \|\| manualState\.stale\) return/u
   )
   assert.match(renderer, /window\.api\.copy\(manualState\.translation\)/u)
+})
+
+test('手动输入框右键应读取剪贴板、替换选区并自动发起翻译', () => {
+  assert.match(
+    renderer,
+    /manualSourceEl\.addEventListener\('contextmenu', handleManualSourceContextMenu\)/u
+  )
+  assert.match(
+    renderer,
+    /function handleManualSourceContextMenu\(event: MouseEvent\): Promise<void>/u
+  )
+  assert.match(renderer, /event\.preventDefault\(\)/u)
+  assert.match(
+    renderer,
+    /function handleManualSourceContextMenu[\s\S]*?const selectionStart = manualSourceEl\.selectionStart[\s\S]*?await window\.api\.readClipboardText\(\)/u
+  )
+  assert.match(renderer, /window\.api\.readClipboardText\(\)/u)
+  assert.match(renderer, /insertManualClipboardText\(/u)
+  assert.match(renderer, /manualState = updateManualDraft\(manualState, insertion\.value\)/u)
+  assert.match(renderer, /manualSourceEl\.setSelectionRange\(insertion\.cursor, insertion\.cursor\)/u)
+  assert.match(renderer, /void submitManualTranslation\(\)/u)
+
+  assert.match(main, /ipcMain\.handle\('clipboard:read-text', \(\) => clipboard\.readText\(\)\)/u)
+  assert.match(preload, /readClipboardText\(\)[\s\S]*?ipcRenderer\.invoke\('clipboard:read-text'\)/u)
+  assert.match(types, /readClipboardText\(\): Promise<string>/u)
 })
 
 test('划词结果在手动模式下只更新划词会话且不得覆盖手动状态提示', () => {

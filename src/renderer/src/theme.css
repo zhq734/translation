@@ -32,6 +32,9 @@
   --page-bg: #f5f5f7;
   --panel-bg: #ffffff;
   --panel-shadow: rgba(0, 0, 0, 0.04);
+  /* PDF 纸张在明暗主题中保持可读的原生白纸观感，左右栏共享同一语义颜色。 */
+  --document-paper-bg: #ffffff;
+  --document-paper-text: #111827;
   --bg-secondary: #f2f2f7;
   --control-bg: #ffffff;
   --control-disabled-bg: #ededf2;
@@ -84,6 +87,8 @@
     --page-bg: #17171a;
     --panel-bg: #232327;
     --panel-shadow: rgba(0, 0, 0, 0.22);
+    --document-paper-bg: #ffffff;
+    --document-paper-text: #111827;
     --bg-secondary: #303035;
     --control-bg: #29292e;
     --control-disabled-bg: #202024;

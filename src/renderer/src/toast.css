@@ -25,3 +25,19 @@ body { display: flex; align-items: center; justify-content: center; padding: var
 .screenshot-toast[data-state='error'] .toast-icon { color: var(--hint-pill-icon-error); }
 .screenshot-toast.visible { opacity: 1; transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { .screenshot-toast { transition: none; transform: none; } }
+
+/* Win7 透明窗口合成可能给提示胶囊留下黑边，兼容模式改为不透明平面外观。 */
+:root[data-win7-compatibility='true'],
+:root[data-win7-compatibility='true'] body {
+  background: var(--panel-bg);
+}
+
+:root[data-win7-compatibility='true'] body {
+  padding: 0;
+}
+
+:root[data-win7-compatibility='true'] .screenshot-toast {
+  border-radius: 0;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+}

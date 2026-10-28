@@ -158,6 +158,27 @@ test('Win7 构建配置固定 Electron 22、仅 x64 且不生成更新清单', (
   assert.match(config, /asarUnpack:[\s\S]*uiohook-napi/u)
 })
 
+test('Win7 构建必须排除文档翻译现代依赖与字体资源', () => {
+  const config = read('electron-builder-win7.yml')
+  for (const dependency of [
+    'pdfjs-dist',
+    'canvas',
+    'pdf-lib',
+    '@pdf-lib/fontkit',
+    'jszip',
+    'mammoth',
+    'fast-xml-parser',
+    'path2d-polyfill'
+  ]) {
+    assert.match(
+      config,
+      new RegExp(`!node_modules/${dependency.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}/\\*\\*/\\*`, 'u'),
+      `Win7 配置必须显式排除 ${dependency}`
+    )
+  }
+  assert.match(config, /!assets\/fonts\/\*\*\/\*/u)
+})
+
 test('Win7 产物校验必须把 Windows asar 路径统一为 POSIX 形式', () => {
   assert.deepEqual(
     normalizeAsarEntries([
@@ -172,6 +193,86 @@ test('Win7 产物校验必须把 Windows asar 路径统一为 POSIX 形式', () 
   assert.deepEqual(
     normalizeAsarEntries(['/out/main/index.js', 'out/main/ocrDispatcher-def.js']),
     ['/out/main/index.js', '/out/main/ocrDispatcher-def.js']
+  )
+})
+
+test('Win7 翻译弹窗与选区按钮应关闭透明合成并使用不透明背景', () => {
+  const popup = read('src/main/popup.ts')
+  const selectionButton = read('src/main/selectionButton.ts')
+  const main = read('src/main/index.ts')
+  const styles = read('src/renderer/src/style.css')
+  const selectionStyles = read('src/renderer/src/selection.css')
+  const toastStyles = read('src/renderer/src/toast.css')
+
+  assert.match(popup, /import \{ isWindows7CompatibilityRuntime \} from '\.\/platformCompatibility'/u)
+  assert.match(
+    popup,
+    /const win7Compatibility = isWindows7CompatibilityRuntime\(\)[\s\S]*?transparent:\s*!win7Compatibility[\s\S]*?backgroundColor:\s*win7Compatibility \? '#f5f5f7' : '#00000000'/u
+  )
+  assert.match(selectionButton, /import \{ isWindows7CompatibilityRuntime \} from '\.\/platformCompatibility'/u)
+  assert.match(
+    selectionButton,
+    /const win7Compatibility = isWindows7CompatibilityRuntime\(\)[\s\S]*?transparent:\s*!win7Compatibility[\s\S]*?backgroundColor:\s*win7Compatibility \? '#ffffff' : '#00000000'/u
+  )
+  assert.match(styles, /:root\[data-win7-compatibility='true'\] html,[\s\S]*?background:\s*var\(--panel-bg\)/u)
+  assert.match(styles, /:root\[data-win7-compatibility='true'\] body\s*\{[^}]*padding:\s*0;/su)
+  assert.match(
+    styles,
+    /:root\[data-win7-compatibility='true'\] #popup\s*\{[^}]*border-radius:\s*0;[^}]*clip-path:\s*none;[^}]*box-shadow:\s*none;/su
+  )
+  assert.match(
+    selectionStyles,
+    /:root\[data-win7-compatibility='true'\] #translate\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*var\(--panel-bg\);/su
+  )
+  const toastWindowStart = main.indexOf('function getScreenshotToastWindow()')
+  const toastWindowEnd = main.indexOf('/**', toastWindowStart + 1)
+  const toastWindowSource = main.slice(toastWindowStart, toastWindowEnd)
+  assert.match(
+    toastWindowSource,
+    /const win7Compatibility = isWindows7CompatibilityRuntime\(\)[\s\S]*?transparent:\s*!win7Compatibility[\s\S]*?backgroundColor:\s*win7Compatibility \? '#f5f5f7' : '#00000000'/u
+  )
+  assert.match(
+    toastStyles,
+    /:root\[data-win7-compatibility='true'\] \.screenshot-toast\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*var\(--panel-bg\);/su
+  )
+})
+
+test('Win7 运行时应在首屏主题应用前标记 Renderer 根节点', () => {
+  const main = read('src/main/index.ts')
+  const preload = read('src/preload/index.ts')
+  const themeBootstrap = read('src/renderer/public/themeBootstrap.js')
+  const renderer = read('src/renderer/src/popup.ts')
+  const selectionRenderer = read('src/renderer/src/selection.ts')
+  const toastRenderer = read('src/renderer/src/toast.ts')
+
+  assert.match(main, /ipcMain\.on\('app:get-win7-compatibility'/u)
+  assert.match(main, /event\.returnValue = isWindows7CompatibilityRuntime\(\)/u)
+  assert.match(preload, /getSelectionTranslatorWin7Compatibility/u)
+  assert.match(preload, /ipcRenderer\.sendSync\('app:get-win7-compatibility'\)/u)
+  assert.match(
+    themeBootstrap,
+    /getSelectionTranslatorWin7Compatibility\(\) === true[\s\S]*?setAttribute\('data-win7-compatibility', 'true'\)/u
+  )
+  assert.match(renderer, /applyWin7CompatibilityAttribute\(\)[\s\S]*?startThemeRuntime\(window\.api\)/u)
+  assert.match(selectionRenderer, /applyWin7CompatibilityAttribute\(\)[\s\S]*?startThemeRuntime\(window\.api\)/u)
+  assert.match(toastRenderer, /applyWin7CompatibilityAttribute\(\)[\s\S]*?startThemeRuntime\(window\.api\)/u)
+})
+
+test('Win7 OCR 覆盖模式必须恢复透明背景，避免不透明图标底遮住快照', () => {
+  const selectionRenderer = read('src/renderer/src/selection.ts')
+  const selectionStyles = read('src/renderer/src/selection.css')
+
+  assert.match(
+    selectionRenderer,
+    /ocrMode = true\s*\n\s*document\.documentElement\.setAttribute\('data-ocr-mode', 'true'\)/u
+  )
+  assert.match(
+    selectionRenderer,
+    /ocrMode = false\s*\n\s*document\.documentElement\.removeAttribute\('data-ocr-mode'\)/u
+  )
+  assert.match(
+    selectionStyles,
+    /:root\[data-win7-compatibility='true'\]\[data-ocr-mode='true'\],[\s\S]*?background:\s*transparent;/u
   )
 })
 

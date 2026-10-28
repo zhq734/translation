@@ -2,14 +2,21 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createAdaptiveOcrFallbackImageBytes,
+  createDocumentAdaptiveOcrFallbackImageBytes,
   OCR_FALLBACK_MIN_EFFECTIVE_SCALE,
   OCR_FALLBACK_TARGET_PIXELS,
+  preprocessDocumentOcrBaselineImageBytes,
   preprocessOcrBaselineImageBytes,
   preprocessOcrImageBytes,
   selectAdaptiveOcrFallback
 } from '../src/main/ocrImagePreprocess.ts'
 import { decodePng, encodePng } from '../src/main/pngCodec.ts'
 import { MAX_OCR_PIXELS, type RgbaImage } from '../src/shared/imagePreprocess.ts'
+
+/** 文档扫描页测试使用的非通用预算尺寸。 */
+const DOCUMENT_SCAN_WIDTH = 1600
+/** 文档扫描页测试使用的高度。 */
+const DOCUMENT_SCAN_HEIGHT = 1400
 
 /**
  * 构造测试用纯色 RGBA 图像。
@@ -139,4 +146,52 @@ test('基线与备用候选应分别从原始图片生成并遵守像素预算',
   assert.equal(fallback.strategy, 'moderate-scale')
   assert.ok(decodedFallback.width > original.width)
   assert.ok(decodedFallback.width * decodedFallback.height <= MAX_OCR_PIXELS)
+})
+
+/**
+ * 校验文档扫描页不会被截图 OCR 的通用像素预算降采样。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文档 OCR 基线应保留超过通用预算的扫描页尺寸', () => {
+  const original = makeImage(DOCUMENT_SCAN_WIDTH, DOCUMENT_SCAN_HEIGHT)
+  const encoded = encodePng(original)
+  const genericBaseline = decodePng(preprocessOcrBaselineImageBytes(encoded))
+  const documentBaseline = decodePng(preprocessDocumentOcrBaselineImageBytes(encoded))
+
+  assert.ok(genericBaseline.width < original.width)
+  assert.equal(documentBaseline.width, original.width)
+  assert.equal(documentBaseline.height, original.height)
+})
+
+/**
+ * 校验文档扫描页的备用增强候选仍使用原始栅格尺寸。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文档 OCR 备用增强候选不应缩小超过通用预算的扫描页', () => {
+  const original = makeImage(DOCUMENT_SCAN_WIDTH, DOCUMENT_SCAN_HEIGHT)
+  const fallback = createDocumentAdaptiveOcrFallbackImageBytes(encodePng(original), 3)
+  const decodedFallback = decodePng(fallback.imageBytes)
+
+  assert.equal(fallback.strategy, 'contrast-enhance')
+  assert.equal(decodedFallback.width, original.width)
+  assert.equal(decodedFallback.height, original.height)
+})
+
+/**
+ * 校验文档扫描页需要适度放大时仍使用原始栅格尺寸选择倍率。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文档 OCR 备用放大候选不应按已缩小图片重新计算倍率', () => {
+  const original = makeImage(400, 300)
+  const encoded = encodePng(original)
+  const genericFallback = createAdaptiveOcrFallbackImageBytes(encoded, 2)
+  const documentFallback = createDocumentAdaptiveOcrFallbackImageBytes(encoded, 2)
+
+  assert.equal(genericFallback.strategy, 'moderate-scale')
+  assert.equal(documentFallback.strategy, 'moderate-scale')
+  assert.ok(documentFallback.actualScale <= 2)
+  assert.equal(decodePng(documentFallback.imageBytes).width, 800)
 })

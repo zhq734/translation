@@ -108,7 +108,8 @@ test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用
   assert.deepEqual(packageJson.build?.win?.extraResources, [
     { from: 'build/icon.ico', to: 'app-icon.ico' },
     { from: 'helpers/windows-uia-reader', to: '.', filter: ['windows-uia-reader.exe'] },
-    { from: 'build/build-info.json', to: 'build-info.json' }
+    { from: 'build/build-info.json', to: 'build-info.json' },
+    { from: 'assets/fonts', to: 'assets/fonts' }
   ])
   assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh')
   assert.equal(existsSync('build/installer.nsh'), true)
