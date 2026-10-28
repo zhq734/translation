@@ -2,9 +2,7 @@
 
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
-import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 
-applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 

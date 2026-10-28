@@ -12,24 +12,6 @@ body {
   clip-path: inset(0 round 12px);
 }
 
-:root[data-win7-compatibility='true'],
-:root[data-win7-compatibility='true'] html,
-:root[data-win7-compatibility='true'] body {
-  background: var(--panel-bg);
-  border-radius: 0;
-  clip-path: none;
-}
-
-:root[data-win7-compatibility='true'] body {
-  padding: 0;
-}
-
-:root[data-win7-compatibility='true'] #popup {
-  border-radius: 0;
-  clip-path: none;
-  box-shadow: none;
-}
-
 body {
   padding: 8px;
   color: var(--text-primary);
