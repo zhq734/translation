@@ -201,6 +201,36 @@ test('Edge 短中英混排应只发起一次合成请求并完整连续朗读', 
   assert.equal(requests.length, 1)
 })
 
+test('Edge 播放控制器应把 IPA 原样透传给合成依赖', async () => {
+  const requests: Array<{ text: string; language: string; ipa?: string }> = []
+  const audios: FakeAudio[] = []
+  const controller = createEdgePlaybackController({
+    getMessage: zhMessage,
+    synthesize: async (text, language, _signal, ipa) => {
+      requests.push({ text, language, ...(ipa ? { ipa } : {}) })
+      return { ok: true, audio: new Uint8Array([1]) }
+    },
+    createObjectUrl: () => 'blob:ipa',
+    revokeObjectUrl: () => {},
+    createAudio: (url) => {
+      const audio = new FakeAudio(url)
+      audios.push(audio)
+      return audio
+    }
+  })
+
+  const resultPromise = controller.start('discount', 'en-GB', 'dɪsˈkaʊnt')
+  await flushMicrotasks()
+  assert.deepEqual(requests, [{
+    text: 'discount',
+    language: 'en-GB',
+    ipa: 'dɪsˈkaʊnt'
+  }])
+
+  audios[0].onended?.(new Event('ended'))
+  assert.deepEqual(await resultPromise, { ok: true })
+})
+
 test('Edge 播放当前片段时应提前合成并预加载下一个片段', async () => {
   const chunks: string[] = []
   const audios: FakeAudio[] = []

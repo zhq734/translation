@@ -721,15 +721,22 @@ const api: Api = {
    * @param text 待朗读译文。
    * @param language 目标语言代码。
    * @param requestId 可选请求标识，由 Renderer 生成并用于取消。
+   * @param ipa 可选 IPA 音标；提供时由 Edge 按音素精确合成。
    * @returns 临时音频或脱敏错误。
    * @author zhenghq
    */
-  synthesizeEdgeSpeech: (text: string, language: string, requestId?: string): Promise<EdgeSpeechResult> =>
+  synthesizeEdgeSpeech: (
+    text: string,
+    language: string,
+    requestId?: string,
+    ipa?: string
+  ): Promise<EdgeSpeechResult> =>
     ipcRenderer.invoke(
       'speech:edge-synthesize',
       requestId || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       text,
-      language
+      language,
+      ipa
     ),
 
   /**
