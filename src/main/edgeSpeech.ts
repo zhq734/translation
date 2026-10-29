@@ -94,6 +94,10 @@ const EDGE_VOICE_BY_LANGUAGE: Readonly<Record<string, string>> = {
   es: 'es-ES-ElviraNeural'
 }
 
+const EDGE_VOICE_BY_LANGUAGE_REGION: Readonly<Record<string, string>> = {
+  'en-gb': 'en-GB-SoniaNeural'
+}
+
 /**
  * 根据目标语言选择固定的 Edge 神经网络音色。
  * @param language 项目语言代码或 BCP 47 语言代码。
@@ -101,7 +105,10 @@ const EDGE_VOICE_BY_LANGUAGE: Readonly<Record<string, string>> = {
  * @author zhenghq
  */
 export function edgeVoiceForLanguage(language: string): string {
-  const prefix = language.trim().toLowerCase().split('-')[0]
+  const normalized = language.trim().toLowerCase()
+  const regionalVoice = EDGE_VOICE_BY_LANGUAGE_REGION[normalized]
+  if (regionalVoice) return regionalVoice
+  const prefix = normalized.split('-')[0]
   return EDGE_VOICE_BY_LANGUAGE[prefix] ?? EDGE_VOICE_BY_LANGUAGE.en
 }
 
@@ -141,19 +148,34 @@ function escapeSsmlText(text: string): string {
 }
 
 /**
+ * 将词典 IPA 规范化为 SSML phoneme 属性值。
+ * @param ipa 词典返回的 IPA 音标，可带首尾斜杠。
+ * @returns 去除定界符并完成 XML 转义的音素文本。
+ * @author zhenghq
+ */
+function normalizeSsmlPhoneme(ipa: string): string {
+  return escapeSsmlText(ipa.trim().replace(/^\/+|\/+$/gu, '').trim())
+}
+
+/**
  * 构造 Edge 在线语音使用的 SSML 请求。
  * @param text 待朗读的译文。
  * @param language 目标语言代码。
+ * @param ipa 可选 IPA 音标；提供时用 phoneme 标签精确指定发音。
  * @returns 包含固定音色和正常一倍语速的 SSML。
  * @author zhenghq
  */
-export function buildEdgeSpeechSsml(text: string, language: string): string {
+export function buildEdgeSpeechSsml(text: string, language: string, ipa?: string): string {
   const voice = edgeVoiceToSsmlName(edgeVoiceForLanguage(language))
   const languageCode = language.trim().split('-')[0].toLowerCase()
   const xmlLanguage = EDGE_VOICE_BY_LANGUAGE[languageCode]
     ? languageCode === 'zh' ? 'zh-CN' : `${languageCode}-${edgeVoiceForLanguage(language).split('-')[1]}`
     : 'en-US'
-  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${xmlLanguage}"><voice name="${voice}"><prosody rate="+0%" volume="+0%" pitch="+0Hz">${escapeSsmlText(text)}</prosody></voice></speak>`
+  const phoneme = ipa?.trim() ? normalizeSsmlPhoneme(ipa) : ''
+  const spokenText = phoneme
+    ? `<phoneme alphabet="ipa" ph="${phoneme}">${escapeSsmlText(text)}</phoneme>`
+    : escapeSsmlText(text)
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${xmlLanguage}"><voice name="${voice}"><prosody rate="+0%" volume="+0%" pitch="+0Hz">${spokenText}</prosody></voice></speak>`
 }
 
 /**
@@ -588,13 +610,15 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
    * @param text 待朗读译文。
    * @param language 目标语言代码。
    * @param signal 可选取消信号。
+   * @param ipa 可选 IPA 音标；提供时由 Edge 按音素精确合成。
    * @returns 临时音频或脱敏错误。
    * @author zhenghq
    */
   async function synthesize(
     text: string,
     language: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    ipa?: string
   ): Promise<EdgeSpeechResult> {
     if (!text.trim()) return { ok: false, error: translateMain('speech.error.emptyText') }
     if (signal?.aborted) return { ok: false, error: translateMain('speech.error.cancelled') }
@@ -655,7 +679,7 @@ export function createEdgeSpeechClient(options: EdgeSpeechClientOptions = {}) {
         ))
         socket.send(edgeCommand(
           'ssml',
-          buildEdgeSpeechSsml(text, language),
+          buildEdgeSpeechSsml(text, language, ipa),
           'application/ssml+xml',
           requestId,
           timestamp

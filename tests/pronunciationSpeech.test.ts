@@ -150,6 +150,57 @@ test('Edge 语音偏好下，单词 TTS 应优先 Edge 且不重复启动系统�
   assert.deepEqual(calls, ['edge'])
 })
 
+test('单词 TTS 兜底应把音标变体口音和 IPA 传给 Edge', async () => {
+  const calls: Array<{ text: string; language: string; ipa?: string }> = []
+  const result = await startPronunciationSpeechFallback('discount', {
+    speechProvider: 'edge',
+    variant: { accent: 'UK', ipa: 'ˈdɪskaʊnt' },
+    edge: {
+      start: async (text, language, ipa) => {
+        calls.push({ text, language, ...(ipa ? { ipa } : {}) })
+        return { ok: true }
+      },
+      isSpeaking: () => true
+    },
+    system: {
+      start: () => ({ ok: true }),
+      isSpeaking: () => true
+    }
+  })
+
+  assert.deepEqual(result, { status: 'started', provider: 'edge' })
+  assert.deepEqual(calls, [{ text: 'discount', language: 'en-GB', ipa: 'ˈdɪskaʊnt' }])
+})
+
+test('系统语音兜底应按 US 和 UK 变体选择不同口音', async () => {
+  const languages: string[] = []
+  const options = {
+    speechProvider: 'system' as const,
+    edge: {
+      start: () => ({ ok: true }),
+      isSpeaking: () => true
+    },
+    system: {
+      start: (_text: string, language: string) => {
+        languages.push(language)
+        return { ok: true }
+      },
+      isSpeaking: () => true
+    }
+  }
+
+  await startPronunciationSpeechFallback('discount', {
+    ...options,
+    variant: { accent: 'US', ipa: 'ˈdɪskaʊnt' }
+  })
+  await startPronunciationSpeechFallback('discount', {
+    ...options,
+    variant: { accent: 'UK', ipa: 'ˈdɪskaʊnt' }
+  })
+
+  assert.deepEqual(languages, ['en-US', 'en-GB'])
+})
+
 test('Edge 播放完成返回成功后不得再次启动系统语音', async () => {
   const calls: string[] = []
   const result = await startPronunciationSpeechFallback('hello', {
@@ -298,4 +349,16 @@ test('Renderer 单词发音必须通过统一兜底函数选择 Edge 或系统�
   assert.match(playWordAudio, /fallbackWordSpeech\(/u)
   assert.doesNotMatch(playWordAudio, /systemSpeechController\.start\(/u)
   assert.match(renderer, /async function fallbackWordSpeech[\s\S]{0,700}startPronunciationSpeechFallback\(/u)
+})
+
+test('Renderer 单词词典音频失败后应保留当前音标变体供 TTS 兜底', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const toggleWordPlayback = renderer.match(/async function toggleWordPlayback[\s\S]*?\n\}/u)?.[0] ?? ''
+  const playWordAudio = renderer.match(/function playWordAudio[\s\S]*?\n\}/u)?.[0] ?? ''
+  const fallbackWordSpeech = renderer.match(/async function fallbackWordSpeech[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(toggleWordPlayback, /playWordAudio\([^)]*variant\s*\)/u)
+  assert.match(toggleWordPlayback, /startPronunciationSpeechFallback\([\s\S]{0,180}variant/u)
+  assert.match(playWordAudio, /fallbackWordSpeech\([^)]*variant\s*\)/u)
+  assert.match(fallbackWordSpeech, /startPronunciationSpeechFallback\([\s\S]{0,180}variant/u)
 })

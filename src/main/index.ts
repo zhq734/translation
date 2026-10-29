@@ -591,13 +591,15 @@ function getWebReader(): WebReaderManager {
  * @param requestId Renderer 请求标识。
  * @param text 待朗读译文。
  * @param language 目标语言代码。
+ * @param ipa 可选 IPA 音标；提供时由 Edge 按音素精确合成。
  * @returns 临时音频或脱敏错误。
  * @author zhenghq
  */
 async function synthesizeEdgeSpeech(
   requestId: string,
   text: string,
-  language: string
+  language: string,
+  ipa = ''
 ): Promise<EdgeSpeechResult> {
   const normalizedText = String(text ?? '').trim()
   if (!normalizedText) return { ok: false, error: t('error.edgeSpeechEmptyText') }
@@ -609,7 +611,12 @@ async function synthesizeEdgeSpeech(
   const controller = new AbortController()
   edgeSpeechRequests.set(requestId, controller)
   try {
-    const result = await edgeSpeechClient.synthesize(normalizedText, String(language ?? ''), controller.signal)
+    const result = await edgeSpeechClient.synthesize(
+      normalizedText,
+      String(language ?? ''),
+      controller.signal,
+      String(ipa ?? '')
+    )
     console.log('[edge-speech] IPC 请求完成', {
       requestId,
       ok: result.ok,
@@ -5645,8 +5652,19 @@ function registerIpc(): void {
   ipcMain.on('speech:edge-cancel', (_event, requestId: unknown) => {
     cancelEdgeSpeech(String(requestId ?? ''))
   })
-  ipcMain.handle('speech:edge-synthesize', (_event, requestId: unknown, text: unknown, language: unknown) =>
-    synthesizeEdgeSpeech(String(requestId ?? ''), String(text ?? ''), String(language ?? ''))
+  ipcMain.handle('speech:edge-synthesize', (
+    _event,
+    requestId: unknown,
+    text: unknown,
+    language: unknown,
+    ipa: unknown
+  ) =>
+    synthesizeEdgeSpeech(
+      String(requestId ?? ''),
+      String(text ?? ''),
+      String(language ?? ''),
+      String(ipa ?? '')
+    )
   )
   ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string, origin?: TranslationOrigin) => {
     const sourcePreference = sourceLang || 'auto'

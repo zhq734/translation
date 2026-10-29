@@ -17,6 +17,7 @@ test('Edge 语音应按目标语言使用固定神经网络音色', () => {
   assert.equal(edgeVoiceForLanguage('ZH'), 'zh-CN-XiaoxiaoNeural')
   assert.equal(edgeVoiceForLanguage('zh-CN'), 'zh-CN-XiaoxiaoNeural')
   assert.equal(edgeVoiceForLanguage('EN'), 'en-US-JennyNeural')
+  assert.equal(edgeVoiceForLanguage('en-GB'), 'en-GB-SoniaNeural')
   assert.equal(edgeVoiceForLanguage('ja-JP'), 'ja-JP-NanamiNeural')
   assert.equal(edgeVoiceForLanguage('unknown'), 'en-US-JennyNeural')
 })
@@ -44,6 +45,24 @@ test('Edge SSML 应包含固定音色、正常一倍语速并转义用户文本'
   assert.match(ssml, /rate=['"]\+0%['"]/u)
   assert.match(ssml, /中文 &lt;测试&gt; &amp; 内容/u)
   assert.doesNotMatch(ssml, /<测试>/u)
+})
+
+test('Edge SSML 应按变体 IPA 输出音素并去除音标定界符', () => {
+  const ssml = buildEdgeSpeechSsml('discount', 'en-GB', '/dɪsˈkaʊnt/')
+
+  assert.match(ssml, /xml:lang=['"]en-GB['"]/u)
+  assert.match(
+    ssml,
+    /voice name=['"]Microsoft Server Speech Text to Speech Voice \(en-GB, SoniaNeural\)['"]/u
+  )
+  assert.match(ssml, /<phoneme alphabet=['"]ipa['"] ph=['"]dɪsˈkaʊnt['"]>discount<\/phoneme>/u)
+  assert.doesNotMatch(ssml, /ph=['"]\/dɪsˈkaʊnt\/['"]/u)
+})
+
+test('Edge SSML 应转义音素属性中的特殊字符', () => {
+  const ssml = buildEdgeSpeechSsml('word', 'en-GB', 'a&"<>\'')
+
+  assert.match(ssml, /ph=['"]a&amp;&quot;&lt;&gt;&apos;['"]/u)
 })
 
 class FakeSocket implements EdgeSpeechSocket {

@@ -49,7 +49,11 @@ test('主进程与 preload 应暴露受限 Edge 语音合成 IPC', () => {
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   assert.match(main, /ipcMain\.handle\('speech:edge-synthesize'/u)
   assert.match(preload, /synthesizeEdgeSpeech:[\s\S]*?\.invoke\(\s*'speech:edge-synthesize'/u)
-  assert.match(preload, /synthesizeEdgeSpeech: \(text: string, language: string, requestId\?: string\)/u)
+  assert.match(
+    preload,
+    /synthesizeEdgeSpeech:\s*\(\s*text: string,\s*language: string,\s*requestId\?: string,\s*ipa\?: string\s*\)/u
+  )
+  assert.match(main, /String\(ipa \?\? ''\)/u)
   assert.match(preload, /cancelEdgeSpeech: \(requestId: string\): void => ipcRenderer\.send\('speech:edge-cancel'/u)
   assert.doesNotMatch(preload, /signal\?\.addEventListener/u)
 })
