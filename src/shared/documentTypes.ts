@@ -99,6 +99,8 @@ export type DocumentPaint =
 export interface DocumentBlockBase {
   /** 页面内稳定的区块标识，不随数组顺序变化。 */
   blockId: string
+  /** PDF 视觉同行分组标识；同一组的图片与文字应在横向保持同一基线。 */
+  flowGroupId?: string
   /** 文档阅读顺序，从零开始递增。 */
   readingOrder: number
   /** 是否允许把区块文本送入翻译服务。 */
@@ -114,8 +116,15 @@ export interface DocumentTextBlock extends DocumentBlockBase {
   kind: 'text'
   role: DocumentTextRole
   runs: DocumentTextRun[]
+  /** PDF 代码区域的原始外框；译文代码块据此保持原横向范围和主题边框。 */
+  codeFrame?: DocumentBoundingBox
   textAlign?: DocumentTextAlign
   language?: string
+  /** PDF 目录项元数据；存在时页码与引导点应独立排版。 */
+  toc?: {
+    /** 目录页码；必须原样保留，不参与翻译。 */
+    pageNumber: string
+  }
   /** 字幕时间轴；仅字幕格式使用，不属于可翻译正文。 */
   timing?: string
   /** 字幕序号；仅字幕格式使用，不属于可翻译正文。 */
@@ -239,8 +248,20 @@ export interface DocumentPage {
   title?: string
   /** 页面背景。 */
   background?: DocumentPaint
+  /** 从 PDF 推断出的正文内容区；用于译文复用原文左右页边距。 */
+  contentArea?: DocumentContentArea
   /** 页面内按阅读顺序排列的区块。 */
   blocks: DocumentBlock[]
+}
+
+/** PDF 正文内容区边界；坐标单位为原始 PDF 点。 */
+export interface DocumentContentArea {
+  /** 正文区左边界。 */
+  left: number
+  /** 正文区右边界。 */
+  right: number
+  /** 正文区水平中心线。 */
+  center: number
 }
 
 /** 文档内可复用的图片、字体或其他二进制资源。 */
@@ -481,13 +502,25 @@ function assertDocumentBlock(value: unknown, field: string): void {
     throw new Error(`document ${field}.kind is not a supported block kind`)
   }
   assertNonEmptyString(value.blockId, `${field}.blockId`)
+  if (value.flowGroupId !== undefined) {
+    assertNonEmptyString(value.flowGroupId, `${field}.flowGroupId`)
+  }
   assertFiniteNumber(value.readingOrder, `${field}.readingOrder`)
   if (typeof value.translatable !== 'boolean') {
     throw new Error(`document ${field}.translatable must be a boolean`)
   }
   assertBoundingBox(value.bbox, `${field}.bbox`)
 
-  if (value.kind === 'text') assertTextRuns(value.runs, `${field}.runs`)
+  if (value.kind === 'text') {
+    assertTextRuns(value.runs, `${field}.runs`)
+    if (value.codeFrame !== undefined) {
+      assertBoundingBox(value.codeFrame, `${field}.codeFrame`)
+    }
+    if (value.toc !== undefined) {
+      if (!isRecord(value.toc)) throw new Error(`document ${field}.toc must be an object`)
+      assertNonEmptyString(value.toc.pageNumber, `${field}.toc.pageNumber`)
+    }
+  }
   if (value.kind === 'table') {
     if (!Array.isArray(value.rows)) throw new Error(`document ${field}.rows must be an array`)
     value.rows.forEach((row, rowIndex) => {
@@ -549,6 +582,17 @@ export function parseDocumentModel(value: unknown): DocumentModel {
     assertFiniteNumber(page.index, `pages[${pageIndex}].index`)
     assertFiniteNumber(page.width, `pages[${pageIndex}].width`, false)
     assertFiniteNumber(page.height, `pages[${pageIndex}].height`, false)
+    if (page.contentArea !== undefined) {
+      if (!isRecord(page.contentArea)) {
+        throw new Error(`document pages[${pageIndex}].contentArea must be an object`)
+      }
+      assertFiniteNumber(page.contentArea.left, `pages[${pageIndex}].contentArea.left`)
+      assertFiniteNumber(page.contentArea.right, `pages[${pageIndex}].contentArea.right`)
+      assertFiniteNumber(page.contentArea.center, `pages[${pageIndex}].contentArea.center`)
+      if (page.contentArea.right <= page.contentArea.left) {
+        throw new Error(`document pages[${pageIndex}].contentArea.right must be greater than left`)
+      }
+    }
     if (!Array.isArray(page.blocks)) throw new Error(`document pages[${pageIndex}].blocks must be an array`)
     page.blocks.forEach((block, blockIndex) => assertDocumentBlock(
       block,

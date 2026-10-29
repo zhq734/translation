@@ -247,6 +247,7 @@ import type {
   ScreenshotOcrActionRequest,
   ScreenshotOcrErrorCode,
   ScreenshotToastKind,
+  WebPagePdfExportResult,
   WebTranslationMode,
   WebTranslationRunRequest,
   WebViewBounds
@@ -637,6 +638,17 @@ function getDocumentWorkspace(): DocumentWorkspaceManager {
 function isDocumentWorkspaceSender(sender: Electron.WebContents): boolean {
   const senderWindow = BrowserWindow.fromWebContents(sender)
   return Boolean(senderWindow && documentWorkspace?.ownsWindow(senderWindow))
+}
+
+/**
+ * 判断 IPC 是否来自当前有效的网页翻译阅读器窗口。
+ * @param sender Renderer 的 WebContents。
+ * @returns 属于当前阅读器壳窗口时返回 true。
+ * @author zhenghq
+ */
+function isWebReaderSender(sender: Electron.WebContents): boolean {
+  const senderWindow = BrowserWindow.fromWebContents(sender)
+  return Boolean(senderWindow && webReader?.ownsWindow(senderWindow))
 }
 
 /**
@@ -1549,6 +1561,27 @@ async function onReady(): Promise<boolean> {
       const quality = evaluateOcrQuality(ocr, settings.ocrLang)
       if (!quality.valid || quality.languageMismatch) return { text: '', score: 0 }
       return { text, score: quality.averageConfidence ?? Math.min(1, quality.textScore / 10) }
+    },
+    showSaveDialog: async (suggestedName) => {
+      const window = webReader?.getWindow() ?? undefined
+      const result = window
+        ? await dialog.showSaveDialog(window, {
+          title: t('webReader.exportPdf'),
+          defaultPath: suggestedName,
+          filters: [{ name: 'PDF', extensions: ['pdf'] }]
+        })
+        : await dialog.showSaveDialog({
+          title: t('webReader.exportPdf'),
+          defaultPath: suggestedName,
+          filters: [{ name: 'PDF', extensions: ['pdf'] }]
+        })
+      return {
+        canceled: result.canceled,
+        ...(result.filePath ? { filePath: result.filePath } : {})
+      }
+    },
+    writeFile: async (path, bytes) => {
+      await writeFile(path, bytes)
     },
     onWindowStateChanged: (open) => {
       webReaderWindowOpen = open
@@ -6029,6 +6062,18 @@ function registerIpc(): void {
   ipcMain.handle('web-translate:set-mode', (_event, mode: unknown) => {
     if (!isWebTranslationMode(mode)) throw new Error(t('error.invalidWebMode'))
     return getWebReader().setMode(mode)
+  })
+  /**
+   * 将当前网页译文导出为带水印 PDF。
+   * @param event IPC 事件对象。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('web-translate:export-pdf', async (event): Promise<WebPagePdfExportResult> => {
+    if (!isWebReaderSender(event.sender)) {
+      return { status: 'rejected', code: 'unreadable' }
+    }
+    return getWebReader().exportPdf()
   })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {

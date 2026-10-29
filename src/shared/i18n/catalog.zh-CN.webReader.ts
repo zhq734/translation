@@ -15,5 +15,10 @@ export const webReaderZhCN = defineCatalog({
   'webReader.error.documentNotReady': '网页主文档尚未准备好，请稍候再试',
   'webReader.error.rootNotReady': '网页根节点尚未创建，请稍候再试',
   'webReader.error.translationFailed': '翻译失败',
+  'webReader.exportPdf': '导出 PDF',
+  'webReader.exportingPdf': '正在导出 PDF…',
+  'webReader.pdfExported': 'PDF 已导出',
+  'webReader.pdfExportCancelled': '已取消导出 PDF',
+  'webReader.pdfExportFailed': '导出 PDF 失败',
   'webReader.mainWindowTitle': '划词翻译 · 网页翻译'
 })

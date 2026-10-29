@@ -7,6 +7,7 @@ import {
 } from '../../shared/documentFormat'
 import type {
   DocumentBlock,
+  DocumentContentArea,
   DocumentImageBlock,
   DocumentModel,
   DocumentOcrRegion,
@@ -33,10 +34,18 @@ import type {
 } from '../../shared/types'
 import type { Settings } from '../../shared/types'
 import { LANGUAGES, langLabel } from '../../shared/langs'
+import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
+import {
+  occupiesDocumentTranslationFlow,
+  resolveTranslationFlowDecorationTop,
+  type DocumentFlowDecorationAnchor,
+  resolveTranslationFlowGroupGeometry,
+  resolveTranslationWatermarkHorizontalOffset
+} from './documentPdfLayout'
 
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
@@ -131,14 +140,24 @@ let renderedSourcePreviewIdentity = ''
 let renderedSourceWarningSignature = ''
 /** 已渲染的译文内容签名。 */
 let renderedTranslationSignature = ''
+/** 当前译文预览的渲染方式；结构变化时才允许回退整页重绘。 */
+let renderedTranslationPreviewKind: DocumentPreviewKind | null = null
 /** 是否已完成过译文栏首次渲染；空模型与空签名不能省略初始等待态。 */
 let hasRenderedTranslation = false
 /** 已渲染的译文告警签名；告警变化时只更新告警层。 */
 let renderedTranslationWarningSignature = ''
 /** 每个 PDF 预览容器当前有效的异步渲染令牌，避免旧渲染覆盖新文件。 */
 const pdfRenderTokens = new WeakMap<HTMLElement, symbol>()
+/** 每个 PDF 预览容器的资源清理函数；切换文件或重绘时取消观察与未完成绘制。 */
+const pdfPreviewCleanups = new WeakMap<HTMLElement, () => void>()
 /** 当前译文 PDF 页面的缩放观察器；重绘前统一断开，避免旧页面泄漏。 */
 let pageScaleObserver: ResizeObserver | null = null
+/** 当前待执行的译文页面重排帧；同一帧内合并缩放、字体与图片尺寸变化。 */
+let pageLayoutFrame: number | null = null
+/** 当前译文页面重排调度器；图片异步加载完成后复用同一帧合并逻辑。 */
+let activePageLayoutScheduler: (() => void) | null = null
+/** 当前译文水印的尺寸观察器；容器宽度变化时重新计算图案横向起点。 */
+let watermarkResizeObserver: ResizeObserver | null = null
 /** 最近一次读取到的完整设置，供界面语言变化时重建语言下拉。 */
 let currentSettings: Settings | null = null
 /** 最近一次已提交的语言组合，用于忽略程序化回填触发的 change 事件。 */
@@ -470,14 +489,19 @@ function resetWorkbenchPreview(): void {
     pendingRenderFrame = null
   }
   latestSnapshot = null
+  watermarkResizeObserver?.disconnect()
+  watermarkResizeObserver = null
   activeJobId = null
   expectedJobId = null
   renderedSourcePreviewIdentity = ''
   renderedSourceWarningSignature = ''
   renderedTranslationSignature = ''
+  renderedTranslationPreviewKind = null
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
   revokeAssetUrls()
+  pdfPreviewCleanups.get(sourceContent)?.()
+  pdfPreviewCleanups.get(translationContent)?.()
   sourceContent.replaceChildren()
   translationContent.replaceChildren()
   sourceContent.dataset.previewKind = ''
@@ -664,7 +688,7 @@ function documentPageContentWidth(container: HTMLElement): number {
 
 /**
  * 计算 PDF 译文文本块相对上一条已排版区块的段前距离。
- * PDF 文本层按视觉行拆分；同字号、同左边线的相邻行使用原始基线推进，
+ * PDF 文本层已按段落合并；同字号、同左边线的相邻段落使用原始基线推进，
  * 其余情况才使用 bbox 间距，避免行盒高度与坐标距离重复叠加。
  * @param block 当前区块；仅文本区块参与基线推进计算。
  * @param previousBlock 上一条已排版区块。
@@ -731,13 +755,37 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
   // 页面 padding 已承载首个区块之前的原文留白，子元素坐标从这里开始计算，避免重复叠加。
   const flowOrigin = pageRect.top + borderTop + paddingTop
   let previousBottom = flowOrigin
+  const flowDecorationAnchors: DocumentFlowDecorationAnchor[] = []
 
-  for (const child of page.children) {
-    if (!(child instanceof HTMLElement)) continue
+  for (const directChild of page.children) {
+    if (!(directChild instanceof HTMLElement)) continue
+    // 同行分组作为一个整体参与纵向排版，组内子区块不能再次叠加段前距离。
+    const child = directChild
+    // 绝对定位装饰线不占据普通流，不能参与实际底边测量，否则后续正文会被重复下推。
+    if (child.dataset.flowOccupiesSpace === 'false') {
+      const shapeSourceTop = Number(child.dataset.sourceTop)
+      const desiredTop = resolveTranslationFlowDecorationTop(
+        shapeSourceTop,
+        flowDecorationAnchors,
+        scale
+      )
+      if (desiredTop !== undefined) {
+        const oldOffset = Number.parseFloat(
+          child.style.getPropertyValue('--document-shape-flow-offset')
+        ) || 0
+        // 装饰线使用绝对定位，其 top 基准是页面内边距盒；先扣除上一次偏移，才能得到稳定基准。
+        const baseTop = child.getBoundingClientRect().top - oldOffset
+        child.style.setProperty('--document-shape-flow-offset', `${desiredTop - baseTop}px`)
+      } else {
+        child.style.removeProperty('--document-shape-flow-offset')
+      }
+      continue
+    }
     const sourceY = Number(child.dataset.sourceY)
     const sourceGap = Math.max(0, Number(child.dataset.sourceGapBefore) || 0)
     let gapPx = sourceGap * scale
-    if (child.classList.contains('document-image-block') && Number.isFinite(sourceY)) {
+    if ((child.classList.contains('document-image-block') ||
+      child.querySelector(':scope > .document-image-block')) && Number.isFinite(sourceY)) {
       const anchoredTop = flowOrigin + Math.max(0, sourceY - pageMarginTop) * scale
       // 原文锚点只允许下推图片，不能把图片拉回前文译文已占用的区域。
       gapPx = Math.max(0, anchoredTop - previousBottom)
@@ -746,7 +794,52 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
       child.style.setProperty('--document-flow-gap-before', `${gapPx / scale}px`)
     }
     previousBottom = Math.max(previousBottom, measureTranslationFlowBottom(child))
+    const sourceTop = Number(child.dataset.sourceTop)
+    const sourceBottom = Number(child.dataset.sourceBottom)
+    if (Number.isFinite(sourceTop) && Number.isFinite(sourceBottom)) {
+      const childRect = child.getBoundingClientRect()
+      flowDecorationAnchors.push({
+        sourceTop,
+        sourceBottom,
+        actualTop: childRect.top,
+        actualBottom: childRect.bottom
+      })
+    }
   }
+}
+
+/**
+ * 将同行区块追加到页面；连续相同 flowGroupId 的区块共享一个横向 flex 容器。
+ * 组容器承载首块的原点、段前距离与测量信息，组内区块只负责自身横向几何。
+ * @param page 译文页面容器。
+ * @param block 当前区块模型。
+ * @param rendered 已渲染的区块元素。
+ * @param groupClassName 分组容器使用的样式类名。
+ * @param flowGroup 当前仍在延续的同组容器。
+ * @returns 当前区块所属的同组容器；不属于分组时返回 undefined。
+ * @author zhenghq
+ */
+function appendTranslationFlowBlock(
+  page: HTMLElement,
+  block: DocumentBlock,
+  rendered: HTMLElement,
+  groupClassName: string,
+  flowGroup?: HTMLElement
+): HTMLElement | undefined {
+  if (!block.flowGroupId) {
+    page.append(rendered)
+    return undefined
+  }
+  if (flowGroup) {
+    flowGroup.append(rendered)
+    return flowGroup
+  }
+  const group = document.createElement('div')
+  group.className = groupClassName
+  group.dataset.flowGroupId = block.flowGroupId
+  group.append(rendered)
+  page.append(group)
+  return group
 }
 
 /**
@@ -775,26 +868,46 @@ function pdfPreviewFontFamily(fontFamily: string): string {
  * @param element 译文文本块。
  * @param block 文本区块。
  * @param pageWidth 原始页面宽度。
+ * @param contentArea 原文正文内容区；用于保留左右页边距并扩展短标题译文。
  * @returns 无返回值。
  * @author zhenghq
  */
 function applyTranslationBlockGeometry(
   element: HTMLElement,
   block: DocumentTextBlock,
-  pageWidth: number
+  pageWidth: number,
+  contentArea?: DocumentContentArea
 ): void {
   if (!block.bbox) return
   const left = Math.max(0, Math.min(pageWidth, block.bbox.x))
   const right = Math.max(left, Math.min(pageWidth, block.bbox.x + block.bbox.width))
   const blockWidth = Math.max(1, right - left)
-  // 居中、右对齐的原文 bbox 就是版式锚点，必须沿用其宽度；扩大后会改变居中位置和换行点。
-  // 左对齐正文仍使用页面可用宽度，避免把翻译后的长句限制在原文单行宽度内。
-  const rightInset = Math.max(0, pageWidth - right)
-  const flowWidth = block.textAlign === 'center' || block.textAlign === 'right'
-    ? blockWidth
-    : Math.max(blockWidth, pageWidth - left - rightInset)
+  // 左对齐正文使用页面正文区右边界，既避免缩在原文短行内，也保留原文右侧页边距。
+  // 居中标题围绕原中心线向正文区两侧扩展，避免中文短标题的 bbox 把英文译文过早折行。
+  // 右对齐仍沿用原 bbox 宽度，防止扩大宽度后改变其右边缘。
+  // 旧模型没有正文区信息时沿用原 bbox 宽度，不能退回物理页宽而重新铺满页面。
+  const contentRight = Math.max(
+    right,
+    Math.min(pageWidth, contentArea?.right ?? right)
+  )
+  const contentLeft = Math.min(
+    left,
+    Math.max(0, contentArea?.left ?? left)
+  )
+  const blockCenter = block.bbox.x + block.bbox.width / 2
+  const centeredWidth = Math.max(blockWidth, Math.min(
+    contentRight - contentLeft,
+    Math.min(blockCenter - contentLeft, contentRight - blockCenter) * 2
+  ))
+  const flowWidth = block.textAlign === 'center'
+    ? centeredWidth
+    : block.textAlign === 'right'
+      ? blockWidth
+      : block.role === 'code'
+        ? blockWidth
+        : Math.max(blockWidth, contentRight - left)
   const flowLeft = block.textAlign === 'center'
-    ? left
+    ? blockCenter - flowWidth / 2
     : block.textAlign === 'right' ? right - flowWidth : left
   element.style.setProperty('--document-block-left', `${flowLeft}px`)
   element.style.setProperty('--document-block-width', `${flowWidth}px`)
@@ -905,19 +1018,60 @@ function hasVisibleFlowContent(model: DocumentModel, side: DocumentRenderSide): 
 /**
  * 创建文本区块 DOM；正文只通过 textContent 写入，避免把译文当 HTML 执行。
  * @param block 文本区块。
+ * @param side 当前渲染侧。
+ * @param pageWidth 原始页面宽度。
+ * @param contentArea 原文正文内容区。
  * @returns 文本区块元素。
  * @author zhenghq
  */
-function renderTextBlock(block: DocumentTextBlock, side: DocumentRenderSide, pageWidth: number): HTMLElement {
+function renderTextBlock(
+  block: DocumentTextBlock,
+  side: DocumentRenderSide,
+  pageWidth: number,
+  contentArea?: DocumentContentArea
+): HTMLElement {
   const element = document.createElement('div')
   element.className = `document-text-block document-text-${block.role}`
   element.dataset.blockId = block.blockId
+  if (block.role === 'code') {
+    // 代码块即使只恢复出横向外框，也必须显式标记为代码框，确保译文侧始终有
+    // 主题边框和独立滚动区域；不能依赖 codeFrame 是否完整识别。
+    element.dataset.codeFrame = 'true'
+  }
   applyBlockGeometry(element, block)
   if (block.textAlign) {
     element.style.textAlign = block.textAlign
     element.dataset.align = block.textAlign
   }
-  if (side === 'translation') applyTranslationBlockGeometry(element, block, pageWidth)
+  if (block.codeFrame) {
+    // 代码框使用解析器识别的原始外框，不依赖已经移出模型的独立形状线。
+    element.style.setProperty('--document-code-frame-left', `${block.codeFrame.x}px`)
+    element.style.setProperty('--document-code-frame-width', `${block.codeFrame.width}px`)
+  }
+  if (side === 'translation') {
+    applyTranslationBlockGeometry(element, block, pageWidth, contentArea)
+  }
+  if (block.toc) {
+    // 目录项必须把标题、引导线和页码拆开排版；整段按普通 run 排列会把页码挤到下一行。
+    element.classList.add('document-text-toc')
+    const titleRun = block.runs.find((run) => run.protected !== true)
+    const title = document.createElement('span')
+    title.className = 'document-toc-title'
+    title.dataset.runId = titleRun?.runId ?? `${block.blockId}-toc-title`
+    title.textContent = block.runs
+      .filter((run) => run.protected !== true)
+      .map((run) => run.text)
+      .join('')
+    applyScalableTextStyle(title, titleRun ? effectiveTextStyle(block, titleRun) : block.style)
+    const leader = document.createElement('span')
+    leader.className = 'document-toc-leader'
+    leader.setAttribute('aria-hidden', 'true')
+    const pageNumber = document.createElement('span')
+    pageNumber.className = 'document-toc-page'
+    pageNumber.textContent = block.toc.pageNumber
+    element.append(title, leader, pageNumber)
+    return element
+  }
   for (const run of block.runs) {
     const span = document.createElement('span')
     span.className = 'document-text-run'
@@ -958,6 +1112,25 @@ function orderedOcrRegions(regions: readonly DocumentOcrRegion[]): DocumentOcrRe
 }
 
 /**
+ * 计算 OCR 覆盖层的可见内容签名，用于跳过未变化图片的覆盖层替换。
+ * @param block 图片区块。
+ * @returns 覆盖层签名；没有可见译文时返回空字符串。
+ * @author zhenghq
+ */
+function ocrTranslationLayerSignature(block: DocumentImageBlock): string {
+  const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasVisibleOcrTranslation)
+  if (regions.length === 0) return ''
+  return JSON.stringify(regions.map((region) => ({
+    regionId: region.regionId,
+    bbox: region.bbox,
+    translatedText: region.translatedText,
+    style: region.style,
+    textAlign: region.textAlign,
+    status: region.status
+  })))
+}
+
+/**
  * 创建 OCR 译文覆盖层；源文侧不叠加识别文本，译文侧也只显示已成功翻译的内容。
  * 覆盖层高度随译文实际换行增长，相邻区域由流式布局避让，避免文字被裁切或重叠。
  * @param imageBlock 图片区块。
@@ -981,6 +1154,7 @@ function renderOcrRegion(
   const element = document.createElement('div')
   element.className = 'document-ocr-region'
   element.dataset.status = region.status
+  element.dataset.regionId = region.regionId
   // 横向沿用 OCR 原文 bbox；左对齐文本允许延伸到图片右边界，减少无意义的逐字换行。
   const left = Math.max(0, Math.min(1, region.bbox.x))
   const right = Math.max(left, Math.min(1, region.bbox.x + region.bbox.width))
@@ -1016,6 +1190,39 @@ function renderOcrRegion(
 }
 
 /**
+ * 创建图片的 OCR 译文覆盖层；没有可展示译文时返回 null。
+ * @param block 图片区块。
+ * @returns 可直接挂载到图片区块的 OCR 覆盖层。
+ * @author zhenghq
+ */
+function createOcrTranslationLayer(block: DocumentImageBlock): HTMLElement | null {
+  const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasVisibleOcrTranslation)
+  if (regions.length === 0) return null
+  const layer = document.createElement('div')
+  layer.className = 'document-ocr-translation-layer'
+  layer.dataset.ocrTranslationSignature = ocrTranslationLayerSignature(block)
+  const masks = document.createElement('div')
+  masks.className = 'document-ocr-original-mask-layer'
+  for (const region of regions) {
+    const mask = document.createElement('span')
+    mask.className = 'document-ocr-original-mask'
+    mask.style.left = `${Math.max(0, Math.min(1, region.bbox.x)) * 100}%`
+    mask.style.top = `${Math.max(0, Math.min(1, region.bbox.y)) * 100}%`
+    mask.style.width = `${Math.max(0, Math.min(1, region.bbox.width)) * 100}%`
+    mask.style.height = `${Math.max(0, Math.min(1, region.bbox.height)) * 100}%`
+    masks.append(mask)
+  }
+  layer.append(masks)
+  let previousRegion: DocumentOcrRegion | undefined
+  for (const region of regions) {
+    const overlay = renderOcrRegion(block, region, previousRegion, 'translation')
+    if (overlay) layer.append(overlay)
+    previousRegion = region
+  }
+  return layer
+}
+
+/**
  * 创建图片区块；资源加载成功前使用占位区域，加载完成后填入图片。
  * @param block 图片区块。
  * @param side 当前渲染侧。
@@ -1048,28 +1255,8 @@ function renderImageBlock(
     })
   }
   if (side === 'translation') {
-    const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasVisibleOcrTranslation)
-    if (regions.length > 0) {
-      const layer = document.createElement('div')
-      layer.className = 'document-ocr-translation-layer'
-      const masks = document.createElement('div')
-      masks.className = 'document-ocr-original-mask-layer'
-      for (const region of regions) {
-        const mask = document.createElement('span')
-        mask.className = 'document-ocr-original-mask'
-        mask.style.left = `${Math.max(0, Math.min(1, region.bbox.x)) * 100}%`
-        mask.style.top = `${Math.max(0, Math.min(1, region.bbox.y)) * 100}%`
-        mask.style.width = `${Math.max(0, Math.min(1, region.bbox.width)) * 100}%`
-        mask.style.height = `${Math.max(0, Math.min(1, region.bbox.height)) * 100}%`
-        masks.append(mask)
-      }
-      layer.append(masks)
-      let previousRegion: DocumentOcrRegion | undefined
-      for (const region of regions) {
-        const overlay = renderOcrRegion(block, region, previousRegion, side)
-        if (overlay) layer.append(overlay)
-        previousRegion = region
-      }
+    const layer = createOcrTranslationLayer(block)
+    if (layer) {
       wrapper.dataset.ocrTranslation = 'true'
       wrapper.append(layer)
     }
@@ -1153,10 +1340,52 @@ function renderTableBlock(
  * @author zhenghq
  */
 function renderTableCellBlock(block: DocumentBlock, side: DocumentRenderSide): HTMLElement {
-  const element = renderBlock(block, side, 1)
+  const pageWidth = 1
+  const element = block.kind === 'image'
+    ? renderTableCellImageBlock(block, side)
+    : renderBlock(block, side, pageWidth)
   // 单元格内子区块的 bbox 是整页坐标，标记后由 CSS 清除页面级偏移并限制在单元格内。
   element.dataset.tableCellContent = 'true'
   return element
+}
+
+/**
+ * 创建表格单元格图片；图片进入单元格普通流并按列宽等比缩放。
+ * @param block 表格单元格内的图片区块。
+ * @param side 当前渲染侧。
+ * @returns 不继承页面绝对坐标的图片区块元素。
+ * @author zhenghq
+ */
+function renderTableCellImageBlock(
+  block: DocumentImageBlock,
+  side: DocumentRenderSide
+): HTMLElement {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'document-image-block'
+  wrapper.dataset.blockId = block.blockId
+  wrapper.dataset.tableCellImage = 'true'
+  wrapper.dataset.tableCellContent = 'true'
+  if (side === 'translation') wrapper.dataset.renderSide = side
+  if (block.renderPending) {
+    wrapper.dataset.pending = 'true'
+    wrapper.textContent = t('document.ocr.pendingRender')
+    return wrapper
+  }
+  const image = document.createElement('img')
+  image.className = 'document-page-image'
+  image.alt = block.alt ?? ''
+  image.decoding = 'async'
+  wrapper.append(image)
+  void resolveAssetUrl(block.assetId).then((url) => {
+    if (!url) {
+      wrapper.dataset.pending = 'true'
+      wrapper.textContent = block.alt || t('document.ocr.pendingRender')
+      return
+    }
+    image.src = url
+    image.addEventListener('load', scheduleTranslationPageLayout, { once: true })
+  })
+  return wrapper
 }
 
 /**
@@ -1191,10 +1420,11 @@ function renderShapeBlock(block: Extract<DocumentBlock, { kind: 'shape' }>): HTM
   applyBlockGeometry(element, block)
   if (block.line) {
     element.dataset.lineOrientation = block.line.orientation
-    element.style.setProperty('--document-line-color', block.line.color ?? 'var(--border-default)')
+    element.style.setProperty('--document-line-color', block.line.color ?? 'var(--document-paper-text)')
     element.style.setProperty('--document-line-thickness', `${Math.max(0.5, block.line.thickness ?? 1)}px`)
     if (block.bbox) {
       element.style.setProperty('--document-shape-left', `${Math.max(0, block.bbox.x)}px`)
+      element.style.setProperty('--document-shape-top', `${Math.max(0, block.bbox.y)}px`)
       element.style.setProperty('--document-shape-width', `${Math.max(1, block.bbox.width)}px`)
       element.style.setProperty('--document-shape-height', `${Math.max(1, block.bbox.height)}px`)
     }
@@ -1221,12 +1451,19 @@ function renderFormulaBlock(block: Extract<DocumentBlock, { kind: 'formula' }>):
  * 根据区块类型创建安全 DOM。
  * @param block 文档区块。
  * @param side 当前渲染侧。
+ * @param pageWidth 原始页面宽度。
+ * @param contentArea 原文正文内容区。
  * @returns 区块元素。
  * @author zhenghq
  */
-function renderBlock(block: DocumentBlock, side: DocumentRenderSide, pageWidth: number): HTMLElement {
+function renderBlock(
+  block: DocumentBlock,
+  side: DocumentRenderSide,
+  pageWidth: number,
+  contentArea?: DocumentContentArea
+): HTMLElement {
   switch (block.kind) {
-    case 'text': return renderTextBlock(block, side, pageWidth)
+    case 'text': return renderTextBlock(block, side, pageWidth, contentArea)
     case 'image': return renderImageBlock(block, side, pageWidth)
     case 'table': return renderTableBlock(block, side, pageWidth)
     case 'formula': return renderFormulaBlock(block)
@@ -1272,6 +1509,15 @@ function renderPage(
     : hasGeometry ? 'absolute' : 'flow'
   let previousBottom = 0
   let previousBlock: DocumentBlock | undefined
+  let activeFlowGroup: HTMLElement | undefined
+  let activeFlowGroupId: string | undefined
+  const flowGroupBlocks = new Map<string, DocumentBlock[]>()
+  for (const block of page.blocks) {
+    if (!block.flowGroupId) continue
+    const groupBlocks = flowGroupBlocks.get(block.flowGroupId) ?? []
+    groupBlocks.push(block)
+    flowGroupBlocks.set(block.flowGroupId, groupBlocks)
+  }
   if (element.dataset.layout === 'translation-flow') {
     // 译文页面用原始 PDF 页面宽度作为缩放基准，字号、间距和页边距随双栏宽度等比变化。
     const geometryBlocks = page.blocks.filter((block) => block.bbox)
@@ -1284,20 +1530,208 @@ function renderPage(
     previousBottom = minY
   }
   for (const block of page.blocks) {
-    const rendered = renderBlock(block, side, page.width)
+    const rendered = renderBlock(block, side, page.width, page.contentArea)
+    const occupiesFlow = occupiesDocumentTranslationFlow(block)
+    rendered.dataset.flowOccupiesSpace = String(occupiesFlow)
+    const continuesFlowGroup = element.dataset.layout === 'translation-flow' &&
+      block.flowGroupId !== undefined &&
+      block.flowGroupId === activeFlowGroupId
+    const blockGapBefore = element.dataset.layout === 'translation-flow' && block.bbox
+      ? pdfFlowGapBefore(block, previousBlock, previousBottom)
+      : 0
     if (element.dataset.layout === 'translation-flow' && block.bbox) {
       // 译文仍按阅读顺序流式换行，但段前距离来自原文坐标，避免统一 gap 破坏标题和正文节奏。
-      const gapBefore = pdfFlowGapBefore(block, previousBlock, previousBottom)
-      rendered.style.setProperty('--document-flow-gap-before', `${gapBefore}px`)
+      rendered.style.setProperty('--document-flow-gap-before', `${blockGapBefore}px`)
       // 图片需要优先回到原文纵向锚点；保留原始 y 与段前距离供挂载后的真实 DOM 测量使用。
       rendered.dataset.sourceY = String(block.bbox.y)
-      rendered.dataset.sourceGapBefore = String(gapBefore)
-      previousBottom = Math.max(previousBottom, block.bbox.y + block.bbox.height)
+      rendered.dataset.sourceTop = String(block.bbox.y)
+      rendered.dataset.sourceBottom = String(block.bbox.y + block.bbox.height)
+      rendered.dataset.sourceGapBefore = String(blockGapBefore)
+      // 装饰线虽然保留原文底边信息，但不占普通流高度；后续文本应继续以最后一个流式区块为基准。
+      if (occupiesFlow) {
+        previousBottom = Math.max(previousBottom, block.bbox.y + block.bbox.height)
+      }
     }
     previousBlock = block
-    element.append(rendered)
+    if (element.dataset.layout !== 'translation-flow') {
+      element.append(rendered)
+      continue
+    }
+    if (!continuesFlowGroup && activeFlowGroup) {
+      activeFlowGroup = undefined
+      activeFlowGroupId = undefined
+    }
+    const nextGroup = appendTranslationFlowBlock(
+      element,
+      block,
+      rendered,
+      'document-flow-group',
+      activeFlowGroup
+    )
+    if (nextGroup && block.flowGroupId) {
+      if (!activeFlowGroup) {
+        // 分组容器继承首块的原文坐标与段前距离，供挂载后的真实 DOM 测量使用。
+        const groupGeometry = resolveTranslationFlowGroupGeometry(
+          flowGroupBlocks.get(block.flowGroupId) ?? [block],
+          page.blocks,
+          page.width,
+          page.contentArea
+        )
+        nextGroup.style.setProperty('--document-flow-group-left', `${groupGeometry.left}px`)
+        nextGroup.style.setProperty('--document-flow-group-width', `${groupGeometry.width}px`)
+        nextGroup.style.setProperty('--document-flow-group-height', `${groupGeometry.height}px`)
+        nextGroup.style.setProperty('--document-flow-group-gap', `${groupGeometry.textGap}px`)
+        nextGroup.style.setProperty('--document-flow-group-text-top', `${groupGeometry.textTop}px`)
+        nextGroup.style.setProperty('--document-flow-gap-before', `${blockGapBefore}px`)
+        nextGroup.dataset.flowOccupiesSpace = String(
+          (flowGroupBlocks.get(block.flowGroupId) ?? [block]).some(occupiesDocumentTranslationFlow)
+        )
+        if (block.bbox) {
+          nextGroup.dataset.sourceY = String(block.bbox.y)
+          nextGroup.dataset.sourceGapBefore = String(blockGapBefore)
+          const groupBlocks = flowGroupBlocks.get(block.flowGroupId) ?? [block]
+          const groupBounds = groupBlocks.filter((groupBlock) => groupBlock.bbox)
+          if (groupBounds.length > 0) {
+            nextGroup.dataset.sourceTop = String(Math.min(
+              ...groupBounds.map((groupBlock) => groupBlock.bbox!.y)
+            ))
+            nextGroup.dataset.sourceBottom = String(Math.max(
+              ...groupBounds.map((groupBlock) => groupBlock.bbox!.y + groupBlock.bbox!.height)
+            ))
+          }
+        }
+        rendered.style.setProperty('--document-flow-gap-before', '0px')
+        rendered.dataset.sourceGapBefore = '0'
+      }
+      activeFlowGroup = nextGroup
+      activeFlowGroupId = block.flowGroupId
+    } else {
+      activeFlowGroup = undefined
+      activeFlowGroupId = undefined
+    }
   }
   return element
+}
+
+/**
+ * 创建译文水印中的真实品牌图标；直接复用托盘模板的“译”字轮廓，并强制使用当前文字颜色。
+ * @returns 无交互的品牌图标元素。
+ * @author zhenghq
+ */
+function createTranslationWatermarkLogo(): SVGSVGElement {
+  const namespace = 'http://www.w3.org/2000/svg'
+  const logo = document.createElementNS(namespace, 'svg')
+  logo.classList.add('document-translation-watermark-logo')
+  logo.setAttribute('viewBox', '0 0 36 36')
+  logo.setAttribute('aria-hidden', 'true')
+  const glyph = document.createElementNS(namespace, 'path')
+  glyph.setAttribute('id', 'rounded-yi-glyph')
+  glyph.setAttribute('data-font-family', 'Wawati SC')
+  glyph.setAttribute('fill', 'currentColor')
+  glyph.setAttribute('stroke', 'currentColor')
+  glyph.setAttribute('stroke-width', '5')
+  glyph.setAttribute('stroke-linecap', 'round')
+  glyph.setAttribute('stroke-linejoin', 'round')
+  glyph.setAttribute('paint-order', 'stroke fill')
+  glyph.setAttribute('transform', 'translate(3.2 25.9) scale(0.113)')
+  glyph.setAttribute('d', TRANSLATION_WATERMARK_LOGO_PATH)
+  logo.append(glyph)
+  return logo
+}
+
+/**
+ * 创建译文水印中的产品名文本，并统一应用当前文字颜色。
+ * @param value 水印展示的产品名。
+ * @param className 文本节点附加的样式类名。
+ * @returns 无交互的 SVG 文本元素。
+ * @author zhenghq
+ */
+function createTranslationWatermarkText(value: string, className?: string): SVGTextElement {
+  const namespace = 'http://www.w3.org/2000/svg'
+  const text = document.createElementNS(namespace, 'text')
+  text.classList.add('document-translation-watermark-text')
+  if (className) text.classList.add(className)
+  text.setAttribute('fill', 'currentColor')
+  text.textContent = value
+  return text
+}
+
+/**
+ * 创建铺满译文预览区域的 SVG 水印图案；图案随内容高度平铺，打印分页时每页都会重复。
+ * @returns 包含斜向品牌文字的 SVG 图案元素。
+ * @author zhenghq
+ */
+function createTranslationWatermarkPattern(): SVGSVGElement {
+  const namespace = 'http://www.w3.org/2000/svg'
+  const pattern = document.createElementNS(namespace, 'svg')
+  pattern.classList.add('document-translation-watermark-pattern')
+  pattern.setAttribute('aria-hidden', 'true')
+  pattern.setAttribute('preserveAspectRatio', 'none')
+  const definitions = document.createElementNS(namespace, 'defs')
+  const tile = document.createElementNS(namespace, 'pattern')
+  tile.setAttribute('id', 'document-translation-watermark-tile-pattern')
+  // 平移图案原点而不是旋转后的内容组，才能保持屏幕与 PDF 中的平铺周期不变。
+  tile.setAttribute('x', '0')
+  // 中英文上下两行沿用原始瓦片间距，保持与既有译文水印的疏密一致。
+  tile.setAttribute('width', '320')
+  tile.setAttribute('height', '180')
+  tile.setAttribute('patternUnits', 'userSpaceOnUse')
+  const content = document.createElementNS(namespace, 'g')
+  content.classList.add('document-translation-watermark-tile')
+  // Chromium 打印链路会忽略 patternTransform，直接旋转内容组可确保屏幕和 PDF 都是 45 度斜水印。
+  content.setAttribute('transform', 'rotate(-45 160 90)')
+  const logo = createTranslationWatermarkLogo()
+  logo.setAttribute('x', '74')
+  logo.setAttribute('y', '96')
+  logo.setAttribute('width', '24')
+  logo.setAttribute('height', '24')
+  const chineseText = createTranslationWatermarkText('划词翻译')
+  chineseText.setAttribute('x', '106')
+  chineseText.setAttribute('y', '107')
+  const englishText = createTranslationWatermarkText(
+    'Selection Translator',
+    'document-translation-watermark-text--english'
+  )
+  englishText.setAttribute('x', '108')
+  englishText.setAttribute('y', '127')
+  content.append(logo, chineseText, englishText)
+  tile.append(content)
+  definitions.append(tile)
+  const surface = document.createElementNS(namespace, 'rect')
+  surface.setAttribute('width', '100%')
+  surface.setAttribute('height', '100%')
+  surface.setAttribute('fill', 'url(#document-translation-watermark-tile-pattern)')
+  pattern.append(definitions, surface)
+  return pattern
+}
+
+/**
+ * 在译文容器内创建覆盖全部内容的水印层，屏幕预览与打印 PDF 共用同一 DOM。
+ * @param container 译文预览宿主；原文侧传入时不创建水印。
+ * @param side 当前渲染侧。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function appendTranslationWatermark(container: HTMLElement, side: DocumentRenderSide): void {
+  if (side !== 'translation') return
+  watermarkResizeObserver?.disconnect()
+  watermarkResizeObserver = null
+  const watermark = document.createElement('div')
+  watermark.className = 'document-translation-watermark'
+  watermark.setAttribute('aria-hidden', 'true')
+  const pattern = createTranslationWatermarkPattern()
+  watermark.append(pattern)
+  container.append(watermark)
+  const tile = pattern.querySelector<SVGPatternElement>('pattern')
+  const updateOffset = (): void => {
+    if (!tile) return
+    tile.setAttribute('x', String(resolveTranslationWatermarkHorizontalOffset(watermark.clientWidth)))
+  }
+  updateOffset()
+  // 首次挂载时容器可能尚未连接 DOM；ResizeObserver 会在布局完成后再次回调。
+  const observer = new ResizeObserver(updateOffset)
+  watermarkResizeObserver = observer
+  observer.observe(watermark)
 }
 
 /**
@@ -1519,6 +1953,7 @@ function renderFlowDocument(container: HTMLElement, model: DocumentModel, side: 
  * @author zhenghq
  */
 async function renderPdfPages(container: HTMLElement, generationAtStart: number): Promise<void> {
+  pdfPreviewCleanups.get(container)?.()
   const renderToken = Symbol('pdf-preview')
   pdfRenderTokens.set(container, renderToken)
   container.replaceChildren()
@@ -1529,22 +1964,86 @@ async function renderPdfPages(container: HTMLElement, generationAtStart: number)
   container.append(loading)
 
   let pdfDocument: Awaited<ReturnType<typeof pdfjsModule.getDocument>['promise']> | null = null
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const article = entry.target as HTMLElement
+      observer.unobserve(article)
+      void renderVisiblePage(article)
+    }
+  }, { root: container, rootMargin: '600px 0px' })
+  const renderTasks = new Set<{ cancel(): void; promise: Promise<void> }>()
+  let disposed = false
+  const cleanup = (): void => {
+    if (disposed) return
+    disposed = true
+    observer.disconnect()
+    for (const renderTask of renderTasks) renderTask.cancel()
+    renderTasks.clear()
+    if (pdfRenderTokens.get(container) === renderToken) pdfRenderTokens.delete(container)
+    if (pdfPreviewCleanups.get(container) === cleanup) pdfPreviewCleanups.delete(container)
+    if (pdfDocument) void pdfDocument.destroy().catch(() => undefined)
+    pdfDocument = null
+  }
+  pdfPreviewCleanups.set(container, cleanup)
+  const isCurrentRender = (): boolean => !disposed &&
+    generationAtStart === generation &&
+    container.isConnected &&
+    pdfRenderTokens.get(container) === renderToken
+  const renderVisiblePage = async (article: HTMLElement): Promise<void> => {
+    if (!pdfDocument || !isCurrentRender() || article.dataset.pdfRendered === 'true') return
+    article.dataset.pdfRendered = 'true'
+    const pageNumber = Number(article.dataset.pageNumber)
+    const canvas = article.querySelector<HTMLCanvasElement>('.document-pdf-canvas')
+    if (!Number.isSafeInteger(pageNumber) || pageNumber <= 0 || !canvas) return
+    try {
+      const page = await pdfDocument.getPage(pageNumber)
+      if (!isCurrentRender()) return
+      const baseViewport = page.getViewport({ scale: 1 })
+      const width = documentPageContentWidth(container)
+      const scale = Math.max(0.25, width / baseViewport.width)
+      const viewport = page.getViewport({ scale })
+      const maxDeviceScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+      canvas.width = Math.max(1, Math.floor(viewport.width * maxDeviceScale))
+      canvas.height = Math.max(1, Math.floor(viewport.height * maxDeviceScale))
+      canvas.style.width = `${viewport.width}px`
+      canvas.style.height = `${viewport.height}px`
+      const canvasContext = canvas.getContext('2d', { alpha: false })
+      if (!canvasContext) throw new Error('canvas-context-unavailable')
+      // PDF.js 的透明页面必须显式铺白底，否则深色主题下空白区域会被合成成黑色。
+      canvasContext.fillStyle = '#ffffff'
+      canvasContext.fillRect(0, 0, canvas.width, canvas.height)
+      const renderTask = page.render({
+        canvasContext,
+        viewport,
+        background: '#ffffff',
+        transform: maxDeviceScale === 1 ? undefined : [maxDeviceScale, 0, 0, maxDeviceScale, 0, 0]
+      })
+      renderTasks.add(renderTask)
+      await renderTask.promise
+      renderTasks.delete(renderTask)
+      if (!isCurrentRender()) return
+    } catch (error) {
+      article.dataset.pdfRendered = 'false'
+      if (!isCurrentRender()) return
+      console.error('Failed to render PDF page', pageNumber, error)
+    }
+  }
   try {
     const source = await window.api.getDocumentSource()
     if (!source.ok || !source.bytes) throw new Error(source.code ?? 'source-not-found')
-    if (generationAtStart !== generation || !container.isConnected || pdfRenderTokens.get(container) !== renderToken) return
+    if (!isCurrentRender()) return
     const loadingTask = pdfjsModule.getDocument({
       data: new Uint8Array(source.bytes),
       isEvalSupported: false,
       useSystemFonts: true
     })
     pdfDocument = await loadingTask.promise
-    if (generationAtStart !== generation || !container.isConnected || pdfRenderTokens.get(container) !== renderToken) return
+    if (!isCurrentRender()) return
     container.replaceChildren()
-    const maxDeviceScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-      if (generationAtStart !== generation || !container.isConnected || pdfRenderTokens.get(container) !== renderToken) return
       const page = await pdfDocument.getPage(pageNumber)
+      if (!isCurrentRender()) return
       const baseViewport = page.getViewport({ scale: 1 })
       const width = documentPageContentWidth(container)
       const scale = Math.max(0.25, width / baseViewport.width)
@@ -1552,37 +2051,24 @@ async function renderPdfPages(container: HTMLElement, generationAtStart: number)
       const article = document.createElement('article')
       article.className = 'document-pdf-page'
       article.dataset.pageNumber = String(pageNumber)
+      article.style.setProperty('--document-pdf-page-height', `${viewport.height}px`)
       const canvas = document.createElement('canvas')
       canvas.className = 'document-pdf-canvas'
-      canvas.width = Math.max(1, Math.floor(viewport.width * maxDeviceScale))
-      canvas.height = Math.max(1, Math.floor(viewport.height * maxDeviceScale))
       canvas.style.width = `${viewport.width}px`
       canvas.style.height = `${viewport.height}px`
       article.append(canvas)
       container.append(article)
-      const canvasContext = canvas.getContext('2d', { alpha: false })
-      if (!canvasContext) throw new Error('canvas-context-unavailable')
-      // PDF.js 的透明页面必须显式铺白底，否则深色主题下空白区域会被合成成黑色。
-      canvasContext.fillStyle = '#ffffff'
-      canvasContext.fillRect(0, 0, canvas.width, canvas.height)
-      await page.render({
-        canvasContext,
-        viewport,
-        background: '#ffffff',
-        transform: maxDeviceScale === 1 ? undefined : [maxDeviceScale, 0, 0, maxDeviceScale, 0, 0]
-      }).promise
-      if (generationAtStart !== generation || !container.isConnected || pdfRenderTokens.get(container) !== renderToken) return
+      observer.observe(article)
     }
     sourcePageCount.textContent = t('document.pageCount', { count: pdfDocument.numPages })
-  } catch {
-    if (generationAtStart !== generation || !container.isConnected || pdfRenderTokens.get(container) !== renderToken) return
+  } catch (error) {
+    if (!isCurrentRender()) return
+    console.error('Failed to render PDF preview', error)
     container.replaceChildren()
     const failed = document.createElement('p')
     failed.className = 'document-empty-state'
     failed.textContent = t('document.run.failed')
     container.append(failed)
-  } finally {
-    if (pdfDocument) await pdfDocument.destroy().catch(() => undefined)
   }
 }
 
@@ -1595,25 +2081,71 @@ async function renderPdfPages(container: HTMLElement, generationAtStart: number)
 function observeTranslationPageScale(container: HTMLElement): void {
   pageScaleObserver?.disconnect()
   pageScaleObserver = null
+  if (pageLayoutFrame !== null) {
+    cancelAnimationFrame(pageLayoutFrame)
+    pageLayoutFrame = null
+  }
   const pages = Array.from(container.querySelectorAll<HTMLElement>(".document-page[data-layout='translation-flow']"))
   if (pages.length === 0 || typeof ResizeObserver === 'undefined') return
-  const update = (page: HTMLElement): void => {
-    const sourceWidth = Number(page.dataset.sourceWidth)
-    if (!Number.isFinite(sourceWidth) || sourceWidth <= 0) return
-    // 原文 Canvas 与译文页面使用同一内容宽度，确保左右两侧缩放比例一致。
-    const availableWidth = documentPageContentWidth(container)
-    const scale = availableWidth / sourceWidth
-    page.style.setProperty('--document-page-scale', String(Math.max(0.25, scale)))
-    // 字号和宽度变化会改变译文真实高度，必须在缩放后重新测量图片锚点与流式底边。
-    normalizeTranslationFlowLayout(page)
+  // 观察器可能因自身样式变化再次触发；统一在下一帧批量重排，避免同步测量循环造成卡顿。
+  const scheduleLayout = (): void => {
+    if (pageLayoutFrame !== null) cancelAnimationFrame(pageLayoutFrame)
+    pageLayoutFrame = requestAnimationFrame(() => {
+      pageLayoutFrame = null
+      const availableWidth = documentPageContentWidth(container)
+      for (const page of pages) {
+        if (!page.isConnected) continue
+        const sourceWidth = Number(page.dataset.sourceWidth)
+        if (!Number.isFinite(sourceWidth) || sourceWidth <= 0) continue
+        // 原文 Canvas 与译文页面使用同一内容宽度，确保左右两侧缩放比例一致。
+        page.style.setProperty('--document-page-scale', String(Math.max(0.25, availableWidth / sourceWidth)))
+        // 字号和宽度变化会改变译文真实高度，必须在缩放后重新测量图片锚点与流式底边。
+        normalizeTranslationFlowLayout(page)
+      }
+    })
   }
+  activePageLayoutScheduler = scheduleLayout
   const observer = new ResizeObserver(() => {
+    scheduleLayout()
+  })
+  pageScaleObserver = observer
+  observer.observe(container)
+  // 字体或图片异步加载会改变页面自身高度，只观察外层容器无法触发装饰线重新锚定。
+  for (const page of pages) observer.observe(page)
+  scheduleLayout()
+}
+
+/**
+ * 请求合并执行当前译文页面的缩放与流式重排。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleTranslationPageLayout(): void {
+  activePageLayoutScheduler?.()
+}
+
+/**
+ * 清理待执行的译文页面重排帧。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function cancelTranslationPageLayout(): void {
+  activePageLayoutScheduler = null
+  if (pageLayoutFrame === null) return
+  cancelAnimationFrame(pageLayoutFrame)
+  pageLayoutFrame = null
+}
+
+/**
+ * 创建独立告警层；告警更新不会替换 PDF Canvas 或正文页面。
     for (const page of pages) {
       if (page.isConnected) update(page)
     }
   })
   pageScaleObserver = observer
   observer.observe(container)
+  // 字体或图片异步加载会改变页面自身高度，只观察外层容器无法触发装饰线重新锚定。
+  for (const page of pages) observer.observe(page)
   for (const page of pages) update(page)
 }
 
@@ -1644,6 +2176,227 @@ function renderDocumentWarnings(container: HTMLElement, warnings: readonly Docum
 }
 
 /**
+ * 原位更新文本区块中的 run；run 结构不兼容时返回失败并交由上层整块或整页回退。
+ * @param element 已渲染的文本区块。
+ * @param block 最新文本区块模型。
+ * @param side 当前渲染侧。
+ * @returns 是否已原位更新成功。
+ * @author zhenghq
+ */
+function patchTranslationTextBlock(
+  element: HTMLElement,
+  block: DocumentTextBlock,
+  side: DocumentRenderSide
+): boolean {
+  if (side !== 'translation') return false
+  if (block.toc) {
+    const title = element.querySelector<HTMLElement>(':scope > .document-toc-title')
+    const pageNumber = element.querySelector<HTMLElement>(':scope > .document-toc-page')
+    if (!title || !pageNumber) return false
+    const titleRun = block.runs.find((run) => run.protected !== true)
+    title.dataset.runId = titleRun?.runId ?? `${block.blockId}-toc-title`
+    const titleText = block.runs
+      .filter((run) => run.protected !== true)
+      .map((run) => run.text)
+      .join('')
+    if (title.textContent !== titleText) title.textContent = titleText
+    applyScalableTextStyle(title, titleRun ? effectiveTextStyle(block, titleRun) : block.style)
+    if (pageNumber.textContent !== block.toc.pageNumber) {
+      pageNumber.textContent = block.toc.pageNumber
+    }
+    return true
+  }
+  const existingRuns = Array.from(element.querySelectorAll<HTMLElement>('.document-text-run'))
+  if (existingRuns.length !== block.runs.length) return false
+  for (let index = 0; index < block.runs.length; index += 1) {
+    const run = block.runs[index]!
+    const existingRun = existingRuns[index]!
+    if (existingRun.dataset.runId !== run.runId) return false
+    if (existingRun.textContent !== run.text) existingRun.textContent = run.text
+    applyScalableTextStyle(existingRun, effectiveTextStyle(block, run))
+  }
+  return true
+}
+
+/**
+ * 原位更新图片 OCR 覆盖层；底图节点与资源 URL 保持不变，只替换覆盖层内容。
+ * @param element 已渲染的图片区块。
+ * @param block 最新图片区块模型。
+ * @returns 是否已原位更新成功。
+ * @author zhenghq
+ */
+function patchTranslationOcrLayer(
+  element: HTMLElement,
+  block: DocumentImageBlock
+): boolean {
+  if (!element.classList.contains('document-image-block')) return false
+  const renderPending = element.dataset.pending === 'true'
+  if (renderPending !== Boolean(block.renderPending)) return false
+  const image = element.querySelector<HTMLImageElement>(':scope > img.document-page-image')
+  if (!block.renderPending && !image) return false
+  if (image) image.alt = block.alt ?? ''
+  const existingLayer = element.querySelector<HTMLElement>(':scope > .document-ocr-translation-layer')
+  const signature = ocrTranslationLayerSignature(block)
+  if (!signature) {
+    existingLayer?.remove()
+    delete element.dataset.ocrTranslation
+    return true
+  }
+  if (existingLayer?.dataset.ocrTranslationSignature === signature) return true
+  const nextLayer = createOcrTranslationLayer(block)
+  if (nextLayer) {
+    if (existingLayer) existingLayer.replaceWith(nextLayer)
+    else element.append(nextLayer)
+    element.dataset.ocrTranslation = 'true'
+  } else {
+    existingLayer?.remove()
+    delete element.dataset.ocrTranslation
+  }
+  return true
+}
+
+/**
+ * 校验并原位更新表格内的单元格文本，避免流式译文触发整表重绘。
+ * @param element 已渲染的表格区块。
+ * @param block 最新表格区块模型。
+ * @param takeBlockElement 按 DOM 顺序取得区块元素。
+ * @returns 是否已原位更新成功。
+ * @author zhenghq
+ */
+function patchTranslationTableBlock(
+  element: HTMLElement,
+  block: DocumentTableBlock,
+  takeBlockElement: (blockId: string) => HTMLElement | undefined
+): boolean {
+  if (!element.classList.contains('document-table-block')) return false
+  const table = element.querySelector<HTMLTableElement>(':scope > table')
+  if (!table || table.rows.length !== block.rows.length) return false
+  const headerRowCount = Math.max(0, Math.min(block.headerRows ?? 0, block.rows.length))
+  for (let rowIndex = 0; rowIndex < block.rows.length; rowIndex += 1) {
+    const row = block.rows[rowIndex]!
+    const tableRow = table.rows[rowIndex]!
+    if (tableRow.cells.length !== row.cells.length) return false
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      const cell = row.cells[cellIndex]!
+      const tableCell = tableRow.cells[cellIndex]!
+      if (tableCell.colSpan !== Math.max(1, cell.colSpan) ||
+        tableCell.rowSpan !== Math.max(1, cell.rowSpan) ||
+        (rowIndex < headerRowCount ? tableCell.tagName !== 'TH' : tableCell.tagName !== 'TD')) {
+        return false
+      }
+      const renderedBlocks = Array.from(tableCell.children)
+      if (renderedBlocks.length !== cell.blocks.length) return false
+      for (let blockIndex = 0; blockIndex < cell.blocks.length; blockIndex += 1) {
+        const child = cell.blocks[blockIndex]!
+        const renderedBlock = child.kind === 'break'
+          ? renderedBlocks[blockIndex]
+          : takeBlockElement(child.blockId)
+        if (!(renderedBlock instanceof HTMLElement) ||
+          !patchTranslationBlock(child, renderedBlock, takeBlockElement)) {
+          return false
+        }
+      }
+    }
+  }
+  return true
+}
+
+/**
+ * 按区块类型原位更新译文；结构不兼容时返回失败。
+ * @param block 最新区块模型。
+ * @param element 已渲染区块元素；分隔符没有稳定 DOM 标识时为 undefined。
+ * @param takeBlockElement 按 DOM 顺序取得区块元素。
+ * @returns 是否已原位更新成功。
+ * @author zhenghq
+ */
+function patchTranslationBlock(
+  block: DocumentBlock,
+  element: HTMLElement | undefined,
+  takeBlockElement: (blockId: string) => HTMLElement | undefined
+): boolean {
+  if (block.kind === 'break') return true
+  if (!element) return false
+  switch (block.kind) {
+    case 'text':
+      return patchTranslationTextBlock(element, block, 'translation')
+    case 'image':
+      return patchTranslationOcrLayer(element, block)
+    case 'table':
+      return patchTranslationTableBlock(element, block, takeBlockElement)
+    case 'formula':
+      return element.classList.contains('document-formula-block')
+    case 'shape':
+      return element.classList.contains('document-shape-block')
+  }
+}
+
+/**
+ * 收集模型中会生成 data-block-id 的区块标识；显式分页标记没有对应标识。
+ * @param block 当前区块模型。
+ * @param blockIds 收集结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function collectDocumentBlockIds(block: DocumentBlock, blockIds: string[]): void {
+  if (block.kind === 'break') return
+  blockIds.push(block.blockId)
+  if (block.kind !== 'table') return
+  for (const row of block.rows) {
+    for (const cell of row.cells) {
+      for (const child of cell.blocks) collectDocumentBlockIds(child, blockIds)
+    }
+  }
+}
+
+/**
+ * 在现有译文 DOM 上原位更新流式内容；只有结构变化时才返回失败并允许整页重绘。
+ * @param container 译文滚动容器。
+ * @param model 最新译文模型。
+ * @returns 是否已原位更新成功。
+ * @author zhenghq
+ */
+function patchTranslationPreview(container: HTMLElement, model: DocumentModel | undefined): boolean {
+  if (!model || renderedTranslationPreviewKind === null) return false
+  const previewHost = container.querySelector<HTMLElement>(':scope > .document-preview-host')
+  if (!previewHost) return false
+  const kind = resolvePreviewKind(model, 'translation')
+  if (kind !== renderedTranslationPreviewKind || previewHost.dataset.previewKind !== kind) return false
+
+  const existingElements = Array.from(
+    previewHost.querySelectorAll<HTMLElement>('[data-block-id]')
+  )
+  const elementsById = new Map<string, HTMLElement[]>()
+  for (const element of existingElements) {
+    const blockId = element.dataset.blockId
+    if (!blockId) continue
+    const matches = elementsById.get(blockId) ?? []
+    matches.push(element)
+    elementsById.set(blockId, matches)
+  }
+  let consumedElementCount = 0
+  const takeBlockElement = (blockId: string): HTMLElement | undefined => {
+    const element = elementsById.get(blockId)?.shift()
+    if (element) consumedElementCount += 1
+    return element
+  }
+  const expectedBlockIds: string[] = []
+  for (const page of model.pages) {
+    for (const block of page.blocks) {
+      collectDocumentBlockIds(block, expectedBlockIds)
+      if (!patchTranslationBlock(block, block.kind === 'break' ? undefined : takeBlockElement(block.blockId), takeBlockElement)) {
+        return false
+      }
+    }
+  }
+  if (consumedElementCount !== existingElements.length ||
+    expectedBlockIds.length !== existingElements.length) {
+    return false
+  }
+  scheduleTranslationPageLayout()
+  return true
+}
+
+/**
  * 渲染一个文档模型到指定栏；没有模型时展示等待提示。
  * @param container 目标滚动容器。
  * @param model 文档模型。
@@ -1662,8 +2415,17 @@ function renderDocumentModel(
 ): void {
   pageScaleObserver?.disconnect()
   pageScaleObserver = null
-  // 模型被替换或切换文件时使旧的 PDF.js 异步渲染立即失效。
-  pdfRenderTokens.delete(container)
+  activePageLayoutScheduler = null
+  if (pageLayoutFrame !== null) {
+    cancelAnimationFrame(pageLayoutFrame)
+    pageLayoutFrame = null
+  }
+  pdfPreviewCleanups.get(container)?.()
+  // 仅替换译文侧时清理旧水印观察器；原文重绘不能中断仍然保留的译文水印。
+  if (container === translationContent) {
+    watermarkResizeObserver?.disconnect()
+    watermarkResizeObserver = null
+  }
   const previousContent = document.createDocumentFragment()
   previousContent.append(...container.childNodes)
   if (!model) {
@@ -1671,6 +2433,7 @@ function renderDocumentModel(
     empty.className = 'document-empty-state'
     empty.textContent = t(emptyKey)
     container.replaceChildren(empty)
+    if (container === translationContent) renderedTranslationPreviewKind = null
     renderDocumentWarnings(container, warnings)
     return
   }
@@ -1701,14 +2464,17 @@ function renderDocumentModel(
     } else {
       renderFlowDocument(previewHost, model, side)
     }
+    appendTranslationWatermark(previewHost, side)
     container.dataset.previewKind = kind
     if (previewHost.parentNode !== container) container.replaceChildren(nextContent)
+    if (side === 'translation') renderedTranslationPreviewKind = kind
     if (side === 'translation' && (kind === 'paged' || model.source.format === 'html')) {
       observeTranslationPageScale(previewHost)
     }
     renderDocumentWarnings(container, warnings)
   } catch (error) {
     console.error('Failed to render document model', error)
+    if (side === 'translation') renderedTranslationPreviewKind = null
     container.replaceChildren(previousContent)
     const failedContent = document.createDocumentFragment()
     const failed = document.createElement('p')
@@ -1751,6 +2517,7 @@ function documentContentSignature(model: DocumentModel | undefined): string {
       width: page.width,
       height: page.height,
       background: page.background,
+      contentArea: page.contentArea,
       blocks: page.blocks.map((block) => {
         if (block.kind === 'text') {
           return {
@@ -1760,6 +2527,7 @@ function documentContentSignature(model: DocumentModel | undefined): string {
             style: block.style,
             textAlign: block.textAlign,
             role: block.role,
+            toc: block.toc,
             runs: block.runs.map((run) => ({
               runId: run.runId,
               text: run.text,
@@ -1859,13 +2627,17 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
     renderedSourceWarningSignature = sourceWarningSignature
   }
   if (translationChanged) {
-    renderDocumentModel(
-      translationContent,
-      snapshot.translation,
-      'document.waitingTranslation',
-      'translation',
-      snapshot.translation?.warnings
-    )
+    const patched = hasRenderedTranslation &&
+      patchTranslationPreview(translationContent, snapshot.translation)
+    if (!patched) {
+      renderDocumentModel(
+        translationContent,
+        snapshot.translation,
+        'document.waitingTranslation',
+        'translation',
+        snapshot.translation?.warnings
+      )
+    }
     renderedTranslationSignature = translationSignature
     hasRenderedTranslation = true
     renderedTranslationWarningSignature = translationWarningSignature
@@ -1946,6 +2718,22 @@ function scheduleSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
 }
 
 /**
+ * 立即渲染指定快照，并取消尚未执行的合并帧，避免终态或导出时沿用旧的流式部分译文。
+ * @param snapshot 需要立即落到界面的最新任务快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function flushSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
+  if (pendingRenderFrame !== null) {
+    cancelAnimationFrame(pendingRenderFrame)
+    pendingRenderFrame = null
+  }
+  latestSnapshot = snapshot
+  renderSnapshot(snapshot)
+  renderTaskState(snapshot)
+}
+
+/**
  * 判断事件是否属于当前任务，隔离旧任务或旧窗口的迟到事件。
  * @param snapshot 收到的任务快照。
  * @returns 是否属于当前任务。
@@ -1984,9 +2772,12 @@ async function startDocumentTranslation(): Promise<void> {
   renderedSourcePreviewIdentity = ''
   renderedSourceWarningSignature = ''
   renderedTranslationSignature = ''
+  renderedTranslationPreviewKind = null
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
   revokeAssetUrls()
+  pdfPreviewCleanups.get(sourceContent)?.()
+  pdfPreviewCleanups.get(translationContent)?.()
   uploadPanel.hidden = true
   workbench.hidden = false
   workbenchName.textContent = selectionState.name
@@ -2107,6 +2898,8 @@ async function retryFailedDocumentTranslation(): Promise<void> {
  */
 async function exportTranslatedPdf(): Promise<void> {
   if (!latestSnapshot?.translation) return
+  // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
+  flushSnapshotRender(latestSnapshot)
   exportButton.disabled = true
   try {
     const result: DocumentExportResult = await window.api.exportDocumentPdf()
@@ -2238,7 +3031,8 @@ async function initializeDocumentWorkspace(): Promise<void> {
   })
   window.api.onDocumentCompleted((snapshot) => {
     if (!isCurrentSnapshot(snapshot)) return
-    scheduleSnapshotRender(snapshot)
+    // 终态必须绕过 rAF 合并立即落盘，确保最终译文覆盖最后一条流式部分译文。
+    flushSnapshotRender(snapshot)
     startButton.disabled = false
   })
   sourceContent.addEventListener('scroll', () => syncScroll(sourceContent, translationContent))
@@ -2256,6 +3050,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
       renderedSourcePreviewIdentity = ''
       renderedSourceWarningSignature = ''
       renderedTranslationSignature = ''
+      renderedTranslationPreviewKind = null
       hasRenderedTranslation = false
       renderedTranslationWarningSignature = ''
       renderSnapshot(latestSnapshot)

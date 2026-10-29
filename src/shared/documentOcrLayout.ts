@@ -1,12 +1,15 @@
 import type { DocumentOcrRegion } from './documentTypes.ts'
 
-/** OCR 区域缺少原文字号时使用的可读默认字号。 */
-export const DOCUMENT_OCR_FALLBACK_FONT_SIZE = 12
+/** OCR 译文统一使用的字号，界面预览与 PDF 导出必须保持一致。 */
+export const DOCUMENT_OCR_UNIFORM_FONT_SIZE = 12
 
-/** OCR 区域允许使用的最小字号，避免异常识别框产生不可读文本。 */
+/** OCR 区域缺少原文字号时使用的兼容默认值，始终与统一字号一致。 */
+export const DOCUMENT_OCR_FALLBACK_FONT_SIZE = DOCUMENT_OCR_UNIFORM_FONT_SIZE
+
+/** OCR 区域历史最小字号；仅为兼容旧调用保留，不再参与字号计算。 */
 export const DOCUMENT_OCR_MIN_FONT_SIZE = 6
 
-/** OCR 区域允许使用的最大字号，避免整页识别框把译文放大到不可用。 */
+/** OCR 区域历史最大字号；仅为兼容旧调用保留，不再参与字号计算。 */
 export const DOCUMENT_OCR_MAX_FONT_SIZE = 72
 
 /** OCR 译文行高相对字号的固定比例；界面预览和 PDF 导出必须共用。 */
@@ -19,25 +22,20 @@ const OCR_PADDING_X_LIMIT = 3
 const OCR_PADDING_Y_LIMIT = 2
 
 /**
- * 计算 OCR 区域译文使用的字号。
+ * 计算 OCR 区域译文使用的统一字号。
  * @param region OCR 区域。
  * @param imageHeight 图片原始高度，保留参数用于兼容调用方语义。
- * @returns 限制在安全范围内的字号。
+ * @returns 固定统一字号，不随区域原文字号或图片高度变化。
  * @author zhenghq
  */
 export function resolveOcrRegionFontSize(
   region: DocumentOcrRegion,
   imageHeight: number
 ): number {
-  // 图片高度目前不参与字号推导，避免整页 bbox 被误当成单行高度。
+  // OCR 译文按整页统一字号排版，避免标题、表格和短文本因识别框高度不同而忽大忽小。
+  void region
   void imageHeight
-  return Math.max(
-    DOCUMENT_OCR_MIN_FONT_SIZE,
-    Math.min(
-      DOCUMENT_OCR_MAX_FONT_SIZE,
-      region.style?.fontSize ?? DOCUMENT_OCR_FALLBACK_FONT_SIZE
-    )
-  )
+  return DOCUMENT_OCR_UNIFORM_FONT_SIZE
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   type DocumentPipelineDeps
 } from '../src/main/documentTranslationPipeline.ts'
 import { parseHtmlDocument, parseMarkdownDocument } from '../src/main/documentTextParser.ts'
+import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
 
 /**
  * 构造测试用文本区块。
@@ -156,7 +157,6 @@ test('同一文本块连续可翻译 run 必须作为一个大目标发送并保
   ])])
   const calls: string[] = []
   const progress = progressCollector()
-  const published = translationCollector()
   const deps: DocumentPipelineDeps = {
     parse: async () => source,
     loadAssetBytes: async () => null,
@@ -165,8 +165,7 @@ test('同一文本块连续可翻译 run 必须作为一个大目标发送并保
       calls.push(text)
       return translateMergedText(text, (part) => `译:${part}`)
     },
-    onProgress: progress.onProgress,
-    publishTranslation: published.publishTranslation
+    onProgress: progress.onProgress
   }
 
   const result = await runDocumentTranslationPipeline(
@@ -182,9 +181,6 @@ test('同一文本块连续可翻译 run 必须作为一个大目标发送并保
   const translated = result.translation.pages[0]!.blocks[0] as DocumentTextBlock
   assert.deepEqual(translated.runs.map((run) => run.runId), ['run-1', 'run-2'])
   assert.deepEqual(translated.runs.map((run) => run.text), ['译:Hello world', ''])
-  assert.equal(published.translations.length >= 1, true)
-  assert.equal((published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '译:Hello world')
-  assert.equal((published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[1]!.text, '')
   assert.equal(progress.states.at(-1)?.status, 'completed')
 })
 
@@ -254,6 +250,47 @@ test('同一文本块被 protected run 分隔时按连续片段聚合且保留�
   assert.deepEqual(translated.runs.map((run) => run.text), ['译:Before ', 'https://example.com', ' 译:after'])
 })
 
+test('目录块只翻译标题并保留点线、页码和目录元数据', async () => {
+  const tocBlock: DocumentTextBlock = {
+    ...textBlock('block-toc', [
+      { runId: 'run-title', text: '2.1.3. Software installation' },
+      { runId: 'run-leader', text: '.............................................................', protected: true },
+      { runId: 'run-page', text: '2', protected: true }
+    ]),
+    toc: { pageNumber: '2' }
+  }
+  const source = model([tocBlock])
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      return translateMergedText(text, (part) => `译:${part}`)
+    },
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/toc.pdf', fileName: 'toc.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-toc', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(calls, ['2.1.3. Software installation'])
+  const translated = result.translation.pages[0]!.blocks[0] as DocumentTextBlock
+  assert.equal(translated.toc?.pageNumber, '2')
+  assert.deepEqual(translated.runs.map((run) => run.text), [
+    '译:2.1.3. Software installation',
+    '.............................................................',
+    '2'
+  ])
+  assert.equal(translated.runs[1]?.protected, true)
+  assert.equal(translated.runs[2]?.protected, true)
+})
+
 test('HTML SVG 扫描件解析后必须进入翻译流水线并生成可见译文', async () => {
   const input = {
     path: '/tmp/scanned.html',
@@ -314,7 +351,7 @@ test('AI 增量必须在当前 run 完成前持续发布部分译文', async () 
 
   await runDocumentTranslationPipeline(
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
-    createDocumentTaskState('job-1', 1),
+    createDocumentTaskState('job-stream-single', 1),
     new AbortController().signal,
     deps
   )
@@ -323,6 +360,30 @@ test('AI 增量必须在当前 run 完成前持续发布部分译文', async () 
     .map((translation) => (translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text)
   assert.deepEqual(streamed.slice(1, 3), ['你好', '你好，世界'])
   assert.equal(streamed.at(-1), '你好，世界')
+})
+
+test('未注入译文发布回调时仍必须持续推送翻译进度', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }])])
+  const progress = progressCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => `译:${text}`,
+    onProgress: progress.onProgress
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-progress-without-publish', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.equal(progress.states.some((state) => (
+    state.phase === 'translate' && state.progress.completed === 1 && state.progress.total === 1
+  )), true)
 })
 
 test('翻译阶段开始时必须立即发布完整原文占位模型，避免译文栏空白', async () => {
@@ -354,7 +415,7 @@ test('翻译阶段开始时必须立即发布完整原文占位模型，避免�
 
   const run = runDocumentTranslationPipeline(
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
-    createDocumentTaskState('job-1', 1),
+    createDocumentTaskState('job-merged-complete', 1),
     new AbortController().signal,
     deps
   )
@@ -364,17 +425,124 @@ test('翻译阶段开始时必须立即发布完整原文占位模型，避免�
   ])
 
   assert.equal(published.translations.length, 1)
-  const initial = published.translations[0]!
   assert.deepEqual(
-    initial.pages[0]!.blocks.map((block) =>
+    published.translations[0]!.pages[0]!.blocks.map((block) =>
       block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
     ['Hello world', 'Second paragraph']
   )
-
   assert.ok(resolveTranslation)
   assert.equal(sentText, 'Hello world\n[[[ST-SEG-0]]]\nSecond paragraph')
   resolveTranslation(translateMergedText(sentText, (part) => `译:${part}`))
-  await run
+  const result = await run
+  assert.equal(result.task.status, 'completed')
+  assert.deepEqual(
+    result.translation.pages[0]!.blocks.map((block) =>
+      block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
+    ['译:Hello world', '译:Second paragraph']
+  )
+})
+
+test('合并批次响应含分段标记时必须按标记流式预览且不丢正文', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'run-1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'run-2', text: 'second' }])
+  ])
+  const published = translationCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (_text, _signal, onDelta) => {
+      onDelta?.('译文一\n[[[ST-SEG-0]]]\n')
+      onDelta?.('译文二')
+      return '译文一\n[[[ST-SEG-0]]]\n译文二'
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-merged-partial-marker', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(
+    result.translation.pages[0]!.blocks.map((block) =>
+      block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
+    ['译文一', '译文二']
+  )
+  assert.deepEqual(
+    published.translations.at(-1)!.pages[0]!.blocks.map((block) =>
+      block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
+    ['译文一', '译文二']
+  )
+})
+
+test('合并批次完整响应必须保留普通方括号正文', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'run-1', text: 'source' }]),
+    textBlock('block-2', [{ runId: 'run-2', text: 'next' }])
+  ])
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async () => '[[[Source]]] 译文\n[[[ST-SEG-0]]]\n下一段',
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-merged-brackets', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '[[[Source]]] 译文'
+  )
+  assert.equal(
+    (result.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text,
+    '下一段'
+  )
+})
+
+test('合并批次流式预览必须保留普通方括号正文，只过滤残缺尾部分段标记', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }]),
+    textBlock('block-2', [{ runId: 'run-2', text: 'Second paragraph' }])
+  ])
+  const published = translationCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (_text, _signal, onDelta) => {
+      onDelta?.('[[[Source]]] 译文\n[[[ST-SEG-0]]]\n下一段\n[[[ST-')
+      return '[[[Source]]] 译文\n[[[ST-SEG-0]]]\n下一段'
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-1', 1),
+    new AbortController().signal,
+    deps
+  )
+  assert.equal(result.task.status, 'completed')
+  const preview = published.translations.at(-1)!
+  assert.equal((preview.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '[[[Source]]] 译文')
+  assert.equal((preview.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text, '下一段')
+  assert.deepEqual(
+    result.translation.pages[0]!.blocks.map((block) =>
+      block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
+    ['[[[Source]]] 译文', '下一段']
+  )
 })
 
 test('翻译流水线跳过公式、受保护与不可翻译区块', async () => {
@@ -560,6 +728,150 @@ test('OCR 文本写入 ocrRegions 并参与后续翻译', async () => {
   assert.equal(image.ocrRegions?.[0]?.translatedText, 'T(OCR text)')
 })
 
+test('多页重复页眉装饰小图必须跳过 OCR，但正文小图仍要识别', async () => {
+  const source = model([
+    {
+      kind: 'image',
+      blockId: 'header-image-1',
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'header-asset-1',
+      bbox: { x: 360, y: 40, width: 20, height: 20 }
+    },
+    {
+      kind: 'image',
+      blockId: 'body-image-1',
+      readingOrder: 1,
+      translatable: false,
+      assetId: 'body-asset-1',
+      bbox: { x: 100, y: 360, width: 20, height: 20 }
+    }
+  ])
+  source.source.format = 'pdf'
+  source.assets.push(
+    { assetId: 'header-asset-1', kind: 'image', mimeType: 'image/png', sha256: 'header-1', byteLength: 3 },
+    { assetId: 'body-asset-1', kind: 'image', mimeType: 'image/png', sha256: 'body-1', byteLength: 3 }
+  )
+  source.pages = Array.from({ length: 3 }, (_, pageIndex) => ({
+    pageId: `page-${pageIndex + 1}`,
+    index: pageIndex,
+    width: 600,
+    height: 800,
+    blocks: [
+      {
+        kind: 'image' as const,
+        blockId: `header-image-${pageIndex + 1}`,
+        readingOrder: 0,
+        translatable: false,
+        assetId: `header-asset-${pageIndex + 1}`,
+        bbox: { x: 360, y: 40, width: 20, height: 20 }
+      },
+      ...(pageIndex === 0 ? [{
+        kind: 'image' as const,
+        blockId: 'body-image-1',
+        readingOrder: 1,
+        translatable: false,
+        assetId: 'body-asset-1',
+        bbox: { x: 100, y: 360, width: 20, height: 20 }
+      }] : [])
+    ]
+  }))
+  source.assets = [
+    ...Array.from({ length: 3 }, (_, pageIndex) => ({
+      assetId: `header-asset-${pageIndex + 1}`,
+      kind: 'image' as const,
+      mimeType: 'image/png',
+      sha256: `header-${pageIndex + 1}`,
+      byteLength: 3
+    })),
+    { assetId: 'body-asset-1', kind: 'image', mimeType: 'image/png', sha256: 'body-1', byteLength: 3 }
+  ]
+  let recognizeCalls = 0
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => {
+      recognizeCalls += 1
+      return { text: '正文截图', lines: [], engine: 'system' }
+    },
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.pdf', fileName: 'test.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-decorative-header', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(recognizeCalls, 1)
+  const headers = result.translation.pages.map((page) => page.blocks[0])
+  assert.equal(headers.every((block) => block?.kind === 'image' &&
+    block.ocrRegions?.[0]?.status === 'skipped' &&
+    block.ocrRegions[0].reason === 'decorative-image'), true)
+  const body = result.translation.pages[0]!.blocks[1]
+  assert.equal(body?.kind === 'image' ? body.ocrRegions?.[0]?.text : undefined, '正文截图')
+  assert.equal(body?.kind === 'image' ? body.ocrRegions?.[0]?.translatedText : undefined, 'T(正文截图)')
+})
+
+test('同一图片资源跨页复用时 OCR 只执行一次', async () => {
+  const source = model([])
+  source.source.format = 'pdf'
+  source.assets.push({
+    assetId: 'shared-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'shared-image',
+    byteLength: 3
+  })
+  source.pages = Array.from({ length: 2 }, (_, pageIndex) => ({
+    pageId: `page-${pageIndex + 1}`,
+    index: pageIndex,
+    width: 600,
+    height: 800,
+    blocks: [{
+      kind: 'image' as const,
+      blockId: `shared-image-${pageIndex + 1}`,
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'shared-asset',
+      bbox: { x: 100 + pageIndex * 100, y: 360, width: 80, height: 60 }
+    }]
+  }))
+  let recognizeCalls = 0
+  let loadCalls = 0
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => {
+      loadCalls += 1
+      return new Uint8Array([1, 2, 3])
+    },
+    recognizeImage: async () => {
+      recognizeCalls += 1
+      return { text: '共享图片文字', lines: [], engine: 'system' }
+    },
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.pdf', fileName: 'test.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-shared-image', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(loadCalls, 1)
+  assert.equal(recognizeCalls, 1)
+  assert.deepEqual(
+    result.translation.pages.map((page) => page.blocks[0]?.kind === 'image'
+      ? page.blocks[0].ocrRegions?.[0]?.text
+      : undefined),
+    ['共享图片文字', '共享图片文字']
+  )
+})
+
 test('OCR 未识别到文字时必须生成可展示告警并保留跳过状态', async () => {
   const source = model([{
     kind: 'image',
@@ -668,7 +980,9 @@ test('OCR 多行结果必须生成归一化局部区域并按区域翻译', asyn
   assert.equal(image.ocrRegions?.length, 2)
   assert.deepEqual(image.ocrRegions?.[0]?.bbox, { x: 0.05, y: 0.15, width: 0.45, height: 0.1 })
   assert.equal(image.ocrRegions?.[0]?.text, 'first line')
+  assert.equal(image.ocrRegions?.[0]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
   assert.equal(image.ocrRegions?.[1]?.text, 'second line')
+  assert.equal(image.ocrRegions?.[1]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
   assert.deepEqual(calls, ['first line\n[[[ST-SEG-0]]]\nsecond line'])
 })
 
@@ -1094,7 +1408,7 @@ test('文档翻译默认最多同时执行三个合并请求', async () => {
   assert.equal(result.task.status, 'completed')
 })
 
-test('OCR 区域必须保留字号与居中、右对齐，供预览和 PDF 导出复用', async () => {
+test('OCR 区域必须统一字号并保留居中、右对齐，供预览和 PDF 导出复用', async () => {
   const source = model([{
     kind: 'image',
     blockId: 'image-styled',
@@ -1133,8 +1447,9 @@ test('OCR 区域必须保留字号与居中、右对齐，供预览和 PDF 导�
   assert.equal(image.ocrRegions?.[0]?.bbox.width, 0.5)
   assert.ok(Math.abs((image.ocrRegions?.[0]?.bbox.height ?? 0) - 0.2) < 1e-9)
   assert.equal(image.ocrRegions?.[0]?.textAlign, 'center')
-  assert.equal(image.ocrRegions?.[0]?.style?.fontSize, 32)
+  assert.equal(image.ocrRegions?.[0]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
   assert.equal(image.ocrRegions?.[1]?.textAlign, 'right')
+  assert.equal(image.ocrRegions?.[1]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
 })
 
 test('OCR 结果缺少文本行边界时必须回退为整图区域', async () => {
@@ -1166,7 +1481,7 @@ test('OCR 结果缺少文本行边界时必须回退为整图区域', async () =
   assert.deepEqual(image.ocrRegions?.[0]?.bbox, { x: 0, y: 0, width: 1, height: 1 })
   assert.equal(image.ocrRegions?.[0]?.text, 'whole image text')
   // 缺少行框时不能把整页高度当成单行高度，否则扫描件译文会被放大到 72pt 上限。
-  assert.equal(image.ocrRegions?.[0]?.style?.fontSize, 12)
+  assert.equal(image.ocrRegions?.[0]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
 })
 
 test('单块翻译失败时保留原文、继续后续块并标记部分完成', async () => {
@@ -1254,6 +1569,55 @@ test('重新翻译只请求失败目标并保留已成功译文', async () => {
   assert.equal((retried.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, 'T(first)')
   assert.equal((retried.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text, 'T(second)')
   assert.equal(retried.translation.warnings.some((warning) => warning.code === 'translation-partial'), false)
+})
+
+test('重新翻译合并批次时也必须在整批完成前发布部分译文', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  const initial = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  const published = translationCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, onDelta) => {
+      assert.equal(text, 'first\n[[[ST-SEG-0]]]\nsecond')
+      onDelta?.('译:first\n[[[ST-SEG-0]]]\n')
+      assert.equal(
+        (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+        '译:first'
+      )
+      onDelta?.('译:second')
+      return '译:first\n[[[ST-SEG-0]]]\n译:second'
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation
+  }
+
+  const retried = await retryFailedDocumentTranslationPipeline(
+    source,
+    initial,
+    ['0:0:text:r1', '0:1:text:r2'],
+    createDocumentTaskState('job-retry-stream', 2),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text,
+    '译:second'
+  )
+  assert.deepEqual(
+    retried.translation.pages[0]!.blocks.map((block) =>
+      block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
+    ['译:first', '译:second']
+  )
 })
 
 test('重新翻译后仍失败时必须保留可再次重试的目标并保持部分完成', async () => {

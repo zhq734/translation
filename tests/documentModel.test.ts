@@ -215,3 +215,68 @@ test('文档模型应可稳定序列化并拒绝未知 schema 与损坏结构', 
     /block/iu
   )
 })
+
+test('文档模型应校验并保留 PDF 页面正文区边界', () => {
+  const model = createModel()
+  model.pages[0]!.contentArea = { left: 72, right: 540, center: 306 }
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  assert.deepEqual(parsed.pages[0]!.contentArea, { left: 72, right: 540, center: 306 })
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{ ...model.pages[0], contentArea: { left: 72, right: 'invalid', center: 306 } }]
+    }),
+    /contentArea\.right/iu
+  )
+})
+
+test('文档模型应校验并保留 PDF 同行布局分组标识', () => {
+  const model = createModel()
+  model.pages[0]!.blocks[0]!.flowGroupId = 'page-group-1'
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  assert.equal(parsed.pages[0]!.blocks[0]!.flowGroupId, 'page-group-1')
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...model.pages[0]!.blocks[0], flowGroupId: '   ' }]
+      }]
+    }),
+    /flowGroupId/iu
+  )
+})
+
+test('文档模型应校验并保留目录页码', () => {
+  const model = createModel()
+  const block = model.pages[0]!.blocks[0]!
+  assert.equal(block.kind, 'text')
+  if (block.kind !== 'text') return
+  block.toc = { pageNumber: '2' }
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  const parsedBlock = parsed.pages[0]!.blocks[0]!
+  assert.equal(parsedBlock.kind === 'text' ? parsedBlock.toc?.pageNumber : undefined, '2')
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...block, toc: { pageNumber: '   ' } }]
+      }]
+    }),
+    /toc\.pageNumber/iu
+  )
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...block, toc: { pageNumber: 2 } }]
+      }]
+    }),
+    /toc\.pageNumber/iu
+  )
+})

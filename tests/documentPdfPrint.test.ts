@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import type { PrintToPDFOptions } from 'electron'
 import type { DocumentModel } from '../src/shared/documentTypes.ts'
@@ -8,6 +9,16 @@ import {
   printDocumentPreviewToPdf,
   type DocumentPrintWebContents
 } from '../src/main/documentPdfPrint.ts'
+
+/**
+ * 读取项目内文本文件。
+ * @param path 相对项目根目录的路径。
+ * @returns 文件文本。
+ * @author zhenghq
+ */
+function read(path: string): string {
+  return readFileSync(path, 'utf8')
+}
 
 /**
  * 构造打印测试文档。
@@ -38,6 +49,35 @@ function documentModel(width = 612, height = 792): DocumentModel {
     assets: [],
     warnings: []
   }
+}
+
+/**
+ * 构造 Markdown 打印测试文档。
+ * @param height 页面高度，单位为 PDF 点。
+ * @returns Markdown 文档模型。
+ * @author zhenghq
+ */
+function markdownDocumentModel(height = 1056): DocumentModel {
+  const model = documentModel(816, height)
+  model.source.path = '/tmp/guide.md'
+  model.source.fileName = 'guide.md'
+  model.source.format = 'markdown'
+  return model
+}
+
+/**
+ * 构造其他连续流式格式的打印测试文档。
+ * @param format 文档格式。
+ * @returns 流式文档模型。
+ * @author zhenghq
+ */
+function flowDocumentModel(format: DocumentModel['source']['format']): DocumentModel {
+  // 文本类流式文档的模型尺寸使用 96 DPI 的 CSS 像素，对应标准 A4 纸张。
+  const model = documentModel(816, 1056)
+  model.source.path = `/tmp/guide.${format}`
+  model.source.fileName = `guide.${format}`
+  model.source.format = format
+  return model
 }
 
 /**
@@ -141,12 +181,82 @@ test('PDF 打印样式必须隐藏工作台并只保留译文预览', () => {
   assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b/iu)
 })
 
+test('下载 PDF 必须保留译文水印且打印时保持覆盖在正文上方', () => {
+  const css = buildDocumentPrintCss(documentModel())
+  const watermarkRule = /#document-translation-content \.document-translation-watermark\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+  const patternRule = /#document-translation-content \.document-translation-watermark-pattern\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+
+  assert.match(watermarkRule, /display:\s*block\s*!important/u)
+  assert.match(watermarkRule, /position:\s*fixed\s*!important/u)
+  assert.match(watermarkRule, /inset:\s*0\s*!important/u)
+  assert.match(watermarkRule, /width:\s*100%\s*!important/u)
+  assert.match(watermarkRule, /height:\s*100%\s*!important/u)
+  assert.match(watermarkRule, /pointer-events:\s*none\s*!important/u)
+  assert.match(watermarkRule, /z-index:\s*2\s*!important/u)
+  assert.match(watermarkRule, /print-color-adjust:\s*exact/u)
+  assert.match(patternRule, /display:\s*block\s*!important/u)
+  assert.match(patternRule, /width:\s*100%\s*!important/u)
+  assert.match(patternRule, /height:\s*100%\s*!important/u)
+  assert.doesNotMatch(css, /\.document-translation-watermark[^{]*\{[^}]*display:\s*none/isu)
+})
+
+test('PDF 打印前必须按目标页面宽度固定水印横向起点，不能读取屏幕布局宽度', async () => {
+  const fake = createWebContentsFake()
+  await printDocumentPreviewToPdf(fake.webContents, documentModel())
+  const waitScript = fake.executedScripts[0] ?? ''
+
+  assert.match(waitScript, /document-translation-watermark/u)
+  assert.match(waitScript, /querySelector\('pattern'\)/u)
+  // A4 的 612pt 对应 816 CSS 像素，水印应向左平移 92px 以保持左右留白均衡。
+  assert.match(waitScript, /const offset = -92;/u)
+  assert.doesNotMatch(waitScript, /clientWidth/u)
+})
+
+test('PDF 水印横向起点必须随自定义纸张宽度变化', async () => {
+  const fake = createWebContentsFake()
+  await printDocumentPreviewToPdf(fake.webContents, documentModel(595.28, 841.89))
+  const waitScript = fake.executedScripts[0] ?? ''
+
+  // 595.28pt 对应约 793.707 CSS 像素，偏移应同步缩小到约 103.147px。
+  assert.match(waitScript, /const offset = -103\.147;/u)
+})
+
+test('Markdown 导出水印必须按扣除纸张页边距后的内容宽度定位', async () => {
+  const fake = createWebContentsFake()
+  await printDocumentPreviewToPdf(fake.webContents, markdownDocumentModel())
+  const waitScript = fake.executedScripts[0] ?? ''
+
+  // 816 CSS 像素换算为 A4 的 612pt，再扣除左右各 0.35in 后对应 748.8 CSS 像素。
+  assert.match(waitScript, /const offset = -125\.6;/u)
+})
+
 test('PDF 打印样式必须按文档页面尺寸生成 CSS 页面并回退有效尺寸', () => {
   const customCss = buildDocumentPrintCss(documentModel(595.28, 841.89))
   assert.match(customCss, /size:\s*595\.28pt 841\.89pt;/u)
 
   const fallbackCss = buildDocumentPrintCss(documentModel(Number.NaN, -1))
   assert.match(fallbackCss, /size:\s*612pt 792pt;/u)
+})
+
+test('PDF 打印样式不能把同行布局分组覆盖为纵向块', () => {
+  const css = buildDocumentPrintCss(documentModel())
+
+  assert.doesNotMatch(css, /\.document-flow-group[^{]*\{[^}]*display:\s*block\s*!important/isu)
+  assert.doesNotMatch(css, /\.document-flow-group[^{]*\{[^}]*flex-direction:\s*column\s*!important/isu)
+})
+
+test('PDF 译文表格必须按整行分页且打印时不能横向裁切表格', () => {
+  const css = buildDocumentPrintCss(documentModel())
+  const tableRule = /#document-translation-content \.document-table-block\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+  const rowRule = /#document-translation-content \.document-table-block tr\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+
+  assert.match(tableRule, /overflow:\s*visible\s*!important/u)
+  assert.match(rowRule, /break-inside:\s*avoid/u)
+  assert.match(rowRule, /page-break-inside:\s*avoid/u)
 })
 
 test('PDF 导出必须等待预览资源稳定后按原页面尺寸打印并清理注入样式', async () => {
@@ -202,6 +312,69 @@ test('PDF 打印必须在译文高于原页时扩展页面高度以保留完整�
   assert.match(fake.insertedCss[1] ?? '', /size:\s*612pt 900pt;/u)
   assert.deepEqual(fake.printOptions[0]?.pageSize, { width: 612 / 72, height: 900 / 72 })
   assert.deepEqual(fake.removedCssKeys, ['document-print-css-2', 'document-print-css-1'])
+})
+
+test('Markdown 连续译文必须按标准纸张自然分页，不能把整篇内容扩展为单页', async () => {
+  const fake = createSequencedWebContentsFake([{ ready: true }, { pageHeightCssPx: 2400 }])
+  await printDocumentPreviewToPdf(fake.webContents, markdownDocumentModel())
+
+  assert.equal(fake.executedScripts.length, 1, 'Markdown 不应把整篇内容高度作为打印页高')
+  assert.equal(fake.insertedCss.length, 1)
+  assert.deepEqual(fake.printOptions[0]?.pageSize, { width: 612 / 72, height: 792 / 72 })
+  assert.deepEqual(fake.removedCssKeys, ['document-print-css-1'])
+})
+
+test('DOCX 译文必须按 A4 纸张尺寸导出并保持页面水平居中', async () => {
+  const model = flowDocumentModel('docx')
+  const css = buildDocumentPrintCss(model)
+  const flowPageRule = /#document-translation-content \.document-page\[data-layout='flow'\]\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+  const fake = createSequencedWebContentsFake([{ ready: true }, { pageHeightCssPx: 2400 }])
+
+  assert.match(css, /@page\s*\{[\s\S]*?size:\s*612pt 792pt;/u)
+  assert.match(flowPageRule, /box-sizing:\s*border-box\s*!important/u)
+  assert.match(flowPageRule, /width:\s*var\(--document-page-width,\s*100%\)\s*!important/u)
+  assert.match(flowPageRule, /margin:\s*0 auto\s*!important/u)
+
+  await printDocumentPreviewToPdf(fake.webContents, model)
+
+  assert.deepEqual(fake.printOptions[0]?.pageSize, { width: 612 / 72, height: 792 / 72 })
+})
+
+test('所有非 PDF 流式译文都必须按标准纸张自然分页', async () => {
+  for (const format of ['docx', 'epub', 'html', 'txt', 'json', 'csv', 'srt', 'vtt'] as const) {
+    const fake = createSequencedWebContentsFake([{ ready: true }, { pageHeightCssPx: 2400 }])
+    await printDocumentPreviewToPdf(fake.webContents, flowDocumentModel(format))
+
+    assert.equal(fake.executedScripts.length, 1, `${format} 不应把整篇内容高度作为打印页高`)
+    assert.equal(fake.insertedCss.length, 1)
+  }
+})
+
+test('Markdown 打印样式必须允许连续内容跨页并避免标题与代码块被拆断', () => {
+  const css = buildDocumentPrintCss(markdownDocumentModel())
+
+  assert.match(css, /\.document-markdown-preview[\s\S]*?height:\s*auto\s*!important/u)
+  assert.match(css, /\.document-markdown-preview[\s\S]*?overflow:\s*visible\s*!important/u)
+  assert.match(css, /\.document-markdown-preview h1[\s\S]*?break-after:\s*avoid/u)
+  assert.match(css, /\.document-markdown-preview pre[\s\S]*?break-inside:\s*avoid/u)
+})
+
+test('Markdown 打印必须保留每页四周边距、预览卡片的居中宽度与纸张配色', () => {
+  const css = buildDocumentPrintCss(markdownDocumentModel())
+  const markdownRule = /#document-translation-content \.document-markdown-preview\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+
+  assert.match(css, /@page\s*\{[\s\S]*?margin:\s*0\.35in;/u)
+  assert.doesNotMatch(css, /@page\s*\{[\s\S]*?margin:\s*16px;/u)
+  assert.match(markdownRule, /display:\s*block\s*!important/u)
+  assert.match(markdownRule, /width:\s*calc\(100%\s*-\s*64px\)\s*!important/u)
+  assert.match(markdownRule, /max-width:\s*920px\s*!important/u)
+  assert.match(markdownRule, /margin:\s*0 auto\s*!important/u)
+  assert.match(markdownRule, /padding:\s*clamp\(16px,\s*4vw,\s*40px\)\s*!important/u)
+  assert.match(markdownRule, /background:\s*var\(--document-paper-bg\)\s*!important/u)
+  assert.match(markdownRule, /color:\s*var\(--document-paper-text\)\s*!important/u)
+  assert.match(css, /\.document-markdown-preview\s*>\s*\*\s*\+\s*\*\s*\{[^}]*margin-top:\s*var\(--space-3\)/su)
 })
 
 test('PDF 打印失败时仍必须移除注入样式并返回稳定错误码', async () => {

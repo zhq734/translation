@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { buildProxyConfig } from '../shared/proxySettings'
 import type {
   Settings,
+  WebPagePdfExportResult,
   WebReaderState,
   WebTranslationApplyPayload,
   WebTranslationExtractionPayload,
@@ -84,6 +85,7 @@ import {
   type WebTextWriteOperation
 } from './webTextExtractionScript'
 import { buildWebTypewriterCancelScript } from './webTypewriterScript'
+import { printWebPageToPdf } from './webPagePdfExport'
 
 /** 阅读器专用持久化 Session 分区。 */
 export const WEB_READER_PARTITION = 'persist:web-page-translation'
@@ -113,6 +115,10 @@ export interface WebReaderManagerOptions {
   hasVisibleSettingsWindow?: () => boolean
   /** 通过统一窗口级入口把阅读器置前；不得由管理器直接激活整个应用。 */
   bringToFrontToOwnWindow?: (window: BrowserWindow) => void
+  /** 显示网页 PDF 保存对话框。 */
+  showSaveDialog(suggestedName: string): Promise<{ canceled: boolean; filePath?: string }>
+  /** 将生成的网页 PDF 写入用户选择的位置。 */
+  writeFile(path: string, bytes: Uint8Array): Promise<void>
 }
 
 /** 管理网页阅读器窗口、远程 BrowserView、原位写回与任务代次。 */
@@ -216,6 +222,15 @@ export class WebReaderManager {
    */
   ownsWindow(window: BrowserWindow): boolean {
     return this.window === window && !window.isDestroyed()
+  }
+
+  /**
+   * 读取当前有效的网页阅读器窗口。
+   * @returns 当前窗口；尚未创建或已销毁时返回 null。
+   * @author zhenghq
+   */
+  getWindow(): BrowserWindow | null {
+    return this.window && !this.window.isDestroyed() ? this.window : null
   }
 
   /**
@@ -745,6 +760,49 @@ export class WebReaderManager {
     void this.clearBilingualInjection()
     void this.clearImageOverlays()
     this.invalidateActiveJob(true)
+  }
+
+  /**
+   * 将当前网页译文导出为带水印 PDF。
+   * 导出期间临时切换到译文模式，屏幕界面不创建水印，结束后恢复用户原显示模式。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  async exportPdf(): Promise<WebPagePdfExportResult> {
+    if (!this.hasExtractedSnapshot || this.translatedUnits.length === 0) {
+      return { status: 'rejected', code: 'not-ready' }
+    }
+    const view = this.requireLoadedView()
+    const previousMode = this.mode
+    try {
+      const save = await this.options.showSaveDialog(this.buildPdfSuggestedName())
+      if (save.canceled || !save.filePath) return { status: 'cancelled' }
+      if (previousMode !== 'target') await this.setMode('target')
+      const bytes = await printWebPageToPdf(view.webContents)
+      await this.options.writeFile(save.filePath, bytes)
+      return { status: 'saved' }
+    } catch {
+      return { status: 'rejected', code: 'export-failed' }
+    } finally {
+      if (previousMode !== 'target' && !view.webContents.isDestroyed()) {
+        try {
+          await this.setMode(previousMode)
+        } catch {
+          // 页面导航或窗口关闭会销毁远程 Frame；恢复失败不能覆盖已经确定的导出结果。
+        }
+      }
+    }
+  }
+
+  /**
+   * 生成网页 PDF 的默认文件名，过滤文件系统不支持的字符。
+   * @returns 安全的 PDF 文件名。
+   * @author zhenghq
+   */
+  private buildPdfSuggestedName(): string {
+    const title = this.state.title.trim() || 'web-page'
+    const safeTitle = title.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '-').replace(/\.pdf$/iu, '').trim()
+    return `${safeTitle || 'web-page'}-translated.pdf`
   }
 
   /** 在原文和当前译文之间切换，不重新加载页面。

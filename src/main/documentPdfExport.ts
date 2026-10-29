@@ -28,6 +28,7 @@ import {
   resolveOcrRegionLineHeight,
   resolveOcrRegionPadding
 } from '../shared/documentOcrLayout.ts'
+import { resolveTranslationFlowGroupGeometry } from '../renderer/src/documentPdfLayout.ts'
 
 /** PDF 导出稳定错误分类。 */
 export type DocumentPdfExportErrorCode =
@@ -114,6 +115,14 @@ interface PageComposer {
   cursor: number
   /** 当前页面已绘制区块的原始底部坐标。 */
   sourceBottom: number
+  /** 当前页最近一个占用普通流的区块原始顶部坐标。 */
+  flowSourceTop: number
+  /** 当前页最近一个占用普通流的区块实际顶部坐标。 */
+  flowActualTop: number
+  /** 当前页最近一个占用普通流的区块原始底部坐标。 */
+  flowSourceBottom: number
+  /** 当前页最近一个占用普通流的区块实际底部坐标。 */
+  flowActualBottom: number
   /** 上一个已绘制区块，用于沿用 PDF 原始段间距。 */
   previousBlock?: DocumentBlock
 }
@@ -379,7 +388,11 @@ function createPageComposer(
     contentTop: Math.max(0, Math.min(insets.top, firstGeometryTop)),
     contentBottom: insets.bottom,
     cursor: Math.max(0, firstGeometryTop),
-    sourceBottom: Math.max(0, firstGeometryTop)
+    sourceBottom: Math.max(0, firstGeometryTop),
+    flowSourceTop: Math.max(0, firstGeometryTop),
+    flowActualTop: Math.max(0, firstGeometryTop),
+    flowSourceBottom: Math.max(0, firstGeometryTop),
+    flowActualBottom: Math.max(0, firstGeometryTop)
   }
 }
 
@@ -404,6 +417,10 @@ function ensurePageSpace(
   context.page = composer.page
   composer.cursor = composer.contentTop
   composer.sourceBottom = composer.contentTop
+  composer.flowSourceTop = composer.contentTop
+  composer.flowActualTop = composer.contentTop
+  composer.flowSourceBottom = composer.contentTop
+  composer.flowActualBottom = composer.contentTop
   return true
 }
 
@@ -835,32 +852,197 @@ function drawTextRunsInLine(
 }
 
 /**
- * 估算表格单元格中文本的实际排版高度，用于让表格行随译文换行增长。
+ * 绘制 PDF 目录项；标题自然换行，页码固定在可用区域右侧，引导线只画最后一行。
+ * @param context 绘制上下文。
+ * @param block 目录文本区块。
+ * @param x 目录项左边界。
+ * @param top 目录项顶部边界。
+ * @param width 目录项可用宽度。
+ * @param composer 页面排版器；传入后可在页底续页。
+ * @param document PDF 文档；传入排版器时必须提供。
+ * @returns 目录项实际消耗的底部坐标。
+ * @author zhenghq
+ */
+function drawTableOfContentsBlock(
+  context: DrawContext,
+  block: DocumentTextBlock,
+  x: number,
+  top: number,
+  width: number,
+  composer?: PageComposer,
+  document?: PDFDocument
+): number {
+  const titleRun = block.runs.find((run) => run.protected !== true)
+  const style = resolvedRunStyle(block, titleRun ?? { runId: `${block.blockId}-toc-title`, text: '' })
+  const fontSize = Math.max(6, Math.min(72, style.fontSize ?? 12))
+  const lineHeight = Math.max(fontSize, style.lineHeight ?? fontSize * 1.35)
+  const font = selectFont(context, style)
+  const pageNumber = block.toc?.pageNumber ?? ''
+  const pageNumberWidth = font.widthOfTextAtSize(safeFontText(pageNumber, font), fontSize)
+  // 页码与标题之间保留一个稳定间距；标题只使用剩余宽度，避免页码被换到独立一行。
+  const pageGap = Math.max(4, fontSize * 0.35)
+  const titleWidth = Math.max(1, width - pageNumberWidth - pageGap)
+  const title = block.runs
+    .filter((run) => run.protected !== true)
+    .map((run) => run.text)
+    .join('')
+  const lines = wrapText(title, font, fontSize, titleWidth)
+  let lineTop = top
+  if (composer && document) {
+    ensurePageSpace(composer, document, context, lineHeight)
+    lineTop = composer.cursor
+  }
+  let drawnBottom = lineTop
+  for (const line of lines) {
+    if (composer && document && lineTop + lineHeight > context.page.getHeight() - composer.contentBottom) {
+      ensurePageSpace(composer, document, context, lineHeight)
+      lineTop = composer.cursor
+    }
+    context.page.drawText(safeFontText(line, font), {
+      x,
+      y: pdfY(context.page.getHeight(), lineTop, fontSize),
+      size: fontSize,
+      font,
+      color: parseColor(style.color)
+    })
+    drawnBottom = lineTop + lineHeight
+    lineTop += lineHeight
+    if (composer) composer.cursor = drawnBottom
+  }
+  const lastLineTop = Math.max(top, lineTop - lineHeight)
+  if (pageNumber) {
+    const pageNumberX = x + width - pageNumberWidth
+    context.page.drawText(safeFontText(pageNumber, font), {
+      x: pageNumberX,
+      y: pdfY(context.page.getHeight(), lastLineTop, fontSize),
+      size: fontSize,
+      font,
+      color: parseColor(style.color)
+    })
+    // 引导点使用最后一行标题末端到页码左侧的矢量点线，不进入 PDF 文本层。
+    const lastLine = lines[lines.length - 1] ?? ''
+    const lastLineWidth = Math.min(titleWidth, font.widthOfTextAtSize(safeFontText(lastLine, font), fontSize))
+    const leaderStart = Math.min(pageNumberX, x + lastLineWidth + pageGap)
+    const leaderY = pdfY(context.page.getHeight(), lastLineTop + fontSize * 0.82, 0)
+    if (leaderStart < pageNumberX) {
+      context.page.drawLine({
+        start: { x: leaderStart, y: leaderY },
+        end: { x: pageNumberX, y: leaderY },
+        thickness: 0.65,
+        color: parseColor(style.color),
+        dashArray: [1.2, 2.4]
+      })
+    }
+  }
+  if (composer) composer.cursor = drawnBottom
+  return drawnBottom
+}
+
+/**
+ * 估算表格单元格内容的实际排版高度，用于让表格行随译文和图片增长。
  * @param context 绘制上下文，用于选择字体并测量文本宽度。
  * @param cell 表格单元格。
  * @param cellWidth 单元格宽度。
- * @returns 单元格文本内容所需高度。
+ * @param dependencies 导出依赖，用于读取单元格内图片尺寸。
+ * @returns 单元格内容所需高度。
  * @author zhenghq
  */
-function tableCellContentHeight(
+async function tableCellContentHeight(
   context: DrawContext,
   cell: DocumentTableCell,
-  cellWidth: number
-): number {
+  cellWidth: number,
+  dependencies: DocumentPdfExportDependencies
+): Promise<number> {
   let height = 0
   const availableWidth = Math.max(1, cellWidth - 10)
   for (const child of cell.blocks) {
-    if (child.kind !== 'text') continue
-    for (const run of child.runs) {
-      const style = { fontSize: 10, ...child.style, ...run.style }
-      const fontSize = Math.max(6, Math.min(72, style.fontSize ?? 10))
-      const lineHeight = Math.max(fontSize, style.lineHeight ?? fontSize * 1.35)
-      const font = selectFont(context, style)
-      const lineCount = wrapText(run.text, font, fontSize, availableWidth).length
-      height += lineCount * lineHeight
+    if (child.kind === 'text') {
+      for (const run of child.runs) {
+        const style = { fontSize: 10, ...child.style, ...run.style }
+        const fontSize = Math.max(6, Math.min(72, style.fontSize ?? 10))
+        const lineHeight = Math.max(fontSize, style.lineHeight ?? fontSize * 1.35)
+        const font = selectFont(context, style)
+        const lineCount = wrapText(run.text, font, fontSize, availableWidth).length
+        height += lineCount * lineHeight
+      }
+    } else if (child.kind === 'image') {
+      const image = await loadImage(context, child.assetId, dependencies)
+      height += tableCellImageHeight(child, image, availableWidth)
     }
   }
   return height
+}
+
+/**
+ * 计算表格图片在单元格可用宽度内等比缩放后的高度。
+ * @param block 图片区块，资源缺失时使用原始 bbox 宽高比兜底。
+ * @param image 已加载的 PDF 图片；缺失时为 null。
+ * @param availableWidth 单元格内可用宽度。
+ * @returns 图片绘制高度。
+ * @author zhenghq
+ */
+function tableCellImageHeight(
+  block: DocumentImageBlock,
+  image: PDFImage | null,
+  availableWidth: number
+): number {
+  const width = Math.max(1, availableWidth)
+  const sourceWidth = image?.width ?? block.bbox?.width ?? width
+  const sourceHeight = image?.height ?? block.bbox?.height ?? width
+  return sourceWidth > 0 && sourceHeight > 0
+    ? Math.max(1, width * sourceHeight / sourceWidth)
+    : Math.max(1, block.bbox?.height ?? width)
+}
+
+/**
+ * 在表格单元格内绘制图片，强制限制在内容区内且不改变原始宽高比。
+ * @param context 绘制上下文。
+ * @param block 图片区块。
+ * @param page 页面模型，用于记录资源缺失告警。
+ * @param x 单元格内容区左边界。
+ * @param top 图片顶部坐标。
+ * @param width 单元格内容区宽度。
+ * @param dependencies 导出依赖。
+ * @returns 图片实际占用高度。
+ * @author zhenghq
+ */
+async function drawTableCellImage(
+  context: DrawContext,
+  block: DocumentImageBlock,
+  page: DocumentPage,
+  x: number,
+  top: number,
+  width: number,
+  dependencies: DocumentPdfExportDependencies
+): Promise<number> {
+  const drawWidth = Math.max(1, width)
+  const image = await loadImage(context, block.assetId, dependencies)
+  const drawHeight = tableCellImageHeight(block, image, drawWidth)
+  if (image) {
+    context.page.drawImage(image, {
+      x,
+      y: pdfY(context.page.getHeight(), top, drawHeight),
+      width: drawWidth,
+      height: drawHeight
+    })
+  } else {
+    context.warnings.push({
+      code: 'image-asset-unavailable',
+      severity: 'warning',
+      message: 'A table image asset could not be embedded and was replaced with a placeholder.',
+      pageId: page.pageId,
+      blockId: block.blockId
+    })
+    context.page.drawRectangle({
+      x,
+      y: pdfY(context.page.getHeight(), top, drawHeight),
+      width: drawWidth,
+      height: drawHeight,
+      borderColor: rgb(0.75, 0.78, 0.82),
+      borderWidth: 0.8
+    })
+  }
+  return drawHeight
 }
 
 /**
@@ -1059,14 +1241,57 @@ function drawTextBlock(
     width: Math.max(80, page.width - 112),
     height: Math.max(20, block.runs.length * 18)
   }
+  const blockRight = bbox.x + bbox.width
+  const contentRight = Math.max(
+    blockRight,
+    Math.min(page.width, page.contentArea?.right ?? blockRight)
+  )
+  const contentLeft = Math.min(
+    bbox.x,
+    Math.max(0, page.contentArea?.left ?? bbox.x)
+  )
+  const blockCenter = bbox.x + bbox.width / 2
+  // 居中短标题的原文 bbox 通常只覆盖中文标题本身；译文变长时围绕原中心线向正文区两侧扩展，
+  // 既避免英文标题按短 bbox 提前换行，也不会像整页铺排那样改变标题中心和右侧页边距。
+  const centeredWidth = Math.max(bbox.width, Math.min(
+    contentRight - contentLeft,
+    Math.min(blockCenter - contentLeft, contentRight - blockCenter) * 2
+  ))
+  const flowWidth = block.textAlign === 'center'
+    ? centeredWidth
+    : block.textAlign === 'right'
+      ? bbox.width
+      : Math.max(bbox.width, contentRight - bbox.x)
+  const flowX = block.textAlign === 'center'
+    ? blockCenter - flowWidth / 2
+    : bbox.x
   const blockTop = hasGeometry ? Math.max(bbox.y, cursor) : cursor
   const yOffset = blockTop - (composer?.contentTop ?? 0)
+  if (block.toc) {
+    if (composer && document) ensurePageSpace(composer, document, context, Math.max(1, bbox.height))
+    const tocTop = composer?.cursor ?? blockTop
+    const tocBottom = drawTableOfContentsBlock(
+      context,
+      block,
+      flowX,
+      tocTop,
+      flowWidth,
+      composer,
+      document
+    )
+    const bottom = Math.max(tocBottom, cursor, hasGeometry ? bbox.y + bbox.height : 0)
+    if (composer) {
+      composer.cursor = bottom + (hasGeometry ? 10 : 12)
+      composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    }
+    return composer?.cursor ?? bottom + (hasGeometry ? 10 : 12)
+  }
   let runTop = blockTop
   let drawnBottom = blockTop
-  if (canDrawRunsAsSingleLine(context, block, bbox.width)) {
+  if (canDrawRunsAsSingleLine(context, block, flowWidth)) {
     if (composer && document) ensurePageSpace(composer, document, context, Math.max(1, bbox.height))
     runTop = composer?.cursor ?? blockTop
-    const used = drawTextRunsInLine(context, block, bbox.x, runTop, bbox.width, composer, document)
+    const used = drawTextRunsInLine(context, block, flowX, runTop, flowWidth, composer, document)
     drawnBottom = (composer?.cursor ?? runTop + used)
     const bottom = Math.max(drawnBottom, cursor, hasGeometry ? bbox.y + bbox.height : 0)
     if (composer) {
@@ -1080,9 +1305,9 @@ function drawTextBlock(
     const used = drawTextRun(
       context,
       run,
-      bbox.x,
+      flowX,
       runTop,
-      bbox.width,
+      flowWidth,
       style,
       block.textAlign,
       composer,
@@ -1102,24 +1327,137 @@ function drawTextBlock(
 }
 
 /**
- * 绘制表格边框、列宽和单元格文本。
+ * 绘制共享 flowGroupId 的同行图片与文字；图片保持原横向位置，文字从同一顶部带开始绘制。
+ * 组内文本使用正文区右边界扩展可用宽度，避免译文因原始短 bbox 过早换行。
+ * @param context 绘制上下文。
+ * @param blocks 同组区块，按阅读顺序排列。
+ * @param page 页面模型。
+ * @param dependencies 导出依赖。
+ * @param composer 页面排版器。
+ * @param document PDF 文档。
+ * @returns 同组实际占用后的纵向底部坐标。
+ * @author zhenghq
+ */
+async function drawFlowGroup(
+  context: DrawContext,
+  blocks: readonly DocumentBlock[],
+  page: DocumentPage,
+  dependencies: DocumentPdfExportDependencies,
+  composer: PageComposer,
+  document: PDFDocument
+): Promise<number> {
+  const geometryTops = blocks
+    .map((block) => block.bbox?.y)
+    .filter((top): top is number => top !== undefined && Number.isFinite(top))
+  const groupTop = geometryTops.length > 0 ? Math.min(...geometryTops) : composer.cursor
+  const groupStartCursor = composer.cursor
+  composer.cursor = Math.max(composer.cursor, groupTop)
+  let groupBottom = composer.cursor
+  const groupGeometry = resolveTranslationFlowGroupGeometry(blocks, page.blocks, page.width, page.contentArea)
+  const flowGroupPage: DocumentPage = {
+    ...page,
+    contentArea: {
+      left: Math.min(groupGeometry.left, page.contentArea?.left ?? groupGeometry.left),
+      right: groupGeometry.left + groupGeometry.width,
+      center: groupGeometry.left + groupGeometry.width / 2
+    }
+  }
+
+  // 先绘制非文本区块，确保 logo 的原位置不受文字排版游标影响。
+  for (const block of blocks) {
+    if (block.kind === 'text') continue
+    if (block.kind === 'image') {
+      const bbox = block.bbox
+      if (!bbox) continue
+      const imageTop = Math.max(bbox.y, groupStartCursor)
+      const imageBlock = { ...block, bbox: { ...bbox, y: imageTop } }
+      const bottom = await drawImageBlock(
+        context,
+        imageBlock,
+        page,
+        dependencies,
+        composer,
+        document
+      )
+      groupBottom = Math.max(groupBottom, bottom, imageTop + bbox.height)
+      composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+      continue
+    }
+    if (block.kind === 'table') {
+      composer.cursor = Math.max(composer.cursor, groupTop)
+      composer.cursor = await drawTableBlock(
+        context,
+        block,
+        page,
+        composer.cursor,
+        dependencies,
+        composer,
+        document
+      )
+      groupBottom = Math.max(groupBottom, composer.cursor)
+      continue
+    }
+    if (block.kind === 'formula') {
+      composer.cursor = Math.max(composer.cursor, groupTop)
+      composer.cursor = drawFormulaBlock(context, block, page, composer.cursor, composer, document)
+      groupBottom = Math.max(groupBottom, composer.cursor)
+      continue
+    }
+    if (block.kind === 'shape' && block.bbox) {
+      const shapeTop = Math.max(block.bbox.y, groupTop)
+      if (block.line?.orientation === 'horizontal') {
+        context.page.drawLine({
+          start: { x: block.bbox.x, y: pdfY(context.page.getHeight(), shapeTop, 0) },
+          end: { x: block.bbox.x + block.bbox.width, y: pdfY(context.page.getHeight(), shapeTop, 0) },
+          thickness: Math.max(0.5, block.line.thickness ?? 1),
+          color: parseColor(block.line.color, [0.8, 0.82, 0.85])
+        })
+      } else if (block.line?.orientation === 'vertical') {
+        context.page.drawLine({
+          start: { x: block.bbox.x, y: pdfY(context.page.getHeight(), shapeTop, block.bbox.height) },
+          end: { x: block.bbox.x, y: pdfY(context.page.getHeight(), shapeTop, 0) },
+          thickness: Math.max(0.5, block.line.thickness ?? 1),
+          color: parseColor(block.line.color, [0.8, 0.82, 0.85])
+        })
+      }
+      groupBottom = Math.max(groupBottom, shapeTop + block.bbox.height)
+      composer.sourceBottom = Math.max(composer.sourceBottom, block.bbox.y + block.bbox.height)
+    }
+  }
+
+  // 文本必须从组顶部带开始，不能继承图片绘制后下移的游标。
+  for (const block of blocks) {
+    if (block.kind !== 'text') continue
+    composer.cursor = Math.max(groupTop, groupStartCursor)
+    const bottom = drawTextBlock(context, block, flowGroupPage, composer.cursor, composer, document)
+    groupBottom = Math.max(groupBottom, bottom)
+  }
+  composer.cursor = groupBottom
+  composer.previousBlock = blocks[blocks.length - 1]
+  return groupBottom
+}
+
+/**
+ * 绘制表格边框、列宽和单元格内容。
  * @param context 绘制上下文。
  * @param block 表格区块。
  * @param page 页面模型。
  * @param cursor 流式排版游标。
+ * @param dependencies 导出依赖，用于读取单元格内图片。
  * @param composer 页面排版器；传入后可按实际行高跨页。
  * @param document PDF 文档；传入排版器时必须提供。
  * @returns 新区块游标。
  * @author zhenghq
  */
-function drawTableBlock(
+async function drawTableBlock(
   context: DrawContext,
   block: DocumentTableBlock,
   page: DocumentPage,
   cursor: number,
+  dependencies: DocumentPdfExportDependencies,
   composer?: PageComposer,
   document?: PDFDocument
-): number {
+): Promise<number> {
   const hasGeometry = block.bbox !== undefined
   const bbox = block.bbox ?? {
     x: 48,
@@ -1148,7 +1486,10 @@ function drawTableBlock(
       const cellWidth = widths
         .slice(cellIndex, cellIndex + Math.max(1, cell.colSpan))
         .reduce((sum, value) => sum + value, 0)
-      rowHeight = Math.max(rowHeight, tableCellContentHeight(context, cell, cellWidth) + 10)
+      rowHeight = Math.max(
+        rowHeight,
+        await tableCellContentHeight(context, cell, cellWidth, dependencies) + 10
+      )
     }
     if (composer && document) {
       composer.cursor = currentRowTop
@@ -1168,7 +1509,7 @@ function drawTableBlock(
         borderColor: rgb(0.72, 0.75, 0.79),
         borderWidth: 0.6
       })
-      let textTop = cellY + 5
+      let contentTop = cellY + 5
       let hasCellText = false
       for (const child of cell.blocks) {
         if (child.kind === 'text') {
@@ -1179,18 +1520,18 @@ function drawTableBlock(
               if (spacerWidth > 0 && cellX + 5 + spacerWidth <= cellX + cellWidth - 5) {
                 context.page.drawText(' ', {
                   x: cellX + 5,
-                  y: pdfY(context.page.getHeight(), textTop, 10),
+                  y: pdfY(context.page.getHeight(), contentTop, 10),
                   size: 10,
                   font: context.regular,
                   color: rgb(0, 0, 0)
                 })
               }
             }
-            textTop += drawTextRun(
+            contentTop += drawTextRun(
               context,
               run,
               cellX + 5,
-              textTop,
+              contentTop,
               cellWidth - 10,
               { fontSize: 10 },
               child.textAlign
@@ -1200,6 +1541,16 @@ function drawTableBlock(
               hasCellText = true
             }
           }
+        } else if (child.kind === 'image') {
+          contentTop += await drawTableCellImage(
+            context,
+            child,
+            page,
+            cellX + 5,
+            contentTop,
+            cellWidth - 10,
+            dependencies
+          )
         }
       }
       cellX += cellWidth
@@ -1280,11 +1631,34 @@ async function drawPageBlocks(
   document: PDFDocument
 ): Promise<void> {
   const composer = createPageComposer(document, context, pageModel)
-  for (const block of pageModel.blocks) {
+  for (let blockIndex = 0; blockIndex < pageModel.blocks.length; blockIndex += 1) {
+    const block = pageModel.blocks[blockIndex]!
+    if (block.flowGroupId) {
+      const group: DocumentBlock[] = [block]
+      let nextIndex = blockIndex + 1
+      while (nextIndex < pageModel.blocks.length &&
+        pageModel.blocks[nextIndex]?.flowGroupId === block.flowGroupId) {
+        group.push(pageModel.blocks[nextIndex]!)
+        nextIndex += 1
+      }
+      if (group.length > 1) {
+        await drawFlowGroup(context, group, pageModel, dependencies, composer, document)
+        blockIndex = nextIndex - 1
+        continue
+      }
+    }
     if (block.kind === 'text') {
       composer.cursor = drawTextBlock(context, block, pageModel, composer.cursor, composer, document)
     } else if (block.kind === 'table') {
-      composer.cursor = drawTableBlock(context, block, pageModel, composer.cursor, composer, document)
+      composer.cursor = await drawTableBlock(
+        context,
+        block,
+        pageModel,
+        composer.cursor,
+        dependencies,
+        composer,
+        document
+      )
     } else if (block.kind === 'image') {
       const bbox = block.bbox
       if (bbox && bbox.y > composer.cursor) composer.cursor = bbox.y

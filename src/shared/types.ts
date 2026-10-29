@@ -924,6 +924,14 @@ export interface WebReaderState {
   imageFailed?: number
 }
 
+/** 网页翻译导出 PDF 的结果。 */
+export interface WebPagePdfExportResult {
+  /** 导出结果分类。 */
+  status: 'saved' | 'cancelled' | 'rejected'
+  /** 失败或拒绝时的稳定错误分类。 */
+  code?: string
+}
+
 /** 携带任务代次的网页文本提取结果。 */
 export interface WebTranslationExtractionPayload extends WebTextExtractionResult {
   /** 阅读器实例标识。 */
@@ -1241,6 +1249,8 @@ export interface Api {
   webTranslateCancel(): void
   /** 切换远程网页的原文或译文。 */
   webTranslateSetMode(mode: WebTranslationMode): Promise<WebTranslationApplyPayload>
+  /** 将当前网页译文导出为带水印 PDF。 */
+  exportWebPagePdf(): Promise<WebPagePdfExportResult>
   /** 订阅网页阅读器状态。 */
   onWebReaderState(cb: (state: WebReaderState) => void): () => void
   /** 订阅网页翻译进度。 */

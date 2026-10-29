@@ -35,6 +35,9 @@
   /* PDF 纸张在明暗主题中保持可读的原生白纸观感，左右栏共享同一语义颜色。 */
   --document-paper-bg: #ffffff;
   --document-paper-text: #111827;
+  /* 译文水印只使用黑白纸张语义色，避免主题预设把品牌水印染成彩色。 */
+  --document-watermark-ink: rgba(17, 24, 39, 0.11);
+  --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
   --bg-secondary: #f2f2f7;
   --control-bg: #ffffff;
   --control-disabled-bg: #ededf2;
@@ -89,6 +92,8 @@
     --panel-shadow: rgba(0, 0, 0, 0.22);
     --document-paper-bg: #ffffff;
     --document-paper-text: #111827;
+    --document-watermark-ink: rgba(17, 24, 39, 0.11);
+    --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
     --bg-secondary: #303035;
     --control-bg: #29292e;
     --control-disabled-bg: #202024;

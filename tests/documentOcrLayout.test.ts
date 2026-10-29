@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   DOCUMENT_OCR_FALLBACK_FONT_SIZE,
   DOCUMENT_OCR_LINE_HEIGHT_RATIO,
+  DOCUMENT_OCR_UNIFORM_FONT_SIZE,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -31,18 +32,22 @@ function region(
   }
 }
 
-test('OCR 预览与导出必须共享字号、行高和内边距', () => {
+test('OCR 预览与导出必须共享统一字号、行高和内边距', () => {
   const current = region({ x: 0.1, y: 0.2, width: 0.6, height: 0.1 }, 20)
-  assert.equal(resolveOcrRegionFontSize(current, 200), 20)
-  assert.equal(resolveOcrRegionLineHeight(20), 20 * DOCUMENT_OCR_LINE_HEIGHT_RATIO)
+  assert.equal(resolveOcrRegionFontSize(current, 200), DOCUMENT_OCR_UNIFORM_FONT_SIZE)
+  assert.equal(
+    resolveOcrRegionLineHeight(DOCUMENT_OCR_UNIFORM_FONT_SIZE),
+    DOCUMENT_OCR_UNIFORM_FONT_SIZE * DOCUMENT_OCR_LINE_HEIGHT_RATIO
+  )
   assert.deepEqual(resolveOcrRegionPadding(300, 200, current), { x: 3, y: 2 })
 })
 
-test('OCR 缺少字号时必须使用共享可读默认值并限制异常字号', () => {
+test('OCR 字号必须统一，不能随区域样式或图片高度变化', () => {
   const current = region({ x: 0, y: 0, width: 1, height: 1 })
   assert.equal(resolveOcrRegionFontSize(current, 700), DOCUMENT_OCR_FALLBACK_FONT_SIZE)
-  assert.equal(resolveOcrRegionFontSize(region(current.bbox, 1), 700), 6)
-  assert.equal(resolveOcrRegionFontSize(region(current.bbox, 200), 700), 72)
+  assert.equal(resolveOcrRegionFontSize(region(current.bbox, 1), 700), DOCUMENT_OCR_UNIFORM_FONT_SIZE)
+  assert.equal(resolveOcrRegionFontSize(region(current.bbox, 200), 200), DOCUMENT_OCR_UNIFORM_FONT_SIZE)
+  assert.equal(DOCUMENT_OCR_FALLBACK_FONT_SIZE, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
 })
 
 test('OCR 区域间距只保留原文行间空白，不包含前序区域剩余高度', () => {

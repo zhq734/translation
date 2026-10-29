@@ -2,6 +2,13 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { parseMarkdownDocument } from '../src/main/documentTextParser.ts'
+import {
+  occupiesDocumentTranslationFlow,
+  resolveTranslationFlowDecorationTop,
+  resolveTranslationFlowGroupGeometry,
+  resolveTranslationWatermarkHorizontalOffset
+} from '../src/renderer/src/documentPdfLayout.ts'
+import type { DocumentBlock } from '../src/shared/documentTypes.ts'
 
 /**
  * 读取项目内文本文件。
@@ -72,6 +79,7 @@ test('文档翻译顶部栏必须提供与页面翻译一致的源语言和目�
   const html = read('src/renderer/document.html')
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
+  const theme = read('src/renderer/src/theme.css')
   const sourceControl = html.indexOf('id="document-source-lang"')
   const targetControl = html.indexOf('id="document-target-lang"')
 
@@ -120,6 +128,28 @@ test('文档翻译目标语言必须默认自动并在主进程按分段文本�
   assert.match(serviceSource, /const pair = resolveLanguagePair\(text, sourcePreference, targetPreference\)/u)
   assert.match(serviceSource, /sourceLang: pair\.sourceLang/u)
   assert.match(serviceSource, /targetLang: pair\.targetLang/u)
+})
+
+test('文件翻译必须使用流式翻译通道，并持续展示增量译文', () => {
+  const main = read('src/main/index.ts')
+  const serviceStart = main.indexOf('function createDocumentWorkspaceTaskService')
+  const serviceEnd = main.indexOf('/**', serviceStart + 1)
+  const serviceSource = main.slice(serviceStart, serviceEnd)
+
+  assert.match(serviceSource, /const output = await translateStream\(/u)
+  assert.match(serviceSource, /onDelta: onDelta \?\? \(\(\) => undefined\)/u)
+  assert.match(serviceSource, /signal/u)
+})
+
+test('文件翻译流式更新必须原位更新变化内容，不能重建整份译文 DOM', () => {
+  const source = read('src/renderer/src/document.ts')
+
+  assert.match(source, /let renderedTranslationPreviewKind/u)
+  assert.match(source, /function patchTranslationPreview\(/u)
+  assert.match(source, /function patchTranslationTextBlock\(/u)
+  assert.match(source, /function patchTranslationOcrLayer\(/u)
+  assert.match(source, /patchTranslationPreview\(translationContent, snapshot\.translation\)/u)
+  assert.match(source, /existingRun\.textContent = run\.text/u)
 })
 
 test('文档扫描页 OCR 必须使用保留原始栅格尺寸的文档预处理配置', () => {
@@ -326,6 +356,27 @@ test('文档工作台初始化必须真正接线任务按钮、进度事件与�
   assert.doesNotMatch(source, /renderedTranslation !== snapshot\.translation/u)
 })
 
+test('文档终态与导出前必须同步刷新最新译文快照，不能停留在流式部分译文', () => {
+  const source = read('src/renderer/src/document.ts')
+  const flushStart = source.indexOf('function flushSnapshotRender(')
+  const flushEnd = source.indexOf('/**', flushStart + 1)
+  const flushSource = source.slice(flushStart, flushEnd)
+  const completedStart = source.indexOf("window.api.onDocumentCompleted(")
+  const completedEnd = source.indexOf('sourceContent.addEventListener', completedStart)
+  const completedSource = source.slice(completedStart, completedEnd)
+  const exportStart = source.indexOf('async function exportTranslatedPdf(')
+  const exportEnd = source.indexOf('/**', exportStart + 1)
+  const exportSource = source.slice(exportStart, exportEnd)
+
+  assert.ok(flushStart > -1, '必须提供可绕过帧合并的同步快照刷新入口')
+  assert.match(flushSource, /cancelAnimationFrame\(pendingRenderFrame\)/u)
+  assert.match(flushSource, /latestSnapshot = snapshot/u)
+  assert.match(flushSource, /renderSnapshot\(snapshot\)/u)
+  assert.match(flushSource, /renderTaskState\(snapshot\)/u)
+  assert.match(completedSource, /flushSnapshotRender\(snapshot\)/u)
+  assert.match(exportSource, /flushSnapshotRender\(latestSnapshot\)/u)
+})
+
 test('译文栏首次快照必须立即渲染等待状态，避免初始签名相同导致空白', () => {
   const source = read('src/renderer/src/document.ts')
   const renderStart = source.indexOf('function renderSnapshot(')
@@ -412,6 +463,11 @@ test('HTML 译文必须按内容流式排版，避免译文换行后覆盖后续
   assert.match(translationRule, /height:\s*auto\s*!important/u)
   assert.match(translationRule, /min-height:\s*0\s*!important/u)
   assert.match(translationRule, /overflow:\s*visible/u)
+  // 译文纸张自身不能继承预览卡片的边框，否则页面四周会出现多余外框。
+  assert.match(translationRule, /border:\s*0/u)
+  // 圆角和投影会在纸张边缘形成可见轮廓，译文纸张必须保持纯白直角边界。
+  assert.match(translationRule, /border-radius:\s*0/u)
+  assert.match(translationRule, /box-shadow:\s*none/u)
   assert.match(textBlockRule, /height:\s*auto\s*!important/u)
   assert.match(textBlockRule, /margin-top:\s*calc\(\s*var\(--document-flow-gap-before/u)
   assert.match(css, /\.document-page\[data-layout='translation-flow'\] \.document-text-block,[\s\S]*?position:\s*static/u)
@@ -553,6 +609,25 @@ test('PDF 译文必须合并区块与 run 样式，保留原文字号、颜色�
   assert.match(gapSource, /effectiveTextStyle\(previousText, previousText\.runs\[0\]\)/u)
 })
 
+test('PDF 目录预览必须将标题、引导线和页码拆成不换行的语义元素', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderTextStart = source.indexOf('function renderTextBlock(')
+  const renderTextEnd = source.indexOf('/**', renderTextStart + 1)
+  const renderTextSource = source.slice(renderTextStart, renderTextEnd)
+
+  assert.match(renderTextSource, /block\.toc/u)
+  assert.match(renderTextSource, /document-toc-title/u)
+  assert.match(renderTextSource, /document-toc-leader/u)
+  assert.match(renderTextSource, /document-toc-page/u)
+  assert.match(renderTextSource, /block\.toc\.pageNumber/u)
+  assert.match(source, /toc:\s*block\.toc/u)
+  assert.match(css, /\.document-text-toc\s*\{[^}]*display:\s*flex/su)
+  assert.match(css, /\.document-toc-title\s*\{[^}]*min-width:\s*0/su)
+  assert.match(css, /\.document-toc-leader\s*\{[^}]*border-bottom:\s*[^;]*dotted/su)
+  assert.match(css, /\.document-toc-page\s*\{[^}]*white-space:\s*nowrap/su)
+})
+
 test('PDF 原文 Canvas 必须显式使用白色背景，避免空白页被合成成黑色', () => {
   const source = read('src/renderer/src/document.ts')
   const renderStart = source.indexOf('async function renderPdfPages(')
@@ -561,6 +636,28 @@ test('PDF 原文 Canvas 必须显式使用白色背景，避免空白页被合�
 
   assert.match(renderSource, /getContext\('2d',\s*\{\s*alpha:\s*false\s*\}\)/u)
   assert.match(renderSource, /background:\s*'#ffffff'/u)
+})
+
+test('PDF 原文必须进入视口后再绘制 Canvas，并在替换预览时释放渲染资源', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderStart = source.indexOf('async function renderPdfPages(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+  const observerStart = renderSource.indexOf('new IntersectionObserver')
+  const renderCall = renderSource.indexOf('page.render({')
+
+  assert.match(source, /pdfPreviewCleanups/u)
+  assert.match(source, /pdfPreviewCleanups\.get\(container\)\?\.\(\)/u)
+  assert.match(renderSource, /new IntersectionObserver/u)
+  assert.match(renderSource, /rootMargin:\s*'[^']+'/u)
+  assert.match(renderSource, /entry\.isIntersecting/u)
+  assert.match(renderSource, /observer\.observe\(article\)/u)
+  assert.ok(observerStart >= 0 && renderCall > observerStart,
+    'Canvas 绘制必须发生在可见性回调触发的路径中')
+  assert.match(renderSource, /pdfDocument\.destroy\(\)/u)
+  assert.match(css, /\.document-pdf-page\s*\{[^}]*content-visibility:\s*auto/su)
+  assert.match(css, /\.document-pdf-page\s*\{[^}]*contain-intrinsic-size:/su)
 })
 
 test('PDF 译文段落不能覆盖 run 的原始字号与颜色', () => {
@@ -591,33 +688,52 @@ test('PDF 译文必须按每个文本块自身边界锚定对齐，不能复用�
   assert.match(css, /text-align:\s*right\s*!important/u)
 })
 
-test('PDF 居中与右对齐译文必须沿用原文本块宽度，不能按整页正文宽度重新换行', () => {
+test('PDF 居中译文应扩展到正文区宽度，右对齐译文必须沿用原文本块宽度', () => {
   const source = read('src/renderer/src/document.ts')
   const geometryStart = source.indexOf('function applyTranslationBlockGeometry(')
   const geometryEnd = source.indexOf('/**', geometryStart + 1)
   const geometrySource = source.slice(geometryStart, geometryEnd)
 
+  assert.match(geometrySource, /contentArea\?: DocumentContentArea/u)
   assert.match(
     geometrySource,
-    /block\.textAlign === 'center'\s*\|\|\s*block\.textAlign === 'right'[\s\S]*?\?\s*blockWidth/su
+    /const contentLeft = Math\.min\(\s*left,\s*Math\.max\(0,\s*contentArea\?\.left\s*\?\?\s*left\)\s*\)/su
   )
   assert.match(
     geometrySource,
-    /block\.textAlign === 'center'[\s\S]*?\?\s*left\s*:\s*block\.textAlign === 'right'\s*\?\s*right - flowWidth/su
+    /const contentRight = Math\.max\(\s*right,\s*Math\.min\(pageWidth,\s*contentArea\?\.right\s*\?\?\s*right\)\s*\)/su
+  )
+  assert.match(
+    geometrySource,
+    /const centeredWidth = Math\.max\(blockWidth,\s*Math\.min\([\s\S]*?Math\.min\(blockCenter - contentLeft,\s*contentRight - blockCenter\) \* 2/su
+  )
+  assert.match(
+    geometrySource,
+    /block\.textAlign === 'center'\s*\?\s*centeredWidth\s*:\s*block\.textAlign === 'right'\s*\?\s*blockWidth/su
+  )
+  assert.match(
+    geometrySource,
+    /block\.textAlign === 'center'\s*\?\s*blockCenter - flowWidth \/ 2\s*:\s*block\.textAlign === 'right'\s*\?\s*right - flowWidth\s*:\s*left/su
   )
 })
 
-test('PDF 左对齐译文扩展宽度时必须保留原左边距且不得越过页面右边界', () => {
+test('PDF 左对齐译文扩展宽度时必须保留原文左右页边距，不能铺到物理页边', () => {
   const source = read('src/renderer/src/document.ts')
   const geometryStart = source.indexOf('function applyTranslationBlockGeometry(')
   const geometryEnd = source.indexOf('/**', geometryStart + 1)
   const geometrySource = source.slice(geometryStart, geometryEnd)
 
-  assert.match(geometrySource, /const rightInset = Math\.max\(0, pageWidth - right\)/u)
+  assert.match(geometrySource, /contentArea\?: DocumentContentArea/u)
   assert.match(
     geometrySource,
-    /Math\.max\(blockWidth, pageWidth - left - rightInset\)/u
+    /Math\.min\(pageWidth,\s*contentArea\?\.right\s*\?\?\s*right\)/u
   )
+  assert.match(
+    geometrySource,
+    /Math\.max\(blockWidth, contentRight - left\)/u
+  )
+  assert.doesNotMatch(geometrySource, /contentArea\?\.right\s*\?\?\s*pageWidth/u)
+  assert.doesNotMatch(geometrySource, /pageWidth - left - rightInset/u)
   assert.doesNotMatch(geometrySource, /pageWidth - pageInset \* 2/u)
 })
 
@@ -894,9 +1010,12 @@ test('文档双栏预览必须在源文隐藏 OCR 文本层，译文按阅读顺
     source,
     /function renderPage\(\s*page: DocumentPage,\s*side: DocumentRenderSide\s*\): HTMLElement/u
   )
-  assert.match(source, /function renderBlock\(block: DocumentBlock, side: DocumentRenderSide, pageWidth: number\)/u)
+  assert.match(
+    source,
+    /function renderBlock\(\s*block: DocumentBlock,\s*side: DocumentRenderSide,\s*pageWidth: number(?:,\s*contentArea\?: DocumentContentArea)?\s*\)/u
+  )
   assert.match(source, /renderPage\(\s*page,\s*side\s*\)/u)
-  assert.match(source, /renderBlock\(block, side, page\.width\)/u)
+  assert.match(source, /renderBlock\(block, side, page\.width, page\.contentArea\)/u)
   assert.match(source, /renderTableCellBlock\(child, side\)/u)
   assert.match(source, /--document-ocr-font-size-pt/u)
   assert.match(source, /resolveOcrRegionFontSize\(region, imageHeight\)/u)
@@ -992,6 +1111,15 @@ test('Markdown 表格必须渲染语义表头并保持窄屏横向滚动', () =>
   assert.match(css, /\.document-table-block tbody tr:nth-child\(even\)\s*\{[^}]*background:\s*var\(--bg-secondary\)/su)
 })
 
+test('代码区域必须保留主题边框与独立滚动容器', () => {
+  const css = read('src/renderer/src/document.css')
+  const codeRule = /\.document-text-code\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(codeRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u)
+  assert.match(codeRule, /overflow-x:\s*auto/u)
+  assert.match(codeRule, /background:\s*var\(--bg-secondary\)/u)
+})
+
 test('PDF 译文表格必须沿用原列宽，单元格内容和内边距不能继承页面绝对偏移', () => {
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
@@ -1024,6 +1152,97 @@ test('PDF 译文表格必须沿用原列宽，单元格内容和内边距不能�
   assert.match(translationCellRule, /padding:\s*0\s*!important/u)
 })
 
+test('PDF 译文表格图片必须限制在单元格内，不能继承页面图片的绝对定位和原页尺寸', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const tableCellStart = source.indexOf('function renderTableCellBlock(')
+  const tableCellEnd = source.indexOf('/**', tableCellStart + 1)
+  const tableCellSource = source.slice(tableCellStart, tableCellEnd)
+  const tableCellImageStart = source.indexOf('function renderTableCellImageBlock(')
+  const tableCellImageEnd = source.indexOf('/**', tableCellImageStart + 1)
+  const tableCellImageSource = source.slice(tableCellImageStart, tableCellImageEnd)
+  const cellImageRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-image-block\[data-table-cell-image='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const cellImageContentRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-image-block\[data-table-cell-image='true'\]\s+\.document-page-image\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(tableCellSource, /renderTableCellImageBlock\(block, side\)/u)
+  assert.doesNotMatch(tableCellSource, /renderBlock\(block, side, 1\)/u)
+  assert.match(tableCellImageSource, /createElement\('img'\)/u)
+  assert.doesNotMatch(tableCellImageSource, /applyBlockGeometry\(/u)
+  assert.doesNotMatch(tableCellImageSource, /applyTranslationImageGeometry\(/u)
+  assert.match(source, /dataset\.tableCellImage\s*=\s*'true'/u)
+  assert.match(cellImageRule, /position:\s*relative\s*!important/u)
+  assert.match(cellImageRule, /left:\s*auto\s*!important/u)
+  assert.match(cellImageRule, /top:\s*auto\s*!important/u)
+  assert.match(cellImageRule, /width:\s*100%\s*!important/u)
+  assert.match(cellImageRule, /height:\s*auto\s*!important/u)
+  assert.match(cellImageRule, /margin(?:-left)?:\s*0\s*!important/u)
+  assert.match(cellImageContentRule, /width:\s*100%/u)
+  assert.match(cellImageContentRule, /height:\s*auto/u)
+  assert.match(cellImageContentRule, /object-fit:\s*contain/u)
+})
+
+test('PDF 译文代码框必须使用代码文本块自身的边框并保持原文横向范围', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const translationCodeRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-text-block\.document-text-code\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(source, /block\.codeFrame/u)
+  assert.match(source, /--document-code-frame-left/u)
+  assert.match(source, /--document-code-frame-width/u)
+  assert.match(translationCodeRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u)
+  assert.match(translationCodeRule, /margin-left:\s*calc\(\s*var\(--document-code-frame-left/u)
+  assert.match(translationCodeRule, /width:\s*calc\(\s*var\(--document-code-frame-width/u)
+  assert.match(translationCodeRule, /box-sizing:\s*border-box/u)
+})
+
+test('PDF 代码块必须带边框标记，即使解析器只恢复了横向外框', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderTextStart = source.indexOf('function renderTextBlock(')
+  const renderTextSource = source.slice(renderTextStart, source.indexOf('/**', renderTextStart + 1))
+  const translationCodeRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-text-block\.document-text-code\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(renderTextSource, /dataset\.codeFrame\s*=\s*'true'/u,
+    '代码块无论是否识别到完整外框都必须有可样式化的边框标记')
+  assert.match(translationCodeRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u)
+  assert.match(translationCodeRule, /background:\s*var\(--bg-secondary\)/u)
+})
+
+test('译文页面缩放重排必须通过 requestAnimationFrame 合并并清理待执行帧', () => {
+  const source = read('src/renderer/src/document.ts')
+  const observeStart = source.indexOf('function observeTranslationPageScale(')
+  const observeSource = source.slice(observeStart, source.indexOf('/**', observeStart + 1))
+  const resetStart = source.indexOf('function renderDocumentModel(')
+  const resetSource = source.slice(resetStart, source.indexOf('/**', resetStart + 1))
+
+  assert.match(observeSource, /requestAnimationFrame\(/u)
+  assert.match(observeSource, /cancelAnimationFrame\(/u)
+  assert.match(observeSource, /pageLayoutFrame/u)
+  assert.match(resetSource, /cancelAnimationFrame\(pageLayoutFrame\)/u)
+})
+
+test('PDF 译文表格单元格必须显式保留主题边框', () => {
+  const css = read('src/renderer/src/document.css')
+  const translationCellLayoutRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block th,\s*\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block td\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(
+    translationCellLayoutRule,
+    /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u
+  )
+})
+
+test('PDF 译文代码块必须保留等宽换行、主题边框和横向滚动', () => {
+  const css = read('src/renderer/src/document.css')
+  const translationCodeRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-text-block\.document-text-code\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const translationCodeRunRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-text-block\.document-text-code\s+\.document-text-run\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(translationCodeRule, /white-space:\s*pre\s*!important/u)
+  assert.match(translationCodeRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u)
+  assert.match(translationCodeRule, /background:\s*var\(--bg-secondary\)/u)
+  assert.match(translationCodeRule, /overflow-x:\s*auto/u)
+  assert.match(translationCodeRunRule, /white-space:\s*pre\s*!important/u)
+})
+
 test('PDF 译文普通分隔线必须保留原始宽度和横向位置，不能被流式布局拉伸为整页宽', () => {
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
@@ -1035,6 +1254,242 @@ test('PDF 译文普通分隔线必须保留原始宽度和横向位置，不能�
   assert.match(horizontalRule, /width:\s*calc\(\s*var\(--document-shape-width[^;]*var\(--document-page-scale/u)
   assert.match(horizontalRule, /margin-left:\s*calc\(\s*var\(--document-shape-left[^;]*var\(--document-page-scale/u)
   assert.match(verticalRule, /margin-left:\s*calc\(\s*var\(--document-shape-left[^;]*var\(--document-page-scale/u)
+})
+
+test('PDF 译文分隔线必须按原文坐标叠放，不能进入普通流把页眉和正文依次下推', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const shapeRenderStart = source.indexOf('function renderShapeBlock(')
+  const shapeRenderEnd = source.indexOf('/**', shapeRenderStart + 1)
+  const shapeRenderSource = source.slice(shapeRenderStart, shapeRenderEnd)
+  const shapeRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const positionedShapeRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\[data-line-orientation='horizontal'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const horizontalRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\[data-line-orientation='horizontal'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const verticalRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\[data-line-orientation='vertical'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(shapeRenderSource, /--document-shape-top/u)
+  assert.match(shapeRenderSource, /--document-shape-height/u)
+  assert.match(positionedShapeRule, /position:\s*absolute\s*!important/u)
+  assert.match(positionedShapeRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
+  assert.match(positionedShapeRule, /pointer-events:\s*none/u)
+  assert.match(horizontalRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
+  assert.match(verticalRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
+})
+
+test('PDF 绝对定位装饰线不得推进译文普通流底边，后续正文仍按原文坐标回到标题位置', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderPageStart = source.indexOf('function renderPage(')
+  const renderPageEnd = source.indexOf('/**', renderPageStart + 1)
+  const renderPageSource = source.slice(renderPageStart, renderPageEnd)
+  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const normalizeEnd = source.indexOf('/**', normalizeStart + 1)
+  const normalizeSource = source.slice(normalizeStart, normalizeEnd)
+  const line = {
+    kind: 'shape' as const,
+    blockId: 'line',
+    readingOrder: 0,
+    translatable: false,
+    line: { orientation: 'horizontal' as const }
+  }
+  const shape = { ...line, line: undefined }
+  const text = {
+    kind: 'text' as const,
+    blockId: 'text',
+    readingOrder: 1,
+    translatable: true,
+    role: 'body' as const,
+    runs: []
+  }
+
+  // 只有装饰线脱离普通流；图片、文本和其他形状仍必须推进真实底边。
+  assert.equal(occupiesDocumentTranslationFlow(line), false)
+  assert.equal(occupiesDocumentTranslationFlow(shape), true)
+  assert.equal(occupiesDocumentTranslationFlow(text), true)
+  assert.match(renderPageSource, /occupiesDocumentTranslationFlow\(block\)/u)
+  assert.match(renderPageSource, /dataset\.flowOccupiesSpace/u)
+  assert.match(normalizeSource, /flowOccupiesSpace\s*===\s*'false'/u)
+})
+
+test('PDF 分隔线缺少显式颜色时必须使用纸张前景色兜底，白底不能吞掉线条', () => {
+  const source = read('src/renderer/src/document.ts')
+  const shapeRenderStart = source.indexOf('function renderShapeBlock(')
+  const shapeRenderEnd = source.indexOf('/**', shapeRenderStart + 1)
+  const shapeRenderSource = source.slice(shapeRenderStart, shapeRenderEnd)
+
+  assert.match(shapeRenderSource, /block\.line\.color\s*\?\?\s*'var\(--document-paper-text\)'/u)
+  assert.doesNotMatch(shapeRenderSource, /block\.line\.color\s*\?\?\s*'var\(--border-default\)'/u)
+})
+
+test('PDF 同行图片与文字必须渲染在横向分组中，文字自然占满右侧可用宽度', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderPageStart = source.indexOf('function renderPage(')
+  const renderPageEnd = source.indexOf('/**', renderPageStart + 1)
+  const renderPageSource = source.slice(renderPageStart, renderPageEnd)
+  const groupRule = /\.document-page\[data-layout='translation-flow'\] \.document-flow-group\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const groupTextRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-flow-group \.document-text-block\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const groupImageRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-flow-group \.document-image-block\[data-geometry='source'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(renderPageSource, /flowGroupId/u)
+  assert.match(renderPageSource, /appendTranslationFlowBlock\(/u)
+  assert.match(renderPageSource, /'document-flow-group'/u)
+  assert.match(source, /document-flow-group/u)
+  assert.match(source, /--document-flow-group-left/u)
+  assert.match(source, /--document-flow-group-width/u)
+  assert.match(source, /--document-flow-group-gap/u)
+  assert.match(source, /--document-flow-group-text-top/u)
+  assert.match(source, /resolveTranslationFlowGroupGeometry/u)
+  assert.match(source, /flowGroupBlocks\.get\(block\.flowGroupId\)/u)
+  assert.match(groupRule, /display:\s*flex/u)
+  assert.match(groupRule, /align-items:\s*flex-start/u)
+  assert.match(groupRule, /min-height:\s*calc\(\s*var\(--document-flow-group-height/u)
+  assert.match(groupRule, /min-width:\s*0/u)
+  assert.match(groupRule, /width:\s*calc\(\s*var\(--document-flow-group-width[^;]*var\(--document-page-scale/u)
+  assert.match(groupRule, /margin-left:\s*calc\(\s*var\(--document-flow-group-left[^;]*var\(--document-page-scale/u)
+  assert.match(groupTextRule, /flex:\s*1\s+1\s+auto/u)
+  assert.match(groupTextRule, /min-width:\s*0/u)
+  assert.match(groupTextRule, /width:\s*auto\s*!important/u)
+  assert.match(groupTextRule, /max-width:\s*none\s*!important/u)
+  assert.match(groupTextRule, /height:\s*auto\s*!important/u)
+  assert.match(groupTextRule, /line-height:\s*normal\s*!important/u)
+  assert.match(groupTextRule, /margin-left:\s*calc\(\s*var\(--document-flow-group-gap[^;]*var\(--document-page-scale/u)
+  assert.match(groupTextRule, /margin-top:\s*calc\(\s*var\(--document-flow-group-text-top[^;]*var\(--document-page-scale/u)
+  assert.match(groupImageRule, /flex:\s*0\s+0\s+auto/u)
+  assert.match(groupImageRule, /margin-left:\s*0\s*!important/u)
+})
+
+test('PDF 页眉分组必须选择最近内框线并保留文字原始纵向偏移', () => {
+  const headerImage: DocumentBlock = {
+    kind: 'image',
+    blockId: 'header-image',
+    readingOrder: 0,
+    translatable: false,
+    flowGroupId: 'header-flow',
+    bbox: { x: 367.8, y: 42.6, width: 18.6, height: 18.6 },
+    assetId: 'header-image'
+  }
+  const headerText: DocumentBlock = {
+    kind: 'text',
+    blockId: 'header-text',
+    readingOrder: 1,
+    translatable: true,
+    flowGroupId: 'header-flow',
+    role: 'paragraph',
+    bbox: { x: 397.32, y: 46.13, width: 108, height: 9 },
+    runs: [{ runId: 'header-run', text: '友虹（北京）科技有限公司', style: { fontSize: 9 } }]
+  }
+  const pageBlocks: DocumentBlock[] = [
+    {
+      kind: 'shape',
+      blockId: 'page-frame-right',
+      readingOrder: 2,
+      translatable: false,
+      bbox: { x: 594.8, y: 0, width: 1, height: 841.9 },
+      line: { orientation: 'vertical', thickness: 1 }
+    },
+    {
+      kind: 'shape',
+      blockId: 'header-frame-right',
+      readingOrder: 3,
+      translatable: false,
+      bbox: { x: 510.25, y: 42.55, width: 1, height: 24.5 },
+      line: { orientation: 'vertical', thickness: 1 }
+    },
+    {
+      kind: 'shape',
+      blockId: 'header-frame-top',
+      readingOrder: 4,
+      translatable: false,
+      bbox: { x: 362.45, y: 42.05, width: 148.3, height: 1 },
+      line: { orientation: 'horizontal', thickness: 1 }
+    }
+  ]
+
+  const geometry = resolveTranslationFlowGroupGeometry(
+    [headerImage, headerText],
+    pageBlocks,
+    595.3,
+    { left: 132, right: 511.319, center: 321.6595 }
+  )
+
+  assert.equal(geometry.left, 367.8)
+  assert.equal(geometry.width, 143.45)
+  assert.ok(Math.abs(geometry.textTop - 3.53) < 0.0001)
+})
+
+test('PDF 表格增高后的装饰线必须跟随最近前序流式锚点', () => {
+  const anchors = [{
+    sourceTop: 100.5,
+    sourceBottom: 614.25,
+    actualTop: 100.5,
+    actualBottom: 750
+  }]
+
+  assert.equal(resolveTranslationFlowDecorationTop(616.25, anchors, 1), 752)
+  assert.equal(resolveTranslationFlowDecorationTop(670, anchors, 1), 805.75)
+  assert.equal(resolveTranslationFlowDecorationTop(70, anchors, 1), undefined)
+})
+
+test('PDF 装饰线纵向与锚点重叠时必须保留相对锚点顶部的原始偏移', () => {
+  const anchors = [{
+    sourceTop: 100,
+    sourceBottom: 300,
+    actualTop: 120,
+    actualBottom: 360
+  }]
+
+  assert.equal(resolveTranslationFlowDecorationTop(150, anchors, 1), 170)
+})
+
+test('PDF 装饰线必须选择最近前序锚点并应用页面缩放比例', () => {
+  const anchors = [{
+    sourceTop: 50,
+    sourceBottom: 100,
+    actualTop: 75,
+    actualBottom: 150
+  }, {
+    sourceTop: 200,
+    sourceBottom: 260,
+    actualTop: 300,
+    actualBottom: 390
+  }]
+
+  assert.equal(resolveTranslationFlowDecorationTop(270, anchors, 0.5), 395)
+})
+
+test('译文水印必须按容器宽度调整横向起点以均衡左右留白', () => {
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(800), -100)
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(900), -50)
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(960), -20)
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(1000), 0)
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(1200), 0)
+})
+
+test('译文水印横向起点必须忽略非法尺寸并保持非正偏移', () => {
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(Number.NaN), 0)
+  assert.equal(resolveTranslationWatermarkHorizontalOffset(-20), 0)
+})
+
+test('PDF 译文装饰线必须按最近前序流式锚点动态重定位并观察页面自身高度', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderPageStart = source.indexOf('function renderPage(')
+  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const observeStart = source.indexOf('function observeTranslationPageScale(')
+  const renderPageSource = source.slice(renderPageStart, observeStart)
+  const normalizeSource = source.slice(normalizeStart, observeStart)
+  const observeSource = source.slice(observeStart, source.indexOf('/**', observeStart + 1))
+  const horizontalRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\[data-line-orientation='horizontal'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const verticalRule = /\.document-page\[data-layout='translation-flow'\] \.document-shape-block\[data-line-orientation='vertical'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(renderPageSource, /dataset\.sourceTop/u)
+  assert.match(renderPageSource, /dataset\.sourceBottom/u)
+  assert.match(normalizeSource, /resolveTranslationFlowDecorationTop/u)
+  assert.match(normalizeSource, /--document-shape-flow-offset/u)
+  assert.match(normalizeSource, /flowDecorationAnchors/u)
+  assert.match(observeSource, /observer\.observe\(page\)/u)
+  assert.match(horizontalRule, /--document-shape-flow-offset/u)
+  assert.match(verticalRule, /--document-shape-flow-offset/u)
 })
 
 test('设置页文档翻译入口必须使用自适应双列布局并重置说明缩进', () => {
@@ -1049,4 +1504,59 @@ test('设置页文档翻译入口必须使用自适应双列布局并重置说�
   assert.match(css, /\.document-settings-row \.document-settings-description\s*\{[^}]*margin:\s*4px 0 0/su)
   assert.match(css, /\.document-settings-row \.document-settings-description\s*\{[^}]*max-width:\s*64ch/su)
   assert.match(css, /@media \(max-width: 480px\)[\s\S]*?\.document-settings-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u)
+})
+
+test('文档译文界面必须显示真实品牌 logo、中英文产品名组成的黑白斜向重复水印且不阻挡交互', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const theme = read('src/renderer/src/theme.css')
+  const watermarkStart = source.indexOf('function createTranslationWatermarkLogo(')
+  const watermarkAppendStart = source.indexOf('function appendTranslationWatermark(')
+  const watermarkAppendEnd = source.indexOf('/**', watermarkAppendStart + 1)
+  const watermarkSource = source.slice(watermarkStart, watermarkAppendEnd)
+  const watermarkRule = /\.document-translation-watermark\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const tileRule = /\.document-translation-watermark-tile\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.ok(watermarkStart > -1 && watermarkAppendStart > -1, '必须提供译文水印挂载函数')
+  assert.match(watermarkSource, /className = 'document-translation-watermark'/u)
+  assert.match(watermarkSource, /aria-hidden', 'true'/u)
+  assert.match(watermarkSource, /document-translation-watermark-logo/u)
+  assert.match(watermarkSource, /document-translation-watermark-text/u)
+  assert.match(watermarkSource, /createTranslationWatermarkText\('划词翻译'/u)
+  assert.match(watermarkSource, /createTranslationWatermarkText\(\s*'Selection Translator'/u)
+  assert.match(watermarkSource, /rounded-yi-glyph/u)
+  assert.match(watermarkSource, /data-font-family/u)
+  assert.match(watermarkSource, /tile\.setAttribute\('width', '320'\)/u)
+  assert.match(watermarkSource, /tile\.setAttribute\('height', '180'\)/u)
+  assert.match(watermarkSource, /tile\.setAttribute\('x'/u)
+  assert.match(watermarkSource, /resolveTranslationWatermarkHorizontalOffset/u)
+  assert.match(source, /new ResizeObserver/u)
+  assert.match(source, /watermarkResizeObserver/u)
+  assert.match(source, /watermarkResizeObserver\?\.disconnect\(\)/u)
+  assert.match(watermarkSource, /content\.setAttribute\('transform', 'rotate\(-45 160 90\)'\)/u)
+  assert.doesNotMatch(watermarkSource, /setAttribute\(['"]patternTransform['"]/u)
+  assert.match(watermarkSource, /createTranslationWatermarkPattern\(/u)
+  assert.match(watermarkSource, /fill', 'currentColor'/u)
+  assert.match(watermarkSource, /stroke', 'currentColor'/u)
+  assert.match(watermarkSource, /side !== 'translation'/u)
+  assert.match(watermarkSource, /content\.append\(logo, chineseText, englishText\)/u)
+  assert.match(watermarkSource, /logo\.setAttribute\('x', '74'\)/u)
+  assert.match(watermarkSource, /logo\.setAttribute\('y', '96'\)/u)
+  assert.match(watermarkSource, /logo\.setAttribute\('width', '24'\)/u)
+  assert.match(watermarkSource, /chineseText\.setAttribute\('x', '106'\)/u)
+  assert.match(watermarkSource, /chineseText\.setAttribute\('y', '107'\)/u)
+  assert.match(watermarkSource, /englishText\.setAttribute\('x', '108'\)/u)
+  assert.match(watermarkSource, /englishText\.setAttribute\('y', '127'\)/u)
+  assert.match(source, /appendTranslationWatermark\(/u)
+  assert.match(watermarkRule, /position:\s*absolute/u)
+  assert.match(watermarkRule, /inset:\s*0/u)
+  assert.match(watermarkRule, /pointer-events:\s*none/u)
+  assert.match(tileRule, /color:\s*var\(--document-watermark-ink-strong\)/u)
+  assert.match(css, /\.document-translation-watermark-pattern\s*\{[^}]*width:\s*100%/su)
+  assert.match(css, /\.document-translation-watermark-logo path\s*\{[^}]*fill:\s*currentColor/su)
+  assert.match(css, /\.document-translation-watermark-logo path\s*\{[^}]*stroke:\s*currentColor/su)
+  assert.match(theme, /--document-watermark-ink:/u)
+  assert.match(theme, /--document-watermark-ink-strong:/u)
+  assert.match(css, /\.document-translation-watermark-text--english\s*\{[^}]*font-size:\s*14px/su)
+  assert.doesNotMatch(watermarkSource, /#[0-9a-f]{3,8}\b/iu)
 })

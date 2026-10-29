@@ -159,7 +159,7 @@ test('任务服务重新翻译失败项时不得重新解析或重跑已成功�
   }
 })
 
-test('任务服务必须在整页完成前推送已翻译文本快照', async () => {
+test('任务服务必须在文件翻译完成前推送中间译文快照', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'sample.txt')
   await writeFile(path, 'Hello')
@@ -167,6 +167,7 @@ test('任务服务必须在整页完成前推送已翻译文本快照', async ()
   let releaseFirst: (() => void) | null = null
   const deps = dependencies(path, events)
   deps.translate = async (text, signal, _request, onDelta) => {
+    assert.equal(typeof onDelta, 'function', '文件翻译必须接收流式增量回调')
     onDelta?.('译')
     if (text === 'Hello') {
       await new Promise<void>((resolve) => {
@@ -180,22 +181,22 @@ test('任务服务必须在整页完成前推送已翻译文本快照', async ()
   try {
     await service.run({ path, generation: 1 })
     const deadline = Date.now() + 2000
-    const hasStreamingText = (event: DocumentWorkspaceSnapshot): boolean => (
+    const hasIntermediateTranslation = (event: DocumentWorkspaceSnapshot): boolean => (
       event.translation?.pages[0]?.blocks[0]?.kind === 'text' &&
-      event.translation.pages[0].blocks[0].runs[0]?.text === '译'
+      event.translation.pages[0].blocks[0].runs[0]?.text === '译' &&
+      !['completed', 'partial', 'cancelled', 'failed'].includes(event.task.status)
     )
-    while (!events.some((event) => hasStreamingText(event) &&
-      !['completed', 'partial', 'cancelled', 'failed'].includes(event.task.status)) &&
-      Date.now() < deadline) {
+    while (!events.some((event) => hasIntermediateTranslation(event)) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5))
     }
-    const streaming = events.find((event) => hasStreamingText(event) &&
-      !['completed', 'partial', 'cancelled', 'failed'].includes(event.task.status))
-    assert.ok(streaming)
-    assert.equal((streaming.translation!.pages[0]!.blocks[0] as { runs: Array<{ text: string }> }).runs[0]!.text, '译')
+    assert.equal(events.some((event) => hasIntermediateTranslation(event)), true)
     releaseFirst?.()
     const completed = await waitForTerminal(events)
     assert.equal(completed.task.status, 'completed')
+    assert.equal(
+      (completed.translation!.pages[0]!.blocks[0] as { runs: Array<{ text: string }> }).runs[0]!.text,
+      '译:Hello'
+    )
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })

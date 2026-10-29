@@ -16,6 +16,7 @@ import {
   DocumentPdfExportError,
   exportDocumentToPdf
 } from '../src/main/documentPdfExport.ts'
+import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
 
 // PDF.js 以 CommonJS 发布；esbuild 打包测试时可能不生成 default，而 Node 原生加载会生成 default。
 const pdfjs = ('default' in pdfjsModule ? pdfjsModule.default : pdfjsModule) as typeof pdfjsModule
@@ -183,6 +184,92 @@ test('PDF 导出必须为表格单元格绘制边框并保留单元格文字', a
   }
 })
 
+test('PDF 导出必须把表格内嵌图片限制在单元格内并让后续行避开图片', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-with-image',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 40, y: 50, width: 400, height: 40 },
+    columnWidths: [200, 200],
+    rows: [{
+      rowId: 'table-with-image-row-0',
+      cells: [{
+        cellId: 'table-with-image-cell-0',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-with-image-label',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'table-with-image-label-run', text: 'Certificate', style: { fontSize: 12 } }]
+        }]
+      }, {
+        cellId: 'table-with-image-cell-1',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: 'table-with-image-image',
+          readingOrder: 1,
+          translatable: false,
+          assetId: 'table-with-image-asset',
+          bbox: { x: 260, y: 55, width: 160, height: 80 }
+        }]
+      }]
+    }, {
+      rowId: 'table-with-image-row-1',
+      cells: [{
+        cellId: 'table-with-image-cell-2',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-with-image-after',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'table-with-image-after-run', text: 'AFTER_TABLE_IMAGE', style: { fontSize: 12 } }]
+        }]
+      }, {
+        cellId: 'table-with-image-cell-3',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: []
+      }]
+    }]
+  }]
+
+  let loadCount = 0
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async (assetId) => {
+      assert.equal(assetId, 'table-with-image-asset')
+      loadCount += 1
+      return readFileSync('tests/fixtures/ocr-scaling/clear.png')
+    }
+  })
+  assert.equal(loadCount, 1, '表格图片资源必须只加载一次')
+
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const operatorList = await page.getOperatorList()
+    assert.ok(operatorList.fnArray.includes(pdfjs.OPS.paintImageXObject))
+    const textContent = await page.getTextContent()
+    const after = textContent.items.find((candidate) => 'str' in candidate && candidate.str === 'AFTER_TABLE_IMAGE')
+    assert.ok(after && 'transform' in after)
+    const afterTop = page.getViewport({ scale: 1 }).height - (after.transform[5] ?? 0)
+    // 图片按右列可用宽度缩放后约为 50pt 高，第二行必须从图片底边之后开始。
+    assert.ok(afterTop > 120, `next row must clear table image, got top=${afterTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('PDF 表格列宽必须按表格边界归一化，不能因列宽总和偏大而溢出页面', async () => {
   const model = documentWithText('')
   model.pages[0]!.blocks = [{
@@ -326,6 +413,118 @@ test('PDF 普通分隔线必须作为矢量线条导出', async () => {
     const horizontalYValues = pathArguments.filter((_, index) => index % 2 === 1)
     assert.ok(horizontalYValues.every((value) => typeof value === 'number'))
     assert.equal(new Set(horizontalYValues).size, 1, 'horizontal divider must have a single y coordinate')
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 同行 logo 与文字必须保持在同一水平带并保留可复制文本', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'image',
+    blockId: 'header-logo',
+    readingOrder: 0,
+    translatable: false,
+    flowGroupId: 'page-1-flow-group-1',
+    bbox: { x: 60, y: 50, width: 20, height: 20 },
+    assetId: 'logo'
+  }, {
+    kind: 'text',
+    blockId: 'header-company',
+    readingOrder: 1,
+    translatable: true,
+    flowGroupId: 'page-1-flow-group-1',
+    role: 'paragraph',
+    bbox: { x: 90, y: 53, width: 120, height: 14 },
+    runs: [{ runId: 'header-company-run', text: 'Company name', style: { fontSize: 12 } }]
+  }, {
+    kind: 'text',
+    blockId: 'body-after-header',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 60, y: 90, width: 400, height: 20 },
+    runs: [{ runId: 'body-after-header-run', text: 'Body text', style: { fontSize: 12 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const company = items.find((item) => item.str.includes('Company name'))
+    const body = items.find((item) => item.str.includes('Body text'))
+    assert.ok(company)
+    assert.ok(body)
+    assert.ok((company.transform[4] ?? 0) >= 90, `company text must stay right of logo: ${company.transform[4]}`)
+    assert.ok((company.transform[5] ?? 0) > 710, `company text must remain in the header band: ${company.transform[5]}`)
+    assert.ok((body.transform[5] ?? 0) < (company.transform[5] ?? 0) - 20)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 页眉分组必须使用最近内框宽度并保留文字原始纵向位置', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.width = 595.3
+  model.pages[0]!.height = 841.9
+  model.pages[0]!.contentArea = { left: 132, right: 511.319, center: 321.6595 }
+  model.pages[0]!.blocks = [{
+    kind: 'image',
+    blockId: 'header-logo',
+    readingOrder: 0,
+    translatable: false,
+    flowGroupId: 'page-1-header-group',
+    bbox: { x: 367.8, y: 42.6, width: 18.6, height: 18.6 },
+    assetId: 'logo'
+  }, {
+    kind: 'text',
+    blockId: 'header-company',
+    readingOrder: 1,
+    translatable: true,
+    flowGroupId: 'page-1-header-group',
+    role: 'paragraph',
+    bbox: { x: 397.32, y: 46.13, width: 108, height: 9 },
+    runs: [{ runId: 'header-company-run', text: 'Company name', style: { fontSize: 9 } }]
+  }, {
+    kind: 'shape',
+    blockId: 'header-frame-right',
+    readingOrder: 2,
+    translatable: false,
+    bbox: { x: 510.25, y: 42.55, width: 1, height: 24.5 },
+    line: { orientation: 'vertical', thickness: 1 }
+  }, {
+    kind: 'shape',
+    blockId: 'page-frame-right',
+    readingOrder: 3,
+    translatable: false,
+    bbox: { x: 594.8, y: 0, width: 1, height: 841.9 },
+    line: { orientation: 'vertical', thickness: 1 }
+  }, {
+    kind: 'shape',
+    blockId: 'header-frame-top',
+    readingOrder: 4,
+    translatable: false,
+    bbox: { x: 362.45, y: 42.05, width: 148.3, height: 1 },
+    line: { orientation: 'horizontal', thickness: 1 }
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const company = content.items.find((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.includes('Company name'))
+    assert.ok(company)
+    assert.ok(Math.abs((company.transform[4] ?? 0) - 397.32) < 1.5)
+    assert.ok(Math.abs((company.transform[5] ?? 0) - (841.9 - 46.13 - 9)) < 1.5)
   } finally {
     await exportedPdf.destroy()
   }
@@ -502,7 +701,7 @@ test('PDF 导出必须把 OCR 译文覆盖到图片对应区域并保留可检�
   }
 })
 
-test('PDF 导出必须保留 OCR 译文字号与居中对齐', async () => {
+test('PDF 导出必须统一 OCR 译文字号并保留对齐方式', async () => {
   const model = documentWithText('OCR document')
   model.pages[0]!.blocks = [{
     kind: 'image',
@@ -519,6 +718,14 @@ test('PDF 导出必须保留 OCR 译文字号与居中对齐', async () => {
       status: 'recognized',
       textAlign: 'center',
       style: { fontSize: 24, color: '#123456', fontWeight: 700 }
+    }, {
+      regionId: 'region-right-aligned',
+      bbox: { x: 0.1, y: 0.6, width: 0.6, height: 0.08 },
+      text: 'OCR right target text',
+      translatedText: 'Right OCR',
+      status: 'recognized',
+      textAlign: 'right',
+      style: { fontSize: 8 }
     }]
   }]
 
@@ -529,15 +736,21 @@ test('PDF 导出必须保留 OCR 译文字号与居中对齐', async () => {
   const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
   try {
     const textContent = await (await exportedPdf.getPage(1)).getTextContent()
-    const item = textContent.items.find((candidate) => 'str' in candidate && candidate.str === 'Centered OCR')
-    assert.ok(item && 'transform' in item)
-    const transform = item.transform as number[]
-    const fontSize = Math.hypot(transform[2] ?? 0, transform[3] ?? 0)
-    assert.ok(Math.abs(fontSize - 24) < 1)
+    const centeredItem = textContent.items.find((candidate) => 'str' in candidate && candidate.str === 'Centered OCR')
+    assert.ok(centeredItem && 'transform' in centeredItem)
+    const centeredTransform = centeredItem.transform as number[]
+    const centeredFontSize = Math.hypot(centeredTransform[2] ?? 0, centeredTransform[3] ?? 0)
+    assert.ok(Math.abs(centeredFontSize - DOCUMENT_OCR_UNIFORM_FONT_SIZE) < 1)
     // 区域范围是 x=70..250；文本宽度约 156.8，居中后起点应接近 81.6。
-    const textWidth = 'width' in item ? Number(item.width) : 0
+    const textWidth = 'width' in centeredItem ? Number(centeredItem.width) : 0
     const expectedX = 70 + (180 - textWidth) / 2
-    assert.ok(Math.abs((transform[4] ?? 0) - expectedX) < 2)
+    assert.ok(Math.abs((centeredTransform[4] ?? 0) - expectedX) < 2)
+
+    const rightItem = textContent.items.find((candidate) => 'str' in candidate && candidate.str === 'Right OCR')
+    assert.ok(rightItem && 'transform' in rightItem)
+    const rightTransform = rightItem.transform as number[]
+    const rightFontSize = Math.hypot(rightTransform[2] ?? 0, rightTransform[3] ?? 0)
+    assert.ok(Math.abs(rightFontSize - DOCUMENT_OCR_UNIFORM_FONT_SIZE) < 1)
   } finally {
     await exportedPdf.destroy()
   }
@@ -605,6 +818,63 @@ test('PDF 导出必须按原生文本区块的对齐方式绘制译文', async (
   }
 })
 
+test('PDF 导出左对齐长译文必须保留原文正文区右侧页边距', async () => {
+  const model = documentWithText(
+    'This translated paragraph is intentionally long enough to reach the right side of the original content area while still needing several wrapped lines.'
+  )
+  const block = model.pages[0]!.blocks[0]
+  assert.equal(block.kind, 'text')
+  if (block.kind !== 'text') return
+  block.bbox = { x: 72, y: 50, width: 120, height: 14 }
+  model.pages[0]!.contentArea = { left: 72, right: 540, center: 306 }
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const textContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = textContent.items.filter((item): item is typeof item & { transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && 'width' in item && item.str.trim().length > 0)
+    assert.ok(items.length > 1, '长译文必须换行')
+    const rightmost = Math.max(...items.map((item) => (item.transform[4] ?? 0) + item.width))
+    assert.ok(rightmost <= 541, `译文不得越过正文区右边界：${rightmost}`)
+    assert.ok(rightmost > 500, `译文应充分利用正文区宽度，不能缩回原文短行宽度：${rightmost}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 导出居中短标题译文应扩展到正文区宽度并保持原中心线', async () => {
+  const model = documentWithText('Measures for the Administration of Electronic Archives')
+  const block = model.pages[0]!.blocks[0]
+  assert.equal(block.kind, 'text')
+  if (block.kind !== 'text') return
+  block.textAlign = 'center'
+  block.bbox = { x: 255, y: 50, width: 90, height: 20 }
+  block.runs[0]!.style = { fontSize: 16, lineHeight: 22 }
+  model.pages[0]!.contentArea = { left: 72, right: 540, center: 306 }
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const textContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = textContent.items.filter((item): item is typeof item & { transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && 'width' in item && item.str.trim().length > 0)
+    const left = Math.min(...items.map((item) => item.transform[4] ?? 0))
+    const right = Math.max(...items.map((item) => (item.transform[4] ?? 0) + item.width))
+    assert.ok(items.length <= 2, `译文应利用正文区宽度，而不是按中文短标题宽度提前换行：${items.length} 行`)
+    assert.ok(right - left > 300, `居中标题译文应扩展到正文区宽度：${right - left}`)
+    assert.ok(Math.abs((left + right) / 2 - 300) < 2, `居中标题不得改变原文中心线：${(left + right) / 2}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('PDF 导出多片段居中文本时必须按整行宽度定位，不能逐个片段重复居中', async () => {
   const model = documentWithText('')
   const block = model.pages[0]!.blocks[0]
@@ -632,6 +902,52 @@ test('PDF 导出多片段居中文本时必须按整行宽度定位，不能逐�
     const right = (rightItem.transform[4] ?? 0) + ('width' in rightItem ? Number(rightItem.width) : 0)
     assert.ok(Math.abs((left + right) / 2 - 290) < 2, `combined text center ${(left + right) / 2}`)
     assert.ok(left > 200, `second fragment must continue after the first instead of restarting at the center: ${left}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 目录导出必须让标题自然换行且页码只在最后一行右侧出现一次', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'text',
+    blockId: 'toc-block',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 90, y: 50, width: 415.27, height: 14 },
+    toc: { pageNumber: '12' },
+    runs: [
+      {
+        runId: 'toc-title',
+        text: '2.1.3. This is a translated table of contents title that must wrap naturally without moving the page number into its own line',
+        style: { fontSize: 12, lineHeight: 18 }
+      },
+      { runId: 'toc-leader', text: '.............................................................', protected: true },
+      { runId: 'toc-page', text: '12', protected: true }
+    ]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const textContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = textContent.items.filter((item): item is typeof item & { str: string; transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && 'width' in item && item.str.trim().length > 0)
+    const pageItems = items.filter((item) => item.str.trim() === '12')
+    assert.equal(pageItems.length, 1, `目录页码只能出现一次：${items.map((item) => item.str).join('|')}`)
+    const pageItem = pageItems[0]!
+    assert.ok(Math.abs((pageItem.transform[4] ?? 0) + pageItem.width - 505.27) < 2)
+
+    const titleItems = items.filter((item) => item !== pageItem && /[A-Za-z]/u.test(item.str))
+    assert.ok(titleItems.length > 1, '长目录标题必须换行')
+    const lastTitle = titleItems.reduce((bottom, item) =>
+      (item.transform[5] ?? 0) < (bottom.transform[5] ?? 0) ? item : bottom)
+    assert.ok(Math.abs((lastTitle.transform[5] ?? 0) - (pageItem.transform[5] ?? 0)) < 1)
+    assert.ok(items.every((item) => !/^\.{6,}$/u.test(item.str)), '引导点应绘制为矢量线，不能生成额外文本行')
   } finally {
     await exportedPdf.destroy()
   }

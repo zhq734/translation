@@ -1,6 +1,7 @@
 import type { PrintToPDFOptions } from 'electron'
 import type { DocumentModel, DocumentWarning } from '../shared/documentTypes.ts'
 import type { DocumentPdfExportResult } from './documentWorkspaceTaskService.ts'
+import { resolveTranslationWatermarkHorizontalOffset } from '../renderer/src/documentPdfLayout.ts'
 
 /** 默认 A4 页面宽度，单位为 PDF 点。 */
 const DEFAULT_PAGE_WIDTH_PT = 612
@@ -14,8 +15,21 @@ const CSS_PX_PER_PDF_POINT = 1.3333333333
 /** 打印尺寸保留三位小数，消除 CSS 像素换算产生的浮点尾差。 */
 const PRINT_POINT_PRECISION = 1000
 
-/** 打印前等待字体、图片和两帧布局完成。 */
-const WAIT_FOR_PRINT_READY_SCRIPT = `(async () => {
+/** Markdown 打印页四周留白，单位为 PDF 点。 */
+const MARKDOWN_PRINT_MARGIN_PT = 25.2
+
+/**
+ * 生成打印前资源等待脚本。
+ * 水印在打印时铺满整页，横向起点必须依据目标纸张宽度计算，不能沿用屏幕预览宽度。
+ * @param watermarkOffset 水印图案相对页面左边缘的横向偏移，单位为 CSS 像素。
+ * @returns 可在文档窗口执行的打印准备脚本。
+ * @author zhenghq
+ */
+function buildWaitForPrintReadyScript(watermarkOffset: number): string {
+  const offset = Number.isFinite(watermarkOffset)
+    ? Math.round(watermarkOffset * PRINT_POINT_PRECISION) / PRINT_POINT_PRECISION
+    : 0
+  return `(async () => {
   if (document.fonts && document.fonts.ready) await document.fonts.ready;
   const images = Array.from(document.querySelectorAll('#document-translation-content img'));
   await Promise.all(images.map(async (image) => {
@@ -29,9 +43,17 @@ const WAIT_FOR_PRINT_READY_SCRIPT = `(async () => {
       try { await image.decode(); } catch {}
     }
   }));
+  // Print layout is driven by the target paper width; reuse its offset instead of the screen viewport.
+  for (const watermark of document.querySelectorAll('#document-translation-content .document-translation-watermark')) {
+    const tile = watermark.querySelector('pattern');
+    if (!tile) continue;
+    const offset = ${offset};
+    tile.setAttribute('x', String(offset === 0 ? 0 : offset));
+  }
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return true;
 })()`
+}
 
 /** 测量打印样式生效后译文页的最大真实高度。 */
 const MEASURE_TRANSLATION_PAGE_HEIGHT_SCRIPT = `(() => {
@@ -83,10 +105,42 @@ function resolvePrintPageSize(model: DocumentModel): { width: number; height: nu
   const page = model.pages[0]
   const width = page?.width
   const height = page?.height
-  return {
-    width: Number.isFinite(width) && (width ?? 0) > 0 ? width as number : DEFAULT_PAGE_WIDTH_PT,
-    height: Number.isFinite(height) && (height ?? 0) > 0 ? height as number : DEFAULT_PAGE_HEIGHT_PT
+  const validWidth = Number.isFinite(width) && (width ?? 0) > 0 ? width as number : DEFAULT_PAGE_WIDTH_PT
+  const validHeight = Number.isFinite(height) && (height ?? 0) > 0 ? height as number : DEFAULT_PAGE_HEIGHT_PT
+  if (model.source.format === 'pdf') {
+    return { width: validWidth, height: validHeight }
   }
+  // 流式文档模型使用 96 DPI 的 CSS 像素，打印前必须换算为 PDF 点。
+  return {
+    width: roundPrintPoints(validWidth / CSS_PX_PER_PDF_POINT),
+    height: roundPrintPoints(validHeight / CSS_PX_PER_PDF_POINT)
+  }
+}
+
+/**
+ * 判断文档是否使用连续流式排版。
+ * 此类文档没有固定页数，必须由浏览器按标准纸张高度自然分页；
+ * 不能把整篇内容高度扩展成单个超长页面。
+ * @param model 文档模型。
+ * @returns 是否为连续流式文档。
+ * @author zhenghq
+ */
+function usesContinuousPrintPagination(model: DocumentModel): boolean {
+  return model.source.format !== 'pdf'
+}
+
+/**
+ * 计算导出 PDF 时水印图案的横向起点。
+ * Markdown 使用带页边距的打印内容区，其余文档水印铺满纸张宽度。
+ * @param model 文档模型。
+ * @returns 水印图案相对打印内容区左边缘的非正横向偏移。
+ * @author zhenghq
+ */
+function resolvePrintWatermarkHorizontalOffset(model: DocumentModel): number {
+  const { width } = resolvePrintPageSize(model)
+  const pageMargin = model.source.format === 'markdown' ? MARKDOWN_PRINT_MARGIN_PT * 2 : 0
+  const printableWidthPt = Math.max(0, width - pageMargin)
+  return resolveTranslationWatermarkHorizontalOffset(printableWidthPt * CSS_PX_PER_PDF_POINT)
 }
 
 /**
@@ -100,13 +154,14 @@ function resolvePrintPageSize(model: DocumentModel): { width: number; height: nu
  */
 export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt?: number): string {
   const { width, height } = resolvePrintPageSize(model)
+  const isMarkdown = model.source.format === 'markdown'
   const printHeight = Number.isFinite(pageHeightOverridePt) && (pageHeightOverridePt ?? 0) > 0
     ? roundPrintPoints(pageHeightOverridePt as number)
     : height
   return `@media print {
   @page {
     size: ${width}pt ${printHeight}pt;
-    margin: 0;
+    margin: ${isMarkdown ? '0.35in' : '0'};
   }
 }
 
@@ -154,7 +209,6 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   .document-preview-host[data-preview-kind='table'],
   .document-preview-host[data-preview-kind='subtitle'],
   .document-flow-preview,
-  .document-markdown-preview,
   .document-table-preview,
   .document-subtitle-preview {
     display: block !important;
@@ -170,6 +224,33 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     border-radius: 0 !important;
     background: var(--document-paper-bg) !important;
     box-shadow: none !important;
+  }
+
+  #document-translation-content .document-markdown-preview {
+    --text-primary: var(--document-paper-text) !important;
+    --text-secondary: var(--document-paper-text) !important;
+    --panel-bg: var(--document-paper-bg) !important;
+    --bg-secondary: color-mix(in srgb, var(--document-paper-text) 5%, var(--document-paper-bg)) !important;
+    --border-default: color-mix(in srgb, var(--document-paper-text) 16%, var(--document-paper-bg)) !important;
+    display: block !important;
+    box-sizing: border-box !important;
+    /* Explicitly reserve horizontal padding when the print viewport is narrower than 920px. */
+    width: calc(100% - 64px) !important;
+    max-width: 920px !important;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 auto !important;
+    padding: clamp(16px, 4vw, 40px) !important;
+    overflow: visible !important;
+    border: var(--border-width) solid var(--border-default) !important;
+    border-radius: var(--radius-control) !important;
+    background: var(--document-paper-bg) !important;
+    color: var(--document-paper-text) !important;
+    box-shadow: none !important;
+  }
+
+  #document-translation-content .document-markdown-preview > * + * {
+    margin-top: var(--space-3);
   }
 
   #document-translation-content,
@@ -206,10 +287,83 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     min-height: 0 !important;
   }
 
+  #document-translation-content .document-page[data-layout='flow'] {
+    box-sizing: border-box !important;
+    width: var(--document-page-width, 100%) !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+  }
+
   #document-translation-content .document-page[data-layout='absolute'] {
     width: var(--document-page-width, auto) !important;
     height: var(--document-page-height) !important;
     min-height: var(--document-page-height) !important;
+  }
+
+  #document-translation-content .document-flow-preview,
+  #document-translation-content .document-table-preview,
+  #document-translation-content .document-subtitle-preview {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  #document-translation-content .document-translation-watermark {
+    display: block !important;
+    /* Repeating a fixed element on each printed page keeps every PDF page watermarked. */
+    position: fixed !important;
+    z-index: 2 !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    background: transparent !important;
+    pointer-events: none !important;
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  #document-translation-content .document-translation-watermark-pattern {
+    display: block !important;
+    width: 100% !important;
+    height: 100% !important;
+    overflow: visible !important;
+    color: var(--document-watermark-ink-strong) !important;
+  }
+
+  #document-translation-content .document-table-block {
+    /* Keep table borders intact when printing instead of clipping horizontally. */
+    overflow: visible !important;
+  }
+
+  #document-translation-content .document-table-block tr {
+    /* Avoid splitting a translated row across printed pages. */
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #document-translation-content .document-markdown-preview h1,
+  #document-translation-content .document-markdown-preview h2,
+  #document-translation-content .document-markdown-preview h3,
+  #document-translation-content .document-markdown-preview h4,
+  #document-translation-content .document-markdown-preview h5,
+  #document-translation-content .document-markdown-preview h6 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  #document-translation-content .document-markdown-preview pre,
+  #document-translation-content .document-markdown-preview blockquote,
+  #document-translation-content .document-markdown-preview li,
+  #document-translation-content .document-markdown-preview tr,
+  #document-translation-content .document-markdown-preview img {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }` 
 }
@@ -260,11 +414,15 @@ export async function printDocumentPreviewToPdf(
   const insertedCssKeys: string[] = []
   try {
     insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model)))
-    await webContents.executeJavaScript(WAIT_FOR_PRINT_READY_SCRIPT)
-    const measuredHeightCssPx = resolveMeasuredPageHeightCssPx(
-      await webContents.executeJavaScript(MEASURE_TRANSLATION_PAGE_HEIGHT_SCRIPT)
-    )
-    const measuredHeightPt = roundPrintPoints(measuredHeightCssPx / CSS_PX_PER_PDF_POINT)
+    await webContents.executeJavaScript(buildWaitForPrintReadyScript(
+      resolvePrintWatermarkHorizontalOffset(model)
+    ))
+    // 连续流式文档由浏览器按 @page 高度自然分页；固定页文档才需要把单页译文高度扩展到原页高以上。
+    const measuredHeightPt = usesContinuousPrintPagination(model)
+      ? height
+      : roundPrintPoints(resolveMeasuredPageHeightCssPx(
+        await webContents.executeJavaScript(MEASURE_TRANSLATION_PAGE_HEIGHT_SCRIPT)
+      ) / CSS_PX_PER_PDF_POINT)
     const printHeightPt = Math.max(height, measuredHeightPt)
     if (printHeightPt > height) {
       // CSS 页面尺寸会覆盖 printToPDF 的 pageSize，内容变高时必须同步更新 @page，否则浏览器会额外分页。

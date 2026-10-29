@@ -33,6 +33,7 @@ import type {
   ScreenshotExportImageResult,
   ScreenshotOcrRecognizeResult,
   WebReaderState,
+  WebPagePdfExportResult,
   WebTranslationExtractionPayload,
   WebTranslationMode,
   WebTranslationProgressPayload,
@@ -428,6 +429,13 @@ const api: Api = {
    * @author zhenghq
    */
   webTranslateSetMode: (mode: WebTranslationMode) => ipcRenderer.invoke('web-translate:set-mode', mode),
+  /**
+   * 将当前网页译文导出为带水印 PDF。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  exportWebPagePdf: (): Promise<WebPagePdfExportResult> =>
+    ipcRenderer.invoke('web-translate:export-pdf'),
   /**
    * 订阅阅读器导航状态。
    * @param callback 状态回调。

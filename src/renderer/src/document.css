@@ -396,6 +396,69 @@ body {
   min-height: 0;
 }
 
+.document-preview-host[data-preview-kind='paged'],
+.document-preview-host[data-preview-kind='flow'],
+.document-preview-host[data-preview-kind='markdown'],
+.document-preview-host[data-preview-kind='table'],
+.document-preview-host[data-preview-kind='subtitle'] {
+  /* 水印相对整个译文预览区域定位，连续文档跨页时也能持续覆盖。 */
+  position: relative;
+  isolation: isolate;
+}
+
+.document-translation-watermark {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.document-translation-watermark-pattern {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--document-watermark-ink-strong);
+}
+
+.document-translation-watermark-tile {
+  color: var(--document-watermark-ink-strong);
+  font-family: var(--font-family-sans);
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+.document-translation-watermark-logo {
+  overflow: visible;
+  color: currentColor;
+}
+
+.document-translation-watermark-logo path {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.document-translation-watermark-text {
+  fill: currentColor;
+  font-family: var(--font-family-sans);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.document-translation-watermark-text--english {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .document-preview-host[data-preview-kind='html-source'] {
   flex: 1 1 auto;
   height: 100%;
@@ -564,6 +627,10 @@ body {
   box-sizing: content-box;
   width: calc(var(--document-page-width, 100%) * var(--document-page-scale, 1)) !important;
   max-width: 100%;
+  /* 译文纸张不绘制预览卡片外框、圆角和投影，避免页面四周出现多余轮廓。 */
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   height: auto !important;
   min-height: 0 !important;
   overflow: visible;
@@ -637,6 +704,52 @@ body {
   object-fit: fill;
 }
 
+.document-page[data-layout='translation-flow'] .document-flow-group {
+  /* 顶部 logo 与公司名称共享同一水平带；文字保留原文相对顶部位置，不能因译文增高被重新居中。 */
+  display: flex;
+  align-items: flex-start;
+  box-sizing: border-box;
+  /* 分组回到 logo 的原文横向起点，右边界停在正文区，避免译文从页面左边缘起排。 */
+  width: calc(
+    var(--document-flow-group-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  min-width: 0;
+  min-height: calc(
+    var(--document-flow-group-height, 0px) * var(--document-page-scale, 1)
+  );
+  margin-left: calc(
+    var(--document-flow-group-left, 0px) * var(--document-page-scale, 1)
+  );
+  margin-top: calc(
+    var(--document-flow-gap-before, 0px) * var(--document-page-scale, 1)
+  );
+}
+
+.document-page[data-layout='translation-flow']
+.document-flow-group .document-text-block {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+  line-height: normal !important;
+  /* 保留原图中 logo 与公司名称的间距，文字再自然占用该行剩余宽度。 */
+  margin-left: calc(
+    var(--document-flow-group-gap, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  margin-top: calc(
+    var(--document-flow-group-text-top, 0px) * var(--document-page-scale, 1)
+  ) !important;
+}
+
+.document-page[data-layout='translation-flow']
+.document-flow-group .document-image-block[data-geometry='source'] {
+  flex: 0 0 auto;
+  /* 分组已经承载原文横向起点，组内图片只保留自身尺寸，不能再次叠加页面左边距。 */
+  margin-left: 0 !important;
+  margin-top: 0 !important;
+}
+
 .document-ocr-translation-layer {
   position: relative;
   display: flex;
@@ -662,7 +775,7 @@ body {
 
 .document-page[data-layout='translation-flow'] .document-text-block,
 .document-page[data-layout='translation-flow'] .document-text-run {
-  /* PDF 文本层按行拆分，译文变长后应交给浏览器自然换行，不能保留原始行内空白。 */
+  /* PDF 文本层按段落合并，译文变长后应交给浏览器自然换行，不能保留原始行内空白。 */
   white-space: normal;
 }
 
@@ -723,6 +836,7 @@ body {
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
+  min-height: var(--document-pdf-page-height, 1120px);
   margin: 0 auto var(--space-4);
   overflow: hidden;
   border: var(--border-width) solid var(--border-default);
@@ -730,6 +844,8 @@ body {
   background: var(--document-paper-bg);
   color: var(--document-paper-text);
   box-shadow: 0 8px 28px var(--panel-shadow);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1120px;
 }
 
 .document-pdf-page:last-child {
@@ -859,6 +975,30 @@ body {
   white-space: pre-wrap;
 }
 
+.document-text-toc {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  width: 100%;
+}
+
+.document-toc-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.document-toc-leader {
+  flex: 1 1 12px;
+  min-width: 12px;
+  border-bottom: 1px dotted currentColor;
+}
+
+.document-toc-page {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .document-page[data-layout='absolute'] .document-text-block {
   position: absolute;
   margin: 0;
@@ -877,6 +1017,8 @@ body {
 .document-text-code {
   padding: var(--space-2);
   overflow-x: auto;
+  /* PDF 与 Markdown 代码区域都需要清晰外框，不能只保留背景色。 */
+  border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--bg-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -988,6 +1130,7 @@ body {
 .document-page[data-layout='translation-flow'] .document-table-block td {
   /* 单元格内边距随页面缩放，译文与源 PDF 的留白保持一致。 */
   padding: calc(var(--space-2) * var(--document-page-scale, 1));
+  border: var(--border-width) solid var(--border-default);
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -1009,6 +1152,56 @@ body {
   padding: 0 !important;
   overflow-wrap: break-word;
   white-space: pre-wrap;
+}
+
+.document-page[data-layout='translation-flow']
+.document-table-block
+.document-image-block[data-table-cell-image='true'] {
+  /* 表格图片的原始 bbox 是页面坐标，进入单元格后必须回到文档流并限制在列宽内。 */
+  display: block;
+  box-sizing: border-box;
+  position: relative !important;
+  left: auto !important;
+  top: auto !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  overflow: hidden;
+  background: transparent;
+}
+
+.document-page[data-layout='translation-flow']
+.document-table-block
+.document-image-block[data-table-cell-image='true']
+.document-page-image {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.document-page[data-layout='translation-flow']
+.document-text-block.document-text-code {
+  /* 代码块保持原框宽度并允许横向滚动，不能被表格/正文流规则改成自动换行。 */
+  box-sizing: border-box;
+  margin-left: calc(
+    var(--document-code-frame-left, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  width: calc(
+    var(--document-code-frame-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  max-width: 100% !important;
+  white-space: pre !important;
+  border: var(--border-width) solid var(--border-default);
+  background: var(--bg-secondary);
+  overflow-x: auto;
+}
+
+.document-page[data-layout='translation-flow']
+.document-text-block.document-text-code
+.document-text-run {
+  white-space: pre !important;
 }
 
 .document-table-block thead th {
@@ -1054,7 +1247,13 @@ body {
 }
 
 .document-page[data-layout='translation-flow'] .document-shape-block[data-line-orientation='horizontal'] {
-  /* 普通分隔线沿用 PDF 原始起止位置，不能被 flex 容器拉伸成整页宽。 */
+  /* 普通分隔线脱离普通流，沿用 PDF 原始起止位置，不能被 flex 容器拉伸成整页宽。 */
+  position: absolute !important;
+  top: calc(
+    var(--document-shape-top, 0px) * var(--document-page-scale, 1) +
+    var(--document-shape-flow-offset, 0px)
+  );
+  pointer-events: none;
   width: calc(
     var(--document-shape-width, 100%) * var(--document-page-scale, 1)
   ) !important;
@@ -1065,6 +1264,13 @@ body {
 }
 
 .document-page[data-layout='translation-flow'] .document-shape-block[data-line-orientation='vertical'] {
+  /* 重叠竖线同样按原文坐标叠放，不能依次占据普通流高度。 */
+  position: absolute !important;
+  top: calc(
+    var(--document-shape-top, 0px) * var(--document-page-scale, 1) +
+    var(--document-shape-flow-offset, 0px)
+  );
+  pointer-events: none;
   width: var(--document-line-thickness, 1px) !important;
   height: calc(var(--document-shape-height, 0px) * var(--document-page-scale, 1)) !important;
   margin-left: calc(

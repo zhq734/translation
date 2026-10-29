@@ -31,6 +31,7 @@ import {
   type DocumentParseInput
 } from './documentParserShared.ts'
 import type { DocumentWarning } from '../shared/documentTypes.ts'
+import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../shared/documentOcrLayout.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -41,14 +42,21 @@ const DOCUMENT_TRANSLATION_DEFAULT_CONCURRENCY = 3
 /** 文档翻译允许的最大并发数。 */
 const DOCUMENT_TRANSLATION_MAX_CONCURRENCY = 8
 
-/** OCR 引擎未返回文本行边界时使用的默认字号，避免把整页高度误当成单行高度。 */
-const OCR_FALLBACK_FONT_SIZE = 12
-
 /** 单个批次最多覆盖的文档目标数；与页面翻译一样由字符上限优先控制请求大小。 */
 const DOCUMENT_TRANSLATION_MAX_TARGETS_PER_BATCH = 50
 
 /** 表格行内单元格之间使用的内部标记前缀，避免译文错位写入其他单元格。 */
 const DOCUMENT_TABLE_CELL_MARKER_PREFIX = 'ST-DOC-CELL'
+
+/** 装饰性页眉小图允许占页面宽高的最大比例。 */
+const DOCUMENT_DECORATIVE_IMAGE_MAX_PAGE_RATIO = 0.08
+
+/** 装饰性页眉小图允许距离页面顶部的最小和最大比例。 */
+const DOCUMENT_DECORATIVE_IMAGE_TOP_MIN_RATIO = 0.01
+const DOCUMENT_DECORATIVE_IMAGE_TOP_MAX_RATIO = 0.12
+
+/** 相同装饰图布局至少重复出现的页数，避免误跳过普通正文截图。 */
+const DOCUMENT_DECORATIVE_IMAGE_MIN_REPEAT_PAGES = 3
 
 /** 文档流水线结果。 */
 export interface DocumentPipelineResult {
@@ -192,6 +200,60 @@ interface SegmentApplicationResult {
   translation?: string
   /** 表格行译文无法可靠拆回单元格，需要调用方逐单元格回退。 */
   needsTableRowFallback?: boolean
+}
+
+/** 合并批次中已经能够可靠识别的流式分段。 */
+interface StreamedMergedSegment {
+  /** 分段在批次中的顺序。 */
+  index: number
+  /** 当前已可展示的译文。 */
+  translation: string
+}
+
+/**
+ * 去掉流式响应中尚未接收完整的分段标记，同时保留标记后的正文。
+ * @param text 当前累计的合并批次响应。
+ * @returns 不含残缺尾部标记的文本。
+ * @author zhenghq
+ */
+function stripIncompleteSegmentMarker(text: string): string {
+  // 仅处理响应尾部仍可能继续增长为 ST-SEG 的片段，正文中的完整方括号不受影响。
+  return text.replace(/\[\[\[\s*(?:S(?:T(?:-(?:S(?:E(?:G(?:-\d*)?)?)?)?)?)?)?\s*\]*$/u, '')
+}
+
+/**
+ * 从合并批次流式响应中读取当前可发布的分段译文。
+ * @param translation 当前累计的完整响应。
+ * @param segmentCount 批次包含的分段总数。
+ * @returns 按分段顺序排列且已可安全展示的译文。
+ * @author zhenghq
+ */
+function readStreamedMergedSegments(
+  translation: string,
+  segmentCount: number
+): StreamedMergedSegment[] {
+  const pattern = /\[\[\[\s*ST-SEG-(\d+)\s*\]\]\]/gu
+  const markers: Array<{ index: number; start: number; end: number }> = []
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(translation)) !== null) {
+    markers.push({ index: Number(match[1]), start: match.index, end: match.index + match[0].length })
+  }
+
+  const streamed: StreamedMergedSegment[] = []
+  let expectedIndex = 0
+  let segmentStart = 0
+  for (const marker of markers) {
+    if (marker.index !== expectedIndex || expectedIndex >= segmentCount) break
+    const part = translation.slice(segmentStart, marker.start).trim()
+    if (part) streamed.push({ index: expectedIndex, translation: part })
+    expectedIndex += 1
+    segmentStart = marker.end
+  }
+  if (expectedIndex < segmentCount) {
+    const current = stripIncompleteSegmentMarker(translation.slice(segmentStart)).trim()
+    if (current) streamed.push({ index: expectedIndex, translation: current })
+  }
+  return streamed
 }
 
 /**
@@ -1067,23 +1129,128 @@ function createOcrRegion(
   asset?: DocumentModel['assets'][number]
 ): DocumentOcrRegion {
   const normalizedBbox = normalizeOcrBoundingBox(bbox, block, asset)
-  const layoutHeight = block.bbox?.height ?? asset?.height
-  const hasLineBoundingBox = Boolean(bbox &&
-    Number.isFinite(bbox.x) && Number.isFinite(bbox.y) &&
-    Number.isFinite(bbox.width) && Number.isFinite(bbox.height) &&
-    bbox.width > 0 && bbox.height > 0)
-  const fontSize = !hasLineBoundingBox || !layoutHeight || layoutHeight <= 0
-    ? OCR_FALLBACK_FONT_SIZE
-    : Math.max(6, Math.min(72, normalizedBbox.height * layoutHeight * 0.8))
   const textAlign = inferOcrTextAlignment(normalizedBbox)
   return {
     regionId: `${block.blockId}-ocr-${index}`,
     bbox: normalizedBbox,
     text,
-    style: { fontSize },
+    // OCR 原文识别框高度差异较大，译文统一字号可避免标题、表格和短文本忽大忽小。
+    style: { fontSize: DOCUMENT_OCR_UNIFORM_FONT_SIZE },
     ...(textAlign ? { textAlign } : {}),
     status: 'recognized',
     ...(confidence === undefined ? {} : { confidence })
+  }
+}
+
+/**
+ * 将 OCR 结果转换为图片区块的识别区域；无文字时保留可展示的跳过状态。
+ * @param block 原始图片区块。
+ * @param result OCR 识别结果。
+ * @param asset 可选图片资源，用于把 OCR 像素边界归一化。
+ * @returns 带 OCR 区域的图片区块。
+ * @author zhenghq
+ */
+function imageBlockWithOcrResult(
+  block: DocumentImageBlock,
+  result: OcrRecognizeResult,
+  asset?: DocumentModel['assets'][number]
+): DocumentImageBlock {
+  const text = result.text.trim()
+  const textLines = result.lines
+    .map((line) => ({ ...line, text: line.text.trim() }))
+    .filter((line) => line.text.length > 0)
+  if (!text && textLines.length === 0) {
+    return { ...block, ocrRegions: [{
+      regionId: `${block.blockId}-ocr-0`,
+      bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
+      text: '',
+      status: 'skipped',
+      reason: 'no-text'
+    }] }
+  }
+  if (textLines.length > 0) {
+    return {
+      ...block,
+      ocrRegions: textLines.map((line, index) =>
+        createOcrRegion(block, index, line.text, line.confidence, line.box, asset))
+    }
+  }
+  const confidence = result.lines[0]?.confidence
+  return { ...block, ocrRegions: [createOcrRegion(block, 0, text, confidence, undefined, asset)] }
+}
+
+/**
+ * 构造装饰性页眉小图布局键；仅使用归一化位置和尺寸，不依赖每页重新编码的图片哈希。
+ * @param block 待判断的图片区块。
+ * @param page 图片所属页面。
+ * @returns 可跨页比较的布局键；不符合页眉小图条件时返回 null。
+ * @author zhenghq
+ */
+function decorativeHeaderLayoutKey(
+  block: DocumentImageBlock,
+  page: DocumentModel['pages'][number]
+): string | null {
+  const bbox = block.bbox
+  if (!bbox || page.width <= 0 || page.height <= 0) return null
+  const widthRatio = bbox.width / page.width
+  const heightRatio = bbox.height / page.height
+  const topRatio = bbox.y / page.height
+  if (widthRatio <= 0 || heightRatio <= 0) return null
+  if (widthRatio > DOCUMENT_DECORATIVE_IMAGE_MAX_PAGE_RATIO ||
+    heightRatio > DOCUMENT_DECORATIVE_IMAGE_MAX_PAGE_RATIO) return null
+  if (topRatio < DOCUMENT_DECORATIVE_IMAGE_TOP_MIN_RATIO ||
+    topRatio > DOCUMENT_DECORATIVE_IMAGE_TOP_MAX_RATIO) return null
+  // 按 0.5% 页面尺寸量化，容忍不同页面的轻微像素取整差异。
+  const quantize = (value: number): number => Math.round(value * 200)
+  return [
+    quantize(bbox.x / page.width),
+    quantize(bbox.y / page.height),
+    quantize(bbox.width / page.width),
+    quantize(bbox.height / page.height)
+  ].join(':')
+}
+
+/**
+ * 收集在多页重复出现的页眉小图布局，用于跳过无正文价值的装饰图标 OCR。
+ * @param pages 文档页面。
+ * @returns 至少重复出现在配置页数上的布局键集合。
+ * @author zhenghq
+ */
+function collectDecorativeHeaderLayoutKeys(
+  pages: DocumentModel['pages']
+): Set<string> {
+  const pageIndexesByLayout = new Map<string, Set<number>>()
+  for (const page of pages) {
+    for (const block of page.blocks) {
+      if (block.kind !== 'image') continue
+      const key = decorativeHeaderLayoutKey(block, page)
+      if (!key) continue
+      const pageIndexes = pageIndexesByLayout.get(key) ?? new Set<number>()
+      pageIndexes.add(page.index)
+      pageIndexesByLayout.set(key, pageIndexes)
+    }
+  }
+  return new Set([...pageIndexesByLayout]
+    .filter(([, pageIndexes]) => pageIndexes.size >= DOCUMENT_DECORATIVE_IMAGE_MIN_REPEAT_PAGES)
+    .map(([key]) => key))
+}
+
+/**
+ * 将图片标记为无需 OCR 的重复页眉装饰图。
+ * @param block 原始图片区块。
+ * @returns 带 skipped OCR 区域的图片区块。
+ * @author zhenghq
+ */
+function skipDecorativeImageOcr(block: DocumentImageBlock): DocumentImageBlock {
+  return {
+    ...block,
+    ocrRegions: [{
+      regionId: `${block.blockId}-ocr-0`,
+      bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
+      text: '',
+      status: 'skipped',
+      reason: 'decorative-image'
+    }]
   }
 }
 
@@ -1102,10 +1269,17 @@ async function recognizeBlock(
   assets: DocumentModel['assets'],
   deps: DocumentPipelineDeps,
   signal: AbortSignal,
-  onFailure: () => void
+  onFailure: () => void,
+  page?: DocumentModel['pages'][number],
+  decorativeLayoutKeys?: ReadonlySet<string>,
+  ocrResultCache?: Map<string, Promise<OcrRecognizeResult | null>>
 ): Promise<DocumentBlock> {
   if (block.kind === 'image') {
     if (block.ocrRegions && block.ocrRegions.length > 0) return block
+    if (page && decorativeLayoutKeys) {
+      const layoutKey = decorativeHeaderLayoutKey(block, page)
+      if (layoutKey && decorativeLayoutKeys.has(layoutKey)) return skipDecorativeImageOcr(block)
+    }
     const asset = assets.find((candidate) => candidate.assetId === block.assetId)
     if (!asset) {
       onFailure()
@@ -1118,12 +1292,37 @@ async function recognizeBlock(
       }] }
     }
     let bytes: Uint8Array | null = null
-    try {
-      bytes = await deps.loadAssetBytes(asset)
-    } catch {
-      bytes = null
+    const cacheKey = asset.sha256
+    let recognizePromise = ocrResultCache?.get(cacheKey)
+    if (!recognizePromise) {
+      try {
+        bytes = await deps.loadAssetBytes(asset)
+      } catch {
+        bytes = null
+      }
+      if (bytes && ocrResultCache) {
+        recognizePromise = deps.recognizeImage(bytes, signal).catch((error: unknown) => {
+          if (isAbortError(error, signal)) throw error
+          return null
+        })
+        ocrResultCache.set(cacheKey, recognizePromise)
+      }
     }
     if (!bytes) {
+      if (recognizePromise) {
+        const cachedResult = await recognizePromise
+        if (!cachedResult) {
+          onFailure()
+          return { ...block, ocrRegions: [{
+            regionId: `${block.blockId}-ocr-0`,
+            bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
+            text: '',
+            status: 'failed',
+            reason: 'ocr-failed'
+          }] }
+        }
+        return imageBlockWithOcrResult(block, cachedResult, asset)
+      }
       onFailure()
       return { ...block, ocrRegions: [{
         regionId: `${block.blockId}-ocr-0`,
@@ -1134,29 +1333,20 @@ async function recognizeBlock(
       }] }
     }
     try {
-      const result = await deps.recognizeImage(bytes, signal)
-      const text = result.text.trim()
-      const textLines = result.lines
-        .map((line) => ({ ...line, text: line.text.trim() }))
-        .filter((line) => line.text.length > 0)
-      if (!text && textLines.length === 0) {
+      const result = recognizePromise
+        ? await recognizePromise
+        : await deps.recognizeImage(bytes, signal)
+      if (!result) {
+        onFailure()
         return { ...block, ocrRegions: [{
           regionId: `${block.blockId}-ocr-0`,
           bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
           text: '',
-          status: 'skipped',
-          reason: 'no-text'
+          status: 'failed',
+          reason: 'ocr-failed'
         }] }
       }
-      if (textLines.length > 0) {
-        return {
-          ...block,
-          ocrRegions: textLines.map((line, index) =>
-            createOcrRegion(block, index, line.text, line.confidence, line.box, asset))
-        }
-      }
-      const confidence = result.lines[0]?.confidence
-      return { ...block, ocrRegions: [createOcrRegion(block, 0, text, confidence, undefined, asset)] }
+      return imageBlockWithOcrResult(block, result, asset)
     } catch (error) {
       if (isAbortError(error, signal)) throw error
       onFailure()
@@ -1176,7 +1366,16 @@ async function recognizeBlock(
       for (const cell of row.cells) {
         const blocks: DocumentBlock[] = []
         for (const child of cell.blocks) {
-          blocks.push(await recognizeBlock(child, assets, deps, signal, onFailure))
+          blocks.push(await recognizeBlock(
+            child,
+            assets,
+            deps,
+            signal,
+            onFailure,
+            page,
+            decorativeLayoutKeys,
+            ocrResultCache
+          ))
         }
         cells.push({ ...cell, blocks })
       }
@@ -1292,6 +1491,10 @@ export async function runDocumentTranslationPipeline(
   let ocrState = moveDocumentTaskToPhase(state, 'ocr')
   emitProgress(ocrState, deps)
   const ocrBlocksByPage: DocumentBlock[][] = []
+  const decorativeLayoutKeys = source.source.format === 'pdf'
+    ? collectDecorativeHeaderLayoutKeys(source.pages)
+    : new Set<string>()
+  const ocrResultCache = new Map<string, Promise<OcrRecognizeResult | null>>()
   try {
     for (let pageIndex = 0; pageIndex < source.pages.length; pageIndex += 1) {
       const page = source.pages[pageIndex]!
@@ -1301,7 +1504,7 @@ export async function runDocumentTranslationPipeline(
         const block = page.blocks[blockIndex]!
         blocks.push(await recognizeBlock(block, source.assets, deps, signal, () => {
           stats.failed += 1
-        }))
+        }, page, decorativeLayoutKeys, ocrResultCache))
         ocrBlocksByPage[pageIndex] = [...blocks, ...page.blocks.slice(blockIndex + 1)]
         if (signal.aborted) {
           const partialSource: DocumentModel = {
@@ -1411,6 +1614,29 @@ export async function runDocumentTranslationPipeline(
       total: stats.total
     })
     emitProgress(translateState, deps)
+  }
+
+  /**
+   * 预览合并批次中已完整接收的分段，最终校验前不推进统计。
+   * @param item 当前翻译批次。
+   * @param translation 当前累计响应。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const previewMergedTranslation = (
+    item: DocumentTranslationBatch,
+    translation: string
+  ): void => {
+    if (signal.aborted) return
+    for (const streamed of readStreamedMergedSegments(translation, item.segments.length)) {
+      const segment = item.segments[streamed.index]
+      if (!segment) continue
+      const state = targetStates.get(segment.target.targetId)
+      if (!state || state.finished) continue
+      // 多分段目标只在全部分段完成后拼接，流式阶段避免展示不完整的拼接结果。
+      if (segment.pieceTotal !== 1) continue
+      commitTarget(segment.target, restoreTargetWhitespace(state, streamed.translation))
+    }
   }
 
   const targetStates = new Map<string, TargetTranslationState>(targets.map((target) => {
@@ -1576,7 +1802,12 @@ export async function runDocumentTranslationPipeline(
       return
     }
     try {
-      const translated = await deps.translate(item.batch.text, signal)
+      let streamed = ''
+      const translated = await deps.translate(item.batch.text, signal, (delta) => {
+        if (signal.aborted) return
+        streamed += delta
+        previewMergedTranslation(item, streamed)
+      })
       throwIfAborted(signal)
       const parts = parseMergedTranslation(item.batch, translated)
       if (!parts || parts.length !== item.segments.length || parts.some((part) => !part.trim())) {
@@ -1613,7 +1844,7 @@ export async function runDocumentTranslationPipeline(
     ))
     throwIfAborted(signal)
     translateState = completeDocumentTaskPhase(translateState)
-    emitProgress(translateState, deps)
+    publishProgress()
   } catch (error) {
     if (isAbortError(error, signal)) {
       const partialTranslation: DocumentModel = {
@@ -1745,6 +1976,29 @@ export async function retryFailedDocumentTranslationPipeline(
       total: targets.length
     })
     emitProgress(translateState, deps)
+  }
+
+  /**
+   * 预览重试合并批次中的流式分段；最终校验完成前不推进重试统计。
+   * @param item 当前重试批次。
+   * @param translation 当前累计响应。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const previewRetriedMergedTranslation = (
+    item: DocumentTranslationBatch,
+    translation: string
+  ): void => {
+    if (signal.aborted) return
+    for (const streamed of readStreamedMergedSegments(translation, item.segments.length)) {
+      const segment = item.segments[streamed.index]
+      if (!segment) continue
+      const state = targetStates.get(segment.target.targetId)
+      if (!state || state.finished) continue
+      // 多分段目标只在全部分段完成后拼接，流式阶段避免展示不完整的拼接结果。
+      if (segment.pieceTotal !== 1) continue
+      commitTarget(segment.target, restoreTargetWhitespace(state, streamed.translation))
+    }
   }
 
   /**
@@ -1895,7 +2149,12 @@ export async function retryFailedDocumentTranslationPipeline(
       return
     }
     try {
-      const translated = await deps.translate(item.batch.text, signal)
+      let streamed = ''
+      const translated = await deps.translate(item.batch.text, signal, (delta) => {
+        if (signal.aborted) return
+        streamed += delta
+        previewRetriedMergedTranslation(item, streamed)
+      })
       throwIfAborted(signal)
       const parts = parseMergedTranslation(item.batch, translated)
       if (!parts || parts.length !== item.segments.length || parts.some((part) => !part.trim())) {
