@@ -362,6 +362,43 @@ test('AI 增量必须在当前 run 完成前持续发布部分译文', async () 
   assert.equal(streamed.at(-1), '你好，世界')
 })
 
+test('高频流式增量必须合并整页发布并保留首段即时反馈', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }])])
+  const published = translationCollector()
+  let countAfterFirstDelta = 0
+  let countAfterAllDeltas = 0
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (_text, _signal, onDelta) => {
+      onDelta?.('译')
+      countAfterFirstDelta = published.translations.length
+      for (let index = 1; index < 40; index += 1) onDelta?.(`文${index}`)
+      countAfterAllDeltas = published.translations.length
+      return `译文${Array.from({ length: 39 }, (_item, index) => index + 1).join('')}`
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation
+  }
+
+  await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-stream-throttle', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(countAfterFirstDelta, 2, '首个增量必须在 onDelta 返回前立即发布')
+  assert.ok(countAfterAllDeltas <= 4, `同步增量发布次数应被合并，实际 ${countAfterAllDeltas}`)
+  assert.ok(published.translations.length <= 5,
+    `包含最终快照的发布次数应保持有限，实际 ${published.translations.length}`)
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    `译文${Array.from({ length: 39 }, (_item, index) => index + 1).join('')}`
+  )
+})
+
 test('未注入译文发布回调时仍必须持续推送翻译进度', async () => {
   const source = model([textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }])])
   const progress = progressCollector()
@@ -1617,6 +1654,46 @@ test('重新翻译合并批次时也必须在整批完成前发布部分译文',
     retried.translation.pages[0]!.blocks.map((block) =>
       block.kind === 'text' ? block.runs.map((run) => run.text).join('') : ''),
     ['译:first', '译:second']
+  )
+})
+
+test('重新翻译高频流式增量也必须合并整页发布并保留首段即时反馈', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const initial = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const published = translationCollector()
+  let countAfterFirstDelta = 0
+  let countAfterAllDeltas = 0
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (_text, _signal, onDelta) => {
+      onDelta?.('译')
+      countAfterFirstDelta = published.translations.length
+      for (let index = 1; index < 40; index += 1) onDelta?.(`文${index}`)
+      countAfterAllDeltas = published.translations.length
+      return `译文${Array.from({ length: 39 }, (_item, index) => index + 1).join('')}`
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation
+  }
+
+  await retryFailedDocumentTranslationPipeline(
+    source,
+    initial,
+    ['0:0:text:r1'],
+    createDocumentTaskState('job-retry-throttle', 2),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(countAfterFirstDelta, 2, '重试的首个增量也必须立即发布')
+  assert.ok(countAfterAllDeltas <= 4, `重试同步增量发布次数应被合并，实际 ${countAfterAllDeltas}`)
+  assert.ok(published.translations.length <= 5,
+    `重试包含最终快照的发布次数应保持有限，实际 ${published.translations.length}`)
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    `译文${Array.from({ length: 39 }, (_item, index) => index + 1).join('')}`
   )
 })
 

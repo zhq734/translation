@@ -46,6 +46,10 @@ import {
   resolveTranslationFlowGroupGeometry,
   resolveTranslationWatermarkHorizontalOffset
 } from './documentPdfLayout'
+import {
+  shouldSyncDocumentScroll,
+  type DocumentScrollSide
+} from './documentScrollSync'
 
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
@@ -56,6 +60,14 @@ const DOCUMENT_GENERATION_STORAGE_KEY = 'selection-translator.document-generatio
 
 /** 文档双栏的渲染侧；OCR 文本层只允许出现在译文侧。 */
 type DocumentRenderSide = 'source' | 'translation'
+
+/** 文档双栏滚动位置快照，用于流式重排后恢复用户视口。 */
+interface DocumentScrollPositions {
+  /** 原文栏当前滚动位置。 */
+  source: number
+  /** 译文栏当前滚动位置。 */
+  translation: number
+}
 
 /** 文档预览按格式采用的渲染方式；HTML 原文使用独立 webview，译文仍采用流式布局。 */
 type DocumentPreviewKind = 'paged' | 'markdown' | 'table' | 'subtitle' | 'flow' | 'html-source'
@@ -130,8 +142,16 @@ let latestSnapshot: DocumentWorkspaceSnapshot | null = null
 let pendingRenderFrame: number | null = null
 /** 当前文档图片 Blob URL，重绘或关闭时统一释放。 */
 const assetUrls = new Map<string, string>()
-/** 左右栏滚动同步的递归保护标记。 */
-let syncingScroll = false
+/** 最近一次真实用户滚动意图所属的栏；程序性滚动不会更新该值。 */
+let userScrollSide: DocumentScrollSide | null = null
+/** 用户滚动意图的有效期；滚轮和键盘停止后仍允许一次比例联动。 */
+let userScrollIntentTimer: number | null = null
+/** 译文页面正在执行流式重排；期间禁止译文侧反向驱动原文。 */
+let translationLayoutUpdating = false
+/** 本轮流式更新开始前捕获的双栏位置；同一轮多次增量复用首帧快照。 */
+let pendingTranslationLayoutScrollPositions: DocumentScrollPositions | null = null
+/** 程序性写入目标栏时记录预期 scrollTop，供后续 scroll 事件消费。 */
+const pendingProgrammaticScrollTops = new WeakMap<HTMLElement, number>()
 /** 文件预检读取的头部字节数。 */
 const DOCUMENT_HEAD_BYTES = 8192
 /** 已渲染的源预览身份；PDF 只按文件指纹复用，避免流式事件重载 Canvas。 */
@@ -154,8 +174,8 @@ const pdfPreviewCleanups = new WeakMap<HTMLElement, () => void>()
 let pageScaleObserver: ResizeObserver | null = null
 /** 当前待执行的译文页面重排帧；同一帧内合并缩放、字体与图片尺寸变化。 */
 let pageLayoutFrame: number | null = null
-/** 当前译文页面重排调度器；图片异步加载完成后复用同一帧合并逻辑。 */
-let activePageLayoutScheduler: (() => void) | null = null
+/** 当前译文页面重排调度器；参数表示是否重新计算页面宽度缩放。 */
+let activePageLayoutScheduler: ((recalculateScale?: boolean) => void) | null = null
 /** 当前译文水印的尺寸观察器；容器宽度变化时重新计算图案横向起点。 */
 let watermarkResizeObserver: ResizeObserver | null = null
 /** 最近一次读取到的完整设置，供界面语言变化时重建语言下拉。 */
@@ -488,6 +508,9 @@ function resetWorkbenchPreview(): void {
     cancelAnimationFrame(pendingRenderFrame)
     pendingRenderFrame = null
   }
+  pageScaleObserver?.disconnect()
+  pageScaleObserver = null
+  cancelTranslationPageLayout()
   latestSnapshot = null
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
@@ -687,6 +710,19 @@ function documentPageContentWidth(container: HTMLElement): number {
 }
 
 /**
+ * 计算译文页面首次挂载时的缩放比例，避免先以 1 倍尺寸排版再跳到真实宽度。
+ * @param container 译文滚动容器。
+ * @param sourceWidth PDF 原始页面宽度。
+ * @returns 与页面宽度观察器一致的缩放比例；无法测量时回退为 1。
+ * @author zhenghq
+ */
+function initialTranslationPageScale(container: HTMLElement, sourceWidth: number): number {
+  if (!Number.isFinite(sourceWidth) || sourceWidth <= 0) return 1
+  const availableWidth = documentPageContentWidth(container)
+  return Math.max(0.25, availableWidth / sourceWidth)
+}
+
+/**
  * 计算 PDF 译文文本块相对上一条已排版区块的段前距离。
  * PDF 文本层已按段落合并；同字号、同左边线的相邻段落使用原始基线推进，
  * 其余情况才使用 bbox 间距，避免行盒高度与坐标距离重复叠加。
@@ -736,6 +772,26 @@ function measureTranslationFlowBottom(element: HTMLElement): number {
 }
 
 /**
+ * 仅在数值实际变化时写入 CSS 自定义属性，避免流式重排触发无意义的样式失效和观察回调。
+ * @param element 目标元素。
+ * @param property CSS 自定义属性名。
+ * @param value 新的像素值。
+ * @returns 是否实际写入属性。
+ * @author zhenghq
+ */
+function setCssPixelPropertyIfChanged(
+  element: HTMLElement,
+  property: string,
+  value: number
+): boolean {
+  if (!Number.isFinite(value)) return false
+  const currentValue = Number.parseFloat(element.style.getPropertyValue(property))
+  if (Number.isFinite(currentValue) && Math.abs(currentValue - value) < 0.01) return false
+  element.style.setProperty(property, `${value}px`)
+  return true
+}
+
+/**
  * 依据真实 DOM 高度修正 PDF 译文流式排版。
  * 图片优先锚定原文纵向坐标；当前文译文变高并越过该坐标时，图片从文字实际底边继续下推，
  * 绝不能用负间距回退覆盖已排版的译文。后续文本再从图片实际底边继续排列。
@@ -775,7 +831,7 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
         ) || 0
         // 装饰线使用绝对定位，其 top 基准是页面内边距盒；先扣除上一次偏移，才能得到稳定基准。
         const baseTop = child.getBoundingClientRect().top - oldOffset
-        child.style.setProperty('--document-shape-flow-offset', `${desiredTop - baseTop}px`)
+        setCssPixelPropertyIfChanged(child, '--document-shape-flow-offset', desiredTop - baseTop)
       } else {
         child.style.removeProperty('--document-shape-flow-offset')
       }
@@ -789,9 +845,9 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
       const anchoredTop = flowOrigin + Math.max(0, sourceY - pageMarginTop) * scale
       // 原文锚点只允许下推图片，不能把图片拉回前文译文已占用的区域。
       gapPx = Math.max(0, anchoredTop - previousBottom)
-      child.style.setProperty('--document-image-flow-gap-before', `${gapPx / scale}px`)
+      setCssPixelPropertyIfChanged(child, '--document-image-flow-gap-before', gapPx / scale)
     } else {
-      child.style.setProperty('--document-flow-gap-before', `${gapPx / scale}px`)
+      setCssPixelPropertyIfChanged(child, '--document-flow-gap-before', gapPx / scale)
     }
     previousBottom = Math.max(previousBottom, measureTranslationFlowBottom(child))
     const sourceTop = Number(child.dataset.sourceTop)
@@ -1279,6 +1335,7 @@ function renderTableBlock(
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-table-block'
+  wrapper.dataset.blockId = block.blockId
   applyBlockGeometry(wrapper, block)
   if (block.bbox) {
     const left = Math.max(0, Math.min(pageWidth, block.bbox.x))
@@ -1383,7 +1440,7 @@ function renderTableCellImageBlock(
       return
     }
     image.src = url
-    image.addEventListener('load', scheduleTranslationPageLayout, { once: true })
+    image.addEventListener('load', () => scheduleTranslationPageLayout(), { once: true })
   })
   return wrapper
 }
@@ -1486,7 +1543,8 @@ function renderBlock(
  */
 function renderPage(
   page: DocumentPage,
-  side: DocumentRenderSide
+  side: DocumentRenderSide,
+  translationInitialScale = 1
 ): HTMLElement {
   const element = document.createElement('article')
   element.className = 'document-page'
@@ -1526,7 +1584,7 @@ function renderPage(
       : 0
     element.style.setProperty('--document-page-margin-top', `${minY}px`)
     element.style.setProperty('--document-page-width', `${Math.max(1, page.width)}px`)
-    element.style.setProperty('--document-page-scale', '1')
+    element.style.setProperty('--document-page-scale', String(translationInitialScale))
     previousBottom = minY
   }
   for (const block of page.blocks) {
@@ -1946,13 +2004,19 @@ function renderFlowDocument(container: HTMLElement, model: DocumentModel, side: 
 }
 
 /**
- * 使用 PDF.js 将源 PDF 逐页绘制到 Canvas，保留原始字体、公式与版面。
- * @param container 源文滚动容器。
+ * 使用 PDF.js 将 PDF 逐页绘制到 Canvas，保留原始字体、公式与版面。
+ * 只有原文侧使用该渲染器；译文侧始终由结构化流式 DOM 承载。
+ * @param container 源文预览滚动容器。
  * @param generationAtStart 开始渲染时的任务代际。
+ * @param model 当前文档模型，用于同步页面占位尺寸。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function renderPdfPages(container: HTMLElement, generationAtStart: number): Promise<void> {
+async function renderPdfPages(
+  container: HTMLElement,
+  generationAtStart: number,
+  model: DocumentModel
+): Promise<void> {
   pdfPreviewCleanups.get(container)?.()
   const renderToken = Symbol('pdf-preview')
   pdfRenderTokens.set(container, renderToken)
@@ -2041,21 +2105,28 @@ async function renderPdfPages(container: HTMLElement, generationAtStart: number)
     pdfDocument = await loadingTask.promise
     if (!isCurrentRender()) return
     container.replaceChildren()
+    const contentWidth = documentPageContentWidth(container)
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-      const page = await pdfDocument.getPage(pageNumber)
-      if (!isCurrentRender()) return
-      const baseViewport = page.getViewport({ scale: 1 })
-      const width = documentPageContentWidth(container)
-      const scale = Math.max(0.25, width / baseViewport.width)
-      const viewport = page.getViewport({ scale })
+      // 先使用解析模型中的原始页面尺寸同步建立占位，避免 83 页 PDF 在首屏前
+      // 逐页等待 PDF.js getPage。真实页面只在进入视口后加载和绘制。
+      const modelPage = model.pages[pageNumber - 1]
+      const sourceWidth = modelPage?.width
+      const sourceHeight = modelPage?.height
+      if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
+        !sourceWidth || !sourceHeight || sourceWidth <= 0 || sourceHeight <= 0) {
+        continue
+      }
+      const scale = Math.max(0.25, contentWidth / sourceWidth)
+      const viewportWidth = sourceWidth * scale
+      const viewportHeight = sourceHeight * scale
       const article = document.createElement('article')
       article.className = 'document-pdf-page'
       article.dataset.pageNumber = String(pageNumber)
-      article.style.setProperty('--document-pdf-page-height', `${viewport.height}px`)
+      article.style.setProperty('--document-pdf-page-height', `${viewportHeight}px`)
       const canvas = document.createElement('canvas')
       canvas.className = 'document-pdf-canvas'
-      canvas.style.width = `${viewport.width}px`
-      canvas.style.height = `${viewport.height}px`
+      canvas.style.width = `${viewportWidth}px`
+      canvas.style.height = `${viewportHeight}px`
       article.append(canvas)
       container.append(article)
       observer.observe(article)
@@ -2074,45 +2145,90 @@ async function renderPdfPages(container: HTMLElement, generationAtStart: number)
 
 /**
  * 让译文 PDF 页面跟随双栏可用宽度缩放，并保持与左侧 Canvas 相同的页面基准。
- * @param container 译文滚动容器。
+ * 宽度只从真正发生横向滚动的译文容器读取；页面高度增长仅触发流式锚点重排。
+ * @param scrollContainer 译文滚动容器，也是唯一的页面缩放宽度来源。
+ * @param previewHost 译文页面宿主，仅用于观察页面高度和异步内容变化。
  * @returns 无返回值。
  * @author zhenghq
  */
-function observeTranslationPageScale(container: HTMLElement): void {
+function observeTranslationPageScale(scrollContainer: HTMLElement, previewHost: HTMLElement): void {
   pageScaleObserver?.disconnect()
   pageScaleObserver = null
   if (pageLayoutFrame !== null) {
     cancelAnimationFrame(pageLayoutFrame)
     pageLayoutFrame = null
   }
-  const pages = Array.from(container.querySelectorAll<HTMLElement>(".document-page[data-layout='translation-flow']"))
+  translationLayoutUpdating = false
+  pendingTranslationLayoutScrollPositions = null
+  const pages = Array.from(previewHost.querySelectorAll<HTMLElement>(".document-page[data-layout='translation-flow']"))
   if (pages.length === 0 || typeof ResizeObserver === 'undefined') return
+  // 最近一次实际写入页面缩放时使用的容器宽度；高度变化不得改变该基准。
+  let lastScaleWidth: number | null = null
+  // 最近一次观察到的滚动容器内容宽度；ResizeObserver 同时上报高度变化，必须按数值区分。
+  let lastObservedScrollWidth: number | null = null
+  // 当前帧是否需要重新计算页面缩放；多个观察回调合并时保留更严格的请求。
+  let recalculateScalePending = false
   // 观察器可能因自身样式变化再次触发；统一在下一帧批量重排，避免同步测量循环造成卡顿。
-  const scheduleLayout = (): void => {
+  const scheduleLayout = (recalculateScale = false): void => {
+    recalculateScalePending ||= recalculateScale
     if (pageLayoutFrame !== null) cancelAnimationFrame(pageLayoutFrame)
     pageLayoutFrame = requestAnimationFrame(() => {
       pageLayoutFrame = null
-      const availableWidth = documentPageContentWidth(container)
-      for (const page of pages) {
-        if (!page.isConnected) continue
-        const sourceWidth = Number(page.dataset.sourceWidth)
-        if (!Number.isFinite(sourceWidth) || sourceWidth <= 0) continue
-        // 原文 Canvas 与译文页面使用同一内容宽度，确保左右两侧缩放比例一致。
-        page.style.setProperty('--document-page-scale', String(Math.max(0.25, availableWidth / sourceWidth)))
-        // 字号和宽度变化会改变译文真实高度，必须在缩放后重新测量图片锚点与流式底边。
-        normalizeTranslationFlowLayout(page)
+      const scrollPositions = pendingTranslationLayoutScrollPositions ?? captureDocumentScrollPositions()
+      translationLayoutUpdating = true
+      try {
+        const availableWidth = documentPageContentWidth(scrollContainer)
+        // 首次布局只记录宽度基准；页面在挂载前已按各自宽度完成初始缩放，不能再次改写。
+        const shouldRecalculateScale = recalculateScalePending &&
+          (lastScaleWidth === null || Math.abs(availableWidth - lastScaleWidth) >= 0.5)
+        for (const page of pages) {
+          if (!page.isConnected) continue
+          if (shouldRecalculateScale) {
+            const sourceWidth = Number(page.dataset.sourceWidth)
+            if (Number.isFinite(sourceWidth) && sourceWidth > 0) {
+              // 原文 Canvas 与译文页面使用同一内容宽度，确保左右两侧缩放比例一致。
+              const nextScale = String(Math.max(0.25, availableWidth / sourceWidth))
+              if (page.style.getPropertyValue('--document-page-scale') !== nextScale) {
+                page.style.setProperty('--document-page-scale', nextScale)
+              }
+            }
+          }
+          // 页面高度只影响流式锚点；仅容器宽度变化时才同步重算缩放，避免流式过程中反复缩放。
+          normalizeTranslationFlowLayout(page)
+        }
+        if (lastScaleWidth === null || shouldRecalculateScale) {
+          lastScaleWidth = availableWidth
+        }
+      } finally {
+        recalculateScalePending = false
+        restoreDocumentScrollPositions(scrollPositions)
+        pendingTranslationLayoutScrollPositions = null
+        translationLayoutUpdating = false
       }
     })
   }
   activePageLayoutScheduler = scheduleLayout
-  const observer = new ResizeObserver(() => {
-    scheduleLayout()
+  const observer = new ResizeObserver((entries) => {
+    // 只有滚动容器自身宽度变化才允许重算缩放。previewHost 的宽度会随页面内容联动，
+    // 不能把它作为宽度基准，否则页面高度增长也会被误判为缩放变化。
+    const scrollContainerWidthChanged = entries.some((entry) => {
+      if (entry.target !== scrollContainer) return false
+      const nextWidth = entry.contentRect.width
+      const changed = lastObservedScrollWidth !== null &&
+        Math.abs(nextWidth - lastObservedScrollWidth) >= 0.5
+      lastObservedScrollWidth = nextWidth
+      return changed
+    })
+    if (scrollContainerWidthChanged) scheduleLayout(true)
+    else scheduleLayout(false)
   })
   pageScaleObserver = observer
-  observer.observe(container)
+  observer.observe(scrollContainer)
   // 字体或图片异步加载会改变页面自身高度，只观察外层容器无法触发装饰线重新锚定。
+  observer.observe(previewHost)
   for (const page of pages) observer.observe(page)
-  scheduleLayout()
+  // 初次观察只建立宽度基准；只有后续滚动容器宽度真正变化时才允许重算页面缩放。
+  scheduleLayout(false)
 }
 
 /**
@@ -2120,8 +2236,56 @@ function observeTranslationPageScale(container: HTMLElement): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function scheduleTranslationPageLayout(): void {
-  activePageLayoutScheduler?.()
+function scheduleTranslationPageLayout(recalculateScale = false): void {
+  if (activePageLayoutScheduler) {
+    activePageLayoutScheduler(recalculateScale)
+    return
+  }
+  // Markdown、表格、字幕和普通流没有页面缩放帧；当前 DOM 写入完成后必须立即恢复视口，
+  // 否则流式保护会一直残留并阻断后续用户滚动联动。
+  const positions = pendingTranslationLayoutScrollPositions
+  if (positions) restoreDocumentScrollPositions(positions)
+  pendingTranslationLayoutScrollPositions = null
+  translationLayoutUpdating = false
+}
+
+/**
+ * 在流式译文写入 DOM 前开启滚动保护，并保存本轮首次更新前的双栏视口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginTranslationLayoutUpdate(): void {
+  pendingTranslationLayoutScrollPositions ??= captureDocumentScrollPositions()
+  translationLayoutUpdating = true
+}
+
+/**
+ * 捕获双栏当前滚动位置；布局更新前后只恢复用户原本的视口，不能改变其阅读进度。
+ * @returns 原文栏与译文栏的滚动位置。
+ * @author zhenghq
+ */
+function captureDocumentScrollPositions(): DocumentScrollPositions {
+  return {
+    source: sourceContent.scrollTop,
+    translation: translationContent.scrollTop
+  }
+}
+
+/**
+ * 恢复双栏滚动位置；若用户在重排期间产生了新滚动意图，则保留用户当前位置。
+ * @param positions 重排开始前捕获的滚动位置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreDocumentScrollPositions(positions: DocumentScrollPositions): void {
+  if (userScrollSide !== 'source' && sourceContent.scrollTop !== positions.source) {
+    pendingProgrammaticScrollTops.set(sourceContent, positions.source)
+    sourceContent.scrollTop = positions.source
+  }
+  if (userScrollSide !== 'translation' && translationContent.scrollTop !== positions.translation) {
+    pendingProgrammaticScrollTops.set(translationContent, positions.translation)
+    translationContent.scrollTop = positions.translation
+  }
 }
 
 /**
@@ -2131,9 +2295,12 @@ function scheduleTranslationPageLayout(): void {
  */
 function cancelTranslationPageLayout(): void {
   activePageLayoutScheduler = null
-  if (pageLayoutFrame === null) return
-  cancelAnimationFrame(pageLayoutFrame)
-  pageLayoutFrame = null
+  if (pageLayoutFrame !== null) {
+    cancelAnimationFrame(pageLayoutFrame)
+    pageLayoutFrame = null
+  }
+  pendingTranslationLayoutScrollPositions = null
+  translationLayoutUpdating = false
 }
 
 /**
@@ -2361,39 +2528,50 @@ function patchTranslationPreview(container: HTMLElement, model: DocumentModel | 
   if (!previewHost) return false
   const kind = resolvePreviewKind(model, 'translation')
   if (kind !== renderedTranslationPreviewKind || previewHost.dataset.previewKind !== kind) return false
-
-  const existingElements = Array.from(
-    previewHost.querySelectorAll<HTMLElement>('[data-block-id]')
-  )
-  const elementsById = new Map<string, HTMLElement[]>()
-  for (const element of existingElements) {
-    const blockId = element.dataset.blockId
-    if (!blockId) continue
-    const matches = elementsById.get(blockId) ?? []
-    matches.push(element)
-    elementsById.set(blockId, matches)
-  }
-  let consumedElementCount = 0
-  const takeBlockElement = (blockId: string): HTMLElement | undefined => {
-    const element = elementsById.get(blockId)?.shift()
-    if (element) consumedElementCount += 1
-    return element
-  }
-  const expectedBlockIds: string[] = []
-  for (const page of model.pages) {
-    for (const block of page.blocks) {
-      collectDocumentBlockIds(block, expectedBlockIds)
-      if (!patchTranslationBlock(block, block.kind === 'break' ? undefined : takeBlockElement(block.blockId), takeBlockElement)) {
-        return false
-      }
+  beginTranslationLayoutUpdate()
+  let layoutScheduled = false
+  try {
+    let patched = true
+    const existingElements = Array.from(
+      previewHost.querySelectorAll<HTMLElement>('[data-block-id]')
+    )
+    const elementsById = new Map<string, HTMLElement[]>()
+    for (const element of existingElements) {
+      const blockId = element.dataset.blockId
+      if (!blockId) continue
+      const matches = elementsById.get(blockId) ?? []
+      matches.push(element)
+      elementsById.set(blockId, matches)
     }
+    let consumedElementCount = 0
+    const takeBlockElement = (blockId: string): HTMLElement | undefined => {
+      const element = elementsById.get(blockId)?.shift()
+      if (element) consumedElementCount += 1
+      return element
+    }
+    const expectedBlockIds: string[] = []
+    for (const page of model.pages) {
+      for (const block of page.blocks) {
+        collectDocumentBlockIds(block, expectedBlockIds)
+        if (!patchTranslationBlock(block, block.kind === 'break' ? undefined : takeBlockElement(block.blockId), takeBlockElement)) {
+          patched = false
+          break
+        }
+      }
+      if (!patched) break
+    }
+    if (consumedElementCount !== existingElements.length ||
+      expectedBlockIds.length !== existingElements.length) {
+      patched = false
+    }
+    if (!patched) return false
+    scheduleTranslationPageLayout()
+    layoutScheduled = true
+    return true
+  } finally {
+    // 成功时由布局调度器负责恢复并释放；失败或异常时必须在回退整页重绘前清理保护状态。
+    if (!layoutScheduled) cancelTranslationPageLayout()
   }
-  if (consumedElementCount !== existingElements.length ||
-    expectedBlockIds.length !== existingElements.length) {
-    return false
-  }
-  scheduleTranslationPageLayout()
-  return true
 }
 
 /**
@@ -2420,6 +2598,8 @@ function renderDocumentModel(
     cancelAnimationFrame(pageLayoutFrame)
     pageLayoutFrame = null
   }
+  pendingTranslationLayoutScrollPositions = null
+  translationLayoutUpdating = false
   pdfPreviewCleanups.get(container)?.()
   // 仅替换译文侧时清理旧水印观察器；原文重绘不能中断仍然保留的译文水印。
   if (container === translationContent) {
@@ -2451,9 +2631,16 @@ function renderDocumentModel(
         container.dataset.previewKind = kind
         // PDF.js 异步渲染要求宿主已连接；此时只挂载空宿主，PDF 数据仍由旧内容保留到加载完成。
         container.replaceChildren(previewHost)
-        void renderPdfPages(previewHost, generation)
+        void renderPdfPages(previewHost, generation, model)
       } else {
-        for (const page of model.pages) previewHost.append(renderPage(page, side))
+        for (const page of model.pages) {
+          // 横竖混排 PDF 的每页宽度不同，必须在首次挂载前按自身宽度计算比例，
+          // 不能先沿用第一页比例再等待观察器纠正，否则会造成可见缩放。
+          const pageScale = side === 'translation'
+            ? initialTranslationPageScale(container, page.width)
+            : 1
+          previewHost.append(renderPage(page, side, pageScale))
+        }
       }
     } else if (kind === 'markdown') {
       renderMarkdownDocument(previewHost, model, side)
@@ -2469,7 +2656,7 @@ function renderDocumentModel(
     if (previewHost.parentNode !== container) container.replaceChildren(nextContent)
     if (side === 'translation') renderedTranslationPreviewKind = kind
     if (side === 'translation' && (kind === 'paged' || model.source.format === 'html')) {
-      observeTranslationPageScale(previewHost)
+      observeTranslationPageScale(container, previewHost)
     }
     renderDocumentWarnings(container, warnings)
   } catch (error) {
@@ -2486,20 +2673,66 @@ function renderDocumentModel(
 }
 
 /**
- * 同步左右两栏滚动比例，并用递归保护避免互相触发。
+ * 消费一次程序性写入产生的 scrollTop 值；值匹配时不再把它当作用户滚动联动。
+ * @param element 收到 scroll 事件的容器。
+ * @returns 是否属于程序性滚动。
+ * @author zhenghq
+ */
+function consumeProgrammaticScroll(element: HTMLElement): boolean {
+  const expected = pendingProgrammaticScrollTops.get(element)
+  if (expected === undefined) return false
+  pendingProgrammaticScrollTops.delete(element)
+  return Math.abs(element.scrollTop - expected) < 1
+}
+
+/**
+ * 记录用户滚动意图，并让程序性重排在这段时间内不覆盖用户视口。
+ * @param side 用户正在操作的栏。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function markUserScrollIntent(side: DocumentScrollSide): void {
+  userScrollSide = side
+  if (userScrollIntentTimer !== null) window.clearTimeout(userScrollIntentTimer)
+  // 键盘与滚动条拖动不会持续触发 wheel；保留一小段时间以覆盖其后续 scroll 事件。
+  userScrollIntentTimer = window.setTimeout(() => {
+    userScrollIntentTimer = null
+    userScrollSide = null
+  }, 180)
+}
+
+/**
+ * 处理文档双栏 scroll 事件；只有真实用户意图才允许驱动另一栏。
+ * @param side 产生事件的栏。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleDocumentScroll(side: DocumentScrollSide): void {
+  const source = side === 'source' ? sourceContent : translationContent
+  const target = side === 'source' ? translationContent : sourceContent
+  const programmatic = consumeProgrammaticScroll(source)
+  if (!shouldSyncDocumentScroll(side, {
+    userScrollSide,
+    programmatic,
+    translationLayoutUpdating
+  })) return
+  syncScroll(source, target)
+}
+
+/**
+ * 同步左右两栏滚动比例；调用方必须先确认这是真实用户滚动。
  * @param source 主动滚动的容器。
  * @param target 需要跟随的容器。
  * @returns 无返回值。
  * @author zhenghq
  */
 function syncScroll(source: HTMLElement, target: HTMLElement): void {
-  if (syncingScroll) return
   const sourceRange = source.scrollHeight - source.clientHeight
   const targetRange = target.scrollHeight - target.clientHeight
   if (sourceRange <= 0 || targetRange <= 0) return
-  syncingScroll = true
-  target.scrollTop = (source.scrollTop / sourceRange) * targetRange
-  requestAnimationFrame(() => { syncingScroll = false })
+  const nextScrollTop = (source.scrollTop / sourceRange) * targetRange
+  pendingProgrammaticScrollTops.set(target, nextScrollTop)
+  target.scrollTop = nextScrollTop
 }
 
 /**
@@ -3035,8 +3268,23 @@ async function initializeDocumentWorkspace(): Promise<void> {
     flushSnapshotRender(snapshot)
     startButton.disabled = false
   })
-  sourceContent.addEventListener('scroll', () => syncScroll(sourceContent, translationContent))
-  translationContent.addEventListener('scroll', () => syncScroll(translationContent, sourceContent))
+  /**
+   * 标记双栏内的真实滚动输入；滚动事件本身无法区分用户操作和布局引起的位移。
+   * @param side 当前操作的栏。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const registerUserScrollIntent = (side: DocumentScrollSide): void => {
+    markUserScrollIntent(side)
+  }
+  sourceContent.addEventListener('wheel', () => registerUserScrollIntent('source'), { passive: true })
+  translationContent.addEventListener('wheel', () => registerUserScrollIntent('translation'), { passive: true })
+  sourceContent.addEventListener('touchstart', () => registerUserScrollIntent('source'), { passive: true })
+  translationContent.addEventListener('touchstart', () => registerUserScrollIntent('translation'), { passive: true })
+  sourceContent.addEventListener('keydown', () => registerUserScrollIntent('source'))
+  translationContent.addEventListener('keydown', () => registerUserScrollIntent('translation'))
+  sourceContent.addEventListener('scroll', () => handleDocumentScroll('source'))
+  translationContent.addEventListener('scroll', () => handleDocumentScroll('translation'))
   historyButton.addEventListener('click', () => {
     uploadStatus.textContent = t('document.historyEmpty')
   })

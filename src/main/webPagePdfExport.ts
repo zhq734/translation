@@ -1,8 +1,23 @@
 import type { PrintToPDFOptions } from 'electron'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../shared/translationWatermark'
 
-/** 网页打印前等待字体、图片与两帧布局稳定的脚本。 */
+/**
+ * 网页打印前等待字体、图片与两帧布局稳定，并标记需展开的滚动容器。
+ * 固定高度或最大高度通常表示滚动视口；即使当前内容尚未溢出，打印时后续布局仍可能被裁掉。
+ * 普通内容盒的 computed height 只是当前内容高度，因此仅在元素同时具备溢出模式与高度约束时展开，
+ * 避免破坏图片、SVG、视频等固有尺寸。
+ */
 const WAIT_FOR_WEB_PAGE_PRINT_READY_SCRIPT = `(async () => {
+  const printScrollAttribute = 'data-st-print-scroll-container';
+  for (const element of document.querySelectorAll('[' + printScrollAttribute + ']')) {
+    element.removeAttribute(printScrollAttribute);
+  }
+  for (const element of document.querySelectorAll('body *')) {
+    const style = getComputedStyle(element);
+    const scrollable = /(auto|scroll|overlay)/.test(style.overflowX + ' ' + style.overflowY);
+    const constrained = style.maxHeight !== 'none' || !['auto', '0px'].includes(style.height);
+    if (scrollable && constrained) element.setAttribute(printScrollAttribute, '');
+  }
   if (document.fonts && document.fonts.ready) await document.fonts.ready;
   const images = Array.from(document.images || []);
   await Promise.all(images.map(async (image) => {
@@ -104,7 +119,35 @@ function encodeWatermarkSvgDataUrl(svg: string): string {
  */
 export function buildWebPagePrintCss(): string {
   const watermarkUrl = encodeWatermarkSvgDataUrl(buildWebPageWatermarkSvg())
+  // 网页阅读器使用滚动容器展示长内容，打印时必须展开以免只输出首屏。
+  // 表格允许自然跨页，但单行不得被纸张边界拆开；代码块必须在纸张宽度内换行。
   return `@media print {
+  html,
+  body {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  body [data-st-print-scroll-container] {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  table {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+  tr,
+  td,
+  th {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  pre {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   html::after {
     content: '';
     position: fixed;

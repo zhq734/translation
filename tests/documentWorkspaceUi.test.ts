@@ -152,6 +152,201 @@ test('文件翻译流式更新必须原位更新变化内容，不能重建整�
   assert.match(source, /existingRun\.textContent = run\.text/u)
 })
 
+test('文件翻译流式滚动同步必须区分用户滚动与程序性滚动，不能形成双向回环', () => {
+  const source = read('src/renderer/src/document.ts')
+
+  assert.match(source, /type DocumentScrollSide/u)
+  assert.match(source, /from '\.\/documentScrollSync'/u)
+  assert.match(source, /const pendingProgrammaticScrollTops = new WeakMap<HTMLElement, number>\(\)/u)
+  assert.match(source, /function consumeProgrammaticScroll\(/u)
+  assert.match(source, /function markUserScrollIntent\(/u)
+  assert.match(source, /function handleDocumentScroll\(/u)
+  assert.doesNotMatch(source, /if \(userScrollSide !== side\) return/u)
+  assert.match(source, /translationLayoutUpdating/u)
+  assert.match(source, /sourceContent\.addEventListener\('wheel'/u)
+  assert.match(source, /translationContent\.addEventListener\('wheel'/u)
+})
+
+test('文件翻译译文重排前后必须保持双栏滚动位置，避免流式高度变化拖动视口', () => {
+  const source = read('src/renderer/src/document.ts')
+  const layoutStart = source.indexOf('function observeTranslationPageScale(')
+  const layoutEnd = source.indexOf('/**', layoutStart + 1)
+  const layoutSource = source.slice(layoutStart, layoutEnd)
+
+  assert.match(source, /function captureDocumentScrollPositions\(/u)
+  assert.match(source, /function restoreDocumentScrollPositions\(/u)
+  assert.match(layoutSource, /captureDocumentScrollPositions\(\)/u)
+  assert.match(layoutSource, /normalizeTranslationFlowLayout\(page\)/u)
+  assert.match(layoutSource, /restoreDocumentScrollPositions\(/u)
+})
+
+test('文件翻译流式 DOM 更新必须在文本写入前进入滚动保护，并在布局完成后解除', () => {
+  const source = read('src/renderer/src/document.ts')
+  const layoutStart = source.indexOf('function observeTranslationPageScale(')
+  const layoutSource = source.slice(layoutStart, source.indexOf('/**', layoutStart + 1))
+  const patchStart = source.indexOf('function patchTranslationPreview(')
+  const patchSource = source.slice(patchStart, source.indexOf('/**', patchStart + 1))
+  const cancelStart = source.indexOf('function cancelTranslationPageLayout(')
+  const cancelSource = source.slice(cancelStart, source.indexOf('/**', cancelStart + 1))
+  const restoreStart = source.indexOf('function restoreDocumentScrollPositions(')
+  const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
+
+  const beginIndex = patchSource.indexOf('beginTranslationLayoutUpdate()')
+  const mutateIndex = patchSource.indexOf('patchTranslationBlock(block')
+  assert.ok(beginIndex > -1, '流式更新必须在写入 DOM 前开启布局保护')
+  assert.ok(beginIndex < mutateIndex, '布局保护必须早于任何译文区块写入')
+  assert.match(patchSource, /cancelTranslationPageLayout\(\)/u, '原位更新失败时必须清理保护状态')
+
+  const restoreIndex = layoutSource.lastIndexOf('restoreDocumentScrollPositions(scrollPositions)')
+  const releaseIndex = layoutSource.lastIndexOf('translationLayoutUpdating = false')
+  assert.ok(restoreIndex > -1 && releaseIndex > restoreIndex,
+    '布局帧必须先恢复视口，再解除流式滚动保护')
+
+  assert.match(cancelSource, /translationLayoutUpdating = false/u)
+  assert.match(cancelSource, /pendingTranslationLayoutScrollPositions = null/u)
+  assert.match(restoreSource, /userScrollSide !== 'source'/u)
+  assert.match(restoreSource, /userScrollSide !== 'translation'/u)
+  assert.doesNotMatch(restoreSource, /if \(userScrollSide !== null\) return/u)
+})
+
+test('文件翻译流式更新没有页面调度器时也必须恢复视口并解除滚动保护', () => {
+  const source = read('src/renderer/src/document.ts')
+  const scheduleStart = source.indexOf('function scheduleTranslationPageLayout(')
+  const scheduleSource = source.slice(scheduleStart, source.indexOf('/**', scheduleStart + 1))
+  const patchStart = source.indexOf('function patchTranslationPreview(')
+  const patchSource = source.slice(patchStart, source.indexOf('/**', patchStart + 1))
+
+  assert.match(scheduleSource, /if \(activePageLayoutScheduler\)/u)
+  assert.match(scheduleSource, /activePageLayoutScheduler\(recalculateScale\)/u)
+  assert.match(scheduleSource, /restoreDocumentScrollPositions\(positions\)/u,
+    '没有页面缩放调度器时必须在当前 DOM 更新后立即恢复双栏位置')
+  assert.match(scheduleSource, /pendingTranslationLayoutScrollPositions = null/u)
+  assert.match(scheduleSource, /translationLayoutUpdating = false/u)
+  assert.match(patchSource, /try\s*\{/u, '流式 DOM 更新必须捕获异常')
+  assert.match(patchSource, /finally\s*\{/u, '流式 DOM 更新必须通过 finally 清理保护状态')
+})
+
+test('文件翻译原位更新成功后不能取消刚登记的页面布局帧', () => {
+  const source = read('src/renderer/src/document.ts')
+  const patchStart = source.indexOf('function patchTranslationPreview(')
+  const patchSource = source.slice(patchStart, source.indexOf('/**', patchStart + 1))
+
+  assert.match(patchSource, /let layoutScheduled = false/u)
+  assert.match(patchSource, /scheduleTranslationPageLayout\(\)\s*\n\s*layoutScheduled = true/u,
+    '成功登记布局帧后必须标记为已调度')
+  assert.match(patchSource, /if \(!layoutScheduled\) cancelTranslationPageLayout\(\)/u,
+    '只有未成功调度时才允许清理布局保护状态')
+})
+
+test('PDF 页面高度流式增长时不能重复写入页面缩放变量', () => {
+  const source = read('src/renderer/src/document.ts')
+  const observeStart = source.indexOf('function observeTranslationPageScale(')
+  const observeSource = source.slice(observeStart, source.indexOf('/**', observeStart + 1))
+
+  assert.match(observeSource, /recalculateScale\s*=\s*false/u)
+  assert.match(observeSource, /recalculateScalePending/u)
+  assert.match(observeSource, /entry\.target !== scrollContainer/u,
+    '只有译文滚动容器才允许参与页面缩放判断')
+  assert.match(observeSource, /entry\.contentRect\.width/u,
+    '必须比较实际内容宽度，不能把容器高度变化当作宽度变化')
+  assert.match(observeSource, /scheduleLayout\(true\)/u)
+  assert.match(observeSource, /scheduleLayout\(false\)/u,
+    '页面自身高度变化只能触发流式布局归一化')
+  assert.match(observeSource, /lastScaleWidth/u)
+  assert.match(observeSource, /Math\.abs\(availableWidth - lastScaleWidth\)/u,
+    '可用宽度没有实际变化时不能重复写入缩放变量')
+  assert.match(observeSource, /if \(lastScaleWidth === null \|\| shouldRecalculateScale\)\s*\{\s*lastScaleWidth = availableWidth/su,
+    '首次布局后必须记录宽度基准，后续高度变化不能再次触发缩放')
+})
+
+test('PDF 译文页面高度变化必须与滚动容器宽度变化分开处理', () => {
+  const source = read('src/renderer/src/document.ts')
+  const observeStart = source.indexOf('function observeTranslationPageScale(')
+  const observeSource = source.slice(observeStart, source.indexOf('/**', observeStart + 1))
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+
+  assert.match(observeSource, /function observeTranslationPageScale\(\s*scrollContainer: HTMLElement,\s*previewHost: HTMLElement\s*\)/u,
+    '宽度基准必须来自滚动容器，页面宿主只能参与高度观察')
+  assert.match(observeSource, /documentPageContentWidth\(scrollContainer\)/u,
+    '缩放宽度必须只从滚动容器测量')
+  assert.match(observeSource, /entry\.contentRect\.width/u,
+    '滚动容器高度变化不能冒充宽度变化')
+  assert.match(observeSource, /lastObservedScrollWidth/u,
+    '必须保存实际观察到的容器宽度以过滤高度回调')
+  assert.match(observeSource, /observer\.observe\(scrollContainer\)/u)
+  assert.match(observeSource, /observer\.observe\(previewHost\)/u)
+  assert.match(renderSource, /observeTranslationPageScale\(container, previewHost\)/u)
+  assert.doesNotMatch(renderSource, /observeTranslationPageScale\(previewHost\)/u)
+})
+
+test('PDF 译文流式页面必须在首次渲染后建立宽度基准，且高度回调不能携带缩放请求', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+  const observeStart = source.indexOf('function observeTranslationPageScale(')
+  const observeSource = source.slice(observeStart, source.indexOf('/**', observeStart + 1))
+
+  assert.match(
+    renderSource,
+    /if \(side === 'translation' && \(kind === 'paged' \|\| model\.source\.format === 'html'\)\)\s*\{\s*observeTranslationPageScale\(container, previewHost\)/su,
+    'PDF 分页译文必须建立页面宽度基准，其他流式预览不应注册页面缩放观察器'
+  )
+  assert.match(observeSource, /scheduleLayout\(false\)/u,
+    '页面高度变化只能请求流式归一化，不能携带宽度重算标记')
+  assert.doesNotMatch(observeSource, /else\s+scheduleLayout\(true\)/u,
+    '高度回调不得被解释为宽度变化')
+  assert.match(
+    observeSource,
+    /const changed = lastObservedScrollWidth !== null &&\s*Math\.abs\(nextWidth - lastObservedScrollWidth\) >= 0\.5/u,
+    '首次观察必须只建立容器宽度基准，不能把尚未测量的容器当成宽度变化'
+  )
+  assert.match(
+    observeSource,
+    /const sourceWidth = Number\(page\.dataset\.sourceWidth\)[\s\S]*availableWidth \/ sourceWidth/u,
+    '宽度变化时必须按每页自身原始宽度重算缩放，不能使用第一页宽度作为统一基准'
+  )
+})
+
+test('PDF 横竖混排译文必须在每页首次挂载时使用自己的宽度计算缩放', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+
+  assert.match(
+    renderSource,
+    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'\s*\? initialTranslationPageScale\(container, page\.width\)\s*: 1[\s\S]*previewHost\.append\(renderPage\(page, side, pageScale\)\)/u,
+    '每页必须在挂载前按自身原始宽度计算缩放，横竖混排时不能先沿用第一页比例'
+  )
+  assert.doesNotMatch(renderSource, /initialTranslationPageScale\(container, model\.pages\[0\]/u,
+    '不能用第一页宽度作为所有译文页的统一缩放基准')
+})
+
+test('PDF 译文流式重排不得重复写入未变化的间距样式', () => {
+  const source = read('src/renderer/src/document.ts')
+  const helperStart = source.indexOf('function setCssPixelPropertyIfChanged(')
+  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const helperSource = source.slice(helperStart, normalizeStart)
+  const normalizeSource = source.slice(normalizeStart, source.indexOf('/**', normalizeStart + 1))
+
+  assert.ok(helperStart > -1 && normalizeStart > helperStart)
+  assert.match(helperSource, /getPropertyValue\(property\)/u)
+  assert.match(helperSource, /Math\.abs\(currentValue - value\) < 0\.01/u,
+    '间距值未变化时不能再次触发样式失效')
+  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-flow-gap-before'/u)
+  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-image-flow-gap-before'/u)
+  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-shape-flow-offset'/u)
+})
+
+test('文件翻译译文滚动容器必须禁用浏览器滚动锚定', () => {
+  const css = read('src/renderer/src/document.css')
+
+  assert.match(
+    css,
+    /#document-translation-content\s*\{[^}]*overflow-anchor:\s*none/u
+  )
+})
+
 test('文档扫描页 OCR 必须使用保留原始栅格尺寸的文档预处理配置', () => {
   const main = read('src/main/index.ts')
   const serviceStart = main.indexOf('function createDocumentWorkspaceTaskService')
@@ -344,8 +539,11 @@ test('文档工作台初始化必须真正接线任务按钮、进度事件与�
   assert.match(source, /window\.api\.onDocumentCompleted\(/u)
   assert.match(source, /sourceContent\.addEventListener\('scroll'/u)
   assert.match(source, /translationContent\.addEventListener\('scroll'/u)
-  assert.match(source, /syncScroll\(sourceContent, translationContent\)/u)
-  assert.match(source, /syncScroll\(translationContent, sourceContent\)/u)
+  assert.match(source, /handleDocumentScroll\('source'\)/u)
+  assert.match(source, /handleDocumentScroll\('translation'\)/u)
+  assert.match(source, /function handleDocumentScroll\(side: DocumentScrollSide\): void/u)
+  assert.match(source, /const target = side === 'source' \? translationContent : sourceContent/u)
+  assert.match(source, /syncScroll\(source, target\)/u)
   assert.match(source, /expectedJobId !== null/u)
   assert.match(source, /runDocument\(/u)
   assert.match(source, /function documentPreviewIdentity\(/u)
@@ -660,6 +858,102 @@ test('PDF 原文必须进入视口后再绘制 Canvas，并在替换预览时释
   assert.match(css, /\.document-pdf-page\s*\{[^}]*contain-intrinsic-size:/su)
 })
 
+test('PDF 初始挂载必须同步建立页面占位，不能逐页等待 getPage 阻塞首屏', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('async function renderPdfPages(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+  const mountStart = renderSource.indexOf('for (let pageNumber = 1')
+  const mountEnd = renderSource.indexOf('sourcePageCount.textContent', mountStart)
+  const mountSource = renderSource.slice(mountStart, mountEnd)
+
+  assert.ok(mountStart >= 0 && mountEnd > mountStart, '必须存在页面占位挂载循环')
+  assert.doesNotMatch(mountSource, /getPage\(/u,
+    '页面占位挂载循环不能逐页等待 PDF.js getPage')
+  assert.match(mountSource, /model\.pages\[pageNumber - 1\]/u,
+    '占位尺寸必须来自已解析模型')
+  assert.match(mountSource, /observer\.observe\(article\)/u,
+    '挂载后的页面仍必须由可见性观察器按需渲染')
+})
+
+test('PDF 只有原文复用 PDF.js Canvas，译文必须重建结构化流式 DOM', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+
+  assert.match(
+    source,
+    /async function renderPdfPages\(\s*container: HTMLElement,\s*generationAtStart: number,\s*model: DocumentModel\s*\)/u
+  )
+  assert.match(renderSource, /model\.source\.format === 'pdf' && side === 'source'/u)
+  assert.match(renderSource, /void renderPdfPages\(previewHost, generation, model\)/u)
+  assert.match(renderSource, /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'/u)
+  assert.match(renderSource, /renderPage\(page, side, pageScale\)/u)
+  assert.doesNotMatch(source, /createPdfTranslationOverlay/u)
+})
+
+test('PDF 译文必须保留真实表格、图片与代码框，不能退化为 Canvas 文本覆盖层', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const tableStart = source.indexOf('function renderTableBlock(')
+  const tableSource = source.slice(tableStart, source.indexOf('/**', tableStart + 1))
+
+  assert.match(source, /function renderPage\(/u)
+  assert.match(source, /dataset\.layout = side === 'translation' && hasGeometry/u)
+  assert.match(tableSource, /createElement\('table'\)/u)
+  assert.match(tableSource, /createElement\('tr'\)/u)
+  assert.match(tableSource, /createElement\('td'\)/u)
+  assert.doesNotMatch(css, /document-pdf-translation-layer/u)
+  assert.doesNotMatch(css, /document-pdf-translation-mask/u)
+  assert.doesNotMatch(css, /document-pdf-translation-text/u)
+  assert.doesNotMatch(css, /document-pdf-translation-copy/u)
+})
+
+test('PDF 译文流式增量必须原位更新结构化区块，不能重新加载 PDF 或重绘 Canvas', () => {
+  const source = read('src/renderer/src/document.ts')
+  const patchStart = source.indexOf('function patchTranslationPreview(')
+  const patchEnd = source.indexOf('/**', patchStart + 1)
+  const patchSource = source.slice(patchStart, patchEnd)
+
+  assert.match(patchSource, /querySelectorAll<HTMLElement>\('\[data-block-id\]'\)/u)
+  assert.match(patchSource, /patchTranslationBlock\(block/u)
+  assert.match(patchSource, /beginTranslationLayoutUpdate\(\)/u)
+  assert.match(patchSource, /scheduleTranslationPageLayout\(\)/u)
+  assert.doesNotMatch(patchSource, /renderPdfPages\(/u)
+  assert.doesNotMatch(patchSource, /document-pdf-translation-layer/u)
+})
+
+test('PDF 表格必须提供稳定区块标识，流式增量才能原位更新而不整页重建', () => {
+  const source = read('src/renderer/src/document.ts')
+  const tableStart = source.indexOf('function renderTableBlock(')
+  const tableSource = source.slice(tableStart, source.indexOf('/**', tableStart + 1))
+
+  assert.match(
+    tableSource,
+    /wrapper\.dataset\.blockId\s*=\s*block\.blockId/u,
+    '表格顶层容器必须写入 data-block-id，否则流式补丁无法定位表格并会反复整页重建'
+  )
+})
+
+test('PDF 译文页面初次挂载不能先按 scale=1 排版再跳到实际缩放', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+  const renderPageStart = source.indexOf('function renderPage(')
+  const renderPageSource = source.slice(renderPageStart, source.indexOf('/**', renderPageStart + 1))
+
+  assert.match(source, /function initialTranslationPageScale\(/u,
+    '译文页面必须使用统一函数计算首次缩放值')
+  assert.match(renderSource, /initialTranslationPageScale\(container, page\.width\)/u,
+    '渲染译文模型时必须按每页自身宽度计算缩放值')
+  assert.match(renderPageSource, /String\(translationInitialScale\)/u,
+    'renderPage 必须直接写入调用方计算好的缩放值')
+  assert.doesNotMatch(renderPageSource, /--document-page-scale',\s*'1'/u)
+  assert.match(renderSource, /renderPage\(page, side, pageScale\)/u,
+    '译文页面创建时必须传入按自身页面宽度计算出的缩放值')
+})
+
 test('PDF 译文段落不能覆盖 run 的原始字号与颜色', () => {
   const css = read('src/renderer/src/document.css')
   const blockRule = /\.document-page\[data-layout='translation-flow'\] \.document-text-block\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
@@ -847,7 +1141,7 @@ test('PDF 源预览必须按文件身份复用并把告警层与画布分离', (
   assert.match(source, /className = 'document-preview-host'/u)
   assert.match(source, /className = 'document-warning-list'/u)
   assert.match(source, /\.document-preview-host/u)
-  assert.match(source, /renderPdfPages\(previewHost, generation\)/u)
+  assert.match(source, /renderPdfPages\(previewHost, generation, model\)/u)
   assert.match(css, /\.document-preview-host/u)
 })
 
@@ -1008,13 +1302,13 @@ test('文档双栏预览必须在源文隐藏 OCR 文本层，译文按阅读顺
   assert.match(source, /if \(!translatedText\) return null/u)
   assert.match(
     source,
-    /function renderPage\(\s*page: DocumentPage,\s*side: DocumentRenderSide\s*\): HTMLElement/u
+    /function renderPage\(\s*page: DocumentPage,\s*side: DocumentRenderSide,\s*translationInitialScale = 1\s*\): HTMLElement/u
   )
   assert.match(
     source,
     /function renderBlock\(\s*block: DocumentBlock,\s*side: DocumentRenderSide,\s*pageWidth: number(?:,\s*contentArea\?: DocumentContentArea)?\s*\)/u
   )
-  assert.match(source, /renderPage\(\s*page,\s*side\s*\)/u)
+  assert.match(source, /renderPage\(\s*page,\s*side(?:,\s*translationInitialScale)?\s*\)/u)
   assert.match(source, /renderBlock\(block, side, page\.width, page\.contentArea\)/u)
   assert.match(source, /renderTableCellBlock\(child, side\)/u)
   assert.match(source, /--document-ocr-font-size-pt/u)
@@ -1043,6 +1337,8 @@ test('文档双栏预览必须在源文隐藏 OCR 文本层，译文按阅读顺
   assert.doesNotMatch(css, /\.document-ocr-region\s*\{[^}]*--document-ocr-min-height/su)
   assert.match(css, /\.document-ocr-original-mask\s*\{[^}]*position:\s*absolute/su)
   assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*pointer-events:\s*none/su)
+  assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*height:\s*calc\(/su)
+  assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*var\(--document-image-height,\s*0px\)\s*\*\s*var\(--document-page-scale,\s*1\)/su)
   assert.match(css, /@font-face\s*\{[^}]*font-family:\s*'Noto Sans SC'/su)
   assert.match(css, /assets\/fonts\/NotoSansSC-Regular\.ttf/u)
   assert.match(
@@ -1179,6 +1475,16 @@ test('PDF 译文表格图片必须限制在单元格内，不能继承页面图�
   assert.match(cellImageContentRule, /width:\s*100%/u)
   assert.match(cellImageContentRule, /height:\s*auto/u)
   assert.match(cellImageContentRule, /object-fit:\s*contain/u)
+
+  const universalCellImageRule = /\.document-table-block\s+\.document-image-block\[data-table-cell-image='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const universalCellRule = /\.document-table-block th,\s*\.document-table-block td\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  assert.match(universalCellImageRule, /position:\s*relative\s*!important/u,
+    '表格图片归位规则不能只在译文流布局中生效')
+  assert.match(universalCellImageRule, /left:\s*auto\s*!important/u)
+  assert.match(universalCellImageRule, /top:\s*auto\s*!important/u)
+  assert.match(universalCellImageRule, /max-width:\s*100%\s*!important/u)
+  assert.match(universalCellRule, /overflow:\s*hidden/u,
+    '单元格必须裁切超出列边界的图片和装饰')
 })
 
 test('PDF 译文代码框必须使用代码文本块自身的边框并保持原文横向范围', () => {
@@ -1200,10 +1506,15 @@ test('PDF 代码块必须带边框标记，即使解析器只恢复了横向外�
   const css = read('src/renderer/src/document.css')
   const renderTextStart = source.indexOf('function renderTextBlock(')
   const renderTextSource = source.slice(renderTextStart, source.indexOf('/**', renderTextStart + 1))
+  const codeFrameRule = /\.document-text-block\[data-code-frame='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const translationCodeRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-text-block\.document-text-code\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
   assert.match(renderTextSource, /dataset\.codeFrame\s*=\s*'true'/u,
     '代码块无论是否识别到完整外框都必须有可样式化的边框标记')
+  assert.match(codeFrameRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u,
+    '代码框边框必须覆盖所有布局，不能只在译文流布局中生效')
+  assert.match(codeFrameRule, /border-radius:\s*var\(--radius-control\)/u)
+  assert.match(codeFrameRule, /background:\s*var\(--bg-secondary\)/u)
   assert.match(translationCodeRule, /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u)
   assert.match(translationCodeRule, /background:\s*var\(--bg-secondary\)/u)
 })
@@ -1223,8 +1534,15 @@ test('译文页面缩放重排必须通过 requestAnimationFrame 合并并清理
 
 test('PDF 译文表格单元格必须显式保留主题边框', () => {
   const css = read('src/renderer/src/document.css')
+  const tableRule = /\.document-table-block table\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const translationCellLayoutRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block th,\s*\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block td\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
+  assert.match(
+    tableRule,
+    /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u,
+    '表格外框必须显式使用主题边框变量'
+  )
+  assert.match(tableRule, /border-collapse:\s*collapse/u)
   assert.match(
     translationCellLayoutRule,
     /border:\s*var\(--border-width\)\s+solid\s+var\(--border-default\)/u

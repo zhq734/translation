@@ -267,6 +267,8 @@ interface PdfTableGridTarget {
   table: DocumentTableBlock
   /** 表格原始网格。 */
   grid: PdfDetectedGrid
+  /** 实际输出到表格区块的真实行带，顺序与表格行一致。 */
+  rowBands: PdfDetectedGridRowBand[]
 }
 
 /** 从 PDF 操作符重建出的水平或垂直线段，坐标为页面视图坐标。 */
@@ -293,6 +295,16 @@ interface PdfDetectedGrid {
   columns: number[]
   /** 去重并排序后的行边界。 */
   rows: number[]
+  /** 可选的稀疏行带；用于表头与数据区之间保留原始空白间隔的表格。 */
+  rowBands?: PdfDetectedGridRowBand[]
+}
+
+/** 表格中一个真实数据行或表头行的纵向范围。 */
+interface PdfDetectedGridRowBand {
+  /** 行带上边界。 */
+  top: number
+  /** 行带下边界。 */
+  bottom: number
 }
 
 /** PDF 内嵌图片的最小可见尺寸，单位为页面点。 */
@@ -931,7 +943,11 @@ function mergePdfGridLines(lines: readonly PdfGridLine[]): PdfGridLine[] {
   const result: PdfGridLine[] = []
   for (const line of lines) {
     const existing = result.find((candidate) => candidate.orientation === line.orientation &&
-      Math.abs(candidate.position - line.position) <= PDF_TABLE_LINE_TOLERANCE)
+      Math.abs(candidate.position - line.position) <= PDF_TABLE_LINE_TOLERANCE &&
+      // 同方向、同坐标并不代表是同一条线。只有横向范围重叠或首尾相接时
+      // 才能合并，否则会把页面两侧的独立装饰线连成贯穿空白区域的长线。
+      candidate.start <= line.end + PDF_TABLE_LINE_TOLERANCE &&
+      line.start <= candidate.end + PDF_TABLE_LINE_TOLERANCE)
     if (!existing) {
       result.push({ ...line })
       continue
@@ -1076,6 +1092,7 @@ function createPdfDividerBlocks(
   grids: readonly PdfDetectedGrid[],
   pageFrameGrids: readonly PdfDetectedGrid[],
   codeFrameGrids: readonly PdfDetectedGrid[],
+  imageRegions: readonly PdfEmbeddedImageRegion[],
   pageWidth: number,
   pageHeight: number,
   pageId: string,
@@ -1087,6 +1104,7 @@ function createPdfDividerBlocks(
   const dividers = clipPdfLinesOutsideDetectedGrids(outsideCodeFrames, grids)
     .filter((line) => !pdfLineOnDetectedPageFrame(line, pageFrameGrids))
     .filter((line) => !isPdfPageEdgeDecoration(line, pageWidth, pageHeight))
+    .filter((line) => !isPdfHeaderLogoDecoration(line, imageRegions, pageWidth, pageHeight))
   return dividers.map((line, index) => {
     const lineStyle: DocumentLineStyle = {
       orientation: line.orientation,
@@ -1113,6 +1131,40 @@ function createPdfDividerBlocks(
           },
       line: lineStyle
     }
+  })
+}
+
+/**
+ * 判断线段是否为页眉 logo 旁的超宽装饰线。
+ * 只在页面顶部、线段超过页面宽度 60% 且附近存在小尺寸图片时过滤，
+ * 保留普通短页眉线，也避免把正文表格顶线误当作装饰。
+ * @param line 候选线段。
+ * @param imageRegions 页面内嵌图片区域。
+ * @param pageWidth 页面宽度。
+ * @param pageHeight 页面高度。
+ * @returns 线段是否为页眉 logo 装饰线。
+ * @author zhenghq
+ */
+function isPdfHeaderLogoDecoration(
+  line: PdfGridLine,
+  imageRegions: readonly PdfEmbeddedImageRegion[],
+  pageWidth: number,
+  pageHeight: number
+): boolean {
+  if (line.orientation !== 'horizontal' ||
+    !Number.isFinite(pageWidth) || pageWidth <= 0 ||
+    !Number.isFinite(pageHeight) || pageHeight <= 0) return false
+  if (line.position > pageHeight * 0.16) return false
+  if (line.end - line.start < pageWidth * 0.6) return false
+  return imageRegions.some((region) => {
+    const image = region.bbox
+    if (image.width > 80 || image.height > 80) return false
+    const centerX = image.x + image.width / 2
+    const centerY = image.y + image.height / 2
+    // logo 可能位于线的上方或下方，只要在同一页眉带内且横向接近即可。
+    return centerX >= line.start - 32 &&
+      centerX <= line.end + 32 &&
+      Math.abs(centerY - line.position) <= 48
   })
 }
 
@@ -1154,6 +1206,25 @@ function mergePdfGridCoordinates(values: readonly number[]): number[] {
     if (previous === undefined || value - previous > PDF_TABLE_LINE_TOLERANCE) result.push(value)
   }
   return result
+}
+
+/**
+ * 读取表格的真实行带，并在旧网格没有稀疏行带时按连续行边界生成。
+ * @param grid 待读取的表格网格。
+ * @returns 按纵向顺序排列且过滤零高度后的行带。
+ * @author zhenghq
+ */
+function pdfGridRowBands(grid: PdfDetectedGrid): PdfDetectedGridRowBand[] {
+  if (Array.isArray(grid.rowBands) && grid.rowBands.length > 0) {
+    return grid.rowBands
+      .filter((band) => band.bottom - band.top > PDF_TABLE_LINE_TOLERANCE)
+      .map((band) => ({ top: band.top, bottom: band.bottom }))
+      .sort((left, right) => left.top - right.top)
+  }
+  return grid.rows.slice(1).flatMap((bottom, index) => {
+    const top = grid.rows[index]!
+    return bottom - top > PDF_TABLE_LINE_TOLERANCE ? [{ top, bottom }] : []
+  })
 }
 
 /**
@@ -1204,7 +1275,14 @@ function trimPdfFormContainerBottom(
   return {
     bbox: { ...grid.bbox, height: nextBottom - grid.bbox.y },
     columns: [...grid.columns],
-    rows
+    rows,
+    ...(grid.rowBands
+      ? {
+          rowBands: grid.rowBands
+            .filter((band) => band.bottom <= nextBottom + PDF_TABLE_LINE_TOLERANCE)
+            .map((band) => ({ ...band }))
+        }
+      : {})
   }
 }
 
@@ -1590,7 +1668,7 @@ function pdfTextItemColumnStarts(line: PdfLine, pageHeight: number): number[] {
     } else {
       const fontSize = Math.max(
         fontSizeFromTransform(previous.item.transform, previous.item.height),
-        fontSizeFromTransform(entry.item.transform, entry.height)
+        fontSizeFromTransform(entry.item.transform, entry.item.height)
       )
       const previousRight = previous.bbox.x + previous.bbox.width
       // 同一单元格中的单词通常连续；只有出现明显间距或起点回退到前一项
@@ -1618,8 +1696,9 @@ function pdfTextLineColumnStarts(line: PdfLine, pageHeight: number): number[] {
 
 /**
  * 从多行文本的稳定左起点推断无内部竖线表格的列边界。
- * 只有同一文本起点至少在两个视觉行出现时才视为一列，随后以相邻起点中点
- * 作为分隔线，并限制过窄列，避免把单元格内部换行误判成新增列。
+ * 只有同一文本起点至少在两个视觉行出现时才视为一列，随后优先使用跨行
+ * 稳定的单元格空白中点作为分隔线；长首列文本覆盖下一列起点时，则回退到
+ * 原始文本项左边界，避免把首列内容拆到下一列。
  * @param grid 待精修的单列网格。
  * @param textLines 页面全部文本行。
  * @param pageHeight 页面高度。
@@ -1632,15 +1711,18 @@ function inferPdfGridColumnsFromText(
   pageHeight: number
 ): number[] {
   const starts: Array<{ position: number; rows: Set<number> }> = []
-  const boundaryClusters: Array<{ position: number; rows: Set<number> }> = []
+  const itemStarts: Array<{ position: number; rows: Set<number> }> = []
   let multiItemRowCount = 0
   for (const line of textLines) {
     if (!pdfLineCenterInsideGrid(line, grid)) continue
     const lineClusters = pdfTextLineColumnClusters(line, pageHeight).filter((cluster) =>
       cluster.start > grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
       cluster.start < grid.bbox.x + grid.bbox.width - PDF_TABLE_LINE_TOLERANCE)
+    const lineItemStarts = pdfTextItemColumnStarts(line, pageHeight).filter((start) =>
+      start > grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+      start < grid.bbox.x + grid.bbox.width - PDF_TABLE_LINE_TOLERANCE)
     const lineStarts = lineClusters.map((cluster) => cluster.start)
-    if (lineStarts.length < 2) continue
+    if (lineStarts.length < 2 && lineItemStarts.length < 2) continue
     multiItemRowCount += 1
     const rowIndex = multiItemRowCount
     for (const position of lineStarts) {
@@ -1649,11 +1731,27 @@ function inferPdfGridColumnsFromText(
       if (cluster) cluster.rows.add(rowIndex)
       else starts.push({ position, rows: new Set([rowIndex]) })
     }
+    for (const position of lineItemStarts) {
+      const cluster = itemStarts.find((candidate) =>
+        Math.abs(candidate.position - position) <= Math.max(4, PDF_TABLE_LINE_TOLERANCE * 2))
+      if (cluster) cluster.rows.add(rowIndex)
+      else itemStarts.push({ position, rows: new Set([rowIndex]) })
+    }
   }
   if (multiItemRowCount < 2) return []
-  const columnStarts = mergePdfGridCoordinates(starts
+  const stableClusterStarts = mergePdfGridCoordinates(starts
     .filter((start) => start.rows.size >= 2)
     .map((start) => start.position))
+  // 长首列文本可能覆盖下一列起点，使文本簇合并而少识别一列。
+  // 原始文本项起点仍能稳定区分单元格，因此在簇不足时优先使用该项证据。
+  const stableItemStarts = mergePdfGridCoordinates(itemStarts
+    .filter((start) => start.rows.size >= 2)
+    .map((start) => start.position))
+  // 两列文本簇可能把首列长文本与第二列粘连；只有三列及以上簇才足以
+  // 排除这种覆盖关系，否则使用仍保留三列起点的原始文本项证据。
+  const columnStarts = stableClusterStarts.length >= 3
+    ? stableClusterStarts
+    : stableItemStarts
   if (columnStarts.length < 2) return []
   // 列分隔线应落在两列文本之间的真实空白区域，而不是两个文本起点之间的中点。
   // 长首列文本可能一直延伸到下一列起点附近，使用中点会把同一单元格拆成两列。
@@ -1688,7 +1786,7 @@ function inferPdfGridColumnsFromText(
     const textBoundary = stableBoundaries
       .filter((position) => position > columnStarts[index]! && position < nextStart)
       .sort((first, second) => Math.abs(second - nextStart) - Math.abs(first - nextStart))[0]
-    boundaries.push(textBoundary ?? (columnStarts[index]! + nextStart) / 2)
+    boundaries.push(textBoundary ?? nextStart)
   }
   boundaries.push(right)
   const minimumWidth = grid.bbox.width / columnStarts.length * 0.66
@@ -1720,8 +1818,12 @@ function refinePdfSingleColumnGrid(
   textLines: readonly PdfLine[],
   pageHeight: number
 ): PdfDetectedGrid {
-  if (grid.columns.length !== 2 || grid.rows.length < 3) return grid
+  if (grid.rows.length < 3) return grid
   const segmentColumns = inferPdfGridColumnsFromRowSegments(rawLines, grid)
+  // 分段横线的端点本身就是单元格边界；普通网格检测可能已把同一区域拆成
+  // 多个多列候选，此时仍需用原始端点恢复真实列数，不能提前跳过精修。
+  if (segmentColumns.length >= 3) return { ...grid, columns: segmentColumns }
+  if (grid.columns.length !== 2) return grid
   // 分段横线端点和稳定文本起点必须交叉校验：端点描述真实单元格边界，
   // 文本起点证明该列确实存在内容，二者单独使用都会产生伪列或粘连。
   const columns = inferPdfGridColumnsFromEvidence(
@@ -1868,6 +1970,32 @@ function detectPdfTextRowTableGrids(
 }
 
 /**
+ * 判断两个候选网格是否存在明显面积重叠。
+ * 用于避免缺少竖线证据的文本行候选覆盖已经由闭合网格确认的正文表格。
+ * @param left 左侧候选网格。
+ * @param right 右侧候选网格。
+ * @returns 两个网格的交集达到较小网格面积的 25% 时返回 true。
+ * @author zhenghq
+ */
+function pdfGridsHaveSubstantialOverlap(
+  left: PdfDetectedGrid,
+  right: PdfDetectedGrid
+): boolean {
+  const overlapWidth = Math.max(0,
+    Math.min(left.bbox.x + left.bbox.width, right.bbox.x + right.bbox.width) -
+      Math.max(left.bbox.x, right.bbox.x))
+  const overlapHeight = Math.max(0,
+    Math.min(left.bbox.y + left.bbox.height, right.bbox.y + right.bbox.height) -
+      Math.max(left.bbox.y, right.bbox.y))
+  const overlap = overlapWidth * overlapHeight
+  const smallerArea = Math.min(
+    left.bbox.width * left.bbox.height,
+    right.bbox.width * right.bbox.height
+  )
+  return smallerArea > 0 && overlap / smallerArea >= 0.25
+}
+
+/**
  * 移除被精修后的多列网格覆盖的同边界单列候选。
  * 单列候选可能先被代码框规则选中，并把同一区域的多列表格一起过滤掉，
  * 因此必须在代码框判定前优先保留列数更多的候选。
@@ -1947,9 +2075,102 @@ function mergeAdjacentPdfTableGrids(
     return {
       bbox: { x: left, y: top, width: right - left, height: bottom - top },
       columns: mergePdfGridCoordinates(group.flatMap((grid) => grid.columns)),
-      rows: mergePdfGridCoordinates(group.flatMap((grid) => grid.rows))
+      rows: mergePdfGridCoordinates(group.flatMap((grid) => grid.rows)),
+      ...(group.some((grid) => grid.rowBands)
+        ? {
+            rowBands: group
+              .flatMap((grid) => pdfGridRowBands(grid))
+              .sort((first, second) => first.top - second.top)
+              .filter((band, index, bands) => index === 0 ||
+                Math.abs(band.top - bands[index - 1]!.top) > PDF_TABLE_LINE_TOLERANCE ||
+                Math.abs(band.bottom - bands[index - 1]!.bottom) > PDF_TABLE_LINE_TOLERANCE)
+              .map((band) => ({ ...band }))
+          }
+        : {})
     }
   })
+}
+
+/**
+ * 将数据表上方独立的表头带并入表格边界。
+ * 只接受同时具备覆盖数据列宽的上横线、与列边界对齐的竖线和表头文本的候选，
+ * 避免把页眉装饰线或上方其他独立表格误并入当前表格。
+ * @param grid 数据区表格网格。
+ * @param lines 页面全部去重线段。
+ * @param textLines 页面全部文本行。
+ * @returns 合并表头后的网格；证据不足时返回原网格。
+ * @author zhenghq
+ */
+function extendPdfTableHeaderBands(
+  grid: PdfDetectedGrid,
+  lines: readonly PdfGridLine[],
+  textLines: readonly PdfLine[]
+): PdfDetectedGrid {
+  const gridTop = grid.bbox.y
+  const gridRight = grid.bbox.x + grid.bbox.width
+  const vertical = lines.filter((line) => line.orientation === 'vertical')
+  const horizontal = lines.filter((line) => line.orientation === 'horizontal')
+  const maximumHeaderHeight = 96
+  const candidates = horizontal
+    .filter((line) => line.position < gridTop - PDF_TABLE_LINE_TOLERANCE &&
+      gridTop - line.position >= PDF_MIN_TABLE_SIZE &&
+      gridTop - line.position <= maximumHeaderHeight &&
+      line.start <= grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+      line.end >= gridRight - PDF_TABLE_LINE_TOLERANCE)
+    .sort((left, right) => right.position - left.position)
+  for (const topLine of candidates) {
+    const headerTop = topLine.position
+    // 表头列线只需覆盖表头自身的上下边界，不要求继续延伸到数据区顶边。
+    // 真实 PDF 会在表头底线与数据区首线之间保留明显空白，强制贯穿会漏掉表头。
+    const alignedColumns = grid.columns.filter((column) => vertical.some((line) =>
+      Math.abs(line.position - column) <= PDF_TABLE_LINE_TOLERANCE &&
+      line.start <= headerTop + PDF_TABLE_LINE_TOLERANCE &&
+      line.end >= Math.min(gridTop - PDF_TABLE_LINE_TOLERANCE, headerTop + PDF_MIN_TABLE_SIZE)))
+    if (alignedColumns.length < 2) continue
+    const hasHeaderText = textLines.some((line) => {
+      const centerX = line.bbox.x + line.bbox.width / 2
+      const centerY = line.bbox.y + line.bbox.height / 2
+      return centerX >= grid.bbox.x - PDF_TABLE_LINE_TOLERANCE &&
+        centerX <= gridRight + PDF_TABLE_LINE_TOLERANCE &&
+        centerY >= headerTop - PDF_TABLE_LINE_TOLERANCE &&
+        centerY <= gridTop + PDF_TABLE_LINE_TOLERANCE
+    })
+    if (!hasHeaderText) continue
+    // 表头下缘必须由覆盖数据列宽的横线闭合。仅有顶部装饰线和贯穿竖线时，
+    // 不能把页眉或上方独立内容并入数据表。
+    const hasHeaderBottom = horizontal.some((line) =>
+      line.position > headerTop + PDF_TABLE_LINE_TOLERANCE &&
+      line.position <= gridTop + PDF_TABLE_LINE_TOLERANCE &&
+      line.start <= grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+      line.end >= gridRight - PDF_TABLE_LINE_TOLERANCE)
+    if (!hasHeaderBottom) continue
+    const bands = pdfGridRowBands(grid)
+    if (bands.length === 0) continue
+    const headerBottom = horizontal
+      .filter((line) => line.position > headerTop + PDF_TABLE_LINE_TOLERANCE &&
+        line.position < gridTop - PDF_TABLE_LINE_TOLERANCE &&
+        line.start <= grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+        line.end >= gridRight - PDF_TABLE_LINE_TOLERANCE)
+      .reduce((closest, line) => Math.min(closest, line.position), gridTop)
+    // 独立表头与数据区之间可能有明显留白；空白带不能被当作数据行。
+    // 仅保留从数据区顶边开始的行带，并让表头行带直接采用自己的上下横线。
+    const dataBands = bands.filter((band) => band.top >= gridTop - PDF_TABLE_LINE_TOLERANCE)
+    return {
+      bbox: {
+        x: Math.min(grid.bbox.x, topLine.start),
+        y: headerTop,
+        width: Math.max(gridRight, topLine.end) - Math.min(grid.bbox.x, topLine.start),
+        height: grid.bbox.y + grid.bbox.height - headerTop
+      },
+      columns: [...grid.columns],
+      rows: [...grid.rows],
+      rowBands: [
+        { top: headerTop, bottom: headerBottom },
+        ...dataBands.map((band) => ({ ...band }))
+      ]
+    }
+  }
+  return grid
 }
 
 /**
@@ -2019,7 +2240,9 @@ function isPdfCodeFrameGrid(
 ): boolean {
   if (grid.columns.length !== 2) return false
   const insideLines = lines.filter((line) => pdfLineIntersectsGrid(line, grid))
-  if (insideLines.length < 2) return false
+  // 跨页代码框可能只剩一行源码（真实接口文档第 75 页的 `agent.close();`）。
+  // 单行闭合框仍应保留代码语义和边框，不能降级成普通段落后把左右边线留作形状。
+  if (insideLines.length < 1) return false
   const items = insideLines.flatMap((line) => line.items)
   const text = items.map((item) => item.str).join('')
   if (!text.trim()) return false
@@ -2096,6 +2319,243 @@ function filterPdfOpenContainerGrids(
   lines: readonly PdfGridLine[]
 ): PdfDetectedGrid[] {
   return grids.filter((grid) => !isPdfOpenContainerGrid(grid, lines))
+}
+
+/** 开放容器识别结果。 */
+interface PdfOpenContainerRegions {
+  /** 仅覆盖连续代码文本的网格，用于建立代码语义。 */
+  codeRegions: PdfDetectedGrid[]
+  /** 覆盖完整左右边线的网格，仅用于裁剪容器边框和局部横线。 */
+  clipRegions: PdfDetectedGrid[]
+}
+
+/**
+ * 判断视觉行是否具有等宽或代码字体特征。
+ * 开放容器可能包含正文，只有代码样式文本才能进入代码区域。
+ * @param line PDF 视觉行。
+ * @param styles PDF.js 字体样式映射。
+ * @returns 行内至少一个文本项明确使用代码字体时返回 true。
+ * @author zhenghq
+ */
+function pdfLineUsesCodeFont(
+  line: PdfLine,
+  styles: Record<string, PdfTextStyle>
+): boolean {
+  return line.items.some((item) => {
+    const style = item.fontName ? styles[item.fontName] : undefined
+    return isPdfMonospaceFontFamily(item.fontName) ||
+      isPdfMonospaceFontFamily(style?.fontName) ||
+      isPdfMonospaceFontFamily(style?.fontFamily)
+  })
+}
+
+/**
+ * 判断视觉行是否具有代码语义。
+ * 优先识别等宽字体，同时兼容用 serif 字体排版的接口示例：符号密度达到
+ * 6% 或出现明确的代码结构时，也应视为代码行。
+ * @param line PDF 视觉行。
+ * @param styles PDF.js 字体样式映射。
+ * @returns 行内文本具有代码字体或代码形态时返回 true。
+ * @author zhenghq
+ */
+function pdfLineUsesCodeSemantics(
+  line: PdfLine,
+  styles: Record<string, PdfTextStyle>
+): boolean {
+  if (pdfLineUsesCodeFont(line, styles)) return true
+  const text = line.items.map((item) => item.str).join('')
+  if (!text.trim()) return false
+  const codeSymbols = text.match(/[{}()[\];=<>./\\:_$@#]/gu)?.length ?? 0
+  const symbolDensity = codeSymbols / Math.max(1, text.length)
+  const hasCodeShape = /(?:=>|::|;\s*$|[{}]\s*$)/mu.test(text)
+  return symbolDensity >= 0.06 || (hasCodeShape && codeSymbols >= 3)
+}
+
+/**
+ * 从贯穿多条横线的左右长竖线中识别开放代码容器。
+ * 这类容器没有闭合外框，普通网格检测只会看到局部横线；这里生成两类区域：
+ * 代码文本区域用于段落分组，完整容器区域用于裁掉残留边框线段。
+ * @param lines 页面全部去重线段。
+ * @param textLines 页面全部文本行。
+ * @param styles PDF.js 字体样式映射。
+ * @returns 开放容器的代码区域与裁剪区域。
+ * @author zhenghq
+ */
+function detectPdfOpenCodeContainers(
+  lines: readonly PdfGridLine[],
+  textLines: readonly PdfLine[],
+  styles: Record<string, PdfTextStyle>,
+  tableGrids: readonly PdfDetectedGrid[] = []
+): PdfOpenContainerRegions {
+  const vertical = lines.filter((line) => line.orientation === 'vertical')
+  const horizontal = lines.filter((line) => line.orientation === 'horizontal')
+  const groups: Array<{
+    left: number
+    right: number
+    top: number
+    bottom: number
+    separators: PdfGridLine[]
+    shortContinuation: boolean
+  }> = []
+  for (const leftBorder of vertical) {
+    for (const rightBorder of vertical) {
+      if (rightBorder.position <= leftBorder.position + PDF_MIN_TABLE_SIZE) continue
+      const top = Math.max(leftBorder.start, rightBorder.start)
+      const bottom = Math.min(leftBorder.end, rightBorder.end)
+      const height = bottom - top
+      // 跨页代码框可能只在新页保留顶部边框和一行源码，此时左右边线高度
+      // 会明显小于普通开放容器。先保留短候选，再结合顶部横线和代码语义
+      // 做更严格判断，避免把普通小表格误吞为代码框。
+      if (height < PDF_MIN_TABLE_SIZE) continue
+      // 真正开放的代码容器左右边线会明显越过表格候选。普通表格的左右边线
+      // 与表格同高，不能仅因单元格文字使用等宽字体就按代码容器处理。
+      // 单列候选通常只是开放容器内部的局部横线，不能据此排除容器；
+      // 只有带内部列分隔的闭合表格才与代码容器结构互斥。
+      const overlapsClosedTable = tableGrids.some((grid) =>
+        grid.columns.length >= 3 &&
+        leftBorder.position >= grid.bbox.x - PDF_TABLE_LINE_TOLERANCE &&
+        leftBorder.position <= grid.bbox.x + grid.bbox.width + PDF_TABLE_LINE_TOLERANCE &&
+        rightBorder.position >= grid.bbox.x - PDF_TABLE_LINE_TOLERANCE &&
+        rightBorder.position <= grid.bbox.x + grid.bbox.width + PDF_TABLE_LINE_TOLERANCE &&
+        top <= grid.bbox.y + PDF_TABLE_LINE_TOLERANCE &&
+        bottom >= grid.bbox.y + grid.bbox.height - PDF_TABLE_LINE_TOLERANCE)
+      if (overlapsClosedTable) continue
+      const separators = horizontal.filter((line) =>
+        line.start <= leftBorder.position + PDF_TABLE_LINE_TOLERANCE &&
+        line.end >= rightBorder.position - PDF_TABLE_LINE_TOLERANCE &&
+        line.position >= top - PDF_TABLE_LINE_TOLERANCE &&
+        line.position <= bottom + PDF_TABLE_LINE_TOLERANCE)
+      const shortContinuation = height < PDF_MIN_TABLE_SIZE * 4
+      if (shortContinuation) {
+        // 真实接口文档第 75 页的续框只有顶部横线，底部由上一页闭合。
+        // 顶部横线可能因导出误差没有精确触达右边线，因此按覆盖框体宽度
+        // 判断，而不是复用要求贯穿两条边线的 separators。底部横线缺失
+        // 可区分跨页开放代码框和带完整外框的小型双列表格。
+        const topCandidates = horizontal.filter((line) =>
+          Math.abs(line.position - top) <= PDF_TABLE_LINE_TOLERANCE)
+        const width = rightBorder.position - leftBorder.position
+        const hasTopSeparator = topCandidates.some((line) =>
+          Math.max(0, Math.min(line.end, rightBorder.position) - Math.max(line.start, leftBorder.position)) >=
+            width * 0.9)
+        const hasBottomSeparator = horizontal.some((line) =>
+          Math.abs(line.position - bottom) <= PDF_TABLE_LINE_TOLERANCE &&
+          Math.max(0, Math.min(line.end, rightBorder.position) - Math.max(line.start, leftBorder.position)) >=
+            width * 0.9)
+        if (!hasTopSeparator || hasBottomSeparator) continue
+      }
+      // 闭合代码框已有独立识别路径。开放容器的强证据是成对长竖线，
+      // 横线可能完全没有（真实 PDF 第 72 页），也可能只有一条局部边线；
+      // 下方仍要求至少两条连续代码语义行，避免把普通双栏正文误判为代码框。
+      if (separators.length === 0) {
+        const hasCodeLines = textLines.some((line) => {
+          const centerX = line.bbox.x + line.bbox.width / 2
+          const centerY = line.bbox.y + line.bbox.height / 2
+          return centerX > leftBorder.position + PDF_TABLE_LINE_TOLERANCE &&
+            centerX < rightBorder.position - PDF_TABLE_LINE_TOLERANCE &&
+            centerY >= top - PDF_TABLE_LINE_TOLERANCE &&
+            centerY <= bottom + PDF_TABLE_LINE_TOLERANCE &&
+            pdfLineUsesCodeSemantics(line, styles)
+        })
+        if (!hasCodeLines) continue
+      }
+      if (groups.some((group) =>
+        Math.abs(group.left - leftBorder.position) <= PDF_TABLE_LINE_TOLERANCE &&
+        Math.abs(group.right - rightBorder.position) <= PDF_TABLE_LINE_TOLERANCE &&
+        Math.abs(group.top - top) <= PDF_TABLE_LINE_TOLERANCE &&
+        Math.abs(group.bottom - bottom) <= PDF_TABLE_LINE_TOLERANCE)) continue
+      groups.push({
+        left: leftBorder.position,
+        right: rightBorder.position,
+        top,
+        bottom,
+        separators,
+        shortContinuation
+      })
+    }
+  }
+  const codeRegions: PdfDetectedGrid[] = []
+  const clipRegions: PdfDetectedGrid[] = []
+  const clipRegionsByBounds = new Map<string, { grid: PdfDetectedGrid; separators: PdfGridLine[] }>()
+  for (const group of groups) {
+    // 同一组左右长边线可能覆盖多个代码段和正文段。为每个代码段保存完整
+    // 容器边界时，需要让段落分组稳定选择第一个同边界候选作为代码框。
+    const groupKey = [group.left, group.top, group.right, group.bottom]
+      .map((value) => Math.round(value * 100) / 100)
+      .join(':')
+    const insideLines = textLines.filter((line) => {
+      const centerX = line.bbox.x + line.bbox.width / 2
+      const centerY = line.bbox.y + line.bbox.height / 2
+      return centerX > group.left + PDF_TABLE_LINE_TOLERANCE &&
+        centerX < group.right - PDF_TABLE_LINE_TOLERANCE &&
+        centerY >= group.top - PDF_TABLE_LINE_TOLERANCE &&
+        centerY <= group.bottom + PDF_TABLE_LINE_TOLERANCE
+    })
+    // 文本项顺序不保证按版面从上到下排列，分组前必须按纵坐标稳定排序。
+    // 真实接口文档会用 serif 字体绘制 Java 示例，不能只依赖等宽字体；
+    // 用闭合代码框相同的符号密度和代码形态规则识别开放容器内的代码行。
+    const codeLines = insideLines
+      .filter((line) => pdfLineUsesCodeSemantics(line, styles))
+      .sort((left, right) => left.bbox.y - right.bbox.y || left.bbox.x - right.bbox.x)
+    if (codeLines.length < (group.shortContinuation ? 1 : 2)) continue
+    // 左右竖线端点不一定精确落在上下横线上，开放容器应优先采用完整横线
+    // 作为视觉外框；仅在横线与左右边线同时相交时才扩展，避免吞入页眉。
+    const groupHorizontalBounds = group.separators
+      .filter((line) =>
+        Math.abs(line.start - group.left) <= PDF_TABLE_LINE_TOLERANCE ||
+        Math.abs(line.end - group.right) <= PDF_TABLE_LINE_TOLERANCE)
+      .map((line) => line.position)
+    const codeFrameTop = Math.round((
+      Math.min(group.top, ...groupHorizontalBounds) * 100
+    )) / 100
+    const codeFrameBottom = Math.round((
+      Math.max(group.bottom, ...groupHorizontalBounds) * 100
+    )) / 100
+    // 同一组左右边线可能被多对局部端点重复发现。裁剪区域必须按完整边界去重，
+    // 否则多份相同的容器候选会让横线裁剪和代码框生成重复执行。
+    if (!clipRegionsByBounds.has(groupKey)) {
+      const clipRegion: PdfDetectedGrid = {
+        bbox: {
+          x: group.left,
+          y: group.top,
+          width: group.right - group.left,
+          height: group.bottom - group.top
+        },
+        columns: [group.left, group.right],
+        rows: [group.top, group.bottom]
+      }
+      clipRegionsByBounds.set(groupKey, { grid: clipRegion, separators: group.separators })
+      clipRegions.push(clipRegion)
+    }
+    const groupSeparators = group.separators
+    // 只把连续代码行扩展为代码区域，避免同一容器中的正文被整段吞成代码。
+    let runStart = 0
+    for (let index = 1; index <= codeLines.length; index += 1) {
+      const current = codeLines[index]
+      const previous = codeLines[index - 1]!
+      const previousBottom = previous.bbox.y + previous.bbox.height
+      const gap = current ? current.bbox.y - previousBottom : Number.POSITIVE_INFINITY
+      const fontSize = Math.max(previous.bbox.height, current?.bbox.height ?? previous.bbox.height)
+      if (current && gap <= Math.max(fontSize * 3, PDF_TABLE_LINE_TOLERANCE * 3)) continue
+      const run = codeLines.slice(runStart, index)
+      const runTop = Math.min(...run.map((line) => line.bbox.y))
+      const runBottom = Math.max(...run.map((line) => line.bbox.y + line.bbox.height))
+      // 开放容器的代码框必须覆盖左右边线的完整连续范围。局部横线只是
+      // 章节分隔，若把代码框收缩到最近两条横线，译文增长后会提前截断边框；
+      // 完整边界同时供界面绘制外框和裁剪贯穿页面的残留线段。
+      codeRegions.push({
+        bbox: {
+          x: Math.round(group.left * 100) / 100,
+          y: codeFrameTop,
+          width: Math.round((group.right - group.left) * 100) / 100,
+          height: Math.round((codeFrameBottom - codeFrameTop) * 100) / 100
+        },
+        columns: [group.left, group.right],
+        rows: [runTop, runBottom]
+      })
+      runStart = index
+    }
+  }
+  return { codeRegions, clipRegions }
 }
 
 /**
@@ -2534,8 +2994,15 @@ function groupPdfTextItems(items: PdfTextItem[], pageHeight: number): PdfLine[] 
   for (const item of items) {
     if (!item.str || item.str.trim().length === 0) continue
     const bbox = textItemBoundingBox(item, pageHeight)
+    const baseline = textItemBaseline(item, pageHeight)
     const last = lines[lines.length - 1]
-    const sameLine = last && Math.abs(last.bbox.y - bbox.y) <= Math.max(2, Math.min(last.bbox.height, bbox.height) * 0.5)
+    const lastFontSize = fontSizeFromTransform(last?.items[0]?.transform, last?.items[0]?.height)
+    const currentFontSize = fontSizeFromTransform(item.transform, item.height)
+    // bbox 顶部接近并不代表处于同一视觉行；上下相邻的侧栏标签也会产生这种假象。
+    // 基线是 PDF 文本排版的真实行锚点，必须同时满足 bbox 与基线容差才能合并。
+    const sameLine = last &&
+      Math.abs(last.bbox.y - bbox.y) <= Math.max(2, Math.min(last.bbox.height, bbox.height) * 0.5) &&
+      Math.abs(last.baseline - baseline) <= Math.max(2, Math.min(lastFontSize, currentFontSize) * 0.5)
     if (sameLine) {
       // 此处只按原始片段顺序合并。表格单元格不能凭空获得前导空格；
       // 代码框会在识别后根据片段几何间距单独恢复源码空格。
@@ -2544,12 +3011,76 @@ function groupPdfTextItems(items: PdfTextItem[], pageHeight: number): PdfLine[] 
       const top = Math.min(last.bbox.y, bbox.y)
       const bottom = Math.max(last.bbox.y + last.bbox.height, bbox.y + bbox.height)
       last.bbox = { x: Math.min(last.bbox.x, bbox.x), y: top, width: right - Math.min(last.bbox.x, bbox.x), height: bottom - top }
-      last.baseline = Math.min(last.baseline, textItemBaseline(item, pageHeight))
+      last.baseline = Math.min(last.baseline, baseline)
     } else {
-      lines.push({ items: [item], bbox, baseline: textItemBaseline(item, pageHeight) })
+      lines.push({ items: [item], bbox, baseline })
     }
   }
   return lines
+}
+
+/**
+ * 按视觉行内明显的横向空白拆分导航项或并排标签。
+ * 普通正文的换行和双栏阅读顺序已在行分组阶段完成；这里只处理同一基线上
+ * 间距远大于正常字间距的文本片段，避免把独立控件重新拼成一句话。
+ * @param lines 页面内按阅读顺序分组的视觉行。
+ * @returns 保留原顺序并补充横向断开边界的视觉行。
+ * @author zhenghq
+ */
+function splitPdfLinesAtHorizontalGaps(lines: readonly PdfLine[]): PdfLine[] {
+  const result: PdfLine[] = []
+  for (const line of lines) {
+    // 目录行中的引导点和页码依赖整行文本才能识别，必须先于横向拆分保护。
+    // 否则标题、点线和页码会变成三个独立文本块，丢失目录语义与受保护片段。
+    if (parsePdfTableOfContentsLine(line.items.map((item) => item.str).join(''))) {
+      result.push(line)
+      continue
+    }
+    let segmentStart = 0
+    for (let index = 1; index < line.items.length; index += 1) {
+      const previous = line.items[index - 1]!
+      const current = line.items[index]!
+      const previousRight = (previous.transform?.[4] ?? 0) + (previous.width ?? 0)
+      const currentLeft = current.transform?.[4] ?? 0
+      const fontSize = Math.min(
+        fontSizeFromTransform(previous.transform, previous.height),
+        fontSizeFromTransform(current.transform, current.height)
+      )
+      if (currentLeft - previousRight <= Math.max(8, fontSize * 1.25)) continue
+      result.push(pdfLineSegment(line, segmentStart, index))
+      segmentStart = index
+    }
+    result.push(pdfLineSegment(line, segmentStart, line.items.length))
+  }
+  return result
+}
+
+/**
+ * 从视觉行中截取连续文本项并重新计算 bbox。
+ * @param line 原始视觉行。
+ * @param start 起始文本项索引，包含。
+ * @param end 结束文本项索引，不包含。
+ * @returns 保留原始基线的新视觉行。
+ * @author zhenghq
+ */
+function pdfLineSegment(line: PdfLine, start: number, end: number): PdfLine {
+  const items = line.items.slice(start, end)
+  const left = Math.min(...items.map((item) => item.transform?.[4] ?? 0))
+  const right = Math.max(...items.map((item) => (item.transform?.[4] ?? 0) + (item.width ?? 0)))
+  const top = Math.min(...items.map((item) => item.transform?.[5] ?? line.baseline))
+  const bottom = Math.max(...items.map((item) =>
+    (item.transform?.[5] ?? line.baseline) + (item.height ?? fontSizeFromTransform(item.transform))))
+  return {
+    items,
+    bbox: {
+      x: left,
+      // PDF.js 变换矩阵的 f 分量是自下而上的基线；这里保留原行的页面坐标顶部。
+      y: line.bbox.y,
+      width: Math.max(1, right - left),
+      height: Math.max(1, line.bbox.height, bottom - top)
+    },
+    baseline: line.baseline
+  }
 }
 
 /**
@@ -2718,6 +3249,22 @@ function endsPdfSemanticSentence(text: string): boolean {
 }
 
 /**
+ * 判断视觉行是否像侧栏中的独立短标签。
+ * 该判定只用于阻止高行距的相邻单行标签被合并，不参与普通段落的首行识别。
+ * @param line PDF 视觉行。
+ * @param pageWidth 页面宽度。
+ * @returns 行宽较窄、最多三个词且没有句末标点时返回 true。
+ * @author zhenghq
+ */
+function isPdfStandaloneShortLabelLine(line: PdfLine, pageWidth: number): boolean {
+  const text = line.items.map((item) => item.str).join('').trim()
+  if (!text || text.length > 32 || endsPdfSemanticSentence(text)) return false
+  const words = text.split(/\s+/u).filter(Boolean)
+  if (words.length > 3) return false
+  return line.bbox.width <= pageWidth * 0.12
+}
+
+/**
  * 判断两行在水平方向是否有足够重叠，避免把双栏或左右并排内容合并为一段。
  * @param previous 前一视觉行。
  * @param current 当前视觉行。
@@ -2802,6 +3349,16 @@ function canMergePdfParagraphLine(
   const minimumAdvance = Math.max(1, Math.max(previousSize, currentSize) * 1.02)
   const maximumAdvance = Math.max(previousSize, currentSize) * 3
   if (baselineAdvance < minimumAdvance || baselineAdvance > maximumAdvance) return false
+  // 侧栏标签通常短小、左对齐，并采用明显大于正文行距的纵向间距。
+  // 这类相邻行是并列导航项而不是续行，不能因为 bbox 接近或行高一致而合并。
+  const sameLeftEdge = Math.abs(current.bbox.x - previous.bbox.x) <=
+    Math.max(1.5, currentSize * 0.2)
+  if (sameLeftEdge &&
+    baselineAdvance >= Math.max(previousSize, currentSize) * 1.5 &&
+    isPdfStandaloneShortLabelLine(previous, pageWidth) &&
+    isPdfStandaloneShortLabelLine(current, pageWidth)) {
+    return false
+  }
   if (paragraph.lineHeight !== undefined &&
     Math.abs(baselineAdvance - paragraph.lineHeight) > Math.max(1, currentSize * 0.25)) return false
   if (!pdfLinesHaveHorizontalOverlap(previous, current)) return false
@@ -3202,8 +3759,9 @@ function pdfTextItemInsideRegion(
  * @param bodyFontSize 页面正文主字号。
  * @param styles 字体样式映射。
  * @param lineHeights 文本行行高映射。
+ * @param imageRegions 页面内嵌图片区域。
  * @param contentArea 页面正文内容区。
- * @returns 表格区块与未落入网格的文本行。
+ * @returns 表格区块、未落入网格的文本行及实际输出的真实行带。
  * @author zhenghq
  */
 function createPdfTableBlock(
@@ -3216,10 +3774,16 @@ function createPdfTableBlock(
   bodyFontSize: number,
   styles: Record<string, PdfTextStyle>,
   lineHeights: ReadonlyMap<PdfLine, number>,
+  imageRegions: readonly PdfEmbeddedImageRegion[],
   contentArea?: { left: number; right: number; center: number }
-): { table: DocumentTableBlock; remainingLines: PdfLine[] } {
+): {
+  table: DocumentTableBlock
+  remainingLines: PdfLine[]
+  rowBands: PdfDetectedGridRowBand[]
+} {
   const tableId = createDocumentBlockId(fingerprint, pageId, 0, 'table')
-  const rowCount = Math.max(1, grid.rows.length - 1)
+  const rowBands = pdfGridRowBands(grid)
+  const rowCount = Math.max(1, rowBands.length)
   const columnCount = Math.max(1, grid.columns.length - 1)
   const cellItems = Array.from({ length: rowCount }, () =>
     Array.from({ length: columnCount }, () => [] as Array<{ item: PdfTextItem; bbox: DocumentBoundingBox }>)
@@ -3241,16 +3805,23 @@ function createPdfTableBlock(
       if (!pdfTextItemInsideRegion(item, itemBbox, grid.bbox)) continue
       const centerX = itemBbox.x + itemBbox.width / 2
       const centerY = itemBbox.y + itemBbox.height / 2
-      const columnIndex = grid.columns.findIndex((left, index) =>
+      // 长首列文本可能越过列边界伸入下一列。按左边界归属能保留单元格的
+      // 原始列语义；只有左边界落在容差之外时才用中心点兜底。
+      const leftColumnIndex = grid.columns.findIndex((left, index) =>
+        index < grid.columns.length - 1 &&
+        itemBbox.x >= left - PDF_TABLE_LINE_TOLERANCE &&
+        itemBbox.x < grid.columns[index + 1]! - PDF_TABLE_LINE_TOLERANCE)
+      const centerColumnIndex = leftColumnIndex >= 0
+        ? leftColumnIndex
+        : grid.columns.findIndex((left, index) =>
         index < grid.columns.length - 1 &&
         centerX >= left - PDF_TABLE_LINE_TOLERANCE &&
-        centerX <= grid.columns[index + 1]! + PDF_TABLE_LINE_TOLERANCE)
-      const rowIndex = grid.rows.findIndex((top, index) =>
-        index < grid.rows.length - 1 &&
-        centerY >= top - PDF_TABLE_LINE_TOLERANCE &&
-        centerY <= grid.rows[index + 1]! + PDF_TABLE_LINE_TOLERANCE)
-      if (columnIndex < 0 || rowIndex < 0) continue
-      cellItems[rowIndex]![columnIndex]!.push({ item, bbox: itemBbox })
+        centerX < grid.columns[index + 1]! - PDF_TABLE_LINE_TOLERANCE)
+      const rowIndex = rowBands.findIndex((band) =>
+        centerY >= band.top - PDF_TABLE_LINE_TOLERANCE &&
+        centerY <= band.bottom + PDF_TABLE_LINE_TOLERANCE)
+      if (centerColumnIndex < 0 || rowIndex < 0) continue
+      cellItems[rowIndex]![centerColumnIndex]!.push({ item, bbox: itemBbox })
       matchedItem = true
     }
     // 只要行内有文本项落入网格，整行就由表格接管，避免同一单元格文本重复输出。
@@ -3259,22 +3830,62 @@ function createPdfTableBlock(
     }
   }
 
-  const rows: DocumentTableRow[] = cellItems.map((cells, rowIndex) => ({
-    rowId: createTableRowId(tableId, rowIndex),
-    cells: cells.map((entries, cellIndex) => {
-      const cellId = createTableCellId(fingerprint, pageId, tableId, rowIndex, cellIndex)
-      const cellLeft = grid.columns[cellIndex]!
-      const cellRight = grid.columns[cellIndex + 1]!
-      const cellTop = grid.rows[rowIndex]!
-      const cellBottom = grid.rows[rowIndex + 1]!
-      const sortedEntries = [...entries].sort((left, right) =>
-        left.bbox.y - right.bbox.y || left.bbox.x - right.bbox.x)
-      const childBlocks: DocumentTextBlock[] = []
-      let currentEntries: typeof sortedEntries = []
-      let currentLine: PdfLine | undefined
-      for (const entry of sortedEntries) {
-        const sourceLine = lines.find((line) => line.items.includes(entry.item))
-        if (currentLine && sourceLine !== currentLine) {
+  // 表头扩展会产生带真实空白间隔的稀疏行带，必须只输出含文本或图片的
+  // 真实行，否则译文表格会出现额外空行并拉大表头间距。普通闭合网格的
+  // 空行可能承载图片或表单结构，仍需完整保留，避免破坏原始行列。
+  const imageRowIndexes = new Set<number>()
+  for (const region of imageRegions) {
+    const imageCell = pdfTableCellIndexForRegion(grid, region, rowBands)
+    if (imageCell) imageRowIndexes.add(imageCell.rowIndex)
+  }
+  const sourceRowIndexes = cellItems.flatMap((cells, sourceRowIndex) =>
+    !grid.rowBands ||
+    cells.some((entries) => entries.length > 0) ||
+    imageRowIndexes.has(sourceRowIndex)
+      ? [sourceRowIndex]
+      : [])
+  const outputRowBands = sourceRowIndexes.map((sourceRowIndex) => ({
+    ...rowBands[sourceRowIndex]!
+  }))
+  const rows: DocumentTableRow[] = sourceRowIndexes.map((sourceRowIndex, rowIndex) => {
+    const cells = cellItems[sourceRowIndex]!
+    return {
+      rowId: createTableRowId(tableId, rowIndex),
+      cells: cells.map((entries, cellIndex) => {
+        const cellId = createTableCellId(fingerprint, pageId, tableId, rowIndex, cellIndex)
+        const cellLeft = grid.columns[cellIndex]!
+        const cellRight = grid.columns[cellIndex + 1]!
+        const cellTop = rowBands[sourceRowIndex]!.top
+        const cellBottom = rowBands[sourceRowIndex]!.bottom
+        const sortedEntries = [...entries].sort((left, right) =>
+          left.bbox.y - right.bbox.y || left.bbox.x - right.bbox.x)
+        const childBlocks: DocumentTextBlock[] = []
+        let currentEntries: typeof sortedEntries = []
+        let currentLine: PdfLine | undefined
+        for (const entry of sortedEntries) {
+          const sourceLine = lines.find((line) => line.items.includes(entry.item))
+          if (currentLine && sourceLine !== currentLine) {
+            childBlocks.push(createPdfTableCellTextBlock(
+              currentEntries,
+              cellId,
+              childBlocks.length,
+              currentLine,
+              pageWidth,
+              bodyFontSize,
+              styles,
+              lineHeights,
+              contentArea,
+              cellLeft,
+              cellRight,
+              cellTop,
+              cellBottom
+            ))
+            currentEntries = []
+          }
+          currentEntries.push(entry)
+          currentLine = sourceLine
+        }
+        if (currentEntries.length > 0 && currentLine) {
           childBlocks.push(createPdfTableCellTextBlock(
             currentEntries,
             cellId,
@@ -3290,31 +3901,11 @@ function createPdfTableBlock(
             cellTop,
             cellBottom
           ))
-          currentEntries = []
         }
-        currentEntries.push(entry)
-        currentLine = sourceLine
-      }
-      if (currentEntries.length > 0 && currentLine) {
-        childBlocks.push(createPdfTableCellTextBlock(
-          currentEntries,
-          cellId,
-          childBlocks.length,
-          currentLine,
-          pageWidth,
-          bodyFontSize,
-          styles,
-          lineHeights,
-          contentArea,
-          cellLeft,
-          cellRight,
-          cellTop,
-          cellBottom
-        ))
-      }
-      return { cellId, rowSpan: 1, colSpan: 1, blocks: childBlocks }
-    })
-  }))
+        return { cellId, rowSpan: 1, colSpan: 1, blocks: childBlocks }
+      })
+    }
+  })
 
   return {
     table: {
@@ -3326,9 +3917,10 @@ function createPdfTableBlock(
       rows,
       columnWidths: grid.columns.slice(1).map((right, index) =>
         Math.round((right - grid.columns[index]!) * 100) / 100),
-      headerRows: rowCount > 1 ? 1 : 0
+      headerRows: rows.length > 1 ? 1 : 0
     },
-    remainingLines
+    remainingLines,
+    rowBands: outputRowBands
   }
 }
 
@@ -3341,23 +3933,34 @@ function createPdfTableBlock(
  */
 function pdfTableCellIndexForRegion(
   grid: PdfDetectedGrid,
-  region: PdfEmbeddedImageRegion
+  region: PdfEmbeddedImageRegion,
+  rowBands: readonly PdfDetectedGridRowBand[] = pdfGridRowBands(grid)
 ): { rowIndex: number; cellIndex: number } | undefined {
   const left = region.bbox.x
   const right = region.bbox.x + region.bbox.width
   const top = region.bbox.y
   const bottom = region.bbox.y + region.bbox.height
+  const centerX = left + region.bbox.width / 2
+  const centerY = top + region.bbox.height / 2
+  const imageArea = Math.max(1, region.bbox.width * region.bbox.height)
   let best: { rowIndex: number; cellIndex: number; overlap: number } | undefined
-  for (let rowIndex = 0; rowIndex < grid.rows.length - 1; rowIndex += 1) {
-    const cellTop = grid.rows[rowIndex]!
-    const cellBottom = grid.rows[rowIndex + 1]!
+  for (let rowIndex = 0; rowIndex < rowBands.length; rowIndex += 1) {
+    const cellTop = rowBands[rowIndex]!.top
+    const cellBottom = rowBands[rowIndex]!.bottom
     for (let cellIndex = 0; cellIndex < grid.columns.length - 1; cellIndex += 1) {
       const cellLeft = grid.columns[cellIndex]!
       const cellRight = grid.columns[cellIndex + 1]!
       const overlapWidth = Math.max(0, Math.min(right, cellRight) - Math.max(left, cellLeft))
       const overlapHeight = Math.max(0, Math.min(bottom, cellBottom) - Math.max(top, cellTop))
       const overlap = overlapWidth * overlapHeight
-      if (overlap > 0 && (!best || overlap > best.overlap)) {
+      const centerInside = centerX >= cellLeft - PDF_TABLE_LINE_TOLERANCE &&
+        centerX <= cellRight + PDF_TABLE_LINE_TOLERANCE &&
+        centerY >= cellTop - PDF_TABLE_LINE_TOLERANCE &&
+        centerY <= cellBottom + PDF_TABLE_LINE_TOLERANCE
+      // 页眉 logo 可能只与表格顶边接触 1～2pt。仅有正面积不足以证明图片
+      // 属于单元格，必须让中心点落入单元格，或至少 60% 的图片面积被覆盖。
+      if ((centerInside || overlap / imageArea >= 0.6) &&
+        (!best || overlap > best.overlap)) {
         best = { rowIndex, cellIndex, overlap }
       }
     }
@@ -3946,21 +4549,53 @@ export async function parsePdfDocument(
         contentArea = inferPdfContentArea(lines, viewport.width)
         const rawGridLines = extractPdfGridLines(operatorList, runtime, viewport)
         const gridLines = mergePdfGridLines(rawGridLines)
+        const closedDetectedGrids = detectPdfTableGrids(gridLines, lines)
+        const textRowDetectedGrids = detectPdfTextRowTableGrids(
+          rawGridLines,
+          lines,
+          viewport.width,
+          viewport.height
+        )
+        // 文本行候选没有竖线闭合证据，容易把页眉 logo 框和正文表格之间
+        // 的空白误当成一整张表。闭合网格是更强证据，只保留与闭合网格
+        // 没有明显重叠的文本行候选，同时仍支持真正无竖线的网页表格。
+        const filteredTextRowGrids = textRowDetectedGrids.filter((candidate) =>
+          !closedDetectedGrids.some((closed) =>
+            closed.columns.length >= 3 && pdfGridsHaveSubstantialOverlap(candidate, closed)))
         const detectedGrids = preferPdfMultiColumnGrids([
-          ...detectPdfTableGrids(gridLines, lines),
-          ...detectPdfTextRowTableGrids(rawGridLines, lines, viewport.width, viewport.height)
+          ...closedDetectedGrids,
+          ...filteredTextRowGrids
         ].map((grid) => refinePdfSingleColumnGrid(grid, rawGridLines, lines, viewport.height)))
           .filter((grid) => !isPdfHeaderImageGrid(grid, imageRegions))
         // 页面装饰边框会形成整页闭合网格，不能作为表格接管正文，也不能过滤边框内的普通分隔线。
         const pageFrameGrids = detectedGrids.filter((grid) =>
           isPdfPageFrameGrid(grid, viewport.width, viewport.height))
-        const codeFrameGrids = selectPdfCodeFrames(
-          detectedGrids.filter((grid) => !pageFrameGrids.includes(grid)),
+        const tableCandidateGrids = detectedGrids.filter((grid) => !pageFrameGrids.includes(grid))
+        // 开放代码容器的局部横线会形成单列闭合候选。若先走闭合代码框
+        // 识别，就会把代码框收缩到局部横线范围；必须先排除开放容器候选，
+        // 再用完整左右边线生成可随译文增长的代码框。
+        const nonOpenContainerGrids = filterPdfOpenContainerGrids(tableCandidateGrids, gridLines)
+        const closedCodeFrameGrids = selectPdfCodeFrames(
+          nonOpenContainerGrids,
           lines,
           styles
         )
+        // 开放代码容器没有完整闭合外框，需要单独恢复代码语义，并保留完整容器
+        // 区域用于裁掉贯穿页面的长竖线和局部横线。
+        // 章节代码容器可能没有闭合上下边，普通网格检测只能看到局部横线。
+        // 将开放容器的代码区域并入代码框，并把完整左右边界作为裁剪区域，
+        // 既让代码文本获得语义与边框，也避免贯穿页面的长竖线残留到译文。
+        const openCodeContainers = detectPdfOpenCodeContainers(
+          gridLines,
+          lines,
+          styles,
+          tableCandidateGrids
+        )
+        // 开放容器中的代码文本块必须携带完整容器边界，而不是仅覆盖代码行的
+        // 局部边界；否则译文增长后边框会在最后一个源码行处提前结束。
+        const allCodeFrameGrids = [...closedCodeFrameGrids, ...openCodeContainers.codeRegions]
         const tableCandidates = filterPdfCodeFrameGrids(
-          detectedGrids.filter((grid) => !pageFrameGrids.includes(grid)),
+          nonOpenContainerGrids,
           lines,
           styles
         )
@@ -3968,8 +4603,8 @@ export async function parsePdfDocument(
         // 若提前裁剪，表头候选会失去与正文候选共享的完整纵向范围。
         const mergedGrids = mergeAdjacentPdfTableGrids(
           filterPdfOpenContainerGrids(tableCandidates, gridLines)
-        ).map((grid) =>
-          trimPdfFormContainerBottom(grid, gridLines, lines))
+        ).map((grid) => extendPdfTableHeaderBands(grid, gridLines, lines))
+          .map((grid) => trimPdfFormContainerBottom(grid, gridLines, lines))
         const grids = filterNestedPdfTableGrids(mergedGrids)
         let remainingLines = [...lines]
         const tableBlocks: DocumentTableBlock[] = []
@@ -3984,28 +4619,37 @@ export async function parsePdfDocument(
             bodyFontSize,
             styles,
             lineHeights,
+            imageRegions,
             contentArea
           )
           if (parsed.table.rows.some((row) => row.cells.some((cell) => cell.blocks.length > 0))) {
             tableBlocks.push(parsed.table)
-            tableGridTargets.push({ table: parsed.table, grid })
+            tableGridTargets.push({
+              table: parsed.table,
+              grid,
+              rowBands: parsed.rowBands
+            })
             remainingLines = parsed.remainingLines
           }
         }
+        // 横向断开只影响表格与代码框之外的普通文本；表格列识别仍需保留
+        // 同一视觉行内的完整片段关系。拆分后的行在同一基线上会由段落合并
+        // 的基线推进约束自然分开，不会把导航控件重新拼成一句话。
         const paragraphs = groupPdfParagraphs(
-          remainingLines,
+          splitPdfLinesAtHorizontalGaps(remainingLines),
           viewport.width,
           bodyFontSize,
           styles,
           lineHeights,
           contentArea,
-          codeFrameGrids
+          allCodeFrameGrids
         )
         blocks.push(...tableBlocks, ...createPdfDividerBlocks(
           gridLines,
           grids,
           pageFrameGrids,
-          codeFrameGrids,
+          [...allCodeFrameGrids, ...openCodeContainers.clipRegions],
+          imageRegions,
           viewport.width,
           viewport.height,
           pageId,
@@ -4025,7 +4669,7 @@ export async function parsePdfDocument(
             paragraph.codeFrame ? 'code' : 'paragraph',
             paragraph.codeFrameIndex === undefined
               ? undefined
-              : codeFrameGrids[paragraph.codeFrameIndex]?.bbox
+              : allCodeFrameGrids[paragraph.codeFrameIndex]?.bbox
           )))
       }
       const isBlankPage = blocks.length === 0 && !hasVisiblePdfPageContent(operatorList, runtime)
@@ -4069,11 +4713,15 @@ export async function parsePdfDocument(
             options.registerAssetBytes,
             assetBytesById
           )
-          const tableTarget = tableGridTargets.find((target) =>
-            pdfTableCellIndexForRegion(target.grid, region) !== undefined)
-          const cellIndex = tableTarget
-            ? pdfTableCellIndexForRegion(tableTarget.grid, region)
-            : undefined
+          let tableTarget: PdfTableGridTarget | undefined
+          let cellIndex: { rowIndex: number; cellIndex: number } | undefined
+          for (const target of tableGridTargets) {
+            const targetCell = pdfTableCellIndexForRegion(target.grid, region, target.rowBands)
+            if (!targetCell) continue
+            tableTarget = target
+            cellIndex = targetCell
+            break
+          }
           if (!tableTarget || !cellIndex || !appendPdfTableCellBlock(
             tableTarget.table,
             cellIndex.rowIndex,

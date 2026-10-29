@@ -108,6 +108,37 @@ test('网页 PDF 水印必须只在打印媒体中生效且复用文件翻译的
   assert.ok(mediaIndex >= 0 && watermarkIndex > mediaIndex, '水印规则必须位于打印媒体查询内')
 })
 
+test('网页 PDF 打印前应仅标记受高度或最大高度约束的滚动容器', () => {
+  const fake = createWebContentsFake()
+  return printWebPageToPdf(fake.webContents).then(() => {
+    const script = fake.executedScripts[0] ?? ''
+    assert.match(script, /querySelectorAll\('body \*'\)/u)
+    assert.match(script, /overflowX\s*\+\s*' '\s*\+\s*style\.overflowY/u)
+    assert.match(script, /style\.maxHeight\s*!==\s*'none'/u)
+    assert.match(script, /!\[[^\]]*'auto'[^\]]*'0px'[^\]]*\]\.includes\(style\.height\)/u)
+    assert.match(script, /setAttribute\(printScrollAttribute,\s*''\)/u)
+  })
+})
+
+test('网页 PDF 打印样式必须展开滚动容器并保持表格、代码块分页完整', () => {
+  const css = buildWebPagePrintCss()
+
+  assert.match(css, /body\s*\{[^}]*height:\s*auto\s*!important/isu, '文档根节点必须按内容自然撑开')
+  assert.match(css, /body\s*\{[^}]*overflow:\s*visible\s*!important/isu, '文档根节点不能保留滚动裁剪')
+  assert.match(css, /body\s*\{[^}]*max-height:\s*none\s*!important/isu, '文档根节点必须取消最大高度限制')
+  assert.match(css, /\[data-st-print-scroll-container\][^{]*\{[^}]*height:\s*auto\s*!important/isu,
+    '标记出的滚动容器必须按内容自然撑开，避免溢出内容覆盖后续区块')
+  assert.match(css, /\[data-st-print-scroll-container\][^{]*\{[^}]*max-height:\s*none\s*!important/isu,
+    '打印时必须取消滚动容器的最大高度限制')
+  assert.match(css, /\[data-st-print-scroll-container\][^{]*\{[^}]*overflow:\s*visible\s*!important/isu,
+    '标记出的滚动容器必须在打印时展开')
+  assert.match(css, /table\s*\{[^}]*break-inside:\s*auto/isu, '表格必须允许自然跨页')
+  assert.match(css, /break-inside:\s*avoid/u, '表格行不能被分页拆开')
+  assert.match(css, /page-break-inside:\s*avoid/u, '表格行需要兼容旧版分页属性')
+  assert.match(css, /pre\s*\{[^}]*white-space:\s*pre-wrap/isu, '代码块必须换行而不是横向裁切')
+  assert.match(css, /pre\s*\{[^}]*overflow-wrap:\s*anywhere/isu, '长代码行必须在打印时安全换行')
+})
+
 test('网页 PDF 应使用 A4 打印并保留页面背景', async () => {
   const fake = createWebContentsFake()
 

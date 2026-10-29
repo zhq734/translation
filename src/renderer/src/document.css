@@ -564,6 +564,11 @@ body {
   scrollbar-gutter: stable;
 }
 
+#document-translation-content {
+  /* 流式译文会持续增高；浏览器滚动锚定会把增量误判为视口变化并反复调整位置。 */
+  overflow-anchor: none;
+}
+
 .document-page-scroll[data-preview-kind='html-source'] {
   display: flex;
   flex-direction: column;
@@ -763,7 +768,14 @@ body {
 
 .document-ocr-original-mask-layer {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  /* 遮罩必须始终与底图原始高度一致；译文变长时覆盖层会增高，
+     若让遮罩层随 inset 拉伸，百分比定位会偏移，导致原扫描文字未被盖住。 */
+  height: calc(
+    var(--document-image-height, 0px) * var(--document-page-scale, 1)
+  );
   pointer-events: none;
 }
 
@@ -1025,6 +1037,13 @@ body {
   white-space: pre;
 }
 
+.document-text-block[data-code-frame='true'] {
+  /* 代码框标记不依赖具体布局；绝对定位和流式译文都必须显示主题边框。 */
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+}
+
 .document-text-run {
   white-space: pre-wrap;
 }
@@ -1110,6 +1129,8 @@ body {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  /* 表格外框和单元格线都属于原文结构，必须使用主题边框变量保留。 */
+  border: var(--border-width) solid var(--border-default);
 }
 
 .document-page[data-layout='translation-flow'] .document-table-block table {
@@ -1122,6 +1143,7 @@ body {
   min-width: 0;
   padding: var(--space-2);
   border: var(--border-width) solid var(--border-default);
+  overflow: hidden;
   overflow-wrap: anywhere;
   vertical-align: top;
 }

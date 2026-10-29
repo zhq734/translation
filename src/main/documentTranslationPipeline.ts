@@ -45,6 +45,9 @@ const DOCUMENT_TRANSLATION_MAX_CONCURRENCY = 8
 /** 单个批次最多覆盖的文档目标数；与页面翻译一样由字符上限优先控制请求大小。 */
 const DOCUMENT_TRANSLATION_MAX_TARGETS_PER_BATCH = 50
 
+/** 流式译文整页快照的最小发布间隔，避免每个 token 都复制并发送整份文档。 */
+const DOCUMENT_TRANSLATION_PUBLISH_INTERVAL_MS = 80
+
 /** 表格行内单元格之间使用的内部标记前缀，避免译文错位写入其他单元格。 */
 const DOCUMENT_TABLE_CELL_MARKER_PREFIX = 'ST-DOC-CELL'
 
@@ -208,6 +211,115 @@ interface StreamedMergedSegment {
   index: number
   /** 当前已可展示的译文。 */
   translation: string
+}
+
+/** 文档译文流式发布器。 */
+interface DocumentTranslationPublisher {
+  /**
+   * 在翻译阶段开始时立即发布原文占位，不消耗首个流式增量窗口。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  publishInitial(): void
+  /**
+   * 请求发布当前译文快照；首个快照立即发布，后续请求在节流窗口内合并。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  request(): void
+  /**
+   * 立即发布尚未发送的最新快照。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  flush(): void
+  /**
+   * 丢弃尚未发送的流式快照，用于失败或取消后不再向界面推送旧状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancel(): void
+}
+
+/**
+ * 创建译文流式发布器；第一帧立即发送以保证首段可见，之后按固定间隔合并。
+ * @param publish 实际发布整份译文快照的回调。
+ * @param isAborted 当前任务是否已取消。
+ * @param intervalMs 合并窗口毫秒数。
+ * @returns 可请求、强制刷新和取消的发布器。
+ * @author zhenghq
+ */
+function createDocumentTranslationPublisher(
+  publish: () => void,
+  isAborted: () => boolean,
+  intervalMs = DOCUMENT_TRANSLATION_PUBLISH_INTERVAL_MS
+): DocumentTranslationPublisher {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let pending = false
+  let hasPublished = false
+
+  /**
+   * 发送当前最新快照，并保留窗口内尚未发送的请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const flush = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+    if (!pending) return
+    pending = false
+    if (isAborted()) return
+    hasPublished = true
+    publish()
+  }
+
+  /**
+   * 请求一次流式快照发布；首个请求同步发送，后续请求合并到窗口尾沿。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const request = (): void => {
+    if (isAborted()) return
+    pending = true
+    if (!hasPublished) {
+      flush()
+      return
+    }
+    if (timer !== null) return
+    timer = setTimeout(() => {
+      timer = null
+      flush()
+    }, Math.max(1, Math.floor(intervalMs)))
+  }
+
+  /**
+   * 取消待发送快照，避免任务结束后继续推送流式内容。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const cancel = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+    pending = false
+  }
+
+  /**
+   * 立即发送初始占位快照，并保持首个流式增量仍可同步发布。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const publishInitial = (): void => {
+    if (isAborted()) return
+    pending = true
+    flush()
+    hasPublished = false
+  }
+
+  return { publishInitial, request, flush, cancel }
 }
 
 /**
@@ -1581,12 +1693,16 @@ export async function runDocumentTranslationPipeline(
       }))
     })
   }
+  const translationPublisher = createDocumentTranslationPublisher(
+    publishTranslation,
+    () => signal.aborted
+  )
 
   // 翻译阶段一开始先发布完整原文占位，避免首个慢请求期间译文栏保持空白。
-  publishTranslation()
+  translationPublisher.publishInitial()
 
   /**
-   * 将完成目标写回其所属页面，并立即发布完整快照。
+   * 将完成目标写回其所属页面，并请求发布最新快照。
    * @param target 已完成翻译的目标。
    * @param translatedText 已完成译文。
    * @returns 无返回值。
@@ -1599,7 +1715,7 @@ export async function runDocumentTranslationPipeline(
       ...page,
       blocks: replaceTargetInBlocks(page.blocks, target.path, target, translatedText)
     }
-    publishTranslation()
+    translationPublisher.request()
   }
 
   /**
@@ -1843,20 +1959,24 @@ export async function runDocumentTranslationPipeline(
       () => worker()
     ))
     throwIfAborted(signal)
+    translationPublisher.flush()
     translateState = completeDocumentTaskPhase(translateState)
     publishProgress()
   } catch (error) {
     if (isAbortError(error, signal)) {
+      translationPublisher.cancel()
       const partialTranslation: DocumentModel = {
         ...ocrSource,
         pages: ocrSource.pages.map((page, index) => translatedPages[index] ?? page)
       }
       return createCancelledResult(ocrSource, partialTranslation, translateState, deps)
     }
+    translationPublisher.cancel()
     const failed = { ...translateState, status: 'failed' as const, errorCode: 'translation-failed' }
     emitProgress(failed, deps)
     throw Object.assign(new Error('Document translation failed'), { task: failed })
   }
+  translationPublisher.flush()
 
   const translation: DocumentModel = {
     ...ocrSource,
@@ -1930,10 +2050,14 @@ export async function retryFailedDocumentTranslationPipeline(
       pages: translatedPages.map((page) => ({ ...page, blocks: [...page.blocks] }))
     })
   }
-  publishTranslation()
+  const translationPublisher = createDocumentTranslationPublisher(
+    publishTranslation,
+    () => signal.aborted
+  )
+  translationPublisher.publishInitial()
 
   /**
-   * 将成功重试的目标写回页面并立即发布完整快照。
+   * 将成功重试的目标写回页面并请求发布最新快照。
    * @param target 重试成功的目标。
    * @param translatedText 已完成译文。
    * @returns 无返回值。
@@ -1946,7 +2070,7 @@ export async function retryFailedDocumentTranslationPipeline(
       ...page,
       blocks: replaceTargetInBlocks(page.blocks, target.path, target, translatedText)
     }
-    publishTranslation()
+    translationPublisher.request()
   }
 
   const targetStates = new Map<string, TargetTranslationState>(targets.map((target) => {
@@ -2191,10 +2315,12 @@ export async function retryFailedDocumentTranslationPipeline(
       () => worker()
     ))
     throwIfAborted(signal)
+    translationPublisher.flush()
     translateState = completeDocumentTaskPhase(translateState)
     emitProgress(translateState, deps)
   } catch (error) {
     if (isAbortError(error, signal)) {
+      translationPublisher.cancel()
       return createCancelledResult(
         source,
         { ...translation, pages: translatedPages },
@@ -2203,10 +2329,12 @@ export async function retryFailedDocumentTranslationPipeline(
         [...retryFailedIds]
       )
     }
+    translationPublisher.cancel()
     const failed = { ...translateState, status: 'failed' as const, errorCode: 'translation-failed' }
     emitProgress(failed, deps)
     throw Object.assign(new Error('Document translation retry failed'), { task: failed })
   }
+  translationPublisher.flush()
 
   const retryFailed = [...retryFailedIds]
   const remainingWarnings = translation.warnings.filter((warning) => warning.code !== 'translation-partial')

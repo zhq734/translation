@@ -1197,7 +1197,8 @@ test('PDF 开放代码容器不能被局部横线误判为单列表格', async (
   // 局部横线只是章节分隔，不应把开放容器识别为单列表格。
   page.drawLine({ start: { x: left, y: drawY(82) }, end: { x: left, y: drawY(703) }, thickness: 1 })
   page.drawLine({ start: { x: right, y: drawY(82) }, end: { x: right, y: drawY(703) }, thickness: 1 })
-  page.drawLine({ start: { x: left, y: drawY(81.1) }, end: { x: right, y: drawY(81.1) }, thickness: 1 })
+  // 真实 PDF 的顶部横线右端没有精确触达右边线，仍应视为跨页续框的顶边。
+  page.drawLine({ start: { x: left + 0.86, y: drawY(81.1) }, end: { x: right - 11.99, y: drawY(81.1) }, thickness: 1 })
   page.drawLine({ start: { x: left, y: drawY(125.75) }, end: { x: right, y: drawY(125.75) }, thickness: 1 })
   page.drawLine({ start: { x: left, y: drawY(496.45) }, end: { x: right, y: drawY(496.45) }, thickness: 1 })
   page.drawLine({ start: { x: left, y: drawY(540.25) }, end: { x: right, y: drawY(540.25) }, thickness: 1 })
@@ -1219,6 +1220,193 @@ test('PDF 开放代码容器不能被局部横线误判为单列表格', async (
     block.line?.orientation === 'vertical' && (block.bbox?.height ?? 0) > 400)
   assert.equal(longVerticalShapes.length, 0,
     '开放容器边界不能在译文中残留为长竖线')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'vertical'), false,
+  '开放代码框左右边线即使只有局部高度，也必须完全由代码框边框接管')
+})
+
+test('PDF 非等宽但代码符号密集的开放容器必须生成可随译文增长的代码框', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  // 真实接口文档第 72、75 页使用 serif 字体绘制 Java 示例；代码语义只能由符号密度恢复。
+  const font = await document.embedFont(StandardFonts.TimesRoman)
+  const drawY = (y: number): number => page.getHeight() - y
+  const left = 89.14
+  const right = 517.29
+  const codeLines = [
+    'final HTTPAgent agent = new HTTPAgent("http://192.168.31.5:9000/v1/");',
+    'Map<String, String> metas = new HashMap<>();',
+    'metas.put("Title", "converted");',
+    'agent.templateToOFD("template", template, cacheKey, data, out, metas);',
+    'agent.close();'
+  ]
+  codeLines.forEach((line, index) => {
+    page.drawText(line, { x: 101.9, y: drawY(456.5 + index * 19.1), size: 9, font })
+  })
+  page.drawLine({ start: { x: left, y: drawY(82) }, end: { x: left, y: drawY(703) }, thickness: 1 })
+  page.drawLine({ start: { x: right, y: drawY(82) }, end: { x: right, y: drawY(703) }, thickness: 1 })
+  for (const y of [81.1, 421.4, 446.5, 551.8]) {
+    page.drawLine({ start: { x: left, y: drawY(y) }, end: { x: right, y: drawY(y) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/open-code-serif.pdf',
+    fileName: 'open-code-serif.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'table'), false,
+    '开放代码容器不能被局部横线识别为表格')
+  const codeBlock = parsedPage.blocks.find((block) => block.kind === 'text' && block.role === 'code')
+  assert.equal(codeBlock?.kind, 'text', '符号密集的非等宽代码行也必须恢复为代码块')
+  if (codeBlock?.kind !== 'text') return
+  assert.match(codeBlock.runs.map((run) => run.text).join(''), /HashMap/u)
+  assert.deepEqual(codeBlock.codeFrame, {
+    x: left,
+    y: 81.1,
+    width: right - left,
+    height: 621.9
+  }, '开放代码框必须携带完整容器边界供界面绘制边框')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'vertical' && (block.bbox?.height ?? 0) > 400), false,
+  '开放代码框内部长竖线必须被裁掉')
+})
+
+test('PDF 开放代码容器只有成对长竖线时仍必须裁掉残留边框', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Courier)
+  const drawY = (y: number): number => page.getHeight() - y
+  const left = 89.14
+  const right = 517.29
+  const codeLines = [
+    'public class Converter {',
+    '  public void convert() {',
+    '    return;',
+    '  }',
+    '}'
+  ]
+  codeLines.forEach((line, index) => {
+    page.drawText(line, { x: 102, y: drawY(456.5 + index * 19.1), size: 9, font })
+  })
+  // 复现真实 PDF 第 72 页：代码容器只有左右长竖线，没有可依赖的横线。
+  page.drawLine({ start: { x: left, y: drawY(431.3) }, end: { x: left, y: drawY(702.95) }, thickness: 1 })
+  page.drawLine({ start: { x: right, y: drawY(431.3) }, end: { x: right, y: drawY(702.95) }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/open-code-no-horizontal.pdf',
+    fileName: 'open-code-no-horizontal.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const codeBlock = parsedPage.blocks.find((block) => block.kind === 'text' && block.role === 'code')
+  assert.equal(codeBlock?.kind, 'text', '成对长竖线内的连续代码行必须恢复为代码块')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'vertical'), false,
+  '开放代码容器没有横线时也必须裁掉左右长竖线')
+})
+
+test('PDF 跨页代码框只剩一行源码时仍必须保留代码框并裁掉独立边线', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Courier)
+  const drawY = (y: number): number => page.getHeight() - y
+  const left = 89.14
+  const right = 517.29
+  const codeLines = [
+    'public interface Converter {',
+    '  String convert(String value);',
+    '}'
+  ]
+  page.drawText('agent.close();', { x: 102, y: drawY(96.76), size: 9, font })
+  codeLines.forEach((line, index) => {
+    page.drawText(line, { x: 102, y: drawY(535 + index * 18), size: 9, font })
+  })
+  // 复现真实 PDF 第 75 页：上一页代码框在新页只延续一行源码，且只有顶部横线。
+  // 顶部短框必须保持为代码框，不能把左右边线留成页眉形状。
+  page.drawLine({ start: { x: left, y: drawY(81.95) }, end: { x: left, y: drawY(125) }, thickness: 1 })
+  page.drawLine({ start: { x: right, y: drawY(81.95) }, end: { x: right, y: drawY(125) }, thickness: 1 })
+  // 真实 PDF 的顶部横线右端未精确触达右边线，短续框仍必须识别。
+  page.drawLine({ start: { x: left + 0.86, y: drawY(81.1) }, end: { x: right - 11.99, y: drawY(81.1) }, thickness: 1 })
+  page.drawLine({ start: { x: left + 0.86, y: drawY(81.1) }, end: { x: right, y: drawY(81.1) }, thickness: 1 })
+  page.drawLine({ start: { x: left, y: drawY(431.3) }, end: { x: left, y: drawY(702.95) }, thickness: 1 })
+  page.drawLine({ start: { x: right, y: drawY(431.3) }, end: { x: right, y: drawY(702.95) }, thickness: 1 })
+  page.drawLine({ start: { x: left, y: drawY(496.45) }, end: { x: right, y: drawY(496.45) }, thickness: 1 })
+  page.drawLine({ start: { x: left, y: drawY(540.25) }, end: { x: right, y: drawY(540.25) }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/open-code-continuation.pdf',
+    fileName: 'open-code-continuation.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const codeBlocks = parsedPage.blocks.filter((block) => block.kind === 'text' && block.role === 'code')
+  assert.equal(codeBlocks.length, 2, '跨页单行代码框和下方主体代码框都必须保留')
+  const continuationBlock = codeBlocks.find((block) => block.kind === 'text' &&
+    block.runs.map((run) => run.text).join('').includes('agent.close();'))
+  assert.equal(continuationBlock?.kind, 'text', '跨页代码框内的单行源码必须保留')
+  assert.deepEqual(continuationBlock?.kind === 'text' ? continuationBlock.codeFrame : undefined, {
+    x: left,
+    y: 81.1,
+    width: right - left,
+    height: 43.9
+  }, '跨页单行代码框必须携带完整外框')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'vertical'), false,
+  '跨页代码框的左右边线必须由代码框边框接管')
+})
+
+test('PDF 等宽字体的普通多列表格不能被开放代码容器误吞', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Courier)
+  const drawY = (y: number): number => page.getHeight() - y
+  const left = 89.14
+  const right = 517.29
+  const columnX = [left, 230, right]
+  const rowY = [120, 160, 200, 240]
+  const cells = [
+    ['Method', 'Description'],
+    ['GET', '/api/users'],
+    ['POST', '/api/users'],
+    ['DELETE', '/api/users/{id}']
+  ]
+  cells.forEach((row, rowIndex) => {
+    page.drawText(row[0]!, { x: columnX[0]! + 12, y: drawY(rowY[rowIndex]! + 25), size: 10, font })
+    page.drawText(row[1]!, { x: columnX[1]! + 12, y: drawY(rowY[rowIndex]! + 25), size: 10, font })
+  })
+  for (const y of rowY) {
+    page.drawLine({ start: { x: left, y: drawY(y) }, end: { x: right, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of columnX) {
+    page.drawLine({ start: { x, y: drawY(rowY[0]!) }, end: { x, y: drawY(rowY[rowY.length - 1]!) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/monospace-table.pdf',
+    fileName: 'monospace-table.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table', '带内部列分隔的等宽字体表格必须保留为表格')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length >= 3, true, '表格必须保留主要数据行')
+  assert.equal(table.rows.every((row) => row.cells.length === 2), true)
+  assert.equal(translatableText(model).some((text) => text.includes('/api/users/{id}')), true,
+    '表格单元格内容不能被开放代码容器吞掉')
 })
 
 test('PDF 表头上方同列竖线必须随表格一起裁剪', async () => {
@@ -1259,6 +1447,150 @@ test('PDF 表头上方同列竖线必须随表格一起裁剪', async () => {
     (block.bbox?.y ?? 0) + (block.bbox?.height ?? 0) > tableTop)
   assert.equal(overhangShapes.length, 0,
     '与表格列边界对齐的表头上方竖线不能残留为独立形状')
+})
+
+test('PDF 表头位于闭合数据区上方时横竖线必须整体并入表格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const headerLeft = 110.2
+  const headerRight = 485.1
+  const tableLeft = 109.96
+  const tableRight = 485.34
+  const headerTop = 81.1
+  const headerBottom = 111.29
+  const tableBottom = 250
+  const columns = [headerLeft, 210.4, 321.2, headerRight]
+  page.drawText('Name', { x: 120, y: drawY(97), size: 10, font })
+  page.drawText('Type', { x: 220, y: drawY(97), size: 10, font })
+  page.drawText('Description', { x: 330, y: drawY(97), size: 10, font })
+  page.drawText('Value', { x: 400, y: drawY(97), size: 10, font })
+  page.drawText('Row', { x: 120, y: drawY(180), size: 10, font })
+  // 复现真实 PDF 第 78 页：表头上下横线比数据区更宽，列竖线从表头顶部
+  // 延伸到页底，而闭合数据网格从表头下缘才开始。
+  page.drawLine({ start: { x: 90, y: drawY(headerTop) }, end: { x: 505.3, y: drawY(headerTop) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(headerBottom) }, end: { x: tableRight, y: drawY(headerBottom) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(180) }, end: { x: tableRight, y: drawY(180) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(tableBottom) }, end: { x: tableRight, y: drawY(tableBottom) }, thickness: 1 })
+  for (const x of columns) {
+    page.drawLine({ start: { x, y: drawY(headerTop + 0.85) }, end: { x, y: drawY(tableBottom) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-header-overhang-real-layout.pdf',
+    fileName: 'table-header-overhang-real-layout.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table', '表头与数据区必须保留为完整表格')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape'), false,
+    '表头横竖线必须由表格边框绘制，不能作为独立形状错位下推')
+  assert.equal(translatableText(model).some((text) => text.includes('Description')), true,
+    '表头文本必须进入表格单元格')
+})
+
+test('PDF 表头列竖线只覆盖表头高度时仍必须并入数据表格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const headerLeft = 110.2
+  const headerRight = 485.1
+  const tableLeft = 109.96
+  const tableRight = 485.34
+  const headerTop = 81.1
+  const headerBottom = 111.29
+  const dataTop = 149.89
+  const dataBottom = 237.09
+  const columns = [headerLeft, 210.4, 321.2, headerRight]
+  page.drawText('Name', { x: 120, y: drawY(97), size: 10, font })
+  page.drawText('Type', { x: 220, y: drawY(97), size: 10, font })
+  page.drawText('Description', { x: 330, y: drawY(97), size: 10, font })
+  page.drawText('Value', { x: 400, y: drawY(97), size: 10, font })
+  page.drawText('first', { x: 120, y: drawY(175), size: 10, font })
+  page.drawText('second', { x: 120, y: drawY(215), size: 10, font })
+  // 复现真实 PDF 第 78 页：表头竖线只覆盖 81.95..111.05，
+  // 与数据区 149.89 的顶边之间有明显空白，不能因此丢失表头。
+  page.drawLine({ start: { x: 90, y: drawY(headerTop) }, end: { x: 505.3, y: drawY(headerTop) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(headerBottom) }, end: { x: tableRight, y: drawY(headerBottom) }, thickness: 1 })
+  for (const y of [dataTop, 178.94, 208.04, dataBottom]) {
+    page.drawLine({ start: { x: tableLeft, y: drawY(y) }, end: { x: tableRight, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of columns) {
+    page.drawLine({ start: { x, y: drawY(81.95) }, end: { x, y: drawY(111.05) }, thickness: 1 })
+    page.drawLine({ start: { x, y: drawY(dataTop) }, end: { x, y: drawY(dataBottom) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-header-partial-verticals.pdf',
+    fileName: 'table-header-partial-verticals.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table', '表头必须与数据区合并为同一张表')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 3, '表头和两行数据之间不能生成空白行')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape'), false,
+    '表头横竖线必须由表格边框绘制，不能残留为独立形状')
+})
+
+test('PDF 表头与数据区存在空白间隔时必须使用稀疏行带保留表头且不生成空行', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const headerLeft = 110.2
+  const headerRight = 485.1
+  const tableLeft = 109.96
+  const tableRight = 485.34
+  const headerTop = 81.1
+  const headerBottom = 111.29
+  const dataTop = 149.89
+  const dataBottom = 237.09
+  const columns = [headerLeft, 210.4, 321.2, headerRight]
+  page.drawText('Name', { x: 120, y: drawY(97), size: 10, font })
+  page.drawText('Type', { x: 220, y: drawY(97), size: 10, font })
+  page.drawText('Description', { x: 330, y: drawY(97), size: 10, font })
+  page.drawText('Value', { x: 400, y: drawY(97), size: 10, font })
+  page.drawText('first', { x: 120, y: drawY(175), size: 10, font })
+  page.drawText('second', { x: 120, y: drawY(215), size: 10, font })
+  page.drawLine({ start: { x: 90, y: drawY(headerTop) }, end: { x: 505.3, y: drawY(headerTop) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(headerBottom) }, end: { x: tableRight, y: drawY(headerBottom) }, thickness: 1 })
+  for (const y of [dataTop, 178.94, 208.04, dataBottom]) {
+    page.drawLine({ start: { x: tableLeft, y: drawY(y) }, end: { x: tableRight, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of columns) {
+    page.drawLine({ start: { x, y: drawY(headerTop + 0.85) }, end: { x, y: drawY(dataBottom) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-header-sparse-bands.pdf',
+    fileName: 'table-header-sparse-bands.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table', '表头与数据区必须保留为同一张表')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 3, '表头与两行数据之间不能生成空白行')
+  assert.equal(table.headerRows, 1)
+  assert.equal(table.rows[0]?.cells.some((cell) => cell.blocks.some((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text.includes('Description')))), true,
+  '表头文本必须位于表头行')
+  assert.equal(parsedPage.blocks.some((block) => block.kind === 'shape'), false,
+    '表头横竖线必须由表格边框绘制')
 })
 
 test('PDF 分隔线 bbox 必须从原始线条位置开始，不能向左上偏移半个线宽', async () => {
@@ -1329,6 +1661,183 @@ test('PDF 表格内嵌图片必须归属单元格并避免页面级重复输出'
     '表格必须保留真实行列结构，单元格边框才能对齐')
   assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 0,
     '表格内图片不能同时作为页面级区块重复输出')
+})
+
+test('PDF 稀疏表头下图片独占无文本行时仍必须归属单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  const drawY = (y: number): number => page.getHeight() - y
+  const headerTop = 50
+  const headerBottom = 90
+  const dataTop = 130
+  const dataBottom = 280
+  const columns = [72, 300, 528]
+  page.drawText('Certificate', { x: 82, y: drawY(70), size: 12, font })
+  page.drawText('Barcode', { x: 310, y: drawY(70), size: 12, font })
+  page.drawText('first', { x: 82, y: drawY(155), size: 12, font })
+  // 图片所在数据行没有任何文本。表头扩展后会产生稀疏行带，旧逻辑会删掉
+  // 该行带，导致图片落到表格外并打乱后续横线位置。
+  page.drawImage(image, { x: 360, y: drawY(225), width: 80, height: 40 })
+  page.drawLine({ start: { x: 60, y: drawY(headerTop) }, end: { x: 540, y: drawY(headerTop) }, thickness: 1 })
+  page.drawLine({ start: { x: 72, y: drawY(headerBottom) }, end: { x: 528, y: drawY(headerBottom) }, thickness: 1 })
+  for (const y of [dataTop, 180, 230, dataBottom]) {
+    page.drawLine({ start: { x: 72, y: drawY(y) }, end: { x: 528, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of columns) {
+    page.drawLine({ start: { x, y: drawY(headerTop) }, end: { x, y: drawY(headerBottom) }, thickness: 1 })
+    page.drawLine({ start: { x, y: drawY(dataTop) }, end: { x, y: drawY(dataBottom) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-image-only-row.pdf',
+    fileName: 'table-image-only-row.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 9, 9])
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 3, '表头、文本行和图片行必须完整保留')
+  const cellImages = table.rows.flatMap((row, rowIndex) => row.cells.flatMap((cell, cellIndex) =>
+    cell.blocks.filter((block) => block.kind === 'image').map((block) => ({ rowIndex, cellIndex, block }))))
+  assert.equal(cellImages.length, 1, '独占行的表格图片必须保留在所属单元格')
+  assert.equal(cellImages[0]?.rowIndex, 2, '图片必须进入对应的无文本数据行')
+  assert.equal(cellImages[0]?.cellIndex, 1, '图片必须进入右侧单元格')
+  assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 0,
+    '表格图片不能溢出为页面级图片')
+})
+
+test('PDF 仅与表格边缘轻微接触的页眉图片不能被吸入单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  const drawY = (y: number): number => page.getHeight() - y
+  page.drawText('Certificate', { x: 82, y: drawY(105), size: 12, font })
+  page.drawText('Barcode', { x: 310, y: drawY(105), size: 12, font })
+  // 图片中心在表格上方，仅底部 2pt 与表格顶边相触，不能按正面积重叠归入单元格。
+  page.drawImage(image, { x: 360, y: drawY(72), width: 80, height: 40 })
+  for (const y of [70, 130, 190]) {
+    page.drawLine({ start: { x: 72, y: drawY(y) }, end: { x: 528, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: drawY(190) }, end: { x, y: drawY(70) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-image-edge-touch.pdf',
+    fileName: 'table-image-edge-touch.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 9, 9])
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const cellImages = table.rows.flatMap((row) => row.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'image')))
+  assert.equal(cellImages.length, 0, '仅边缘接触的图片不能进入表格单元格')
+  assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 1,
+    '未归属单元格的页眉图片必须保留为页面级图片')
+})
+
+test('PDF 同列但中间存在空白的分段横线不能合并成跨页长线', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  page.drawText('Section A', { x: 72, y: drawY(120), size: 12, font })
+  page.drawText('Section B', { x: 72, y: drawY(320), size: 12, font })
+  // 两段横线纵坐标一致但横向完全分离，中间空白不能被合并成一条长线。
+  page.drawLine({ start: { x: 72, y: drawY(200) }, end: { x: 180, y: drawY(200) }, thickness: 1 })
+  page.drawLine({ start: { x: 420, y: drawY(200) }, end: { x: 528, y: drawY(200) }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/disjoint-grid-lines.pdf',
+    fileName: 'disjoint-grid-lines.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const horizontalShapes = model.pages[0]!.blocks.filter((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'horizontal')
+  assert.equal(horizontalShapes.length, 2, '中间有空白的横线必须保留为两条独立线段')
+  assert.deepEqual(horizontalShapes.map((block) => block.bbox?.width).sort((left, right) => left! - right!),
+    [108, 108])
+})
+
+test('PDF 页眉横线不能生成与闭合正文表格重叠的幻影表格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  // WinAnsi 标准字体不能编码中文；该夹具只需要表格行与列证据，
+  // 用可编码的英文描述验证幻影表过滤即可。
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const tableLeft = 109.96
+  const tableRight = 485.34
+  const tableTop = 111.29
+  const tableBottom = 710.84
+  const columns = [tableLeft, 210.4, 321.2, tableRight]
+  const rows = [tableTop, 149.89, 178.94, 208.04, 237.09, 266.19, 295.24, 324.34,
+    381.99, 439.64, 468.69, 507.29, 536.39, 565.44, 594.54, 623.59, 652.69, 681.74, tableBottom]
+  const cells = [
+    ['sealID', 'String', 'Seal identifier'],
+    ['text', 'String', 'Watermark text'],
+    ['fontName', 'String', 'Watermark font'],
+    ['fontSize', 'float', 'Watermark font size'],
+    ['color', 'String', 'Watermark color'],
+    ['rotate', 'int', 'Rotation angle'],
+    ['xAlign', 'Const.XAlign', 'Horizontal alignment'],
+    ['yAlign', 'Const.YAlign', 'Vertical alignment'],
+    ['tiled', 'boolean', 'Whether tiled']
+  ]
+  cells.forEach((cell, index) => {
+    page.drawText(cell[0]!, { x: 115.6, y: drawY(rows[index]! + 24), size: 9, font })
+    page.drawText(cell[1]!, { x: 215.8, y: drawY(rows[index]! + 24), size: 9, font })
+    page.drawText(cell[2]!, { x: 326.6, y: drawY(rows[index]! + 24), size: 9, font })
+  })
+  // 页眉 logo 框的底边与正文首条表线接近，旧逻辑会跨过整段空白生成幻影表格。
+  page.drawLine({ start: { x: 90, y: drawY(81.1) }, end: { x: 505.3, y: drawY(81.1) }, thickness: 1 })
+  page.drawLine({ start: { x: 90, y: drawY(324.34) }, end: { x: 505.3, y: drawY(324.34) }, thickness: 1 })
+  for (const y of rows) {
+    page.drawLine({ start: { x: tableLeft, y: drawY(y) }, end: { x: tableRight, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of columns) {
+    page.drawLine({ start: { x, y: drawY(81.95) }, end: { x, y: drawY(tableBottom) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/header-phantom-table.pdf',
+    fileName: 'header-phantom-table.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const tables = model.pages[0]!.blocks.filter((block) => block.kind === 'table')
+  assert.equal(tables.length, 1, '页眉与正文之间只能保留一张真实表格')
+  assert.ok(Math.abs((tables[0]?.bbox?.y ?? 0) - tableTop) <= 1,
+    '正文表格必须从首条真实表线开始，不能包含页眉区域')
 })
 
 test('PDF 表头局部竖线与共享左右边界的相邻网格必须并入完整表格', async () => {
@@ -2070,6 +2579,74 @@ test('PDF 同一样式的相邻正文在段间距增大时仍必须分段', asyn
   assert.deepEqual(translatableText(model), [`${firstLine} ${continuation}`, nextParagraph])
 })
 
+test('PDF 同一视觉行的导航项在明显横向空洞处必须拆成独立文本块', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const items = ['Code', 'Issues', 'Pull requests', 'Actions', 'Projects']
+  const positions = [54, 98, 148, 280, 350]
+
+  items.forEach((item, index) => {
+    page.drawText(item, { x: positions[index]!, y: 730, size: 10, font })
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/pdf-navigation-gaps.pdf',
+    fileName: 'pdf-navigation-gaps.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.deepEqual(translatableText(model), items)
+})
+
+test('PDF 不同基线的侧栏标签不能因 bbox 接近而合并成一块', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+
+  page.drawText('Readme', { x: 48, y: 610, size: 11, font })
+  page.drawText('License', { x: 48, y: 590, size: 11, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/pdf-sidebar-baselines.pdf',
+    fileName: 'pdf-sidebar-baselines.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const texts = translatableText(model)
+  assert.equal(texts.some((text) => text.includes('Readme') && text.includes('License')), false, JSON.stringify(texts))
+  assert.equal(texts.includes('Readme'), true, JSON.stringify(texts))
+  assert.equal(texts.includes('License'), true, JSON.stringify(texts))
+})
+
+test('PDF 正常行距的短正文续行仍应合并为同一段落', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const lines = [
+    'The short first line remains connected',
+    'to its wrapped continuation.'
+  ]
+
+  lines.forEach((line, index) => {
+    page.drawText(line, { x: 90, y: 700 - index * 18, size: 12, font })
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/pdf-short-paragraph.pdf',
+    fileName: 'pdf-short-paragraph.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.deepEqual(translatableText(model), [lines.join(' ')])
+})
+
 test('PDF 双栏正文应分别按段落合并，不能跨栏粘连句子', async () => {
   const document = await PDFDocument.create()
   const font = await document.embedFont(StandardFonts.Helvetica)
@@ -2488,4 +3065,43 @@ test('PDF 贴纸张边缘的整页装饰线不能进入译文预览', async () =
   '正常页眉横线必须保留')
   assert.equal(parsedPage.blocks.some((block) => block.kind === 'table'), true,
   '正常表格必须保留')
+})
+
+test('PDF 页眉长横线在小 logo 附近时必须被过滤，短页眉线仍保留', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.3, 841.9])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  const drawY = (y: number): number => page.getHeight() - y
+  page.drawImage(image, { x: 367.8, y: drawY(61.2), width: 18.6, height: 18.6 })
+  page.drawText('Acme Technology Ltd', { x: 397.32, y: drawY(55.4), size: 9, font })
+  // 长线是页眉装饰；短线下方的文字区说明短页眉线是正常结构线，必须保留。
+  page.drawLine({ start: { x: 90, y: drawY(81.1) }, end: { x: 505.3, y: drawY(81.1) }, thickness: 1 })
+  page.drawLine({ start: { x: 417.75, y: drawY(88) }, end: { x: 535.5, y: drawY(88) }, thickness: 1 })
+  page.drawText('Body text', { x: 90, y: drawY(180), size: 12, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/header-long-divider.pdf',
+    fileName: 'header-long-divider.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 7, 7])
+  })
+
+  const horizontalShapes = model.pages[0]!.blocks.filter((block) => block.kind === 'shape' &&
+    block.line?.orientation === 'horizontal')
+  assert.equal(horizontalShapes.some((block) =>
+    Math.abs((block.bbox?.x ?? 0) - 90) <= 1.5 &&
+    Math.abs((block.bbox?.y ?? 0) - 81.1) <= 1.5), false,
+  '页眉 logo 附近的超宽横线不能作为独立形状进入译文')
+  assert.equal(horizontalShapes.some((block) =>
+    Math.abs((block.bbox?.x ?? 0) - 417.75) <= 1.5 &&
+    Math.abs((block.bbox?.y ?? 0) - 88) <= 1.5), true,
+  '普通短页眉线必须保留')
 })
