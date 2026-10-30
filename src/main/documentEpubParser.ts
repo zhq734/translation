@@ -11,9 +11,12 @@ import {
 } from '../shared/documentTypes.ts'
 import {
   DOCUMENT_MAX_IMAGES,
+  DOCUMENT_MAX_IMAGE_PIXELS,
+  DOCUMENT_MAX_PAGES,
   createDocumentWarning,
   hashDocumentBytes,
   createDocumentModelId,
+  readDocumentImageDimensions,
   type DocumentParseInput
 } from './documentParserShared.ts'
 import {
@@ -64,6 +67,16 @@ interface EpubPackage {
 
 /** EPUB 目录标题映射；键为不含片段标识的章节包内路径。 */
 type EpubTocTitles = Map<string, string>
+
+/** EPUB 解析可覆盖的资源与页数限制。 */
+export interface ParseEpubOptions {
+  /** 最多解析的 spine 章节数。 */
+  maxPages?: number
+  /** 最多登记的不同图片资源数。 */
+  maxImages?: number
+  /** 单张图片允许的最大像素数。 */
+  maxImagePixels?: number
+}
 
 /** EPUB XML 解析配置；不执行外部实体，不加载远程资源。 */
 const EPUB_XML_OPTIONS = {
@@ -322,6 +335,7 @@ async function readEpubTocTitles(
  * @param chapterXml 章节 HTML。
  * @param assets 资源输出数组。
  * @param warnings 告警输出数组。
+ * @param options 可覆盖的图片数量与像素限制。
  * @returns 原始图片地址到已登记图片资源的映射。
  * @author zhenghq
  */
@@ -330,7 +344,8 @@ async function registerEpubImages(
   chapterPath: string,
   chapterXml: string,
   assets: DocumentAsset[],
-  warnings: ReturnType<typeof createDocumentWarning>[]
+  warnings: ReturnType<typeof createDocumentWarning>[],
+  options: Required<ParseEpubOptions>
 ): Promise<Map<string, HtmlDocumentImage>> {
   const resolved = new Map<string, HtmlDocumentImage>()
   const sources = [...chapterXml.matchAll(/<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/giu)]
@@ -344,7 +359,7 @@ async function registerEpubImages(
       resolved.set(source, { assetId: existing.assetId })
       continue
     }
-    if (assets.length >= DOCUMENT_MAX_IMAGES) {
+    if (assets.length >= options.maxImages) {
       if (!warnings.some((warning) => warning.code === 'image-limit-reached')) {
         warnings.push(createDocumentWarning('image-limit-reached', 'The EPUB image limit was reached; remaining images were skipped.'))
       }
@@ -352,6 +367,16 @@ async function registerEpubImages(
     }
     const bytes = await readPackageBytes(packageInfo, assetPath)
     if (!bytes) continue
+    const dimensions = readDocumentImageDimensions(bytes)
+    if (dimensions && dimensions.width * dimensions.height > options.maxImagePixels) {
+      if (!warnings.some((warning) => warning.code === 'image-pixel-limit-reached')) {
+        warnings.push(createDocumentWarning(
+          'image-pixel-limit-reached',
+          'An EPUB image exceeded the pixel limit and was skipped.'
+        ))
+      }
+      continue
+    }
     const sha256 = hashDocumentBytes(bytes)
     const asset: DocumentAsset = {
       assetId: `asset-${sha256.slice(0, 16)}`,
@@ -403,10 +428,19 @@ function chapterInlineStyles(chapterXml: string): string[] {
 /**
  * 按 OPF spine 顺序解析 EPUB，章节 HTML 只在本地转换为安全区块。
  * @param input 解析输入。
+ * @param options 可覆盖的页数、图片数量与像素限制。
  * @returns EPUB 文档模型。
  * @author zhenghq
  */
-export async function parseEpubDocument(input: DocumentParseInput): Promise<DocumentModel> {
+export async function parseEpubDocument(
+  input: DocumentParseInput,
+  options: ParseEpubOptions = {}
+): Promise<DocumentModel> {
+  const limits: Required<ParseEpubOptions> = {
+    maxPages: Math.max(1, options.maxPages ?? DOCUMENT_MAX_PAGES),
+    maxImages: Math.max(0, options.maxImages ?? DOCUMENT_MAX_IMAGES),
+    maxImagePixels: Math.max(1, options.maxImagePixels ?? DOCUMENT_MAX_IMAGE_PIXELS)
+  }
   const packageInfo = await loadSafeDocumentPackage(input)
   const containerXml = await readPackageText(packageInfo, 'META-INF/container.xml')
   if (!containerXml) throw new Error('epub package is missing META-INF/container.xml')
@@ -421,6 +455,13 @@ export async function parseEpubDocument(input: DocumentParseInput): Promise<Docu
   const tocTitles = await readEpubTocTitles(packageInfo, epubPackage)
 
   for (let index = 0; index < epubPackage.spine.length; index += 1) {
+    if (pages.length >= limits.maxPages) {
+      warnings.push(createDocumentWarning(
+        'page-limit-reached',
+        'The EPUB page limit was reached; remaining chapters were skipped.'
+      ))
+      break
+    }
     const item = epubPackage.manifest.get(epubPackage.spine[index]!)!
     const chapterPath = resolvePackagePath(baseDirectory, item.href)
     if (!chapterPath) {
@@ -438,7 +479,14 @@ export async function parseEpubDocument(input: DocumentParseInput): Promise<Docu
       if (stylesheet) chapterCss.push(stylesheet)
     }
     chapterCss.push(...chapterInlineStyles(chapterXml))
-    const chapterImages = await registerEpubImages(packageInfo, chapterPath, chapterXml, assets, warnings)
+    const chapterImages = await registerEpubImages(
+      packageInfo,
+      chapterPath,
+      chapterXml,
+      assets,
+      warnings,
+      limits
+    )
     const chapterModel = parseHtmlDocument({
       ...input,
       sha256: `${input.sha256}#chapter:${index}`,

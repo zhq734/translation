@@ -1051,6 +1051,186 @@ test('同一图片资源跨页复用时 OCR 只执行一次', async () => {
   )
 })
 
+test('表格单元格内的图片必须参与 OCR 并生成可切换的原文', async () => {
+  const source = model([{
+    kind: 'table',
+    blockId: 'table-with-image',
+    readingOrder: 0,
+    translatable: true,
+    rows: [{
+      rowId: 'table-with-image-row-1',
+      cells: [{
+        cellId: 'table-with-image-cell-1',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image' as const,
+          blockId: 'cell-image-1',
+          readingOrder: 0,
+          translatable: false,
+          assetId: 'cell-image-asset',
+          bbox: { x: 40, y: 120, width: 200, height: 80 }
+        }]
+      }]
+    }]
+  }])
+  source.source.format = 'pdf'
+  source.assets.push({
+    assetId: 'cell-image-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'cell-image',
+    byteLength: 3
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => ({ text: '单元格图片原文', lines: [], engine: 'system' }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.pdf', fileName: 'test.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-image', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const sourceTable = result.source.pages[0]!.blocks[0]
+  assert.equal(sourceTable.kind, 'table')
+  if (sourceTable.kind !== 'table') return
+  const sourceImage = sourceTable.rows[0]!.cells[0]!.blocks[0]
+  assert.equal(sourceImage.kind, 'image')
+  if (sourceImage.kind !== 'image') return
+  assert.equal(sourceImage.ocrRegions?.[0]?.text, '单元格图片原文')
+
+  const translationTable = result.translation.pages[0]!.blocks[0]
+  assert.equal(translationTable.kind, 'table')
+  if (translationTable.kind !== 'table') return
+  const translationImage = translationTable.rows[0]!.cells[0]!.blocks[0]
+  assert.equal(translationImage.kind, 'image')
+  if (translationImage.kind !== 'image') return
+  assert.equal(translationImage.ocrRegions?.[0]?.translatedText, 'T(单元格图片原文)')
+})
+
+test('OCR 达到图片预算后必须跳过新资源且不加载或识别', async () => {
+  const source = model([
+    {
+      kind: 'image',
+      blockId: 'image-1',
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'asset-1'
+    },
+    {
+      kind: 'image',
+      blockId: 'image-2',
+      readingOrder: 1,
+      translatable: false,
+      assetId: 'asset-2'
+    }
+  ])
+  source.assets.push(
+    { assetId: 'asset-1', kind: 'image', mimeType: 'image/png', sha256: 'image-a', byteLength: 3 },
+    { assetId: 'asset-2', kind: 'image', mimeType: 'image/png', sha256: 'image-b', byteLength: 3 }
+  )
+  const loadedAssets: string[] = []
+  const recognizedTexts: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async (asset) => {
+      loadedAssets.push(asset.assetId)
+      return new Uint8Array([asset.assetId === 'asset-1' ? 1 : 2])
+    },
+    recognizeImage: async (bytes) => {
+      recognizedTexts.push(bytes[0] === 1 ? 'first image' : 'second image')
+      return { text: bytes[0] === 1 ? 'first image' : 'second image', lines: [], engine: 'system' }
+    },
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined,
+    maxOcrImages: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'image', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-limit', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(loadedAssets, ['asset-1'])
+  assert.deepEqual(recognizedTexts, ['first image'])
+  const second = result.translation.pages[0]!.blocks[1]
+  assert.equal(second?.kind === 'image' ? second.ocrRegions?.[0]?.status : undefined, 'skipped')
+  assert.equal(second?.kind === 'image' ? second.ocrRegions?.[0]?.reason : undefined, 'ocr-limit-reached')
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'ocr-limit-reached'), true)
+})
+
+test('OCR 图片预算按资源哈希去重且缓存命中不重复占用名额', async () => {
+  const source = model([
+    {
+      kind: 'image',
+      blockId: 'image-1',
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'asset-1'
+    }
+  ])
+  source.assets.push(
+    { assetId: 'asset-1', kind: 'image', mimeType: 'image/png', sha256: 'shared-image', byteLength: 3 }
+  )
+  source.pages.push({
+    pageId: 'page-2',
+    index: 1,
+    width: 600,
+    height: 800,
+    blocks: [{
+      kind: 'image',
+      blockId: 'image-2',
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'asset-2'
+    }]
+  })
+  source.assets.push(
+    { assetId: 'asset-2', kind: 'image', mimeType: 'image/png', sha256: 'shared-image', byteLength: 3 }
+  )
+  let loadCalls = 0
+  let recognizeCalls = 0
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => {
+      loadCalls += 1
+      return new Uint8Array([1, 2, 3])
+    },
+    recognizeImage: async () => {
+      recognizeCalls += 1
+      return { text: '共享文字', lines: [], engine: 'system' }
+    },
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined,
+    maxOcrImages: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'image', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-dedup', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(loadCalls, 1)
+  assert.equal(recognizeCalls, 1)
+  assert.deepEqual(
+    result.translation.pages.map((page) => page.blocks[0]?.kind === 'image'
+      ? page.blocks[0].ocrRegions?.[0]?.text
+      : undefined),
+    ['共享文字', '共享文字']
+  )
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'ocr-limit-reached'), false)
+})
+
 test('OCR 未识别到文字时必须生成可展示告警并保留跳过状态', async () => {
   const source = model([{
     kind: 'image',
@@ -2193,4 +2373,35 @@ test('失败目标重试必须复用首次任务语言对，不能重新按失�
   assert.deepEqual(retried.languagePair, firstPair)
   assert.equal(retried.sourcePreference, 'auto')
   assert.equal(retried.targetPreference, 'auto')
+})
+
+test('OCR 原文模式必须完成解析与识别但绝不调用翻译', async () => {
+  const source = model([
+    textBlock('block-ocr', [{ runId: 'run-ocr', text: '需要识别但不翻译' }])
+  ])
+  let translateCalls = 0
+  const progress = progressCollector()
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-only', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async () => {
+        translateCalls += 1
+        return '不应调用'
+      },
+      onProgress: progress.onProgress
+    },
+    { sourcePreference: 'auto', targetPreference: 'ZH' },
+    'ocr'
+  )
+
+  assert.equal(translateCalls, 0)
+  assert.equal(result.task.status, 'completed')
+  assert.equal(result.runMode, 'ocr')
+  assert.deepEqual(result.translation, result.source)
+  assert.equal(progress.states.some((state) => state.phase === 'translate'), false)
 })

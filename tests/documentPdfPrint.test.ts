@@ -242,6 +242,40 @@ test('PDF 打印样式必须按文档页面尺寸生成 CSS 页面并回退有�
   assert.match(fallbackCss, /size:\s*612pt 792pt;/u)
 })
 
+test('PDF 打印样式必须把译文栏 OCR 原文打印层输出为透明可检索文字层', () => {
+  const css = buildDocumentPrintCss(documentModel())
+
+  // 打印时透明文字层必须重新显示，且整体不遮挡译文底图。
+  const layerRule = /#document-translation-content \.document-ocr-print-text-layer\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+  assert.match(layerRule, /display:\s*block\s*!important/u)
+  assert.match(layerRule, /position:\s*absolute\s*!important/u)
+  assert.match(layerRule, /z-index:\s*0\s*!important/u)
+  assert.match(layerRule, /background:\s*transparent\s*!important/u)
+  assert.match(layerRule, /pointer-events:\s*none\s*!important/u)
+
+  // 每个 OCR 原文区域必须保持透明，但文字仍写入 PDF 文本层，支持检索和复制。
+  const regionRule = /#document-translation-content \.document-ocr-print-text-layer \.document-ocr-text-region\s*\{([^}]*)\}/u
+    .exec(css)?.[1] ?? ''
+  assert.match(regionRule, /color:\s*transparent\s*!important/u)
+  assert.match(regionRule, /background:\s*transparent\s*!important/u)
+  assert.match(regionRule, /-webkit-text-fill-color:\s*transparent\s*!important/u)
+})
+
+test('PDF 打印页、Canvas 与 OCR 文字层必须共享同一页面矩形', () => {
+  const css = buildDocumentPrintCss(documentModel())
+  const pageRule = /#document-translation-content \.document-pdf-page\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const canvasRule = /#document-translation-content \.document-pdf-canvas\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const layerRule = /#document-translation-content \.document-ocr-print-text-layer\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(pageRule, /width:\s*calc\(var\(--document-pdf-source-width\)\s*\*\s*1\.3333333333px\)/u)
+  assert.match(pageRule, /height:\s*calc\(var\(--document-pdf-source-height\)\s*\*\s*1\.3333333333px\)/u)
+  assert.match(canvasRule, /width:\s*100%\s*!important/u)
+  assert.match(canvasRule, /height:\s*100%\s*!important/u)
+  assert.match(layerRule, /width:\s*100%\s*!important/u)
+  assert.match(layerRule, /height:\s*100%\s*!important/u)
+})
+
 test('PDF 打印样式不能把同行布局分组覆盖为纵向块', () => {
   const css = buildDocumentPrintCss(documentModel())
 
@@ -452,4 +486,16 @@ test('部分导出准备失败时不得打印且必须尝试恢复预览', async
   assert.equal(fake.printOptions.length, 0)
   assert.equal(fake.executedScripts.length, 2)
   assert.match(fake.executedScripts[1] ?? '', /restorePrintPreview/u)
+})
+
+test('OCR 原文导出必须等待 PDF Canvas 并测量 PDF 页面高度以生成双层 PDF', async () => {
+  const fake = createSequencedWebContentsFake([
+    { ready: true },
+    { pageHeightCssPx: 1056 }
+  ])
+
+  await printDocumentPreviewToPdf(fake.webContents, documentModel(), undefined, true)
+
+  assert.match(fake.executedScripts[0] ?? '', /\.document-pdf-canvas/u)
+  assert.match(fake.executedScripts[1] ?? '', /\.document-pdf-page/u)
 })

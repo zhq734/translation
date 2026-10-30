@@ -7,7 +7,13 @@ const isWindows7Build = process.env['WIN7_BUILD'] === '1'
 export default defineConfig({
   main: {
     build: {
-      target: isWindows7Build ? 'node16.17' : undefined
+      target: isWindows7Build ? 'node16.17' : undefined,
+      rollupOptions: {
+        input: {
+          index: resolve('src/main/index.ts'),
+          documentWorker: resolve('src/main/documentWorkerRuntimeEntry.ts')
+        }
+      }
     },
     plugins: [externalizeDepsPlugin()]
   },

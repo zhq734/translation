@@ -4,6 +4,7 @@ import {
   DOCUMENT_OCR_FALLBACK_FONT_SIZE,
   DOCUMENT_OCR_LINE_HEIGHT_RATIO,
   DOCUMENT_OCR_UNIFORM_FONT_SIZE,
+  normalizeDocumentOcrRegionBox,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -62,5 +63,20 @@ test('OCR 区域间距只保留原文行间空白，不包含前序区域剩余�
       300
     ),
     0
+  )
+})
+
+test('OCR 透明文字层坐标必须有效、不越界并保留最小可命中尺寸', () => {
+  assert.deepEqual(
+    normalizeDocumentOcrRegionBox({ x: 0.25, y: 0.3, width: 0.4, height: 0.2 }),
+    { x: 0.25, y: 0.3, width: 0.4, height: 0.2 }
+  )
+  assert.deepEqual(
+    normalizeDocumentOcrRegionBox({ x: -0.1, y: 1, width: 0, height: Number.NaN }),
+    { x: 0, y: 0.999, width: 0.001, height: 0.001 }
+  )
+  assert.deepEqual(
+    normalizeDocumentOcrRegionBox({ x: 0.9, y: 0.8, width: 0.5, height: 0.5 }),
+    { x: 0.9, y: 0.8, width: 0.1, height: 0.2 }
   )
 })

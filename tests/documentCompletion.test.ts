@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  canRetryDocumentSnapshot,
+  countRetryableDocumentTargets,
   evaluateDocumentCompletion,
   isLikelyUntranslatedTranslation,
+  resolveDocumentRetryActionState,
+  resolveRetryableDocumentTargetCount,
   selectDocumentWorkspaceSnapshot,
   validateDocumentCompletionReport,
   type DocumentCompletionTarget,
@@ -117,6 +121,150 @@ test('全部目标失败且没有可用结果时为 failed', () => {
   assert.equal(report.translated + report.unchanged, 0)
   assert.equal(report.failed, 1)
   assert.equal(report.pending, 1)
+})
+
+test('可重试目标数量必须与失败、未完成和疑似未翻译的摘要统计同源', () => {
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    { targetId: 'target-2', sourceText: 'Install the application', state: 'failed' },
+    { targetId: 'target-3', sourceText: 'Open the settings page', state: 'pending' },
+    {
+      targetId: 'target-4',
+      sourceText: 'This paragraph is intentionally long enough to require translation.',
+      translatedText: 'This paragraph is intentionally long enough to require translation.',
+      state: 'translated'
+    }
+  ]))
+
+  assert.equal(report.failed + report.pending + report.suspectUntranslated, 3)
+  assert.equal(countRetryableDocumentTargets(report), 3)
+  assert.equal(countRetryableDocumentTargets(undefined), 0)
+})
+
+test('界面重试数量必须优先复用完成报告并兼容缺失或过期的失败块字段', () => {
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    { targetId: 'target-2', sourceText: 'Install the application', state: 'failed' },
+    { targetId: 'target-3', sourceText: 'Open the settings page', state: 'pending' }
+  ]))
+  const completedReport = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界')
+  ]))
+
+  assert.equal(resolveRetryableDocumentTargetCount({ completionReport: report }), 2)
+  assert.equal(resolveRetryableDocumentTargetCount({
+    completionReport: report,
+    retryableFailedBlocks: 0
+  }), 2)
+  assert.equal(resolveRetryableDocumentTargetCount({
+    completionReport: completedReport,
+    retryableFailedBlocks: 5
+  }), 0)
+  assert.equal(resolveRetryableDocumentTargetCount({ retryableFailedBlocks: 3 }), 3)
+  assert.equal(resolveRetryableDocumentTargetCount({}), 0)
+})
+
+test('部分结果含失败 1 与疑似未翻译 16 时必须启用重新翻译入口', () => {
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    {
+      targetId: 'target-failed',
+      sourceText: 'Install the application',
+      state: 'failed',
+      failureReason: 'provider-error'
+    },
+    ...Array.from({ length: 16 }, (_, index): DocumentCompletionTarget => {
+      const sourceText = `This is untranslated paragraph ${index + 1} with enough English words.`
+      return translatedTarget(`target-suspect-${index + 1}`, sourceText, sourceText)
+    })
+  ], { languagePair: { sourceLang: 'EN', targetLang: 'ZH' } }))
+  const completedReport = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界')
+  ]))
+  const snapshot = {
+    task: { status: 'partial' as const },
+    completionReport: report,
+    retryableFailedBlocks: 0
+  }
+
+  assert.equal(report.failed, 1)
+  assert.equal(report.suspectUntranslated, 16)
+  assert.equal(resolveRetryableDocumentTargetCount(snapshot), 17)
+  assert.equal(canRetryDocumentSnapshot(snapshot), true)
+  assert.equal(canRetryDocumentSnapshot({
+    task: { status: 'completed' },
+    completionReport: report,
+    retryableFailedBlocks: 17
+  }), true, '完成报告为 partial 时必须以报告为准，不能被矛盾的任务状态禁用')
+  assert.equal(canRetryDocumentSnapshot({
+    task: { status: 'partial' },
+    completionReport: completedReport,
+    retryableFailedBlocks: 17
+  }), false, '完成报告为 completed 时旧失败计数不得重新启用入口')
+  assert.equal(canRetryDocumentSnapshot({
+    task: { status: 'partial' },
+    completionReport: undefined,
+    retryableFailedBlocks: 0
+  }), false)
+})
+
+test('部分结果摘要与重新翻译按钮必须由同一动作状态驱动', () => {
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    {
+      targetId: 'target-failed',
+      sourceText: 'Install the application',
+      state: 'failed',
+      failureReason: 'provider-error'
+    },
+    ...Array.from({ length: 16 }, (_, index): DocumentCompletionTarget => {
+      const sourceText = `This is untranslated paragraph ${index + 1} with enough English words.`
+      return translatedTarget(`target-suspect-${index + 1}`, sourceText, sourceText)
+    })
+  ], { languagePair: { sourceLang: 'EN', targetLang: 'ZH' } }))
+
+  assert.deepEqual(resolveDocumentRetryActionState({
+    task: { status: 'partial', failedBlocks: 17 },
+    completionReport: report,
+    retryableFailedBlocks: 0
+  }), {
+    failed: 1,
+    pending: 0,
+    suspectUntranslated: 16,
+    reverted: 17,
+    retryableCount: 17,
+    retryDisabled: false
+  })
+  assert.equal(resolveDocumentRetryActionState({
+    task: { status: 'completed', failedBlocks: 17 },
+    completionReport: evaluateDocumentCompletion(completionInput([
+      translatedTarget('target-1', 'Hello world', '你好，世界')
+    ])),
+    retryableFailedBlocks: 17
+  }).retryDisabled, true)
+})
+
+test('完成报告仍有 17 项可重试时不得被矛盾的任务状态禁用入口', () => {
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    {
+      targetId: 'target-failed',
+      sourceText: 'Install the application',
+      state: 'failed',
+      failureReason: 'provider-error'
+    },
+    ...Array.from({ length: 16 }, (_, index): DocumentCompletionTarget => {
+      const sourceText = `This is untranslated paragraph ${index + 1} with enough English words.`
+      return translatedTarget(`target-suspect-${index + 1}`, sourceText, sourceText)
+    })
+  ], { languagePair: { sourceLang: 'EN', targetLang: 'ZH' } }))
+
+  assert.equal(report.status, 'partial')
+  assert.equal(resolveDocumentRetryActionState({
+    task: { status: 'completed', failedBlocks: 17 },
+    completionReport: report,
+    retryableFailedBlocks: 17
+  }).retryDisabled, false)
 })
 
 test('非空译文为空、占位符损坏或表格映射失败时不得计为成功', () => {

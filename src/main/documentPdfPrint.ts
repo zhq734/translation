@@ -23,10 +23,11 @@ const MARKDOWN_PRINT_MARGIN_PT = 25.2
  * 生成打印前资源等待脚本。
  * 水印在打印时铺满整页，横向起点必须依据目标纸张宽度计算，不能沿用屏幕预览宽度。
  * @param watermarkOffset 水印图案相对页面左边缘的横向偏移，单位为 CSS 像素。
+ * @param waitForPdfCanvas 是否逐页触发并等待 PDF.js Canvas 绘制完成。
  * @returns 可在文档窗口执行的打印准备脚本。
  * @author zhenghq
  */
-function buildWaitForPrintReadyScript(watermarkOffset: number): string {
+function buildWaitForPrintReadyScript(watermarkOffset: number, waitForPdfCanvas = false): string {
   const offset = Number.isFinite(watermarkOffset)
     ? Math.round(watermarkOffset * PRINT_POINT_PRECISION) / PRINT_POINT_PRECISION
     : 0
@@ -44,6 +45,27 @@ function buildWaitForPrintReadyScript(watermarkOffset: number): string {
       try { await image.decode(); } catch {}
     }
   }));
+  ${waitForPdfCanvas ? `// PDF.js loads pages lazily; scroll each page into view before printing so every canvas is ready.
+  const pdfPages = Array.from(document.querySelectorAll('#document-translation-content .document-pdf-page'));
+  for (const page of pdfPages) {
+    page.scrollIntoView({ block: 'center', inline: 'nearest' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const canvas = page.querySelector('.document-pdf-canvas');
+    if (canvas && (canvas.width <= 0 || canvas.height <= 0)) {
+      await new Promise((resolve) => {
+        const observer = new MutationObserver(() => {
+          if (canvas.width <= 0 || canvas.height <= 0) return;
+          observer.disconnect();
+          resolve();
+        });
+        observer.observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] });
+        setTimeout(() => { observer.disconnect(); resolve(); }, 3000);
+      });
+    }
+  }
+  if (pdfPages.length > 0) {
+    pdfPages[0].scrollIntoView({ block: 'start', inline: 'nearest' });
+  }` : ''}
   // Print layout is driven by the target paper width; reuse its offset instead of the screen viewport.
   for (const watermark of document.querySelectorAll('#document-translation-content .document-translation-watermark')) {
     const tile = watermark.querySelector('pattern');
@@ -111,7 +133,9 @@ function buildPreparePartialExportScript(
 
 /** 测量打印样式生效后译文页的最大真实高度。 */
 const MEASURE_TRANSLATION_PAGE_HEIGHT_SCRIPT = `(() => {
-  const pages = Array.from(document.querySelectorAll('#document-translation-content .document-page'));
+  const pages = Array.from(document.querySelectorAll(
+    '#document-translation-content .document-page, #document-translation-content .document-pdf-page'
+  ));
   const pageHeightCssPx = Math.max(0, ...pages.map((page) => page.getBoundingClientRect().height));
   return { pageHeightCssPx };
 })()`
@@ -354,6 +378,40 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     min-height: var(--document-page-height) !important;
   }
 
+  #document-translation-content .document-pdf-page {
+    --document-page-scale: ${CSS_PX_PER_PDF_POINT} !important;
+    position: relative !important;
+    display: flex !important;
+    box-sizing: border-box !important;
+    justify-content: center !important;
+    width: calc(var(--document-pdf-source-width) * ${CSS_PX_PER_PDF_POINT}px) !important;
+    height: calc(var(--document-pdf-source-height) * ${CSS_PX_PER_PDF_POINT}px) !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: var(--document-paper-bg) !important;
+    color: var(--document-paper-text) !important;
+    box-shadow: none !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  #document-translation-content .document-pdf-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  #document-translation-content .document-pdf-canvas {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+  }
+
   #document-translation-content .document-flow-preview,
   #document-translation-content .document-table-preview,
   #document-translation-content .document-subtitle-preview {
@@ -393,6 +451,25 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   #document-translation-content .document-table-block {
     /* Keep table borders intact when printing instead of clipping horizontally. */
     overflow: visible !important;
+  }
+
+  #document-translation-content .document-ocr-print-text-layer {
+    display: block !important;
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    z-index: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+    background: transparent !important;
+  }
+
+  #document-translation-content .document-ocr-print-text-layer .document-ocr-text-region {
+    color: transparent !important;
+    opacity: 1 !important;
+    background: transparent !important;
+    -webkit-text-fill-color: transparent !important;
   }
 
   #document-translation-content .document-partial-export-notice {
@@ -471,13 +548,16 @@ function resolveMeasuredPageHeightCssPx(result: unknown): number {
  * 将文档窗口中的译文预览直接打印为 PDF。
  * @param webContents 文档窗口的 webContents。
  * @param model 当前译文模型，用于确定打印页面尺寸。
+ * @param partialExport 可选的部分导出统计；存在时打印前插入部分结果标记。
+ * @param textLayer 是否等待并打印原图上的透明 OCR 文字层。
  * @returns PDF 字节与可降级告警。
  * @author zhenghq
  */
 export async function printDocumentPreviewToPdf(
   webContents: DocumentPrintWebContents,
   model: DocumentModel,
-  partialExport?: DocumentPartialExportSummary
+  partialExport?: DocumentPartialExportSummary,
+  textLayer?: boolean
 ): Promise<DocumentPdfExportResult> {
   if (!model || !Array.isArray(model.pages) || model.pages.length === 0) {
     throw new DocumentPdfPrintError('invalid-document', 'Document has no pages')
@@ -494,7 +574,8 @@ export async function printDocumentPreviewToPdf(
       ))
     } else {
       await webContents.executeJavaScript(buildWaitForPrintReadyScript(
-        resolvePrintWatermarkHorizontalOffset(model)
+        resolvePrintWatermarkHorizontalOffset(model),
+        textLayer === true
       ))
     }
     // 连续流式文档由浏览器按 @page 高度自然分页；固定页文档才需要把单页译文高度扩展到原页高以上。

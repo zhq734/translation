@@ -20,7 +20,7 @@ import {
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { copyFile, open as openFile, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, open as openFile, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -677,6 +677,9 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     sendProgress: (snapshot) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.progress, snapshot)
     },
+    sendTranslationUpdate: (update) => {
+      documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.blockTranslated, update)
+    },
     sendCompleted: (snapshot) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
     },
@@ -740,6 +743,7 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     },
     loadAssetBytes: async () => null,
     getTranslationConcurrency: () => getSettings().webTranslationConcurrency,
+    getOcrConcurrency: () => 2,
     getModelFingerprint: () => {
       const settings = getSettings()
       return createHash('sha256').update(JSON.stringify([
@@ -755,10 +759,10 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
-    exportPdf: (model, _dependencies, partialExport) => {
+    exportPdf: (model, _dependencies, partialExport, textLayer) => {
       const window = documentWorkspace?.getWindow()
       if (!window) throw new Error('document-window-unavailable')
-      return printDocumentPreviewToPdf(window.webContents, model, partialExport)
+      return printDocumentPreviewToPdf(window.webContents, model, partialExport, textLayer)
     },
     showSaveDialog: async (suggestedName) => {
       const window = documentWorkspace?.getWindow()
@@ -780,7 +784,11 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     },
     writeFile: async (path, bytes) => {
       await writeFile(path, bytes)
-    }
+    },
+    rename: async (source, target) => {
+      await rename(source, target)
+    },
+    unlink
   })
 }
 
@@ -5972,6 +5980,43 @@ function registerIpc(): void {
     return selected
   })
   /**
+   * 从文档窗口一次选择并校验多个本地文件。
+   *
+   * 只有当前文档工作台可以调用；每个候选路径都重新读取有限文件片段，
+   * 通过校验后才加入当前窗口批准集合，拒绝项不携带路径或正文。
+   * @param event IPC 事件对象。
+   * @returns 每个候选文件的选择、取消或拒绝结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:select-files', async (event): Promise<DocumentFileSelectionResult[]> => {
+    if (!isDocumentWorkspaceSender(event.sender)) {
+      return [{ status: 'rejected', code: 'unreadable' }]
+    }
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow) return [{ status: 'rejected', code: 'unreadable' }]
+    const result = await dialog.showOpenDialog(senderWindow, {
+      title: t('document.batch.chooseFiles'),
+      properties: ['openFile', 'multiSelections'],
+      filters: [{
+        name: t('document.upload.formats'),
+        extensions: ['pdf', 'docx', 'epub', 'html', 'htm', 'md', 'markdown', 'txt', 'json', 'csv', 'srt', 'vtt', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
+      }]
+    })
+    if (result.canceled || result.filePaths.length === 0) return [{ status: 'cancelled' }]
+    const validated = await Promise.allSettled(
+      result.filePaths.map((path) => validateApprovedDocumentPath(path))
+    )
+    const selections = validated.map((entry) =>
+      entry.status === 'fulfilled'
+        ? entry.value
+        : { status: 'rejected' as const, code: 'unreadable' as const }
+    )
+    for (const selected of selections) {
+      if (selected.status === 'selected') approvedDocumentPaths.add(selected.path)
+    }
+    return selections
+  })
+  /**
    * 重新校验拖放得到的本地路径，并在当前文档窗口登记为唯一可运行文件。
    * @param event IPC 事件对象。
    * @param path Renderer 从受信任拖放 File 对象取得的绝对路径。
@@ -5989,6 +6034,34 @@ function registerIpc(): void {
       approvedDocumentPaths.add(selected.path)
     }
     return selected
+  })
+  /**
+   * 重新校验拖放得到的多个本地路径，并批量登记当前文档窗口的可运行文件。
+   * 成功项只追加到批准集合，不能清空队列中此前已批准的文件。
+   * @param event IPC 事件对象。
+   * @param paths Renderer 从受信任拖放 File 对象取得的绝对路径列表。
+   * @returns 每个候选文件的选择或拒绝结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:approve-files', async (event, paths: unknown): Promise<DocumentFileSelectionResult[]> => {
+    if (!isDocumentWorkspaceSender(event.sender)) {
+      return [{ status: 'rejected', code: 'unreadable' }]
+    }
+    if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== 'string')) {
+      return [{ status: 'rejected', code: 'unreadable' }]
+    }
+    const validated = await Promise.allSettled(
+      paths.map((path) => validateApprovedDocumentPath(path as string))
+    )
+    const selections = validated.map((entry) =>
+      entry.status === 'fulfilled'
+        ? entry.value
+        : { status: 'rejected' as const, code: 'unreadable' as const }
+    )
+    for (const selected of selections) {
+      if (selected.status === 'selected') approvedDocumentPaths.add(selected.path)
+    }
+    return selections
   })
   /**
    * 启动当前文档窗口已批准文件的翻译任务。

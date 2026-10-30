@@ -25,6 +25,7 @@ import type {
 } from '../shared/documentLanguageDirection.ts'
 import type { DocumentCompletionReport } from '../shared/documentCompletion.ts'
 import {
+  collectRetryableDocumentTargetIds,
   selectDocumentWorkspaceSnapshot,
   validateDocumentCompletionReport
 } from '../shared/documentCompletion.ts'
@@ -40,7 +41,8 @@ import type {
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
-  DocumentWorkspaceSnapshot
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
 import type { DocumentParseInput } from './documentParserShared.ts'
@@ -57,6 +59,7 @@ import {
   type DocumentPipelineResult
 } from './documentTranslationPipeline.ts'
 import { DocumentPdfExportError } from './documentPdfExport.ts'
+import { writeDocumentFileAtomically } from './documentAtomicFile.ts'
 
 /** 文件头预检读取上限，与文件选择阶段保持一致。 */
 const DOCUMENT_HEAD_BYTES = 8192
@@ -75,6 +78,8 @@ export interface DocumentWorkspaceTaskServiceDependencies {
   isApprovedPath(path: string): boolean
   /** 推送运行中进度快照。 */
   sendProgress(snapshot: DocumentWorkspaceSnapshot): void
+  /** 推送可立即原位合并的单个译文区块。 */
+  sendTranslationUpdate?(update: DocumentWorkspaceTranslationUpdate): void
   /** 推送最终完成、部分完成、取消或失败快照。 */
   sendCompleted(snapshot: DocumentWorkspaceSnapshot): void
   /** 解析完整文档；第二个参数用于登记 PDF 等解析期生成的资源字节，第三个参数用于传递取消信号。 */
@@ -97,21 +102,31 @@ export interface DocumentWorkspaceTaskServiceDependencies {
   loadAssetBytes?(asset: DocumentAsset, input: DocumentParseInput): Promise<Uint8Array | null>
   /** 读取可嵌入 PDF 的 CJK 字体。 */
   loadFontBytes(): Promise<Uint8Array | null>
-  /** 将译文模型导出为 PDF；部分导出时携带回退摘要供可见标记使用。 */
+  /** 将译文模型导出为 PDF；部分导出时携带回退摘要，双层导出时追加透明 OCR 文字层。 */
   exportPdf(model: DocumentModel, dependencies: {
     loadFontBytes(): Promise<Uint8Array | null>
     loadAssetBytes(assetId: string): Promise<Uint8Array | null>
-  }, partialExport?: DocumentPartialExportSummary): Promise<DocumentPdfExportResult>
+  }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean): Promise<DocumentPdfExportResult>
   /** 显示 PDF 保存对话框。 */
   showSaveDialog(suggestedName: string): Promise<DocumentSaveDialogResult>
   /** 将 PDF 字节写入用户选择的位置。 */
   writeFile(path: string, bytes: Uint8Array): Promise<void>
+  /** 将已完成的临时 PDF 原子替换为目标文件。 */
+  rename(source: string, target: string): Promise<void>
+  /** 清理写入或替换失败时遗留的临时文件。 */
+  unlink(path: string): Promise<void>
   /**
    * 读取页面翻译使用的并发数，供文档批量翻译复用同一用户配置。
    * @returns 页面翻译并发数。
    * @author zhenghq
    */
   getTranslationConcurrency?(): number
+  /**
+   * 读取文档 OCR 并发数。
+   * @returns 文档 OCR 并发数。
+   * @author zhenghq
+   */
+  getOcrConcurrency?(): number
   /**
    * 读取当前翻译提供方与模型的稳定指纹，用于完成报告绑定。
    * @returns 不含凭据的模型指纹。
@@ -340,6 +355,9 @@ export class DocumentWorkspaceTaskService {
   retryFailed(generation: number): DocumentRunResult {
     const job = this.active
     if (this.disposed) return { accepted: false, code: 'service-disposed' }
+    if ((job?.request.mode ?? 'translation') === 'ocr') {
+      return { accepted: false, code: 'no-retryable-failures' }
+    }
     if (!Number.isInteger(generation) || generation < 1) {
       return { accepted: false, code: 'invalid-request' }
     }
@@ -350,18 +368,21 @@ export class DocumentWorkspaceTaskService {
         suggestedGeneration: this.highestGeneration + 1
       }
     }
-    const retryableTerminal = job?.task.status === 'partial' ||
-      (job?.task.status === 'failed' && job.retryableTargetIds.length > 0)
+    const retryableTargetIds = this.resolveRetryableTargetIds(job)
+    const completionStatus = this.resolveCompletionStatus(job)
+    const retryableTerminal = completionStatus
+      ? completionStatus === 'partial' || completionStatus === 'failed'
+      : job?.task.status === 'partial' ||
+        (job?.task.status === 'failed' && retryableTargetIds.length > 0)
     if (this.starting || !job || !job.settled || !retryableTerminal) {
       return { accepted: false, code: 'not-ready' }
     }
     if (!job.source || !job.translation || !job.languageResolution ||
-      job.retryableTargetIds.length === 0) {
+      retryableTargetIds.length === 0) {
       return { accepted: false, code: 'no-retryable-failures' }
     }
 
     job.generation = generation
-    const retryableTargetIds = [...job.retryableTargetIds]
     job.task = {
       ...createDocumentTaskState(job.jobId, generation),
       phase: 'translate',
@@ -406,7 +427,7 @@ export class DocumentWorkspaceTaskService {
    */
   async getAsset(assetId: string): Promise<DocumentAssetResult> {
     const job = this.active
-    if (!job || typeof assetId !== 'string' || !assetId || assetId.includes('/') || assetId.includes('\\') || assetId.includes('..')) {
+    if (this.disposed || !job || typeof assetId !== 'string' || !assetId || assetId.includes('/') || assetId.includes('\\') || assetId.includes('..')) {
       return { ok: false, code: 'asset-not-found' }
     }
     const asset = job.source?.assets.find((candidate) => candidate.assetId === assetId) ??
@@ -429,7 +450,7 @@ export class DocumentWorkspaceTaskService {
    */
   getSource(): DocumentSourceResult {
     const job = this.active
-    if (!job) return { ok: false, code: 'source-not-found' }
+    if (this.disposed || !job) return { ok: false, code: 'source-not-found' }
     if (job.input.format === 'html') {
       if (!job.sanitizedHtmlSource) {
         const sanitized = sanitizeHtmlPreview(decodeDocumentText(job.input.bytes)).html
@@ -450,12 +471,13 @@ export class DocumentWorkspaceTaskService {
   }
 
   /**
-   * 校验任务终态、代际和显式导出模式后，将当前译文模型导出为 PDF。
-   * @param request 当前任务标识、代际与完整/部分导出模式。
+   * 校验任务终态、代际和显式导出模式后，将当前译文或 OCR 原文模型导出为 PDF。
+   * @param request 当前任务标识、代际、完整/部分导出模式及透明文字层选项。
    * @returns 保存、取消或拒绝结果。
    * @author zhenghq
    */
   async exportPdf(request: DocumentExportRequest): Promise<DocumentExportResult> {
+    if (this.disposed) return { status: 'rejected', code: 'service-disposed' }
     if (!request || typeof request !== 'object' ||
       typeof request.jobId !== 'string' || !request.jobId.trim() ||
       !Number.isInteger(request.generation) || request.generation < 1 ||
@@ -472,6 +494,8 @@ export class DocumentWorkspaceTaskService {
     if (!job.completionReport || !job.source) {
       return { status: 'rejected', code: 'completion-mismatch' }
     }
+    // OCR 原文模式不产生翻译目标，但仍必须使用同一任务、代际、文档和模型指纹完成报告。
+    const ocrOnly = (job.request.mode ?? 'translation') === 'ocr'
     const validation = validateDocumentCompletionReport(job.completionReport, {
       jobId: job.jobId,
       generation: job.generation,
@@ -504,31 +528,41 @@ export class DocumentWorkspaceTaskService {
       if (request.mode === 'complete') {
         return { status: 'rejected', code: 'partial-export-not-confirmed' }
       }
-    } else if (job.completionReport.translated + job.completionReport.unchanged === 0) {
+    } else if (!ocrOnly &&
+      job.completionReport.translated + job.completionReport.unchanged === 0) {
       return { status: 'rejected', code: 'not-ready' }
     }
     try {
-      const exportDocument = request.mode === 'partial'
+      // OCR 原文没有部分译文回退语义，直接导出已完成 OCR 的源模型。
+      const exportDocument = !ocrOnly && request.mode === 'partial'
         ? buildPartialExportDocument(job.source, job.translation, job.completionReport)
         : undefined
       // 完整导出也必须先按源模型重建目标目录，避免伪造或过期的成功计数进入保存流程。
-      if (!exportDocument) {
+      if (!ocrOnly && !exportDocument) {
         buildPartialExportDocument(job.source, job.translation, job.completionReport)
       }
       const save = await this.dependencies.showSaveDialog(
-        request.mode === 'partial'
+        ocrOnly
+          ? `${job.input.fileName.replace(/\.[^.]+$/u, '')}-ocr.pdf`
+          : request.mode === 'partial'
           ? `${job.input.fileName.replace(/\.[^.]+$/u, '')}-partial-${exportDocument?.summary.reverted ?? 0}-reverted-translated.pdf`
           : `${job.input.fileName.replace(/\.[^.]+$/u, '')}-translated.pdf`
       )
       if (save.canceled || !save.filePath) return { status: 'cancelled' }
-      const result = await this.dependencies.exportPdf(exportDocument?.model ?? job.translation, {
+      // OCR 原文导出明确使用任务源模型，避免流水线返回结构变化时误把翻译模型写入双层 PDF。
+      const exportModel = ocrOnly ? job.source : exportDocument?.model ?? job.translation
+      const result = await this.dependencies.exportPdf(exportModel, {
         loadFontBytes: () => this.dependencies.loadFontBytes(),
         loadAssetBytes: async (assetId) => {
-          const asset = job.translation?.assets.find((candidate) => candidate.assetId === assetId)
+          const asset = exportModel.assets.find((candidate) => candidate.assetId === assetId)
           return asset ? this.loadAsset(job, asset) : null
         }
-      }, exportDocument?.summary)
-      await this.dependencies.writeFile(save.filePath, result.bytes)
+      }, exportDocument?.summary, request.textLayer)
+      await writeDocumentFileAtomically(save.filePath, result.bytes, {
+        writeFile: (path, bytes) => this.dependencies.writeFile(path, bytes),
+        rename: (source, target) => this.dependencies.rename(source, target),
+        unlink: (path) => this.dependencies.unlink(path)
+      })
       return {
         status: 'saved',
         ...(result.warnings.length > 0 ? { warnings: result.warnings } : {})
@@ -544,9 +578,33 @@ export class DocumentWorkspaceTaskService {
    * @author zhenghq
    */
   dispose(): void {
+    if (this.disposed) return
     this.disposed = true
-    this.active?.controller.abort()
+    const job = this.active
     this.active = null
+    if (job) {
+      job.cancelled = true
+      job.controller.abort()
+      this.releaseJob(job)
+    }
+  }
+
+  /**
+   * 清空任务持有的模型、源文件、资源和快照引用，帮助关闭窗口后及时释放内存。
+   * @param job 待释放任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private releaseJob(job: ActiveDocumentJob): void {
+    job.source = undefined
+    job.translation = undefined
+    job.input.bytes = new Uint8Array(0)
+    job.assetBytes.clear()
+    job.sanitizedHtmlSource = undefined
+    job.lastSnapshot = undefined
+    job.completionReport = undefined
+    job.failedTargetIds = []
+    job.retryableTargetIds = []
   }
 
   /**
@@ -557,6 +615,9 @@ export class DocumentWorkspaceTaskService {
    * @author zhenghq
    */
   private async process(job: ActiveDocumentJob): Promise<void> {
+    let previousTranslation: DocumentModel | undefined
+    let translationCompleted = 0
+    let translationTotal = 0
     try {
       const result: DocumentPipelineResult = await runDocumentTranslationPipeline(
         job.input,
@@ -578,23 +639,39 @@ export class DocumentWorkspaceTaskService {
           recognizeImage: (bytes, signal) => this.dependencies.recognizeImage(bytes, signal),
           translate: (text, signal, languagePair, onDelta) =>
             this.dependencies.translate(text, signal, job.request, languagePair, onDelta),
-          publishTranslation: (translation) => {
-            if (job.cancelled || job.settled || job.controller.signal.aborted) return
-            job.translation = translation
-            this.emitProgress(job, job.task)
-          },
           onProgress: (state) => {
             if (job.cancelled || job.settled) return
+            if (state.phase === 'translate') {
+              translationCompleted = state.progress.completed
+              translationTotal = state.progress.total
+            }
             job.task = state
             this.emitProgress(job, state)
           },
+          publishTranslation: (translation) => {
+            if (job.cancelled || job.settled || job.controller.signal.aborted) return
+            job.translation = translation
+            if (previousTranslation) {
+              this.emitTranslationUpdates(
+                job,
+                previousTranslation,
+                translation,
+                translationCompleted,
+                translationTotal
+              )
+            }
+            previousTranslation = translation
+            this.emitProgress(job, job.task)
+          },
           concurrency: this.dependencies.getTranslationConcurrency?.(),
+          ocrConcurrency: this.dependencies.getOcrConcurrency?.(),
           getModelFingerprint: this.dependencies.getModelFingerprint
         },
         {
           sourcePreference: job.request.sourceLang ?? 'auto',
           targetPreference: job.request.targetLang ?? 'auto'
-        }
+        },
+        job.request.mode ?? 'translation'
       )
       if (job.cancelled) {
         this.emitCompleted(job, requestDocumentTaskCancellation(job.task))
@@ -636,6 +713,9 @@ export class DocumentWorkspaceTaskService {
       this.emitCompleted(job, job.task)
       return
     }
+    let previousTranslation: DocumentModel | undefined
+    let retryCompleted = 0
+    let retryTotal = retryableTargetIds.length
     try {
       const result = await retryFailedDocumentTranslationPipeline(
         source,
@@ -649,17 +729,32 @@ export class DocumentWorkspaceTaskService {
           recognizeImage: (bytes, signal) => this.dependencies.recognizeImage(bytes, signal),
           translate: (text, signal, languagePair, onDelta) =>
             this.dependencies.translate(text, signal, job.request, languagePair, onDelta),
-          publishTranslation: (nextTranslation) => {
-            if (job.cancelled || job.settled || job.controller.signal.aborted) return
-            job.translation = nextTranslation
-            this.emitProgress(job, job.task)
-          },
           onProgress: (state) => {
             if (job.cancelled || job.settled) return
+            if (state.phase === 'translate') {
+              retryCompleted = state.progress.completed
+              retryTotal = state.progress.total
+            }
             job.task = state
             this.emitProgress(job, state)
           },
+          publishTranslation: (nextTranslation) => {
+            if (job.cancelled || job.settled || job.controller.signal.aborted) return
+            job.translation = nextTranslation
+            if (previousTranslation) {
+              this.emitTranslationUpdates(
+                job,
+                previousTranslation,
+                nextTranslation,
+                retryCompleted,
+                retryTotal
+              )
+            }
+            previousTranslation = nextTranslation
+            this.emitProgress(job, job.task)
+          },
           concurrency: this.dependencies.getTranslationConcurrency?.(),
+          ocrConcurrency: this.dependencies.getOcrConcurrency?.(),
           getModelFingerprint: this.dependencies.getModelFingerprint
         },
         languageResolution
@@ -723,11 +818,15 @@ export class DocumentWorkspaceTaskService {
    * @author zhenghq
    */
   private snapshot(job: ActiveDocumentJob, task: DocumentTaskState): DocumentWorkspaceSnapshot {
+    const retryableTargetIds = this.resolveRetryableTargetIds(job)
+    const completionStatus = this.resolveCompletionStatus(job)
+    const effectiveTask = completionStatus ? { ...task, status: completionStatus } : task
     return {
       jobId: job.jobId,
       generation: job.generation,
-      task: { ...task, progress: { ...task.progress } },
-      percent: calculateDocumentTaskProgress(task),
+      runMode: job.request.mode ?? 'translation',
+      task: { ...effectiveTask, progress: { ...effectiveTask.progress } },
+      percent: calculateDocumentTaskProgress(effectiveTask),
       ...(job.source ? { source: job.source } : {}),
       ...(job.translation ? { translation: job.translation } : {}),
       ...(job.languageResolution ? {
@@ -736,11 +835,40 @@ export class DocumentWorkspaceTaskService {
         languagePair: job.languageResolution.languagePair
       } : {}),
       ...(job.completionReport ? { completionReport: job.completionReport } : {}),
-      ...(job.retryableTargetIds.length > 0
-        ? { retryableFailedBlocks: job.retryableTargetIds.length }
+      ...(retryableTargetIds.length > 0
+        ? { retryableFailedBlocks: retryableTargetIds.length }
         : {}),
-      ...(task.errorCode ? { errorCode: task.errorCode } : {})
+      ...(effectiveTask.errorCode ? { errorCode: effectiveTask.errorCode } : {})
     }
+  }
+
+  /**
+   * 读取与当前任务标识和代际严格匹配的完成报告状态。
+   * @param job 当前任务；尚未创建时省略。
+   * @returns 同代际完成报告状态；没有有效报告时返回 undefined。
+   * @author zhenghq
+   */
+  private resolveCompletionStatus(
+    job: ActiveDocumentJob | null | undefined
+  ): DocumentCompletionReport['status'] | undefined {
+    const report = job?.completionReport
+    if (!job || !report || report.jobId !== job.jobId || report.generation !== job.generation) {
+      return undefined
+    }
+    return report.status
+  }
+
+  /**
+   * 解析当前任务需要重试的目标；完整完成报告优先，旧版冗余数组仅作兼容兜底。
+   * @param job 当前任务；尚未创建时省略。
+   * @returns 去重且保持稳定顺序的可重试目标标识。
+   * @author zhenghq
+   */
+  private resolveRetryableTargetIds(job: ActiveDocumentJob | null | undefined): string[] {
+    if (!job) return []
+    const fromReport = collectRetryableDocumentTargetIds(job.completionReport)
+    const candidates = fromReport.length > 0 ? fromReport : job.retryableTargetIds
+    return [...new Set(candidates)]
   }
 
   /**
@@ -751,6 +879,7 @@ export class DocumentWorkspaceTaskService {
    * @author zhenghq
    */
   private emitProgress(job: ActiveDocumentJob, task: DocumentTaskState): void {
+    if (this.disposed || this.active !== job) return
     const incoming = this.snapshot(job, task)
     const accepted = job.lastSnapshot
       ? selectDocumentWorkspaceSnapshot(job.lastSnapshot, incoming)
@@ -761,6 +890,49 @@ export class DocumentWorkspaceTaskService {
   }
 
   /**
+   * 比较前后两份译文快照并推送发生变化的顶层区块。
+   * 仅发送当前未取消、未终结任务的区块，避免迟到结果覆盖新任务或终态。
+   * @param job 当前任务。
+   * @param previous 上一次已推送的译文快照。
+   * @param current 当前最新译文快照。
+   * @param completed 当前翻译阶段已完成目标数。
+   * @param total 当前翻译阶段目标总数。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private emitTranslationUpdates(
+    job: ActiveDocumentJob,
+    previous: DocumentModel,
+    current: DocumentModel,
+    completed: number,
+    total: number
+  ): void {
+    if (!this.dependencies.sendTranslationUpdate || job.cancelled || job.settled ||
+      job.controller.signal.aborted || this.active !== job) {
+      return
+    }
+    const previousPages = new Map(previous.pages.map((page) => [page.pageId, page]))
+    for (const page of current.pages) {
+      const previousPage = previousPages.get(page.pageId)
+      if (!previousPage) continue
+      const previousBlocks = new Map(previousPage.blocks.map((block) => [block.blockId, block]))
+      for (const block of page.blocks) {
+        const previousBlock = previousBlocks.get(block.blockId)
+        if (!previousBlock || JSON.stringify(previousBlock) === JSON.stringify(block)) continue
+        this.dependencies.sendTranslationUpdate({
+          jobId: job.jobId,
+          generation: job.generation,
+          pageId: page.pageId,
+          blockId: block.blockId,
+          block,
+          completed,
+          total: Math.max(1, total)
+        })
+      }
+    }
+  }
+
+  /**
    * 推送终态事件；同一任务只发送一次。
    * @param job 当前任务。
    * @param task 当前状态。
@@ -768,7 +940,7 @@ export class DocumentWorkspaceTaskService {
    * @author zhenghq
    */
   private emitCompleted(job: ActiveDocumentJob, task: DocumentTaskState): void {
-    if (job.settled) return
+    if (this.disposed || this.active !== job || job.settled) return
     job.settled = true
     job.task = task
     const incoming = this.snapshot(job, task)

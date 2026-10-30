@@ -18,6 +18,8 @@ import type {
 import { createDocumentBlockId, createDocumentPageId } from '../shared/documentTypes.ts'
 import {
   DOCUMENT_MAX_IMAGES,
+  DOCUMENT_MAX_IMAGE_PIXELS,
+  DOCUMENT_MAX_PAGES,
   createDocumentModel,
   createDocumentWarning,
   createTableCellId,
@@ -26,6 +28,7 @@ import {
   decodeHtmlEntities,
   hashDocumentBytes,
   limitDocumentBlocks,
+  readDocumentImageDimensions,
   sanitizeDocumentText,
   type DocumentParseInput
 } from './documentParserShared.ts'
@@ -871,6 +874,16 @@ async function ensureDocxImageAsset(
   }
   const bytes = await readPackageBytes(context.package, path)
   if (!bytes) return null
+  const dimensions = readDocumentImageDimensions(bytes)
+  if (dimensions && dimensions.width * dimensions.height > DOCUMENT_MAX_IMAGE_PIXELS) {
+    if (!context.model.warnings.some((warning) => warning.code === 'image-pixel-limit-reached')) {
+      context.model.warnings.push(createDocumentWarning(
+        'image-pixel-limit-reached',
+        'An image exceeded the pixel limit and was skipped.'
+      ))
+    }
+    return null
+  }
   const sha256 = hashDocumentBytes(bytes)
   const asset: DocumentAsset = {
     assetId: `asset-${sha256.slice(0, 16)}`,
@@ -1031,7 +1044,7 @@ export async function parseDocxDocument(input: DocumentParseInput): Promise<Docu
    */
   const flushPage = (): void => {
     if (context.blocks.length === 0) return
-    if (model.pages.length >= 2000) {
+    if (model.pages.length >= DOCUMENT_MAX_PAGES) {
       model.warnings.push(createDocumentWarning('page-limit-reached', 'The document page limit was reached; remaining pages were skipped.'))
       return
     }

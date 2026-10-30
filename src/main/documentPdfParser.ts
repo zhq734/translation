@@ -21,12 +21,14 @@ import { createDocumentBlockId, createDocumentPageId } from '../shared/documentT
 import {
   DOCUMENT_MAX_PAGES,
   DOCUMENT_MAX_IMAGES,
+  DOCUMENT_MAX_IMAGE_PIXELS,
   createDocumentModelId,
   createDocumentWarning,
   createTableCellId,
   createTableRowId,
   createTextRunId,
   hashDocumentBytes,
+  readDocumentImageDimensions,
   sanitizeDocumentText,
   type DocumentParseInput
 } from './documentParserShared.ts'
@@ -228,6 +230,12 @@ export interface ParsePdfOptions {
   registerAssetBytes?: (assetId: string, bytes: Uint8Array) => void
   /** 取消 PDF 解析与页面栅格化。 */
   signal?: AbortSignal
+  /** 最多解析的页面数。 */
+  maxPages?: number
+  /** 最多登记的图片资源数。 */
+  maxImages?: number
+  /** 单张图片允许的最大像素数。 */
+  maxImagePixels?: number
 }
 
 /** 单行聚合后的文本片段。 */
@@ -410,22 +418,6 @@ function pdfFilledLineFromRectangle(
         ...(color ? { color } : {}),
         thickness
       }
-}
-
-/**
- * 从 PNG 的 IHDR 数据块读取像素宽高，供 OCR 坐标与字号换算使用。
- * @param bytes 图片字节。
- * @returns PNG 像素尺寸；不是有效 PNG 时返回 null。
- * @author zhenghq
- */
-function readPngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
-  if (bytes.byteLength < 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
-    return null
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const width = view.getUint32(16, false)
-  const height = view.getUint32(20, false)
-  return width > 0 && height > 0 ? { width, height } : null
 }
 
 /**
@@ -3855,6 +3847,23 @@ function detectPdfColumnLayout(
   const leftLines = columnCandidates.filter((line) => line.bbox.x + line.bbox.width / 2 < middle)
   const rightLines = columnCandidates.filter((line) => line.bbox.x + line.bbox.width / 2 >= middle)
   if (leftLines.length < 2 || rightLines.length < 2) return undefined
+  const leftTop = Math.min(...leftLines.map((line) => line.bbox.y))
+  const leftBottom = Math.max(...leftLines.map((line) => line.bbox.y + line.bbox.height))
+  const rightTop = Math.min(...rightLines.map((line) => line.bbox.y))
+  const rightBottom = Math.max(...rightLines.map((line) => line.bbox.y + line.bbox.height))
+  const verticalOverlap = Math.min(leftBottom, rightBottom) - Math.max(leftTop, rightTop)
+  const shorterColumnHeight = Math.min(leftBottom - leftTop, rightBottom - rightTop)
+  // 单栏表单常在正文右侧放签名、日期等字段。两侧行数可能都不少，但字段
+  // 通常只覆盖正文的一小段纵向范围，不能仅凭左右都有窄行就判成双栏。
+  if (shorterColumnHeight <= 0 || verticalOverlap / shorterColumnHeight < 0.6) return undefined
+  const leftColumnHeight = leftBottom - leftTop
+  const rightColumnHeight = rightBottom - rightTop
+  const columnHeightRatio = Math.min(leftColumnHeight, rightColumnHeight) /
+    Math.max(leftColumnHeight, rightColumnHeight)
+  const shorterColumnLineCount = Math.min(leftLines.length, rightLines.length)
+  if (columnHeightRatio < 0.6 && shorterColumnLineCount < 3) {
+    return undefined
+  }
   const leftRight = Math.max(...leftLines.map((line) => line.bbox.x + line.bbox.width))
   const rightLeft = Math.min(...rightLines.map((line) => line.bbox.x))
   const gap = rightLeft - leftRight
@@ -4643,6 +4652,7 @@ function enrichPdfFontStyles(
  * @param pageIndex 页面索引。
  * @param fingerprint 文档指纹。
  * @param renderPageToImage 可选栅格化适配器。
+ * @param maxImagePixels 单张图片允许的最大像素数。
  * @returns 图像区块与资源。
  * @author zhenghq
  */
@@ -4651,13 +4661,15 @@ async function createScannedPageImage(
   pageIndex: number,
   fingerprint: string,
   renderPageToImage: ParsePdfOptions['renderPageToImage'],
-  registerAssetBytes?: ParsePdfOptions['registerAssetBytes']
-): Promise<{ block: DocumentImageBlock; asset: DocumentAsset }> {
+  registerAssetBytes?: ParsePdfOptions['registerAssetBytes'],
+  maxImagePixels = DOCUMENT_MAX_IMAGE_PIXELS
+): Promise<{ block: DocumentImageBlock; asset: DocumentAsset } | null> {
   const pageId = createDocumentPageId(fingerprint, pageIndex)
   const blockId = createDocumentBlockId(fingerprint, pageId, 0, 'image')
   const bytes = renderPageToImage ? await renderPageToImage(page, pageIndex) : null
   const content = bytes ?? new Uint8Array()
-  const dimensions = bytes ? readPngDimensions(bytes) : null
+  const dimensions = bytes ? readDocumentImageDimensions(bytes) : null
+  if (dimensions && dimensions.width * dimensions.height > maxImagePixels) return null
   const viewport = page.getViewport({ scale: 1 })
   const sha256 = hashDocumentBytes(content)
   const assetId = `asset-${sha256.slice(0, 16)}`
@@ -4841,6 +4853,7 @@ function extractPdfImageRegions(
  * @param renderPageRegionToImage 可选区域栅格化函数。
  * @param registerAssetBytes 可选资源字节登记函数。
  * @param assetBytesById 当前已登记的资源字节。
+ * @param maxImagePixels 单张图片允许的最大像素数。
  * @returns 图片区块与资源。
  * @author zhenghq
  */
@@ -4854,8 +4867,9 @@ async function createEmbeddedImageBlock(
   renderEmbeddedImageToImage: ParsePdfOptions['renderEmbeddedImageToImage'],
   renderPageRegionToImage: ParsePdfOptions['renderPageRegionToImage'],
   registerAssetBytes: ParsePdfOptions['registerAssetBytes'],
-  assetBytesById: Map<string, Uint8Array>
-): Promise<{ block: DocumentImageBlock; asset: DocumentAsset }> {
+  assetBytesById: Map<string, Uint8Array>,
+  maxImagePixels = DOCUMENT_MAX_IMAGE_PIXELS
+): Promise<{ block: DocumentImageBlock; asset: DocumentAsset } | null> {
   const pageId = createDocumentPageId(fingerprint, pageIndex)
   let bytes: Uint8Array | null = null
   if (objectId && renderEmbeddedImageToImage) {
@@ -4870,7 +4884,8 @@ async function createEmbeddedImageBlock(
     bytes = await renderPageRegionToImage(page, pageIndex, bbox)
   }
   const content = bytes ?? new TextEncoder().encode(`pdf-image:${pageIndex}:${readingOrder}`)
-  const dimensions = bytes ? readPngDimensions(bytes) : null
+  const dimensions = bytes ? readDocumentImageDimensions(bytes) : null
+  if (dimensions && dimensions.width * dimensions.height > maxImagePixels) return null
   const sha256 = hashDocumentBytes(content)
   const assetId = `asset-${sha256.slice(0, 16)}`
   if (bytes) {
@@ -4913,10 +4928,20 @@ function orderPdfPageBlocks(
   fingerprint: string,
   columnLayout?: PdfColumnLayout
 ): DocumentBlock[] {
+  const topBandBottom = blocks.reduce((bottom, block) => block.bbox
+    ? Math.min(bottom, block.bbox.y + block.bbox.height)
+    : bottom, Number.POSITIVE_INFINITY) + PDF_TABLE_LINE_TOLERANCE
   const ordered = blocks
     .map((block, sourceIndex) => ({ block, sourceIndex }))
     .sort((left, right) => {
       if (columnLayout) {
+        // 双栏正文开始前的顶部独立区块必须先按视觉纵坐标输出。右上角表格或
+        // 页眉区块不跨越栏线，若直接按栏等级排序会被错误压到左栏正文之后。
+        const leftY = left.block.bbox?.y ?? Number.POSITIVE_INFINITY
+        const rightY = right.block.bbox?.y ?? Number.POSITIVE_INFINITY
+        const leftIsTop = left.block.bbox !== undefined && leftY <= topBandBottom
+        const rightIsTop = right.block.bbox !== undefined && rightY <= topBandBottom
+        if (leftIsTop !== rightIsTop) return leftIsTop ? -1 : 1
         const columnRank = (block: DocumentBlock): number => {
           if (!block.bbox) return 0
           const crosses = block.bbox.x < columnLayout.splitX &&
@@ -5021,6 +5046,9 @@ export async function parsePdfDocument(
   input: DocumentParseInput,
   options: ParsePdfOptions = {}
 ): Promise<DocumentModel> {
+  const maxPages = Math.max(1, options.maxPages ?? DOCUMENT_MAX_PAGES)
+  const maxImages = Math.max(0, options.maxImages ?? DOCUMENT_MAX_IMAGES)
+  const maxImagePixels = Math.max(1, options.maxImagePixels ?? DOCUMENT_MAX_IMAGE_PIXELS)
   const runtime = await loadPdfJs()
   const pdfBytes = input.bytes instanceof Uint8Array && !Buffer.isBuffer(input.bytes)
     ? input.bytes
@@ -5034,11 +5062,11 @@ export async function parsePdfDocument(
   })
   const document = await loadingTask.promise
   try {
-    const pageCount = Math.min(document.numPages, DOCUMENT_MAX_PAGES)
+    const pageCount = Math.min(document.numPages, maxPages)
     const pages: DocumentPage[] = []
     const assets: DocumentAsset[] = []
     const warnings: DocumentWarning[] = []
-    if (document.numPages > DOCUMENT_MAX_PAGES) {
+    if (document.numPages > maxPages) {
       warnings.push(createDocumentWarning('page-limit-reached', 'The PDF page limit was reached; remaining pages were skipped.'))
     }
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
@@ -5249,8 +5277,17 @@ export async function parsePdfDocument(
           pageIndex,
           input.sha256,
           options.renderPageToImage,
-          options.registerAssetBytes
+          options.registerAssetBytes,
+          maxImagePixels
         )
+        if (!scanned) {
+          warnings.push(createDocumentWarning(
+            'image-pixel-limit-reached',
+            'A scanned page exceeded the image pixel limit and was skipped.',
+            { pageId }
+          ))
+          continue
+        }
         // 低文本密度扫描页可能只有页眉或页码残留在原生文本层中；整页图像
         // 一旦生成，就必须以 OCR 结果作为唯一内容来源，避免重复展示外围文字。
         blocks.length = 0
@@ -5265,12 +5302,13 @@ export async function parsePdfDocument(
         }
       } else if (blocks.length > 0) {
         const regions = imageRegions
-        const availableImageSlots = Math.max(0, DOCUMENT_MAX_IMAGES - assets.length)
+        const availableImageSlots = Math.max(0, maxImages - assets.length)
         const acceptedRegions = regions.slice(0, availableImageSlots)
         if (regions.length > acceptedRegions.length) {
           warnings.push(createDocumentWarning('image-limit-reached', 'The PDF image limit was reached; remaining images were skipped.', { pageId }))
         }
         const assetBytesById = new Map<string, Uint8Array>()
+        let acceptedImageCount = 0
         for (let regionIndex = 0; regionIndex < acceptedRegions.length; regionIndex += 1) {
           if (options.signal?.aborted) throw createPdfAbortError()
           const region = acceptedRegions[regionIndex]!
@@ -5284,8 +5322,17 @@ export async function parsePdfDocument(
             options.renderEmbeddedImageToImage,
             options.renderPageRegionToImage,
             options.registerAssetBytes,
-            assetBytesById
+            assetBytesById,
+            maxImagePixels
           )
+          if (!image) {
+            warnings.push(createDocumentWarning(
+              'image-pixel-limit-reached',
+              'A PDF image exceeded the pixel limit and was skipped.',
+              { pageId }
+            ))
+            continue
+          }
           let tableTarget: PdfTableGridTarget | undefined
           let cellIndex: { rowIndex: number; cellIndex: number } | undefined
           for (const target of tableGridTargets) {
@@ -5303,9 +5350,14 @@ export async function parsePdfDocument(
           )) {
             blocks.push(image.block)
           }
+          acceptedImageCount += 1
           if (!assets.some((asset) => asset.assetId === image.asset.assetId)) assets.push(image.asset)
         }
-        if (acceptedRegions.length > 0) {
+        // 只有真正接收了图片资源时才提示后续 OCR；像素或资源预算跳过时
+        // 再提示“图片文字会识别”会误导用户。
+        if (acceptedImageCount > 0 && warnings.some((warning) =>
+          warning.code === 'embedded-image-ocr-required' && warning.pageId === pageId
+        ) === false) {
           warnings.push(createDocumentWarning('embedded-image-ocr-required', 'The PDF page contains images whose text will be recognized during OCR.', { pageId }))
         }
       }

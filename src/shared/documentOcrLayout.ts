@@ -15,6 +15,50 @@ export const DOCUMENT_OCR_MAX_FONT_SIZE = 72
 /** OCR 译文行高相对字号的固定比例；界面预览和 PDF 导出必须共用。 */
 export const DOCUMENT_OCR_LINE_HEIGHT_RATIO = 1.15
 
+/** OCR 透明文字区域的最小归一化边长，确保边界浮点误差不会产生不可选中的零尺寸元素。 */
+export const DOCUMENT_OCR_MIN_REGION_SIZE = 0.001
+
+/** 图片内 OCR 区域的归一化矩形。 */
+export interface DocumentOcrNormalizedBox {
+  /** 区域左边界，范围 0 到 1。 */
+  x: number
+  /** 区域上边界，范围 0 到 1。 */
+  y: number
+  /** 区域宽度，范围大于 0 且不超过剩余边界。 */
+  width: number
+  /** 区域高度，范围大于 0 且不超过剩余边界。 */
+  height: number
+}
+
+/**
+ * 将 OCR 区域坐标归一化到图片范围内，并保证透明文字层始终具有可命中尺寸。
+ * @param bbox OCR 引擎返回的原始区域坐标。
+ * @returns 可直接用于百分比定位的安全矩形。
+ * @author zhenghq
+ */
+export function normalizeDocumentOcrRegionBox(
+  bbox: DocumentOcrNormalizedBox
+): DocumentOcrNormalizedBox {
+  const maximumOrigin = 1 - DOCUMENT_OCR_MIN_REGION_SIZE
+  const normalizeValue = (value: number): number => Math.round(value * 1_000_000) / 1_000_000
+  const x = normalizeValue(Number.isFinite(bbox.x)
+    ? Math.max(0, Math.min(maximumOrigin, bbox.x))
+    : 0)
+  const y = normalizeValue(Number.isFinite(bbox.y)
+    ? Math.max(0, Math.min(maximumOrigin, bbox.y))
+    : 0)
+  const availableWidth = Math.max(0, 1 - x)
+  const availableHeight = Math.max(0, 1 - y)
+  const rawWidth = Number.isFinite(bbox.width) ? Math.max(0, bbox.width) : 0
+  const rawHeight = Number.isFinite(bbox.height) ? Math.max(0, bbox.height) : 0
+  return {
+    x,
+    y,
+    width: normalizeValue(Math.min(availableWidth, Math.max(DOCUMENT_OCR_MIN_REGION_SIZE, rawWidth))),
+    height: normalizeValue(Math.min(availableHeight, Math.max(DOCUMENT_OCR_MIN_REGION_SIZE, rawHeight)))
+  }
+}
+
 /** OCR 译文水平内边距上限，单位为页面点或预览逻辑像素。 */
 const OCR_PADDING_X_LIMIT = 3
 
@@ -61,8 +105,9 @@ export function resolveOcrRegionPadding(
   imageHeight: number,
   region: DocumentOcrRegion
 ): { x: number; y: number } {
-  const normalizedWidth = Math.max(0, Math.min(1, region.bbox.width))
-  const normalizedHeight = Math.max(0, Math.min(1, region.bbox.height))
+  const normalized = normalizeDocumentOcrRegionBox(region.bbox)
+  const normalizedWidth = normalized.width
+  const normalizedHeight = normalized.height
   const regionWidth = Math.max(1, normalizedWidth * Math.max(1, imageWidth))
   const regionHeight = Math.max(1, normalizedHeight * Math.max(1, imageHeight))
   return {

@@ -89,6 +89,10 @@ body {
   text-align: center;
 }
 
+.document-actual-language[hidden] {
+  display: none;
+}
+
 .document-tab,
 .document-secondary-button,
 .document-primary-button,
@@ -134,6 +138,137 @@ body {
 .document-secondary-button:hover:not(:disabled),
 .document-tab:hover:not(:disabled):not([aria-selected='true']) {
   background: var(--button-secondary-hover);
+}
+
+.document-history {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.document-history-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(440px, calc(100vh - 120px));
+  min-width: 0;
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-overlay);
+}
+
+.document-history-popover[hidden] {
+  display: none;
+}
+
+.document-history-search-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.document-history-search {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  padding: 0 var(--space-3);
+  background: var(--control-bg);
+  color: var(--text-primary);
+}
+
+.document-history-status,
+.document-history-empty {
+  margin: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.document-history-status {
+  color: var(--status-error);
+}
+
+.document-history-status[hidden],
+.document-history-empty[hidden] {
+  display: none;
+}
+
+.document-history-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  margin: 0;
+  margin-top: var(--space-2);
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.document-history-list:empty {
+  display: none;
+}
+
+.document-history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.document-history-item:hover,
+.document-history-item:focus-visible {
+  background: var(--button-secondary-hover);
+}
+
+.document-history-item[aria-selected='true'] {
+  background: var(--bg-secondary);
+}
+
+.document-history-item-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.document-history-item-copy strong,
+.document-history-item-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-history-item-copy span {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.document-history-item-check {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--control-height);
+  color: var(--button-bg);
 }
 
 .document-primary-button {
@@ -382,6 +517,39 @@ body {
   min-width: 0;
 }
 
+.document-view-mode {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
+}
+
+.document-view-mode button {
+  appearance: none;
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.document-view-mode button:hover {
+  background: var(--button-secondary-hover);
+}
+
+.document-view-mode button[aria-pressed='true'] {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
 .document-partial-status {
   max-width: min(42vw, 460px);
   overflow: hidden;
@@ -619,6 +787,14 @@ body {
   min-height: 0;
 }
 
+.document-columns[data-view-mode='translation'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.document-columns[data-view-mode='translation'] .document-column:first-child {
+  display: none;
+}
+
 .document-column {
   display: flex;
   flex-direction: column;
@@ -649,6 +825,38 @@ body {
   color: var(--text-muted);
   font-size: var(--font-size-caption);
   font-weight: 400;
+}
+
+.document-ocr-display-mode {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
+}
+
+.document-ocr-display-mode[hidden] {
+  display: none;
+}
+
+.document-ocr-display-mode button {
+  appearance: none;
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.document-ocr-display-mode button[aria-pressed='true'] {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .document-page-scroll {
@@ -914,6 +1122,9 @@ body {
     calc(100% - var(--document-table-left, 0px) * var(--document-page-scale, 1))
   ) !important;
   margin-left: calc(var(--document-table-left, 0px) * var(--document-page-scale, 1));
+  /* 横向滚动仍由该容器承担；纵向明确裁切，避免纵向滚动条挤占布局并截断末行底边。 */
+  overflow-x: auto;
+  overflow-y: clip;
 }
 
 .document-page[data-layout='translation-flow'] .document-text-run {
@@ -940,12 +1151,14 @@ body {
 }
 
 .document-pdf-page {
+  position: relative;
   display: flex;
   justify-content: center;
   box-sizing: border-box;
-  width: 100%;
+  width: var(--document-pdf-page-width, 100%);
   max-width: 100%;
-  min-height: var(--document-pdf-page-height, 1120px);
+  height: var(--document-pdf-page-height, 1120px);
+  min-height: 0;
   margin: 0 auto var(--space-4);
   overflow: hidden;
   border: var(--border-width) solid var(--border-default);
@@ -965,7 +1178,32 @@ body {
   display: block;
   width: 100%;
   max-width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* 独立图片铺满预览栏宽度，并由原始宽高比撑开高度；不能沿用 PDF 页面的固定像素高度。 */
+.document-preview-host[data-document-format='image'] .document-page[data-layout='absolute'] {
+  width: 100% !important;
+  max-width: 100%;
+  aspect-ratio: var(--document-page-aspect-ratio);
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+.document-preview-host[data-document-format='image']
+  .document-page[data-layout='absolute'] .document-image-block {
+  /* 图片块与页面共享同一矩形，页面由原始宽高比撑开，避免译文图片被压扁。 */
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.document-preview-host[data-document-format='image'] .document-page-image {
+  width: 100%;
   height: auto;
+  object-fit: contain;
 }
 
 .document-flow-preview,
@@ -1168,12 +1406,80 @@ body {
   text-align: center;
 }
 
+.document-image-placeholder {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  pointer-events: none;
+}
+
 .document-page-image {
   display: block;
   width: 100%;
   height: 100%;
   max-width: 100%;
   object-fit: contain;
+}
+
+.document-ocr-text-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.document-image-block[data-ocr-text='true'] > .document-ocr-text-layer {
+  /* 文字层必须显式位于底图之上，否则图片会截获指针导致 OCR 原文无法选择。 */
+  z-index: 2;
+  pointer-events: auto;
+  user-select: text;
+}
+
+.document-ocr-text-region {
+  position: absolute;
+  box-sizing: border-box;
+  /* 边界坐标可能因浮点误差产生极小宽度，保留 1px 命中区域便于选择文字。 */
+  min-width: 1px;
+  min-height: 1px;
+  pointer-events: auto;
+  overflow: hidden;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  font-size: calc(
+    var(--document-ocr-font-size-pt, 12) * var(--document-page-scale, 1) * 1px
+  );
+  line-height: var(--document-ocr-line-height, 1.15);
+  font-family: 'Noto Sans SC', "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: transparent;
+  cursor: text;
+  user-select: text;
+}
+
+.document-ocr-text-region::selection {
+  background: color-mix(in srgb, var(--text-primary) 22%, transparent);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 双层 PDF 导出所需的透明 OCR 文字层：屏幕仅在上文“OCR 原文”模式由源文栏显示，
+   译文栏中的同源文字层屏幕隐藏，仅在打印时作为透明文字层输出，避免遮挡译文。 */
+#document-translation-content .document-ocr-print-text-layer {
+  display: none;
+}
+
+#document-translation-content[data-ocr-display-mode='ocr-text']
+  .document-ocr-print-text-layer {
+  display: block;
+}
+
+#document-translation-content[data-ocr-display-mode='ocr-text']
+  .document-ocr-text-layer {
+  pointer-events: auto;
+  user-select: text;
 }
 
 .document-ocr-region {
@@ -1252,6 +1558,11 @@ body {
   border: var(--border-width) solid var(--border-default);
   overflow-wrap: break-word;
   word-break: normal;
+}
+
+.document-page[data-layout='translation-flow'] .document-table-block tbody tr:last-child td {
+  /* 空单元格没有内容衬托时，浅色主题的默认边框几乎不可见；末行底边使用更强语义色。 */
+  border-bottom: var(--border-width) solid var(--border-control);
 }
 
 .document-page[data-layout='translation-flow'] .document-table-block .document-text-block,
@@ -1504,6 +1815,10 @@ body {
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 
+  .document-columns[data-view-mode='translation'] {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .document-column {
     border-right: 0;
     border-bottom: var(--border-width) solid var(--border-default);
@@ -1533,6 +1848,21 @@ body {
   .document-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .document-toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  /* 窄屏顶部栏可能贴边，历史下拉改为固定层，避免被工具栏滚动或裁切。 */
+  .document-history-popover {
+    position: fixed;
+    top: 50%;
+    right: var(--space-3);
+    left: var(--space-3);
+    width: auto;
+    max-height: min(70vh, 440px);
+    transform: translateY(-50%);
   }
 
   .document-upload-panel {

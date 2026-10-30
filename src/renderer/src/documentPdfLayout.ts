@@ -29,6 +29,85 @@ export interface DocumentFlowDecorationAnchor {
   actualBottom: number
 }
 
+/** 译文普通流中的横向范围，坐标相对当前页面内容盒。 */
+export interface DocumentFlowHorizontalRange {
+  /** 范围左边界。 */
+  left: number
+  /** 范围右边界。 */
+  right: number
+}
+
+/** 已排版流式区块的二维占位范围，用于判断图片能否回填原文锚点。 */
+export interface DocumentFlowObstacle extends DocumentFlowHorizontalRange {
+  /** 区块在页面内容盒中的实际顶部坐标。 */
+  top: number
+  /** 区块在页面内容盒中的实际底部坐标。 */
+  bottom: number
+}
+
+/** 计算图片段前间距所需的二维排版信息。 */
+export interface DocumentTranslationImageFlowGapInput {
+  /** 图片按原文坐标换算后的目标顶部位置。 */
+  anchoredTop: number
+  /** 当前普通流已到达的实际底部位置。 */
+  previousBottom: number
+  /** 页面内容盒的顶部位置。 */
+  flowOrigin: number
+  /** 图片相对页面内容盒的横向范围。 */
+  imageRange: DocumentFlowHorizontalRange
+  /** 图片相对页面内容盒的原始高度。 */
+  imageHeight: number
+  /** 阅读顺序中此前已排版且占用普通流的区块范围。 */
+  obstacles: readonly DocumentFlowObstacle[]
+}
+
+/**
+ * 判断两个横向范围是否存在实际重叠。
+ * 边界刚好相接视为不重叠，避免相邻列被误判为碰撞。
+ * @param left 左侧范围。
+ * @param right 右侧范围。
+ * @returns 两个范围是否相交。
+ * @author zhenghq
+ */
+export function rangesOverlapHorizontally(
+  left: DocumentFlowHorizontalRange,
+  right: DocumentFlowHorizontalRange
+): boolean {
+  return Math.min(left.right, right.right) > Math.max(left.left, right.left)
+}
+
+/**
+ * 计算图片相对当前普通流底边需要追加的段前距离。
+ * 前序内容只有与图片横向相交且纵向延伸到锚点下方时才构成障碍；没有碰撞时允许负间距，
+ * 让图片回到原文锚点。存在碰撞时从实际底边继续下推，且不得把图片推到页面内容盒上方。
+ * @param input 图片锚点、实际底边、页面起点与已排版障碍范围。
+ * @returns 图片段前距离，可为负数。
+ * @author zhenghq
+ */
+export function resolveTranslationImageFlowGap(
+  input: DocumentTranslationImageFlowGapInput
+): number {
+  const { anchoredTop, previousBottom, flowOrigin, imageRange, imageHeight, obstacles } = input
+  if (!Number.isFinite(anchoredTop) || !Number.isFinite(previousBottom)) return 0
+  const safeFlowOrigin = Number.isFinite(flowOrigin) ? flowOrigin : anchoredTop
+  const safeImageHeight = Number.isFinite(imageHeight) && imageHeight > 0 ? imageHeight : 0
+  const safeRange = {
+    left: Number.isFinite(imageRange.left) ? imageRange.left : 0,
+    right: Number.isFinite(imageRange.right) ? imageRange.right : 0
+  }
+  const imageBottom = anchoredTop + safeImageHeight
+  const hasCollision = obstacles.some((obstacle) =>
+    Number.isFinite(obstacle.top) &&
+    Number.isFinite(obstacle.bottom) &&
+    obstacle.bottom > anchoredTop &&
+    obstacle.top < imageBottom &&
+    rangesOverlapHorizontally(safeRange, obstacle)
+  )
+  const gap = anchoredTop - previousBottom
+  // 横向错开时允许回填；但图片顶部仍不能越过页面内容起点。
+  return hasCollision ? Math.max(0, gap) : Math.max(safeFlowOrigin - previousBottom, gap)
+}
+
 /**
  * 计算译文水印图案相对容器左边缘的横向偏移。
  * 320px 宽的斜向瓦片在旋转后存在固定视觉留白；容器越窄，向左平移越多，

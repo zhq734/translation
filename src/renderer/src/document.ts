@@ -8,6 +8,7 @@ import {
 import type {
   DocumentBlock,
   DocumentContentArea,
+  DocumentFormulaBlock,
   DocumentImageBlock,
   DocumentModel,
   DocumentOcrRegion,
@@ -19,6 +20,7 @@ import type {
   DocumentWarning
 } from '../../shared/documentTypes'
 import {
+  normalizeDocumentOcrRegionBox,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -30,21 +32,46 @@ import type {
   DocumentFileSelectionResult,
   DocumentPlatformCapability,
   DocumentRunResult,
-  DocumentWorkspaceSnapshot
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
 } from '../../shared/types'
 import type { DocumentPartialExportSummary } from '../../shared/documentPartialExport'
 import type { Settings } from '../../shared/types'
 import { LANGUAGES, langLabel } from '../../shared/langs'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
 import { canApplyDocumentTaskEvent } from '../../shared/documentTask'
+import { applyDocumentWorkspaceTranslationUpdate } from '../../shared/documentWorkspace'
+import {
+  resolveDocumentRetryActionState
+} from '../../shared/documentCompletion'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
 import {
+  DOCUMENT_FILE_HISTORY_STORAGE_KEY,
+  filterDocumentFileHistory,
+  normalizeDocumentFileHistory,
+  recordDocumentFileHistory,
+  type DocumentFileHistoryEntry
+} from './documentHistory'
+import {
+  appendDocumentBatchItems,
+  cancelDocumentBatch,
+  createDocumentBatchState,
+  markDocumentBatchItem,
+  removeDocumentBatchItem,
+  resolveDocumentBatchProgress,
+  type DocumentBatchCandidate,
+  type DocumentBatchItem,
+  type DocumentBatchState
+} from './documentBatch'
+import {
   occupiesDocumentTranslationFlow,
+  resolveTranslationImageFlowGap,
   resolveTranslationFlowDecorationTop,
   type DocumentFlowDecorationAnchor,
+  type DocumentFlowObstacle,
   resolveTranslationFlowGroupGeometry,
   resolveTranslationWatermarkHorizontalOffset
 } from './documentPdfLayout'
@@ -59,8 +86,10 @@ pdfjsModule.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 /** 任务代际在 Renderer 重载后继续递增，避免主进程拒绝复用旧值。 */
 const DOCUMENT_GENERATION_STORAGE_KEY = 'selection-translator.document-generation'
+/** 文档预览方式在窗口重载后保留；损坏或未知值回退为双面显示。 */
+const DOCUMENT_VIEW_MODE_STORAGE_KEY = 'selection-translator.document-view-mode'
 
-/** 文档双栏的渲染侧；OCR 文本层只允许出现在译文侧。 */
+/** 文档双栏的渲染侧；译文栏与 OCR 原文展示层分别在各自侧渲染。 */
 type DocumentRenderSide = 'source' | 'translation'
 
 /** 文档双栏滚动位置快照，用于流式重排后恢复用户视口。 */
@@ -73,6 +102,9 @@ interface DocumentScrollPositions {
 
 /** 文档预览按格式采用的渲染方式；HTML 原文使用独立 webview，译文仍采用流式布局。 */
 type DocumentPreviewKind = 'paged' | 'markdown' | 'table' | 'subtitle' | 'flow' | 'html-source'
+
+/** 文档工作台预览方式；双面保留原文与译文对照，单面只显示译文。 */
+type DocumentViewMode = 'spread' | 'translation'
 
 /** 文档工作台当前上传状态。 */
 interface DocumentSelectionState {
@@ -106,18 +138,41 @@ const fileReplaceButton = document.getElementById('document-file-replace') as HT
 const uploadStatus = document.getElementById('document-upload-status') as HTMLElement
 const startButton = document.getElementById('document-start-button') as HTMLButtonElement
 const historyButton = document.getElementById('document-history-button') as HTMLButtonElement
+const historyPopover = document.getElementById('document-history-popover') as HTMLElement
+const documentHistorySearch = document.getElementById('document-history-search') as HTMLInputElement
+const documentHistoryList = document.getElementById('document-history-list') as HTMLUListElement
+const documentHistoryEmpty = document.getElementById('document-history-empty') as HTMLElement
+const documentHistoryStatus = document.getElementById('document-history-status') as HTMLElement
 const sourceLanguageSelect = document.getElementById('document-source-lang') as HTMLSelectElement
 const targetLanguageSelect = document.getElementById('document-target-lang') as HTMLSelectElement
 const actualLanguage = document.getElementById('document-actual-language') as HTMLElement
 const uploadPanel = document.getElementById('document-upload-panel') as HTMLElement
 const workbench = document.getElementById('document-workbench') as HTMLElement
+const documentTabSingle = document.getElementById('document-tab-single') as HTMLButtonElement
+const documentTabBatch = document.getElementById('document-tab-batch') as HTMLButtonElement
+const documentBatchPanel = document.getElementById('document-batch-panel') as HTMLElement
+const documentBatchSelectButton = document.getElementById('document-batch-select-button') as HTMLButtonElement
+const documentBatchDropZone = document.getElementById('document-batch-drop-zone') as HTMLElement
+const documentBatchStatus = document.getElementById('document-batch-status') as HTMLElement
+const documentBatchCount = document.getElementById('document-batch-count') as HTMLElement
+const documentBatchProgress = document.getElementById('document-batch-progress') as HTMLElement
+const documentBatchProgressLabel = document.getElementById('document-batch-progress-label') as HTMLElement
+const documentBatchList = document.getElementById('document-batch-list') as HTMLUListElement
+const documentBatchEmpty = document.getElementById('document-batch-empty') as HTMLElement
+const documentBatchClearButton = document.getElementById('document-batch-clear-button') as HTMLButtonElement
+const documentBatchCancelButton = document.getElementById('document-batch-cancel-button') as HTMLButtonElement
+const documentBatchStartButton = document.getElementById('document-batch-start-button') as HTMLButtonElement
 const workbenchName = document.getElementById('document-workbench-name') as HTMLElement
 const workbenchMeta = document.getElementById('document-workbench-meta') as HTMLElement
 const progressStage = document.getElementById('document-progress-stage') as HTMLElement
 const progressCount = document.getElementById('document-progress-count') as HTMLElement
 const progressbar = document.getElementById('document-progressbar') as HTMLElement
 const sourceContent = document.getElementById('document-source-content') as HTMLElement
+const sourceOcrMode = document.getElementById('document-source-ocr-mode') as HTMLElement
+const documentViewModeControl = document.getElementById('document-view-mode') as HTMLElement
+const documentColumns = document.querySelector<HTMLElement>('.document-columns') as HTMLElement
 const translationContent = document.getElementById('document-translation-content') as HTMLElement
+const translationHeading = document.getElementById('document-translation-heading') as HTMLElement
 const sourcePageCount = document.getElementById('document-source-page-count') as HTMLElement
 const translationPageCount = document.getElementById('document-translation-page-count') as HTMLElement
 const cancelButton = document.getElementById('document-cancel-button') as HTMLButtonElement
@@ -136,6 +191,10 @@ const windowMaximizeButton = document.getElementById('window-maximize') as HTMLB
 const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement
 
 let selectionState: DocumentSelectionState = { ...EMPTY_SELECTION }
+/** 当前本地文件翻译历史；按最近选择时间倒序排列。 */
+let documentFileHistory: DocumentFileHistoryEntry[] = []
+/** 当前搜索条件下实际展示的历史记录，用于把列表项索引映射回完整记录。 */
+let visibleDocumentFileHistory: DocumentFileHistoryEntry[] = []
 let platformCapability: DocumentPlatformCapability | null = null
 let dragDepth = 0
 /** 当前 Renderer 任务代际；每次开始翻译递增。 */
@@ -146,12 +205,20 @@ let activeJobId: string | null = null
 let expectedJobId: string | null = null
 /** 最近一次收到且属于当前任务的进度快照。 */
 let latestSnapshot: DocumentWorkspaceSnapshot | null = null
+/** 原文栏图片文字的展示方式；默认显示译文覆盖层，切换后显示 OCR 原文透明文字层。 */
+let ocrDisplayMode: 'ocr-text' | 'translation' = 'translation'
+/** 当前文档预览方式；默认保留现有的原文与译文双面布局。 */
+let documentViewMode: DocumentViewMode = readDocumentViewMode()
 /** 部分导出确认对话框的待决结果；关闭对话框时统一解析为取消。 */
 let resolvePartialExportConfirmation: ((confirmed: boolean) => void) | null = null
 /** 等待下一帧合并执行的渲染回调。 */
 let pendingRenderFrame: number | null = null
 /** 当前文档图片 Blob URL，重绘或关闭时统一释放。 */
 const assetUrls = new Map<string, string>()
+/** 图片资源请求缓存；同一资源的并发渲染必须共享同一次读取，避免重复 IPC 与竞争。 */
+const assetRequests = new Map<string, Promise<string | null>>()
+/** 图片资源代际；切换文件或释放缓存后，迟到请求不得重新写回旧文档资源。 */
+let assetUrlEpoch = 0
 
 /** 当前 HTML 源文预览 Blob URL；同一时间只允许存在一个。 */
 let htmlPreviewUrl: string | null = null
@@ -200,8 +267,24 @@ let currentSettings: Settings | null = null
 let appliedLanguagePair = ''
 /** 当前是否正在等待 runDocument 返回任务标识。 */
 let documentStartInFlight = false
+/** 是否正在执行历史文件切换，阻止快速重复点击创建并发切换。 */
+let documentHistorySwitchInFlight = false
+/** 批量翻译队列状态；页面切换和单项处理期间持续保留。 */
+let documentBatchState: DocumentBatchState = createDocumentBatchState()
+/** 当前批量队列条目快照，渲染与串行循环始终读取同一份状态。 */
+let documentBatchItems = documentBatchState.items
+/** 批量任务是否正在执行，包括等待单项终态和导出阶段。 */
+let documentBatchRunning = false
+/** 当前批量条目标识；未运行时为 null。 */
+let documentBatchCurrentId: string | null = null
+/** 等待当前批量项终态的解析器；只允许一个活动任务。 */
+let resolveDocumentBatchCompletion: ((snapshot: DocumentWorkspaceSnapshot | null) => void) | null = null
+/** 当前批量项在等待器注册前可能已收到的终态快照。 */
+let latestBatchCompletedSnapshot: DocumentWorkspaceSnapshot | null = null
 /** 启动请求进行中收到语言变化时，待启动完成后再执行一次最新语言的重译。 */
 let pendingLanguageRetranslation = false
+/** 启动请求进行中切换 OCR 模式时，待旧启动流程结束后按最新模式重启。 */
+let pendingOcrModeRestart = false
 /** 语言切换序号，用于丢弃取消旧任务期间已经过期的重译请求。 */
 let languageChangeRevision = 0
 
@@ -214,6 +297,35 @@ let languageChangeRevision = 0
  */
 function t(key: string, params?: Record<string, string | number>): string {
   return localeRuntime.translator.t(key, params)
+}
+
+/**
+ * 读取上次保存的文档预览方式。
+ * @returns 有效偏好值；存储不可用或内容无效时返回双面显示。
+ * @author zhenghq
+ */
+function readDocumentViewMode(): DocumentViewMode {
+  try {
+    return localStorage.getItem(DOCUMENT_VIEW_MODE_STORAGE_KEY) === 'translation'
+      ? 'translation'
+      : 'spread'
+  } catch {
+    return 'spread'
+  }
+}
+
+/**
+ * 保存文档预览方式，供下次打开文件翻译窗口时恢复。
+ * @param mode 用户选择的预览方式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function persistDocumentViewMode(mode: DocumentViewMode): void {
+  try {
+    localStorage.setItem(DOCUMENT_VIEW_MODE_STORAGE_KEY, mode)
+  } catch {
+    // 存储不可用时只影响下次启动的偏好恢复，当前窗口仍可正常切换。
+  }
 }
 
 /**
@@ -322,18 +434,20 @@ function populateDocumentLanguages(
 }
 
 /**
- * 使用任务快照中的实际语言对更新方向提示；未解析时显示自动占位。
+ * 使用任务快照中的实际语言对更新语言提示；未解析时隐藏提示。
  * @param languagePair 文档级解析后的实际语言对。
  * @returns 无返回值。
  * @author zhenghq
  */
 function renderActualLanguage(languagePair?: DocumentWorkspaceSnapshot['languagePair']): void {
   if (!languagePair) {
-    actualLanguage.textContent = t('document.actualLanguageAuto')
+    actualLanguage.textContent = ''
+    actualLanguage.hidden = true
     return
   }
   const direction = `${langLabel(languagePair.sourceLang, localeRuntime.locale)} → ${langLabel(languagePair.targetLang, localeRuntime.locale)}`
   actualLanguage.textContent = t('document.actualLanguage', { direction })
+  actualLanguage.hidden = false
 }
 
 /**
@@ -400,6 +514,160 @@ function validationMessage(code: string): string {
 }
 
 /**
+ * 从本地存储读取并规范化文件翻译历史。
+ * @returns 可安全渲染的历史记录；存储不可用或内容损坏时返回空列表。
+ * @author zhenghq
+ */
+function readDocumentFileHistory(): DocumentFileHistoryEntry[] {
+  try {
+    const raw = window.localStorage.getItem(DOCUMENT_FILE_HISTORY_STORAGE_KEY)
+    return raw ? normalizeDocumentFileHistory(JSON.parse(raw)) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 将文件翻译历史持久化到本地存储。
+ * @param entries 待保存的历史记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function writeDocumentFileHistory(entries: readonly DocumentFileHistoryEntry[]): void {
+  try {
+    window.localStorage.setItem(DOCUMENT_FILE_HISTORY_STORAGE_KEY, JSON.stringify(entries))
+  } catch {
+    // 本地存储受限时仍保留当前窗口内可用的历史记录。
+  }
+}
+
+/**
+ * 记录一次成功文件选择，并同步刷新下拉列表。
+ * @param selection 已通过校验的文件元数据。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function rememberSelectedDocument(selection: Pick<DocumentFileHistoryEntry, 'path' | 'name' | 'size' | 'format'>): void {
+  documentFileHistory = recordDocumentFileHistory(documentFileHistory, selection, Date.now())
+  writeDocumentFileHistory(documentFileHistory)
+  renderDocumentHistory()
+}
+
+/**
+ * 根据当前搜索词渲染历史文件下拉列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderDocumentHistory(): void {
+  visibleDocumentFileHistory = filterDocumentFileHistory(documentFileHistory, documentHistorySearch.value)
+  documentHistoryList.replaceChildren()
+  documentHistoryEmpty.hidden = visibleDocumentFileHistory.length > 0
+  documentHistoryEmpty.textContent = documentFileHistory.length === 0
+    ? t('document.historyEmpty')
+    : t('document.historyNoResults')
+
+  visibleDocumentFileHistory.forEach((entry, index) => {
+    const item = document.createElement('li')
+    const button = document.createElement('button')
+    const copy = document.createElement('span')
+    const name = document.createElement('strong')
+    const meta = document.createElement('span')
+    const check = document.createElement('span')
+    const isCurrent = selectionState.path === entry.path
+    button.type = 'button'
+    button.className = 'document-history-item'
+    button.dataset.historyIndex = String(index)
+    button.setAttribute('role', 'option')
+    button.setAttribute('aria-selected', String(isCurrent))
+    button.title = entry.path
+    copy.className = 'document-history-item-copy'
+    name.textContent = entry.name
+    meta.textContent = `${entry.format.toUpperCase()} · ${formatFileSize(entry.size)}`
+    check.className = 'document-history-item-check'
+    check.setAttribute('aria-hidden', 'true')
+    check.textContent = isCurrent ? '✓' : ''
+    copy.append(name, meta)
+    button.append(copy, check)
+    item.append(button)
+    documentHistoryList.append(item)
+  })
+}
+
+/**
+ * 打开或关闭历史文件下拉，并在打开时聚焦搜索框。
+ * @param open 是否打开下拉。
+ * @param restoreFocus 关闭时是否把焦点还给历史按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setDocumentHistoryOpen(open: boolean, restoreFocus = false): void {
+  if (historyPopover.hidden === !open) return
+  historyPopover.hidden = !open
+  historyButton.setAttribute('aria-expanded', String(open))
+  if (open) {
+    documentHistoryStatus.hidden = true
+    documentHistorySearch.value = ''
+    renderDocumentHistory()
+    requestAnimationFrame(() => documentHistorySearch.focus())
+  } else if (restoreFocus) {
+    historyButton.focus()
+  }
+}
+
+/**
+ * 使用历史记录快速切换到已选择过的文件。
+ * @param entry 待切换的历史记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Promise<void> {
+  if (!platformCapability?.supported || documentHistorySwitchInFlight || documentBatchRunning) return
+  if (selectionState.path === entry.path) {
+    setDocumentHistoryOpen(false, true)
+    return
+  }
+  documentHistorySwitchInFlight = true
+  historyButton.disabled = true
+  documentHistoryStatus.hidden = true
+  try {
+    // 历史切换失败只提示并保留当前工作台与历史列表，不能走普通选择的清空路径。
+    const previousSelection = selectionState
+    // 历史路径只作为候选值，切换前仍由主进程重新读取文件并登记授权。
+    const result = await window.api.approveDocumentFile(entry.path)
+    if (result.status === 'cancelled') return
+    if (result.status === 'rejected') {
+      documentHistoryStatus.textContent = validationMessage(result.code)
+      documentHistoryStatus.hidden = false
+      return
+    }
+    // 历史切换只更换待确认文件，不沿用启动请求中的模式切换或语言重译意图。
+    pendingLanguageRetranslation = false
+    pendingOcrModeRestart = false
+    const jobGeneration = generation
+    nextGeneration()
+    // 先推进代际再等待取消响应，切换期间到达的旧任务事件会立即失效。
+    await cancelDocumentJob(activeJobId, jobGeneration)
+    activeJobId = null
+    expectedJobId = null
+    applyFileSelection(result)
+    if (selectionState.error) selectionState = previousSelection
+    resetWorkbenchPreview()
+    workbench.hidden = true
+    documentBatchPanel.hidden = true
+    uploadPanel.hidden = false
+    documentTabSingle.setAttribute('aria-selected', 'true')
+    documentTabBatch.setAttribute('aria-selected', 'false')
+    setDocumentHistoryOpen(false, true)
+  } catch {
+    documentHistoryStatus.textContent = t('document.error.unreadable')
+    documentHistoryStatus.hidden = false
+  } finally {
+    documentHistorySwitchInFlight = false
+    historyButton.disabled = !platformCapability?.supported
+  }
+}
+
+/**
  * 根据当前选择状态刷新上传卡片、开始按钮与状态提示。
  * @returns 无返回值。
  * @author zhenghq
@@ -408,6 +676,13 @@ function renderSelectionState(): void {
   const hasFile = Boolean(selectionState.path)
   fileSummary.hidden = !hasFile
   startButton.disabled = !hasFile || !platformCapability?.supported
+  // 文件通过预检后立即提供模式选择，不等待解析或 OCR 完成。
+  sourceOcrMode.hidden = !(
+    hasFile &&
+    !selectionState.error &&
+    (selectionState.format === 'pdf' || selectionState.format === 'image')
+  )
+  syncOcrDisplayModeControls()
   if (hasFile) {
     fileName.textContent = selectionState.name
     fileDetail.textContent = `${selectionState.format.toUpperCase()} · ${formatFileSize(selectionState.size)}`
@@ -420,6 +695,197 @@ function renderSelectionState(): void {
       ? t('document.error.windows7Unsupported')
       : t('document.error.unsupportedPlatform')
     uploadStatus.dataset.state = 'error'
+  }
+}
+
+/**
+ * 根据当前批量队列状态刷新页签、计数、整体进度和文件卡片。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderDocumentBatch(): void {
+  const progress = resolveDocumentBatchProgress(documentBatchState)
+  const hasItems = documentBatchItems.length > 0
+  const pendingCount = documentBatchItems.filter((item) => item.status === 'pending').length
+  documentBatchCount.textContent = hasItems
+    ? t('document.batch.count', { total: progress.total, completed: progress.completed })
+    : t('document.batch.empty')
+  documentBatchProgressLabel.textContent = hasItems ? `${progress.percent}%` : ''
+  documentBatchProgress.setAttribute('aria-valuenow', String(progress.percent))
+  documentBatchProgress.style.width = `${progress.percent}%`
+  documentBatchEmpty.hidden = hasItems
+  documentBatchList.replaceChildren()
+  for (const item of documentBatchItems) {
+    documentBatchList.append(createDocumentBatchListItem(item))
+  }
+  documentBatchStartButton.disabled = !platformCapability?.supported ||
+    documentBatchRunning || pendingCount === 0
+  documentBatchClearButton.disabled = !hasItems || documentBatchRunning
+  documentBatchSelectButton.disabled = !platformCapability?.supported || documentBatchRunning
+  documentBatchDropZone.setAttribute('aria-disabled', String(!platformCapability?.supported || documentBatchRunning))
+  documentBatchDropZone.tabIndex = platformCapability?.supported && !documentBatchRunning ? 0 : -1
+  documentBatchCancelButton.hidden = !documentBatchRunning
+  documentBatchCancelButton.disabled = !documentBatchRunning
+  documentTabSingle.disabled = documentBatchRunning
+  documentTabBatch.disabled = documentBatchRunning
+  sourceLanguageSelect.disabled = documentBatchRunning
+  targetLanguageSelect.disabled = documentBatchRunning
+  sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]').forEach((button) => {
+    button.disabled = documentBatchRunning
+  })
+  documentWorkbenchReplaceButton.disabled = documentBatchRunning
+  historyButton.disabled = documentBatchRunning || !platformCapability?.supported
+}
+
+/**
+ * 创建批量队列中的单个文件卡片。
+ * @param item 队列条目。
+ * @returns 可访问的列表项节点。
+ * @author zhenghq
+ */
+function createDocumentBatchListItem(item: DocumentBatchItem): HTMLLIElement {
+  const row = document.createElement('li')
+  const identity = document.createElement('div')
+  const name = document.createElement('strong')
+  const meta = document.createElement('span')
+  const state = document.createElement('span')
+  const progressTrack = document.createElement('div')
+  const progressbar = document.createElement('div')
+  row.className = 'document-batch-item'
+  row.dataset.status = item.status
+  row.dataset.batchItemId = item.id
+  identity.className = 'document-batch-item-identity'
+  name.textContent = item.name
+  name.title = item.path
+  meta.textContent = `${item.format.toUpperCase()} · ${formatFileSize(item.size)}`
+  state.className = 'document-batch-item-status'
+  state.textContent = t(`document.batch.status.${item.status}`)
+  identity.append(name, meta)
+  progressTrack.className = 'document-batch-progress-track'
+  progressTrack.setAttribute('role', 'progressbar')
+  progressTrack.setAttribute('aria-valuemin', '0')
+  progressTrack.setAttribute('aria-valuemax', '100')
+  progressTrack.setAttribute('aria-valuenow', String(item.progress))
+  progressTrack.setAttribute('aria-label', item.name)
+  progressbar.className = 'document-batch-progressbar'
+  progressbar.style.width = `${item.progress}%`
+  progressTrack.append(progressbar)
+  row.append(identity, state, progressTrack)
+  if (item.status === 'pending') {
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'document-text-button document-batch-remove'
+    remove.textContent = t('document.batch.remove')
+    remove.disabled = documentBatchRunning
+    remove.addEventListener('click', () => {
+      documentBatchState = removeDocumentBatchItem(documentBatchState, item.id)
+      documentBatchItems = documentBatchState.items
+      renderDocumentBatch()
+    })
+    row.append(remove)
+  }
+  return row
+}
+
+/**
+ * 更新批量队列并同步条目引用与界面。
+ * @param nextState 新的队列状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function applyDocumentBatchState(nextState: DocumentBatchState): void {
+  documentBatchState = nextState
+  documentBatchItems = nextState.items
+  renderDocumentBatch()
+}
+
+/**
+ * 将主进程批准结果转换为可加入队列的文件候选。
+ * @param results 主进程返回的文件选择结果。
+ * @returns 成功项与拒绝项数量。
+ * @author zhenghq
+ */
+function collectDocumentBatchCandidates(results: readonly DocumentFileSelectionResult[]): {
+  candidates: DocumentBatchCandidate[]
+  rejected: number
+} {
+  const candidates: DocumentBatchCandidate[] = []
+  let rejected = 0
+  for (const result of results) {
+    if (result.status === 'selected') {
+      candidates.push({
+        path: result.path,
+        name: result.fileName,
+        size: result.size,
+        format: result.format
+      })
+    } else if (result.status === 'rejected') {
+      rejected += 1
+    }
+  }
+  return { candidates, rejected }
+}
+
+/**
+ * 将批准文件加入批量队列，并记录成功文件的历史。
+ * @param candidates 已通过主进程校验的文件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function addDocumentBatchCandidates(candidates: readonly DocumentBatchCandidate[]): void {
+  if (candidates.length === 0) return
+  applyDocumentBatchState(appendDocumentBatchItems(documentBatchState, candidates))
+  for (const candidate of candidates) rememberSelectedDocument(candidate)
+}
+
+/**
+ * 通过主进程多选对话框添加批量文件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function chooseDocumentBatchFiles(): Promise<void> {
+  if (!platformCapability?.supported || documentBatchRunning) return
+  documentBatchStatus.hidden = true
+  try {
+    const { candidates, rejected } = collectDocumentBatchCandidates(await window.api.selectDocumentFiles())
+    addDocumentBatchCandidates(candidates)
+    if (rejected > 0) {
+      documentBatchStatus.textContent = t('document.batch.status.invalidFiles', { count: rejected })
+      documentBatchStatus.dataset.state = 'error'
+      documentBatchStatus.hidden = false
+    }
+  } catch {
+    documentBatchStatus.textContent = t('document.error.unreadable')
+    documentBatchStatus.dataset.state = 'error'
+    documentBatchStatus.hidden = false
+  }
+}
+
+/**
+ * 校验并添加拖放得到的多个文件。
+ * @param files 用户拖放的浏览器文件列表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function addDroppedDocumentBatchFiles(files: readonly File[]): Promise<void> {
+  if (!platformCapability?.supported || documentBatchRunning || files.length === 0) return
+  documentBatchStatus.hidden = true
+  try {
+    const paths = files.map((file) => window.api.getDocumentDroppedFilePath(file)).filter(Boolean)
+    if (paths.length === 0) throw new Error('unreadable')
+    const { candidates, rejected } = collectDocumentBatchCandidates(await window.api.approveDocumentFiles(paths))
+    addDocumentBatchCandidates(candidates)
+    if (rejected > 0 || paths.length < files.length) {
+      documentBatchStatus.textContent = t('document.batch.status.invalidFiles', {
+        count: rejected + files.length - paths.length
+      })
+      documentBatchStatus.dataset.state = 'error'
+      documentBatchStatus.hidden = false
+    }
+  } catch {
+    documentBatchStatus.textContent = t('document.error.unreadable')
+    documentBatchStatus.dataset.state = 'error'
+    documentBatchStatus.hidden = false
   }
 }
 
@@ -509,6 +975,12 @@ function applyFileSelection(result: DocumentFileSelectionResult): void {
     error: null
   }
   renderSelectionState()
+  rememberSelectedDocument({
+    path: result.path,
+    name: result.fileName,
+    size: result.size,
+    format: result.format
+  })
 }
 
 /**
@@ -543,6 +1015,8 @@ function resetWorkbenchPreview(): void {
   pageScaleObserver = null
   cancelTranslationPageLayout()
   latestSnapshot = null
+  ocrDisplayMode = 'translation'
+  syncOcrDisplayModeControls()
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
   activeJobId = null
@@ -567,7 +1041,8 @@ function resetWorkbenchPreview(): void {
   progressCount.textContent = ''
   progressbar.setAttribute('aria-valuenow', '0')
   progressbar.style.width = '0%'
-  actualLanguage.textContent = t('document.actualLanguageAuto')
+  actualLanguage.textContent = ''
+  actualLanguage.hidden = true
   partialStatus.hidden = true
   cancelButton.hidden = true
   exportButton.disabled = true
@@ -620,6 +1095,8 @@ async function replaceDocumentFromWorkbench(): Promise<void> {
  * @author zhenghq
  */
 function revokeAssetUrls(): void {
+  assetUrlEpoch += 1
+  assetRequests.clear()
   for (const url of assetUrls.values()) URL.revokeObjectURL(url)
   assetUrls.clear()
 }
@@ -644,18 +1121,94 @@ function releaseHtmlPreviewUrl(): void {
 async function resolveAssetUrl(assetId: string): Promise<string | null> {
   const cached = assetUrls.get(assetId)
   if (cached) return cached
-  try {
-    const asset: DocumentAssetResult = await window.api.getDocumentAsset(assetId)
-    if (!asset.ok || !asset.bytes) return null
-    const bytes = new Uint8Array(asset.bytes)
-    const url = URL.createObjectURL(new Blob([bytes], {
-      type: asset.mimeType ?? 'application/octet-stream'
-    }))
-    assetUrls.set(assetId, url)
-    return url
-  } catch {
+  const pending = assetRequests.get(assetId)
+  if (pending) return pending
+  const requestEpoch = assetUrlEpoch
+  const request = (async (): Promise<string | null> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const asset: DocumentAssetResult = await window.api.getDocumentAsset(assetId)
+        if (requestEpoch !== assetUrlEpoch) return null
+        if (!asset.ok || !asset.bytes) return null
+        const bytes = new Uint8Array(asset.bytes)
+        const url = URL.createObjectURL(new Blob([bytes], {
+          type: asset.mimeType ?? 'application/octet-stream'
+        }))
+        if (requestEpoch !== assetUrlEpoch) {
+          URL.revokeObjectURL(url)
+          return null
+        }
+        assetUrls.set(assetId, url)
+        return url
+      } catch {
+        if (requestEpoch !== assetUrlEpoch) return null
+        if (attempt < 2) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 80 * (attempt + 1)))
+        }
+      }
+    }
     return null
+  })()
+  assetRequests.set(assetId, request)
+  try {
+    return await request
+  } finally {
+    if (assetRequests.get(assetId) === request) assetRequests.delete(assetId)
   }
+}
+
+/**
+ * 在图片区块内追加独立占位提示，避免资源异步失败时覆盖已经挂载的 OCR 文字层。
+ * @param wrapper 图片区块容器。
+ * @param block 图片区块。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderDocumentImagePlaceholder(wrapper: HTMLElement, block: DocumentImageBlock): void {
+  wrapper.querySelector<HTMLElement>(':scope > .document-image-placeholder')?.remove()
+  const placeholder = document.createElement('span')
+  placeholder.className = 'document-image-placeholder'
+  placeholder.textContent = block.alt || t('document.ocr.pendingRender')
+  wrapper.append(placeholder)
+}
+
+/**
+ * 加载图片资源并同步占位状态；失败时移除空图片节点并显示可读占位。
+ * @param wrapper 图片区块容器。
+ * @param image 待加载的图片元素。
+ * @param block 图片区块。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function loadDocumentImageAsset(
+  wrapper: HTMLElement,
+  image: HTMLImageElement,
+  block: DocumentImageBlock
+): void {
+  wrapper.dataset.assetState = 'loading'
+  void resolveAssetUrl(block.assetId).then((url) => {
+    if (!url) {
+      wrapper.dataset.assetState = 'error'
+      wrapper.dataset.pending = 'true'
+      image.remove()
+      renderDocumentImagePlaceholder(wrapper, block)
+      scheduleTranslationPageLayout()
+      return
+    }
+    image.addEventListener('load', () => {
+      wrapper.dataset.assetState = 'loaded'
+      delete wrapper.dataset.pending
+      scheduleTranslationPageLayout()
+    }, { once: true })
+    image.addEventListener('error', () => {
+      wrapper.dataset.assetState = 'error'
+      wrapper.dataset.pending = 'true'
+      image.remove()
+      renderDocumentImagePlaceholder(wrapper, block)
+      scheduleTranslationPageLayout()
+    }, { once: true })
+    image.src = url
+  })
 }
 
 /**
@@ -816,6 +1369,41 @@ function measureTranslationFlowBottom(element: HTMLElement): number {
 }
 
 /**
+ * 测量流式区块在当前页面内容盒中的横向与纵向范围。
+ * 同行分组可能包含弹性空白，因此优先合并组内实际子区块的可见边界，避免整组宽度误判图片碰撞。
+ * @param element 已挂载的译文区块或同行分组。
+ * @param pageRect 译文页面边界。
+ * @returns 相对页面左边缘和视口顶部的二维范围。
+ * @author zhenghq
+ */
+function measureTranslationFlowObstacle(
+  element: HTMLElement,
+  pageRect: DOMRect
+): DocumentFlowObstacle {
+  const measuredElements = element.classList.contains('document-flow-group')
+    ? Array.from(element.querySelectorAll<HTMLElement>(':scope > [data-block-id]'))
+    : [element]
+  const rects = (measuredElements.length > 0 ? measuredElements : [element])
+    .map((item) => item.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+  if (rects.length === 0) {
+    const rect = element.getBoundingClientRect()
+    return {
+      left: rect.left - pageRect.left,
+      right: rect.right - pageRect.left,
+      top: rect.top,
+      bottom: rect.bottom
+    }
+  }
+  return {
+    left: Math.min(...rects.map((rect) => rect.left)) - pageRect.left,
+    right: Math.max(...rects.map((rect) => rect.right)) - pageRect.left,
+    top: Math.min(...rects.map((rect) => rect.top)),
+    bottom: Math.max(...rects.map((rect) => rect.bottom))
+  }
+}
+
+/**
  * 仅在数值实际变化时写入 CSS 自定义属性，避免流式重排触发无意义的样式失效和观察回调。
  * @param element 目标元素。
  * @param property CSS 自定义属性名。
@@ -837,8 +1425,8 @@ function setCssPixelPropertyIfChanged(
 
 /**
  * 依据真实 DOM 高度修正 PDF 译文流式排版。
- * 图片优先锚定原文纵向坐标；当前文译文变高并越过该坐标时，图片从文字实际底边继续下推，
- * 绝不能用负间距回退覆盖已排版的译文。后续文本再从图片实际底边继续排列。
+ * 图片优先锚定原文纵向坐标；只有横向相交的前序译文变高并越过该坐标时才继续下推，
+ * 横向错开的内容不会把图片错误挤到页面下方。后续文本再从图片实际底边继续排列。
  * 文本与其他区块仍按原文段前距离跟随实际底边，避免使用原始 bbox 底边造成图片被重复下推。
  * @param page 已挂载的译文页面。
  * @returns 无返回值。
@@ -856,6 +1444,7 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
   const flowOrigin = pageRect.top + borderTop + paddingTop
   let previousBottom = flowOrigin
   const flowDecorationAnchors: DocumentFlowDecorationAnchor[] = []
+  const flowObstacles: DocumentFlowObstacle[] = []
 
   for (const directChild of page.children) {
     if (!(directChild instanceof HTMLElement)) continue
@@ -887,13 +1476,32 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
     if ((child.classList.contains('document-image-block') ||
       child.querySelector(':scope > .document-image-block')) && Number.isFinite(sourceY)) {
       const anchoredTop = flowOrigin + Math.max(0, sourceY - pageMarginTop) * scale
-      // 原文锚点只允许下推图片，不能把图片拉回前文译文已占用的区域。
-      gapPx = Math.max(0, anchoredTop - previousBottom)
+      const imageBlock = child.classList.contains('document-image-block')
+        ? child
+        : child.querySelector<HTMLElement>(':scope > .document-image-block')
+      const imageRect = (imageBlock ?? child).getBoundingClientRect()
+      const imageHeight = Number.parseFloat(
+        child.style.getPropertyValue('--document-image-height')
+      ) || imageRect.height / scale
+      // 只有横向相交的前序内容才阻挡图片回填；同行分组使用子元素并集，避免弹性空白误判。
+      gapPx = resolveTranslationImageFlowGap({
+        anchoredTop,
+        previousBottom,
+        flowOrigin,
+        imageRange: {
+          left: imageRect.left - pageRect.left,
+          right: imageRect.right - pageRect.left
+        },
+        imageHeight: imageHeight * scale,
+        obstacles: flowObstacles
+      })
       setCssPixelPropertyIfChanged(child, '--document-image-flow-gap-before', gapPx / scale)
     } else {
       setCssPixelPropertyIfChanged(child, '--document-flow-gap-before', gapPx / scale)
     }
     previousBottom = Math.max(previousBottom, measureTranslationFlowBottom(child))
+    // 每个已排版区块都要登记二维占位，供后续图片判断是否需要避让。
+    flowObstacles.push(measureTranslationFlowObstacle(child, pageRect))
     const sourceTop = Number(child.dataset.sourceTop)
     const sourceBottom = Number(child.dataset.sourceBottom)
     if (Number.isFinite(sourceTop) && Number.isFinite(sourceBottom)) {
@@ -1246,8 +1854,6 @@ function renderOcrRegion(
   previousRegion: DocumentOcrRegion | undefined,
   side: DocumentRenderSide
 ): HTMLElement | null {
-  // 源文栏保留扫描页或原始图片，不在图片上重复叠加 OCR 原文。
-  if (side !== 'translation') return null
   const translatedText = region.translatedText?.trim()
   // 翻译失败或尚未完成时保留原图，避免把 OCR 原文误当作译文覆盖显示。
   if (!translatedText) return null
@@ -1323,6 +1929,267 @@ function createOcrTranslationLayer(block: DocumentImageBlock): HTMLElement | nul
 }
 
 /**
+ * 判断 OCR 区域是否具有可展示的识别原文。
+ * @param region OCR 区域。
+ * @returns 是否存在非空识别原文。
+ * @author zhenghq
+ */
+function hasOcrRegionText(region: DocumentOcrRegion): boolean {
+  return Boolean(region.text?.trim())
+}
+
+/**
+ * 创建图片的 OCR 原文透明覆盖层；文字与底图坐标一致，便于对照阅读和复制。
+ * 覆盖层不使用纸张底或遮罩，只承载透明文字，因此切换显示方式时原文图片不受遮挡。
+ * @param block 图片区块。
+ * @returns 可挂载到图片区块的 OCR 原文覆盖层；没有原文时返回 null。
+ * @author zhenghq
+ */
+function createOcrTextLayer(block: DocumentImageBlock): HTMLElement | null {
+  const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasOcrRegionText)
+  if (regions.length === 0) return null
+  const layer = document.createElement('div')
+  layer.className = 'document-ocr-text-layer document-ocr-print-text-layer'
+  const imageHeight = Math.max(1, block.bbox?.height ?? 1)
+  for (const region of regions) {
+    const box = normalizeDocumentOcrRegionBox(region.bbox)
+    const regionElement = document.createElement('span')
+    regionElement.className = 'document-ocr-text-region'
+    regionElement.dataset.regionId = region.regionId
+    regionElement.dataset.status = region.status
+    regionElement.style.left = `${box.x * 100}%`
+    regionElement.style.top = `${box.y * 100}%`
+    regionElement.style.width = `${box.width * 100}%`
+    regionElement.style.height = `${box.height * 100}%`
+    const fontSize = resolveOcrRegionFontSize(region, imageHeight)
+    const lineHeight = resolveOcrRegionLineHeight(fontSize)
+    regionElement.style.setProperty('--document-ocr-font-size-pt', String(fontSize))
+    regionElement.style.setProperty('--document-ocr-line-height', String(lineHeight / fontSize))
+    if (region.style?.fontWeight !== undefined) regionElement.style.fontWeight = String(region.style.fontWeight)
+    regionElement.style.fontFamily = pdfPreviewFontFamily(region.style?.fontFamily ?? 'Noto Sans SC')
+    if (region.style?.italic) regionElement.style.fontStyle = 'italic'
+    if (region.textAlign) regionElement.style.textAlign = region.textAlign
+    regionElement.textContent = region.text
+    layer.append(regionElement)
+  }
+  return layer
+}
+
+/**
+ * 按当前栏位和 OCR 展示模式挂载图片的透明文字层与译文覆盖层。
+ * 原文栏只允许显示原图，必要时叠加透明可选文字；译文栏始终保留打印文字层，
+ * 并在译文模式下额外挂载可见译文覆盖层。
+ * @param wrapper 图片区块容器。
+ * @param block 图片区块。
+ * @param side 当前渲染侧。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function appendImageOcrLayers(
+  wrapper: HTMLElement,
+  block: DocumentImageBlock,
+  side: DocumentRenderSide
+): void {
+  if (side === 'source') {
+    if (ocrDisplayMode !== 'ocr-text') return
+    const textLayer = createOcrTextLayer(block)
+    if (!textLayer) return
+    wrapper.dataset.ocrText = 'true'
+    wrapper.append(textLayer)
+    return
+  }
+
+  // 译文栏的打印文字层在译文模式下仅屏幕隐藏，仍须挂载供双层 PDF 导出。
+  const textLayer = createOcrTextLayer(block)
+  if (textLayer) {
+    wrapper.dataset.ocrText = 'true'
+    wrapper.append(textLayer)
+  }
+  if (ocrDisplayMode === 'ocr-text') return
+  const translationLayer = createOcrTranslationLayer(block)
+  if (!translationLayer) return
+  wrapper.dataset.ocrTranslation = 'true'
+  wrapper.append(translationLayer)
+}
+
+/**
+ * 递归收集页面中所有带 OCR 原文的图片区块；表格单元格内的图片也必须进入双层 PDF 文字层。
+ * @param blocks 待遍历区块。
+ * @param output 收集结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function collectOcrImageBlocks(blocks: readonly DocumentBlock[], output: DocumentImageBlock[] = []): DocumentImageBlock[] {
+  for (const block of blocks) {
+    if (block.kind === 'image') {
+      if ((block.ocrRegions ?? []).some(hasOcrRegionText)) output.push(block)
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) collectOcrImageBlocks(cell.blocks, output)
+    }
+  }
+  return output
+}
+
+/**
+ * 递归收集页面中的原生文本、表格文本和公式原文。
+ * PDF.js 已能从原生 PDF 提取文本，但页面仍以 Canvas 展示；这些区块必须补入透明文字层，
+ * 才能在“OCR 原文”中选中文字，并让导出的双层 PDF 保留可检索文本。
+ * @param blocks 待遍历区块。
+ * @param output 收集结果。
+ * @returns 按原阅读顺序收集到的文本区块。
+ * @author zhenghq
+ */
+function collectPdfTextBlocks(
+  blocks: readonly DocumentBlock[],
+  output: DocumentTextBlock[] = []
+): DocumentTextBlock[] {
+  for (const block of blocks) {
+    if (block.kind === 'text') {
+      if (hasVisibleText(block)) output.push(block)
+      continue
+    }
+    if (block.kind === 'formula') continue
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) collectPdfTextBlocks(cell.blocks, output)
+    }
+  }
+  return output
+}
+
+/**
+ * 递归收集页面中的公式原文；公式可能位于表格单元格内。
+ * @param blocks 待遍历区块。
+ * @param output 收集结果。
+ * @returns 带可展示原文的公式区块。
+ * @author zhenghq
+ */
+function collectPdfFormulaBlocks(
+  blocks: readonly DocumentBlock[],
+  output: DocumentFormulaBlock[] = []
+): DocumentFormulaBlock[] {
+  for (const block of blocks) {
+    if (block.kind === 'formula') {
+      if (block.sourceText?.trim()) output.push(block)
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) collectPdfFormulaBlocks(cell.blocks, output)
+    }
+  }
+  return output
+}
+
+/**
+ * 将区块坐标转换为整页百分比，并限制在页面范围内。
+ * @param value 原始坐标。
+ * @param total 页面宽度或高度。
+ * @returns 0 到 100 的百分比值。
+ * @author zhenghq
+ */
+function pdfPagePercent(value: number, total: number): number {
+  return Math.max(0, Math.min(100, value / Math.max(1, total) * 100))
+}
+
+/**
+ * 创建覆盖整张 PDF 页面的透明文字层。
+ * 原生文本和公式使用整页坐标，图片 OCR 区域使用图片内归一化坐标；
+ * 两类坐标都换算到同一页面矩形后，才能随 Canvas 等比缩放并正确导出双层 PDF。
+ * @param page 当前文档页面。
+ * @returns 透明文字层；页面没有可检索文字时返回 null。
+ * @author zhenghq
+ */
+function createPdfOcrTextLayer(page: DocumentPage): HTMLElement | null {
+  const textBlocks = collectPdfTextBlocks(page.blocks)
+  const formulaBlocks = collectPdfFormulaBlocks(page.blocks)
+  const imageBlocks = collectOcrImageBlocks(page.blocks)
+  if (textBlocks.length === 0 && formulaBlocks.length === 0 && imageBlocks.length === 0) return null
+  const layer = document.createElement('div')
+  layer.className = 'document-ocr-text-layer document-ocr-print-text-layer'
+  for (const block of textBlocks) {
+    const box = block.bbox
+    if (!box || box.width <= 0 || box.height <= 0) continue
+    const regionElement = document.createElement('span')
+    regionElement.className = 'document-ocr-text-region'
+    regionElement.dataset.blockId = block.blockId
+    regionElement.style.left = `${pdfPagePercent(box.x, page.width)}%`
+    regionElement.style.top = `${pdfPagePercent(box.y, page.height)}%`
+    regionElement.style.width = `${pdfPagePercent(box.width, page.width)}%`
+    regionElement.style.height = `${pdfPagePercent(box.height, page.height)}%`
+    const style = effectiveTextStyle(block, block.runs[0] ?? {
+      runId: `${block.blockId}-text-layer`,
+      text: ''
+    })
+    const fontSize = style.fontSize ?? Math.max(1, box.height)
+    const lineHeight = style.lineHeight ?? fontSize * 1.15
+    regionElement.style.setProperty('--document-ocr-font-size-pt', String(fontSize))
+    regionElement.style.setProperty('--document-ocr-line-height', String(lineHeight / fontSize))
+    if (style.fontWeight !== undefined) regionElement.style.fontWeight = String(style.fontWeight)
+    if (style.fontFamily) regionElement.style.fontFamily = pdfPreviewFontFamily(style.fontFamily)
+    if (style.italic) regionElement.style.fontStyle = 'italic'
+    if (block.textAlign) regionElement.style.textAlign = block.textAlign
+    regionElement.textContent = block.runs.map((run) => run.text).join('')
+    layer.append(regionElement)
+  }
+  for (const block of formulaBlocks) {
+    const box = block.bbox
+    const text = block.sourceText?.trim()
+    if (!box || !text || box.width <= 0 || box.height <= 0) continue
+    const regionElement = document.createElement('span')
+    regionElement.className = 'document-ocr-text-region'
+    regionElement.dataset.blockId = block.blockId
+    regionElement.style.left = `${pdfPagePercent(box.x, page.width)}%`
+    regionElement.style.top = `${pdfPagePercent(box.y, page.height)}%`
+    regionElement.style.width = `${pdfPagePercent(box.width, page.width)}%`
+    regionElement.style.height = `${pdfPagePercent(box.height, page.height)}%`
+    regionElement.style.setProperty('--document-ocr-font-size-pt', String(Math.max(1, box.height)))
+    regionElement.style.setProperty('--document-ocr-line-height', '1.15')
+    regionElement.textContent = text
+    layer.append(regionElement)
+  }
+  for (const block of imageBlocks) {
+    const imageBox = block.bbox
+    if (!imageBox || imageBox.width <= 0 || imageBox.height <= 0) continue
+    for (const region of orderedOcrRegions(block.ocrRegions ?? []).filter(hasOcrRegionText)) {
+      const normalizedRegion = normalizeDocumentOcrRegionBox(region.bbox)
+      const regionElement = document.createElement('span')
+      regionElement.className = 'document-ocr-text-region'
+      regionElement.dataset.regionId = region.regionId
+      regionElement.dataset.status = region.status
+      const left = Math.max(0, Math.min(1,
+        (imageBox.x + normalizedRegion.x * imageBox.width) / page.width))
+      const top = Math.max(0, Math.min(1,
+        (imageBox.y + normalizedRegion.y * imageBox.height) / page.height))
+      const width = Math.max(0, Math.min(1 - left,
+        normalizedRegion.width * imageBox.width / page.width))
+      const height = Math.max(0, Math.min(1 - top,
+        normalizedRegion.height * imageBox.height / page.height))
+      regionElement.style.left = `${left * 100}%`
+      regionElement.style.top = `${top * 100}%`
+      regionElement.style.width = `${width * 100}%`
+      regionElement.style.height = `${height * 100}%`
+      const fontSize = resolveOcrRegionFontSize(region, imageBox.height)
+      const lineHeight = resolveOcrRegionLineHeight(fontSize)
+      regionElement.style.setProperty('--document-ocr-font-size-pt', String(fontSize))
+      regionElement.style.setProperty('--document-ocr-line-height', String(lineHeight / fontSize))
+      if (region.style?.fontWeight !== undefined) {
+        regionElement.style.fontWeight = String(region.style.fontWeight)
+      }
+      regionElement.style.fontFamily = pdfPreviewFontFamily(region.style?.fontFamily ?? 'Noto Sans SC')
+      if (region.style?.italic) regionElement.style.fontStyle = 'italic'
+      if (region.textAlign) regionElement.style.textAlign = region.textAlign
+      regionElement.textContent = region.text
+      layer.append(regionElement)
+    }
+  }
+  return layer.childElementCount > 0 ? layer : null
+}
+
+/**
  * 创建图片区块；资源加载成功前使用占位区域，加载完成后填入图片。
  * @param block 图片区块。
  * @param side 当前渲染侧。
@@ -1342,25 +2209,16 @@ function renderImageBlock(
   if (side === 'translation') applyTranslationImageGeometry(wrapper, block, pageWidth)
   if (block.renderPending) {
     wrapper.dataset.pending = 'true'
-    wrapper.textContent = t('document.ocr.pendingRender')
+    renderDocumentImagePlaceholder(wrapper, block)
   } else {
     const image = document.createElement('img')
     image.className = 'document-page-image'
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    void resolveAssetUrl(block.assetId).then((url) => {
-      if (!url) return
-      image.src = url
-    })
+    loadDocumentImageAsset(wrapper, image, block)
   }
-  if (side === 'translation') {
-    const layer = createOcrTranslationLayer(block)
-    if (layer) {
-      wrapper.dataset.ocrTranslation = 'true'
-      wrapper.append(layer)
-    }
-  }
+  appendImageOcrLayers(wrapper, block, side)
   return wrapper
 }
 
@@ -1471,23 +2329,16 @@ function renderTableCellImageBlock(
   if (side === 'translation') wrapper.dataset.renderSide = side
   if (block.renderPending) {
     wrapper.dataset.pending = 'true'
-    wrapper.textContent = t('document.ocr.pendingRender')
-    return wrapper
+    renderDocumentImagePlaceholder(wrapper, block)
+  } else {
+    const image = document.createElement('img')
+    image.className = 'document-page-image'
+    image.alt = block.alt ?? ''
+    image.decoding = 'async'
+    wrapper.append(image)
+    loadDocumentImageAsset(wrapper, image, block)
   }
-  const image = document.createElement('img')
-  image.className = 'document-page-image'
-  image.alt = block.alt ?? ''
-  image.decoding = 'async'
-  wrapper.append(image)
-  void resolveAssetUrl(block.assetId).then((url) => {
-    if (!url) {
-      wrapper.dataset.pending = 'true'
-      wrapper.textContent = block.alt || t('document.ocr.pendingRender')
-      return
-    }
-    image.src = url
-    image.addEventListener('load', () => scheduleTranslationPageLayout(), { once: true })
-  })
+  appendImageOcrLayers(wrapper, block, side)
   return wrapper
 }
 
@@ -1600,6 +2451,11 @@ function renderPage(
   element.style.height = `${Math.max(1, page.height)}px`
   element.style.setProperty('--document-page-width', `${Math.max(1, page.width)}px`)
   element.style.setProperty('--document-page-height', `${Math.max(1, page.height)}px`)
+  // aspect-ratio 只接受无单位数字，单独写入比例变量，避免页面宽高带 px 后整条规则失效。
+  element.style.setProperty(
+    '--document-page-aspect-ratio',
+    `${Math.max(1, page.width)} / ${Math.max(1, page.height)}`
+  )
   if (page.background?.kind === 'solid') {
     element.style.backgroundColor = page.background.color
   }
@@ -1817,7 +2673,7 @@ function createTranslationWatermarkPattern(): SVGSVGElement {
  * @author zhenghq
  */
 function appendTranslationWatermark(container: HTMLElement, side: DocumentRenderSide): void {
-  if (side !== 'translation') return
+  if (side !== 'translation' || ocrDisplayMode === 'ocr-text') return
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
   const watermark = document.createElement('div')
@@ -1847,7 +2703,8 @@ function appendTranslationWatermark(container: HTMLElement, side: DocumentRender
  */
 function resolvePreviewKind(model: DocumentModel, side: DocumentRenderSide): DocumentPreviewKind {
   const format = model.source.format
-  if (format === 'pdf') return 'paged'
+  // PDF 与图片文档都按页等比缩放，避免整页图片在窄栏中被压变形。
+  if (format === 'pdf' || format === 'image') return 'paged'
   if (format === 'markdown') return 'markdown'
   if (format === 'csv') return 'table'
   if (format === 'srt' || format === 'vtt') return 'subtitle'
@@ -2162,12 +3019,18 @@ async function renderPdfPages(
       const article = document.createElement('article')
       article.className = 'document-pdf-page'
       article.dataset.pageNumber = String(pageNumber)
+      article.style.setProperty('--document-pdf-page-width', `${viewportWidth}px`)
       article.style.setProperty('--document-pdf-page-height', `${viewportHeight}px`)
+      article.style.setProperty('--document-pdf-source-width', String(sourceWidth))
+      article.style.setProperty('--document-pdf-source-height', String(sourceHeight))
       const canvas = document.createElement('canvas')
       canvas.className = 'document-pdf-canvas'
       canvas.style.width = `${viewportWidth}px`
       canvas.style.height = `${viewportHeight}px`
       article.append(canvas)
+      // 扫描页的可见文字由 PDF.js Canvas 绘制，透明 DOM 文字层只负责检索和选择。
+      const textLayer = createPdfOcrTextLayer(modelPage)
+      if (textLayer) article.append(textLayer)
       container.append(article)
       observer.observe(article)
     }
@@ -2438,10 +3301,21 @@ function patchTranslationOcrLayer(
 ): boolean {
   if (!element.classList.contains('document-image-block')) return false
   const renderPending = element.dataset.pending === 'true'
-  if (renderPending !== Boolean(block.renderPending)) return false
+  const assetFailed = element.dataset.assetState === 'error'
+  if (!assetFailed && renderPending !== Boolean(block.renderPending)) return false
   const image = element.querySelector<HTMLImageElement>(':scope > img.document-page-image')
-  if (!block.renderPending && !image) return false
+  if (!block.renderPending && !image && !assetFailed) return false
   if (image) image.alt = block.alt ?? ''
+  const existingTextLayer = element.querySelector<HTMLElement>(':scope > .document-ocr-text-layer')
+  const nextTextLayer = createOcrTextLayer(block)
+  if (nextTextLayer) {
+    if (existingTextLayer) existingTextLayer.replaceWith(nextTextLayer)
+    else element.append(nextTextLayer)
+    element.dataset.ocrText = 'true'
+  } else {
+    existingTextLayer?.remove()
+    delete element.dataset.ocrText
+  }
   const existingLayer = element.querySelector<HTMLElement>(':scope > .document-ocr-translation-layer')
   const signature = ocrTranslationLayerSignature(block)
   if (!signature) {
@@ -2663,11 +3537,14 @@ function renderDocumentModel(
     const previewHost = document.createElement('div')
     previewHost.className = 'document-preview-host'
     previewHost.dataset.previewKind = kind
+    // 独立图片沿用原始像素尺寸；宿主格式标记用于启用 contain，避免窄栏把图片压扁。
+    previewHost.dataset.documentFormat = model.source.format
     nextContent.append(previewHost)
     if (side === 'source' && model.source.format === 'html') {
       renderHtmlSourcePreview(previewHost, model)
     } else if (kind === 'paged') {
-      if (model.source.format === 'pdf' && side === 'source') {
+      const usePdfCanvas = model.source.format === 'pdf' && side === 'source'
+      if (model.source.format === 'pdf' && (side === 'source' || ocrDisplayMode === 'ocr-text')) {
         container.dataset.previewKind = kind
         // PDF.js 异步渲染要求宿主已连接；此时只挂载空宿主，PDF 数据仍由旧内容保留到加载完成。
         container.replaceChildren(previewHost)
@@ -2876,9 +3753,10 @@ function documentWarningSignature(warnings: readonly DocumentWarning[] = []): st
 function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
   renderActualLanguage(snapshot.languagePair)
   const sourcePreviewIdentity = documentPreviewIdentity(snapshot.source)
-  const translationSignature = documentContentSignature(snapshot.translation)
+  const translationPaneModel = ocrDisplayMode === 'ocr-text' ? snapshot.source : snapshot.translation
+  const translationSignature = documentContentSignature(translationPaneModel)
   const sourceWarningSignature = documentWarningSignature(snapshot.source?.warnings)
-  const translationWarningSignature = documentWarningSignature(snapshot.translation?.warnings)
+  const translationWarningSignature = documentWarningSignature(translationPaneModel?.warnings)
   const sourceChanged = renderedSourcePreviewIdentity !== sourcePreviewIdentity
   const sourceWarningsChanged = renderedSourceWarningSignature !== sourceWarningSignature
   const translationChanged = !hasRenderedTranslation ||
@@ -2902,30 +3780,36 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
     renderedSourceWarningSignature = sourceWarningSignature
   }
   if (translationChanged) {
-    const patched = hasRenderedTranslation &&
+    // OCR 原文模式展示源模型和透明文字层，不能走针对流式译文的原位补丁路径。
+    const patched = ocrDisplayMode === 'translation' && hasRenderedTranslation &&
       patchTranslationPreview(translationContent, snapshot.translation)
     if (!patched) {
       renderDocumentModel(
         translationContent,
-        snapshot.translation,
+        translationPaneModel,
         'document.waitingTranslation',
         'translation',
-        snapshot.translation?.warnings
+        translationPaneModel?.warnings
       )
     }
     renderedTranslationSignature = translationSignature
     hasRenderedTranslation = true
     renderedTranslationWarningSignature = translationWarningSignature
   } else if (translationWarningsChanged) {
-    renderDocumentWarnings(translationContent, snapshot.translation?.warnings)
+    renderDocumentWarnings(translationContent, translationPaneModel?.warnings)
     renderedTranslationWarningSignature = translationWarningSignature
   }
   sourcePageCount.textContent = snapshot.source
     ? t('document.pageCount', { count: snapshot.source.pages.length })
     : ''
-  translationPageCount.textContent = snapshot.translation
-    ? t('document.pageCount', { count: snapshot.translation.pages.length })
+  translationPageCount.textContent = translationPaneModel
+    ? t('document.pageCount', { count: translationPaneModel.pages.length })
     : ''
+  translationContent.dataset.ocrDisplayMode = ocrDisplayMode
+  translationHeading.textContent = t(
+    ocrDisplayMode === 'ocr-text' ? 'document.ocr.source' : 'document.translation'
+  )
+  renderOcrDisplayModeControls(snapshot)
 }
 
 /**
@@ -2935,6 +3819,8 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
  * @author zhenghq
  */
 function hasUsableExportResult(snapshot: DocumentWorkspaceSnapshot | null): boolean {
+  // OCR 原文任务没有翻译目标，完成报告计数为 0 时仍应允许导出双层 PDF。
+  if (snapshot?.runMode === 'ocr') return snapshot.task.status === 'completed'
   if (!snapshot?.completionReport) return snapshot?.task.status === 'completed'
   return snapshot.completionReport.translated + snapshot.completionReport.unchanged > 0
 }
@@ -3101,11 +3987,11 @@ function exposeDocumentPrintPreview(): void {
 function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
   const status = snapshot.task.status
   const report = snapshot.completionReport
-  const failed = report?.failed ?? snapshot.task.failedBlocks
-  const pending = report?.pending ?? 0
-  const suspectUntranslated = report?.suspectUntranslated ?? 0
-  const reverted = failed + pending + suspectUntranslated
-  const hasUsableTranslation = report
+  const retryAction = resolveDocumentRetryActionState(snapshot)
+  const { failed, pending, suspectUntranslated, reverted } = retryAction
+  const hasUsableTranslation = snapshot.runMode === 'ocr'
+    ? status === 'completed'
+    : report
     ? report.translated + report.unchanged > 0
     : status === 'completed' || status === 'partial'
   const stageKeys: Record<string, string> = {
@@ -3134,12 +4020,9 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
     : status === 'partial' || status === 'failed'
       ? !hasUsableTranslation
       : true
-  // partial 或仍有可重试目标的 failed 终态允许重试；failed 表示没有成功译文，
-  // 但用户仍应能恢复提供方后从同一任务继续。
-  const retryableTerminal = status === 'partial' ||
-    (status === 'failed' && (snapshot.retryableFailedBlocks ?? 0) > 0)
-  retryButton.disabled = !retryableTerminal || snapshot.task.phaseCompleted ||
-    (snapshot.retryableFailedBlocks ?? 0) <= 0
+  // phaseCompleted 只表示阶段流程结束，不代表没有可重试目标；partial 终态
+  // 仍需与摘要共用同一动作状态，按失败、未完成和疑似未翻译目标决定按钮状态。
+  retryButton.disabled = retryAction.retryDisabled
   partialStatus.hidden = status !== 'partial' && status !== 'failed' && status !== 'cancelled'
   if (status === 'partial') {
     partialStatus.textContent = t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: snapshot.task.warningCount })
@@ -3160,6 +4043,8 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
  * @author zhenghq
  */
 function scheduleSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
+  // 模式切换重启期间禁止旧任务快照进入合并队列，避免取消终态在新流程启动前回写界面。
+  if (pendingOcrModeRestart) return
   latestSnapshot = snapshot
   if (pendingRenderFrame !== null) return
   pendingRenderFrame = requestAnimationFrame(() => {
@@ -3177,6 +4062,8 @@ function scheduleSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
  * @author zhenghq
  */
 function flushSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
+  // 模式切换重启期间终态也必须丢弃，新任务只接受其自身代际的完成事件。
+  if (pendingOcrModeRestart) return
   if (pendingRenderFrame !== null) {
     cancelAnimationFrame(pendingRenderFrame)
     pendingRenderFrame = null
@@ -3217,6 +4104,71 @@ function canApplyProgressSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean 
 }
 
 /**
+ * 取消指定任务；任务已结束时静默忽略，避免阻断后续新模式启动。
+ * @param jobId 可选的当前任务标识。
+ * @param jobGeneration 发起取消时对应的任务代际。
+ * @returns 取消请求完成后的 Promise。
+ * @author zhenghq
+ */
+async function cancelDocumentJob(jobId: string | null, jobGeneration: number): Promise<void> {
+  if (!jobId) return
+  try {
+    await window.api.cancelDocument(jobId, jobGeneration)
+  } catch {
+    // 任务可能已经结束，后续代际仍会隔离迟到事件。
+  }
+}
+
+/**
+ * 取消启动请求在代际失效后才返回的旧任务。
+ * @param result 启动请求返回结果。
+ * @param jobGeneration 发起该启动请求时使用的任务代际。
+ * @returns 取消请求完成后的 Promise。
+ * @author zhenghq
+ */
+async function cancelLateDocumentRunResult(
+  result: DocumentRunResult,
+  jobGeneration: number
+): Promise<void> {
+  if (!result.accepted || !result.jobId) return
+  await cancelDocumentJob(result.jobId, jobGeneration)
+}
+
+/**
+ * 在 OCR 原文与译文模式切换时立即清空旧进度、预览和导出状态。
+ * 保留 activeJobId 供调用方取消旧任务，避免启动请求尚未返回时丢失取消目标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetDocumentRunForModeSwitch(): void {
+  if (pendingRenderFrame !== null) {
+    cancelAnimationFrame(pendingRenderFrame)
+    pendingRenderFrame = null
+  }
+  latestSnapshot = null
+  expectedJobId = null
+  // 重新启动会推进任务代际；先清理旧代际的渲染令牌，避免异步 PDF 绘制回写新界面。
+  pdfPreviewCleanups.get(sourceContent)?.()
+  pdfPreviewCleanups.get(translationContent)?.()
+  renderedSourcePreviewIdentity = ''
+  renderedSourceWarningSignature = ''
+  renderedTranslationSignature = ''
+  renderedTranslationPreviewKind = null
+  hasRenderedTranslation = false
+  renderedTranslationWarningSignature = ''
+  sourceContent.replaceChildren()
+  translationContent.replaceChildren()
+  progressStage.textContent = t('document.progress.preparing')
+  progressCount.textContent = t('document.progress.pending')
+  progressbar.style.width = '0%'
+  progressbar.setAttribute('aria-valuenow', '0')
+  exportButton.disabled = true
+  retryButton.disabled = true
+  partialStatus.hidden = true
+  closePartialExportDialog(false)
+}
+
+/**
  * 启动当前已批准文件的翻译任务。
  * @returns 无返回值。
  * @author zhenghq
@@ -3224,11 +4176,14 @@ function canApplyProgressSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean 
 async function startDocumentTranslation(): Promise<void> {
   if (!selectionState.path || !platformCapability?.supported) return
   if (documentStartInFlight) {
-    pendingLanguageRetranslation = true
+    // 模式切换与语言切换使用不同重启标记；启动结束后只执行最后一次用户意图。
+    if (pendingOcrModeRestart) pendingLanguageRetranslation = false
+    else pendingLanguageRetranslation = true
     return
   }
   // 先消费待重译标记再启动，确保本次启动期间再次切换语言时仍能留下新的待处理标记。
   pendingLanguageRetranslation = false
+  pendingOcrModeRestart = false
   documentStartInFlight = true
   // 先递增并取得本次任务代际，主进程要求代际严格大于上一任务；
   // 若发送递增前的旧值，首次运行或窗口重载后都会被判定为 generation-conflict。
@@ -3239,6 +4194,7 @@ async function startDocumentTranslation(): Promise<void> {
   activeJobId = null
   expectedJobId = null
   latestSnapshot = null
+  syncOcrDisplayModeControls()
   renderedSourcePreviewIdentity = ''
   renderedSourceWarningSignature = ''
   renderedTranslationSignature = ''
@@ -3259,7 +4215,8 @@ async function startDocumentTranslation(): Promise<void> {
   progressCount.textContent = t('document.progress.pending')
   progressbar.setAttribute('aria-valuenow', '0')
   progressbar.style.width = '0%'
-  actualLanguage.textContent = t('document.actualLanguageAuto')
+  actualLanguage.textContent = ''
+  actualLanguage.hidden = true
   cancelButton.hidden = false
   exportButton.disabled = true
   retryButton.disabled = true
@@ -3271,9 +4228,13 @@ async function startDocumentTranslation(): Promise<void> {
       path: selectedPath,
       generation: jobGeneration,
       sourceLang: sourceLanguageSelect.value,
-      targetLang: targetLanguageSelect.value
+      targetLang: targetLanguageSelect.value,
+      mode: ocrDisplayMode === 'ocr-text' ? 'ocr' : 'translation'
     })
-    if (generation !== jobGeneration) return
+    if (generation !== jobGeneration) {
+      await cancelLateDocumentRunResult(result, jobGeneration)
+      return
+    }
     // 只有尚未绑定任务标识且未收到当前任务进度时才允许重试；
     // 同一 Renderer 的并发启动会返回 busy，不能被误当成可重试的冲突。
     if (!result.accepted && result.code === 'generation-conflict' && expectedJobId === null &&
@@ -3284,10 +4245,14 @@ async function startDocumentTranslation(): Promise<void> {
         path: selectedPath,
         generation: jobGeneration,
         sourceLang: sourceLanguageSelect.value,
-        targetLang: targetLanguageSelect.value
+        targetLang: targetLanguageSelect.value,
+        mode: ocrDisplayMode === 'ocr-text' ? 'ocr' : 'translation'
       })
     }
-    if (generation !== jobGeneration) return
+    if (generation !== jobGeneration) {
+      await cancelLateDocumentRunResult(result, jobGeneration)
+      return
+    }
     if (!result.accepted || !result.jobId) {
       progressStage.textContent = t('document.run.failed')
       progressCount.textContent = t('document.run.failedCode', { code: result.code ?? 'run-failed' })
@@ -3298,7 +4263,9 @@ async function startDocumentTranslation(): Promise<void> {
     expectedJobId = result.jobId
     activeJobId = result.jobId
     const pendingSnapshot = latestSnapshot as DocumentWorkspaceSnapshot | null
-    if (pendingSnapshot?.jobId === result.jobId) scheduleSnapshotRender(pendingSnapshot)
+    if (!pendingOcrModeRestart && pendingSnapshot?.jobId === result.jobId) {
+      scheduleSnapshotRender(pendingSnapshot)
+    }
   } catch {
     if (generation !== jobGeneration) return
     progressStage.textContent = t('document.run.failed')
@@ -3306,7 +4273,12 @@ async function startDocumentTranslation(): Promise<void> {
     startButton.disabled = false
   } finally {
     documentStartInFlight = false
-    if (pendingLanguageRetranslation) {
+    if (pendingOcrModeRestart) {
+      // 启动请求返回时旧任务可能已经创建；取消期间继续保持挂起态，丢弃旧任务终态。
+      await cancelDocumentJob(activeJobId, generation)
+      pendingOcrModeRestart = false
+      await startDocumentTranslation()
+    } else if (pendingLanguageRetranslation) {
       void retranslateDocumentAfterLanguageChange()
     }
   }
@@ -3334,9 +4306,7 @@ async function cancelDocumentTranslation(): Promise<void> {
  */
 async function retryFailedDocumentTranslation(): Promise<void> {
   if (!latestSnapshot?.translation) return
-  const retryableTerminal = latestSnapshot.task.status === 'partial' ||
-    (latestSnapshot.task.status === 'failed' && (latestSnapshot.retryableFailedBlocks ?? 0) > 0)
-  if (!retryableTerminal || (latestSnapshot.retryableFailedBlocks ?? 0) <= 0) return
+  if (resolveDocumentRetryActionState(latestSnapshot).retryDisabled) return
   const jobGeneration = nextGeneration()
   retryButton.disabled = true
   cancelButton.hidden = false
@@ -3390,7 +4360,9 @@ async function exportTranslatedPdf(): Promise<void> {
     const result: DocumentExportResult = await window.api.exportDocumentPdf({
       jobId: latestSnapshot.jobId,
       generation: latestSnapshot.generation,
-      ...(isComplete ? { mode: 'complete' as const } : { mode: 'partial' as const })
+      ...(isComplete ? { mode: 'complete' as const } : { mode: 'partial' as const }),
+      // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
+      textLayer: true
     })
     if (result.status === 'saved') {
       partialStatus.textContent = result.warnings && result.warnings.length > 0
@@ -3413,6 +4385,81 @@ async function exportTranslatedPdf(): Promise<void> {
       !hasUsableExportResult(latestSnapshot)
     )
   }
+}
+
+/**
+ * 判断模型是否包含至少一个带识别原文的图片区块。
+ * @param model 文档模型。
+ * @returns 是否存在可切换的 OCR 原文。
+ * @author zhenghq
+ */
+function hasOcrSourceText(model: DocumentModel | undefined): boolean {
+  if (!model) return false
+  // 图片可能嵌套在表格单元格内，必须递归检查整棵区块树，不能只遍历页面顶层区块。
+  const hasVisibleOcrText = (block: DocumentBlock): boolean => {
+    if (block.kind === 'image') {
+      return (block.ocrRegions ?? []).some((region) => Boolean(region.text?.trim()))
+    }
+    if (block.kind === 'table') {
+      return block.rows.some((row) => row.cells.some((cell) => cell.blocks.some(hasVisibleOcrText)))
+    }
+    return false
+  }
+  return model.pages.some((page) => page.blocks.some(hasVisibleOcrText))
+}
+
+/**
+ * 根据原文栏 OCR 展示方式更新分段控件的选中态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncOcrDisplayModeControls(): void {
+  for (const button of Array.from(sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]'))) {
+    button.setAttribute('aria-pressed', String(button.dataset.ocrMode === ocrDisplayMode))
+  }
+}
+
+/**
+ * 根据当前预览方式同步顶栏开关选中态和工作台布局标记。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncDocumentViewModeControls(): void {
+  documentColumns.dataset.viewMode = documentViewMode
+  for (const button of documentViewModeControl.querySelectorAll<HTMLButtonElement>('[data-document-view-mode]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.documentViewMode === documentViewMode))
+  }
+}
+
+/**
+ * 切换原文与译文双面显示或仅译文单面显示；不中断正在执行的翻译任务。
+ * @param nextMode 用户选择的预览方式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setDocumentViewMode(nextMode: DocumentViewMode): void {
+  if (documentViewMode === nextMode) return
+  documentViewMode = nextMode
+  persistDocumentViewMode(documentViewMode)
+  syncDocumentViewModeControls()
+  // 单面切换后译文栏宽度改变，只为已渲染的 PDF 页面重新计算缩放。
+  const hasPdfPages = Boolean(translationContent.querySelector(".document-page[data-layout='translation-flow']"))
+  if (nextMode === 'translation' && hasPdfPages) {
+    requestAnimationFrame(() => scheduleTranslationPageLayout(true))
+  }
+}
+
+/**
+ * 根据当前快照决定原文栏 OCR 切换控件是否可见。
+ * 仅当源模型存在带识别原文的图片时显示控件，避免普通文档出现无意义的分段开关。
+ * @param snapshot 当前任务快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderOcrDisplayModeControls(snapshot: DocumentWorkspaceSnapshot): void {
+  // PDF 扫描件可能整体被判定为低置信度或暂无译文；只要 OCR 任务已尝试，就保留顶部切换入口。
+  const format = snapshot.source?.source.format
+  sourceOcrMode.hidden = !(format === 'pdf' || format === 'image' || hasOcrSourceText(snapshot.source))
 }
 
 /**
@@ -3461,6 +4508,7 @@ async function initializePlatformCapability(): Promise<void> {
   }
   dropZone.tabIndex = platformCapability.supported ? 0 : -1
   dropZone.setAttribute('aria-disabled', String(!platformCapability.supported))
+  historyButton.disabled = !platformCapability.supported
   renderSelectionState()
 }
 
@@ -3531,11 +4579,52 @@ async function initializeDocumentWorkspace(): Promise<void> {
   })
   sourceLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   targetLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
+  for (const button of Array.from(sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]'))) {
+    button.addEventListener('click', async () => {
+      const nextMode = button.dataset.ocrMode === 'ocr-text' ? 'ocr-text' : 'translation'
+      if (ocrDisplayMode === nextMode) return
+      ocrDisplayMode = nextMode
+      syncOcrDisplayModeControls()
+      // 展示方式改变即代表新的执行流程：先中断旧任务，再清空旧进度和预览。
+      if (documentStartInFlight || pendingOcrModeRestart) {
+        pendingOcrModeRestart = true
+        pendingLanguageRetranslation = false
+        resetDocumentRunForModeSwitch()
+        // 若启动请求已创建任务但尚未返回，这里先尝试取消；finally 会再次按最新 jobId 兜底。
+        void cancelDocumentJob(activeJobId, generation)
+        return
+      }
+      const jobId = activeJobId
+      await cancelDocumentJob(jobId, generation)
+      resetDocumentRunForModeSwitch()
+      await startDocumentTranslation()
+    })
+  }
+  syncOcrDisplayModeControls()
+  for (const button of Array.from(documentViewModeControl.querySelectorAll<HTMLButtonElement>('[data-document-view-mode]'))) {
+    button.addEventListener('click', () => {
+      const nextMode = button.dataset.documentViewMode === 'translation' ? 'translation' : 'spread'
+      setDocumentViewMode(nextMode)
+    })
+  }
+  syncDocumentViewModeControls()
+  documentFileHistory = readDocumentFileHistory()
+  renderDocumentHistory()
   window.api.onDocumentProgress((snapshot) => {
+    if (pendingOcrModeRestart) return
     if (!canApplyProgressSnapshot(snapshot)) return
     scheduleSnapshotRender(snapshot)
   })
+  window.api.onDocumentBlockTranslated((update: DocumentWorkspaceTranslationUpdate) => {
+    if (pendingOcrModeRestart) return
+    const snapshot = latestSnapshot
+    if (!snapshot || snapshot.jobId !== update.jobId || snapshot.generation !== update.generation) return
+    const next = applyDocumentWorkspaceTranslationUpdate(snapshot, update)
+    if (next === snapshot) return
+    scheduleSnapshotRender(next)
+  })
   window.api.onDocumentCompleted((snapshot) => {
+    if (pendingOcrModeRestart) return
     if (!isCurrentSnapshot(snapshot)) return
     // 终态必须绕过 rAF 合并立即落盘，确保最终译文覆盖最后一条流式部分译文。
     flushSnapshotRender(snapshot)
@@ -3562,11 +4651,56 @@ async function initializeDocumentWorkspace(): Promise<void> {
     revokeAssetUrls()
     releaseHtmlPreviewUrl()
   })
-  historyButton.addEventListener('click', () => {
-    uploadStatus.textContent = t('document.historyEmpty')
+  historyButton.addEventListener('click', () => setDocumentHistoryOpen(historyPopover.hidden))
+  documentHistorySearch.addEventListener('input', renderDocumentHistory)
+  documentHistorySearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      const firstEntry = visibleDocumentFileHistory[0]
+      if (firstEntry) {
+        event.preventDefault()
+        void switchToDocumentHistoryEntry(firstEntry)
+      }
+      return
+    }
+    if (event.key !== 'ArrowDown') return
+    event.preventDefault()
+    documentHistoryList.querySelector<HTMLButtonElement>('[data-history-index]')?.focus()
+  })
+  documentHistoryList.addEventListener('click', (event) => {
+    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-index]')
+    const entry = item ? visibleDocumentFileHistory[Number(item.dataset.historyIndex)] : undefined
+    if (entry) void switchToDocumentHistoryEntry(entry)
+  })
+  documentHistoryList.addEventListener('keydown', (event) => {
+    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-index]')
+    if (!item) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const entry = visibleDocumentFileHistory[Number(item.dataset.historyIndex)]
+      if (entry) void switchToDocumentHistoryEntry(entry)
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const offset = event.key === 'ArrowDown' ? 1 : -1
+      const buttons = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('[data-history-index]'))
+      const next = buttons[(buttons.indexOf(item) + offset + buttons.length) % buttons.length]
+      next?.focus()
+    }
+  })
+  document.addEventListener('click', (event) => {
+    if (historyPopover.hidden || historyPopover.contains(event.target as Node) || historyButton.contains(event.target as Node)) return
+    setDocumentHistoryOpen(false)
+  })
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !historyPopover.hidden) {
+      event.preventDefault()
+      setDocumentHistoryOpen(false, true)
+    }
   })
   localeRuntime.onLocaleChanged(() => {
     renderSelectionState()
+    renderDocumentHistory()
     if (currentSettings) {
       populateDocumentLanguages(currentSettings, sourceLanguageSelect.value, targetLanguageSelect.value)
     }

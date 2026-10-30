@@ -33,10 +33,7 @@
       <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
         <div class="document-tabs" role="tablist" data-i18n-attr="aria-label:document.tabs" aria-label="Document translation modes">
           <button id="document-tab-single" class="document-tab" type="button" role="tab" aria-selected="true" aria-controls="document-upload-panel" data-i18n="document.tab.single">Single file</button>
-          <button id="document-tab-batch" class="document-tab" type="button" role="tab" aria-selected="false" aria-disabled="true" aria-controls="document-batch-panel" disabled>
-            <span data-i18n="document.tab.batch">Batch</span>
-            <span class="document-coming-soon" data-i18n="document.upload.batchComingSoon">Coming soon</span>
-          </button>
+          <button id="document-tab-batch" class="document-tab" type="button" role="tab" aria-selected="false" aria-controls="document-batch-panel" data-i18n="document.tab.batch">Batch</button>
         </div>
         <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
           <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
@@ -46,11 +43,20 @@
           <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
             <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
           </label>
-          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite"></span>
+          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>
         </div>
         <div class="document-toolbar-actions">
-          <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry failed items</button>
-          <button id="document-history-button" class="document-secondary-button" type="button" data-i18n="document.history">History</button>
+          <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry incomplete items</button>
+          <div class="document-history">
+            <button id="document-history-button" class="document-secondary-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-history-popover" data-i18n="document.history">History</button>
+            <div id="document-history-popover" class="document-history-popover" hidden>
+              <label class="document-history-search-label" for="document-history-search" data-i18n="document.historySearch">Search history</label>
+              <input id="document-history-search" class="document-history-search" type="search" role="searchbox" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:document.historySearch" placeholder="Search history" />
+              <p id="document-history-status" class="document-history-status" role="status" aria-live="polite" hidden></p>
+              <p id="document-history-empty" class="document-history-empty" role="status" aria-live="polite"></p>
+              <ul id="document-history-list" class="document-history-list" role="listbox" data-i18n-attr="aria-label:document.history" aria-label="History"></ul>
+            </div>
+          </div>
         </div>
       </nav>
 
@@ -83,7 +89,35 @@
       </section>
 
       <section id="document-batch-panel" class="document-batch-panel" role="tabpanel" aria-labelledby="document-tab-batch" hidden>
-        <p data-i18n="document.upload.batchComingSoon">Coming soon</p>
+        <div class="document-batch-card">
+          <header class="document-batch-heading">
+            <div>
+              <h1 data-i18n="document.batch.title">Batch translate local documents</h1>
+              <p data-i18n="document.batch.description">Add several documents, then translate and export them one by one.</p>
+            </div>
+            <button id="document-batch-select-button" class="document-primary-button" type="button" data-i18n="document.batch.chooseFiles">Choose files</button>
+          </header>
+          <div id="document-batch-drop-zone" class="document-batch-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.batch.dropHint" aria-label="Choose or drop documents for batch translation" aria-describedby="document-batch-privacy">
+            <span class="document-drop-zone-icon" aria-hidden="true">⇪</span>
+            <strong data-i18n="document.batch.dropHint">Choose or drop multiple documents here</strong>
+            <span id="document-batch-privacy" class="document-privacy-hint" data-i18n="document.upload.privacy">Files stay on this device; only extracted text is sent to the translation service.</span>
+          </div>
+          <p id="document-batch-status" class="document-batch-status" role="status" aria-live="polite"></p>
+          <div class="document-batch-summary">
+            <span id="document-batch-count" data-i18n="document.batch.empty">No files added.</span>
+            <span id="document-batch-progress-label"></span>
+          </div>
+          <div class="document-batch-progress-track">
+            <div id="document-batch-progress" class="document-batch-progressbar" role="progressbar" data-i18n-attr="aria-label:document.batch.progressLabel" aria-label="Batch translation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+          </div>
+          <ul id="document-batch-list" class="document-batch-list" role="list" data-i18n-attr="aria-label:document.batch.queue" aria-label="Batch translation files"></ul>
+          <p id="document-batch-empty" class="document-batch-empty" data-i18n="document.batch.empty">No files added.</p>
+          <footer class="document-batch-actions">
+            <button id="document-batch-clear-button" class="document-secondary-button" type="button" data-i18n="document.batch.clear" disabled>Clear list</button>
+            <button id="document-batch-cancel-button" class="document-secondary-button" type="button" data-i18n="document.batch.cancel" hidden>Cancel batch</button>
+            <button id="document-batch-start-button" class="document-primary-button" type="button" data-i18n="document.batch.start" disabled>Start batch translation</button>
+          </footer>
+        </div>
       </section>
 
       <section id="document-workbench" class="document-workbench" hidden>
@@ -92,6 +126,14 @@
                 <strong id="document-workbench-name"></strong>
                 <span id="document-workbench-meta"></span>
               </div>
+              <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
+                <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
+                <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
+              </div>
+              <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
+                <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
+                <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
+              </div>
               <div class="document-workbench-actions">
                 <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
                 <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.replace">Replace</button>
@@ -99,7 +141,7 @@
                 <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
               </div>
             </div>
-        <div class="document-columns" data-i18n-attr="aria-label:document.comparison" aria-label="Source and translation comparison">
+        <div class="document-columns" data-view-mode="spread" data-i18n-attr="aria-label:document.comparison" aria-label="Source and translation comparison">
           <section class="document-column" data-i18n-attr="aria-label:document.source" aria-label="Source document">
             <header class="document-column-header">
               <span data-i18n="document.source">Source</span>
@@ -109,7 +151,7 @@
           </section>
           <section class="document-column" data-i18n-attr="aria-label:document.translation" aria-label="Translated document">
             <header class="document-column-header">
-              <span data-i18n="document.translation">Translation</span>
+              <span id="document-translation-heading" data-i18n="document.translation">Translation</span>
               <span id="document-translation-page-count" class="document-column-meta"></span>
             </header>
             <div class="document-page-scroll" id="document-translation-content" tabindex="0"></div>

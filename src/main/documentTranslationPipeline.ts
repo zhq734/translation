@@ -27,6 +27,7 @@ import {
   type WebTranslationSegment
 } from '../shared/webBlockSplitter.ts'
 import {
+  DOCUMENT_MAX_OCR_IMAGES,
   createDocumentModel,
   type DocumentParseInput
 } from './documentParserShared.ts'
@@ -39,11 +40,13 @@ import {
   type DocumentLanguageResolution
 } from '../shared/documentLanguageDirection.ts'
 import {
+  collectRetryableDocumentTargetIds,
   evaluateDocumentCompletion,
   type DocumentCompletionReport,
   type DocumentCompletionTarget
 } from '../shared/documentCompletion.ts'
 import { evaluateOcrQuality } from '../shared/ocrQuality.ts'
+import type { DocumentRunMode } from '../shared/documentWorkspace.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -53,6 +56,12 @@ const DOCUMENT_TRANSLATION_DEFAULT_CONCURRENCY = 3
 
 /** 文档翻译允许的最大并发数。 */
 const DOCUMENT_TRANSLATION_MAX_CONCURRENCY = 8
+
+/** 文档 OCR 默认并发数；识别本身较重，默认低于翻译并发。 */
+const DOCUMENT_OCR_DEFAULT_CONCURRENCY = 2
+
+/** 文档 OCR 允许的最大并发数，避免多个原生引擎同时抢占过多资源。 */
+const DOCUMENT_OCR_MAX_CONCURRENCY = 4
 
 /** 单个批次最多覆盖的文档目标数；与页面翻译一样由字符上限优先控制请求大小。 */
 const DOCUMENT_TRANSLATION_MAX_TARGETS_PER_BATCH = 50
@@ -98,6 +107,8 @@ export interface DocumentPipelineResult {
   languagePair?: DocumentLanguagePair
   /** 本次任务冻结的完整语言解析结果，重试必须原样复用。 */
   languageResolution?: DocumentLanguageResolution
+  /** 本次流水线运行模式；OCR 原文模式不会执行翻译。 */
+  runMode?: DocumentRunMode
 }
 
 /** 文档流水线可注入依赖。 */
@@ -119,10 +130,21 @@ export interface DocumentPipelineDeps {
   onProgress(state: DocumentTaskState): void
   /** 可选的部分译文发布回调，用于界面流式展示。 */
   publishTranslation?(translation: DocumentModel): void
+  /**
+   * 可选的语言方向冻结回调；翻译首帧发布前会同步调用。
+   * @param languageResolution 本任务冻结的语言方向。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  publishLanguageResolution?(languageResolution: DocumentLanguageResolution): void
   /** 可选页面栅格化适配器，用于扫描 PDF。 */
   renderPage?: (pageIndex: number) => Promise<Uint8Array | null>
   /** 可选翻译并发数，未提供时使用默认值并限制在 1 到 8 之间。 */
   concurrency?: number
+  /** 可选 OCR 并发数，未提供时使用默认值并限制在 1 到 4 之间。 */
+  ocrConcurrency?: number
+  /** 单次任务允许 OCR 的不同图片数；相同内容哈希只占用一个名额。 */
+  maxOcrImages?: number
   /**
    * 读取当前翻译提供方与模型的稳定指纹，用于完成报告绑定。
    * @returns 不含凭据的模型指纹。
@@ -133,6 +155,20 @@ export interface DocumentPipelineDeps {
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
 type DocumentBlockPath = Array<number | { row: number; cell: number }>
+
+/**
+ * 将区块路径序列化为稳定、可读且不碰撞的字符串键。
+ * 表格单元格描述符（对象）不能直接 join，否则会退化成 `[object Object]`，
+ * 导致不同单元格之间产生相同键；这里把单元格统一格式化为 `r{row}c{cell}`。
+ * @param path 区块路径。
+ * @returns 可安全用作 targetId / 映射键的字符串。
+ * @author zhenghq
+ */
+function serializeBlockPath(path: DocumentBlockPath): string {
+  return path.map((segment) =>
+    typeof segment === 'number' ? String(segment) : `r${segment.row}c${segment.cell}`
+  ).join('.')
+}
 
 /** 可翻译目标类型。 */
 type TranslationTargetKind = 'text-block' | 'table-row' | 'ocr-region'
@@ -686,6 +722,44 @@ function collectCellTextRanges(
 }
 
 /**
+ * 递归收集表格单元格内图片区块中已识别成功的 OCR 区域。
+ * 表格单元格里的图片可能又嵌套在子表格中，因此需要与文本收集一样递归遍历整棵子区块树。
+ * @param blocks 单元格子区块。
+ * @param path 当前子区块路径。
+ * @returns 按阅读顺序排列的 OCR 区域及其所属图片区块路径。
+ * @author zhenghq
+ */
+function collectCellOcrRegions(
+  blocks: DocumentBlock[],
+  path: DocumentBlockPath = []
+): Array<{ blockPath: DocumentBlockPath; regionIndex: number; region: DocumentOcrRegion }> {
+  const output: Array<{ blockPath: DocumentBlockPath; regionIndex: number; region: DocumentOcrRegion }> = []
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const block = blocks[blockIndex]!
+    const blockPath = [...path, blockIndex]
+    if (block.kind === 'image' && block.ocrRegions) {
+      for (let regionIndex = 0; regionIndex < block.ocrRegions.length; regionIndex += 1) {
+        const region = block.ocrRegions[regionIndex]!
+        if (region.status !== 'recognized' || !region.text.trim()) continue
+        output.push({ blockPath, regionIndex, region })
+      }
+      continue
+    }
+    if (block.kind === 'table') {
+      for (let rowIndex = 0; rowIndex < block.rows.length; rowIndex += 1) {
+        for (let cellIndex = 0; cellIndex < block.rows[rowIndex]!.cells.length; cellIndex += 1) {
+          output.push(...collectCellOcrRegions(
+            block.rows[rowIndex]!.cells[cellIndex]!.blocks,
+            [...blockPath, { row: rowIndex, cell: cellIndex }]
+          ))
+        }
+      }
+    }
+  }
+  return output
+}
+
+/**
  * 将单元格内的多个文本块拼接为翻译原文，并在块边界补充必要空白。
  * @param blocks 单元格内文本块及 run 区间。
  * @returns 单元格待翻译原文。
@@ -841,7 +915,7 @@ function collectBlockTargets(
       for (const range of ranges) {
         const whitespace = splitBoundaryWhitespace(range.text)
         targets.push({
-          targetId: `${pageIndex}:${blockPath.join('.')}:text:${range.runId}`,
+          targetId: `${pageIndex}:${serializeBlockPath(blockPath)}:text:${range.runId}`,
           kind: 'text-block',
           pageIndex,
           path: blockPath,
@@ -861,7 +935,7 @@ function collectBlockTargets(
         if (region.status !== 'recognized' || !region.text.trim()) continue
         const whitespace = splitBoundaryWhitespace(region.text)
         targets.push({
-          targetId: `${pageIndex}:${blockPath.join('.')}:ocr:${region.regionId}`,
+          targetId: `${pageIndex}:${serializeBlockPath(blockPath)}:ocr:${region.regionId}`,
           kind: 'ocr-region',
           pageIndex,
           path: blockPath,
@@ -890,11 +964,31 @@ function collectBlockTargets(
             text
           })
         }
+        // 单元格内的图片 OCR 区域无法通过整行文本拆分回写，必须作为独立的 ocr-region
+        // 目标参与翻译，path 定位到单元格内的图片区块。
+        for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+          const cell = row.cells[cellIndex]!
+          const cellPath = [...blockPath, { row: rowIndex, cell: cellIndex }]
+          for (const ocr of collectCellOcrRegions(cell.blocks)) {
+            const regionPath = [...cellPath, ...ocr.blockPath]
+            const whitespace = splitBoundaryWhitespace(ocr.region.text)
+            targets.push({
+              targetId: `${pageIndex}:${serializeBlockPath(regionPath)}:ocr:${ocr.region.regionId}`,
+              kind: 'ocr-region',
+              pageIndex,
+              path: regionPath,
+              regionIndex: ocr.regionIndex,
+              text: ocr.region.text,
+              leadingWhitespace: whitespace.leading,
+              trailingWhitespace: whitespace.trailing
+            })
+          }
+        }
         if (cells.length > 0) {
           const text = joinTableRowCells(cells)
           const whitespace = splitBoundaryWhitespace(text)
           targets.push({
-            targetId: `${pageIndex}:${blockPath.join('.')}:row:${row.rowId}`,
+            targetId: `${pageIndex}:${serializeBlockPath(blockPath)}:row:${row.rowId}`,
             kind: 'table-row',
             pageIndex,
             path: blockPath,
@@ -964,6 +1058,66 @@ function normalizeTranslationConcurrency(concurrency: number | undefined): numbe
     DOCUMENT_TRANSLATION_MAX_CONCURRENCY,
     Math.max(1, Math.floor(concurrency as number))
   )
+}
+
+/**
+ * 规范化文档 OCR 并发数。
+ * @param concurrency 可选并发数。
+ * @returns 1 到 4 之间的整数。
+ * @author zhenghq
+ */
+function normalizeOcrConcurrency(concurrency: number | undefined): number {
+  if (!Number.isFinite(concurrency)) return DOCUMENT_OCR_DEFAULT_CONCURRENCY
+  return Math.min(
+    DOCUMENT_OCR_MAX_CONCURRENCY,
+    Math.max(1, Math.floor(concurrency as number))
+  )
+}
+
+/** 限制实际 OCR 调用数量的轻量信号量。 */
+interface OcrSemaphore {
+  /**
+   * 在并发名额可用时执行识别任务。
+   * @param task 实际识别任务。
+   * @returns 识别任务结果。
+   * @author zhenghq
+   */
+  run<T>(task: () => Promise<T>): Promise<T>
+}
+
+/**
+ * 创建带等待队列的 OCR 信号量；只包裹识别调用，不阻塞资源读取和页面渲染。
+ * @param concurrency 已规范化的最大并发数。
+ * @returns OCR 信号量。
+ * @author zhenghq
+ */
+function createOcrSemaphore(concurrency: number): OcrSemaphore {
+  let active = 0
+  const waiters: Array<() => void> = []
+
+  /**
+   * 释放一个 OCR 并发名额并唤醒最早等待者。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const release = (): void => {
+    active -= 1
+    waiters.shift()?.()
+  }
+
+  return {
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      if (active >= concurrency) {
+        await new Promise<void>((resolve) => waiters.push(resolve))
+      }
+      active += 1
+      try {
+        return await task()
+      } finally {
+        release()
+      }
+    }
+  }
 }
 
 /**
@@ -1114,11 +1268,7 @@ function buildDocumentCompletionReport(
  * @author zhenghq
  */
 function collectRetryableTargetIds(report: DocumentCompletionReport): string[] {
-  return [
-    ...report.failedTargetIds,
-    ...report.pendingTargetIds,
-    ...report.suspectUntranslatedTargetIds
-  ]
+  return collectRetryableDocumentTargetIds(report)
 }
 
 /**
@@ -1463,7 +1613,7 @@ function replaceCellBlocks(
   ranges: TranslationTableCellRange['blocks'],
   translated: string
 ): DocumentBlock[] {
-  const rangeByPath = new Map(ranges.map((range) => [range.blockPath.join('.'), range]))
+  const rangeByPath = new Map(ranges.map((range) => [serializeBlockPath(range.blockPath), range]))
   let translatedAssigned = false
   /**
    * 递归写回单元格内文本，同时保持图片、公式和嵌套表格的原有位置。
@@ -1476,7 +1626,7 @@ function replaceCellBlocks(
     candidates.map((block, blockIndex) => {
       const blockPath = [...path, blockIndex]
       if (block.kind === 'text') {
-        const range = rangeByPath.get(blockPath.join('.'))
+        const range = rangeByPath.get(serializeBlockPath(blockPath))
         if (!range) return block
         const runIds = new Set(range.runs.flatMap((run) => run.runIds))
         return {
@@ -1574,12 +1724,16 @@ function createOcrRegion(
   text: string,
   confidence?: number,
   bbox?: DocumentBoundingBox,
-  asset?: DocumentModel['assets'][number]
+  asset?: DocumentModel['assets'][number],
+  pageId = ''
 ): DocumentOcrRegion {
   const normalizedBbox = normalizeOcrBoundingBox(bbox, block, asset)
   const textAlign = inferOcrTextAlignment(normalizedBbox)
   return {
     regionId: `${block.blockId}-ocr-${index}`,
+    pageId,
+    blockId: block.blockId,
+    assetId: block.assetId,
     bbox: normalizedBbox,
     text,
     // OCR 原文识别框高度差异较大，译文统一字号可避免标题、表格和短文本忽大忽小。
@@ -1601,7 +1755,8 @@ function createOcrRegion(
 function imageBlockWithOcrResult(
   block: DocumentImageBlock,
   result: OcrRecognizeResult,
-  asset?: DocumentModel['assets'][number]
+  asset?: DocumentModel['assets'][number],
+  pageId = ''
 ): DocumentImageBlock {
   const text = result.text.trim()
   const textLines = result.lines
@@ -1610,6 +1765,9 @@ function imageBlockWithOcrResult(
   if (!text && textLines.length === 0) {
     return { ...block, ocrRegions: [{
       regionId: `${block.blockId}-ocr-0`,
+      pageId,
+      blockId: block.blockId,
+      assetId: block.assetId,
       bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
       text: '',
       status: 'skipped',
@@ -1623,12 +1781,12 @@ function imageBlockWithOcrResult(
       ...block,
       ocrRegions: textLines.length > 0
         ? textLines.map((line, index) => ({
-            ...createOcrRegion(block, index, line.text, line.confidence, line.box, asset),
+            ...createOcrRegion(block, index, line.text, line.confidence, line.box, asset, pageId),
             status: 'skipped' as const,
             reason: 'low-confidence'
           }))
         : [{
-            ...createOcrRegion(block, 0, text, result.lines[0]?.confidence, undefined, asset),
+            ...createOcrRegion(block, 0, text, result.lines[0]?.confidence, undefined, asset, pageId),
             status: 'skipped' as const,
             reason: 'low-confidence'
           }]
@@ -1638,11 +1796,11 @@ function imageBlockWithOcrResult(
     return {
       ...block,
       ocrRegions: textLines.map((line, index) =>
-        createOcrRegion(block, index, line.text, line.confidence, line.box, asset))
+        createOcrRegion(block, index, line.text, line.confidence, line.box, asset, pageId))
     }
   }
   const confidence = result.lines[0]?.confidence
-  return { ...block, ocrRegions: [createOcrRegion(block, 0, text, confidence, undefined, asset)] }
+  return { ...block, ocrRegions: [createOcrRegion(block, 0, text, confidence, undefined, asset, pageId)] }
 }
 
 /**
@@ -1707,11 +1865,14 @@ function collectDecorativeHeaderLayoutKeys(
  * @returns 带 skipped OCR 区域的图片区块。
  * @author zhenghq
  */
-function skipDecorativeImageOcr(block: DocumentImageBlock): DocumentImageBlock {
+function skipDecorativeImageOcr(block: DocumentImageBlock, pageId = ''): DocumentImageBlock {
   return {
     ...block,
     ocrRegions: [{
       regionId: `${block.blockId}-ocr-0`,
+      pageId,
+      blockId: block.blockId,
+      assetId: block.assetId,
       bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
       text: '',
       status: 'skipped',
@@ -1721,12 +1882,56 @@ function skipDecorativeImageOcr(block: DocumentImageBlock): DocumentImageBlock {
 }
 
 /**
+ * 创建图片 OCR 失败或跳过区域，统一保留原因与原始图片。
+ * @param block 图片区块。
+ * @param status 区域状态。
+ * @param reason 稳定失败或跳过原因。
+ * @returns 带单个状态区域的图片区块。
+ * @author zhenghq
+ */
+function imageBlockWithOcrStatus(
+  block: DocumentImageBlock,
+  status: 'failed' | 'skipped',
+  reason: string,
+  pageId = ''
+): DocumentImageBlock {
+  return {
+    ...block,
+    ocrRegions: [{
+      regionId: `${block.blockId}-ocr-0`,
+      pageId,
+      blockId: block.blockId,
+      assetId: block.assetId,
+      bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
+      text: '',
+      status,
+      reason
+    }]
+  }
+}
+
+/**
+ * 在 OCR 结果返回后检查取消状态，防止迟到结果写入文档或缓存。
+ * @param signal 当前取消信号。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function throwIfOcrAborted(signal: AbortSignal): void {
+  throwIfAborted(signal)
+}
+
+/**
  * 递归处理区块中的图片 OCR；返回新的区块，不修改源模型。
  * @param block 原始区块。
  * @param assets 文档资源。
  * @param deps 流水线依赖。
  * @param signal 取消信号。
  * @param onFailure 单块失败回调。
+ * @param page 区块所属页面；用于重复页眉装饰识别。
+ * @param decorativeLayoutKeys 需要跳过 OCR 的重复页眉布局。
+ * @param ocrResultCache 按资源或待渲染页面共享的 OCR 结果缓存。
+ * @param ocrBudget 任务级 OCR 图片预算状态。
+ * @param ocrSemaphore 任务级 OCR 并发限制器。
  * @returns 处理后的区块。
  * @author zhenghq
  */
@@ -1738,115 +1943,96 @@ async function recognizeBlock(
   onFailure: () => void,
   page?: DocumentModel['pages'][number],
   decorativeLayoutKeys?: ReadonlySet<string>,
-  ocrResultCache?: Map<string, Promise<OcrRecognizeResult | null>>
+  ocrResultCache?: Map<string, Promise<OcrRecognizeResult | null>>,
+  ocrBudget?: { maxImages: number; usedHashes: Set<string> },
+  ocrSemaphore?: OcrSemaphore
 ): Promise<DocumentBlock> {
   if (block.kind === 'image') {
+    throwIfOcrAborted(signal)
     if (block.ocrRegions && block.ocrRegions.length > 0) return block
     if (page && decorativeLayoutKeys) {
       const layoutKey = decorativeHeaderLayoutKey(block, page)
-      if (layoutKey && decorativeLayoutKeys.has(layoutKey)) return skipDecorativeImageOcr(block)
+      if (layoutKey && decorativeLayoutKeys.has(layoutKey)) {
+        return skipDecorativeImageOcr(block, page.pageId)
+      }
     }
     const asset = assets.find((candidate) => candidate.assetId === block.assetId)
     if (!asset) {
       onFailure()
-      return { ...block, ocrRegions: [{
-        regionId: `${block.blockId}-ocr-0`,
-        bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
-        text: '',
-        status: 'failed',
-        reason: 'asset-missing'
-      }] }
+      return imageBlockWithOcrStatus(block, 'failed', 'asset-missing', page?.pageId)
     }
-    let bytes: Uint8Array | null = null
-    const cacheKey = asset.sha256
+    // 待补渲染的扫描页资源字节为空，占位哈希无法区分页面；使用页面与区块标识作为稳定键。
+    const cacheKey = block.renderPending
+      ? `render:${page?.pageId ?? 'unknown'}:${block.blockId}:${asset.assetId}`
+      : asset.sha256
     let recognizePromise = ocrResultCache?.get(cacheKey)
-    if (!recognizePromise) {
-      try {
-        bytes = await deps.loadAssetBytes(asset)
-      } catch {
-        bytes = null
+    if (!recognizePromise && ocrBudget && !ocrBudget.usedHashes.has(cacheKey)) {
+      if (ocrBudget.usedHashes.size >= ocrBudget.maxImages) {
+        return imageBlockWithOcrStatus(block, 'skipped', 'ocr-limit-reached', page?.pageId)
       }
-      if (bytes && ocrResultCache) {
-        recognizePromise = deps.recognizeImage(bytes, signal).catch((error: unknown) => {
+      ocrBudget.usedHashes.add(cacheKey)
+    }
+    try {
+      if (!recognizePromise) {
+        recognizePromise = (async () => {
+          let bytes: Uint8Array | null = null
+          try {
+            bytes = await deps.loadAssetBytes(asset)
+          } catch {
+            bytes = null
+          }
+          throwIfOcrAborted(signal)
+          if (!bytes && block.renderPending && deps.renderPage) {
+            bytes = await deps.renderPage(page?.index ?? 0)
+            throwIfOcrAborted(signal)
+          }
+          if (!bytes) return null
+          return ocrSemaphore
+            ? ocrSemaphore.run(() => deps.recognizeImage(bytes, signal))
+            : deps.recognizeImage(bytes, signal)
+        })().catch((error: unknown) => {
           if (isAbortError(error, signal)) throw error
           return null
         })
-        ocrResultCache.set(cacheKey, recognizePromise)
+        ocrResultCache?.set(cacheKey, recognizePromise)
       }
-    }
-    if (!bytes) {
-      if (recognizePromise) {
-        const cachedResult = await recognizePromise
-        if (!cachedResult) {
-          onFailure()
-          return { ...block, ocrRegions: [{
-            regionId: `${block.blockId}-ocr-0`,
-            bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
-            text: '',
-            status: 'failed',
-            reason: 'ocr-failed'
-          }] }
-        }
-        return imageBlockWithOcrResult(block, cachedResult, asset)
-      }
-      onFailure()
-      return { ...block, ocrRegions: [{
-        regionId: `${block.blockId}-ocr-0`,
-        bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
-        text: '',
-        status: 'failed',
-        reason: 'asset-unavailable'
-      }] }
-    }
-    try {
-      const result = recognizePromise
-        ? await recognizePromise
-        : await deps.recognizeImage(bytes, signal)
+      const result = await recognizePromise
+      throwIfOcrAborted(signal)
       if (!result) {
         onFailure()
-        return { ...block, ocrRegions: [{
-          regionId: `${block.blockId}-ocr-0`,
-          bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
-          text: '',
-          status: 'failed',
-          reason: 'ocr-failed'
-        }] }
+        return imageBlockWithOcrStatus(
+          block,
+          'failed',
+          block.renderPending ? 'asset-unavailable' : 'ocr-failed',
+          page?.pageId
+        )
       }
-      return imageBlockWithOcrResult(block, result, asset)
+      return imageBlockWithOcrResult(block, result, asset, page?.pageId)
     } catch (error) {
       if (isAbortError(error, signal)) throw error
       onFailure()
-      return { ...block, ocrRegions: [{
-        regionId: `${block.blockId}-ocr-0`,
-        bbox: block.bbox ?? { x: 0, y: 0, width: 1, height: 1 },
-        text: '',
-        status: 'failed',
-        reason: 'ocr-failed'
-      }] }
+      return imageBlockWithOcrStatus(block, 'failed', 'ocr-failed', page?.pageId)
     }
   }
   if (block.kind === 'table') {
-    const rows = []
-    for (const row of block.rows) {
-      const cells = []
-      for (const cell of row.cells) {
-        const blocks: DocumentBlock[] = []
-        for (const child of cell.blocks) {
-          blocks.push(await recognizeBlock(
-            child,
-            assets,
-            deps,
-            signal,
-            onFailure,
-            page,
-            decorativeLayoutKeys,
-            ocrResultCache
-          ))
-        }
-        cells.push({ ...cell, blocks })
-      }
-      rows.push({ ...row, cells })
-    }
+    const rows = await Promise.all(block.rows.map(async (row) => ({
+      ...row,
+      cells: await Promise.all(row.cells.map(async (cell) => ({
+        ...cell,
+        blocks: await Promise.all(cell.blocks.map((child) => recognizeBlock(
+          child,
+          assets,
+          deps,
+          signal,
+          onFailure,
+          page,
+          decorativeLayoutKeys,
+          ocrResultCache,
+          ocrBudget,
+          ocrSemaphore
+        )))
+      })))
+    })))
     return { ...block, rows }
   }
   return block
@@ -1910,6 +2096,16 @@ function collectOcrWarnings(
         })
         return
       }
+      if (region.status === 'skipped' && region.reason === 'ocr-limit-reached') {
+        warnings.push({
+          code: 'ocr-limit-reached',
+          severity: 'warning',
+          message: 'The OCR image limit was reached; remaining images were skipped.',
+          pageId,
+          blockId: block.blockId
+        })
+        return
+      }
     }
     return
   }
@@ -1928,6 +2124,8 @@ function collectOcrWarnings(
  * @param initialState 初始任务状态。
  * @param signal 取消信号。
  * @param deps 可注入依赖。
+ * @param languagePreference 用户语言偏好。
+ * @param mode 运行模式；OCR 原文模式在识别完成后直接结束。
  * @returns 源文档、译文文档和最终状态。
  * @author zhenghq
  */
@@ -1939,7 +2137,8 @@ export async function runDocumentTranslationPipeline(
   languagePreference: DocumentLanguagePreference = {
     sourcePreference: 'auto',
     targetPreference: 'auto'
-  }
+  },
+  mode: DocumentRunMode = 'translation'
 ): Promise<DocumentPipelineResult> {
   let state = initialState
   emitProgress(state, deps)
@@ -1987,34 +2186,29 @@ export async function runDocumentTranslationPipeline(
     ? collectDecorativeHeaderLayoutKeys(source.pages)
     : new Set<string>()
   const ocrResultCache = new Map<string, Promise<OcrRecognizeResult | null>>()
+  const ocrBudget = {
+    maxImages: Math.max(0, deps.maxOcrImages ?? DOCUMENT_MAX_OCR_IMAGES),
+    usedHashes: new Set<string>()
+  }
+  const ocrSemaphore = createOcrSemaphore(normalizeOcrConcurrency(deps.ocrConcurrency))
   try {
     for (let pageIndex = 0; pageIndex < source.pages.length; pageIndex += 1) {
       const page = source.pages[pageIndex]!
-      const blocks: DocumentBlock[] = []
-      ocrBlocksByPage[pageIndex] = blocks
-      for (let blockIndex = 0; blockIndex < page.blocks.length; blockIndex += 1) {
-        const block = page.blocks[blockIndex]!
-        blocks.push(await recognizeBlock(block, source.assets, deps, signal, () => {
+      const blocks = await Promise.all(page.blocks.map((block) => recognizeBlock(
+        block,
+        source.assets,
+        deps,
+        signal,
+        () => {
           stats.failed += 1
-        }, page, decorativeLayoutKeys, ocrResultCache))
-        ocrBlocksByPage[pageIndex] = [...blocks, ...page.blocks.slice(blockIndex + 1)]
-        if (signal.aborted) {
-          const partialSource: DocumentModel = {
-            ...source,
-            pages: source.pages.map((sourcePage, index) => ({
-              ...sourcePage,
-              blocks: ocrBlocksByPage[index] ?? sourcePage.blocks
-            }))
-          }
-          return createCancelledResult(
-            partialSource,
-            partialSource,
-            ocrState,
-            deps,
-            resolveDocumentLanguagePair(partialSource, languagePreference)
-          )
-        }
-      }
+        },
+        page,
+        decorativeLayoutKeys,
+        ocrResultCache,
+        ocrBudget,
+        ocrSemaphore
+      )))
+      throwIfAborted(signal)
       ocrBlocksByPage[pageIndex] = blocks
       ocrState = updateDocumentTaskProgress(ocrState, {
         completed: pageIndex + 1,
@@ -2063,7 +2257,49 @@ export async function runDocumentTranslationPipeline(
   // 解析和 OCR 全部完成后只解析一次方向，后续所有请求共享同一个冻结语言对。
   const languageResolution = resolveDocumentLanguagePair(ocrSource, languagePreference)
   const languagePair = languageResolution.languagePair
+  deps.publishLanguageResolution?.(languageResolution)
   const ocrFailedCount = stats.failed
+  if (mode === 'ocr') {
+    // OCR 原文模式不执行翻译，但任务阶段机仍要求按顺序经过 translate/layout，
+    // 因此只推进内部状态而不发送 translate 进度，避免界面出现并未执行的翻译阶段。
+    let exportState = moveDocumentTaskToPhase(ocrState, 'translate')
+    exportState = moveDocumentTaskToPhase(exportState, 'layout')
+    exportState = completeDocumentTaskPhase(moveDocumentTaskToPhase(exportState, 'export'))
+    emitProgress(exportState, deps)
+    const completionReport: DocumentCompletionReport = {
+      jobId: exportState.jobId,
+      generation: exportState.generation,
+      documentId: ocrSource.documentId,
+      modelFingerprint: deps.getModelFingerprint?.() ?? DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT,
+      status: 'completed',
+      total: 0,
+      translated: 0,
+      unchanged: 0,
+      failed: 0,
+      pending: 0,
+      suspectUntranslated: 0,
+      failedTargetIds: [],
+      pendingTargetIds: [],
+      suspectUntranslatedTargetIds: [],
+      failureReasons: {},
+      sourcePreference: languageResolution.sourcePreference,
+      targetPreference: languageResolution.targetPreference,
+      languagePair
+    }
+    return {
+      source: ocrSource,
+      translation: ocrSource,
+      task: completeDocumentTask(exportState),
+      completionReport,
+      failedTargetIds: [],
+      retryableTargetIds: [],
+      sourcePreference: languageResolution.sourcePreference,
+      targetPreference: languageResolution.targetPreference,
+      languagePair,
+      languageResolution,
+      runMode: 'ocr'
+    }
+  }
   const targets = collectTranslationTargets(ocrSource)
   const totalTranslationUnits = targets.length
   stats = { completed: 0, total: totalTranslationUnits, failed: 0 }
@@ -2176,8 +2412,8 @@ export async function runDocumentTranslationPipeline(
     if (!applied.finished) return
     stats.completed += 1
     if (applied.failed) stats.failed += 1
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
     publishProgress()
+    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
   }
 
   /**
@@ -2205,10 +2441,10 @@ export async function runDocumentTranslationPipeline(
           return
         }
         stats.completed += 1
+        publishProgress()
         if (completedFallback.translation !== undefined) {
           commitTarget(segment.target, completedFallback.translation)
         }
-        publishProgress()
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -2218,8 +2454,8 @@ export async function runDocumentTranslationPipeline(
     if (!applied.finished) return
     stats.completed += 1
     if (applied.failed) stats.failed += 1
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
     publishProgress()
+    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
   }
 
   /**
@@ -2237,8 +2473,8 @@ export async function runDocumentTranslationPipeline(
     stats.completed += 1
     stats.failed += 1
     failedTargetIds.add(segment.target.targetId)
-    commitTarget(segment.target, segment.target.text)
     publishProgress()
+    commitTarget(segment.target, segment.target.text)
   }
 
   /**
@@ -2263,10 +2499,10 @@ export async function runDocumentTranslationPipeline(
             continue
           }
           stats.completed += 1
+          publishProgress()
           if (completedFallback.translation !== undefined) {
             commitTarget(segment.target, completedFallback.translation)
           }
-          publishProgress()
         } catch (error) {
           if (isAbortError(error, signal)) throw error
           failTarget(segment)
@@ -2558,8 +2794,8 @@ export async function retryFailedDocumentTranslationPipeline(
     if (!applied.finished) return
     completed += 1
     if (applied.failed) retryFailedIds.add(segment.target.targetId)
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
     publishProgress()
+    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
   }
 
   /**
@@ -2587,10 +2823,10 @@ export async function retryFailedDocumentTranslationPipeline(
           return
         }
         completed += 1
+        publishProgress()
         if (completedFallback.translation !== undefined) {
           commitTarget(segment.target, completedFallback.translation)
         }
-        publishProgress()
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -2600,8 +2836,8 @@ export async function retryFailedDocumentTranslationPipeline(
     if (!applied.finished) return
     completed += 1
     if (applied.failed) retryFailedIds.add(segment.target.targetId)
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
     publishProgress()
+    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
   }
 
   /**
@@ -2643,10 +2879,10 @@ export async function retryFailedDocumentTranslationPipeline(
             continue
           }
           completed += 1
+          publishProgress()
           if (completedFallback.translation !== undefined) {
             commitTarget(segment.target, completedFallback.translation)
           }
-          publishProgress()
         } catch (error) {
           if (isAbortError(error, signal)) throw error
           failTarget(segment)

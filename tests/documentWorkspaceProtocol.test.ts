@@ -1,56 +1,192 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { DocumentModel, DocumentTextBlock } from '../src/shared/documentTypes.ts'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
-  type DocumentRunRequest,
-  type DocumentRunResult,
+  applyDocumentWorkspaceTranslationUpdate,
+  type DocumentWorkspaceTranslationUpdate,
   type DocumentWorkspaceSnapshot
 } from '../src/shared/documentWorkspace.ts'
-import { createDocumentTaskState } from '../src/shared/documentTask.ts'
 
-test('文档工作台协议应暴露受控运行、取消、资源与导出通道', () => {
-  assert.deepEqual(DOCUMENT_WORKSPACE_CHANNELS, {
-    run: 'document:run',
-    cancel: 'document:cancel',
-    retryFailed: 'document:retry-failed',
-    exportPdf: 'document:export-pdf',
-    getAsset: 'document:get-asset',
-    getSource: 'document:get-source',
-    progress: 'document:progress',
-    completed: 'document:completed'
-  })
+/**
+ * 创建包含两个文本区块的最小文档模型。
+ * @param path 源文件路径。
+ * @returns 文档模型。
+ * @author zhenghq
+ */
+function model(path = '/tmp/sample.txt'): DocumentModel {
+  return {
+    schemaVersion: 1,
+    documentId: 'document-1',
+    source: {
+      path,
+      fileName: 'sample.txt',
+      format: 'txt',
+      sha256: 'fixture',
+      size: 11
+    },
+    metadata: { direction: 'auto' },
+    pages: [{
+      pageId: 'page-1',
+      index: 0,
+      width: 600,
+      height: 800,
+      blocks: [
+        {
+          kind: 'text',
+          blockId: 'block-1',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-1', text: 'Hello' }]
+        },
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }],
+    assets: [],
+    warnings: []
+  }
+}
+
+/**
+ * 创建运行中的工作台快照。
+ * @returns 工作台快照。
+ * @author zhenghq
+ */
+function snapshot(): DocumentWorkspaceSnapshot {
+  const source = model()
+  return {
+    jobId: 'job-1',
+    generation: 1,
+    task: {
+      jobId: 'job-1',
+      generation: 1,
+      phase: 'translate',
+      status: 'translating',
+      progress: { completed: 0, total: 2 },
+      phaseCompleted: false,
+      failedBlocks: 0,
+      warningCount: 0,
+      cancellationRequested: false
+    },
+    percent: 40,
+    source,
+    translation: model(),
+    sourcePreference: 'EN',
+    targetPreference: 'ZH',
+    languagePair: { sourceLang: 'EN', targetLang: 'ZH' }
+  }
+}
+
+/**
+ * 创建匹配第一个文本区块的增量事件。
+ * @returns 块级增量事件。
+ * @author zhenghq
+ */
+function update(): DocumentWorkspaceTranslationUpdate {
+  return {
+    jobId: 'job-1',
+    generation: 1,
+    pageId: 'page-1',
+    blockId: 'block-1',
+    block: {
+      kind: 'text',
+      blockId: 'block-1',
+      readingOrder: 0,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'run-1', text: '你好' }]
+    },
+    completed: 1,
+    total: 2
+  }
+}
+
+test('文档工作台协议必须暴露独立的块增量通道', () => {
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.blockTranslated, 'document:block-translated')
 })
 
-test('文档任务快照应携带 jobId、generation、状态与百分比', () => {
-  const request: DocumentRunRequest = { path: '/tmp/test.txt', generation: 3 }
-  const task = createDocumentTaskState('job-1', request.generation)
-  const snapshot: DocumentWorkspaceSnapshot = {
-    jobId: task.jobId,
-    generation: task.generation,
-    task,
-    percent: 0
-  }
-  assert.equal(snapshot.task.generation, 3)
-  assert.equal(snapshot.percent, 0)
+test('块增量必须原位替换匹配译文区块并同步翻译进度', () => {
+  const previous = snapshot()
+  const before = structuredClone(previous)
+  const next = applyDocumentWorkspaceTranslationUpdate(previous, update())
+
+  assert.notEqual(next, previous)
+  assert.notEqual(next.translation, previous.translation)
+  assert.notEqual(next.translation?.pages[0], previous.translation?.pages[0])
+  assert.deepEqual(next.translation?.pages[0]?.blocks[0], update().block)
+  assert.equal(next.translation?.pages[0]?.blocks[1]?.blockId, 'block-2')
+  assert.deepEqual(next.task.progress, { completed: 1, total: 2 })
+  assert.equal(next.percent, previous.percent)
+  assert.deepEqual(next.languagePair, { sourceLang: 'EN', targetLang: 'ZH' })
+  assert.deepEqual(previous, before)
 })
 
-test('文档部分完成快照应明确携带可重试失败块数量', () => {
-  const task = createDocumentTaskState('job-1', 3)
-  const snapshot: DocumentWorkspaceSnapshot = {
-    jobId: task.jobId,
-    generation: task.generation,
-    task: { ...task, status: 'partial', failedBlocks: 2 },
-    percent: 100,
-    retryableFailedBlocks: 2
+test('块增量遇到旧代际、终态或缺失页面区块时必须返回原快照', () => {
+  const previous = snapshot()
+  const stale = { ...update(), generation: 2 }
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(previous, stale), previous)
+
+  const terminal: DocumentWorkspaceSnapshot = {
+    ...previous,
+    task: { ...previous.task, status: 'completed' }
   }
-  assert.equal(snapshot.retryableFailedBlocks, 2)
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(terminal, update()), terminal)
+
+  const missingPage = { ...update(), pageId: 'page-missing' }
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(previous, missingPage), previous)
+
+  const missingBlock = { ...update(), blockId: 'block-missing' }
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(previous, missingBlock), previous)
+
+  const noTranslation: DocumentWorkspaceSnapshot = { ...previous, translation: undefined }
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(noTranslation, update()), noTranslation)
 })
 
-test('文档运行冲突结果应返回可安全采用的下一任务代际', () => {
-  const conflict: DocumentRunResult = {
-    accepted: false,
-    code: 'generation-conflict',
-    suggestedGeneration: 8
+test('块增量必须拒绝更新页面中的嵌套区块而不误改表格内容', () => {
+  const previous = snapshot()
+  const translation = previous.translation!
+  translation.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-1',
+    readingOrder: 0,
+    translatable: false,
+    rows: [{
+      rowId: 'row-1',
+      cells: [{
+        cellId: 'cell-1',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'nested-1',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'nested-run', text: 'Nested' }]
+        }]
+      }]
+    }]
+  }]
+  const nestedUpdate = {
+    ...update(),
+    blockId: 'nested-1',
+    block: {
+      kind: 'text',
+      blockId: 'nested-1',
+      readingOrder: 0,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'nested-run', text: '嵌套' }]
+    } satisfies DocumentTextBlock
   }
-  assert.equal(conflict.suggestedGeneration, 8)
+
+  assert.equal(applyDocumentWorkspaceTranslationUpdate(previous, nestedUpdate), previous)
 })

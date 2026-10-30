@@ -54,7 +54,7 @@ const DEFAULT_DEPENDENCIES: DocumentParserDependencies = {
   parsePdf: async (input, options) => parsePdfDocument(input, options),
   parseDocx: async (input) => parseDocxDocument(input),
   parseEpub: async (input) => parseEpubDocument(input),
-  parseImage: async (input) => parseImageDocument(input)
+  parseImage: async (input, registerAssetBytes) => parseImageDocument(input, registerAssetBytes)
 }
 
 /**

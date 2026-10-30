@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseImageDocument } from '../src/main/documentImageParser.ts'
+import {
+  DocumentImageSecurityError,
+  parseImageDocument
+} from '../src/main/documentImageParser.ts'
 import { detectDocumentFormat, getDocumentCapabilities } from '../src/shared/documentFormat.ts'
 
 /**
@@ -75,4 +78,26 @@ test('解析 PNG 生成单页图片区块并登记资源字节', async () => {
   assert.equal(model.assets.length, 1)
   assert.equal(model.assets[0]!.mimeType, 'image/png')
   assert.equal(registered.get(model.assets[0]!.assetId), bytes)
+})
+
+test('独立图片像素超过上限时必须拒绝解析且不得登记资源', async () => {
+  const bytes = pngBytes(5_000, 5_000)
+  let registerCalls = 0
+  await assert.rejects(
+    parseImageDocument({
+      path: '/tmp/huge.png',
+      fileName: 'huge.png',
+      format: 'image',
+      sha256: 'fixture-sha256',
+      bytes
+    }, () => {
+      registerCalls += 1
+    }),
+    (error: unknown) => {
+      assert.equal(error instanceof DocumentImageSecurityError, true)
+      assert.equal((error as DocumentImageSecurityError).code, 'image-pixel-limit-reached')
+      return true
+    }
+  )
+  assert.equal(registerCalls, 0)
 })

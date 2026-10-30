@@ -55,6 +55,12 @@ export class DocumentPdfExportError extends Error {
   }
 }
 
+/** PDF 导出选项。 */
+export interface DocumentPdfExportOptions {
+  /** 为图片区块追加透明的 OCR 原文文字层，生成可检索的双层 PDF。 */
+  includeOcrTextLayer?: boolean
+}
+
 /** PDF 导出依赖。 */
 export interface DocumentPdfExportDependencies {
   /** 读取支持 CJK 的字体字节；没有字体时返回 null。 */
@@ -535,6 +541,70 @@ function ocrRegionSourceTop(
   region: DocumentOcrRegion
 ): number {
   return imageBox.y + Math.max(0, Math.min(1, region.bbox.y)) * imageBox.height
+}
+
+/**
+ * 将 OCR 原文以完全透明文字绘制到图片区域，形成可检索但不遮挡原图的文字层。
+ * @param context 绘制上下文。
+ * @param imageBox 图片原始边界。
+ * @param region OCR 区域。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawOcrTextRegion(
+  context: DrawContext,
+  imageBox: DocumentBoundingBox,
+  region: DocumentOcrRegion
+): void {
+  const text = region.text?.trim()
+  if (!text) return
+  const { left: regionX, width: regionWidth } = ocrRegionHorizontalBounds(imageBox, region)
+  const padding = resolveOcrRegionPadding(imageBox.width, imageBox.height, region)
+  const availableWidth = Math.max(1, regionWidth - padding.x * 2)
+  const fontSize = resolveOcrRegionFontSize(region, imageBox.height)
+  const font = selectFont(context, region.style)
+  const lines = wrapText(text, font, fontSize, availableWidth)
+  const lineHeight = resolveOcrRegionLineHeight(fontSize)
+  const top = imageBox.y + Math.max(0, Math.min(1, region.bbox.y)) * imageBox.height
+  let y = top
+  for (const line of lines) {
+    if (!line) {
+      y += lineHeight
+      continue
+    }
+    const lineWidth = Math.min(availableWidth, font.widthOfTextAtSize(line, fontSize))
+    const lineX = alignedTextX(regionX + padding.x, availableWidth, lineWidth, region.textAlign)
+    context.page.drawText(safeFontText(line, font), {
+      x: lineX,
+      y: pdfY(context.page.getHeight(), y + (lineHeight - fontSize) / 2, fontSize),
+      size: fontSize,
+      font,
+      color: rgb(0, 0, 0),
+      opacity: 0
+    })
+    y += lineHeight
+  }
+}
+
+/**
+ * 绘制图片区块的透明 OCR 原文文字层，供双层 PDF 检索与复制。
+ * @param context 绘制上下文。
+ * @param block 图片区块。
+ * @param page 页面模型。
+ * @param imageBox 图片实际边界。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawOcrTextLayer(
+  context: DrawContext,
+  block: DocumentImageBlock,
+  page: DocumentPage,
+  imageBox: DocumentBoundingBox
+): void {
+  for (const region of orderedOcrRegions(block.ocrRegions ?? [])) {
+    if (!region.text?.trim()) continue
+    drawOcrTextRegion(context, imageBox, region)
+  }
 }
 
 /**
@@ -1175,7 +1245,8 @@ async function drawImageBlock(
   page: DocumentPage,
   dependencies: DocumentPdfExportDependencies,
   composer?: PageComposer,
-  document?: PDFDocument
+  document?: PDFDocument,
+  includeOcrTextLayer = false
 ): Promise<number> {
   const bbox = block.bbox ?? { x: 24, y: 24, width: page.width - 48, height: 240 }
   const image = await loadImage(context, block.assetId, dependencies)
@@ -1195,6 +1266,9 @@ async function drawImageBlock(
       width: Math.max(1, bbox.width),
       height: Math.max(1, bbox.height)
     })
+    if (includeOcrTextLayer) {
+      drawOcrTextLayer(context, block, page, bbox)
+    }
   } else {
     context.page.drawRectangle({
       x: bbox.x,
@@ -1628,7 +1702,8 @@ async function drawPageBlocks(
   context: DrawContext,
   pageModel: DocumentPage,
   dependencies: DocumentPdfExportDependencies,
-  document: PDFDocument
+  document: PDFDocument,
+  includeOcrTextLayer = false
 ): Promise<void> {
   const composer = createPageComposer(document, context, pageModel)
   for (let blockIndex = 0; blockIndex < pageModel.blocks.length; blockIndex += 1) {
@@ -1681,7 +1756,8 @@ async function drawPageBlocks(
         pageModel,
         dependencies,
         composer,
-        document
+        document,
+        includeOcrTextLayer
       )
       composer.sourceBottom = Math.max(
         composer.sourceBottom,
@@ -1743,7 +1819,8 @@ async function drawPageBlocks(
  */
 export async function exportDocumentToPdf(
   model: DocumentModel,
-  dependencies: DocumentPdfExportDependencies
+  dependencies: DocumentPdfExportDependencies,
+  options: DocumentPdfExportOptions = {}
 ): Promise<DocumentPdfExportResult> {
   if (!model || !Array.isArray(model.pages) || model.pages.length === 0) {
     throw new DocumentPdfExportError('invalid-document', 'Document has no pages')
@@ -1765,7 +1842,7 @@ export async function exportDocumentToPdf(
         boldItalic: fonts.boldItalic,
         images,
         warnings
-      }, pageModel, dependencies, document)
+      }, pageModel, dependencies, document, options.includeOcrTextLayer)
     }
     return { bytes: await document.save(), warnings }
   } catch (error) {

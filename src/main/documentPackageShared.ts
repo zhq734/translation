@@ -16,6 +16,52 @@ export interface SafeDocumentPackage {
   entries: Map<string, JSZip.JSZipObject>
   /** 解包安全告警。 */
   warnings: DocumentWarning[]
+  /** 加载该包时实际使用的安全限制。 */
+  limits: DocumentPackageLimits
+}
+
+/** 文档包解包安全限制。 */
+export interface DocumentPackageLimits {
+  /** 单个包内条目的最大解包字节数。 */
+  maxEntryBytes: number
+  /** 整个文档包的最大解包字节数。 */
+  maxUncompressedBytes: number
+  /** 单条目与整包允许的最大压缩比。 */
+  maxCompressionRatio: number
+}
+
+/** 文档包安全错误码。 */
+export type DocumentPackageSecurityErrorCode =
+  | 'package-entry-too-large'
+  | 'package-uncompressed-too-large'
+  | 'package-compression-ratio-too-high'
+
+/** 文档包超出解包安全限制时抛出的稳定错误。 */
+export class DocumentPackageSecurityError extends Error {
+  /** 稳定的安全错误分类。 */
+  readonly code: DocumentPackageSecurityErrorCode
+
+  /**
+   * 创建不包含文件名或路径的文档包安全错误。
+   * @param code 稳定安全错误分类。
+   * @author zhenghq
+   */
+  constructor(code: DocumentPackageSecurityErrorCode) {
+    super({
+      'package-entry-too-large': 'document package entry exceeds size limit',
+      'package-uncompressed-too-large': 'document package exceeds uncompressed size limit',
+      'package-compression-ratio-too-high': 'document package compression ratio exceeds safety limit'
+    }[code])
+    this.name = 'DocumentPackageSecurityError'
+    this.code = code
+  }
+}
+
+/** 默认文档包安全限制。 */
+const DEFAULT_DOCUMENT_PACKAGE_LIMITS: DocumentPackageLimits = {
+  maxEntryBytes: DOCUMENT_MAX_ENTRY_BYTES,
+  maxUncompressedBytes: DOCUMENT_MAX_UNCOMPRESSED_BYTES,
+  maxCompressionRatio: DOCUMENT_MAX_COMPRESSION_RATIO
 }
 
 /**
@@ -71,10 +117,19 @@ export function packageDirectory(path: string): string {
 /**
  * 安全加载 DOCX/EPUB 包，限制单文件大小、总解包大小、压缩比和路径穿越。
  * @param input 文档解析输入。
+ * @param limits 可选安全限制；省略时使用全局默认值。
  * @returns 已校验的包及安全告警。
  * @author zhenghq
  */
-export async function loadSafeDocumentPackage(input: DocumentParseInput): Promise<SafeDocumentPackage> {
+export async function loadSafeDocumentPackage(
+  input: DocumentParseInput,
+  limits: DocumentPackageLimits = DEFAULT_DOCUMENT_PACKAGE_LIMITS
+): Promise<SafeDocumentPackage> {
+  const effectiveLimits: DocumentPackageLimits = {
+    maxEntryBytes: Math.max(1, limits.maxEntryBytes),
+    maxUncompressedBytes: Math.max(1, limits.maxUncompressedBytes),
+    maxCompressionRatio: Math.max(1, limits.maxCompressionRatio)
+  }
   const zip = await JSZip.loadAsync(input.bytes, { checkCRC32: false, createFolders: false })
   const entries = new Map<string, JSZip.JSZipObject>()
   const warnings: DocumentWarning[] = []
@@ -92,21 +147,23 @@ export async function loadSafeDocumentPackage(input: DocumentParseInput): Promis
     }
     const uncompressedSize = Number(internal._data?.uncompressedSize ?? 0)
     const compressedSize = Math.max(1, Number(internal._data?.compressedSize ?? 0))
-    if (uncompressedSize > DOCUMENT_MAX_ENTRY_BYTES) {
-      throw new Error('document package entry exceeds size limit')
+    if (uncompressedSize > effectiveLimits.maxEntryBytes) {
+      throw new DocumentPackageSecurityError('package-entry-too-large')
     }
-    if (uncompressedSize > 0 && uncompressedSize / compressedSize > DOCUMENT_MAX_COMPRESSION_RATIO) {
-      throw new Error('document package compression ratio exceeds safety limit')
+    if (uncompressedSize > 0 && uncompressedSize / compressedSize > effectiveLimits.maxCompressionRatio) {
+      throw new DocumentPackageSecurityError('package-compression-ratio-too-high')
     }
     totalUncompressed += uncompressedSize
     totalCompressed += compressedSize
-    if (totalUncompressed > DOCUMENT_MAX_UNCOMPRESSED_BYTES ||
-      totalUncompressed / totalCompressed > DOCUMENT_MAX_COMPRESSION_RATIO) {
-      throw new Error('document package exceeds uncompressed size limit')
+    if (totalUncompressed > effectiveLimits.maxUncompressedBytes) {
+      throw new DocumentPackageSecurityError('package-uncompressed-too-large')
+    }
+    if (totalUncompressed / totalCompressed > effectiveLimits.maxCompressionRatio) {
+      throw new DocumentPackageSecurityError('package-compression-ratio-too-high')
     }
     entries.set(path, entry)
   }
-  return { zip, entries, warnings }
+  return { zip, entries, warnings, limits: effectiveLimits }
 }
 
 /**
@@ -123,8 +180,8 @@ export async function readPackageText(
   const entry = packageInfo.entries.get(path)
   if (!entry) return null
   const bytes = await entry.async('uint8array')
-  if (bytes.byteLength > DOCUMENT_MAX_ENTRY_BYTES) {
-    throw new Error('document package entry exceeds size limit')
+  if (bytes.byteLength > packageInfo.limits.maxEntryBytes) {
+    throw new DocumentPackageSecurityError('package-entry-too-large')
   }
   return new TextDecoder('utf-8').decode(bytes)
 }
@@ -143,8 +200,8 @@ export async function readPackageBytes(
   const entry = packageInfo.entries.get(path)
   if (!entry) return null
   const bytes = await entry.async('uint8array')
-  if (bytes.byteLength > DOCUMENT_MAX_ENTRY_BYTES) {
-    throw new Error('document package entry exceeds size limit')
+  if (bytes.byteLength > packageInfo.limits.maxEntryBytes) {
+    throw new DocumentPackageSecurityError('package-entry-too-large')
   }
   return bytes
 }

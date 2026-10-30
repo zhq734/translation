@@ -176,6 +176,12 @@ export interface DocumentTableBlock extends DocumentBlockBase {
 export interface DocumentOcrRegion {
   /** 区域稳定标识。 */
   regionId: string
+  /** 所属页面标识；与父图片区块共同定位该区域。 */
+  pageId: string
+  /** 承载该区域的图片区块标识。 */
+  blockId: string
+  /** 原始图片资源标识，用于失败或跳过区域保留原图。 */
+  assetId: string
   /** 相对图片左上角的归一化坐标，x、y、width、height 均在 0 到 1 之间。 */
   bbox: DocumentBoundingBox
   /** OCR 原文。 */
@@ -579,6 +585,17 @@ function assertDocumentBlock(value: unknown, field: string): void {
   if (value.kind === 'break' && !['page', 'column', 'section'].includes(String(value.breakType))) {
     throw new Error(`document ${field}.breakType is not supported`)
   }
+}
+
+/**
+ * 解析并校验未知值是否为当前版本的单个文档区块。
+ * @param value 来自 IPC、worker 消息或缓存的未知区块。
+ * @returns 通过结构校验的文档区块。
+ * @author zhenghq
+ */
+export function parseDocumentBlock(value: unknown): DocumentBlock {
+  assertDocumentBlock(value, 'block')
+  return value as DocumentBlock
 }
 
 /**

@@ -121,6 +121,22 @@ function translatableText(model: DocumentModel): string[] {
   }))
 }
 
+/**
+ * 提取模型中的稳定页面与区块标识，供跨解析器重复解析回归使用。
+ * @param model 文档模型。
+ * @returns 页面标识及按页面分组的区块标识。
+ * @author zhenghq
+ */
+function stableDocumentIdentities(model: DocumentModel): {
+  pageIds: string[]
+  blockIds: string[][]
+} {
+  return {
+    pageIds: model.pages.map((page) => page.pageId),
+    blockIds: model.pages.map((page) => page.blocks.map((block) => block.blockId))
+  }
+}
+
 test('TXT 应保留段落与空行边界，并生成稳定页面和区块标识', () => {
   const input = textInput('第一段\n第二行\n\nSecond paragraph', 'notes.txt', 'txt')
   const first = parseTextDocument(input)
@@ -685,6 +701,61 @@ test('DOCX 应解析段落、表格、图片关系和 OMML 公式', async () => 
   assert.equal(heading.kind === 'text' ? heading.role : '', 'heading')
 })
 
+test('DOCX、EPUB 与 PDF 重复解析必须生成稳定页面、区块和资源标识', async () => {
+  const docx = new JSZip()
+  docx.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>')
+  docx.file('word/document.xml', '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Stable DOCX paragraph</w:t></w:r></w:p></w:body></w:document>')
+  const docxBytes = await docx.generateAsync({ type: 'uint8array' })
+  const docxInput = {
+    path: '/tmp/stable.docx',
+    fileName: 'stable.docx',
+    format: 'docx' as const,
+    sha256: FINGERPRINT,
+    bytes: docxBytes
+  }
+  const firstDocx = await parseDocxDocument(docxInput)
+  const secondDocx = await parseDocxDocument(docxInput)
+
+  const epub = new JSZip()
+  epub.file('mimetype', 'application/epub+zip')
+  epub.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  epub.file('OEBPS/content.opf', '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Stable EPUB</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>')
+  epub.file('OEBPS/chapter.xhtml', '<html><body><h1>Stable EPUB heading</h1><p>Stable EPUB paragraph</p></body></html>')
+  const epubBytes = await epub.generateAsync({ type: 'uint8array' })
+  const epubInput = {
+    path: '/tmp/stable.epub',
+    fileName: 'stable.epub',
+    format: 'epub' as const,
+    sha256: FINGERPRINT,
+    bytes: epubBytes
+  }
+  const firstEpub = await parseEpubDocument(epubInput)
+  const secondEpub = await parseEpubDocument(epubInput)
+
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([600, 800])
+  page.drawText('Stable PDF paragraph', { x: 50, y: 700, size: 20 })
+  const pdfBytes = await pdf.save()
+  const pdfInput = {
+    path: '/tmp/stable.pdf',
+    fileName: 'stable.pdf',
+    format: 'pdf' as const,
+    sha256: FINGERPRINT,
+    bytes: pdfBytes
+  }
+  const firstPdf = await parsePdfDocument(pdfInput)
+  const secondPdf = await parsePdfDocument(pdfInput)
+
+  for (const [label, first, second] of [
+    ['DOCX', firstDocx, secondDocx],
+    ['EPUB', firstEpub, secondEpub],
+    ['PDF', firstPdf, secondPdf]
+  ] as const) {
+    assert.deepEqual(stableDocumentIdentities(first), stableDocumentIdentities(second), `${label} 重复解析标识必须一致`)
+    assert.deepEqual(first.assets.map((asset) => asset.assetId), second.assets.map((asset) => asset.assetId), `${label} 重复解析资源标识必须一致`)
+  }
+})
+
 test('DOCX 包单条目超过限制时必须返回稳定安全错误且不泄露路径', async () => {
   const bytes = await minimalDocx({
     'word/media/large.bin': new Uint8Array(2_048)
@@ -765,6 +836,46 @@ test('DOCX 图片像素超过上限时必须跳过资源并保留可本地化告
 
   assert.equal(model.assets.length, 0)
   assert.deepEqual(translatableText(model), ['Visible paragraph'])
+  assert.equal(model.warnings.some((warning) => warning.code === 'image-pixel-limit-reached'), true)
+})
+
+test('EPUB 页数超过限制时必须停止新增章节并保留可本地化告警', async () => {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  zip.file('OEBPS/content.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Paged book</dc:title></metadata><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>`)
+  zip.file('OEBPS/one.xhtml', '<html><body><p>First chapter</p></body></html>')
+  zip.file('OEBPS/two.xhtml', '<html><body><p>Second chapter</p></body></html>')
+  const model = await parseEpubDocument({
+    path: '/tmp/paged-book.epub',
+    fileName: 'paged-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes: await zip.generateAsync({ type: 'uint8array' })
+  }, { maxPages: 1 })
+
+  assert.equal(model.pages.length, 1)
+  assert.deepEqual(translatableText(model), ['First chapter'])
+  assert.equal(model.warnings.some((warning) => warning.code === 'page-limit-reached'), true)
+})
+
+test('EPUB 图片像素超过上限时必须跳过资源并保留正文', async () => {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  zip.file('OEBPS/content.opf', '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Pixel book</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>')
+  zip.file('OEBPS/chapter.xhtml', '<html><body><p>Visible chapter text</p><img src="images/huge.png"/></body></html>')
+  zip.file('OEBPS/images/huge.png', pngHeader(5_000, 5_000))
+  const model = await parseEpubDocument({
+    path: '/tmp/pixel-book.epub',
+    fileName: 'pixel-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes: await zip.generateAsync({ type: 'uint8array' })
+  })
+
+  assert.equal(model.assets.length, 0)
+  assert.deepEqual(translatableText(model), ['Visible chapter text'])
   assert.equal(model.warnings.some((warning) => warning.code === 'image-pixel-limit-reached'), true)
 })
 
@@ -3451,6 +3562,102 @@ test('PDF 双栏内容流交错时必须先完成左栏再读取右栏，并保�
     `左栏必须完整排在右栏之前，实际顺序: ${JSON.stringify(texts)}`)
 })
 
+test('PDF 双栏正文上方的右侧独立表格必须先按视觉纵坐标输出', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const drawY = (y: number): number => page.getHeight() - y
+
+  // 右上角是独立的流水号表格；双栏正文从表格下方开始。
+  page.drawText('Serial number', { x: 430, y: drawY(38), size: 9, font })
+  page.drawText('2026R11L3505485', { x: 430, y: drawY(58), size: 9, font })
+  for (const y of [24, 48, 72]) {
+    page.drawLine({ start: { x: 418, y: drawY(y) }, end: { x: 536, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of [418, 536]) {
+    page.drawLine({ start: { x, y: drawY(24) }, end: { x, y: drawY(72) }, thickness: 1 })
+  }
+
+  const leftLines = [
+    'Left column body starts below the header block.',
+    'Left column continues with another sentence.',
+    'Left column ends before the right column.'
+  ]
+  const rightLines = [
+    'Right column body follows the complete left column.',
+    'Right column continues with another sentence.',
+    'Right column ends at the bottom of the body.'
+  ]
+  leftLines.forEach((line, index) => {
+    page.drawText(line, { x: 60, y: drawY(150 + index * 24), size: 10, font })
+  })
+  rightLines.forEach((line, index) => {
+    page.drawText(line, { x: 330, y: drawY(150 + index * 24), size: 10, font })
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/two-column-top-right-table.pdf',
+    fileName: 'two-column-top-right-table.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const blocks = model.pages[0]!.blocks
+  const tableIndex = blocks.findIndex((block) => block.kind === 'table')
+  const leftBodyIndex = blocks.findIndex((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text.includes(leftLines[0]!)))
+  assert.ok(tableIndex >= 0, `必须识别右上角独立表格，实际区块: ${JSON.stringify(blocks.map((block) => block.kind))}`)
+  assert.ok(leftBodyIndex >= 0, '必须识别左栏正文')
+  assert.ok(tableIndex < leftBodyIndex,
+    `顶部表格必须先于双栏正文输出，实际顺序: ${JSON.stringify(translatableText(model))}`)
+  assert.ok((blocks[tableIndex]!.bbox?.y ?? Infinity) < (blocks[leftBodyIndex]!.bbox?.y ?? Infinity),
+    '顶部表格的视觉纵坐标必须小于正文')
+})
+
+test('PDF 单栏表单右侧签名和日期字段不得触发双栏区块重排', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const drawY = (y: number): number => page.getHeight() - y
+
+  // 单栏表单：左侧是连续正文，右侧只有签名和日期两个字段。
+  // 两侧都有多行且栏宽接近，但右侧字段的纵向跨度明显短于正文，不能判成双栏。
+  const leftRows = [
+    { y: 100, text: 'Applicant name: Lin Wei', match: 'Applicant name' },
+    { y: 200, text: 'Contact phone: 13800000000', match: 'Contact phone' },
+    { y: 300, text: 'Mailing address: No. 8 Example Road', match: 'Mailing address' }
+  ]
+  const rightRows = [
+    { y: 100, text: 'Signature: Lin Wei ____________________', match: 'Signature' },
+    { y: 200, text: 'Date: 2026-10-12 ______________________', match: 'Date' }
+  ]
+  leftRows.forEach((row) => {
+    page.drawText(row.text, { x: 70, y: drawY(row.y), size: 10, font })
+  })
+  rightRows.forEach((row) => {
+    page.drawText(row.text, { x: 420, y: drawY(row.y), size: 10, font })
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/single-column-form-fields.pdf',
+    fileName: 'single-column-form-fields.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const blocks = model.pages[0]!.blocks
+  const expectedRows = [...leftRows, ...rightRows]
+    .sort((left, right) => left.y - right.y)
+  const rowIndexes = expectedRows.map((row) => blocks.findIndex((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text.includes(row.match))))
+  assert.ok(rowIndexes.every((index) => index >= 0), '表单正文、签名和日期字段都必须被解析')
+  assert.deepEqual(rowIndexes, [...rowIndexes].sort((left, right) => left - right),
+    `单栏表单必须保持原始视觉顺序，实际区块顺序: ${JSON.stringify(blocks.map((block) => block.bbox?.y))}`)
+  assert.equal(model.warnings.some((warning) => warning.code === 'pdf-reading-order-uncertain'), false)
+})
+
 test('PDF 旋转文本必须保留并生成稳定告警', async () => {
   const document = await PDFDocument.create()
   const font = await document.embedFont(StandardFonts.Helvetica)
@@ -3723,6 +3930,57 @@ test('PDF 原生文本页应提取页内图片区域并登记 OCR 资源', async
   assert.equal(registered.has(imageBlocks[0]!.kind === 'image' ? imageBlocks[0].assetId : ''), true)
   assert.equal(model.assets.length, 1)
   assert.equal(model.warnings.some((warning) => warning.code === 'embedded-image-ocr-required'), true)
+})
+
+test('PDF 页数超过限制时必须停止后续页面并保留可本地化告警', async () => {
+  const document = await PDFDocument.create()
+  document.addPage([600, 800]).drawText('First page', { x: 50, y: 700, size: 20 })
+  document.addPage([600, 800]).drawText('Second page', { x: 50, y: 700, size: 20 })
+  const model = await parsePdfDocument({
+    path: '/tmp/paged.pdf',
+    fileName: 'paged.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, { maxPages: 1 })
+
+  assert.equal(model.pages.length, 1)
+  assert.deepEqual(translatableText(model), ['First page'])
+  assert.equal(model.warnings.some((warning) => warning.code === 'page-limit-reached'), true)
+})
+
+test('PDF 内嵌图片像素超过上限时必须跳过资源并保留原生正文', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  page.drawText('Native text', { x: 50, y: 700, size: 20 })
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawImage(image, { x: 100, y: 200, width: 200, height: 100 })
+  const registered = new Map<string, Uint8Array>()
+  const model = await parsePdfDocument({
+    path: '/tmp/pixel-image.pdf',
+    fileName: 'pixel-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => pngHeader(5_000, 5_000),
+    registerAssetBytes: (assetId, bytes) => registered.set(assetId, bytes)
+  })
+
+  assert.deepEqual(translatableText(model), ['Native text'])
+  assert.equal(model.pages[0]!.blocks.some((block) => block.kind === 'image'), false)
+  assert.equal(model.assets.length, 0)
+  assert.equal(registered.size, 0)
+  assert.equal(model.warnings.some((warning) => warning.code === 'image-pixel-limit-reached'), true)
+  assert.equal(
+    model.warnings.some((warning) => warning.code === 'embedded-image-ocr-required'),
+    false,
+    '图片全部因像素上限被跳过时不得误报图片文字会进入 OCR'
+  )
 })
 
 test('PDF 页面区块应按版面位置合并文本与图片，保持原文阅读顺序', async () => {

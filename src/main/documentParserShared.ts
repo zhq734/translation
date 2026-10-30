@@ -38,8 +38,22 @@ export const DOCUMENT_MAX_PAGES = 2000
 /** 文档解析允许的最大图片资源数。 */
 export const DOCUMENT_MAX_IMAGES = 1000
 
+/** 单张图片允许的最大像素数，用于阻止超大位图耗尽内存。 */
+export const DOCUMENT_MAX_IMAGE_PIXELS = 20_000_000
+
+/** 单份文档允许进入 OCR 的最大不同图片数。 */
+export const DOCUMENT_MAX_OCR_IMAGES = 200
+
 /** 文档解析允许的最大区块数。 */
 export const DOCUMENT_MAX_BLOCKS = 100000
+
+/** 图片像素尺寸。 */
+export interface DocumentImageDimensions {
+  /** 像素宽度。 */
+  width: number
+  /** 像素高度。 */
+  height: number
+}
 
 /** 所有解析器共用的输入结构。 */
 export interface DocumentParseInput {
@@ -89,6 +103,128 @@ export interface ParsedDocumentAsset {
  */
 export function hashDocumentBytes(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * 读取 PNG 文件头中的像素尺寸。
+ * @param bytes 图片字节。
+ * @returns 像素宽高；文件头不足以可靠读取尺寸时返回 null。
+ * @author zhenghq
+ */
+function readPngImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  if (bytes.byteLength < 24 ||
+    bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    return null
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const width = view.getUint32(16, false)
+  const height = view.getUint32(20, false)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
+ * 读取 JPEG 文件头中的像素尺寸。
+ * @param bytes 图片字节。
+ * @returns 像素宽高；未找到可靠 SOF 段时返回 null。
+ * @author zhenghq
+ */
+function readJpegImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
+  let offset = 2
+  while (offset + 9 <= bytes.byteLength) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = bytes[offset + 1]!
+    offset += 2
+    if (marker === 0xd8 || marker === 0xd9) continue
+    if (marker === 0xda) return null
+    if (offset + 2 > bytes.byteLength) return null
+    const segmentLength = (bytes[offset]! << 8) | bytes[offset + 1]!
+    if (segmentLength < 2 || offset + segmentLength > bytes.byteLength) return null
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      const height = (bytes[offset + 3]! << 8) | bytes[offset + 4]!
+      const width = (bytes[offset + 5]! << 8) | bytes[offset + 6]!
+      return width > 0 && height > 0 ? { width, height } : null
+    }
+    offset += segmentLength
+  }
+  return null
+}
+
+/**
+ * 读取 GIF 文件头中的逻辑屏幕像素尺寸。
+ * @param bytes 图片字节。
+ * @returns 像素宽高；不是 GIF 时返回 null。
+ * @author zhenghq
+ */
+function readGifImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  if (bytes.byteLength < 10) return null
+  const signature = new TextDecoder('latin1').decode(bytes.subarray(0, 6))
+  if (signature !== 'GIF87a' && signature !== 'GIF89a') return null
+  const width = bytes[6]! | (bytes[7]! << 8)
+  const height = bytes[8]! | (bytes[9]! << 8)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
+ * 读取 BMP 文件头中的像素尺寸。
+ * @param bytes 图片字节。
+ * @returns 像素宽高；不是 BMP 时返回 null。
+ * @author zhenghq
+ */
+function readBmpImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  if (bytes.byteLength < 26 || bytes[0] !== 0x42 || bytes[1] !== 0x4d) return null
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const width = Math.abs(view.getInt32(18, true))
+  const height = Math.abs(view.getInt32(22, true))
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
+ * 读取 WebP 文件头中的像素尺寸，支持 VP8、VP8L 与 VP8X。
+ * @param bytes 图片字节。
+ * @returns 像素宽高；文件头不完整时返回 null。
+ * @author zhenghq
+ */
+function readWebpImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  if (bytes.byteLength < 30) return null
+  const signature = new TextDecoder('latin1').decode(bytes.subarray(0, 12))
+  if (signature.slice(0, 4) !== 'RIFF' || signature.slice(8, 12) !== 'WEBP') return null
+  const chunk = new TextDecoder('latin1').decode(bytes.subarray(12, 16))
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (chunk === 'VP8X') {
+    const width = 1 + (bytes[24]! | (bytes[25]! << 8) | (bytes[26]! << 16))
+    const height = 1 + (bytes[27]! | (bytes[28]! << 8) | (bytes[29]! << 16))
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+  if (chunk === 'VP8L' && bytes.byteLength >= 25 && bytes[20] === 0x2f) {
+    const bits = view.getUint32(21, true)
+    const width = 1 + (bits & 0x3fff)
+    const height = 1 + ((bits >>> 14) & 0x3fff)
+    return { width, height }
+  }
+  if (chunk === 'VP8 ' && bytes.byteLength >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+    const width = view.getUint16(26, true) & 0x3fff
+    const height = view.getUint16(28, true) & 0x3fff
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+  return null
+}
+
+/**
+ * 从受支持的位图文件头读取像素尺寸，不完整或无法可靠识别的文件返回 null。
+ * @param bytes 图片字节。
+ * @returns 像素宽高或 null。
+ * @author zhenghq
+ */
+export function readDocumentImageDimensions(bytes: Uint8Array): DocumentImageDimensions | null {
+  return readPngImageDimensions(bytes) ??
+    readJpegImageDimensions(bytes) ??
+    readGifImageDimensions(bytes) ??
+    readBmpImageDimensions(bytes) ??
+    readWebpImageDimensions(bytes)
 }
 
 /**

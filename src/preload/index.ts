@@ -51,6 +51,7 @@ import type {
   , DocumentRunResult
   , DocumentSourceResult
   , DocumentWorkspaceSnapshot
+  , DocumentWorkspaceTranslationUpdate
 } from '../shared/types'
 
 /** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
@@ -278,6 +279,13 @@ const api: Api = {
   selectDocumentFile: (): Promise<DocumentFileSelectionResult> =>
     ipcRenderer.invoke('document:select-file'),
   /**
+   * 通过主进程文件选择器一次导入并校验多个本地文档。
+   * @returns 每个候选文件的选择、取消或拒绝结果。
+   * @author zhenghq
+   */
+  selectDocumentFiles: (): Promise<DocumentFileSelectionResult[]> =>
+    ipcRenderer.invoke('document:select-files'),
+  /**
    * 重新校验拖放得到的本地路径，并在主进程登记为当前窗口可运行文件。
    * @param path 拖放文件对应的本地绝对路径。
    * @returns 选择、取消或拒绝结果。
@@ -285,6 +293,14 @@ const api: Api = {
    */
   approveDocumentFile: (path: string): Promise<DocumentFileSelectionResult> =>
     ipcRenderer.invoke('document:approve-file', path),
+  /**
+   * 重新校验拖放得到的多个本地路径，并在主进程登记为当前窗口可运行文件。
+   * @param paths 拖放文件对应的本地绝对路径列表。
+   * @returns 每个候选文件的选择或拒绝结果。
+   * @author zhenghq
+   */
+  approveDocumentFiles: (paths: string[]): Promise<DocumentFileSelectionResult[]> =>
+    ipcRenderer.invoke('document:approve-files', paths),
   /**
    * 查询当前平台是否允许启用文档翻译。
    * @returns 平台能力结果。
@@ -350,6 +366,17 @@ const api: Api = {
     const listener = (_event: unknown, snapshot: DocumentWorkspaceSnapshot): void => callback(snapshot)
     ipcRenderer.on('document:progress', listener)
     return () => ipcRenderer.removeListener('document:progress', listener)
+  },
+  /**
+   * 订阅单个文档翻译区块的增量事件。
+   * @param callback 块级译文更新回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onDocumentBlockTranslated(callback: (update: DocumentWorkspaceTranslationUpdate) => void) {
+    const listener = (_event: unknown, update: DocumentWorkspaceTranslationUpdate): void => callback(update)
+    ipcRenderer.on('document:block-translated', listener)
+    return () => ipcRenderer.removeListener('document:block-translated', listener)
   },
   /**
    * 订阅文档翻译终态事件。

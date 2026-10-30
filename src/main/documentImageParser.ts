@@ -10,24 +10,31 @@ import {
 import {
   createDocumentModel,
   hashDocumentBytes,
+  readDocumentImageDimensions,
+  DOCUMENT_MAX_IMAGE_PIXELS,
   type DocumentParseInput
 } from './documentParserShared.ts'
 
-/**
- * 读取 PNG 文件头中的像素尺寸。
- * @param bytes 图片字节。
- * @returns 像素宽高；不是合法 PNG 时返回 null。
- * @author zhenghq
- */
-function readPngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
-  if (bytes.byteLength < 24 ||
-    bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
-    return null
+/** 独立图片解析安全错误码。 */
+export type DocumentImageSecurityErrorCode = 'image-pixel-limit-reached'
+
+/** 独立图片超过安全限制时抛出的稳定错误。 */
+export class DocumentImageSecurityError extends Error {
+  /** 稳定安全错误分类。 */
+  readonly code: DocumentImageSecurityErrorCode
+
+  /**
+   * 创建不包含文件名或路径的图片安全错误。
+   * @param code 稳定安全错误分类。
+   * @author zhenghq
+   */
+  constructor(code: DocumentImageSecurityErrorCode) {
+    super(code === 'image-pixel-limit-reached'
+      ? 'image exceeds pixel limit'
+      : 'image exceeds safety limit')
+    this.name = 'DocumentImageSecurityError'
+    this.code = code
   }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const width = view.getUint32(16, false)
-  const height = view.getUint32(20, false)
-  return width > 0 && height > 0 ? { width, height } : null
 }
 
 /**
@@ -63,7 +70,10 @@ export async function parseImageDocument(
   registerAssetBytes?: (assetId: string, bytes: Uint8Array) => void
 ): Promise<DocumentModel> {
   const sha256 = hashDocumentBytes(input.bytes)
-  const dimensions = readPngDimensions(input.bytes)
+  const dimensions = readDocumentImageDimensions(input.bytes)
+  if (dimensions && dimensions.width * dimensions.height > DOCUMENT_MAX_IMAGE_PIXELS) {
+    throw new DocumentImageSecurityError('image-pixel-limit-reached')
+  }
   const assetId = `asset-${sha256.slice(0, 16)}`
   registerAssetBytes?.(assetId, input.bytes)
   const pageId = createDocumentPageId(input.sha256, 0)

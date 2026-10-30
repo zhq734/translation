@@ -18,7 +18,8 @@ import type {
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
-  DocumentWorkspaceSnapshot
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
 } from './documentWorkspace'
 
 export type { ExtractedWebTextUnit, WebImageOverlayPlacement, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
@@ -34,7 +35,8 @@ export type {
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
-  DocumentWorkspaceSnapshot
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
 } from './documentWorkspace'
 
 /** 文档文件选择成功结果，只向 Renderer 暴露校验后的元数据。 */
@@ -1207,8 +1209,12 @@ export interface Api {
   openDocumentWorkspace(): void
   /** 通过主进程文件选择器导入并校验一个本地文档。 */
   selectDocumentFile(): Promise<DocumentFileSelectionResult>
+  /** 通过主进程文件选择器一次导入并校验多个本地文档。 */
+  selectDocumentFiles(): Promise<DocumentFileSelectionResult[]>
   /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
   approveDocumentFile(path: string): Promise<DocumentFileSelectionResult>
+  /** 重新校验拖放得到的多个本地文档路径并登记为当前窗口可运行文件。 */
+  approveDocumentFiles(paths: string[]): Promise<DocumentFileSelectionResult[]>
   /** 查询当前平台是否允许启用文档翻译。 */
   getDocumentPlatformCapability(): Promise<DocumentPlatformCapability>
   /** 启动当前已批准文件的翻译任务。 */
@@ -1225,6 +1231,10 @@ export interface Api {
   getDocumentSource(): Promise<DocumentSourceResult>
   /** 订阅文档翻译进度。 */
   onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
+  /** 订阅单个翻译区块的增量更新。 */
+  onDocumentBlockTranslated(
+    callback: (update: DocumentWorkspaceTranslationUpdate) => void
+  ): () => void
   /** 订阅文档翻译终态。 */
   onDocumentCompleted(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
   /** 从 Electron 拖放 File 对象读取受信任的本地路径。 */

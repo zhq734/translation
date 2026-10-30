@@ -101,6 +101,132 @@ export interface DocumentCompletionReport {
   languagePair: DocumentLanguagePair
 }
 
+/**
+ * 从完成报告提取失败、未完成和疑似未翻译目标，保持报告内的稳定顺序。
+ * @param report 当前任务的完成报告；尚未生成时省略。
+ * @returns 可安全重新翻译的目标标识。
+ * @author zhenghq
+ */
+export function collectRetryableDocumentTargetIds(
+  report: DocumentCompletionReport | undefined
+): string[] {
+  if (!report) return []
+  return [
+    ...report.failedTargetIds,
+    ...report.pendingTargetIds,
+    ...report.suspectUntranslatedTargetIds
+  ]
+}
+
+/**
+ * 统计完成报告中需要重新翻译的目标数量，作为界面摘要和重试入口的共同数据源。
+ * @param report 当前任务的完成报告；尚未生成时省略。
+ * @returns 失败、未完成和疑似未翻译目标的总数。
+ * @author zhenghq
+ */
+export function countRetryableDocumentTargets(
+  report: DocumentCompletionReport | undefined
+): number {
+  if (!report) return 0
+  return report.failed + report.pending + report.suspectUntranslated
+}
+
+/**
+ * 解析工作台快照中的可重试目标数量；完成报告存在时以报告为唯一真相。
+ * 兼容旧版快照缺少重试计数，或冗余计数与最新报告不同步的情况。
+ * @param snapshot 包含完成报告或旧版失败块计数的工作台快照片段。
+ * @returns 可重试目标数量。
+ * @author zhenghq
+ */
+export function resolveRetryableDocumentTargetCount(snapshot: {
+  /** 当前任务代际对应的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
+  /** 旧版快照中冗余记录的可重试失败块数量。 */
+  retryableFailedBlocks?: number
+}): number {
+  if (snapshot.completionReport) return countRetryableDocumentTargets(snapshot.completionReport)
+  return Math.max(0, Math.floor(snapshot.retryableFailedBlocks ?? 0))
+}
+
+/**
+ * 判断终态快照是否允许重新翻译未完成目标。
+ * 摘要、按钮状态与点击入口必须共用此判定，避免显示部分结果但入口仍被禁用。
+ * @param snapshot 包含任务状态、完成报告或旧版失败块计数的快照片段。
+ * @returns partial 或仍有可重试目标的 failed 终态返回 true。
+ * @author zhenghq
+ */
+export function canRetryDocumentSnapshot(snapshot: {
+  /** 当前任务状态。 */
+  task: {
+    /** 任务终态或运行态。 */
+    status: string
+  }
+  /** 当前任务代际对应的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
+  /** 旧版快照中冗余记录的可重试失败块数量。 */
+  retryableFailedBlocks?: number
+}): boolean {
+  const retryableCount = resolveRetryableDocumentTargetCount(snapshot)
+  if (retryableCount === 0) return false
+  // 完成报告绑定同一任务代际，是目标级终态的唯一真相；任务状态可能来自迟到
+  // 或旧版事件而与报告矛盾，此时不能让旧状态把仍有未完成目标的入口禁用。
+  if (snapshot.completionReport) {
+    return snapshot.completionReport.status === 'partial' ||
+      snapshot.completionReport.status === 'failed'
+  }
+  return snapshot.task.status === 'partial' || snapshot.task.status === 'failed'
+}
+
+/** 工作台部分结果摘要与重试按钮共用的动作状态。 */
+export interface DocumentRetryActionState {
+  /** 失败目标数。 */
+  failed: number
+  /** 未完成目标数。 */
+  pending: number
+  /** 疑似未翻译目标数。 */
+  suspectUntranslated: number
+  /** 本次保留原文的目标总数。 */
+  reverted: number
+  /** 当前可重新翻译的目标总数。 */
+  retryableCount: number
+  /** 重试按钮是否禁用。 */
+  retryDisabled: boolean
+}
+
+/**
+ * 从任务快照解析部分结果摘要与重试入口状态，确保展示和交互使用同一份计数。
+ * @param snapshot 当前任务快照或测试中的最小快照片段。
+ * @returns 部分结果计数与重试按钮状态。
+ * @author zhenghq
+ */
+export function resolveDocumentRetryActionState(snapshot: {
+  /** 当前任务状态。 */
+  task: {
+    /** 任务终态或运行态。 */
+    status: string
+    /** 旧版任务状态中的失败块数量。 */
+    failedBlocks?: number
+  }
+  /** 当前任务代际对应的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
+  /** 旧版快照中冗余记录的可重试失败块数量。 */
+  retryableFailedBlocks?: number
+}): DocumentRetryActionState {
+  const failed = snapshot.completionReport?.failed ?? snapshot.task.failedBlocks ?? 0
+  const pending = snapshot.completionReport?.pending ?? 0
+  const suspectUntranslated = snapshot.completionReport?.suspectUntranslated ?? 0
+  const reverted = failed + pending + suspectUntranslated
+  const retryableCount = resolveRetryableDocumentTargetCount(snapshot)
+  return {
+    failed,
+    pending,
+    suspectUntranslated,
+    reverted,
+    retryableCount,
+    retryDisabled: !canRetryDocumentSnapshot(snapshot)
+  }
+}
+
 /** 导出前复验所需的当前模型身份与计数。 */
 export interface DocumentCompletionExpectation {
   /** 当前任务标识。 */
