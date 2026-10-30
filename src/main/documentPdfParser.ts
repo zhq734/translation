@@ -4005,12 +4005,14 @@ function pdfLineInsideGrid(line: PdfLine, grid: PdfDetectedGrid): boolean {
  * 估算页面正文内容区左右边界，供居中判定使用，避免整页坐标或少量标题干扰。
  * @param lines 页面内按阅读顺序分组的文本行。
  * @param pageWidth 页面宽度。
+ * @param gridLines 页面内提取到的水平、垂直网格线。
  * @returns 正文内容区中心线与左右边界；样本不足时返回 undefined。
  * @author zhenghq
  */
 function inferPdfContentArea(
   lines: readonly PdfLine[],
-  pageWidth: number
+  pageWidth: number,
+  gridLines: readonly PdfGridLine[] = []
 ): { left: number; right: number; center: number } | undefined {
   if (!Number.isFinite(pageWidth) || pageWidth <= 0 || lines.length < 3) return undefined
   const leftCounts = new Map<number, number>()
@@ -4039,8 +4041,27 @@ function inferPdfContentArea(
     .map((line) => line.bbox.x + line.bbox.width)
     .filter((right) => Number.isFinite(right) && right > left && right <= pageWidth)
     .sort((a, b) => a - b)
-  if (bodyRightEdges.length < 3) return undefined
-  const right = bodyRightEdges[bodyRightEdges.length - 1]!
+  const textRight = bodyRightEdges.length >= 3
+    ? bodyRightEdges[bodyRightEdges.length - 1]
+    : undefined
+  const alignmentTolerance = Math.max(3, pageWidth * 0.012)
+  const pageEdgeMargin = Math.max(8, pageWidth * 0.02)
+  // 目录、表单等页面的可见内容宽度可能由框线而非文字右边缘决定。目录项通常
+  // 分成两列且右侧留白很大，只看文本会把正文区误缩到第一列附近。
+  // 只采纳从正文左边界出发、长度足够且未贴物理纸张右边缘的水平线，
+  // 避免整页边框或页眉装饰线把译文铺到纸张边缘。
+  const boundaryLineRights = gridLines
+    .filter((line) => line.orientation === 'horizontal' &&
+      Math.abs(line.start - left) <= alignmentTolerance &&
+      line.end - line.start >= pageWidth * 0.25 &&
+      line.end > left + pageWidth * 0.25 &&
+      line.end <= pageWidth - pageEdgeMargin)
+    .map((line) => line.end)
+    .filter((right) => Number.isFinite(right))
+    .sort((a, b) => a - b)
+  const boundaryRight = boundaryLineRights[boundaryLineRights.length - 1]
+  const right = Math.max(textRight ?? left, boundaryRight ?? left)
+  if (textRight === undefined && boundaryRight === undefined) return undefined
   if (right - left < pageWidth * 0.25) return undefined
   return { left, right, center: (left + right) / 2 }
 }
@@ -5090,9 +5111,9 @@ export async function parsePdfDocument(
         nativeLines = lines
         const bodyFontSize = inferPdfBodyFontSize(lines)
         const lineHeights = inferPdfLineHeights(lines)
-        contentArea = inferPdfContentArea(lines, viewport.width)
         const rawGridLines = extractPdfGridLines(operatorList, runtime, viewport)
         const gridLines = mergePdfGridLines(rawGridLines)
+        contentArea = inferPdfContentArea(lines, viewport.width, gridLines)
         const closedDetectedGrids = detectPdfTableGrids(gridLines, lines)
         const textRowDetectedGrids = detectPdfTextRowTableGrids(
           rawGridLines,

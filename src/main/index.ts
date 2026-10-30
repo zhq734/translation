@@ -276,6 +276,7 @@ import {
   type DocumentExportRequest,
   type DocumentRunRequest
 } from '../shared/documentWorkspace'
+import { parseDocumentTargetId } from '../shared/documentTargetLocator'
 import {
   DOCUMENT_WINDOW_STATE_FILE,
   loadDocumentWindowState,
@@ -742,7 +743,7 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         settings,
         dingTalkCredentials,
         aiApiKey,
-        { onDelta: onDelta ?? (() => undefined), signal }
+        { onDelta: onDelta ?? (() => undefined), signal, context }
       )
       return output.translation
     },
@@ -833,8 +834,9 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
 /**
  * 重新校验一个候选本地文档路径，并返回不泄漏未授权信息的稳定结果。
  *
- * 文件选择与拖放批准共用此入口，只读取有限文件片段，避免 UI 阶段把整份文档
- * 载入主进程内存。路径必须为绝对路径，校验失败时结果不携带路径或文件名。
+ * 文件选择与拖放批准共用此入口。文件头、尾与 ZIP 目录只读取有限片段，
+ * 完整内容则通过流式计算 SHA-256，避免把整份文档载入主进程内存。
+ * 路径必须为绝对路径，校验失败时结果不携带路径或文件名。
  * @param path 候选文件绝对路径。
  * @returns 选择、取消或拒绝结果。
  * @author zhenghq
@@ -879,12 +881,20 @@ async function validateApprovedDocumentPath(path: string): Promise<DocumentFileS
         ...(validation.format ? { format: validation.format } : {})
       }
     }
+    const sha256 = await new Promise<string>((resolve, reject) => {
+      const hash = createHash('sha256')
+      const stream = handle!.createReadStream()
+      stream.on('data', (chunk) => hash.update(chunk))
+      stream.on('error', reject)
+      stream.on('end', () => resolve(hash.digest('hex')))
+    })
     return {
       status: 'selected',
       path,
       fileName: basename(path),
       size: validation.size,
       format: validation.format,
+      sha256,
       capabilities: validation.capabilities
     }
   } catch {
@@ -6123,6 +6133,29 @@ function registerIpc(): void {
       return { accepted: false, code: 'invalid-request' }
     }
     return documentWorkspaceTaskServices.get(jobId)?.retryFailed(generation as number) ??
+      { accepted: false, code: 'not-ready' }
+  })
+  /**
+   * 使用新代际仅重试当前文档中的一个可重试目标。
+   * @param event IPC 事件对象。
+   * @param jobId 任务标识。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 稳定目标标识。
+   * @returns 主进程是否接受重试。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:retry-failed-target', (
+    event,
+    jobId: unknown,
+    generation: unknown,
+    targetId: unknown
+  ) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
+      !Number.isInteger(generation) || typeof targetId !== 'string' ||
+      targetId.length === 0 || targetId.length > 512 || parseDocumentTargetId(targetId) === null) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    return documentWorkspaceTaskServices.get(jobId)?.retryFailedTarget(generation as number, targetId) ??
       { accepted: false, code: 'not-ready' }
   })
   /**

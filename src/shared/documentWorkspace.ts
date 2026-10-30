@@ -44,6 +44,8 @@ export interface DocumentWorkspaceSnapshot {
   languagePair?: DocumentLanguagePair
   /** 当前任务代际对应的完整完成报告。 */
   completionReport?: DocumentCompletionReport
+  /** 当前代际由翻译缓存直接恢复的目标标识。 */
+  cacheHitTargetIds?: string[]
   /** 翻译阶段失败且可安全重试的块数量。 */
   retryableFailedBlocks?: number
   /** 脱敏错误分类。 */
@@ -68,13 +70,31 @@ export interface DocumentWorkspaceTranslationUpdate {
   total: number
 }
 
-/** 当前任务完成报告的只读历史快照，用于恢复审阅与后续历史列表接入。 */
+/** 历史列表中的安全任务摘要；不包含正文、源路径或资源字节。 */
 export interface DocumentHistoryEntry {
   /** 任务标识。 */
   jobId: string
   /** 快照对应的任务代际。 */
   generation: number
-  /** 该代际生成的完整完成报告。 */
+  /** 面向界面的源文件名。 */
+  fileName: string
+  /** 源文档格式。 */
+  format: import('./documentTypes.ts').DocumentFormat
+  /** 用户选择的原始源语言偏好。 */
+  sourcePreference: string
+  /** 用户选择的原始目标语言偏好。 */
+  targetPreference: string
+  /** 文档级解析后的实际语言对。 */
+  languagePair: DocumentLanguagePair
+  /** 最近一次终态。 */
+  status: DocumentTaskState['status']
+  /** 最近一次终态进度百分比。 */
+  percent: number
+  /** 最近更新时间，用于倒序排列。 */
+  updatedAt: number
+  /** 当前代际是否已成功导出 PDF。 */
+  exportStatus: 'not-exported' | 'saved'
+  /** 该代际生成的完整完成报告；旧兼容调用可省略。 */
   completionReport?: DocumentCompletionReport
 }
 
@@ -142,6 +162,7 @@ export const DOCUMENT_WORKSPACE_CHANNELS = {
   cancel: 'document:cancel',
   release: 'document:release',
   retryFailed: 'document:retry-failed',
+  retryFailedTarget: 'document:retry-failed-target',
   exportPdf: 'document:export-pdf',
   getAsset: 'document:get-asset',
   getSource: 'document:get-source',

@@ -15,6 +15,7 @@ import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
 import { BoundedLruCache } from './boundedLruCache'
 import { translateMain } from './messages'
+import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
 const GOOGLE_ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
@@ -72,6 +73,8 @@ export interface TranslateStreamOptions {
   onDelta: (delta: string) => void
   /** 可选外部取消信号。 */
   signal?: AbortSignal
+  /** 可选的文档术语与相邻语义上下文；仅 AI 通道使用。 */
+  context?: DocumentTranslationRequestContext
 }
 
 interface CachedTranslation extends TranslateOutput {
@@ -227,7 +230,8 @@ export class TranslationRuntime {
       settings.aiEnabled,
       settings.aiProtocol,
       settings.aiBaseUrl,
-      settings.aiModel
+      settings.aiModel,
+      options.context
     )
     const hit = this.cache.get(key)
     if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
@@ -243,7 +247,7 @@ export class TranslationRuntime {
           ? await this.aiStreamChannel(text, settings, aiApiKey, (delta) => {
               visibleDeltaCount += 1
               options.onDelta(delta)
-            }, options.signal)
+            }, options.signal, options.context)
           : await channel.run()
         this.resetBreaker(channel.breakerKey)
         const successful: CachedTranslation = {
@@ -486,7 +490,8 @@ export class TranslationRuntime {
     settings: Settings,
     apiKey: string | null,
     onDelta: (delta: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    context?: DocumentTranslationRequestContext
   ): Promise<TranslateOutput> {
     const translation = await this.aiClient.stream({
       protocol: settings.aiProtocol,
@@ -495,7 +500,8 @@ export class TranslationRuntime {
       apiKey,
       text,
       sourceLang: settings.sourceLang,
-      targetLang: settings.targetLang
+      targetLang: settings.targetLang,
+      context
     }, { onDelta, signal })
     return { translation, provider: 'ai' }
   }
@@ -616,6 +622,11 @@ export class TranslationRuntime {
    * @param source 源语言。
    * @param target 目标语言。
    * @param preferredProvider 用户选择的首选翻译 API。
+   * @param aiEnabled 是否启用 AI 通道。
+   * @param aiProtocol AI 协议。
+   * @param aiBaseUrl AI Base URL。
+   * @param aiModel AI 模型名称。
+   * @param context 可选的文档上下文。
    * @returns 缓存键。
    * @author zhenghq
    */
@@ -627,9 +638,13 @@ export class TranslationRuntime {
     aiEnabled: boolean,
     aiProtocol: Settings['aiProtocol'],
     aiBaseUrl: string,
-    aiModel: string
+    aiModel: string,
+    context?: DocumentTranslationRequestContext
   ): string {
-    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${text}`
+    const documentContextKey = context
+      ? `doc:${context.glossaryVersion}:${context.glossaryContext}:${context.contextSummary ?? ''}`
+      : ''
+    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${documentContextKey}|${text}`
   }
 
   /**

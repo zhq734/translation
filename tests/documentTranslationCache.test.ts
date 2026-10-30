@@ -130,3 +130,22 @@ test('文档翻译缓存损坏 JSON 时必须安全回退为空缓存并允许�
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('文档翻译缓存必须按源文件哈希删除条目并保留其他文件', async () => {
+  const directory = temporaryDirectory()
+  try {
+    const store = new DocumentTranslationCacheStore({
+      directory,
+      maxBytes: 1024 * 1024,
+      maxAgeMs: 60_000,
+      now: () => 1000
+    })
+    await store.write('key-a', entry('译文 A'))
+    await store.write('key-b', { ...entry('译文 B'), sourceSha256: 'other-source' })
+    await store.deleteBySourceSha256('source-hash')
+    assert.equal(await store.read('key-a'), null)
+    assert.equal((await store.read('key-b'))?.translation, '译文 B')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

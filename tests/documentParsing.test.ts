@@ -3080,6 +3080,58 @@ test('PDF 正文行右边界不齐时应按正文最大右边界推断内容区�
   assert.ok((titleBlock?.bbox?.width ?? 0) < contentRight - contentLeft)
 })
 
+test('PDF 目录页应使用目录框横线推断正文区右边界，避免标题译文被窄栏折行', async () => {
+  const document = await PDFDocument.create()
+  const regular = await document.embedFont(StandardFonts.Helvetica)
+  const bold = await document.embedFont(StandardFonts.HelveticaBold)
+  const page = document.addPage([612, 792])
+  const contentLeft = 70
+  const contentRight = 407.69
+  const title = 'Table of Contents'
+  const titleSize = 14
+  const titleWidth = bold.widthOfTextAtSize(title, titleSize)
+  const titleCenter = 238.33
+  const bodySize = 10.5
+
+  // 模拟目录页顶部的框线。它比两列目录项宽得多，是正文区右边界更可靠的证据。
+  page.drawLine({
+    start: { x: 68.97, y: 650 },
+    end: { x: contentRight, y: 650 },
+    thickness: 1
+  })
+  page.drawText(title, {
+    x: titleCenter - titleWidth / 2,
+    y: 625,
+    size: titleSize,
+    font: bold
+  })
+  ;[
+    ['Article 1', 'Software Development Services'],
+    ['Article 2', 'Contract Price and Payment Method'],
+    ['Article 3', 'Service Period and Service Location']
+  ].forEach(([label, value], index) => {
+    const y = 580 - index * 24
+    page.drawText(label!, { x: contentLeft, y, size: bodySize, font: regular })
+    page.drawText(value!, { x: 142.53, y, size: bodySize, font: regular })
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/toc-content-area.pdf',
+    fileName: 'toc-content-area.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.ok(model.pages[0]!.contentArea)
+  assert.ok(Math.abs(model.pages[0]!.contentArea!.left - contentLeft) <= 2)
+  assert.ok(Math.abs(model.pages[0]!.contentArea!.right - contentRight) <= 2)
+  assert.ok(Math.abs(model.pages[0]!.contentArea!.center - titleCenter) <= 2)
+  const titleBlock = model.pages[0]!.blocks.find((block) =>
+    block.kind === 'text' && block.runs.map((run) => run.text).join('') === title)
+  assert.equal(titleBlock?.kind === 'text' ? titleBlock.textAlign : undefined, 'center')
+})
+
 test('PDF 接近整页的页面边框不能被识别为表格，封面文字仍应保持文本区块', async () => {
   const document = await PDFDocument.create()
   const regular = await document.embedFont(StandardFonts.Helvetica)

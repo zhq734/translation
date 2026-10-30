@@ -646,6 +646,146 @@ body {
   color: var(--text-primary);
 }
 
+.document-reading-controls {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.document-reading-button,
+.document-page-input {
+  min-height: var(--control-height);
+  border: var(--border-width) solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-caption);
+}
+
+.document-reading-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+
+.document-reading-button:hover:not(:disabled),
+.document-reading-button:focus-visible {
+  border-color: var(--button-bg);
+  background: var(--button-secondary-hover);
+}
+
+.document-reading-button:focus-visible,
+.document-page-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.document-reading-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+#document-sync-scroll[data-enabled='true'] {
+  border-color: var(--button-bg);
+  color: var(--button-bg);
+}
+
+.document-page-navigation,
+.document-zoom-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.document-page-step {
+  width: var(--control-height);
+  padding: 0;
+  font-size: var(--font-size-title);
+  line-height: 1;
+}
+
+.document-page-input {
+  width: 4.5em;
+  min-width: 0;
+  padding: 0 var(--space-2);
+  text-align: center;
+}
+
+.document-toc {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.document-toc-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(52vh, 420px);
+  min-width: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--popup-bg);
+  box-shadow: var(--shadow-overlay);
+}
+
+.document-toc-list[hidden] {
+  display: none;
+}
+
+.document-toc-item {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.document-toc-item:hover,
+.document-toc-item:focus-visible {
+  background: var(--button-secondary-hover);
+}
+
+.document-toc-empty {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.document-zoom-value {
+  min-width: 4.5em;
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .document-partial-status {
   flex: 1 1 320px;
   min-width: 0;
@@ -895,6 +1035,14 @@ body {
   display: none;
 }
 
+.document-columns[data-view-mode='source'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.document-columns[data-view-mode='source'] .document-column:last-child {
+  display: none;
+}
+
 .document-column {
   display: flex;
   flex-direction: column;
@@ -966,7 +1114,43 @@ body {
   overflow: auto;
   padding: var(--space-4);
   background: var(--page-bg);
+  scroll-behavior: smooth;
   scrollbar-gutter: stable;
+}
+
+.document-block-active {
+  outline: 2px solid var(--button-bg);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 目标级状态只改变局部语义边框，不替换正文；失败块必须继续显示原文供对照。 */
+.document-translation-failed {
+  outline: 2px solid var(--status-error);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.document-translation-pending {
+  outline: var(--border-width) dashed var(--status-warning);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.document-translation-suspect-untranslated {
+  outline: var(--border-width) dotted var(--status-warning);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 流式译文通过 --document-page-scale 应用用户缩放，不能在这里叠加 zoom。 */
+.document-page:not([data-layout='translation-flow']),
+.document-pdf-page,
+.document-markdown-preview,
+.document-table-preview,
+.document-subtitle-preview,
+.document-flow-preview {
+  zoom: var(--document-user-zoom, 1);
 }
 
 #document-translation-content {
@@ -1162,32 +1346,12 @@ body {
 
 .document-ocr-translation-layer {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: block;
   box-sizing: border-box;
   width: 100%;
   min-height: calc(
     var(--document-image-height, 0px) * var(--document-page-scale, 1)
   );
-}
-
-.document-ocr-original-mask-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  /* 遮罩必须始终与底图原始高度一致；译文变长时覆盖层会增高，
-     若让遮罩层随 inset 拉伸，百分比定位会偏移，导致原扫描文字未被盖住。 */
-  height: calc(
-    var(--document-image-height, 0px) * var(--document-page-scale, 1)
-  );
-  pointer-events: none;
-}
-
-.document-ocr-original-mask {
-  position: absolute;
-  display: block;
-  background: var(--document-paper-bg);
 }
 
 .document-page[data-layout='translation-flow'] .document-text-block,
@@ -1310,6 +1474,23 @@ body {
   .document-image-block > .document-page-image {
   /* 图片仅作为视觉底图，指针交给上方透明 OCR 文字层，保证文字可选中。 */
   pointer-events: none;
+}
+
+.document-preview-host[data-document-format='image']
+  .document-page[data-layout='absolute']
+  .document-ocr-translation-layer {
+  /* 独立图片没有流式占位需求；覆盖层必须直接铺在原图矩形上。 */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 0;
+}
+
+.document-preview-host[data-document-format='image']
+  .document-page[data-layout='absolute'] .document-ocr-region {
+  /* 原图像素无法反映预览栏缩放，独立图片统一使用百分比顶部坐标。 */
+  top: var(--document-ocr-source-top-percent, 0%);
+  min-height: var(--document-ocr-source-height-percent, 0%);
 }
 
 .document-flow-preview,
@@ -1589,15 +1770,16 @@ body {
 }
 
 .document-ocr-region {
-  position: relative;
+  position: absolute;
   display: block;
-  flex: 0 0 auto;
   box-sizing: border-box;
   min-width: 0;
-  min-height: 0;
+  min-height: calc(
+    var(--document-ocr-source-height, 0px) * var(--document-page-scale, 1)
+  );
   height: auto;
-  margin-top: calc(
-    var(--document-ocr-gap-before, 0px) * var(--document-page-scale, 1)
+  top: calc(
+    var(--document-ocr-source-top, 0px) * var(--document-page-scale, 1)
   );
   overflow: visible;
   padding: calc(var(--document-ocr-padding-y, 2px) * var(--document-page-scale, 1))
@@ -1907,6 +2089,10 @@ body {
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 
+  .document-columns[data-view-mode='source'] {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .document-columns[data-view-mode='translation'] {
     grid-template-rows: minmax(0, 1fr);
   }
@@ -1944,6 +2130,20 @@ body {
 
   .document-toolbar-display-controls {
     width: 100%;
+  }
+
+  .document-reading-controls {
+    width: 100%;
+  }
+
+  .document-toc-list {
+    position: fixed;
+    top: 50%;
+    right: var(--space-3);
+    left: var(--space-3);
+    width: auto;
+    max-height: min(70vh, 440px);
+    transform: translateY(-50%);
   }
 
   .document-actual-language {

@@ -45,8 +45,15 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
     '翻译为',
     '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。',
     '若原文包含形如 [[[ST-SEG-数字]]] 或 [[[ST-DOC-CELL-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。',
+    '术语约束：以下术语译法必须优先采用，未列出的词语不得自行套用：\n',
+    '相邻上下文：以下内容仅用于理解当前文本语义，不得输出上下文：\n',
     // 不可达的内部协议兜底错误，调用方已包装为本地化错误。
     '不支持的 AI 协议：'
+  ],
+  'src/main/documentTranslationPipeline.ts': [
+    // 相邻目标摘要前缀仅作为模型上下文标记，不展示给最终用户。
+    '上一段：',
+    '下一段：'
   ],
   'src/shared/aiTranslationStreamSanitize.ts': [
     // 模型可能输出的协议级译文标签前缀，用于流式暂存判断，不直接展示给用户。
@@ -117,6 +124,58 @@ function isInComment(position: number, commentRanges: ReadonlyArray<readonly [nu
 }
 
 /**
+ * 剥离注入脚本模板片段中的注释，同时保留字符串字面量内的中文。
+ * @param text 模板字符串片段文本。
+ * @returns 去除注释后的可执行文本。
+ * @author zhenghq
+ */
+function stripTemplateJavaScriptComments(text: string): string {
+  let result = ''
+  let inBlockComment = false
+  let inLineComment = false
+  let quote: string | null = null
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!
+    const next = text[index + 1]
+    if (inLineComment) {
+      if (character === '\n') {
+        inLineComment = false
+        result += character
+      }
+      continue
+    }
+    if (inBlockComment) {
+      if (character === '*' && next === '/') {
+        inBlockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote) {
+      result += character
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = null
+      continue
+    }
+    if (character === '/' && next === '/') {
+      inLineComment = true
+      index += 1
+      continue
+    }
+    if (character === '/' && next === '*') {
+      inBlockComment = true
+      index += 1
+      continue
+    }
+    if (character === '"' || character === "'" || character === '`') quote = character
+    result += character
+  }
+  return result
+}
+
+/**
  * 判断字符串字面量是否属于允许保留的中文内容。
  * @param file 源文件相对路径。
  * @param text 字符串文本。
@@ -175,7 +234,12 @@ function scanHardcodedChinese(): HardcodedChineseFinding[] {
         ts.isTemplateHead(node) ||
         ts.isTemplateMiddle(node) ||
         ts.isTemplateTail(node)
-      if (isStringLike && CJK_PATTERN.test(node.text) && !isInComment(node.getStart(sourceFile), commentRanges)) {
+      const containsUserVisibleChinese = ts.isTemplateHead(node) || ts.isTemplateMiddle(node) ||
+        ts.isTemplateTail(node) || ts.isNoSubstitutionTemplateLiteral(node)
+        ? CJK_PATTERN.test(stripTemplateJavaScriptComments(node.text))
+        : CJK_PATTERN.test(node.text)
+      if (isStringLike && containsUserVisibleChinese &&
+        !isInComment(node.getStart(sourceFile), commentRanges)) {
         if (!isAllowedFinding(file, node.text, ancestors)) {
           const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
           findings.push({ file, line: line + 1, text: node.text })
@@ -205,7 +269,10 @@ test('硬编码中文白名单不得包含过期条目', () => {
     const source = readFileSync(file, 'utf8')
     for (const text of allowedTexts) {
       assert.ok(
-        source.includes(JSON.stringify(text)) || source.includes(`'${text}'`) || source.includes(text),
+        source.includes(JSON.stringify(text)) ||
+          source.includes(JSON.stringify(text).slice(1, -1)) ||
+          source.includes(`'${text}'`) ||
+          source.includes(text),
         `${file} 的白名单条目已过期：${JSON.stringify(text)}`
       )
     }

@@ -9,6 +9,10 @@ export interface DocumentScrollSyncState {
   programmatic: boolean
   /** 译文页面是否正在执行流式重排。 */
   translationLayoutUpdating: boolean
+  /** 是否允许双栏联动；省略时保持旧版默认开启。 */
+  enabled?: boolean
+  /** 当前被允许驱动联动的栏；省略时表示任一侧都可驱动。 */
+  syncedSide?: DocumentScrollSide
 }
 
 /**
@@ -23,8 +27,10 @@ export function shouldSyncDocumentScroll(
   side: DocumentScrollSide,
   state: DocumentScrollSyncState
 ): boolean {
+  if (state.enabled === false) return false
   if (state.programmatic) return false
   if (state.userScrollSide !== side) return false
+  if (state.syncedSide !== undefined && state.syncedSide !== side) return false
   if (side === 'translation' && state.translationLayoutUpdating) return false
   return true
 }

@@ -37,13 +37,13 @@ import type {
   DocumentAssetResult,
   DocumentExportRequest,
   DocumentExportResult,
-  DocumentHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
+import { parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
 import type {
   DocumentGlossary,
@@ -75,6 +75,16 @@ export interface DocumentSaveDialogResult {
   canceled: boolean
   /** 用户选择的保存路径。 */
   filePath?: string
+}
+
+/** 当前活动任务的轻量完成历史，保持旧调用结构兼容。 */
+export interface DocumentCompletionHistoryEntry {
+  /** 任务标识。 */
+  jobId: string
+  /** 任务代际。 */
+  generation: number
+  /** 同代际完成报告。 */
+  completionReport?: DocumentCompletionReport
 }
 
 /** 文档工作台任务服务依赖。 */
@@ -165,6 +175,26 @@ export interface DocumentWorkspaceTaskServiceDependencies {
   writeTranslationCache?(key: string, value: DocumentTranslationCacheEntry): Promise<void>
   /** 读取解析器版本，用于翻译缓存隔离。 */
   getParserVersion?(): string
+  /**
+   * 保存完成或部分完成任务的完整历史快照。
+   * @param snapshot 当前终态工作台快照。
+   * @returns 写入完成后的 Promise。
+   * @author zhenghq
+   */
+  saveHistory?(snapshot: DocumentWorkspaceSnapshot): Promise<void>
+  /**
+   * 在 PDF 原子写入成功后更新同任务同代际的导出状态。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @param status 已保存导出状态。
+   * @returns 更新完成后的 Promise。
+   * @author zhenghq
+   */
+  updateHistoryExportStatus?(
+    jobId: string,
+    generation: number,
+    status: 'saved'
+  ): Promise<void>
 }
 
 /** 文档 PDF 导出器返回的字节与可降级告警。 */
@@ -199,6 +229,8 @@ interface ActiveDocumentJob {
   failedTargetIds: string[]
   /** 失败、未完成与疑似未翻译目标组成的完整重试集合。 */
   retryableTargetIds: string[]
+  /** 最近一次运行中直接从成功缓存恢复的目标标识。 */
+  cacheHitTargetIds: string[]
   /** 最近一次终态对应的完整完成报告。 */
   completionReport?: DocumentCompletionReport
   /** 资源字节缓存。 */
@@ -211,6 +243,8 @@ interface ActiveDocumentJob {
   settled: boolean
   /** 最近一次已经接受并发送的工作台快照。 */
   lastSnapshot?: DocumentWorkspaceSnapshot
+  /** 当前代际是否已经尝试保存完整历史快照。 */
+  historySaved: boolean
 }
 
 /**
@@ -363,9 +397,11 @@ export class DocumentWorkspaceTaskService {
         task: createDocumentTaskState(jobId, request.generation),
         failedTargetIds: [],
         retryableTargetIds: [],
+        cacheHitTargetIds: [],
         assetBytes: new Map(),
         cancelled: false,
-        settled: false
+        settled: false,
+        historySaved: false
       }
       this.highestGeneration = request.generation
       this.active = job
@@ -405,6 +441,42 @@ export class DocumentWorkspaceTaskService {
    */
   retryFailed(generation: number): DocumentRunResult {
     const job = this.active
+    const retryableTargetIds = this.resolveRetryableTargetIds(job)
+    return this.startRetry(generation, retryableTargetIds)
+  }
+
+  /**
+   * 仅重试当前完成报告中的一个可重试目标，不重新解析文档或执行 OCR。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 当前完成报告中的稳定目标标识。
+   * @returns 是否接受重试以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  retryFailedTarget(generation: number, targetId: string): DocumentRunResult {
+    const job = this.active
+    if (typeof targetId !== 'string' || targetId.trim().length === 0 || targetId.length > 512 ||
+      parseDocumentTargetId(targetId) === null) {
+      return { accepted: false, code: 'invalid-target' }
+    }
+    if (!job?.completionReport) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    const retryableTargetIds = this.resolveRetryableTargetIds(job)
+    if (!retryableTargetIds.includes(targetId)) {
+      return { accepted: false, code: 'not-retryable-target' }
+    }
+    return this.startRetry(generation, [targetId])
+  }
+
+  /**
+   * 校验任务终态与新代际后，启动指定目标集合的重试。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetIds 本轮允许请求的稳定目标标识。
+   * @returns 是否接受重试以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  private startRetry(generation: number, targetIds: readonly string[]): DocumentRunResult {
+    const job = this.active
     if (this.disposed) return { accepted: false, code: 'service-disposed' }
     if ((job?.request.mode ?? 'translation') === 'ocr') {
       return { accepted: false, code: 'no-retryable-failures' }
@@ -419,7 +491,7 @@ export class DocumentWorkspaceTaskService {
         suggestedGeneration: this.highestGeneration + 1
       }
     }
-    const retryableTargetIds = this.resolveRetryableTargetIds(job)
+    const retryableTargetIds = [...new Set(targetIds)]
     const completionStatus = this.resolveCompletionStatus(job)
     const retryableTerminal = completionStatus
       ? completionStatus === 'partial' || completionStatus === 'failed'
@@ -446,6 +518,7 @@ export class DocumentWorkspaceTaskService {
     job.completionReport = undefined
     // 新代际允许重新进入运行态；旧终态快照只用于拒绝旧事件，不能阻止本次重试。
     job.lastSnapshot = undefined
+    job.historySaved = false
     job.controller = new AbortController()
     job.cancelled = false
     job.settled = false
@@ -460,7 +533,7 @@ export class DocumentWorkspaceTaskService {
    * @returns 单条历史快照；尚无完成报告时返回空数组。
    * @author zhenghq
    */
-  getHistory(): DocumentHistoryEntry[] {
+  getHistory(): DocumentCompletionHistoryEntry[] {
     const job = this.active
     if (!job?.completionReport) return []
     return [{
@@ -615,6 +688,15 @@ export class DocumentWorkspaceTaskService {
         rename: (source, target) => this.dependencies.rename(source, target),
         unlink: (path) => this.dependencies.unlink(path)
       })
+      try {
+        await this.dependencies.updateHistoryExportStatus?.(
+          job.jobId,
+          job.generation,
+          'saved'
+        )
+      } catch {
+        // PDF 已经成功落盘，历史状态更新失败不能反向把导出结果标记为失败。
+      }
       return {
         status: 'saved',
         ...(result.warnings.length > 0 ? { warnings: result.warnings } : {})
@@ -711,6 +793,9 @@ export class DocumentWorkspaceTaskService {
             job.task = state
             this.emitProgress(job, state)
           },
+          publishLanguageResolution: (languageResolution) => {
+            job.languageResolution = languageResolution
+          },
           publishTranslation: (translation) => {
             if (job.cancelled || job.settled || job.controller.signal.aborted) return
             job.translation = translation
@@ -752,6 +837,7 @@ export class DocumentWorkspaceTaskService {
       job.completionReport = result.completionReport
       job.failedTargetIds = result.failedTargetIds ?? result.completionReport?.failedTargetIds ?? []
       job.retryableTargetIds = result.retryableTargetIds ?? job.failedTargetIds
+      job.cacheHitTargetIds = result.cacheHitTargetIds ?? []
       this.emitCompleted(job, result.task)
     } catch (error) {
       if (job.cancelled || job.controller.signal.aborted) {
@@ -814,6 +900,9 @@ export class DocumentWorkspaceTaskService {
             job.task = state
             this.emitProgress(job, state)
           },
+          publishLanguageResolution: (languageResolution) => {
+            job.languageResolution = languageResolution
+          },
           publishTranslation: (nextTranslation) => {
             if (job.cancelled || job.settled || job.controller.signal.aborted) return
             job.translation = nextTranslation
@@ -851,6 +940,10 @@ export class DocumentWorkspaceTaskService {
       job.completionReport = result.completionReport
       job.failedTargetIds = result.failedTargetIds ?? result.completionReport?.failedTargetIds ?? []
       job.retryableTargetIds = result.retryableTargetIds ?? job.failedTargetIds
+      job.cacheHitTargetIds = [...new Set([
+        ...job.cacheHitTargetIds,
+        ...(result.cacheHitTargetIds ?? [])
+      ])]
       this.emitCompleted(job, result.task)
     } catch (error) {
       if (job.cancelled || job.controller.signal.aborted) {
@@ -916,6 +1009,9 @@ export class DocumentWorkspaceTaskService {
         languagePair: job.languageResolution.languagePair
       } : {}),
       ...(job.completionReport ? { completionReport: job.completionReport } : {}),
+      ...(job.cacheHitTargetIds.length > 0
+        ? { cacheHitTargetIds: [...job.cacheHitTargetIds] }
+        : {}),
       ...(retryableTargetIds.length > 0
         ? { retryableFailedBlocks: retryableTargetIds.length }
         : {}),
@@ -1025,11 +1121,30 @@ export class DocumentWorkspaceTaskService {
     job.settled = true
     job.task = task
     const incoming = this.snapshot(job, task)
+    this.saveHistory(job, incoming)
     const accepted = job.lastSnapshot
       ? selectDocumentWorkspaceSnapshot(job.lastSnapshot, incoming)
       : incoming
     if (accepted === job.lastSnapshot) return
     job.lastSnapshot = accepted
     this.dependencies.sendCompleted(accepted)
+  }
+
+  /**
+   * 保存完成或部分完成任务的完整历史快照。
+   * 保存必须在终态快照去重返回前发起，且每个任务代际最多尝试一次。
+   * @param job 当前任务。
+   * @param snapshot 当前终态快照。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private saveHistory(job: ActiveDocumentJob, snapshot: DocumentWorkspaceSnapshot): void {
+    if (job.historySaved || !this.dependencies.saveHistory ||
+      (snapshot.task.status !== 'completed' && snapshot.task.status !== 'partial') ||
+      !snapshot.source || !snapshot.translation || !snapshot.languagePair) {
+      return
+    }
+    job.historySaved = true
+    void this.dependencies.saveHistory(snapshot).catch(() => undefined)
   }
 }

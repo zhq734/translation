@@ -894,6 +894,41 @@ test('文档块级翻译增量必须通过受控 IPC 原位更新当前任务界
   assert.match(handler, /scheduleSnapshotRenderForTab\(tab, next\)/u)
 })
 
+test('失败块必须支持单目标重试并显示可定位状态，但不在译文区显示操作角标', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const types = read('src/shared/types.ts')
+  const preload = read('src/preload/index.ts')
+  const main = read('src/main/index.ts')
+  const channels = read('src/shared/documentWorkspace.ts')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+
+  assert.match(channels, /retryFailedTarget:\s*'document:retry-failed-target'/u)
+  assert.match(types, /retryFailedDocumentTarget\(\s*jobId: string,\s*generation: number,\s*targetId: string\s*\): Promise<DocumentRunResult>/u)
+  assert.match(preload, /retryFailedDocumentTarget:\s*\(jobId: string, generation: number, targetId: string\)/u)
+  assert.match(preload, /ipcRenderer\.invoke\('document:retry-failed-target', jobId, generation, targetId\)/u)
+  assert.match(main, /ipcMain\.handle\('document:retry-failed-target'/u)
+  assert.match(main, /parseDocumentTargetId\(targetId\)/u)
+
+  assert.match(source, /function markDocumentTargetStatuses\(/u)
+  assert.match(source, /data-translation-status.*failed/su)
+  assert.match(source, /function retryFailedDocumentTarget\(/u)
+  assert.match(source, /window\.api\.retryFailedDocumentTarget\(/u)
+  assert.match(source, /findDocumentTarget\(/u)
+  assert.doesNotMatch(source, /document-block-retry/u)
+  assert.doesNotMatch(source, /document-block-badge/u)
+  assert.doesNotMatch(source, /document\.badge\.(ocr|formula|table|cache)/u)
+  assert.doesNotMatch(source, /document\.retryBlock/u)
+  assert.match(css, /\.document-translation-failed\b/u)
+  assert.doesNotMatch(css, /\.document-block-(?:badge|retry)\b/u)
+  assert.match(css, /var\(--status-error\)/u)
+  assert.doesNotMatch(zh, /'document\.badge\.(?:ocr|formula|table|cache)'/u)
+  assert.doesNotMatch(zh, /'document\.retryBlock'/u)
+  assert.doesNotMatch(en, /'document\.badge\.(?:ocr|formula|table|cache)'/u)
+  assert.doesNotMatch(en, /'document\.retryBlock'/u)
+})
+
 test('生产 PDF 导出必须分流 OCR 原文双层导出与普通译文打印', () => {
   const main = read('src/main/index.ts')
 
@@ -1819,7 +1854,7 @@ test('解析告警必须按稳定 code 本地化并在双栏中可见', () => {
   assert.match(css, /\.document-warning-list/u)
 })
 
-test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖，译文按阅读顺序流式避让且不裁切', () => {
+test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖，译文锚定原位置且只在相交时避让', () => {
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
 
@@ -1848,11 +1883,24 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   assert.match(source, /appendImageOcrLayers\(wrapper, block, side\)/u)
   assert.match(source, /createOcrTranslationLayer\(block\)/u)
   assert.match(source, /dataset\.ocrText = 'true'/u)
-  assert.match(source, /--document-ocr-gap-before/u)
+  assert.match(source, /--document-ocr-source-top/u)
   assert.match(source, /resolveOcrRegionFontSize/u)
   assert.match(source, /resolveOcrRegionLineHeight/u)
   assert.match(source, /resolveOcrRegionPadding/u)
   assert.match(source, /resolveOcrRegionGapBefore/u)
+  assert.match(source, /resolveDocumentOcrRegionFlowTop/u)
+  assert.match(source, /function normalizeOcrTranslationLayout\(/u)
+  assert.match(source, /dataset\.sourceTop = String\(box\.y\)/u)
+  assert.match(
+    source,
+    /--document-ocr-source-height[^\n]*box\.height \* imageHeight/u,
+    'OCR 白底必须记录原识别框高度，短译文不能露出扫描原文'
+  )
+  assert.match(
+    source,
+    /--document-ocr-source-top-percent[^\n]*box\.y \* 100/u,
+    '独立图片会按预览栏缩放，OCR 顶部坐标必须同时提供百分比基准'
+  )
   assert.match(source, /pdfPreviewFontFamily\(region\.style\?\.fontFamily/u)
   assert.match(source, /dataset\.ocrTranslation = 'true'/u)
   assert.match(css, /\.document-ocr-region\s*\{[^}]*background:\s*var\(--document-paper-bg\)/su)
@@ -1862,23 +1910,35 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   assert.match(css, /\.document-ocr-region\s*\{[^}]*height:\s*auto/su)
   assert.match(
     css,
+    /\.document-ocr-region\s*\{[^}]*min-height:\s*calc\([\s\S]*?var\(--document-ocr-source-height,[^)]*\)\s*\*\s*var\(--document-page-scale/su,
+    'OCR 白底的最小高度必须跟随原识别框并按页面缩放'
+  )
+  assert.match(
+    css,
     /\.document-ocr-region\s*\{[^}]*line-height:\s*var\(--document-ocr-line-height,\s*1\.15\)/su
   )
   assert.doesNotMatch(css, /\.document-ocr-region\s*\{[^}]*--document-ocr-min-height/su)
-  assert.match(css, /\.document-ocr-original-mask\s*\{[^}]*position:\s*absolute/su)
-  assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*pointer-events:\s*none/su)
-  assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*height:\s*calc\(/su)
-  assert.match(css, /\.document-ocr-original-mask-layer\s*\{[^}]*var\(--document-image-height,\s*0px\)\s*\*\s*var\(--document-page-scale,\s*1\)/su)
+  assert.doesNotMatch(source, /document-ocr-original-mask-layer/u)
+  assert.doesNotMatch(css, /\.document-ocr-original-mask/u)
   assert.match(css, /@font-face\s*\{[^}]*font-family:\s*'Noto Sans SC'/su)
   assert.match(css, /assets\/fonts\/NotoSansSC-Regular\.ttf/u)
   assert.match(
     css,
     /\.document-page\[data-layout='translation-flow'\] \.document-image-block\[data-ocr-translation='true'\][\s\S]*?overflow:\s*visible/su
   )
+  assert.match(css, /\.document-ocr-region\s*\{[^}]*position:\s*absolute/su)
   assert.match(
     css,
-    /\.document-ocr-translation-layer\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-direction:\s*column/su
+    /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s+\.document-ocr-translation-layer\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/su,
+    '只有独立图片原文页的 OCR 覆盖层必须与图片共享完整矩形，译文流式页不能脱离文档流'
   )
+  assert.match(
+    css,
+    /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s+\.document-ocr-region\s*\{[^}]*top:\s*var\(--document-ocr-source-top-percent/su,
+    '只有独立图片原文页使用百分比顶部坐标，译文流式页必须继续使用像素坐标'
+  )
+  assert.doesNotMatch(css, /\.document-ocr-region\s*\{[^}]*margin-top:/su)
+  assert.doesNotMatch(css, /\.document-ocr-translation-layer\s*\{[^}]*flex-direction:\s*column/su)
 })
 
 test('图片 OCR 原文必须同时作为透明打印文字层注入译文栏并支持屏幕切换显示', () => {
@@ -1981,6 +2041,19 @@ test('PDF 与图片任务必须在顶部栏始终显示 OCR 原文切换入口',
   assert.match(fn, /const format = snapshot\.source\?\.source\.format/u)
   assert.match(fn, /format === 'pdf' \|\| format === 'image' \|\| hasOcrSourceText\(snapshot\.source\)/u)
   assert.match(fn, /sourceOcrMode\.hidden = !\(/u)
+})
+
+test('OCR 切换入口在准备阶段缺少源模型时必须按当前文件格式保持可见', () => {
+  const source = read('src/renderer/src/document.ts')
+  const start = source.indexOf('function renderOcrDisplayModeControls(')
+  const end = source.indexOf('/**', start + 1)
+  const fn = source.slice(start, end)
+
+  assert.match(
+    fn,
+    /const format = snapshot\.source\?\.source\.format \?\? getActiveDocumentTab\(\)\?\.selection\.format/u,
+    '准备中的快照可能尚未包含 source，不能因此丢失当前 Tab 已识别的文件格式'
+  )
 })
 
 test('Markdown 链接文字必须可翻译而链接目标和 HTML 标签必须保持受保护', () => {
@@ -2543,7 +2616,8 @@ test('PDF OCR 原文必须使用 Canvas 底图并叠加可缩放的透明文字�
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
 
-  assert.match(source, /if \(model\.source\.format === 'pdf' && \(side === 'source' \|\| ocrDisplayMode === 'ocr-text'\)\)/u)
+  assert.match(source, /if \(model\.source\.format === 'pdf' && side === 'source'\)/u)
+  assert.match(source, /else if \(model\.source\.format === 'pdf' && ocrDisplayMode === 'ocr-text'\)/u)
   assert.match(source, /const textLayer = createPdfOcrTextLayer\(modelPage\)/u)
   assert.match(source, /if \(textLayer\) article\.append\(textLayer\)/u)
   assert.match(source, /--document-pdf-page-width/u)
@@ -2708,6 +2782,31 @@ test('切换 OCR 原文/译文必须取消旧任务、清空进度并按新模�
   assert.match(handler, /await startDocumentTabTranslation\(tab\)/u)
 })
 
+test('切换 OCR 原文/译文只能重建右侧内容并保留左侧原文预览', () => {
+  const source = read('src/renderer/src/document.ts')
+  const resetStart = source.indexOf('function resetDocumentRunForModeSwitch(')
+  const resetEnd = source.indexOf('/**', resetStart + 1)
+  const resetSource = source.slice(resetStart, resetEnd)
+  const startStart = source.indexOf('async function startDocumentTabTranslation(')
+  const startEnd = source.indexOf('/**', startStart + 1)
+  const startSource = source.slice(startStart, startEnd)
+  const renderStart = source.indexOf('function renderSnapshot(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+
+  assert.match(source, /function clearActiveTabTranslationPreview\(\): void/u)
+  assert.match(resetSource, /clearActiveTabTranslationPreview\(\)/u)
+  assert.doesNotMatch(resetSource, /sourceContent\.replaceChildren\(\)/u)
+  assert.doesNotMatch(resetSource, /renderedSourcePreviewIdentity = ''/u)
+  assert.match(startSource, /clearActiveTabTranslationPreview\(\)/u)
+  assert.doesNotMatch(startSource, /clearActiveTabPreview\(\)/u)
+  assert.match(
+    renderSource,
+    /const sourcePreviewIdentity = snapshot\.source\s*\?\s*documentPreviewIdentity\(snapshot\.source\)\s*:\s*renderedSourcePreviewIdentity/u,
+    '新任务准备阶段缺少 source 时必须沿用已渲染的左侧原文'
+  )
+})
+
 test('启动请求期间切换 OCR 模式必须立即清空旧进度并隔离旧任务事件', () => {
   const source = read('src/renderer/src/document.ts')
   const start = source.indexOf("button.addEventListener('click'")
@@ -2755,4 +2854,118 @@ test('文件入口必须调用多文件预检并允许选择图片原文和 OCR 
   assert.doesNotMatch(source, /function replaceDocumentFromWorkbench\(\)/u)
   assert.match(css, /aspect-ratio:\s*var\(--document-page-aspect-ratio\)/u)
   assert.match(css, /object-fit:\s*contain/u)
+})
+
+test('文档工作台必须提供三模式、同步、页码、目录与缩放控件', () => {
+  const html = read('src/renderer/document.html')
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+
+  assert.match(html, /data-document-view-mode="source"/u)
+  assert.match(html, /data-document-view-mode="translation"/u)
+  assert.match(html, /data-document-view-mode="spread"/u)
+  assert.match(html, /id="document-sync-scroll"[^>]*role="switch"[^>]*aria-checked="true"/u)
+  assert.match(html, /id="document-page-input"[^>]*inputmode="numeric"/u)
+  assert.match(html, /id="document-page-previous"/u)
+  assert.match(html, /id="document-page-next"/u)
+  assert.match(html, /id="document-toc-button"[^>]*aria-haspopup="listbox"/u)
+  assert.match(html, /id="document-toc-list"[^>]*role="listbox"/u)
+  assert.match(html, /id="document-zoom-out"/u)
+  assert.match(html, /id="document-zoom-value"[^>]*aria-live="polite"/u)
+  assert.match(html, /id="document-zoom-in"/u)
+  assert.match(html, /id="document-zoom-reset"/u)
+  assert.match(html, /id="document-zoom-fit"/u)
+  assert.match(source, /resolveDocumentPageJump/u)
+  assert.match(source, /resolveDocumentTocTarget/u)
+  assert.match(source, /resolveDocumentBlockHighlight/u)
+  assert.match(source, /resolveFitDocumentZoom/u)
+  assert.match(source, /clampDocumentZoom/u)
+  assert.match(source, /function scrollToDocumentTarget\(/u)
+  assert.match(source, /function highlightDocumentBlock\(/u)
+  assert.match(source, /function setDocumentScrollSync\(/u)
+  assert.match(source, /function setDocumentZoom\(/u)
+  assert.match(source, /data-active-block["']\s*,\s*["']true["']/u)
+  assert.match(css, /\.document-block-active/u)
+  assert.match(css, /\.document-page-scroll\s*\{[^}]*scroll-behavior:/su)
+  assert.match(zh, /'document\.viewMode\.source'/u)
+  assert.match(en, /'document\.viewMode\.source'/u)
+  assert.match(zh, /'document\.syncScroll'/u)
+  assert.match(en, /'document\.syncScroll'/u)
+  assert.match(zh, /'document\.zoom\.fit'/u)
+  assert.match(en, /'document\.zoom\.fit'/u)
+})
+
+test('工作台状态恢复必须先重新授权文件，并以内容指纹拒绝不一致的旧模型', () => {
+  const source = read('src/renderer/src/document.ts')
+  const types = read('src/shared/types.ts')
+  const main = read('src/main/index.ts')
+  const restoreStart = source.indexOf('async function restoreDocumentViewerState(')
+  const restoreEnd = source.indexOf('/**', restoreStart + 1)
+  const restoreSource = source.slice(restoreStart, restoreEnd)
+  const validationStart = main.indexOf('async function validateApprovedDocumentPath')
+  const validationEnd = main.indexOf('/**', validationStart + 1)
+  const validationSource = main.slice(validationStart, validationEnd)
+
+  assert.ok(restoreStart > -1)
+  assert.match(types, /interface DocumentFileSelectionSuccess[\s\S]*?sha256: string/u)
+  assert.match(validationSource, /createHash\('sha256'\)/u)
+  assert.match(validationSource, /createReadStream\(\)/u)
+  assert.match(validationSource, /sha256/u)
+  assert.match(source, /readDocumentViewerState\(\)/u)
+  assert.match(source, /window\.api\.approveDocumentFile\(state\.file\.path\)/u)
+  assert.match(source, /validateRestoredDocumentViewerFile\(state\.file, authorized\)/u)
+  assert.match(source, /createRestoredDocumentWorkspaceSnapshot\(state\)/u)
+  assert.match(source, /restoreDocumentViewerState\(\)/u)
+})
+
+test('恢复快照不得复用旧任务身份，且必须禁用旧任务操作与资源预览', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+  const taskStart = source.indexOf('function renderTaskState(')
+  const taskEnd = source.indexOf('/**', taskStart + 1)
+  const taskSource = source.slice(taskStart, taskEnd)
+  const exportStart = source.indexOf('async function exportTranslatedPdf(')
+  const exportEnd = source.indexOf('/**', exportStart + 1)
+  const exportSource = source.slice(exportStart, exportEnd)
+  const retryStart = source.indexOf('async function retryFailedDocumentTranslation(')
+  const retryEnd = source.indexOf('/**', retryStart + 1)
+  const retrySource = source.slice(retryStart, retryEnd)
+
+  assert.match(source, /const RESTORED_DOCUMENT_JOB_ID = 'restored-viewer-state'/u)
+  assert.match(source, /function isRestoredDocumentTab\(/u)
+  assert.match(source, /tab\.activeJobId = null/u)
+  assert.match(source, /tab\.expectedJobId = null/u)
+  assert.match(source, /tab\.generation = 0/u)
+  assert.match(source, /tab\.startInFlight = false/u)
+  assert.match(renderSource, /isRestoredDocumentTab\(/u)
+  assert.match(renderSource, /renderRestoredDocumentSourcePreview/u)
+  assert.doesNotMatch(renderSource, /getDocumentSource\(jobId\)[\s\S]*?isRestoredDocumentTab/u)
+  assert.match(taskSource, /isRestoredDocumentTab\(/u)
+  assert.match(taskSource, /exportButton\.disabled = true/u)
+  assert.match(taskSource, /retryButton\.disabled = true/u)
+  assert.match(taskSource, /cancelButton\.hidden = true/u)
+  assert.match(exportSource, /isRestoredDocumentTab\(tab\)/u)
+  assert.match(retrySource, /isRestoredDocumentTab\(tab\)/u)
+})
+
+test('工作台必须在滚动、缩放、模式、语言与译文变化后节流保存状态', () => {
+  const source = read('src/renderer/src/document.ts')
+
+  assert.match(source, /function persistActiveDocumentViewerState\(/u)
+  assert.match(source, /function scheduleDocumentViewerStatePersist\(/u)
+  assert.match(source, /function readDocumentViewerState\(/u)
+  assert.match(source, /function writeDocumentViewerState\(/u)
+  assert.match(source, /serializeDocumentViewerState/u)
+  assert.match(source, /parseDocumentViewerState/u)
+  assert.match(source, /sourceContent\.addEventListener\('scroll',[\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /translationContent\.addEventListener\('scroll',[\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /function setDocumentZoom\([\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /function setDocumentViewMode\([\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /function retranslateDocumentAfterLanguageChange\([\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /function routeDocumentSnapshot\([\s\S]*?scheduleDocumentViewerStatePersist/u)
+  assert.match(source, /window\.addEventListener\('beforeunload',[\s\S]*?persistActiveDocumentViewerState/u)
 })

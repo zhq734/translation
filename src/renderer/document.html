@@ -63,8 +63,31 @@
               <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
             </div>
             <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
+              <button type="button" data-document-view-mode="source" aria-pressed="false" data-i18n="document.viewMode.source">Source only</button>
               <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
               <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
+            </div>
+            <div class="document-reading-controls">
+              <button id="document-sync-scroll" class="document-reading-button" type="button" role="switch" aria-checked="true" data-i18n-attr="aria-label:document.syncScroll;title:document.syncScroll" aria-label="Synchronize scrolling" title="Synchronize scrolling">
+                <span aria-hidden="true">↕</span>
+                <span data-i18n="document.syncScroll">Synchronize scrolling</span>
+              </button>
+              <div class="document-page-navigation" role="group" data-i18n-attr="aria-label:document.page.input" aria-label="Page navigation">
+                <button id="document-page-previous" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.previous;title:document.page.previous" aria-label="Previous page" title="Previous page">‹</button>
+                <input id="document-page-input" class="document-page-input" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:document.page.input;placeholder:document.page.input" aria-label="Jump to page" placeholder="Page" />
+                <button id="document-page-next" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.next;title:document.page.next" aria-label="Next page" title="Next page">›</button>
+              </div>
+              <div class="document-toc">
+                <button id="document-toc-button" class="document-reading-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-toc-list" data-i18n="document.toc">Contents</button>
+                <div id="document-toc-list" class="document-toc-list" role="listbox" data-i18n-attr="aria-label:document.toc" aria-label="Contents" hidden></div>
+              </div>
+              <div class="document-zoom-controls" role="group" data-i18n-attr="aria-label:document.zoom.in" aria-label="Zoom">
+                <button id="document-zoom-out" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.out;title:document.zoom.out" aria-label="Zoom out" title="Zoom out">−</button>
+                <span id="document-zoom-value" class="document-zoom-value" aria-live="polite">100%</span>
+                <button id="document-zoom-in" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.in;title:document.zoom.in" aria-label="Zoom in" title="Zoom in">+</button>
+                <button id="document-zoom-reset" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.reset;title:document.zoom.reset" aria-label="Reset to 100%" title="Reset to 100%">100%</button>
+                <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit">Fit width</button>
+              </div>
             </div>
           </div>
           <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>

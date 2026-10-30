@@ -9,6 +9,7 @@ import {
 import { createAiStreamParser } from './aiStreamProtocol'
 import { AiTranslationStreamSanitizer } from '../shared/aiTranslationStreamSanitize'
 import { translateMain } from './messages'
+import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
 
 /** AI 翻译网络请求函数签名，复用主进程代理会话。 */
 export type AiFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
@@ -37,6 +38,8 @@ export interface AiTranslateInput {
   sourceLang: string
   /** 已解析的目标语言。 */
   targetLang: string
+  /** 可选的文档术语与相邻语义上下文。 */
+  context?: DocumentTranslationRequestContext
 }
 
 /** 流式翻译回调与取消选项。 */
@@ -219,6 +222,7 @@ export class AiTranslationClient {
         text: input.text,
         sourceLang: input.sourceLang,
         targetLang: input.targetLang,
+        context: input.context,
         stream
       })
     } catch (error) {

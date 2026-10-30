@@ -620,6 +620,9 @@ export function selectDocumentWorkspaceSnapshot(
     if (current.completionReport === undefined && incoming.completionReport !== undefined) {
       completed.completionReport = incoming.completionReport
     }
+    if (current.cacheHitTargetIds === undefined && incoming.cacheHitTargetIds !== undefined) {
+      completed.cacheHitTargetIds = incoming.cacheHitTargetIds
+    }
     if (current.retryableFailedBlocks === undefined && incoming.retryableFailedBlocks !== undefined) {
       completed.retryableFailedBlocks = incoming.retryableFailedBlocks
     }

@@ -319,6 +319,16 @@ const api: Api = {
   retryFailedDocument: (jobId: string, generation: number): Promise<DocumentRunResult> =>
     ipcRenderer.invoke('document:retry-failed', jobId, generation),
   /**
+   * 使用新代际仅重试当前文档中的一个失败目标。
+   * @param jobId 任务标识。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 稳定目标标识。
+   * @returns 主进程是否接受重试。
+   * @author zhenghq
+   */
+  retryFailedDocumentTarget: (jobId: string, generation: number, targetId: string): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:retry-failed-target', jobId, generation, targetId),
+  /**
    * 取消当前文档翻译任务。
    * @param jobId 任务标识。
    * @param generation 任务代际。

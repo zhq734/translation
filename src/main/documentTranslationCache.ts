@@ -198,6 +198,22 @@ export class DocumentTranslationCacheStore {
   }
 
   /**
+   * 删除指定源文件对应的全部翻译缓存条目，并保留其他源文件缓存。
+   * @param sourceSha256 源文件内容哈希。
+   * @returns 删除完成后的 Promise。
+   * @author zhenghq
+   */
+  async deleteBySourceSha256(sourceSha256: string): Promise<void> {
+    if (!sourceSha256.trim()) return
+    await this.enqueue(async () => {
+      const entries = await this.load()
+      const retained = entries.filter((entry) => entry.value.sourceSha256 !== sourceSha256)
+      if (retained.length === entries.length) return
+      await this.persist(retained)
+    })
+  }
+
+  /**
    * 将操作加入串行队列，并保持队列在异常后继续可用。
    * @param operation 待执行操作。
    * @returns 操作完成后的 Promise。

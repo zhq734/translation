@@ -113,6 +113,8 @@ export interface DocumentPipelineResult {
   failedTargetIds?: string[]
   /** 包含失败、未完成与疑似未翻译目标的完整可重试集合。 */
   retryableTargetIds?: string[]
+  /** 本次直接从成功缓存恢复、未请求翻译提供方的目标标识。 */
+  cacheHitTargetIds?: string[]
   /** 基于完整文档目标生成的完成报告。 */
   completionReport?: DocumentCompletionReport
   /** 用户选择的原始源语言偏好。 */
@@ -553,7 +555,8 @@ function finalizeTranslationResult(
   ocrFailedCount: number,
   deps: DocumentPipelineDeps,
   languageResolution: Pick<DocumentPipelineResult, 'sourcePreference' | 'targetPreference' | 'languagePair'>,
-  targetStates?: Map<string, TargetTranslationState>
+  targetStates?: Map<string, TargetTranslationState>,
+  cacheHitTargetIds: readonly string[] = []
 ): DocumentPipelineResult {
   const completionReport = buildDocumentCompletionReport(
     source,
@@ -599,6 +602,7 @@ function finalizeTranslationResult(
     task: finalState,
     failedTargetIds: [...completionReport.failedTargetIds],
     retryableTargetIds,
+    ...(cacheHitTargetIds.length > 0 ? { cacheHitTargetIds: [...cacheHitTargetIds] } : {}),
     completionReport,
     ...languageResolution,
     languageResolution: {
@@ -3000,7 +3004,8 @@ export async function runDocumentTranslationPipeline(
     ocrFailedCount,
     deps,
     languageResolution,
-    targetStates
+    targetStates,
+    [...cachedTargetIds]
   )
 }
 
@@ -3531,6 +3536,7 @@ export async function retryFailedDocumentTranslationPipeline(
     0,
     deps,
     languageResolution,
-    targetStates
+    targetStates,
+    [...cachedTargetIds]
   )
 }

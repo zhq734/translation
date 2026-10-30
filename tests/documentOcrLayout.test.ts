@@ -5,6 +5,8 @@ import {
   DOCUMENT_OCR_LINE_HEIGHT_RATIO,
   DOCUMENT_OCR_UNIFORM_FONT_SIZE,
   normalizeDocumentOcrRegionBox,
+  resolveDocumentOcrOverlayBox,
+  resolveDocumentOcrRegionFlowTop,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -78,5 +80,32 @@ test('OCR 透明文字层坐标必须有效、不越界并保留最小可命中�
   assert.deepEqual(
     normalizeDocumentOcrRegionBox({ x: 0.9, y: 0.8, width: 0.5, height: 0.5 }),
     { x: 0.9, y: 0.8, width: 0.1, height: 0.2 }
+  )
+})
+
+test('OCR 遮罩与译文必须共用同一个安全覆盖框，左对齐短文本不能扩到图片右边界', () => {
+  assert.deepEqual(
+    resolveDocumentOcrOverlayBox({ x: 0.25, y: 0.3, width: 0.2, height: 0.08 }),
+    { x: 0.25, y: 0.3, width: 0.2, height: 0.08 }
+  )
+  assert.deepEqual(
+    resolveDocumentOcrOverlayBox({ x: 0.9, y: 0.8, width: 0.5, height: 0.5 }),
+    { x: 0.9, y: 0.8, width: 0.1, height: 0.2 }
+  )
+})
+
+test('OCR 译文必须优先锚定原文顶部，仅横向重叠时才避让前序译文', () => {
+  const previous = { left: 20, right: 120, top: 40, bottom: 96 }
+  assert.equal(
+    resolveDocumentOcrRegionFlowTop(40, { left: 20, right: 120 }, [previous], 4),
+    100
+  )
+  assert.equal(
+    resolveDocumentOcrRegionFlowTop(140, { left: 20, right: 120 }, [previous], 4),
+    140
+  )
+  assert.equal(
+    resolveDocumentOcrRegionFlowTop(40, { left: 130, right: 230 }, [previous], 4),
+    40
   )
 })

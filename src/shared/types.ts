@@ -51,6 +51,8 @@ export interface DocumentFileSelectionSuccess {
   size: number
   /** 已校验的文档格式。 */
   format: DocumentFormat
+  /** 完整文件内容的 SHA-256 指纹，用于安全恢复旧译文。 */
+  sha256: string
   /** 当前格式可用的解析、OCR 与导出能力。 */
   capabilities: DocumentCapabilities
 }
@@ -1231,6 +1233,12 @@ export interface Api {
   runDocument(request: DocumentRunRequest): Promise<DocumentRunResult>
   /** 使用新代际重新翻译指定文档任务中的失败项。 */
   retryFailedDocument(jobId: string, generation: number): Promise<DocumentRunResult>
+  /** 使用新代际仅重试指定文档任务中的一个可重试目标。 */
+  retryFailedDocumentTarget(
+    jobId: string,
+    generation: number,
+    targetId: string
+  ): Promise<DocumentRunResult>
   /** 取消当前文档翻译任务。 */
   cancelDocument(jobId: string, generation: number): Promise<boolean>
   /** 关闭文档标签后释放对应任务及其资源。 */

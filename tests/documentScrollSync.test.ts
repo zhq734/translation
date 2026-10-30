@@ -43,3 +43,42 @@ test('用户主动滚动任一侧时仍保留双向联动能力', () => {
     translationLayoutUpdating: false
   }), true)
 })
+
+test('同步开关关闭后任何真实用户滚动都不得联动另一侧', () => {
+  assert.equal(shouldSyncDocumentScroll('source', {
+    userScrollSide: 'source',
+    programmatic: false,
+    translationLayoutUpdating: false,
+    enabled: false
+  }), false)
+  assert.equal(shouldSyncDocumentScroll('translation', {
+    userScrollSide: 'translation',
+    programmatic: false,
+    translationLayoutUpdating: false,
+    enabled: false
+  }), false)
+})
+
+test('直接拖动另一侧时解除同步，直到用户重新开启', () => {
+  assert.equal(shouldSyncDocumentScroll('translation', {
+    userScrollSide: 'translation',
+    programmatic: false,
+    translationLayoutUpdating: false,
+    enabled: true,
+    syncedSide: 'source'
+  }), false)
+  assert.equal(shouldSyncDocumentScroll('source', {
+    userScrollSide: 'source',
+    programmatic: false,
+    translationLayoutUpdating: false,
+    enabled: true,
+    syncedSide: 'translation'
+  }), false)
+  assert.equal(shouldSyncDocumentScroll('source', {
+    userScrollSide: 'source',
+    programmatic: false,
+    translationLayoutUpdating: false,
+    enabled: true,
+    syncedSide: 'source'
+  }), true)
+})

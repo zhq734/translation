@@ -116,8 +116,37 @@ function mergePaddleItemBoxes(
 }
 
 /**
+ * 将同一纵向行中的检测条目按横向间距拆分为独立视觉行。
+ * 间距阈值至少为 24 像素且不小于相邻文字高度的两倍，避免把同一排相距较远的独立标签合并成整行。
+ * @param items 已按 X 坐标排序的同行检测条目。
+ * @returns 按从左到右顺序排列的视觉行分组。
+ * @author zhenghq
+ */
+function splitPaddleVisualRows<
+  T extends { box: { x: number; y: number; width: number; height: number } }
+>(items: T[]): T[][] {
+  if (items.length === 0) return []
+  const rows: T[][] = [[items[0]!]]
+  let previous = items[0]!
+  for (const item of items.slice(1)) {
+    const previousRight = previous.box.x + Math.max(0, previous.box.width)
+    const gap = item.box.x - previousRight
+    const adjacentHeight = Math.max(
+      previous.box.height || 0,
+      item.box.height || 0,
+      1
+    )
+    const splitThreshold = Math.max(24, adjacentHeight * 2)
+    if (gap > splitThreshold) rows.push([item])
+    else rows[rows.length - 1]!.push(item)
+    previous = item
+  }
+  return rows
+}
+
+/**
  * 将 @gutenye/ocr-node 返回的原始检测行列表规范化为 OcrTextLine 数组。
- * 过滤低置信度与空白文本，按包围盒 Y 轴分组后同行内按 X 排序拼接。
+ * 过滤低置信度与空白文本，按包围盒 Y 轴分组后，再按横向间距拆分独立视觉行并拼接文本。
  * @param lines @gutenye/ocr-node 检测结果。
  * @returns 规范化后的文本行数组。
  * @author zhenghq
@@ -167,17 +196,19 @@ export function normalizePaddleLines(lines: PaddleDetectItem[] | null | undefine
 
   const mergedLines = groups
     .sort((a, b) => a.mid - b.mid)
-    .map((group): OcrTextLine | null => {
+    .flatMap((group): OcrTextLine[] => {
       const sorted = group.items.slice().sort((a, b) => a.box.x - b.box.x)
-      const text = joinOcrFragments(sorted.map((item) => item.text))
-      if (!text) return null
-      return {
-        text,
-        box: mergePaddleItemBoxes(sorted),
-        confidence: sorted.reduce((sum, item) => sum + (item.confidence ?? 1), 0) / sorted.length
-      } satisfies OcrTextLine
+      return splitPaddleVisualRows(sorted).flatMap((row): OcrTextLine[] => {
+        const text = joinOcrFragments(row.map((item) => item.text))
+        if (!text) return []
+        return [{
+          text,
+          box: mergePaddleItemBoxes(row),
+          confidence: row.reduce((sum, item) => sum + (item.confidence ?? 1), 0) / row.length
+        } satisfies OcrTextLine]
+      })
     })
-  return mergedLines.filter((line): line is OcrTextLine => line !== null)
+  return mergedLines
 }
 
 /** @gutenye/ocr-node 实例接口（最小化依赖类型，方便测试注入）。 */

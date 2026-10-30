@@ -30,6 +30,18 @@ export interface DocumentOcrNormalizedBox {
   height: number
 }
 
+/** OCR 译文在图片覆盖层中的实际二维占位。 */
+export interface DocumentOcrFlowRect {
+  /** 左边界，单位与覆盖层一致。 */
+  left: number
+  /** 右边界，单位与覆盖层一致。 */
+  right: number
+  /** 上边界，单位与覆盖层一致。 */
+  top: number
+  /** 下边界，单位与覆盖层一致。 */
+  bottom: number
+}
+
 /**
  * 将 OCR 区域坐标归一化到图片范围内，并保证透明文字层始终具有可命中尺寸。
  * @param bbox OCR 引擎返回的原始区域坐标。
@@ -57,6 +69,51 @@ export function normalizeDocumentOcrRegionBox(
     width: normalizeValue(Math.min(availableWidth, Math.max(DOCUMENT_OCR_MIN_REGION_SIZE, rawWidth))),
     height: normalizeValue(Math.min(availableHeight, Math.max(DOCUMENT_OCR_MIN_REGION_SIZE, rawHeight)))
   }
+}
+
+/**
+ * 计算 OCR 遮罩和可见译文共用的安全覆盖框。
+ * 两者必须使用完全相同的边界，避免遮罩仍覆盖原文时译文已扩展到相邻插图。
+ * @param bbox OCR 引擎返回的原始区域坐标。
+ * @returns 已收敛到图片范围内的统一覆盖矩形。
+ * @author zhenghq
+ */
+export function resolveDocumentOcrOverlayBox(
+  bbox: DocumentOcrNormalizedBox
+): DocumentOcrNormalizedBox {
+  return normalizeDocumentOcrRegionBox(bbox)
+}
+
+/**
+ * 计算 OCR 译文的最终顶部位置：优先保持原文坐标，只有横向相交且前序译文越过时才向下避让。
+ * 该规则避免同一排的多个短区域被前一项的实际高度逐级推偏，同时保证长译文不会互相覆盖。
+ * @param sourceTop 当前区域由 OCR 坐标换算出的原始顶部位置。
+ * @param horizontalRange 当前区域的横向范围。
+ * @param previousRegions 已完成排版的全部前序区域。
+ * @param gap 需要避让时与前序区域之间保留的间距。
+ * @returns 当前区域最终使用的顶部位置。
+ * @author zhenghq
+ */
+export function resolveDocumentOcrRegionFlowTop(
+  sourceTop: number,
+  horizontalRange: Pick<DocumentOcrFlowRect, 'left' | 'right'>,
+  previousRegions: readonly DocumentOcrFlowRect[],
+  gap = 0
+): number {
+  const safeTop = Number.isFinite(sourceTop) ? Math.max(0, sourceTop) : 0
+  const safeGap = Number.isFinite(gap) ? Math.max(0, gap) : 0
+  const left = Math.min(horizontalRange.left, horizontalRange.right)
+  const right = Math.max(horizontalRange.left, horizontalRange.right)
+  let top = safeTop
+  for (const previous of previousRegions) {
+    const previousLeft = Math.min(previous.left, previous.right)
+    const previousRight = Math.max(previous.left, previous.right)
+    // 横向完全错开的区域属于不同列，不能因为前一项译文变长而整体下移。
+    if (right <= previousLeft || left >= previousRight) continue
+    if (!Number.isFinite(previous.bottom)) continue
+    top = Math.max(top, previous.bottom + safeGap)
+  }
+  return Math.round(top * 1000) / 1000
 }
 
 /** OCR 译文水平内边距上限，单位为页面点或预览逻辑像素。 */
