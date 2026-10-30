@@ -1,5 +1,7 @@
 import type { DocumentModel, DocumentWarning } from './documentTypes.ts'
 import type { DocumentTaskState } from './documentTask.ts'
+import type { DocumentLanguagePair } from './documentLanguageDirection.ts'
+import type { DocumentCompletionReport } from './documentCompletion.ts'
 
 /** 文档工作台任务请求；路径必须来自当前窗口已批准的文件选择结果。 */
 export interface DocumentRunRequest {
@@ -27,10 +29,28 @@ export interface DocumentWorkspaceSnapshot {
   source?: DocumentModel
   /** 翻译后的文档模型；翻译完成前可以省略。 */
   translation?: DocumentModel
+  /** 用户选择的原始源语言偏好；完成方向解析后返回。 */
+  sourcePreference?: string
+  /** 用户选择的原始目标语言偏好；完成方向解析后返回。 */
+  targetPreference?: string
+  /** 本任务冻结并在所有批次、回退与重试中复用的实际语言对。 */
+  languagePair?: DocumentLanguagePair
+  /** 当前任务代际对应的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
   /** 翻译阶段失败且可安全重试的块数量。 */
   retryableFailedBlocks?: number
   /** 脱敏错误分类。 */
   errorCode?: string
+}
+
+/** 当前任务完成报告的只读历史快照，用于恢复审阅与后续历史列表接入。 */
+export interface DocumentHistoryEntry {
+  /** 任务标识。 */
+  jobId: string
+  /** 快照对应的任务代际。 */
+  generation: number
+  /** 该代际生成的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
 }
 
 /** 文档任务启动结果。 */
@@ -43,6 +63,16 @@ export interface DocumentRunResult {
   code?: string
   /** 代际冲突时返回主进程可安全采用的下一个任务代际。 */
   suggestedGeneration?: number
+}
+
+/** PDF 导出请求；任务标识、代际和显式模式共同构成导出授权。 */
+export interface DocumentExportRequest {
+  /** 发起导出的任务标识。 */
+  jobId: string
+  /** 发起导出的任务代际。 */
+  generation: number
+  /** 完整导出或用户明确确认的部分导出。 */
+  mode: 'complete' | 'partial'
 }
 
 /** PDF 导出结果。 */

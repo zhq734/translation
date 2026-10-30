@@ -13,6 +13,7 @@ import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
 import type { DocumentPlatformCapability } from './documentPlatformCapability'
 import type {
   DocumentAssetResult,
+  DocumentExportRequest,
   DocumentExportResult,
   DocumentRunRequest,
   DocumentRunResult,
@@ -28,6 +29,7 @@ export type {
 export type { DocumentPlatformCapability } from './documentPlatformCapability'
 export type {
   DocumentAssetResult,
+  DocumentExportRequest,
   DocumentExportResult,
   DocumentRunRequest,
   DocumentRunResult,
@@ -1215,8 +1217,8 @@ export interface Api {
   retryFailedDocument(generation: number): Promise<DocumentRunResult>
   /** 取消当前文档翻译任务。 */
   cancelDocument(jobId: string, generation: number): Promise<boolean>
-  /** 将当前译文导出为 PDF。 */
-  exportDocumentPdf(): Promise<DocumentExportResult>
+  /** 校验当前任务并导出完整或已确认的部分 PDF。 */
+  exportDocumentPdf(request: DocumentExportRequest): Promise<DocumentExportResult>
   /** 读取当前任务中的受控图片资源。 */
   getDocumentAsset(assetId: string): Promise<DocumentAssetResult>
   /** 读取当前活动 PDF 任务的原始字节，供 PDF.js 原生预览。 */

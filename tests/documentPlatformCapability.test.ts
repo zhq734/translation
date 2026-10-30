@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   detectDocumentPlatformCapability,
+  getDocumentPlatformUnsupportedMessageKey,
   getDocumentPlatformCapability,
   type DocumentPlatformInput
 } from '../src/shared/documentPlatformCapability.ts'
@@ -91,3 +93,38 @@ test('当前运行时能力探测应复用纯函数并允许注入环境', () =>
   assert.equal(capability.reason, 'windows-7-unsupported')
 })
 
+test('平台不支持原因必须映射为稳定且可翻译的提示词条', () => {
+  assert.equal(
+    getDocumentPlatformUnsupportedMessageKey({ supported: false, reason: 'windows-7-unsupported' }),
+    'document.error.windows7Unsupported'
+  )
+  assert.equal(
+    getDocumentPlatformUnsupportedMessageKey({ supported: false, reason: 'unsupported-platform' }),
+    'document.error.unsupportedPlatform'
+  )
+  assert.equal(
+    getDocumentPlatformUnsupportedMessageKey({ supported: false, reason: 'unsupported-architecture' }),
+    'document.error.unsupportedPlatform'
+  )
+  assert.equal(getDocumentPlatformUnsupportedMessageKey({ supported: true, reason: null }), null)
+})
+
+test('弹窗与快捷键入口必须在隐藏窗口或创建窗口前统一拒绝不兼容平台', () => {
+  const main = readFileSync('src/main/index.ts', 'utf8')
+
+  for (const functionName of [
+    'openDocumentWorkspaceFromPopup',
+    'openDocumentWorkspaceFromShortcut'
+  ]) {
+    const start = main.indexOf(`function ${functionName}`)
+    const end = main.indexOf('\n}\n', start)
+    assert.ok(start >= 0, `${functionName} 必须存在`)
+    assert.ok(end > start, `${functionName} 必须完整定义`)
+    const source = main.slice(start, end)
+    assert.match(source, /ensureDocumentWorkspaceSupported\(\)/u, `${functionName} 必须检查平台能力`)
+    assert.ok(
+      source.indexOf('ensureDocumentWorkspaceSupported()') < source.indexOf('getDocumentWorkspace()'),
+      `${functionName} 必须在取得或创建文档窗口前检查平台能力`
+    )
+  }
+})

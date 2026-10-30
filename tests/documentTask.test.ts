@@ -150,3 +150,19 @@ test('任务事件应校验 jobId、代际和终态', () => {
   assert.equal(canApplyDocumentTaskEvent(state, 'job-2', 7), false)
   assert.equal(canApplyDocumentTaskEvent({ ...state, status: 'completed' }, 'job-1', 7), false)
 })
+
+test('终态快照之后到达的同任务进度不得回退界面', () => {
+  const completed = {
+    ...createDocumentTaskState('job-1', 7),
+    status: 'completed' as const
+  }
+  const lateProgress = {
+    ...createDocumentTaskState('job-1', 7),
+    phase: 'translate' as const,
+    status: 'translating' as const,
+    progress: progress(3, 10)
+  }
+
+  assert.equal(canApplyDocumentTaskEvent(completed, lateProgress.jobId, lateProgress.generation), false)
+  assert.equal(canApplyDocumentTaskEvent(lateProgress, lateProgress.jobId, lateProgress.generation), true)
+})

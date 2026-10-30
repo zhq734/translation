@@ -133,6 +133,11 @@ export function buildWebPagePrintCss(): string {
     max-height: none !important;
     overflow: visible !important;
   }
+  body [data-st-translation] {
+    display: inline !important;
+    flex: 0 1 auto !important;
+    grid-column: auto !important;
+  }
   table {
     break-inside: auto;
     page-break-inside: auto;

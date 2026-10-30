@@ -6,6 +6,7 @@ import {
   type DocumentAsset,
   type DocumentBlock,
   type DocumentFormat,
+  type DocumentListInfo,
   type DocumentMetadata,
   type DocumentModel,
   type DocumentPage,
@@ -195,7 +196,7 @@ export function createTableRowId(tableBlockId: string, rowIndex: number): string
  * @param readingOrder 页面内阅读顺序。
  * @param text 区块文本。
  * @param role 语义角色。
- * @param options 可选样式、对齐和字幕元数据。
+ * @param options 可选样式、对齐、列表和字幕元数据。
  * @returns 文本区块。
  * @author zhenghq
  */
@@ -211,6 +212,7 @@ export function createTextBlock(
     timing?: string
     sequence?: number
     protected?: boolean
+    list?: DocumentListInfo
   } = {}
 ): DocumentTextBlock {
   const blockId = createDocumentBlockId(input.sha256, pageId, readingOrder, 'text')
@@ -229,6 +231,7 @@ export function createTextBlock(
     runs: [run],
     ...(options.style ? { style: options.style } : {}),
     ...(options.textAlign ? { textAlign: options.textAlign } : {}),
+    ...(options.list ? { list: options.list } : {}),
     ...(options.timing ? { timing: options.timing } : {}),
     ...(options.sequence === undefined ? {} : { sequence: options.sequence })
   }

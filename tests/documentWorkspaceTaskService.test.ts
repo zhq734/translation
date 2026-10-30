@@ -8,8 +8,12 @@ import {
   DocumentWorkspaceTaskService,
   type DocumentWorkspaceTaskServiceDependencies
 } from '../src/main/documentWorkspaceTaskService.ts'
+import type { DocumentLanguagePair } from '../src/shared/documentLanguageDirection.ts'
 import type { DocumentModel } from '../src/shared/documentTypes.ts'
-import type { DocumentWorkspaceSnapshot } from '../src/shared/documentWorkspace.ts'
+import type {
+  DocumentExportRequest,
+  DocumentWorkspaceSnapshot
+} from '../src/shared/documentWorkspace.ts'
 
 /**
  * 创建测试用文档模型。
@@ -98,6 +102,24 @@ async function waitForTerminal(
   throw new Error('timed out waiting for document task')
 }
 
+/**
+ * 构造与终态快照同代际的导出请求。
+ * @param terminal 当前终态快照。
+ * @param mode 完整或部分导出模式。
+ * @returns 受控导出请求。
+ * @author zhenghq
+ */
+function exportRequest(
+  terminal: DocumentWorkspaceSnapshot,
+  mode: DocumentExportRequest['mode']
+): DocumentExportRequest {
+  return {
+    jobId: terminal.jobId,
+    generation: terminal.generation,
+    mode
+  }
+}
+
 test('任务服务必须重新校验已批准路径并推送完成快照', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'sample.txt')
@@ -111,6 +133,9 @@ test('任务服务必须重新校验已批准路径并推送完成快照', async
     const completed = await waitForTerminal(events)
     assert.equal(completed.task.status, 'completed')
     assert.equal(completed.percent, 100)
+    assert.equal(completed.sourcePreference, 'auto')
+    assert.equal(completed.targetPreference, 'auto')
+    assert.deepEqual(completed.languagePair, { sourceLang: 'auto', targetLang: 'ZH' })
     assert.equal(completed.translation?.pages[0]?.blocks[0]?.kind, 'text')
   } finally {
     service.dispose()
@@ -127,21 +152,37 @@ test('任务服务重新翻译失败项时不得重新解析或重跑已成功�
   let parseCalls = 0
   let retrying = false
   const translatedTexts: string[] = []
+  const languagePairs: DocumentLanguagePair[] = []
   deps.parse = async () => {
     parseCalls += 1
     return model(path)
   }
-  deps.translate = async (text) => {
+  deps.translate = async (text, _signal, _request, languagePair) => {
     translatedTexts.push(text)
+    languagePairs.push(languagePair)
     if (!retrying) throw new Error('provider failed')
     return `译:${text}`
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
     await service.run({ path, generation: 1 })
-    const partial = await waitForTerminal(events)
-    assert.equal(partial.task.status, 'partial')
-    assert.equal(partial.retryableFailedBlocks, 1)
+    const failed = await waitForTerminal(events)
+    // 没有成功译文时任务必须保持 failed，不能仅因存在可重试目标而伪装成 partial。
+    assert.equal(failed.task.status, 'failed')
+    assert.equal(failed.retryableFailedBlocks, 1)
+    assert.equal(failed.completionReport?.status, 'failed')
+    assert.equal(failed.completionReport?.jobId, failed.jobId)
+    assert.equal(failed.completionReport?.generation, 1)
+    assert.equal(failed.completionReport?.documentId, 'document-1')
+    assert.equal(failed.completionReport?.total, 1)
+    assert.deepEqual(failed.completionReport?.failedTargetIds, ['0:0:text:run-1'])
+    assert.deepEqual(await service.getHistory(), [{
+      jobId: failed.jobId,
+      generation: 1,
+      completionReport: failed.completionReport
+    }])
+    const frozenPair = failed.languagePair
+    assert.deepEqual(frozenPair, { sourceLang: 'auto', targetLang: 'ZH' })
 
     retrying = true
     translatedTexts.length = 0
@@ -151,8 +192,546 @@ test('任务服务重新翻译失败项时不得重新解析或重跑已成功�
     assert.equal(completed.task.status, 'completed')
     assert.equal(completed.task.generation, 2)
     assert.equal(completed.retryableFailedBlocks ?? 0, 0)
+    assert.equal(completed.completionReport?.status, 'completed')
+    assert.equal(completed.completionReport?.jobId, failed.jobId)
+    assert.equal(completed.completionReport?.generation, 2)
+    assert.equal(completed.completionReport?.total, 1)
+    assert.equal(completed.completionReport?.translated, 1)
+    assert.deepEqual(completed.completionReport?.failedTargetIds, [])
+    assert.deepEqual(await service.getHistory(), [{
+      jobId: failed.jobId,
+      generation: 2,
+      completionReport: completed.completionReport
+    }])
     assert.equal(parseCalls, 1)
     assert.deepEqual(translatedTexts, ['Hello'])
+    assert.deepEqual(completed.languagePair, frozenPair)
+    assert.equal(languagePairs[0], frozenPair)
+    assert.equal(languagePairs[1], frozenPair)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务在部分成功时保持 partial 并记录完整完成报告', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    if (text.includes('World')) throw new Error('provider failed')
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const partial = await waitForTerminal(events)
+    assert.equal(partial.task.status, 'partial')
+    assert.equal(partial.retryableFailedBlocks, 1)
+    assert.equal(partial.completionReport?.status, 'partial')
+    assert.equal(partial.completionReport?.translated, 1)
+    assert.equal(partial.completionReport?.failed, 1)
+    assert.deepEqual(partial.completionReport?.failedTargetIds, ['0:1:text:run-2'])
+    assert.deepEqual(await service.getHistory(), [{
+      jobId: partial.jobId,
+      generation: 1,
+      completionReport: partial.completionReport
+    }])
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务仅允许 completed 任务执行完整导出', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+
+    assert.equal(completed.task.status, 'completed')
+    assert.equal(completed.completionReport?.status, 'completed')
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'saved' }
+    )
+    assert.equal(saveDialogCalls, 1)
+    assert.equal(exportCalls, 1)
+    assert.equal(writeCalls, 1)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须拒绝未确认的部分导出且不得打开保存对话框或写文件', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    if (text.includes('World')) throw new Error('provider failed')
+    return `译:${text}`
+  }
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const partial = await waitForTerminal(events)
+
+    assert.equal(partial.task.status, 'partial')
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(partial, 'complete')),
+      { status: 'rejected', code: 'partial-export-not-confirmed' }
+    )
+    assert.equal(saveDialogCalls, 0)
+    assert.equal(exportCalls, 0)
+    assert.equal(writeCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务允许已确认的 partial 任务导出部分结果', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let exportedModel: DocumentModel | undefined
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    if (text.includes('World')) throw new Error('provider failed')
+    return `译:${text}`
+  }
+  deps.exportPdf = async (exported) => {
+    exportedModel = exported
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const partial = await waitForTerminal(events)
+
+    assert.equal(partial.task.status, 'partial')
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(partial, 'partial')),
+      { status: 'saved' }
+    )
+    const exportedBlocks = exportedModel?.pages[0]?.blocks
+    assert.equal(exportedBlocks?.[0]?.kind, 'text')
+    assert.equal(exportedBlocks?.[1]?.kind, 'text')
+    if (exportedBlocks?.[0]?.kind !== 'text' || exportedBlocks[1]?.kind !== 'text') return
+    assert.equal(exportedBlocks[0].runs[0]?.text, '译:Hello')
+    assert.equal(exportedBlocks[1].runs[0]?.text, 'World')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须在打开保存框前拒绝与源模型不一致的完成报告', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => `译:${text}`
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    const report = completed.completionReport
+    assert.ok(report)
+    const active = service as unknown as {
+      active?: { completionReport?: typeof report }
+    }
+    assert.ok(active.active)
+    active.active.completionReport = {
+      ...report,
+      total: report.total + 1,
+      translated: report.translated + 1
+    }
+
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'rejected', code: 'completion-mismatch' }
+    )
+    assert.equal(saveDialogCalls, 0)
+    assert.equal(exportCalls, 0)
+    assert.equal(writeCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须拒绝状态为 completed 但报告仍含失败目标的完整导出', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    const report = completed.completionReport
+    assert.ok(report)
+    const active = service as unknown as {
+      active?: { completionReport?: typeof report }
+    }
+    assert.ok(active.active)
+    // 计数保持自洽，仅让 completed 状态与失败计数发生语义冲突。
+    active.active.completionReport = {
+      ...report,
+      status: 'completed',
+      translated: 0,
+      unchanged: 0,
+      failed: 1,
+      pending: 0,
+      suspectUntranslated: 0,
+      failedTargetIds: ['0:0'],
+      pendingTargetIds: [],
+      suspectUntranslatedTargetIds: [],
+      failureReasons: { '0:0': 'translation-failed' }
+    }
+
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'rejected', code: 'completion-mismatch' }
+    )
+    assert.equal(saveDialogCalls, 0)
+    assert.equal(exportCalls, 0)
+    assert.equal(writeCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务禁止无可用译文的 failed 任务导出', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.translate = async () => {
+    throw new Error('provider failed')
+  }
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const failed = await waitForTerminal(events)
+
+    assert.equal(failed.task.status, 'failed')
+    assert.equal(failed.completionReport?.translated, 0)
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(failed, 'partial')),
+      { status: 'rejected', code: 'not-ready' }
+    )
+    assert.equal(saveDialogCalls, 0)
+    assert.equal(exportCalls, 0)
+    assert.equal(writeCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务拒绝旧任务和旧代际的导出请求', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let saveDialogCalls = 0
+  const deps = dependencies(path, events)
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: true }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+
+    assert.deepEqual(
+      await service.exportPdf({ ...exportRequest(completed, 'complete'), jobId: 'job-old' }),
+      { status: 'rejected', code: 'completion-mismatch' }
+    )
+    assert.deepEqual(
+      await service.exportPdf({ ...exportRequest(completed, 'complete'), generation: 0 }),
+      { status: 'rejected', code: 'invalid-request' }
+    )
+    assert.deepEqual(
+      await service.exportPdf({ ...exportRequest(completed, 'complete'), generation: 2 }),
+      { status: 'rejected', code: 'completion-mismatch' }
+    )
+
+    assert.equal(saveDialogCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须在导出前复验模型指纹并拒绝已切换的翻译模型', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let fingerprint = 'provider-a'
+  let saveDialogCalls = 0
+  let exportCalls = 0
+  let writeCalls = 0
+  const deps = dependencies(path, events)
+  deps.getModelFingerprint = () => fingerprint
+  deps.showSaveDialog = async () => {
+    saveDialogCalls += 1
+    return { canceled: false, filePath: join(directory, 'out.pdf') }
+  }
+  deps.exportPdf = async () => {
+    exportCalls += 1
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  deps.writeFile = async () => {
+    writeCalls += 1
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.completionReport?.modelFingerprint, 'provider-a')
+
+    fingerprint = 'provider-b'
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'rejected', code: 'completion-mismatch' }
+    )
+    assert.equal(saveDialogCalls, 0)
+    assert.equal(exportCalls, 0)
+    assert.equal(writeCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('部分导出文件名和打印摘要必须明确包含回退原文数量', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let suggestedName = ''
+  let partialSummary: Parameters<NonNullable<DocumentWorkspaceTaskServiceDependencies['exportPdf']>>[2]
+  const deps = dependencies(path, events)
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    if (text.includes('World')) throw new Error('provider failed')
+    return `译:${text}`
+  }
+  deps.showSaveDialog = async (name) => {
+    suggestedName = name
+    return { canceled: true }
+  }
+  deps.exportPdf = async (_model, _dependencies, summary) => {
+    partialSummary = summary
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const partial = await waitForTerminal(events)
+    assert.equal(partial.task.status, 'partial')
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(partial, 'partial')),
+      { status: 'cancelled' }
+    )
+    assert.match(suggestedName, /sample-partial-1-reverted-translated\.pdf$/u)
+    assert.equal(partialSummary, undefined)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务拒绝非法导出模式', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const service = new DocumentWorkspaceTaskService(dependencies(path, events))
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.deepEqual(
+      await service.exportPdf({
+        ...exportRequest(completed, 'complete'),
+        mode: 'unknown' as DocumentExportRequest['mode']
+      }),
+      { status: 'rejected', code: 'invalid-request' }
+    )
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -166,8 +745,9 @@ test('任务服务必须在文件翻译完成前推送中间译文快照', async
   const events: DocumentWorkspaceSnapshot[] = []
   let releaseFirst: (() => void) | null = null
   const deps = dependencies(path, events)
-  deps.translate = async (text, signal, _request, onDelta) => {
+  deps.translate = async (text, signal, _request, languagePair, onDelta) => {
     assert.equal(typeof onDelta, 'function', '文件翻译必须接收流式增量回调')
+    assert.deepEqual(languagePair, { sourceLang: 'auto', targetLang: 'ZH' })
     onDelta?.('译')
     if (text === 'Hello') {
       await new Promise<void>((resolve) => {
@@ -379,8 +959,8 @@ test('任务服务导出必须写出 PDF 且只允许已批准任务资源', asy
   const service = new DocumentWorkspaceTaskService(deps)
   try {
     await service.run({ path, generation: 1 })
-    await waitForTerminal(events)
-    const result = await service.exportPdf()
+    const completed = await waitForTerminal(events)
+    const result = await service.exportPdf(exportRequest(completed, 'complete'))
     assert.equal(result.status, 'saved')
     assert.deepEqual([...await readFile(output)], [37, 80, 68, 70])
     assert.deepEqual(await service.getAsset('../escape.png'), { ok: false, code: 'asset-not-found' })
@@ -409,8 +989,8 @@ test('任务服务导出必须把图片资源告警返回给界面', async () =>
   const service = new DocumentWorkspaceTaskService(deps)
   try {
     await service.run({ path, generation: 1 })
-    await waitForTerminal(events)
-    const result = await service.exportPdf()
+    const completed = await waitForTerminal(events)
+    const result = await service.exportPdf(exportRequest(completed, 'complete'))
     assert.deepEqual(result, {
       status: 'saved',
       warnings: [{
@@ -427,7 +1007,7 @@ test('任务服务导出必须把图片资源告警返回给界面', async () =>
   }
 })
 
-test('任务服务允许 PDF 与 HTML 读取原始源文件字节', async () => {
+test('任务服务允许 PDF 读取原始字节，但 HTML 只能返回净化预览', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const pdfPath = join(directory, 'sample.pdf')
   const textPath = join(directory, 'sample.txt')
@@ -435,7 +1015,16 @@ test('任务服务允许 PDF 与 HTML 读取原始源文件字节', async () => 
   const pdfBytes = await readFile('tests/fixtures/document/sample.pdf')
   await writeFile(pdfPath, pdfBytes)
   await writeFile(textPath, 'Hello')
-  await writeFile(htmlPath, '<html><body>Hello</body></html>')
+  const htmlSource = [
+    '<html><head>',
+    '<style>p{color:#123456;background:url(https://evil.example/a.png)}</style>',
+    '</head><body onload="alert(1)">',
+    '<p onclick="alert(1)">Hello</p>',
+    '<script>alert(1)</script>',
+    '<img src="https://evil.example/a.png">',
+    '</body></html>'
+  ].join('')
+  await writeFile(htmlPath, htmlSource)
 
   const pdfEvents: DocumentWorkspaceSnapshot[] = []
   const pdfDependencies = dependencies(pdfPath, pdfEvents)
@@ -469,7 +1058,12 @@ test('任务服务允许 PDF 与 HTML 读取原始源文件字节', async () => 
     const source = await htmlService.getSource()
     assert.equal(source.ok, true)
     assert.equal(source.mimeType, 'text/html; charset=utf-8')
-    assert.deepEqual(source.bytes, new TextEncoder().encode('<html><body>Hello</body></html>'))
+    assert.ok(source.bytes)
+    const preview = new TextDecoder().decode(source.bytes)
+    assert.notDeepEqual(source.bytes, new TextEncoder().encode(htmlSource))
+    assert.match(preview, /Hello/u)
+    assert.match(preview, /color:\s*#123456/iu)
+    assert.doesNotMatch(preview, /<script|onload|onclick|javascript:|evil\.example/iu)
     await waitForTerminal(htmlEvents)
   } finally {
     htmlService.dispose()

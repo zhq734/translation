@@ -324,6 +324,8 @@ const PDF_MAX_FILLED_LINE_THICKNESS = 2
 
 /** 网格线坐标合并与闭合判定的容差，单位为页面点。 */
 const PDF_TABLE_LINE_TOLERANCE = 2
+/** 同一视觉行内允许视为并排短标签（导航/统计条）的最大文本长度。 */
+const PDF_FLOW_ROW_LABEL_MAX_LENGTH = 16
 
 /** 表格网格的最小宽高，单位为页面点。 */
 const PDF_MIN_TABLE_SIZE = 16
@@ -1191,6 +1193,58 @@ function pdfBlocksShareVisualRow(left: DocumentBlock, right: DocumentBlock): boo
   if (overlap < minHeight * 0.35) return false
   const gap = left === image ? textBox.x - (imageBox.x + imageBox.width) : imageBox.x - (textBox.x + textBox.width)
   return gap >= -PDF_TABLE_LINE_TOLERANCE && gap <= Math.max(32, imageBox.height * 1.5)
+}
+
+/**
+ * 读取文本区块主样式，作为横向行分组时比较字号与字体的稳定依据。
+ * @param block 文本区块。
+ * @returns 文本样式；没有可用样式时返回 undefined。
+ * @author zhenghq
+ */
+function pdfTextBlockPrimaryStyle(block: DocumentBlock): DocumentTextStyle | undefined {
+  if (block.kind !== 'text') return undefined
+  return block.runs[0]?.style ?? block.style
+}
+
+/**
+ * 判断同一视觉基线、横向相邻且样式一致的两个文本区块是否应共享横向行分组。
+ * 网页导出的 PDF 常把导航栏、仓库统计条等同一行拆成多个独立文本块；
+ * 模型层面仍保留这些独立块（避免导航项被拼成一句话），但通过共享 flowGroupId
+ * 让译文预览在同一 flex 行内横向排列，而不是每项各占一行。
+ * 判定刻意保守：仅接受纵向重叠明显、字号/字体风格一致、横向间隙在正文空格
+ * 范围内的相邻文本，避免把双栏正文或表格拆列误合并成一行。
+ * @param left 左侧候选文本区块。
+ * @param right 右侧候选文本区块。
+ * @returns 是否应共享横向行分组。
+ * @author zhenghq
+ */
+function pdfBlocksShareVisualTextRow(left: DocumentBlock, right: DocumentBlock): boolean {
+  if (left.kind !== 'text' || right.kind !== 'text') return false
+  if (!left.bbox || !right.bbox) return false
+  const leftBox = left.bbox
+  const rightBox = right.bbox
+  const leftStyle = pdfTextBlockPrimaryStyle(left)
+  const rightStyle = pdfTextBlockPrimaryStyle(right)
+  const leftSize = leftStyle?.fontSize ?? Math.max(1, leftBox.height)
+  const rightSize = rightStyle?.fontSize ?? Math.max(1, rightBox.height)
+  // 网页导出的 PDF 常为每个片段嵌入不同字体子集，字号一致即可视为同一视觉行，
+  // 不能要求字体名完全一致，否则导航栏会被拆成多条独立折行。
+  if (Math.abs(leftSize - rightSize) > Math.max(0.5, Math.min(leftSize, rightSize) * 0.15)) return false
+  const overlap = Math.min(leftBox.y + leftBox.height, rightBox.y + rightBox.height) -
+    Math.max(leftBox.y, rightBox.y)
+  const minHeight = Math.min(leftBox.height, rightBox.height)
+  if (overlap < minHeight * 0.35) return false
+  const gap = rightBox.x - (leftBox.x + leftBox.width)
+  const leftText = left.runs.map((run) => run.text).join('')
+  const rightText = right.runs.map((run) => run.text).join('')
+  // 同一行上的并排短标签通常是导航栏、统计条等控件，允许较宽的横向间隙；
+  // 长文本并排更可能是双栏正文，只允许接近字间距的间隙，避免跨栏粘连。
+  const bothShortLabels = leftText.length <= PDF_FLOW_ROW_LABEL_MAX_LENGTH &&
+    rightText.length <= PDF_FLOW_ROW_LABEL_MAX_LENGTH
+  const gapLimit = bothShortLabels
+    ? Math.max(160, leftSize * 10)
+    : Math.max(PDF_TABLE_LINE_TOLERANCE * 3, leftSize * 1.4)
+  return gap >= -PDF_TABLE_LINE_TOLERANCE && gap <= gapLimit
 }
 
 /**
@@ -4432,19 +4486,27 @@ function orderPdfPageBlocks(
       return left.sourceIndex - right.sourceIndex
     })
 
-  // 仅将页面顶部的小图片与紧邻文字归为同一视觉行，避免正文双栏或表格被误合并。
+  // 页面顶部小图片与紧邻文字共享一行；网页导出的同一视觉行文字被拆成多个
+  // 独立块时也共享 flowGroupId，让译文预览横向排布而不是每项各占一行。
   let flowGroupIndex = 0
   const flowGroups = new Map<number, string>()
-  for (let index = 0; index < ordered.length; index += 1) {
+  for (let index = 0; index < ordered.length - 1; index += 1) {
     const current = ordered[index]!
-    const next = ordered[index + 1]
-    if (!next || !pdfBlocksShareVisualRow(current.block, next.block)) continue
-    const groupId = `flow-${createDocumentBlockId(fingerprint, pageId, index, 'shape')}-${flowGroupIndex}`
-      .replace(/^flow-block-/u, 'flow-')
-    flowGroups.set(index, groupId)
+    const next = ordered[index + 1]!
+    const sharesRow = pdfBlocksShareVisualRow(current.block, next.block) ||
+      pdfBlocksShareVisualTextRow(current.block, next.block)
+    if (!sharesRow) continue
+    // 连续相邻的同行区块共享同一分组，导航栏等超过两个短标签的视觉行
+    // 不会被切成多个两两一组的小段。
+    const existingGroupId = flowGroups.get(index)
+    const groupId = existingGroupId ??
+      `flow-${createDocumentBlockId(fingerprint, pageId, index, 'shape')}-${flowGroupIndex}`
+        .replace(/^flow-block-/u, 'flow-')
+    if (!existingGroupId) {
+      flowGroups.set(index, groupId)
+      flowGroupIndex += 1
+    }
     flowGroups.set(index + 1, groupId)
-    flowGroupIndex += 1
-    index += 1
   }
 
   return ordered.map(({ block }, readingOrder) => {

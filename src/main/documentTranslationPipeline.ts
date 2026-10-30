@@ -32,6 +32,17 @@ import {
 } from './documentParserShared.ts'
 import type { DocumentWarning } from '../shared/documentTypes.ts'
 import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../shared/documentOcrLayout.ts'
+import {
+  resolveDocumentLanguagePair,
+  type DocumentLanguagePair,
+  type DocumentLanguagePreference,
+  type DocumentLanguageResolution
+} from '../shared/documentLanguageDirection.ts'
+import {
+  evaluateDocumentCompletion,
+  type DocumentCompletionReport,
+  type DocumentCompletionTarget
+} from '../shared/documentCompletion.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -61,6 +72,9 @@ const DOCUMENT_DECORATIVE_IMAGE_TOP_MAX_RATIO = 0.12
 /** 相同装饰图布局至少重复出现的页数，避免误跳过普通正文截图。 */
 const DOCUMENT_DECORATIVE_IMAGE_MIN_REPEAT_PAGES = 3
 
+/** 未注入模型指纹依赖时使用的稳定默认值，便于测试与离线运行生成可复验报告。 */
+const DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT = 'document-translation-model'
+
 /** 文档流水线结果。 */
 export interface DocumentPipelineResult {
   /** 源文档模型。 */
@@ -71,6 +85,18 @@ export interface DocumentPipelineResult {
   task: DocumentTaskState
   /** 翻译失败且仍可重新请求的目标标识。 */
   failedTargetIds?: string[]
+  /** 包含失败、未完成与疑似未翻译目标的完整可重试集合。 */
+  retryableTargetIds?: string[]
+  /** 基于完整文档目标生成的完成报告。 */
+  completionReport?: DocumentCompletionReport
+  /** 用户选择的原始源语言偏好。 */
+  sourcePreference?: string
+  /** 用户选择的原始目标语言偏好。 */
+  targetPreference?: string
+  /** 本次任务冻结并在全部请求中复用的实际语言对。 */
+  languagePair?: DocumentLanguagePair
+  /** 本次任务冻结的完整语言解析结果，重试必须原样复用。 */
+  languageResolution?: DocumentLanguageResolution
 }
 
 /** 文档流水线可注入依赖。 */
@@ -81,10 +107,11 @@ export interface DocumentPipelineDeps {
   loadAssetBytes(asset: DocumentModel['assets'][number]): Promise<Uint8Array | null>
   /** 识别图片文字。 */
   recognizeImage(bytes: Uint8Array, signal: AbortSignal): Promise<OcrRecognizeResult>
-  /** 翻译单段文本，并通过 onDelta 推送当前片段的增量译文。 */
+  /** 翻译单段文本，显式接收任务级语言对，并通过 onDelta 推送当前片段的增量译文。 */
   translate(
     text: string,
     signal: AbortSignal,
+    languagePair: DocumentLanguagePair,
     onDelta?: (delta: string) => void
   ): Promise<string>
   /** 任务状态变化回调。 */
@@ -95,6 +122,12 @@ export interface DocumentPipelineDeps {
   renderPage?: (pageIndex: number) => Promise<Uint8Array | null>
   /** 可选翻译并发数，未提供时使用默认值并限制在 1 到 8 之间。 */
   concurrency?: number
+  /**
+   * 读取当前翻译提供方与模型的稳定指纹，用于完成报告绑定。
+   * @returns 不含凭据的模型指纹。
+   * @author zhenghq
+   */
+  getModelFingerprint?(): string
 }
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
@@ -191,6 +224,10 @@ interface TargetTranslationState {
   failed: boolean
   /** 目标是否已经成功或失败收尾，避免并发分段重复计数。 */
   finished: boolean
+  /** 目标成功收尾后的完整译文。 */
+  translation?: string
+  /** 目标失败时保留的稳定原因。 */
+  failureReason?: string
 }
 
 /** 单个分段应用后的目标级状态变化。 */
@@ -404,14 +441,33 @@ function createCancelledResult(
   translation: DocumentModel,
   state: DocumentTaskState,
   deps: DocumentPipelineDeps,
-  failedTargetIds?: string[]
+  languageResolution: Pick<DocumentPipelineResult, 'sourcePreference' | 'targetPreference' | 'languagePair'>,
+  failedTargetIds?: string[],
+  targetStates?: Map<string, TargetTranslationState>
 ): DocumentPipelineResult {
   const cancelled = requestDocumentTaskCancellation(state)
   emitProgress(cancelled, deps)
+  const completionReport = buildDocumentCompletionReport(
+    source,
+    translation,
+    cancelled,
+    targetStates,
+    deps,
+    languageResolution,
+    true
+  )
   return {
     source,
     translation,
     task: cancelled,
+    completionReport,
+    retryableTargetIds: collectRetryableTargetIds(completionReport),
+    ...languageResolution,
+    languageResolution: {
+      sourcePreference: languageResolution.sourcePreference ?? 'auto',
+      targetPreference: languageResolution.targetPreference ?? 'auto',
+      languagePair: languageResolution.languagePair ?? { sourceLang: 'auto', targetLang: 'auto' }
+    },
     ...(failedTargetIds ? { failedTargetIds: [...failedTargetIds] } : {})
   }
 }
@@ -432,16 +488,40 @@ function finalizeTranslationResult(
   translation: DocumentModel,
   state: DocumentTaskState,
   failedTargetIds: string[],
-  failedBlockCount: number,
-  deps: DocumentPipelineDeps
+  ocrFailedCount: number,
+  deps: DocumentPipelineDeps,
+  languageResolution: Pick<DocumentPipelineResult, 'sourcePreference' | 'targetPreference' | 'languagePair'>,
+  targetStates?: Map<string, TargetTranslationState>
 ): DocumentPipelineResult {
+  const completionReport = buildDocumentCompletionReport(
+    source,
+    translation,
+    state,
+    targetStates,
+    deps,
+    languageResolution
+  )
+  const retryableTargetIds = collectRetryableTargetIds(completionReport)
+  const failedBlockCount = retryableTargetIds.length + Math.max(0, ocrFailedCount)
   let layoutState = moveDocumentTaskToPhase(state, 'layout')
   layoutState = completeDocumentTaskPhase(layoutState)
   emitProgress(layoutState, deps)
   let exportState = moveDocumentTaskToPhase(layoutState, 'export')
   exportState = completeDocumentTaskPhase(exportState)
   emitProgress(exportState, deps)
-  const finalState = failedBlockCount > 0
+  // 没有成功译文时任务必须保持 failed 以阻止完整导出；可重试目标由任务服务
+  // 单独记录，不能为了让按钮可用而把无可用结果的任务伪装成 partial。
+  const finalState = completionReport.status === 'failed'
+    ? {
+        ...exportState,
+        status: 'failed' as const,
+        errorCode: 'translation-failed',
+        failedBlocks: failedBlockCount,
+        warningCount: translation.warnings.length
+      }
+    : completionReport.status === 'cancelled'
+      ? requestDocumentTaskCancellation(exportState)
+      : completionReport.status === 'partial' || ocrFailedCount > 0
     ? markDocumentTaskPartial(exportState, {
         failedBlocks: failedBlockCount,
         warningCount: translation.warnings.length
@@ -455,7 +535,15 @@ function finalizeTranslationResult(
     source,
     translation,
     task: finalState,
-    failedTargetIds: [...failedTargetIds]
+    failedTargetIds: [...completionReport.failedTargetIds],
+    retryableTargetIds,
+    completionReport,
+    ...languageResolution,
+    languageResolution: {
+      sourcePreference: languageResolution.sourcePreference ?? 'auto',
+      targetPreference: languageResolution.targetPreference ?? 'auto',
+      languagePair: languageResolution.languagePair ?? { sourceLang: 'auto', targetLang: 'auto' }
+    }
   }
 }
 
@@ -708,7 +796,8 @@ function composeTableRowTranslation(
 async function translateTableRowCells(
   target: TranslationTarget,
   signal: AbortSignal,
-  deps: DocumentPipelineDeps
+  deps: DocumentPipelineDeps,
+  languagePair: DocumentLanguagePair
 ): Promise<string | null> {
   const cells = target.cells ?? []
   if (cells.length === 0) return null
@@ -718,7 +807,7 @@ async function translateTableRowCells(
     const parts = splitText(cell.text.trim(), DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS)
     const translatedParts: string[] = []
     for (const part of parts) {
-      const translated = await deps.translate(part, signal)
+      const translated = await deps.translate(part, signal, languagePair)
       throwIfAborted(signal)
       if (!translated.trim()) return null
       translatedParts.push(translated.trim())
@@ -890,6 +979,249 @@ function restoreTargetWhitespace(state: TargetTranslationState, translated: stri
 }
 
 /**
+ * 从已完成 OCR 与翻译的模型读取单个目标当前译文。
+ * @param model 当前译文模型。
+ * @param target 待读取的稳定目标。
+ * @returns 目标译文；目标无法定位或表格映射损坏时返回 undefined。
+ * @author zhenghq
+ */
+function readTargetTranslation(
+  model: DocumentModel,
+  target: TranslationTarget
+): string | undefined {
+  const page = model.pages[target.pageIndex]
+  if (!page) return undefined
+  const block = resolveTargetBlock(page.blocks, target.path)
+  if (!block) return undefined
+  if (target.kind === 'text-block' && block.kind === 'text') {
+    const runIds = new Set(target.runIds ?? (target.runId ? [target.runId] : []))
+    const translatedRuns = block.runs.filter((run) => runIds.has(run.runId))
+    if (translatedRuns.length === 0) return undefined
+    return translatedRuns.map((run) => run.text).join('')
+  }
+  if (target.kind === 'ocr-region' && block.kind === 'image') {
+    const region = block.ocrRegions?.[target.regionIndex ?? -1]
+    return region?.translatedText
+  }
+  if (target.kind === 'table-row' && block.kind === 'table') {
+    return readTableRowTranslation(block, target)
+  }
+  return undefined
+}
+
+/**
+ * 判断目标在译文模型中是否仍保留可可靠读回的表格结构。
+ * @param model 当前译文模型。
+ * @param target 待检查的翻译目标。
+ * @returns 目标不是表格行或表格结构完整时返回 true。
+ * @author zhenghq
+ */
+function isTargetTableMappingValid(model: DocumentModel, target: TranslationTarget): boolean {
+  if (target.kind !== 'table-row' || (target.cells?.length ?? 0) <= 1) return true
+  const page = model.pages[target.pageIndex]
+  if (!page) return false
+  const block = resolveTargetBlock(page.blocks, target.path)
+  return block?.kind === 'table' && readTableRowTranslation(block, target) !== undefined
+}
+
+/**
+ * 生成基于完整文档目标的完成报告，供终态、快照和重试复用。
+ * @param source 已完成 OCR 的源文档。
+ * @param translation 当前完整译文模型。
+ * @param state 当前任务状态，用于绑定任务标识与代际。
+ * @param targetStates 本代际参与翻译的目标状态；重试时只包含本轮目标。
+ * @param deps 流水线依赖，用于读取模型指纹。
+ * @param languageResolution 本任务冻结的语言偏好与实际语言对。
+ * @param cancelled 是否由取消终态触发。
+ * @returns 覆盖全部可翻译目标的完成报告。
+ * @author zhenghq
+ */
+function buildDocumentCompletionReport(
+  source: DocumentModel,
+  translation: DocumentModel,
+  state: DocumentTaskState,
+  targetStates: Map<string, TargetTranslationState> | undefined,
+  deps: DocumentPipelineDeps,
+  languageResolution: Pick<DocumentPipelineResult, 'sourcePreference' | 'targetPreference' | 'languagePair'>,
+  cancelled = false
+): DocumentCompletionReport {
+  const targets: DocumentCompletionTarget[] = collectTranslationTargets(source).map((target) => {
+    const targetState = targetStates?.get(target.targetId)
+    const translatedText = readTargetTranslation(translation, target)
+    if (targetState?.finished) {
+      if (targetState.failed) {
+        return {
+          targetId: target.targetId,
+          sourceText: target.text,
+          state: 'failed',
+          failureReason: targetState.failureReason ?? 'translation-failed'
+        }
+      }
+      return {
+        targetId: target.targetId,
+        sourceText: target.text,
+        ...(targetState.translation !== undefined
+          ? { translatedText: targetState.translation }
+          : translatedText !== undefined ? { translatedText } : {}),
+        state: 'translated',
+        tableMappingValid: isTargetTableMappingValid(translation, target)
+      }
+    }
+    if (targetState) {
+      return {
+        targetId: target.targetId,
+        sourceText: target.text,
+        state: 'pending'
+      }
+    }
+    // 重试时已成功目标不在本轮 targetStates 中，必须从完整译文模型读回。
+    if (translatedText === undefined) {
+      return {
+        targetId: target.targetId,
+        sourceText: target.text,
+        state: 'pending'
+      }
+    }
+    return {
+      targetId: target.targetId,
+      sourceText: target.text,
+      translatedText,
+      state: 'translated',
+      tableMappingValid: isTargetTableMappingValid(translation, target)
+    }
+  })
+  const sourcePreference = languageResolution.sourcePreference ?? 'auto'
+  const targetPreference = languageResolution.targetPreference ?? 'auto'
+  const languagePair = languageResolution.languagePair ?? { sourceLang: 'auto', targetLang: 'auto' }
+  return evaluateDocumentCompletion({
+    jobId: state.jobId,
+    generation: state.generation,
+    documentId: source.documentId,
+    modelFingerprint: deps.getModelFingerprint?.() ?? DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT,
+    sourcePreference,
+    targetPreference,
+    languagePair,
+    targets,
+    cancelled
+  })
+}
+
+/**
+ * 从完成报告中提取需要用户重试的全部目标，保持稳定顺序。
+ * @param report 当前完成报告。
+ * @returns 失败、未完成与疑似未翻译目标标识。
+ * @author zhenghq
+ */
+function collectRetryableTargetIds(report: DocumentCompletionReport): string[] {
+  return [
+    ...report.failedTargetIds,
+    ...report.pendingTargetIds,
+    ...report.suspectUntranslatedTargetIds
+  ]
+}
+
+/**
+ * 沿区块路径定位目标所在区块，支持表格单元格中的嵌套区块。
+ * @param blocks 当前区块树。
+ * @param path 目标区块路径。
+ * @returns 定位到的区块；路径无效时返回 undefined。
+ * @author zhenghq
+ */
+function resolveTargetBlock(
+  blocks: DocumentBlock[],
+  path: DocumentBlockPath
+): DocumentBlock | undefined {
+  const [head, ...rest] = path
+  if (head === undefined) return undefined
+  if (typeof head === 'number') {
+    const block = blocks[head]
+    if (!block || rest.length === 0) return block
+    const [cellRef, ...cellRest] = rest
+    if (!cellRef || typeof cellRef === 'number' || block.kind !== 'table') return undefined
+    const cell = block.rows[cellRef.row]?.cells[cellRef.cell]
+    return cell ? resolveNestedBlock(cell.blocks, cellRest) : undefined
+  }
+  return undefined
+}
+
+/**
+ * 从译文模型表格行重组目标译文，并验证单元格标记仍可可靠拆分。
+ * @param table 当前译文表格区块。
+ * @param target 表格行目标。
+ * @returns 重组后的行译文；无法可靠映射时返回 undefined。
+ * @author zhenghq
+ */
+function readTableRowTranslation(
+  table: DocumentTableBlock,
+  target: TranslationTarget
+): string | undefined {
+  const row = table.rows[target.tableRowIndex ?? -1]
+  const cells = target.cells ?? []
+  if (!row || cells.length === 0) return undefined
+  const translatedCells: string[] = []
+  for (const cellRange of cells) {
+    const cell = row.cells[cellRange.cellIndex]
+    if (!cell) return undefined
+    const translated = readCellTranslation(cell.blocks, cellRange)
+    if (translated === undefined) return undefined
+    translatedCells.push(translated)
+  }
+  const translated = composeTableRowTranslation(target, translatedCells)
+  return isTableRowTranslationValid(target, translated) ? translated : undefined
+}
+
+/**
+ * 从单元格子区块中按目标 run 映射读取聚合译文。
+ * @param blocks 单元格子区块。
+ * @param cellRange 目标单元格映射。
+ * @returns 单元格译文；映射缺失时返回 undefined。
+ * @author zhenghq
+ */
+function readCellTranslation(
+  blocks: DocumentBlock[],
+  cellRange: TranslationTableCellRange
+): string | undefined {
+  const translatedBlocks: string[] = []
+  for (const range of cellRange.blocks) {
+    const block = resolveNestedBlock(blocks, range.blockPath)
+    if (!block || block.kind !== 'text') return undefined
+    const runIds = new Set(range.runs.flatMap((run) => run.runIds))
+    const translated = block.runs
+      .filter((run) => runIds.has(run.runId))
+      .map((run) => run.text)
+      .join('')
+    if (!translated) return undefined
+    translatedBlocks.push(translated)
+  }
+  return translatedBlocks.join('\n')
+}
+
+/**
+ * 按数字与表格单元格引用组成的路径读取嵌套区块。
+ * @param blocks 当前区块树。
+ * @param path 嵌套区块路径。
+ * @returns 定位到的区块；路径无效时返回 undefined。
+ * @author zhenghq
+ */
+function resolveNestedBlock(
+  blocks: DocumentBlock[],
+  path: DocumentBlockPath
+): DocumentBlock | undefined {
+  const [head, ...rest] = path
+  if (head === undefined) return undefined
+  if (typeof head === 'number') {
+    const block = blocks[head]
+    if (!block) return undefined
+    if (rest.length === 0) return block
+    const [cellRef, ...cellRest] = rest
+    if (!cellRef || typeof cellRef === 'number' || block.kind !== 'table') return undefined
+    const cell = block.rows[cellRef.row]?.cells[cellRef.cell]
+    return cell ? resolveNestedBlock(cell.blocks, cellRest) : undefined
+  }
+  return undefined
+}
+
+/**
  * 把文档分段转换为网页批处理器可识别的稳定分段标识。
  * @param segment 文档分段。
  * @returns 网页翻译分段。
@@ -951,6 +1283,7 @@ function applySegmentTranslation(
   if (!piece) {
     state.failed = true
     state.finished = true
+    state.failureReason = 'empty-translation'
     return { finished: true, failed: true }
   }
   const pieces = state.pieces.slice()
@@ -968,6 +1301,7 @@ function applySegmentTranslation(
   state.pieces = pieces
   state.completed = completed
   state.finished = true
+  state.translation = translation
   return {
     finished: true,
     failed: false,
@@ -996,6 +1330,7 @@ function completeTableRowFallback(
   state.pieces = state.pieces.map((_piece, index) => index === segment.pieceIndex ? translation : undefined)
   state.completed = state.pieceTotal
   state.finished = true
+  state.translation = translation
   return { finished: true, failed: false, translation }
 }
 
@@ -1571,7 +1906,11 @@ export async function runDocumentTranslationPipeline(
   input: DocumentParseInput,
   initialState: DocumentTaskState,
   signal: AbortSignal,
-  deps: DocumentPipelineDeps
+  deps: DocumentPipelineDeps,
+  languagePreference: DocumentLanguagePreference = {
+    sourcePreference: 'auto',
+    targetPreference: 'auto'
+  }
 ): Promise<DocumentPipelineResult> {
   let state = initialState
   emitProgress(state, deps)
@@ -1583,7 +1922,13 @@ export async function runDocumentTranslationPipeline(
     source = await deps.parse(input)
     if (signal.aborted) {
       const emptySource = createDocumentModel(input)
-      return createCancelledResult(emptySource, emptySource, state, deps)
+      return createCancelledResult(
+        emptySource,
+        emptySource,
+        state,
+        deps,
+        resolveDocumentLanguagePair(emptySource, languagePreference)
+      )
     }
     state = completeDocumentTaskPhase(state)
     state = updateDocumentTaskProgress(state, { completed: source.pages.length, total: source.pages.length })
@@ -1591,7 +1936,13 @@ export async function runDocumentTranslationPipeline(
   } catch (error) {
     if (isAbortError(error, signal)) {
       const emptySource = createDocumentModel(input)
-      return createCancelledResult(emptySource, emptySource, state, deps)
+      return createCancelledResult(
+        emptySource,
+        emptySource,
+        state,
+        deps,
+        resolveDocumentLanguagePair(emptySource, languagePreference)
+      )
     }
     const failed = { ...state, status: 'failed' as const, errorCode: 'parse-failed' }
     emitProgress(failed, deps)
@@ -1626,7 +1977,13 @@ export async function runDocumentTranslationPipeline(
               blocks: ocrBlocksByPage[index] ?? sourcePage.blocks
             }))
           }
-          return createCancelledResult(partialSource, partialSource, ocrState, deps)
+          return createCancelledResult(
+            partialSource,
+            partialSource,
+            ocrState,
+            deps,
+            resolveDocumentLanguagePair(partialSource, languagePreference)
+          )
         }
       }
       ocrBlocksByPage[pageIndex] = blocks
@@ -1647,7 +2004,13 @@ export async function runDocumentTranslationPipeline(
           blocks: ocrBlocksByPage[index] ?? page.blocks
         }))
       }
-      return createCancelledResult(partialSource, partialSource, ocrState, deps)
+      return createCancelledResult(
+        partialSource,
+        partialSource,
+        ocrState,
+        deps,
+        resolveDocumentLanguagePair(partialSource, languagePreference)
+      )
     }
     const failed = { ...ocrState, status: 'failed' as const, errorCode: 'ocr-failed' }
     emitProgress(failed, deps)
@@ -1668,9 +2031,13 @@ export async function runDocumentTranslationPipeline(
       ...ocrWarnings
     ]
   }
+  // 解析和 OCR 全部完成后只解析一次方向，后续所有请求共享同一个冻结语言对。
+  const languageResolution = resolveDocumentLanguagePair(ocrSource, languagePreference)
+  const languagePair = languageResolution.languagePair
+  const ocrFailedCount = stats.failed
   const targets = collectTranslationTargets(ocrSource)
   const totalTranslationUnits = targets.length
-  stats = { completed: 0, total: totalTranslationUnits, failed: stats.failed }
+  stats = { completed: 0, total: totalTranslationUnits, failed: 0 }
   const failedTargetIds = new Set<string>()
   let translateState = moveDocumentTaskToPhase(ocrState, 'translate')
   emitProgress(translateState, deps)
@@ -1798,7 +2165,7 @@ export async function runDocumentTranslationPipeline(
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (applied.needsTableRowFallback) {
       try {
-        const fallback = await translateTableRowCells(segment.target, signal, deps)
+        const fallback = await translateTableRowCells(segment.target, signal, deps, languagePair)
         if (!fallback) {
           failTarget(segment)
           return
@@ -1837,6 +2204,7 @@ export async function runDocumentTranslationPipeline(
     if (!state || state.finished) return
     state.failed = true
     state.finished = true
+    state.failureReason = 'translation-failed'
     stats.completed += 1
     stats.failed += 1
     failedTargetIds.add(segment.target.targetId)
@@ -1855,7 +2223,7 @@ export async function runDocumentTranslationPipeline(
       throwIfAborted(signal)
       if (segment.target.kind === 'table-row' && (segment.target.cells?.length ?? 0) > 1) {
         try {
-          const translated = await translateTableRowCells(segment.target, signal, deps)
+          const translated = await translateTableRowCells(segment.target, signal, deps, languagePair)
           if (!translated) {
             failTarget(segment)
             continue
@@ -1877,7 +2245,7 @@ export async function runDocumentTranslationPipeline(
         continue
       }
       try {
-        const translated = await deps.translate(segment.text, signal)
+        const translated = await deps.translate(segment.text, signal, languagePair)
         throwIfAborted(signal)
         applyTranslation(segment, translated)
       } catch (error) {
@@ -1900,7 +2268,7 @@ export async function runDocumentTranslationPipeline(
       if (!segment) return
       let streamed = ''
       try {
-        const translated = await deps.translate(segment.text, signal, segment.pieceTotal === 1
+        const translated = await deps.translate(segment.text, signal, languagePair, segment.pieceTotal === 1
           ? (delta) => {
               if (signal.aborted) return
               streamed += delta
@@ -1919,7 +2287,7 @@ export async function runDocumentTranslationPipeline(
     }
     try {
       let streamed = ''
-      const translated = await deps.translate(item.batch.text, signal, (delta) => {
+      const translated = await deps.translate(item.batch.text, signal, languagePair, (delta) => {
         if (signal.aborted) return
         streamed += delta
         previewMergedTranslation(item, streamed)
@@ -1965,11 +2333,17 @@ export async function runDocumentTranslationPipeline(
   } catch (error) {
     if (isAbortError(error, signal)) {
       translationPublisher.cancel()
-      const partialTranslation: DocumentModel = {
-        ...ocrSource,
-        pages: ocrSource.pages.map((page, index) => translatedPages[index] ?? page)
-      }
-      return createCancelledResult(ocrSource, partialTranslation, translateState, deps)
+      return createCancelledResult(
+        ocrSource,
+        // 取消后 onDelta 已因 signal.aborted 被丢弃；这里只快照取消前已接受的译文，
+        // 不能从原始页面重建，否则会抹掉取消前已成功提交的目标。
+        { ...ocrSource, pages: translatedPages },
+        translateState,
+        deps,
+        languageResolution,
+        undefined,
+        targetStates
+      )
     }
     translationPublisher.cancel()
     const failed = { ...translateState, status: 'failed' as const, errorCode: 'translation-failed' }
@@ -1978,12 +2352,26 @@ export async function runDocumentTranslationPipeline(
   }
   translationPublisher.flush()
 
+  const completionReport = buildDocumentCompletionReport(
+    ocrSource,
+    {
+      ...ocrSource,
+      pages: translatedPages,
+      warnings: ocrSource.warnings
+    },
+    translateState,
+    targetStates,
+    deps,
+    languageResolution
+  )
+  const hasTranslationFailures = completionReport.failed + completionReport.pending +
+    completionReport.suspectUntranslated > 0
   const translation: DocumentModel = {
     ...ocrSource,
     pages: translatedPages,
     warnings: [
       ...ocrSource.warnings,
-      ...(stats.failed > 0 ? [{
+      ...(hasTranslationFailures ? [{
         code: 'translation-partial',
         severity: 'warning' as const,
         message: 'Some content could not be translated and was kept in the source language.'
@@ -1995,8 +2383,10 @@ export async function runDocumentTranslationPipeline(
     translation,
     translateState,
     [...failedTargetIds],
-    stats.failed,
-    deps
+    ocrFailedCount,
+    deps,
+    languageResolution,
+    targetStates
   )
 }
 
@@ -2017,8 +2407,10 @@ export async function retryFailedDocumentTranslationPipeline(
   failedTargetIds: readonly string[],
   initialState: DocumentTaskState,
   signal: AbortSignal,
-  deps: DocumentPipelineDeps
+  deps: DocumentPipelineDeps,
+  languageResolution: DocumentLanguageResolution
 ): Promise<DocumentPipelineResult> {
+  const languagePair = languageResolution.languagePair
   const requestedIds = new Set(failedTargetIds)
   const targets = collectTranslationTargets(source).filter((target) => requestedIds.has(target.targetId))
   const translatedPages: DocumentModel['pages'] = translation.pages.map((page) => ({
@@ -2155,7 +2547,7 @@ export async function retryFailedDocumentTranslationPipeline(
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (applied.needsTableRowFallback) {
       try {
-        const fallback = await translateTableRowCells(segment.target, signal, deps)
+        const fallback = await translateTableRowCells(segment.target, signal, deps, languagePair)
         if (!fallback) {
           failTarget(segment)
           return
@@ -2194,6 +2586,7 @@ export async function retryFailedDocumentTranslationPipeline(
     if (!state || state.finished) return
     state.failed = true
     state.finished = true
+    state.failureReason = 'translation-failed'
     completed += 1
     retryFailedIds.add(segment.target.targetId)
     publishProgress()
@@ -2210,7 +2603,7 @@ export async function retryFailedDocumentTranslationPipeline(
       throwIfAborted(signal)
       if (segment.target.kind === 'table-row' && (segment.target.cells?.length ?? 0) > 1) {
         try {
-          const translated = await translateTableRowCells(segment.target, signal, deps)
+          const translated = await translateTableRowCells(segment.target, signal, deps, languagePair)
           if (!translated) {
             failTarget(segment)
             continue
@@ -2232,7 +2625,7 @@ export async function retryFailedDocumentTranslationPipeline(
         continue
       }
       try {
-        const translated = await deps.translate(segment.text, signal)
+        const translated = await deps.translate(segment.text, signal, languagePair)
         throwIfAborted(signal)
         applyTranslation(segment, translated)
       } catch (error) {
@@ -2255,7 +2648,7 @@ export async function retryFailedDocumentTranslationPipeline(
       if (!segment) return
       let streamed = ''
       try {
-        const translated = await deps.translate(segment.text, signal, segment.pieceTotal === 1
+        const translated = await deps.translate(segment.text, signal, languagePair, segment.pieceTotal === 1
           ? (delta) => {
               if (signal.aborted) return
               streamed += delta
@@ -2274,7 +2667,7 @@ export async function retryFailedDocumentTranslationPipeline(
     }
     try {
       let streamed = ''
-      const translated = await deps.translate(item.batch.text, signal, (delta) => {
+      const translated = await deps.translate(item.batch.text, signal, languagePair, (delta) => {
         if (signal.aborted) return
         streamed += delta
         previewRetriedMergedTranslation(item, streamed)
@@ -2326,7 +2719,9 @@ export async function retryFailedDocumentTranslationPipeline(
         { ...translation, pages: translatedPages },
         translateState,
         deps,
-        [...retryFailedIds]
+        languageResolution,
+        [...retryFailedIds],
+        targetStates
       )
     }
     translationPublisher.cancel()
@@ -2336,12 +2731,26 @@ export async function retryFailedDocumentTranslationPipeline(
   }
   translationPublisher.flush()
 
+  const completionReport = buildDocumentCompletionReport(
+    source,
+    {
+      ...translation,
+      pages: translatedPages,
+      warnings: translation.warnings
+    },
+    translateState,
+    targetStates,
+    deps,
+    languageResolution
+  )
+  const hasTranslationFailures = completionReport.failed + completionReport.pending +
+    completionReport.suspectUntranslated > 0
   const retryFailed = [...retryFailedIds]
   const remainingWarnings = translation.warnings.filter((warning) => warning.code !== 'translation-partial')
   const retriedTranslation: DocumentModel = {
     ...translation,
     pages: translatedPages,
-    warnings: retryFailed.length > 0
+    warnings: hasTranslationFailures
       ? [...remainingWarnings, {
           code: 'translation-partial',
           severity: 'warning' as const,
@@ -2353,8 +2762,10 @@ export async function retryFailedDocumentTranslationPipeline(
     source,
     retriedTranslation,
     translateState,
-    retryFailed,
-    Math.max(0, initialState.failedBlocks - failedTargetIds.length) + retryFailed.length,
-    deps
+    completionReport.failedTargetIds,
+    0,
+    deps,
+    languageResolution,
+    targetStates
   )
 }

@@ -45,6 +45,7 @@ import type {
   , DocumentFileSelectionResult
   , DocumentPlatformCapability
   , DocumentAssetResult
+  , DocumentExportRequest
   , DocumentExportResult
   , DocumentRunRequest
   , DocumentRunResult
@@ -317,12 +318,13 @@ const api: Api = {
   cancelDocument: (jobId: string, generation: number): Promise<boolean> =>
     ipcRenderer.invoke('document:cancel', jobId, generation),
   /**
-   * 将当前译文导出为 PDF。
+   * 校验当前任务并导出完整或已确认的部分 PDF。
+   * @param request 当前任务标识、代际与导出模式。
    * @returns 保存、取消或拒绝结果。
    * @author zhenghq
    */
-  exportDocumentPdf: (): Promise<DocumentExportResult> =>
-    ipcRenderer.invoke('document:export-pdf'),
+  exportDocumentPdf: (request: DocumentExportRequest): Promise<DocumentExportResult> =>
+    ipcRenderer.invoke('document:export-pdf', request),
   /**
    * 读取当前任务中的受控图片资源。
    * @param assetId 解析阶段生成的资源标识。

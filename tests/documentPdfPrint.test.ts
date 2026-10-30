@@ -155,7 +155,9 @@ function createSequencedWebContentsFake(results: unknown[]): {
       },
       async executeJavaScript(script: string): Promise<unknown> {
         executedScripts.push(script)
-        return results.shift()
+        const result = results.shift()
+        if (result instanceof Error) throw result
+        return result
       },
       async printToPDF(options: PrintToPDFOptions): Promise<Uint8Array> {
         printOptions.push(options)
@@ -397,4 +399,57 @@ test('PDF 打印必须拒绝没有页面的文档', async () => {
     (error: unknown) => error instanceof DocumentPdfPrintError && error.code === 'invalid-document'
   )
   assert.equal(fake.insertedCss.length, 0)
+})
+
+test('部分导出必须在打印前准备可见标记并在打印后恢复最新预览', async () => {
+  const fake = createSequencedWebContentsFake([
+    { ready: true },
+    { pageHeightCssPx: 1056 },
+    { restored: true }
+  ])
+
+  await printDocumentPreviewToPdf(fake.webContents, documentModel(), {
+    mode: 'partial',
+    summary: {
+      total: 4,
+      translated: 1,
+      unchanged: 0,
+      reverted: 3,
+      failed: 1,
+      pending: 1,
+      suspectUntranslated: 1
+    }
+  })
+
+  assert.equal(fake.executedScripts.length, 3)
+  assert.match(fake.executedScripts[0] ?? '', /__documentPrintPreview/u)
+  assert.match(fake.executedScripts[0] ?? '', /preparePartialExport/u)
+  assert.match(fake.executedScripts[0] ?? '', /Partial result/u)
+  assert.match(fake.executedScripts[2] ?? '', /restorePrintPreview/u)
+})
+
+test('部分导出准备失败时不得打印且必须尝试恢复预览', async () => {
+  const fake = createSequencedWebContentsFake([
+    new Error('prepare failed'),
+    { restored: true }
+  ])
+
+  await assert.rejects(
+    printDocumentPreviewToPdf(fake.webContents, documentModel(), {
+      mode: 'partial',
+      summary: {
+        total: 1,
+        translated: 0,
+        unchanged: 0,
+        reverted: 1,
+        failed: 1,
+        pending: 0,
+        suspectUntranslated: 0
+      }
+    }),
+    (error: unknown) => error instanceof DocumentPdfPrintError && error.code === 'export-failed'
+  )
+  assert.equal(fake.printOptions.length, 0)
+  assert.equal(fake.executedScripts.length, 2)
+  assert.match(fake.executedScripts[1] ?? '', /restorePrintPreview/u)
 })

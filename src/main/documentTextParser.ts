@@ -3,6 +3,8 @@ import {
   createDocumentPageId,
   type DocumentBlock,
   type DocumentBoundingBox,
+  type DocumentImageBlock,
+  type DocumentListInfo,
   type DocumentModel,
   type DocumentPage,
   type DocumentTableBlock,
@@ -11,7 +13,8 @@ import {
   type DocumentTextBlock,
   type DocumentTextRole,
   type DocumentTextRun,
-  type DocumentTextStyle
+  type DocumentTextStyle,
+  type DocumentWarning
 } from '../shared/documentTypes.ts'
 import {
   createDocumentModel,
@@ -231,8 +234,8 @@ function parseMarkdownRuns(line: string): Array<Omit<DocumentTextRun, 'runId'>> 
   }
 
   let cursor = 0
-  // 路径以字母、下划线、点或波浪线开头，避免把 5s/10s、真人/动画等普通斜杠文本保护成路径。
-  const pattern = /<!--[\s\S]*?-->|`[^`]*`|!\[([^\]]*)\]\(([^)]*)\)|\[([^\]]*)\]\(([^)]*)\)|<\/?([a-z][a-z0-9:-]*)(?:\s[^>]*)?>|https?:\/\/[^\s<>)\]]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\/{1,2}|\.{1,2}\/)[A-Za-z_.~][^\s<>)\]]*|(\*\*|__)(?=\S)|(?<=\S)(\*\*|__)|(?<!\*)\*(?=\S)|(?<=\S)\*(?!\*)/giu
+  // 路径规则只匹配盘符、UNC 或明确的相对路径起点，避免把 5s/10s、真人/动画等普通斜杠文本保护成路径。
+  const pattern = /<!--[\s\S]*?-->|`[^`]*`|!\[([^\]]*)\]\(([^)]*)\)|\[([^\]]*)\]\(([^)]*)\)|<\/?([a-z][a-z0-9:-]*)(?:\s[^>]*)?>|https?:\/\/[^\s<>)\]]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[a-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*|\\\\[^\\\s]+\\[^\\\s]+(?:\\[^\\/:*?"<>|\r\n]*)*|(?:\/{1,2}|\.{1,2}\/)[A-Za-z_.~][^\s<>)\]]*|(\*\*|__)(?=\S)|(?<=\S)(\*\*|__)|(?<!\*)\*(?=\S)|(?<=\S)\*(?!\*)/giu
   let match: RegExpExecArray | null
   while ((match = pattern.exec(line)) !== null) {
     if (match.index > cursor) textBuffer += line.slice(cursor, match.index)
@@ -726,8 +729,139 @@ interface HtmlNode {
   children: HtmlNode[]
 }
 
+/** EPUB 章节图片解析结果。 */
+export interface HtmlDocumentImage {
+  /** 已登记资源的稳定标识。 */
+  assetId: string
+  /** 图片替代文本。 */
+  alt?: string
+}
+
+/** HTML/EPUB 语义解析的受控扩展选项。 */
+export interface HtmlDocumentParseOptions {
+  /** 额外样式表；仅接受已净化且不含资源型规则的普通声明。 */
+  css?: string[]
+  /** 将包内相对图片解析为已登记资源；返回 undefined 时忽略该图片。 */
+  resolveImage?: (source: string) => HtmlDocumentImage | undefined
+}
+
+/** HTML 源文预览允许保留的标签白名单。 */
+const HTML_PREVIEW_ALLOWED_TAGS = new Set([
+  'html', 'head', 'body', 'title', 'style', 'article', 'section', 'main', 'header', 'footer', 'a',
+  'div', 'span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'dl', 'dt',
+  'dd', 'blockquote', 'pre', 'code', 'strong', 'b', 'em', 'i', 'u', 's', 'del', 'ins',
+  'mark', 'small', 'sub', 'sup', 'br', 'hr', 'table', 'caption', 'thead', 'tbody', 'tfoot',
+  'tr', 'th', 'td', 'colgroup', 'col', 'figure', 'figcaption', 'picture', 'img', 'video',
+  'audio', 'source', 'track', 'svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line',
+  'polyline', 'polygon', 'text', 'tspan', 'defs', 'clipPath', 'use', 'symbol', 'title',
+  'desc', 'details', 'summary'
+])
+
+/** HTML 源文预览中必须丢弃整个子树的高风险标签。 */
+const HTML_PREVIEW_DROPPED_TAGS = new Set([
+  'script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'base', 'link',
+  'meta', 'form', 'input', 'button', 'textarea', 'select', 'option', 'optgroup', 'canvas',
+  'template', 'noscript', 'portal', 'math', 'foreignObject'
+])
+
+/** 可保留的普通 HTML 属性白名单。 */
+const HTML_PREVIEW_ALLOWED_ATTRIBUTES = new Set([
+  'class', 'id', 'title', 'lang', 'dir', 'role', 'aria-label', 'aria-hidden', 'aria-describedby',
+  'alt', 'width', 'height', 'colspan', 'rowspan', 'scope', 'headers', 'start', 'reversed',
+  'datetime', 'cite', 'open', 'viewbox', 'preserveaspectratio', 'fill', 'stroke',
+  'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'd', 'x', 'y', 'x1', 'x2', 'y1', 'y2',
+  'cx', 'cy', 'r', 'rx', 'ry', 'points', 'transform', 'opacity', 'fill-opacity',
+  'stroke-opacity', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'dominant-baseline'
+])
+
+/** 需要按 URL 规则净化的资源与链接属性。 */
+const HTML_PREVIEW_URL_ATTRIBUTES = new Set([
+  'href', 'src', 'poster', 'xlink:href', 'action', 'formaction'
+])
+
+/** CSS 属性白名单；只允许排版、颜色、边框和受控背景。 */
+const HTML_PREVIEW_CSS_PROPERTIES = new Set([
+  'color', 'background', 'background-color', 'font-family', 'font-size', 'font-style',
+  'font-weight', 'font-variant', 'line-height', 'letter-spacing', 'word-spacing',
+  'text-align', 'text-indent', 'text-transform', 'text-decoration', 'text-shadow',
+  'vertical-align', 'white-space', 'word-break', 'overflow-wrap', 'direction', 'unicode-bidi',
+  'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding',
+  'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'border', 'border-top',
+  'border-right', 'border-bottom', 'border-left', 'border-color', 'border-style',
+  'border-width', 'border-radius', 'border-collapse', 'border-spacing', 'background-clip',
+  'background-origin', 'background-position', 'background-repeat', 'background-size',
+  'list-style', 'list-style-type', 'list-style-position', 'table-layout', 'caption-side',
+  'empty-cells', 'display', 'flex-direction', 'flex-wrap', 'justify-content', 'align-items',
+  'align-content', 'align-self', 'gap', 'row-gap', 'column-gap', 'grid-template-columns',
+  'grid-template-rows', 'grid-column', 'grid-row', 'width', 'min-width', 'max-width', 'height',
+  'min-height', 'max-height', 'box-sizing', 'object-fit', 'object-position', 'page-break-before',
+  'page-break-after', 'page-break-inside', 'break-before', 'break-after', 'break-inside'
+])
+
+/** CSS 属性值中明确禁止的危险表达式与网络资源。 */
+const HTML_PREVIEW_UNSAFE_CSS = /(?:expression\s*\(|@import|url\s*\(|javascript\s*:|vbscript\s*:|-moz-binding|behavior\s*:)/iu
+
+/** 资源 URL 中的危险协议。 */
+const HTML_PREVIEW_UNSAFE_URL_SCHEME = /^(?:javascript|vbscript|data|file|filesystem|blob|about):/iu
+
+/**
+ * 查找 HTML 标签的结束尖括号。
+ * 合法属性引号中的 `<` 与 `>` 会被跳过；遇到下一个标签起始位置时，
+ * 将未闭合的畸形属性视为在上一个 `>` 结束，防止其吞并后续真实节点。
+ * @param html 原始 HTML。
+ * @param start 标签起始位置。
+ * @returns 结束尖括号位置；未闭合时返回 -1。
+ * @author zhenghq
+ */
+function findHtmlTagEnd(html: string, start: number): number {
+  let quote = ''
+  let lastTagEnd = -1
+  for (let index = start + 1; index < html.length; index += 1) {
+    const character = html[index]!
+    if (quote) {
+      if (character === quote) {
+        quote = ''
+      } else if (character === '>') {
+        // 记录引号内的 `>` 作为畸形未闭合属性的回退边界，但继续等待合法闭合引号。
+        lastTagEnd = index
+      } else if (character === '<' && findNextHtmlTagStart(html, index) === index) {
+        const closingQuote = html.indexOf(quote, index + 1)
+        const nextTag = findNextHtmlTagStart(html, index + 1)
+        if (closingQuote < 0 || (nextTag >= 0 && nextTag < closingQuote)) {
+          return lastTagEnd >= 0 ? lastTagEnd : index - 1
+        }
+      }
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+    } else if (character === '>') {
+      lastTagEnd = index
+      return index
+    }
+  }
+  return lastTagEnd
+}
+
+/**
+ * 查找下一个可能开始 HTML 标签的位置。
+ * @param html 原始 HTML。
+ * @param start 搜索起点。
+ * @returns 下一个标签起始位置；不存在时返回 -1。
+ * @author zhenghq
+ */
+function findNextHtmlTagStart(html: string, start: number): number {
+  for (let index = start; index < html.length; index += 1) {
+    if (html[index] !== '<') continue
+    const next = html[index + 1] ?? ''
+    if (/[a-z!?]/iu.test(next) || (next === '/' && /[a-z]/iu.test(html[index + 2] ?? ''))) return index
+  }
+  return -1
+}
+
 /**
  * 安全解析 HTML 为简化节点树，不执行脚本，也不创建 DOM。
+ * 解析器按引号感知方式读取标签，避免属性值中的 `<svg>` 被误识别为真实节点。
  * @param html HTML 文本。
  * @returns 根节点。
  * @author zhenghq
@@ -735,12 +869,35 @@ interface HtmlNode {
 function parseHtmlTree(html: string): HtmlNode {
   const root: HtmlNode = { name: '#root', attributes: {}, children: [] }
   const stack: HtmlNode[] = [root]
-  // XML 声明、处理指令和 DOCTYPE 都只属于文档元数据，不能作为可见正文进入翻译模型。
-  const tokenPattern = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<![^>]*>|<\/?[a-z][^>]*>|[^<]+/giu
-  let match: RegExpExecArray | null
-  while ((match = tokenPattern.exec(html)) !== null) {
-    const token = match[0]
-    if (token.startsWith('<!--') || token.startsWith('<!') || token.startsWith('<?')) continue
+  let cursor = 0
+  while (cursor < html.length) {
+    const tagStart = findNextHtmlTagStart(html, cursor)
+    if (tagStart < 0) {
+      const text = decodeHtmlEntities(html.slice(cursor))
+      // 保留空白文本节点，源文预览才能维持 inline 元素之间的自然间距；
+      // 翻译模型仍会在提取区块时自行 trim，不会把纯空白送去翻译。
+      stack[stack.length - 1]!.children.push({ name: '#text', text, attributes: {}, children: [] })
+      break
+    }
+    if (tagStart > cursor) {
+      const text = decodeHtmlEntities(html.slice(cursor, tagStart))
+      stack[stack.length - 1]!.children.push({ name: '#text', text, attributes: {}, children: [] })
+    }
+    if (html.startsWith('<!--', tagStart)) {
+      const commentEnd = html.indexOf('-->', tagStart + 4)
+      cursor = commentEnd < 0 ? html.length : commentEnd + 3
+      continue
+    }
+    const tagEnd = findHtmlTagEnd(html, tagStart)
+    if (tagEnd < 0) {
+      const text = decodeHtmlEntities(html.slice(tagStart))
+      stack[stack.length - 1]!.children.push({ name: '#text', text, attributes: {}, children: [] })
+      break
+    }
+    const token = html.slice(tagStart, tagEnd + 1)
+    cursor = tagEnd + 1
+    // XML 声明、处理指令和 DOCTYPE 都只属于文档元数据，不能作为可见正文进入翻译模型。
+    if (token.startsWith('<!') || token.startsWith('<?')) continue
     if (token.startsWith('</')) {
       const closing = token.slice(2, -1).trim().toLowerCase()
       for (let index = stack.length - 1; index > 0; index -= 1) {
@@ -751,31 +908,500 @@ function parseHtmlTree(html: string): HtmlNode {
       }
       continue
     }
-    if (token.startsWith('<')) {
-      const tagMatch = /^<([a-z][a-z0-9:-]*)([^>]*)>/iu.exec(token)
-      if (!tagMatch) continue
-      const name = tagMatch[1]!.toLowerCase()
-      const attributes: Record<string, string> = {}
-      const attributePattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu
-      let attribute: RegExpExecArray | null
-      while ((attribute = attributePattern.exec(tagMatch[2] ?? '')) !== null) {
-        attributes[attribute[1]!.toLowerCase()] = decodeHtmlEntities(
-          attribute[2] ?? attribute[3] ?? attribute[4] ?? ''
-        )
+    const tagMatch = /^<([a-z][a-z0-9:-]*)([\s\S]*)$/iu.exec(token.slice(0, -1))
+    if (!tagMatch) continue
+    const isSelfClosing = /\/\s*>$/u.test(token)
+    const rawAttributes = tagMatch[2] ?? ''
+    const hasUnclosedAttributeQuote = (() => {
+      let quote = ''
+      for (let index = 0; index < rawAttributes.length; index += 1) {
+        const character = rawAttributes[index]!
+        if (quote) {
+          if (character === quote) quote = ''
+        } else if (character === '"' || character === "'") {
+          quote = character
+        }
       }
-      const node: HtmlNode = { name, attributes, children: [] }
-      stack[stack.length - 1]!.children.push(node)
-      if (!/\/\s*>$/u.test(token) && !['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'].includes(name)) {
-        stack.push(node)
-      }
-      continue
+      return quote.length > 0
+    })()
+    // 未闭合属性属于畸形输入；丢弃该标签及其属性残片，避免属性内容被当作真实节点。
+    if (hasUnclosedAttributeQuote) continue
+    const name = tagMatch[1]!.toLowerCase()
+    const attributes: Record<string, string> = {}
+    const attributePattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu
+    let attribute: RegExpExecArray | null
+    while ((attribute = attributePattern.exec(rawAttributes)) !== null) {
+      attributes[attribute[1]!.toLowerCase()] = decodeHtmlEntities(
+        attribute[2] ?? attribute[3] ?? attribute[4] ?? ''
+      )
     }
-    const text = decodeHtmlEntities(token)
-    if (text.trim().length > 0) {
-      stack[stack.length - 1]!.children.push({ name: '#text', text, attributes: {}, children: [] })
+    const node: HtmlNode = { name, attributes, children: [] }
+    stack[stack.length - 1]!.children.push(node)
+    if (!isSelfClosing && !['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'].includes(name)) {
+      stack.push(node)
     }
   }
   return root
+}
+
+/**
+ * 将文本转义为可安全写入 HTML 正文的内容。
+ * @param value 原始文本。
+ * @returns 转义后的文本。
+ * @author zhenghq
+ */
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;')
+}
+
+/**
+ * 将文本转义为可安全写入双引号 HTML 属性的值。
+ * @param value 原始属性值。
+ * @returns 转义后的属性值。
+ * @author zhenghq
+ */
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replace(/"/gu, '&quot;')
+}
+
+/**
+ * 归一化 URL 中的空白和控制字符，避免通过字符夹带绕过协议检查。
+ * @param value 原始 URL。
+ * @returns 去除首尾空白及内部控制字符后的 URL。
+ * @author zhenghq
+ */
+function normalizeHtmlUrl(value: string): string {
+  return value
+    .replace(/[\u0000-\u0020\u007f]+/gu, '')
+    .trim()
+}
+
+/**
+ * 判断资源 URL 是否为允许的包内相对路径。
+ * @param value 已归一化的 URL。
+ * @returns 不含协议、网络定位或脚本伪协议时返回 true。
+ * @author zhenghq
+ */
+function isSafeRelativeResourceUrl(value: string): boolean {
+  if (!value || value.startsWith('//') || value.startsWith('\\\\')) return false
+  if (value.startsWith('#') || value.startsWith('?')) return true
+  return !/^[a-z][a-z0-9+.-]*:/iu.test(value)
+}
+
+/**
+ * 判断普通链接 URL 是否安全；允许 HTTP(S)、邮件、电话、锚点和相对链接。
+ * @param value 已归一化的 URL。
+ * @returns 可安全写入 href 时返回 true。
+ * @author zhenghq
+ */
+function isSafeLinkUrl(value: string): boolean {
+  if (isSafeRelativeResourceUrl(value)) return true
+  return /^(?:https?:|mailto:|tel:)/iu.test(value)
+}
+
+/**
+ * 判断 URL 是否为远程网络资源。
+ * @param value 已归一化的 URL。
+ * @returns 使用 HTTP(S) 或协议相对地址时返回 true。
+ * @author zhenghq
+ */
+function isRemoteResourceUrl(value: string): boolean {
+  return /^(?:https?:)?\/\//iu.test(value)
+}
+
+/**
+ * 按声明边界拆分 CSS，避免引号或函数中的分号被错误截断。
+ * @param value CSS 声明文本。
+ * @returns 去除空项后的声明数组。
+ * @author zhenghq
+ */
+function splitCssDeclarations(value: string): string[] {
+  const declarations: string[] = []
+  let start = 0
+  let quote = ''
+  let depth = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!
+    if (quote) {
+      if (character === '\\') index += 1
+      else if (character === quote) quote = ''
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+      continue
+    }
+    if (character === '(') depth += 1
+    else if (character === ')' && depth > 0) depth -= 1
+    else if (character === ';' && depth === 0) {
+      const declaration = value.slice(start, index).trim()
+      if (declaration) declarations.push(declaration)
+      start = index + 1
+    }
+  }
+  const tail = value.slice(start).trim()
+  if (tail) declarations.push(tail)
+  return declarations
+}
+
+/**
+ * 判断 CSS 值是否含有可加载资源、执行脚本或逃逸样式块的危险内容。
+ * @param value 已去除首尾空白的 CSS 值。
+ * @returns 可安全保留时返回 true。
+ * @author zhenghq
+ */
+function isSafeCssValue(value: string): boolean {
+  if (!value || value.length > 2000) return false
+  if (HTML_PREVIEW_UNSAFE_CSS.test(value)) return false
+  // 反斜杠可把 url、expression 等关键字拆开，受控预览不接受 CSS 转义。
+  if (/[\\<>{}@]/u.test(value)) return false
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) return false
+  return true
+}
+
+/**
+ * 按属性白名单净化 CSS 声明，并保留安全的排版与颜色规则。
+ * @param css 内联或样式表中的声明文本。
+ * @param warnings 告警收集数组。
+ * @returns 只包含白名单属性的声明文本。
+ * @author zhenghq
+ */
+function sanitizeCssDeclarations(css: string, warnings: DocumentWarning[]): string {
+  const safe: string[] = []
+  for (const declaration of splitCssDeclarations(css.replace(/\/\*[\s\S]*?\*\//gu, ''))) {
+    const separator = declaration.indexOf(':')
+    if (separator <= 0) {
+      if (declaration.trim()) addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      continue
+    }
+    const property = declaration.slice(0, separator).trim().toLowerCase()
+    const value = declaration.slice(separator + 1).trim()
+    if (!HTML_PREVIEW_CSS_PROPERTIES.has(property) || !isSafeCssValue(value)) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      if (HTML_PREVIEW_UNSAFE_CSS.test(value) && /url\s*\(/iu.test(value)) {
+        addHtmlSanitizeWarning(warnings, 'remote-resource-removed')
+      }
+      continue
+    }
+    safe.push(`${property}: ${value}`)
+  }
+  return safe.join('; ')
+}
+
+/**
+ * 删除样式表中的全部 at-rule。
+ * 支持分号结尾与块结尾两类规则，并在跳过块时感知引号和括号，
+ * 避免 `@import` 后的首个普通规则被错误吞掉。
+ * @param css 已移除注释的样式表。
+ * @param warnings 告警收集数组。
+ * @returns 仅含普通规则候选的样式表。
+ * @author zhenghq
+ */
+function removeCssAtRules(css: string, warnings: DocumentWarning[]): string {
+  let result = ''
+  let cursor = 0
+  while (cursor < css.length) {
+    const atIndex = css.indexOf('@', cursor)
+    if (atIndex < 0) {
+      result += css.slice(cursor)
+      break
+    }
+    result += css.slice(cursor, atIndex)
+    addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+    let quote = ''
+    let parentheses = 0
+    let braces = 0
+    let index = atIndex + 1
+    for (; index < css.length; index += 1) {
+      const character = css[index]!
+      if (quote) {
+        if (character === '\\') index += 1
+        else if (character === quote) quote = ''
+        continue
+      }
+      if (character === '"' || character === "'") {
+        quote = character
+      } else if (character === '(') {
+        parentheses += 1
+      } else if (character === ')' && parentheses > 0) {
+        parentheses -= 1
+      } else if (character === '{' && parentheses === 0) {
+        braces += 1
+      } else if (character === '}' && parentheses === 0 && braces > 0) {
+        braces -= 1
+        if (braces === 0) {
+          index += 1
+          break
+        }
+      } else if (character === ';' && parentheses === 0 && braces === 0) {
+        index += 1
+        break
+      }
+    }
+    cursor = index
+  }
+  return result
+}
+
+/**
+ * 将普通 CSS 样式表拆分为选择器与声明块。
+ * 只接受顶层花括号规则；嵌套结构、未闭合规则和规则外垃圾均不会进入输出。
+ * @param css 已移除 at-rule 的样式表。
+ * @returns 选择器与声明块数组。
+ * @author zhenghq
+ */
+function parseCssStyleRules(css: string): Array<{ selector: string; body: string }> {
+  const rules: Array<{ selector: string; body: string }> = []
+  let cursor = 0
+  while (cursor < css.length) {
+    const openBrace = css.indexOf('{', cursor)
+    if (openBrace < 0) break
+    const selector = css.slice(cursor, openBrace).trim()
+    let quote = ''
+    let parentheses = 0
+    let depth = 1
+    let closeBrace = -1
+    for (let index = openBrace + 1; index < css.length; index += 1) {
+      const character = css[index]!
+      if (quote) {
+        if (character === '\\') index += 1
+        else if (character === quote) quote = ''
+        continue
+      }
+      if (character === '"' || character === "'") {
+        quote = character
+      } else if (character === '(') {
+        parentheses += 1
+      } else if (character === ')' && parentheses > 0) {
+        parentheses -= 1
+      } else if (parentheses === 0 && character === '{') {
+        depth += 1
+      } else if (parentheses === 0 && character === '}') {
+        depth -= 1
+        if (depth === 0) {
+          closeBrace = index
+          break
+        }
+      }
+    }
+    if (closeBrace < 0) break
+    rules.push({ selector, body: css.slice(openBrace + 1, closeBrace) })
+    cursor = closeBrace + 1
+  }
+  return rules
+}
+
+/**
+ * 净化样式表，删除资源型 at-rule 并逐条过滤声明。
+ * @param css 样式表文本。
+ * @param warnings 告警收集数组。
+ * @returns 可安全放入 style 标签的样式表。
+ * @author zhenghq
+ */
+function sanitizeCssStylesheet(css: string, warnings: DocumentWarning[]): string {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//gu, '')
+  // 所有 at-rule 都可能引入字体、资源、动画或嵌套逃逸；首版预览只保留普通样式规则。
+  const withoutAtRules = removeCssAtRules(withoutComments, warnings)
+  return parseCssStyleRules(withoutAtRules).map(({ selector, body }) => {
+    const safeSelector = selector.trim()
+    if (!safeSelector || safeSelector.length > 1000 || /[<>{}@\\\u0000-\u001f\u007f]/u.test(safeSelector)) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      return ''
+    }
+    const declarations = sanitizeCssDeclarations(body, warnings)
+    return declarations ? `${safeSelector}{${declarations}}` : ''
+  }).join('')
+}
+
+/**
+ * 净化 EPUB 章节样式表，保留普通排版规则并移除资源型 at-rule。
+ * @param css 样式表文本。
+ * @returns 可安全解析的样式表与去重告警。
+ * @author zhenghq
+ */
+export function sanitizeDocumentCss(css: string): { css: string; warnings: DocumentWarning[] } {
+  const warnings: DocumentWarning[] = []
+  return { css: sanitizeCssStylesheet(css, warnings), warnings }
+}
+
+/**
+ * 添加去重后的 HTML 净化告警。
+ * @param warnings 告警收集数组。
+ * @param code 稳定告警码。
+ * @author zhenghq
+ */
+function addHtmlSanitizeWarning(warnings: DocumentWarning[], code: 'remote-resource-removed' | 'unsafe-html-removed'): void {
+  if (warnings.some((warning) => warning.code === code)) return
+  warnings.push(createDocumentWarning(
+    code,
+    code === 'remote-resource-removed'
+      ? 'Remote resources were removed from the HTML preview.'
+      : 'Unsafe HTML or CSS was removed from the preview.'
+  ))
+}
+
+/**
+ * 净化 srcset 候选列表，只保留安全的包内相对资源。
+ * @param value 原始 srcset。
+ * @param warnings 告警收集数组。
+ * @returns 安全的 srcset；没有候选时返回 undefined。
+ * @author zhenghq
+ */
+function sanitizeSrcset(value: string, warnings: DocumentWarning[]): string | undefined {
+  const candidates: string[] = []
+  for (const candidate of value.split(',')) {
+    const parts = candidate.trim().split(/\s+/u)
+    const url = normalizeHtmlUrl(parts[0] ?? '')
+    if (!url) continue
+    if (isRemoteResourceUrl(url)) {
+      addHtmlSanitizeWarning(warnings, 'remote-resource-removed')
+      continue
+    }
+    if (HTML_PREVIEW_UNSAFE_URL_SCHEME.test(url) || !isSafeRelativeResourceUrl(url)) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      continue
+    }
+    candidates.push([url, ...parts.slice(1)].join(' '))
+  }
+  return candidates.length > 0 ? candidates.join(', ') : undefined
+}
+
+/**
+ * 按元素类型净化单个属性值。
+ * @param tagName 小写标签名。
+ * @param name 小写属性名。
+ * @param value 已解码的属性值。
+ * @param warnings 告警收集数组。
+ * @returns 可保留的属性值；应删除属性时返回 undefined。
+ * @author zhenghq
+ */
+function sanitizeHtmlAttribute(
+  tagName: string,
+  name: string,
+  value: string,
+  warnings: DocumentWarning[]
+): string | undefined {
+  if (name.startsWith('on') || name === 'srcdoc' || name === 'formaction' || name === 'action') {
+    addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+    return undefined
+  }
+  if (name === 'style') {
+    const style = sanitizeCssDeclarations(value, warnings)
+    return style || undefined
+  }
+  if (name === 'srcset' || name === 'imagesrcset') return sanitizeSrcset(value, warnings)
+  if (HTML_PREVIEW_URL_ATTRIBUTES.has(name)) {
+    const normalized = normalizeHtmlUrl(value)
+    if (!normalized) return undefined
+    if (HTML_PREVIEW_UNSAFE_URL_SCHEME.test(normalized) || normalized.startsWith('//')) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      return undefined
+    }
+    if (tagName === 'a' && name === 'href') {
+      if (!isSafeLinkUrl(normalized)) {
+        addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+        return undefined
+      }
+      return normalized
+    }
+    if (isRemoteResourceUrl(normalized)) {
+      addHtmlSanitizeWarning(warnings, 'remote-resource-removed')
+      return undefined
+    }
+    if (!isSafeRelativeResourceUrl(normalized)) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      return undefined
+    }
+    return normalized
+  }
+  if (name === 'fill' || name === 'stroke') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'none' || normalized === 'currentcolor' || SAFE_MARKDOWN_COLOR.test(normalized)) return value.trim()
+    addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+    return undefined
+  }
+  if (HTML_PREVIEW_ALLOWED_ATTRIBUTES.has(name)) {
+    if (/[\u0000-\u001f\u007f]/u.test(value)) {
+      addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+      return undefined
+    }
+    return value
+  }
+  // data-* 只用于受控布局标记，不接收任意自定义属性。
+  if (name.startsWith('data-') && /^[a-z0-9_-]+$/iu.test(name) && !/[\u0000-\u001f\u007f]/u.test(value)) {
+    return value
+  }
+  return undefined
+}
+
+/**
+ * 递归序列化受控 HTML 节点，未知标签仅保留子内容。
+ * @param node 当前节点。
+ * @param warnings 告警收集数组。
+ * @returns 安全 HTML 片段。
+ * @author zhenghq
+ */
+function serializeSafeHtmlNode(node: HtmlNode, warnings: DocumentWarning[]): string {
+  if (node.name === '#text') return escapeHtmlText(node.text ?? '')
+  if (HTML_PREVIEW_DROPPED_TAGS.has(node.name)) {
+    addHtmlSanitizeWarning(warnings, 'unsafe-html-removed')
+    return ''
+  }
+  if (!HTML_PREVIEW_ALLOWED_TAGS.has(node.name)) {
+    return node.children.map((child) => serializeSafeHtmlNode(child, warnings)).join('')
+  }
+  const attributes: string[] = []
+  for (const [name, value] of Object.entries(node.attributes)) {
+    const safeValue = sanitizeHtmlAttribute(node.name, name, value, warnings)
+    if (safeValue !== undefined) attributes.push(`${name}="${escapeHtmlAttribute(safeValue)}"`)
+  }
+  if (node.name === 'style') {
+    const css = sanitizeCssStylesheet(htmlText(node), warnings)
+    return css ? `<style>${css}</style>` : ''
+  }
+  const attributeText = attributes.length > 0 ? ` ${attributes.join(' ')}` : ''
+  if (['area', 'br', 'col', 'hr', 'img', 'source', 'track', 'wbr', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'use'].includes(node.name)) {
+    return `<${node.name}${attributeText}>`
+  }
+  const children = node.children.map((child) => serializeSafeHtmlNode(child, warnings)).join('')
+  return `<${node.name}${attributeText}>${children}</${node.name}>`
+}
+
+/**
+ * 将任意 HTML 文档净化成可交给隔离 webview 的受控预览。
+ * 脚本、框架、表单、远程资源、事件属性与危险 URL 均不会进入输出。
+ * @param html 原始 HTML 文本。
+ * @returns 净化后的完整 HTML 与去重告警。
+ * @author zhenghq
+ */
+export function sanitizeHtmlPreview(html: string): { html: string; warnings: DocumentWarning[] } {
+  const root = parseHtmlTree(html)
+  const warnings: DocumentWarning[] = []
+  const htmlNode = root.children.find((node) => node.name === 'html')
+  const htmlAttributes = htmlNode
+    ? Object.entries(htmlNode.attributes)
+      .map(([name, value]) => sanitizeHtmlAttribute('html', name, value, warnings))
+      .filter((value): value is string => value !== undefined)
+    : []
+  const headNode = (htmlNode ?? root).children.find((node) => node.name === 'head')
+  const bodyNode = (htmlNode ?? root).children.find((node) => node.name === 'body')
+  const headNodes = headNode?.children ?? []
+  const bodyNodes = bodyNode?.children ?? (htmlNode
+    ? htmlNode.children.filter((node) => node.name !== 'head' && node.name !== 'body')
+    : root.children.filter((node) => node.name !== 'head'))
+  const head = headNodes.map((node) => serializeSafeHtmlNode(node, warnings)).join('')
+  const body = bodyNodes.map((node) => serializeSafeHtmlNode(node, warnings)).join('')
+  const bodyAttributes = bodyNode
+    ? Object.entries(bodyNode.attributes)
+      .map(([name, value]) => sanitizeHtmlAttribute('body', name, value, warnings))
+      .filter((value): value is string => value !== undefined)
+    : []
+  const htmlAttributeText = htmlAttributes.length > 0 ? ` ${htmlAttributes.join(' ')}` : ''
+  const bodyAttributeText = bodyAttributes.length > 0 ? ` ${bodyAttributes.join(' ')}` : ''
+  return {
+    html: `<!doctype html><html${htmlAttributeText}><head>${head}</head><body${bodyAttributeText}>${body}</body></html>`,
+    warnings
+  }
 }
 
 /**
@@ -1029,6 +1655,215 @@ function inlineStyleColor(style: string | undefined, property: string): string |
 }
 
 /**
+ * 将受控 CSS 声明转换为文档样式。
+ * @param style CSS 声明文本。
+ * @returns 仅包含白名单字段的样式。
+ * @author zhenghq
+ */
+function documentTextStyleFromCss(style: string | undefined): DocumentTextStyle | undefined {
+  if (!style) return undefined
+  const fontSize = inlineStylePixels(style, 'font-size')
+  const color = inlineStyleColor(style, 'color')
+  const backgroundColor = inlineStyleColor(style, 'background-color')
+  const rawFontFamily = cssDeclarationValue(style, 'font-family')?.replace(/[;{}<>]/gu, '').slice(0, 200).trim()
+  const rawFontWeight = cssDeclarationValue(style, 'font-weight')?.toLowerCase()
+  const numericWeight = Number.parseInt(rawFontWeight ?? '', 10)
+  const fontWeight = Number.isFinite(numericWeight)
+    ? numericWeight
+    : rawFontWeight === 'bold'
+      ? 700
+      : rawFontWeight === 'normal'
+        ? 400
+        : undefined
+  const fontStyle = cssDeclarationValue(style, 'font-style')?.toLowerCase()
+  const textDecoration = cssDeclarationValue(style, 'text-decoration')?.toLowerCase()
+  const result: DocumentTextStyle = {
+    ...(rawFontFamily ? { fontFamily: rawFontFamily } : {}),
+    ...(fontSize === undefined ? {} : { fontSize }),
+    ...(fontWeight === undefined ? {} : { fontWeight }),
+    ...(color ? { color } : {}),
+    ...(backgroundColor ? { backgroundColor } : {}),
+    ...(fontStyle === 'italic' || fontStyle === 'oblique' ? { italic: true } : {}),
+    ...(textDecoration?.includes('underline') ? { underline: true } : {}),
+    ...(textDecoration?.includes('line-through') ? { strikethrough: true } : {})
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
+/**
+ * 读取 CSS 声明中的单个属性值。
+ * @param style CSS 声明文本。
+ * @param property 小写属性名。
+ * @returns 原始属性值。
+ * @author zhenghq
+ */
+function cssDeclarationValue(style: string | undefined, property: string): string | undefined {
+  if (!style) return undefined
+  for (const declaration of style.split(';')) {
+    const separator = declaration.indexOf(':')
+    if (separator < 0 || declaration.slice(0, separator).trim().toLowerCase() !== property) continue
+    return declaration.slice(separator + 1).trim()
+  }
+  return undefined
+}
+
+/**
+ * 合并继承、样式表与内联样式；后者覆盖前者。
+ * @param styles 按优先级从低到高的样式。
+ * @returns 合并后的样式。
+ * @author zhenghq
+ */
+function mergeDocumentTextStyles(...styles: Array<DocumentTextStyle | undefined>): DocumentTextStyle | undefined {
+  const merged = Object.assign({}, ...styles.filter((style): style is DocumentTextStyle => Boolean(style))) as DocumentTextStyle
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+/** 已解析的受控 HTML CSS 规则。 */
+interface HtmlCssRule {
+  /** 逗号分隔后的单个选择器，按空格拆成后代匹配片段。 */
+  selectorParts: string[]
+  /** 规则中的受控文本样式。 */
+  style?: DocumentTextStyle
+  /** 规则中的文本对齐方式。 */
+  textAlign?: DocumentTextBlock['textAlign']
+  /** CSS 优先级，用于稳定覆盖。 */
+  specificity: number
+  /** 原始规则顺序。 */
+  order: number
+}
+
+/**
+ * 解析受控 CSS 文本对齐值。
+ * @param style CSS 声明文本。
+ * @returns 文档模型支持的文本对齐方式。
+ * @author zhenghq
+ */
+function documentTextAlignFromCss(style: string | undefined): DocumentTextBlock['textAlign'] | undefined {
+  const value = cssDeclarationValue(style, 'text-align')?.toLowerCase()
+  return value === 'left' || value === 'center' || value === 'right' || value === 'justify'
+    ? value
+    : undefined
+}
+
+/**
+ * 计算简单选择器的 CSS 优先级。
+ * @param selector 选择器文本。
+ * @returns 数值优先级。
+ * @author zhenghq
+ */
+function cssSelectorSpecificity(selector: string): number {
+  const ids = selector.match(/#[a-z0-9_-]+/giu)?.length ?? 0
+  const classes = selector.match(/\.[a-z0-9_-]+/giu)?.length ?? 0
+  const tags = selector.match(/(?:^|\s)([a-z][a-z0-9-]*)/giu)?.length ?? 0
+  return ids * 100 + classes * 10 + tags
+}
+
+/**
+ * 判断选择器片段是否只包含受支持的类型、类、ID 与通配符。
+ * @param selector 单个选择器片段。
+ * @returns 可安全匹配时返回 true。
+ * @author zhenghq
+ */
+function isSupportedCssSelector(selector: string): boolean {
+  return /^(?:(?:[a-z][a-z0-9-]*|\*)?(?:[.#][a-z0-9_-]+)*)$/iu.test(selector) &&
+    selector !== '' && selector !== '.'
+}
+
+/**
+ * 解析样式表中的普通规则，并丢弃无法安全匹配的选择器。
+ * @param css 已净化样式表。
+ * @returns 受控规则数组。
+ * @author zhenghq
+ */
+function parseDocumentCssRules(css: string): HtmlCssRule[] {
+  const warnings: DocumentWarning[] = []
+  const rules: HtmlCssRule[] = []
+  let order = 0
+  for (const rule of parseCssStyleRules(css.replace(/\/\*[\s\S]*?\*\//gu, ''))) {
+    const declarations = sanitizeCssDeclarations(rule.body, warnings)
+    const style = documentTextStyleFromCss(declarations)
+    const textAlign = documentTextAlignFromCss(declarations)
+    if (!style && !textAlign) continue
+    for (const selector of rule.selector.split(',')) {
+      const parts = selector.trim().split(/\s+/u).filter(Boolean)
+      if (parts.length === 0 || parts.some((part) => !isSupportedCssSelector(part))) continue
+      rules.push({
+        selectorParts: parts,
+        ...(style ? { style } : {}),
+        ...(textAlign ? { textAlign } : {}),
+        specificity: cssSelectorSpecificity(selector),
+        order
+      })
+      order += 1
+    }
+  }
+  return rules
+}
+
+/**
+ * 判断节点是否匹配单个简单选择器。
+ * @param node HTML 节点。
+ * @param selector 简单选择器。
+ * @returns 匹配时返回 true。
+ * @author zhenghq
+ */
+function matchesSimpleCssSelector(node: HtmlNode, selector: string): boolean {
+  const tag = /^([a-z][a-z0-9-]*|\*)/iu.exec(selector)?.[1]?.toLowerCase()
+  if (tag && tag !== '*' && node.name !== tag) return false
+  const ids = selector.match(/#([a-z0-9_-]+)/giu)?.map((value) => value.slice(1)) ?? []
+  if (ids.some((id) => node.attributes.id !== id)) return false
+  const classes = new Set((node.attributes.class ?? '').split(/\s+/u).filter(Boolean))
+  const requiredClasses = selector.match(/\.([a-z0-9_-]+)/giu)?.map((value) => value.slice(1)) ?? []
+  return requiredClasses.every((className) => classes.has(className))
+}
+
+/**
+ * 判断节点是否匹配支持的后代选择器。
+ * @param node 待匹配节点。
+ * @param ancestors 从根到父节点的祖先链。
+ * @param selectorParts 选择器片段。
+ * @returns 匹配时返回 true。
+ * @author zhenghq
+ */
+function matchesCssSelector(node: HtmlNode, ancestors: HtmlNode[], selectorParts: string[]): boolean {
+  let ancestorIndex = ancestors.length - 1
+  for (let index = selectorParts.length - 1; index >= 0; index -= 1) {
+    const part = selectorParts[index]!
+    if (index === selectorParts.length - 1) {
+      if (!matchesSimpleCssSelector(node, part)) return false
+      continue
+    }
+    while (ancestorIndex >= 0 && !matchesSimpleCssSelector(ancestors[ancestorIndex]!, part)) {
+      ancestorIndex -= 1
+    }
+    if (ancestorIndex < 0) return false
+    ancestorIndex -= 1
+  }
+  return true
+}
+
+/**
+ * 计算节点自身命中的样式表规则。
+ * @param node HTML 节点。
+ * @param ancestors 祖先链。
+ * @param rules 已解析 CSS 规则。
+ * @returns 合并后的样式与对齐方式。
+ * @author zhenghq
+ */
+function matchedCssStyle(
+  node: HtmlNode,
+  ancestors: HtmlNode[],
+  rules: HtmlCssRule[]
+): { style?: DocumentTextStyle; textAlign?: DocumentTextBlock['textAlign'] } {
+  const matched = rules
+    .filter((rule) => matchesCssSelector(node, ancestors, rule.selectorParts))
+    .sort((left, right) => left.specificity - right.specificity || left.order - right.order)
+  const style = mergeDocumentTextStyles(...matched.map((rule) => rule.style))
+  const textAlign = [...matched].reverse().find((rule) => rule.textAlign)?.textAlign
+  return { ...(style ? { style } : {}), ...(textAlign ? { textAlign } : {}) }
+}
+
+/**
  * 读取 SVG 文本节点的数字属性。
  * @param node SVG 节点。
  * @param name 属性名。
@@ -1204,18 +2039,55 @@ function parseHtmlSvgBlocks(
 function parseHtmlBlocks(node: HtmlNode, context: {
   input: DocumentParseInput
   pageId: string
+  cssRules?: HtmlCssRule[]
+  resolveImage?: HtmlDocumentParseOptions['resolveImage']
+  ancestors?: HtmlNode[]
+  inheritedStyle?: DocumentTextStyle
+  list?: {
+    level: number
+    ordered: boolean
+    counters: Map<number, number>
+    itemCount: number
+    nestedItemCounts: Map<number, number>
+  }
 }): DocumentBlock[] {
   const blocks: DocumentBlock[] = []
   const blockTags = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'blockquote', 'pre', 'caption'])
   const ignoredTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'form', 'button', 'input', 'textarea', 'select', 'canvas'])
+  const ancestors = [...(context.ancestors ?? []), node]
   for (const child of node.children) {
     if (child.name === '#text') {
       const text = child.text?.trim() ?? ''
-      if (text) blocks.push(createTextBlock(context.input, context.pageId, 0, text))
+      if (text) {
+        blocks.push(createTextBlock(context.input, context.pageId, blocks.length, text, 'paragraph', {
+          ...(context.inheritedStyle ? { style: context.inheritedStyle } : {})
+        }))
+      }
       continue
     }
     if (ignoredTags.has(child.name)) continue
     if (child.name === 'svg') continue
+    const cssStyle = context.cssRules ? matchedCssStyle(child, ancestors, context.cssRules) : {}
+    const inlineStyle = documentTextStyleFromCss(child.attributes.style)
+    const childStyle = mergeDocumentTextStyles(context.inheritedStyle, cssStyle.style, inlineStyle)
+    const childTextAlign = documentTextAlignFromCss(child.attributes.style) ?? cssStyle.textAlign
+    if (child.name === 'img') {
+      const source = child.attributes.src?.trim()
+      const image = source && context.resolveImage ? context.resolveImage(source) : undefined
+      if (image) {
+        const readingOrder = blocks.length
+        const block: DocumentImageBlock = {
+          kind: 'image',
+          blockId: createDocumentBlockId(context.input.sha256, context.pageId, readingOrder, 'image'),
+          readingOrder,
+          translatable: false,
+          assetId: image.assetId,
+          ...(image.alt ? { alt: image.alt } : {})
+        }
+        blocks.push(block)
+      }
+      continue
+    }
     if (child.name === 'table') {
       const rows = findHtmlNodes(child, new Set(['tr'])).map((rowNode, rowIndex) => ({
         rowId: createTableRowId(`table-${rowIndex}`, rowIndex),
@@ -1223,11 +2095,21 @@ function parseHtmlBlocks(node: HtmlNode, context: {
           .filter((cell) => cell.name === 'td' || cell.name === 'th')
           .map((cell, cellIndex): DocumentTableCell => {
             const text = htmlText(cell).replace(/\s+/gu, ' ').trim()
+            const cellCssStyle = context.cssRules
+              ? matchedCssStyle(cell, [...ancestors, child], context.cssRules)
+              : {}
+            const cellStyle = mergeDocumentTextStyles(
+              childStyle,
+              cellCssStyle.style,
+              documentTextStyleFromCss(cell.attributes.style)
+            )
             return {
               cellId: createTableCellId(context.input.sha256, context.pageId, `table-${rowIndex}`, rowIndex, cellIndex),
               rowSpan: Number.parseInt(cell.attributes['rowspan'] ?? '1', 10) || 1,
               colSpan: Number.parseInt(cell.attributes['colspan'] ?? '1', 10) || 1,
-              blocks: text ? [createTextBlock(context.input, context.pageId, 0, text)] : []
+              blocks: text ? [createTextBlock(context.input, context.pageId, 0, text, 'paragraph', {
+                ...(cellStyle ? { style: cellStyle } : {})
+              })] : []
             }
           })
       }))
@@ -1240,8 +2122,22 @@ function parseHtmlBlocks(node: HtmlNode, context: {
       })
       continue
     }
-    if (child.name === 'img' || child.name === 'br') continue
-    if (blockTags.has(child.name)) {
+    if (child.name === 'br') continue
+    if (child.name === 'ul' || child.name === 'ol') {
+      const level = context.list ? context.list.level + 1 : 0
+      const ordered = child.name === 'ol'
+      const start = Number.parseInt(child.attributes.start ?? '1', 10)
+      const counters = new Map(context.list?.counters ?? [])
+      if (!counters.has(level)) counters.set(level, Number.isFinite(start) ? start : 1)
+      blocks.push(...parseHtmlBlocks(child, {
+        ...context,
+        ancestors,
+        ...(childStyle ? { inheritedStyle: childStyle } : {}),
+        list: { level, ordered, counters, itemCount: 0, nestedItemCounts: new Map() }
+      }))
+      continue
+    }
+    if (blockTags.has(child.name) && !(child.name === 'li' && child.children.some((item) => item.name === 'ul' || item.name === 'ol'))) {
       const text = htmlText(child).replace(/[ \t]+/gu, ' ').replace(/\n{3,}/gu, '\n\n').trim()
       if (text) {
         const role: DocumentTextRole = /^h[1-6]$/u.test(child.name)
@@ -1253,42 +2149,94 @@ function parseHtmlBlocks(node: HtmlNode, context: {
               : child.name === 'caption'
                 ? 'caption'
                 : 'paragraph'
+        const listInfo: DocumentListInfo | undefined = child.name === 'li' && context.list
+          ? (() => {
+              const level = context.list.level
+              const current = (context.list.counters.get(level) ?? 1) +
+                (level === context.list.level
+                  ? context.list.itemCount
+                  : context.list.nestedItemCounts.get(level) ?? 0)
+              return {
+                level,
+                marker: context.list.ordered ? `${current}.` : '•',
+                ordered: context.list.ordered
+              }
+            })()
+          : undefined
         blocks.push(createTextBlock(
           context.input,
           context.pageId,
           blocks.length,
           text,
           role,
-          { protected: child.name === 'pre' }
+          {
+            ...(childStyle ? { style: childStyle } : {}),
+            ...(childTextAlign ? { textAlign: childTextAlign } : {}),
+            ...(listInfo ? { list: listInfo } : {}),
+            protected: child.name === 'pre'
+          }
         ))
       }
       continue
     }
-    blocks.push(...parseHtmlBlocks(child, context))
+    blocks.push(...parseHtmlBlocks(child, {
+      ...context,
+      ancestors,
+      ...(childStyle ? { inheritedStyle: childStyle } : {}),
+      ...(context.list && child.name === 'li'
+        ? {
+            list: {
+              ...context.list,
+              itemCount: child.name === 'li' ? context.list.itemCount + 1 : context.list.itemCount,
+              nestedItemCounts: new Map(context.list.nestedItemCounts).set(
+                context.list.level,
+                (context.list.nestedItemCounts.get(context.list.level) ?? 0) + 1
+              )
+            }
+          }
+        : {})
+    }))
   }
   return blocks
 }
 
 /**
  * 解析 HTML 文档的可翻译语义内容。
- * 源文预览直接加载原始文件，因此这里不生成资源清理告警；脚本、框架和事件属性
- * 仅从翻译模型中排除，不会被复制到译文渲染 DOM。
+ * 源文预览会经过受控 HTML/CSS 净化，因此这里同时返回远程资源与危险内容清理告警；
+ * 翻译模型只提取语义正文，不把脚本、框架和事件属性复制到译文渲染 DOM。
  * @param input 解析输入。
+ * @param options 可选的受控 CSS 与包内图片解析扩展。
  * @returns HTML 文档模型。
  * @author zhenghq
  */
-export function parseHtmlDocument(input: DocumentParseInput): DocumentModel {
+export function parseHtmlDocument(input: DocumentParseInput, options: HtmlDocumentParseOptions = {}): DocumentModel {
   const html = decodeDocumentText(input.bytes)
   const tree = parseHtmlTree(html)
   const titleNode = findHtmlNodes(tree, new Set(['title']))[0]
   const title = titleNode ? htmlText(titleNode).trim() : undefined
   const body = findHtmlNodes(tree, new Set(['body']))[0] ?? tree
   const model = createDocumentModel(input, title ? { title } : {})
+  const cssWarnings: DocumentWarning[] = []
+  const safeCss: string[] = []
+  // 源文预览与后续 EPUB 章节共用同一净化规则，解析告警必须随模型返回，
+  // 不能只在实际加载预览时才提示用户远程资源或危险内容已被移除。
+  const preview = sanitizeHtmlPreview(html)
+  for (const css of options.css ?? []) {
+    const sanitized = sanitizeDocumentCss(css)
+    if (sanitized.css) safeCss.push(sanitized.css)
+    cssWarnings.push(...sanitized.warnings)
+  }
+  const cssRules = parseDocumentCssRules(safeCss.join('\n'))
+  for (const warning of [...preview.warnings, ...cssWarnings]) {
+    if (!model.warnings.some((existing) => existing.code === warning.code)) model.warnings.push(warning)
+  }
   const pageContainers = findHtmlPageContainers(body)
   if (pageContainers.length === 0) {
     const blocks = parseHtmlBlocks(body, {
       input,
-      pageId: model.pages[0]!.pageId
+      pageId: model.pages[0]!.pageId,
+      cssRules,
+      ...(options.resolveImage ? { resolveImage: options.resolveImage } : {})
     })
     // 非分页 HTML 没有可靠的页面边界，保留原单页流式行为，仅附加 SVG 文本。
     for (const svg of findHtmlNodes(body, new Set(['svg']))) {

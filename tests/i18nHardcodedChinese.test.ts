@@ -81,7 +81,9 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
   'src/renderer/src/document.ts': [
     // 水印固定展示产品中文名，与英文名上下两行同时出现。
     '划词翻译'
-  ]
+  ],
+  // 部分导出注入脚本使用固定英文标记，供中文审计规则以字符串字面量精确放行。
+  'src/main/documentPdfPrint.ts': ['Partial result']
 }
 
 /**

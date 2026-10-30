@@ -22,7 +22,8 @@ import {
   parseHtmlDocument,
   parseMarkdownDocument,
   parseSubtitleDocument,
-  parseTextDocument
+  parseTextDocument,
+  sanitizeHtmlPreview
 } from '../src/main/documentTextParser.ts'
 import { parseDocxDocument } from '../src/main/documentDocxParser.ts'
 import { parseEpubDocument } from '../src/main/documentEpubParser.ts'
@@ -179,6 +180,30 @@ test('Markdown 行内路径保护不应把提示词中的斜杠分隔文本截�
   assert.equal(block.runs.some((run) => run.protected === true), false)
 })
 
+test('Markdown 应保护邮箱、Windows 路径和 URL，只翻译周围说明文字', () => {
+  const model = parseMarkdownDocument(textInput([
+    '请联系 owner+docs@example.com。',
+    '文件位于 C:\\Users\\alice\\文档\\report.pdf。',
+    '共享盘是 \\\\server\\share\\manual.txt。',
+    '访问 https://example.com/guide 获取说明。'
+  ].join('\n'), 'contacts.md', 'markdown'))
+  const block = model.pages[0]!.blocks[0]
+  assert.equal(block?.kind, 'text')
+  if (block?.kind !== 'text') return
+
+  const protectedText = block.runs.filter((run) => run.protected === true).map((run) => run.text).join('\n')
+  const translatable = block.runs.filter((run) => run.protected !== true).map((run) => run.text).join('')
+  assert.match(protectedText, /owner\+docs@example\.com/u)
+  assert.match(protectedText, /C:\\Users\\alice\\文档\\report\.pdf/u)
+  assert.match(protectedText, /\\\\server\\share\\manual\.txt/u)
+  assert.match(protectedText, /https:\/\/example\.com\/guide/u)
+  assert.doesNotMatch(translatable, /owner\+docs@example\.com|C:\\Users|\\\\server|https:\/\//u)
+  assert.match(translatable, /请联系/u)
+  assert.match(translatable, /文件位于/u)
+  assert.match(translatable, /共享盘是/u)
+  assert.match(translatable, /获取说明/u)
+})
+
 test('Markdown 代码注释识别应避开 C 预处理指令、URL 与字符串内容', () => {
   const model = parseMarkdownDocument(textInput([
     '```c',
@@ -252,6 +277,7 @@ test('JSON 应保留键名并仅翻译字符串值，CSV 应生成行列结构',
   assert.match(jsonText, /Hello world/u)
   assert.match(jsonText, /Translate me/u)
   assert.doesNotMatch(jsonText, /title|nested|label/u)
+  assert.deepEqual(translatableText(json), ['Hello world', 'Translate me'])
 
   const csv = parseDelimitedDocument(textInput('name,description\nA,"First row"\nB,"Second row"', 'items.csv', 'csv'))
   const table = csv.pages[0]!.blocks[0]
@@ -275,6 +301,12 @@ test('SRT 与 VTT 应保留时间轴和序号，仅将字幕文本作为可翻�
   assert.deepEqual(translatableText(srt), ['Hello subtitle', 'Second line'])
   assert.match(JSON.stringify(srt), /00:00:01,000/u)
   assert.match(JSON.stringify(srt), /"readingOrder":0/u)
+  assert.deepEqual(srt.pages[0]!.blocks.map((block) => block.kind === 'text' ? block.timing : undefined), [
+    '00:00:01,000 --> 00:00:03,000',
+    '00:00:04,000 --> 00:00:06,000'
+  ])
+  assert.deepEqual(srt.pages[0]!.blocks.map((block) => block.kind === 'text' ? block.sequence : undefined), [1, 2])
+  assert.equal(translatableText(srt).some((text) => /00:00:|\d{3}\s+-->/u.test(text)), false)
 
   const vtt = parseSubtitleDocument(textInput([
     'WEBVTT',
@@ -285,7 +317,7 @@ test('SRT 与 VTT 应保留时间轴和序号，仅将字幕文本作为可翻�
   assert.deepEqual(translatableText(vtt), ['Hello VTT'])
 })
 
-test('HTML 应保留原文件供源文预览，翻译模型只提取受控语义内容', () => {
+test('HTML 应清理危险内容并为源文预览提供净化结果', () => {
   const model = parseHtmlDocument(textInput([
     '<!doctype html><html><head><title>Example</title></head><body>',
     '<h1>Heading</h1>',
@@ -299,7 +331,63 @@ test('HTML 应保留原文件供源文预览，翻译模型只提取受控语义
   assert.match(serialized, /Heading/u)
   assert.doesNotMatch(serialized, /script|iframe|onclick|onerror|javascript:/iu)
   assert.equal(model.assets.length, 0)
-  assert.equal(model.warnings.some((warning) => warning.code === 'remote-resource-removed'), false)
+  assert.equal(model.warnings.some((warning) => warning.code === 'remote-resource-removed'), true)
+})
+
+test('HTML 源文预览必须移除脚本、事件属性、危险 URL 与远程资源', () => {
+  const preview = sanitizeHtmlPreview([
+    '<!doctype html><html><head>',
+    '<meta http-equiv="refresh" content="0;url=https://evil.example">',
+    '<base href="https://evil.example/">',
+    '<link rel="stylesheet" href="https://evil.example/site.css">',
+    '<style>',
+    '@import url("https://evil.example/import.css");',
+    'p{color:#123456;background:url(https://evil.example/a.png);width:expression(alert(1))}',
+    'a{position:fixed;inset:0;font-family:"Noto Sans";font-size:16px;line-height:1.6;text-align:left;color:rgb(1,2,3)}',
+    '</style></head><body onload="alert(1)">',
+    '<h1 onclick="alert(1)">Safe heading</h1>',
+    '<p style="color:red;background-image:url(javascript:alert(1));width:expression(alert(1))">Safe text</p>',
+    '<a href="javascript:alert(1)" onmouseover="alert(1)">bad</a>',
+    '<a href="https://example.com">remote link</a>',
+    '<img src="https://evil.example/a.png" onerror="alert(1)">',
+    '<img src="data:image/svg+xml,<svg onload=alert(1)>">',
+    '<img src="images/local.png">',
+    '<iframe src="https://evil.example"></iframe>',
+    '<script>alert(1)</script>',
+    '</body></html>'
+  ].join(''), 'safe-preview.html', 'html')
+
+  assert.match(preview.html, /Safe heading/u)
+  assert.match(preview.html, /Safe text/u)
+  assert.match(preview.html, /href="https:\/\/example\.com"/u)
+  assert.match(preview.html, /src="images\/local\.png"/u)
+  assert.doesNotMatch(preview.html, /<script|onclick|onerror|onload|onmouseover/iu)
+  assert.doesNotMatch(preview.html, /javascript:|vbscript:|expression\(|@import/iu)
+  assert.doesNotMatch(preview.html, /<iframe|<meta[^>]+refresh|<base\b|<link\b/iu)
+  assert.doesNotMatch(preview.html, /https:\/\/evil\.example/iu)
+  assert.doesNotMatch(preview.html, /data:image\/svg/iu)
+  assert.match(preview.html, /<style>/u)
+  assert.match(preview.html, /color:\s*#123456/iu)
+  assert.match(preview.html, /font-size:\s*16px/iu)
+  assert.doesNotMatch(preview.html, /position:\s*fixed|inset:\s*0/iu)
+  assert.equal(preview.warnings.some((warning) => warning.code === 'remote-resource-removed'), true)
+  assert.equal(preview.warnings.some((warning) => warning.code === 'unsafe-html-removed'), true)
+})
+
+test('HTML 净化预览必须保持无危险内容且允许安全的包内相对资源', () => {
+  const preview = sanitizeHtmlPreview([
+    '<html><body>',
+    '<picture><source srcset="https://evil.example/a.webp"><img src="./images/local.png" alt="local"></picture>',
+    '<video poster="https://evil.example/poster.png"><source src="media/local.mp4"></video>',
+    '<div style="font-weight:700;color:#abc;background-color:rgba(1,2,3,.5);border:1px solid #000">Content</div>',
+    '</body></html>'
+  ].join(''), 'relative.html', 'html')
+
+  assert.match(preview.html, /src="\.\/images\/local\.png"/u)
+  assert.match(preview.html, /src="media\/local\.mp4"/u)
+  assert.doesNotMatch(preview.html, /evil\.example/iu)
+  assert.match(preview.html, /font-weight:\s*700/iu)
+  assert.match(preview.html, /border:\s*1px solid #000/iu)
 })
 
 test('HTML 应忽略 XML 声明而不是把声明作为正文送去翻译', () => {
@@ -547,6 +635,193 @@ test('DOCX 应解析段落、表格、图片关系和 OMML 公式', async () => 
   assert.equal(heading.kind === 'text' ? heading.role : '', 'heading')
 })
 
+test('DOCX 应解析编号列表、纵向合并、单元格语义与 OMML 结构', async () => {
+  const zip = new JSZip()
+  zip.file('word/document.xml', `<?xml version="1.0"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+      <w:body>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>First item</w:t></w:r></w:p>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Nested item</w:t></w:r></w:p>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Second item</w:t></w:r></w:p>
+        <w:tbl>
+          <w:tr>
+            <w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:pPr><w:pStyle w:val="Heading2"/><w:jc w:val="center"/></w:pPr><w:r><w:t>Merged heading</w:t></w:r></w:p></w:tc>
+            <w:tc><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:tc>
+          </w:tr>
+          <w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p/></w:tc><w:tc><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:tc></w:tr>
+          <w:tr><w:tc><w:tcPr><w:vMerge w:val="continue"/></w:tcPr><w:p/></w:tc><w:tc><w:p><w:r><w:t>Footer</w:t></w:r></w:p></w:tc></w:tr>
+        </w:tbl>
+        <w:p><m:oMath><m:f><m:num><m:r><m:t>x</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f><m:sSup><m:e><m:r><m:t>y</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p>
+      </w:body>
+    </w:document>`)
+  zip.file('word/numbering.xml', `<?xml version="1.0"?>
+    <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:abstractNum w:abstractNumId="0">
+        <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+        <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2."/></w:lvl>
+      </w:abstractNum>
+      <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+    </w:numbering>`)
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const model = await parseDocxDocument({
+    path: '/tmp/lists-and-merges.docx',
+    fileName: 'lists-and-merges.docx',
+    format: 'docx',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  const listItems = model.pages[0]!.blocks.filter((block) => block.kind === 'text' && block.role === 'list-item')
+  assert.deepEqual(listItems.map((block) => block.kind === 'text' ? block.list : undefined), [
+    { level: 0, marker: '1.', ordered: true },
+    { level: 1, marker: 'a.', ordered: true },
+    { level: 0, marker: '2.', ordered: true }
+  ])
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 3)
+  assert.equal(table.rows[0]!.cells[0]!.rowSpan, 3)
+  assert.equal(table.rows[1]!.cells.length, 1)
+  assert.equal(table.rows[2]!.cells.length, 1)
+  const mergedHeading = table.rows[0]!.cells[0]!.blocks[0]
+  assert.equal(mergedHeading?.kind === 'text' ? mergedHeading.role : '', 'heading')
+  assert.equal(mergedHeading?.kind === 'text' ? mergedHeading.textAlign : undefined, 'center')
+
+  const formula = model.pages[0]!.blocks.find((block) => block.kind === 'formula')
+  assert.equal(formula?.kind, 'formula')
+  if (formula?.kind !== 'formula') return
+  assert.match(formula.mathml ?? '', /^<math\b/u)
+  assert.match(formula.mathml ?? '', /<mfrac>/u)
+  assert.match(formula.mathml ?? '', /<msup>/u)
+  assert.equal(formula.mathml?.includes('<script') ?? true, false)
+})
+
+test('DOCX 应继承文档默认、段落和字符样式，并允许直接格式覆盖', async () => {
+  const zip = new JSZip()
+  zip.file('word/document.xml', `<?xml version="1.0"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Styled heading</w:t></w:r></w:p>
+        <w:p><w:pPr><w:pStyle w:val="Numbered"/></w:pPr><w:r><w:t>Styled list item</w:t></w:r></w:p>
+        <w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:rStyle w:val="Emphasis"/></w:rPr><w:t>Character style</w:t></w:r></w:p>
+        <w:p><w:r><w:rPr><w:rStyle w:val="Emphasis"/><w:b/><w:sz w:val="40"/><w:color w:val="abcdef"/><w:i w:val="0"/></w:rPr><w:t>Direct override</w:t></w:r></w:p>
+      </w:body>
+    </w:document>`)
+  zip.file('word/styles.xml', `<?xml version="1.0"?>
+    <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:docDefaults>
+        <w:rPrDefault><w:rPr><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos"/><w:sz w:val="22"/><w:color w:val="222222"/></w:rPr></w:rPrDefault>
+        <w:pPrDefault><w:pPr><w:jc w:val="left"/></w:pPr></w:pPrDefault>
+      </w:docDefaults>
+      <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Heading1">
+        <w:name w:val="heading 1"/><w:basedOn w:val="Normal"/>
+        <w:pPr><w:jc w:val="center"/></w:pPr>
+        <w:rPr><w:rFonts w:ascii="Aptos Display"/><w:sz w:val="32"/><w:color w:val="112233"/><w:b/></w:rPr>
+      </w:style>
+      <w:style w:type="paragraph" w:styleId="Numbered">
+        <w:name w:val="List Number"/><w:basedOn w:val="Normal"/>
+        <w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr>
+      </w:style>
+      <w:style w:type="character" w:styleId="Emphasis">
+        <w:name w:val="Emphasis"/><w:rPr><w:i/><w:u/><w:color w:val="445566"/></w:rPr>
+      </w:style>
+    </w:styles>`)
+  zip.file('word/numbering.xml', `<?xml version="1.0"?>
+    <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>
+      <w:num w:numId="2"><w:abstractNumId w:val="0"/></w:num>
+    </w:numbering>`)
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const model = await parseDocxDocument({
+    path: '/tmp/styles.docx',
+    fileName: 'styles.docx',
+    format: 'docx',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  const blocks = model.pages[0]!.blocks
+  const heading = blocks[0]
+  assert.equal(heading?.kind === 'text' ? heading.role : '', 'heading')
+  assert.equal(heading?.kind === 'text' ? heading.textAlign : undefined, 'center')
+  assert.deepEqual(heading?.kind === 'text' ? heading.runs[0]?.style : undefined, {
+    fontFamily: 'Aptos Display',
+    fontSize: 16,
+    color: '#112233',
+    fontWeight: 700
+  })
+
+  const listItem = blocks[1]
+  assert.equal(listItem?.kind === 'text' ? listItem.role : '', 'list-item')
+  assert.deepEqual(listItem?.kind === 'text' ? listItem.list : undefined, {
+    level: 0,
+    marker: '1.',
+    ordered: true
+  })
+
+  const characterStyle = blocks[2]
+  assert.deepEqual(characterStyle?.kind === 'text' ? characterStyle.runs[0]?.style : undefined, {
+    fontFamily: 'Aptos',
+    fontSize: 11,
+    color: '#445566',
+    italic: true,
+    underline: true
+  })
+
+  const directOverride = blocks[3]
+  assert.deepEqual(directOverride?.kind === 'text' ? directOverride.runs[0]?.style : undefined, {
+    fontFamily: 'Aptos',
+    fontSize: 20,
+    color: '#abcdef',
+    fontWeight: 700,
+    italic: false,
+    underline: true
+  })
+})
+
+test('DOCX 应保持段落内文本、公式、图片顺序，并在分页符处切页', async () => {
+  const zip = new JSZip()
+  zip.file('word/document.xml', `<?xml version="1.0"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+      <w:body>
+        <w:p>
+          <w:r><w:t>Before formula</w:t></w:r>
+          <m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath>
+          <w:r><w:drawing><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="rId1"/></w:drawing></w:r>
+          <w:r><w:t>After image</w:t></w:r>
+        </w:p>
+        <w:p><w:r><w:t>Page one</w:t><w:br w:type="page"/><w:t>Page two</w:t></w:r></w:p>
+        <w:tbl>
+          <w:tr>
+            <w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Wide cell</w:t></w:r></w:p></w:tc>
+          </w:tr>
+        </w:tbl>
+      </w:body>
+    </w:document>`)
+  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>`)
+  zip.file('word/media/image1.png', new Uint8Array([137, 80, 78, 71]))
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const model = await parseDocxDocument({
+    path: '/tmp/ordered-and-paged.docx',
+    fileName: 'ordered-and-paged.docx',
+    format: 'docx',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  assert.equal(model.pages.length, 2)
+  assert.deepEqual(model.pages[0]!.blocks.map((block) => block.kind), ['text', 'formula', 'image', 'text', 'text'])
+  assert.deepEqual(model.pages[0]!.blocks.flatMap((block) => block.kind === 'text'
+    ? [block.runs.map((run) => run.text).join('')]
+    : []), ['Before formula', 'After image', 'Page one'])
+  assert.deepEqual(translatableText({ ...model, pages: [model.pages[1]!] }), ['Page two', 'Wide cell'])
+  const table = model.pages[1]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind === 'table' ? table.rows[0]?.cells[0]?.colSpan : undefined, 2)
+})
+
 test('EPUB 应按 OPF spine 顺序生成章节而不是按文件名排序', async () => {
   const zip = new JSZip()
   zip.file('mimetype', 'application/epub+zip')
@@ -587,6 +862,103 @@ test('EPUB 章节图片应登记资源并生成可 OCR 的图片区块', async (
   const imageBlocks = model.pages.flatMap((page) => page.blocks).filter((block) => block.kind === 'image')
   assert.equal(imageBlocks.length, 1)
   assert.equal(imageBlocks[0]?.kind === 'image' ? imageBlocks[0].assetId : '', model.assets[0]!.assetId)
+})
+
+test('EPUB3 应读取 nav 目录、包内 CSS 与内联样式，并按正文顺序保留图片', async () => {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  zip.file('OEBPS/content.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Styled book</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="style" href="styles/book.css" media-type="text/css"/><item id="image" href="images/scan.png" media-type="image/png"/></manifest><spine><itemref idref="chapter"/></spine></package>`)
+  zip.file('OEBPS/nav.xhtml', '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#start">目录中的章节标题</a></li></ol></nav></body></html>')
+  zip.file('OEBPS/styles/book.css', 'p{color:#123456;font-family:"Noto Serif";font-size:18px;font-weight:700;text-align:center}@import url("https://evil.example/x.css");p{background-image:url("https://evil.example/a.png")}')
+  zip.file('OEBPS/chapter.xhtml', '<html><head><link rel="stylesheet" href="styles/book.css"/><style>h2{color:#abcdef;font-size:24px}</style></head><body><h2 id="start">Heading</h2><p>Before image</p><img src="images/scan.png" alt="scanned note"/><p style="color:#654321;font-size:20px">After image</p><ol><li>One</li><li>Two</li></ol><table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table></body></html>')
+  zip.file('OEBPS/images/scan.png', new Uint8Array([137, 80, 78, 71, 4, 5, 6]))
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const first = await parseEpubDocument({
+    path: '/tmp/styled-book.epub',
+    fileName: 'styled-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes
+  })
+  const second = await parseEpubDocument({
+    path: '/tmp/styled-book.epub',
+    fileName: 'styled-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  assert.equal(first.pages[0]?.title, '目录中的章节标题')
+  assert.deepEqual(first.pages[0]?.blocks.map((block) => block.kind), ['text', 'text', 'image', 'text', 'text', 'text', 'table'])
+  assert.deepEqual(translatableText(first), ['Heading', 'Before image', 'After image', 'One', 'Two', 'Name', 'Value', 'A', '1'])
+  const heading = first.pages[0]?.blocks[0]
+  assert.deepEqual(heading?.kind === 'text' ? heading.runs[0]?.style : undefined, {
+    fontFamily: 'Noto Serif',
+    fontSize: 18,
+    fontWeight: 700,
+    color: '#abcdef'
+  })
+  const styledParagraph = first.pages[0]?.blocks.find((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text === 'After image'))
+  assert.deepEqual(styledParagraph?.kind === 'text' ? styledParagraph.runs[0]?.style : undefined, {
+    fontSize: 20,
+    color: '#654321'
+  })
+  const listItems = first.pages[0]?.blocks.filter((block) => block.kind === 'text' && block.role === 'list-item') ?? []
+  assert.deepEqual(listItems.map((block) => block.kind === 'text' ? block.list : undefined), [
+    { level: 0, marker: '1.', ordered: true },
+    { level: 0, marker: '2.', ordered: true }
+  ])
+  assert.equal(first.warnings.some((warning) => warning.code === 'remote-resource-removed'), true)
+  assert.equal(first.warnings.some((warning) => warning.code === 'unsafe-html-removed'), true)
+  assert.deepEqual(
+    first.pages[0]?.blocks.map((block) => block.blockId),
+    second.pages[0]?.blocks.map((block) => block.blockId)
+  )
+  assert.deepEqual(first.assets.map((asset) => asset.assetId), second.assets.map((asset) => asset.assetId))
+})
+
+test('EPUB2 缺少 nav 时应回退读取 toc.ncx 目录标题', async () => {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  zip.file('OPS/book.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>EPUB2 book</dc:title></metadata><manifest><item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="chapter"/></spine></package>`)
+  zip.file('OPS/toc.ncx', '<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap><navPoint id="chapter"><navLabel><text>NCX 章节标题</text></navLabel><content src="text/chapter.xhtml"/></navPoint></navMap></ncx>')
+  zip.file('OPS/text/chapter.xhtml', '<html><body><h1>Body heading</h1><p>Content</p></body></html>')
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const model = await parseEpubDocument({
+    path: '/tmp/epub2-book.epub',
+    fileName: 'epub2-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  assert.equal(model.pages[0]?.title, 'NCX 章节标题')
+  assert.deepEqual(translatableText(model), ['Body heading', 'Content'])
+})
+
+test('EPUB 应忽略远程图片与不安全目录链接，且不登记远程资源', async () => {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+  zip.file('OEBPS/content.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Safe book</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="chapter"/></spine></package>`)
+  zip.file('OEBPS/nav.xhtml', '<html><body><nav role="doc-toc"><a href="https://evil.example/">Remote</a></nav></body></html>')
+  zip.file('OEBPS/chapter.xhtml', '<html><body><h1>Safe chapter</h1><img src="https://evil.example/tracker.png"/><img src="data:image/svg+xml,alert(1)"/></body></html>')
+  const bytes = await zip.generateAsync({ type: 'uint8array' })
+  const model = await parseEpubDocument({
+    path: '/tmp/safe-book.epub',
+    fileName: 'safe-book.epub',
+    format: 'epub',
+    sha256: FINGERPRINT,
+    bytes
+  })
+
+  assert.equal(model.pages[0]?.title, 'Safe chapter')
+  assert.deepEqual(model.assets, [])
+  assert.deepEqual(model.pages[0]?.blocks.map((block) => block.kind), ['text'])
+  assert.equal(model.warnings.some((warning) => warning.code === 'remote-resource-removed'), true)
 })
 
 test('PDF 原生文本页应读取坐标与字体样式，完全空白页不应标记待 OCR', async () => {
@@ -2599,6 +2971,15 @@ test('PDF 同一视觉行的导航项在明显横向空洞处必须拆成独立�
   })
 
   assert.deepEqual(translatableText(model), items)
+
+  // 区块仍需保持独立（不能被拼成一句话），但同一视觉行的导航项应共享 flowGroupId，
+  // 供译文预览横向排布而不是每个标签各占一行。
+  const navigationText = model.pages[0]!.blocks.filter((block) => block.kind === 'text')
+  const navigationGroups = new Set(
+    navigationText.map((block) => block.kind === 'text' ? block.flowGroupId : undefined)
+  )
+  assert.equal(navigationGroups.size, 1)
+  assert.ok(navigationText.every((block) => block.flowGroupId !== undefined))
 })
 
 test('PDF 不同基线的侧栏标签不能因 bbox 接近而合并成一块', async () => {

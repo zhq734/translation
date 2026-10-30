@@ -1,6 +1,7 @@
 import type { PrintToPDFOptions } from 'electron'
 import type { DocumentModel, DocumentWarning } from '../shared/documentTypes.ts'
 import type { DocumentPdfExportResult } from './documentWorkspaceTaskService.ts'
+import type { DocumentPartialExportSummary } from '../shared/documentPartialExport.ts'
 import { resolveTranslationWatermarkHorizontalOffset } from '../renderer/src/documentPdfLayout.ts'
 
 /** 默认 A4 页面宽度，单位为 PDF 点。 */
@@ -52,6 +53,59 @@ function buildWaitForPrintReadyScript(watermarkOffset: number): string {
   }
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return true;
+})()`
+}
+
+/**
+ * 生成部分导出的打印准备脚本。
+ * 脚本必须在打印样式生效后等待字体、图片和布局稳定，再插入可见的部分结果标记；
+ * 标记只存在于打印 DOM 中，打印结束后由 Renderer 恢复为最新预览。
+ * @param watermarkOffset 水印图案相对页面左边缘的横向偏移，单位为 CSS 像素。
+ * @param summary 部分导出目标统计。
+ * @returns 可在文档窗口执行的打印准备脚本。
+ * @author zhenghq
+ */
+function buildPreparePartialExportScript(
+  watermarkOffset: number,
+  summary: DocumentPartialExportSummary
+): string {
+  const offset = Number.isFinite(watermarkOffset)
+    ? Math.round(watermarkOffset * PRINT_POINT_PRECISION) / PRINT_POINT_PRECISION
+    : 0
+  const safeSummary = JSON.stringify({
+    total: Math.max(0, Math.trunc(summary.total)),
+    translated: Math.max(0, Math.trunc(summary.translated)),
+    unchanged: Math.max(0, Math.trunc(summary.unchanged)),
+    reverted: Math.max(0, Math.trunc(summary.reverted)),
+    failed: Math.max(0, Math.trunc(summary.failed)),
+    pending: Math.max(0, Math.trunc(summary.pending)),
+    suspectUntranslated: Math.max(0, Math.trunc(summary.suspectUntranslated))
+  }).replace(/</gu, '\\u003c')
+  return `(async () => {
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  const images = Array.from(document.querySelectorAll('#document-translation-content img'));
+  await Promise.all(images.map(async (image) => {
+    if (!image.complete) {
+      await new Promise((resolve) => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', resolve, { once: true });
+      });
+    }
+    if (typeof image.decode === 'function') {
+      try { await image.decode(); } catch {}
+    }
+  }));
+  for (const watermark of document.querySelectorAll('#document-translation-content .document-translation-watermark')) {
+    const tile = watermark.querySelector('pattern');
+    if (!tile) continue;
+    const offset = ${offset};
+    tile.setAttribute('x', String(offset === 0 ? 0 : offset));
+  }
+  const summary = ${safeSummary};
+  if (!window.__documentPrintPreview || typeof window.__documentPrintPreview.preparePartialExport !== 'function') {
+    throw new Error('document-print-preview-unavailable');
+  }
+  return window.__documentPrintPreview.preparePartialExport(summary, ${JSON.stringify('Partial result')});
 })()`
 }
 
@@ -341,6 +395,24 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     overflow: visible !important;
   }
 
+  #document-translation-content .document-partial-export-notice {
+    display: block !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    margin: 0 0 12px !important;
+    padding: 10px 12px !important;
+    border: 1px solid var(--status-warning) !important;
+    border-radius: 8px !important;
+    background: color-mix(in srgb, var(--status-warning) 12%, var(--document-paper-bg)) !important;
+    color: var(--document-paper-text) !important;
+    font-family: var(--font-family-sans) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    line-height: 1.5 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
   #document-translation-content .document-table-block tr {
     /* Avoid splitting a translated row across printed pages. */
     break-inside: avoid;
@@ -404,7 +476,8 @@ function resolveMeasuredPageHeightCssPx(result: unknown): number {
  */
 export async function printDocumentPreviewToPdf(
   webContents: DocumentPrintWebContents,
-  model: DocumentModel
+  model: DocumentModel,
+  partialExport?: DocumentPartialExportSummary
 ): Promise<DocumentPdfExportResult> {
   if (!model || !Array.isArray(model.pages) || model.pages.length === 0) {
     throw new DocumentPdfPrintError('invalid-document', 'Document has no pages')
@@ -414,9 +487,16 @@ export async function printDocumentPreviewToPdf(
   const insertedCssKeys: string[] = []
   try {
     insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model)))
-    await webContents.executeJavaScript(buildWaitForPrintReadyScript(
-      resolvePrintWatermarkHorizontalOffset(model)
-    ))
+    if (partialExport) {
+      await webContents.executeJavaScript(buildPreparePartialExportScript(
+        resolvePrintWatermarkHorizontalOffset(model),
+        partialExport
+      ))
+    } else {
+      await webContents.executeJavaScript(buildWaitForPrintReadyScript(
+        resolvePrintWatermarkHorizontalOffset(model)
+      ))
+    }
     // 连续流式文档由浏览器按 @page 高度自然分页；固定页文档才需要把单页译文高度扩展到原页高以上。
     const measuredHeightPt = usesContinuousPrintPagination(model)
       ? height
@@ -441,6 +521,13 @@ export async function printDocumentPreviewToPdf(
     if (error instanceof DocumentPdfPrintError) throw error
     throw new DocumentPdfPrintError('export-failed', 'PDF print failed')
   } finally {
+    if (partialExport) {
+      try {
+        await webContents.executeJavaScript('window.__documentPrintPreview?.restorePrintPreview?.()')
+      } catch {
+        // 预览恢复失败不能覆盖已经确定的 PDF 结果或原始打印错误。
+      }
+    }
     for (const cssKey of insertedCssKeys.reverse()) {
       try {
         await webContents.removeInsertedCSS(cssKey)

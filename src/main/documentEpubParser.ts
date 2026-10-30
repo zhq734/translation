@@ -59,6 +59,8 @@ interface EpubPackage {
   spine: string[]
   /** 目录页标识。 */
   navId?: string
+  /** EPUB2 目录 NCX 标识。 */
+  tocId?: string
 }
 
 /** EPUB XML 解析配置；不执行外部实体，不加载远程资源。 */
@@ -164,6 +166,7 @@ function parseOpfPackage(opfXml: string, opfPath: string): EpubPackage {
   const metadata = isRecord(packageNode.metadata) ? packageNode.metadata : {}
   const manifestNode = isRecord(packageNode.manifest) ? packageNode.manifest : {}
   const spineNode = isRecord(packageNode.spine) ? packageNode.spine : {}
+  const tocId = typeof spineNode.toc === 'string' ? spineNode.toc.trim() : undefined
   const manifest = new Map<string, EpubManifestItem>()
   let navId: string | undefined
   for (const item of asArray(manifestNode.item)) {
@@ -188,7 +191,8 @@ function parseOpfPackage(opfXml: string, opfPath: string): EpubPackage {
     ...(firstText(metadata.language, ['language', '#text']) ? { language: firstText(metadata.language, ['language', '#text']) } : {}),
     manifest,
     spine,
-    ...(navId ? { navId } : {})
+    ...(navId ? { navId } : {}),
+    ...(tocId && manifest.has(tocId) ? { tocId } : {})
   }
 }
 

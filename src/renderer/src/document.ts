@@ -32,9 +32,11 @@ import type {
   DocumentRunResult,
   DocumentWorkspaceSnapshot
 } from '../../shared/types'
+import type { DocumentPartialExportSummary } from '../../shared/documentPartialExport'
 import type { Settings } from '../../shared/types'
 import { LANGUAGES, langLabel } from '../../shared/langs'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
+import { canApplyDocumentTaskEvent } from '../../shared/documentTask'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url'
 import { startThemeRuntime } from './theme'
@@ -106,6 +108,7 @@ const startButton = document.getElementById('document-start-button') as HTMLButt
 const historyButton = document.getElementById('document-history-button') as HTMLButtonElement
 const sourceLanguageSelect = document.getElementById('document-source-lang') as HTMLSelectElement
 const targetLanguageSelect = document.getElementById('document-target-lang') as HTMLSelectElement
+const actualLanguage = document.getElementById('document-actual-language') as HTMLElement
 const uploadPanel = document.getElementById('document-upload-panel') as HTMLElement
 const workbench = document.getElementById('document-workbench') as HTMLElement
 const workbenchName = document.getElementById('document-workbench-name') as HTMLElement
@@ -122,6 +125,11 @@ const exportButton = document.getElementById('document-export-button') as HTMLBu
 const retryButton = document.getElementById('document-retry-button') as HTMLButtonElement
 const documentWorkbenchReplaceButton = document.getElementById('document-workbench-replace') as HTMLButtonElement
 const partialStatus = document.getElementById('document-partial-status') as HTMLElement
+const partialExportDialog = document.getElementById('document-partial-export-dialog') as HTMLDialogElement
+const partialExportSummary = document.getElementById('document-partial-export-summary') as HTMLElement
+const partialExportRetryButton = document.getElementById('document-partial-export-retry') as HTMLButtonElement
+const partialExportConfirmButton = document.getElementById('document-partial-export-confirm') as HTMLButtonElement
+const partialExportCancelButton = document.getElementById('document-partial-export-cancel') as HTMLButtonElement
 const titlebar = document.getElementById('document-titlebar') as HTMLElement
 const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
 const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
@@ -138,10 +146,18 @@ let activeJobId: string | null = null
 let expectedJobId: string | null = null
 /** 最近一次收到且属于当前任务的进度快照。 */
 let latestSnapshot: DocumentWorkspaceSnapshot | null = null
+/** 部分导出确认对话框的待决结果；关闭对话框时统一解析为取消。 */
+let resolvePartialExportConfirmation: ((confirmed: boolean) => void) | null = null
 /** 等待下一帧合并执行的渲染回调。 */
 let pendingRenderFrame: number | null = null
 /** 当前文档图片 Blob URL，重绘或关闭时统一释放。 */
 const assetUrls = new Map<string, string>()
+
+/** 当前 HTML 源文预览 Blob URL；同一时间只允许存在一个。 */
+let htmlPreviewUrl: string | null = null
+
+/** 当前 HTML 源文预览请求身份，用于阻止旧异步响应覆盖新文档。 */
+let htmlPreviewRequestIdentity = ''
 /** 最近一次真实用户滚动意图所属的栏；程序性滚动不会更新该值。 */
 let userScrollSide: DocumentScrollSide | null = null
 /** 用户滚动意图的有效期；滚轮和键盘停止后仍允许一次比例联动。 */
@@ -303,6 +319,21 @@ function populateDocumentLanguages(
   targetLanguageSelect.value = selectedTarget || 'auto'
   if (!targetLanguageSelect.value) targetLanguageSelect.value = 'auto'
   appliedLanguagePair = `${sourceLanguageSelect.value}\u0000${targetLanguageSelect.value}`
+}
+
+/**
+ * 使用任务快照中的实际语言对更新方向提示；未解析时显示自动占位。
+ * @param languagePair 文档级解析后的实际语言对。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderActualLanguage(languagePair?: DocumentWorkspaceSnapshot['languagePair']): void {
+  if (!languagePair) {
+    actualLanguage.textContent = t('document.actualLanguageAuto')
+    return
+  }
+  const direction = `${langLabel(languagePair.sourceLang, localeRuntime.locale)} → ${langLabel(languagePair.targetLang, localeRuntime.locale)}`
+  actualLanguage.textContent = t('document.actualLanguage', { direction })
 }
 
 /**
@@ -523,6 +554,7 @@ function resetWorkbenchPreview(): void {
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
   revokeAssetUrls()
+  releaseHtmlPreviewUrl()
   pdfPreviewCleanups.get(sourceContent)?.()
   pdfPreviewCleanups.get(translationContent)?.()
   sourceContent.replaceChildren()
@@ -535,6 +567,7 @@ function resetWorkbenchPreview(): void {
   progressCount.textContent = ''
   progressbar.setAttribute('aria-valuenow', '0')
   progressbar.style.width = '0%'
+  actualLanguage.textContent = t('document.actualLanguageAuto')
   partialStatus.hidden = true
   cancelButton.hidden = true
   exportButton.disabled = true
@@ -589,6 +622,17 @@ async function replaceDocumentFromWorkbench(): Promise<void> {
 function revokeAssetUrls(): void {
   for (const url of assetUrls.values()) URL.revokeObjectURL(url)
   assetUrls.clear()
+}
+
+/**
+ * 释放当前 HTML 源文预览 Blob URL，并清空请求身份。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseHtmlPreviewUrl(): void {
+  if (htmlPreviewUrl) URL.revokeObjectURL(htmlPreviewUrl)
+  htmlPreviewUrl = null
+  htmlPreviewRequestIdentity = ''
 }
 
 /**
@@ -1360,6 +1404,7 @@ function renderTableBlock(
     const head = document.createElement('thead')
     for (const row of block.rows.slice(0, headerRowCount)) {
       const tableRow = document.createElement('tr')
+      tableRow.dataset.rowId = row.rowId
       for (const cell of row.cells) {
         const tableCell = document.createElement('th')
         tableCell.scope = 'col'
@@ -1375,6 +1420,7 @@ function renderTableBlock(
   const body = document.createElement('tbody')
   for (const row of block.rows.slice(headerRowCount)) {
     const tableRow = document.createElement('tr')
+    tableRow.dataset.rowId = row.rowId
     for (const cell of row.cells) {
       const tableCell = document.createElement('td')
       tableCell.colSpan = Math.max(1, cell.colSpan)
@@ -1811,42 +1857,36 @@ function resolvePreviewKind(model: DocumentModel, side: DocumentRenderSide): Doc
 }
 
 /**
- * 将本机绝对路径转换为可供 webview 加载的 file URL。
- * 逐段编码空格、中文与 URL 保留字符，同时保留 Windows 盘符和 UNC 主机名。
- * @param filePath 本机文件绝对路径。
- * @returns 可直接交给 webview.src 的 file URL。
- * @author zhenghq
- */
-function toFileUrl(filePath: string): string {
-  const normalized = filePath.replace(/\\/gu, '/')
-  const encodeSegments = (segments: readonly string[]): string =>
-    segments.map((segment) => encodeURIComponent(segment)).join('/')
-  if (/^[a-z]:\//iu.test(normalized)) {
-    return `file:///${normalized.slice(0, 2)}/${encodeSegments(normalized.slice(3).split('/'))}`
-  }
-  if (normalized.startsWith('//')) {
-    const [, , host = '', ...segments] = normalized.split('/')
-    return `file://${encodeURIComponent(host)}/${encodeSegments(segments)}`
-  }
-  const absolute = normalized.startsWith('/') ? normalized : `/${normalized}`
-  return `file://${encodeSegments(absolute.split('/'))}`
-}
-
-/**
- * 使用隔离 webview 直接加载原始 HTML，保留远程图片、样式、框架和链接。
- * webview 不继承 preload 或 Node 能力，页面脚本只能在独立 guest 中运行。
+ * 使用隔离 webview 加载主进程净化后的 HTML Blob，避免暴露本地文件路径或远程资源。
+ * 异步请求通过文件指纹令牌隔离，旧请求不能覆盖新文档；切换文件和窗口关闭时释放 Blob URL。
  * @param container 源文滚动容器。
  * @param model 当前 HTML 文档模型。
  * @returns 无返回值。
  * @author zhenghq
  */
 function renderHtmlSourcePreview(container: HTMLElement, model: DocumentModel): void {
+  const requestIdentity = `html:${model.source.sha256}`
+  htmlPreviewRequestIdentity = requestIdentity
+  releaseHtmlPreviewUrl()
   const webview = document.createElement('webview')
   webview.className = 'document-html-preview'
   webview.setAttribute('partition', 'document-html-preview')
   webview.setAttribute('aria-label', t('document.source'))
-  webview.src = toFileUrl(model.source.path)
   container.append(webview)
+  void window.api.getDocumentSource().then((source) => {
+    if (htmlPreviewRequestIdentity !== requestIdentity || !webview.isConnected) return
+    if (!source.ok || !source.bytes) {
+      webview.remove()
+      return
+    }
+    const previewUrl = URL.createObjectURL(new Blob([new Uint8Array(source.bytes)], {
+      type: source.mimeType ?? 'text/html; charset=utf-8'
+    }))
+    htmlPreviewUrl = previewUrl
+    webview.src = previewUrl
+  }).catch(() => {
+    if (htmlPreviewRequestIdentity === requestIdentity) webview.remove()
+  })
 }
 
 /**
@@ -2834,6 +2874,7 @@ function documentWarningSignature(warnings: readonly DocumentWarning[] = []): st
  * @author zhenghq
  */
 function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
+  renderActualLanguage(snapshot.languagePair)
   const sourcePreviewIdentity = documentPreviewIdentity(snapshot.source)
   const translationSignature = documentContentSignature(snapshot.translation)
   const sourceWarningSignature = documentWarningSignature(snapshot.source?.warnings)
@@ -2845,6 +2886,7 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
   const translationWarningsChanged = renderedTranslationWarningSignature !== translationWarningSignature
   // 只有源文件身份变化才释放图片资源；译文流式增量不能破坏仍在使用的源预览。
   if (sourceChanged) revokeAssetUrls()
+  if (sourceChanged) releaseHtmlPreviewUrl()
   if (sourceChanged) {
     renderDocumentModel(
       sourceContent,
@@ -2887,6 +2929,170 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
 }
 
 /**
+ * 判断当前快照是否包含至少一个可导出的成功译文或无需翻译目标。
+ * @param snapshot 当前任务快照。
+ * @returns 存在可导出内容时返回 true。
+ * @author zhenghq
+ */
+function hasUsableExportResult(snapshot: DocumentWorkspaceSnapshot | null): boolean {
+  if (!snapshot?.completionReport) return snapshot?.task.status === 'completed'
+  return snapshot.completionReport.translated + snapshot.completionReport.unchanged > 0
+}
+
+/**
+ * 从完成报告的目标标识中解析页面索引与目标类型。
+ * 目标格式为 `pageIndex:blockPath:kind:identifier`，只读取稳定定位所需字段。
+ * @param targetId 完成报告中的目标标识。
+ * @returns 页面索引、目标类型和可选表格行标识。
+ * @author zhenghq
+ */
+function parseFailedTargetId(targetId: string): {
+  pageIndex: number
+  kind: string
+  rowId?: string
+} | null {
+  const match = /^(\d+):(.+):(text|ocr|row):(.+)$/u.exec(targetId)
+  if (!match) return null
+  const pageIndex = Number(match[1])
+  if (!Number.isSafeInteger(pageIndex) || pageIndex < 0) return null
+  return {
+    pageIndex,
+    kind: match[3]!,
+    ...(match[3] === 'row' ? { rowId: match[4]! } : {})
+  }
+}
+
+/**
+ * 滚动到完成报告中第一个失败、未完成或疑似未翻译目标。
+ * 优先使用稳定目标标识；表格行使用 data-row-id，其余目标回退到页面级定位。
+ * @param snapshot 当前任务快照。
+ * @returns 是否找到并定位了目标。
+ * @author zhenghq
+ */
+function revealFirstIncompleteTarget(snapshot: DocumentWorkspaceSnapshot): boolean {
+  const report = snapshot.completionReport
+  if (!report) return false
+  const targetIds = [
+    ...report.failedTargetIds,
+    ...report.pendingTargetIds,
+    ...report.suspectUntranslatedTargetIds
+  ]
+  for (const targetId of targetIds) {
+    const target = parseFailedTargetId(targetId)
+    if (!target) continue
+    const pages = translationContent.querySelectorAll<HTMLElement>('.document-page')
+    const page = pages[target.pageIndex]
+    let element: HTMLElement | null = null
+    if (target.rowId) {
+      element = translationContent.querySelector<HTMLElement>(
+        `[data-row-id="${CSS.escape(target.rowId)}"]`
+      )
+    }
+    element ??= page ?? null
+    if (!element) continue
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    element.dataset.incompleteTarget = 'true'
+    return true
+  }
+  return false
+}
+
+/**
+ * 等待字体、图片和两帧布局稳定后插入部分导出可见标记。
+ * 该函数由主进程打印脚本调用，不能读取未序列化的任务对象。
+ * @param summary 部分导出目标统计。
+ * @param label 可见标记标题。
+ * @returns 打印准备完成状态。
+ * @author zhenghq
+ */
+async function preparePartialExport(
+  summary: DocumentPartialExportSummary,
+  label: string
+): Promise<{ ready: true; summary: DocumentPartialExportSummary }> {
+  const host = translationContent
+  host.querySelector('.document-partial-export-notice')?.remove()
+  const notice = document.createElement('aside')
+  notice.className = 'document-partial-export-notice'
+  notice.setAttribute('role', 'note')
+  notice.textContent = `${label} · ${t('document.partialExport.notice', {
+    reverted: summary.reverted,
+    failed: summary.failed,
+    pending: summary.pending,
+    suspectUntranslated: summary.suspectUntranslated
+  })}`
+  host.insertBefore(notice, host.firstChild)
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+  return { ready: true, summary }
+}
+
+/**
+ * 恢复部分导出前的实时译文预览，清除仅用于打印的标记并强制重绘最新快照。
+ * @returns 恢复完成状态。
+ * @author zhenghq
+ */
+function restorePrintPreview(): { restored: true } {
+  translationContent.querySelectorAll('.document-partial-export-notice').forEach((notice) => notice.remove())
+  if (latestSnapshot) {
+    renderedTranslationSignature = ''
+    hasRenderedTranslation = false
+    renderSnapshot(latestSnapshot)
+  }
+  return { restored: true }
+}
+
+/**
+ * 等待用户在部分导出确认对话框中选择继续或返回。
+ * @param snapshot 当前任务快照。
+ * @returns 用户是否确认导出部分结果。
+ * @author zhenghq
+ */
+function confirmPartialExport(snapshot: DocumentWorkspaceSnapshot): Promise<boolean> {
+  const completionReport = snapshot.completionReport
+  const failed = completionReport ? completionReport.failed : snapshot.task.failedBlocks
+  const pending = completionReport ? completionReport.pending : 0
+  const suspectUntranslated = completionReport ? completionReport.suspectUntranslated : 0
+  partialExportSummary.textContent = t('document.partialExport.summary', {
+    failed,
+    pending,
+    suspectUntranslated,
+    reverted: failed + pending + suspectUntranslated
+  })
+  if (typeof partialExportDialog.showModal === 'function') partialExportDialog.showModal()
+  else partialExportDialog.setAttribute('open', '')
+  return new Promise((resolve) => {
+    resolvePartialExportConfirmation = resolve
+  })
+}
+
+/**
+ * 关闭部分导出确认对话框并解析等待中的导出请求。
+ * @param confirmed 是否由“导出部分结果”按钮确认。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closePartialExportDialog(confirmed: boolean): void {
+  const resolve = resolvePartialExportConfirmation
+  resolvePartialExportConfirmation = null
+  if (partialExportDialog.open) partialExportDialog.close()
+  else partialExportDialog.removeAttribute('open')
+  resolve?.(confirmed)
+}
+
+/**
+ * 将打印所需的受控预览能力暴露给主进程，限制为准备和恢复两个动作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function exposeDocumentPrintPreview(): void {
+  window.__documentPrintPreview = {
+    preparePartialExport,
+    restorePrintPreview
+  }
+}
+
+/**
  * 更新进度、任务状态和操作按钮。
  * @param snapshot 当前任务快照。
  * @returns 无返回值。
@@ -2894,6 +3100,14 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
  */
 function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
   const status = snapshot.task.status
+  const report = snapshot.completionReport
+  const failed = report?.failed ?? snapshot.task.failedBlocks
+  const pending = report?.pending ?? 0
+  const suspectUntranslated = report?.suspectUntranslated ?? 0
+  const reverted = failed + pending + suspectUntranslated
+  const hasUsableTranslation = report
+    ? report.translated + report.unchanged > 0
+    : status === 'completed' || status === 'partial'
   const stageKeys: Record<string, string> = {
     validating: 'document.progress.preparing',
     parsing: 'document.progress.parsing',
@@ -2915,18 +3129,24 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
     : `${percent}%`
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(status)
   cancelButton.hidden = terminal
-  exportButton.disabled = status !== 'completed' && status !== 'partial'
-  // 只有部分完成终态允许重试，避免重试期间沿用上一轮失败数而重复提交。
-  retryButton.disabled = status !== 'partial' || snapshot.task.phaseCompleted ||
+  exportButton.disabled = status === 'completed'
+    ? false
+    : status === 'partial' || status === 'failed'
+      ? !hasUsableTranslation
+      : true
+  // partial 或仍有可重试目标的 failed 终态允许重试；failed 表示没有成功译文，
+  // 但用户仍应能恢复提供方后从同一任务继续。
+  const retryableTerminal = status === 'partial' ||
+    (status === 'failed' && (snapshot.retryableFailedBlocks ?? 0) > 0)
+  retryButton.disabled = !retryableTerminal || snapshot.task.phaseCompleted ||
     (snapshot.retryableFailedBlocks ?? 0) <= 0
   partialStatus.hidden = status !== 'partial' && status !== 'failed' && status !== 'cancelled'
   if (status === 'partial') {
-    partialStatus.textContent = t('document.partialSummary', {
-      failed: snapshot.task.failedBlocks,
-      warnings: snapshot.task.warningCount
-    })
+    partialStatus.textContent = t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: snapshot.task.warningCount })
   } else if (status === 'failed') {
-    partialStatus.textContent = t('document.run.failed')
+    partialStatus.textContent = hasUsableTranslation
+      ? t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: snapshot.task.warningCount })
+      : t('document.run.failed')
   } else if (status === 'cancelled') {
     partialStatus.textContent = t('document.cancelled')
   }
@@ -2980,6 +3200,23 @@ function isCurrentSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean {
 }
 
 /**
+ * 判断进度快照是否仍可覆盖界面，阻止终态之后迟到的同代际进度造成回退。
+ * @param snapshot 收到的进度快照。
+ * @returns 是否可以应用该进度快照。
+ * @author zhenghq
+ */
+function canApplyProgressSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean {
+  if (!isCurrentSnapshot(snapshot)) return false
+  if (!latestSnapshot) return true
+  if (latestSnapshot.jobId !== snapshot.jobId) return true
+  // 失败项重试沿用同一 jobId 并递增代际，必须允许新代际覆盖上一轮终态。
+  if (latestSnapshot.generation !== snapshot.generation) {
+    return snapshot.generation > latestSnapshot.generation
+  }
+  return canApplyDocumentTaskEvent(latestSnapshot.task, snapshot.jobId, snapshot.generation)
+}
+
+/**
  * 启动当前已批准文件的翻译任务。
  * @returns 无返回值。
  * @author zhenghq
@@ -3009,6 +3246,7 @@ async function startDocumentTranslation(): Promise<void> {
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
   revokeAssetUrls()
+  releaseHtmlPreviewUrl()
   pdfPreviewCleanups.get(sourceContent)?.()
   pdfPreviewCleanups.get(translationContent)?.()
   uploadPanel.hidden = true
@@ -3021,10 +3259,12 @@ async function startDocumentTranslation(): Promise<void> {
   progressCount.textContent = t('document.progress.pending')
   progressbar.setAttribute('aria-valuenow', '0')
   progressbar.style.width = '0%'
+  actualLanguage.textContent = t('document.actualLanguageAuto')
   cancelButton.hidden = false
   exportButton.disabled = true
   retryButton.disabled = true
   partialStatus.hidden = true
+  closePartialExportDialog(false)
   startButton.disabled = true
   try {
     let result: DocumentRunResult = await window.api.runDocument({
@@ -3093,8 +3333,10 @@ async function cancelDocumentTranslation(): Promise<void> {
  * @author zhenghq
  */
 async function retryFailedDocumentTranslation(): Promise<void> {
-  if (!latestSnapshot?.translation || latestSnapshot.task.status !== 'partial' ||
-    (latestSnapshot.retryableFailedBlocks ?? 0) <= 0) return
+  if (!latestSnapshot?.translation) return
+  const retryableTerminal = latestSnapshot.task.status === 'partial' ||
+    (latestSnapshot.task.status === 'failed' && (latestSnapshot.retryableFailedBlocks ?? 0) > 0)
+  if (!retryableTerminal || (latestSnapshot.retryableFailedBlocks ?? 0) <= 0) return
   const jobGeneration = nextGeneration()
   retryButton.disabled = true
   cancelButton.hidden = false
@@ -3113,14 +3355,14 @@ async function retryFailedDocumentTranslation(): Promise<void> {
       retryButton.disabled = true
       cancelButton.hidden = true
       // 重试请求被拒绝时仍停留在原来的部分完成快照，应恢复已有译文的导出能力。
-      exportButton.disabled = false
+      exportButton.disabled = !hasUsableExportResult(latestSnapshot)
     }
   } catch {
     if (generation !== jobGeneration) return
     partialStatus.textContent = t('document.run.failed')
     retryButton.disabled = false
     cancelButton.hidden = true
-    exportButton.disabled = false
+    exportButton.disabled = !hasUsableExportResult(latestSnapshot)
   }
 }
 
@@ -3133,9 +3375,23 @@ async function exportTranslatedPdf(): Promise<void> {
   if (!latestSnapshot?.translation) return
   // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
   flushSnapshotRender(latestSnapshot)
+  const isComplete = latestSnapshot.task.status === 'completed'
+  if (!isComplete) {
+    revealFirstIncompleteTarget(latestSnapshot)
+    const confirmed = await confirmPartialExport(latestSnapshot)
+    if (!confirmed) {
+      partialStatus.textContent = t('document.export.cancelled')
+      partialStatus.hidden = false
+      return
+    }
+  }
   exportButton.disabled = true
   try {
-    const result: DocumentExportResult = await window.api.exportDocumentPdf()
+    const result: DocumentExportResult = await window.api.exportDocumentPdf({
+      jobId: latestSnapshot.jobId,
+      generation: latestSnapshot.generation,
+      ...(isComplete ? { mode: 'complete' as const } : { mode: 'partial' as const })
+    })
     if (result.status === 'saved') {
       partialStatus.textContent = result.warnings && result.warnings.length > 0
         ? `${t('document.export.saved')} ${result.warnings.map(localizeDocumentWarning).join(' ')}`
@@ -3152,8 +3408,10 @@ async function exportTranslatedPdf(): Promise<void> {
     partialStatus.textContent = t('document.export.failed')
     partialStatus.hidden = false
   } finally {
-    exportButton.disabled = latestSnapshot?.task.status !== 'completed' &&
-      latestSnapshot?.task.status !== 'partial'
+    exportButton.disabled = !latestSnapshot || (
+      latestSnapshot.task.status !== 'completed' &&
+      !hasUsableExportResult(latestSnapshot)
+    )
   }
 }
 
@@ -3212,6 +3470,7 @@ async function initializePlatformCapability(): Promise<void> {
  * @author zhenghq
  */
 async function initializeDocumentWorkspace(): Promise<void> {
+  exposeDocumentPrintPreview()
   await initializeWindowTitlebar()
   await initializePlatformCapability()
   await initializeDocumentLanguages()
@@ -3256,10 +3515,24 @@ async function initializeDocumentWorkspace(): Promise<void> {
   cancelButton.addEventListener('click', () => void cancelDocumentTranslation())
   exportButton.addEventListener('click', () => void exportTranslatedPdf())
   retryButton.addEventListener('click', () => void retryFailedDocumentTranslation())
+  partialExportRetryButton.addEventListener('click', () => {
+    closePartialExportDialog(false)
+    void retryFailedDocumentTranslation()
+  })
+  partialExportConfirmButton.addEventListener('click', () => closePartialExportDialog(true))
+  partialExportCancelButton.addEventListener('click', () => closePartialExportDialog(false))
+  partialExportDialog.addEventListener('cancel', (event) => {
+    event.preventDefault()
+    closePartialExportDialog(false)
+  })
+  partialExportDialog.addEventListener('close', () => {
+    // 点击遮罩等原生关闭路径不会经过按钮；统一按取消处理，避免导出 Promise 悬挂。
+    if (resolvePartialExportConfirmation) closePartialExportDialog(false)
+  })
   sourceLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   targetLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   window.api.onDocumentProgress((snapshot) => {
-    if (!isCurrentSnapshot(snapshot)) return
+    if (!canApplyProgressSnapshot(snapshot)) return
     scheduleSnapshotRender(snapshot)
   })
   window.api.onDocumentCompleted((snapshot) => {
@@ -3285,6 +3558,10 @@ async function initializeDocumentWorkspace(): Promise<void> {
   translationContent.addEventListener('keydown', () => registerUserScrollIntent('translation'))
   sourceContent.addEventListener('scroll', () => handleDocumentScroll('source'))
   translationContent.addEventListener('scroll', () => handleDocumentScroll('translation'))
+  window.addEventListener('beforeunload', () => {
+    revokeAssetUrls()
+    releaseHtmlPreviewUrl()
+  })
   historyButton.addEventListener('click', () => {
     uploadStatus.textContent = t('document.historyEmpty')
   })

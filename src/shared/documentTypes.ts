@@ -87,6 +87,16 @@ export type DocumentTextRole =
   | 'code'
   | 'other'
 
+/** 列表项的编号层级与原始标记；标记不参与自然语言翻译。 */
+export interface DocumentListInfo {
+  /** 从零开始的列表层级。 */
+  level: number
+  /** 原始编号或项目符号标记。 */
+  marker: string
+  /** 是否为有序列表。 */
+  ordered: boolean
+}
+
 /** 文本对齐方式。 */
 export type DocumentTextAlign = 'left' | 'center' | 'right' | 'justify'
 
@@ -116,6 +126,8 @@ export interface DocumentTextBlock extends DocumentBlockBase {
   kind: 'text'
   role: DocumentTextRole
   runs: DocumentTextRun[]
+  /** 从 DOCX 等格式恢复的列表编号信息。 */
+  list?: DocumentListInfo
   /** PDF 代码区域的原始外框；译文代码块据此保持原横向范围和主题边框。 */
   codeFrame?: DocumentBoundingBox
   textAlign?: DocumentTextAlign
@@ -513,6 +525,16 @@ function assertDocumentBlock(value: unknown, field: string): void {
 
   if (value.kind === 'text') {
     assertTextRuns(value.runs, `${field}.runs`)
+    if (value.list !== undefined) {
+      if (!isRecord(value.list)) throw new Error(`document ${field}.list must be an object`)
+      assertFiniteNumber(value.list.level, `${field}.list.level`)
+      if (typeof value.list.marker !== 'string') {
+        throw new Error(`document ${field}.list.marker must be a string`)
+      }
+      if (typeof value.list.ordered !== 'boolean') {
+        throw new Error(`document ${field}.list.ordered must be a boolean`)
+      }
+    }
     if (value.codeFrame !== undefined) {
       assertBoundingBox(value.codeFrame, `${field}.codeFrame`)
     }

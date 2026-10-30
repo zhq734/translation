@@ -1,7 +1,8 @@
-import { BrowserWindow, screen, type Rectangle } from 'electron'
+import { BrowserWindow, screen, session, type Rectangle } from 'electron'
 import { handBackFrontmostThen, rememberFrontmostAppIfInactiveAsync } from './macForeground'
 import {
   getDocumentPlatformCapability,
+  getDocumentPlatformUnsupportedMessageKey,
   type DocumentPlatformCapability
 } from '../shared/documentPlatformCapability'
 import { translateMain } from './messages'
@@ -44,6 +45,22 @@ const DOCUMENT_WINDOW_MIN_HEIGHT = 620
 /** 窗口移动或缩放后延迟持久化的时长，避免拖动过程中频繁写入配置。 */
 const DOCUMENT_WINDOW_BOUNDS_SAVE_DELAY_MS = 300
 
+/** HTML 预览 guest 使用的固定隔离分区。 */
+const DOCUMENT_HTML_PREVIEW_PARTITION = 'document-html-preview'
+
+/** HTML 预览仅允许加载内存 Blob，不允许文件、HTTP 或其他协议。 */
+const DOCUMENT_HTML_PREVIEW_URL = /^blob:/iu
+
+/**
+ * 判断 webview 导航目标是否属于受控 HTML 预览。
+ * @param url 待检查的导航 URL。
+ * @returns 允许加载时返回 true。
+ * @author zhenghq
+ */
+function isAllowedDocumentHtmlPreviewUrl(url: string): boolean {
+  return DOCUMENT_HTML_PREVIEW_URL.test(url)
+}
+
 /**
  * 管理独立文档翻译工作台窗口的生命周期。
  * 该窗口是普通可交互窗口，显式打开时复用并聚焦，关闭时按 macOS 前台交还约定收尾。
@@ -74,9 +91,8 @@ export class DocumentWorkspaceManager {
   async open(options: { bringToFront?: boolean } = {}): Promise<void> {
     const capability = this.getDocumentPlatformCapability()
     if (!capability.supported) {
-      throw new Error(capability.reason === 'windows-7-unsupported'
-        ? translateMain('document.error.windows7Unsupported')
-        : translateMain('document.error.unsupportedPlatform'))
+      const messageKey = getDocumentPlatformUnsupportedMessageKey(capability)
+      throw new Error(messageKey ? translateMain(messageKey) : translateMain('document.error.unsupportedPlatform'))
     }
     if (this.closingWindow) return
     await rememberFrontmostAppIfInactiveAsync()
@@ -268,7 +284,7 @@ export class DocumentWorkspaceManager {
     window.on('blur', () => this.options.onInternalWindowFocusLost?.())
     window.on('move', () => this.scheduleBoundsSave())
     window.on('resize', () => this.scheduleBoundsSave())
-    // HTML 原文只在隔离 guest 中加载，并移除任何继承的 preload 与 Node 能力。
+    // HTML 原文只在固定分区的隔离 guest 中加载净化 Blob，并移除任何继承的 preload 与 Node 能力。
     window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
       delete webPreferences.preload
       webPreferences.nodeIntegration = false
@@ -277,11 +293,24 @@ export class DocumentWorkspaceManager {
       webPreferences.sandbox = true
       webPreferences.webSecurity = true
       webPreferences.webviewTag = false
-      if (!/^file:/iu.test(params.src ?? '')) event.preventDefault()
+      webPreferences.partition = DOCUMENT_HTML_PREVIEW_PARTITION
+      if (!isAllowedDocumentHtmlPreviewUrl(params.src ?? '')) event.preventDefault()
     })
-    // 原始 HTML 中的新窗口请求不应创建未受控的 Electron 窗口。
+    // 净化后的 HTML 仍禁止新窗口、任意导航与权限请求，形成第二道边界。
     window.webContents.on('did-attach-webview', (_event, contents) => {
       contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+      contents.on('will-navigate', (event, url) => {
+        if (!isAllowedDocumentHtmlPreviewUrl(url)) event.preventDefault()
+      })
+      contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+        callback(false)
+      })
+      contents.session.setPermissionCheckHandler(() => false)
+      contents.session.webRequest.onBeforeRequest((details, callback) => {
+        const protocol = details.url.split(':', 1)[0]?.toLowerCase()
+        if (protocol !== 'blob' && protocol !== 'data') callback({ cancel: true })
+        else callback({})
+      })
     })
     window.on('closed', () => {
       this.options.onInternalWindowFocusLost?.()

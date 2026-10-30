@@ -18,6 +18,7 @@ import {
 } from '../src/main/documentTranslationPipeline.ts'
 import { parseHtmlDocument, parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
+import type { DocumentLanguagePair } from '../src/shared/documentLanguageDirection.ts'
 
 /**
  * 构造测试用文本区块。
@@ -125,6 +126,15 @@ function translationCollector(): {
 }
 
 /**
+ * 构造固定语言对，用于验证所有翻译路径复用同一方向。
+ * @returns 任务级语言对。
+ * @author zhenghq
+ */
+function fixedLanguagePair(): DocumentLanguagePair {
+  return { sourceLang: 'auto', targetLang: 'ZH' }
+}
+
+/**
  * 模拟翻译服务逐段处理合并批次，并在返回时保留协议标记。
  * @param text 发送给翻译服务的完整批次文本。
  * @param transform 单段译文转换函数。
@@ -161,7 +171,7 @@ test('同一文本块连续可翻译 run 必须作为一个大目标发送并保
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (text) => {
+    translate: async (text, _signal, _languagePair, _onDelta) => {
       calls.push(text)
       return translateMergedText(text, (part) => `译:${part}`)
     },
@@ -172,7 +182,8 @@ test('同一文本块连续可翻译 run 必须作为一个大目标发送并保
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1, 2, 3]) },
     createDocumentTaskState('job-1', 1),
     new AbortController().signal,
-    deps
+    deps,
+    fixedLanguagePair()
   )
 
   assert.deepEqual(calls, ['Hello world'])
@@ -340,7 +351,7 @@ test('AI 增量必须在当前 run 完成前持续发布部分译文', async () 
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (_text, _signal, onDelta) => {
+    translate: async (_text, _signal, _languagePair, onDelta) => {
       onDelta?.('你好')
       onDelta?.('，世界')
       return '你好，世界'
@@ -362,6 +373,86 @@ test('AI 增量必须在当前 run 完成前持续发布部分译文', async () 
   assert.equal(streamed.at(-1), '你好，世界')
 })
 
+test('单目标流式预览后请求失败时必须恢复原文并标记 partial', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }]),
+    textBlock('block-2', [{ runId: 'run-2', text: 'Second paragraph' }])
+  ])
+  const published = translationCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, _languagePair, onDelta) => {
+      if (text === 'Hello world') {
+        onDelta?.('你好')
+        throw new Error('provider failed after preview')
+      }
+      return '第二段'
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation,
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-preview-failure', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(result.task.status, 'partial')
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    'Hello world'
+  )
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    'Hello world'
+  )
+  assert.deepEqual(result.completionReport?.failedTargetIds, ['0:0:text:run-1'])
+})
+
+test('同一目标多分段部分成功、部分失败时必须整体保留原文并归入失败', async () => {
+  const firstPart = 'First sentence. '.repeat(120)
+  const secondPart = 'Second sentence. '.repeat(120)
+  const sourceText = `${firstPart}${secondPart}`
+  const source = model([textBlock('block-1', [{ runId: 'run-1', text: sourceText }])])
+  const published = translationCollector()
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      if (text.includes('Second sentence.')) throw new Error('second segment failed')
+      return `译:${text}`
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation,
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-segment-partial-failure', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(result.task.status, 'failed')
+  assert.equal(result.task.failedBlocks, 1)
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    sourceText
+  )
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    sourceText
+  )
+  assert.deepEqual(result.retryableTargetIds, ['0:0:text:run-1'])
+})
+
 test('高频流式增量必须合并整页发布并保留首段即时反馈', async () => {
   const source = model([textBlock('block-1', [{ runId: 'run-1', text: 'Hello world' }])])
   const published = translationCollector()
@@ -371,7 +462,7 @@ test('高频流式增量必须合并整页发布并保留首段即时反馈', as
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (_text, _signal, onDelta) => {
+    translate: async (_text, _signal, _languagePair, onDelta) => {
       onDelta?.('译')
       countAfterFirstDelta = published.translations.length
       for (let index = 1; index < 40; index += 1) onDelta?.(`文${index}`)
@@ -489,7 +580,7 @@ test('合并批次响应含分段标记时必须按标记流式预览且不丢�
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (_text, _signal, onDelta) => {
+    translate: async (_text, _signal, _languagePair, onDelta) => {
       onDelta?.('译文一\n[[[ST-SEG-0]]]\n')
       onDelta?.('译文二')
       return '译文一\n[[[ST-SEG-0]]]\n译文二'
@@ -557,7 +648,7 @@ test('合并批次流式预览必须保留普通方括号正文，只过滤残�
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (_text, _signal, onDelta) => {
+    translate: async (_text, _signal, _languagePair, onDelta) => {
       onDelta?.('[[[Source]]] 译文\n[[[ST-SEG-0]]]\n下一段\n[[[ST-')
       return '[[[Source]]] 译文\n[[[ST-SEG-0]]]\n下一段'
     },
@@ -1225,7 +1316,8 @@ test('超长表格行丢失单元格标记时回退译文不得与已有分段�
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
     createDocumentTaskState('job-table-long-cell-fallback', 1),
     new AbortController().signal,
-    deps
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
   )
 
   assert.equal(result.task.status, 'completed')
@@ -1267,7 +1359,8 @@ test('超长表格行所在合并批次失败时只完成一次逐单元格回�
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
     createDocumentTaskState('job-table-long-merged-fallback', 1),
     new AbortController().signal,
-    deps
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
   )
 
   assert.equal(result.task.status, 'completed')
@@ -1323,7 +1416,7 @@ test('合并批次保留分段标记但丢失单元格标记时必须只回退�
   assert.equal((result.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text, 'T(说明文字)')
 })
 
-test('表格行逐单元格回退仍失败时必须标记部分完成并支持重新翻译', async () => {
+test('表格行逐单元格回退仍失败且无成功译文时必须标记失败并支持重新翻译', async () => {
   const source = model([tableBlock('table-retry', [['题号', '一、单选题']])])
   const calls: string[] = []
   let retrying = false
@@ -1348,9 +1441,10 @@ test('表格行逐单元格回退仍失败时必须标记部分完成并支持�
     deps
   )
 
-  assert.equal(initial.task.status, 'partial')
+  assert.equal(initial.task.status, 'failed')
   assert.equal(initial.task.failedBlocks, 1)
-  assert.equal(initial.failedTargetIds?.length, 1)
+  assert.equal(initial.completionReport?.status, 'failed')
+  assert.equal(initial.retryableTargetIds?.length, 1)
   const initialTable = initial.translation.pages[0]!.blocks[0]
   assert.equal(initialTable.kind, 'table')
   if (initialTable.kind !== 'table') return
@@ -1363,10 +1457,11 @@ test('表格行逐单元格回退仍失败时必须标记部分完成并支持�
   const retried = await retryFailedDocumentTranslationPipeline(
     initial.source,
     initial.translation,
-    initial.failedTargetIds!,
+    initial.retryableTargetIds!,
     { ...initial.task, generation: 2 },
     new AbortController().signal,
-    deps
+    deps,
+    initial.languageResolution!
   )
 
   assert.equal(retried.task.status, 'completed')
@@ -1550,6 +1645,130 @@ test('单块翻译失败时保留原文、继续后续块并标记部分完成',
   assert.equal((blocks[1] as DocumentTextBlock).runs[0]!.text, 'T(second)')
 })
 
+test('首次运行必须生成绑定任务身份与完整目标的完成报告', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => text.includes('first') ? '第一' : '第二',
+    onProgress: () => undefined,
+    getModelFingerprint: () => 'provider:test-model',
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-completion', 3),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.ok(result.completionReport)
+  assert.equal(result.completionReport.jobId, 'job-completion')
+  assert.equal(result.completionReport.generation, 3)
+  assert.equal(result.completionReport.documentId, source.documentId)
+  assert.equal(result.completionReport.modelFingerprint, 'provider:test-model')
+  assert.equal(result.completionReport.status, 'completed')
+  assert.equal(result.completionReport.total, 2)
+  assert.equal(result.completionReport.translated, 2)
+  assert.equal(result.completionReport.unchanged, 0)
+  assert.deepEqual(result.completionReport.failedTargetIds, [])
+  assert.deepEqual(result.completionReport.pendingTargetIds, [])
+  assert.deepEqual(result.completionReport.suspectUntranslatedTargetIds, [])
+  assert.deepEqual(result.failedTargetIds, [])
+})
+
+test('完成报告必须把部分失败归为 partial 并暴露失败原因和可重试目标', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      if (text.includes('first')) throw new Error('provider failed')
+      return '第二'
+    },
+    onProgress: () => undefined,
+    getModelFingerprint: () => 'provider:test-model',
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-partial-report', 4),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(result.task.status, 'partial')
+  assert.ok(result.completionReport)
+  assert.equal(result.completionReport.status, 'partial')
+  assert.equal(result.completionReport.total, 2)
+  assert.equal(result.completionReport.translated, 1)
+  assert.equal(result.completionReport.failed, 1)
+  assert.deepEqual(result.completionReport.failedTargetIds, ['0:0:text:r1'])
+  assert.equal(result.completionReport.failureReasons['0:0:text:r1'], 'translation-failed')
+  assert.deepEqual(result.failedTargetIds, ['0:0:text:r1'])
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'translation-partial'), true)
+})
+
+test('重试成功必须对完整文档重新生成完成报告而不是只统计重试目标', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  let retrying = false
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      if (!retrying && text.includes('first')) throw new Error('provider failed')
+      return text.includes('first') ? '第一' : '第二'
+    },
+    onProgress: () => undefined,
+    getModelFingerprint: () => 'provider:test-model',
+    concurrency: 1
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-retry-report', 5),
+    new AbortController().signal,
+    deps
+  )
+  assert.equal(initial.completionReport?.status, 'partial')
+
+  retrying = true
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    initial.failedTargetIds!,
+    { ...initial.task, generation: 6 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  assert.ok(retried.completionReport)
+  assert.equal(retried.completionReport.jobId, 'job-retry-report')
+  assert.equal(retried.completionReport.generation, 6)
+  assert.equal(retried.completionReport.status, 'completed')
+  assert.equal(retried.completionReport.total, 2)
+  assert.equal(retried.completionReport.translated, 2)
+  assert.deepEqual(retried.completionReport.failedTargetIds, [])
+  assert.deepEqual(retried.failedTargetIds, [])
+  assert.equal(retried.translation.warnings.some((warning) => warning.code === 'translation-partial'), false)
+})
+
 test('重新翻译只请求失败目标并保留已成功译文', async () => {
   const source = model([
     textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
@@ -1595,7 +1814,8 @@ test('重新翻译只请求失败目标并保留已成功译文', async () => {
     initial.failedTargetIds!,
     { ...initial.task, generation: 2 },
     new AbortController().signal,
-    deps
+    deps,
+    initial.languageResolution!
   )
 
   assert.deepEqual(calls, ['first'])
@@ -1617,12 +1837,17 @@ test('重新翻译合并批次时也必须在整批完成前发布部分译文',
     textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
     textBlock('block-2', [{ runId: 'r2', text: 'second' }])
   ])
+  const languageResolution = {
+    sourcePreference: 'auto',
+    targetPreference: 'auto',
+    languagePair: fixedLanguagePair()
+  }
   const published = translationCollector()
   const deps: DocumentPipelineDeps = {
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (text, _signal, onDelta) => {
+    translate: async (text, _signal, _languagePair, onDelta) => {
       assert.equal(text, 'first\n[[[ST-SEG-0]]]\nsecond')
       onDelta?.('译:first\n[[[ST-SEG-0]]]\n')
       assert.equal(
@@ -1642,7 +1867,8 @@ test('重新翻译合并批次时也必须在整批完成前发布部分译文',
     ['0:0:text:r1', '0:1:text:r2'],
     createDocumentTaskState('job-retry-stream', 2),
     new AbortController().signal,
-    deps
+    deps,
+    languageResolution
   )
 
   assert.equal(retried.task.status, 'completed')
@@ -1660,6 +1886,11 @@ test('重新翻译合并批次时也必须在整批完成前发布部分译文',
 test('重新翻译高频流式增量也必须合并整页发布并保留首段即时反馈', async () => {
   const source = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
   const initial = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const languageResolution = {
+    sourcePreference: 'auto',
+    targetPreference: 'auto',
+    languagePair: fixedLanguagePair()
+  }
   const published = translationCollector()
   let countAfterFirstDelta = 0
   let countAfterAllDeltas = 0
@@ -1667,7 +1898,7 @@ test('重新翻译高频流式增量也必须合并整页发布并保留首段�
     parse: async () => source,
     loadAssetBytes: async () => null,
     recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
-    translate: async (_text, _signal, onDelta) => {
+    translate: async (_text, _signal, _languagePair, onDelta) => {
       onDelta?.('译')
       countAfterFirstDelta = published.translations.length
       for (let index = 1; index < 40; index += 1) onDelta?.(`文${index}`)
@@ -1684,7 +1915,8 @@ test('重新翻译高频流式增量也必须合并整页发布并保留首段�
     ['0:0:text:r1'],
     createDocumentTaskState('job-retry-throttle', 2),
     new AbortController().signal,
-    deps
+    deps,
+    languageResolution
   )
 
   assert.equal(countAfterFirstDelta, 2, '重试的首个增量也必须立即发布')
@@ -1726,7 +1958,8 @@ test('重新翻译后仍失败时必须保留可再次重试的目标并保持�
     initial.failedTargetIds!,
     { ...initial.task, generation: 2 },
     new AbortController().signal,
-    deps
+    deps,
+    initial.languageResolution!
   )
 
   assert.equal(retried.task.status, 'partial')
@@ -1766,4 +1999,147 @@ test('取消后不再发起翻译并返回 cancelled', async () => {
 
   assert.equal(result.task.status, 'cancelled')
   assert.equal(calls, 1)
+})
+
+test('取消后迟到的流式增量不得覆盖取消结果中的已完成译文', async () => {
+  const completedSourceText = `${'first '.repeat(300)}`.trim()
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: completedSourceText }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  const controller = new AbortController()
+  const published = translationCollector()
+  let releaseFirst: (() => void) | null = null
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, _languagePair, onDelta) => {
+      if (text === completedSourceText) {
+        onDelta?.('第一')
+        return '第一'
+      }
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      controller.abort()
+      onDelta?.('迟到的第二段')
+      return '迟到的第二段'
+    },
+    onProgress: () => undefined,
+    publishTranslation: published.publishTranslation,
+    concurrency: 1
+  }
+
+  const pending = runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-cancel-late-delta', 1),
+    controller.signal,
+    deps
+  )
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  releaseFirst?.()
+  const result = await pending
+
+  assert.equal(result.task.status, 'cancelled')
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '第一'
+  )
+  assert.equal(
+    (result.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text,
+    'second'
+  )
+  const lateSnapshots = published.translations.slice(1).filter((translation) =>
+    (translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text === '迟到的第二段')
+  assert.deepEqual(lateSnapshots, [])
+})
+
+test('文档翻译流水线必须把任务级语言对传给所有批次、回退和重试请求', async () => {
+  const source = model([
+    textBlock('block-cn', [{ runId: 'cn', text: '中文说明'.repeat(80) }]),
+    textBlock('block-en', [{ runId: 'en', text: 'English-only batch text '.repeat(70) }]),
+    tableBlock('table-direction', [[
+      '表格中文单元格一',
+      '表格中文单元格二'
+    ]])
+  ])
+  const seenPairs: DocumentLanguagePair[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, languagePair) => {
+      seenPairs.push(languagePair)
+      if (text.includes('ST-DOC-CELL')) return '表格标记丢失'
+      return translateMergedText(text, (part) => `T(${part})`)
+    },
+    onProgress: () => undefined,
+    concurrency: 3
+  }
+  const pair = { sourceLang: 'auto', targetLang: 'ZH' }
+  const preference = { sourcePreference: 'auto', targetPreference: 'ZH' }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-document-direction', 1),
+    new AbortController().signal,
+    deps,
+    preference
+  )
+
+  assert.ok(seenPairs.length >= 4)
+  assert.equal(seenPairs.every((candidate) => candidate === result.languagePair), true)
+  assert.deepEqual(result.languagePair, pair)
+})
+
+test('失败目标重试必须复用首次任务语言对，不能重新按失败块解析方向', async () => {
+  const source = model([
+    textBlock('block-fail', [{ runId: 'fail', text: 'English-only failed block' }]),
+    textBlock('block-ok', [{ runId: 'ok', text: '中文成功块' }])
+  ])
+  const seenPairs: DocumentLanguagePair[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, languagePair) => {
+      seenPairs.push(languagePair)
+      if (text.includes('English-only')) throw new Error('temporary failure')
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+  const pair = { sourceLang: 'auto', targetLang: 'ZH' }
+  const preference = { sourcePreference: 'auto', targetPreference: 'auto' }
+
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-retry-direction', 1),
+    new AbortController().signal,
+    deps,
+    preference
+  )
+  const firstPair = initial.languagePair
+  const firstResolution = {
+    sourcePreference: initial.sourcePreference!,
+    targetPreference: initial.targetPreference!,
+    languagePair: firstPair!
+  }
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    initial.failedTargetIds!,
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    firstResolution
+  )
+
+  assert.deepEqual(firstPair, pair)
+  assert.equal(seenPairs.every((candidate) => candidate === firstPair), true)
+  assert.deepEqual(retried.languagePair, firstPair)
+  assert.equal(retried.sourcePreference, 'auto')
+  assert.equal(retried.targetPreference, 'auto')
 })

@@ -90,3 +90,17 @@ export function getDocumentPlatformCapability(
   return detectDocumentPlatformCapability(input)
 }
 
+/**
+ * 将文档平台不支持原因映射为稳定的国际化提示词条。
+ * @param capability 平台能力结果。
+ * @returns 不支持时返回提示词条；支持时返回 null。
+ * @author zhenghq
+ */
+export function getDocumentPlatformUnsupportedMessageKey(
+  capability: DocumentPlatformCapability
+): 'document.error.windows7Unsupported' | 'document.error.unsupportedPlatform' | null {
+  if (capability.supported) return null
+  return capability.reason === 'windows-7-unsupported'
+    ? 'document.error.windows7Unsupported'
+    : 'document.error.unsupportedPlatform'
+}

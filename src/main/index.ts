@@ -260,7 +260,10 @@ import {
   getDocumentZipCentralDirectoryRange,
   validateDocumentFile
 } from '../shared/documentFormat'
-import { getDocumentPlatformCapability } from '../shared/documentPlatformCapability'
+import {
+  getDocumentPlatformCapability,
+  getDocumentPlatformUnsupportedMessageKey
+} from '../shared/documentPlatformCapability'
 import { parseDocument } from './documentParser'
 import { createProductionPdfRasterizer } from './documentPdfRuntime'
 import { printDocumentPreviewToPdf } from './documentPdfPrint'
@@ -268,6 +271,7 @@ import { loadDocumentPdfFontBytes } from './documentPdfFont'
 import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
+  type DocumentExportRequest,
   type DocumentRunRequest
 } from '../shared/documentWorkspace'
 import {
@@ -691,15 +695,12 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         ...(signal ? { signal } : {})
       })
     },
-    translate: async (text, signal, request, onDelta) => {
+    translate: async (text, signal, _request, languagePair, onDelta) => {
       const settingsSnapshot = getSettings()
-      const sourcePreference = request.sourceLang ?? settingsSnapshot.sourceLang
-      const targetPreference = request.targetLang ?? settingsSnapshot.targetLang
-      const pair = resolveLanguagePair(text, sourcePreference, targetPreference)
       const settings = {
         ...settingsSnapshot,
-        sourceLang: pair.sourceLang,
-        targetLang: pair.targetLang
+        sourceLang: languagePair.sourceLang,
+        targetLang: languagePair.targetLang
       }
       const dingTalkCredentials = settings.dingTalkEnabled
         ? getDingTalkConfiguration().getCredentialsSnapshot()
@@ -736,15 +737,25 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     },
     loadAssetBytes: async () => null,
     getTranslationConcurrency: () => getSettings().webTranslationConcurrency,
+    getModelFingerprint: () => {
+      const settings = getSettings()
+      return createHash('sha256').update(JSON.stringify([
+        settings.preferredTranslationProvider,
+        settings.aiEnabled,
+        settings.aiProtocol,
+        settings.aiBaseUrl,
+        settings.aiModel
+      ])).digest('hex')
+    },
     loadFontBytes: () => loadDocumentPdfFontBytes({
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
-    exportPdf: (model) => {
+    exportPdf: (model, _dependencies, partialExport) => {
       const window = documentWorkspace?.getWindow()
       if (!window) throw new Error('document-window-unavailable')
-      return printDocumentPreviewToPdf(window.webContents, model)
+      return printDocumentPreviewToPdf(window.webContents, model, partialExport)
     },
     showSaveDialog: async (suggestedName) => {
       const window = documentWorkspace?.getWindow()
@@ -5405,6 +5416,7 @@ function openWebReaderFromPopup(url?: string): void {
  * @author zhenghq
  */
 function openDocumentWorkspaceFromPopup(): void {
+  if (!ensureDocumentWorkspaceSupported()) return
   if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
   beginPopupSettingsOpenGuard()
   void getDocumentWorkspace().open({ bringToFront: true }).catch((error: unknown) => {
@@ -5420,12 +5432,27 @@ function openDocumentWorkspaceFromPopup(): void {
  * @author zhenghq
  */
 function openDocumentWorkspaceFromShortcut(): void {
+  if (!ensureDocumentWorkspaceSupported()) return
   const workspace = getDocumentWorkspace()
   if (workspace.focusOrOpenExistingWindow()) return
   void workspace.open({ bringToFront: true }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : t('error.openDocumentTranslation')
     dialog.showErrorBox(t('error.openDocumentTranslation'), message)
   })
+}
+
+/**
+ * 在所有文档工作台显式入口创建或隐藏窗口前校验平台能力。
+ * @returns 当前平台支持文档翻译时返回 true；否则显示明确原因并返回 false。
+ * @author zhenghq
+ */
+function ensureDocumentWorkspaceSupported(): boolean {
+  const capability = getDocumentPlatformCapability()
+  if (capability.supported) return true
+  const messageKey = getDocumentPlatformUnsupportedMessageKey(capability)
+    ?? 'document.error.unsupportedPlatform'
+  dialog.showErrorBox(t('error.openDocumentTranslation'), t(messageKey))
+  return false
 }
 
 /**
@@ -6004,14 +6031,16 @@ function registerIpc(): void {
   /**
    * 将当前译文导出为 PDF。
    * @param event IPC 事件对象。
+   * @param request 当前任务标识、代际与显式导出模式。
    * @returns 保存、取消或拒绝结果。
    * @author zhenghq
    */
-  ipcMain.handle('document:export-pdf', async (event) => {
+  ipcMain.handle('document:export-pdf', async (event, request: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { status: 'rejected', code: 'unreadable' }
     }
-    return documentWorkspaceTaskService?.exportPdf() ?? { status: 'rejected', code: 'not-ready' }
+    return documentWorkspaceTaskService?.exportPdf(request as DocumentExportRequest) ??
+      { status: 'rejected', code: 'not-ready' }
   })
   /**
    * 读取当前任务中的受控图片资源。

@@ -139,6 +139,26 @@ test('网页 PDF 打印样式必须展开滚动容器并保持表格、代码块
   assert.match(css, /pre\s*\{[^}]*overflow-wrap:\s*anywhere/isu, '长代码行必须在打印时安全换行')
 })
 
+test('网页 PDF 打印时对照译文节点不得强制独占新行', () => {
+  const css = buildWebPagePrintCss()
+
+  assert.match(
+    css,
+    /body\s+\[data-st-translation\]\s*\{[^}]*display:\s*inline\s*!important/isu,
+    '对照注入节点在 PDF 里应随译文段自然流动'
+  )
+  assert.match(
+    css,
+    /body\s+\[data-st-translation\]\s*\{[^}]*flex:\s*0\s+1\s+auto\s*!important/isu,
+    'flex 父级中的对照注入节点打印时不应强制换行'
+  )
+  assert.match(
+    css,
+    /body\s+\[data-st-translation\]\s*\{[^}]*grid-column:\s*auto\s*!important/isu,
+    'grid 父级中的对照注入节点打印时不应跨满整行'
+  )
+})
+
 test('网页 PDF 应使用 A4 打印并保留页面背景', async () => {
   const fake = createWebContentsFake()
 

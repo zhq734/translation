@@ -53,6 +53,42 @@ test('文档工作台必须提供单文件上传态与禁用的批量页签', ()
   assert.match(source, /await window\.api\.cancelDocument\(/u)
 })
 
+test('文档工作台上传面板必须提供可访问的主操作、隐私边界与主题化自适应布局', () => {
+  const html = read('src/renderer/document.html')
+  const css = read('src/renderer/src/document.css')
+
+  assert.match(
+    html,
+    /id="document-start-button"[^>]*class="[^"]*document-primary-button[^"]*"[^>]*data-i18n="document\.upload\.start"[^>]*disabled/u
+  )
+  assert.match(html, /id="document-upload-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="document-tab-single"/u)
+  assert.match(html, /id="document-drop-zone"[^>]*role="button"[^>]*aria-describedby="document-upload-formats document-upload-privacy"/u)
+  assert.match(html, /id="document-upload-formats"[^>]*data-i18n="document\.upload\.formats"/u)
+  assert.match(html, /id="document-upload-privacy"[^>]*data-i18n="document\.upload\.privacy"/u)
+  assert.match(html, /id="document-upload-status"[^>]*role="status"[^>]*aria-live="polite"/u)
+  assert.match(css, /\.document-upload-panel\s*\{[^}]*display:\s*(?:flex|grid)/u)
+  assert.match(css, /\.document-upload-panel\s*\{[^}]*min-height:\s*0/u)
+  assert.match(css, /\.document-drop-zone:focus-visible\s*\{[^}]*outline:/u)
+  assert.doesNotMatch(css, /(?:^|[;{])\s*color:\s*#[0-9a-f]{3,8}\b/imu)
+  assert.doesNotMatch(css, /(?:^|[;{])\s*background(?:-color)?:\s*#[0-9a-f]{3,8}\b/imu)
+})
+
+test('文档工作台窗口必须限制为安全本地页面并只允许单实例复用', () => {
+  const manager = read('src/main/documentWorkspaceWindow.ts')
+  const createStart = manager.indexOf('private async ensureWindow()')
+  const createEnd = manager.indexOf('private resolveInitialBounds()', createStart)
+  const createSource = manager.slice(createStart, createEnd)
+
+  assert.ok(createStart >= 0 && createEnd > createStart)
+  assert.match(createSource, /contextIsolation:\s*true/u)
+  assert.match(createSource, /nodeIntegration:\s*false/u)
+  assert.match(createSource, /sandbox:\s*true/u)
+  assert.match(createSource, /setWindowOpenHandler\(\(\)\s*=>\s*\(\{\s*action:\s*'deny'\s*\}\)\)/u)
+  assert.match(createSource, /isAllowedDocumentHtmlPreviewUrl\(params\.src \?\? ''\)\) event\.preventDefault\(\)/u)
+  assert.match(createSource, /this\.options\.loadRenderer\(window, 'document\.html'\)/u)
+  assert.match(manager, /if \(this\.window && !this\.window\.isDestroyed\(\)\) return/u)
+})
+
 test('文档翻译顶部栏必须提供仅重试失败项的重新翻译按钮', () => {
   const html = read('src/renderer/document.html')
   const source = read('src/renderer/src/document.ts')
@@ -65,7 +101,8 @@ test('文档翻译顶部栏必须提供仅重试失败项的重新翻译按钮',
     /id="document-retry-button"[^>]*data-i18n="document\.retryFailed"[^>]*disabled/u
   )
   assert.match(source, /const retryButton = document\.getElementById\('document-retry-button'\) as HTMLButtonElement/u)
-  assert.match(source, /retryButton\.disabled = status !== 'partial' \|\|[\s\S]{0,120}phaseCompleted[\s\S]{0,120}retryableFailedBlocks/u)
+  assert.match(source, /const retryableTerminal = status === 'partial' \|\|[\s\S]{0,160}status === 'failed'[\s\S]{0,160}retryableFailedBlocks/u)
+  assert.match(source, /retryButton\.disabled = !retryableTerminal \|\|[\s\S]{0,120}phaseCompleted[\s\S]{0,120}retryableFailedBlocks/u)
   assert.match(source, /retryButton\.addEventListener\('click',\s*\(\)\s*=>\s*void retryFailedDocumentTranslation\(\)\)/u)
   assert.match(source, /async function retryFailedDocumentTranslation\(/u)
   assert.match(source, /await window\.api\.retryFailedDocument\(/u)
@@ -116,18 +153,75 @@ test('文档翻译语言下拉首次初始化必须沿用设置中的源语言�
   )
 })
 
-test('文档翻译目标语言必须默认自动并在主进程按分段文本解析实际语言对', () => {
+test('文档翻译必须在文档级解析一次语言对并让任务服务冻结复用', () => {
   const source = read('src/renderer/src/document.ts')
   const main = read('src/main/index.ts')
+  const pipeline = read('src/main/documentTranslationPipeline.ts')
+  const service = read('src/main/documentWorkspaceTaskService.ts')
   const serviceStart = main.indexOf('function createDocumentWorkspaceTaskService')
   const serviceEnd = main.indexOf('/**', serviceStart + 1)
   const serviceSource = main.slice(serviceStart, serviceEnd)
 
   assert.match(source, /targetLanguageSelect\.value = selectedTarget \|\| 'auto'/u)
   assert.match(source, /populateDocumentLanguages\(\{ sourceLang: 'auto', targetLang: 'auto' \} as Settings\)/u)
-  assert.match(serviceSource, /const pair = resolveLanguagePair\(text, sourcePreference, targetPreference\)/u)
-  assert.match(serviceSource, /sourceLang: pair\.sourceLang/u)
-  assert.match(serviceSource, /targetLang: pair\.targetLang/u)
+  assert.doesNotMatch(serviceSource, /resolveLanguagePair\(text,/u)
+  assert.match(serviceSource, /translate: async \(text, signal, _request, languagePair, onDelta\)/u)
+  assert.match(serviceSource, /sourceLang: languagePair\.sourceLang/u)
+  assert.match(serviceSource, /targetLang: languagePair\.targetLang/u)
+  assert.match(pipeline, /resolveDocumentLanguagePair\(/u)
+  assert.match(pipeline, /languageResolution: DocumentLanguageResolution/u)
+  assert.match(pipeline, /deps\.translate\(item\.batch\.text, signal, languagePair, \(delta\)/u)
+  assert.match(pipeline, /deps\.translate\(segment\.text, signal, languagePair\)/u)
+  assert.match(service, /languageResolution\?: DocumentLanguageResolution/u)
+  assert.match(service, /job\.languageResolution = result\.languageResolution/u)
+  assert.match(service, /retryFailedDocumentTranslationPipeline\([\s\S]*?languageResolution\s*\)/u)
+  assert.match(service, /sourcePreference: job\.languageResolution\.sourcePreference/u)
+  assert.match(service, /targetPreference: job\.languageResolution\.targetPreference/u)
+  assert.match(service, /languagePair: job\.languageResolution\.languagePair/u)
+})
+
+test('文档工作台必须保留语言偏好并单独展示文档级实际语言方向', () => {
+  const html = read('src/renderer/document.html')
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+
+  assert.match(
+    html,
+    /id="document-actual-language"[^>]*data-i18n="document\.actualLanguage"[^>]*aria-live="polite"/u
+  )
+  assert.match(source, /const actualLanguage = document\.getElementById\('document-actual-language'\) as HTMLElement/u)
+  assert.match(source, /function renderActualLanguage\(languagePair\?: DocumentWorkspaceSnapshot\['languagePair'\]\)/u)
+  assert.match(source, /langLabel\(languagePair\.sourceLang, localeRuntime\.locale\)/u)
+  assert.match(source, /langLabel\(languagePair\.targetLang, localeRuntime\.locale\)/u)
+  assert.match(source, /t\('document\.actualLanguage', \{ direction \}\)/u)
+  assert.match(source, /actualLanguage\.textContent = t\('document\.actualLanguageAuto'\)/u)
+  assert.match(source, /snapshot\.languagePair/u)
+  assert.match(source, /sourceLanguageSelect\.value = selectedSource \|\| 'auto'/u)
+  assert.match(source, /targetLanguageSelect\.value = selectedTarget \|\| 'auto'/u)
+  assert.doesNotMatch(source, /sourceLanguageSelect\.value = snapshot\.languagePair/u)
+  assert.doesNotMatch(source, /targetLanguageSelect\.value = snapshot\.languagePair/u)
+  assert.match(source, /actualLanguage\.textContent = t\('document\.actualLanguageAuto'\)/u)
+  const resetStart = source.indexOf('function resetWorkbenchPreview()')
+  const resetSource = source.slice(resetStart, source.indexOf('/**', resetStart + 1))
+  const replaceStart = source.indexOf('async function replaceDocumentFromWorkbench()')
+  const replaceSource = source.slice(replaceStart, source.indexOf('/**', replaceStart + 1))
+  const startStart = source.indexOf('async function startDocumentTranslation()')
+  const startSource = source.slice(startStart, source.indexOf('async function cancelDocumentTranslation', startStart))
+  const localeStart = source.indexOf('localeRuntime.onLocaleChanged(')
+  const localeSource = source.slice(localeStart, source.indexOf('\n  })', localeStart) + 4)
+  assert.match(resetSource, /actualLanguage\.textContent = t\('document\.actualLanguageAuto'\)/u)
+  assert.match(replaceSource, /resetWorkbenchPreview\(\)/u)
+  assert.match(startSource, /actualLanguage\.textContent = t\('document\.actualLanguageAuto'\)/u)
+  assert.match(localeSource, /renderSnapshot\(latestSnapshot\)/u)
+  assert.match(css, /\.document-actual-language\b/u)
+  assert.match(css, /var\(--text-secondary\)/u)
+  assert.match(css, /flex-wrap:\s*wrap/u)
+  assert.match(zh, /'document\.actualLanguage': '实际方向：\{\{direction\}\}'/u)
+  assert.match(zh, /'document\.actualLanguageAuto': '自动'/u)
+  assert.match(en, /'document\.actualLanguage': 'Actual direction: \{\{direction\}\}'/u)
+  assert.match(en, /'document\.actualLanguageAuto': 'Auto'/u)
 })
 
 test('文件翻译必须使用流式翻译通道，并持续展示增量译文', () => {
@@ -523,10 +617,49 @@ test('生产 PDF 导出必须直接打印译文预览而不是重新排版模型
   assert.match(main, /import \{ printDocumentPreviewToPdf \} from '\.\/documentPdfPrint'/u)
   assert.match(
     main,
-    /exportPdf:\s*\(model\)\s*=>\s*\{[\s\S]*?documentWorkspace\?\.getWindow\(\)[\s\S]*?printDocumentPreviewToPdf\(window\.webContents,\s*model\)/u
+    /exportPdf:\s*\(model,\s*_dependencies,\s*partialExport\)\s*=>\s*\{[\s\S]*?documentWorkspace\?\.getWindow\(\)[\s\S]*?printDocumentPreviewToPdf\(window\.webContents,\s*model,\s*partialExport\)/u
   )
   assert.doesNotMatch(main, /from '\.\/documentPdfExport'/u)
   assert.doesNotMatch(main, /exportDocumentToPdf\(/u)
+})
+
+test('部分导出必须经过原生确认对话框并明确标记部分结果', () => {
+  const html = read('src/renderer/document.html')
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+
+  assert.match(html, /<dialog[^>]+id="document-partial-export-dialog"/u)
+  assert.match(html, /id="document-partial-export-retry"/u)
+  assert.match(html, /id="document-partial-export-confirm"/u)
+  assert.match(html, /id="document-partial-export-cancel"/u)
+  assert.match(source, /completionReport\.failed/u)
+  assert.match(source, /completionReport\.pending/u)
+  assert.match(source, /completionReport\.suspectUntranslated/u)
+  assert.match(source, /mode:\s*'partial'/u)
+  assert.match(source, /mode:\s*'complete'/u)
+  assert.match(source, /dataset\.rowId\s*=\s*row\.rowId/u)
+  assert.match(source, /document-partial-export-dialog/u)
+  assert.match(source, /partialExportRetryButton\.addEventListener\('click'/u)
+  assert.match(source, /partialExportConfirmButton\.addEventListener\('click'/u)
+  assert.match(source, /partialExportCancelButton\.addEventListener\('click'/u)
+  assert.match(css, /\.document-partial-export-dialog/u)
+  assert.match(css, /\.document-partial-export-notice/u)
+  assert.match(css, /\[data-incomplete-target='true'\]/u)
+  assert.doesNotMatch(zh, /'document\.partialSummary':\s*'已完成翻译/u)
+  assert.match(zh, /'document\.partialSummary':[^\n]+部分结果/u)
+  assert.match(en, /'document\.partialSummary':[^\n]+partial/iu)
+})
+
+test('打印前必须通过受控预览接口准备和恢复部分导出标记', () => {
+  const source = read('src/renderer/src/document.ts')
+
+  assert.match(source, /__documentPrintPreview/u)
+  assert.match(source, /preparePartialExport/u)
+  assert.match(source, /restorePrintPreview/u)
+  assert.match(source, /document-partial-export-notice/u)
+  assert.match(source, /latestSnapshot/u)
 })
 
 test('文档工作台初始化必须真正接线任务按钮、进度事件与双栏滚动同步', () => {
@@ -694,6 +827,18 @@ test('任务启动必须等待 runDocument 返回 jobId，并在代际冲突时�
   assert.match(startSource, /adoptSuggestedGeneration\(result\.suggestedGeneration\)/u)
   assert.match(currentSource, /snapshot\.generation !== generation/u)
   assert.match(currentSource, /expectedJobId/u)
+})
+
+test('终态完成后迟到的进度快照不得覆盖最终译文', () => {
+  const source = read('src/renderer/src/document.ts')
+  const progressStart = source.indexOf('window.api.onDocumentProgress(')
+  const progressEnd = source.indexOf('window.api.onDocumentCompleted(', progressStart)
+  const progressSource = source.slice(progressStart, progressEnd)
+
+  assert.ok(progressStart > -1, '必须订阅文档进度事件')
+  assert.match(progressSource, /canApplyProgressSnapshot\(snapshot\)/u)
+  assert.match(source, /canApplyDocumentTaskEvent\(/u)
+  assert.match(source, /latestSnapshot\.task/u)
 })
 
 test('PDF 预览必须使用 PDF.js 原生页面渲染而不是重建绝对定位文本', () => {
@@ -1201,7 +1346,7 @@ test('文档工作台必须补齐任务、OCR、导出和页面提示词条', ()
   }
 })
 
-test('HTML 源文预览必须使用隔离 webview 原样加载文件，并允许远程资源', () => {
+test('HTML 源文预览必须加载净化结果，并禁止远程导航、权限与网络请求', () => {
   const source = read('src/renderer/src/document.ts')
   const manager = read('src/main/documentWorkspaceWindow.ts')
   const html = read('src/renderer/document.html')
@@ -1209,11 +1354,21 @@ test('HTML 源文预览必须使用隔离 webview 原样加载文件，并允许
 
   assert.match(source, /function renderHtmlSourcePreview/u)
   assert.match(source, /document\.createElement\('webview'\)/u)
-  assert.match(source, /webview\.src\s*=\s*toFileUrl\(/u)
+  assert.match(source, /getDocumentSource\(\)/u)
+  assert.match(source, /URL\.createObjectURL\(/u)
+  assert.match(source, /URL\.revokeObjectURL\(/u)
+  assert.match(source, /webview\.src\s*=\s*previewUrl/u)
+  assert.doesNotMatch(source, /toFileUrl\(model\.source\.path\)/u)
   assert.match(source, /side === 'source' && model\.source\.format === 'html'/u)
   assert.match(manager, /webviewTag:\s*true/u)
   assert.match(manager, /on\('will-attach-webview'/u)
   assert.match(manager, /delete webPreferences\.preload/u)
+  assert.match(manager, /on\('will-navigate'/u)
+  assert.match(manager, /setWindowOpenHandler\(\(\)\s*=>\s*\(\{\s*action:\s*'deny'\s*\}\)\)/u)
+  assert.match(manager, /setPermissionRequestHandler/u)
+  assert.match(manager, /setPermissionCheckHandler/u)
+  assert.match(manager, /webRequest\.onBeforeRequest/u)
+  assert.match(manager, /event\.preventDefault\(\)/u)
   assert.match(html, /document-page-scroll[^>]*id="document-source-content"/u)
   assert.match(
     css,
@@ -1277,6 +1432,8 @@ test('解析告警必须按稳定 code 本地化并在双栏中可见', () => {
     'unclosed-code-fence',
     'invalid-subtitle',
     'translation-partial',
+    'remote-resource-removed',
+    'unsafe-html-removed',
     'unknown'
   ]
   for (const code of keys) {

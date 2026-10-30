@@ -46,6 +46,7 @@
           <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
             <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
           </label>
+          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite"></span>
         </div>
         <div class="document-toolbar-actions">
           <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry failed items</button>
@@ -60,12 +61,12 @@
             <h1 data-i18n="document.upload.title">Translate a local document</h1>
             <p data-i18n="document.upload.description">Choose a file to create a side-by-side source and translation workspace.</p>
           </div>
-          <div id="document-drop-zone" class="document-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.upload.dropHint" aria-label="Choose or drop a document here">
+          <div id="document-drop-zone" class="document-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.upload.dropHint" aria-label="Choose or drop a document here" aria-describedby="document-upload-formats document-upload-privacy">
             <span class="document-drop-zone-icon" aria-hidden="true">⇪</span>
             <strong data-i18n="document.upload.dropHint">Choose or drop a document here</strong>
             <span class="document-drop-zone-action" data-i18n="document.upload.chooseFile">Choose file</span>
-            <span class="document-format-hint" data-i18n="document.upload.formats">Supports PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT and VTT</span>
-            <span class="document-privacy-hint" data-i18n="document.upload.privacy">Files are processed locally. Only extracted text is sent to the translation service.</span>
+            <span id="document-upload-formats" class="document-format-hint" data-i18n="document.upload.formats">Supports PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT and VTT</span>
+            <span id="document-upload-privacy" class="document-privacy-hint" data-i18n="document.upload.privacy">Files are processed locally. Only extracted text is sent to the translation service.</span>
           </div>
           <input id="document-file-input" class="document-file-input" type="file" accept=".pdf,.docx,.epub,.html,.htm,.md,.markdown,.txt,.json,.csv,.srt,.vtt" hidden />
           <div id="document-file-summary" class="document-file-summary" aria-live="polite" hidden>
@@ -126,6 +127,20 @@
         </div>
       </footer>
     </main>
+    <dialog id="document-partial-export-dialog" class="document-partial-export-dialog flat-overlay" aria-labelledby="document-partial-export-title" aria-describedby="document-partial-export-summary">
+      <div class="document-partial-export-content">
+        <header class="document-partial-export-header">
+          <span class="document-partial-export-icon" aria-hidden="true">!</span>
+          <h2 id="document-partial-export-title" data-i18n="document.partialExport.title">Export partial result?</h2>
+        </header>
+        <p id="document-partial-export-summary" class="document-partial-export-summary"></p>
+        <div class="document-partial-export-actions">
+          <button id="document-partial-export-cancel" class="document-secondary-button" type="button" data-i18n="document.partialExport.cancel">Back</button>
+          <button id="document-partial-export-retry" class="document-secondary-button" type="button" data-i18n="document.partialExport.retry">Retry incomplete items</button>
+          <button id="document-partial-export-confirm" class="document-primary-button" type="button" data-i18n="document.partialExport.confirm">Export partial result</button>
+        </div>
+      </div>
+    </dialog>
     <script type="module" src="./src/document.ts"></script>
   </body>
 </html>
