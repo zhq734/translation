@@ -19,7 +19,13 @@ const EXTENSION_FORMATS: Readonly<Record<string, DocumentFormat>> = {
   json: 'json',
   csv: 'csv',
   srt: 'srt',
-  vtt: 'vtt'
+  vtt: 'vtt',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  webp: 'image',
+  gif: 'image',
+  bmp: 'image'
 }
 
 /** 各格式进入解析、OCR 与导出阶段的能力矩阵。 */
@@ -91,6 +97,13 @@ const FORMAT_CAPABILITIES: Readonly<Record<DocumentFormat, DocumentCapabilities>
     nativeLayout: false,
     ocrPageImages: false,
     ocrEmbeddedImages: false,
+    preserveStyles: false,
+    exportPdf: true
+  },
+  image: {
+    nativeLayout: false,
+    ocrPageImages: false,
+    ocrEmbeddedImages: true,
     preserveStyles: false,
     exportPdf: true
   }
@@ -220,6 +233,73 @@ function decodeTextHead(head: Uint8Array): string | null {
 function isPdfHeader(head: Uint8Array): boolean {
   const prefix = new TextDecoder('latin1').decode(head.subarray(0, Math.min(head.length, 1024)))
   return prefix.includes('%PDF-')
+}
+
+/**
+ * 判断文件头是否包含 PNG 签名。
+ * @param head 文件头字节。
+ * @returns 是否为 PNG。
+ * @author zhenghq
+ */
+function isPngHeader(head: Uint8Array): boolean {
+  return startsWithBytes(head, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+}
+
+/**
+ * 判断文件头是否包含 JPEG 签名。
+ * @param head 文件头字节。
+ * @returns 是否为 JPEG。
+ * @author zhenghq
+ */
+function isJpegHeader(head: Uint8Array): boolean {
+  return startsWithBytes(head, [0xff, 0xd8, 0xff])
+}
+
+/**
+ * 判断文件头是否包含 GIF 签名。
+ * @param head 文件头字节。
+ * @returns 是否为 GIF。
+ * @author zhenghq
+ */
+function isGifHeader(head: Uint8Array): boolean {
+  const prefix = new TextDecoder('latin1').decode(head.subarray(0, Math.min(head.length, 6)))
+  return prefix === 'GIF87a' || prefix === 'GIF89a'
+}
+
+/**
+ * 判断文件头是否包含 BMP 签名。
+ * @param head 文件头字节。
+ * @returns 是否为 BMP。
+ * @author zhenghq
+ */
+function isBmpHeader(head: Uint8Array): boolean {
+  return startsWithBytes(head, [0x42, 0x4d])
+}
+
+/**
+ * 判断文件头是否包含 WebP 签名。
+ * @param head 文件头字节。
+ * @returns 是否为 WebP。
+ * @author zhenghq
+ */
+function isWebpHeader(head: Uint8Array): boolean {
+  if (!startsWithBytes(head, [0x52, 0x49, 0x46, 0x46])) return false
+  if (head.length < 12) return false
+  return head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50
+}
+
+/**
+ * 判断文件头是否属于任一已支持图片格式。
+ * @param head 文件头字节。
+ * @returns 是否为图片。
+ * @author zhenghq
+ */
+function isImageHeader(head: Uint8Array): boolean {
+  return isPngHeader(head) ||
+    isJpegHeader(head) ||
+    isGifHeader(head) ||
+    isBmpHeader(head) ||
+    isWebpHeader(head)
 }
 
 /**
@@ -375,6 +455,7 @@ function isValidTextHeader(format: DocumentFormat, head: Uint8Array): boolean {
  */
 function matchesDeclaredFormat(format: DocumentFormat, input: DocumentFormatDetectionInput): boolean {
   if (format === 'pdf') return isPdfHeader(input.head)
+  if (format === 'image') return isImageHeader(input.head)
   if (format === 'docx') {
     return isZipPackage(input, ['[Content_Types].xml', 'word/document.xml'])
   }
@@ -392,6 +473,7 @@ function matchesDeclaredFormat(format: DocumentFormat, input: DocumentFormatDete
  */
 function sniffFormat(input: DocumentFormatDetectionInput): DocumentFormat | null {
   if (isPdfHeader(input.head)) return 'pdf'
+  if (isImageHeader(input.head)) return 'image'
   if (isZipPackage(input, ['[Content_Types].xml', 'word/document.xml'])) return 'docx'
   if (isZipPackage(input, ['mimetype', 'META-INF/container.xml'])) return 'epub'
   if (isHtmlHeader(input.head)) return 'html'

@@ -5,7 +5,6 @@ import {
   createDocumentPageId,
   type DocumentAsset,
   type DocumentBlock,
-  type DocumentImageBlock,
   type DocumentModel,
   type DocumentPage,
   type DocumentTextBlock
@@ -26,7 +25,7 @@ import {
   resolvePackagePath,
   type SafeDocumentPackage
 } from './documentPackageShared.ts'
-import { parseHtmlDocument } from './documentTextParser.ts'
+import { parseHtmlDocument, type HtmlDocumentImage } from './documentTextParser.ts'
 
 /** EPUB XML 节点；非 preserveOrder 模式下可能是对象、数组或标量。 */
 type EpubXmlNode = Record<string, unknown>
@@ -62,6 +61,9 @@ interface EpubPackage {
   /** EPUB2 目录 NCX 标识。 */
   tocId?: string
 }
+
+/** EPUB 目录标题映射；键为不含片段标识的章节包内路径。 */
+type EpubTocTitles = Map<string, string>
 
 /** EPUB XML 解析配置；不执行外部实体，不加载远程资源。 */
 const EPUB_XML_OPTIONS = {
@@ -197,6 +199,208 @@ function parseOpfPackage(opfXml: string, opfPath: string): EpubPackage {
 }
 
 /**
+ * 判断目录链接是否指向包内文档，并拒绝远程、协议和 data URL。
+ * @param href 目录链接原始值。
+ * @returns 可安全解析时返回 true。
+ * @author zhenghq
+ */
+function isSafeEpubTocHref(href: string): boolean {
+  return Boolean(href) && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/iu.test(href)
+}
+
+/**
+ * 递归读取 EPUB3 nav 中的目录链接，并按 nav 文件目录解析章节路径。
+ * @param value 当前 XML 节点。
+ * @param baseDirectory nav 文件所在目录。
+ * @param titles 标题映射输出。
+ * @author zhenghq
+ */
+function collectEpub3NavTitles(value: unknown, baseDirectory: string, titles: EpubTocTitles): void {
+  if (Array.isArray(value)) {
+    for (const child of value) collectEpub3NavTitles(child, baseDirectory, titles)
+    return
+  }
+  if (!isRecord(value)) return
+  const href = typeof value.href === 'string' ? value.href.trim() : ''
+  const title = xmlText(value)
+  if (href && title && isSafeEpubTocHref(href)) {
+    const target = resolvePackagePath(baseDirectory, href)
+    if (target && !titles.has(target)) titles.set(target, title)
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (key !== '#text' && key !== 'href') collectEpub3NavTitles(child, baseDirectory, titles)
+  }
+}
+
+/**
+ * 递归读取 EPUB2 NCX navPoint，并按 NCX 文件目录解析章节路径。
+ * @param value 当前 XML 节点。
+ * @param baseDirectory NCX 文件所在目录。
+ * @param titles 标题映射输出。
+ * @author zhenghq
+ */
+function collectEpub2NcxTitles(value: unknown, baseDirectory: string, titles: EpubTocTitles): void {
+  if (Array.isArray(value)) {
+    for (const child of value) collectEpub2NcxTitles(child, baseDirectory, titles)
+    return
+  }
+  if (!isRecord(value)) return
+  const navPoints = asArray(value.navPoint)
+  for (const point of navPoints) {
+    if (!isRecord(point)) continue
+    const labelNode = isRecord(point.navLabel) ? point.navLabel : undefined
+    const title = firstText(labelNode?.text, ['#text', 'text'])
+    const content = isRecord(point.content) ? point.content : undefined
+    const href = typeof content?.src === 'string' ? content.src.trim() : ''
+    if (href && title && isSafeEpubTocHref(href)) {
+      const target = resolvePackagePath(baseDirectory, href)
+      if (target && !titles.has(target)) titles.set(target, title)
+    }
+    collectEpub2NcxTitles(point, baseDirectory, titles)
+  }
+}
+
+/**
+ * 读取 EPUB 目录，优先使用 EPUB3 nav，缺失时回退到 EPUB2 NCX。
+ * @param packageInfo 已校验文档包。
+ * @param epubPackage OPF 包描述。
+ * @returns 章节路径到目录标题的映射。
+ * @author zhenghq
+ */
+async function readEpubTocTitles(
+  packageInfo: SafeDocumentPackage,
+  epubPackage: EpubPackage
+): Promise<EpubTocTitles> {
+  const titles: EpubTocTitles = new Map()
+  const baseDirectory = packageDirectory(epubPackage.opfPath)
+  const navItem = epubPackage.navId ? epubPackage.manifest.get(epubPackage.navId) : undefined
+  if (navItem) {
+    const navPath = resolvePackagePath(baseDirectory, navItem.href)
+    const navXml = navPath ? await readPackageText(packageInfo, navPath) : null
+    if (navPath && navXml) {
+      const parser = new XMLParser(EPUB_XML_OPTIONS)
+      const parsed = parser.parse(navXml) as EpubXmlNode
+      const navNodes = (() => {
+        const found: unknown[] = []
+        const visit = (value: unknown): void => {
+          if (Array.isArray(value)) {
+            for (const child of value) visit(child)
+            return
+          }
+          if (!isRecord(value)) return
+          if (Array.isArray(value.nav)) found.push(...value.nav)
+          else if (isRecord(value.nav)) found.push(value.nav)
+          for (const child of Object.values(value)) visit(child)
+        }
+        visit(parsed)
+        return found
+      })()
+      const tocNavs = navNodes.filter((node): node is EpubXmlNode => isRecord(node) &&
+        (node.type === 'toc' || node.role === 'doc-toc'))
+      for (const nav of tocNavs.length > 0 ? tocNavs : navNodes) {
+        collectEpub3NavTitles(nav, packageDirectory(navPath), titles)
+      }
+    }
+  }
+  if (titles.size > 0 || !epubPackage.tocId) return titles
+  const ncxItem = epubPackage.manifest.get(epubPackage.tocId)
+  if (!ncxItem) return titles
+  const ncxPath = resolvePackagePath(baseDirectory, ncxItem.href)
+  const ncxXml = ncxPath ? await readPackageText(packageInfo, ncxPath) : null
+  if (!ncxPath || !ncxXml) return titles
+  const parser = new XMLParser(EPUB_XML_OPTIONS)
+  const parsed = parser.parse(ncxXml) as EpubXmlNode
+  const ncx = isRecord(parsed.ncx) ? parsed.ncx : parsed
+  collectEpub2NcxTitles(ncx.navMap, packageDirectory(ncxPath), titles)
+  return titles
+}
+
+/**
+ * 从章节 HTML 中按出现顺序提取安全的包内图片引用。
+ * @param packageInfo 已校验文档包。
+ * @param chapterPath 章节包内路径。
+ * @param chapterXml 章节 HTML。
+ * @param assets 资源输出数组。
+ * @param warnings 告警输出数组。
+ * @returns 原始图片地址到已登记图片资源的映射。
+ * @author zhenghq
+ */
+async function registerEpubImages(
+  packageInfo: SafeDocumentPackage,
+  chapterPath: string,
+  chapterXml: string,
+  assets: DocumentAsset[],
+  warnings: ReturnType<typeof createDocumentWarning>[]
+): Promise<Map<string, HtmlDocumentImage>> {
+  const resolved = new Map<string, HtmlDocumentImage>()
+  const sources = [...chapterXml.matchAll(/<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/giu)]
+    .map((match) => (match[1] ?? match[2] ?? '').trim())
+  for (const source of sources) {
+    if (!source || resolved.has(source) || !isSafeEpubTocHref(source)) continue
+    const assetPath = resolvePackagePath(packageDirectory(chapterPath), source)
+    if (!assetPath) continue
+    const existing = assets.find((asset) => asset.storageKey === assetPath)
+    if (existing) {
+      resolved.set(source, { assetId: existing.assetId })
+      continue
+    }
+    if (assets.length >= DOCUMENT_MAX_IMAGES) {
+      if (!warnings.some((warning) => warning.code === 'image-limit-reached')) {
+        warnings.push(createDocumentWarning('image-limit-reached', 'The EPUB image limit was reached; remaining images were skipped.'))
+      }
+      continue
+    }
+    const bytes = await readPackageBytes(packageInfo, assetPath)
+    if (!bytes) continue
+    const sha256 = hashDocumentBytes(bytes)
+    const asset: DocumentAsset = {
+      assetId: `asset-${sha256.slice(0, 16)}`,
+      kind: 'image',
+      mimeType: imageMimeTypeFromPath(assetPath),
+      sha256,
+      byteLength: bytes.byteLength,
+      storageKey: assetPath
+    }
+    assets.push(asset)
+    resolved.set(source, { assetId: asset.assetId })
+  }
+  return resolved
+}
+
+/**
+ * 提取章节中可安全加载的包内样式表地址。
+ * @param chapterPath 章节包内路径。
+ * @param chapterXml 章节 HTML。
+ * @returns 样式表包内路径数组。
+ * @author zhenghq
+ */
+function chapterStylesheetPaths(chapterPath: string, chapterXml: string): string[] {
+  const paths: string[] = []
+  for (const match of chapterXml.matchAll(/<link\b[^>]*>/giu)) {
+    const tag = match[0]
+    if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|stylesheet\b)/iu.test(tag)) continue
+    const hrefMatch = /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)')/iu.exec(tag)
+    const href = (hrefMatch?.[1] ?? hrefMatch?.[2] ?? '').trim()
+    if (!href || !isSafeEpubTocHref(href)) continue
+    const path = resolvePackagePath(packageDirectory(chapterPath), href)
+    if (path && !paths.includes(path)) paths.push(path)
+  }
+  return paths
+}
+
+/**
+ * 提取章节内联 style 内容，交给统一 CSS 白名单净化。
+ * @param chapterXml 章节 HTML。
+ * @returns 内联样式表内容数组。
+ * @author zhenghq
+ */
+function chapterInlineStyles(chapterXml: string): string[] {
+  return [...chapterXml.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/giu)]
+    .map((match) => match[1] ?? '')
+    .filter((css) => css.trim().length > 0)
+}
+
+/**
  * 按 OPF spine 顺序解析 EPUB，章节 HTML 只在本地转换为安全区块。
  * @param input 解析输入。
  * @returns EPUB 文档模型。
@@ -214,6 +418,7 @@ export async function parseEpubDocument(input: DocumentParseInput): Promise<Docu
   const pages: DocumentPage[] = []
   const assets: DocumentAsset[] = []
   const warnings = [...packageInfo.warnings]
+  const tocTitles = await readEpubTocTitles(packageInfo, epubPackage)
 
   for (let index = 0; index < epubPackage.spine.length; index += 1) {
     const item = epubPackage.manifest.get(epubPackage.spine[index]!)!
@@ -227,10 +432,20 @@ export async function parseEpubDocument(input: DocumentParseInput): Promise<Docu
       warnings.push(createDocumentWarning('missing-epub-chapter', 'An EPUB chapter file was missing and was skipped.'))
       continue
     }
+    const chapterCss: string[] = []
+    for (const stylesheetPath of chapterStylesheetPaths(chapterPath, chapterXml)) {
+      const stylesheet = await readPackageText(packageInfo, stylesheetPath)
+      if (stylesheet) chapterCss.push(stylesheet)
+    }
+    chapterCss.push(...chapterInlineStyles(chapterXml))
+    const chapterImages = await registerEpubImages(packageInfo, chapterPath, chapterXml, assets, warnings)
     const chapterModel = parseHtmlDocument({
       ...input,
       sha256: `${input.sha256}#chapter:${index}`,
       bytes: new TextEncoder().encode(chapterXml)
+    }, {
+      css: chapterCss,
+      resolveImage: (source) => chapterImages.get(source.trim())
     })
     const pageId = createDocumentPageId(input.sha256, pages.length)
     const chapterPage = chapterModel.pages[0]!
@@ -240,17 +455,7 @@ export async function parseEpubDocument(input: DocumentParseInput): Promise<Docu
       input.sha256,
       pageId
     )
-    blocks = await collectEpubImages(
-      packageInfo,
-      chapterPath,
-      chapterXml,
-      input.sha256,
-      assets,
-      warnings,
-      pageId,
-      blocks
-    )
-    const title = chapterModel.metadata.title ?? firstBlockHeading(blocks)
+    const title = tocTitles.get(chapterPath) ?? chapterModel.metadata.title ?? firstBlockHeading(blocks)
     pages.push({
       pageId,
       index: pages.length,
@@ -341,76 +546,4 @@ function remapChapterBlocks(
 function firstBlockHeading(blocks: DocumentBlock[]): string | undefined {
   const heading = blocks.find((block): block is DocumentTextBlock => block.kind === 'text' && block.role === 'heading')
   return heading?.runs.map((run) => run.text).join('').trim() || undefined
-}
-
-/**
- * 登记 EPUB 章节引用的包内图片，供后续本机 OCR 使用。
- * @param packageInfo 已校验文档包。
- * @param chapterPath 章节包内路径。
- * @param chapterXml 章节 HTML。
- * @param fingerprint 文档指纹。
- * @param assets 资源输出数组。
- * @param warnings 告警输出数组。
- * @param pageId 当前章节页面标识。
- * @param blocks 当前章节区块数组。
- * @returns 已追加图片区块的章节区块。
- * @author zhenghq
- */
-async function collectEpubImages(
-  packageInfo: SafeDocumentPackage,
-  chapterPath: string,
-  chapterXml: string,
-  fingerprint: string,
-  assets: DocumentAsset[],
-  warnings: ReturnType<typeof createDocumentWarning>[],
-  pageId: string,
-  blocks: DocumentBlock[]
-): Promise<DocumentBlock[]> {
-  const sources = [...chapterXml.matchAll(/<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/giu)]
-    .map((match) => match[1] ?? match[2] ?? '')
-  const imageBlocks: DocumentImageBlock[] = []
-  for (const source of sources) {
-    if (!source || /^(?:[a-z]+:|\/\/|data:)/iu.test(source)) continue
-    const assetPath = resolvePackagePath(packageDirectory(chapterPath), source)
-    if (!assetPath) continue
-    const existing = assets.find((asset) => asset.storageKey === assetPath)
-    if (existing) {
-      const readingOrder = blocks.length + imageBlocks.length
-      imageBlocks.push({
-        kind: 'image',
-        blockId: createDocumentBlockId(fingerprint, pageId, readingOrder, 'image'),
-        readingOrder,
-        translatable: false,
-        assetId: existing.assetId
-      })
-      continue
-    }
-    if (assets.length >= DOCUMENT_MAX_IMAGES) {
-      if (!warnings.some((warning) => warning.code === 'image-limit-reached')) {
-        warnings.push(createDocumentWarning('image-limit-reached', 'The EPUB image limit was reached; remaining images were skipped.'))
-      }
-      break
-    }
-    const bytes = await readPackageBytes(packageInfo, assetPath)
-    if (!bytes) continue
-    const sha256 = hashDocumentBytes(bytes)
-    const asset: DocumentAsset = {
-      assetId: `asset-${sha256.slice(0, 16)}`,
-      kind: 'image',
-      mimeType: imageMimeTypeFromPath(assetPath),
-      sha256,
-      byteLength: bytes.byteLength,
-      storageKey: assetPath
-    }
-    assets.push(asset)
-    const readingOrder = blocks.length + imageBlocks.length
-    imageBlocks.push({
-      kind: 'image',
-      blockId: createDocumentBlockId(fingerprint, pageId, readingOrder, 'image'),
-      readingOrder,
-      translatable: false,
-      assetId: asset.assetId
-    })
-  }
-  return [...blocks, ...imageBlocks]
 }

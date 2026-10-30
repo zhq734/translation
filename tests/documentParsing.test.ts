@@ -6,6 +6,7 @@ import {
   PDFDocument,
   StandardFonts,
   clipEvenOdd,
+  degrees,
   endPath,
   fill,
   lineTo,
@@ -28,10 +29,59 @@ import {
 import { parseDocxDocument } from '../src/main/documentDocxParser.ts'
 import { parseEpubDocument } from '../src/main/documentEpubParser.ts'
 import { parsePdfDocument } from '../src/main/documentPdfParser.ts'
+import {
+  DocumentPackageSecurityError,
+  loadSafeDocumentPackage
+} from '../src/main/documentPackageShared.ts'
 import type { DocumentModel } from '../src/shared/documentTypes.ts'
 
 /** 测试文档统一使用的稳定指纹。 */
 const FINGERPRINT = 'fixture-sha256'
+
+/**
+ * 构造带真实像素尺寸的 PNG 文件头。
+ * @param width 图片像素宽度。
+ * @param height 图片像素高度。
+ * @returns 仅含签名与 IHDR 尺寸的最小 PNG 字节。
+ * @author zhenghq
+ */
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24)
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  const view = new DataView(bytes.buffer)
+  view.setUint32(16, width, false)
+  view.setUint32(20, height, false)
+  return bytes
+}
+
+/**
+ * 构造最小 DOCX 包，正文只包含一个段落。
+ * @param extraFiles 额外写入包内的文件。
+ * @returns DOCX 字节。
+ * @author zhenghq
+ */
+async function minimalDocx(extraFiles: Record<string, Uint8Array | string> = {}): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+  zip.file('word/document.xml', '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Safe paragraph</w:t></w:r></w:p></w:body></w:document>')
+  for (const [path, content] of Object.entries(extraFiles)) zip.file(path, content)
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 9 } })
+}
+
+/**
+ * 断言解析器抛出的稳定文档包安全错误。
+ * @param operation 待执行解析操作。
+ * @param code 期望错误码。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function assertPackageSecurityError(operation: () => Promise<unknown>, code: string): Promise<void> {
+  await assert.rejects(operation, (error: unknown) => {
+    assert.equal(error instanceof DocumentPackageSecurityError, true)
+    assert.equal((error as DocumentPackageSecurityError).code, code)
+    return true
+  })
+}
 
 /**
  * 构造解析输入。
@@ -635,6 +685,89 @@ test('DOCX 应解析段落、表格、图片关系和 OMML 公式', async () => 
   assert.equal(heading.kind === 'text' ? heading.role : '', 'heading')
 })
 
+test('DOCX 包单条目超过限制时必须返回稳定安全错误且不泄露路径', async () => {
+  const bytes = await minimalDocx({
+    'word/media/large.bin': new Uint8Array(2_048)
+  })
+  await assertPackageSecurityError(async () => {
+    await loadSafeDocumentPackage({
+      path: '/tmp/secret.docx',
+      fileName: 'secret.docx',
+      format: 'docx',
+      sha256: FINGERPRINT,
+      bytes
+    }, {
+      maxEntryBytes: 1_024,
+      maxUncompressedBytes: 10_000,
+      maxCompressionRatio: 10_000
+    })
+  }, 'package-entry-too-large')
+})
+
+test('DOCX 包解包总大小超过限制时必须中止解析并返回稳定错误', async () => {
+  const bytes = await minimalDocx({
+    'word/media/first.bin': new Uint8Array(800),
+    'word/media/second.bin': new Uint8Array(800)
+  })
+  await assertPackageSecurityError(async () => {
+    await loadSafeDocumentPackage({
+      path: '/tmp/secret.docx',
+      fileName: 'secret.docx',
+      format: 'docx',
+      sha256: FINGERPRINT,
+      bytes
+    }, {
+      maxEntryBytes: 1_024,
+      maxUncompressedBytes: 1_500,
+      maxCompressionRatio: 10_000
+    })
+  }, 'package-uncompressed-too-large')
+})
+
+test('DOCX 高压缩比条目必须作为压缩炸弹中止解析', async () => {
+  const bytes = await minimalDocx({
+    'word/media/bomb.bin': new Uint8Array(16_384)
+  })
+  await assertPackageSecurityError(async () => {
+    await loadSafeDocumentPackage({
+      path: '/tmp/secret.docx',
+      fileName: 'secret.docx',
+      format: 'docx',
+      sha256: FINGERPRINT,
+      bytes
+    }, {
+      maxEntryBytes: 64 * 1024,
+      maxUncompressedBytes: 128 * 1024,
+      maxCompressionRatio: 2
+    })
+  }, 'package-compression-ratio-too-high')
+})
+
+test('DOCX 图片像素超过上限时必须跳过资源并保留可本地化告警', async () => {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+  zip.file('word/document.xml', `<?xml version="1.0"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <w:body>
+        <w:p><w:r><w:drawing><a:blip r:embed="rId1"/></w:drawing></w:r></w:p>
+        <w:p><w:r><w:t>Visible paragraph</w:t></w:r></w:p>
+      </w:body>
+    </w:document>`)
+  zip.file('word/_rels/document.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/huge.png"/></Relationships>')
+  zip.file('word/media/huge.png', pngHeader(5_000, 5_000))
+  const model = await parseDocxDocument({
+    path: '/tmp/pixel-limit.docx',
+    fileName: 'pixel-limit.docx',
+    format: 'docx',
+    sha256: FINGERPRINT,
+    bytes: await zip.generateAsync({ type: 'uint8array' })
+  })
+
+  assert.equal(model.assets.length, 0)
+  assert.deepEqual(translatableText(model), ['Visible paragraph'])
+  assert.equal(model.warnings.some((warning) => warning.code === 'image-pixel-limit-reached'), true)
+})
+
 test('DOCX 应解析编号列表、纵向合并、单元格语义与 OMML 结构', async () => {
   const zip = new JSZip()
   zip.file('word/document.xml', `<?xml version="1.0"?>
@@ -870,8 +1003,8 @@ test('EPUB3 应读取 nav 目录、包内 CSS 与内联样式，并按正文顺�
   zip.file('META-INF/container.xml', '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
   zip.file('OEBPS/content.opf', `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Styled book</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="style" href="styles/book.css" media-type="text/css"/><item id="image" href="images/scan.png" media-type="image/png"/></manifest><spine><itemref idref="chapter"/></spine></package>`)
   zip.file('OEBPS/nav.xhtml', '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#start">目录中的章节标题</a></li></ol></nav></body></html>')
-  zip.file('OEBPS/styles/book.css', 'p{color:#123456;font-family:"Noto Serif";font-size:18px;font-weight:700;text-align:center}@import url("https://evil.example/x.css");p{background-image:url("https://evil.example/a.png")}')
-  zip.file('OEBPS/chapter.xhtml', '<html><head><link rel="stylesheet" href="styles/book.css"/><style>h2{color:#abcdef;font-size:24px}</style></head><body><h2 id="start">Heading</h2><p>Before image</p><img src="images/scan.png" alt="scanned note"/><p style="color:#654321;font-size:20px">After image</p><ol><li>One</li><li>Two</li></ol><table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table></body></html>')
+  zip.file('OEBPS/styles/book.css', '#start{font-family:"Noto Serif";font-size:18px;font-weight:700;text-align:center}p{color:#123456;text-align:center}@import url("https://evil.example/x.css");p{background-image:url("https://evil.example/a.png")}')
+  zip.file('OEBPS/chapter.xhtml', '<html><head><link rel="stylesheet" href="styles/book.css"/><style>h2{color:#abcdef}</style></head><body><h2 id="start">Heading</h2><p>Before image</p><img src="images/scan.png" alt="scanned note"/><p style="color:#654321;font-size:20px">After image</p><ol><li>One</li><li>Two</li></ol><table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table></body></html>')
   zip.file('OEBPS/images/scan.png', new Uint8Array([137, 80, 78, 71, 4, 5, 6]))
   const bytes = await zip.generateAsync({ type: 'uint8array' })
   const first = await parseEpubDocument({
@@ -1135,6 +1268,130 @@ test('PDF 扫描页未注入栅格化器时才应保留待渲染告警', async (
   const warning = model.warnings.find((candidate) => candidate.code === 'ocr-required')
   assert.equal(warning?.pageId, model.pages[0]!.pageId)
   assert.equal(warning?.blockId, scanned?.blockId)
+})
+
+test('PDF 文本层仅有页眉页码且主体为大图时仍应生成整页扫描图', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawImage(image, { x: 60, y: 80, width: 480, height: 640 })
+  page.drawText('Quarterly report', { x: 72, y: 760, size: 10, font })
+  page.drawText('1', { x: 294, y: 28, size: 10, font })
+  let renderCount = 0
+
+  const model = await parsePdfDocument({
+    path: '/tmp/low-text-density-scan.pdf',
+    fileName: 'low-text-density-scan.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderPageToImage: async () => {
+      renderCount += 1
+      return new Uint8Array([137, 80, 78, 71, 9, 9])
+    },
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 8, 8])
+  })
+
+  const imageBlocks = model.pages[0]!.blocks.filter((block) => block.kind === 'image')
+  assert.equal(renderCount, 1)
+  assert.equal(imageBlocks.length, 1)
+  assert.deepEqual(imageBlocks[0]!.bbox, {
+    x: 0,
+    y: 0,
+    width: model.pages[0]!.width,
+    height: model.pages[0]!.height
+  })
+  assert.equal(model.pages[0]!.blocks.some((block) =>
+    block.kind === 'text' && block.runs.map((run) => run.text).join('').includes('Quarterly report')), false)
+})
+
+test('PDF 正常正文页即使存在页眉页码也不得误判为扫描页', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const lines = [
+    'The first body line contains enough text to establish a normal text layer.',
+    'The second body line continues the report with meaningful document content.',
+    'The third body line keeps the page readable without invoking OCR.',
+    'The fourth body line closes the paragraph for this layout fixture.'
+  ]
+  page.drawText('Quarterly report', { x: 72, y: 760, size: 10, font })
+  lines.forEach((line, index) => {
+    page.drawText(line, { x: 72, y: 700 - index * 24, size: 12, font })
+  })
+  page.drawText('1', { x: 294, y: 28, size: 10, font })
+  let renderCount = 0
+
+  const model = await parsePdfDocument({
+    path: '/tmp/normal-text-page.pdf',
+    fileName: 'normal-text-page.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderPageToImage: async () => {
+      renderCount += 1
+      return new Uint8Array([137, 80, 78, 71, 9, 9])
+    }
+  })
+
+  assert.equal(renderCount, 0)
+  assert.equal(model.pages[0]!.blocks.some((block) => block.kind === 'image'), false)
+  assert.equal(translatableText(model).some((text) => text.includes('The first body line')), true)
+})
+
+test('PDF 正常正文页内的大图不得触发重复的整页 OCR', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  const body = 'A complete paragraph remains in the native text layer and must not be replaced by whole-page OCR.'
+  // 图片先绘制，正文覆盖在图片上方；这是海报、报告和网页导出中常见的
+  // “原生文本层 + 背景大图”结构，不能因为文本面积小就重复识别整页。
+  page.drawImage(image, { x: 60, y: 80, width: 480, height: 560 })
+  page.drawText(body, { x: 72, y: 720, size: 12, font })
+  let renderPageCount = 0
+  let renderRegionCount = 0
+
+  const model = await parsePdfDocument({
+    path: '/tmp/text-with-large-image.pdf',
+    fileName: 'text-with-large-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderPageToImage: async () => {
+      renderPageCount += 1
+      return new Uint8Array([137, 80, 78, 71, 9, 9])
+    },
+    renderEmbeddedImageToImage: async () => {
+      renderRegionCount += 1
+      return new Uint8Array([137, 80, 78, 71, 8, 8])
+    }
+  })
+
+  const imageBlocks = model.pages[0]!.blocks.filter((block) => block.kind === 'image')
+  assert.equal(renderPageCount, 0)
+  assert.equal(renderRegionCount, 1)
+  assert.equal(imageBlocks.length, 1)
+  assert.notDeepEqual(imageBlocks[0]!.bbox, {
+    x: 0,
+    y: 0,
+    width: model.pages[0]!.width,
+    height: model.pages[0]!.height
+  })
+  // PDF.js 会去掉文本项末尾的句点，夹具断言按可见正文前缀匹配。
+  assert.equal(translatableText(model).some((text) => text.includes(body.slice(0, -1))), true)
 })
 
 test('PDF 原生表格应识别矢量网格并保留单元格文字与列宽', async () => {
@@ -2853,6 +3110,93 @@ test('PDF 同一段落中的字体子集变化不能阻止视觉行合并', asyn
   assert.equal(texts[0]?.includes(secondLine), true)
 })
 
+test('PDF 同一段落内颜色碎片交错不能拆开视觉续行', async () => {
+  const document = await PDFDocument.create()
+  const regular = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const gray = rgb(0.35, 0.39, 0.43)
+  const dark = rgb(0.12, 0.14, 0.16)
+  const left = 90
+  const firstGray = 'The first visual line is mostly gray and'
+  const firstDark = ' a short dark tail.'
+  const secondDark = 'The second visual line is mostly dark and'
+  const secondGray = ' a short gray tail.'
+
+  // 网页导出的 PDF 会把同一段落内不同片段渲染成不同颜色；两行各含两种颜色，
+  // 但主导色在相邻行正好相反，严格的颜色比较会把正常的视觉续行误判为新段落。
+  page.drawText(firstGray, { x: left, y: 700, size: 12, font: regular, color: gray })
+  page.drawText(firstDark, {
+    x: left + regular.widthOfTextAtSize(firstGray, 12),
+    y: 700,
+    size: 12,
+    font: regular,
+    color: dark
+  })
+  page.drawText(secondDark, { x: left, y: 672, size: 12, font: regular, color: dark })
+  page.drawText(secondGray, {
+    x: left + regular.widthOfTextAtSize(secondDark, 12),
+    y: 672,
+    size: 12,
+    font: regular,
+    color: gray
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/pdf-mixed-color-paragraph.pdf',
+    fileName: 'pdf-mixed-color-paragraph.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const texts = translatableText(model)
+  assert.equal(texts.length, 1, JSON.stringify(texts))
+  assert.equal(texts[0]?.includes('gray tail'), true, JSON.stringify(texts))
+  assert.equal(texts[0]?.includes('dark tail'), true, JSON.stringify(texts))
+})
+
+test('PDF 同一段落内字体族碎片交错不能拆开视觉续行', async () => {
+  const document = await PDFDocument.create()
+  const helvetica = await document.embedFont(StandardFonts.Helvetica)
+  const times = await document.embedFont(StandardFonts.TimesRoman)
+  const page = document.addPage([600, 800])
+  const left = 90
+  const firstHelvetica = 'The first visual line is mostly Helvetica and'
+  const firstTimes = ' a shorter Times tail.'
+  const secondTimes = 'The second visual line is mostly Times and'
+  const secondHelvetica = ' a shorter Helvetica tail.'
+
+  // 真实网页 PDF 中，中英文回退字体会在相邻行内交错出现，主导字体随之互换；
+  // 只要两行共享同一组字体，就仍应视为同一自然段的视觉续行。
+  page.drawText(firstHelvetica, { x: left, y: 700, size: 12, font: helvetica })
+  page.drawText(firstTimes, {
+    x: left + helvetica.widthOfTextAtSize(firstHelvetica, 12),
+    y: 700,
+    size: 12,
+    font: times
+  })
+  page.drawText(secondTimes, { x: left, y: 672, size: 12, font: times })
+  page.drawText(secondHelvetica, {
+    x: left + times.widthOfTextAtSize(secondTimes, 12),
+    y: 672,
+    size: 12,
+    font: helvetica
+  })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/pdf-mixed-font-paragraph.pdf',
+    fileName: 'pdf-mixed-font-paragraph.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const texts = translatableText(model)
+  assert.equal(texts.length, 1, JSON.stringify(texts))
+  assert.equal(texts[0]?.includes('Helvetica tail'), true, JSON.stringify(texts))
+  assert.equal(texts[0]?.includes('Times tail'), true, JSON.stringify(texts))
+})
+
 test('PDF 列表项续行缩进到正文列时仍应与列表首行合并', async () => {
   const document = await PDFDocument.create()
   const font = await document.embedFont(StandardFonts.Helvetica)
@@ -3063,6 +3407,121 @@ test('PDF 双栏正文应分别按段落合并，不能跨栏粘连句子', asyn
   // 双栏右栏正文只是位于页面右侧，并不代表段落本身采用右对齐排版。
   assert.equal(leftParagraph?.kind === 'text' ? leftParagraph.textAlign : undefined, undefined)
   assert.equal(rightParagraph?.kind === 'text' ? rightParagraph.textAlign : undefined, undefined)
+})
+
+test('PDF 双栏内容流交错时必须先完成左栏再读取右栏，并保留跨栏标题', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const bold = await document.embedFont(StandardFonts.HelveticaBold)
+  const page = document.addPage([600, 800])
+  page.drawText('Shared document heading', { x: 60, y: 740, size: 18, font: bold })
+
+  // 模拟常见的 PDF 内容流顺序：左右栏逐行交错绘制，而不是先完整绘制左栏。
+  // 阅读顺序恢复必须在段落分组前完成，否则会生成左一、右一、左二、右二。
+  const leftLines = [
+    'Left column starts here and continues',
+    'with a second wrapped line.',
+    'Left column ends with this sentence.'
+  ]
+  const rightLines = [
+    'Right column starts after the left column',
+    'and carries its own continuation.',
+    'Right column ends here.'
+  ]
+  for (let index = 0; index < Math.max(leftLines.length, rightLines.length); index += 1) {
+    if (leftLines[index]) page.drawText(leftLines[index]!, { x: 60, y: 680 - index * 18, size: 11, font })
+    if (rightLines[index]) page.drawText(rightLines[index]!, { x: 330, y: 680 - index * 18, size: 11, font })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/interleaved-two-columns.pdf',
+    fileName: 'interleaved-two-columns.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const texts = translatableText(model)
+  assert.equal(texts[0], 'Shared document heading')
+  assert.equal(texts[1], leftLines.join(' '))
+  assert.equal(texts[2], rightLines.join(' '))
+  const leftIndex = texts.findIndex((text) => text.includes('Left column starts'))
+  const rightIndex = texts.findIndex((text) => text.includes('Right column starts'))
+  assert.ok(leftIndex >= 0 && rightIndex >= 0 && leftIndex < rightIndex,
+    `左栏必须完整排在右栏之前，实际顺序: ${JSON.stringify(texts)}`)
+})
+
+test('PDF 旋转文本必须保留并生成稳定告警', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  page.drawText('Horizontal body text', { x: 72, y: 700, size: 12, font })
+  page.drawText('Rotated margin label', { x: 540, y: 300, size: 11, font, rotate: degrees(90) })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/rotated-text.pdf',
+    fileName: 'rotated-text.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.equal(translatableText(model).some((text) => text.includes('Rotated margin label')), true)
+  assert.equal(model.warnings.some((warning) => warning.code === 'pdf-rotated-text'), true)
+})
+
+test('PDF 显著重叠文本必须告警，但正常同行和表格单元格不得误报', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const drawY = (y: number): number => page.getHeight() - y
+  page.drawText('Overlapping foreground', { x: 80, y: drawY(180), size: 14, font })
+  page.drawText('Overlapping background', { x: 84, y: drawY(181), size: 14, font })
+  page.drawText('Navigation', { x: 80, y: drawY(260), size: 11, font })
+  page.drawText('Reference', { x: 260, y: drawY(260), size: 11, font })
+  page.drawText('Cell A', { x: 80, y: drawY(500), size: 11, font })
+  page.drawText('Cell B', { x: 260, y: drawY(500), size: 11, font })
+  page.drawRectangle({ x: 70, y: drawY(520), width: 420, height: 40, borderWidth: 1 })
+  page.drawLine({ start: { x: 240, y: drawY(520) }, end: { x: 240, y: drawY(480) }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/overlapping-text.pdf',
+    fileName: 'overlapping-text.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => null,
+    renderPageRegionToImage: async () => null
+  })
+
+  const overlapWarnings = model.warnings.filter((warning) => warning.code === 'pdf-overlapping-text')
+  assert.equal(overlapWarnings.length, 1)
+})
+
+test('PDF 独立公式必须生成不可翻译公式区块并保留原文', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  page.drawText('The equation below defines the relation.', { x: 72, y: 700, size: 12, font })
+  page.drawText('E = mc^2', { x: 240, y: 660, size: 14, font })
+  page.drawText('where E is energy and m is mass.', { x: 72, y: 620, size: 12, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/formula-block.pdf',
+    fileName: 'formula-block.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const formula = model.pages[0]!.blocks.find((block) => block.kind === 'formula')
+  assert.equal(formula?.kind, 'formula')
+  if (formula?.kind !== 'formula') return
+  assert.equal(formula.translatable, false)
+  assert.equal(formula.sourceText, 'E = mc^2')
+  assert.equal(translatableText(model).some((text) => text.includes('E = mc^2')), false)
+  assert.equal(model.warnings.some((warning) => warning.code === 'formula-unrecognized'), true)
 })
 
 test('PDF 双栏右栏的普通正文不能被右边缘对齐启发式误判为右对齐', async () => {

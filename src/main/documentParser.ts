@@ -1,6 +1,7 @@
 import type { DocumentModel } from '../shared/documentTypes.ts'
 import { parseDocxDocument } from './documentDocxParser.ts'
 import { parseEpubDocument } from './documentEpubParser.ts'
+import { parseImageDocument } from './documentImageParser.ts'
 import { parsePdfDocument, type ParsePdfOptions } from './documentPdfParser.ts'
 import type { DocumentParseInput } from './documentParserShared.ts'
 import {
@@ -29,6 +30,8 @@ export interface DocumentParserDependencies {
   parseDocx(input: DocumentParseInput): Promise<DocumentModel>
   /** 解析 EPUB。 */
   parseEpub(input: DocumentParseInput): Promise<DocumentModel>
+  /** 解析单张图片。 */
+  parseImage(input: DocumentParseInput, registerAssetBytes?: ParsePdfOptions['registerAssetBytes']): Promise<DocumentModel>
   /** 可选的 PDF 页面栅格化函数。 */
   renderPageToImage?: ParsePdfOptions['renderPageToImage']
   /** 可选的 PDF 页面区域裁切函数。 */
@@ -50,7 +53,8 @@ const DEFAULT_DEPENDENCIES: DocumentParserDependencies = {
   parseHtml: async (input) => parseHtmlDocument(input),
   parsePdf: async (input, options) => parsePdfDocument(input, options),
   parseDocx: async (input) => parseDocxDocument(input),
-  parseEpub: async (input) => parseEpubDocument(input)
+  parseEpub: async (input) => parseEpubDocument(input),
+  parseImage: async (input) => parseImageDocument(input)
 }
 
 /**
@@ -98,6 +102,8 @@ export async function parseDocument(
       return dependencies.parseDocx(input)
     case 'epub':
       return dependencies.parseEpub(input)
+    case 'image':
+      return dependencies.parseImage(input, dependencies.registerAssetBytes)
     default:
       throw new Error('unsupported document format')
   }

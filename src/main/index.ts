@@ -681,7 +681,10 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
     },
     parse: async (input, registerAssetBytes, signal) => {
-      if (input.format !== 'pdf') return parseDocument(input, { registerAssetBytes })
+      if (input.format !== 'pdf' && input.format !== 'image') {
+        return parseDocument(input, { registerAssetBytes })
+      }
+      if (input.format === 'image') return parseDocument(input, { registerAssetBytes })
       const {
         renderPageToImage,
         renderPageRegionToImage,
@@ -5957,7 +5960,7 @@ function registerIpc(): void {
       properties: ['openFile'],
       filters: [{
         name: t('document.upload.formats'),
-        extensions: ['pdf', 'docx', 'epub', 'html', 'htm', 'md', 'markdown', 'txt', 'json', 'csv', 'srt', 'vtt']
+        extensions: ['pdf', 'docx', 'epub', 'html', 'htm', 'md', 'markdown', 'txt', 'json', 'csv', 'srt', 'vtt', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
       }]
     })
     if (result.canceled || !result.filePaths[0]) return { status: 'cancelled' }

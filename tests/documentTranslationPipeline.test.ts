@@ -856,6 +856,57 @@ test('OCR 文本写入 ocrRegions 并参与后续翻译', async () => {
   assert.equal(image.ocrRegions?.[0]?.translatedText, 'T(OCR text)')
 })
 
+test('低置信度 OCR 区域必须保留原文和图片并跳过翻译', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-low-confidence',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-low-confidence'
+  }])
+  source.assets.push({
+    assetId: 'asset-low-confidence',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'low-confidence',
+    byteLength: 3
+  })
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => ({
+      text: 'uncertain OCR content',
+      lines: [{ text: 'uncertain OCR content', confidence: 0.35 }],
+      engine: 'system'
+    }),
+    translate: async (text) => {
+      calls.push(text)
+      return `T(${text})`
+    },
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-low-confidence', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.equal(image.assetId, 'asset-low-confidence')
+  assert.equal(image.ocrRegions?.[0]?.text, 'uncertain OCR content')
+  assert.equal(image.ocrRegions?.[0]?.status, 'skipped')
+  assert.equal(image.ocrRegions?.[0]?.reason, 'low-confidence')
+  assert.deepEqual(calls, [])
+  const warning = result.translation.warnings.find((candidate) => candidate.code === 'ocr-low-confidence')
+  assert.equal(warning?.pageId, source.pages[0]!.pageId)
+  assert.equal(warning?.blockId, image.blockId)
+})
+
 test('多页重复页眉装饰小图必须跳过 OCR，但正文小图仍要识别', async () => {
   const source = model([
     {

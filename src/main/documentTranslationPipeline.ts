@@ -43,6 +43,7 @@ import {
   type DocumentCompletionReport,
   type DocumentCompletionTarget
 } from '../shared/documentCompletion.ts'
+import { evaluateOcrQuality } from '../shared/ocrQuality.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -1615,6 +1616,24 @@ function imageBlockWithOcrResult(
       reason: 'no-text'
     }] }
   }
+  // OCR 引擎返回文本并不代表结果可直接用于翻译。统一质量门禁会在低置信度、
+  // 噪声或语言明显不匹配时保留原文和图片，阻止不可靠文本进入翻译请求。
+  if (!evaluateOcrQuality(result).safeToAccept) {
+    return {
+      ...block,
+      ocrRegions: textLines.length > 0
+        ? textLines.map((line, index) => ({
+            ...createOcrRegion(block, index, line.text, line.confidence, line.box, asset),
+            status: 'skipped' as const,
+            reason: 'low-confidence'
+          }))
+        : [{
+            ...createOcrRegion(block, 0, text, result.lines[0]?.confidence, undefined, asset),
+            status: 'skipped' as const,
+            reason: 'low-confidence'
+          }]
+    }
+  }
   if (textLines.length > 0) {
     return {
       ...block,
@@ -1876,6 +1895,16 @@ function collectOcrWarnings(
           code: 'ocr-no-text',
           severity: 'info',
           message: 'No text was recognized in an image on this page.',
+          pageId,
+          blockId: block.blockId
+        })
+        return
+      }
+      if (region.status === 'skipped' && region.reason === 'low-confidence') {
+        warnings.push({
+          code: 'ocr-low-confidence',
+          severity: 'warning',
+          message: 'An OCR result had low confidence and was preserved without translation.',
           pageId,
           blockId: block.blockId
         })

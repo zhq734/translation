@@ -13,6 +13,7 @@ export type DocumentFormat =
   | 'csv'
   | 'srt'
   | 'vtt'
+  | 'image'
 
 /** 文档在翻译和导出阶段可以使用的格式能力。 */
 export interface DocumentCapabilities {

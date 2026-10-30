@@ -1655,6 +1655,40 @@ function inlineStyleColor(style: string | undefined, property: string): string |
 }
 
 /**
+ * 规范化受控 CSS 字体族，去除字体名称外层引号并保留逗号分隔的回退顺序。
+ * @param value 原始 font-family 属性值。
+ * @returns 适合写入文档模型的字体族；无有效内容时返回 undefined。
+ * @author zhenghq
+ */
+function normalizeCssFontFamily(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const sanitized = value.replace(/[;{}<>]/gu, '').trim()
+  if (!sanitized) return undefined
+  const families: string[] = []
+  let current = ''
+  let quote = ''
+  for (const character of sanitized) {
+    if ((character === '"' || character === "'") && (!quote || quote === character)) {
+      quote = quote ? '' : character
+      current += character
+      continue
+    }
+    if (character === ',' && !quote) {
+      families.push(current.trim())
+      current = ''
+      continue
+    }
+    current += character
+  }
+  families.push(current.trim())
+  const normalized = families
+    .map((family) => family.replace(/^(["'])([\s\S]*)\1$/u, '$2').trim())
+    .filter(Boolean)
+    .join(', ')
+  return normalized ? normalized.slice(0, 200) : undefined
+}
+
+/**
  * 将受控 CSS 声明转换为文档样式。
  * @param style CSS 声明文本。
  * @returns 仅包含白名单字段的样式。
@@ -1665,7 +1699,7 @@ function documentTextStyleFromCss(style: string | undefined): DocumentTextStyle 
   const fontSize = inlineStylePixels(style, 'font-size')
   const color = inlineStyleColor(style, 'color')
   const backgroundColor = inlineStyleColor(style, 'background-color')
-  const rawFontFamily = cssDeclarationValue(style, 'font-family')?.replace(/[;{}<>]/gu, '').slice(0, 200).trim()
+  const rawFontFamily = normalizeCssFontFamily(cssDeclarationValue(style, 'font-family'))
   const rawFontWeight = cssDeclarationValue(style, 'font-weight')?.toLowerCase()
   const numericWeight = Number.parseInt(rawFontWeight ?? '', 10)
   const fontWeight = Number.isFinite(numericWeight)
@@ -1899,10 +1933,7 @@ function svgTextStyle(node: HtmlNode): DocumentTextStyle | undefined {
     .map((declaration) => declaration.split(':', 2))
     .find(([property]) => property?.trim().toLowerCase() === 'font-family')?.[1]
     ?.trim()
-  const fontFamily = rawFontFamily
-    ?.replace(/[;{}<>]/gu, '')
-    .slice(0, 200)
-    .trim()
+  const fontFamily = normalizeCssFontFamily(rawFontFamily)
   const fill = node.attributes.fill?.trim().toLowerCase()
   const color = fill && fill !== 'transparent' && SAFE_MARKDOWN_COLOR.test(fill)
     ? fill
@@ -2137,6 +2168,19 @@ function parseHtmlBlocks(node: HtmlNode, context: {
       }))
       continue
     }
+    const listInfo: DocumentListInfo | undefined = child.name === 'li' && context.list
+      ? (() => {
+          const level = context.list.level
+          const current = (context.list.counters.get(level) ?? 1) + context.list.itemCount
+          // 列表上下文在同级子节点之间共享；在生成当前项后立即递增，保证后续项序号连续。
+          context.list.itemCount += 1
+          return {
+            level,
+            marker: context.list.ordered ? `${current}.` : '•',
+            ordered: context.list.ordered
+          }
+        })()
+      : undefined
     if (blockTags.has(child.name) && !(child.name === 'li' && child.children.some((item) => item.name === 'ul' || item.name === 'ol'))) {
       const text = htmlText(child).replace(/[ \t]+/gu, ' ').replace(/\n{3,}/gu, '\n\n').trim()
       if (text) {
@@ -2149,20 +2193,6 @@ function parseHtmlBlocks(node: HtmlNode, context: {
               : child.name === 'caption'
                 ? 'caption'
                 : 'paragraph'
-        const listInfo: DocumentListInfo | undefined = child.name === 'li' && context.list
-          ? (() => {
-              const level = context.list.level
-              const current = (context.list.counters.get(level) ?? 1) +
-                (level === context.list.level
-                  ? context.list.itemCount
-                  : context.list.nestedItemCounts.get(level) ?? 0)
-              return {
-                level,
-                marker: context.list.ordered ? `${current}.` : '•',
-                ordered: context.list.ordered
-              }
-            })()
-          : undefined
         blocks.push(createTextBlock(
           context.input,
           context.pageId,
@@ -2187,7 +2217,6 @@ function parseHtmlBlocks(node: HtmlNode, context: {
         ? {
             list: {
               ...context.list,
-              itemCount: child.name === 'li' ? context.list.itemCount + 1 : context.list.itemCount,
               nestedItemCounts: new Map(context.list.nestedItemCounts).set(
                 context.list.level,
                 (context.list.nestedItemCounts.get(context.list.level) ?? 0) + 1

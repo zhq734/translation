@@ -336,6 +336,12 @@ const PDF_PAGE_FRAME_MIN_RATIO = 0.9
 /** PDF 路径中识别轴对齐矩形所需的坐标容差，单位为页面点。 */
 const PDF_PATH_GEOMETRY_TOLERANCE = 0.1
 
+/** 页眉、页脚等页面外围文本的纵向范围占页面高度比例。 */
+const PDF_PAGE_CHROME_MARGIN_RATIO = 0.08
+
+/** 大图在页面宽高两个方向上的最小覆盖比例，用于识别扫描页或海报式页面。 */
+const PDF_DOMINATING_IMAGE_MIN_RATIO = 0.5
+
 /**
  * 从闭合路径的顶点判断它是否为一个轴对齐矩形。
  * @param points 路径按绘制顺序记录的顶点。
@@ -674,6 +680,77 @@ function hasVisiblePdfPageContent(
     .map((name) => runtime.OPS[name])
     .filter((value): value is number => typeof value === 'number'))
   return operatorList.fnArray.some((operation) => visibleOperations.has(operation))
+}
+
+/**
+ * 判断视觉行是否位于页眉或页脚区域。
+ * @param line PDF 视觉行。
+ * @param pageHeight 页面高度。
+ * @returns 行中心位于页面外围区域时返回 true。
+ * @author zhenghq
+ */
+function isPdfPageChromeLine(line: PdfLine, pageHeight: number): boolean {
+  if (!Number.isFinite(pageHeight) || pageHeight <= 0) return false
+  const center = line.bbox.y + line.bbox.height / 2
+  const margin = pageHeight * PDF_PAGE_CHROME_MARGIN_RATIO
+  return center <= margin || center >= pageHeight - margin
+}
+
+/**
+ * 判断页面是否具有正文带内的可翻译文本证据。
+ * 页眉、页码、水印等外围短文本不能单独证明该页已有完整文本层。
+ * @param lines 页面原生文本视觉行。
+ * @param pageHeight 页面高度。
+ * @returns 正文带内存在文字时返回 true。
+ * @author zhenghq
+ */
+function hasPdfBodyTextEvidence(lines: readonly PdfLine[], pageHeight: number): boolean {
+  return lines.some((line) => {
+    if (isPdfPageChromeLine(line, pageHeight)) return false
+    return line.items.some((item) => /[\p{L}\p{N}]/u.test(item.str))
+  })
+}
+
+/**
+ * 判断页面内是否存在覆盖大部分版心的大图。
+ * @param imageRegions 页面内嵌图片区域。
+ * @param pageWidth 页面宽度。
+ * @param pageHeight 页面高度。
+ * @returns 至少一张图片同时覆盖页面宽高一半以上时返回 true。
+ * @author zhenghq
+ */
+function hasPdfDominatingImage(
+  imageRegions: readonly PdfEmbeddedImageRegion[],
+  pageWidth: number,
+  pageHeight: number
+): boolean {
+  if (!Number.isFinite(pageWidth) || pageWidth <= 0 ||
+    !Number.isFinite(pageHeight) || pageHeight <= 0) return false
+  return imageRegions.some((region) =>
+    region.bbox.width >= pageWidth * PDF_DOMINATING_IMAGE_MIN_RATIO &&
+    region.bbox.height >= pageHeight * PDF_DOMINATING_IMAGE_MIN_RATIO)
+}
+
+/**
+ * 判断带原生文本的页面是否因文本密度异常低而需要整页 OCR。
+ * 只有大图主导页面且正文带内没有文本时才判定为扫描页；正常正文页、
+ * 以及原生正文叠加背景大图的页面必须保留原生文本层，避免重复 OCR。
+ * @param lines 页面原生文本视觉行。
+ * @param imageRegions 页面内嵌图片区域。
+ * @param pageWidth 页面宽度。
+ * @param pageHeight 页面高度。
+ * @returns 需要整页栅格化时返回 true。
+ * @author zhenghq
+ */
+function shouldRenderLowDensityPdfPage(
+  lines: readonly PdfLine[],
+  imageRegions: readonly PdfEmbeddedImageRegion[],
+  pageWidth: number,
+  pageHeight: number
+): boolean {
+  if (lines.length === 0) return false
+  return hasPdfDominatingImage(imageRegions, pageWidth, pageHeight) &&
+    !hasPdfBodyTextEvidence(lines, pageHeight)
 }
 
 /**
@@ -3059,7 +3136,8 @@ function groupPdfTextItems(items: PdfTextItem[], pageHeight: number): PdfLine[] 
       Math.abs(last.baseline - baseline) <= Math.max(2, Math.min(lastFontSize, currentFontSize) * 0.5)
     if (sameLine) {
       // 此处只按原始片段顺序合并。表格单元格不能凭空获得前导空格；
-      // 代码框会在识别后根据片段几何间距单独恢复源码空格。
+      // 代码框会在识别后根据片段几何间距单独恢复源码空格。双栏行必须
+      // 等表格、目录和代码框完成识别后再拆分，否则会破坏这些结构的几何证据。
       last.items.push(item)
       const right = Math.max(last.bbox.x + last.bbox.width, bbox.x + bbox.width)
       const top = Math.min(last.bbox.y, bbox.y)
@@ -3071,6 +3149,61 @@ function groupPdfTextItems(items: PdfTextItem[], pageHeight: number): PdfLine[] 
     }
   }
   return lines
+}
+
+/**
+ * 判断 PDF 文本项是否相对页面水平基线发生显著旋转。
+ * 仅依据变换矩阵判断，不修改文本内容；旋转文本仍需保留并在解析结果中告警。
+ * @param item PDF 文本项。
+ * @returns 文本方向偏离水平方向超过约半度时返回 true。
+ * @author zhenghq
+ */
+function isPdfTextItemRotated(item: PdfTextItem): boolean {
+  const transform = item.transform
+  if (!transform || transform.length < 4) return false
+  const a = transform[0] ?? 0
+  const b = transform[1] ?? 0
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false
+  const axisLength = Math.hypot(a, b)
+  if (axisLength <= 0.000001) return false
+  const angle = Math.abs(Math.atan2(b, a))
+  return angle > Math.PI / 360
+}
+
+/**
+ * 判断页面是否包含显著重叠的可见文本项。
+ * 只比较有真实交集的文本边界，并要求交集覆盖较小文本项的大部分面积，
+ * 避免把同一视觉行的正常相邻文字或表格单元格误判为重叠。
+ * @param items PDF 文本项。
+ * @param pageHeight 页面高度。
+ * @returns 存在显著重叠时返回 true。
+ * @author zhenghq
+ */
+function hasSignificantPdfTextOverlap(items: readonly PdfTextItem[], pageHeight: number): boolean {
+  const boxes = items
+    .filter((item) => item.str.trim().length > 0)
+    .map((item) => textItemBoundingBox(item, pageHeight))
+    .sort((left, right) => left.y - right.y)
+  for (let index = 0; index < boxes.length; index += 1) {
+    const current = boxes[index]!
+    const currentBottom = current.y + current.height
+    for (let candidateIndex = index + 1; candidateIndex < boxes.length; candidateIndex += 1) {
+      const candidate = boxes[candidateIndex]!
+      if (candidate.y >= currentBottom) break
+      const overlapWidth = Math.min(current.x + current.width, candidate.x + candidate.width) -
+        Math.max(current.x, candidate.x)
+      const overlapHeight = Math.min(currentBottom, candidate.y + candidate.height) -
+        Math.max(current.y, candidate.y)
+      if (overlapWidth <= 0 || overlapHeight <= 0) continue
+      const overlapArea = overlapWidth * overlapHeight
+      const smallerArea = Math.min(current.width * current.height, candidate.width * candidate.height)
+      if (smallerArea <= 0) continue
+      const significantWidth = overlapWidth >= Math.min(current.width, candidate.width) * 0.35
+      const significantHeight = overlapHeight >= Math.min(current.height, candidate.height) * 0.35
+      if (significantWidth && significantHeight && overlapArea / smallerArea >= 0.3) return true
+    }
+  }
+  return false
 }
 
 /**
@@ -3105,6 +3238,75 @@ function splitPdfLinesAtHorizontalGaps(lines: readonly PdfLine[]): PdfLine[] {
       segmentStart = index
     }
     result.push(pdfLineSegment(line, segmentStart, line.items.length))
+  }
+  return result
+}
+
+/**
+ * 在表格、代码框和目录项完成识别后，拆分稳定双栏页面中共享基线的左右文本。
+ * 只在至少两个视觉行出现跨页面中线的相同大间距时拆行，避免把普通导航项、
+ * 表格单元格或单个并排标签误判为双栏正文。
+ * @param lines 已完成结构识别的剩余视觉行。
+ * @param pageWidth 页面宽度。
+ * @param excludedFrames 不应参与双栏拆分的代码框区域。
+ * @returns 拆分后的视觉行；未检测到稳定双栏结构时原样返回。
+ * @author zhenghq
+ */
+function splitPdfTwoColumnLines(
+  lines: readonly PdfLine[],
+  pageWidth: number,
+  excludedFrames: readonly PdfDetectedGrid[] = []
+): PdfLine[] {
+  if (lines.length < 4 || !Number.isFinite(pageWidth) || pageWidth <= 0) return [...lines]
+  const middle = pageWidth / 2
+  const candidates: Array<{ line: PdfLine; splitIndex: number; gapCenter: number }> = []
+  for (const line of lines) {
+    if (parsePdfTableOfContentsLine(line.items.map((item) => item.str).join(''))) continue
+    if (excludedFrames.some((frame) => pdfLineCenterInsideGrid(line, frame))) continue
+    const orderedItems = line.items
+      .map((item, index) => ({
+        item,
+        index,
+        bbox: {
+          x: item.transform?.[4] ?? 0,
+          width: Math.max(1, item.width ?? 1)
+        }
+      }))
+      .sort((left, right) => left.bbox.x - right.bbox.x)
+    let selected: { splitIndex: number; gapCenter: number; gap: number } | undefined
+    for (let index = 1; index < orderedItems.length; index += 1) {
+      const previous = orderedItems[index - 1]!
+      const current = orderedItems[index]!
+      const previousRight = previous.bbox.x + previous.bbox.width
+      const gap = current.bbox.x - previousRight
+      const gapCenter = previousRight + gap / 2
+      const crossesMiddle = previousRight <= middle + pageWidth * 0.03 &&
+        current.bbox.x >= middle - pageWidth * 0.03
+      const minimumGap = Math.max(18, pageWidth * 0.035)
+      if (!crossesMiddle || gap < minimumGap) continue
+      if (!selected || gap > selected.gap) {
+        selected = { splitIndex: current.index, gapCenter, gap }
+      }
+    }
+    if (selected) candidates.push({ line, splitIndex: selected.splitIndex, gapCenter: selected.gapCenter })
+  }
+  if (candidates.length < 2) return [...lines]
+  // 多个共享基线的左右栏行必须具有接近的栏间空白位置；只出现一次或位置漂移的
+  // 大间距更可能是目录、表单或独立控件，不应触发阅读顺序重排。
+  const gapCenters = candidates.map((candidate) => candidate.gapCenter).sort((left, right) => left - right)
+  const reference = gapCenters[Math.floor(gapCenters.length / 2)]!
+  const stable = candidates.filter((candidate) =>
+    Math.abs(candidate.gapCenter - reference) <= Math.max(12, pageWidth * 0.04))
+  if (stable.length < 2) return [...lines]
+  const splitIndexes = new Map(stable.map((candidate) => [candidate.line, candidate.splitIndex]))
+  const result: PdfLine[] = []
+  for (const line of lines) {
+    const splitIndex = splitIndexes.get(line)
+    if (splitIndex === undefined) {
+      result.push(line)
+      continue
+    }
+    result.push(pdfLineSegment(line, 0, splitIndex), pdfLineSegment(line, splitIndex, line.items.length))
   }
   return result
 }
@@ -3189,11 +3391,28 @@ function normalizePdfParagraphFontFamily(fontFamily: string | undefined): string
  * @returns 行内按有效字符数加权后的主导样式；行内没有文本时返回 undefined。
  * @author zhenghq
  */
-function pdfLineDominantStyle(
+/** PDF 视觉行内按有效字符数加权的样式候选，供主导样式与段落样式比较复用。 */
+interface PdfLineStyleCandidate {
+  /** 文本项。 */
+  item: PdfTextItem
+  /** 文本项在原行中的索引，用于权重相同时保持稳定顺序。 */
+  index: number
+  /** 去除行首标记与句末标点后的有效字符数。 */
+  weight: number
+}
+
+/**
+ * 读取 PDF 视觉行内可用于样式比较的文本片段，过滤行首标记与句末标点等干扰。
+ * @param line PDF 视觉行。
+ * @param styles PDF.js 字体样式映射。
+ * @returns 按有效字符数加权的候选列表。
+ * @author zhenghq
+ */
+function pdfLineStyleCandidates(
   line: PdfLine,
   styles: Record<string, PdfTextStyle>
-): DocumentTextStyle | undefined {
-  const candidates = line.items.map((item, index) => {
+): PdfLineStyleCandidate[] {
+  return line.items.map((item, index) => {
     const normalized = item.str.replace(/\s/gu, '')
     const marker = /^(?:[•●▪◦·*\uF0B7\uFFFD-]|\d+[.)、．]|[A-Za-z][.)])/u.exec(normalized)?.[0] ?? ''
     const trailingPunctuation = normalized.endsWith('。') || normalized.endsWith('.')
@@ -3205,6 +3424,13 @@ function pdfLineDominantStyle(
       weight: normalized.length - marker.length - trailingPunctuation
     }
   }).filter((candidate) => candidate.weight > 0)
+}
+
+function pdfLineDominantStyle(
+  line: PdfLine,
+  styles: Record<string, PdfTextStyle>
+): DocumentTextStyle | undefined {
+  const candidates = pdfLineStyleCandidates(line, styles)
   if (candidates.length === 0) return undefined
 
   const dominant = candidates.reduce((best, candidate) => {
@@ -3239,6 +3465,57 @@ function samePdfParagraphStyle(
     left.fontWeight === right.fontWeight &&
     left.color === right.color &&
     left.italic === right.italic
+}
+
+/**
+ * 比较两个正文视觉行的样式是否足够一致，供 PDF 网页/长文段落合并使用。
+ * 与 `samePdfParagraphStyle` 相比，这里刻意忽略颜色差异：网页导出或印刷 PDF
+ * 常把同一段落内强调、链接等片段渲染成不同颜色，视觉上仍是同一条自然段。
+ * 由于主导样式会因行内颜色碎片交错而在相邻行选中不同主色，继续要求颜色相等
+ * 会把正常换行误判成新段落。这里仍保留字号、斜体与「有无字重」的对齐检查，
+ * 字体族与具体字重则改为按交集判定，允许子集前缀或中英文回退字体不同。
+ * @param left 前一行的主导样式。
+ * @param right 当前行的主导样式。
+ * @param previous 前一视觉行。
+ * @param current 当前视觉行。
+ * @param styles PDF.js 字体样式映射。
+ * @param bodyFontSize 页面正文主字号。
+ * @returns 可视为同一正文段落时返回 true。
+ * @author zhenghq
+ */
+function samePdfParagraphBodyStyle(
+  left: DocumentTextStyle | undefined,
+  right: DocumentTextStyle | undefined,
+  previous: PdfLine,
+  current: PdfLine,
+  styles: Record<string, PdfTextStyle>,
+  bodyFontSize: number
+): boolean {
+  if (!left || !right) return false
+  const leftSize = left.fontSize ?? 0
+  const rightSize = right.fontSize ?? 0
+  if (leftSize <= 0 || rightSize <= 0) return false
+  // 只对真正的正文行放宽颜色与字体差异；标题、副标题等较大字号仍走严格比较。
+  const bodySizeThreshold = Math.max(1, bodyFontSize * 1.25)
+  if (leftSize > bodySizeThreshold || rightSize > bodySizeThreshold) return false
+  if (Math.abs(leftSize - rightSize) > Math.max(0.25, Math.max(leftSize, rightSize) * 0.03)) {
+    return false
+  }
+  if (left.italic !== right.italic) return false
+  const leftWeight = left.fontWeight ?? 0
+  const rightWeight = right.fontWeight ?? 0
+  if (leftWeight >= 700 !== rightWeight >= 700) return false
+  const previousFamilies = new Set(pdfLineStyleCandidates(previous, styles).map((candidate) => {
+    const style = pdfTextStyle(candidate.item, candidate.item.fontName ? styles[candidate.item.fontName] : undefined)
+    const weight = style.fontWeight ?? 0
+    return `${normalizePdfParagraphFontFamily(style.fontFamily)}:${weight >= 700 ? 700 : 400}`
+  }))
+  const currentFamilies = new Set(pdfLineStyleCandidates(current, styles).map((candidate) => {
+    const style = pdfTextStyle(candidate.item, candidate.item.fontName ? styles[candidate.item.fontName] : undefined)
+    const weight = style.fontWeight ?? 0
+    return `${normalizePdfParagraphFontFamily(style.fontFamily)}:${weight >= 700 ? 700 : 400}`
+  }))
+  return [...previousFamilies].some((family) => currentFamilies.has(family))
 }
 
 /**
@@ -3378,7 +3655,10 @@ function canMergePdfParagraphLine(
 ): boolean {
   const previousStyle = pdfLineDominantStyle(previous, styles)
   const currentStyle = pdfLineDominantStyle(current, styles)
-  if (!samePdfParagraphStyle(previousStyle, currentStyle)) return false
+  if (!samePdfParagraphStyle(previousStyle, currentStyle) &&
+    !samePdfParagraphBodyStyle(previousStyle, currentStyle, previous, current, styles, bodyFontSize)) {
+    return false
+  }
   const previousSize = previousStyle?.fontSize ?? 0
   const currentSize = currentStyle?.fontSize ?? 0
   const headingThreshold = Math.max(14, bodyFontSize * 1.2)
@@ -3418,6 +3698,11 @@ function canMergePdfParagraphLine(
   if (!pdfLinesHaveHorizontalOverlap(previous, current)) return false
   const previousText = previous.items.map((item) => item.str).join('')
   const currentText = current.items.map((item) => item.str).join('')
+  // 独立公式必须保持为单独区块；若允许前后正文合并，公式会被送进普通翻译，
+  // 也会丢失原始数学表达边界。
+  if (isPdfStandaloneFormulaText(previousText) || isPdfStandaloneFormulaText(currentText)) {
+    return false
+  }
   // 目录项必须逐行独立翻译，否则相邻条目或后续正文会被并进同一个目录块。
   if (parsePdfTableOfContentsLine(previousText) || parsePdfTableOfContentsLine(currentText)) {
     return false
@@ -3537,6 +3822,159 @@ function groupPdfParagraphs(
     previousLine = line
   }
   return paragraphs
+}
+
+/** PDF 页面中用于恢复阅读顺序的保守双栏分区。 */
+interface PdfColumnLayout {
+  /** 栏间分隔线；全宽区块跨越该线时作为跨栏内容。 */
+  splitX: number
+  /** 左栏右边界。 */
+  leftRight: number
+  /** 右栏左边界。 */
+  rightLeft: number
+}
+
+/**
+ * 检测页面是否为稳定的双栏版面。
+ * 只有左右两侧都有足够正文行、栏间存在明确空白且两栏宽度接近时才启用重排，
+ * 避免把普通表格、目录或单栏短行误判为双栏。
+ * @param lines 页面视觉行。
+ * @param pageWidth 页面宽度。
+ * @returns 可靠的栏布局；无法确认时返回 undefined。
+ * @author zhenghq
+ */
+function detectPdfColumnLayout(
+  lines: readonly PdfLine[],
+  pageWidth: number
+): PdfColumnLayout | undefined {
+  if (lines.length < 4 || !Number.isFinite(pageWidth) || pageWidth <= 0) return undefined
+  const middle = pageWidth / 2
+  // 跨栏标题和全宽表格会同时覆盖页面中线，不能参与栏边界估算；
+  // 先排除这类宽行，再用两栏内部的窄行确定真实的栏间距。
+  const columnCandidates = lines.filter((line) => line.bbox.width < pageWidth * 0.45)
+  const leftLines = columnCandidates.filter((line) => line.bbox.x + line.bbox.width / 2 < middle)
+  const rightLines = columnCandidates.filter((line) => line.bbox.x + line.bbox.width / 2 >= middle)
+  if (leftLines.length < 2 || rightLines.length < 2) return undefined
+  const leftRight = Math.max(...leftLines.map((line) => line.bbox.x + line.bbox.width))
+  const rightLeft = Math.min(...rightLines.map((line) => line.bbox.x))
+  const gap = rightLeft - leftRight
+  if (!Number.isFinite(gap) || gap < Math.max(12, pageWidth * 0.025)) return undefined
+  const leftWidth = Math.max(...leftLines.map((line) => line.bbox.width))
+  const rightWidth = Math.max(...rightLines.map((line) => line.bbox.width))
+  // 栏宽不能只看单行文本长度：短栏正文可能每行都明显短于栏宽。
+  // 使用同一栏内行首到最远行尾的跨度，仍要求两栏跨度接近且彼此留有空白。
+  const leftSpan = leftRight - Math.min(...leftLines.map((line) => line.bbox.x))
+  const rightSpan = Math.max(...rightLines.map((line) => line.bbox.x + line.bbox.width)) - rightLeft
+  if (leftSpan < pageWidth * 0.12 || rightSpan < pageWidth * 0.12) return undefined
+  if (Math.min(leftSpan, rightSpan) / Math.max(leftSpan, rightSpan) < 0.55) return undefined
+  return { splitX: (leftRight + rightLeft) / 2, leftRight, rightLeft }
+}
+
+/**
+ * 判断视觉行是否跨越双栏分隔线，跨栏标题和全宽表格不能被按栏切分。
+ * @param line 页面视觉行。
+ * @param layout 已检测到的栏布局。
+ * @returns 行跨越栏间区域时返回 true。
+ * @author zhenghq
+ */
+function pdfLineSpansColumns(line: PdfLine, layout: PdfColumnLayout): boolean {
+  return line.bbox.x < layout.splitX && line.bbox.x + line.bbox.width > layout.splitX
+}
+
+/**
+ * 按栏恢复 PDF 视觉行阅读顺序。
+ * 跨栏行保持在其视觉纵坐标位置，左右栏分别按纵向顺序完整读取；无法确认栏结构时
+ * 原样返回内容流顺序，确保不确定场景不会比现有行为更差。
+ * @param lines 内容流顺序的视觉行。
+ * @param pageWidth 页面宽度。
+ * @returns 阅读顺序行及是否成功识别双栏。
+ * @author zhenghq
+ */
+function orderPdfLinesForReading(
+  lines: readonly PdfLine[],
+  pageWidth: number
+): { lines: PdfLine[]; columnLayout?: PdfColumnLayout; uncertain?: boolean } {
+  const layout = detectPdfColumnLayout(lines, pageWidth)
+  if (!layout) return { lines: [...lines] }
+  const spanning = lines.filter((line) => pdfLineSpansColumns(line, layout))
+  const left = lines.filter((line) => !pdfLineSpansColumns(line, layout) &&
+    line.bbox.x + line.bbox.width / 2 < layout.splitX)
+  const right = lines.filter((line) => !pdfLineSpansColumns(line, layout) &&
+    line.bbox.x + line.bbox.width / 2 >= layout.splitX)
+  const ordered: PdfLine[] = []
+  const topLevelSpanning = spanning.filter((line) =>
+    left.every((candidate) => line.bbox.y < candidate.bbox.y) &&
+    right.every((candidate) => line.bbox.y < candidate.bbox.y))
+  ordered.push(...topLevelSpanning.sort((leftLine, rightLine) => leftLine.bbox.y - rightLine.bbox.y))
+  ordered.push(...[...left].sort((leftLine, rightLine) => leftLine.bbox.y - rightLine.bbox.y))
+  ordered.push(...[...right].sort((leftLine, rightLine) => leftLine.bbox.y - rightLine.bbox.y))
+  // 正文中间的跨栏标题、表格或图片应保留其视觉锚点：位于两栏都尚未读取的位置时，
+  // 在左右栏之间插入；其余跨栏内容追加到末尾，避免猜测导致阅读顺序回退。
+  for (const line of spanning) {
+    if (topLevelSpanning.includes(line)) continue
+    const leftBefore = left.filter((candidate) => candidate.bbox.y < line.bbox.y).length
+    const rightBefore = right.filter((candidate) => candidate.bbox.y < line.bbox.y).length
+    if (leftBefore === 0 && rightBefore === 0) {
+      ordered.push(line)
+      continue
+    }
+    // 中间的跨栏内容会打断栏内顺序，无法可靠恢复时保留稳定视觉顺序并让调用方告警。
+    return {
+      lines: [...lines].sort((leftLine, rightLine) =>
+        leftLine.bbox.y === rightLine.bbox.y
+          ? leftLine.bbox.x - rightLine.bbox.x
+          : leftLine.bbox.y - rightLine.bbox.y),
+      columnLayout: layout,
+      uncertain: true
+    }
+  }
+  return { lines: ordered, columnLayout: layout }
+}
+
+/**
+ * 判断段落文本是否具备独立公式的保守特征。
+ * 只接受短小、无句末标点且包含等号或关系符号的独立行；普通带等号的说明文字
+ * 仍按正文翻译，避免把自然语言误判成公式。
+ * @param text 段落文本。
+ * @returns 可保守识别为公式时返回 true。
+ * @author zhenghq
+ */
+function isPdfStandaloneFormulaText(text: string): boolean {
+  const normalized = text.trim()
+  if (!normalized || normalized.length > 80) return false
+  if (/[.!?。！？；;]$/u.test(normalized)) return false
+  if (!/[=<>≤≥±×÷∑∫√^_]/u.test(normalized)) return false
+  if (!/[\p{L}\p{N}]/u.test(normalized)) return false
+  // 公式行允许变量、数字、希腊字母、上下标和常见运算符；出现大段普通英文单词时
+  // 仍按正文处理，避免把“Revenue = Cost”这类说明性短语静默排除出翻译。
+  const alphaWords = normalized.match(/[A-Za-z]{3,}/gu) ?? []
+  return alphaWords.length === 0
+}
+
+/**
+ * 将已识别为公式的 PDF 段落转换为不可翻译公式区块。
+ * 当前不猜测 LaTeX；保留原始文本并交由调用方生成公式未识别告警。
+ * @param paragraph 公式段落。
+ * @param pageId 页面标识。
+ * @param fingerprint 文档指纹。
+ * @param readingOrder 页面内阅读顺序。
+ * @returns 公式区块。
+ * @author zhenghq
+ */
+function createPdfFormulaBlock(
+  paragraph: PdfParagraph,
+  pageId: string,
+  fingerprint: string,
+  readingOrder: number
+): DocumentFormulaBlock {
+  return {
+    kind: 'formula',
+    blockId: createDocumentBlockId(fingerprint, pageId, readingOrder, 'formula'),
+    readingOrder,
+    translatable: false,
+    bbox: { ...paragraph.bbox },
+    sourceText: sanitizeDocumentText(paragraph.items.map((item) => item.str).join('').trim())
+  }
 }
 
 /**
@@ -4472,11 +4910,24 @@ async function createEmbeddedImageBlock(
 function orderPdfPageBlocks(
   blocks: readonly DocumentBlock[],
   pageId: string,
-  fingerprint: string
+  fingerprint: string,
+  columnLayout?: PdfColumnLayout
 ): DocumentBlock[] {
   const ordered = blocks
     .map((block, sourceIndex) => ({ block, sourceIndex }))
     .sort((left, right) => {
+      if (columnLayout) {
+        const columnRank = (block: DocumentBlock): number => {
+          if (!block.bbox) return 0
+          const crosses = block.bbox.x < columnLayout.splitX &&
+            block.bbox.x + block.bbox.width > columnLayout.splitX
+          if (crosses) return 0
+          return block.bbox.x + block.bbox.width / 2 < columnLayout.splitX ? 1 : 2
+        }
+        const leftRank = columnRank(left.block)
+        const rightRank = columnRank(right.block)
+        if (leftRank !== rightRank) return leftRank - rightRank
+      }
       const leftY = left.block.bbox?.y ?? Number.POSITIVE_INFINITY
       const rightY = right.block.bbox?.y ?? Number.POSITIVE_INFINITY
       if (leftY !== rightY) return leftY - rightY
@@ -4601,11 +5052,14 @@ export async function parsePdfDocument(
       const operatorList = await page.getOperatorList()
       const imageRegions = extractPdfImageRegions(operatorList, runtime, viewport)
       let contentArea: { left: number; right: number; center: number } | undefined
+      let nativeLines: PdfLine[] = []
+      let columnLayout: PdfColumnLayout | undefined
       const tableGridTargets: PdfTableGridTarget[] = []
       if (hasNativeText) {
         applyPdfTextColors(textContent.items, extractPdfTextColors(operatorList, runtime))
         const styles = enrichPdfFontStyles(page, textContent.items, textContent.styles ?? {})
         const lines = groupPdfTextItems(textContent.items, viewport.height)
+        nativeLines = lines
         const bodyFontSize = inferPdfBodyFontSize(lines)
         const lineHeights = inferPdfLineHeights(lines)
         contentArea = inferPdfContentArea(lines, viewport.width)
@@ -4694,18 +5148,52 @@ export async function parsePdfDocument(
             remainingLines = parsed.remainingLines
           }
         }
+        // 表格和代码框先从原始几何关系提取；剩余普通文本再按栏恢复阅读顺序。
+        // 双栏行必须在此阶段拆开，否则共享基线的左右栏文本会始终被视为同一视觉行，
+        // 交错内容流随后只能得到左一、右一、左二的错误段落顺序。
+        const columnSplitLines = splitPdfTwoColumnLines(
+          remainingLines,
+          viewport.width,
+          allCodeFrameGrids
+        )
+        const orderedLines = orderPdfLinesForReading(columnSplitLines, viewport.width)
+        columnLayout = orderedLines.columnLayout
+        // 行高必须在阅读顺序恢复后重新估算。交错内容流中的“下一行”可能是另一栏
+        // 的同行文本，提前计算会把左右栏行距错误绑定到同栏续行，导致段落被拆散。
+        const orderedLineHeights = inferPdfLineHeights(orderedLines.lines)
+        if (orderedLines.uncertain) {
+          warnings.push(createDocumentWarning(
+            'pdf-reading-order-uncertain',
+            'The PDF reading order could not be recovered reliably.',
+            { pageId }
+          ))
+        }
         // 横向断开只影响表格与代码框之外的普通文本；表格列识别仍需保留
         // 同一视觉行内的完整片段关系。拆分后的行在同一基线上会由段落合并
         // 的基线推进约束自然分开，不会把导航控件重新拼成一句话。
         const paragraphs = groupPdfParagraphs(
-          splitPdfLinesAtHorizontalGaps(remainingLines),
+          splitPdfLinesAtHorizontalGaps(orderedLines.lines),
           viewport.width,
           bodyFontSize,
           styles,
-          lineHeights,
+          orderedLineHeights,
           contentArea,
           allCodeFrameGrids
         )
+        const formulaParagraphs = new Set(paragraphs.filter((paragraph) =>
+          isPdfStandaloneFormulaText(paragraph.items.map((item) => item.str).join(''))))
+        const formulaBlocks = paragraphs
+          .map((paragraph, readingOrder) => ({ paragraph, readingOrder }))
+          .filter(({ paragraph }) => formulaParagraphs.has(paragraph))
+          .map(({ paragraph, readingOrder }) =>
+            createPdfFormulaBlock(paragraph, pageId, input.sha256, readingOrder))
+        if (formulaBlocks.length > 0) {
+          warnings.push(createDocumentWarning(
+            'formula-unrecognized',
+            'A formula was preserved as source text because it could not be recognized reliably.',
+            { pageId, blockId: formulaBlocks[0]!.blockId }
+          ))
+        }
         blocks.push(...tableBlocks, ...createPdfDividerBlocks(
           gridLines,
           grids,
@@ -4716,7 +5204,7 @@ export async function parsePdfDocument(
           viewport.height,
           pageId,
           input.sha256
-        ), ...paragraphs.map((paragraph, readingOrder) =>
+        ), ...paragraphs.filter((paragraph) => !formulaParagraphs.has(paragraph)).map((paragraph, readingOrder) =>
           createPdfTextBlock(
             paragraph.items,
             pageId,
@@ -4732,10 +5220,30 @@ export async function parsePdfDocument(
             paragraph.codeFrameIndex === undefined
               ? undefined
               : allCodeFrameGrids[paragraph.codeFrameIndex]?.bbox
-          )))
+          )), ...formulaBlocks)
+        if (hasSignificantPdfTextOverlap(textContent.items, viewport.height)) {
+          warnings.push(createDocumentWarning(
+            'pdf-overlapping-text',
+            'Significantly overlapping text was detected and preserved in its original position.',
+            { pageId }
+          ))
+        }
+        if (textContent.items.some(isPdfTextItemRotated)) {
+          warnings.push(createDocumentWarning(
+            'pdf-rotated-text',
+            'Rotated text was detected and preserved in its original orientation.',
+            { pageId }
+          ))
+        }
       }
       const isBlankPage = blocks.length === 0 && !hasVisiblePdfPageContent(operatorList, runtime)
-      if (blocks.length === 0 && !isBlankPage) {
+      const isLowDensityScanPage = shouldRenderLowDensityPdfPage(
+        nativeLines,
+        imageRegions,
+        viewport.width,
+        viewport.height
+      )
+      if ((blocks.length === 0 && !isBlankPage) || isLowDensityScanPage) {
         const scanned = await createScannedPageImage(
           page,
           pageIndex,
@@ -4743,6 +5251,9 @@ export async function parsePdfDocument(
           options.renderPageToImage,
           options.registerAssetBytes
         )
+        // 低文本密度扫描页可能只有页眉或页码残留在原生文本层中；整页图像
+        // 一旦生成，就必须以 OCR 结果作为唯一内容来源，避免重复展示外围文字。
+        blocks.length = 0
         blocks.push(scanned.block)
         assets.push(scanned.asset)
         if (scanned.block.renderPending) {
@@ -4805,7 +5316,7 @@ export async function parsePdfDocument(
         height: viewport.height,
         ...(contentArea ? { contentArea } : {}),
         ...(isBlankPage ? { background: { kind: 'solid' as const, color: '#ffffff' } } : {}),
-        blocks: orderPdfPageBlocks(blocks, pageId, input.sha256)
+        blocks: orderPdfPageBlocks(blocks, pageId, input.sha256, columnLayout)
       })
       if (options.signal?.aborted) throw createPdfAbortError()
     }
