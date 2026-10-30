@@ -329,6 +329,34 @@
             </div>
             <p id="document-translation-unsupported" class="field-hint document-settings-unsupported" data-i18n="settings.document.unsupported" hidden>Document translation is not supported on this platform.</p>
             <div class="row">
+              <label for="document-translation-enabled" data-i18n="settings.document.enabled">Enable document translation</label>
+              <label class="checkbox-control">
+                <input id="document-translation-enabled" type="checkbox" />
+                <span data-i18n="settings.document.enabledLabel">Allow opening the document workspace and starting local document tasks</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="document-translation-max-file-mb" data-i18n="settings.document.maxFileMb">Max file size (MB)</label>
+              <input id="document-translation-max-file-mb" type="number" min="1" max="2048" step="1" />
+            </div>
+            <div class="row">
+              <label for="document-translation-max-pages" data-i18n="settings.document.maxPages">Max pages</label>
+              <input id="document-translation-max-pages" type="number" min="1" max="5000" step="1" />
+            </div>
+            <div class="row">
+              <label for="document-translation-max-ocr-images" data-i18n="settings.document.maxOcrImages">Max OCR images</label>
+              <input id="document-translation-max-ocr-images" type="number" min="1" max="2000" step="1" />
+            </div>
+            <div class="row">
+              <label for="document-translation-cache-max-mb" data-i18n="settings.document.cacheMaxMb">Cache size (MB)</label>
+              <input id="document-translation-cache-max-mb" type="number" min="64" max="20480" step="1" />
+            </div>
+            <div class="row">
+              <label for="document-translation-cache-max-age-days" data-i18n="settings.document.cacheMaxAgeDays">Keep cache for (days)</label>
+              <input id="document-translation-cache-max-age-days" type="number" min="1" max="365" step="1" />
+            </div>
+            <p class="field-hint" data-i18n="settings.document.limitsHint">Limits apply to every newly started document task. The cache stores only successful translated text; failures and suspected untranslated content are not saved.</p>
+            <div class="row">
               <label for="web-translation-enabled" data-i18n="settings.web.enabled">Enable web translation</label>
               <label class="checkbox-control">
                 <input id="web-translation-enabled" type="checkbox" />

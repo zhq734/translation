@@ -1,6 +1,6 @@
 import type { DocumentModel } from '../shared/documentTypes.ts'
 import { parseDocxDocument } from './documentDocxParser.ts'
-import { parseEpubDocument } from './documentEpubParser.ts'
+import { parseEpubDocument, type ParseEpubOptions } from './documentEpubParser.ts'
 import { parseImageDocument } from './documentImageParser.ts'
 import { parsePdfDocument, type ParsePdfOptions } from './documentPdfParser.ts'
 import type { DocumentParseInput } from './documentParserShared.ts'
@@ -28,8 +28,8 @@ export interface DocumentParserDependencies {
   parsePdf(input: DocumentParseInput, options: ParsePdfOptions): Promise<DocumentModel>
   /** 解析 DOCX。 */
   parseDocx(input: DocumentParseInput): Promise<DocumentModel>
-  /** 解析 EPUB。 */
-  parseEpub(input: DocumentParseInput): Promise<DocumentModel>
+  /** 解析 EPUB，并允许限制章节数量。 */
+  parseEpub(input: DocumentParseInput, options?: ParseEpubOptions): Promise<DocumentModel>
   /** 解析单张图片。 */
   parseImage(input: DocumentParseInput, registerAssetBytes?: ParsePdfOptions['registerAssetBytes']): Promise<DocumentModel>
   /** 可选的 PDF 页面栅格化函数。 */
@@ -42,6 +42,8 @@ export interface DocumentParserDependencies {
   registerAssetBytes?: ParsePdfOptions['registerAssetBytes']
   /** 可选的 PDF 解析取消信号。 */
   signal?: AbortSignal
+  /** 可选的最大页数或章节数，由当前设置动态提供。 */
+  maxPages?: number
 }
 
 /** 默认解析器依赖；生产环境直接使用各格式适配器。 */
@@ -53,7 +55,7 @@ const DEFAULT_DEPENDENCIES: DocumentParserDependencies = {
   parseHtml: async (input) => parseHtmlDocument(input),
   parsePdf: async (input, options) => parsePdfDocument(input, options),
   parseDocx: async (input) => parseDocxDocument(input),
-  parseEpub: async (input) => parseEpubDocument(input),
+  parseEpub: async (input, options) => parseEpubDocument(input, options),
   parseImage: async (input, registerAssetBytes) => parseImageDocument(input, registerAssetBytes)
 }
 
@@ -96,12 +98,15 @@ export async function parseDocument(
         ...(dependencies.registerAssetBytes
           ? { registerAssetBytes: dependencies.registerAssetBytes }
           : {}),
-        ...(dependencies.signal ? { signal: dependencies.signal } : {})
+        ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+        ...(dependencies.maxPages !== undefined ? { maxPages: dependencies.maxPages } : {})
       })
     case 'docx':
       return dependencies.parseDocx(input)
     case 'epub':
-      return dependencies.parseEpub(input)
+      return dependencies.parseEpub(input, dependencies.maxPages !== undefined
+        ? { maxPages: dependencies.maxPages }
+        : undefined)
     case 'image':
       return dependencies.parseImage(input, dependencies.registerAssetBytes)
     default:

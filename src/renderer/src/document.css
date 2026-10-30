@@ -25,15 +25,38 @@ body {
 }
 
 .document-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
   padding: var(--space-2) var(--space-4);
   border-bottom: var(--border-width) solid var(--border-default);
   background: var(--bg-secondary);
+}
+
+.document-toolbar-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.document-toolbar-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.document-toolbar-display-controls {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .document-file-tabs,
@@ -47,19 +70,19 @@ body {
 
 .document-file-tabs {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   overflow-x: auto;
+  padding-bottom: 1px;
   scrollbar-width: thin;
 }
 
 .document-file-tab {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 clamp(150px, 18vw, 220px);
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
-  max-width: 220px;
   min-height: var(--control-height);
   padding: 0 var(--space-1) 0 var(--space-3);
   border: var(--border-width) solid var(--border-control);
@@ -134,8 +157,8 @@ body {
 }
 
 .document-language-controls {
-  flex: 1 1 auto;
-  justify-content: center;
+  flex: 0 1 auto;
+  justify-content: flex-start;
   flex-wrap: wrap;
 }
 
@@ -164,13 +187,14 @@ body {
 }
 
 .document-actual-language {
-  flex: 1 1 100%;
+  flex: 0 1 auto;
   min-width: 0;
+  margin-left: auto;
   color: var(--text-secondary);
   font-size: var(--font-size-caption);
   line-height: 1.4;
   overflow-wrap: anywhere;
-  text-align: center;
+  text-align: right;
 }
 
 .document-actual-language[hidden] {
@@ -563,12 +587,21 @@ body {
 .document-workbench-header {
   display: flex;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-bottom: var(--border-width) solid var(--border-default);
   background: var(--panel-bg);
+}
+
+.document-workbench-primary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .document-workbench-actions {
@@ -614,12 +647,15 @@ body {
 }
 
 .document-partial-status {
-  max-width: min(42vw, 460px);
+  flex: 1 1 320px;
+  min-width: 0;
+  margin-left: auto;
   overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--font-size-caption);
   line-height: 1.4;
   text-overflow: ellipsis;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -825,6 +861,7 @@ body {
 
 .document-file-identity {
   display: flex;
+  flex: 1 1 260px;
   flex-direction: column;
   min-width: 0;
   gap: 2px;
@@ -1821,10 +1858,15 @@ body {
 .document-progress-copy {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-3);
   color: var(--text-secondary);
   font-size: var(--font-size-caption);
+}
+
+.document-progress-copy > #document-progress-stage,
+.document-progress-copy > #document-progress-count {
+  flex: 0 0 auto;
 }
 
 .document-progress-track {
@@ -1860,25 +1902,6 @@ body {
 }
 
 @media (max-width: 900px) {
-  .document-toolbar {
-    flex-wrap: wrap;
-  }
-
-  .document-language-controls {
-    order: 3;
-    flex-basis: 100%;
-    justify-content: flex-start;
-  }
-
-  .document-file-tabs {
-    flex-basis: 100%;
-    order: 2;
-  }
-
-  .document-actual-language {
-    text-align: left;
-  }
-
   .document-columns {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
@@ -1897,24 +1920,15 @@ body {
     border-bottom: 0;
   }
 
-  .document-workbench-header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .document-workbench-actions {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
   .document-partial-status {
-    flex: 1 1 100%;
-    max-width: none;
+    flex-basis: 100%;
+    margin-left: 0;
+    text-align: left;
   }
 }
 
 @media (max-width: 620px) {
-  .document-toolbar {
+  .document-toolbar-main {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1923,8 +1937,22 @@ body {
     flex-wrap: wrap;
   }
 
+  .document-toolbar-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .document-toolbar-display-controls {
+    width: 100%;
+  }
+
+  .document-actual-language {
+    margin-left: 0;
+    text-align: left;
+  }
+
   .document-file-tab {
-    max-width: min(72vw, 220px);
+    flex-basis: min(72vw, 220px);
   }
 
   /* 窄屏顶部栏可能贴边，历史下拉改为固定层，避免被工具栏滚动或裁切。 */
@@ -1976,5 +2004,14 @@ body {
 
   .document-workbench-actions > button {
     flex: 1 1 auto;
+  }
+
+  .document-workbench-actions {
+    flex-wrap: wrap;
+  }
+
+  .document-workbench-primary {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

@@ -263,7 +263,7 @@ test('任务服务重新翻译失败项时不得重新解析或重跑已成功�
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
-    await service.run({ path, generation: 1 })
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
     const failed = await waitForTerminal(events)
     // 没有成功译文时任务必须保持 failed，不能仅因存在可重试目标而伪装成 partial。
     assert.equal(failed.task.status, 'failed')
@@ -280,7 +280,7 @@ test('任务服务重新翻译失败项时不得重新解析或重跑已成功�
       completionReport: failed.completionReport
     }])
     const frozenPair = failed.languagePair
-    assert.deepEqual(frozenPair, { sourceLang: 'auto', targetLang: 'ZH' })
+    assert.deepEqual(frozenPair, { sourceLang: 'EN', targetLang: 'ZH' })
 
     retrying = true
     translatedTexts.length = 0
@@ -341,7 +341,7 @@ test('任务服务在部分成功时保持 partial 并记录完整完成报告',
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
-    await service.run({ path, generation: 1 })
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
     const partial = await waitForTerminal(events)
     assert.equal(partial.task.status, 'partial')
     assert.equal(partial.retryableFailedBlocks, 1)
@@ -392,7 +392,7 @@ test('任务服务必须从完成报告派生重试集合，不能因失败块�
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
-    await service.run({ path, generation: 1 })
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
     const partial = await waitForTerminal(events)
     assert.equal(partial.task.status, 'partial')
     assert.equal(partial.completionReport?.failed, 1)
@@ -450,7 +450,7 @@ test('任务快照必须以同代际完成报告校正矛盾状态并允许重�
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
-    await service.run({ path, generation: 1 })
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
     const partial = await waitForTerminal(events)
     assert.equal(partial.task.status, 'partial')
     const active = service as unknown as {
@@ -1835,6 +1835,155 @@ test('任务服务块增量必须携带当前任务和代际且不覆盖旧终�
     assert.ok(current)
     assert.equal(current.generation, 2)
     await waitForTerminal(events, 2)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须使用当前文件大小上限并在解析前拒绝超限文件', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let parseCalls = 0
+  const deps = dependencies(path, events)
+  deps.maxFileBytes = () => 4
+  deps.parse = async () => {
+    parseCalls += 1
+    return model(path)
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    assert.deepEqual(await service.run({ path, generation: 1 }), {
+      accepted: false,
+      code: 'too-large'
+    })
+    assert.equal(parseCalls, 0)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须把页数和 OCR 预算透传给解析与流水线', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let parseOptions: { maxPages?: number } | undefined
+  let ocrCalls = 0
+  const deps = dependencies(path, events)
+  deps.maxPages = () => 12
+  deps.maxOcrImages = () => 0
+  deps.parse = async (_input, _registerAssetBytes, _signal, options) => {
+    parseOptions = options
+    const parsed = model(path)
+    parsed.pages[0]!.blocks.push({
+      kind: 'image',
+      blockId: 'image-1',
+      readingOrder: 1,
+      translatable: false,
+      assetId: 'asset-1',
+      bbox: { x: 100, y: 200, width: 100, height: 100 }
+    })
+    parsed.assets = [{
+      assetId: 'asset-1',
+      kind: 'image',
+      mimeType: 'image/png',
+      sha256: 'asset',
+      byteLength: 1
+    }]
+    return parsed
+  }
+  deps.loadAssetBytes = async () => new Uint8Array([1])
+  deps.recognizeImage = async () => {
+    ocrCalls += 1
+    return { text: 'OCR', lines: [], engine: 'system' }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    const accepted = await service.run({ path, generation: 1 })
+    assert.equal(accepted.accepted, true)
+    const completed = await waitForTerminal(events)
+    assert.deepEqual(parseOptions, { maxPages: 12 })
+    assert.equal(ocrCalls, 0)
+    assert.ok(completed.source?.warnings.some((warning) => warning.code === 'ocr-limit-reached'))
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须使用成功缓存跳过提供方并写回成功译文', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const cache = new Map<string, unknown>()
+  let translateCalls = 0
+  deps.getParserVersion = () => 'parser-v2'
+  deps.readTranslationCache = async (key) => cache.get(key) ?? null
+  deps.writeTranslationCache = async (key, value) => {
+    cache.set(key, value)
+  }
+  deps.translate = async (text) => {
+    translateCalls += 1
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
+    const first = await waitForTerminal(events, 1)
+    assert.equal(first.task.status, 'completed')
+    assert.equal(translateCalls, 1)
+    assert.equal(cache.size, 1)
+    const [cacheKey] = [...cache.keys()]
+    assert.match(cacheKey ?? '', /parser-v2/u)
+
+    await service.run({ path, generation: 2, sourceLang: 'EN', targetLang: 'ZH' })
+    const second = await waitForTerminal(events, 2)
+    assert.equal(second.task.status, 'completed')
+    assert.equal(translateCalls, 1)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须把术语表传给缓存上下文，并在缓存异常时继续翻译', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const cacheKeys: string[] = []
+  const glossaryContexts: string[] = []
+  deps.getParserVersion = () => 'parser-v3'
+  deps.glossary = () => ({
+    version: 'glossary-v4',
+    entries: [{ source: 'Hello', target: '你好', sourceLang: 'EN', targetLang: 'ZH' }]
+  })
+  deps.readTranslationCache = async (key) => {
+    cacheKeys.push(key)
+    throw new Error('cache unavailable')
+  }
+  deps.writeTranslationCache = async () => {
+    throw new Error('cache unavailable')
+  }
+  deps.translate = async (text, _signal, _request, _languagePair, _onDelta, context) => {
+    glossaryContexts.push(context?.glossaryContext ?? '')
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.task.status, 'completed')
+    assert.ok(cacheKeys.length > 0)
+    assert.match(cacheKeys[0] ?? '', /glossary-v4/u)
+    assert.match(glossaryContexts[0] ?? '', /Hello => 你好/u)
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })

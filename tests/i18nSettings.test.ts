@@ -6,9 +6,9 @@ import {
   normalizeSettings
 } from '../src/shared/settingsDefaults.ts'
 
-test('新安装默认跟随系统，schema 升级到 20', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 20)
-  assert.equal(DEFAULT_SETTINGS.schemaVersion, 20)
+test('新安装默认跟随系统，schema 升级到 21', () => {
+  assert.equal(SETTINGS_SCHEMA_VERSION, 21)
+  assert.equal(DEFAULT_SETTINGS.schemaVersion, 21)
   assert.equal(DEFAULT_SETTINGS.uiLocale, 'auto')
 })
 
@@ -35,7 +35,7 @@ test('schema 19 迁移到 20 时补齐 uiLocale 且保留其他字段', () => {
     hotkey: 'Alt+Y',
     webTranslationMaxBlocks: 321
   } as never)
-  assert.equal(migrated.schemaVersion, 20)
+  assert.equal(migrated.schemaVersion, 21)
   assert.equal(migrated.uiLocale, 'auto')
   assert.equal(migrated.targetLang, 'EN')
   assert.equal(migrated.sourceLang, 'ZH')

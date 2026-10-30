@@ -144,6 +144,8 @@ export interface DocumentFileValidationInput {
   zipDirectory?: Uint8Array
   /** 文件是否可读；未提供时视为可读。 */
   readable?: boolean
+  /** 当前设置允许的最大文件字节数；未提供时使用默认上限。 */
+  maxBytes?: number
 }
 
 /** 格式探测所需的有限文件内容。 */
@@ -534,7 +536,8 @@ export function validateDocumentFile(input: DocumentFileValidationInput): Docume
   if (!Number.isFinite(input.size) || input.size <= 0) {
     return { ok: false, code: 'empty-file', format: detected.format }
   }
-  if (input.size > DOCUMENT_MAX_FILE_BYTES) {
+  const maxBytes = input.maxBytes ?? DOCUMENT_MAX_FILE_BYTES
+  if (input.size > maxBytes) {
     return { ok: false, code: 'too-large', format: detected.format }
   }
   if (input.readable === false) {

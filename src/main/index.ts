@@ -270,6 +270,7 @@ import { exportDocumentToPdf } from './documentPdfExport'
 import { printDocumentPreviewToPdf } from './documentPdfPrint'
 import { loadDocumentPdfFontBytes } from './documentPdfFont'
 import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
+import { DocumentTranslationCacheStore } from './documentTranslationCache'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
   type DocumentExportRequest,
@@ -687,6 +688,12 @@ function releaseDocumentWorkspaceTask(jobId: string): boolean {
  * @author zhenghq
  */
 function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
+  const settings = getSettings()
+  const cacheStore = new DocumentTranslationCacheStore({
+    directory: join(app.getPath('userData'), 'document-translation-cache'),
+    maxBytes: settings.documentTranslationCacheMaxBytes,
+    maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
+  })
   return new DocumentWorkspaceTaskService({
     isApprovedPath: (path) => approvedDocumentPaths.has(path),
     sendProgress: (snapshot) => {
@@ -698,11 +705,13 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     sendCompleted: (snapshot) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
     },
-    parse: async (input, registerAssetBytes, signal) => {
+    parse: async (input, registerAssetBytes, signal, options) => {
       if (input.format !== 'pdf' && input.format !== 'image') {
-        return parseDocument(input, { registerAssetBytes })
+        return parseDocument(input, { registerAssetBytes, ...options })
       }
-      if (input.format === 'image') return parseDocument(input, { registerAssetBytes })
+      if (input.format === 'image') {
+        return parseDocument(input, { registerAssetBytes, ...options })
+      }
       const {
         renderPageToImage,
         renderPageRegionToImage,
@@ -713,10 +722,11 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         renderPageToImage,
         renderPageRegionToImage,
         renderEmbeddedImageToImage,
+        ...options,
         ...(signal ? { signal } : {})
       })
     },
-    translate: async (text, signal, _request, languagePair, onDelta) => {
+    translate: async (text, signal, _request, languagePair, onDelta, context) => {
       const settingsSnapshot = getSettings()
       const settings = {
         ...settingsSnapshot,
@@ -757,6 +767,13 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       )
     },
     loadAssetBytes: async () => null,
+    maxFileBytes: () => getSettings().documentTranslationMaxFileBytes,
+    maxPages: () => getSettings().documentTranslationMaxPages,
+    maxOcrImages: () => getSettings().documentTranslationMaxOcrImages,
+    glossary: () => undefined,
+    readTranslationCache: (key) => cacheStore.read(key),
+    writeTranslationCache: (key, value) => cacheStore.write(key, value),
+    getParserVersion: () => 'document-parser-v1',
     getTranslationConcurrency: () => getSettings().webTranslationConcurrency,
     getOcrConcurrency: () => 2,
     getModelFingerprint: () => {
@@ -826,11 +843,12 @@ async function validateApprovedDocumentPath(path: string): Promise<DocumentFileS
   if (typeof path !== 'string' || !path.trim() || !isAbsolute(path)) {
     return { status: 'rejected', code: 'unreadable' }
   }
+  const maxBytes = getSettings().documentTranslationMaxFileBytes
   let handle: Awaited<ReturnType<typeof openFile>> | null = null
   try {
     const fileStat = await stat(path)
     if (!fileStat.isFile()) return { status: 'rejected', code: 'unreadable' }
-    if (fileStat.size > DOCUMENT_MAX_FILE_BYTES) {
+    if (fileStat.size > maxBytes) {
       return { status: 'rejected', code: 'too-large' }
     }
     handle = await openFile(path, 'r')
@@ -851,7 +869,8 @@ async function validateApprovedDocumentPath(path: string): Promise<DocumentFileS
       head,
       tail,
       ...(zipDirectory ? { zipDirectory } : {}),
-      readable: true
+      readable: true,
+      maxBytes: getSettings().documentTranslationMaxFileBytes
     })
     if (!validation.ok) {
       return {
@@ -5479,6 +5498,10 @@ function openDocumentWorkspaceFromShortcut(): void {
  * @author zhenghq
  */
 function ensureDocumentWorkspaceSupported(): boolean {
+  if (!getSettings().documentTranslationEnabled) {
+    dialog.showErrorBox(t('error.openDocumentTranslation'), t('document.error.disabled'))
+    return false
+  }
   const capability = getDocumentPlatformCapability()
   if (capability.supported) return true
   const messageKey = getDocumentPlatformUnsupportedMessageKey(capability)
@@ -6062,6 +6085,9 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { accepted: false, code: 'unreadable' }
     }
+    if (!getSettings().documentTranslationEnabled) {
+      return { accepted: false, code: 'disabled' }
+    }
     const service = createDocumentWorkspaceTaskService()
     let acceptedJobId: string | null = null
     try {
@@ -6470,7 +6496,7 @@ function buildTrayMenu(): Menu {
     } },
     {
       label: t.t('menu.openDocumentTranslation'),
-      enabled: getDocumentPlatformCapability().supported,
+      enabled: getDocumentPlatformCapability().supported && settings.documentTranslationEnabled,
       click: () => openDocumentWorkspaceFromPopup()
     },
     {

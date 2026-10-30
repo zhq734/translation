@@ -494,10 +494,10 @@ async function retranslateDocumentAfterLanguageChange(): Promise<void> {
   appliedLanguagePair = nextPair
   const revision = ++tab.languageRevision
   const jobId = tab.activeJobId ?? tab.expectedJobId
-  if (jobId) {
-    await cancelDocumentJob(jobId, tab.generation)
-  }
+  const jobGeneration = tab.generation
+  await cancelDocumentJob(jobId, jobGeneration)
   if (!documentTabs.includes(tab) || revision !== tab.languageRevision) return
+  if (jobId) await releaseDocumentJob(jobId)
   await startDocumentTabTranslation(tab)
 }
 
@@ -900,8 +900,8 @@ function routeDocumentSnapshot(snapshot: DocumentWorkspaceSnapshot, terminal: bo
   updateDocumentTabSnapshot(tab, snapshot)
   if (tab.id !== activeDocumentTabId) return true
   refreshActiveTabMirror(tab)
-  if (terminal) flushSnapshotRender(tab, snapshot)
-  else scheduleSnapshotRender(tab, snapshot)
+  if (terminal) flushSnapshotRenderForTab(tab, snapshot)
+  else scheduleSnapshotRenderForTab(tab, snapshot)
   startButton.disabled = false
   return true
 }
@@ -1035,6 +1035,7 @@ function clearActiveTabPreview(): void {
  * @author zhenghq
  */
 function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
+  syncActiveTabMirror(tab)
   uploadPanel.hidden = true
   workbench.hidden = false
   workbenchName.textContent = tab.selection.name
@@ -2447,7 +2448,7 @@ function renderImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  jobId: string
+  jobId = ''
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -2481,7 +2482,7 @@ function renderTableBlock(
   block: DocumentTableBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  jobId: string
+  jobId = ''
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-table-block'
@@ -2572,7 +2573,7 @@ function renderTableCellBlock(
 function renderTableCellImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
-  jobId: string
+  jobId = ''
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -4319,7 +4320,7 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function scheduleSnapshotRender(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
+function scheduleSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
   // 模式切换重启期间禁止旧任务快照进入合并队列，避免取消终态在新流程启动前回写界面。
   if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
   latestSnapshot = snapshot
@@ -4340,7 +4341,7 @@ function scheduleSnapshotRender(tab: DocumentWorkspaceTab, snapshot: DocumentWor
  * @returns 无返回值。
  * @author zhenghq
  */
-function flushSnapshotRender(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
+function flushSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
   // 模式切换重启期间终态也必须丢弃，新任务只接受其自身代际的完成事件。
   if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
   if (pendingRenderFrame !== null) {
@@ -4387,12 +4388,14 @@ async function cancelLateDocumentRunResult(
 
 /**
  * 在 OCR 原文与译文模式切换时立即清空目标 Tab 的旧进度和可见预览。
+ * 不传参数时重置当前活动页；传入 Tab 时同时清理后台任务状态。
  * 保留 activeJobId 供调用方取消旧任务，避免启动请求尚未返回时丢失取消目标。
- * @param tab 要重置运行状态的 Tab。
+ * @param tabs 可选的待重置 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab): void {
+function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab | null = getActiveDocumentTab()): void {
+  if (!tab) return
   tab.snapshot = null
   tab.expectedJobId = null
   tab.status = 'starting'
@@ -4426,6 +4429,7 @@ function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab): void {
   retryButton.disabled = true
   partialStatus.hidden = true
   closePartialExportDialog(false)
+  syncOcrDisplayModeControls()
 }
 
 /**
@@ -4529,7 +4533,7 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
     const pendingSnapshot = tab.snapshot as DocumentWorkspaceSnapshot | null
     if (pendingSnapshot?.jobId === result.jobId && tab.id === activeDocumentTabId) {
       refreshActiveTabMirror(tab)
-      scheduleSnapshotRender(tab, pendingSnapshot)
+      scheduleSnapshotRenderForTab(tab, pendingSnapshot)
     }
   } catch {
     if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
@@ -4571,8 +4575,7 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
  */
 async function startDocumentTranslation(): Promise<void> {
   const tab = getActiveDocumentTab()
-  if (!tab) return
-  await startDocumentTabTranslation(tab)
+  if (tab) await startDocumentTabTranslation(tab)
 }
 
 /**
@@ -4661,7 +4664,7 @@ async function exportTranslatedPdf(): Promise<void> {
   const snapshot = tab?.snapshot
   if (!tab || !snapshot?.translation) return
   // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
-  flushSnapshotRender(tab, snapshot)
+  flushSnapshotRenderForTab(tab, snapshot)
   const isComplete = snapshot.task.status === 'completed'
   if (!isComplete) {
     revealFirstIncompleteTarget(snapshot)
@@ -4673,7 +4676,7 @@ async function exportTranslatedPdf(): Promise<void> {
     }
     if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation) return
     if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
-    flushSnapshotRender(tab, snapshot)
+    flushSnapshotRenderForTab(tab, snapshot)
   }
   exportButton.disabled = true
   try {
@@ -4905,20 +4908,27 @@ async function initializeDocumentWorkspace(): Promise<void> {
       const tab = getActiveDocumentTab()
       if (!tab || tab.ocrDisplayMode === nextMode) return
       tab.ocrDisplayMode = nextMode
-      refreshActiveTabMirror(tab)
+      ocrDisplayMode = nextMode
       syncOcrDisplayModeControls()
       // 展示方式改变即代表新的执行流程：先中断旧任务，再清空旧进度和预览。
       if (tab.startInFlight || tab.pendingOcrModeRestart) {
+        // reset 会清空 expectedJobId；必须在重置前捕获旧任务，确保迟到任务仍可取消并释放。
+        const jobId = tab.activeJobId ?? tab.expectedJobId
+        const jobGeneration = tab.generation
         tab.pendingOcrModeRestart = true
         tab.pendingLanguageRetranslation = false
         refreshActiveTabMirror(tab)
         resetDocumentRunForModeSwitch(tab)
         // 若启动请求已创建任务但尚未返回，这里先尝试取消；finally 会再次按最新 jobId 兜底。
-        void cancelDocumentJob(tab.activeJobId ?? tab.expectedJobId, tab.generation)
+        void cancelDocumentJob(jobId, jobGeneration)
         return
       }
+      // reset 会清空 expectedJobId；正常切换也必须先保存旧任务标识，避免资源泄漏。
       const jobId = tab.activeJobId ?? tab.expectedJobId
-      await cancelDocumentJob(jobId, tab.generation)
+      const jobGeneration = tab.generation
+      await cancelDocumentJob(jobId, jobGeneration)
+      if (!documentTabs.includes(tab) || tab.ocrDisplayMode !== nextMode) return
+      if (jobId) await releaseDocumentJob(jobId)
       resetDocumentRunForModeSwitch(tab)
       await startDocumentTabTranslation(tab)
     })
@@ -4945,7 +4955,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
     updateDocumentTabSnapshot(tab, next)
     if (tab.id !== activeDocumentTabId) return
     refreshActiveTabMirror(tab)
-    scheduleSnapshotRender(tab, next)
+    scheduleSnapshotRenderForTab(tab, next)
   })
   window.api.onDocumentCompleted((snapshot) => {
     routeDocumentSnapshot(snapshot, true)

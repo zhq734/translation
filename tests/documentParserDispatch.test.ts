@@ -66,6 +66,7 @@ test('统一解析调度器必须按格式选择对应解析器', async () => {
 test('统一解析调度器必须把 PDF 栅格化函数透传并拒绝不支持的格式', async () => {
   let renderer: unknown
   let embeddedImageRenderer: unknown
+  let pdfMaxPages: number | undefined
   await parseDocument({
     path: '/tmp/sample.pdf',
     fileName: 'sample.pdf',
@@ -81,15 +82,18 @@ test('统一解析调度器必须把 PDF 栅格化函数透传并拒绝不支持
     parsePdf: async (_input, options) => {
       renderer = options.renderPageToImage
       embeddedImageRenderer = options.renderEmbeddedImageToImage
+      pdfMaxPages = options.maxPages
       return model('pdf')
     },
     parseDocx: async () => model('docx'),
     parseEpub: async () => model('epub'),
     renderPageToImage: async () => new Uint8Array([1]),
-    renderEmbeddedImageToImage: async () => new Uint8Array([2])
+    renderEmbeddedImageToImage: async () => new Uint8Array([2]),
+    maxPages: 17
   })
   assert.equal(typeof renderer, 'function')
   assert.equal(typeof embeddedImageRenderer, 'function')
+  assert.equal(pdfMaxPages, 17)
 
   await assert.rejects(() => parseDocument({
     path: '/tmp/sample.exe',
@@ -107,4 +111,29 @@ test('统一解析调度器必须把 PDF 栅格化函数透传并拒绝不支持
     parseDocx: async () => model('docx'),
     parseEpub: async () => model('epub')
   }), /unsupported document format/u)
+})
+
+test('统一解析调度器必须把页数预算透传给 EPUB 解析器', async () => {
+  let epubMaxPages: number | undefined
+  await parseDocument({
+    path: '/tmp/sample.epub',
+    fileName: 'sample.epub',
+    format: 'epub',
+    sha256: 'fixture',
+    bytes: new Uint8Array([1])
+  }, {
+    parseText: async () => model('txt'),
+    parseMarkdown: async () => model('markdown'),
+    parseDelimited: async () => model('csv'),
+    parseSubtitle: async () => model('srt'),
+    parseHtml: async () => model('html'),
+    parsePdf: async () => model('pdf'),
+    parseDocx: async () => model('docx'),
+    parseEpub: async (_input, options) => {
+      epubMaxPages = options?.maxPages
+      return model('epub')
+    },
+    maxPages: 23
+  })
+  assert.equal(epubMaxPages, 23)
 })

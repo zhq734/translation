@@ -8,7 +8,7 @@ import {
 } from '../src/main/globalShortcutRegistry.ts'
 
 test('设置默认值应包含手动翻译、网页阅读器与文档翻译快捷键', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 20)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 21)
   assert.equal(DEFAULT_SETTINGS.manualTranslationHotkey, 'Alt+M')
   assert.equal(DEFAULT_SETTINGS.webReaderHotkey, 'Alt+P')
   assert.equal(DEFAULT_SETTINGS.documentTranslationHotkey, 'Alt+D')

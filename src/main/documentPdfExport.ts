@@ -1154,18 +1154,28 @@ async function drawTableCellImage(
   x: number,
   top: number,
   width: number,
-  dependencies: DocumentPdfExportDependencies
+  dependencies: DocumentPdfExportDependencies,
+  includeOcrTextLayer = false
 ): Promise<number> {
   const drawWidth = Math.max(1, width)
   const image = await loadImage(context, block.assetId, dependencies)
   const drawHeight = tableCellImageHeight(block, image, drawWidth)
   if (image) {
+    const imageBox = {
+      x,
+      y: top,
+      width: drawWidth,
+      height: drawHeight
+    }
     context.page.drawImage(image, {
       x,
       y: pdfY(context.page.getHeight(), top, drawHeight),
       width: drawWidth,
       height: drawHeight
     })
+    if (includeOcrTextLayer) {
+      drawOcrTextLayer(context, block, page, imageBox)
+    }
   } else {
     context.warnings.push({
       code: 'image-asset-unavailable',
@@ -1480,6 +1490,7 @@ function drawTextBlock(
  * @param dependencies 导出依赖。
  * @param composer 页面排版器。
  * @param document PDF 文档。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
  * @returns 同组实际占用后的纵向底部坐标。
  * @author zhenghq
  */
@@ -1489,7 +1500,8 @@ async function drawFlowGroup(
   page: DocumentPage,
   dependencies: DocumentPdfExportDependencies,
   composer: PageComposer,
-  document: PDFDocument
+  document: PDFDocument,
+  includeOcrTextLayer = false
 ): Promise<number> {
   const geometryTops = blocks
     .map((block) => block.bbox?.y)
@@ -1522,7 +1534,8 @@ async function drawFlowGroup(
         page,
         dependencies,
         composer,
-        document
+        document,
+        includeOcrTextLayer
       )
       groupBottom = Math.max(groupBottom, bottom, imageTop + bbox.height)
       composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
@@ -1537,7 +1550,8 @@ async function drawFlowGroup(
         composer.cursor,
         dependencies,
         composer,
-        document
+        document,
+        includeOcrTextLayer
       )
       groupBottom = Math.max(groupBottom, composer.cursor)
       continue
@@ -1591,6 +1605,7 @@ async function drawFlowGroup(
  * @param dependencies 导出依赖，用于读取单元格内图片。
  * @param composer 页面排版器；传入后可按实际行高跨页。
  * @param document PDF 文档；传入排版器时必须提供。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
  * @returns 新区块游标。
  * @author zhenghq
  */
@@ -1601,7 +1616,8 @@ async function drawTableBlock(
   cursor: number,
   dependencies: DocumentPdfExportDependencies,
   composer?: PageComposer,
-  document?: PDFDocument
+  document?: PDFDocument,
+  includeOcrTextLayer = false
 ): Promise<number> {
   const hasGeometry = block.bbox !== undefined
   const bbox = block.bbox ?? {
@@ -1694,7 +1710,8 @@ async function drawTableBlock(
             cellX + 5,
             contentTop,
             cellWidth - 10,
-            dependencies
+            dependencies,
+            includeOcrTextLayer
           )
         }
       }
@@ -1788,7 +1805,15 @@ async function drawPageBlocks(
         nextIndex += 1
       }
       if (group.length > 1) {
-        await drawFlowGroup(context, group, pageModel, dependencies, composer, document)
+        await drawFlowGroup(
+          context,
+          group,
+          pageModel,
+          dependencies,
+          composer,
+          document,
+          includeOcrTextLayer
+        )
         blockIndex = nextIndex - 1
         continue
       }
@@ -1803,7 +1828,8 @@ async function drawPageBlocks(
         composer.cursor,
         dependencies,
         composer,
-        document
+        document,
+        includeOcrTextLayer
       )
     } else if (block.kind === 'image') {
       const bbox = block.bbox

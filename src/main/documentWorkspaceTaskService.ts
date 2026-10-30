@@ -45,6 +45,11 @@ import type {
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
+import type {
+  DocumentGlossary,
+  DocumentTranslationCacheEntry,
+  DocumentTranslationRequestContext
+} from '../shared/documentTranslation.ts'
 import type { DocumentParseInput } from './documentParserShared.ts'
 import { decodeDocumentText } from './documentParserShared.ts'
 import { sanitizeHtmlPreview } from './documentTextParser.ts'
@@ -82,19 +87,21 @@ export interface DocumentWorkspaceTaskServiceDependencies {
   sendTranslationUpdate?(update: DocumentWorkspaceTranslationUpdate): void
   /** 推送最终完成、部分完成、取消或失败快照。 */
   sendCompleted(snapshot: DocumentWorkspaceSnapshot): void
-  /** 解析完整文档；第二个参数用于登记 PDF 等解析期生成的资源字节，第三个参数用于传递取消信号。 */
+  /** 解析完整文档；后两个参数用于登记资源字节和传递取消信号，最后一个参数携带页数预算。 */
   parse(
     input: DocumentParseInput,
     registerAssetBytes?: (assetId: string, bytes: Uint8Array) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { maxPages?: number }
   ): Promise<DocumentModel>
-  /** 翻译单段文本，显式接收任务级语言对，并通过 onDelta 推送当前片段的增量译文。 */
+  /** 翻译单段文本，显式接收任务级语言对、增量回调和受控上下文。 */
   translate(
     text: string,
     signal: AbortSignal,
     request: DocumentRunRequest,
     languagePair: DocumentLanguagePair,
-    onDelta?: (delta: string) => void
+    onDelta?: (delta: string) => void,
+    context?: DocumentTranslationRequestContext
   ): Promise<string>
   /** 识别图片文字。 */
   recognizeImage(bytes: Uint8Array, signal: AbortSignal): Promise<OcrRecognizeResult>
@@ -144,6 +151,20 @@ export interface DocumentWorkspaceTaskServiceDependencies {
    * @author zhenghq
    */
   getModelFingerprint?(): string
+  /** 读取当前设置允许的最大文件字节数。 */
+  maxFileBytes?(): number
+  /** 读取当前设置允许的最大页数或章节数。 */
+  maxPages?(): number
+  /** 读取当前设置允许 OCR 的最大图片数。 */
+  maxOcrImages?(): number
+  /** 读取当前启用的文档术语表。 */
+  glossary?(): DocumentGlossary | undefined
+  /** 读取文档翻译缓存；缓存不可用时返回 null 或抛出异常。 */
+  readTranslationCache?(key: string): Promise<unknown | null>
+  /** 写入成功的文档翻译缓存。 */
+  writeTranslationCache?(key: string, value: DocumentTranslationCacheEntry): Promise<void>
+  /** 读取解析器版本，用于翻译缓存隔离。 */
+  getParserVersion?(): string
 }
 
 /** 文档 PDF 导出器返回的字节与可降级告警。 */
@@ -218,6 +239,17 @@ function errorCode(error: unknown, fallback: string): string {
 }
 
 /**
+ * 判断任务状态是否已经进入不可回退的终态。
+ * @param status 当前任务状态。
+ * @returns completed、partial、cancelled 或 failed 时返回 true。
+ * @author zhenghq
+ */
+function isTerminalDocumentTaskStatus(status: DocumentTaskState['status']): boolean {
+  return status === 'completed' || status === 'partial' ||
+    status === 'cancelled' || status === 'failed'
+}
+
+/**
  * 文档工作台任务服务，负责把文件校验、解析、OCR、翻译、进度和导出串成受控链路。
  * @author zhenghq
  */
@@ -280,6 +312,7 @@ export class DocumentWorkspaceTaskService {
     this.starting = true
     this.pendingGeneration = request.generation
     try {
+      const maxFileBytes = this.dependencies.maxFileBytes?.() ?? DOCUMENT_MAX_FILE_BYTES
       let fileStat: Awaited<ReturnType<typeof stat>>
       try {
         fileStat = await stat(request.path)
@@ -288,7 +321,7 @@ export class DocumentWorkspaceTaskService {
       }
       if (!fileStat.isFile()) return { accepted: false, code: 'unreadable' }
       if (fileStat.size === 0) return { accepted: false, code: 'empty-file' }
-      if (fileStat.size > DOCUMENT_MAX_FILE_BYTES) return { accepted: false, code: 'too-large' }
+      if (fileStat.size > maxFileBytes) return { accepted: false, code: 'too-large' }
 
       let bytes: Uint8Array
       try {
@@ -308,7 +341,8 @@ export class DocumentWorkspaceTaskService {
         head: bytes.subarray(0, Math.min(bytes.byteLength, DOCUMENT_HEAD_BYTES)),
         tail,
         ...(zipDirectory ? { zipDirectory } : {}),
-        readable: true
+        readable: true,
+        maxBytes: maxFileBytes
       })
       if (!validation.ok) return { accepted: false, code: validation.code }
 
@@ -643,22 +677,33 @@ export class DocumentWorkspaceTaskService {
         job.controller.signal,
         {
           parse: async (input) => {
+            const maxPages = this.dependencies.maxPages?.()
             const parsed = await this.dependencies.parse(
               input,
               (assetId, bytes) => {
                 job.assetBytes.set(assetId, bytes)
               },
-              job.controller.signal
+              job.controller.signal,
+              maxPages !== undefined ? { maxPages } : undefined
             )
             job.source = parsed
             return parsed
           },
           loadAssetBytes: (asset) => this.loadAsset(job, asset),
           recognizeImage: (bytes, signal) => this.dependencies.recognizeImage(bytes, signal),
-          translate: (text, signal, languagePair, onDelta) =>
-            this.dependencies.translate(text, signal, job.request, languagePair, onDelta),
+          translate: (text, signal, languagePair, onDelta, context) =>
+            this.dependencies.translate(
+              text,
+              signal,
+              job.request,
+              languagePair,
+              onDelta,
+              context
+            ),
           onProgress: (state) => {
-            if (job.cancelled || job.settled) return
+            // 流水线会在返回结果前先发出终态；此时源模型与完成报告尚未回填到
+            // 任务服务，必须等 result 到达后由 emitCompleted 统一发送权威快照。
+            if (job.cancelled || job.settled || isTerminalDocumentTaskStatus(state.status)) return
             if (state.phase === 'translate') {
               translationCompleted = state.progress.completed
               translationTotal = state.progress.total
@@ -683,7 +728,12 @@ export class DocumentWorkspaceTaskService {
           },
           concurrency: this.dependencies.getTranslationConcurrency?.(),
           ocrConcurrency: this.dependencies.getOcrConcurrency?.(),
-          getModelFingerprint: this.dependencies.getModelFingerprint
+          getModelFingerprint: this.dependencies.getModelFingerprint,
+          maxOcrImages: this.dependencies.maxOcrImages?.(),
+          glossary: this.dependencies.glossary?.(),
+          readTranslationCache: this.dependencies.readTranslationCache,
+          writeTranslationCache: this.dependencies.writeTranslationCache,
+          getParserVersion: this.dependencies.getParserVersion
         },
         {
           sourcePreference: job.request.sourceLang ?? 'auto',
@@ -745,10 +795,18 @@ export class DocumentWorkspaceTaskService {
           parse: async () => source,
           loadAssetBytes: (asset) => this.loadAsset(job, asset),
           recognizeImage: (bytes, signal) => this.dependencies.recognizeImage(bytes, signal),
-          translate: (text, signal, languagePair, onDelta) =>
-            this.dependencies.translate(text, signal, job.request, languagePair, onDelta),
+          translate: (text, signal, languagePair, onDelta, context) =>
+            this.dependencies.translate(
+              text,
+              signal,
+              job.request,
+              languagePair,
+              onDelta,
+              context
+            ),
           onProgress: (state) => {
-            if (job.cancelled || job.settled) return
+            // 与首次运行一致，终态只能由 result 驱动的 emitCompleted 发送。
+            if (job.cancelled || job.settled || isTerminalDocumentTaskStatus(state.status)) return
             if (state.phase === 'translate') {
               retryCompleted = state.progress.completed
               retryTotal = state.progress.total
@@ -773,7 +831,12 @@ export class DocumentWorkspaceTaskService {
           },
           concurrency: this.dependencies.getTranslationConcurrency?.(),
           ocrConcurrency: this.dependencies.getOcrConcurrency?.(),
-          getModelFingerprint: this.dependencies.getModelFingerprint
+          getModelFingerprint: this.dependencies.getModelFingerprint,
+          maxOcrImages: this.dependencies.maxOcrImages?.(),
+          glossary: this.dependencies.glossary?.(),
+          readTranslationCache: this.dependencies.readTranslationCache,
+          writeTranslationCache: this.dependencies.writeTranslationCache,
+          getParserVersion: this.dependencies.getParserVersion
         },
         languageResolution
       )

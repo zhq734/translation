@@ -4,7 +4,18 @@ import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
 
-export const SETTINGS_SCHEMA_VERSION = 20
+export const SETTINGS_SCHEMA_VERSION = 21
+
+/** 文档翻译设置的最小与最大安全边界。 */
+const DOCUMENT_SETTINGS_LIMITS = {
+  fileBytesMin: 1024 * 1024,
+  fileBytesMax: 2 * 1024 * 1024 * 1024,
+  pagesMax: 5000,
+  ocrImagesMax: 2000,
+  cacheBytesMin: 64 * 1024 * 1024,
+  cacheBytesMax: 20 * 1024 * 1024 * 1024,
+  cacheAgeDaysMax: 365
+} as const
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -17,6 +28,12 @@ export const DEFAULT_SETTINGS: Settings = {
   manualTranslationHotkey: 'Alt+M',
   webReaderHotkey: 'Alt+P',
   documentTranslationHotkey: 'Alt+D',
+  documentTranslationEnabled: true,
+  documentTranslationMaxFileBytes: 100 * 1024 * 1024,
+  documentTranslationMaxPages: 500,
+  documentTranslationMaxOcrImages: 200,
+  documentTranslationCacheMaxBytes: 1024 * 1024 * 1024,
+  documentTranslationCacheMaxAgeDays: 30,
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
@@ -143,6 +160,27 @@ function normalizeWebLimit(value: unknown, fallback: number, maximum: number, mi
 }
 
 /**
+ * 规范化文档翻译整数限制；缺失、非数值或负数回退默认值，合法数值裁剪到安全范围。
+ * @param value 待规范化的值。
+ * @param fallback 缺失或非法时使用的默认值。
+ * @param minimum 允许的最小值。
+ * @param maximum 允许的最大值。
+ * @returns 安全范围内的整数。
+ * @author zhenghq
+ */
+function normalizeDocumentInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  if (value === undefined || value === null || value === '') return fallback
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) return fallback
+  return Math.min(maximum, Math.max(minimum, Math.floor(numeric)))
+}
+
+/**
  * 规范化 AI Base URL：去除首尾空白和末尾斜杠。
  * @param baseUrl 原始 Base URL。
  * @returns 规范化后的 Base URL。
@@ -217,6 +255,38 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     documentTranslationHotkey: normalizeShortcutSetting(
       rawSettings.documentTranslationHotkey,
       DEFAULT_SETTINGS.documentTranslationHotkey
+    ),
+    // 第二十一版新增文档翻译设置；缺失时启用，显式关闭必须保留。
+    documentTranslationEnabled: rawSettings.documentTranslationEnabled !== false,
+    documentTranslationMaxFileBytes: normalizeDocumentInteger(
+      rawSettings.documentTranslationMaxFileBytes,
+      DEFAULT_SETTINGS.documentTranslationMaxFileBytes,
+      DOCUMENT_SETTINGS_LIMITS.fileBytesMin,
+      DOCUMENT_SETTINGS_LIMITS.fileBytesMax
+    ),
+    documentTranslationMaxPages: normalizeDocumentInteger(
+      rawSettings.documentTranslationMaxPages,
+      DEFAULT_SETTINGS.documentTranslationMaxPages,
+      1,
+      DOCUMENT_SETTINGS_LIMITS.pagesMax
+    ),
+    documentTranslationMaxOcrImages: normalizeDocumentInteger(
+      rawSettings.documentTranslationMaxOcrImages,
+      DEFAULT_SETTINGS.documentTranslationMaxOcrImages,
+      1,
+      DOCUMENT_SETTINGS_LIMITS.ocrImagesMax
+    ),
+    documentTranslationCacheMaxBytes: normalizeDocumentInteger(
+      rawSettings.documentTranslationCacheMaxBytes,
+      DEFAULT_SETTINGS.documentTranslationCacheMaxBytes,
+      DOCUMENT_SETTINGS_LIMITS.cacheBytesMin,
+      DOCUMENT_SETTINGS_LIMITS.cacheBytesMax
+    ),
+    documentTranslationCacheMaxAgeDays: normalizeDocumentInteger(
+      rawSettings.documentTranslationCacheMaxAgeDays,
+      DEFAULT_SETTINGS.documentTranslationCacheMaxAgeDays,
+      1,
+      DOCUMENT_SETTINGS_LIMITS.cacheAgeDaysMax
     ),
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),

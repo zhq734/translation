@@ -56,6 +56,12 @@ const webReaderHotkey = document.getElementById('web-reader-hotkey') as HTMLInpu
 const webReaderHotkeyClear = document.getElementById('web-reader-hotkey-clear') as HTMLButtonElement
 const documentTranslationHotkey = document.getElementById('document-translation-hotkey') as HTMLInputElement
 const documentTranslationHotkeyClear = document.getElementById('document-translation-hotkey-clear') as HTMLButtonElement
+const documentTranslationEnabled = document.getElementById('document-translation-enabled') as HTMLInputElement
+const documentTranslationMaxFileMb = document.getElementById('document-translation-max-file-mb') as HTMLInputElement
+const documentTranslationMaxPages = document.getElementById('document-translation-max-pages') as HTMLInputElement
+const documentTranslationMaxOcrImages = document.getElementById('document-translation-max-ocr-images') as HTMLInputElement
+const documentTranslationCacheMaxMb = document.getElementById('document-translation-cache-max-mb') as HTMLInputElement
+const documentTranslationCacheMaxAgeDays = document.getElementById('document-translation-cache-max-age-days') as HTMLInputElement
 const shortcutRegistrationStatus = document.getElementById('shortcut-registration-status') as HTMLElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
@@ -502,6 +508,12 @@ function renderSettings(settings: Settings): void {
   manualTranslationHotkey.value = settings.manualTranslationHotkey
   webReaderHotkey.value = settings.webReaderHotkey
   documentTranslationHotkey.value = settings.documentTranslationHotkey
+  documentTranslationEnabled.checked = settings.documentTranslationEnabled
+  documentTranslationMaxFileMb.value = String(Math.round(settings.documentTranslationMaxFileBytes / (1024 * 1024)))
+  documentTranslationMaxPages.value = String(settings.documentTranslationMaxPages)
+  documentTranslationMaxOcrImages.value = String(settings.documentTranslationMaxOcrImages)
+  documentTranslationCacheMaxMb.value = String(Math.round(settings.documentTranslationCacheMaxBytes / (1024 * 1024)))
+  documentTranslationCacheMaxAgeDays.value = String(settings.documentTranslationCacheMaxAgeDays)
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
   speechProvider.value = settings.speechProvider
@@ -977,6 +989,22 @@ function saveWebReaderHotkey(): void {
  */
 function saveDocumentTranslationHotkey(): void {
   void save({ documentTranslationHotkey: documentTranslationHotkey.value.trim() })
+}
+
+/**
+ * 保存文档翻译开关、资源上限与持久化缓存策略。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDocumentTranslationSettings(): void {
+  void save({
+    documentTranslationEnabled: documentTranslationEnabled.checked,
+    documentTranslationMaxFileBytes: Number(documentTranslationMaxFileMb.value) * 1024 * 1024,
+    documentTranslationMaxPages: Number(documentTranslationMaxPages.value),
+    documentTranslationMaxOcrImages: Number(documentTranslationMaxOcrImages.value),
+    documentTranslationCacheMaxBytes: Number(documentTranslationCacheMaxMb.value) * 1024 * 1024,
+    documentTranslationCacheMaxAgeDays: Number(documentTranslationCacheMaxAgeDays.value)
+  })
 }
 
 /**
@@ -1878,6 +1906,12 @@ webReaderHotkeyClear.addEventListener('click', clearWebReaderHotkey)
 documentTranslationHotkey.addEventListener('change', saveDocumentTranslationHotkey)
 documentTranslationHotkey.addEventListener('keydown', handleDocumentTranslationHotkeyKeydown)
 documentTranslationHotkeyClear.addEventListener('click', clearDocumentTranslationHotkey)
+documentTranslationEnabled.addEventListener('change', saveDocumentTranslationSettings)
+documentTranslationMaxFileMb.addEventListener('change', saveDocumentTranslationSettings)
+documentTranslationMaxPages.addEventListener('change', saveDocumentTranslationSettings)
+documentTranslationMaxOcrImages.addEventListener('change', saveDocumentTranslationSettings)
+documentTranslationCacheMaxMb.addEventListener('change', saveDocumentTranslationSettings)
+documentTranslationCacheMaxAgeDays.addEventListener('change', saveDocumentTranslationSettings)
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 autoLaunch.addEventListener('change', saveAutoLaunch)

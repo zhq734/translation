@@ -811,6 +811,92 @@ test('整页扫描图 OCR 原文文字层必须按页面坐标定位且不能额
   }
 })
 
+test('表格单元格内嵌图片的 OCR 原文文字层必须按图片坐标定位', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  const imageBox = { x: 280, y: 180, width: 220, height: 120 }
+  page.blocks = [{
+    kind: 'table',
+    blockId: 'table-with-ocr-image',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 50, width: 460, height: 300 },
+    columnWidths: [220, 240],
+    headerRows: 1,
+    rows: [{
+      rowId: 'table-with-ocr-image-row',
+      cells: [{
+        cellId: 'table-with-ocr-image-label-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-with-ocr-image-label',
+          readingOrder: 0,
+          translatable: false,
+          role: 'paragraph',
+          runs: [{ runId: 'table-with-ocr-image-label-run', text: 'Embedded image', style: { fontSize: 12 } }]
+        }]
+      }, {
+        cellId: 'table-with-ocr-image-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: 'table-with-ocr-image',
+          readingOrder: 1,
+          translatable: false,
+          bbox: imageBox,
+          assetId: 'table-with-ocr-image-asset',
+          ocrRegions: [{
+            regionId: 'table-with-ocr-image-region',
+            pageId: page.pageId,
+            blockId: 'table-with-ocr-image',
+            assetId: 'table-with-ocr-image-asset',
+            bbox: { x: 0.2, y: 0.25, width: 0.5, height: 0.2 },
+            text: 'TABLE_CELL_OCR_COORDINATE_CHECK',
+            status: 'recognized'
+          }]
+        }]
+      }]
+    }]
+  }]
+  model.assets = [{
+    assetId: 'table-with-ocr-image-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'fixture',
+    byteLength: 9364
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  }, { includeOcrTextLayer: true })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const extractedText = content.items
+      .flatMap((candidate) => 'str' in candidate ? [candidate.str] : [])
+      .join('')
+      .replaceAll(/\s+/gu, '')
+    assert.match(extractedText, /TABLE_CELL_OCR_COORDINATE_CHECK/u, '表格单元格图片必须生成可提取的 OCR 原文文字层')
+    const item = content.items.find((candidate) => (
+      'str' in candidate && 'transform' in candidate && candidate.str.includes('TABLE')
+    ))
+    assert.ok(item && 'transform' in item, '表格单元格图片必须生成可定位的 OCR 原文文字层')
+    const transform = item.transform as number[]
+    const x = transform[4] ?? 0
+    const top = page.height - (transform[5] ?? page.height)
+    assert.ok(x > 0 && top > 0, '表格图片 OCR 文字层不能缩放到左上角')
+    // 表格会按单元格可用宽度重新排版图片；文字层应位于图片所在的第二列和表格纵向范围内。
+    assert.ok(x >= 240 && x <= 500, `OCR 文字层 X 必须位于图片所在的表格单元格内: ${x}`)
+    assert.ok(top >= 50 && top <= 350, `OCR 文字层 Y 必须位于表格区域内: ${top}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('OCR 原文导出必须保留原始 PDF 页面并只在对应图片区域追加透明文字层', async () => {
   const sourceDocument = await PDFDocument.create()
   const sourcePage = sourceDocument.addPage([600, 800])

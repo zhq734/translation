@@ -31,29 +31,43 @@
       </header>
 
       <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
-        <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
-        <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
-          <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
-            <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
-          </label>
-          <span class="document-language-arrow" aria-hidden="true">→</span>
-          <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
-            <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
-          </label>
-          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>
-        </div>
-        <div class="document-toolbar-actions">
-          <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry incomplete items</button>
-          <div class="document-history">
-            <button id="document-history-button" class="document-secondary-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-history-popover" data-i18n="document.history">History</button>
-            <div id="document-history-popover" class="document-history-popover" hidden>
-              <label class="document-history-search-label" for="document-history-search" data-i18n="document.historySearch">Search history</label>
-              <input id="document-history-search" class="document-history-search" type="search" role="searchbox" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:document.historySearch" placeholder="Search history" />
-              <p id="document-history-status" class="document-history-status" role="status" aria-live="polite" hidden></p>
-              <p id="document-history-empty" class="document-history-empty" role="status" aria-live="polite"></p>
-              <ul id="document-history-list" class="document-history-list" role="listbox" data-i18n-attr="aria-label:document.history" aria-label="History"></ul>
+        <div class="document-toolbar-main">
+          <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
+          <div class="document-toolbar-actions">
+            <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry incomplete items</button>
+            <div class="document-history">
+              <button id="document-history-button" class="document-secondary-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-history-popover" data-i18n="document.history">History</button>
+              <div id="document-history-popover" class="document-history-popover" hidden>
+                <label class="document-history-search-label" for="document-history-search" data-i18n="document.historySearch">Search history</label>
+                <input id="document-history-search" class="document-history-search" type="search" role="searchbox" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:document.historySearch" placeholder="Search history" />
+                <p id="document-history-status" class="document-history-status" role="status" aria-live="polite" hidden></p>
+                <p id="document-history-empty" class="document-history-empty" role="status" aria-live="polite"></p>
+                <ul id="document-history-list" class="document-history-list" role="listbox" data-i18n-attr="aria-label:document.history" aria-label="History"></ul>
+              </div>
             </div>
           </div>
+        </div>
+        <div class="document-toolbar-meta">
+          <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+            <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
+              <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
+            </label>
+            <span class="document-language-arrow" aria-hidden="true">→</span>
+            <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
+              <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
+            </label>
+          </div>
+          <div class="document-toolbar-display-controls">
+            <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
+              <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
+              <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
+            </div>
+            <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
+              <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
+              <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
+            </div>
+          </div>
+          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>
         </div>
       </nav>
 
@@ -87,23 +101,16 @@
 
       <section id="document-workbench" class="document-workbench" hidden>
             <div class="document-workbench-header">
-              <div class="document-file-identity">
-                <strong id="document-workbench-name"></strong>
-                <span id="document-workbench-meta"></span>
-              </div>
-              <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
-                <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
-                <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
-              </div>
-              <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
-                <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
-                <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
-              </div>
-              <div class="document-workbench-actions">
-                <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
-                <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.addFiles">Add files</button>
-                <button id="document-cancel-button" class="document-secondary-button" type="button" data-i18n="document.cancel" hidden>Cancel conversion</button>
-                <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
+              <div class="document-workbench-primary">
+                <div class="document-file-identity">
+                  <strong id="document-workbench-name"></strong>
+                  <span id="document-workbench-meta"></span>
+                </div>
+                <div class="document-workbench-actions">
+                  <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.addFiles">Add files</button>
+                  <button id="document-cancel-button" class="document-secondary-button" type="button" data-i18n="document.cancel" hidden>Cancel conversion</button>
+                  <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
+                </div>
               </div>
             </div>
         <div class="document-columns" data-view-mode="spread" data-i18n-attr="aria-label:document.comparison" aria-label="Source and translation comparison">
@@ -128,6 +135,7 @@
         <div class="document-progress-copy">
           <span id="document-progress-stage" data-i18n="document.progress.ready">Ready</span>
           <span id="document-progress-count"></span>
+          <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
         </div>
         <div class="document-progress-track">
           <div id="document-progressbar" class="document-progressbar" role="progressbar" aria-live="polite" data-i18n-attr="aria-label:document.progress.label" aria-label="Document conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>

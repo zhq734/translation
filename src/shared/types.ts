@@ -787,6 +787,18 @@ export interface Settings {
   webReaderHotkey: string
   /** 全局文档翻译快捷键，空字符串表示不注册。 */
   documentTranslationHotkey: string
+  /** 是否启用文档翻译入口与任务执行。 */
+  documentTranslationEnabled: boolean
+  /** 单个文档允许的最大字节数。 */
+  documentTranslationMaxFileBytes: number
+  /** 单个文档允许解析的最大页数。 */
+  documentTranslationMaxPages: number
+  /** 单个文档最多进入 OCR 的不同图片数量。 */
+  documentTranslationMaxOcrImages: number
+  /** 文档翻译持久化缓存允许占用的最大字节数。 */
+  documentTranslationCacheMaxBytes: number
+  /** 文档翻译缓存保留天数。 */
+  documentTranslationCacheMaxAgeDays: number
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
