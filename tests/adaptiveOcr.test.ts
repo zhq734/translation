@@ -109,6 +109,38 @@ test('自适应 OCR 应选择严格更优的备用结果', async () => {
 })
 
 /**
+ * 校验备用图片胜出时携带实际放大倍率，供文档流水线回映射 OCR 行框。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('自适应 OCR 备用结果胜出时应携带实际坐标倍率', async () => {
+  const outputs = [result('模糊文本', 0.2), result('改善后的中文文本', 0.9)]
+  const output = await recognizeAdaptiveOcr(
+    { imageBytes: Buffer.from('source'), maxScale: 3, language: 'zh' },
+    { ...imageDeps(), recognize: async () => outputs.shift()! }
+  )
+
+  assert.equal(output.text, '改善后的中文文本')
+  assert.equal(output.coordinateScale, 2)
+})
+
+/**
+ * 校验基线胜出时不会错误继承备用图片的放大倍率。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('自适应 OCR 基线胜出时坐标倍率应保持为一倍', async () => {
+  const outputs = [result('清晰基线文本', 0.9), result('较差备用文本', 0.2)]
+  const output = await recognizeAdaptiveOcr(
+    { imageBytes: Buffer.from('source'), maxScale: 3, language: 'zh' },
+    { ...imageDeps(), recognize: async () => outputs.shift()! }
+  )
+
+  assert.equal(output.text, '清晰基线文本')
+  assert.equal(output.coordinateScale, undefined)
+})
+
+/**
  * 校验较差和平局备用结果均不能覆盖基线。
  * @returns 无返回值。
  * @author zhenghq

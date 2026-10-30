@@ -224,7 +224,7 @@ test('长文本只在句界切分，并携带稳定的分段标识和相邻上�
 test('长文本不得切断单词、保护片段或公式', () => {
   const source = model([textBlock(
     'protected-long',
-    'Read the installation guide carefully before starting the service. Keep [[[ST-DOC-PROTECTED-0001]]] unchanged and verify every URL.'
+    'Read the installation guide carefully before starting the service. Keep https://example.com unchanged and verify every URL.'
   )])
   const [unit] = collectDocumentTranslationUnits(source)
   assert.ok(unit)

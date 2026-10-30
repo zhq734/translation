@@ -701,6 +701,297 @@ test('PDF 导出必须把 OCR 译文覆盖到图片对应区域并保留可检�
   }
 })
 
+test('OCR 原文双层 PDF 必须写入图片对应位置的透明可复制文字层', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 600
+  page.height = 800
+  page.blocks = [{
+    kind: 'image',
+    blockId: 'ocr-source-page',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 50, y: 80, width: 500, height: 640 },
+    assetId: 'ocr-source-asset',
+    ocrRegions: [{
+      regionId: 'ocr-source-region',
+      pageId: page.pageId,
+      blockId: 'ocr-source-page',
+      assetId: 'ocr-source-asset',
+      bbox: { x: 0.2, y: 0.25, width: 0.3, height: 0.08 },
+      text: 'OCR_LAYER_COORDINATE_CHECK',
+      status: 'recognized'
+    }]
+  }]
+  model.assets = [{
+    assetId: 'ocr-source-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'fixture',
+    byteLength: 9364
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  }, { includeOcrTextLayer: true })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const item = content.items.find((candidate) => (
+      'str' in candidate && candidate.str.includes('OCR_LAYER_COORDINATE_CHECK')
+    ))
+    assert.ok(item && 'transform' in item, 'OCR 原文必须生成可被 PDF.js 提取的文本对象')
+    const transform = item.transform as number[]
+    const x = transform[4] ?? 0
+    const top = page.height - (transform[5] ?? page.height)
+    // 区域横坐标应为 50 + 0.2 * 500 = 150；纵坐标应为 80 + 0.25 * 640 = 240。
+    assert.ok(x >= 150 && x < 310, `OCR 文字层 X 坐标错误: ${x}`)
+    assert.ok(top >= 240 && top < 310, `OCR 文字层 Y 坐标错误: ${top}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('整页扫描图 OCR 原文文字层必须按页面坐标定位且不能额外换页', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 594.95996
+  page.height = 841.91998
+  page.blocks = [{
+    kind: 'image',
+    blockId: 'full-page-scan',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 0, y: 0, width: page.width, height: page.height },
+    assetId: 'full-page-scan-asset',
+    ocrRegions: [{
+      regionId: 'full-page-scan-region',
+      pageId: page.pageId,
+      blockId: 'full-page-scan',
+      assetId: 'full-page-scan-asset',
+      bbox: { x: 0.3, y: 0.4, width: 0.2, height: 0.05 },
+      text: 'FULL_PAGE_OCR_COORDINATE_CHECK',
+      status: 'recognized'
+    }]
+  }]
+  model.assets = [{
+    assetId: 'full-page-scan-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'fixture',
+    byteLength: 9364
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  }, { includeOcrTextLayer: true })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1)
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const item = content.items.find((candidate) => (
+      'str' in candidate && candidate.str.includes('FULL_PAGE_OCR_COORDINATE_CHECK')
+    ))
+    assert.ok(item && 'transform' in item, '整页 OCR 原文必须生成可提取的文本对象')
+    const transform = item.transform as number[]
+    const x = transform[4] ?? 0
+    const top = page.height - (transform[5] ?? page.height)
+    assert.ok(Math.abs(x - page.width * 0.3) < 5, `OCR 文字层 X 坐标错误: ${x}`)
+    // PDF.js 的文本 transform 以基线为原点；区域顶部到基线还包含约 2pt 内边距和 12pt 字号。
+    assert.ok(
+      top > page.height * 0.4 && top < page.height * 0.4 + 20,
+      `OCR 文字层 Y 坐标错误: ${top}`
+    )
+    assert.ok(x > page.width * 0.2, 'OCR 文字层不能缩放到左上角')
+    assert.ok(top > page.height * 0.3, 'OCR 文字层不能缩放到左上角')
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('OCR 原文导出必须保留原始 PDF 页面并只在对应图片区域追加透明文字层', async () => {
+  const sourceDocument = await PDFDocument.create()
+  const sourcePage = sourceDocument.addPage([600, 800])
+  sourcePage.drawText('ORIGINAL_NATIVE_TEXT', {
+    x: 72,
+    y: 700,
+    size: 14
+  })
+  const sourcePdfBytes = await sourceDocument.save()
+
+  const model = documentWithText('')
+  model.source = {
+    ...model.source,
+    fileName: 'scan.pdf',
+    format: 'pdf',
+    pageCount: 1
+  }
+  const firstPage = model.pages[0]!
+  firstPage.width = 600
+  firstPage.height = 800
+  firstPage.blocks = [{
+    kind: 'image',
+    blockId: 'source-scan-image',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 50, y: 80, width: 500, height: 640 },
+    assetId: 'source-scan-asset',
+    ocrRegions: [{
+      regionId: 'source-scan-region',
+      pageId: firstPage.pageId,
+      blockId: 'source-scan-image',
+      assetId: 'source-scan-asset',
+      bbox: { x: 0.2, y: 0.25, width: 0.3, height: 0.08 },
+      text: 'SOURCE_PDF_OCR_LAYER_CHECK',
+      status: 'recognized'
+    }]
+  }]
+  // 模拟解析模型被错误拆分出的额外页面；源 PDF 仍只有一页，导出不得重排或新增页面。
+  model.pages.push({
+    pageId: 'unexpected-extra-page',
+    index: 1,
+    width: 600,
+    height: 800,
+    blocks: [{
+      kind: 'text',
+      blockId: 'unexpected-extra-text',
+      readingOrder: 0,
+      translatable: false,
+      role: 'paragraph',
+      runs: [{ runId: 'unexpected-extra-run', text: 'MUST_NOT_BE_RENDERED' }]
+    }]
+  })
+  model.assets = [{
+    assetId: 'source-scan-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'fixture',
+    byteLength: 9364
+  }]
+
+  const result = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png'),
+    sourcePdfBytes
+  }, { includeOcrTextLayer: true })
+
+  const exportedPdf = await pdfjs.getDocument({
+    data: result.bytes,
+    isEvalSupported: false,
+    verbosity: 0
+  }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1)
+    const page = await exportedPdf.getPage(1)
+    const viewport = page.getViewport({ scale: 1 })
+    assert.ok(Math.abs(viewport.width - 600) < 0.01)
+    assert.ok(Math.abs(viewport.height - 800) < 0.01)
+    const content = await page.getTextContent()
+    const text = content.items.map((item) => 'str' in item ? item.str : '').join('')
+    assert.match(text, /ORIGINAL_NATIVE_TEXT/u)
+    assert.match(text, /SOURCE_PDF_OCR_LAYER_CHECK/u)
+    assert.doesNotMatch(text, /MUST_NOT_BE_RENDERED/u)
+
+    const item = content.items.find((candidate) => (
+      'str' in candidate && candidate.str.includes('SOURCE_PDF_OCR_LAYER_CHECK')
+    ))
+    assert.ok(item && 'transform' in item, 'OCR 原文必须生成可提取的透明文本对象')
+    const transform = item.transform as number[]
+    const x = transform[4] ?? 0
+    const top = viewport.height - (transform[5] ?? viewport.height)
+    assert.ok(Math.abs(x - 150) < 5, `OCR 文字层 X 坐标错误: ${x}`)
+    assert.ok(top >= 240 && top < 260, `OCR 文字层 Y 坐标错误: ${top}`)
+    assert.ok(result.warnings.some((warning) => warning.code === 'ocr-source-page-count-mismatch'))
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('OCR 原文源 PDF 没有可写入文字层时必须返回明确告警', async () => {
+  const sourceDocument = await PDFDocument.create()
+  const sourcePage = sourceDocument.addPage([600, 800])
+  sourcePage.drawText('ORIGINAL_PAGE', { x: 72, y: 700, size: 14 })
+  const sourcePdfBytes = await sourceDocument.save()
+  const model = documentWithText('')
+  model.pages[0]!.width = 600
+  model.pages[0]!.height = 800
+  model.pages[0]!.blocks = [{
+    kind: 'image',
+    blockId: 'empty-ocr-image',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 40, width: 300, height: 200 },
+    assetId: 'empty-ocr-asset',
+    ocrRegions: [{
+      regionId: 'empty-ocr-region',
+      pageId: model.pages[0]!.pageId,
+      blockId: 'empty-ocr-image',
+      assetId: 'empty-ocr-asset',
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      text: '',
+      status: 'failed',
+      reason: 'ocr-failed'
+    }]
+  }]
+
+  const result = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null,
+    sourcePdfBytes
+  }, { includeOcrTextLayer: true })
+
+  assert.ok(result.warnings.some((warning) => warning.code === 'ocr-source-text-layer-empty'))
+})
+
+test('OCR 原文导出遇到旋转页面时必须跳过文字层并返回受控告警', async () => {
+  const sourceDocument = await PDFDocument.create()
+  const sourcePage = sourceDocument.addPage([600, 800])
+  sourcePage.setRotation({ type: 'degrees', angle: 90 })
+  const sourcePdfBytes = await sourceDocument.save()
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 600
+  page.height = 800
+  page.blocks = [{
+    kind: 'image',
+    blockId: 'rotated-image',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 50, y: 80, width: 500, height: 640 },
+    assetId: 'rotated-asset',
+    ocrRegions: [{
+      regionId: 'rotated-region',
+      pageId: page.pageId,
+      blockId: 'rotated-image',
+      assetId: 'rotated-asset',
+      bbox: { x: 0.2, y: 0.25, width: 0.3, height: 0.08 },
+      text: 'ROTATED_OCR_MUST_NOT_BE_MISPLACED',
+      status: 'recognized'
+    }]
+  }]
+
+  const result = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null,
+    sourcePdfBytes
+  }, { includeOcrTextLayer: true })
+  const exportedPdf = await pdfjs.getDocument({
+    data: result.bytes,
+    isEvalSupported: false,
+    verbosity: 0
+  }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1)
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    assert.ok(content.items.every((item) => !('str' in item) || !item.str.includes('ROTATED_OCR_MUST_NOT_BE_MISPLACED')))
+    assert.ok(result.warnings.some((warning) => warning.code === 'ocr-source-rotated-page'))
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('PDF 导出必须统一 OCR 译文字号并保留对齐方式', async () => {
   const model = documentWithText('OCR document')
   model.pages[0]!.blocks = [{

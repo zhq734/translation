@@ -140,6 +140,7 @@ export interface DocumentSourceResult {
 export const DOCUMENT_WORKSPACE_CHANNELS = {
   run: 'document:run',
   cancel: 'document:cancel',
+  release: 'document:release',
   retryFailed: 'document:retry-failed',
   exportPdf: 'document:export-pdf',
   getAsset: 'document:get-asset',

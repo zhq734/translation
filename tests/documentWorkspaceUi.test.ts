@@ -35,84 +35,87 @@ test('文档翻译必须使用独立入口并由构建配置注册', () => {
   assert.match(html, /src\/document\.css/u)
 })
 
-test('文档工作台必须提供单文件上传态与可用的批量翻译页签', () => {
+test('文档工作台必须移除旧模式页签并提供多文件上传入口', () => {
   const html = read('src/renderer/document.html')
   const source = read('src/renderer/src/document.ts')
-  assert.match(html, /role="tablist"/u)
-  assert.match(html, /id="document-tab-single"[^>]*role="tab"[^>]*aria-selected="true"/u)
-  assert.match(html, /id="document-tab-batch"[^>]*role="tab"[^>]*aria-selected="false"[^>]*aria-controls="document-batch-panel"/u)
-  assert.doesNotMatch(html, /id="document-tab-batch"[^>]*disabled/u)
-  assert.match(html, /id="document-batch-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="document-tab-batch"/u)
-  assert.match(html, /id="document-batch-drop-zone"[^>]*role="button"/u)
-  assert.match(html, /id="document-batch-select-button"[^>]*data-i18n="document\.batch\.chooseFiles"/u)
-  assert.match(html, /id="document-batch-start-button"[^>]*disabled/u)
-  assert.match(html, /id="document-batch-cancel-button"[^>]*hidden/u)
-  assert.match(html, /id="document-batch-list"[^>]*role="list"/u)
+  assert.match(html, /id="document-file-tabs"[^>]*role="tablist"/u)
+  assert.doesNotMatch(html, /id="document-tab-single"/u)
+  assert.doesNotMatch(html, /id="document-tab-batch"/u)
+  assert.doesNotMatch(html, /id="document-batch-panel"/u)
+  assert.doesNotMatch(source, /runDocumentBatch\(/u)
+  assert.doesNotMatch(source, /exportDocumentBatchItem\(/u)
   assert.match(source, /selectDocumentFiles\(\)/u)
-  assert.match(source, /runDocumentBatch\(/u)
-  assert.match(source, /exportDocumentBatchItem\(/u)
   assert.match(html, /id="document-drop-zone"/u)
-  assert.match(html, /id="document-file-input"[^>]*type="file"[^>]*accept=/u)
+  assert.match(html, /id="document-file-input"[^>]*type="file"[^>]*multiple[^>]*accept=/u)
   assert.match(html, /id="document-start-button"[^>]*disabled/u)
   assert.match(html, /data-i18n="document\.upload\.dropHint"/u)
   assert.match(html, /data-i18n="document\.upload\.formats"/u)
   assert.match(html, /data-i18n="document\.upload\.privacy"/u)
   assert.match(html, /id="document-history-button"/u)
-  assert.match(html, /id="document-workbench-replace"[^>]*data-i18n="document\.upload\.replace"/u)
+  assert.match(html, /id="document-workbench-replace"[^>]*data-i18n="document\.upload\.addFiles"/u)
   assert.match(source, /documentWorkbenchReplaceButton\.addEventListener\('click'/u)
-  assert.match(source, /async function replaceDocumentFromWorkbench\(/u)
-  assert.match(source, /await window\.api\.cancelDocument\(/u)
+  assert.match(source, /async function addDocumentFilesFromWorkbench\(/u)
+  assert.match(source, /async function createDocumentTab\(/u)
+  assert.match(source, /async function activateDocumentTab\(/u)
+  assert.match(source, /async function closeDocumentTab\(/u)
 })
 
-test('批量翻译必须一次多选文件、顺序执行并在切换下一项前导出当前结果', () => {
+test('多文件选择必须一次创建独立 Tab，并由主进程按任务隔离授权与资源', () => {
   const source = read('src/renderer/src/document.ts')
   const types = read('src/shared/types.ts')
   const preload = read('src/preload/index.ts')
   const main = read('src/main/index.ts')
-  const batchStart = source.indexOf('async function runDocumentBatch(')
-  const batchEnd = source.indexOf('/**', batchStart + 1)
-  const batchSource = source.slice(batchStart, batchEnd)
-  const exportStart = source.indexOf('async function exportDocumentBatchItem(')
-  const exportEnd = source.indexOf('/**', exportStart + 1)
-  const exportSource = source.slice(exportStart, exportEnd)
   const selectStart = main.indexOf("ipcMain.handle('document:select-files'")
   const selectEnd = main.indexOf('/**', selectStart + 1)
   const selectSource = main.slice(selectStart, selectEnd)
 
-  assert.ok(batchStart > -1)
-  assert.ok(exportStart > -1)
   assert.ok(selectStart > -1)
-  assert.match(batchSource, /for \(const item of documentBatchItems\)/u)
-  assert.match(batchSource, /await runDocumentBatchItem\(item\)/u)
-  assert.match(batchSource, /await exportDocumentBatchItem\(item, snapshot\)/u)
-  assert.match(exportSource, /window\.api\.exportDocumentPdf\(/u)
+  assert.match(source, /const results = await window\.api\.selectDocumentFiles\(\)/u)
+  assert.match(source, /for \(const result of results\)[\s\S]*?createDocumentTab\(/u)
   assert.match(types, /selectDocumentFiles\(\): Promise<DocumentFileSelectionResult\[\]>/u)
   assert.match(preload, /ipcRenderer\.invoke\('document:select-files'\)/u)
   assert.match(selectSource, /properties: \['openFile', 'multiSelections'\]/u)
   assert.match(selectSource, /Promise\.allSettled/u)
   assert.match(selectSource, /approvedDocumentPaths\.add/u)
   assert.doesNotMatch(selectSource, /approvedDocumentPaths\.clear/u)
+  assert.match(main, /const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>\(\)/u)
+  assert.match(
+    main,
+    /service\.run\(request as DocumentRunRequest, \(jobId\) => \{\s*acceptedJobId = jobId\s*documentWorkspaceTaskServices\.set\(jobId, service\)/u,
+    '任务服务必须在首条进度发出前通过接受回调同步登记'
+  )
+  assert.match(
+    main,
+    /documentWorkspaceTaskServices\.get\(acceptedJobId\) === service[\s\S]*?documentWorkspaceTaskServices\.delete\(acceptedJobId\)/u,
+    '任务启动异常时必须移除已经登记的服务，避免残留不可达资源'
+  )
+  assert.match(main, /documentWorkspaceTaskServices\.get\(jobId\)/u)
+  assert.match(main, /ipcMain\.handle\('document:release'/u)
+  assert.match(types, /retryFailedDocument\(jobId: string, generation: number\)/u)
+  assert.match(types, /getDocumentAsset\(jobId: string, assetId: string\)/u)
+  assert.match(types, /getDocumentSource\(jobId: string\)/u)
+  assert.match(types, /releaseDocumentJob\(jobId: string\)/u)
 })
 
-test('批量翻译面板必须使用主题变量、自适应布局和可访问队列状态', () => {
+test('多 Tab 栏必须使用主题变量、横向滚动并支持逐个关闭', () => {
   const html = read('src/renderer/document.html')
   const css = read('src/renderer/src/document.css')
+  const source = read('src/renderer/src/document.ts')
   const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
 
-  assert.match(css, /\.document-batch-panel\s*\{[^}]*display:\s*(?:flex|grid)/u)
-  assert.match(css, /\.document-batch-panel\s*\{[^}]*min-height:\s*0/u)
-  assert.match(css, /\.document-batch-list\s*\{[^}]*overflow-y:\s*auto/u)
-  assert.match(html, /id="document-batch-progress"[^>]*role="progressbar"/u)
-  assert.match(html, /id="document-batch-status"[^>]*role="status"[^>]*aria-live="polite"/u)
-  assert.match(zh, /'document\.batch\.chooseFiles'/u)
-  assert.match(zh, /'document\.batch\.start'/u)
-  assert.match(zh, /'document\.batch\.cancel'/u)
-  assert.match(zh, /'document\.batch\.status\.running'/u)
-  assert.match(en, /'document\.batch\.chooseFiles'/u)
-  assert.match(en, /'document\.batch\.start'/u)
-  assert.match(en, /'document\.batch\.cancel'/u)
-  assert.match(en, /'document\.batch\.status\.running'/u)
+  assert.match(css, /\.document-file-tabs\s*\{[^}]*display:\s*flex[^}]*min-width:\s*0[^}]*overflow-x:\s*auto/su)
+  assert.match(css, /\.document-file-tab\s*\{[^}]*min-width:\s*0/su)
+  assert.match(css, /\.document-file-tab-close\s*\{/u)
+  assert.doesNotMatch(css, /\.document-batch-panel/u)
+  assert.match(source, /aria-label',\s*t\('document\.tab\.close', \{ name: tab\.selection\.name \}\)/u)
+  assert.match(source, /documentWorkspaceTabs\.replaceChildren\(\)/u)
+  assert.match(zh, /'document\.upload\.addFiles'/u)
+  assert.match(zh, /'document\.tab\.close'/u)
+  assert.match(zh, /'document\.files\.invalid'/u)
+  assert.match(en, /'document\.upload\.addFiles'/u)
+  assert.match(en, /'document\.tab\.close'/u)
+  assert.match(en, /'document\.files\.invalid'/u)
 })
 
 test('文件翻译历史必须提供可搜索下拉列表并支持快速切换', () => {
@@ -134,8 +137,10 @@ test('文件翻译历史必须提供可搜索下拉列表并支持快速切换',
   assert.match(source, /let documentHistorySwitchInFlight = false/u)
   assert.match(source, /historyButton\.addEventListener\('click'/u)
   assert.match(source, /documentHistorySearch\.addEventListener\('input'/u)
-  assert.match(source, /const previousSelection = selectionState/u)
-  assert.match(source, /if \(selectionState\.error\) selectionState = previousSelection/u)
+  assert.match(source, /const existingTab = findDocumentTabByPath\(entry\.path\)/u)
+  assert.match(source, /await activateDocumentTab\(existingTab\.id\)/u)
+  assert.match(source, /await createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
+  assert.match(source, /await startDocumentTabTranslation\(tab\)/u)
   assert.match(source, /event\.key === 'Enter'[\s\S]*visibleDocumentFileHistory\[0\]/u)
   assert.match(css, /\.document-history-popover\s*\{[^}]*position:\s*absolute/u)
   assert.match(css, /\.document-history-list\s*\{[^}]*overflow-y:\s*auto/u)
@@ -150,12 +155,12 @@ test('文件翻译历史必须提供可搜索下拉列表并支持快速切换',
   assert.match(en, /'document\.historyNoResults': 'No matching files\.'/u)
 })
 
-test('文件翻译历史切换必须防止重复触发并隔离迟到的启动任务', () => {
+test('文件翻译历史切换必须防止重复触发并按目标 Tab 隔离任务', () => {
   const source = read('src/renderer/src/document.ts')
   const switchStart = source.indexOf('async function switchToDocumentHistoryEntry(')
   const switchEnd = source.indexOf('/**', switchStart + 1)
   const switchSource = source.slice(switchStart, switchEnd)
-  const startStart = source.indexOf('async function startDocumentTranslation(')
+  const startStart = source.indexOf('async function startDocumentTabTranslation(')
   const startEnd = source.indexOf('/**', startStart + 1)
   const startSource = source.slice(startStart, startEnd)
 
@@ -163,31 +168,51 @@ test('文件翻译历史切换必须防止重复触发并隔离迟到的启动�
   assert.ok(startStart > -1)
   assert.match(switchSource, /if \([^\n]*documentHistorySwitchInFlight\) return/u)
   assert.match(switchSource, /documentHistorySwitchInFlight = true/u)
-  assert.match(switchSource, /const jobGeneration = generation/u)
-  assert.match(switchSource, /pendingLanguageRetranslation = false/u)
-  assert.match(switchSource, /pendingOcrModeRestart = false/u)
-  assert.match(switchSource, /await cancelDocumentJob\(activeJobId, jobGeneration\)/u)
-  assert.match(switchSource, /nextGeneration\(\)/u)
-  assert.doesNotMatch(switchSource, /if \(documentStartInFlight\)/u)
+  assert.match(switchSource, /const existingTab = findDocumentTabByPath\(entry\.path\)/u)
+  assert.match(switchSource, /if \(existingTab\) \{\s*await activateDocumentTab\(existingTab\.id\)/u)
+  assert.match(switchSource, /await createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
+  assert.match(switchSource, /if \(tab\) await startDocumentTabTranslation\(tab\)/u)
   assert.match(switchSource, /finally \{\s*documentHistorySwitchInFlight = false/u)
 
-  // 迟到的启动结果必须按发起时的代际取消，不能把旧任务带入新文件。
+  // 迟到的启动结果必须按发起时的代际取消，不能把旧任务带入已关闭或已切换模式的 Tab。
   assert.match(source, /async function cancelLateDocumentRunResult\(/u)
   assert.match(
     startSource,
-    /if \(generation !== jobGeneration\) \{\s*await cancelLateDocumentRunResult\(result, jobGeneration\)\s*return\s*\}/u
+    /if \(!documentTabs\.includes\(tab\) \|\| tab\.generation !== jobGeneration\) \{\s*await cancelLateDocumentRunResult\(result, jobGeneration\)\s*return\s*\}/u
   )
 })
 
-test('文件翻译历史切换后必须同步重置 OCR 展示模式控件', () => {
+test('工作台添加文件必须保留现有 Tab 并自动启动本次新文件', () => {
   const source = read('src/renderer/src/document.ts')
-  const resetStart = source.indexOf('function resetWorkbenchPreview()')
+  const addStart = source.indexOf('async function addDocumentSelectionResults(')
+  const addSource = source.slice(addStart, source.indexOf('/**', addStart + 1))
+  const workbenchStart = source.indexOf('async function addDocumentFilesFromWorkbench()')
+  const workbenchSource = source.slice(workbenchStart, source.indexOf('/**', workbenchStart + 1))
+
+  assert.ok(addStart > -1)
+  assert.ok(workbenchStart > -1)
+  assert.match(addSource, /for \(const result of results\)/u)
+  assert.match(addSource, /createDocumentTab\(result, \{ activate: false, start: false \}\)/u)
+  assert.match(addSource, /if \(existed\) lastActivatedTab = tab\s*else newTabs\.push\(tab\)/u)
+  assert.match(addSource, /await Promise\.all\(newTabs\.map\(\(tab\) => startDocumentTabTranslation\(tab\)\)\)/u)
+  assert.match(workbenchSource, /await window\.api\.selectDocumentFiles\(\)/u)
+  assert.match(workbenchSource, /await addDocumentSelectionResults\(results\)/u)
+  assert.doesNotMatch(workbenchSource, /workbench\.hidden = true/u)
+  assert.doesNotMatch(workbenchSource, /uploadPanel\.hidden = false/u)
+})
+
+test('文件翻译模式切换后必须重置目标 Tab 的 OCR 展示状态', () => {
+  const source = read('src/renderer/src/document.ts')
+  const resetStart = source.indexOf('function resetDocumentRunForModeSwitch(')
   const resetEnd = source.indexOf('/**', resetStart + 1)
   const resetSource = source.slice(resetStart, resetEnd)
 
   assert.ok(resetStart > -1)
-  assert.match(resetSource, /ocrDisplayMode = 'translation'/u)
+  assert.match(resetSource, /tab\.snapshot = null/u)
+  assert.match(resetSource, /tab\.status = 'starting'/u)
   assert.match(resetSource, /syncOcrDisplayModeControls\(\)/u)
+  assert.match(source, /tab\.ocrDisplayMode = nextMode/u)
+  assert.match(source, /resetDocumentRunForModeSwitch\(tab\)/u)
 })
 
 test('文档工作台上传面板必须提供可访问的主操作、隐私边界与主题化自适应布局', () => {
@@ -198,7 +223,7 @@ test('文档工作台上传面板必须提供可访问的主操作、隐私边�
     html,
     /id="document-start-button"[^>]*class="[^"]*document-primary-button[^"]*"[^>]*data-i18n="document\.upload\.start"[^>]*disabled/u
   )
-  assert.match(html, /id="document-upload-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="document-tab-single"/u)
+  assert.match(html, /id="document-upload-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="document-upload-title"/u)
   assert.match(html, /id="document-drop-zone"[^>]*role="button"[^>]*aria-describedby="document-upload-formats document-upload-privacy"/u)
   assert.match(html, /id="document-upload-formats"[^>]*data-i18n="document\.upload\.formats"/u)
   assert.match(html, /id="document-upload-privacy"[^>]*data-i18n="document\.upload\.privacy"/u)
@@ -351,7 +376,7 @@ test('文档工作台必须保留语言偏好并单独展示文档级实际语�
   const resetSource = source.slice(resetStart, source.indexOf('/**', resetStart + 1))
   const replaceStart = source.indexOf('async function replaceDocumentFromWorkbench()')
   const replaceSource = source.slice(replaceStart, source.indexOf('/**', replaceStart + 1))
-  const startStart = source.indexOf('async function startDocumentTranslation()')
+  const startStart = source.indexOf('async function startDocumentTranslation(')
   const startSource = source.slice(startStart, source.indexOf('async function cancelDocumentTranslation', startStart))
   const localeStart = source.indexOf('localeRuntime.onLocaleChanged(')
   const localeSource = source.slice(localeStart, source.indexOf('\n  })', localeStart) + 4)
@@ -554,7 +579,7 @@ test('PDF 横竖混排译文必须在每页首次挂载时使用自己的宽度�
 
   assert.match(
     renderSource,
-    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'\s*\? initialTranslationPageScale\(container, page\.width\)\s*: 1[\s\S]*previewHost\.append\(renderPage\(page, side, pageScale\)\)/u,
+    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'\s*\? initialTranslationPageScale\(container, page\.width\)\s*: 1[\s\S]*const pageRenderSide = ocrDisplayMode === 'ocr-text' && model\.source\.format === 'image'\s*\? 'source'\s*: side[\s\S]*previewHost\.append\(renderPage\(page, pageRenderSide, pageScale\)\)/u,
     '每页必须在挂载前按自身原始宽度计算缩放，横竖混排时不能先沿用第一页比例'
   )
   assert.doesNotMatch(renderSource, /initialTranslationPageScale\(container, model\.pages\[0\]/u,
@@ -791,16 +816,16 @@ test('文档块级翻译增量必须通过受控 IPC 原位更新当前任务界
   assert.match(handler, /scheduleSnapshotRender\(next\)/u)
 })
 
-test('生产 PDF 导出必须直接打印译文预览而不是重新排版模型', () => {
+test('生产 PDF 导出必须分流 OCR 原文双层导出与普通译文打印', () => {
   const main = read('src/main/index.ts')
 
   assert.match(main, /import \{ printDocumentPreviewToPdf \} from '\.\/documentPdfPrint'/u)
+  assert.match(main, /import \{ exportDocumentToPdf \} from '\.\/documentPdfExport'/u)
   assert.match(
     main,
-    /exportPdf:\s*\(model,\s*_dependencies,\s*partialExport,\s*textLayer\)\s*=>\s*\{[\s\S]*?documentWorkspace\?\.getWindow\(\)[\s\S]*?printDocumentPreviewToPdf\(window\.webContents,\s*model,\s*partialExport,\s*textLayer\)/u
+    /exportPdf:\s*\(model,\s*dependencies,\s*partialExport,\s*textLayer,\s*sourceOnly\)\s*=>\s*\{[\s\S]*?if \(sourceOnly\)[\s\S]*?exportDocumentToPdf\(model,\s*dependencies,\s*\{[\s\S]*?includeOcrTextLayer:\s*textLayer !== false/u
   )
-  assert.doesNotMatch(main, /from '\.\/documentPdfExport'/u)
-  assert.doesNotMatch(main, /exportDocumentToPdf\(/u)
+  assert.match(main, /documentWorkspace\?\.getWindow\(\)[\s\S]*?printDocumentPreviewToPdf\(window\.webContents,\s*model,\s*partialExport,\s*textLayer\)/u)
 })
 
 test('部分导出必须经过原生确认对话框并明确标记部分结果', () => {
@@ -860,7 +885,8 @@ test('文档工作台初始化必须真正接线任务按钮、进度事件与�
   assert.match(source, /expectedJobId !== null/u)
   assert.match(source, /runDocument\(/u)
   assert.match(source, /function documentPreviewIdentity\(/u)
-  assert.match(source, /pdf:\$\{model\.source\.sha256\}/u)
+  assert.match(source, /model\.source\.format === 'pdf' \|\| model\.source\.format === 'image'/u)
+  assert.match(source, /return `\$\{model\.source\.format\}:\$\{model\.source\.sha256\}`/u)
   assert.match(source, /renderedSourcePreviewIdentity/u)
   assert.match(source, /renderedTranslationSignature/u)
   assert.doesNotMatch(source, /renderedSource !== snapshot\.source/u)
@@ -1214,7 +1240,7 @@ test('PDF 只有原文复用 PDF.js Canvas，译文必须重建结构化流式 D
   assert.match(renderSource, /model\.source\.format === 'pdf' && side === 'source'/u)
   assert.match(renderSource, /void renderPdfPages\(previewHost, generation, model\)/u)
   assert.match(renderSource, /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'/u)
-  assert.match(renderSource, /renderPage\(page, side, pageScale\)/u)
+  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale\)/u)
   assert.doesNotMatch(source, /createPdfTranslationOverlay/u)
 })
 
@@ -1275,7 +1301,7 @@ test('PDF 译文页面初次挂载不能先按 scale=1 排版再跳到实际缩�
   assert.match(renderPageSource, /String\(translationInitialScale\)/u,
     'renderPage 必须直接写入调用方计算好的缩放值')
   assert.doesNotMatch(renderPageSource, /--document-page-scale',\s*'1'/u)
-  assert.match(renderSource, /renderPage\(page, side, pageScale\)/u,
+  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale\)/u,
     '译文页面创建时必须传入按自身页面宽度计算出的缩放值')
 })
 
@@ -1537,7 +1563,8 @@ test('PDF 源预览必须按文件身份复用并把告警层与画布分离', (
 
   assert.match(source, /function documentPreviewIdentity\(/u)
   assert.match(source, /model\.source\.format === 'pdf'/u)
-  assert.match(source, /return `pdf:\$\{model\.source\.sha256\}`/u)
+  assert.match(source, /model\.source\.format === 'pdf' \|\| model\.source\.format === 'image'/u)
+  assert.match(source, /return `\$\{model\.source\.format\}:\$\{model\.source\.sha256\}`/u)
   assert.match(source, /const sourceChanged = renderedSourcePreviewIdentity !== sourcePreviewIdentity/u)
   assert.match(source, /if \(sourceChanged\) revokeAssetUrls\(\)/u)
   assert.doesNotMatch(source, /if \(sourceChanged \|\| translationChanged\) revokeAssetUrls\(\)/u)
@@ -2052,14 +2079,28 @@ test('PDF 译文表格单元格必须显式保留主题边框', () => {
   )
 })
 
-test('PDF 译文表格最后一行空单元格仍必须显示可辨认的底边', () => {
+test('PDF 译文表格最后一行空单元格必须使用高对比外边界', () => {
   const css = read('src/renderer/src/document.css')
+  const theme = read('src/renderer/src/theme.css')
   const lastRowCellRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+tbody\s+tr:last-child\s+td\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const translationTableRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+table\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
   assert.match(
     lastRowCellRule,
-    /border-bottom:\s*var\(--border-width\)\s+solid\s+var\(--border-control\)/u,
-    '最后一行即使右侧单元格为空，也必须使用更强主题边框显示表格底边'
+    /border-bottom:\s*2px\s+solid\s+var\(--document-table-boundary\)/u,
+    '最后一行即使右侧单元格为空，也必须使用足够醒目的专用外边界显示表格底边'
+  )
+  assert.match(
+    translationTableRule,
+    /border-bottom:\s*2px\s+solid\s+var\(--document-table-boundary\)/u,
+    '表格自身也必须绘制同色底边界，避免折叠边框时仅依赖空单元格的边框'
+  )
+  assert.doesNotMatch(lastRowCellRule, /--border-control/u,
+    '普通控件边框色在浅色主题下对比度不足，不能作为表格最终外边界')
+  assert.match(
+    theme,
+    /:root\[data-theme='sakura'\]\[data-theme-mode='light'\]\s*\{[^}]*--document-table-boundary:\s*#[0-9a-f]{6}/isu,
+    '樱花浅色主题必须为表格外边界提供高对比语义色'
   )
 })
 
@@ -2461,6 +2502,56 @@ test('图片预览必须按原始宽高比完整显示，不能被容器拉伸�
   )
 })
 
+test('图片预览身份必须只跟随源文件指纹，OCR 流式更新不得撤销原图资源', () => {
+  const source = read('src/renderer/src/document.ts')
+  const identityStart = source.indexOf('function documentPreviewIdentity(')
+  const identityEnd = source.indexOf('/**', identityStart + 1)
+  const identitySource = source.slice(identityStart, identityEnd)
+
+  assert.match(
+    identitySource,
+    /model\.source\.format === 'pdf' \|\| model\.source\.format === 'image'/u
+  )
+  assert.match(identitySource, /return `\$\{model\.source\.format\}:\$\{model\.source\.sha256\}`/u)
+  assert.match(
+    identitySource,
+    /model\.source\.format === 'image'\)\s*\{\s*return `\$\{model\.source\.format\}:\$\{model\.source\.sha256\}`\s*\}/u
+  )
+})
+
+test('图片异步加载完成时只能更新仍然挂载的当前图片节点', () => {
+  const source = read('src/renderer/src/document.ts')
+  const loadStart = source.indexOf('function loadDocumentImageAsset(')
+  const loadEnd = source.indexOf('/**', loadStart + 1)
+  const loadSource = source.slice(loadStart, loadEnd)
+
+  assert.match(loadSource, /const isCurrentImage = \(\): boolean =>/u)
+  assert.match(loadSource, /wrapper\.isConnected/u)
+  assert.match(loadSource, /image\.parentElement === wrapper/u)
+  assert.match(loadSource, /querySelector\(':scope > img\.document-page-image'\) === image/u)
+  assert.match(loadSource, /if \(!url\) \{\s*if \(!isCurrentImage\(\)\) return/u)
+  assert.match(loadSource, /addEventListener\('load', \(\) => \{\s*if \(!isCurrentImage\(\)\) return/u)
+  assert.match(loadSource, /addEventListener\('error', \(\) => \{\s*if \(!isCurrentImage\(\)\) return/u)
+})
+
+test('图片资源与源文件预览必须显式携带当前任务标识', () => {
+  const source = read('src/renderer/src/document.ts')
+  const assetStart = source.indexOf('async function resolveAssetUrl(')
+  const assetEnd = source.indexOf('/**', assetStart + 1)
+  const assetSource = source.slice(assetStart, assetEnd)
+
+  assert.match(
+    assetSource,
+    /window\.api\.getDocumentAsset\(jobId, assetId\)/u,
+    '图片资源必须按任务读取，不能依赖启动返回前可能为空的 activeJobId'
+  )
+  assert.match(source, /renderPage\(page, pageRenderSide, pageScale, jobId\)/u)
+  assert.match(source, /window\.api\.getDocumentSource\(jobId\)/u)
+  assert.match(source, /renderDocumentModel\([\s\S]*?'source',[\s\S]*?snapshot\.jobId,/u)
+  assert.match(source, /renderDocumentModel\([\s\S]*?'translation',[\s\S]*?snapshot\.jobId,/u)
+  assert.match(source, /window\.api\.retryFailedDocument\(latestSnapshot\.jobId, jobGeneration\)/u)
+})
+
 test('OCR 原文模式必须允许直接选择透明文字层', () => {
   const css = read('src/renderer/src/document.css')
   const source = read('src/renderer/src/document.ts')
@@ -2477,6 +2568,24 @@ test('OCR 原文模式必须允许直接选择透明文字层', () => {
   const tableCellStart = source.indexOf('function renderTableCellImageBlock(')
   const tableCellEnd = source.indexOf('/**', tableCellStart + 1)
   assert.match(source.slice(tableCellStart, tableCellEnd), /appendImageOcrLayers\(wrapper, block, side\)/u)
+})
+
+test('图片 OCR 原文必须复用源页绝对布局并让透明文字层优先接收指针', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderStart = source.indexOf('function renderDocumentModel(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+
+  assert.match(
+    renderSource,
+    /const pageRenderSide = ocrDisplayMode === 'ocr-text' && model\.source\.format === 'image'\s*\? 'source'\s*: side/u
+  )
+  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale\)/u)
+  assert.match(
+    css,
+    /\.document-preview-host\[data-document-format='image'\][\s\S]*?\.document-image-block > \.document-page-image\s*\{[^}]*pointer-events:\s*none/su
+  )
 })
 
 test('PDF OCR 文字层必须包含原生文本、表格文本和公式原文', () => {
@@ -2531,4 +2640,27 @@ test('启动请求期间切换 OCR 模式必须立即清空旧进度并隔离旧
   assert.match(source, /window\.api\.onDocumentCompleted\(\(snapshot\) => \{\s*if \(pendingOcrModeRestart\) return/su)
   assert.match(source, /function scheduleSnapshotRender\(snapshot: DocumentWorkspaceSnapshot\): void \{\s*\/\/[^\n]*\n\s*if \(pendingOcrModeRestart\) return/su)
   assert.match(source, /function flushSnapshotRender\(snapshot: DocumentWorkspaceSnapshot\): void \{\s*\/\/[^\n]*\n\s*if \(pendingOcrModeRestart\) return/su)
+})
+
+test('文件入口必须调用多文件预检并允许选择图片原文和 OCR 文字层', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+
+  assert.match(source, /async function chooseDocumentFile\(\): Promise<void>/u)
+  assert.match(source, /await chooseDocumentFiles\(\)/u)
+  assert.match(source, /function inspectBrowserFile\(file: File\): Promise<void>/u)
+  assert.match(source, /await inspectBrowserFiles\(\[file\]\)/u)
+  assert.match(source, /void inspectBrowserFiles\(Array\.from\(input\.files \?\? \[\]\)\)/u)
+  assert.match(source, /void inspectBrowserFiles\(Array\.from\(event\.dataTransfer\?\.files \?\? \[\]\)\)/u)
+  assert.match(source, /async function replaceDocumentFromWorkbench\(\): Promise<void>/u)
+  assert.match(source, /await addDocumentFilesFromWorkbench\(\)/u)
+  assert.match(source, /window\.api\.onDocumentProgress\(\(snapshot\) => \{\s*routeDocumentSnapshot\(snapshot, false\)/su)
+  assert.match(source, /window\.api\.onDocumentCompleted\(\(snapshot\) => \{\s*routeDocumentSnapshot\(snapshot, true\)/su)
+  assert.match(source, /function findDocumentTabByTranslationUpdate\(/u)
+  assert.match(source, /updateDocumentTabSnapshot\(tab, next\)/u)
+  assert.match(source, /tab\.ocrDisplayMode = nextMode/u)
+  assert.match(source, /tab\.pendingOcrModeRestart = true/u)
+  assert.match(source, /await startDocumentTabTranslation\(tab\)/u)
+  assert.match(css, /aspect-ratio:\s*var\(--document-page-aspect-ratio\)/u)
+  assert.match(css, /object-fit:\s*contain/u)
 })

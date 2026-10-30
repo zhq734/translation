@@ -31,10 +31,7 @@
       </header>
 
       <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
-        <div class="document-tabs" role="tablist" data-i18n-attr="aria-label:document.tabs" aria-label="Document translation modes">
-          <button id="document-tab-single" class="document-tab" type="button" role="tab" aria-selected="true" aria-controls="document-upload-panel" data-i18n="document.tab.single">Single file</button>
-          <button id="document-tab-batch" class="document-tab" type="button" role="tab" aria-selected="false" aria-controls="document-batch-panel" data-i18n="document.tab.batch">Batch</button>
-        </div>
+        <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
         <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
           <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
             <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
@@ -60,11 +57,11 @@
         </div>
       </nav>
 
-      <section id="document-upload-panel" class="document-upload-panel" role="tabpanel" aria-labelledby="document-tab-single">
+      <section id="document-upload-panel" class="document-upload-panel" role="tabpanel" aria-labelledby="document-upload-title">
         <div class="document-upload-card">
           <div class="document-upload-heading">
             <span class="document-upload-icon" aria-hidden="true">↥</span>
-            <h1 data-i18n="document.upload.title">Translate a local document</h1>
+            <h1 id="document-upload-title" data-i18n="document.upload.title">Translate a local document</h1>
             <p data-i18n="document.upload.description">Choose a file to create a side-by-side source and translation workspace.</p>
           </div>
           <div id="document-drop-zone" class="document-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.upload.dropHint" aria-label="Choose or drop a document here" aria-describedby="document-upload-formats document-upload-privacy">
@@ -74,7 +71,7 @@
             <span id="document-upload-formats" class="document-format-hint" data-i18n="document.upload.formats">Supports PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT and VTT</span>
             <span id="document-upload-privacy" class="document-privacy-hint" data-i18n="document.upload.privacy">Files are processed locally. Only extracted text is sent to the translation service.</span>
           </div>
-          <input id="document-file-input" class="document-file-input" type="file" accept=".pdf,.docx,.epub,.html,.htm,.md,.markdown,.txt,.json,.csv,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.bmp" hidden />
+          <input id="document-file-input" class="document-file-input" type="file" multiple accept=".pdf,.docx,.epub,.html,.htm,.md,.markdown,.txt,.json,.csv,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.bmp" hidden />
           <div id="document-file-summary" class="document-file-summary" aria-live="polite" hidden>
             <span class="document-file-summary-icon" aria-hidden="true">▤</span>
             <div class="document-file-summary-copy">
@@ -85,38 +82,6 @@
           </div>
           <p id="document-upload-status" class="document-upload-status" role="status" aria-live="polite"></p>
           <button id="document-start-button" class="document-primary-button" type="button" data-i18n="document.upload.start" disabled>Translate document</button>
-        </div>
-      </section>
-
-      <section id="document-batch-panel" class="document-batch-panel" role="tabpanel" aria-labelledby="document-tab-batch" hidden>
-        <div class="document-batch-card">
-          <header class="document-batch-heading">
-            <div>
-              <h1 data-i18n="document.batch.title">Batch translate local documents</h1>
-              <p data-i18n="document.batch.description">Add several documents, then translate and export them one by one.</p>
-            </div>
-            <button id="document-batch-select-button" class="document-primary-button" type="button" data-i18n="document.batch.chooseFiles">Choose files</button>
-          </header>
-          <div id="document-batch-drop-zone" class="document-batch-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.batch.dropHint" aria-label="Choose or drop documents for batch translation" aria-describedby="document-batch-privacy">
-            <span class="document-drop-zone-icon" aria-hidden="true">⇪</span>
-            <strong data-i18n="document.batch.dropHint">Choose or drop multiple documents here</strong>
-            <span id="document-batch-privacy" class="document-privacy-hint" data-i18n="document.upload.privacy">Files stay on this device; only extracted text is sent to the translation service.</span>
-          </div>
-          <p id="document-batch-status" class="document-batch-status" role="status" aria-live="polite"></p>
-          <div class="document-batch-summary">
-            <span id="document-batch-count" data-i18n="document.batch.empty">No files added.</span>
-            <span id="document-batch-progress-label"></span>
-          </div>
-          <div class="document-batch-progress-track">
-            <div id="document-batch-progress" class="document-batch-progressbar" role="progressbar" data-i18n-attr="aria-label:document.batch.progressLabel" aria-label="Batch translation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
-          </div>
-          <ul id="document-batch-list" class="document-batch-list" role="list" data-i18n-attr="aria-label:document.batch.queue" aria-label="Batch translation files"></ul>
-          <p id="document-batch-empty" class="document-batch-empty" data-i18n="document.batch.empty">No files added.</p>
-          <footer class="document-batch-actions">
-            <button id="document-batch-clear-button" class="document-secondary-button" type="button" data-i18n="document.batch.clear" disabled>Clear list</button>
-            <button id="document-batch-cancel-button" class="document-secondary-button" type="button" data-i18n="document.batch.cancel" hidden>Cancel batch</button>
-            <button id="document-batch-start-button" class="document-primary-button" type="button" data-i18n="document.batch.start" disabled>Start batch translation</button>
-          </footer>
         </div>
       </section>
 
@@ -136,7 +101,7 @@
               </div>
               <div class="document-workbench-actions">
                 <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
-                <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.replace">Replace</button>
+                <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.addFiles">Add files</button>
                 <button id="document-cancel-button" class="document-secondary-button" type="button" data-i18n="document.cancel" hidden>Cancel conversion</button>
                 <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
               </div>

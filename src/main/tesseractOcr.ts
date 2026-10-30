@@ -15,9 +15,15 @@ export interface TesseractWorker {
   /**
    * 识别图片或字节。
    * @param input 图片字节或路径。
-   * @returns 识别结果，含 data.text。
+   * @param options 识别参数；省略时由 tesseract.js 使用默认值。
+   * @param output 需要返回的输出类型；文档场景显式请求 blocks。
+   * @returns 识别结果，含 data.text 与可选结构化 blocks。
    */
-  recognize(input: unknown): Promise<{ data: { text: string } }>
+  recognize(
+    input: unknown,
+    options?: Record<string, unknown>,
+    output?: { text?: boolean; blocks?: boolean }
+  ): Promise<{ data: TesseractRecognizeData }>
   /**
    * 设置 Tesseract 参数。
    * @param params 参数键值对。
@@ -27,6 +33,48 @@ export interface TesseractWorker {
    * 释放 worker 资源。
    */
   terminate(): Promise<void>
+}
+
+/** Tesseract 行框，坐标使用输入图片像素。 */
+interface TesseractBoundingBox {
+  /** 左坐标。 */
+  x0: number
+  /** 上坐标。 */
+  y0: number
+  /** 右坐标。 */
+  x1: number
+  /** 下坐标。 */
+  y1: number
+}
+
+/** Tesseract 结构化文本行。 */
+interface TesseractLine {
+  /** 识别文本。 */
+  text?: unknown
+  /** 识别置信度，通常为 0-100。 */
+  confidence?: unknown
+  /** 行框。 */
+  bbox?: unknown
+}
+
+/** Tesseract 结构化段落。 */
+interface TesseractParagraph {
+  /** 段落内文本行。 */
+  lines?: unknown
+}
+
+/** Tesseract 结构化区块。 */
+interface TesseractBlock {
+  /** 区块内段落。 */
+  paragraphs?: unknown
+}
+
+/** Tesseract worker 返回的识别数据。 */
+interface TesseractRecognizeData {
+  /** 纯文本。 */
+  text: string
+  /** 可选结构化区块。 */
+  blocks?: unknown
 }
 
 /**
@@ -114,6 +162,59 @@ export function normalizeTesseractLines(rawText: string): OcrTextLine[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((text) => ({ text }))
+}
+
+/**
+ * 将 Tesseract blocks 中的行框与置信度规范化为 OCR 文本行。
+ * 无有效行框时返回空数组，由调用方回退到纯文本拆分。
+ * @param blocks Tesseract data.blocks。
+ * @returns 带像素行框和 0-1 置信度的文本行。
+ * @author zhenghq
+ */
+export function normalizeTesseractBlocks(blocks: unknown): OcrTextLine[] {
+  if (!Array.isArray(blocks)) return []
+  const result: OcrTextLine[] = []
+  for (const block of blocks) {
+    const paragraphs = (block as TesseractBlock | null)?.paragraphs
+    if (!Array.isArray(paragraphs)) continue
+    for (const paragraph of paragraphs) {
+      const lines = (paragraph as TesseractParagraph | null)?.lines
+      if (!Array.isArray(lines)) continue
+      for (const rawLine of lines) {
+        const line = rawLine as TesseractLine | null
+        const text = typeof line?.text === 'string' ? line.text.trim() : ''
+        const box = normalizeTesseractBoundingBox(line?.bbox)
+        if (!text || !box) continue
+        const rawConfidence = Number(line?.confidence)
+        const confidence = Number.isFinite(rawConfidence)
+          ? Math.max(0, Math.min(1, rawConfidence / 100))
+          : undefined
+        result.push({
+          text,
+          box,
+          ...(confidence === undefined ? {} : { confidence })
+        })
+      }
+    }
+  }
+  return result
+}
+
+/**
+ * 将 Tesseract x0/y0/x1/y1 行框转换为统一左上角宽高格式。
+ * @param value 原始行框。
+ * @returns 有效像素行框；坐标无效或尺寸非正时返回 undefined。
+ * @author zhenghq
+ */
+function normalizeTesseractBoundingBox(value: unknown): OcrTextLine['box'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const bbox = value as Partial<TesseractBoundingBox>
+  const x0 = Number(bbox.x0)
+  const y0 = Number(bbox.y0)
+  const x1 = Number(bbox.x1)
+  const y1 = Number(bbox.y1)
+  if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return undefined
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
 }
 
 /**
@@ -378,11 +479,14 @@ export class TesseractOcrEngine implements OcrEngine {
         : input.imagePath!
 
       const { data } = await withOcrTimeout(
-        worker.recognize(imageInput),
+        worker.recognize(imageInput, {}, { text: true, blocks: true }),
         { timeoutMs, signal: input.signal, message: translateMain },
         'tesseract'
       )
-      const lines = normalizeTesseractLines(data.text)
+      const structuredLines = normalizeTesseractBlocks(data.blocks)
+      const lines = structuredLines.length > 0
+        ? structuredLines
+        : normalizeTesseractLines(data.text)
       const text = lines.map((l) => l.text).join('\n')
       return { lines, text, engine: 'tesseract' }
     } catch (error) {

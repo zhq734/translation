@@ -67,6 +67,8 @@ export interface DocumentPdfExportDependencies {
   loadFontBytes(): Promise<Uint8Array | null>
   /** 读取文档资源字节；资源不存在时返回 null。 */
   loadAssetBytes(assetId: string): Promise<Uint8Array | null>
+  /** 原始 PDF 字节；提供时保留原页面并只追加 OCR 透明文字层。 */
+  sourcePdfBytes?: Uint8Array
 }
 
 /** PDF 导出成功结果；告警表示已生成的 PDF 存在可降级内容。 */
@@ -157,6 +159,11 @@ function collectBlockText(blocks: DocumentBlock[], output: string[]): void {
   for (const block of blocks) {
     if (block.kind === 'text') {
       output.push(block.runs.map((run) => run.text).join(''))
+    } else if (block.kind === 'image') {
+      for (const region of block.ocrRegions ?? []) {
+        output.push(region.text)
+        if (region.translatedText) output.push(region.translatedText)
+      }
     } else if (block.kind === 'table') {
       for (const row of block.rows) {
         for (const cell of row.cells) collectBlockText(cell.blocks, output)
@@ -164,11 +171,6 @@ function collectBlockText(blocks: DocumentBlock[], output: string[]): void {
     } else if (block.kind === 'formula') {
       if (block.sourceText) output.push(block.sourceText)
       if (block.latex) output.push(block.latex)
-    } else if (block.kind === 'image') {
-      for (const region of block.ocrRegions ?? []) {
-        if (region.text) output.push(region.text)
-        if (region.translatedText) output.push(region.translatedText)
-      }
     }
   }
 }
@@ -605,6 +607,75 @@ function drawOcrTextLayer(
     if (!region.text?.trim()) continue
     drawOcrTextRegion(context, imageBox, region)
   }
+}
+
+/**
+ * 递归收集页面中带 OCR 原文的图片区块，包含表格单元格内的嵌套图片。
+ * @param blocks 待遍历区块。
+ * @param output 收集结果。
+ * @returns 带 OCR 原文的图片区块。
+ * @author zhenghq
+ */
+function collectOcrImageBlocks(
+  blocks: readonly DocumentBlock[],
+  output: DocumentImageBlock[] = []
+): DocumentImageBlock[] {
+  for (const block of blocks) {
+    if (block.kind === 'image') {
+      if ((block.ocrRegions ?? []).some((region) => Boolean(region.text?.trim()))) output.push(block)
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) collectOcrImageBlocks(cell.blocks, output)
+    }
+  }
+  return output
+}
+
+/**
+ * 在保留的原始 PDF 页面上追加 OCR 透明文字层；不重绘、重排或新增原页面。
+ * @param document 已加载的原始 PDF。
+ * @param pageModel 当前页面模型。
+ * @param context 绘制上下文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function appendSourcePdfOcrTextLayers(
+  document: PDFDocument,
+  pageModel: DocumentPage,
+  context: DrawContext
+): number {
+  const sourcePage = document.getPage(pageModel.index)
+  const rotation = sourcePage.getRotation().angle % 360
+  if (rotation !== 0) {
+    context.warnings.push({
+      code: 'ocr-source-rotated-page',
+      severity: 'warning',
+      message: 'OCR text was skipped on a rotated source PDF page.',
+      pageId: pageModel.pageId
+    })
+    return 0
+  }
+  let writtenTextCount = 0
+  for (const block of collectOcrImageBlocks(pageModel.blocks)) {
+    if (!block.bbox) {
+      context.warnings.push({
+        code: 'ocr-source-image-bbox-missing',
+        severity: 'warning',
+        message: 'OCR text was skipped because the source image has no reliable bounding box.',
+        pageId: pageModel.pageId,
+        blockId: block.blockId
+      })
+      continue
+    }
+    for (const region of orderedOcrRegions(block.ocrRegions ?? [])) {
+      if (!region.text?.trim()) continue
+      drawOcrTextRegion(context, block.bbox, region)
+      writtenTextCount += 1
+    }
+  }
+  return writtenTextCount
 }
 
 /**
@@ -1826,12 +1897,51 @@ export async function exportDocumentToPdf(
     throw new DocumentPdfExportError('invalid-document', 'Document has no pages')
   }
   try {
-    const document = await PDFDocument.create()
-    document.setTitle(model.metadata.title ?? model.source.fileName)
-    if (model.metadata.author) document.setAuthor(model.metadata.author)
+    const sourcePdfBytes = dependencies.sourcePdfBytes
+    const document = sourcePdfBytes
+      ? await PDFDocument.load(sourcePdfBytes, { updateMetadata: false })
+      : await PDFDocument.create()
+    if (!sourcePdfBytes) {
+      document.setTitle(model.metadata.title ?? model.source.fileName)
+      if (model.metadata.author) document.setAuthor(model.metadata.author)
+    }
     const fonts = await resolveFonts(document, model, dependencies)
     const images = new Map<string, PDFImage | null>()
     const warnings: DocumentWarning[] = []
+    if (sourcePdfBytes) {
+      const sourcePageCount = document.getPageCount()
+      if (sourcePageCount !== model.pages.length) {
+        warnings.push({
+          code: 'ocr-source-page-count-mismatch',
+          severity: 'warning',
+          message: 'The source PDF page count differs from the OCR model; original pages were preserved.'
+        })
+      }
+      const pagesByIndex = new Map(model.pages.map((page) => [page.index, page]))
+      let writtenOcrTextCount = 0
+      for (let pageIndex = 0; pageIndex < sourcePageCount; pageIndex += 1) {
+        const pageModel = pagesByIndex.get(pageIndex)
+        if (!pageModel) continue
+        const page = document.getPage(pageIndex)
+        writtenOcrTextCount += appendSourcePdfOcrTextLayers(document, pageModel, {
+          page,
+          regular: fonts.regular,
+          bold: fonts.bold,
+          italic: fonts.italic,
+          boldItalic: fonts.boldItalic,
+          images,
+          warnings
+        })
+      }
+      if (writtenOcrTextCount === 0) {
+        warnings.push({
+          code: 'ocr-source-text-layer-empty',
+          severity: 'warning',
+          message: 'No OCR text was available to write into the source PDF text layer.'
+        })
+      }
+      return { bytes: await document.save(), warnings }
+    }
     for (const pageModel of model.pages) {
       const page = createComposedPage(document, pageModel)
       await drawPageBlocks({

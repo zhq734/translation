@@ -267,13 +267,47 @@ test('PDF 打印页、Canvas 与 OCR 文字层必须共享同一页面矩形', (
   const pageRule = /#document-translation-content \.document-pdf-page\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const canvasRule = /#document-translation-content \.document-pdf-canvas\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const layerRule = /#document-translation-content \.document-ocr-print-text-layer\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const imageBlockRule = /#document-translation-content \.document-image-block\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
   assert.match(pageRule, /width:\s*calc\(var\(--document-pdf-source-width\)\s*\*\s*1\.3333333333px\)/u)
   assert.match(pageRule, /height:\s*calc\(var\(--document-pdf-source-height\)\s*\*\s*1\.3333333333px\)/u)
+  assert.match(pageRule, /content-visibility:\s*visible\s*!important/u)
+  assert.match(pageRule, /contain-intrinsic-size:\s*none\s*!important/u)
   assert.match(canvasRule, /width:\s*100%\s*!important/u)
   assert.match(canvasRule, /height:\s*100%\s*!important/u)
-  assert.match(layerRule, /width:\s*100%\s*!important/u)
-  assert.match(layerRule, /height:\s*100%\s*!important/u)
+  assert.match(layerRule, /left:\s*var\(--document-ocr-print-left,\s*0(?:px)?\)\s*!important/u)
+  assert.match(layerRule, /top:\s*var\(--document-ocr-print-top,\s*0(?:px)?\)\s*!important/u)
+  assert.match(layerRule, /width:\s*var\(--document-ocr-print-width,\s*100%\)\s*!important/u)
+  assert.match(layerRule, /height:\s*var\(--document-ocr-print-height,\s*100%\)\s*!important/u)
+  assert.doesNotMatch(layerRule, /inset:/u)
+  assert.match(imageBlockRule, /position:\s*relative\s*!important/u)
+  assert.match(imageBlockRule, /isolation:\s*isolate\s*!important/u)
+})
+
+test('OCR 原文打印前必须按底图真实矩形校正透明文字层', async () => {
+  const fake = createWebContentsFake()
+  await printDocumentPreviewToPdf(fake.webContents, documentModel(), undefined, true)
+  const waitScript = fake.executedScripts[0] ?? ''
+
+  // 图片块会因 OCR 译文变高，PDF 页也可能受内容可见性影响；文字层必须重新贴合底图而不是父容器。
+  assert.match(waitScript, /querySelectorAll\([\s\S]*?\.document-ocr-print-text-layer/u)
+  assert.match(waitScript, /\.document-image-block/u)
+  assert.match(waitScript, /:scope > img\.document-page-image/u)
+  assert.match(waitScript, /\.document-pdf-canvas/u)
+  assert.match(waitScript, /getBoundingClientRect\(\)/u)
+  assert.match(waitScript, /--document-ocr-print-left/u)
+  assert.match(waitScript, /--document-ocr-print-top/u)
+  assert.match(waitScript, /--document-ocr-print-width/u)
+  assert.match(waitScript, /--document-ocr-print-height/u)
+})
+
+test('普通译文 PDF 打印不得测量 OCR 原文文字层', async () => {
+  const fake = createWebContentsFake()
+  await printDocumentPreviewToPdf(fake.webContents, documentModel())
+  const waitScript = fake.executedScripts[0] ?? ''
+
+  assert.doesNotMatch(waitScript, /document-ocr-print-text-layer/u)
+  assert.doesNotMatch(waitScript, /--document-ocr-print-left/u)
 })
 
 test('PDF 打印样式不能把同行布局分组覆盖为纵向块', () => {

@@ -162,7 +162,12 @@ export async function recognizeAdaptiveOcr(
       elapsedMs: Math.max(0, now() - fallbackStartedAt),
       selected
     })
-    if (selected === 'fallback') return fallback
+    if (selected === 'fallback') {
+      return {
+        ...fallback,
+        coordinateScale: fallbackImage.actualScale
+      }
+    }
     if (baseline) return baseline
   } catch (fallbackError) {
     logger({

@@ -162,6 +162,20 @@ export interface DocumentTranslationCacheEntry {
   incomplete?: boolean
 }
 
+/** 流水线传给翻译提供方的受控文档上下文；不包含文件路径、正文以外的凭据或图片字节。 */
+export interface DocumentTranslationRequestContext {
+  /** 当前文档任务标识。 */
+  jobId?: string
+  /** 当前文档任务代际。 */
+  generation?: number
+  /** 本次请求使用的术语表版本；无术语表时固定为 none。 */
+  glossaryVersion: string
+  /** 仅包含当前目标命中术语的受控约束。 */
+  glossaryContext: string
+  /** 当前目标相邻语义单元的受限摘要。 */
+  contextSummary?: string
+}
+
 /** 缓存读取结果。 */
 export type DocumentTranslationCacheParseResult =
   | { ok: true; translation: string }
@@ -205,8 +219,6 @@ const PROTECTION_RULES: readonly ProtectionRule[] = [
   { pattern: /`[^`\n]+`/gu, reason: 'inline-code' },
   { pattern: /\$\$[\s\S]+?\$\$/gu, reason: 'formula' },
   { pattern: /\$[^$\n]+?\$/gu, reason: 'formula' },
-  { pattern: /!\[[^\]\n]*\]\((?:https?:\/\/|\/)[^)\s]+\)/gu, reason: 'link-target' },
-  { pattern: /\[[^\]\n]+\]\((?:https?:\/\/|\/)[^)\s]+\)/gu, reason: 'link-target' },
   { pattern: /https?:\/\/[^\s<>"'，。；！？）】]+/gu, reason: 'url' },
   { pattern: /mailto:[^\s<>"'，。；！？）】]+/gu, reason: 'email' },
   { pattern: /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, reason: 'email' },
@@ -215,7 +227,7 @@ const PROTECTION_RULES: readonly ProtectionRule[] = [
     reason: 'file-path'
   },
   { pattern: /[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\([^()\n]*\)/gu, reason: 'code' },
-  { pattern: /(?<![\w.])\d+(?:\.\d+)?(?![\w.])/gu, reason: 'number' }
+  { pattern: /(?<![\w.])\d+(?:\.\d+)?(?!\w|\.\d)/gu, reason: 'number' }
 ]
 
 /** 术语匹配时的 ASCII 单词边界字符。 */
@@ -407,7 +419,7 @@ function collectProtectedSpans(text: string): DocumentProtectedSpan[] {
     rule.pattern.lastIndex = 0
     const matches = Array.from(text.matchAll(new RegExp(rule.pattern.source, rule.pattern.flags)))
     for (const match of matches) {
-      const value = match[0]
+      const value = trimProtectedMatch(match[0], rule.reason)
       const start = match.index ?? 0
       if (!value || start < 0) continue
       const end = start + value.length
@@ -421,6 +433,18 @@ function collectProtectedSpans(text: string): DocumentProtectedSpan[] {
     text: candidate.text,
     reason: candidate.reason
   }))
+}
+
+/**
+ * 去除 URL、邮箱和文件路径末尾的句读符号，避免把正文标点锁进受保护片段。
+ * @param value 正则命中的原始片段。
+ * @param reason 保护原因。
+ * @returns 去除尾随标点后的片段。
+ * @author zhenghq
+ */
+function trimProtectedMatch(value: string, reason: string): string {
+  if (reason !== 'url' && reason !== 'email' && reason !== 'file-path') return value
+  return value.replace(/[.,;:!?)\]}>]+$/u, '')
 }
 
 /**

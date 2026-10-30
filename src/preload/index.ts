@@ -272,13 +272,6 @@ const api: Api = {
     ipcRenderer.send('document:open')
   },
   /**
-   * 通过主进程文件选择器导入并校验一个本地文档。
-   * @returns 选择、取消或拒绝结果。
-   * @author zhenghq
-   */
-  selectDocumentFile: (): Promise<DocumentFileSelectionResult> =>
-    ipcRenderer.invoke('document:select-file'),
-  /**
    * 通过主进程文件选择器一次导入并校验多个本地文档。
    * @returns 每个候选文件的选择、取消或拒绝结果。
    * @author zhenghq
@@ -318,12 +311,13 @@ const api: Api = {
     ipcRenderer.invoke('document:run', request),
   /**
    * 使用新代际重新翻译当前文档中的失败项。
+   * @param jobId 任务标识。
    * @param generation Renderer 生成的新任务代际。
    * @returns 主进程是否接受重试。
    * @author zhenghq
    */
-  retryFailedDocument: (generation: number): Promise<DocumentRunResult> =>
-    ipcRenderer.invoke('document:retry-failed', generation),
+  retryFailedDocument: (jobId: string, generation: number): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:retry-failed', jobId, generation),
   /**
    * 取消当前文档翻译任务。
    * @param jobId 任务标识。
@@ -334,6 +328,14 @@ const api: Api = {
   cancelDocument: (jobId: string, generation: number): Promise<boolean> =>
     ipcRenderer.invoke('document:cancel', jobId, generation),
   /**
+   * 释放已关闭文档标签对应的任务与资源。
+   * @param jobId 任务标识。
+   * @returns 是否找到并释放了任务服务。
+   * @author zhenghq
+   */
+  releaseDocumentJob: (jobId: string): Promise<boolean> =>
+    ipcRenderer.invoke('document:release', jobId),
+  /**
    * 校验当前任务并导出完整或已确认的部分 PDF。
    * @param request 当前任务标识、代际与导出模式。
    * @returns 保存、取消或拒绝结果。
@@ -343,19 +345,21 @@ const api: Api = {
     ipcRenderer.invoke('document:export-pdf', request),
   /**
    * 读取当前任务中的受控图片资源。
+   * @param jobId 任务标识。
    * @param assetId 解析阶段生成的资源标识。
    * @returns 资源字节或稳定错误分类。
    * @author zhenghq
    */
-  getDocumentAsset: (assetId: string): Promise<DocumentAssetResult> =>
-    ipcRenderer.invoke('document:get-asset', assetId),
+  getDocumentAsset: (jobId: string, assetId: string): Promise<DocumentAssetResult> =>
+    ipcRenderer.invoke('document:get-asset', jobId, assetId),
   /**
    * 读取当前活动 PDF 任务的原始字节，供 PDF.js 原生预览。
+   * @param jobId 任务标识。
    * @returns 受控源文件读取结果。
    * @author zhenghq
    */
-  getDocumentSource: (): Promise<DocumentSourceResult> =>
-    ipcRenderer.invoke('document:get-source'),
+  getDocumentSource: (jobId: string): Promise<DocumentSourceResult> =>
+    ipcRenderer.invoke('document:get-source', jobId),
   /**
    * 订阅文档翻译进度事件。
    * @param callback 进度快照回调。

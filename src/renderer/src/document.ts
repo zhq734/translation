@@ -2,8 +2,7 @@ import {
   DOCUMENT_MAX_FILE_BYTES,
   DOCUMENT_ZIP_TAIL_BYTES,
   getDocumentZipCentralDirectoryRange,
-  validateDocumentFile,
-  type DocumentFileValidationResult
+  validateDocumentFile
 } from '../../shared/documentFormat'
 import type {
   DocumentBlock,
@@ -55,17 +54,6 @@ import {
   recordDocumentFileHistory,
   type DocumentFileHistoryEntry
 } from './documentHistory'
-import {
-  appendDocumentBatchItems,
-  cancelDocumentBatch,
-  createDocumentBatchState,
-  markDocumentBatchItem,
-  removeDocumentBatchItem,
-  resolveDocumentBatchProgress,
-  type DocumentBatchCandidate,
-  type DocumentBatchItem,
-  type DocumentBatchState
-} from './documentBatch'
 import {
   occupiesDocumentTranslationFlow,
   resolveTranslationImageFlowGap,
@@ -120,6 +108,43 @@ interface DocumentSelectionState {
   error: string | null
 }
 
+/** 单个文件 Tab 的任务状态；只用于顶栏状态点，不参与任务协议。 */
+type DocumentTabStatus = 'idle' | 'starting' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
+
+/** 文档工作台中的独立文件 Tab；每个 Tab 拥有自己的任务、快照与交互状态。 */
+interface DocumentWorkspaceTab {
+  /** 当前窗口内稳定的 Tab 标识。 */
+  id: string
+  /** 已通过主进程批准的文件元数据。 */
+  selection: DocumentSelectionState
+  /** 最近一次属于该 Tab 的任务快照。 */
+  snapshot: DocumentWorkspaceSnapshot | null
+  /** 已确认的主进程任务标识。 */
+  activeJobId: string | null
+  /** 启动请求返回前由首条进度事件推导出的任务标识。 */
+  expectedJobId: string | null
+  /** 最近一次为该 Tab 申请的任务代际。 */
+  generation: number
+  /** runDocument 请求是否尚未返回。 */
+  startInFlight: boolean
+  /** 当前任务的界面状态。 */
+  status: DocumentTabStatus
+  /** 原文栏和译文栏的滚动位置。 */
+  scrollPositions: DocumentScrollPositions
+  /** 该 Tab 提交给任务的源语言。 */
+  sourceLang: string
+  /** 该 Tab 提交给任务的目标语言。 */
+  targetLang: string
+  /** 图片 OCR 原文与译文的展示方式。 */
+  ocrDisplayMode: 'ocr-text' | 'translation'
+  /** 启动完成后仍需按最新语言重译。 */
+  pendingLanguageRetranslation: boolean
+  /** 启动完成后仍需按最新 OCR 模式重启。 */
+  pendingOcrModeRestart: boolean
+  /** 当前 Tab 的语言切换序号，用于丢弃过期重译请求。 */
+  languageRevision: number
+}
+
 /** 初始空选择状态。 */
 const EMPTY_SELECTION: DocumentSelectionState = {
   path: null,
@@ -148,20 +173,7 @@ const targetLanguageSelect = document.getElementById('document-target-lang') as 
 const actualLanguage = document.getElementById('document-actual-language') as HTMLElement
 const uploadPanel = document.getElementById('document-upload-panel') as HTMLElement
 const workbench = document.getElementById('document-workbench') as HTMLElement
-const documentTabSingle = document.getElementById('document-tab-single') as HTMLButtonElement
-const documentTabBatch = document.getElementById('document-tab-batch') as HTMLButtonElement
-const documentBatchPanel = document.getElementById('document-batch-panel') as HTMLElement
-const documentBatchSelectButton = document.getElementById('document-batch-select-button') as HTMLButtonElement
-const documentBatchDropZone = document.getElementById('document-batch-drop-zone') as HTMLElement
-const documentBatchStatus = document.getElementById('document-batch-status') as HTMLElement
-const documentBatchCount = document.getElementById('document-batch-count') as HTMLElement
-const documentBatchProgress = document.getElementById('document-batch-progress') as HTMLElement
-const documentBatchProgressLabel = document.getElementById('document-batch-progress-label') as HTMLElement
-const documentBatchList = document.getElementById('document-batch-list') as HTMLUListElement
-const documentBatchEmpty = document.getElementById('document-batch-empty') as HTMLElement
-const documentBatchClearButton = document.getElementById('document-batch-clear-button') as HTMLButtonElement
-const documentBatchCancelButton = document.getElementById('document-batch-cancel-button') as HTMLButtonElement
-const documentBatchStartButton = document.getElementById('document-batch-start-button') as HTMLButtonElement
+const documentWorkspaceTabs = document.getElementById('document-file-tabs') as HTMLElement
 const workbenchName = document.getElementById('document-workbench-name') as HTMLElement
 const workbenchMeta = document.getElementById('document-workbench-meta') as HTMLElement
 const progressStage = document.getElementById('document-progress-stage') as HTMLElement
@@ -207,6 +219,12 @@ let expectedJobId: string | null = null
 let latestSnapshot: DocumentWorkspaceSnapshot | null = null
 /** 原文栏图片文字的展示方式；默认显示译文覆盖层，切换后显示 OCR 原文透明文字层。 */
 let ocrDisplayMode: 'ocr-text' | 'translation' = 'translation'
+/** 当前活动 Tab 是否仍有启动请求未返回；仅作为活动 Tab 的界面投影。 */
+let documentStartInFlight = false
+/** 当前活动 Tab 是否等待启动请求结束后按最新语言重译。 */
+let pendingLanguageRetranslation = false
+/** 当前活动 Tab 是否等待启动请求结束后按最新 OCR 模式重启。 */
+let pendingOcrModeRestart = false
 /** 当前文档预览方式；默认保留现有的原文与译文双面布局。 */
 let documentViewMode: DocumentViewMode = readDocumentViewMode()
 /** 部分导出确认对话框的待决结果；关闭对话框时统一解析为取消。 */
@@ -265,28 +283,14 @@ let watermarkResizeObserver: ResizeObserver | null = null
 let currentSettings: Settings | null = null
 /** 最近一次已提交的语言组合，用于忽略程序化回填触发的 change 事件。 */
 let appliedLanguagePair = ''
-/** 当前是否正在等待 runDocument 返回任务标识。 */
-let documentStartInFlight = false
+/** 所有已打开文件 Tab，按顶栏展示顺序保存。 */
+let documentTabs: DocumentWorkspaceTab[] = []
+/** 当前激活 Tab 标识；没有打开文件时为 null。 */
+let activeDocumentTabId: string | null = null
+/** 下一个 Tab 序号，用于生成稳定且不重复的标识。 */
+let nextDocumentTabSequence = 1
 /** 是否正在执行历史文件切换，阻止快速重复点击创建并发切换。 */
 let documentHistorySwitchInFlight = false
-/** 批量翻译队列状态；页面切换和单项处理期间持续保留。 */
-let documentBatchState: DocumentBatchState = createDocumentBatchState()
-/** 当前批量队列条目快照，渲染与串行循环始终读取同一份状态。 */
-let documentBatchItems = documentBatchState.items
-/** 批量任务是否正在执行，包括等待单项终态和导出阶段。 */
-let documentBatchRunning = false
-/** 当前批量条目标识；未运行时为 null。 */
-let documentBatchCurrentId: string | null = null
-/** 等待当前批量项终态的解析器；只允许一个活动任务。 */
-let resolveDocumentBatchCompletion: ((snapshot: DocumentWorkspaceSnapshot | null) => void) | null = null
-/** 当前批量项在等待器注册前可能已收到的终态快照。 */
-let latestBatchCompletedSnapshot: DocumentWorkspaceSnapshot | null = null
-/** 启动请求进行中收到语言变化时，待启动完成后再执行一次最新语言的重译。 */
-let pendingLanguageRetranslation = false
-/** 启动请求进行中切换 OCR 模式时，待旧启动流程结束后按最新模式重启。 */
-let pendingOcrModeRestart = false
-/** 语言切换序号，用于丢弃取消旧任务期间已经过期的重译请求。 */
-let languageChangeRevision = 0
 
 /**
  * 使用当前界面语言翻译词条。
@@ -348,7 +352,7 @@ function readPersistedGeneration(): number {
  * @author zhenghq
  */
 function nextGeneration(): number {
-  generation += 1
+  generation = Math.max(generation, readPersistedGeneration()) + 1
   try {
     sessionStorage.setItem(DOCUMENT_GENERATION_STORAGE_KEY, String(generation))
   } catch {
@@ -365,7 +369,8 @@ function nextGeneration(): number {
  * @author zhenghq
  */
 function adoptSuggestedGeneration(suggestedGeneration: number | undefined): boolean {
-  if (!Number.isSafeInteger(suggestedGeneration) || (suggestedGeneration ?? 0) <= generation) {
+  const currentGeneration = Math.max(generation, readPersistedGeneration())
+  if (!Number.isSafeInteger(suggestedGeneration) || (suggestedGeneration ?? 0) <= currentGeneration) {
     return false
   }
   generation = suggestedGeneration as number
@@ -473,25 +478,27 @@ async function initializeDocumentLanguages(): Promise<void> {
  * @author zhenghq
  */
 async function retranslateDocumentAfterLanguageChange(): Promise<void> {
-  if (workbench.hidden || !selectionState.path) return
-  if (documentStartInFlight) {
-    pendingLanguageRetranslation = true
+  const tab = getActiveDocumentTab()
+  if (!tab?.selection.path || workbench.hidden) return
+  if (tab.startInFlight) {
+    tab.pendingLanguageRetranslation = true
+    tab.sourceLang = sourceLanguageSelect.value || tab.sourceLang
+    tab.targetLang = targetLanguageSelect.value || tab.targetLang
+    refreshActiveTabMirror(tab)
     return
   }
   const nextPair = `${sourceLanguageSelect.value}\u0000${targetLanguageSelect.value}`
-  if (nextPair === appliedLanguagePair) return
+  if (nextPair === `${tab.sourceLang}\u0000${tab.targetLang}`) return
+  tab.sourceLang = sourceLanguageSelect.value || tab.sourceLang
+  tab.targetLang = targetLanguageSelect.value || tab.targetLang
   appliedLanguagePair = nextPair
-  const revision = ++languageChangeRevision
-  const jobId = activeJobId
+  const revision = ++tab.languageRevision
+  const jobId = tab.activeJobId ?? tab.expectedJobId
   if (jobId) {
-    try {
-      await window.api.cancelDocument(jobId, generation)
-    } catch {
-      // 任务可能已经结束，继续以新代际重译并隔离旧任务迟到事件。
-    }
+    await cancelDocumentJob(jobId, tab.generation)
   }
-  if (revision !== languageChangeRevision) return
-  await startDocumentTranslation()
+  if (!documentTabs.includes(tab) || revision !== tab.languageRevision) return
+  await startDocumentTabTranslation(tab)
 }
 
 /**
@@ -573,7 +580,7 @@ function renderDocumentHistory(): void {
     const name = document.createElement('strong')
     const meta = document.createElement('span')
     const check = document.createElement('span')
-    const isCurrent = selectionState.path === entry.path
+    const isCurrent = findDocumentTabByPath(entry.path) !== null
     button.type = 'button'
     button.className = 'document-history-item'
     button.dataset.historyIndex = String(index)
@@ -621,8 +628,10 @@ function setDocumentHistoryOpen(open: boolean, restoreFocus = false): void {
  * @author zhenghq
  */
 async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Promise<void> {
-  if (!platformCapability?.supported || documentHistorySwitchInFlight || documentBatchRunning) return
-  if (selectionState.path === entry.path) {
+  if (!platformCapability?.supported || documentHistorySwitchInFlight) return
+  const existingTab = findDocumentTabByPath(entry.path)
+  if (existingTab) {
+    await activateDocumentTab(existingTab.id)
     setDocumentHistoryOpen(false, true)
     return
   }
@@ -630,8 +639,6 @@ async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Pr
   historyButton.disabled = true
   documentHistoryStatus.hidden = true
   try {
-    // 历史切换失败只提示并保留当前工作台与历史列表，不能走普通选择的清空路径。
-    const previousSelection = selectionState
     // 历史路径只作为候选值，切换前仍由主进程重新读取文件并登记授权。
     const result = await window.api.approveDocumentFile(entry.path)
     if (result.status === 'cancelled') return
@@ -640,23 +647,9 @@ async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Pr
       documentHistoryStatus.hidden = false
       return
     }
-    // 历史切换只更换待确认文件，不沿用启动请求中的模式切换或语言重译意图。
-    pendingLanguageRetranslation = false
-    pendingOcrModeRestart = false
-    const jobGeneration = generation
-    nextGeneration()
-    // 先推进代际再等待取消响应，切换期间到达的旧任务事件会立即失效。
-    await cancelDocumentJob(activeJobId, jobGeneration)
-    activeJobId = null
-    expectedJobId = null
-    applyFileSelection(result)
-    if (selectionState.error) selectionState = previousSelection
-    resetWorkbenchPreview()
-    workbench.hidden = true
-    documentBatchPanel.hidden = true
-    uploadPanel.hidden = false
-    documentTabSingle.setAttribute('aria-selected', 'true')
-    documentTabBatch.setAttribute('aria-selected', 'false')
+    // 历史文件与顶栏文件共用同一 Tab 入口；新文件创建后立即启动自己的任务。
+    const tab = await createDocumentTab(result, { activate: true, start: false })
+    if (tab) await startDocumentTabTranslation(tab)
     setDocumentHistoryOpen(false, true)
   } catch {
     documentHistoryStatus.textContent = t('document.error.unreadable')
@@ -699,314 +692,313 @@ function renderSelectionState(): void {
 }
 
 /**
- * 根据当前批量队列状态刷新页签、计数、整体进度和文件卡片。
- * @returns 无返回值。
+ * 按绝对路径查找已打开的文件 Tab。
+ * @param path 文件绝对路径。
+ * @returns 已打开的 Tab；不存在时返回 null。
  * @author zhenghq
  */
-function renderDocumentBatch(): void {
-  const progress = resolveDocumentBatchProgress(documentBatchState)
-  const hasItems = documentBatchItems.length > 0
-  const pendingCount = documentBatchItems.filter((item) => item.status === 'pending').length
-  documentBatchCount.textContent = hasItems
-    ? t('document.batch.count', { total: progress.total, completed: progress.completed })
-    : t('document.batch.empty')
-  documentBatchProgressLabel.textContent = hasItems ? `${progress.percent}%` : ''
-  documentBatchProgress.setAttribute('aria-valuenow', String(progress.percent))
-  documentBatchProgress.style.width = `${progress.percent}%`
-  documentBatchEmpty.hidden = hasItems
-  documentBatchList.replaceChildren()
-  for (const item of documentBatchItems) {
-    documentBatchList.append(createDocumentBatchListItem(item))
-  }
-  documentBatchStartButton.disabled = !platformCapability?.supported ||
-    documentBatchRunning || pendingCount === 0
-  documentBatchClearButton.disabled = !hasItems || documentBatchRunning
-  documentBatchSelectButton.disabled = !platformCapability?.supported || documentBatchRunning
-  documentBatchDropZone.setAttribute('aria-disabled', String(!platformCapability?.supported || documentBatchRunning))
-  documentBatchDropZone.tabIndex = platformCapability?.supported && !documentBatchRunning ? 0 : -1
-  documentBatchCancelButton.hidden = !documentBatchRunning
-  documentBatchCancelButton.disabled = !documentBatchRunning
-  documentTabSingle.disabled = documentBatchRunning
-  documentTabBatch.disabled = documentBatchRunning
-  sourceLanguageSelect.disabled = documentBatchRunning
-  targetLanguageSelect.disabled = documentBatchRunning
-  sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]').forEach((button) => {
-    button.disabled = documentBatchRunning
-  })
-  documentWorkbenchReplaceButton.disabled = documentBatchRunning
-  historyButton.disabled = documentBatchRunning || !platformCapability?.supported
+function findDocumentTabByPath(path: string): DocumentWorkspaceTab | null {
+  return documentTabs.find((tab) => tab.selection.path === path) ?? null
 }
 
 /**
- * 创建批量队列中的单个文件卡片。
- * @param item 队列条目。
- * @returns 可访问的列表项节点。
+ * 获取当前激活的文档 Tab。
+ * @returns 当前 Tab；没有打开文件时返回 null。
  * @author zhenghq
  */
-function createDocumentBatchListItem(item: DocumentBatchItem): HTMLLIElement {
-  const row = document.createElement('li')
-  const identity = document.createElement('div')
-  const name = document.createElement('strong')
-  const meta = document.createElement('span')
-  const state = document.createElement('span')
-  const progressTrack = document.createElement('div')
-  const progressbar = document.createElement('div')
-  row.className = 'document-batch-item'
-  row.dataset.status = item.status
-  row.dataset.batchItemId = item.id
-  identity.className = 'document-batch-item-identity'
-  name.textContent = item.name
-  name.title = item.path
-  meta.textContent = `${item.format.toUpperCase()} · ${formatFileSize(item.size)}`
-  state.className = 'document-batch-item-status'
-  state.textContent = t(`document.batch.status.${item.status}`)
-  identity.append(name, meta)
-  progressTrack.className = 'document-batch-progress-track'
-  progressTrack.setAttribute('role', 'progressbar')
-  progressTrack.setAttribute('aria-valuemin', '0')
-  progressTrack.setAttribute('aria-valuemax', '100')
-  progressTrack.setAttribute('aria-valuenow', String(item.progress))
-  progressTrack.setAttribute('aria-label', item.name)
-  progressbar.className = 'document-batch-progressbar'
-  progressbar.style.width = `${item.progress}%`
-  progressTrack.append(progressbar)
-  row.append(identity, state, progressTrack)
-  if (item.status === 'pending') {
-    const remove = document.createElement('button')
-    remove.type = 'button'
-    remove.className = 'document-text-button document-batch-remove'
-    remove.textContent = t('document.batch.remove')
-    remove.disabled = documentBatchRunning
-    remove.addEventListener('click', () => {
-      documentBatchState = removeDocumentBatchItem(documentBatchState, item.id)
-      documentBatchItems = documentBatchState.items
-      renderDocumentBatch()
-    })
-    row.append(remove)
-  }
-  return row
+function getActiveDocumentTab(): DocumentWorkspaceTab | null {
+  return documentTabs.find((tab) => tab.id === activeDocumentTabId) ?? null
 }
 
 /**
- * 更新批量队列并同步条目引用与界面。
- * @param nextState 新的队列状态。
- * @returns 无返回值。
+ * 将任务快照状态映射为顶栏 Tab 状态。
+ * @param snapshot 任务快照。
+ * @returns 对应的 Tab 状态。
  * @author zhenghq
  */
-function applyDocumentBatchState(nextState: DocumentBatchState): void {
-  documentBatchState = nextState
-  documentBatchItems = nextState.items
-  renderDocumentBatch()
-}
-
-/**
- * 将主进程批准结果转换为可加入队列的文件候选。
- * @param results 主进程返回的文件选择结果。
- * @returns 成功项与拒绝项数量。
- * @author zhenghq
- */
-function collectDocumentBatchCandidates(results: readonly DocumentFileSelectionResult[]): {
-  candidates: DocumentBatchCandidate[]
-  rejected: number
-} {
-  const candidates: DocumentBatchCandidate[] = []
-  let rejected = 0
-  for (const result of results) {
-    if (result.status === 'selected') {
-      candidates.push({
-        path: result.path,
-        name: result.fileName,
-        size: result.size,
-        format: result.format
-      })
-    } else if (result.status === 'rejected') {
-      rejected += 1
-    }
-  }
-  return { candidates, rejected }
-}
-
-/**
- * 将批准文件加入批量队列，并记录成功文件的历史。
- * @param candidates 已通过主进程校验的文件。
- * @returns 无返回值。
- * @author zhenghq
- */
-function addDocumentBatchCandidates(candidates: readonly DocumentBatchCandidate[]): void {
-  if (candidates.length === 0) return
-  applyDocumentBatchState(appendDocumentBatchItems(documentBatchState, candidates))
-  for (const candidate of candidates) rememberSelectedDocument(candidate)
-}
-
-/**
- * 通过主进程多选对话框添加批量文件。
- * @returns 无返回值。
- * @author zhenghq
- */
-async function chooseDocumentBatchFiles(): Promise<void> {
-  if (!platformCapability?.supported || documentBatchRunning) return
-  documentBatchStatus.hidden = true
-  try {
-    const { candidates, rejected } = collectDocumentBatchCandidates(await window.api.selectDocumentFiles())
-    addDocumentBatchCandidates(candidates)
-    if (rejected > 0) {
-      documentBatchStatus.textContent = t('document.batch.status.invalidFiles', { count: rejected })
-      documentBatchStatus.dataset.state = 'error'
-      documentBatchStatus.hidden = false
-    }
-  } catch {
-    documentBatchStatus.textContent = t('document.error.unreadable')
-    documentBatchStatus.dataset.state = 'error'
-    documentBatchStatus.hidden = false
+function resolveDocumentTabStatus(snapshot: DocumentWorkspaceSnapshot): DocumentTabStatus {
+  switch (snapshot.task.status) {
+    case 'completed':
+    case 'partial':
+    case 'failed':
+    case 'cancelled':
+      return snapshot.task.status
+    case 'validating':
+    case 'parsing':
+    case 'ocr':
+    case 'translating':
+    case 'rendering':
+    case 'exporting':
+      return 'running'
+    default:
+      return 'starting'
   }
 }
 
 /**
- * 校验并添加拖放得到的多个文件。
- * @param files 用户拖放的浏览器文件列表。
+ * 将激活 Tab 的字段同步到现有渲染函数使用的镜像变量。
+ * 镜像只服务当前可见页面，后台 Tab 的任务字段始终保存在自身对象中。
+ * @param tab 要激活的 Tab；null 表示清空镜像。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function addDroppedDocumentBatchFiles(files: readonly File[]): Promise<void> {
-  if (!platformCapability?.supported || documentBatchRunning || files.length === 0) return
-  documentBatchStatus.hidden = true
-  try {
-    const paths = files.map((file) => window.api.getDocumentDroppedFilePath(file)).filter(Boolean)
-    if (paths.length === 0) throw new Error('unreadable')
-    const { candidates, rejected } = collectDocumentBatchCandidates(await window.api.approveDocumentFiles(paths))
-    addDocumentBatchCandidates(candidates)
-    if (rejected > 0 || paths.length < files.length) {
-      documentBatchStatus.textContent = t('document.batch.status.invalidFiles', {
-        count: rejected + files.length - paths.length
-      })
-      documentBatchStatus.dataset.state = 'error'
-      documentBatchStatus.hidden = false
-    }
-  } catch {
-    documentBatchStatus.textContent = t('document.error.unreadable')
-    documentBatchStatus.dataset.state = 'error'
-    documentBatchStatus.hidden = false
+function syncActiveTabMirror(tab: DocumentWorkspaceTab | null): void {
+  selectionState = tab ? { ...tab.selection } : { ...EMPTY_SELECTION }
+  activeJobId = tab?.activeJobId ?? null
+  expectedJobId = tab?.expectedJobId ?? null
+  latestSnapshot = tab?.snapshot ?? null
+  ocrDisplayMode = tab?.ocrDisplayMode ?? 'translation'
+  documentStartInFlight = tab?.startInFlight ?? false
+  pendingLanguageRetranslation = tab?.pendingLanguageRetranslation ?? false
+  pendingOcrModeRestart = tab?.pendingOcrModeRestart ?? false
+  if (tab) {
+    // 多个 Tab 共用会话级单调代际；切回旧 Tab 时不能把全局代际退回旧值。
+    generation = Math.max(generation, tab.generation)
+    sourceLanguageSelect.value = tab.sourceLang
+    targetLanguageSelect.value = tab.targetLang
+    appliedLanguagePair = `${tab.sourceLang}\u0000${tab.targetLang}`
   }
 }
 
 /**
- * 应用文件预检结果；失败时不保留任何任务或文件选择状态。
- * @param result 统一格式校验结果。
- * @param candidate 文件名称、大小与可读取路径。
- * @returns 是否通过校验。
+ * 把当前激活 Tab 的运行时字段回写到镜像变量。
+ * @param tab 当前激活 Tab。
+ * @returns 无返回值。
  * @author zhenghq
  */
-function applyValidationResult(
-  result: DocumentFileValidationResult,
-  candidate: { path: string; name: string; size: number }
+function refreshActiveTabMirror(tab: DocumentWorkspaceTab): void {
+  if (tab.id !== activeDocumentTabId) return
+  selectionState = { ...tab.selection }
+  activeJobId = tab.activeJobId
+  expectedJobId = tab.expectedJobId
+  latestSnapshot = tab.snapshot
+  ocrDisplayMode = tab.ocrDisplayMode
+  documentStartInFlight = tab.startInFlight
+  pendingLanguageRetranslation = tab.pendingLanguageRetranslation
+  pendingOcrModeRestart = tab.pendingOcrModeRestart
+  generation = Math.max(generation, tab.generation)
+}
+
+/**
+ * 按任务标识查找所属 Tab，用于把后台进度路由到正确文件。
+ * @param jobId 主进程任务标识。
+ * @returns 匹配的 Tab；不存在时返回 null。
+ * @author zhenghq
+ */
+function findDocumentTabByJob(jobId: string): DocumentWorkspaceTab | null {
+  return documentTabs.find((tab) => tab.activeJobId === jobId || tab.expectedJobId === jobId) ?? null
+}
+
+/**
+ * 根据任务快照的标识与代际定位所属 Tab。
+ * @param snapshot 收到的任务快照。
+ * @returns 匹配的 Tab；不属于任何已打开文件时返回 null。
+ * @author zhenghq
+ */
+function findDocumentTabForSnapshot(snapshot: DocumentWorkspaceSnapshot): DocumentWorkspaceTab | null {
+  return documentTabs.find((tab) =>
+    tab.generation === snapshot.generation &&
+    (tab.activeJobId === snapshot.jobId || tab.expectedJobId === snapshot.jobId)
+  ) ?? null
+}
+
+/**
+ * 将首条进度快照绑定到仍在等待 runDocument 结果的 Tab。
+ * @param snapshot 首条任务快照。
+ * @returns 可绑定的 Tab；没有唯一候选时返回 null。
+ * @author zhenghq
+ */
+function bindPendingDocumentTabSnapshot(snapshot: DocumentWorkspaceSnapshot): DocumentWorkspaceTab | null {
+  const candidates = documentTabs.filter((tab) =>
+    tab.generation === snapshot.generation &&
+    tab.startInFlight &&
+    !tab.pendingOcrModeRestart &&
+    tab.activeJobId === null &&
+    tab.expectedJobId === null
+  )
+  if (candidates.length !== 1) return null
+  const tab = candidates[0]!
+  tab.expectedJobId = snapshot.jobId
+  return tab
+}
+
+/**
+ * 将任务快照保存到所属 Tab，并仅在活动 Tab 时刷新可见界面。
+ * @param tab 目标 Tab。
+ * @param snapshot 最新任务快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateDocumentTabSnapshot(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
+  tab.snapshot = snapshot
+  tab.activeJobId = snapshot.jobId
+  tab.expectedJobId = snapshot.jobId
+  tab.generation = Math.max(tab.generation, snapshot.generation)
+  tab.status = resolveDocumentTabStatus(snapshot)
+  if (tab.id !== activeDocumentTabId) {
+    renderDocumentTabs()
+    return
+  }
+  refreshActiveTabMirror(tab)
+  renderDocumentTabs()
+}
+
+/**
+ * 判断任务快照是否仍可覆盖指定 Tab 的可见界面。
+ * 这里只读取 Tab 自身状态，避免后台任务受到当前激活 Tab 的干扰。
+ * @param tab 目标任务所属 Tab。
+ * @param snapshot 待渲染的任务快照。
+ * @returns 是否可以安全渲染该快照。
+ * @author zhenghq
+ */
+function canRenderDocumentTabSnapshot(
+  tab: DocumentWorkspaceTab,
+  snapshot: DocumentWorkspaceSnapshot
 ): boolean {
-  if (!result.ok) {
-    selectionState = { ...EMPTY_SELECTION, error: result.code }
-    renderSelectionState()
-    return false
+  return documentTabs.includes(tab) &&
+    tab.id === activeDocumentTabId &&
+    !tab.pendingOcrModeRestart &&
+    tab.generation === snapshot.generation &&
+    (tab.activeJobId === snapshot.jobId || tab.expectedJobId === snapshot.jobId)
+}
+
+/**
+ * 判断任务快照是否可以覆盖指定 Tab 的当前快照。
+ * @param tab 目标任务所属 Tab。
+ * @param snapshot 收到的任务快照。
+ * @returns 是否可以应用该快照。
+ * @author zhenghq
+ */
+function canApplyDocumentTabProgressSnapshot(
+  tab: DocumentWorkspaceTab,
+  snapshot: DocumentWorkspaceSnapshot
+): boolean {
+  if (snapshot.generation !== tab.generation) return false
+  if (tab.expectedJobId !== null && snapshot.jobId !== tab.expectedJobId) return false
+  if (tab.activeJobId !== null && snapshot.jobId !== tab.activeJobId) return false
+  if (!tab.snapshot) return true
+  if (tab.snapshot.jobId !== snapshot.jobId) return true
+  if (tab.snapshot.generation !== snapshot.generation) {
+    return snapshot.generation > tab.snapshot.generation
   }
-  selectionState = {
-    path: candidate.path,
-    name: candidate.name,
-    size: candidate.size,
-    format: result.format,
-    error: null
-  }
-  renderSelectionState()
+  return canApplyDocumentTaskEvent(tab.snapshot.task, snapshot.jobId, snapshot.generation)
+}
+
+/**
+ * 将后台任务事件写入其所属 Tab，并只在激活 Tab 上触发界面渲染。
+ * @param snapshot 收到的进度或终态快照。
+ * @param terminal 是否为终态事件。
+ * @returns 是否成功路由到已打开 Tab。
+ * @author zhenghq
+ */
+function routeDocumentSnapshot(snapshot: DocumentWorkspaceSnapshot, terminal: boolean): boolean {
+  const tab = findDocumentTabForSnapshot(snapshot) ?? bindPendingDocumentTabSnapshot(snapshot)
+  if (!tab) return false
+  // OCR 模式切换期间旧任务的取消终态和迟到进度都必须丢弃，等待新模式重新建立任务身份。
+  if (tab.pendingOcrModeRestart) return false
+  if (!terminal && !canApplyDocumentTabProgressSnapshot(tab, snapshot)) return false
+  updateDocumentTabSnapshot(tab, snapshot)
+  if (tab.id !== activeDocumentTabId) return true
+  refreshActiveTabMirror(tab)
+  if (terminal) flushSnapshotRender(tab, snapshot)
+  else scheduleSnapshotRender(tab, snapshot)
+  startButton.disabled = false
   return true
 }
 
 /**
- * 读取浏览器 File 对象有限头尾片段和 ZIP 中央目录并执行本地预检。
- * @param file 用户拖放或选择的文件。
+ * 根据块级翻译增量定位所属文件 Tab。
+ * @param update 收到的块级翻译增量。
+ * @returns 匹配的 Tab；任务标识、代际不匹配或正在重启时返回 null。
+ * @author zhenghq
+ */
+function findDocumentTabByTranslationUpdate(
+  update: DocumentWorkspaceTranslationUpdate
+): DocumentWorkspaceTab | null {
+  return documentTabs.find((tab) =>
+    !tab.pendingOcrModeRestart &&
+    tab.generation === update.generation &&
+    (tab.activeJobId === update.jobId || tab.expectedJobId === update.jobId)
+  ) ?? null
+}
+
+/**
+ * 渲染顶栏文件 Tab，并同步选中态、状态点和逐个关闭入口。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function inspectBrowserFile(file: File): Promise<void> {
-  try {
-    const head = new Uint8Array(await file.slice(0, DOCUMENT_HEAD_BYTES).arrayBuffer())
-    const tailStart = Math.max(0, file.size - DOCUMENT_ZIP_TAIL_BYTES)
-    const tail = new Uint8Array(await file.slice(tailStart, file.size).arrayBuffer())
-    const zipRange = getDocumentZipCentralDirectoryRange(tail, file.size)
-    const zipDirectory = zipRange
-      ? new Uint8Array(await file.slice(zipRange.start, zipRange.end).arrayBuffer())
-      : undefined
-    const path = window.api.getDocumentDroppedFilePath(file)
-    if (!path) {
-      selectionState = { ...EMPTY_SELECTION, error: 'unreadable' }
-      renderSelectionState()
-      return
-    }
-    const validation = validateDocumentFile({
-      fileName: file.name,
-      size: file.size,
-      head,
-      tail,
-      ...(zipDirectory ? { zipDirectory } : {})
+function renderDocumentTabs(): void {
+  documentWorkspaceTabs.replaceChildren()
+  for (const tab of documentTabs) {
+    const item = document.createElement('div')
+    const label = document.createElement('span')
+    const status = document.createElement('span')
+    const close = document.createElement('button')
+    item.className = 'document-file-tab'
+    item.dataset.tabId = tab.id
+    item.dataset.status = tab.status
+    item.setAttribute('role', 'tab')
+    item.setAttribute('aria-selected', String(tab.id === activeDocumentTabId))
+    item.tabIndex = tab.id === activeDocumentTabId ? 0 : -1
+    item.title = tab.selection.path ?? tab.selection.name
+    label.className = 'document-file-tab-label'
+    label.textContent = tab.selection.name
+    status.className = 'document-file-tab-status'
+    status.setAttribute('aria-hidden', 'true')
+    close.type = 'button'
+    close.className = 'document-file-tab-close'
+    close.textContent = '×'
+    close.setAttribute('aria-label', t('document.tab.close', { name: tab.selection.name }))
+    item.append(label, status, close)
+    item.addEventListener('click', () => void activateDocumentTab(tab.id))
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      void activateDocumentTab(tab.id)
     })
-    if (!applyValidationResult(validation, { path, name: file.name, size: file.size })) return
-    // Renderer 预检只用于即时反馈，真正可运行资格仍由主进程重新读取文件头并登记。
-    const approved = await window.api.approveDocumentFile(path)
-    applyFileSelection(approved)
-  } catch {
-    selectionState = { ...EMPTY_SELECTION, error: 'unreadable' }
-    renderSelectionState()
+    close.addEventListener('click', (event) => {
+      event.stopPropagation()
+      void closeDocumentTab(tab.id)
+    })
+    documentWorkspaceTabs.append(item)
+  }
+  const activeElement = documentWorkspaceTabs.querySelector<HTMLElement>('[aria-selected="true"]')
+  activeElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
+/**
+ * 保存当前 Tab 的双栏滚动位置，供切回时恢复。
+ * @param tab 当前激活 Tab。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDocumentTabScroll(tab: DocumentWorkspaceTab): void {
+  tab.scrollPositions = {
+    source: sourceContent.scrollTop,
+    translation: translationContent.scrollTop
   }
 }
 
 /**
- * 应用主进程文件选择结果，确保拒绝结果不创建任务。
- * @param result 文件选择、取消或拒绝结果。
+ * 恢复指定 Tab 的双栏滚动位置。
+ * @param tab 要恢复的 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function applyFileSelection(result: DocumentFileSelectionResult): void {
-  if (result.status === 'cancelled') return
-  if (result.status === 'rejected') {
-    selectionState = { ...EMPTY_SELECTION, error: result.code }
-    renderSelectionState()
-    return
-  }
-  selectionState = {
-    path: result.path,
-    name: result.fileName,
-    size: result.size,
-    format: result.format,
-    error: null
-  }
-  renderSelectionState()
-  rememberSelectedDocument({
-    path: result.path,
-    name: result.fileName,
-    size: result.size,
-    format: result.format
+function restoreDocumentTabScroll(tab: DocumentWorkspaceTab): void {
+  requestAnimationFrame(() => {
+    if (tab.id !== activeDocumentTabId) return
+    sourceContent.scrollTop = tab.scrollPositions.source
+    translationContent.scrollTop = tab.scrollPositions.translation
   })
 }
 
 /**
- * 通过主进程受信任文件选择器选择文档。
+ * 清空当前可见预览与异步渲染资源，但不修改任何 Tab 的任务状态。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function chooseDocumentFile(): Promise<void> {
-  if (!platformCapability?.supported) {
-    renderSelectionState()
-    return
-  }
-  try {
-    applyFileSelection(await window.api.selectDocumentFile())
-  } catch {
-    selectionState = { ...EMPTY_SELECTION, error: 'unreadable' }
-    renderSelectionState()
-  }
-}
-
-/**
- * 清空当前工作台预览及任务快照，供更换文件后回到上传态。
- * @returns 无返回值。
- * @author zhenghq
- */
-function resetWorkbenchPreview(): void {
+function clearActiveTabPreview(): void {
   if (pendingRenderFrame !== null) {
     cancelAnimationFrame(pendingRenderFrame)
     pendingRenderFrame = null
@@ -1014,13 +1006,8 @@ function resetWorkbenchPreview(): void {
   pageScaleObserver?.disconnect()
   pageScaleObserver = null
   cancelTranslationPageLayout()
-  latestSnapshot = null
-  ocrDisplayMode = 'translation'
-  syncOcrDisplayModeControls()
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
-  activeJobId = null
-  expectedJobId = null
   renderedSourcePreviewIdentity = ''
   renderedSourceWarningSignature = ''
   renderedTranslationSignature = ''
@@ -1037,55 +1024,304 @@ function resetWorkbenchPreview(): void {
   translationContent.dataset.previewKind = ''
   sourcePageCount.textContent = ''
   translationPageCount.textContent = ''
-  progressStage.textContent = t('document.progress.ready')
-  progressCount.textContent = ''
-  progressbar.setAttribute('aria-valuenow', '0')
-  progressbar.style.width = '0%'
   actualLanguage.textContent = ''
   actualLanguage.hidden = true
-  partialStatus.hidden = true
-  cancelButton.hidden = true
-  exportButton.disabled = true
-  retryButton.disabled = true
-  workbench.dataset.state = 'idle'
 }
 
 /**
- * 从工作台更换文件；取消文件选择时保留当前预览，选择成功后返回上传确认态。
+ * 渲染激活 Tab 的文件信息、语言、OCR 模式、快照与任务状态。
+ * @param tab 要展示的 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-async function replaceDocumentFromWorkbench(): Promise<void> {
+function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
+  uploadPanel.hidden = true
+  workbench.hidden = false
+  workbenchName.textContent = tab.selection.name
+  workbenchMeta.textContent = `${tab.selection.format.toUpperCase()} · ${formatFileSize(tab.selection.size)}`
+  sourceLanguageSelect.value = tab.sourceLang
+  targetLanguageSelect.value = tab.targetLang
+  appliedLanguagePair = `${tab.sourceLang}\u0000${tab.targetLang}`
+  ocrDisplayMode = tab.ocrDisplayMode
+  syncOcrDisplayModeControls()
+  sourceOcrMode.hidden = !(tab.selection.format === 'pdf' || tab.selection.format === 'image' || Boolean(tab.snapshot?.source && hasOcrSourceText(tab.snapshot.source)))
+  if (tab.snapshot) {
+    renderSnapshot(tab.snapshot)
+    renderTaskState(tab.snapshot)
+  } else {
+    progressStage.textContent = tab.status === 'starting'
+      ? t('document.progress.preparing')
+      : t('document.progress.ready')
+    progressCount.textContent = tab.status === 'starting' ? t('document.progress.pending') : ''
+    progressbar.setAttribute('aria-valuenow', '0')
+    progressbar.style.width = '0%'
+    cancelButton.hidden = tab.status !== 'starting' && tab.status !== 'running'
+    exportButton.disabled = true
+    retryButton.disabled = true
+    partialStatus.hidden = true
+    workbench.dataset.state = tab.status
+  }
+  restoreDocumentTabScroll(tab)
+}
+
+/**
+ * 激活指定文件 Tab，保存旧 Tab 滚动位置并恢复目标任务视图。
+ * @param tabId 目标 Tab 标识。
+ * @returns 激活完成后的 Promise。
+ * @author zhenghq
+ */
+async function activateDocumentTab(tabId: string): Promise<void> {
+  if (tabId === activeDocumentTabId) return
+  const currentTab = getActiveDocumentTab()
+  if (currentTab) saveDocumentTabScroll(currentTab)
+  const tab = documentTabs.find((candidate) => candidate.id === tabId)
+  if (!tab) return
+  clearActiveTabPreview()
+  activeDocumentTabId = tab.id
+  syncActiveTabMirror(tab)
+  renderDocumentTabs()
+  renderActiveDocumentTab(tab)
+}
+
+/**
+ * 创建独立文件 Tab；重复路径只激活已有 Tab，不重复启动任务。
+ * @param result 已通过主进程校验的文件选择结果。
+ * @param options 是否激活以及是否立即开始翻译。
+ * @returns 创建或复用的 Tab。
+ * @author zhenghq
+ */
+async function createDocumentTab(
+  result: DocumentFileSelectionResult,
+  options: { activate?: boolean; start?: boolean } = {}
+): Promise<DocumentWorkspaceTab | null> {
+  if (result.status !== 'selected') return null
+  const existing = findDocumentTabByPath(result.path)
+  if (existing) {
+    if (options.activate !== false) await activateDocumentTab(existing.id)
+    return existing
+  }
+  const tab: DocumentWorkspaceTab = {
+    id: `document-tab-${nextDocumentTabSequence++}`,
+    selection: {
+      path: result.path,
+      name: result.fileName,
+      size: result.size,
+      format: result.format,
+      error: null
+    },
+    snapshot: null,
+    activeJobId: null,
+    expectedJobId: null,
+    generation: 0,
+    startInFlight: false,
+    status: 'idle',
+    scrollPositions: { source: 0, translation: 0 },
+    sourceLang: sourceLanguageSelect.value || 'auto',
+    targetLang: targetLanguageSelect.value || 'auto',
+    ocrDisplayMode,
+    pendingLanguageRetranslation: false,
+    pendingOcrModeRestart: false,
+    languageRevision: 0
+  }
+  documentTabs.push(tab)
+  if (tab.selection.path) {
+    rememberSelectedDocument({
+      path: tab.selection.path,
+      name: tab.selection.name,
+      size: tab.selection.size,
+      format: tab.selection.format
+    })
+  }
+  if (options.activate !== false) await activateDocumentTab(tab.id)
+  else renderDocumentTabs()
+  if (options.start !== false) await startDocumentTabTranslation(tab)
+  return tab
+}
+
+/**
+ * 关闭指定文件 Tab；运行中的任务先取消并释放主进程资源。
+ * @param tabId 要关闭的 Tab 标识。
+ * @returns 关闭流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function closeDocumentTab(tabId: string): Promise<void> {
+  const index = documentTabs.findIndex((tab) => tab.id === tabId)
+  if (index < 0) return
+  const tab = documentTabs[index]!
+  const wasActive = tab.id === activeDocumentTabId
+  if (wasActive) saveDocumentTabScroll(tab)
+  documentTabs = documentTabs.filter((candidate) => candidate.id !== tab.id)
+  tab.status = 'cancelled'
+  if (wasActive) {
+    activeDocumentTabId = null
+    const nextTab = documentTabs[Math.min(index, documentTabs.length - 1)]
+    clearActiveTabPreview()
+    if (nextTab) {
+      activeDocumentTabId = nextTab.id
+      syncActiveTabMirror(nextTab)
+      renderActiveDocumentTab(nextTab)
+    } else {
+      syncActiveTabMirror(null)
+      workbench.hidden = true
+      uploadPanel.hidden = false
+      renderSelectionState()
+    }
+  }
+  renderDocumentTabs()
+  const jobId = tab.activeJobId ?? tab.expectedJobId
+  if (jobId) {
+    await cancelDocumentJob(jobId, tab.generation)
+    await releaseDocumentJob(jobId)
+  }
+}
+
+/**
+ * 释放主进程中的文档任务资源；任务已结束时静默忽略。
+ * @param jobId 任务标识。
+ * @returns 释放完成后的 Promise。
+ * @author zhenghq
+ */
+async function releaseDocumentJob(jobId: string): Promise<void> {
+  try {
+    await window.api.releaseDocumentJob(jobId)
+  } catch {
+    // 资源可能已由主进程回收，关闭 Tab 不应因此失败。
+  }
+}
+
+/**
+ * 统一添加一组已审批文件，只启动本次新建的 Tab。
+ * 已打开的相同路径只激活，不重复启动任务，避免多文件选择时重复解析。
+ * @param results 主进程返回的文件选择结果。
+ * @returns 本次选择数量与未通过数量。
+ * @author zhenghq
+ */
+async function addDocumentSelectionResults(
+  results: readonly DocumentFileSelectionResult[]
+): Promise<{ selectedCount: number; rejectedCount: number }> {
+  let selectedCount = 0
+  let rejectedCount = 0
+  const newTabs: DocumentWorkspaceTab[] = []
+  let lastActivatedTab: DocumentWorkspaceTab | null = null
+  for (const result of results) {
+    if (result.status !== 'selected') {
+      // 用户取消文件选择是正常操作，不能与格式或可读性校验失败混为一谈。
+      if (result.status === 'rejected') rejectedCount += 1
+      continue
+    }
+    selectedCount += 1
+    const existed = findDocumentTabByPath(result.path) !== null
+    const tab = await createDocumentTab(result, { activate: false, start: false })
+    if (!tab) {
+      rejectedCount += 1
+      continue
+    }
+    if (existed) lastActivatedTab = tab
+    else newTabs.push(tab)
+  }
+  const activeTab = newTabs.at(-1) ?? lastActivatedTab
+  if (activeTab) await activateDocumentTab(activeTab.id)
+  await Promise.all(newTabs.map((tab) => startDocumentTabTranslation(tab)))
+  return { selectedCount, rejectedCount }
+}
+
+/**
+ * 通过主进程多选对话框一次添加多个文件，每个文件创建独立 Tab。
+ * @returns 添加完成后的 Promise。
+ * @author zhenghq
+ */
+async function addDocumentFilesFromWorkbench(): Promise<void> {
   if (!platformCapability?.supported) return
   documentWorkbenchReplaceButton.disabled = true
+  uploadStatus.hidden = false
   try {
-    const jobId = activeJobId
-    const jobGeneration = generation
-    if (jobId) {
-      try {
-        await window.api.cancelDocument(jobId, jobGeneration)
-      } catch {
-        // 任务可能已结束；文件选择仍可继续，迟到事件由新代际隔离。
-      }
+    const results = await window.api.selectDocumentFiles()
+    const { rejectedCount: rejected } = await addDocumentSelectionResults(results)
+    if (rejected > 0) {
+      uploadStatus.textContent = t('document.files.invalid', { count: rejected })
+      uploadStatus.dataset.state = 'error'
     }
-    // 无论旧任务是否取消成功，都递增代际以丢弃后续进度与完成事件。
-    nextGeneration()
-    activeJobId = null
-    expectedJobId = null
-    const result = await window.api.selectDocumentFile()
-    if (result.status === 'cancelled') {
-      startButton.disabled = !selectionState.path || !platformCapability.supported
-      return
-    }
-    applyFileSelection(result)
-    resetWorkbenchPreview()
-    workbench.hidden = true
-    uploadPanel.hidden = false
   } catch {
     uploadStatus.textContent = t('document.error.unreadable')
     uploadStatus.dataset.state = 'error'
   } finally {
     documentWorkbenchReplaceButton.disabled = false
+  }
+}
+
+/**
+ * 读取浏览器 File 对象有限头尾片段和 ZIP 中央目录并执行本地预检。
+ * @param file 用户拖放或选择的文件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function inspectBrowserFiles(files: readonly File[]): Promise<void> {
+  if (files.length === 0) return
+  uploadStatus.hidden = false
+  try {
+    const validatedPaths = (await Promise.all(files.map(async (file): Promise<string | null> => {
+      try {
+        const head = new Uint8Array(await file.slice(0, DOCUMENT_HEAD_BYTES).arrayBuffer())
+        const tailStart = Math.max(0, file.size - DOCUMENT_ZIP_TAIL_BYTES)
+        const tail = new Uint8Array(await file.slice(tailStart, file.size).arrayBuffer())
+        const zipRange = getDocumentZipCentralDirectoryRange(tail, file.size)
+        const zipDirectory = zipRange
+          ? new Uint8Array(await file.slice(zipRange.start, zipRange.end).arrayBuffer())
+          : undefined
+        const path = window.api.getDocumentDroppedFilePath(file)
+        if (!path) return null
+        const validation = validateDocumentFile({
+          fileName: file.name,
+          size: file.size,
+          head,
+          tail,
+          ...(zipDirectory ? { zipDirectory } : {})
+        })
+        if (!validation.ok) return null
+        return path
+      } catch {
+        return null
+      }
+    }))).filter((path): path is string => path !== null)
+    if (validatedPaths.length === 0) {
+      selectionState = { ...EMPTY_SELECTION, error: 'invalid-header' }
+      renderSelectionState()
+      return
+    }
+    // Renderer 预检只用于即时反馈，真正可运行资格仍由主进程重新读取文件头并登记。
+    const approved = await window.api.approveDocumentFiles(validatedPaths)
+    const { selectedCount } = await addDocumentSelectionResults(approved)
+    const rejected = files.length - selectedCount
+    if (rejected > 0) {
+      uploadStatus.textContent = t('document.files.invalid', { count: rejected })
+      uploadStatus.dataset.state = 'error'
+    }
+  } catch {
+    selectionState = { ...EMPTY_SELECTION, error: 'unreadable' }
+    renderSelectionState()
+  }
+}
+
+/**
+ * 通过主进程受信任文件选择器选择文档。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function chooseDocumentFiles(): Promise<void> {
+  if (!platformCapability?.supported) {
+    renderSelectionState()
+    return
+  }
+  try {
+    const results = await window.api.selectDocumentFiles()
+    const { rejectedCount: rejected } = await addDocumentSelectionResults(results)
+    if (rejected > 0) {
+      uploadStatus.textContent = t('document.files.invalid', { count: rejected })
+      uploadStatus.dataset.state = 'error'
+    }
+  } catch {
+    selectionState = { ...EMPTY_SELECTION, error: 'unreadable' }
+    renderSelectionState()
   }
 }
 
@@ -1118,16 +1354,17 @@ function releaseHtmlPreviewUrl(): void {
  * @returns 可用于 img.src 的 Blob URL；资源不可用时返回 null。
  * @author zhenghq
  */
-async function resolveAssetUrl(assetId: string): Promise<string | null> {
-  const cached = assetUrls.get(assetId)
+async function resolveAssetUrl(jobId: string, assetId: string): Promise<string | null> {
+  const cacheKey = `${jobId}:${assetId}`
+  const cached = assetUrls.get(cacheKey)
   if (cached) return cached
-  const pending = assetRequests.get(assetId)
+  const pending = assetRequests.get(cacheKey)
   if (pending) return pending
   const requestEpoch = assetUrlEpoch
   const request = (async (): Promise<string | null> => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const asset: DocumentAssetResult = await window.api.getDocumentAsset(assetId)
+        const asset: DocumentAssetResult = await window.api.getDocumentAsset(jobId, assetId)
         if (requestEpoch !== assetUrlEpoch) return null
         if (!asset.ok || !asset.bytes) return null
         const bytes = new Uint8Array(asset.bytes)
@@ -1138,7 +1375,7 @@ async function resolveAssetUrl(assetId: string): Promise<string | null> {
           URL.revokeObjectURL(url)
           return null
         }
-        assetUrls.set(assetId, url)
+        assetUrls.set(cacheKey, url)
         return url
       } catch {
         if (requestEpoch !== assetUrlEpoch) return null
@@ -1149,11 +1386,11 @@ async function resolveAssetUrl(assetId: string): Promise<string | null> {
     }
     return null
   })()
-  assetRequests.set(assetId, request)
+  assetRequests.set(cacheKey, request)
   try {
     return await request
   } finally {
-    if (assetRequests.get(assetId) === request) assetRequests.delete(assetId)
+    if (assetRequests.get(cacheKey) === request) assetRequests.delete(cacheKey)
   }
 }
 
@@ -1183,11 +1420,18 @@ function renderDocumentImagePlaceholder(wrapper: HTMLElement, block: DocumentIma
 function loadDocumentImageAsset(
   wrapper: HTMLElement,
   image: HTMLImageElement,
-  block: DocumentImageBlock
+  block: DocumentImageBlock,
+  jobId: string
 ): void {
+  // 异步资源返回时旧页面可能已被新快照替换；只有仍挂载的当前图片才允许更新状态。
+  const isCurrentImage = (): boolean =>
+    wrapper.isConnected &&
+    image.parentElement === wrapper &&
+    wrapper.querySelector(':scope > img.document-page-image') === image
   wrapper.dataset.assetState = 'loading'
-  void resolveAssetUrl(block.assetId).then((url) => {
+  void resolveAssetUrl(jobId, block.assetId).then((url) => {
     if (!url) {
+      if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'error'
       wrapper.dataset.pending = 'true'
       image.remove()
@@ -1196,11 +1440,13 @@ function loadDocumentImageAsset(
       return
     }
     image.addEventListener('load', () => {
+      if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'loaded'
       delete wrapper.dataset.pending
       scheduleTranslationPageLayout()
     }, { once: true })
     image.addEventListener('error', () => {
+      if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'error'
       wrapper.dataset.pending = 'true'
       image.remove()
@@ -2200,7 +2446,8 @@ function createPdfOcrTextLayer(page: DocumentPage): HTMLElement | null {
 function renderImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
-  pageWidth: number
+  pageWidth: number,
+  jobId: string
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -2216,7 +2463,7 @@ function renderImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block)
+    loadDocumentImageAsset(wrapper, image, block, jobId)
   }
   appendImageOcrLayers(wrapper, block, side)
   return wrapper
@@ -2233,7 +2480,8 @@ function renderImageBlock(
 function renderTableBlock(
   block: DocumentTableBlock,
   side: DocumentRenderSide,
-  pageWidth: number
+  pageWidth: number,
+  jobId: string
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-table-block'
@@ -2268,7 +2516,7 @@ function renderTableBlock(
         tableCell.scope = 'col'
         tableCell.colSpan = Math.max(1, cell.colSpan)
         tableCell.rowSpan = Math.max(1, cell.rowSpan)
-        for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side))
+        for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId))
         tableRow.append(tableCell)
       }
       head.append(tableRow)
@@ -2283,7 +2531,7 @@ function renderTableBlock(
       const tableCell = document.createElement('td')
       tableCell.colSpan = Math.max(1, cell.colSpan)
       tableCell.rowSpan = Math.max(1, cell.rowSpan)
-      for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side))
+      for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId))
       tableRow.append(tableCell)
     }
     body.append(tableRow)
@@ -2300,11 +2548,15 @@ function renderTableBlock(
  * @returns 单元格子区块元素。
  * @author zhenghq
  */
-function renderTableCellBlock(block: DocumentBlock, side: DocumentRenderSide): HTMLElement {
+function renderTableCellBlock(
+  block: DocumentBlock,
+  side: DocumentRenderSide,
+  jobId: string
+): HTMLElement {
   const pageWidth = 1
   const element = block.kind === 'image'
-    ? renderTableCellImageBlock(block, side)
-    : renderBlock(block, side, pageWidth)
+    ? renderTableCellImageBlock(block, side, jobId)
+    : renderBlock(block, side, pageWidth, undefined, jobId)
   // 单元格内子区块的 bbox 是整页坐标，标记后由 CSS 清除页面级偏移并限制在单元格内。
   element.dataset.tableCellContent = 'true'
   return element
@@ -2319,7 +2571,8 @@ function renderTableCellBlock(block: DocumentBlock, side: DocumentRenderSide): H
  */
 function renderTableCellImageBlock(
   block: DocumentImageBlock,
-  side: DocumentRenderSide
+  side: DocumentRenderSide,
+  jobId: string
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -2336,7 +2589,7 @@ function renderTableCellImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block)
+    loadDocumentImageAsset(wrapper, image, block, jobId)
   }
   appendImageOcrLayers(wrapper, block, side)
   return wrapper
@@ -2414,12 +2667,13 @@ function renderBlock(
   block: DocumentBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  contentArea?: DocumentContentArea
+  contentArea?: DocumentContentArea,
+  jobId = ''
 ): HTMLElement {
   switch (block.kind) {
     case 'text': return renderTextBlock(block, side, pageWidth, contentArea)
-    case 'image': return renderImageBlock(block, side, pageWidth)
-    case 'table': return renderTableBlock(block, side, pageWidth)
+    case 'image': return renderImageBlock(block, side, pageWidth, jobId)
+    case 'table': return renderTableBlock(block, side, pageWidth, jobId)
     case 'formula': return renderFormulaBlock(block)
     case 'shape': return renderShapeBlock(block)
     case 'break': {
@@ -2441,7 +2695,8 @@ function renderBlock(
 function renderPage(
   page: DocumentPage,
   side: DocumentRenderSide,
-  translationInitialScale = 1
+  translationInitialScale = 1,
+  jobId = ''
 ): HTMLElement {
   const element = document.createElement('article')
   element.className = 'document-page'
@@ -2490,7 +2745,7 @@ function renderPage(
     previousBottom = minY
   }
   for (const block of page.blocks) {
-    const rendered = renderBlock(block, side, page.width, page.contentArea)
+    const rendered = renderBlock(block, side, page.width, page.contentArea, jobId)
     const occupiesFlow = occupiesDocumentTranslationFlow(block)
     rendered.dataset.flowOccupiesSpace = String(occupiesFlow)
     const continuesFlowGroup = element.dataset.layout === 'translation-flow' &&
@@ -2721,7 +2976,7 @@ function resolvePreviewKind(model: DocumentModel, side: DocumentRenderSide): Doc
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderHtmlSourcePreview(container: HTMLElement, model: DocumentModel): void {
+function renderHtmlSourcePreview(container: HTMLElement, model: DocumentModel, jobId: string): void {
   const requestIdentity = `html:${model.source.sha256}`
   htmlPreviewRequestIdentity = requestIdentity
   releaseHtmlPreviewUrl()
@@ -2730,7 +2985,7 @@ function renderHtmlSourcePreview(container: HTMLElement, model: DocumentModel): 
   webview.setAttribute('partition', 'document-html-preview')
   webview.setAttribute('aria-label', t('document.source'))
   container.append(webview)
-  void window.api.getDocumentSource().then((source) => {
+  void window.api.getDocumentSource(jobId).then((source) => {
     if (htmlPreviewRequestIdentity !== requestIdentity || !webview.isConnected) return
     if (!source.ok || !source.bytes) {
       webview.remove()
@@ -2772,7 +3027,7 @@ function renderTextRuns(block: DocumentTextBlock): DocumentFragment {
  * @returns 语义化区块元素。
  * @author zhenghq
  */
-function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide): HTMLElement {
+function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide, jobId: string): HTMLElement {
   if (block.kind === 'text') {
     if (block.role === 'code') {
       const pre = document.createElement('pre')
@@ -2804,7 +3059,7 @@ function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide): HT
       return list
     }
   }
-  return renderBlock(block, side, 1)
+  return renderBlock(block, side, 1, undefined, jobId)
 }
 
 /**
@@ -2818,12 +3073,13 @@ function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide): HT
 function renderMarkdownDocument(
   container: HTMLElement,
   model: DocumentModel,
-  side: DocumentRenderSide
+  side: DocumentRenderSide,
+  jobId: string
 ): void {
   const article = document.createElement('article')
   article.className = 'document-markdown-preview'
   for (const page of model.pages) {
-    for (const block of page.blocks) article.append(renderMarkdownBlock(block, side))
+    for (const block of page.blocks) article.append(renderMarkdownBlock(block, side, jobId))
   }
   container.append(article)
 }
@@ -2836,11 +3092,16 @@ function renderMarkdownDocument(
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderTableDocument(container: HTMLElement, model: DocumentModel, side: DocumentRenderSide): void {
+function renderTableDocument(
+  container: HTMLElement,
+  model: DocumentModel,
+  side: DocumentRenderSide,
+  jobId: string
+): void {
   const article = document.createElement('article')
   article.className = 'document-table-preview'
   for (const page of model.pages) {
-    for (const block of page.blocks) article.append(renderBlock(block, side, page.width))
+    for (const block of page.blocks) article.append(renderBlock(block, side, page.width, undefined, jobId))
   }
   container.append(article)
 }
@@ -2853,7 +3114,12 @@ function renderTableDocument(container: HTMLElement, model: DocumentModel, side:
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderSubtitleDocument(container: HTMLElement, model: DocumentModel, side: DocumentRenderSide): void {
+function renderSubtitleDocument(
+  container: HTMLElement,
+  model: DocumentModel,
+  side: DocumentRenderSide,
+  jobId: string
+): void {
   const article = document.createElement('article')
   article.className = 'document-subtitle-preview'
   for (const page of model.pages) {
@@ -2866,7 +3132,7 @@ function renderSubtitleDocument(container: HTMLElement, model: DocumentModel, si
         timing.textContent = block.timing
         item.append(timing)
       }
-      item.append(renderBlock(block, side, page.width))
+      item.append(renderBlock(block, side, page.width, undefined, jobId))
       article.append(item)
     }
   }
@@ -2881,7 +3147,12 @@ function renderSubtitleDocument(container: HTMLElement, model: DocumentModel, si
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderFlowDocument(container: HTMLElement, model: DocumentModel, side: DocumentRenderSide): void {
+function renderFlowDocument(
+  container: HTMLElement,
+  model: DocumentModel,
+  side: DocumentRenderSide,
+  jobId: string
+): void {
   if (!hasVisibleFlowContent(model, side)) {
     const empty = document.createElement('p')
     empty.className = 'document-empty-state'
@@ -2895,7 +3166,7 @@ function renderFlowDocument(container: HTMLElement, model: DocumentModel, side: 
   article.className = 'document-flow-preview'
   for (const page of model.pages) {
     // HTML 译文同样使用流式页面：保留原页宽和段落间距，但让译文高度参与后续排版。
-    article.append(renderPage(page, side))
+    article.append(renderPage(page, side, 1, jobId))
   }
   container.append(article)
 }
@@ -2904,15 +3175,14 @@ function renderFlowDocument(container: HTMLElement, model: DocumentModel, side: 
  * 使用 PDF.js 将 PDF 逐页绘制到 Canvas，保留原始字体、公式与版面。
  * 只有原文侧使用该渲染器；译文侧始终由结构化流式 DOM 承载。
  * @param container 源文预览滚动容器。
- * @param generationAtStart 开始渲染时的任务代际。
  * @param model 当前文档模型，用于同步页面占位尺寸。
  * @returns 无返回值。
  * @author zhenghq
  */
 async function renderPdfPages(
   container: HTMLElement,
-  generationAtStart: number,
-  model: DocumentModel
+  model: DocumentModel,
+  jobId: string
 ): Promise<void> {
   pdfPreviewCleanups.get(container)?.()
   const renderToken = Symbol('pdf-preview')
@@ -2948,7 +3218,6 @@ async function renderPdfPages(
   }
   pdfPreviewCleanups.set(container, cleanup)
   const isCurrentRender = (): boolean => !disposed &&
-    generationAtStart === generation &&
     container.isConnected &&
     pdfRenderTokens.get(container) === renderToken
   const renderVisiblePage = async (article: HTMLElement): Promise<void> => {
@@ -2991,7 +3260,7 @@ async function renderPdfPages(
     }
   }
   try {
-    const source = await window.api.getDocumentSource()
+    const source = await window.api.getDocumentSource(jobId)
     if (!source.ok || !source.bytes) throw new Error(source.code ?? 'source-not-found')
     if (!isCurrentRender()) return
     const loadingTask = pdfjsModule.getDocument({
@@ -3503,6 +3772,7 @@ function renderDocumentModel(
   model: DocumentModel | undefined,
   emptyKey: string,
   side: DocumentRenderSide,
+  jobId: string,
   warnings: readonly DocumentWarning[] = []
 ): void {
   pageScaleObserver?.disconnect()
@@ -3541,14 +3811,14 @@ function renderDocumentModel(
     previewHost.dataset.documentFormat = model.source.format
     nextContent.append(previewHost)
     if (side === 'source' && model.source.format === 'html') {
-      renderHtmlSourcePreview(previewHost, model)
+      renderHtmlSourcePreview(previewHost, model, jobId)
     } else if (kind === 'paged') {
       const usePdfCanvas = model.source.format === 'pdf' && side === 'source'
       if (model.source.format === 'pdf' && (side === 'source' || ocrDisplayMode === 'ocr-text')) {
         container.dataset.previewKind = kind
         // PDF.js 异步渲染要求宿主已连接；此时只挂载空宿主，PDF 数据仍由旧内容保留到加载完成。
         container.replaceChildren(previewHost)
-        void renderPdfPages(previewHost, generation, model)
+        void renderPdfPages(previewHost, model, jobId)
       } else {
         for (const page of model.pages) {
           // 横竖混排 PDF 的每页宽度不同，必须在首次挂载前按自身宽度计算比例，
@@ -3556,17 +3826,21 @@ function renderDocumentModel(
           const pageScale = side === 'translation'
             ? initialTranslationPageScale(container, page.width)
             : 1
-          previewHost.append(renderPage(page, side, pageScale))
+          // 图片 OCR 原文右侧必须复用源页绝对定位；译文流式布局会拆散底图与透明文字层的坐标。
+          const pageRenderSide = ocrDisplayMode === 'ocr-text' && model.source.format === 'image'
+            ? 'source'
+            : side
+          previewHost.append(renderPage(page, pageRenderSide, pageScale, jobId))
         }
       }
     } else if (kind === 'markdown') {
-      renderMarkdownDocument(previewHost, model, side)
+      renderMarkdownDocument(previewHost, model, side, jobId)
     } else if (kind === 'table') {
-      renderTableDocument(previewHost, model, side)
+      renderTableDocument(previewHost, model, side, jobId)
     } else if (kind === 'subtitle') {
-      renderSubtitleDocument(previewHost, model, side)
+      renderSubtitleDocument(previewHost, model, side, jobId)
     } else {
-      renderFlowDocument(previewHost, model, side)
+      renderFlowDocument(previewHost, model, side, jobId)
     }
     appendTranslationWatermark(previewHost, side)
     container.dataset.previewKind = kind
@@ -3712,15 +3986,15 @@ function documentContentSignature(model: DocumentModel | undefined): string {
 }
 
 /**
- * 计算源预览身份；PDF 与 HTML 使用文件指纹，译文流式更新时不会触发原生预览重载。
+ * 计算源预览身份；PDF、图片与 HTML 使用文件指纹，OCR 或译文流式更新时不会触发原生预览重载。
  * @param model 当前源文档模型。
  * @returns 稳定的预览身份。
  * @author zhenghq
  */
 function documentPreviewIdentity(model: DocumentModel | undefined): string {
   if (!model) return ''
-  if (model.source.format === 'pdf') {
-    return `pdf:${model.source.sha256}`
+  if (model.source.format === 'pdf' || model.source.format === 'image') {
+    return `${model.source.format}:${model.source.sha256}`
   }
   if (model.source.format === 'html') {
     return `html:${model.source.sha256}`
@@ -3771,6 +4045,7 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
       snapshot.source,
       'document.waitingSource',
       'source',
+      snapshot.jobId,
       snapshot.source?.warnings
     )
     renderedSourcePreviewIdentity = sourcePreviewIdentity
@@ -3789,6 +4064,7 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
         translationPaneModel,
         'document.waitingTranslation',
         'translation',
+        snapshot.jobId,
         translationPaneModel?.warnings
       )
     }
@@ -4038,32 +4314,35 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
 
 /**
  * 在下一帧合并快照重绘，避免高频进度事件反复重建大文档 DOM。
+ * @param tab 快照所属的 Tab。
  * @param snapshot 最新任务快照。
  * @returns 无返回值。
  * @author zhenghq
  */
-function scheduleSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
+function scheduleSnapshotRender(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
   // 模式切换重启期间禁止旧任务快照进入合并队列，避免取消终态在新流程启动前回写界面。
-  if (pendingOcrModeRestart) return
+  if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
   latestSnapshot = snapshot
   if (pendingRenderFrame !== null) return
   pendingRenderFrame = requestAnimationFrame(() => {
     pendingRenderFrame = null
-    if (!latestSnapshot || !isCurrentSnapshot(latestSnapshot)) return
-    renderSnapshot(latestSnapshot)
-    renderTaskState(latestSnapshot)
+    if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
+    latestSnapshot = snapshot
+    renderSnapshot(snapshot)
+    renderTaskState(snapshot)
   })
 }
 
 /**
  * 立即渲染指定快照，并取消尚未执行的合并帧，避免终态或导出时沿用旧的流式部分译文。
+ * @param tab 快照所属的 Tab。
  * @param snapshot 需要立即落到界面的最新任务快照。
  * @returns 无返回值。
  * @author zhenghq
  */
-function flushSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
+function flushSnapshotRender(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
   // 模式切换重启期间终态也必须丢弃，新任务只接受其自身代际的完成事件。
-  if (pendingOcrModeRestart) return
+  if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
   if (pendingRenderFrame !== null) {
     cancelAnimationFrame(pendingRenderFrame)
     pendingRenderFrame = null
@@ -4071,36 +4350,6 @@ function flushSnapshotRender(snapshot: DocumentWorkspaceSnapshot): void {
   latestSnapshot = snapshot
   renderSnapshot(snapshot)
   renderTaskState(snapshot)
-}
-
-/**
- * 判断事件是否属于当前任务，隔离旧任务或旧窗口的迟到事件。
- * @param snapshot 收到的任务快照。
- * @returns 是否属于当前任务。
- * @author zhenghq
- */
-function isCurrentSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean {
-  if (snapshot.generation !== generation) return false
-  if (expectedJobId !== null && snapshot.jobId !== expectedJobId) return false
-  // run() 返回前可能收到首条进度事件；此时只接收事件，不提前绑定任务标识。
-  return activeJobId === null || snapshot.jobId === activeJobId
-}
-
-/**
- * 判断进度快照是否仍可覆盖界面，阻止终态之后迟到的同代际进度造成回退。
- * @param snapshot 收到的进度快照。
- * @returns 是否可以应用该进度快照。
- * @author zhenghq
- */
-function canApplyProgressSnapshot(snapshot: DocumentWorkspaceSnapshot): boolean {
-  if (!isCurrentSnapshot(snapshot)) return false
-  if (!latestSnapshot) return true
-  if (latestSnapshot.jobId !== snapshot.jobId) return true
-  // 失败项重试沿用同一 jobId 并递增代际，必须允许新代际覆盖上一轮终态。
-  if (latestSnapshot.generation !== snapshot.generation) {
-    return snapshot.generation > latestSnapshot.generation
-  }
-  return canApplyDocumentTaskEvent(latestSnapshot.task, snapshot.jobId, snapshot.generation)
 }
 
 /**
@@ -4132,21 +4381,32 @@ async function cancelLateDocumentRunResult(
 ): Promise<void> {
   if (!result.accepted || !result.jobId) return
   await cancelDocumentJob(result.jobId, jobGeneration)
+  // 启动请求迟到时对应 Tab 可能已经关闭，取消后必须立即释放主进程任务资源。
+  await releaseDocumentJob(result.jobId)
 }
 
 /**
- * 在 OCR 原文与译文模式切换时立即清空旧进度、预览和导出状态。
+ * 在 OCR 原文与译文模式切换时立即清空目标 Tab 的旧进度和可见预览。
  * 保留 activeJobId 供调用方取消旧任务，避免启动请求尚未返回时丢失取消目标。
+ * @param tab 要重置运行状态的 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function resetDocumentRunForModeSwitch(): void {
+function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab): void {
+  tab.snapshot = null
+  tab.expectedJobId = null
+  tab.status = 'starting'
+  if (tab.id !== activeDocumentTabId) {
+    renderDocumentTabs()
+    return
+  }
   if (pendingRenderFrame !== null) {
     cancelAnimationFrame(pendingRenderFrame)
     pendingRenderFrame = null
   }
   latestSnapshot = null
   expectedJobId = null
+  refreshActiveTabMirror(tab)
   // 重新启动会推进任务代际；先清理旧代际的渲染令牌，避免异步 PDF 绘制回写新界面。
   pdfPreviewCleanups.get(sourceContent)?.()
   pdfPreviewCleanups.get(translationContent)?.()
@@ -4169,119 +4429,150 @@ function resetDocumentRunForModeSwitch(): void {
 }
 
 /**
- * 启动当前已批准文件的翻译任务。
- * @returns 无返回值。
+ * 启动指定文件 Tab 的翻译或 OCR 任务。
+ * 所有请求参数均从目标 Tab 捕获，后台 Tab 的启动结果不会覆盖当前可见 Tab。
+ * @param tab 要启动的文件 Tab。
+ * @returns 启动请求完成后的 Promise。
  * @author zhenghq
  */
-async function startDocumentTranslation(): Promise<void> {
-  if (!selectionState.path || !platformCapability?.supported) return
-  if (documentStartInFlight) {
-    // 模式切换与语言切换使用不同重启标记；启动结束后只执行最后一次用户意图。
-    if (pendingOcrModeRestart) pendingLanguageRetranslation = false
-    else pendingLanguageRetranslation = true
+async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<void> {
+  if (!tab.selection.path || !platformCapability?.supported) return
+  if (tab.startInFlight) {
+    // 同一 Tab 的模式或语言变更必须等当前启动请求返回后再执行，避免主进程拒绝并发任务。
+    tab.pendingLanguageRetranslation = true
     return
   }
-  // 先消费待重译标记再启动，确保本次启动期间再次切换语言时仍能留下新的待处理标记。
-  pendingLanguageRetranslation = false
-  pendingOcrModeRestart = false
-  documentStartInFlight = true
-  // 先递增并取得本次任务代际，主进程要求代际严格大于上一任务；
-  // 若发送递增前的旧值，首次运行或窗口重载后都会被判定为 generation-conflict。
+  if (!documentTabs.includes(tab)) return
+
+  tab.pendingLanguageRetranslation = false
+  tab.pendingOcrModeRestart = false
+  tab.startInFlight = true
+  tab.status = 'starting'
   let jobGeneration = nextGeneration()
-  const selectedPath = selectionState.path
-  // 记录本次任务实际提交的语言组合，避免启动前切换过语言时误判为无需重译。
-  appliedLanguagePair = `${sourceLanguageSelect.value}\u0000${targetLanguageSelect.value}`
-  activeJobId = null
-  expectedJobId = null
-  latestSnapshot = null
-  syncOcrDisplayModeControls()
-  renderedSourcePreviewIdentity = ''
-  renderedSourceWarningSignature = ''
-  renderedTranslationSignature = ''
-  renderedTranslationPreviewKind = null
-  hasRenderedTranslation = false
-  renderedTranslationWarningSignature = ''
-  revokeAssetUrls()
-  releaseHtmlPreviewUrl()
-  pdfPreviewCleanups.get(sourceContent)?.()
-  pdfPreviewCleanups.get(translationContent)?.()
-  uploadPanel.hidden = true
-  workbench.hidden = false
-  workbenchName.textContent = selectionState.name
-  workbenchMeta.textContent = `${selectionState.format.toUpperCase()} · ${formatFileSize(selectionState.size)}`
-  sourceContent.replaceChildren()
-  translationContent.replaceChildren()
-  progressStage.textContent = t('document.progress.preparing')
-  progressCount.textContent = t('document.progress.pending')
-  progressbar.setAttribute('aria-valuenow', '0')
-  progressbar.style.width = '0%'
-  actualLanguage.textContent = ''
-  actualLanguage.hidden = true
-  cancelButton.hidden = false
-  exportButton.disabled = true
-  retryButton.disabled = true
-  partialStatus.hidden = true
-  closePartialExportDialog(false)
-  startButton.disabled = true
+  tab.generation = jobGeneration
+  const selectedPath = tab.selection.path
+  const sourceLang = tab.sourceLang
+  const targetLang = tab.targetLang
+  const mode = tab.ocrDisplayMode === 'ocr-text' ? 'ocr' as const : 'translation' as const
+  tab.activeJobId = null
+  tab.expectedJobId = null
+  tab.snapshot = null
+  const isActive = tab.id === activeDocumentTabId
+  if (isActive) {
+    refreshActiveTabMirror(tab)
+    uploadPanel.hidden = true
+    workbench.hidden = false
+    workbenchName.textContent = tab.selection.name
+    workbenchMeta.textContent = `${tab.selection.format.toUpperCase()} · ${formatFileSize(tab.selection.size)}`
+    clearActiveTabPreview()
+    progressStage.textContent = t('document.progress.preparing')
+    progressCount.textContent = t('document.progress.pending')
+    progressbar.setAttribute('aria-valuenow', '0')
+    progressbar.style.width = '0%'
+    actualLanguage.textContent = ''
+    actualLanguage.hidden = true
+    cancelButton.hidden = false
+    exportButton.disabled = true
+    retryButton.disabled = true
+    partialStatus.hidden = true
+    closePartialExportDialog(false)
+    startButton.disabled = true
+  }
+  renderDocumentTabs()
+
   try {
     let result: DocumentRunResult = await window.api.runDocument({
       path: selectedPath,
       generation: jobGeneration,
-      sourceLang: sourceLanguageSelect.value,
-      targetLang: targetLanguageSelect.value,
-      mode: ocrDisplayMode === 'ocr-text' ? 'ocr' : 'translation'
+      sourceLang,
+      targetLang,
+      mode
     })
-    if (generation !== jobGeneration) {
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) {
       await cancelLateDocumentRunResult(result, jobGeneration)
       return
     }
-    // 只有尚未绑定任务标识且未收到当前任务进度时才允许重试；
-    // 同一 Renderer 的并发启动会返回 busy，不能被误当成可重试的冲突。
-    if (!result.accepted && result.code === 'generation-conflict' && expectedJobId === null &&
-      latestSnapshot === null &&
+    // 首个任务可能因 Renderer 重载或旧窗口留下更高代际而冲突，仅在尚无任何事件时安全重试一次。
+    if (!result.accepted && result.code === 'generation-conflict' &&
+      tab.expectedJobId === null && tab.snapshot === null &&
       adoptSuggestedGeneration(result.suggestedGeneration)) {
+      tab.generation = generation
       jobGeneration = generation
+      tab.startInFlight = true
       result = await window.api.runDocument({
         path: selectedPath,
         generation: jobGeneration,
-        sourceLang: sourceLanguageSelect.value,
-        targetLang: targetLanguageSelect.value,
-        mode: ocrDisplayMode === 'ocr-text' ? 'ocr' : 'translation'
+        sourceLang,
+        targetLang,
+        mode
       })
     }
-    if (generation !== jobGeneration) {
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) {
       await cancelLateDocumentRunResult(result, jobGeneration)
       return
     }
     if (!result.accepted || !result.jobId) {
-      progressStage.textContent = t('document.run.failed')
-      progressCount.textContent = t('document.run.failedCode', { code: result.code ?? 'run-failed' })
-      cancelButton.hidden = true
-      startButton.disabled = false
+      tab.status = 'failed'
+      if (tab.id === activeDocumentTabId) {
+        refreshActiveTabMirror(tab)
+        progressStage.textContent = t('document.run.failed')
+        progressCount.textContent = t('document.run.failedCode', { code: result.code ?? 'run-failed' })
+        cancelButton.hidden = true
+        startButton.disabled = false
+      }
+      renderDocumentTabs()
       return
     }
-    expectedJobId = result.jobId
-    activeJobId = result.jobId
-    const pendingSnapshot = latestSnapshot as DocumentWorkspaceSnapshot | null
-    if (!pendingOcrModeRestart && pendingSnapshot?.jobId === result.jobId) {
-      scheduleSnapshotRender(pendingSnapshot)
+    tab.expectedJobId = result.jobId
+    tab.activeJobId = result.jobId
+    // 首条进度可能早于 runDocument 返回；此处读取异步事件写入后的最新值，而非启动前清空的快照。
+    const pendingSnapshot = tab.snapshot as DocumentWorkspaceSnapshot | null
+    if (pendingSnapshot?.jobId === result.jobId && tab.id === activeDocumentTabId) {
+      refreshActiveTabMirror(tab)
+      scheduleSnapshotRender(tab, pendingSnapshot)
     }
   } catch {
-    if (generation !== jobGeneration) return
-    progressStage.textContent = t('document.run.failed')
-    cancelButton.hidden = true
-    startButton.disabled = false
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
+    tab.status = 'failed'
+    if (tab.id === activeDocumentTabId) {
+      refreshActiveTabMirror(tab)
+      progressStage.textContent = t('document.run.failed')
+      cancelButton.hidden = true
+      startButton.disabled = false
+    }
+    renderDocumentTabs()
   } finally {
-    documentStartInFlight = false
-    if (pendingOcrModeRestart) {
-      // 启动请求返回时旧任务可能已经创建；取消期间继续保持挂起态，丢弃旧任务终态。
-      await cancelDocumentJob(activeJobId, generation)
-      pendingOcrModeRestart = false
-      await startDocumentTranslation()
-    } else if (pendingLanguageRetranslation) {
-      void retranslateDocumentAfterLanguageChange()
+    if (documentTabs.includes(tab)) {
+      tab.startInFlight = false
+      if (tab.id === activeDocumentTabId) {
+        documentStartInFlight = false
+        startButton.disabled = false
+      }
+      if (tab.pendingOcrModeRestart) {
+        const restartJobId = tab.activeJobId ?? tab.expectedJobId
+        const restartGeneration = tab.generation
+        await cancelDocumentJob(restartJobId, restartGeneration)
+        tab.pendingOcrModeRestart = false
+        if (restartJobId) await releaseDocumentJob(restartJobId)
+        await startDocumentTabTranslation(tab)
+      } else if (tab.pendingLanguageRetranslation) {
+        tab.pendingLanguageRetranslation = false
+        await startDocumentTabTranslation(tab)
+      }
+      renderDocumentTabs()
     }
   }
+}
+
+/**
+ * 启动当前激活 Tab 的翻译任务。
+ * @returns 启动流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function startDocumentTranslation(): Promise<void> {
+  const tab = getActiveDocumentTab()
+  if (!tab) return
+  await startDocumentTabTranslation(tab)
 }
 
 /**
@@ -4290,10 +4581,12 @@ async function startDocumentTranslation(): Promise<void> {
  * @author zhenghq
  */
 async function cancelDocumentTranslation(): Promise<void> {
-  if (!activeJobId) return
+  const tab = getActiveDocumentTab()
+  const jobId = tab?.activeJobId ?? tab?.expectedJobId
+  if (!tab || !jobId) return
   cancelButton.disabled = true
   try {
-    await window.api.cancelDocument(activeJobId, generation)
+    await cancelDocumentJob(jobId, tab.generation)
   } finally {
     cancelButton.disabled = false
   }
@@ -4305,9 +4598,15 @@ async function cancelDocumentTranslation(): Promise<void> {
  * @author zhenghq
  */
 async function retryFailedDocumentTranslation(): Promise<void> {
-  if (!latestSnapshot?.translation) return
-  if (resolveDocumentRetryActionState(latestSnapshot).retryDisabled) return
-  const jobGeneration = nextGeneration()
+  const tab = getActiveDocumentTab()
+  const snapshot = tab?.snapshot
+  if (!tab || !snapshot?.translation) return
+  if (resolveDocumentRetryActionState(snapshot).retryDisabled) return
+  const previousGeneration = tab.generation
+  let jobGeneration = nextGeneration()
+  tab.generation = jobGeneration
+  tab.status = 'running'
+  refreshActiveTabMirror(tab)
   retryButton.disabled = true
   cancelButton.hidden = false
   exportButton.disabled = true
@@ -4316,23 +4615,39 @@ async function retryFailedDocumentTranslation(): Promise<void> {
   progressStage.textContent = t('document.progress.translating')
   progressCount.textContent = t('document.progress.pending')
   try {
-    const result = await window.api.retryFailedDocument(jobGeneration)
-    if (generation !== jobGeneration) return
+    let result = await window.api.retryFailedDocument(snapshot.jobId, jobGeneration)
+    // 重试同样可能遇到 Renderer 重载后遗留的更高代际；采用建议值后只安全重试一次。
+    if (!result.accepted && result.code === 'generation-conflict' &&
+      adoptSuggestedGeneration(result.suggestedGeneration)) {
+      jobGeneration = generation
+      tab.generation = jobGeneration
+      refreshActiveTabMirror(tab)
+      result = await window.api.retryFailedDocument(snapshot.jobId, jobGeneration)
+    }
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
     if (!result.accepted) {
+      tab.generation = previousGeneration
+      tab.status = resolveDocumentTabStatus(snapshot)
+      refreshActiveTabMirror(tab)
       partialStatus.textContent = result.code === 'no-retryable-failures'
         ? t('document.progress.completed')
         : t('document.run.failedCode', { code: result.code ?? 'retry-failed' })
       retryButton.disabled = true
       cancelButton.hidden = true
       // 重试请求被拒绝时仍停留在原来的部分完成快照，应恢复已有译文的导出能力。
-      exportButton.disabled = !hasUsableExportResult(latestSnapshot)
+      exportButton.disabled = !hasUsableExportResult(snapshot)
+      renderDocumentTabs()
     }
   } catch {
-    if (generation !== jobGeneration) return
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
+    tab.generation = previousGeneration
+    tab.status = resolveDocumentTabStatus(snapshot)
+    refreshActiveTabMirror(tab)
     partialStatus.textContent = t('document.run.failed')
     retryButton.disabled = false
     cancelButton.hidden = true
-    exportButton.disabled = !hasUsableExportResult(latestSnapshot)
+    exportButton.disabled = !hasUsableExportResult(snapshot)
+    renderDocumentTabs()
   }
 }
 
@@ -4342,28 +4657,34 @@ async function retryFailedDocumentTranslation(): Promise<void> {
  * @author zhenghq
  */
 async function exportTranslatedPdf(): Promise<void> {
-  if (!latestSnapshot?.translation) return
+  const tab = getActiveDocumentTab()
+  const snapshot = tab?.snapshot
+  if (!tab || !snapshot?.translation) return
   // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
-  flushSnapshotRender(latestSnapshot)
-  const isComplete = latestSnapshot.task.status === 'completed'
+  flushSnapshotRender(tab, snapshot)
+  const isComplete = snapshot.task.status === 'completed'
   if (!isComplete) {
-    revealFirstIncompleteTarget(latestSnapshot)
-    const confirmed = await confirmPartialExport(latestSnapshot)
+    revealFirstIncompleteTarget(snapshot)
+    const confirmed = await confirmPartialExport(snapshot)
     if (!confirmed) {
       partialStatus.textContent = t('document.export.cancelled')
       partialStatus.hidden = false
       return
     }
+    if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation) return
+    if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
+    flushSnapshotRender(tab, snapshot)
   }
   exportButton.disabled = true
   try {
     const result: DocumentExportResult = await window.api.exportDocumentPdf({
-      jobId: latestSnapshot.jobId,
-      generation: latestSnapshot.generation,
+      jobId: snapshot.jobId,
+      generation: snapshot.generation,
       ...(isComplete ? { mode: 'complete' as const } : { mode: 'partial' as const }),
       // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
       textLayer: true
     })
+    if (!documentTabs.includes(tab)) return
     if (result.status === 'saved') {
       partialStatus.textContent = result.warnings && result.warnings.length > 0
         ? `${t('document.export.saved')} ${result.warnings.map(localizeDocumentWarning).join(' ')}`
@@ -4380,9 +4701,10 @@ async function exportTranslatedPdf(): Promise<void> {
     partialStatus.textContent = t('document.export.failed')
     partialStatus.hidden = false
   } finally {
-    exportButton.disabled = !latestSnapshot || (
-      latestSnapshot.task.status !== 'completed' &&
-      !hasUsableExportResult(latestSnapshot)
+    const currentSnapshot = tab.snapshot
+    exportButton.disabled = !currentSnapshot || (
+      currentSnapshot.task.status !== 'completed' &&
+      !hasUsableExportResult(currentSnapshot)
     )
   }
 }
@@ -4523,11 +4845,11 @@ async function initializeDocumentWorkspace(): Promise<void> {
   await initializePlatformCapability()
   await initializeDocumentLanguages()
 
-  dropZone.addEventListener('click', () => void chooseDocumentFile())
+  dropZone.addEventListener('click', () => void chooseDocumentFiles())
   dropZone.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
-    void chooseDocumentFile()
+    void chooseDocumentFiles()
   })
   dropZone.addEventListener('dragover', (event) => {
     event.preventDefault()
@@ -4548,17 +4870,15 @@ async function initializeDocumentWorkspace(): Promise<void> {
     event.preventDefault()
     dragDepth = 0
     dropZone.dataset.dragging = 'false'
-    const file = event.dataTransfer?.files[0]
-    if (file) void inspectBrowserFile(file)
+    void inspectBrowserFiles(Array.from(event.dataTransfer?.files ?? []))
   })
   documentFileInput.addEventListener('change', (event) => {
     const input = event.currentTarget as HTMLInputElement
-    const file = input.files?.[0]
-    if (file) void inspectBrowserFile(file)
+    void inspectBrowserFiles(Array.from(input.files ?? []))
     input.value = ''
   })
   fileReplaceButton.addEventListener('click', () => documentFileInput.click())
-  documentWorkbenchReplaceButton.addEventListener('click', () => void replaceDocumentFromWorkbench())
+  documentWorkbenchReplaceButton.addEventListener('click', () => void addDocumentFilesFromWorkbench())
   startButton.addEventListener('click', () => void startDocumentTranslation())
   cancelButton.addEventListener('click', () => void cancelDocumentTranslation())
   exportButton.addEventListener('click', () => void exportTranslatedPdf())
@@ -4582,22 +4902,25 @@ async function initializeDocumentWorkspace(): Promise<void> {
   for (const button of Array.from(sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]'))) {
     button.addEventListener('click', async () => {
       const nextMode = button.dataset.ocrMode === 'ocr-text' ? 'ocr-text' : 'translation'
-      if (ocrDisplayMode === nextMode) return
-      ocrDisplayMode = nextMode
+      const tab = getActiveDocumentTab()
+      if (!tab || tab.ocrDisplayMode === nextMode) return
+      tab.ocrDisplayMode = nextMode
+      refreshActiveTabMirror(tab)
       syncOcrDisplayModeControls()
       // 展示方式改变即代表新的执行流程：先中断旧任务，再清空旧进度和预览。
-      if (documentStartInFlight || pendingOcrModeRestart) {
-        pendingOcrModeRestart = true
-        pendingLanguageRetranslation = false
-        resetDocumentRunForModeSwitch()
+      if (tab.startInFlight || tab.pendingOcrModeRestart) {
+        tab.pendingOcrModeRestart = true
+        tab.pendingLanguageRetranslation = false
+        refreshActiveTabMirror(tab)
+        resetDocumentRunForModeSwitch(tab)
         // 若启动请求已创建任务但尚未返回，这里先尝试取消；finally 会再次按最新 jobId 兜底。
-        void cancelDocumentJob(activeJobId, generation)
+        void cancelDocumentJob(tab.activeJobId ?? tab.expectedJobId, tab.generation)
         return
       }
-      const jobId = activeJobId
-      await cancelDocumentJob(jobId, generation)
-      resetDocumentRunForModeSwitch()
-      await startDocumentTranslation()
+      const jobId = tab.activeJobId ?? tab.expectedJobId
+      await cancelDocumentJob(jobId, tab.generation)
+      resetDocumentRunForModeSwitch(tab)
+      await startDocumentTabTranslation(tab)
     })
   }
   syncOcrDisplayModeControls()
@@ -4611,24 +4934,21 @@ async function initializeDocumentWorkspace(): Promise<void> {
   documentFileHistory = readDocumentFileHistory()
   renderDocumentHistory()
   window.api.onDocumentProgress((snapshot) => {
-    if (pendingOcrModeRestart) return
-    if (!canApplyProgressSnapshot(snapshot)) return
-    scheduleSnapshotRender(snapshot)
+    routeDocumentSnapshot(snapshot, false)
   })
   window.api.onDocumentBlockTranslated((update: DocumentWorkspaceTranslationUpdate) => {
-    if (pendingOcrModeRestart) return
-    const snapshot = latestSnapshot
-    if (!snapshot || snapshot.jobId !== update.jobId || snapshot.generation !== update.generation) return
+    const tab = findDocumentTabByTranslationUpdate(update)
+    const snapshot = tab?.snapshot
+    if (!tab || !snapshot || snapshot.jobId !== update.jobId || snapshot.generation !== update.generation) return
     const next = applyDocumentWorkspaceTranslationUpdate(snapshot, update)
     if (next === snapshot) return
-    scheduleSnapshotRender(next)
+    updateDocumentTabSnapshot(tab, next)
+    if (tab.id !== activeDocumentTabId) return
+    refreshActiveTabMirror(tab)
+    scheduleSnapshotRender(tab, next)
   })
   window.api.onDocumentCompleted((snapshot) => {
-    if (pendingOcrModeRestart) return
-    if (!isCurrentSnapshot(snapshot)) return
-    // 终态必须绕过 rAF 合并立即落盘，确保最终译文覆盖最后一条流式部分译文。
-    flushSnapshotRender(snapshot)
-    startButton.disabled = false
+    routeDocumentSnapshot(snapshot, true)
   })
   /**
    * 标记双栏内的真实滚动输入；滚动事件本身无法区分用户操作和布局引起的位移。

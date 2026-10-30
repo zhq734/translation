@@ -98,6 +98,38 @@ test('Vision OCR 空输出应返回空数组', () => {
 })
 
 /**
+ * 校验 Vision 结构化输出保留左上角像素行框，供文档文字层定位。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Vision OCR 结构化输出应保留像素行框', () => {
+  const lines = parseVisionOcrOutput(JSON.stringify({
+    lines: [{
+      text: '标题',
+      box: { x: 120, y: 80, width: 200, height: 40 }
+    }]
+  }))
+
+  assert.deepEqual(lines, [{
+    text: '标题',
+    box: { x: 120, y: 80, width: 200, height: 40 }
+  }])
+})
+
+/**
+ * 校验 Vision 脚本输出结构化 JSON 与 boundingBox，避免只返回纯文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Vision OCR 脚本应输出结构化行框 JSON', () => {
+  const script = buildVisionOcrScript('/tmp/test.png', 'zh-Hans')
+
+  assert.match(script, /boundingBox/u)
+  assert.match(script, /JSONSerialization/u)
+  assert.match(script, /"lines"/u)
+})
+
+/**
  * 校验 macOS Vision 引擎识别图片字节前会写入临时文件，再把该路径传入 osascript。
  * @returns 测试完成后的 Promise。
  * @author zhenghq
@@ -349,6 +381,7 @@ test('Windows OCR 结构化输出应解析每行的词框', () => {
   assert.deepEqual(lines[0]!.words?.[1], {
     text: 'id', x: 54, y: 20, width: 16, height: 16
   })
+  assert.deepEqual(lines[0]!.box, { x: 10, y: 20, width: 60, height: 16 })
 })
 
 /**

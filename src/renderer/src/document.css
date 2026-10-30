@@ -36,7 +36,7 @@ body {
   background: var(--bg-secondary);
 }
 
-.document-tabs,
+.document-file-tabs,
 .document-language-controls,
 .document-toolbar-actions {
   display: flex;
@@ -45,8 +45,92 @@ body {
   min-width: 0;
 }
 
-.document-tabs {
+.document-file-tabs {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.document-file-tab {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 220px;
+  min-height: var(--control-height);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: var(--border-width) solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--button-secondary-bg);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.document-file-tab[aria-selected='true'] {
+  border-color: var(--button-bg);
+  background: var(--accent-gradient);
+  color: var(--button-text);
+}
+
+.document-file-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-file-tab-status {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.document-file-tab[data-status='starting'] .document-file-tab-status,
+.document-file-tab[data-status='running'] .document-file-tab-status {
+  background: var(--status-info);
+}
+
+.document-file-tab[data-status='completed'] .document-file-tab-status {
+  background: var(--status-success);
+}
+
+.document-file-tab[data-status='partial'] .document-file-tab-status {
+  background: var(--status-warning);
+}
+
+.document-file-tab[data-status='failed'] .document-file-tab-status {
+  background: var(--status-error);
+}
+
+.document-file-tab-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: calc(var(--control-height) - 8px);
+  height: calc(var(--control-height) - 8px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.document-file-tab-close:hover,
+.document-file-tab-close:focus-visible {
+  background: var(--button-secondary-hover);
+}
+
+.document-file-tab[aria-selected='true'] .document-file-tab-close:hover,
+.document-file-tab[aria-selected='true'] .document-file-tab-close:focus-visible {
+  background: color-mix(in srgb, var(--button-text) 16%, transparent);
 }
 
 .document-language-controls {
@@ -93,7 +177,6 @@ body {
   display: none;
 }
 
-.document-tab,
 .document-secondary-button,
 .document-primary-button,
 .document-text-button {
@@ -103,24 +186,6 @@ body {
   background: var(--button-secondary-bg);
   color: var(--text-primary);
   font: inherit;
-}
-
-.document-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-3);
-  white-space: nowrap;
-}
-
-.document-tab[aria-selected='true'] {
-  border-color: var(--button-bg);
-  background: var(--accent-gradient);
-  color: var(--button-text);
-}
-
-.document-tab:disabled {
-  cursor: not-allowed;
 }
 
 .document-coming-soon {
@@ -135,8 +200,7 @@ body {
   padding: 0 var(--space-3);
 }
 
-.document-secondary-button:hover:not(:disabled),
-.document-tab:hover:not(:disabled):not([aria-selected='true']) {
+.document-secondary-button:hover:not(:disabled) {
   background: var(--button-secondary-hover);
 }
 
@@ -297,7 +361,6 @@ body {
 }
 
 .document-upload-panel[hidden],
-.document-batch-panel[hidden],
 .document-workbench[hidden],
 .document-file-summary[hidden] {
   display: none;
@@ -1206,6 +1269,12 @@ body {
   object-fit: contain;
 }
 
+.document-preview-host[data-document-format='image']
+  .document-image-block > .document-page-image {
+  /* 图片仅作为视觉底图，指针交给上方透明 OCR 文字层，保证文字可选中。 */
+  pointer-events: none;
+}
+
 .document-flow-preview,
 .document-markdown-preview,
 .document-table-preview,
@@ -1539,6 +1608,8 @@ body {
 .document-page[data-layout='translation-flow'] .document-table-block table {
   /* 译文列宽必须沿用原文列宽，固定布局可防止长译文改变列边界。 */
   table-layout: fixed;
+  /* 最终外边界使用专用高对比语义色，避免与内部行线混在一起而视觉消失。 */
+  border-bottom: 2px solid var(--document-table-boundary);
 }
 
 .document-table-block th,
@@ -1561,8 +1632,8 @@ body {
 }
 
 .document-page[data-layout='translation-flow'] .document-table-block tbody tr:last-child td {
-  /* 空单元格没有内容衬托时，浅色主题的默认边框几乎不可见；末行底边使用更强语义色。 */
-  border-bottom: var(--border-width) solid var(--border-control);
+  /* 空单元格没有内容衬托时，浅色主题的普通边框几乎不可见；末行底边必须明确可见。 */
+  border-bottom: 2px solid var(--document-table-boundary);
 }
 
 .document-page[data-layout='translation-flow'] .document-table-block .document-text-block,
@@ -1788,13 +1859,6 @@ body {
   background: var(--text-muted);
 }
 
-.document-batch-panel {
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: var(--space-6);
-  color: var(--text-secondary);
-}
-
 @media (max-width: 900px) {
   .document-toolbar {
     flex-wrap: wrap;
@@ -1804,6 +1868,11 @@ body {
     order: 3;
     flex-basis: 100%;
     justify-content: flex-start;
+  }
+
+  .document-file-tabs {
+    flex-basis: 100%;
+    order: 2;
   }
 
   .document-actual-language {
@@ -1852,6 +1921,10 @@ body {
 
   .document-toolbar-actions {
     flex-wrap: wrap;
+  }
+
+  .document-file-tab {
+    max-width: min(72vw, 220px);
   }
 
   /* 窄屏顶部栏可能贴边，历史下拉改为固定层，避免被工具栏滚动或裁切。 */

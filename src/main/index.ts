@@ -266,6 +266,7 @@ import {
 } from '../shared/documentPlatformCapability'
 import { parseDocument } from './documentParser'
 import { createProductionPdfRasterizer } from './documentPdfRuntime'
+import { exportDocumentToPdf } from './documentPdfExport'
 import { printDocumentPreviewToPdf } from './documentPdfPrint'
 import { loadDocumentPdfFontBytes } from './documentPdfFont'
 import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
@@ -423,8 +424,8 @@ let webReader: WebReaderManager | null = null
 let documentWorkspace: DocumentWorkspaceManager | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
 const approvedDocumentPaths = new Set<string>()
-/** 当前文档窗口独占的解析、OCR、翻译与导出任务服务。 */
-let documentWorkspaceTaskService: DocumentWorkspaceTaskService | null = null
+/** 当前文档窗口按 jobId 隔离的解析、OCR、翻译与导出任务服务。 */
+const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>()
 /** 主进程当前界面语言运行时；应用设置加载后初始化。 */
 let mainI18n: MainI18nRuntime | null = null
 
@@ -661,9 +662,23 @@ function isWebReaderSender(sender: Electron.WebContents): boolean {
  * @author zhenghq
  */
 function resetDocumentWorkspaceSession(): void {
-  documentWorkspaceTaskService?.dispose()
-  documentWorkspaceTaskService = null
+  for (const service of documentWorkspaceTaskServices.values()) service.dispose()
+  documentWorkspaceTaskServices.clear()
   approvedDocumentPaths.clear()
+}
+
+/**
+ * 从任务服务集合中移除并释放指定任务。
+ * @param jobId 任务标识。
+ * @returns 是否找到并释放了任务服务。
+ * @author zhenghq
+ */
+function releaseDocumentWorkspaceTask(jobId: string): boolean {
+  const service = documentWorkspaceTaskServices.get(jobId)
+  if (!service) return false
+  documentWorkspaceTaskServices.delete(jobId)
+  service.dispose()
+  return true
 }
 
 /**
@@ -759,7 +774,13 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
-    exportPdf: (model, _dependencies, partialExport, textLayer) => {
+    exportPdf: (model, dependencies, partialExport, textLayer, sourceOnly) => {
+      // OCR 原文必须直接写回 PDF 文字对象；Chromium 打印会丢弃完全透明的 DOM 文字层。
+      if (sourceOnly) {
+        return exportDocumentToPdf(model, dependencies, {
+          includeOcrTextLayer: textLayer !== false
+        })
+      }
       const window = documentWorkspace?.getWindow()
       if (!window) throw new Error('document-window-unavailable')
       return printDocumentPreviewToPdf(window.webContents, model, partialExport, textLayer)
@@ -5948,38 +5969,6 @@ function registerIpc(): void {
   ipcMain.on('document:open', () => openDocumentWorkspaceFromPopup())
   ipcMain.handle('document:get-platform-capability', () => getDocumentPlatformCapability())
   /**
-   * 从文档窗口选择并预检一个本地文件。
-   *
-   * 仅接受当前文档工作台发起的请求；主进程重新读取有限文件头并复用共享校验，
-   * 避免 Renderer 伪造格式、大小或任意路径。拒绝结果只返回稳定错误码，
-   * 不记录文件名、路径或正文。
-   * @param event IPC 事件对象。
-   * @returns 选择、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:select-file', async (event) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow) return { status: 'rejected', code: 'unreadable' }
-    const result = await dialog.showOpenDialog(senderWindow, {
-      title: t('document.upload.chooseFile'),
-      properties: ['openFile'],
-      filters: [{
-        name: t('document.upload.formats'),
-        extensions: ['pdf', 'docx', 'epub', 'html', 'htm', 'md', 'markdown', 'txt', 'json', 'csv', 'srt', 'vtt', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
-      }]
-    })
-    if (result.canceled || !result.filePaths[0]) return { status: 'cancelled' }
-    const selected = await validateApprovedDocumentPath(result.filePaths[0])
-    if (selected.status === 'selected') {
-      approvedDocumentPaths.clear()
-      approvedDocumentPaths.add(selected.path)
-    }
-    return selected
-  })
-  /**
    * 从文档窗口一次选择并校验多个本地文件。
    *
    * 只有当前文档工作台可以调用；每个候选路径都重新读取有限文件片段，
@@ -5995,7 +5984,7 @@ function registerIpc(): void {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow) return [{ status: 'rejected', code: 'unreadable' }]
     const result = await dialog.showOpenDialog(senderWindow, {
-      title: t('document.batch.chooseFiles'),
+      title: t('document.upload.chooseFiles'),
       properties: ['openFile', 'multiSelections'],
       filters: [{
         name: t('document.upload.formats'),
@@ -6017,7 +6006,7 @@ function registerIpc(): void {
     return selections
   })
   /**
-   * 重新校验拖放得到的本地路径，并在当前文档窗口登记为唯一可运行文件。
+   * 重新校验拖放得到的本地路径，并在当前文档窗口登记为可运行文件。
    * @param event IPC 事件对象。
    * @param path Renderer 从受信任拖放 File 对象取得的绝对路径。
    * @returns 选择、取消或拒绝结果。
@@ -6030,7 +6019,6 @@ function registerIpc(): void {
     if (typeof path !== 'string') return { status: 'rejected', code: 'unreadable' }
     const selected = await validateApprovedDocumentPath(path)
     if (selected.status === 'selected') {
-      approvedDocumentPaths.clear()
       approvedDocumentPaths.add(selected.path)
     }
     return selected
@@ -6074,21 +6062,41 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { accepted: false, code: 'unreadable' }
     }
-    documentWorkspaceTaskService ??= createDocumentWorkspaceTaskService()
-    return documentWorkspaceTaskService.run(request as DocumentRunRequest)
+    const service = createDocumentWorkspaceTaskService()
+    let acceptedJobId: string | null = null
+    try {
+      // 首条进度会携带图片资源声明；必须先登记服务，Renderer 才能按 jobId 读取资源。
+      const result = await service.run(request as DocumentRunRequest, (jobId) => {
+        acceptedJobId = jobId
+        documentWorkspaceTaskServices.set(jobId, service)
+      })
+      if (!result.accepted || !result.jobId) {
+        service.dispose()
+      }
+      return result
+    } catch (error) {
+      // 接受回调可能已经登记服务；异常返回前必须同时移除映射，避免残留不可达任务。
+      if (acceptedJobId && documentWorkspaceTaskServices.get(acceptedJobId) === service) {
+        documentWorkspaceTaskServices.delete(acceptedJobId)
+      }
+      service.dispose()
+      throw error
+    }
   })
   /**
    * 使用新代际重新翻译当前文档中失败的目标。
    * @param event IPC 事件对象。
+   * @param jobId 任务标识。
    * @param generation Renderer 生成的新任务代际。
    * @returns 主进程是否接受重试。
    * @author zhenghq
    */
-  ipcMain.handle('document:retry-failed', (event, generation: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || !Number.isInteger(generation)) {
+  ipcMain.handle('document:retry-failed', (event, jobId: unknown, generation: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
+      !Number.isInteger(generation)) {
       return { accepted: false, code: 'invalid-request' }
     }
-    return documentWorkspaceTaskService?.retryFailed(generation as number) ??
+    return documentWorkspaceTaskServices.get(jobId)?.retryFailed(generation as number) ??
       { accepted: false, code: 'not-ready' }
   })
   /**
@@ -6102,7 +6110,18 @@ function registerIpc(): void {
   ipcMain.handle('document:cancel', (event, jobId: unknown, generation: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
       !Number.isInteger(generation)) return false
-    return documentWorkspaceTaskService?.cancel(jobId, generation as number) ?? false
+    return documentWorkspaceTaskServices.get(jobId)?.cancel(jobId, generation as number) ?? false
+  })
+  /**
+   * 释放已关闭文档标签对应的任务和内存资源。
+   * @param event IPC 事件对象。
+   * @param jobId 任务标识。
+   * @returns 是否找到并释放了任务服务。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:release', (event, jobId: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string') return false
+    return releaseDocumentWorkspaceTask(jobId)
   })
   /**
    * 将当前译文导出为 PDF。
@@ -6115,34 +6134,39 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { status: 'rejected', code: 'unreadable' }
     }
-    return documentWorkspaceTaskService?.exportPdf(request as DocumentExportRequest) ??
+    const jobId = (request as Partial<DocumentExportRequest> | null)?.jobId
+    return (typeof jobId === 'string' ? documentWorkspaceTaskServices.get(jobId) : undefined)
+      ?.exportPdf(request as DocumentExportRequest) ??
       { status: 'rejected', code: 'not-ready' }
   })
   /**
    * 读取当前任务中的受控图片资源。
    * @param event IPC 事件对象。
+   * @param jobId 任务标识。
    * @param assetId 解析阶段生成的资源标识。
    * @returns 资源字节或稳定错误分类。
    * @author zhenghq
    */
-  ipcMain.handle('document:get-asset', async (event, assetId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof assetId !== 'string') {
+  ipcMain.handle('document:get-asset', async (event, jobId: unknown, assetId: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
+      typeof assetId !== 'string') {
       return { ok: false, code: 'asset-not-found' }
     }
-    return documentWorkspaceTaskService?.getAsset(assetId) ??
+    return documentWorkspaceTaskServices.get(jobId)?.getAsset(assetId) ??
       { ok: false, code: 'asset-not-found' }
   })
   /**
    * 读取当前活动 PDF 任务的原始字节，供文档窗口使用 PDF.js 原生渲染。
    * @param event IPC 事件对象。
+   * @param jobId 任务标识。
    * @returns 受控源文件字节或稳定错误分类。
    * @author zhenghq
    */
-  ipcMain.handle('document:get-source', (event) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
+  ipcMain.handle('document:get-source', (event, jobId: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string') {
       return { ok: false, code: 'source-not-found' }
     }
-    return documentWorkspaceTaskService?.getSource() ??
+    return documentWorkspaceTaskServices.get(jobId)?.getSource() ??
       { ok: false, code: 'source-not-found' }
   })
   ipcMain.on('webview:open', (_event, url: unknown) => {

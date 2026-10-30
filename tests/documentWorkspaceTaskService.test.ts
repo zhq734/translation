@@ -146,6 +146,101 @@ test('任务服务必须重新校验已批准路径并推送完成快照', async
   }
 })
 
+test('任务服务必须在首条进度发出前通知 jobId 已可登记', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const acceptedJobIds: string[] = []
+  let progressBeforeAccepted = false
+  deps.sendProgress = (snapshot) => {
+    progressBeforeAccepted ||= !acceptedJobIds.includes(snapshot.jobId)
+    events.push(snapshot)
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    const accepted = await service.run(
+      { path, generation: 1 },
+      (jobId) => acceptedJobIds.push(jobId)
+    )
+    assert.equal(accepted.accepted, true)
+    assert.equal(acceptedJobIds.length, 1)
+    assert.equal(acceptedJobIds[0], accepted.jobId)
+    assert.equal(progressBeforeAccepted, false)
+    await waitForTerminal(events)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('图片资源进度到达时任务必须已完成登记并可立即读取图片', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'clear.png')
+  const imageBytes = new Uint8Array(await readFile('tests/fixtures/ocr-scaling/clear.png'))
+  await writeFile(path, imageBytes)
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let acceptedJobId: string | null = null
+  let progressBeforeAccepted = false
+  let assetResult: Awaited<ReturnType<DocumentWorkspaceTaskService['getAsset']>> | null = null
+  let service: DocumentWorkspaceTaskService
+  deps.parse = async (_input, registerAssetBytes) => {
+    registerAssetBytes?.('asset-1', imageBytes)
+    const source = model(path)
+    source.source = {
+      ...source.source,
+      fileName: 'clear.png',
+      format: 'image',
+      size: imageBytes.byteLength
+    }
+    source.pages[0]!.blocks = [{
+      kind: 'image',
+      blockId: 'image-1',
+      readingOrder: 0,
+      translatable: false,
+      assetId: 'asset-1',
+      bbox: { x: 0, y: 0, width: 600, height: 800 }
+    }]
+    source.assets = [{
+      assetId: 'asset-1',
+      kind: 'image',
+      mimeType: 'image/png',
+      sha256: 'fixture',
+      byteLength: imageBytes.byteLength
+    }]
+    return source
+  }
+  deps.loadAssetBytes = async () => imageBytes
+  deps.sendProgress = (snapshot) => {
+    events.push(snapshot)
+    if (!snapshot.source?.assets.some((asset) => asset.assetId === 'asset-1') || assetResult) return
+    progressBeforeAccepted ||= acceptedJobId !== snapshot.jobId
+    // 模拟 Renderer 收到带图片声明的首条快照后立即按 jobId 请求资源。
+    assetResult = service.getAsset('asset-1')
+  }
+  service = new DocumentWorkspaceTaskService(deps)
+  try {
+    const accepted = await service.run(
+      { path, generation: 1 },
+      (jobId) => { acceptedJobId = jobId }
+    )
+    assert.equal(accepted.accepted, true)
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.task.status, 'completed')
+    assert.equal(progressBeforeAccepted, false)
+    assert.ok(assetResult)
+    const asset = await assetResult
+    assert.equal(asset.ok, true)
+    assert.equal(asset.mimeType, 'image/png')
+    assert.deepEqual(asset.bytes, imageBytes)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('任务服务重新翻译失败项时不得重新解析或重跑已成功内容', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'sample.txt')
@@ -508,6 +603,32 @@ test('任务服务仅允许 completed 任务执行完整导出', async () => {
     assert.equal(saveDialogCalls, 1)
     assert.equal(exportCalls, 1)
     assert.equal(writeCalls, 1)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('普通译文导出不得被识别为 OCR 原文专用导出', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let exportedSourceOnly: boolean | undefined
+  const deps = dependencies(path, events)
+  deps.exportPdf = async (_model, _dependencies, _partialExport, _textLayer, sourceOnly) => {
+    exportedSourceOnly = sourceOnly
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'saved' }
+    )
+    assert.equal(exportedSourceOnly, false)
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -1561,7 +1682,7 @@ test('OCR 原文任务必须跳过翻译并在快照中标记 ocr 运行模式',
   }
 })
 
-test('OCR 原文任务必须直接导出双层 PDF，不能按译文部分结果回退源文', async () => {
+test('OCR 原文任务必须显式走源模型双层 PDF 导出，不能按译文部分结果回退源文', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'scan.pdf')
   await writeFile(path, '%PDF-1.7\n%%EOF')
@@ -1570,6 +1691,8 @@ test('OCR 原文任务必须直接导出双层 PDF，不能按译文部分结果
   let suggestedName = ''
   let exportedModel: DocumentModel | undefined
   let exportedTextLayer: boolean | undefined
+  let exportedSourceOnly: boolean | undefined
+  let exportedSourcePdfBytes: Uint8Array | undefined
   deps.parse = async () => ({
     ...model(path),
     source: { ...model(path).source, format: 'pdf', fileName: 'scan.pdf' }
@@ -1578,9 +1701,11 @@ test('OCR 原文任务必须直接导出双层 PDF，不能按译文部分结果
   deps.translate = async () => {
     throw new Error('OCR 原文任务不应执行翻译')
   }
-  deps.exportPdf = async (exported, _dependencies, _partialExport, textLayer) => {
+  deps.exportPdf = async (exported, exportDependencies, _partialExport, textLayer, sourceOnly) => {
     exportedModel = exported
+    exportedSourcePdfBytes = exportDependencies.sourcePdfBytes
     exportedTextLayer = textLayer
+    exportedSourceOnly = sourceOnly
     return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
   }
   deps.showSaveDialog = async (name) => {
@@ -1597,6 +1722,8 @@ test('OCR 原文任务必须直接导出双层 PDF，不能按译文部分结果
       { status: 'saved' }
     )
     assert.equal(exportedTextLayer, true)
+    assert.equal(exportedSourceOnly, true)
+    assert.deepEqual(exportedSourcePdfBytes, new TextEncoder().encode('%PDF-1.7\n%%EOF'))
     assert.deepEqual(exportedModel, completed.source)
     assert.notStrictEqual(exportedModel, translatedModel)
     assert.match(suggestedName, /scan-ocr\.pdf$/u)

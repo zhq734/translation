@@ -19,6 +19,12 @@ import {
 import { parseHtmlDocument, parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
 import type { DocumentLanguagePair } from '../src/shared/documentLanguageDirection.ts'
+import {
+  buildDocumentTranslationCacheKey,
+  DOCUMENT_PROTECTION_RULES_VERSION,
+  type DocumentGlossary,
+  type DocumentTranslationCacheEntry
+} from '../src/shared/documentTranslation.ts'
 
 /**
  * 构造测试用文本区块。
@@ -1847,6 +1853,92 @@ test('OCR 结果缺少文本行边界时必须回退为整图区域', async () =
   assert.equal(image.ocrRegions?.[0]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
 })
 
+test('OCR 自适应放大结果必须回映射到原图坐标', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-scaled',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-scaled'
+  }])
+  source.assets.push({
+    assetId: 'asset-scaled',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'a',
+    byteLength: 3,
+    width: 1000,
+    height: 1000
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => ({
+      text: 'scaled text',
+      lines: [{
+        text: 'scaled text',
+        confidence: 0.95,
+        box: { x: 500, y: 200, width: 200, height: 100 }
+      }],
+      engine: 'system',
+      coordinateScale: 2
+    }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-scaled', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(result.translation.pages[0]!.blocks[0]!.ocrRegions?.[0]?.bbox, {
+    x: 0.25,
+    y: 0.1,
+    width: 0.1,
+    height: 0.05
+  })
+})
+
+test('多个无框 OCR 行只能合并为一个整图兜底区域', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-no-box',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-no-box'
+  }])
+  source.assets.push({ assetId: 'asset-no-box', kind: 'image', mimeType: 'image/png', sha256: 'a', byteLength: 3 })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => ({
+      text: 'first\nsecond',
+      lines: [
+        { text: 'first', confidence: 0.95 },
+        { text: 'second', confidence: 0.9 }
+      ],
+      engine: 'system'
+    }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-no-box', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const regions = result.translation.pages[0]!.blocks[0]!.ocrRegions ?? []
+  assert.equal(regions.length, 1)
+  assert.deepEqual(regions[0]!.bbox, { x: 0, y: 0, width: 1, height: 1 })
+  assert.equal(regions[0]!.text, 'first\nsecond')
+})
+
 test('单块翻译失败时保留原文、继续后续块并标记部分完成', async () => {
   const source = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
     textBlock('block-2', [{ runId: 'r2', text: 'second' }])])
@@ -2404,4 +2496,440 @@ test('OCR 原文模式必须完成解析与识别但绝不调用翻译', async (
   assert.equal(result.runMode, 'ocr')
   assert.deepEqual(result.translation, result.source)
   assert.equal(progress.states.some((state) => state.phase === 'translate'), false)
+})
+
+test('OCR 原文模式识别失败时必须进入失败态并保留可诊断告警', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-ocr-failed',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-ocr-failed'
+  }])
+  source.assets.push({
+    assetId: 'asset-ocr-failed',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'ocr-failed',
+    byteLength: 3
+  })
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'image', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-failed', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+      recognizeImage: async () => {
+        throw new Error('ocr unavailable')
+      },
+      translate: async () => '不应调用',
+      onProgress: () => undefined
+    },
+    { sourcePreference: 'auto', targetPreference: 'ZH' },
+    'ocr'
+  )
+
+  assert.equal(result.runMode, 'ocr')
+  assert.equal(result.task.status, 'failed')
+  assert.equal(result.task.errorCode, 'ocr-failed')
+  assert.equal(result.completionReport?.status, 'failed')
+  assert.equal(result.source.warnings.some((warning) => warning.code === 'ocr-failed'), true)
+})
+
+test('术语表命中后必须把受控术语上下文传给每个实际翻译请求', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'workspace cache' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'workspace settings' }])
+  ])
+  const contexts: Array<{ glossaryVersion: string; glossaryContext: string }> = []
+  const glossary: DocumentGlossary = {
+    version: 'glossary-v7',
+    entries: [
+      { source: 'workspace', target: '工作区', sourceLang: 'EN', targetLang: 'ZH' },
+      { source: 'cache', target: '缓存', sourceLang: 'EN', targetLang: 'ZH' },
+      { source: 'unused', target: '未命中', sourceLang: 'EN', targetLang: 'ZH' }
+    ]
+  }
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-glossary', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async (text, _signal, _languagePair, _onDelta, context) => {
+        contexts.push({
+          glossaryVersion: context?.glossaryVersion ?? '',
+          glossaryContext: context?.glossaryContext ?? ''
+        })
+        return translateMergedText(text, (part) => `T(${part})`)
+      },
+      onProgress: () => undefined,
+      concurrency: 1,
+      glossary
+    },
+    { sourcePreference: 'EN', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.ok(contexts.length >= 1)
+  assert.equal(contexts.every((context) => context.glossaryVersion === 'glossary-v7'), true)
+  assert.equal(contexts.every((context) => context.glossaryContext.includes('workspace => 工作区')), true)
+  assert.equal(contexts.some((context) => context.glossaryContext.includes('unused')), false)
+})
+
+test('完整目标缓存命中必须跳过提供方请求、写回译文并推进目标进度', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'Cached sentence.' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'Fresh sentence.' }])
+  ])
+  let translateCalls = 0
+  const writes: Array<{ key: string; value: unknown }> = []
+  const progress = progressCollector()
+  const cachedKey = buildDocumentTranslationCacheKey({
+    fileSha256: source.source.sha256,
+    parserVersion: 'parser-v9',
+    languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
+    modelFingerprint: 'provider:model',
+    glossaryVersion: 'none',
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      translateCalls += 1
+      return text.includes('Cached') ? '不应请求' : '新鲜译文'
+    },
+    onProgress: progress.onProgress,
+    concurrency: 1,
+    getParserVersion: () => 'parser-v9',
+    getModelFingerprint: () => 'provider:model',
+    readTranslationCache: async (key) => key.startsWith(`${cachedKey}|target:`) && key.endsWith(':text:r1')
+      ? {
+          sourceSha256: source.source.sha256,
+          languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
+          glossaryVersion: 'none',
+          protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+          status: 'completed',
+          translation: '缓存译文'
+        }
+      : null,
+    writeTranslationCache: async (key, value) => {
+      writes.push({ key, value })
+    }
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-cache-hit', 1),
+    new AbortController().signal,
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.equal(translateCalls, 1)
+  assert.equal((result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '缓存译文')
+  assert.equal((result.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text, '新鲜译文')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0]!.key.startsWith(`${cachedKey}|target:`), true)
+  assert.notEqual(writes[0]!.key, `${cachedKey}|target:page-1.block-1`)
+  assert.equal((writes[0]!.value as DocumentTranslationCacheEntry).translation, '新鲜译文')
+  const finalProgress = progress.states.filter((state) => state.phase === 'translate').at(-1)
+  assert.equal(finalProgress?.progress.completed, 2)
+})
+
+test('缓存读写异常不得影响翻译主任务', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'r1', text: 'Cache failure.' }])])
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-cache-error', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async () => '缓存异常仍应成功',
+      onProgress: () => undefined,
+      readTranslationCache: async () => {
+        throw new Error('cache read unavailable')
+      },
+      writeTranslationCache: async () => {
+        throw new Error('cache write unavailable')
+      }
+    }
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.equal((result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '缓存异常仍应成功')
+})
+
+test('失败、取消、空译文和疑似未翻译目标不得写入成功缓存', async () => {
+  const source = model([
+    textBlock('block-failed', [{ runId: 'rf', text: 'Failure source text.' }]),
+    textBlock('block-empty', [{ runId: 're', text: 'Empty source text.' }]),
+    textBlock('block-suspect', [
+      { runId: 'rs', text: 'This is a complete sentence that should be translated.' }
+    ])
+  ])
+  const writes: unknown[] = []
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-cache-negative', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async (text) => {
+        if (text.includes('Failure')) throw new Error('provider failure')
+        if (text.includes('Empty')) return '   '
+        return text
+      },
+      onProgress: () => undefined,
+      concurrency: 1,
+      writeTranslationCache: async (_key, value) => {
+        writes.push(value)
+      }
+    },
+    { sourcePreference: 'EN', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'failed')
+  assert.deepEqual(writes, [])
+})
+
+test('重试必须使用完整源文档相邻上下文并透传命中的术语', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'workspace first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'workspace failed' }]),
+    textBlock('block-3', [{ runId: 'r3', text: 'workspace last' }])
+  ])
+  const contexts: Array<{
+    text: string
+    glossaryVersion: string
+    glossaryContext: string
+    contextSummary: string
+  }> = []
+  let retrying = false
+  const glossary: DocumentGlossary = {
+    version: 'glossary-retry-v1',
+    entries: [
+      { source: 'workspace', target: '工作区', sourceLang: 'EN', targetLang: 'ZH' },
+      { source: 'failed', target: '失败', sourceLang: 'EN', targetLang: 'ZH' }
+    ]
+  }
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text, _signal, _languagePair, _onDelta, context) => {
+      contexts.push({
+        text,
+        glossaryVersion: context?.glossaryVersion ?? '',
+        glossaryContext: context?.glossaryContext ?? '',
+        contextSummary: context?.contextSummary ?? ''
+      })
+      if (!retrying && text.includes('failed')) throw new Error('provider failed')
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1,
+    glossary
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-retry-context', 1),
+    new AbortController().signal,
+    deps,
+    { sourcePreference: 'EN', targetPreference: 'ZH' }
+  )
+
+  retrying = true
+  contexts.length = 0
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    initial.failedTargetIds!,
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  assert.equal(contexts.length, 1)
+  assert.equal(contexts[0]!.text, 'workspace failed')
+  assert.equal(contexts[0]!.glossaryVersion, 'glossary-retry-v1')
+  assert.match(contexts[0]!.glossaryContext, /workspace => 工作区/u)
+  assert.match(contexts[0]!.glossaryContext, /failed => 失败/u)
+  assert.match(contexts[0]!.contextSummary, /workspace first/u)
+  assert.match(contexts[0]!.contextSummary, /workspace last/u)
+})
+
+test('重试缓存命中必须跳过提供方请求并写回已缓存译文', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  let retrying = false
+  let translateCalls = 0
+  const cachedKey = buildDocumentTranslationCacheKey({
+    fileSha256: source.source.sha256,
+    parserVersion: 'parser-retry-v1',
+    languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
+    modelFingerprint: 'provider:retry-model',
+    glossaryVersion: 'none',
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      translateCalls += 1
+      if (!retrying && text.includes('first')) throw new Error('provider failed')
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1,
+    getParserVersion: () => 'parser-retry-v1',
+    getModelFingerprint: () => 'provider:retry-model',
+    readTranslationCache: async (key) => retrying && key === `${cachedKey}|target:0:0:text:r1`
+      ? {
+          sourceSha256: source.source.sha256,
+          languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
+          glossaryVersion: 'none',
+          protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+          status: 'completed',
+          translation: '重试缓存译文'
+        }
+      : null
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-retry-cache-hit', 1),
+    new AbortController().signal,
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+
+  retrying = true
+  translateCalls = 0
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    initial.failedTargetIds!,
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  assert.equal(translateCalls, 0)
+  assert.equal((retried.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '重试缓存译文')
+})
+
+test('重试成功必须写入成功缓存，缓存异常不得影响重试结果', async () => {
+  const source = model([
+    textBlock('block-1', [{ runId: 'r1', text: 'first' }]),
+    textBlock('block-2', [{ runId: 'r2', text: 'second' }])
+  ])
+  let retrying = false
+  let writeMode: 'throw' | 'record' = 'record'
+  const writes: Array<{ key: string; value: DocumentTranslationCacheEntry }> = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      if (!retrying && text.includes('first')) throw new Error('provider failed')
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1,
+    readTranslationCache: async () => {
+      throw new Error('cache read unavailable')
+    },
+    writeTranslationCache: async (key, value) => {
+      if (writeMode === 'throw') throw new Error('cache write unavailable')
+      writes.push({ key, value })
+    }
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-retry-cache-write', 1),
+    new AbortController().signal,
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+  const failedTargetIds = initial.failedTargetIds!
+
+  retrying = true
+  writeMode = 'throw'
+  writes.length = 0
+  const failedCache = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    failedTargetIds,
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!
+  )
+  assert.equal(failedCache.task.status, 'completed')
+  assert.equal((failedCache.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, 'T(first)')
+
+  writeMode = 'record'
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    failedTargetIds,
+    { ...initial.task, generation: 3 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!
+  )
+  assert.equal(retried.task.status, 'completed')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0]!.value.translation, 'T(first)')
+  assert.match(writes[0]!.key, /target:0:0:text:r1$/u)
+})
+
+test('重试取消后不得写入成功缓存', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const initial = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const controller = new AbortController()
+  const writes: unknown[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async () => {
+      controller.abort()
+      return 'T(first)'
+    },
+    onProgress: () => undefined,
+    writeTranslationCache: async (_key, value) => {
+      writes.push(value)
+    }
+  }
+
+  const retried = await retryFailedDocumentTranslationPipeline(
+    source,
+    initial,
+    ['0:0:text:r1'],
+    createDocumentTaskState('job-retry-cancel-cache', 2),
+    controller.signal,
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH', languagePair: fixedLanguagePair() }
+  )
+
+  assert.equal(retried.task.status, 'cancelled')
+  assert.deepEqual(writes, [])
 })

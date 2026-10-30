@@ -74,6 +74,47 @@ function buildWaitForPrintReadyScript(watermarkOffset: number, waitForPdfCanvas 
     tile.setAttribute('x', String(offset === 0 ? 0 : offset));
   }
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  ${waitForPdfCanvas ? `// OCR 译文可能增高图片容器，PDF 页还可能受内容可见性影响；透明文字层必须按底图真实矩形重新定位。
+  const alignOcrTextLayers = () => {
+    // 每次都在打印样式和异步布局稳定后重新查询，避免 OCR 更新替换节点后仍校正旧引用。
+    const layers = Array.from(document.querySelectorAll(
+      '#document-translation-content .document-ocr-print-text-layer'
+    ));
+    const round = (value) => Math.round(value * 1000) / 1000;
+    for (const layer of layers) {
+      const imageBlock = layer.closest('.document-image-block');
+      const pdfPage = layer.closest('.document-pdf-page');
+      const base = imageBlock
+        ? imageBlock.querySelector(':scope > img.document-page-image')
+        : pdfPage ? pdfPage.querySelector('.document-pdf-canvas') : null;
+      const offsetParent = layer.offsetParent;
+      if (!base || !(offsetParent instanceof HTMLElement)) {
+        for (const property of [
+          '--document-ocr-print-left',
+          '--document-ocr-print-top',
+          '--document-ocr-print-width',
+          '--document-ocr-print-height'
+        ]) layer.style.removeProperty(property);
+        continue;
+      }
+      const baseRect = base.getBoundingClientRect();
+      const parentRect = offsetParent.getBoundingClientRect();
+      layer.style.setProperty(
+        '--document-ocr-print-left',
+        String(round(baseRect.left - parentRect.left - offsetParent.clientLeft)) + 'px'
+      );
+      layer.style.setProperty(
+        '--document-ocr-print-top',
+        String(round(baseRect.top - parentRect.top - offsetParent.clientTop)) + 'px'
+      );
+      layer.style.setProperty('--document-ocr-print-width', String(round(baseRect.width)) + 'px');
+      layer.style.setProperty('--document-ocr-print-height', String(round(baseRect.height)) + 'px');
+    }
+  };
+  alignOcrTextLayers();
+  // 写入定位变量后再等待一帧，确保打印引擎读取到已经稳定的最终矩形。
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  alignOcrTextLayers();` : ''}
   return true;
 })()`
 }
@@ -395,6 +436,9 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     background: var(--document-paper-bg) !important;
     color: var(--document-paper-text) !important;
     box-shadow: none !important;
+    /* 打印前必须让所有 PDF 页参与布局，避免 content-visibility 改变 Canvas 与文字层的实际矩形。 */
+    content-visibility: visible !important;
+    contain-intrinsic-size: none !important;
     break-after: page;
     page-break-after: always;
   }
@@ -453,12 +497,27 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
     overflow: visible !important;
   }
 
+  #document-translation-content .document-image-block {
+    /* OCR 文字层按图片块定位；表格图片和流式图片都必须保持同一包含块。 */
+    position: relative !important;
+    /* 建立独立层叠上下文，避免透明文字层被后续绘制内容遮住。 */
+    isolation: isolate !important;
+  }
+
   #document-translation-content .document-ocr-print-text-layer {
     display: block !important;
     position: absolute !important;
-    inset: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
+    left: var(--document-ocr-print-left, 0) !important;
+    top: var(--document-ocr-print-top, 0) !important;
+    right: auto !important;
+    bottom: auto !important;
+    width: var(--document-ocr-print-width, 100%) !important;
+    height: var(--document-ocr-print-height, 100%) !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
     z-index: 0 !important;
     overflow: hidden !important;
     pointer-events: none !important;
@@ -466,6 +525,9 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   }
 
   #document-translation-content .document-ocr-print-text-layer .document-ocr-text-region {
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
     color: transparent !important;
     opacity: 1 !important;
     background: transparent !important;

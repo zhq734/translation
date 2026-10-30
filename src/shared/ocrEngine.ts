@@ -29,6 +29,11 @@ export interface OcrRecognizeResult {
   text: string
   /** 实际产出结果的引擎。 */
   engine: OcrEngineId
+  /**
+   * 识别图片相对原图的坐标倍率；缺省或 1 表示行框已是原图像素坐标。
+   * 自适应放大图片胜出时必须携带实际倍率，供文档流水线回映射。
+   */
+  coordinateScale?: number
 }
 
 /**

@@ -47,6 +47,16 @@ import {
 } from '../shared/documentCompletion.ts'
 import { evaluateOcrQuality } from '../shared/ocrQuality.ts'
 import type { DocumentRunMode } from '../shared/documentWorkspace.ts'
+import {
+  DOCUMENT_PROTECTION_RULES_VERSION,
+  applyDocumentGlossary,
+  buildDocumentTranslationCacheKey,
+  parseDocumentTranslationCacheEntry,
+  type DocumentGlossary,
+  type DocumentTranslationCacheEntry,
+  type DocumentTranslationRequestContext,
+  type TranslationUnit
+} from '../shared/documentTranslation.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -84,6 +94,12 @@ const DOCUMENT_DECORATIVE_IMAGE_MIN_REPEAT_PAGES = 3
 
 /** 未注入模型指纹依赖时使用的稳定默认值，便于测试与离线运行生成可复验报告。 */
 const DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT = 'document-translation-model'
+
+/** 单个翻译请求允许携带的相邻上下文最大字符数。 */
+const DOCUMENT_TRANSLATION_REQUEST_CONTEXT_MAX_CHARS = 240
+
+/** 未注入解析器版本依赖时使用的稳定默认值，保证缓存键可复验。 */
+const DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION = 'document-parser-v1'
 
 /** 文档流水线结果。 */
 export interface DocumentPipelineResult {
@@ -124,7 +140,8 @@ export interface DocumentPipelineDeps {
     text: string,
     signal: AbortSignal,
     languagePair: DocumentLanguagePair,
-    onDelta?: (delta: string) => void
+    onDelta?: (delta: string) => void,
+    context?: DocumentTranslationRequestContext
   ): Promise<string>
   /** 任务状态变化回调。 */
   onProgress(state: DocumentTaskState): void
@@ -151,6 +168,14 @@ export interface DocumentPipelineDeps {
    * @author zhenghq
    */
   getModelFingerprint?(): string
+  /** 可选文档术语表；仅将当前目标命中的条目发送给提供方。 */
+  glossary?: DocumentGlossary
+  /** 读取文档翻译缓存；实现可来自持久化层或测试内存。 */
+  readTranslationCache?(key: string): Promise<unknown | null>
+  /** 写入完整成功目标的翻译缓存；失败和部分结果不得调用。 */
+  writeTranslationCache?(key: string, value: DocumentTranslationCacheEntry): Promise<void>
+  /** 读取解析器版本，用于文档缓存隔离。 */
+  getParserVersion?(): string
 }
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
@@ -872,7 +897,8 @@ async function translateTableRowCells(
   target: TranslationTarget,
   signal: AbortSignal,
   deps: DocumentPipelineDeps,
-  languagePair: DocumentLanguagePair
+  languagePair: DocumentLanguagePair,
+  contextFactory?: (text: string) => DocumentTranslationRequestContext
 ): Promise<string | null> {
   const cells = target.cells ?? []
   if (cells.length === 0) return null
@@ -882,7 +908,13 @@ async function translateTableRowCells(
     const parts = splitText(cell.text.trim(), DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS)
     const translatedParts: string[] = []
     for (const part of parts) {
-      const translated = await deps.translate(part, signal, languagePair)
+      const translated = await deps.translate(
+        part,
+        signal,
+        languagePair,
+        undefined,
+        contextFactory?.(part)
+      )
       throwIfAborted(signal)
       if (!translated.trim()) return null
       translatedParts.push(translated.trim())
@@ -1016,6 +1048,118 @@ function collectTranslationTargets(model: DocumentModel): TranslationTarget[] {
     collectBlockTargets(model.pages[pageIndex]!.blocks, pageIndex, [], targets)
   }
   return targets
+}
+
+/**
+ * 截取相邻目标摘要，避免上下文无限增长或把整份文档发送给提供方。
+ * @param text 相邻目标原文。
+ * @returns 最长 240 字符的单行摘要。
+ * @author zhenghq
+ */
+function summarizeDocumentRequestContext(text: string): string {
+  const normalized = text.trim().replace(/\s+/gu, ' ')
+  return normalized.length <= DOCUMENT_TRANSLATION_REQUEST_CONTEXT_MAX_CHARS
+    ? normalized
+    : `${normalized.slice(0, DOCUMENT_TRANSLATION_REQUEST_CONTEXT_MAX_CHARS - 1)}…`
+}
+
+/**
+ * 为每个目标生成受限的前后文摘要，供翻译提供方理解相邻语义。
+ * @param targets 按阅读顺序排列的翻译目标。
+ * @returns 以稳定目标标识为键的上下文摘要。
+ * @author zhenghq
+ */
+function buildTargetContextSummaries(targets: readonly TranslationTarget[]): Map<string, string> {
+  const summaries = new Map<string, string>()
+  for (let index = 0; index < targets.length; index += 1) {
+    const parts: string[] = []
+    const previous = targets[index - 1]
+    const next = targets[index + 1]
+    if (previous) parts.push(`上一段：${summarizeDocumentRequestContext(previous.text)}`)
+    if (next) parts.push(`下一段：${summarizeDocumentRequestContext(next.text)}`)
+    if (parts.length > 0) summaries.set(targets[index]!.targetId, parts.join('\n'))
+  }
+  return summaries
+}
+
+/**
+ * 构造单个翻译请求的受控上下文；术语表只发送当前请求命中的条目。
+ * @param text 当前请求文本。
+ * @param languagePair 本任务冻结的实际语言方向。
+ * @param deps 流水线依赖。
+ * @param state 当前任务状态，用于携带任务身份。
+ * @param contextSummary 可选的相邻目标摘要。
+ * @returns 可传给翻译提供方的受控上下文。
+ * @author zhenghq
+ */
+function createDocumentTranslationRequestContext(
+  text: string,
+  languagePair: DocumentLanguagePair,
+  deps: DocumentPipelineDeps,
+  state: DocumentTaskState,
+  contextSummary?: string
+): DocumentTranslationRequestContext {
+  const glossary = deps.glossary
+  const unit: TranslationUnit = {
+    unitId: 'document-request',
+    pageId: 'document-request',
+    blockId: 'document-request',
+    text,
+    protectedSpans: [],
+    context: {},
+    kind: 'paragraph'
+  }
+  const glossaryApplication = glossary
+    ? applyDocumentGlossary(unit, glossary, languagePair)
+    : undefined
+  return {
+    jobId: state.jobId,
+    generation: state.generation,
+    glossaryVersion: glossaryApplication?.glossaryVersion ?? 'none',
+    glossaryContext: glossaryApplication?.context ?? '',
+    ...(contextSummary
+      ? { contextSummary: contextSummary.slice(0, DOCUMENT_TRANSLATION_REQUEST_CONTEXT_MAX_CHARS) }
+      : {})
+  }
+}
+
+/**
+ * 判断目标译文是否达到可写入成功缓存的质量门槛。
+ * @param target 已完成目标。
+ * @param translatedText 完整目标译文。
+ * @param languagePair 本任务冻结的实际语言方向。
+ * @param state 当前任务状态。
+ * @param deps 流水线依赖。
+ * @returns 仅当目标被完成报告归类为真正翻译时返回 true。
+ * @author zhenghq
+ */
+function isCacheableDocumentTargetTranslation(
+  target: TranslationTarget,
+  translatedText: string,
+  languagePair: DocumentLanguagePair,
+  state: DocumentTaskState,
+  deps: DocumentPipelineDeps
+): boolean {
+  const tableMappingValid = target.kind !== 'table-row' ||
+    (target.cells?.length ?? 0) <= 1 ||
+    parseTableRowTranslation(target, translatedText) !== null
+  const report = evaluateDocumentCompletion({
+    jobId: state.jobId,
+    generation: state.generation,
+    documentId: 'document-translation-cache-check',
+    modelFingerprint: deps.getModelFingerprint?.() ?? DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT,
+    sourcePreference: 'auto',
+    targetPreference: 'auto',
+    languagePair,
+    targets: [{
+      targetId: target.targetId,
+      sourceText: target.text,
+      translatedText,
+      state: 'translated',
+      tableMappingValid
+    }]
+  })
+  return report.translated === 1
 }
 
 /**
@@ -1663,20 +1807,25 @@ function replaceCellBlocks(
  * @param box 引擎文本行边界。
  * @param block 图片区块；缺少像素尺寸时以其版面边界作为基准。
  * @param asset 图片资源；存在真实像素尺寸时优先使用。
+ * @param coordinateScale OCR 识别图相对原图的坐标倍率，默认 1。
  * @returns 相对图片左上角且取值在 0 到 1 之间的边界。
  * @author zhenghq
  */
 function normalizeOcrBoundingBox(
   box: DocumentBoundingBox | undefined,
   block: DocumentImageBlock,
-  asset?: DocumentModel['assets'][number]
+  asset?: DocumentModel['assets'][number],
+  coordinateScale = 1
 ): DocumentBoundingBox {
   if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.y) ||
     !Number.isFinite(box.width) || !Number.isFinite(box.height) || box.width <= 0 || box.height <= 0) {
     return { x: 0, y: 0, width: 1, height: 1 }
   }
-  const sourceWidth = asset?.width && asset.width > 0 ? asset.width : block.bbox?.width
-  const sourceHeight = asset?.height && asset.height > 0 ? asset.height : block.bbox?.height
+  const safeScale = Number.isFinite(coordinateScale) && coordinateScale > 0 ? coordinateScale : 1
+  const sourceWidthValue = asset?.width && asset.width > 0 ? asset.width : block.bbox?.width
+  const sourceHeightValue = asset?.height && asset.height > 0 ? asset.height : block.bbox?.height
+  const sourceWidth = sourceWidthValue ? sourceWidthValue * safeScale : undefined
+  const sourceHeight = sourceHeightValue ? sourceHeightValue * safeScale : undefined
   if (!sourceWidth || !sourceHeight || sourceWidth <= 0 || sourceHeight <= 0) {
     return { x: 0, y: 0, width: 1, height: 1 }
   }
@@ -1686,7 +1835,13 @@ function normalizeOcrBoundingBox(
   const right = normalize(Math.max(left, Math.min(1, (box.x + box.width) / sourceWidth)))
   const bottom = normalize(Math.max(top, Math.min(1, (box.y + box.height) / sourceHeight)))
   if (right <= left || bottom <= top) return { x: 0, y: 0, width: 1, height: 1 }
-  return { x: left, y: top, width: right - left, height: bottom - top }
+  // 宽高也要按同一精度量化，避免两个量化边界相减后再次出现浮点尾差。
+  return {
+    x: left,
+    y: top,
+    width: normalize(right - left),
+    height: normalize(bottom - top)
+  }
 }
 
 /**
@@ -1715,6 +1870,8 @@ function inferOcrTextAlignment(bbox: DocumentBoundingBox): DocumentTextAlign | u
  * @param confidence 可选置信度。
  * @param bbox 可选图片像素边界。
  * @param asset 可选图片资源，用于读取真实像素尺寸。
+ * @param pageId 图片所属页面标识。
+ * @param coordinateScale OCR 识别图相对原图的坐标倍率，默认 1。
  * @returns OCR 区域。
  * @author zhenghq
  */
@@ -1725,9 +1882,10 @@ function createOcrRegion(
   confidence?: number,
   bbox?: DocumentBoundingBox,
   asset?: DocumentModel['assets'][number],
-  pageId = ''
+  pageId = '',
+  coordinateScale = 1
 ): DocumentOcrRegion {
-  const normalizedBbox = normalizeOcrBoundingBox(bbox, block, asset)
+  const normalizedBbox = normalizeOcrBoundingBox(bbox, block, asset, coordinateScale)
   const textAlign = inferOcrTextAlignment(normalizedBbox)
   return {
     regionId: `${block.blockId}-ocr-${index}`,
@@ -1759,6 +1917,9 @@ function imageBlockWithOcrResult(
   pageId = ''
 ): DocumentImageBlock {
   const text = result.text.trim()
+  const coordinateScale = result.coordinateScale && result.coordinateScale > 0
+    ? result.coordinateScale
+    : 1
   const textLines = result.lines
     .map((line) => ({ ...line, text: line.text.trim() }))
     .filter((line) => line.text.length > 0)
@@ -1777,14 +1938,41 @@ function imageBlockWithOcrResult(
   // OCR 引擎返回文本并不代表结果可直接用于翻译。统一质量门禁会在低置信度、
   // 噪声或语言明显不匹配时保留原文和图片，阻止不可靠文本进入翻译请求。
   if (!evaluateOcrQuality(result).safeToAccept) {
+    const boundedLines = textLines.filter((line) => line.box)
+    const unboundedLines = textLines.filter((line) => !line.box)
+    const regions = boundedLines.map((line, index) => ({
+      ...createOcrRegion(
+        block,
+        index,
+        line.text,
+        line.confidence,
+        line.box,
+        asset,
+        pageId,
+        coordinateScale
+      ),
+      status: 'skipped' as const,
+      reason: 'low-confidence' as const
+    }))
+    if (unboundedLines.length > 0) {
+      regions.push({
+        ...createOcrRegion(
+          block,
+          regions.length,
+          unboundedLines.map((line) => line.text).join('\n'),
+          unboundedLines[0]?.confidence,
+          undefined,
+          asset,
+          pageId
+        ),
+        status: 'skipped' as const,
+        reason: 'low-confidence' as const
+      })
+    }
     return {
       ...block,
-      ocrRegions: textLines.length > 0
-        ? textLines.map((line, index) => ({
-            ...createOcrRegion(block, index, line.text, line.confidence, line.box, asset, pageId),
-            status: 'skipped' as const,
-            reason: 'low-confidence'
-          }))
+      ocrRegions: regions.length > 0
+        ? regions
         : [{
             ...createOcrRegion(block, 0, text, result.lines[0]?.confidence, undefined, asset, pageId),
             status: 'skipped' as const,
@@ -1793,10 +1981,33 @@ function imageBlockWithOcrResult(
     }
   }
   if (textLines.length > 0) {
+    const boundedLines = textLines.filter((line) => line.box)
+    const unboundedLines = textLines.filter((line) => !line.box)
+    const regions = boundedLines.map((line, index) =>
+      createOcrRegion(
+        block,
+        index,
+        line.text,
+        line.confidence,
+        line.box,
+        asset,
+        pageId,
+        coordinateScale
+      ))
+    if (unboundedLines.length > 0) {
+      regions.push(createOcrRegion(
+        block,
+        regions.length,
+        unboundedLines.map((line) => line.text).join('\n'),
+        unboundedLines[0]?.confidence,
+        undefined,
+        asset,
+        pageId
+      ))
+    }
     return {
       ...block,
-      ocrRegions: textLines.map((line, index) =>
-        createOcrRegion(block, index, line.text, line.confidence, line.box, asset, pageId))
+      ocrRegions: regions
     }
   }
   const confidence = result.lines[0]?.confidence
@@ -2271,11 +2482,11 @@ export async function runDocumentTranslationPipeline(
       generation: exportState.generation,
       documentId: ocrSource.documentId,
       modelFingerprint: deps.getModelFingerprint?.() ?? DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT,
-      status: 'completed',
+      status: ocrFailedCount > 0 ? 'failed' : 'completed',
       total: 0,
       translated: 0,
       unchanged: 0,
-      failed: 0,
+      failed: ocrFailedCount,
       pending: 0,
       suspectUntranslated: 0,
       failedTargetIds: [],
@@ -2286,10 +2497,20 @@ export async function runDocumentTranslationPipeline(
       targetPreference: languageResolution.targetPreference,
       languagePair
     }
+    const ocrTask = ocrFailedCount > 0
+      ? {
+          ...exportState,
+          status: 'failed' as const,
+          errorCode: 'ocr-failed',
+          failedBlocks: ocrFailedCount,
+          warningCount: ocrSource.warnings.length
+        }
+      : completeDocumentTask(exportState)
+    emitProgress(ocrTask, deps)
     return {
       source: ocrSource,
       translation: ocrSource,
-      task: completeDocumentTask(exportState),
+      task: ocrTask,
       completionReport,
       failedTargetIds: [],
       retryableTargetIds: [],
@@ -2306,6 +2527,77 @@ export async function runDocumentTranslationPipeline(
   const failedTargetIds = new Set<string>()
   let translateState = moveDocumentTaskToPhase(ocrState, 'translate')
   emitProgress(translateState, deps)
+  const targetContextSummaries = buildTargetContextSummaries(targets)
+  const glossaryVersion = deps.glossary?.version ?? 'none'
+  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION
+  const modelFingerprint = deps.getModelFingerprint?.() ??
+    DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT
+  const cacheContext = {
+    fileSha256: ocrSource.source.sha256,
+    parserVersion,
+    languagePair,
+    modelFingerprint,
+    glossaryVersion,
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+  }
+  const cacheBaseKey = buildDocumentTranslationCacheKey(cacheContext)
+  /** 读取目标级成功缓存；任何持久化异常都不得阻断翻译主任务。 */
+  const readTargetCache = async (target: TranslationTarget): Promise<string | undefined> => {
+    if (!deps.readTranslationCache) return undefined
+    try {
+      const value = await deps.readTranslationCache(`${cacheBaseKey}|target:${target.targetId}`)
+      const parsed = parseDocumentTranslationCacheEntry(cacheContext, value)
+      return parsed.ok ? parsed.translation : undefined
+    } catch {
+      return undefined
+    }
+  }
+  /** 写入目标级成功缓存；失败、取消或校验不通过时调用方不会调用。 */
+  const writeTargetCache = async (
+    target: TranslationTarget,
+    translatedText: string
+  ): Promise<void> => {
+    if (!deps.writeTranslationCache || signal.aborted) return
+    try {
+      await deps.writeTranslationCache(`${cacheBaseKey}|target:${target.targetId}`, {
+        sourceSha256: ocrSource.source.sha256,
+        languagePair: { ...languagePair },
+        glossaryVersion,
+        protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+        status: 'completed',
+        translation: translatedText
+      })
+    } catch {
+      // 缓存只是加速手段，写入失败不能改变已完成翻译的终态。
+    }
+  }
+  /** 构造目标级请求上下文，确保合并批次与逐段回退复用同一术语约束。 */
+  const requestContextForTarget = (
+    target: TranslationTarget,
+    text: string
+  ): DocumentTranslationRequestContext => createDocumentTranslationRequestContext(
+    text,
+    languagePair,
+    deps,
+    translateState,
+    targetContextSummaries.get(target.targetId)
+  )
+  /**
+   * 将成功目标写入缓存；完成报告会把空译文、疑似未翻译和表格映射失败排除在外。
+   * @param target 已完成目标。
+   * @param translatedText 已完成译文。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const persistTargetCache = async (
+    target: TranslationTarget,
+    translatedText: string
+  ): Promise<void> => {
+    if (!isCacheableDocumentTargetTranslation(target, translatedText, languagePair, translateState, deps)) {
+      return
+    }
+    await writeTargetCache(target, translatedText)
+  }
   const translatedPages: DocumentModel['pages'] = ocrSource.pages.map((page) => ({
     ...page,
     blocks: [...page.blocks]
@@ -2398,7 +2690,31 @@ export async function runDocumentTranslationPipeline(
       finished: false
     }]
   }))
-  const batches = buildDocumentTranslationBatches(createDocumentBatchSegments(targets))
+  const retryFailedIds = new Set<string>()
+  let completed = 0
+  // 在创建批次前完成完整目标缓存预扫描；命中目标不进入提供方请求队列。
+  const cachedTargetIds = new Set<string>()
+  for (const target of targets) {
+    throwIfAborted(signal)
+    const cachedTranslation = await readTargetCache(target)
+    if (cachedTranslation === undefined ||
+      !isCacheableDocumentTargetTranslation(target, cachedTranslation, languagePair, translateState, deps)) {
+      continue
+    }
+    const state = targetStates.get(target.targetId)
+    if (!state) continue
+    state.pieces = state.pieces.map((_piece, index) => index === 0 ? cachedTranslation : undefined)
+    state.completed = state.pieceTotal
+    state.finished = true
+    state.translation = cachedTranslation
+    cachedTargetIds.add(target.targetId)
+    stats.completed += 1
+    commitTarget(target, cachedTranslation)
+  }
+  if (cachedTargetIds.size > 0) publishProgress()
+  const batches = buildDocumentTranslationBatches(createDocumentBatchSegments(
+    targets.filter((target) => !cachedTargetIds.has(target.targetId))
+  ))
 
   /**
    * 应用单个分段译文；目标完成或失败时同步统计与写回。
@@ -2407,13 +2723,16 @@ export async function runDocumentTranslationPipeline(
    * @returns 无返回值。
    * @author zhenghq
    */
-  const applyTranslation = (segment: DocumentBatchSegment, translated: string): void => {
+  const applyTranslation = async (segment: DocumentBatchSegment, translated: string): Promise<void> => {
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (!applied.finished) return
     stats.completed += 1
     if (applied.failed) stats.failed += 1
     publishProgress()
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
+    if (applied.translation !== undefined) {
+      commitTarget(segment.target, applied.translation)
+      await persistTargetCache(segment.target, applied.translation)
+    }
   }
 
   /**
@@ -2430,7 +2749,13 @@ export async function runDocumentTranslationPipeline(
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (applied.needsTableRowFallback) {
       try {
-        const fallback = await translateTableRowCells(segment.target, signal, deps, languagePair)
+        const fallback = await translateTableRowCells(
+          segment.target,
+          signal,
+          deps,
+          languagePair,
+          (text) => requestContextForTarget(segment.target, text)
+        )
         if (!fallback) {
           failTarget(segment)
           return
@@ -2444,6 +2769,7 @@ export async function runDocumentTranslationPipeline(
         publishProgress()
         if (completedFallback.translation !== undefined) {
           commitTarget(segment.target, completedFallback.translation)
+          await persistTargetCache(segment.target, completedFallback.translation)
         }
       } catch (error) {
         if (isAbortError(error, signal)) throw error
@@ -2455,7 +2781,10 @@ export async function runDocumentTranslationPipeline(
     stats.completed += 1
     if (applied.failed) stats.failed += 1
     publishProgress()
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
+    if (applied.translation !== undefined) {
+      commitTarget(segment.target, applied.translation)
+      await persistTargetCache(segment.target, applied.translation)
+    }
   }
 
   /**
@@ -2488,7 +2817,13 @@ export async function runDocumentTranslationPipeline(
       throwIfAborted(signal)
       if (segment.target.kind === 'table-row' && (segment.target.cells?.length ?? 0) > 1) {
         try {
-          const translated = await translateTableRowCells(segment.target, signal, deps, languagePair)
+          const translated = await translateTableRowCells(
+            segment.target,
+            signal,
+            deps,
+            languagePair,
+            (text) => requestContextForTarget(segment.target, text)
+          )
           if (!translated) {
             failTarget(segment)
             continue
@@ -2502,6 +2837,7 @@ export async function runDocumentTranslationPipeline(
           publishProgress()
           if (completedFallback.translation !== undefined) {
             commitTarget(segment.target, completedFallback.translation)
+            await persistTargetCache(segment.target, completedFallback.translation)
           }
         } catch (error) {
           if (isAbortError(error, signal)) throw error
@@ -2510,9 +2846,15 @@ export async function runDocumentTranslationPipeline(
         continue
       }
       try {
-        const translated = await deps.translate(segment.text, signal, languagePair)
+        const translated = await deps.translate(
+          segment.text,
+          signal,
+          languagePair,
+          undefined,
+          requestContextForTarget(segment.target, segment.text)
+        )
         throwIfAborted(signal)
-        applyTranslation(segment, translated)
+        await applyTranslation(segment, translated)
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -2541,7 +2883,8 @@ export async function runDocumentTranslationPipeline(
               if (!state || state.finished || !streamed.trim()) return
               commitTarget(segment.target, restoreTargetWhitespace(state, streamed))
             }
-          : undefined)
+          : undefined,
+        requestContextForTarget(segment.target, segment.text))
         throwIfAborted(signal)
         await applyOrFallbackTranslation(segment, translated)
       } catch (error) {
@@ -2552,11 +2895,17 @@ export async function runDocumentTranslationPipeline(
     }
     try {
       let streamed = ''
-      const translated = await deps.translate(item.batch.text, signal, languagePair, (delta) => {
+      const translated = await deps.translate(
+        item.batch.text,
+        signal,
+        languagePair,
+        (delta) => {
         if (signal.aborted) return
         streamed += delta
         previewMergedTranslation(item, streamed)
-      })
+        },
+        requestContextForTarget(item.segments[0]!.target, item.batch.text)
+      )
       throwIfAborted(signal)
       const parts = parseMergedTranslation(item.batch, translated)
       if (!parts || parts.length !== item.segments.length || parts.some((part) => !part.trim())) {
@@ -2677,7 +3026,10 @@ export async function retryFailedDocumentTranslationPipeline(
 ): Promise<DocumentPipelineResult> {
   const languagePair = languageResolution.languagePair
   const requestedIds = new Set(failedTargetIds)
-  const targets = collectTranslationTargets(source).filter((target) => requestedIds.has(target.targetId))
+  // 上下文必须基于完整源文档生成；重试目标集合只用于限制实际请求范围。
+  const allTargets = collectTranslationTargets(source)
+  const targetContextSummaries = buildTargetContextSummaries(allTargets)
+  const targets = allTargets.filter((target) => requestedIds.has(target.targetId))
   const translatedPages: DocumentModel['pages'] = translation.pages.map((page) => ({
     ...page,
     blocks: [...page.blocks]
@@ -2741,9 +3093,99 @@ export async function retryFailedDocumentTranslationPipeline(
       finished: false
     }]
   }))
-  const batches = buildDocumentTranslationBatches(createDocumentBatchSegments(targets))
   const retryFailedIds = new Set<string>()
   let completed = 0
+  const glossaryVersion = deps.glossary?.version ?? 'none'
+  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION
+  const modelFingerprint = deps.getModelFingerprint?.() ??
+    DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT
+  const cacheContext = {
+    fileSha256: source.source.sha256,
+    parserVersion,
+    languagePair,
+    modelFingerprint,
+    glossaryVersion,
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+  }
+  const cacheBaseKey = buildDocumentTranslationCacheKey(cacheContext)
+
+  /**
+   * 读取重试目标的成功缓存；缓存异常仅视为未命中。
+   * @param target 待读取的目标。
+   * @returns 校验通过的缓存译文；未命中或异常时返回 undefined。
+   * @author zhenghq
+   */
+  const readTargetCache = async (target: TranslationTarget): Promise<string | undefined> => {
+    if (!deps.readTranslationCache) return undefined
+    try {
+      const value = await deps.readTranslationCache(`${cacheBaseKey}|target:${target.targetId}`)
+      const parsed = parseDocumentTranslationCacheEntry(cacheContext, value)
+      return parsed.ok ? parsed.translation : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 写入重试目标的成功缓存；失败、取消和校验不通过的目标不会调用。
+   * @param target 已完成目标。
+   * @param translatedText 已完成译文。
+   * @returns 写入完成的 Promise。
+   * @author zhenghq
+   */
+  const writeTargetCache = async (
+    target: TranslationTarget,
+    translatedText: string
+  ): Promise<void> => {
+    if (!deps.writeTranslationCache || signal.aborted) return
+    try {
+      await deps.writeTranslationCache(`${cacheBaseKey}|target:${target.targetId}`, {
+        sourceSha256: source.source.sha256,
+        languagePair: { ...languagePair },
+        glossaryVersion,
+        protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+        status: 'completed',
+        translation: translatedText
+      })
+    } catch {
+      // 缓存写入失败不能改变已经完成的翻译结果。
+    }
+  }
+
+  /**
+   * 构造重试请求的受控上下文，复用完整源文档中的相邻目标摘要。
+   * @param target 当前请求目标。
+   * @param text 当前请求文本。
+   * @returns 带术语和相邻上下文的请求上下文。
+   * @author zhenghq
+   */
+  const requestContextForTarget = (
+    target: TranslationTarget,
+    text: string
+  ): DocumentTranslationRequestContext => createDocumentTranslationRequestContext(
+    text,
+    languagePair,
+    deps,
+    translateState,
+    targetContextSummaries.get(target.targetId)
+  )
+
+  /**
+   * 校验并持久化重试成功目标，避免失败、空译文或疑似未翻译结果进入缓存。
+   * @param target 已完成目标。
+   * @param translatedText 已完成译文。
+   * @returns 写入完成的 Promise。
+   * @author zhenghq
+   */
+  const persistTargetCache = async (
+    target: TranslationTarget,
+    translatedText: string
+  ): Promise<void> => {
+    if (!isCacheableDocumentTargetTranslation(target, translatedText, languagePair, translateState, deps)) {
+      return
+    }
+    await writeTargetCache(target, translatedText)
+  }
 
   /**
    * 更新重试阶段进度。
@@ -2758,6 +3200,31 @@ export async function retryFailedDocumentTranslationPipeline(
     })
     emitProgress(translateState, deps)
   }
+
+  // 在创建批次前完成缓存预扫描；命中的目标不进入提供方请求队列。
+  const cachedTargetIds = new Set<string>()
+  for (const target of targets) {
+    throwIfAborted(signal)
+    const cachedTranslation = await readTargetCache(target)
+    if (cachedTranslation === undefined ||
+      !isCacheableDocumentTargetTranslation(target, cachedTranslation, languagePair, translateState, deps)) {
+      continue
+    }
+    const state = targetStates.get(target.targetId)
+    if (!state) continue
+    state.pieces = state.pieces.map((_piece, index) => index === 0 ? cachedTranslation : undefined)
+    state.completed = state.pieceTotal
+    state.finished = true
+    state.translation = cachedTranslation
+    cachedTargetIds.add(target.targetId)
+    completed += 1
+    commitTarget(target, cachedTranslation)
+  }
+  if (cachedTargetIds.size > 0) publishProgress()
+
+  const batches = buildDocumentTranslationBatches(createDocumentBatchSegments(
+    targets.filter((target) => !cachedTargetIds.has(target.targetId))
+  ))
 
   /**
    * 预览重试合并批次中的流式分段；最终校验完成前不推进重试统计。
@@ -2789,13 +3256,16 @@ export async function retryFailedDocumentTranslationPipeline(
    * @returns 无返回值。
    * @author zhenghq
    */
-  const applyTranslation = (segment: DocumentBatchSegment, translated: string): void => {
+  const applyTranslation = async (segment: DocumentBatchSegment, translated: string): Promise<void> => {
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (!applied.finished) return
     completed += 1
     if (applied.failed) retryFailedIds.add(segment.target.targetId)
     publishProgress()
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
+    if (applied.translation !== undefined) {
+      commitTarget(segment.target, applied.translation)
+      await persistTargetCache(segment.target, applied.translation)
+    }
   }
 
   /**
@@ -2812,7 +3282,13 @@ export async function retryFailedDocumentTranslationPipeline(
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (applied.needsTableRowFallback) {
       try {
-        const fallback = await translateTableRowCells(segment.target, signal, deps, languagePair)
+        const fallback = await translateTableRowCells(
+          segment.target,
+          signal,
+          deps,
+          languagePair,
+          (text) => requestContextForTarget(segment.target, text)
+        )
         if (!fallback) {
           failTarget(segment)
           return
@@ -2826,6 +3302,7 @@ export async function retryFailedDocumentTranslationPipeline(
         publishProgress()
         if (completedFallback.translation !== undefined) {
           commitTarget(segment.target, completedFallback.translation)
+          await persistTargetCache(segment.target, completedFallback.translation)
         }
       } catch (error) {
         if (isAbortError(error, signal)) throw error
@@ -2837,7 +3314,10 @@ export async function retryFailedDocumentTranslationPipeline(
     completed += 1
     if (applied.failed) retryFailedIds.add(segment.target.targetId)
     publishProgress()
-    if (applied.translation !== undefined) commitTarget(segment.target, applied.translation)
+    if (applied.translation !== undefined) {
+      commitTarget(segment.target, applied.translation)
+      await persistTargetCache(segment.target, applied.translation)
+    }
   }
 
   /**
@@ -2868,7 +3348,13 @@ export async function retryFailedDocumentTranslationPipeline(
       throwIfAborted(signal)
       if (segment.target.kind === 'table-row' && (segment.target.cells?.length ?? 0) > 1) {
         try {
-          const translated = await translateTableRowCells(segment.target, signal, deps, languagePair)
+          const translated = await translateTableRowCells(
+            segment.target,
+            signal,
+            deps,
+            languagePair,
+            (text) => requestContextForTarget(segment.target, text)
+          )
           if (!translated) {
             failTarget(segment)
             continue
@@ -2882,6 +3368,7 @@ export async function retryFailedDocumentTranslationPipeline(
           publishProgress()
           if (completedFallback.translation !== undefined) {
             commitTarget(segment.target, completedFallback.translation)
+            await persistTargetCache(segment.target, completedFallback.translation)
           }
         } catch (error) {
           if (isAbortError(error, signal)) throw error
@@ -2890,9 +3377,15 @@ export async function retryFailedDocumentTranslationPipeline(
         continue
       }
       try {
-        const translated = await deps.translate(segment.text, signal, languagePair)
+        const translated = await deps.translate(
+          segment.text,
+          signal,
+          languagePair,
+          undefined,
+          requestContextForTarget(segment.target, segment.text)
+        )
         throwIfAborted(signal)
-        applyTranslation(segment, translated)
+        await applyTranslation(segment, translated)
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -2921,7 +3414,8 @@ export async function retryFailedDocumentTranslationPipeline(
               if (!state || state.finished || !streamed.trim()) return
               commitTarget(segment.target, restoreTargetWhitespace(state, streamed))
             }
-          : undefined)
+          : undefined,
+        requestContextForTarget(segment.target, segment.text))
         throwIfAborted(signal)
         await applyOrFallbackTranslation(segment, translated)
       } catch (error) {
@@ -2932,11 +3426,17 @@ export async function retryFailedDocumentTranslationPipeline(
     }
     try {
       let streamed = ''
-      const translated = await deps.translate(item.batch.text, signal, languagePair, (delta) => {
-        if (signal.aborted) return
-        streamed += delta
-        previewRetriedMergedTranslation(item, streamed)
-      })
+      const translated = await deps.translate(
+        item.batch.text,
+        signal,
+        languagePair,
+        (delta) => {
+          if (signal.aborted) return
+          streamed += delta
+          previewRetriedMergedTranslation(item, streamed)
+        },
+        requestContextForTarget(item.segments[0]!.target, item.batch.text)
+      )
       throwIfAborted(signal)
       const parts = parseMergedTranslation(item.batch, translated)
       if (!parts || parts.length !== item.segments.length || parts.some((part) => !part.trim())) {

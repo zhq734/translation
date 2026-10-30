@@ -733,6 +733,62 @@ test('生产执行器应缓存资源字节并在重试与导出时复用', async
   assert.deepEqual(exportAssetBytes, [new Uint8Array([7, 8, 9])])
 })
 
+test('OCR 原文 PDF 导出必须把原始 PDF 字节传给导出器', async () => {
+  const source = workerModel('doc-ocr-source', 'hello')
+  source.source = {
+    ...source.source,
+    fileName: 'scan.pdf',
+    format: 'pdf',
+    pageCount: 1
+  }
+  const pdfBytes = new TextEncoder().encode('%PDF-1.7\n%%EOF')
+  const fixturePath = join(workerFixtureDirectory, 'ocr-source.pdf')
+  writeFileSync(fixturePath, pdfBytes)
+  let exportedSourceBytes: Uint8Array | undefined
+  let exportCalls = 0
+  const dependencies = productionDependencies(
+    source,
+    async (text) => `译:${text}`,
+    async (_model, exportDependencies) => {
+      exportCalls += 1
+      exportedSourceBytes = exportDependencies.sourcePdfBytes
+      return { bytes: new Uint8Array([1]), warnings: [] }
+    }
+  )
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const emit = (message: DocumentWorkerResponseMessage): void => responses.push(message)
+  const runMessage: DocumentWorkerRequestMessage = {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'run',
+    jobId: 'job-ocr-source',
+    generation: 1,
+    request: { path: fixturePath, generation: 1, mode: 'ocr' }
+  }
+
+  await executor.execute(runMessage, new AbortController().signal, emit)
+  const runResult = responses.find((message) => message.type === 'result')
+  assert.ok(runResult && runResult.type === 'result')
+  if (!runResult || runResult.type !== 'result') return
+
+  await executor.execute({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'export',
+    jobId: 'job-ocr-source',
+    generation: 1,
+    request: {
+      mode: 'complete',
+      textLayer: true,
+      ...(runResult.payload.completionReport
+        ? { completionReport: runResult.payload.completionReport }
+        : {})
+    }
+  }, new AbortController().signal, emit)
+
+  assert.equal(exportCalls, 1)
+  assert.deepEqual(exportedSourceBytes, pdfBytes)
+})
+
 test('生产执行器必须把 OCR 并发配置传递到文档流水线', async () => {
   const source = workerModel('doc-ocr-concurrency', 'hello')
   const images = Array.from({ length: 4 }, (_, index) => ({

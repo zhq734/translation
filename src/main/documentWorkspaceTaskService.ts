@@ -102,11 +102,22 @@ export interface DocumentWorkspaceTaskServiceDependencies {
   loadAssetBytes?(asset: DocumentAsset, input: DocumentParseInput): Promise<Uint8Array | null>
   /** 读取可嵌入 PDF 的 CJK 字体。 */
   loadFontBytes(): Promise<Uint8Array | null>
-  /** 将译文模型导出为 PDF；部分导出时携带回退摘要，双层导出时追加透明 OCR 文字层。 */
+  /**
+   * 将文档模型导出为 PDF；部分导出时携带回退摘要，双层导出时追加透明 OCR 文字层。
+   * @param model 待导出的文档模型。
+   * @param dependencies 字体与资源读取依赖。
+   * @param partialExport 部分导出的回退摘要。
+   * @param textLayer 是否追加透明 OCR 文字层。
+   * @param sourceOnly 是否为仅保留 OCR 原文的双层 PDF 导出。
+   * @returns 已生成的 PDF 字节与可降级告警。
+   * @author zhenghq
+   */
   exportPdf(model: DocumentModel, dependencies: {
     loadFontBytes(): Promise<Uint8Array | null>
     loadAssetBytes(assetId: string): Promise<Uint8Array | null>
-  }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean): Promise<DocumentPdfExportResult>
+    /** 原始 PDF 字节；仅 OCR 原文导出 PDF 时提供。 */
+    sourcePdfBytes?: Uint8Array
+  }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean, sourceOnly?: boolean): Promise<DocumentPdfExportResult>
   /** 显示 PDF 保存对话框。 */
   showSaveDialog(suggestedName: string): Promise<DocumentSaveDialogResult>
   /** 将 PDF 字节写入用户选择的位置。 */
@@ -231,10 +242,14 @@ export class DocumentWorkspaceTaskService {
   /**
    * 接受一个已批准文件的翻译任务并立即返回，后续通过事件推送进度。
    * @param request 文档运行请求。
+   * @param onAccepted 任务生成 jobId 后的同步登记回调；必须先于任何进度事件执行。
    * @returns 接受结果或稳定拒绝分类。
    * @author zhenghq
    */
-  async run(request: DocumentRunRequest): Promise<DocumentRunResult> {
+  async run(
+    request: DocumentRunRequest,
+    onAccepted?: (jobId: string) => void
+  ): Promise<DocumentRunResult> {
     if (this.disposed) return { accepted: false, code: 'service-disposed' }
     if (!request || typeof request.path !== 'string' || !request.path.trim() ||
       !Number.isInteger(request.generation) || request.generation < 1) {
@@ -320,6 +335,8 @@ export class DocumentWorkspaceTaskService {
       }
       this.highestGeneration = request.generation
       this.active = job
+      // Renderer 收到首条含资源声明的进度后会立即请求资源，登记必须先于事件发送。
+      onAccepted?.(jobId)
       this.emitProgress(job, job.task)
       void this.process(job)
       return { accepted: true, jobId }
@@ -556,8 +573,9 @@ export class DocumentWorkspaceTaskService {
         loadAssetBytes: async (assetId) => {
           const asset = exportModel.assets.find((candidate) => candidate.assetId === assetId)
           return asset ? this.loadAsset(job, asset) : null
-        }
-      }, exportDocument?.summary, request.textLayer)
+        },
+        ...(ocrOnly && job.input.format === 'pdf' ? { sourcePdfBytes: job.input.bytes } : {})
+      }, exportDocument?.summary, request.textLayer, ocrOnly)
       await writeDocumentFileAtomically(save.filePath, result.bytes, {
         writeFile: (path, bytes) => this.dependencies.writeFile(path, bytes),
         rename: (source, target) => this.dependencies.rename(source, target),

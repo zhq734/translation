@@ -380,6 +380,8 @@ export interface DocumentWorkerProductionDependencies {
     loadFontBytes(): Promise<Uint8Array | null>
     /** 按资源标识读取图片字节。 */
     loadAssetBytes(assetId: string): Promise<Uint8Array | null>
+    /** 原始 PDF 字节；仅 OCR 原文导出 PDF 时提供。 */
+    sourcePdfBytes?: Uint8Array
   }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean): Promise<{
     /** PDF 字节。 */
     bytes: Uint8Array
@@ -890,7 +892,8 @@ export function createDocumentWorkerExecutor(
     const exportModel = ocrOnly ? job.source : partial?.model ?? job.translation
     const output = await dependencies.exportPdf(exportModel, {
       loadFontBytes: () => dependencies.loadFontBytes(),
-      loadAssetBytes: async (assetId) => job.assetBytes.get(assetId) ?? null
+      loadAssetBytes: async (assetId) => job.assetBytes.get(assetId) ?? null,
+      ...(ocrOnly && job.input.format === 'pdf' ? { sourcePdfBytes: job.input.bytes } : {})
     }, partial?.summary, message.request.textLayer)
     const payload: DocumentWorkerExportPayload = {
       bytes: output.bytes,

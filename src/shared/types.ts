@@ -1207,8 +1207,6 @@ export interface Api {
   openSettings(): void
   /** 打开或聚焦独立文档翻译工作台。 */
   openDocumentWorkspace(): void
-  /** 通过主进程文件选择器导入并校验一个本地文档。 */
-  selectDocumentFile(): Promise<DocumentFileSelectionResult>
   /** 通过主进程文件选择器一次导入并校验多个本地文档。 */
   selectDocumentFiles(): Promise<DocumentFileSelectionResult[]>
   /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
@@ -1219,16 +1217,18 @@ export interface Api {
   getDocumentPlatformCapability(): Promise<DocumentPlatformCapability>
   /** 启动当前已批准文件的翻译任务。 */
   runDocument(request: DocumentRunRequest): Promise<DocumentRunResult>
-  /** 使用新代际重新翻译当前文档中的失败项。 */
-  retryFailedDocument(generation: number): Promise<DocumentRunResult>
+  /** 使用新代际重新翻译指定文档任务中的失败项。 */
+  retryFailedDocument(jobId: string, generation: number): Promise<DocumentRunResult>
   /** 取消当前文档翻译任务。 */
   cancelDocument(jobId: string, generation: number): Promise<boolean>
+  /** 关闭文档标签后释放对应任务及其资源。 */
+  releaseDocumentJob(jobId: string): Promise<boolean>
   /** 校验当前任务并导出完整或已确认的部分 PDF。 */
   exportDocumentPdf(request: DocumentExportRequest): Promise<DocumentExportResult>
-  /** 读取当前任务中的受控图片资源。 */
-  getDocumentAsset(assetId: string): Promise<DocumentAssetResult>
-  /** 读取当前活动 PDF 任务的原始字节，供 PDF.js 原生预览。 */
-  getDocumentSource(): Promise<DocumentSourceResult>
+  /** 读取指定任务中的受控图片资源。 */
+  getDocumentAsset(jobId: string, assetId: string): Promise<DocumentAssetResult>
+  /** 读取指定 PDF 任务的原始字节，供 PDF.js 原生预览。 */
+  getDocumentSource(jobId: string): Promise<DocumentSourceResult>
   /** 订阅文档翻译进度。 */
   onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
   /** 订阅单个翻译区块的增量更新。 */
