@@ -170,11 +170,13 @@ test('文件翻译历史必须提供可搜索下拉列表并支持快速切换',
   assert.match(source, /await createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
   assert.match(source, /await startDocumentTabTranslation\(tab\)/u)
   assert.match(source, /event\.key === 'Enter'[\s\S]*visibleDocumentHistory\[0\]/u)
+  assert.match(source, /openButton\.addEventListener\('click',\s*\(\) => void openDocumentHistoryEntry\(entry\)\)/u)
   assert.match(css, /\.document-history-popover\s*\{[^}]*position:\s*absolute/u)
   assert.match(css, /\.document-history-list\s*\{[^}]*overflow-y:\s*auto/u)
   assert.match(css, /\.document-history-list\s*\{[^}]*margin-top:\s*var\(--space-2\)/su)
   assert.match(css, /\.document-history-item\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-3\)/su)
-  assert.match(css, /\.document-history-item-check\s*\{[^}]*display:\s*(?:inline-)?grid[^}]*place-items:\s*center[^}]*width:\s*var\(--control-height\)/su)
+  assert.match(css, /\.document-history-row\[data-selected='true'\]\s*\{[^}]*background:\s*var\(--bg-secondary\)/su)
+  assert.doesNotMatch(css, /\.document-history-item-check/u)
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.document-history-popover\s*\{[^}]*position:\s*fixed/u)
   assert.doesNotMatch(css, /\.document-history-popover[^}]*background(?:-color)?:\s*#[0-9a-f]{3,8}\b/iu)
   assert.match(zh, /'document\.historySearch': '搜索历史文件'/u)
@@ -1079,6 +1081,31 @@ test('文档翻译请求必须携带顶部栏选择的语言并在切换后重�
   assert.match(startSource, /const sourceLang = tab\.sourceLang/u)
   assert.match(startSource, /const targetLang = tab\.targetLang/u)
   assert.match(startSource, /sourceLang,\s*targetLang,\s*mode/u)
+})
+
+test('恢复态与已授权历史文档切换语言后必须提升为新任务并重新翻译', () => {
+  const source = read('src/renderer/src/document.ts')
+  const helperStart = source.indexOf('function prepareDocumentTabForLanguageRetranslation(')
+  const helperEnd = source.indexOf('/**', helperStart + 1)
+  const helperSource = source.slice(helperStart, helperEnd)
+  const retranslateStart = source.indexOf('async function retranslateDocumentAfterLanguageChange(')
+  const retranslateEnd = source.indexOf('/**', retranslateStart + 1)
+  const retranslateSource = source.slice(retranslateStart, retranslateEnd)
+
+  assert.ok(helperStart > -1, '必须提供只读 Tab 的语言重译提升方法')
+  assert.match(helperSource, /tab\.sourceAuthorized/u,
+    '只有源文件已重新授权且校验通过时才能提升为新任务')
+  assert.match(helperSource, /tab\.sourceKind = 'task'/u,
+    '提升后必须脱离恢复态或历史快照的只读身份')
+  assert.match(helperSource, /tab\.snapshot = null/u,
+    '提升时必须清除旧快照，不能复用历史任务身份')
+  assert.match(helperSource, /tab\.activeJobId = null/u)
+  assert.match(helperSource, /tab\.expectedJobId = null/u)
+  assert.match(retranslateSource, /prepareDocumentTabForLanguageRetranslation\(tab\)/u)
+  assert.match(retranslateSource, /await startDocumentTabTranslation\(tab\)/u)
+  assert.doesNotMatch(retranslateSource,
+    /if \(isRestoredDocumentTab\(tab\)\) \{\s*tab\.sourceLang =[\s\S]*?return\s*\}/u,
+    '恢复态不能在只更新语言偏好后静默返回')
 })
 
 test('上传态必须通过可键盘操作的拖放区和文件选择器读取文件', () => {
@@ -3567,12 +3594,11 @@ test('文档历史列表必须展示完整摘要并使用对话框确认删除�
   assert.match(source, /function isReadOnlyDocumentTab\(/u)
   assert.match(source, /if \(isReadOnlyDocumentTab\(tab\)\) return/u)
   assert.match(source, /revokeAssetUrls\(\)[\s\S]*releaseHtmlPreviewUrl\(\)/u)
-  assert.match(css, /\.document-history-item-actions/u)
+  assert.match(css, /\.document-history-delete/u)
   assert.match(css, /\.document-history-confirm-dialog/u)
   assert.doesNotMatch(css, /\.document-history-confirm-dialog[^}]*#[0-9a-f]{3,8}\b/iu)
   for (const key of [
     'historyClear',
-    'historyOpen',
     'historyDelete',
     'historyReadOnly',
     'historyExported',
@@ -3593,6 +3619,43 @@ test('文档历史列表必须展示完整摘要并使用对话框确认删除�
   }
 })
 
+test('历史下拉必须整行打开并以 X 图标删除，不得显示文字操作或勾选图标', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+
+  assert.doesNotMatch(source, /document\.historyOpen/u)
+  assert.doesNotMatch(source, /document-history-item-check/u)
+  assert.doesNotMatch(source, /✓/u)
+  assert.doesNotMatch(source, /document-history-item-actions/u)
+  assert.match(source, /function createDocumentHistoryDeleteButton\(/u)
+  assert.match(source, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg',\s*'svg'\)/u)
+  assert.match(source, /button\.setAttribute\('aria-label',\s*label\)/u)
+  assert.match(source, /button\.setAttribute\('title',\s*label\)/u)
+  assert.match(source, /button\.dataset\.historyAction = 'delete'/u)
+  assert.match(source, /item\.dataset\.selected = String\(isCurrent\)/u)
+  assert.match(css, /\.document-history-row\[data-selected='true'\]\s*\{[^}]*background:\s*var\(--bg-secondary\)/su)
+  assert.match(css, /\.document-history-delete\s*\{[^}]*display:\s*inline-grid[^}]*place-items:\s*center[^}]*width:\s*var\(--control-height\)/su)
+  assert.match(css, /\.document-history-delete svg\s*\{[^}]*stroke:\s*currentColor/su)
+})
+
+test('X 图标必须同时删除任务历史和本地文件历史', () => {
+  const source = read('src/renderer/src/document.ts')
+  const confirmStart = source.indexOf('async function confirmDocumentHistoryAction()')
+  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const clickStart = source.indexOf("documentHistoryList.addEventListener('click'")
+  const clickSource = source.slice(clickStart, source.indexOf("documentHistoryList.addEventListener('keydown'", clickStart))
+
+  assert.ok(confirmStart > -1)
+  assert.ok(clickStart > -1)
+  assert.match(clickSource, /const deleteButton = \(event\.target as HTMLElement\)\.closest<HTMLButtonElement>\('\[data-history-action="delete"\]'\)/u)
+  assert.match(clickSource, /const entry = visibleDocumentHistory\[Number\(deleteButton\.dataset\.historyIndex\)\]/u)
+  assert.match(clickSource, /setDocumentHistoryConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
+  assert.match(confirmSource, /entry\?\.kind === 'file'/u)
+  assert.match(confirmSource, /documentFileHistory = documentFileHistory\.filter\(\(candidate\) => candidate\.path !== entry\.file\.path\)/u)
+  assert.match(confirmSource, /writeDocumentFileHistory\(documentFileHistory\)/u)
+  assert.match(confirmSource, /window\.api\.deleteDocumentHistory\(jobId\)/u)
+})
+
 test('统一历史列表必须支持打开、删除确认、清空确认与完整键盘导航', () => {
   const source = read('src/renderer/src/document.ts')
   const html = read('src/renderer/document.html')
@@ -3604,8 +3667,7 @@ test('统一历史列表必须支持打开、删除确认、清空确认与完�
   assert.match(source, /visibleDocumentHistory\[0\]/u)
   assert.match(source, /openDocumentHistoryEntry\(entry\)/u)
   assert.match(source, /data-history-action/u)
-  assert.match(source, /data-history-target-id/u)
-  assert.match(source, /setDocumentHistoryConfirmation\(\{ kind: 'delete', entry: entry\.task \}, actionButton\)/u)
+  assert.match(source, /setDocumentHistoryConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
   assert.match(source, /setDocumentHistoryConfirmation\(\{ kind: 'clear' \}/u)
   assert.match(source, /documentHistoryConfirmDelete\.addEventListener\('click'/u)
   assert.match(source, /documentHistoryConfirmCancel\.addEventListener\('click'/u)
@@ -3617,7 +3679,7 @@ test('统一历史列表必须支持打开、删除确认、清空确认与完�
   assert.match(source, /event\.key === 'Escape'/u)
   assert.match(
     source,
-    /documentHistoryList\.querySelectorAll<HTMLButtonElement>\('\[data-history-action\]'\)/u
+    /documentHistoryList\.querySelectorAll<HTMLButtonElement>\('\.document-history-item'\)/u
   )
   assert.match(
     source,
@@ -3632,7 +3694,7 @@ test('历史操作必须支持窄屏、减少动画、可见焦点与文本复�
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.document-history-confirm-dialog\s*\{[^}]*width:\s*calc\(100vw - var\(--space-6\)\)/u)
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.document-progressbar\s*\{[^}]*transition:\s*none/u)
   assert.match(css, /#document-source-content,\s*#document-translation-content\s*\{[^}]*user-select:\s*text/u)
-  assert.match(css, /\.document-history-action:focus-visible/u)
+  assert.match(css, /\.document-history-delete:focus-visible/u)
 })
 
 test('历史任务必须以真实任务标识只读打开，关闭时不得取消或释放活动任务', () => {

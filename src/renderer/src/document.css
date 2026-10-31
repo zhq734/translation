@@ -328,7 +328,7 @@ body {
 }
 
 .document-history-item[aria-selected='true'] {
-  background: var(--bg-secondary);
+  background: transparent;
 }
 
 .document-history-item-copy {
@@ -351,14 +351,6 @@ body {
   line-height: 1.45;
 }
 
-.document-history-item-check {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: var(--control-height);
-  color: var(--button-bg);
-}
-
 .document-history-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -368,40 +360,45 @@ body {
   border-radius: var(--radius-control);
 }
 
+.document-history-row[data-selected='true'] {
+  background: var(--bg-secondary);
+}
+
 .document-history-row:hover,
 .document-history-row:focus-within {
   background: var(--button-secondary-hover);
 }
 
-.document-history-item-actions {
-  display: flex;
+.document-history-delete {
+  display: inline-grid;
   flex: 0 0 auto;
-  align-items: center;
-  gap: var(--space-1);
-  padding-right: var(--space-1);
-}
-
-.document-history-action {
+  place-items: center;
+  width: var(--control-height);
+  min-width: var(--control-height);
   min-height: var(--control-height);
-  padding: 0 var(--space-2);
+  margin-right: var(--space-1);
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--font-size-caption);
+  color: var(--text-muted);
 }
 
-.document-history-action:hover:not(:disabled) {
+.document-history-delete svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.75;
+}
+
+.document-history-delete:hover:not(:disabled) {
   border-color: var(--border-default);
   background: var(--control-bg);
-  color: var(--text-primary);
-}
-
-.document-history-action-danger {
   color: var(--status-error);
 }
 
-.document-history-action:focus-visible,
+.document-history-delete:focus-visible,
 .document-history-confirm-dialog button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
@@ -2626,7 +2623,7 @@ body {
   }
 
   .document-file-tab,
-  .document-history-action,
+  .document-history-delete,
   .document-history-confirm-dialog {
     transition: none;
   }

@@ -435,7 +435,7 @@ let nextDocumentTabSequence = 1
 let documentHistorySwitchInFlight = false
 /** 当前等待用户确认的历史操作；null 表示没有待确认操作。 */
 let pendingDocumentHistoryAction:
-  | { kind: 'delete'; entry: DocumentHistoryEntry }
+  | { kind: 'delete'; entry: DocumentHistoryListItem }
   | { kind: 'clear' }
   | null = null
 /** 历史确认对话框关闭后应恢复焦点的触发按钮。 */
@@ -708,10 +708,13 @@ async function retranslateDocumentAfterLanguageChange(): Promise<void> {
   const tab = getActiveDocumentTab()
   if (!tab?.selection.path || workbench.hidden) return
   scheduleDocumentViewerStatePersist()
-  // 恢复态没有活动任务；语言切换只更新本地阅读偏好，不尝试重译已保存的只读译文。
-  if (isRestoredDocumentTab(tab)) {
-    tab.sourceLang = sourceLanguageSelect.value || tab.sourceLang
-    tab.targetLang = targetLanguageSelect.value || tab.targetLang
+  const nextPair = `${sourceLanguageSelect.value}\u0000${targetLanguageSelect.value}`
+  if (nextPair === `${tab.sourceLang}\u0000${tab.targetLang}`) return
+  const readOnly = isReadOnlyDocumentTab(tab)
+  if (readOnly && !prepareDocumentTabForLanguageRetranslation(tab)) {
+    // 未重新授权的历史/恢复文档只能继续回放旧译文，必须明确提示而不是静默忽略。
+    partialStatus.textContent = t('document.error.unreadable')
+    partialStatus.hidden = false
     refreshActiveTabMirror(tab)
     return
   }
@@ -722,21 +725,42 @@ async function retranslateDocumentAfterLanguageChange(): Promise<void> {
     refreshActiveTabMirror(tab)
     return
   }
-  const nextPair = `${sourceLanguageSelect.value}\u0000${targetLanguageSelect.value}`
-  if (nextPair === `${tab.sourceLang}\u0000${tab.targetLang}`) return
   tab.sourceLang = sourceLanguageSelect.value || tab.sourceLang
   tab.targetLang = targetLanguageSelect.value || tab.targetLang
   appliedLanguagePair = nextPair
   scheduleDocumentViewerStatePersist()
   const revision = ++tab.languageRevision
-  // 只读回放中的历史任务标识属于持久化快照，不是当前主进程可取消的活动任务。
-  if (isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)) return
   const jobId = tab.activeJobId ?? tab.expectedJobId
   const jobGeneration = tab.generation
   await cancelDocumentJob(jobId, jobGeneration)
   if (!documentTabs.includes(tab) || revision !== tab.languageRevision) return
   if (jobId) await releaseDocumentJob(jobId)
   await startDocumentTabTranslation(tab)
+}
+
+/**
+ * 将已重新授权的只读历史或恢复文档提升为可执行任务。
+ * 旧快照仅用于阅读回放，不能复用其中的任务标识；提升时清除快照与任务身份，
+ * 后续由 startDocumentTabTranslation 使用当前文件指纹和语言选择创建新任务。
+ * @param tab 用户主动切换语言的历史或恢复文档 Tab。
+ * @returns 源文件已授权且 Tab 成功提升时返回 true；否则返回 false。
+ * @author zhenghq
+ */
+function prepareDocumentTabForLanguageRetranslation(tab: DocumentWorkspaceTab): boolean {
+  if (!isReadOnlyDocumentTab(tab) || !tab.sourceAuthorized || !tab.selection.path ||
+    !tab.selection.sha256) {
+    return false
+  }
+  tab.sourceKind = 'task'
+  tab.snapshot = null
+  tab.activeJobId = null
+  tab.expectedJobId = null
+  tab.generation = nextGeneration()
+  tab.status = 'idle'
+  tab.pendingLanguageRetranslation = false
+  tab.pendingOcrModeRestart = false
+  tab.languageRevision += 1
+  return true
 }
 
 /**
@@ -849,26 +873,29 @@ function formatDocumentHistoryTime(timestamp: number): string {
 }
 
 /**
- * 创建历史列表中的操作按钮。
+ * 创建历史列表中的删除图标按钮。
  * @param label 按钮的可访问文本。
- * @param className 附加样式类。
- * @param action 按钮动作类型。
- * @param id 任务标识或文件路径。
- * @returns 已完成事件数据绑定的按钮。
+ * @param index 条目在当前可见列表中的索引。
+ * @returns 带 X 图标和事件数据的删除按钮。
  * @author zhenghq
  */
-function createDocumentHistoryActionButton(
-  label: string,
-  className: string,
-  action: 'open' | 'delete',
-  id: string
-): HTMLButtonElement {
+function createDocumentHistoryDeleteButton(label: string, index: number): HTMLButtonElement {
   const button = document.createElement('button')
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  const firstLine = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  const secondLine = document.createElementNS('http://www.w3.org/2000/svg', 'path')
   button.type = 'button'
-  button.className = className
-  button.textContent = label
-  button.dataset.historyAction = action
-  button.dataset.historyTargetId = id
+  button.className = 'document-history-delete'
+  button.dataset.historyAction = 'delete'
+  button.dataset.historyIndex = String(index)
+  button.setAttribute('aria-label', label)
+  button.setAttribute('title', label)
+  icon.setAttribute('viewBox', '0 0 16 16')
+  icon.setAttribute('aria-hidden', 'true')
+  firstLine.setAttribute('d', 'm4 4 8 8')
+  secondLine.setAttribute('d', 'm12 4-8 8')
+  icon.append(firstLine, secondLine)
+  button.append(icon)
   return button
 }
 
@@ -895,21 +922,20 @@ function renderDocumentHistory(): void {
 
   visibleDocumentHistory.forEach((entry, index) => {
     const item = document.createElement('li')
-    item.className = 'document-history-row'
     const openButton = document.createElement('button')
     const copy = document.createElement('span')
     const name = document.createElement('strong')
     const meta = document.createElement('span')
-    const check = document.createElement('span')
-    const actions = document.createElement('span')
+    item.className = 'document-history-row'
     const isCurrent = entry.kind === 'task'
       ? documentTabs.some((tab) => tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId)
       : findDocumentTabByPath(entry.path) !== null
+    item.dataset.selected = String(isCurrent)
     openButton.type = 'button'
     openButton.className = 'document-history-item'
     openButton.dataset.historyIndex = String(index)
     openButton.dataset.historyAction = 'open'
-    openButton.dataset.historyTargetId = entry.kind === 'task' ? entry.jobId : entry.path
+    openButton.addEventListener('click', () => void openDocumentHistoryEntry(entry))
     openButton.setAttribute('role', 'option')
     openButton.setAttribute('aria-selected', String(isCurrent))
     openButton.title = entry.kind === 'task' ? entry.task.fileName : entry.path
@@ -924,27 +950,12 @@ function renderDocumentHistory(): void {
     } else {
       meta.textContent = `${entry.file.format.toUpperCase()} · ${formatFileSize(entry.file.size)} · ${formatDocumentHistoryTime(entry.file.lastUsedAt)}`
     }
-    check.className = 'document-history-item-check'
-    check.setAttribute('aria-hidden', 'true')
-    check.textContent = isCurrent ? '✓' : ''
     copy.append(name, meta)
-    openButton.append(copy, check)
-    actions.className = 'document-history-item-actions'
-    actions.append(createDocumentHistoryActionButton(
-      t('document.historyOpen'),
-      'document-history-action',
-      'open',
-      entry.kind === 'task' ? entry.jobId : entry.path
-    ))
-    if (entry.kind === 'task') {
-      actions.append(createDocumentHistoryActionButton(
-        t('document.historyDelete'),
-        'document-history-action document-history-action-danger',
-        'delete',
-        entry.jobId
-      ))
-    }
-    item.append(openButton, actions)
+    openButton.append(copy)
+    item.append(
+      openButton,
+      createDocumentHistoryDeleteButton(t('document.historyDelete'), index)
+    )
     documentHistoryList.append(item)
   })
 }
@@ -1142,13 +1153,17 @@ function setDocumentHistoryConfirmation(
     ? document.activeElement
     : null)
   const isClear = action.kind === 'clear'
+  const isFile = action.kind === 'delete' && action.entry.kind === 'file'
+  const fileName = action.kind === 'delete'
+    ? action.entry.kind === 'task' ? action.entry.task.fileName : action.entry.file.name
+    : ''
   documentHistoryConfirmDialog.setAttribute('aria-modal', 'true')
   documentHistoryConfirmTitle.textContent = t(isClear
     ? 'document.historyClearTitle'
     : 'document.historyDeleteTitle')
-  documentHistoryConfirmDescription.textContent = t(isClear
-    ? 'document.historyClearDescription'
-    : 'document.historyDeleteDescription')
+  documentHistoryConfirmDescription.textContent = isClear
+    ? t('document.historyClearDescription')
+    : t(isFile ? 'document.historyDeleteFileDescription' : 'document.historyDeleteDescription', { name: fileName })
   documentHistoryConfirmDelete.textContent = t(isClear
     ? 'document.historyConfirmClear'
     : 'document.historyConfirmDelete')
@@ -1173,12 +1188,19 @@ async function confirmDocumentHistoryAction(): Promise<void> {
   const focusTarget = documentHistoryFocusTarget
   documentHistoryConfirmDelete.disabled = true
   try {
-    if (action.kind === 'delete') {
-      const jobId = action.entry.jobId
+    const entry = action.kind === 'delete' ? action.entry : null
+    if (entry?.kind === 'file') {
+      documentFileHistory = documentFileHistory.filter((candidate) => candidate.path !== entry.file.path)
+      writeDocumentFileHistory(documentFileHistory)
+      renderDocumentHistory()
+      documentHistoryStatus.textContent = t('document.historyDeleted')
+      documentHistoryStatus.hidden = false
+    } else if (entry?.kind === 'task') {
+      const jobId = entry.task.jobId
       const removed = await window.api.deleteDocumentHistory(jobId)
-      documentTaskHistory = documentTaskHistory.filter((entry) => entry.jobId !== action.entry.jobId)
+      documentTaskHistory = documentTaskHistory.filter((candidate) => candidate.jobId !== jobId)
       // 同名本地文件入口可能只是该任务的重新授权记录，删除任务时一并移除避免残留重复项。
-      documentFileHistory = documentFileHistory.filter((entry) => entry.name !== action.entry.fileName)
+      documentFileHistory = documentFileHistory.filter((candidate) => candidate.name !== entry.task.fileName)
       writeDocumentFileHistory(documentFileHistory)
       renderDocumentHistory()
       documentHistoryStatus.textContent = removed
@@ -7189,46 +7211,30 @@ async function initializeDocumentWorkspace(): Promise<void> {
     }
     if (event.key !== 'ArrowDown') return
     event.preventDefault()
-    documentHistoryList.querySelector<HTMLButtonElement>('[data-history-index]')?.focus()
+    documentHistoryList.querySelector<HTMLButtonElement>('.document-history-item')?.focus()
   })
   documentHistoryList.addEventListener('click', (event) => {
-    const actionButton = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action]')
-    if (!actionButton) return
-    const action = actionButton.dataset.historyAction
-    if (action === 'open') {
-      const entry = visibleDocumentHistory[Number(actionButton.dataset.historyIndex)]
-      if (entry) void openDocumentHistoryEntry(entry)
-      return
-    }
-    if (action !== 'delete') return
-    // 先按渲染时写入的 data-history-target-id 查找任务，避免误用文件路径或列表索引。
-    const historyTargetId = actionButton.dataset.historyTargetId
-    const entry = visibleDocumentHistory.find((candidate) =>
-      candidate.kind === 'task' && candidate.jobId === historyTargetId
-    )
-    if (entry?.kind === 'task') {
-      setDocumentHistoryConfirmation({ kind: 'delete', entry: entry.task }, actionButton)
-    }
+    const deleteButton = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action="delete"]')
+    if (!deleteButton) return
+    // 删除按钮与整行打开按钮分开渲染，按列表索引找回任务或文件历史条目。
+    const entry = visibleDocumentHistory[Number(deleteButton.dataset.historyIndex)]
+    if (entry) setDocumentHistoryConfirmation({ kind: 'delete', entry }, deleteButton)
   })
   documentHistoryList.addEventListener('keydown', (event) => {
     const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action]')
     if (!item) return
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      item.click()
-      return
-    }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
-    // 打开与删除按钮都属于同一键盘导航序列，避免删除操作只能依赖鼠标。
-    const buttons = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('[data-history-action]'))
-    const currentIndex = buttons.indexOf(item)
+    // 上下键在整行打开按钮之间移动；X 删除按钮通过 Tab 单独访问，避免误触删除。
+    const items = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('.document-history-item'))
+    const currentIndex = items.indexOf(item as HTMLButtonElement)
+    if (currentIndex < 0) return
     const nextIndex = event.key === 'Home'
       ? 0
       : event.key === 'End'
-        ? buttons.length - 1
-        : (Math.max(0, currentIndex) + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
-    buttons[nextIndex]?.focus()
+        ? items.length - 1
+        : (currentIndex + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    items[nextIndex]?.focus()
   })
   document.addEventListener('click', (event) => {
     if (historyPopover.hidden || historyPopover.contains(event.target as Node) || historyButton.contains(event.target as Node)) return
