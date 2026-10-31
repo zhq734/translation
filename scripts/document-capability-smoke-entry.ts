@@ -32,7 +32,7 @@ function isPng(bytes: Uint8Array): boolean {
  * @author zhenghq
  */
 function verifyCanvasColorRendering(): string {
-  const canvasModule = require('canvas') as {
+  const canvasModule = require('@napi-rs/canvas') as {
     createCanvas(width: number, height: number): {
       getContext(type: '2d'): {
         fillStyle: string
@@ -177,7 +177,7 @@ async function runSmoke(): Promise<void> {
   assert.match(exportedText, /文档翻译能力验证/u)
   assert.match(exportedText, /扫描页 OCR 译文/u)
 
-  const canvasPackage = require('canvas/package.json') as { version: string }
+  const canvasPackage = require('@napi-rs/canvas/package.json') as { version: string }
   const pdfjsPackage = require('pdfjs-dist/package.json') as { version: string }
   process.stdout.write(JSON.stringify({
     ok: true,

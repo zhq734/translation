@@ -196,6 +196,37 @@ test('Win7 产物校验必须把 Windows asar 路径统一为 POSIX 形式', () 
   )
 })
 
+test('Win7 产物校验必须识别 out/main/chunks 下的哈希化运行时', () => {
+  const script = read('scripts/build-win7.mjs')
+
+  for (const chunk of [
+    'updateManager',
+    'win7UpdateDriver',
+    'ocrDispatcher',
+    'tesseractOcr'
+  ]) {
+    assert.match(
+      script,
+      new RegExp(`/out/main/chunks/${chunk}-`, 'u'),
+      `${chunk} 的实际产物位于 out/main/chunks，不能只检查 out/main 根目录`
+    )
+  }
+})
+
+test('Win7 裁剪规则必须同时覆盖 out/main 根目录与 chunks 下的禁止运行时', () => {
+  const script = read('scripts/build-win7.mjs')
+  const afterPack = read('scripts/win7-after-pack.cjs')
+  const config = read('electron-builder-win7.yml')
+
+  for (const chunk of ['updater', 'ocrModelAssets', 'paddleOcr', 'systemOcr']) {
+    assert.match(script, new RegExp(`out\\\\/main\\\\/${chunk}-`, 'u'), `build-win7.mjs 应覆盖根目录 ${chunk}`)
+    assert.match(script, new RegExp(`out\\\\/main\\\\/chunks\\\\/${chunk}-`, 'u'), `build-win7.mjs 应覆盖 chunks/${chunk}`)
+    assert.match(afterPack, new RegExp(`out\\\\/main\\\\/.*${chunk}-`, 'u'), `afterPack 应识别 ${chunk}`)
+    assert.match(config, new RegExp(`!out/main/${chunk}-\\*\\.js`, 'u'), `配置应排除根目录 ${chunk}`)
+    assert.match(config, new RegExp(`!out/main/chunks/${chunk}-\\*\\.js`, 'u'), `配置应排除 chunks/${chunk}`)
+  }
+})
+
 test('Win7 翻译弹窗与选区按钮应关闭透明合成并使用不透明背景', () => {
   const popup = read('src/main/popup.ts')
   const selectionButton = read('src/main/selectionButton.ts')
@@ -289,15 +320,19 @@ test('Win7 打包配置保留 Tesseract WASM 运行时并排除原生 OCR 与 el
   assert.match(config, /!node_modules\/uiohook-napi\/prebuilds\/linux-\*\/\*\*\/\*/u)
   assert.match(config, /!node_modules\/electron-updater\/\*\*\/\*/u)
   assert.match(config, /!node_modules\/builder-util-runtime\/\*\*\/\*/u)
+  assert.match(config, /!node_modules\/@napi-rs\/\*\*\/\*/u)
   assert.match(config, /!out\/main\/updater-\*\.js/u)
   assert.match(config, /!out\/main\/ocrModelAssets-\*\.js/u)
   assert.match(config, /!out\/main\/paddleOcr-\*\.js/u)
   assert.match(config, /!out\/main\/systemOcr-\*\.js/u)
   assert.doesNotMatch(config, /!out\/main\/updateManager-\*\.js/u)
+  assert.doesNotMatch(config, /!out\/main\/chunks\/updateManager-\*\.js/u)
   assert.doesNotMatch(config, /!node_modules\/tesseract\.js\/\*\*\/\*/u)
   assert.doesNotMatch(config, /!node_modules\/tesseract\.js-core\/\*\*\/\*/u)
   assert.doesNotMatch(config, /!out\/main\/ocrDispatcher-\*\.js/u)
+  assert.doesNotMatch(config, /!out\/main\/chunks\/ocrDispatcher-\*\.js/u)
   assert.doesNotMatch(config, /!out\/main\/tesseractOcr-\*\.js/u)
+  assert.doesNotMatch(config, /!out\/main\/chunks\/tesseractOcr-\*\.js/u)
   assert.match(config, /node_modules\/tesseract\.js\/\*\*\/\*/u)
   assert.match(config, /node_modules\/tesseract\.js-core\/\*\*\/\*/u)
   assert.match(config, /node_modules\/node-fetch\/\*\*\/\*/u)

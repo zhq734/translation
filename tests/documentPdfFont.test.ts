@@ -10,6 +10,7 @@ import {
 
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
   dependencies: Record<string, string>
+  overrides?: Record<string, string>
   build: {
     npmRebuild: boolean
     files: string[]
@@ -92,6 +93,42 @@ test('PDF 字体与文档运行时依赖必须纳入打包配置', () => {
   }
   assert.ok(packageJson.build.files.includes('assets/fonts/**/*'))
   assert.ok(packageJson.build.asarUnpack.includes('node_modules/canvas/**/*'))
+  assert.ok(packageJson.build.files.includes('node_modules/@napi-rs/**/*'))
+  assert.ok(packageJson.build.asarUnpack.includes('node_modules/@napi-rs/**/*'))
+})
+
+test('PDF 画布依赖必须使用带 Windows ARM64 预编译包的实现', () => {
+  assert.equal(
+    packageJson.dependencies['@napi-rs/canvas'],
+    '1.1.0',
+    '应用应直接依赖带跨平台预编译包的 N-API Canvas'
+  )
+  assert.equal(
+    packageJson.dependencies.canvas,
+    'npm:@napi-rs/canvas@1.1.0',
+    'node-canvas 不提供 win32-arm64 预编译包，electron-builder 会回退到需要 GTK/Cairo 的源码编译'
+  )
+  assert.equal(
+    packageJson.overrides?.canvas,
+    'npm:@napi-rs/canvas@1.1.0',
+    '必须同时覆盖 pdfjs-dist 的间接 canvas 依赖，避免 npm 重新安装 node-canvas'
+  )
+})
+
+test('PDF 生产运行时必须直接加载 N-API Canvas，避免别名包被 bundler 展开', () => {
+  for (const sourcePath of [
+    'src/main/documentPdfRuntime.ts',
+    'src/main/documentPdfParser.ts',
+    'src/main/documentPdfParser.debug.ts'
+  ]) {
+    const source = readFileSync(sourcePath, 'utf8')
+    assert.match(source, /@napi-rs\/canvas/u, `${sourcePath} 应直接引用 @napi-rs/canvas`)
+    assert.doesNotMatch(
+      source,
+      /(?:from\s+|require\(|import\()['"]canvas['"]/u,
+      `${sourcePath} 不应引用 npm alias canvas，否则 bundler 会跟随平台 .node 文件`
+    )
+  }
 })
 
 test('Electron 打包必须重建原生依赖以匹配 canvas 的 Node ABI', () => {

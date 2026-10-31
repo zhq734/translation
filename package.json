@@ -68,6 +68,7 @@
       "node_modules/tesseract.js-core/**/*",
       "node_modules/uiohook-napi/**/*",
       "node_modules/canvas/**/*",
+      "node_modules/@napi-rs/**/*",
       "node_modules/path2d-polyfill/**/*",
       "node_modules/pdfjs-dist/**/*",
       "node_modules/pdf-lib/**/*",
@@ -82,6 +83,7 @@
     "asarUnpack": [
       "assets/ocr/**/*",
       "node_modules/canvas/**/*",
+      "node_modules/@napi-rs/**/*",
       "node_modules/@gutenye/**/*",
       "node_modules/@gutenye/ocr-models/assets/**/*",
       "node_modules/@img/**/*",
@@ -140,6 +142,13 @@
           ]
         }
       ],
+      "files": [
+        "node_modules/@napi-rs/**/*",
+        "!node_modules/@napi-rs/canvas-linux-*/**/*",
+        "!node_modules/@napi-rs/canvas-darwin-*/**/*",
+        "!node_modules/@napi-rs/canvas-android-*/**/*",
+        "!node_modules/@napi-rs/canvas-freebsd-*/**/*"
+      ],
       "extraResources": [
         {
           "from": "build/icon.ico",
@@ -186,6 +195,13 @@
           ]
         }
       ],
+      "files": [
+        "node_modules/@napi-rs/**/*",
+        "!node_modules/@napi-rs/canvas-win32-*/**/*",
+        "!node_modules/@napi-rs/canvas-darwin-*/**/*",
+        "!node_modules/@napi-rs/canvas-android-*/**/*",
+        "!node_modules/@napi-rs/canvas-freebsd-*/**/*"
+      ],
       "category": "Utility",
       "extraResources": [
         {
@@ -204,8 +220,9 @@
   },
   "dependencies": {
     "@gutenye/ocr-node": "^1.4.8",
+    "@napi-rs/canvas": "1.1.0",
     "@pdf-lib/fontkit": "1.1.1",
-    "canvas": "3.2.0",
+    "canvas": "npm:@napi-rs/canvas@1.1.0",
     "electron-updater": "^6.8.9",
     "fast-xml-parser": "5.11.2",
     "jszip": "3.10.2",
@@ -221,6 +238,6 @@
   },
   "overrides": {
     "sharp": "0.34.2",
-    "canvas": "3.2.0"
+    "canvas": "npm:@napi-rs/canvas@1.1.0"
   }
 }

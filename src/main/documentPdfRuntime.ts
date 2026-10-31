@@ -196,7 +196,7 @@ export function createPdfEmbeddedImageExporter(
  * @author zhenghq
  */
 async function loadPdfRuntime(): Promise<PdfRuntimeCapabilities> {
-  const canvasModule = await import('canvas') as unknown as NativeCanvasModule
+  const canvasModule = await import('@napi-rs/canvas') as unknown as NativeCanvasModule
   if (typeof canvasModule.createCanvas !== 'function') {
     throw new Error('PDF canvas runtime is unavailable')
   }

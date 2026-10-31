@@ -54,13 +54,14 @@ Linux AppImage 同样同时覆盖 x64 与 arm64，而构建机上的 `npm ci` �
 
 升级依赖无法解决该问题（1.5.5 已是 npm 最新版），因此在 `node:18-buster`（Debian 10 / glibc 2.28）容器内重新编译了 Linux x64 与 arm64 产物，并随仓库分发：
 
-- `build/uiohook-prebuilds/linux-x64/uiohook-napi.node`（最高 glibc 2.7）
-- `build/uiohook-prebuilds/linux-arm64/uiohook-napi.node`（最高 glibc 2.17）
+- `build/uiohook-prebuilds/linux-x64/node.napi.node`（最高 glibc 2.7）
+- `build/uiohook-prebuilds/linux-arm64/node.napi.armv8.node`（最高 glibc 2.17）
 
 `npm run dist:linux` 会在打包前执行 `scripts/prepare-linux-uiohook-runtime.mjs`，脚本会：
 
 - 校验随仓库分发的两个产物存在且引用的最高 glibc 版本不超过 2.28；
 - 用它们覆盖 `node_modules/uiohook-napi/prebuilds/linux-{x64,arm64}`；
+- 使用 prebuildify 标准文件名（x64 为 `node.napi.node`，arm64 为 `node.napi.armv8.node`），确保 `@electron/rebuild` 能识别并复用预编译产物，而不是触发 node-gyp 源码编译；
 - 删除不会用于 AppImage、却会引入 `GLIBC_2.34` 符号的 `linux-loong64` 目录；
 - 复核替换后的产物 glibc 版本，任一环节失败即以非零退出码终止打包。
 

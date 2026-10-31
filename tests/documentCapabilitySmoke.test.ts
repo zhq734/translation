@@ -60,3 +60,24 @@ test('文档能力冒烟必须验证 Canvas 矢量绘制颜色未退化为黑色
   assert.match(entry, /verifyCanvasColorRendering\(\)/u)
   assert.match(entry, /canvasVectorColor/u)
 })
+
+test('文档能力冒烟必须加载 Windows ARM64 可用的 N-API Canvas 实现', () => {
+  const runner = read(RUNNER_PATH)
+  const entry = read(ENTRY_PATH)
+
+  assert.match(entry, /require\('@napi-rs\/canvas'\)/u)
+  assert.match(entry, /require\('@napi-rs\/canvas\/package\.json'\)/u)
+  assert.match(runner, /'@napi-rs\/canvas'/u)
+  assert.doesNotMatch(runner, /'canvas'/u)
+})
+
+test('单元测试打包必须将 Canvas 与 PDF.js 的兼容别名一起外部化', () => {
+  const testRunner = read('scripts/run-tests.mjs')
+
+  assert.match(testRunner, /'@napi-rs\/canvas'/u)
+  assert.match(
+    testRunner,
+    /^\s*'canvas',?$/mu,
+    'pdfjs-dist 内部仍硬编码 require("canvas")，必须保留 alias 的外部化'
+  )
+})

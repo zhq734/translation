@@ -19,7 +19,7 @@ function sanitizeOutput(value) {
 }
 
 /**
- * 使用 Electron 内置 Node 运行文档能力冒烟，确保 canvas 原生 ABI 与生产环境一致。
+ * 使用 Electron 内置 Node 运行文档能力冒烟，确保 N-API Canvas 与生产环境一致。
  * @returns 进程退出码。
  * @author zhenghq
  */
@@ -36,7 +36,7 @@ async function run() {
       outfile: bundlePath,
       logLevel: 'silent',
       external: [
-        'canvas',
+        '@napi-rs/canvas',
         'path2d-polyfill',
         'pdfjs-dist',
         'pdfjs-dist/*',

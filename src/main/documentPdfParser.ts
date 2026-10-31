@@ -180,7 +180,7 @@ function createPdfCanvasFactory() {
      * @author zhenghq
      */
     create(width: number, height: number): PdfCanvasEntry {
-      const canvasModule = require('canvas') as PdfCanvasModule
+      const canvasModule = require('@napi-rs/canvas') as PdfCanvasModule
       const canvas = canvasModule.createCanvas(width, height)
       return { canvas, context: canvas.getContext('2d') }
     },

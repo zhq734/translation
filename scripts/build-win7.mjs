@@ -70,10 +70,17 @@ const forbiddenAsarPrefixes = [
   '/node_modules/onnxruntime-common',
   '/node_modules/onnxruntime-node',
   '/node_modules/sharp',
-  '/out/main/ocrModelAssets-',
-  '/out/main/paddleOcr-',
-  '/out/main/systemOcr-',
-  '/out/main/updater-'
+  '/node_modules/@napi-rs'
+]
+const forbiddenAsarPatterns = [
+  /^\/out\/main\/updater-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/updater-[^/]+\.js$/u,
+  /^\/out\/main\/ocrModelAssets-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/ocrModelAssets-[^/]+\.js$/u,
+  /^\/out\/main\/paddleOcr-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/paddleOcr-[^/]+\.js$/u,
+  /^\/out\/main\/systemOcr-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/systemOcr-[^/]+\.js$/u
 ]
 
 /**
@@ -239,16 +246,17 @@ function verifyWin7Package() {
   const entries = normalizeAsarEntries(listPackage(asarPath))
   const forbidden = entries.filter((entry) =>
     forbiddenAsarPrefixes.some((prefix) => entry === prefix || entry.startsWith(`${prefix}/`)) ||
+    forbiddenAsarPatterns.some((pattern) => pattern.test(entry)) ||
     isForbiddenRuntimePath(entry)
   )
   if (forbidden.length > 0) {
     throw new Error(`Win7 包仍包含禁用运行时或 OCR 资源：\n${forbidden.slice(0, 20).join('\n')}`)
   }
   const required = [
-    '/out/main/updateManager-',
-    '/out/main/win7UpdateDriver-',
-    '/out/main/ocrDispatcher-',
-    '/out/main/tesseractOcr-',
+    '/out/main/chunks/updateManager-',
+    '/out/main/chunks/win7UpdateDriver-',
+    '/out/main/chunks/ocrDispatcher-',
+    '/out/main/chunks/tesseractOcr-',
     '/node_modules/uiohook-napi/package.json',
     '/node_modules/koffi/package.json',
     '/node_modules/tesseract.js/package.json',
