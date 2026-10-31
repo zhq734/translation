@@ -44,9 +44,16 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
     '你是一个专业翻译引擎，请将用户输入的文本从',
     '翻译为',
     '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。',
-    '若原文包含形如 [[[ST-SEG-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。',
+    '若原文包含形如 [[[ST-SEG-数字]]] 或 [[[ST-DOC-CELL-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。',
+    '术语约束：以下术语译法必须优先采用，未列出的词语不得自行套用：\n',
+    '相邻上下文：以下内容仅用于理解当前文本语义，不得输出上下文：\n',
     // 不可达的内部协议兜底错误，调用方已包装为本地化错误。
     '不支持的 AI 协议：'
+  ],
+  'src/main/documentTranslationPipeline.ts': [
+    // 相邻目标摘要前缀仅作为模型上下文标记，不展示给最终用户。
+    '上一段：',
+    '下一段：'
   ],
   'src/shared/aiTranslationStreamSanitize.ts': [
     // 模型可能输出的协议级译文标签前缀，用于流式暂存判断，不直接展示给用户。
@@ -77,7 +84,13 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
   // OCR 乱码判定使用的常用汉字频表，不展示给用户。
   'src/shared/ocrScoring.ts': [
     '的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规热领七海口东导器压志世金增争济阶油思术极交受联什认六共权收证改清己美再采转更单风切打白教速花带安场身车例真务具万每目至达走积示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住调满县局照参红细引听该铁价严龙飞'
-  ]
+  ],
+  'src/renderer/src/document.ts': [
+    // 水印固定展示产品中文名，与英文名上下两行同时出现。
+    '划词翻译'
+  ],
+  // 部分导出注入脚本使用固定英文标记，供中文审计规则以字符串字面量精确放行。
+  'src/main/documentPdfPrint.ts': ['Partial result']
 }
 
 /**
@@ -108,6 +121,58 @@ function collectSourceFiles(directory: string): string[] {
  */
 function isInComment(position: number, commentRanges: ReadonlyArray<readonly [number, number]>): boolean {
   return commentRanges.some(([start, end]) => position >= start && position < end)
+}
+
+/**
+ * 剥离注入脚本模板片段中的注释，同时保留字符串字面量内的中文。
+ * @param text 模板字符串片段文本。
+ * @returns 去除注释后的可执行文本。
+ * @author zhenghq
+ */
+function stripTemplateJavaScriptComments(text: string): string {
+  let result = ''
+  let inBlockComment = false
+  let inLineComment = false
+  let quote: string | null = null
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!
+    const next = text[index + 1]
+    if (inLineComment) {
+      if (character === '\n') {
+        inLineComment = false
+        result += character
+      }
+      continue
+    }
+    if (inBlockComment) {
+      if (character === '*' && next === '/') {
+        inBlockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote) {
+      result += character
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = null
+      continue
+    }
+    if (character === '/' && next === '/') {
+      inLineComment = true
+      index += 1
+      continue
+    }
+    if (character === '/' && next === '*') {
+      inBlockComment = true
+      index += 1
+      continue
+    }
+    if (character === '"' || character === "'" || character === '`') quote = character
+    result += character
+  }
+  return result
 }
 
 /**
@@ -169,7 +234,12 @@ function scanHardcodedChinese(): HardcodedChineseFinding[] {
         ts.isTemplateHead(node) ||
         ts.isTemplateMiddle(node) ||
         ts.isTemplateTail(node)
-      if (isStringLike && CJK_PATTERN.test(node.text) && !isInComment(node.getStart(sourceFile), commentRanges)) {
+      const containsUserVisibleChinese = ts.isTemplateHead(node) || ts.isTemplateMiddle(node) ||
+        ts.isTemplateTail(node) || ts.isNoSubstitutionTemplateLiteral(node)
+        ? CJK_PATTERN.test(stripTemplateJavaScriptComments(node.text))
+        : CJK_PATTERN.test(node.text)
+      if (isStringLike && containsUserVisibleChinese &&
+        !isInComment(node.getStart(sourceFile), commentRanges)) {
         if (!isAllowedFinding(file, node.text, ancestors)) {
           const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
           findings.push({ file, line: line + 1, text: node.text })
@@ -199,7 +269,10 @@ test('硬编码中文白名单不得包含过期条目', () => {
     const source = readFileSync(file, 'utf8')
     for (const text of allowedTexts) {
       assert.ok(
-        source.includes(JSON.stringify(text)) || source.includes(`'${text}'`) || source.includes(text),
+        source.includes(JSON.stringify(text)) ||
+          source.includes(JSON.stringify(text).slice(1, -1)) ||
+          source.includes(`'${text}'`) ||
+          source.includes(text),
         `${file} 的白名单条目已过期：${JSON.stringify(text)}`
       )
     }

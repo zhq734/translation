@@ -1,0 +1,4526 @@
+{
+  "schemaVersion": 1,
+  "documentId": "document-6f3e2a04d4068bde",
+  "source": {
+    "path": "/Users/mac/Downloads/用户中心-20261012.pdf",
+    "fileName": "用户中心-20261012.pdf",
+    "format": "pdf",
+    "sha256": "9d2ca80779382878c02051131b52c34f0b25e09ed5056bd3d77d6cf30147febc",
+    "size": 167988,
+    "pageCount": 1
+  },
+  "metadata": {
+    "direction": "auto"
+  },
+  "pages": [
+    {
+      "pageId": "page-db0f39554db1",
+      "index": 0,
+      "width": 594.95996,
+      "height": 841.91998,
+      "contentArea": {
+        "left": 65,
+        "right": 524.2500011062496,
+        "center": 294.6250005531248
+      },
+      "blocks": [
+        {
+          "kind": "table",
+          "blockId": "block-b07b42f8978a",
+          "readingOrder": 0,
+          "translatable": true,
+          "bbox": {
+            "x": 417.74998259374996,
+            "y": 22.4999990625,
+            "width": 117.74999509374999,
+            "height": 65.99999724999999
+          },
+          "rows": [
+            {
+              "rowId": "block-b07b42f8978a-row-0",
+              "cells": [
+                {
+                  "cellId": "cell-b68f0ea5e3556b7e",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-b68f0ea5e3556b7e-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 424.4999823125,
+                        "y": 37.499998437500025,
+                        "width": 9.000000075000003,
+                        "height": 8.999999625000001
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-b68f0ea5e3556b7e-block-0-run-0",
+                          "text": "流",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 12.75
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-b68f0ea5e3556b7e-block-1",
+                      "readingOrder": 1,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 424.4999823125,
+                        "y": 50.24999790625007,
+                        "width": 9.000000075000003,
+                        "height": 8.999999625000001
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-b68f0ea5e3556b7e-block-1-run-0",
+                          "text": "⽔",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 12.75
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-b68f0ea5e3556b7e-block-2",
+                      "readingOrder": 2,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 424.4999823125,
+                        "y": 62.99999737500001,
+                        "width": 9.000000075000003,
+                        "height": 8.999999625000001
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-b68f0ea5e3556b7e-block-2-run-0",
+                          "text": "号",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-c55211c430a2cdf3",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-c55211c430a2cdf3-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 448.4999813125,
+                        "y": 29.999998750000017,
+                        "width": 77.99396799525101,
+                        "height": 8.999999625000001
+                      },
+                      "textAlign": "right",
+                      "runs": [
+                        {
+                          "runId": "cell-c55211c430a2cdf3-block-0-run-0",
+                          "text": "2026R11L3505485",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "image",
+                      "blockId": "cell-c55211c430a2cdf3-block-1",
+                      "readingOrder": 1,
+                      "translatable": false,
+                      "bbox": {
+                        "x": 446.24998140625,
+                        "y": 41.999998250000004,
+                        "width": 82.49999656250003,
+                        "height": 37.4999984375
+                      },
+                      "assetId": "asset-9a72cd6f2abab37a",
+                      "alt": "Embedded PDF image",
+                      "renderPending": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "columnWidths": [
+            21.75,
+            95.25
+          ],
+          "headerRows": 0
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-77840d4e37cf",
+          "readingOrder": 1,
+          "translatable": false,
+          "bbox": {
+            "x": 59.9999975,
+            "y": 100.49999581249999,
+            "width": 475.49998018749994,
+            "height": 1.4999999375000073
+          },
+          "line": {
+            "orientation": "horizontal",
+            "color": "#000000",
+            "thickness": 1.4999999375000073
+          }
+        },
+        {
+          "kind": "table",
+          "blockId": "block-1a4016ca86f6",
+          "readingOrder": 2,
+          "translatable": true,
+          "bbox": {
+            "x": 60.374997484374994,
+            "y": 109.87499542187498,
+            "width": 474.74998021874995,
+            "height": 504.374978984375
+          },
+          "rows": [
+            {
+              "rowId": "block-1a4016ca86f6-row-0",
+              "cells": [
+                {
+                  "cellId": "cell-d54abe8b8fea4e9c",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-d54abe8b8fea4e9c-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 83.24999653124999,
+                        "y": 116.24999515625005,
+                        "width": 36.000000299999925,
+                        "height": 8.999999625000001
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-d54abe8b8fea4e9c-block-0-run-0",
+                          "text": "证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d54abe8b8fea4e9c-block-0-run-1",
+                          "text": "书份",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d54abe8b8fea4e9c-block-0-run-2",
+                          "text": "数",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-d9952df14c2be66f",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-d9952df14c2be66f-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 162.4422959065707,
+                        "y": 115.49999518750006,
+                        "width": 118.05769375592931,
+                        "height": 8.999999625000001
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-0",
+                          "text": "1",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-1",
+                          "text": "份",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-2",
+                          "text": "正",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-3",
+                          "text": "本",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-4",
+                          "text": "0",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-5",
+                          "text": "份",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-6",
+                          "text": "副",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        },
+                        {
+                          "runId": "cell-d9952df14c2be66f-block-0-run-7",
+                          "text": "本",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 22.5
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-1",
+              "cells": [
+                {
+                  "cellId": "cell-17976b62afd14fe6",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-17976b62afd14fe6-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 83.24999653124999,
+                        "y": 137.99999425,
+                        "width": 57.74999759375001,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-0",
+                          "text": "请",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-1",
+                          "text": "确",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-2",
+                          "text": "认",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-3",
+                          "text": "所",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-4",
+                          "text": "需",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-5",
+                          "text": "要",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-17976b62afd14fe6-block-0-run-6",
+                          "text": "的",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-e4c5047f1be6b3c5",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-e4c5047f1be6b3c5-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 146.24999705624984,
+                        "y": 137.99999425,
+                        "width": 369.00000307499965,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-0",
+                          "text": "计",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-1",
+                          "text": "算",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-2",
+                          "text": "机",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-3",
+                          "text": "软",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-4",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-5",
+                          "text": "著",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-6",
+                          "text": "作",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-7",
+                          "text": "权",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-8",
+                          "text": "登",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-9",
+                          "text": "记证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-10",
+                          "text": "书",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-11",
+                          "text": "副",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-12",
+                          "text": "本",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-13",
+                          "text": "数",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-14",
+                          "text": "量",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-15",
+                          "text": "。",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-16",
+                          "text": "登",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-17",
+                          "text": "记证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-18",
+                          "text": "书",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-19",
+                          "text": "和",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-20",
+                          "text": "副",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-21",
+                          "text": "本",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-22",
+                          "text": "数",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-23",
+                          "text": "量",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-24",
+                          "text": "之",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-25",
+                          "text": "和",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-26",
+                          "text": "不",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-27",
+                          "text": "能",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-28",
+                          "text": "超",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-29",
+                          "text": "过软",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-30",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-31",
+                          "text": "著",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-32",
+                          "text": "作",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-33",
+                          "text": "权",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-34",
+                          "text": "⼈",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-35",
+                          "text": "的",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-36",
+                          "text": "数",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-e4c5047f1be6b3c5-block-0-run-37",
+                          "text": "量",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-2",
+              "cells": [
+                {
+                  "cellId": "cell-c76dd5a76435fe1b",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": []
+                },
+                {
+                  "cellId": "cell-e3e13c88613c3e53",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-e3e13c88613c3e53-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 261.74998909375,
+                        "y": 159.74999334375002,
+                        "width": 72.00000059999996,
+                        "height": 8.999999624999987
+                      },
+                      "textAlign": "center",
+                      "runs": [
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-0",
+                          "text": "提",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-1",
+                          "text": "交",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-2",
+                          "text": "申",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-3",
+                          "text": "请",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-4",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-5",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-6",
+                          "text": "清",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-e3e13c88613c3e53-block-0-run-7",
+                          "text": "单",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-3",
+              "cells": [
+                {
+                  "cellId": "cell-06ea04ddf6e80fcf",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-06ea04ddf6e80fcf-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 83.24999653124999,
+                        "y": 181.49999243750005,
+                        "width": 36.000000299999925,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-06ea04ddf6e80fcf-block-0-run-0",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-06ea04ddf6e80fcf-block-0-run-1",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-06ea04ddf6e80fcf-block-0-run-2",
+                          "text": "类",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-06ea04ddf6e80fcf-block-0-run-3",
+                          "text": "型",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-6561c2df97246132",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-6561c2df97246132-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 145.4999939375,
+                        "y": 181.49999243750005,
+                        "width": 36.0000002999999,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-6561c2df97246132-block-0-run-0",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-6561c2df97246132-block-0-run-1",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-6561c2df97246132-block-0-run-2",
+                          "text": "名",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        },
+                        {
+                          "runId": "cell-6561c2df97246132-block-0-run-3",
+                          "text": "称",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "BAAAAA+PingFangSC-Semibold"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-4",
+              "cells": [
+                {
+                  "cellId": "cell-823c02de4b953cdd",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-823c02de4b953cdd-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 87.74999634375,
+                        "y": 233.99999025,
+                        "width": 27.000000224999937,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-823c02de4b953cdd-block-0-run-0",
+                          "text": "申",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-823c02de4b953cdd-block-0-run-1",
+                          "text": "请表",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-7757f34933d4c8e9",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-7757f34933d4c8e9-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 145.4999939375,
+                        "y": 233.99999025,
+                        "width": 117.00000097499981,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-0",
+                          "text": "打",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-1",
+                          "text": "印",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-2",
+                          "text": "签",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-3",
+                          "text": "字",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-4",
+                          "text": "或",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-5",
+                          "text": "盖",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-6",
+                          "text": "章",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-7",
+                          "text": "的登",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-8",
+                          "text": "记",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-9",
+                          "text": "申",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-0-run-10",
+                          "text": "请表",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-7757f34933d4c8e9-block-1",
+                      "readingOrder": 1,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 515.8476385063475,
+                        "y": 233.99999025,
+                        "width": 14.399997525000003,
+                        "height": 8.999999624999987
+                      },
+                      "textAlign": "right",
+                      "runs": [
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-1-run-0",
+                          "text": "4",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-7757f34933d4c8e9-block-1-run-1",
+                          "text": "⻚",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-5",
+              "cells": [
+                {
+                  "cellId": "cell-77e89b21392ddc14",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-77e89b21392ddc14-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 74.24999690624999,
+                        "y": 317.2499867812501,
+                        "width": 54.00000044999989,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-0",
+                          "text": "身",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-1",
+                          "text": "份",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-2",
+                          "text": "证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-3",
+                          "text": "明",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-4",
+                          "text": "⽂",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-77e89b21392ddc14-block-0-run-5",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-b7214384800bd10e",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-b7214384800bd10e-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 145.4999939375,
+                        "y": 317.2499867812501,
+                        "width": 155.43897522337596,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-0",
+                          "text": "著",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-1",
+                          "text": "作",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-2",
+                          "text": "权",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-3",
+                          "text": "⼈",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-4",
+                          "text": "-",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-5",
+                          "text": "郑辉",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-6",
+                          "text": "强",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-7",
+                          "text": "的",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-8",
+                          "text": "居",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-9",
+                          "text": "⺠",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-10",
+                          "text": "身",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-11",
+                          "text": "份",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-12",
+                          "text": "证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-13",
+                          "text": "复",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-14",
+                          "text": "印",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-0-run-15",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-b7214384800bd10e-block-1",
+                      "readingOrder": 1,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 517.6406034316406,
+                        "y": 317.2499867812501,
+                        "width": 12.608997299625116,
+                        "height": 8.999999624999987
+                      },
+                      "textAlign": "right",
+                      "runs": [
+                        {
+                          "runId": "cell-b7214384800bd10e-block-1-run-0",
+                          "text": "1",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-b7214384800bd10e-block-1-run-1",
+                          "text": "⻚",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-6",
+              "cells": [
+                {
+                  "cellId": "cell-c45d4dd8929ff315",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-c45d4dd8929ff315-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 65.24999728125,
+                        "y": 400.49998331250004,
+                        "width": 72.00000059999984,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-0",
+                          "text": "权",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-1",
+                          "text": "利",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-2",
+                          "text": "归",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-3",
+                          "text": "属",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-4",
+                          "text": "证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-5",
+                          "text": "明",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-6",
+                          "text": "⽂",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-c45d4dd8929ff315-block-0-run-7",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-3c1b01f8f2f7b4f7",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": []
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-7",
+              "cells": [
+                {
+                  "cellId": "cell-83a66c8e7c5c54e8",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-83a66c8e7c5c54e8-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 74.24999690624999,
+                        "y": 483.74997984375,
+                        "width": 54.00000044999989,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-0",
+                          "text": "软",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-1",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-2",
+                          "text": "鉴",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-3",
+                          "text": "别",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-4",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-83a66c8e7c5c54e8-block-0-run-5",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-89e778b560c71ee6",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-89e778b560c71ee6-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 145.4999939375,
+                        "y": 476.99998012500004,
+                        "width": 101.43897387337594,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-0",
+                          "text": "程",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-1",
+                          "text": "序",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-2",
+                          "text": "鉴",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-3",
+                          "text": "别",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-4",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-5",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-6",
+                          "text": "-",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-7",
+                          "text": "⼀",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-8",
+                          "text": "般",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-9",
+                          "text": "交",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-0-run-10",
+                          "text": "存",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular",
+                            "lineHeight": 13.5
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-89e778b560c71ee6-block-1",
+                      "readingOrder": 1,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 510.4452912314453,
+                        "y": 476.99998012500004,
+                        "width": 19.799994975000175,
+                        "height": 8.999999624999987
+                      },
+                      "textAlign": "right",
+                      "runs": [
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-1-run-0",
+                          "text": "60",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-1-run-1",
+                          "text": "⻚",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-89e778b560c71ee6-block-2",
+                      "readingOrder": 2,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 145.4999939375,
+                        "y": 490.4999795625,
+                        "width": 101.43897387337594,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-0",
+                          "text": "⽂",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-1",
+                          "text": "档",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-2",
+                          "text": "鉴",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-3",
+                          "text": "别",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-4",
+                          "text": "材",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-5",
+                          "text": "料",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-6",
+                          "text": "-",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-7",
+                          "text": "⼀",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-8",
+                          "text": "般",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-9",
+                          "text": "交",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-2-run-10",
+                          "text": "存",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "text",
+                      "blockId": "cell-89e778b560c71ee6-block-3",
+                      "readingOrder": 3,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 512.7070136372068,
+                        "y": 490.4999795625,
+                        "width": 17.531993644500176,
+                        "height": 8.999999624999987
+                      },
+                      "textAlign": "right",
+                      "runs": [
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-3-run-0",
+                          "text": "17",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-89e778b560c71ee6-block-3-run-1",
+                          "text": "⻚",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowId": "block-1a4016ca86f6-row-8",
+              "cells": [
+                {
+                  "cellId": "cell-6cb4d3ecdd880e45",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": [
+                    {
+                      "kind": "text",
+                      "blockId": "cell-6cb4d3ecdd880e45-block-0",
+                      "readingOrder": 0,
+                      "translatable": true,
+                      "role": "paragraph",
+                      "bbox": {
+                        "x": 65.24999728125,
+                        "y": 566.999976375,
+                        "width": 72.00000059999984,
+                        "height": 8.999999624999987
+                      },
+                      "runs": [
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-0",
+                          "text": "其",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-1",
+                          "text": "他",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-2",
+                          "text": "相",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-3",
+                          "text": "关",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-4",
+                          "text": "证",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-5",
+                          "text": "明",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-6",
+                          "text": "⽂",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        },
+                        {
+                          "runId": "cell-6cb4d3ecdd880e45-block-0-run-7",
+                          "text": "件",
+                          "style": {
+                            "fontSize": 8.999999625,
+                            "color": "#000000",
+                            "fontFamily": "AAAAAA+PingFangSC-Regular"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "cellId": "cell-093bf187497297e5",
+                  "rowSpan": 1,
+                  "colSpan": 1,
+                  "blocks": []
+                }
+              ]
+            }
+          ],
+          "columnWidths": [
+            80.62,
+            393
+          ],
+          "headerRows": 1
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-e7592128dec4",
+          "readingOrder": 3,
+          "translatable": false,
+          "bbox": {
+            "x": 60.374997484374994,
+            "y": 616.24997440625,
+            "width": 1,
+            "height": 187.37499210937506
+          },
+          "line": {
+            "orientation": "vertical",
+            "color": "#000000",
+            "thickness": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-a35695d5364b",
+          "readingOrder": 4,
+          "translatable": false,
+          "bbox": {
+            "x": 535.124977703125,
+            "y": 616.24997440625,
+            "width": 1,
+            "height": 187.37499210937506
+          },
+          "line": {
+            "orientation": "vertical",
+            "color": "#000000",
+            "thickness": 1
+          }
+        },
+        {
+          "kind": "text",
+          "blockId": "block-f35fde4a1d8e",
+          "readingOrder": 5,
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 65.24999728125,
+            "y": 620.24997415625,
+            "width": 459.00000382499957,
+            "height": 76.49999681249994
+          },
+          "runs": [
+            {
+              "runId": "block-f35fde4a1d8e-run-0",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-1",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-2",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-3",
+              "text": "认",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-4",
+              "text": "真",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-5",
+              "text": "阅",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-6",
+              "text": "读",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-7",
+              "text": "了",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-8",
+              "text": "登",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-9",
+              "text": "记",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-10",
+              "text": "指",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-11",
+              "text": "南",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-12",
+              "text": "，",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-13",
+              "text": "确",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-14",
+              "text": "认",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-15",
+              "text": "并",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-16",
+              "text": "声",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-17",
+              "text": "明本",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-18",
+              "text": "软",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-19",
+              "text": "件",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-20",
+              "text": "确",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-21",
+              "text": "系",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-22",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-23",
+              "text": "的",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-24",
+              "text": "独",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-25",
+              "text": "⽴",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-26",
+              "text": "开",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-27",
+              "text": "发",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-28",
+              "text": "，",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-29",
+              "text": "未",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-30",
+              "text": "使",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-31",
+              "text": "⽤",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-32",
+              "text": "AI",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-33",
+              "text": "开",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-34",
+              "text": "发",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-35",
+              "text": "编",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-36",
+              "text": "写",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-37",
+              "text": "代",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-38",
+              "text": "码",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-39",
+              "text": "、",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-40",
+              "text": "撰",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-41",
+              "text": "写",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-42",
+              "text": "⽂",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-43",
+              "text": "档",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-44",
+              "text": "或",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-45",
+              "text": "⽣",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-46",
+              "text": "成",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-47",
+              "text": "登",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-48",
+              "text": "记",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-49",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-50",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-51",
+              "text": "材",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-52",
+              "text": "料",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-53",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-54",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-55",
+              "text": "请表",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-56",
+              "text": "中",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-57",
+              "text": "填",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-58",
+              "text": "写",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-59",
+              "text": "的",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-60",
+              "text": "软",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-61",
+              "text": "件",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-62",
+              "text": "功",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-63",
+              "text": "能",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-64",
+              "text": "和",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-65",
+              "text": "技",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-66",
+              "text": "术",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-67",
+              "text": "特点",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-68",
+              "text": "的相",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-69",
+              "text": "关内",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-70",
+              "text": "容",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-71",
+              "text": "与",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-72",
+              "text": "本",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-73",
+              "text": "软",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-74",
+              "text": "件",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-75",
+              "text": "实",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-76",
+              "text": "际",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-77",
+              "text": "情",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-78",
+              "text": "况",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-79",
+              "text": "相",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-80",
+              "text": "符",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-81",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-82",
+              "text": "提",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-83",
+              "text": "交",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-84",
+              "text": "的",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-85",
+              "text": "全",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-86",
+              "text": "部",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-87",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-88",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-89",
+              "text": "材",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-90",
+              "text": "料",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-91",
+              "text": "内",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-92",
+              "text": "容",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-93",
+              "text": "真",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-94",
+              "text": "实",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-95",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-96",
+              "text": "本",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-97",
+              "text": "软",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-98",
+              "text": "件",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-99",
+              "text": "实",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-100",
+              "text": "现",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-101",
+              "text": "功",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-102",
+              "text": "能",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-103",
+              "text": "不",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-104",
+              "text": "存",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-105",
+              "text": "在",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-106",
+              "text": "违",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-107",
+              "text": "规",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-108",
+              "text": "违",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-109",
+              "text": "法",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-110",
+              "text": "内",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-111",
+              "text": "容",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-112",
+              "text": "，",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-113",
+              "text": "本",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-114",
+              "text": "软",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-115",
+              "text": "件",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-116",
+              "text": "在",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-117",
+              "text": "传",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-118",
+              "text": "播",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-119",
+              "text": "和",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-120",
+              "text": "使",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-121",
+              "text": "⽤",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-122",
+              "text": "中",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-123",
+              "text": "将",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-124",
+              "text": "遵",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-125",
+              "text": "守",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-126",
+              "text": "相",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-127",
+              "text": "关",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-128",
+              "text": "法",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-129",
+              "text": "律",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-130",
+              "text": "法",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-131",
+              "text": "规要",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-132",
+              "text": "求",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-133",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-134",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-135",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-136",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-137",
+              "text": "承",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-138",
+              "text": "诺",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-139",
+              "text": "以",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-140",
+              "text": "上",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-141",
+              "text": "信",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-142",
+              "text": "息",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-143",
+              "text": "真",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-144",
+              "text": "实",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-145",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-146",
+              "text": "如",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-147",
+              "text": "有",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-148",
+              "text": "失",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-149",
+              "text": "实",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-150",
+              "text": "或",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-151",
+              "text": "欺",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-152",
+              "text": "骗",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-153",
+              "text": "，",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-154",
+              "text": "⾃",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-155",
+              "text": "愿承担",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-156",
+              "text": "列",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-157",
+              "text": "⼊",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-158",
+              "text": "版",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-159",
+              "text": "权",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-160",
+              "text": "登",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-161",
+              "text": "记",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-162",
+              "text": "失",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-163",
+              "text": "信",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-164",
+              "text": "名单及",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-165",
+              "text": "个",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-166",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-167",
+              "text": "征",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-168",
+              "text": "信",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-169",
+              "text": "记",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-170",
+              "text": "录",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-171",
+              "text": "，",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-172",
+              "text": "并",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-173",
+              "text": "承担",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-174",
+              "text": "由",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-175",
+              "text": "此",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-176",
+              "text": "引",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-177",
+              "text": "发",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-178",
+              "text": "的",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-179",
+              "text": "法",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-180",
+              "text": "律",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-181",
+              "text": "责",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-182",
+              "text": "任",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-183",
+              "text": "及后",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-184",
+              "text": "果",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-185",
+              "text": "。",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-186",
+              "text": "以",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-187",
+              "text": "上",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-188",
+              "text": "划",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-189",
+              "text": "线",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-190",
+              "text": "部",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-191",
+              "text": "分内",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-192",
+              "text": "容",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-193",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-194",
+              "text": "在",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-195",
+              "text": "下",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-196",
+              "text": "⽅",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-197",
+              "text": "⼿",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-198",
+              "text": "抄",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-199",
+              "text": "写",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            },
+            {
+              "runId": "block-f35fde4a1d8e-run-200",
+              "text": "：",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular",
+                "lineHeight": 13.5
+              }
+            }
+          ]
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-e3c8528fe882",
+          "readingOrder": 6,
+          "translatable": false,
+          "bbox": {
+            "x": 65.24999728125,
+            "y": 670.4999720625,
+            "width": 458.999980875,
+            "height": 1
+          },
+          "line": {
+            "orientation": "horizontal",
+            "color": "#000000",
+            "thickness": 0.7499999687499894
+          }
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-b77d12e4b203",
+          "readingOrder": 7,
+          "translatable": false,
+          "bbox": {
+            "x": 65.24999728125,
+            "y": 683.9999715,
+            "width": 62.99999737499998,
+            "height": 1
+          },
+          "line": {
+            "orientation": "horizontal",
+            "color": "#000000",
+            "thickness": 0.7499999687499894
+          }
+        },
+        {
+          "kind": "text",
+          "blockId": "block-3d5432abcceb",
+          "readingOrder": 8,
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 307.4999871875,
+            "y": 737.2499692812501,
+            "width": 99.00000082499997,
+            "height": 8.999999625000001
+          },
+          "runs": [
+            {
+              "runId": "block-3d5432abcceb-run-0",
+              "text": "申",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-1",
+              "text": "请",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-2",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-3",
+              "text": "（",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-4",
+              "text": "⾃",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-5",
+              "text": "然",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-6",
+              "text": "⼈",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-7",
+              "text": "）",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-8",
+              "text": "签",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-9",
+              "text": "名",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-3d5432abcceb-run-10",
+              "text": "：",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "blockId": "block-e8a6b6ae485f",
+          "readingOrder": 9,
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 352.4999853125,
+            "y": 752.24996865625,
+            "width": 54.000000450000016,
+            "height": 8.999999625000001
+          },
+          "runs": [
+            {
+              "runId": "block-e8a6b6ae485f-run-0",
+              "text": "身",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-e8a6b6ae485f-run-1",
+              "text": "份",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-e8a6b6ae485f-run-2",
+              "text": "证",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-e8a6b6ae485f-run-3",
+              "text": "号",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-e8a6b6ae485f-run-4",
+              "text": "码",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-e8a6b6ae485f-run-5",
+              "text": "：",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "blockId": "block-415acb400bf1",
+          "readingOrder": 10,
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 444.8906064628906,
+            "y": 782.24996740625,
+            "width": 81.60292872487781,
+            "height": 8.999999625000001
+          },
+          "textAlign": "right",
+          "runs": [
+            {
+              "runId": "block-415acb400bf1-run-0",
+              "text": "2026",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-415acb400bf1-run-1",
+              "text": "年",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-415acb400bf1-run-2",
+              "text": "10",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-415acb400bf1-run-3",
+              "text": "⽉",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-415acb400bf1-run-4",
+              "text": "12",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            },
+            {
+              "runId": "block-415acb400bf1-run-5",
+              "text": "⽇",
+              "style": {
+                "fontSize": 8.999999625,
+                "color": "#000000",
+                "fontFamily": "AAAAAA+PingFangSC-Regular"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "shape",
+          "blockId": "block-20101edbdd05",
+          "readingOrder": 11,
+          "translatable": false,
+          "bbox": {
+            "x": 60.374997484374994,
+            "y": 803.624966515625,
+            "width": 474.74998021874995,
+            "height": 1
+          },
+          "line": {
+            "orientation": "horizontal",
+            "color": "#000000",
+            "thickness": 1
+          }
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "assetId": "asset-9a72cd6f2abab37a",
+      "kind": "image",
+      "mimeType": "image/png",
+      "sha256": "9a72cd6f2abab37a9f3ef82bc3f2993f5afc033c3f8abe1596dd1234e4c257db",
+      "byteLength": 772,
+      "width": 214,
+      "height": 88
+    }
+  ],
+  "warnings": [
+    {
+      "code": "embedded-image-ocr-required",
+      "severity": "warning",
+      "message": "The PDF page contains images whose text will be recognized during OCR.",
+      "pageId": "page-db0f39554db1"
+    }
+  ]
+}

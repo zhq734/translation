@@ -7,6 +7,7 @@ const RENDERER_ENTRIES = [
   'src/renderer/settings.html',
   'src/renderer/selection.html',
   'src/renderer/web-reader.html',
+  'src/renderer/document.html',
   'src/renderer/toast.html'
 ] as const
 
@@ -15,6 +16,7 @@ const COMPONENT_STYLES = [
   'src/renderer/src/settings.css',
   'src/renderer/src/selection.css',
   'src/renderer/src/webReader.css',
+  'src/renderer/src/document.css',
   'src/renderer/src/toast.css'
 ] as const
 
@@ -73,12 +75,12 @@ test('共享基础样式应提供扁平控件、可见焦点与降低动态效�
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/u)
 })
 
-test('五类 Renderer 应在主题之后、组件样式之前引用共享基础样式', () => {
+test('六类 Renderer 应在主题之后、组件样式之前引用共享基础样式', () => {
   for (const file of RENDERER_ENTRIES) {
     const html = readFileSync(file, 'utf8')
     const themeIndex = html.indexOf('./src/theme.css')
     const baseIndex = html.indexOf('./src/base.css')
-    const componentIndex = html.search(/\.\/src\/(?:style|settings|selection|webReader|toast)\.css/u)
+    const componentIndex = html.search(/\.\/src\/(?:style|settings|selection|webReader|document|toast)\.css/u)
     assert.ok(themeIndex >= 0, `${file} 缺少 theme.css`)
     assert.ok(baseIndex > themeIndex, `${file} 未在主题后引用 base.css`)
     assert.ok(componentIndex > baseIndex, `${file} 未在基础样式后引用组件样式`)

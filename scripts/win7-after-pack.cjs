@@ -43,10 +43,14 @@ const forbiddenAsarPatterns = [
   /^\/node_modules\/@koromix\/koffi-(?!win32-x64(?:\/|$))/u,
   /^\/node_modules\/uiohook-napi\/prebuilds\/(?!win32-x64(?:\/|$))/u,
   /^\/out\/main\/updater-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/updater-[^/]+\.js$/u,
   /^\/out\/main\/ocrModelAssets-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/ocrModelAssets-[^/]+\.js$/u,
   /^\/out\/main\/paddleOcr-[^/]+\.js$/u,
+  /^\/out\/main\/chunks\/paddleOcr-[^/]+\.js$/u,
   /^\/out\/main\/systemOcr-[^/]+\.js$/u,
-  /^\/node_modules\/(?:@gutenye|@techstark|@img|onnxruntime-common|onnxruntime-node|sharp)(?:\/|$)/u,
+  /^\/out\/main\/chunks\/systemOcr-[^/]+\.js$/u,
+  /^\/node_modules\/(?:@gutenye|@techstark|@img|@napi-rs|onnxruntime-common|onnxruntime-node|sharp)(?:\/|$)/u,
   /^\/assets\/ocr(?:\/|$)/u
 ]
 

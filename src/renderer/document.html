@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="document.windowTitle">Document Translation</title>
+    <script src="./localeBootstrap.js"></script>
+    <script src="./themeBootstrap.js"></script>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
+    <link rel="stylesheet" href="./src/document.css" />
+  </head>
+  <body>
+    <main class="document-shell">
+      <header id="document-titlebar" class="window-titlebar" data-i18n-attr="aria-label:document.titlebar" aria-label="Document translation window title bar">
+        <div class="window-titlebar-brand" data-i18n-attr="aria-label:document.brand" aria-label="Selection Translator document translation">
+          <span class="window-titlebar-mark" aria-hidden="true">译</span>
+          <span class="window-titlebar-title" data-i18n="document.windowTitle">Document Translation</span>
+        </div>
+        <div class="window-controls" data-i18n-attr="aria-label:common.windowControls" aria-label="Window controls">
+          <button id="window-minimize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.minimize;title:common.minimize" aria-label="Minimize" title="Minimize">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+          </button>
+          <button id="window-maximize" class="window-control-button" type="button" data-i18n-attr="aria-label:common.maximize;title:common.maximize" aria-label="Maximize" title="Maximize">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>
+          </button>
+          <button id="window-close" class="window-control-button window-control-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+        <div class="document-toolbar-main">
+          <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
+          <div class="document-toolbar-actions">
+            <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry incomplete items</button>
+            <div class="document-history">
+              <button id="document-history-button" class="document-secondary-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-history-popover" data-i18n="document.history">History</button>
+              <div id="document-history-popover" class="document-history-popover" hidden>
+                <label class="document-history-search-label" for="document-history-search" data-i18n="document.historySearch">Search history</label>
+                <input id="document-history-search" class="document-history-search" type="search" role="searchbox" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:document.historySearch" placeholder="Search history" />
+                <p id="document-history-status" class="document-history-status" role="status" aria-live="polite" hidden></p>
+                <p id="document-history-empty" class="document-history-empty" role="status" aria-live="polite"></p>
+                <ul id="document-history-list" class="document-history-list" role="listbox" data-i18n-attr="aria-label:document.history" aria-label="History"></ul>
+                <div class="document-history-footer">
+                  <button id="document-history-clear" class="document-text-button document-history-clear" type="button" data-i18n="document.historyClear">Clear cache</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="document-toolbar-meta">
+          <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+            <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
+              <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
+            </label>
+            <span class="document-language-arrow" aria-hidden="true">→</span>
+            <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
+              <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
+            </label>
+          </div>
+          <div class="document-toolbar-display-controls">
+            <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
+              <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
+              <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
+            </div>
+            <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
+              <button type="button" data-document-view-mode="source" aria-pressed="false" data-i18n="document.viewMode.source">Source only</button>
+              <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
+              <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
+            </div>
+            <div class="document-reading-controls">
+              <button id="document-sync-scroll" class="document-reading-button" type="button" role="switch" aria-checked="true" data-i18n-attr="aria-label:document.syncScroll;title:document.syncScroll" aria-label="Synchronize scrolling" title="Synchronize scrolling">
+                <span aria-hidden="true">↕</span>
+                <span data-i18n="document.syncScroll">Synchronize scrolling</span>
+              </button>
+              <div class="document-page-navigation" role="group" data-i18n-attr="aria-label:document.page.input" aria-label="Page navigation">
+                <button id="document-page-previous" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.previous;title:document.page.previous" aria-label="Previous page" title="Previous page">‹</button>
+                <input id="document-page-input" class="document-page-input" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:document.page.input;placeholder:document.page.input" aria-label="Jump to page" placeholder="Page" />
+                <button id="document-page-next" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.next;title:document.page.next" aria-label="Next page" title="Next page">›</button>
+              </div>
+              <div class="document-toc">
+                <button id="document-toc-button" class="document-reading-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-toc-list" data-i18n="document.toc">Contents</button>
+                <div id="document-toc-list" class="document-toc-list" role="listbox" data-i18n-attr="aria-label:document.toc" aria-label="Contents" hidden></div>
+              </div>
+              <div class="document-zoom-controls" role="group" data-i18n-attr="aria-label:document.zoom.in" aria-label="Zoom">
+                <button id="document-zoom-out" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.out;title:document.zoom.out" aria-label="Zoom out" title="Zoom out">−</button>
+                <span id="document-zoom-value" class="document-zoom-value" aria-live="polite">100%</span>
+                <button id="document-zoom-in" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.in;title:document.zoom.in" aria-label="Zoom in" title="Zoom in">+</button>
+                <button id="document-zoom-reset" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.reset;title:document.zoom.reset" aria-label="Reset to 100%" title="Reset to 100%">100%</button>
+                <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit">Fit width</button>
+              </div>
+            </div>
+          </div>
+          <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>
+        </div>
+      </nav>
+
+      <section id="document-upload-panel" class="document-upload-panel" role="tabpanel" aria-labelledby="document-upload-title">
+        <div class="document-upload-card">
+          <div class="document-upload-heading">
+            <span class="document-upload-icon" aria-hidden="true">↥</span>
+            <h1 id="document-upload-title" data-i18n="document.upload.title">Translate a local document</h1>
+            <p data-i18n="document.upload.description">Choose a file to create a side-by-side source and translation workspace.</p>
+          </div>
+          <div id="document-drop-zone" class="document-drop-zone" tabindex="0" role="button" data-i18n-attr="aria-label:document.upload.dropHint" aria-label="Choose or drop a document here" aria-describedby="document-upload-formats document-upload-privacy">
+            <span class="document-drop-zone-icon" aria-hidden="true">⇪</span>
+            <strong data-i18n="document.upload.dropHint">Choose or drop a document here</strong>
+            <span class="document-drop-zone-action" data-i18n="document.upload.chooseFile">Choose file</span>
+            <span id="document-upload-formats" class="document-format-hint" data-i18n="document.upload.formats">Supports PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT and VTT</span>
+            <span id="document-upload-privacy" class="document-privacy-hint" data-i18n="document.upload.privacy">Files are processed locally. Only extracted text is sent to the translation service.</span>
+          </div>
+          <input id="document-file-input" class="document-file-input" type="file" multiple accept=".pdf,.docx,.epub,.html,.htm,.md,.markdown,.txt,.json,.csv,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.bmp" hidden />
+          <div id="document-file-summary" class="document-file-summary" aria-live="polite" hidden>
+            <span class="document-file-summary-icon" aria-hidden="true">▤</span>
+            <div class="document-file-summary-copy">
+              <strong id="document-file-name"></strong>
+              <span id="document-file-detail"></span>
+            </div>
+            <button id="document-file-replace" class="document-text-button" type="button" data-i18n="document.upload.replace">Replace</button>
+          </div>
+          <p id="document-upload-status" class="document-upload-status" role="status" aria-live="polite"></p>
+          <button id="document-start-button" class="document-primary-button" type="button" data-i18n="document.upload.start" disabled>Translate document</button>
+        </div>
+      </section>
+
+      <section id="document-workbench" class="document-workbench" hidden>
+            <div class="document-workbench-header">
+              <div class="document-workbench-primary">
+                <div class="document-file-identity">
+                  <strong id="document-workbench-name"></strong>
+                  <span id="document-workbench-meta"></span>
+                </div>
+                <div class="document-workbench-actions">
+                  <button id="document-workbench-replace" class="document-secondary-button" type="button" data-i18n="document.upload.addFiles">Add files</button>
+                  <button id="document-cancel-button" class="document-secondary-button" type="button" data-i18n="document.cancel" hidden>Cancel conversion</button>
+                  <button id="document-export-button" class="document-secondary-button" type="button" data-i18n="document.export" disabled>Export PDF</button>
+                </div>
+              </div>
+            </div>
+        <div class="document-columns" data-view-mode="spread" data-i18n-attr="aria-label:document.comparison" aria-label="Source and translation comparison">
+          <section class="document-column" data-i18n-attr="aria-label:document.source" aria-label="Source document">
+            <header class="document-column-header">
+              <span data-i18n="document.source">Source</span>
+              <span id="document-source-page-count" class="document-column-meta"></span>
+            </header>
+            <div class="document-page-scroll" id="document-source-content" tabindex="0"></div>
+          </section>
+          <section class="document-column" data-i18n-attr="aria-label:document.translation" aria-label="Translated document">
+            <header class="document-column-header">
+              <span id="document-translation-heading" data-i18n="document.translation">Translation</span>
+              <span id="document-translation-page-count" class="document-column-meta"></span>
+            </header>
+            <div class="document-page-scroll" id="document-translation-content" tabindex="0"></div>
+          </section>
+        </div>
+      </section>
+
+      <footer id="document-progress-panel" class="document-progress-panel" aria-live="polite">
+        <div class="document-progress-copy">
+          <span id="document-progress-stage" data-i18n="document.progress.ready">Ready</span>
+          <span id="document-progress-count"></span>
+          <span id="document-progress-pages"></span>
+          <span id="document-progress-blocks"></span>
+          <span id="document-progress-warnings"></span>
+          <span id="document-progress-remaining"></span>
+          <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
+        </div>
+        <div class="document-progress-track">
+          <div id="document-progressbar" class="document-progressbar" role="progressbar" aria-live="polite" data-i18n-attr="aria-label:document.progress.label" aria-label="Document conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+        </div>
+      </footer>
+    </main>
+    <dialog id="document-export-dialog" class="document-export-dialog flat-overlay" aria-labelledby="document-export-title" aria-describedby="document-export-description">
+      <form class="document-export-content" method="dialog">
+        <header class="document-export-header">
+          <div>
+            <h2 id="document-export-title" data-i18n="document.export.dialogTitle">Export PDF</h2>
+            <p id="document-export-description" class="document-export-description" data-i18n="document.export.dialogDescription">Choose a layout. A PDF is created from the current translated result.</p>
+          </div>
+          <button id="document-export-cancel" class="document-export-close" type="button" data-i18n-attr="aria-label:document.export.cancel;title:document.export.cancel" aria-label="Cancel export" title="Cancel export">×</button>
+        </header>
+        <fieldset class="document-export-layouts">
+          <legend data-i18n="document.export.layoutLabel">PDF layout</legend>
+          <label class="document-export-layout-option">
+            <input id="document-export-layout-translation" type="radio" name="document-export-layout" value="translation" checked />
+            <span>
+              <strong data-i18n="document.export.layout.translation">Translated PDF</strong>
+              <small data-i18n="document.export.layout.translationDescription">Translated content only, preserving the original page layout.</small>
+            </span>
+          </label>
+          <label class="document-export-layout-option">
+            <input id="document-export-layout-bilingual" type="radio" name="document-export-layout" value="bilingual" />
+            <span>
+              <strong data-i18n="document.export.layout.bilingual">Bilingual PDF</strong>
+              <small data-i18n="document.export.layout.bilingualDescription">Original and translated content side by side.</small>
+            </span>
+          </label>
+        </fieldset>
+        <div class="document-export-summary-grid">
+          <p id="document-export-incomplete" class="document-export-summary-item"></p>
+          <p id="document-export-warning-count" class="document-export-summary-item"></p>
+        </div>
+        <p id="document-export-incomplete-notice" class="document-export-notice" hidden></p>
+        <section id="document-export-progress" class="document-export-progress" aria-live="polite" hidden>
+          <div class="document-export-progress-copy">
+            <span id="document-export-progress-stage"></span>
+            <span id="document-export-progress-page"></span>
+            <span id="document-export-progress-percent"></span>
+          </div>
+          <div class="document-export-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="document-export-progressbar" class="document-export-progressbar"></div>
+          </div>
+        </section>
+        <div class="document-export-actions">
+          <button id="document-export-open-folder" class="document-secondary-button" type="button" data-i18n="document.export.openFolder" hidden>Open folder</button>
+          <button id="document-export-retry" class="document-secondary-button" type="button" data-i18n="document.export.retryIncomplete">Retry incomplete items</button>
+          <button id="document-export-confirm" class="document-primary-button" type="button" data-i18n="document.export.confirm">Export</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="document-partial-export-dialog" class="document-partial-export-dialog flat-overlay" aria-labelledby="document-partial-export-title" aria-describedby="document-partial-export-summary">
+      <div class="document-partial-export-content">
+        <header class="document-partial-export-header">
+          <span class="document-partial-export-icon" aria-hidden="true">!</span>
+          <h2 id="document-partial-export-title" data-i18n="document.partialExport.title">Export partial result?</h2>
+        </header>
+        <p id="document-partial-export-summary" class="document-partial-export-summary"></p>
+        <div class="document-partial-export-actions">
+          <button id="document-partial-export-cancel" class="document-secondary-button" type="button" data-i18n="document.partialExport.cancel">Back</button>
+          <button id="document-partial-export-retry" class="document-secondary-button" type="button" data-i18n="document.partialExport.retry">Retry incomplete items</button>
+          <button id="document-partial-export-confirm" class="document-primary-button" type="button" data-i18n="document.partialExport.confirm">Export partial result</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="document-history-confirm-dialog" class="document-history-confirm-dialog flat-overlay" role="alertdialog" aria-modal="true" aria-labelledby="document-history-confirm-title" aria-describedby="document-history-confirm-description">
+      <div class="document-history-confirm-content">
+        <header class="document-history-confirm-header">
+          <span class="document-history-confirm-icon" aria-hidden="true">!</span>
+          <h2 id="document-history-confirm-title" data-i18n="document.historyDeleteTitle">Delete this history record?</h2>
+        </header>
+        <p id="document-history-confirm-description" class="document-history-confirm-description" data-i18n="document.historyDeleteDescription">The task history and its cached translation will be deleted. This action cannot be undone.</p>
+        <div class="document-history-confirm-actions">
+          <button id="document-history-confirm-cancel" class="document-secondary-button" type="button" data-i18n="document.historyCancel">Cancel</button>
+          <button id="document-history-confirm-delete" class="document-history-danger-button" type="button" data-i18n="document.historyConfirmDelete">Delete</button>
+        </div>
+      </div>
+    </dialog>
+    <script type="module" src="./src/document.ts"></script>
+  </body>
+</html>

@@ -10,6 +10,7 @@ import { ocrZhCN } from './catalog.zh-CN.ocr.ts'
 import { speechZhCN } from './catalog.zh-CN.speech.ts'
 import { rendererSpeechZhCN } from './catalog.zh-CN.rendererSpeech.ts'
 import { webReaderZhCN } from './catalog.zh-CN.webReader.ts'
+import { documentZhCN } from './catalog.zh-CN.document.ts'
 
 /**
  * 中文界面词条目录。
@@ -26,5 +27,6 @@ export const zhCNCatalog = defineCatalog({
   ...ocrZhCN,
   ...speechZhCN,
   ...rendererSpeechZhCN,
-  ...webReaderZhCN
+  ...webReaderZhCN,
+  ...documentZhCN
 })

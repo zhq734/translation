@@ -183,6 +183,35 @@ test('流式客户端应按顺序回调安全片段并返回最终清洗译文',
   assert.equal(final, '你好')
 })
 
+test('流式客户端应把文档上下文传入系统提示而不混入用户正文', async () => {
+  let requestBody: Record<string, unknown> | undefined
+  const client = new AiTranslationClient({
+    fetch: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return streamingResponse([openAiDelta('工作区'), 'data: [DONE]\n\n'])
+    }
+  })
+  await client.stream({
+    protocol: 'openai',
+    baseUrl: 'https://api.example.com',
+    model: 'gpt-4o',
+    apiKey: null,
+    text: 'workspace',
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    context: {
+      glossaryVersion: 'glossary-v1',
+      glossaryContext: 'workspace => 工作区',
+      contextSummary: '上一段：打开工作区'
+    }
+  }, { onDelta: () => undefined })
+
+  const messages = requestBody?.messages as Array<{ role: string; content: string }>
+  assert.equal(messages.find((message) => message.role === 'user')?.content, 'workspace')
+  assert.match(messages.find((message) => message.role === 'system')?.content ?? '', /workspace => 工作区/u)
+  assert.match(messages.find((message) => message.role === 'system')?.content ?? '', /上一段：打开工作区/u)
+})
+
 test('流式客户端应支持外部 AbortSignal 取消并抛出超时分类错误', async () => {
   const client = new AiTranslationClient({
     fetch: async (_input, init) => {
@@ -268,4 +297,54 @@ test('AI 首个片段后失败时不得静默降级替换，且保留已展示�
   )
   assert.deepEqual(deltas, ['半'])
   assert.equal(calls.some((url) => url.includes('deeplx')), false)
+})
+
+test('相同正文使用不同文档术语上下文时不得复用普通翻译缓存', async () => {
+  const requestBodies: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (_url, init) => {
+      requestBodies.push(String(init?.body))
+      return streamingResponse([openAiDelta('工作区'), 'data: [DONE]\n\n'])
+    }
+  })
+  const baseContext = {
+    glossaryVersion: 'glossary-v1',
+    glossaryContext: 'workspace => 工作区'
+  }
+
+  await runtime.translateStream('workspace', aiSettings(), null, 'sk-ai', {
+    onDelta: () => undefined,
+    context: baseContext
+  })
+  await runtime.translateStream('workspace', aiSettings(), null, 'sk-ai', {
+    onDelta: () => undefined,
+    context: { ...baseContext, glossaryVersion: 'glossary-v2', glossaryContext: 'workspace => 协作空间' }
+  })
+
+  assert.equal(requestBodies.length, 2)
+  assert.match(requestBodies[0]!, /workspace => 工作区/u)
+  assert.match(requestBodies[1]!, /workspace => 协作空间/u)
+})
+
+test('非 AI 通道应忽略文档上下文并保持普通翻译结果', async () => {
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      assert.match(String(url), /api\.deeplx\.org/u)
+      return new Response(JSON.stringify({ code: 200, data: '工作区' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+  })
+  const result = await runtime.translateStream(
+    'workspace',
+    aiSettings({ aiEnabled: false, preferredTranslationProvider: 'deeplx-public' }),
+    null,
+    null,
+    {
+      onDelta: () => undefined,
+      context: { glossaryVersion: 'glossary-v1', glossaryContext: 'workspace => 工作区' }
+    }
+  )
+  assert.equal(result.translation, '工作区')
 })

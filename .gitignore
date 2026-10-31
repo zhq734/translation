@@ -10,6 +10,9 @@ dist-win7/
 .DS_Store
 *.log
 
+# WorkBuddy AI 本地工作数据
+.workbuddy-ai/
+
 # 流水线生成的构建元数据
 build/build-info.json
 

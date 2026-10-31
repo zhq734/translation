@@ -30,6 +30,32 @@ export interface AdaptiveOcrFallbackImage extends AdaptiveOcrFallbackSelection {
 }
 
 /**
+ * 从 PNG 字节的 IHDR 数据块读取尺寸，不展开像素数据。
+ * @param imageBytes PNG 图片字节。
+ * @returns 图片尺寸；不是有效 PNG 时返回 null。
+ * @author zhenghq
+ */
+function readPngDimensions(
+  imageBytes: Uint8Array | Buffer
+): { width: number; height: number } | null {
+  if (imageBytes.byteLength < 24 ||
+    imageBytes[0] !== 0x89 ||
+    imageBytes[1] !== 0x50 ||
+    imageBytes[2] !== 0x4e ||
+    imageBytes[3] !== 0x47) {
+    return null
+  }
+  const view = new DataView(
+    imageBytes.buffer,
+    imageBytes.byteOffset,
+    imageBytes.byteLength
+  )
+  const width = view.getUint32(16, false)
+  const height = view.getUint32(20, false)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
  * 将用户倍率约束到兼容的 1～3 范围。
  * @param scale 用户设置的最大尝试倍率。
  * @returns 安全的最大尝试倍率。
@@ -80,6 +106,19 @@ export function preprocessOcrBaselineImageBytes(
 }
 
 /**
+ * 从 PDF 扫描页原始 PNG 生成固定 1× 文档基线，不应用截图 OCR 的通用像素预算。
+ * PDF 栅格化器已单独限制页面尺寸，二次降采样会显著破坏小字号 PaddleOCR 识别。
+ * @param imageBytes 原始 PNG 图片字节。
+ * @returns 保持原始栅格尺寸的基线 PNG 字节。
+ * @author zhenghq
+ */
+export function preprocessDocumentOcrBaselineImageBytes(
+  imageBytes: Uint8Array | Buffer
+): Buffer {
+  return Buffer.from(imageBytes)
+}
+
+/**
  * 从原始 PNG 的解码像素生成单一自适应备用图片。
  * 适度放大与 1× 对比度增强互斥，不会缩放已编码基线或叠加处理策略。
  * @param imageBytes 原始 PNG 图片字节。
@@ -97,6 +136,32 @@ export function createAdaptiveOcrFallbackImageBytes(
   const candidate = selection.strategy === 'moderate-scale'
     ? resizeRgbaForOcr(image, selection.actualScale)
     : enhanceRgbaForOcr(resizeRgbaForOcr(image, 1))
+  return { ...selection, imageBytes: encodePng(candidate) }
+}
+
+/**
+ * 从 PDF 扫描页原始 PNG 生成单一文档自适应备用图片。
+ * 备用候选同样不应用截图 OCR 的通用像素预算，避免增强阶段再次缩小扫描页。
+ * @param imageBytes 原始 PNG 图片字节。
+ * @param maxScale 用户配置的最大尝试倍率。
+ * @returns 备用 PNG 字节及实际采用的策略。
+ * @throws 原图无法解码时抛出解码错误，由协调器隔离处理。
+ * @author zhenghq
+ */
+export function createDocumentAdaptiveOcrFallbackImageBytes(
+  imageBytes: Uint8Array | Buffer,
+  maxScale: number
+): AdaptiveOcrFallbackImage {
+  const dimensions = readPngDimensions(imageBytes)
+  const image = decodePng(imageBytes)
+  const selection = selectAdaptiveOcrFallback(
+    dimensions?.width ?? image.width,
+    dimensions?.height ?? image.height,
+    maxScale
+  )
+  const candidate = selection.strategy === 'moderate-scale'
+    ? resizeRgbaForOcr(image, selection.actualScale)
+    : enhanceRgbaForOcr(image)
   return { ...selection, imageBytes: encodePng(candidate) }
 }
 

@@ -15,5 +15,10 @@ export const webReaderEnUS = defineCatalog({
   'webReader.error.documentNotReady': 'The web page document is not ready yet. Try again shortly.',
   'webReader.error.rootNotReady': 'The web page root element has not been created yet. Try again shortly.',
   'webReader.error.translationFailed': 'Translation failed',
+  'webReader.exportPdf': 'Export PDF',
+  'webReader.exportingPdf': 'Exporting PDF…',
+  'webReader.pdfExported': 'PDF exported',
+  'webReader.pdfExportCancelled': 'PDF export cancelled',
+  'webReader.pdfExportFailed': 'Failed to export PDF',
   'webReader.mainWindowTitle': 'Selection Translator · Web Translation'
 })

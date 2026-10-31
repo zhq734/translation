@@ -9,7 +9,14 @@ import {
 } from './helpers/i18n.ts'
 
 /** 需要检查静态本地化标记的 Renderer 入口。 */
-const ENTRY_FILES = ['index.html', 'selection.html', 'settings.html', 'toast.html', 'web-reader.html'] as const
+const ENTRY_FILES = [
+  'index.html',
+  'selection.html',
+  'settings.html',
+  'toast.html',
+  'web-reader.html',
+  'document.html'
+] as const
 
 /** 必须由 data-i18n-attr 或显式白名单覆盖的静态属性。 */
 const TRANSLATABLE_ATTRIBUTES = ['title', 'aria-label', 'placeholder', 'alt'] as const

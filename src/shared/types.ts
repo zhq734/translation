@@ -9,8 +9,91 @@ import type {
 } from './webPageTranslation'
 
 import type { UiLocale } from './i18n/locale'
+import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
+import type { DocumentPlatformCapability } from './documentPlatformCapability'
+import type {
+  DocumentAssetResult,
+  DocumentApprovedAssetRequest,
+  DocumentApprovedSourceRequest,
+  DocumentExportProgress,
+  DocumentExportRequest,
+  DocumentExportResult,
+  DocumentHistoryEntry,
+  DocumentRunRequest,
+  DocumentRunResult,
+  DocumentSourceResult,
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
+} from './documentWorkspace'
 
 export type { ExtractedWebTextUnit, WebImageOverlayPlacement, WebTranslationMode, WebTranslationScope } from './webPageTranslation'
+export type {
+  DocumentCapabilities,
+  DocumentFormat
+} from './documentTypes'
+export type { DocumentPlatformCapability } from './documentPlatformCapability'
+export type {
+  DocumentAssetResult,
+  DocumentApprovedAssetRequest,
+  DocumentApprovedSourceRequest,
+  DocumentExportProgress,
+  DocumentExportRequest,
+  DocumentExportResult,
+  DocumentHistoryEntry,
+  DocumentRunRequest,
+  DocumentRunResult,
+  DocumentSourceResult,
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
+} from './documentWorkspace'
+
+/** 文档文件选择成功结果，只向 Renderer 暴露校验后的元数据。 */
+export interface DocumentFileSelectionSuccess {
+  /** 选择成功。 */
+  status: 'selected'
+  /** 用户选择的本地文件绝对路径。 */
+  path: string
+  /** 文件名，用于界面展示。 */
+  fileName: string
+  /** 文件字节数。 */
+  size: number
+  /** 已校验的文档格式。 */
+  format: DocumentFormat
+  /** 完整文件内容的 SHA-256 指纹，用于安全恢复旧译文。 */
+  sha256: string
+  /** 当前格式可用的解析、OCR 与导出能力。 */
+  capabilities: DocumentCapabilities
+}
+
+/** 用户取消文件选择。 */
+export interface DocumentFileSelectionCancelled {
+  /** 用户主动取消。 */
+  status: 'cancelled'
+}
+
+/** 文件在选择阶段被拒绝的稳定分类。 */
+export type DocumentFileSelectionRejectionCode =
+  | 'unsupported-format'
+  | 'invalid-header'
+  | 'empty-file'
+  | 'too-large'
+  | 'unreadable'
+
+/** 文件在选择阶段被拒绝；不得携带路径、文件对象或任务字段。 */
+export interface DocumentFileSelectionRejected {
+  /** 文件未通过校验。 */
+  status: 'rejected'
+  /** 可本地化的稳定错误分类。 */
+  code: DocumentFileSelectionRejectionCode
+  /** 扩展名可识别时返回的格式。 */
+  format?: DocumentFormat
+}
+
+/** 文档文件选择结果。 */
+export type DocumentFileSelectionResult =
+  | DocumentFileSelectionSuccess
+  | DocumentFileSelectionCancelled
+  | DocumentFileSelectionRejected
 
 /** 划词后的弹窗触发方式。 */
 export type TriggerMode = 'auto' | 'button' | 'hotkey'
@@ -712,6 +795,20 @@ export interface Settings {
   manualTranslationHotkey: string
   /** 全局网页阅读器快捷键，空字符串表示不注册。 */
   webReaderHotkey: string
+  /** 全局文档翻译快捷键，空字符串表示不注册。 */
+  documentTranslationHotkey: string
+  /** 是否启用文档翻译入口与任务执行。 */
+  documentTranslationEnabled: boolean
+  /** 单个文档允许的最大字节数。 */
+  documentTranslationMaxFileBytes: number
+  /** 单个文档允许解析的最大页数。 */
+  documentTranslationMaxPages: number
+  /** 单个文档最多进入 OCR 的不同图片数量。 */
+  documentTranslationMaxOcrImages: number
+  /** 文档翻译持久化缓存允许占用的最大字节数。 */
+  documentTranslationCacheMaxBytes: number
+  /** 文档翻译缓存保留天数。 */
+  documentTranslationCacheMaxAgeDays: number
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
@@ -786,7 +883,7 @@ export interface Settings {
 }
 
 /** 可注册的全局快捷键字段标识。 */
-export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey'
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
 
 /** 单个全局快捷键的注册状态。 */
 export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
@@ -851,6 +948,14 @@ export interface WebReaderState {
   imageSkipped?: number
   /** OCR 或翻译失败的图片数量。 */
   imageFailed?: number
+}
+
+/** 网页翻译导出 PDF 的结果。 */
+export interface WebPagePdfExportResult {
+  /** 导出结果分类。 */
+  status: 'saved' | 'cancelled' | 'rejected'
+  /** 失败或拒绝时的稳定错误分类。 */
+  code?: string
 }
 
 /** 携带任务代次的网页文本提取结果。 */
@@ -1115,11 +1220,73 @@ export interface Api {
   /** 请求主进程显示并固定手动翻译模式。 */
   openManualTranslate(): void
   copy(text: string): void
+  /** 读取系统剪贴板中的纯文本，供手动翻译右键快速粘贴。 */
+  readClipboardText(): Promise<string>
   hide(): void
   /** 请求主进程按内容自然尺寸调整弹窗大小。 */
   resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 打开或聚焦独立文档翻译工作台。 */
+  openDocumentWorkspace(): void
+  /** 通过主进程文件选择器一次导入并校验多个本地文档。 */
+  selectDocumentFiles(): Promise<DocumentFileSelectionResult[]>
+  /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
+  approveDocumentFile(path: string): Promise<DocumentFileSelectionResult>
+  /** 重新校验拖放得到的多个本地文档路径并登记为当前窗口可运行文件。 */
+  approveDocumentFiles(paths: string[]): Promise<DocumentFileSelectionResult[]>
+  /** 查询当前平台是否允许启用文档翻译。 */
+  getDocumentPlatformCapability(): Promise<DocumentPlatformCapability>
+  /** 启动当前已批准文件的翻译任务。 */
+  runDocument(request: DocumentRunRequest): Promise<DocumentRunResult>
+  /** 使用新代际重新翻译指定文档任务中的失败项。 */
+  retryFailedDocument(jobId: string, generation: number): Promise<DocumentRunResult>
+  /** 使用新代际仅重试指定文档任务中的一个可重试目标。 */
+  retryFailedDocumentTarget(
+    jobId: string,
+    generation: number,
+    targetId: string
+  ): Promise<DocumentRunResult>
+  /** 取消当前文档翻译任务。 */
+  cancelDocument(jobId: string, generation: number): Promise<boolean>
+  /** 关闭文档标签后释放对应任务及其资源。 */
+  releaseDocumentJob(jobId: string): Promise<boolean>
+  /** 校验当前任务并导出完整或已确认的部分 PDF。 */
+  exportDocumentPdf(request: DocumentExportRequest): Promise<DocumentExportResult>
+  /** 取消当前正在执行的 PDF 导出，任务终态保持不变。 */
+  cancelDocumentExport(jobId: string, generation: number): Promise<boolean>
+  /** 在系统文件管理器中定位当前任务最近一次成功导出的 PDF。 */
+  openDocumentExportFolder(jobId: string, generation: number): Promise<boolean>
+  /** 订阅不包含路径或正文的 PDF 导出阶段进度。 */
+  onDocumentExportProgress(
+    callback: (progress: DocumentExportProgress) => void
+  ): () => void
+  /** 读取按更新时间倒序排列的文档任务安全摘要。 */
+  listDocumentHistory(): Promise<DocumentHistoryEntry[]>
+  /** 打开指定历史任务的完整只读快照。 */
+  openDocumentHistory(jobId: string): Promise<{ snapshot: DocumentWorkspaceSnapshot } | null>
+  /** 删除指定任务历史及其源文件对应的翻译缓存。 */
+  deleteDocumentHistory(jobId: string): Promise<boolean>
+  /** 清空全部文档翻译缓存与任务历史，不修改用户设置。 */
+  clearDocumentCache(): Promise<void>
+  /** 读取指定任务中的受控图片资源。 */
+  getDocumentAsset(jobId: string, assetId: string): Promise<DocumentAssetResult>
+  /** 读取指定 PDF 任务的原始字节，供 PDF.js 原生预览。 */
+  getDocumentSource(jobId: string): Promise<DocumentSourceResult>
+  /** 读取已重新授权历史文件的受控图片资源。 */
+  getApprovedDocumentAsset(request: DocumentApprovedAssetRequest): Promise<DocumentAssetResult>
+  /** 读取已重新授权历史文件的源预览字节。 */
+  getApprovedDocumentSource(request: DocumentApprovedSourceRequest): Promise<DocumentSourceResult>
+  /** 订阅文档翻译进度。 */
+  onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
+  /** 订阅单个翻译区块的增量更新。 */
+  onDocumentBlockTranslated(
+    callback: (update: DocumentWorkspaceTranslationUpdate) => void
+  ): () => void
+  /** 订阅文档翻译终态。 */
+  onDocumentCompleted(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
+  /** 从 Electron 拖放 File 对象读取受信任的本地路径。 */
+  getDocumentDroppedFilePath(file: File): string
   /** 打开内置网页翻译阅读器。 */
   openWebReader(url?: string): void
   /** 关闭内置网页翻译阅读器。 */
@@ -1142,6 +1309,8 @@ export interface Api {
   webTranslateCancel(): void
   /** 切换远程网页的原文或译文。 */
   webTranslateSetMode(mode: WebTranslationMode): Promise<WebTranslationApplyPayload>
+  /** 将当前网页译文导出为带水印 PDF。 */
+  exportWebPagePdf(): Promise<WebPagePdfExportResult>
   /** 订阅网页阅读器状态。 */
   onWebReaderState(cb: (state: WebReaderState) => void): () => void
   /** 订阅网页翻译进度。 */

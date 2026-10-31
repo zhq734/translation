@@ -1,0 +1,1860 @@
+{
+  "pages": 6,
+  "warnings": [
+    {
+      "code": "embedded-image-ocr-required",
+      "severity": "warning",
+      "message": "The PDF page contains images whose text will be recognized during OCR.",
+      "pageId": "page-a81d4ad7466c"
+    },
+    {
+      "code": "embedded-image-ocr-required",
+      "severity": "warning",
+      "message": "The PDF page contains images whose text will be recognized during OCR.",
+      "pageId": "page-a41d448b2ebd"
+    }
+  ],
+  "summary": [
+    {
+      "page": 1,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "text",
+          "id": "block-d2355b1dd5c0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 38.74999926541663,
+            "y": 39.2499992845832,
+            "width": 25.49804802117505,
+            "height": 7.000000268333338
+          },
+          "text": "⽆⼼-gh",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-7836cc60c0e2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.67334060097787,
+            "y": 39.2499992845832,
+            "width": 26.844728635547796,
+            "height": 7.000000268333338
+          },
+          "text": "ai润滑剂",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-b047a3abc60d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 53.60156233472648,
+            "y": 61.75000014708317,
+            "width": 14.000001236666648,
+            "height": 7.000000268333338
+          },
+          "text": "代码",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-5b9a27aed151",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 97.2656265085154,
+            "y": 61.75000014708317,
+            "width": 14.000001236666648,
+            "height": 7.000000268333338
+          },
+          "text": "问题",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-2e2b0c91ea31",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 147.0781284179944,
+            "y": 61.75000014708317,
+            "width": 28.000002473333296,
+            "height": 7.000000268333338
+          },
+          "text": "拉取请求",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-6abdfaa437f4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 212.8125059378119,
+            "y": 61.75000014708317,
+            "width": 14.000001236666662,
+            "height": 7.000000268333338
+          },
+          "text": "操作",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-82ce9f8ffe5a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 263.4765728799342,
+            "y": 61.75000014708317,
+            "width": 14.000001236666606,
+            "height": 7.000000268333338
+          },
+          "text": "项⽬",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-14fb7e027f46",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 324.53907522066316,
+            "y": 61.75000014708317,
+            "width": 35.0000030916666,
+            "height": 7.000000268333338
+          },
+          "text": "安全与质量",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-6a6e2425bdb7",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 406.14063834872275,
+            "y": 61.75000014708317,
+            "width": 14.000001236666606,
+            "height": 7.000000268333338
+          },
+          "text": "洞察",
+          "length": 2
+        },
+        {
+          "kind": "shape",
+          "id": "block-dc940428f6b9",
+          "translatable": false,
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 76.75000072208317,
+            "width": 37.500001437499876,
+            "height": 1.0000000383333258
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-f9f6ba4e9e75",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 50.24999970624992,
+            "y": 86.75000110541636,
+            "width": 84.00000381999976,
+            "height": 25.500000977499994
+          },
+          "text": "⼈⼯智能润滑剂公共通知",
+          "length": 11
+        },
+        {
+          "kind": "image",
+          "id": "block-c67075e9229c",
+          "translatable": false,
+          "bbox": {
+            "x": 35.75000107041656,
+            "y": 86.75000422541635,
+            "width": 12.00000045999996,
+            "height": 12.000000459999953
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-2fe01400a612",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.25000104791647,
+            "y": 106.25000185291637,
+            "width": 34.441419050332385,
+            "height": 6.0000002299999835
+          },
+          "text": "Fork20(20)",
+          "length": 10
+        },
+        {
+          "kind": "shape",
+          "id": "block-c510229b75ca",
+          "translatable": false,
+          "bbox": {
+            "x": 35.99999915999997,
+            "y": 106.2500018529164,
+            "width": 1,
+            "height": 8.000000306666664
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-a6f026e22c3e",
+          "translatable": false,
+          "bbox": {
+            "x": 71.00000050166653,
+            "y": 106.2500018529164,
+            "width": 1,
+            "height": 8.000000306666664
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-f5862add078c",
+          "translatable": false,
+          "bbox": {
+            "x": 137.500003050833,
+            "y": 106.2500018529164,
+            "width": 1,
+            "height": 8.000000306666664
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-226742448b32",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.671874147421846,
+            "y": 136.75000302208295,
+            "width": 23.141911902731522,
+            "height": 8.000000306666635
+          },
+          "text": "About",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-e5d45431f5bf",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 154.75000371208293,
+            "width": 107.40625611723934,
+            "height": 8.000000306666635
+          },
+          "text": "⼀个平台，串起AI的全套⽣态",
+          "length": 14
+        },
+        {
+          "kind": "text",
+          "id": "block-92783af6d64d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.71240195247536,
+            "y": 172.75000440208285,
+            "width": 26.345704197418527,
+            "height": 7.000000268333338
+          },
+          "text": "Readme",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-69cc6c13d9c4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.71240195247536,
+            "y": 187.2500049579161,
+            "width": 24.916993242651287,
+            "height": 7.000000268333338
+          },
+          "text": "License",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-2ef0466343bb",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.71240195247536,
+            "y": 201.75000551374936,
+            "width": 24.11035257423005,
+            "height": 7.000000268333338
+          },
+          "text": "Activity",
+          "length": 8
+        },
+        {
+          "kind": "text",
+          "id": "block-5a14eb46c574",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.71240195247536,
+            "y": 216.25000606958272,
+            "width": 26.530274516993714,
+            "height": 7.000000268333338
+          },
+          "text": "78stars",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-50ddfdd5982d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 94.1733412334778,
+            "y": 216.25000606958272,
+            "width": 35.748536620360426,
+            "height": 7.000000268333338
+          },
+          "text": "0watching",
+          "length": 9
+        },
+        {
+          "kind": "text",
+          "id": "block-affe77584686",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 149.85303086786564,
+            "y": 216.25000606958272,
+            "width": 27.03125358619795,
+            "height": 7.000000268333338
+          },
+          "text": "20forks",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-2175e1a757ed",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.712401492475394,
+            "y": 230.75000662541598,
+            "width": 56.413576612520174,
+            "height": 7.000000268333338
+          },
+          "text": "Reportrepository",
+          "length": 16
+        },
+        {
+          "kind": "shape",
+          "id": "block-3c78ab4aa9e5",
+          "translatable": false,
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 248.2500072962493,
+            "width": 524.0000200866649,
+            "height": 1
+          }
+        },
+        {
+          "kind": "image",
+          "id": "block-7da8df274433",
+          "translatable": false,
+          "bbox": {
+            "x": 470.3999804,
+            "y": 259.91998917,
+            "width": 53.75999776000003,
+            "height": 18.719999219999977
+          }
+        },
+        {
+          "kind": "image",
+          "id": "block-f89b88f08544",
+          "translatable": false,
+          "bbox": {
+            "x": 471.11998037,
+            "y": 260.63998914,
+            "width": 52.319997820000026,
+            "height": 17.27999927999997
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-9f8668f1701e",
+          "translatable": false,
+          "bbox": {
+            "x": 52.999999811666584,
+            "y": 263.7500078904159,
+            "width": 1,
+            "height": 10.000000383333315
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-82509b0685d9",
+          "translatable": false,
+          "bbox": {
+            "x": 319.00001000833237,
+            "y": 263.7500078904159,
+            "width": 1,
+            "height": 10.000000383333315
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-5103bc68f94e",
+          "translatable": false,
+          "bbox": {
+            "x": 425.00001407166536,
+            "y": 263.7500078904159,
+            "width": 1,
+            "height": 10.000000383333315
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-0eddd4f370a9",
+          "translatable": false,
+          "bbox": {
+            "x": 527.000017981665,
+            "y": 263.7500078904159,
+            "width": 1,
+            "height": 10.000000383333315
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-78f7bc963195",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 122.21240480830846,
+            "y": 264.25000790958245,
+            "width": 35.50586121755785,
+            "height": 7.500000287500029
+          },
+          "text": "1分⽀7标签",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-504d80b33956",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 335.48438564023337,
+            "y": 264.25000790958245,
+            "width": 28.000002473333268,
+            "height": 7.500000287500029
+          },
+          "text": "转到⽂件",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-5bdc7e8c6fc0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 431.44679166229184,
+            "y": 264.25000790958245,
+            "width": 29.83431974228148,
+            "height": 7.500000287500029
+          },
+          "text": "Gotofile",
+          "length": 8
+        },
+        {
+          "kind": "text",
+          "id": "block-ce2f56996bbc",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 490.2500165729152,
+            "y": 264.25000790958245,
+            "width": 14.000001236666662,
+            "height": 7.500000287500029
+          },
+          "text": "代码",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-3335928a9dd2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 71.25000051124985,
+            "y": 264.75000792874914,
+            "width": 14.000001236666662,
+            "height": 7.000000268333338
+          },
+          "text": "主要",
+          "length": 2
+        },
+        {
+          "kind": "shape",
+          "id": "block-52c57f158b74",
+          "translatable": false,
+          "bbox": {
+            "x": 52.999999811666584,
+            "y": 287.7500088104158,
+            "width": 1,
+            "height": 21.75000091041659
+          }
+        },
+        {
+          "kind": "image",
+          "id": "block-7dd505fcec1c",
+          "translatable": false,
+          "bbox": {
+            "x": 59.749999110416596,
+            "y": 293.25000650124923,
+            "width": 10.000000863333284,
+            "height": 10.000000863333298
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-5713025dfc46",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 73.75000060708318,
+            "y": 294.25000905958245,
+            "width": 157.02246615669378,
+            "height": 7.000000268333338
+          },
+          "text": "管理员来⾃master分⽀的发布快照@ce2a0025",
+          "length": 27
+        },
+        {
+          "kind": "text",
+          "id": "block-f7bb719d53c4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 464.02345556756376,
+            "y": 294.25000905958245,
+            "width": 47.85058873427238,
+            "height": 7.000000268333338
+          },
+          "text": "68437f8上个⽉",
+          "length": 10
+        },
+        {
+          "kind": "table",
+          "id": "block-5b3c54d93a09",
+          "translatable": true,
+          "bbox": {
+            "x": 52.999999811666584,
+            "y": 311.5000097208324,
+            "width": 489.500018764165,
+            "height": 491.7500188504149
+          },
+          "rows": 24,
+          "text": "。tmp-保护-测试 | 主@4fd079f6的发布快照 | 上个⽉ | 代理⼈ | master@ce2a0025的发布快照 | 上个⽉ | 渠道导⼊器 | 从master@498a9dfd发布快照 | 上个⽉ | 部署 | 从主分⽀发布快照@ce2a0025 | 上个⽉ | 桌⾯ | master@5ee504f5发布快照 | 上个⽉ | 设备控制@29cf02f | 从主分⽀释放快照@5ee504f5 | 上个⽉ | docs-站点 | master@777cd80f的发⾏快照 | 上个⽉ | ⽂档 | 从主分⽀发布快照@ce2a0025 | 上个⽉ | 集成 | 从主分⽀释放快照@4fd079f6 | 上个⽉ | 限制 | 从主分⽀释放快照@4fd079f6 | 上个⽉ | 多磷酸钙 | master@19e59429的发布快照 | 上个⽉ | mcp_builtin | 从master@9f04eb2f发布快照 | 上个⽉ | mcp_runtime | 从主分⽀发布快照@19e59429 | 上个⽉ | mcp_sdk | 从主分⽀释放快照@5ee504f5 | 上个⽉ |"
+        },
+        {
+          "kind": "shape",
+          "id": "block-c135a541d6e1",
+          "translatable": false,
+          "bbox": {
+            "x": 52.999999811666584,
+            "y": 805.2500285712473,
+            "width": 1,
+            "height": 9.500000440833446
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-820923567172",
+          "translatable": false,
+          "bbox": {
+            "x": 542.2500185662483,
+            "y": 805.2500285712473,
+            "width": 1,
+            "height": 9.500000440833446
+          }
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "table",
+          "id": "block-f3ad8b004a91",
+          "translatable": true,
+          "bbox": {
+            "x": 53.249999821249915,
+            "y": 36.75005414874772,
+            "width": 421.000016138332,
+            "height": 553.5000212174982
+          },
+          "rows": 27,
+          "text": "隧道服务器 | 从主分⽀发布快照@19e59429 | 上个⽉ | ⽤户前端@b3a5bad | 从主分⽀发布快照@ce2a0025 | 上个⽉ | ⽤户平台 | 从主分⽀发布快照@ce2a0025 | 上个⽉ | 。.dockerignore | 从主分⽀释放快照@4fd079f6 | 上个⽉ | 。环境示例 | 来⾃master@736bbaf8的发布快照 | 上个⽉ | 。footer-verify.js | 从主分⽀释放快照@4fd079f6 | 上个⽉ | 。忽略⽂件 | 从主分⽀发布快照@ce2a0025 | 上个⽉ | 。⼦模块 | 从主分⽀释放快照@4fd079f6 | 上个⽉ | 。stage2-server-progress.md | 从主分⽀发布快照@19e59429 | 上个⽉ | 。stage3-wda-job-progress.md | 从主分⽀发布快照@19e59429 | 上个⽉ | 代理.md | 从主分⽀释放快照@4fd079f6 | 上个⽉ | Dockerfile | 从主分⽀发布快照@ce2a0025 | 上个⽉ | Dockerfile.代码"
+        },
+        {
+          "kind": "text",
+          "id": "block-c89fe9ae1d18",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 74.25000062624986,
+            "y": 596.7500756154127,
+            "width": 30.228516971259666,
+            "height": 7.000000268333338
+          },
+          "text": "牧⼈.toml",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-3f3b1d1d9b1b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 211.60157089139273,
+            "y": 596.7500756154127,
+            "width": 96.39355869508603,
+            "height": 7.000000268333338
+          },
+          "text": "从主分⽀释放快照@4fd079f6",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-e53c8e60aba4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 445.2343898473164,
+            "y": 596.7500756154127,
+            "width": 21.000001854999937,
+            "height": 7.000000268333338
+          },
+          "text": "上个⽉",
+          "length": 3
+        },
+        {
+          "kind": "text",
+          "id": "block-efd4618f2741",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 659.7499817904162,
+            "width": 80.00000706666657,
+            "height": 16.000000613333327
+          },
+          "text": "⼈⼯润滑剂",
+          "length": 5
+        },
+        {
+          "kind": "shape",
+          "id": "block-98cbb6c2bed2",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 684.7499827487495,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-9b30ce91b756",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 694.2499831129162,
+            "width": 136.00001201333322,
+            "height": 8.000000306666635
+          },
+          "text": "⼀个平台，串起⼈⼯智能的全套⽣态。",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-d7c3bca46746",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 714.2499838795828,
+            "width": 503.05472848376166,
+            "height": 8.00000030666665
+          },
+          "text": "亞惟润滑油是⾯向团队与个⼈的Ai开发平台。模型中转、代理、编辑器接⼊、代码评审、远程节点、内⽹穿透、浏览器控制、⼿机控制、⼿机客",
+          "length": 64
+        },
+        {
+          "kind": "text",
+          "id": "block-38759b73469a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 726.2499843395827,
+            "width": 485.7031464186183,
+            "height": 8.000000306666635
+          },
+          "text": "户端、邮件与安全把控--全部内置、互相咬合、统⼀治理。不是⼯具拼盘、是⼀套能直接跑⽣产的完整⽣态、并提供开放/⼈类兼容接⼝。",
+          "length": 62
+        },
+        {
+          "kind": "text",
+          "id": "block-611fd75615a2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 749.2499852212494,
+            "width": 48.00000423999994,
+            "height": 12.000000459999953
+          },
+          "text": "核⼼能⼒",
+          "length": 4
+        },
+        {
+          "kind": "shape",
+          "id": "block-4ad44e681ada",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 767.749985930416,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-d760cd657e0d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 777.2499862945826,
+            "width": 484.6601767786376,
+            "height": 8.000000306666635
+          },
+          "text": "统⼀模型⽹关:多渠道、多账号统⼀接⼊、渠道智能选路、九种冻结模式、双层限流重试、⽤量归⼀;⽀持⽹络代理、URL前缀代理、直连和",
+          "length": 63
+        },
+        {
+          "kind": "text",
+          "id": "block-1908229605a4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 789.2499867545826,
+            "width": 252.97657789743423,
+            "height": 8.000000306666642
+          },
+          "text": "节点出⼝四种模式;免费模型监控与模型列表⾃动更新;⾃定义代码渠道。",
+          "length": 33
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-e500d204aa06",
+          "translatable": false,
+          "bbox": {
+            "x": 52.74999980208325,
+            "y": 27.7500847637466,
+            "width": 1,
+            "height": 305.9999152362534
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-4f2864f988bb",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 28.749998882083297,
+            "width": 486.3633086439239,
+            "height": 20.000000766666552
+          },
+          "text": "代理:主/⼦代理派发、定时任务;终端、浏览器、⽹⻚内、邮箱四种载体;记忆增强;资源显式授权。代理能⼒随数据服务运⾏，不需要额外的代理进程。",
+          "length": 69
+        },
+        {
+          "kind": "text",
+          "id": "block-c720fcea1bf1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 54.74999987874988,
+            "width": 469.50392339764824,
+            "height": 8.000000306666642
+          },
+          "text": "连接编辑器:Claude代码/Codex/OpenCode/游标/GeminiCLI接⼊;多环境选择(分⽀模式);代码审查(PR⾃动审查);多任务隔离;项⽬/任",
+          "length": 80
+        },
+        {
+          "kind": "text",
+          "id": "block-d6be865751e6",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 66.7500003387498,
+            "width": 45.378909439524676,
+            "height": 8.000000306666635
+          },
+          "text": "务/Git标识。",
+          "length": 8
+        },
+        {
+          "kind": "text",
+          "id": "block-368da20897b4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 80.75000087541648,
+            "width": 488.65627273182133,
+            "height": 20.000000766666545
+          },
+          "text": "远程节点:⼀键脚本连接代理;节点主动连接平台，⽆需公⽹IP和SSH;⽀持执⾏、管理、被动管理三种⻆⾊，以及PTY终端、主机命令、⽂件服务和HTTP代理出⼝，节点凭据使⽤总封存+审批。",
+          "length": 91
+        },
+        {
+          "kind": "text",
+          "id": "block-cb3bd1c515a8",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.17187400492178,
+            "y": 106.75000187208306,
+            "width": 487.90236850292166,
+            "height": 104.00000398666626
+          },
+          "text": "内⽹穿透:frp/云状/nps三类⽅案;隧道⽅案管理⻚统⼀配置;任务预览端⼝⼀键对外。浏览器控制:把你正在⽤的真实铬交给剂与编辑器--MV3扩展接⼊，提供CDP⼯具集，⽹⻚内剂实时对话和任务级会话隔离。 ⼿机控制:装平台安卓真机(不依赖ADB)即可控制APK:读屏、点击、输⼊、滚动、打开应⽤;iOS⾛节点ios通道。移动端应⽤:iOS/安卓客户端⽀持任务/项⽬跟踪、⼿机发起任务、语⾳转写、图⽚与zip附件，以及APK下载升级。邮箱:邮件读取MCP、按实例隔离只读、⽀持真实邮箱与别名标注、正⽂⻓度控制、附件默认元数据。 MCP、技能与插件⽣态:提供MCP、技能、插件、渠道模板和提示词市场，⽀持Git仓库分发、安装、版本管理和权限治理;资源中⼼接⼊ GitHub著名榜单(技能/MCP/提示词/插件/框架)，集中展示、直接搜索，勾选即⽤于代理、任务、编辑器和代码审查。安全治理:覆盖API密钥⽣命周期(真正失效、⼦密钥归并、常量时间⽐较)、MCP保护(令牌绑实例、审批、吊销)、凭据哈希存储、节点总封",
+          "length": 452
+        },
+        {
+          "kind": "text",
+          "id": "block-0ce326f656a1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 214.7500060120827,
+            "width": 104.0000091866666,
+            "height": 8.000000306666635
+          },
+          "text": "存、审计⽇志和请求级观测。",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-e4375813679f",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 237.75000689374923,
+            "width": 24.000002119999976,
+            "height": 12.000000459999967
+          },
+          "text": "⽂档",
+          "length": 2
+        },
+        {
+          "kind": "shape",
+          "id": "block-0f7d5c8c2b94",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 256.2500076029159,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-603f40312a19",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 265.75000796708247,
+            "width": 460.52736505354676,
+            "height": 8.000000306666664
+          },
+          "text": "⾯向使⽤者的完整⽂档站:https://ai-lubricant.vip100.de5.net/，覆盖产品能⼒、部署、环境变量、节点、移动端、API和运维说明。",
+          "length": 80
+        },
+        {
+          "kind": "text",
+          "id": "block-4caed4359c3c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 288.75000884874913,
+            "width": 24.000002119999976,
+            "height": 12.00000045999996
+          },
+          "text": "架构",
+          "length": 2
+        },
+        {
+          "kind": "shape",
+          "id": "block-8f2ae5f801ef",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 307.25000955791575,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-440dd1c3fefd",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 316.75000992208226,
+            "width": 356.5156386664311,
+            "height": 8.000000306666664
+          },
+          "text": "主仓库保留亞惟润滑剂的数据服务、业务层和治理能⼒;节点、前端和移动端以独⽴仓库挂载为⼦模块:",
+          "length": 46
+        },
+        {
+          "kind": "table",
+          "id": "block-78ea45b7db3e",
+          "translatable": true,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 335.7500106504157,
+            "width": 497.50001907083174,
+            "height": 129.50000496416624
+          },
+          "rows": 7,
+          "text": "⽬录 | 作⽤ | 许可/来源 | 服务器/、代理/、限制/、提供商/等 | 主数据服务、模型聚合、代理、限流计费和管理API | 本仓库BSL. | 节点服务器/ | 独⽴节点控制⾯，接收节点主动连接 | 独⽴仓库，请参阅其LICENSE/NOTICE。 | 节点/ | 执⾏/管理节点客户端与运⾏时 | 独⽴仓库，请参阅其LICENSE/NOTICE。 | ⽤户前端/ | ⽤户⻔户前端 | 独⽴仓库，请参阅其LICENSE/NOTICE。 | 移动/ | 移动端⼯程 | 独⽴仓库，请参阅其LICENSE/NOTICE。 | 设备控制/ | 设备控制MCP与移动设备协议实现 | 独⽴仓库，请参阅其LICENSE/NOTICE。"
+        },
+        {
+          "kind": "shape",
+          "id": "block-8e6eab9f90a0",
+          "translatable": false,
+          "bbox": {
+            "x": 52.74999980208325,
+            "y": 467.7500156337486,
+            "width": 1,
+            "height": 347.0000992983288
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-4f9e629c5fe7",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 477.75001609374846,
+            "width": 48.00000423999994,
+            "height": 12.000000459999967
+          },
+          "text": "快速开始",
+          "length": 4
+        },
+        {
+          "kind": "shape",
+          "id": "block-3f311ee5e6bb",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 496.7500168220818,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-461b295a9300",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.13769370027828,
+            "y": 509.2500173012484,
+            "width": 119.16682325806099,
+            "height": 10.000000383333315
+          },
+          "text": "DockerCompose（推荐）",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-4ad4e66d3620",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.25000302124974,
+            "y": 537.9499860414163,
+            "width": 477.8756718429753,
+            "height": 6.800000460666638
+          },
+          "text": "#1.拉代码(主仓+全部⼦模块，⼀条命令)#。gitmodules使⽤相对地址，⼦模块会⾃动解析到同组织的ai-润滑剂-*仓库#国内直连GitHub慢，⽤gh",
+          "length": 79
+        }
+      ]
+    },
+    {
+      "page": 4,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-0dc7cf3710d3",
+          "translatable": false,
+          "bbox": {
+            "x": 52.74999980208325,
+            "y": 27.75018772374233,
+            "width": 1,
+            "height": 147.99981227625767
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-bce78604674d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 138.7500030987496,
+            "width": 399.47267071311705,
+            "height": 8.000000306666635
+          },
+          "text": "启动后访问http://127.0.0.13006:⽤户⻔户在/控制台，管理端在/管理器。⽣产环境⽤HTTPS反向代理指向3006。",
+          "length": 66
+        },
+        {
+          "kind": "text",
+          "id": "block-03b1a4ef4503",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 158.75000386541623,
+            "width": 42.296876621380065,
+            "height": 8.000000306666635
+          },
+          "text": "服务与端⼝:",
+          "length": 6
+        },
+        {
+          "kind": "table",
+          "id": "block-08c09cab6624",
+          "translatable": true,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 177.7500045937495,
+            "width": 353.50001355083214,
+            "height": 111.00000425499962
+          },
+          "rows": 6,
+          "text": "端⼝ | ⽤途 | 三千零六 | ⽹⻚⼊⼝(数据服务:⽤户⻔户/控制台、管理端/管理器) | ⼋千零三 | 节点控制⾯(只接受节点连接和内部调⽤、不要当⽹⻚访问) | / | PostgreSQL/Redis宿主机调试映射，仅本机调试⽤;⽣产建议从对外映射⾥去掉 | ⼋千零四 | 隧道运⾏时，仅撰写内⽹可达，不对外发布 | / | ClickHouse(可选，--简介clickhouse启⽤)"
+        },
+        {
+          "kind": "shape",
+          "id": "block-e1c75a5b87a4",
+          "translatable": false,
+          "bbox": {
+            "x": 52.74999980208325,
+            "y": 291.2500088679158,
+            "width": 1,
+            "height": 523.5002090241574
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-f919d1c033d5",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 298.2500092129157,
+            "width": 504.8945517542887,
+            "height": 20.000000766666687
+          },
+          "text": "数据持久化:PostgreSQL、Redis与主服务的代理运⾏时数据(记忆/⼯作区/SOP/技能归档)、附件、删除前备份、资源镜像、⽇志、隧道⼆进制缓存分别绑定挂载到宿主。/data/下的独⽴⼦⽬录(pg_data/redis_data/ai_data等，已gitignore)，docker组合保留全部数据(down-v也不影响绑定",
+          "length": 167
+        },
+        {
+          "kind": "text",
+          "id": "block-312aa90b25a9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 322.25001013291563,
+            "width": 182.26563198684838,
+            "height": 8.000000306666664
+          },
+          "text": "挂载数据，清数据=直接删对应⼦⽬录)。备份示例:",
+          "length": 24
+        },
+        {
+          "kind": "text",
+          "id": "block-dc7d2d0e8ea1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 349.45001097558225,
+            "width": 343.8213162042259,
+            "height": 6.800000460666638
+          },
+          "text": "dockercomposeexec-Tpostgrespg_dump-Uai_ubule-dai-润滑剂-Fc>ai-lubricant.dump",
+          "length": 73
+        },
+        {
+          "kind": "text",
+          "id": "block-9b7b3ab9e582",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 379.25001231791543,
+            "width": 40.000003533333256,
+            "height": 10.000000383333315
+          },
+          "text": "本地运⾏",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-57e1dcac947b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 400.750013142082,
+            "width": 172.67578661923767,
+            "height": 8.000000306666664
+          },
+          "text": "需要Python3.11、PostgreSQL16+和Redis6+:",
+          "length": 35
+        },
+        {
+          "kind": "text",
+          "id": "block-0ac2fc8aa369",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 427.95001398474864,
+            "width": 211.14845821843335,
+            "height": 6.800000460666638
+          },
+          "text": "复制.环境示例。环境⽂件pip安装-r要求。txtpythonmain.py",
+          "length": 38
+        },
+        {
+          "kind": "text",
+          "id": "block-1a6085f770a9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 454.75001521208185,
+            "width": 162.29688122137966,
+            "height": 8.000000306666664
+          },
+          "text": "需要节点时，在另⼀个终端启动节点控制服务:",
+          "length": 21
+        },
+        {
+          "kind": "text",
+          "id": "block-3369e88c28b4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 481.95001605474846,
+            "width": 70.845451355742,
+            "height": 6.800000460666638
+          },
+          "text": "python-m节点服务器",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-a5bcc09912c9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 508.7500172820816,
+            "width": 130.29687999471312,
+            "height": 8.000000306666664
+          },
+          "text": "需要内⽹穿透时，再启动隧道运⾏时:",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-50852696ce2d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 535.9500181247483,
+            "width": 70.845451355742,
+            "height": 6.800000460666638
+          },
+          "text": "python-m隧道服务器",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-27daeab31a82",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 563.8093941926909,
+            "width": 498.288300841049,
+            "height": 18.800000920666662
+          },
+          "text": "。env只保存连接、密钥和启动级选项;渠道、模型、账号、API密钥等业务数据存储在PostgreSQL/Redis。env.ini.example仅⽤于兼容旧部署，新部署优先使⽤。env。",
+          "length": 94
+        },
+        {
+          "kind": "text",
+          "id": "block-a66eb2a875c3",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 597.7500206937482,
+            "width": 30.000002649999942,
+            "height": 10.000000383333315
+          },
+          "text": "桌⾯版",
+          "length": 3
+        },
+        {
+          "kind": "text",
+          "id": "block-0eddd1654695",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.17187339158849,
+            "y": 619.2500215179147,
+            "width": 107.41797411768849,
+            "height": 8.000000306666635
+          },
+          "text": "Windows桌⾯壳的构建⼊⼝为:",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-8ab344426351",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 646.4500223605812,
+            "width": 158.06667068363186,
+            "height": 6.800000460666638
+          },
+          "text": "powershell-执⾏策略绕过-⽂件桌⾯/build.ps1",
+          "length": 32
+        },
+        {
+          "kind": "text",
+          "id": "block-0df32acf2c7c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 673.2500235879146,
+            "width": 362.2109550847515,
+            "height": 8.000000306666635
+          },
+          "text": "桌⾯版与本地服务使⽤相同的数据服务、节点控制服务和隧道运⾏时;构建前需要准备⽤户-前端/部分。",
+          "length": 47
+        },
+        {
+          "kind": "text",
+          "id": "block-7fe2200f39d0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.26757652025711,
+            "y": 696.2500244695811,
+            "width": 44.1855497687792,
+            "height": 12.000000459999967
+          },
+          "text": "API示例",
+          "length": 5
+        },
+        {
+          "kind": "shape",
+          "id": "block-de6e9a42a229",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 714.7500251787477,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-2b3e8d118062",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 724.2500255429144,
+            "width": 50.2968769280467,
+            "height": 8.000000306666635
+          },
+          "text": "获取模型列表:",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-67d17b24c206",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999870124992,
+            "y": 751.4500263855809,
+            "width": 151.4758181309826,
+            "height": 6.800000460666652
+          },
+          "text": "curlhttp://localhost:3006/v1/models",
+          "length": 35
+        },
+        {
+          "kind": "text",
+          "id": "block-ad5b242bfa26",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 778.2500276129142,
+            "width": 62.98828366455058,
+            "height": 8.000000306666635
+          },
+          "text": "使⽤OpenAI SDK:",
+          "length": 13
+        }
+      ]
+    },
+    {
+      "page": 5,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "text",
+          "id": "block-5670f2ab5094",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.25000302124974,
+            "y": 35.94999895808324,
+            "width": 478.2273845564579,
+            "height": 6.800000460666652
+          },
+          "text": "fromopenaiimportOpenAIclient=OpenAI(base_url=\"http://localhost:3006/v1\"，api_key=\"yor-api-key\"，)响应e=client.",
+          "length": 106
+        },
+        {
+          "kind": "shape",
+          "id": "block-82fb14d66d36",
+          "translatable": false,
+          "bbox": {
+            "x": 69.2500027145831,
+            "y": 132.2500000895831,
+            "width": 484.0000185533318,
+            "height": 1.0000000383333258
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-d89c237b3490",
+          "translatable": false,
+          "bbox": {
+            "x": 69.2500027145831,
+            "y": 146.25000062624972,
+            "width": 484.0000185533318,
+            "height": 1.0000000383333258
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-1e601b60b0f1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 156.2500037695829,
+            "width": 432.6250169839569,
+            "height": 8.000000306666635
+          },
+          "text": "本地直跑(pythonmain.py)时端⼝为8001。具体的流式响应、错误格式、兼容协议和鉴权⽅式⻅docs-site/users-api.html。",
+          "length": 76
+        },
+        {
+          "kind": "text",
+          "id": "block-28f7ee8f9fc2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 179.2500046512494,
+            "width": 48.00000423999994,
+            "height": 12.000000459999967
+          },
+          "text": "社区交流",
+          "length": 4
+        },
+        {
+          "kind": "shape",
+          "id": "block-8bc2adc21b0c",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 198.25000537958277,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-d4545b914a42",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 207.75000574374937,
+            "width": 384.00003391999917,
+            "height": 8.000000306666635
+          },
+          "text": "欢迎加⼊交流群反馈问题与使⽤⼼得。进群领更多免费资源信息、包括主流国产⼤模型、内⽹穿透、域名等等",
+          "length": 48
+        },
+        {
+          "kind": "table",
+          "id": "block-182587e5855a",
+          "translatable": true,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 226.7500064720827,
+            "width": 277.50001063749903,
+            "height": 207.500007954166
+          },
+          "rows": 2,
+          "text": "QQ交流群 | 微信交流群 | Ai_润滑剂群号: | 群聊:⽆⼼、H-one、迈克尔⽉⽇⾯"
+        },
+        {
+          "kind": "text",
+          "id": "block-7199287302b4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 446.75001490541524,
+            "width": 24.000002119999976,
+            "height": 12.000000459999967
+          },
+          "text": "鸣谢",
+          "length": 2
+        },
+        {
+          "kind": "shape",
+          "id": "block-ffc64d4e0026",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 465.2500156145819,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-61e8a5a8548d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.17187400492178,
+            "y": 474.7500159787485,
+            "width": 309.9179822801879,
+            "height": 50.00000191666663
+          },
+          "text": "猴⼦代码(chaitin/猴⼦代码)--⽤户平台兼容层与⽤户⻔户前端的上游基础(AGPL-3.0)。 jaychempan/代理-排⾏榜-资源中⼼接⼊的代理榜单数据源。通⽤代理(datahalechina)--本平台代理运⾏时(通⽤代理)架构的上游参考。 L站--感谢L站。",
+          "length": 137
+        },
+        {
+          "kind": "shape",
+          "id": "block-83753bf37160",
+          "translatable": false,
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 484.25001634291516,
+            "width": 309.8437618773428,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-ca456a8e6337",
+          "translatable": false,
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 498.2500168795818,
+            "width": 213.05469816709578,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-b415dc79212c",
+          "translatable": false,
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 512.2500174162484,
+            "width": 271.8750104218741,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-0a3e70249eb4",
+          "translatable": false,
+          "bbox": {
+            "x": 85.24999900791656,
+            "y": 526.250017952915,
+            "width": 60.195314807486795,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-6136b399398e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 539.750018470415,
+            "width": 72.0000063599999,
+            "height": 12.000000459999967
+          },
+          "text": "发布与许可证",
+          "length": 6
+        },
+        {
+          "kind": "shape",
+          "id": "block-d35b225a1a93",
+          "translatable": false,
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 558.2500191795815,
+            "width": 506.00001939666504,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-d5da78f70a55",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 567.7500195437482,
+            "width": 498.3359611028761,
+            "height": 8.000000306666664
+          },
+          "text": "本仓库⾃研部分采⽤业务来源许可证1.1(BSL1.1)。在更改⽇期到来前，个⼈、学习研究、内部评估和⾮商业使⽤按许可证约定进⾏;商业产品、",
+          "length": 69
+        },
+        {
+          "kind": "text",
+          "id": "block-a96885a0f4ec",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 579.7500200037482,
+            "width": 440.0000388666656,
+            "height": 8.000000306666664
+          },
+          "text": "商业服务、经营性活动或向第三⽅提供营利服务、需要事先取得著作权⼈的商业授权。更改⽇期和更改许可证以许可证为准。",
+          "length": 55
+        },
+        {
+          "kind": "text",
+          "id": "block-ea1a5f5df2d7",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.17187339158849,
+            "y": 599.7500207704148,
+            "width": 504.5703443418604,
+            "height": 28.000001073333124
+          },
+          "text": "GitHub发布使⽤脚本/publish_github.sh⽣成快照。内部开发仓库保留完整历史，公开仓库只接收选定版本的发布快照。并发会话在途、需要只发布已提交内容时、加COMMITTED_ONLY=1:仅⽤户-前端/dot会被定向构建并提交，其余⼯作树脏改动原样保留不纳⼊",
+          "length": 137
+        },
+        {
+          "kind": "text",
+          "id": "block-926947a13eb0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 631.7500219970814,
+            "width": 323.3320427943934,
+            "height": 8.000000306666635
+          },
+          "text": "快照(前端除dot外必须⼲净，否则中⽌;或配合skip_front_build=1个直接发布当前各仓头)。",
+          "length": 53
+        },
+        {
+          "kind": "text",
+          "id": "block-941164f4a739",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.24999839458329,
+            "y": 651.7500227637479,
+            "width": 504.0000445199987,
+            "height": 8.000000306666635
+          },
+          "text": "独⽴⼦模块具有⾃⼰的许可证和归属声明，使⽤或再分发时必须同时遵守各⾃⽬录中的许可证、通知以及上游项⽬要求。根⽬录通知记录本仓库",
+          "length": 63
+        },
+        {
+          "kind": "shape",
+          "id": "block-c2bc244d9f48",
+          "translatable": false,
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 675.7501955237412,
+            "width": 520.0000199333316,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-3e4ee852e137",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 685.2501958879078,
+            "width": 16.000001413333308,
+            "height": 8.000000306666635
+          },
+          "text": "发布",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-fb8a586d2438",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 45.712401875808695,
+            "y": 703.2501965779077,
+            "width": 25.1118184191196,
+            "height": 7.000000268333338
+          },
+          "text": "7个标签",
+          "length": 4
+        },
+        {
+          "kind": "shape",
+          "id": "block-a90e04c0c4cf",
+          "translatable": false,
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 720.7501972487412,
+            "width": 520.0000199333316,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-40c4efbb48be",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 730.2501976129073,
+            "width": 24.000002119999962,
+            "height": 8.000000306666635
+          },
+          "text": "贡献者",
+          "length": 3
+        },
+        {
+          "kind": "text",
+          "id": "block-b12ca2fe38fc",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 747.7501982837409,
+            "width": 30.000002649999956,
+            "height": 6.0000002299999835
+          },
+          "text": "没有贡献者",
+          "length": 5
+        },
+        {
+          "kind": "shape",
+          "id": "block-bc11219f4bf1",
+          "translatable": false,
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 764.2501989162406,
+            "width": 520.0000199333316,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-0053d49c275d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74999915041664,
+            "y": 773.7501992804072,
+            "width": 16.000001413333308,
+            "height": 8.000000306666635
+          },
+          "text": "语⾔",
+          "length": 2
+        }
+      ]
+    },
+    {
+      "page": 6,
+      "width": 595.91998,
+      "height": 842.88,
+      "blocks": [
+        {
+          "kind": "text",
+          "id": "block-db68c93db254",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 43.74999945708328,
+            "y": 29.75015372041091,
+            "width": 40.29489665166875,
+            "height": 6.00000022999998
+          },
+          "text": "Python93.2%",
+          "length": 11
+        },
+        {
+          "kind": "text",
+          "id": "block-9ab55c80d3a3",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 100.04687661512997,
+            "y": 29.75015372041091,
+            "width": 28.99606806854706,
+            "height": 6.00000022999998
+          },
+          "text": "HTML4%",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-ff06d7cb671a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 145.04687834012984,
+            "y": 29.75015372041091,
+            "width": 42.728490544956514,
+            "height": 6.00000022999998
+          },
+          "text": "JavaScript2%",
+          "length": 12
+        },
+        {
+          "kind": "text",
+          "id": "block-64cc02ceb7bd",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 203.781255591614,
+            "y": 29.75015372041091,
+            "width": 27.60934921538953,
+            "height": 6.00000022999998
+          },
+          "text": "弹壳0.4%",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-50a99cb1d905",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 247.39844726360616,
+            "y": 29.75015372041091,
+            "width": 29.38766963355846,
+            "height": 6.00000022999998
+          },
+          "text": "CSS0.3%",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-8d3c8ac48d57",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 292.78907400357997,
+            "y": 29.75015372041091,
+            "width": 20.412090889494664,
+            "height": 6.00000022999998
+          },
+          "text": "到0.1%",
+          "length": 5
+        }
+      ]
+    }
+  ]
+}

@@ -33,6 +33,7 @@ const sourceLang = document.getElementById('web-source-lang') as HTMLSelectEleme
 const targetLang = document.getElementById('web-target-lang') as HTMLSelectElement
 const translateButton = document.getElementById('web-translate') as HTMLButtonElement
 const cancelButton = document.getElementById('web-cancel') as HTMLButtonElement
+const exportButton = document.getElementById('web-export-pdf') as HTMLButtonElement
 const modeSelect = document.getElementById('web-mode') as HTMLSelectElement
 const viewSlot = document.getElementById('web-view-slot') as HTMLElement
 const status = document.getElementById('web-status') as HTMLElement
@@ -44,6 +45,7 @@ const windowCloseButton = document.getElementById('window-close') as HTMLButtonE
 
 let currentState: WebReaderState | null = null
 let translating = false
+let exportingPdf = false
 let extractedRevision = -1
 let translationGeneration = 0
 /** 当前状态文案的重算工厂，供界面语言切换后立即刷新。 */
@@ -143,6 +145,17 @@ function populateLanguages(settings: Settings): void {
 }
 
 /**
+ * 根据当前页面与任务状态刷新 PDF 导出按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateExportButtonState(): void {
+  const hasTranslation = (currentState?.translationDone ?? 0) > 0
+  exportButton.disabled = exportingPdf || translating || !currentState?.url || !hasTranslation
+  exportButton.textContent = exportingPdf ? t('webReader.exportingPdf') : t('webReader.exportPdf')
+}
+
+/**
  * 根据阅读器状态刷新导航、地址和加载提示。
  * @param state 最新阅读器状态。
  * @returns 无返回值。
@@ -157,6 +170,7 @@ function renderReaderState(state: WebReaderState): void {
     cancelButton.disabled = true
   }
   currentState = state
+  updateExportButtonState()
   loadingProgress.hidden = !state.loading
   loadingProgress.setAttribute('aria-valuenow', state.loading ? '50' : '100')
   if (document.activeElement !== address) address.value = state.url
@@ -214,6 +228,7 @@ function renderProgress(progress: WebTranslationProgressPayload): void {
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
+    updateExportButtonState()
     setLocalizedStatus(() => t('webReader.cancelled'))
     return
   }
@@ -221,12 +236,14 @@ function renderProgress(progress: WebTranslationProgressPayload): void {
   const failureHint = progress.failed ? t('webReader.failureCount', { count: progress.failed }) : ''
   const imageHint = formatImageProgressHint(progress.images)
   if (!progress.inputClosed) {
+    updateExportButtonState()
     setLocalizedStatus(() => t('webReader.loadingAndTranslating', {
       done: progress.done,
       discovered: progress.discovered
     }) + cacheHint + failureHint + imageHint)
     return
   }
+  updateExportButtonState()
   setLocalizedStatus(() => t('webReader.translatingProgress', {
     done: progress.done,
     total: progress.total
@@ -245,6 +262,7 @@ async function translatePage(extractFresh = true): Promise<void> {
   translating = true
   translateButton.disabled = true
   cancelButton.disabled = false
+  updateExportButtonState()
   try {
     if (extractFresh || extractedRevision < 0) {
       setLocalizedStatus(() => t('webReader.extracting'))
@@ -263,6 +281,7 @@ async function translatePage(extractFresh = true): Promise<void> {
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
+    updateExportButtonState()
     const imageHint = formatImageProgressHint(result.images ?? result.progress.images)
     if (result.progress.cancelled) setLocalizedStatus(() => t('webReader.cancelled'))
     else if (result.apply.mismatched > 0) {
@@ -288,6 +307,7 @@ async function translatePage(extractFresh = true): Promise<void> {
     translating = false
     translateButton.disabled = false
     cancelButton.disabled = true
+    updateExportButtonState()
     setStatus(normalizeWebTranslationError(error, t('webReader.translationFailed')), true)
   }
 }
@@ -348,8 +368,32 @@ function cancelTranslation(): void {
   translating = false
   translateButton.disabled = false
   cancelButton.disabled = true
+  updateExportButtonState()
   window.api.webTranslateCancel()
   setLocalizedStatus(() => t('webReader.cancelled'))
+}
+
+/**
+ * 将当前网页译文导出为 PDF，并展示保存结果。
+ * @returns 导出流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function exportPagePdf(): Promise<void> {
+  if (exportButton.disabled || exportingPdf) return
+  exportingPdf = true
+  updateExportButtonState()
+  setLocalizedStatus(() => t('webReader.exportingPdf'))
+  try {
+    const result = await window.api.exportWebPagePdf()
+    if (result.status === 'saved') setLocalizedStatus(() => t('webReader.pdfExported'))
+    else if (result.status === 'cancelled') setLocalizedStatus(() => t('webReader.pdfExportCancelled'))
+    else setLocalizedStatus(() => t('webReader.pdfExportFailed'), true)
+  } catch {
+    setLocalizedStatus(() => t('webReader.pdfExportFailed'), true)
+  } finally {
+    exportingPdf = false
+    updateExportButtonState()
+  }
 }
 
 addressForm.addEventListener('submit', (event) => {
@@ -369,6 +413,7 @@ forwardButton.addEventListener('click', () => window.api.webViewForward())
 reloadButton.addEventListener('click', () => window.api.webViewReload())
 translateButton.addEventListener('click', () => void translatePage(true))
 cancelButton.addEventListener('click', cancelTranslation)
+exportButton.addEventListener('click', () => void exportPagePdf())
 modeSelect.addEventListener('change', () => void changeMode())
 sourceLang.addEventListener('change', handleLanguageChange)
 targetLang.addEventListener('change', handleLanguageChange)
@@ -398,6 +443,8 @@ localeRuntime.onLocaleChanged(() => {
   sourceLang.value = sourceValue || 'auto'
   targetLang.value = targetValue || 'ZH'
   if (statusFactory) status.textContent = statusFactory()
+  updateExportButtonState()
   void window.api.windowIsMaximized().then(renderWindowMaximizedState)
 })
+updateExportButtonState()
 requestAnimationFrame(syncViewBounds)

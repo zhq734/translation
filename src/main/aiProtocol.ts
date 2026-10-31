@@ -1,5 +1,6 @@
 import type { AiProtocol } from '../shared/types'
 import { sanitizeAiTranslation } from '../shared/aiTranslationSanitize'
+import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
 
 /** 统一 AI 翻译请求输入。 */
 export interface AiTranslationRequestInput {
@@ -19,6 +20,8 @@ export interface AiTranslationRequestInput {
   targetLang: string
   /** 是否构造流式请求；省略或 false 时保持现有非流式行为。 */
   stream?: boolean
+  /** 可选的文档术语与相邻语义上下文；普通翻译不传。 */
+  context?: DocumentTranslationRequestContext
 }
 
 /** 构造完成的 AI 请求。 */
@@ -47,18 +50,34 @@ export function normalizeAiBaseUrl(baseUrl: string): string {
  * 构造固定翻译系统提示，要求模型只输出译文。
  * @param sourceLang 源语言。
  * @param targetLang 目标语言。
+ * @param context 可选的文档术语与相邻语义上下文。
  * @returns 翻译系统提示文本。
  * @author zhenghq
  */
-function buildTranslationSystemPrompt(sourceLang: string, targetLang: string): string {
-  return [
+function buildTranslationSystemPrompt(
+  sourceLang: string,
+  targetLang: string,
+  context?: DocumentTranslationRequestContext
+): string {
+  const prompt = [
     '你是一个专业翻译引擎，请将用户输入的文本从',
     sourceLang,
     '翻译为',
     targetLang,
     '，只输出译文，保留换行和基本格式，不要输出解释、思考过程、工具调用、Markdown 代码块或额外引号。',
-    '若原文包含形如 [[[ST-SEG-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。'
+    '若原文包含形如 [[[ST-SEG-数字]]] 或 [[[ST-DOC-CELL-数字]]] 的分段标记，必须原样保留这些标记，不得翻译、改写、增删或调整其顺序。'
   ].join('')
+
+  const sections: string[] = []
+  const glossaryContext = context?.glossaryContext.trim()
+  if (glossaryContext) {
+    sections.push(`术语约束：以下术语译法必须优先采用，未列出的词语不得自行套用：\n${glossaryContext}`)
+  }
+  const contextSummary = context?.contextSummary?.trim()
+  if (contextSummary) {
+    sections.push(`相邻上下文：以下内容仅用于理解当前文本语义，不得输出上下文：\n${contextSummary}`)
+  }
+  return sections.length > 0 ? `${prompt}\n\n${sections.join('\n\n')}` : prompt
 }
 
 /**
@@ -70,7 +89,7 @@ function buildTranslationSystemPrompt(sourceLang: string, targetLang: string): s
 export function buildAiTranslationRequest(input: AiTranslationRequestInput): AiBuiltRequest {
   const baseUrl = normalizeAiBaseUrl(input.baseUrl)
   const stream = input.stream === true
-  const systemPrompt = buildTranslationSystemPrompt(input.sourceLang, input.targetLang)
+  const systemPrompt = buildTranslationSystemPrompt(input.sourceLang, input.targetLang, input.context)
   const headers = new Map<string, string>([['Content-Type', 'application/json']])
 
   switch (input.protocol) {

@@ -1,0 +1,1840 @@
+{
+  "pages": 8,
+  "warnings": [
+    {
+      "code": "embedded-image-ocr-required",
+      "severity": "warning",
+      "message": "The PDF page contains images whose text will be recognized during OCR.",
+      "pageId": "page-aebd9c82bde7"
+    },
+    {
+      "code": "embedded-image-ocr-required",
+      "severity": "warning",
+      "message": "The PDF page contains images whose text will be recognized during OCR.",
+      "pageId": "page-abbd97c91475"
+    },
+    {
+      "code": "ocr-required",
+      "severity": "warning",
+      "message": "A scanned page requires local rendering before OCR.",
+      "pageId": "page-a9bd94a3675a",
+      "blockId": "block-d11c5af98ffe"
+    }
+  ],
+  "summary": [
+    {
+      "page": 1,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-111bf2514aa0",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 8.249999656250004
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-f3e7b766bfbf",
+          "translatable": false,
+          "bbox": {
+            "x": 53.249997781249995,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 30.74999871875
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-b911bc0bb7d1",
+          "translatable": false,
+          "bbox": {
+            "x": 71.24999703125,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 8.249999656250004
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-e340cd405da0",
+          "translatable": false,
+          "bbox": {
+            "x": 137.24999428125,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 8.249999656250004
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-fceeeccd6820",
+          "translatable": false,
+          "bbox": {
+            "x": 318.74998671875,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 10.499999562500001
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-6e5a171247ce",
+          "translatable": false,
+          "bbox": {
+            "x": 425.24998228124997,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 10.499999562500001
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-91155ca70de8",
+          "translatable": false,
+          "bbox": {
+            "x": 527.24997803125,
+            "y": 38.999998375,
+            "width": 1,
+            "height": 10.499999562500001
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-8d2dd6bc5846",
+          "translatable": false,
+          "bbox": {
+            "x": 542.24997740625,
+            "y": 41.24999828125,
+            "width": 1,
+            "height": 9.749999593749997
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-5cc4a943f80b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 38.74218588574219,
+            "y": 43.25249827281247,
+            "width": 72.44678166547158,
+            "height": 22.74749897718751
+          },
+          "text": "Unintentional-gh AILubricant",
+          "length": 28
+        },
+        {
+          "kind": "shape",
+          "id": "block-90fac51e1044",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 47.24999803125,
+            "width": 37.499998437500004,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-a701da784115",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 49.4999979375,
+            "width": 523.4999781875,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-52c6ddb59864",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 53.60156026660156,
+            "y": 89.7524963353125,
+            "width": 14.770580177120571,
+            "height": 6.997499633437504
+          },
+          "text": "Code",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-754a8026c3bc",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 97.26562094726562,
+            "y": 104.75249571031252,
+            "width": 25.266819184715743,
+            "height": 6.997499633437504
+          },
+          "text": "Question",
+          "length": 8
+        },
+        {
+          "kind": "text",
+          "id": "block-4a25db43026c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 147.07030637207032,
+            "y": 119.75249508531253,
+            "width": 33.23464414931061,
+            "height": 6.997499633437504
+          },
+          "text": "Pull request",
+          "length": 12
+        },
+        {
+          "kind": "text",
+          "id": "block-55b66c1cfcdf",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 212.81249113281248,
+            "y": 134.75249446031253,
+            "width": 27.97970969667867,
+            "height": 6.997499633437504
+          },
+          "text": "Operation",
+          "length": 9
+        },
+        {
+          "kind": "text",
+          "id": "block-c8094429ccf8",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 263.4726490219725,
+            "y": 150.50249380406254,
+            "width": 19.82052113323249,
+            "height": 6.997499633437504
+          },
+          "text": "Project",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-4c3332dacecd",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 324.53904897753904,
+            "y": 165.50249317906255,
+            "width": 52.46749015135447,
+            "height": 6.997499633437504
+          },
+          "text": "Safety and Quality",
+          "length": 18
+        },
+        {
+          "kind": "text",
+          "id": "block-23605487cac9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 406.1367055776365,
+            "y": 180.50249255406257,
+            "width": 19.4378422741774,
+            "height": 6.997499633437504
+          },
+          "text": "Insight",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-31d79ef03dff",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 50.249997906249995,
+            "y": 212.24999115625008,
+            "width": 161.45507141270505,
+            "height": 8.9999996250001
+          },
+          "text": "Artificial Intelligence LubricantPublic transitKnow",
+          "length": 51
+        },
+        {
+          "kind": "image",
+          "id": "block-50665e036e17",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 227.99998954000003,
+            "width": 12.00000045999996,
+            "height": 12.000000459999967
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-ce3e48b182ea",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 245.2499897812501,
+            "width": 29.855921581003173,
+            "height": 5.99999975
+          },
+          "text": "Fork20(20)",
+          "length": 10
+        },
+        {
+          "kind": "text",
+          "id": "block-0ad136c40702",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.671873513671876,
+            "y": 283.004988358125,
+            "width": 22.51389665537092,
+            "height": 7.994999516875006
+          },
+          "text": "About",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-0996b9af7662",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74218601074219,
+            "y": 308.50498729562486,
+            "width": 176.8451446974509,
+            "height": 7.994999516874998
+          },
+          "text": "A platform,String togetherAIthe complete ecosystem of",
+          "length": 53
+        },
+        {
+          "kind": "text",
+          "id": "block-b50eba22fe9e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.70702926220703,
+            "y": 334.2524861478125,
+            "width": 26.72341564497428,
+            "height": 6.997499633437504
+          },
+          "text": "Readme",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-58fd753d2cc2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.70702926220703,
+            "y": 356.7524852103124,
+            "width": 24.400242331673198,
+            "height": 6.997499633437504
+          },
+          "text": "License",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-184a08800ac7",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.70702926220703,
+            "y": 380.0024842415625,
+            "width": 27.977574970192677,
+            "height": 6.997499633437485
+          },
+          "text": "Activeity",
+          "length": 9
+        },
+        {
+          "kind": "text",
+          "id": "block-7c9b83cbaa2e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 47.70702926220703,
+            "y": 402.5024833040624,
+            "width": 23.19899284827524,
+            "height": 6.997499633437504
+          },
+          "text": "78stars",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-e260aece8804",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 94.17187107617187,
+            "y": 417.50248267906244,
+            "width": 33.68592650411965,
+            "height": 6.997499633437504
+          },
+          "text": "0watching",
+          "length": 9
+        },
+        {
+          "kind": "text",
+          "id": "block-bd276d79f4d6",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 149.84765375634748,
+            "y": 433.25248202281244,
+            "width": 24.038687788287916,
+            "height": 6.997499633437504
+          },
+          "text": "20forks",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-7713a66c3b29",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.70702976220703,
+            "y": 455.75248108531235,
+            "width": 57.25344882536453,
+            "height": 6.997499633437504
+          },
+          "text": "Report repository",
+          "length": 17
+        },
+        {
+          "kind": "image",
+          "id": "block-c613019aafdf",
+          "translatable": false,
+          "bbox": {
+            "x": 470.24998040625,
+            "y": 490.4999776425001,
+            "width": 53.99999774999998,
+            "height": 18.750001138749894
+          }
+        },
+        {
+          "kind": "image",
+          "id": "block-7cd079799058",
+          "translatable": false,
+          "bbox": {
+            "x": 470.999980375,
+            "y": 513.74997859375,
+            "width": 52.4999978125,
+            "height": 17.249999281249984
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-39a8d5d0e00d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 122.20311990820312,
+            "y": 535.2524777728125,
+            "width": 43.924962653880726,
+            "height": 6.997499633437542
+          },
+          "text": "1Branch7Label",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-3f6fdecdd606",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 335.48436102148435,
+            "y": 551.0024771165625,
+            "width": 28.37944721008438,
+            "height": 6.997499633437504
+          },
+          "text": "Go to File",
+          "length": 10
+        },
+        {
+          "kind": "text",
+          "id": "block-9b82b6b25125",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 431.4374820234375,
+            "y": 566.0024764915623,
+            "width": 29.01160434963316,
+            "height": 6.997499633437542
+          },
+          "text": "Go tofile",
+          "length": 9
+        },
+        {
+          "kind": "text",
+          "id": "block-f009233f0e30",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 490.2421670732422,
+            "y": 581.0024758665626,
+            "width": 14.77058017712045,
+            "height": 6.997499633437504
+          },
+          "text": "Code",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-d7f87e54f6cd",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 71.24999703125,
+            "y": 596.7524752103126,
+            "width": 14.77058469705895,
+            "height": 6.997499633437504
+          },
+          "text": "Main",
+          "length": 4
+        },
+        {
+          "kind": "image",
+          "id": "block-3f826cbf492a",
+          "translatable": false,
+          "bbox": {
+            "x": 59.9999975,
+            "y": 621.74997313375,
+            "width": 9.749999593749997,
+            "height": 10.500000522499931
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-61549906268d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 73.73437192773437,
+            "y": 626.7524739603124,
+            "width": 181.13417713611733,
+            "height": 6.997499633437542
+          },
+          "text": "AdministratorFromMasterBranch release snapshot@ce2a0025",
+          "length": 55
+        },
+        {
+          "kind": "text",
+          "id": "block-38aa5d23efb8",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 464.01560566601563,
+            "y": 641.9999732499999,
+            "width": 32.26757679551753,
+            "height": 5.999999750000029
+          },
+          "text": "68437f8Last",
+          "length": 11
+        },
+        {
+          "kind": "text",
+          "id": "block-6f61703f59e9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 464.01560566601563,
+            "y": 657.7499725937499,
+            "width": 15.333983721083996,
+            "height": 5.99999975
+          },
+          "text": "month",
+          "length": 5
+        },
+        {
+          "kind": "table",
+          "id": "block-a80c099bfaf2",
+          "translatable": true,
+          "bbox": {
+            "x": 53.249997781249995,
+            "y": 675.74997184375,
+            "width": 488.999979625,
+            "height": 1201.4999499375
+          },
+          "rows": 23,
+          "text": ". tmp-protection-test | Snapshot of the post by @4fd079f6 | Last month | Agent | Release snapshot for master @ ce2a0025 | Last month | Channel importer | Publish snapshot from master @ 498a9 dfd | Last month | Deployment | Published a snapshot from the main branch | @ce2a0025 | Last month | Desktop | maste r @5 ee504f5 published a | snapshot. | Last month | Device Control @29cf02f | Release the snapshot from the main branch | @5ee 504f5 | Last month | docs-site | Commit snapshot of master @ 777c"
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "table",
+          "id": "block-dc044a30ffcc",
+          "translatable": true,
+          "bbox": {
+            "x": 53.249997781249995,
+            "y": -2.2737367544323206e-13,
+            "width": 488.999979625,
+            "height": 85.49999643750016
+          },
+          "rows": 2,
+          "text": ". tmp-protection-test | Snapshot of the post by @4fd079f6 | Last month | static/vendor | Release snapshot @4fd079f 6 from the main | branch | Last month"
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "table",
+          "id": "block-5a4ae13ec7b1",
+          "translatable": true,
+          "bbox": {
+            "x": 53.249997781249995,
+            "y": 36.74999846874971,
+            "width": 420.74998246875,
+            "height": 1538.2499359062504
+          },
+          "rows": 27,
+          "text": "Tunnel server | Published a snapshot from the main branch | @19e59429 | Last month | Household front end @ b3 a5bad | Published a snapshot from the main branch | @ce2a 0025 | Last month | User platform | Published a snapshot from the main branch | @ce2a0025 | Last month | .. d ockerignore | Release snapshot from the main branch | @4fd079f6 | Last month | . Environment example | Publish snapshot from master @ 736bbaf8 | Last month | . footer-verif y. js | Release snapshot from the main branch | @"
+        },
+        {
+          "kind": "shape",
+          "id": "block-8a8d419c6d50",
+          "translatable": false,
+          "bbox": {
+            "x": 475.99998024999996,
+            "y": 43.49999818749984,
+            "width": 99.24999578124999,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-fa4e57adc3a5",
+          "translatable": false,
+          "bbox": {
+            "x": 475.99998024999996,
+            "y": 45.74999809374958,
+            "width": 99.24999578124999,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-01463832f1b8",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 74.24999690624999,
+            "y": 1586.0024339915622,
+            "width": 43.22448215267987,
+            "height": 6.997499633437485
+          },
+          "text": "Shepherd.toml",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-a533604df1b0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 211.59374118359375,
+            "y": 1601.002433366562,
+            "width": 149.87892946341935,
+            "height": 6.997499633437485
+          },
+          "text": "Release a snapshot from the main branch@4fd079f6",
+          "length": 48
+        },
+        {
+          "kind": "text",
+          "id": "block-9f6c5750541a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 445.23045394873026,
+            "y": 1616.7524327103124,
+            "width": 31.680042142498053,
+            "height": 6.997499633437504
+          },
+          "text": "Last month",
+          "length": 10
+        },
+        {
+          "kind": "text",
+          "id": "block-be30799bb8c2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1684.2524298228118,
+            "width": 120.82617794050068,
+            "height": 15.997499333437474
+          },
+          "text": "ArtificialLubricant",
+          "length": 19
+        },
+        {
+          "kind": "text",
+          "id": "block-2e982cdefe50",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1728.2549281393747,
+            "width": 271.07208006782946,
+            "height": 7.994999516874998
+          },
+          "text": "One platform, connecting the entire world of artificial intelligenceNested ecosystem.",
+          "length": 85
+        },
+        {
+          "kind": "text",
+          "id": "block-f01236892eb4",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1756.004926983125,
+            "width": 472.0685890805978,
+            "height": 22.99499889187473
+          },
+          "text": "Yawei Lubricants is designed for teams and individuals.AIOpenSend it to the platform. Model relay., agents, editor integration, code review, remote nodes,Intranet penetration, browsing,Browser control, mobile phone control, mobile client",
+          "length": 237
+        },
+        {
+          "kind": "text",
+          "id": "block-a9fcdc7cb4c0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1790.504925545625,
+            "width": 494.6337125903842,
+            "height": 22.99499889187473
+          },
+          "text": "Client, email, and security...Full control--All built-in, mutually integrated, and governed under a unified framework.It’s not just a patchwork of tools; it’s a complete ecosystem that can run in production out of the box., and provide open/Human-compatibleIntegration interface.",
+          "length": 279
+        },
+        {
+          "kind": "text",
+          "id": "block-9bbe2cda1bca",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1832.9999236249996,
+            "width": 94.30663695055665,
+            "height": 11.999999500000001
+          },
+          "text": "Core Competencies",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-72eb4e8797b2",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 92.55468364355468,
+            "y": 1869.2549222643745,
+            "width": 477.33172040217664,
+            "height": 7.994999516875012
+          },
+          "text": "Unified Model Gateway:Unified management across multiple channels and accountsIntegration, intelligent channel routing, nine freeze modes, dual-",
+          "length": 144
+        },
+        {
+          "kind": "text",
+          "id": "block-a541661c1367",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 221.0507757895506,
+            "y": 1884.2549216393743,
+            "width": 348.8337305153834,
+            "height": 7.994999516875012
+          },
+          "text": "layer rate limiting and retries,Dosage normalization;Supports network proxiesURLPrefix proxy, directLianhe",
+          "length": 106
+        },
+        {
+          "kind": "text",
+          "id": "block-17943e298b2b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 1903.7549208268745,
+            "width": 381.73653483181045,
+            "height": 7.994999516875005
+          },
+          "text": "Four Node Output Modes;Free model monitoringControls and model list automatically update;Custom Code Channels.",
+          "length": 110
+        }
+      ]
+    },
+    {
+      "page": 4,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-3fe89f006d16",
+          "translatable": false,
+          "bbox": {
+            "x": 52.4999978125,
+            "y": 27.74999884374938,
+            "width": 1,
+            "height": 349.4999854375001
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-8b0c71adb5c9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 31.754998826874434,
+            "width": 459.0817787847669,
+            "height": 23.744998860625465
+          },
+          "text": "Agents:Main/Subagent Dispatch, Scheduled Tasks;Four Interfaces: Terminal, Browser, In-Webpage, and Email;Memory Enhancement;Explicit Resource Authorization. Agent capabilities operate alongside data services without requiring additional agent processes.",
+          "length": 253
+        },
+        {
+          "kind": "shape",
+          "id": "block-d80140262db4",
+          "translatable": false,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 34.49999856249906,
+            "width": 506.24997890624996,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-bd563ffb948c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 68.50499729562459,
+            "width": 436.92299069499757,
+            "height": 22.9949988918748
+          },
+          "text": "Editor Integration:ClaudeCode/Codex/OpenCode/Cursor/GeminiCLIIntegration;Multi-Environment Selection(Branch Mode);Code Review(PRAutomated Review);Multi-Task Isolation;Project/Task",
+          "length": 179
+        },
+        {
+          "kind": "text",
+          "id": "block-f756003485fa",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 103.00499585812456,
+            "width": 475.1724207512715,
+            "height": 28.994998641874716
+          },
+          "text": "/GitIdentifiers. Remote Nodes:One-Click Script to Connect Agents;Nodes Connect to the Platform Directly, Without Requiring a Public IPIPorSSH;Supports Three",
+          "length": 156
+        },
+        {
+          "kind": "text",
+          "id": "block-3b3815e19f88",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 139.00499435812497,
+            "width": 469.2803159217758,
+            "height": 23.74499886062455
+          },
+          "text": "Roles: Execution, Management, and Passive Management, as well asPTYTerminals, Host Commands, File Services, andHTTPProxy Egress. Node Credentials Are Centrally Sealed+examination and approval.",
+          "length": 192
+        },
+        {
+          "kind": "text",
+          "id": "block-e71f4992d1b0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.17187145117187,
+            "y": 175.75499282687423,
+            "width": 479.61283684113135,
+            "height": 121.99499476687521
+          },
+          "text": "Internal penetration: frp/Cloud form/npsThree types of solutions;Unified Configuration of the Tunnel Project Management Page;One-click external access to the task preview interface. Browser control:Hand over the real Chrome you’re using to the agent and editor.-- MV3Extended access, providesCDPToolset, real-time conversations within web pages, and task-level session isolation. Mobile control:Install the platform on a real Android device.(independent ofADB)Can be controlled.APK:Screen reading, cl",
+          "length": 1140
+        },
+        {
+          "kind": "text",
+          "id": "block-3ba5b61f6237",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.17187145117187,
+            "y": 305.5049874206249,
+            "width": 482.5223272449022,
+            "height": 24.49499882937431
+          },
+          "text": "GitHub著名榜单(技能/MCP/提⽰词/插件/框架)，集中展⽰、直接搜索，勾选即⽤于代理、任务、编辑器和代码审查。安全治理:覆盖API密钥⽣命周期(真正失效、⼦密钥归并、常量时间⽐较)、MCP保护(令牌绑实例、审批、吊销)、凭据哈希存储、节点总封",
+          "length": 125
+        },
+        {
+          "kind": "text",
+          "id": "block-d69ba6f8b2e6",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.24218394824219,
+            "y": 342.25498588937506,
+            "width": 103.93489111937932,
+            "height": 7.994999516875006
+          },
+          "text": "存、审计⽇志和请求级观测。",
+          "length": 13
+        },
+        {
+          "kind": "text",
+          "id": "block-777b2d75c829",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 369.74998459375007,
+            "width": 23.999999000000003,
+            "height": 11.999999500000058
+          },
+          "text": "⽂档",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-c0717ff1cd17",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 406.00498323312485,
+            "width": 465.2277532155093,
+            "height": 7.994999516874998
+          },
+          "text": "⾯向使⽤者的完整⽂档站:https://ai-lubricant.vip100.de5.net/，覆盖产品能⼒、部署、环境变量、节点、移动端、API和运维说明。",
+          "length": 80
+        },
+        {
+          "kind": "text",
+          "id": "block-fa8a0504ab1c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 433.49998193749985,
+            "width": 23.999999000000003,
+            "height": 11.999999500000058
+          },
+          "text": "架构",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-415423ef4a83",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 469.75498057687463,
+            "width": 356.2343138652029,
+            "height": 7.994999516874998
+          },
+          "text": "主仓库保留亞惟润滑剂的数据服务、业务层和治理能⼒;节点、前端和移动端以独⽴仓库挂载为⼦模块:",
+          "length": 46
+        },
+        {
+          "kind": "table",
+          "id": "block-0f8e89ab5704",
+          "translatable": true,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 492.7499794687492,
+            "width": 497.99997924999997,
+            "height": 350.9999853750005
+          },
+          "rows": 7,
+          "text": "⽬录 | 作⽤ | 许可/来源 | 服务器/、代理/、限制/、提供商/等 | 主数据服务、模型聚合、代理、限流计费和管理 | API | 本仓库BSL. | 节点服务器/ | 独⽴节点控制⾯，接收节点主动连接 | 独⽴仓库，请参阅其 | LICENSE/NOTICE。 | 节点/ | 执⾏/管理节点客户端与运⾏时 | 独⽴仓库，请参阅其 | LICENSE/NOTICE。 | ⽤户前端/ | ⽤户⻔户前端 | 独⽴仓库，请参阅其 | LICENSE/NOTICE。 | 移动/ | 移动端⼯程 | 独⽴仓库，请参阅其 | LICENSE/NOTICE。 | 设备控制/ | 设备控制MCP与移动设备协议实现 | 独⽴仓库，请参阅其 | LICENSE/NOTICE。"
+        },
+        {
+          "kind": "text",
+          "id": "block-8e40767d233e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 857.9999642499998,
+            "width": 47.999998000000005,
+            "height": 11.999999500000058
+          },
+          "text": "快速开始",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-36bc50c0a756",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.1289033696289,
+            "y": 895.252462772812,
+            "width": 116.85324615611457,
+            "height": 9.997499508437613
+          },
+          "text": "DockerCompose（推荐）",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-6ecd280b16b7",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 932.9549608268745,
+            "width": 453.0959098017183,
+            "height": 6.795000016875065
+          },
+          "text": "#1.拉代码(主仓+全部⼦模块，⼀条命令)#。gitmodules使⽤相对地址，⼦模块会⾃动解析到同组织的ai-润滑剂-*仓库#国内直连GitHub慢，⽤gh",
+          "length": 79
+        }
+      ]
+    },
+    {
+      "page": 5,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-ceac6703ba24",
+          "translatable": false,
+          "bbox": {
+            "x": 52.4999978125,
+            "y": 27.74999884374938,
+            "width": 1,
+            "height": 162.24999315624973
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-f5f5ca384bc4",
+          "translatable": false,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 34.49999856249997,
+            "width": 506.24997890624996,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-cf79600394db",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 142.00499423312493,
+            "width": 398.41686199929666,
+            "height": 7.994999516874998
+          },
+          "text": "启动后访问http://127.0.0.13006:⽤户⻔户在/控制台，管理端在/管理器。⽣产环境⽤HTTPS反向代理指向3006。",
+          "length": 66
+        },
+        {
+          "kind": "text",
+          "id": "block-cbe48ae6e57e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 169.00499310812455,
+            "width": 42.20698319967562,
+            "height": 7.994999516874998
+          },
+          "text": "服务与端⼜:",
+          "length": 6
+        },
+        {
+          "kind": "table",
+          "id": "block-411c4456d4a9",
+          "translatable": true,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 191.9999919999991,
+            "width": 353.99998525,
+            "height": 225.74999059375023
+          },
+          "rows": 6,
+          "text": "端⼜ | ⽤途 | 三千零六 | ⽹⻚⼊⼜(数据服务:⽤户⻔户/控制台、管理端/管理器) | ⼋千零三 | 节点控制⾯(只接受节点连接和内部调⽤、不要当⽹⻚访问) | / | PostgreSQL/Redis宿主机调试映射，仅本机调试⽤;⽣产建议从对外映射⾥去 | 掉 | ⼋千零四 | 隧道运⾏时，仅撰写内⽹可达，不对外发布 | / | ClickHouse(可选，--简介clickhouse启⽤)"
+        },
+        {
+          "kind": "shape",
+          "id": "block-fa42f5347885",
+          "translatable": false,
+          "bbox": {
+            "x": 52.4999978125,
+            "y": 420.5,
+            "width": 1,
+            "height": 132.99997693749992
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-95c17d47dca0",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 431.50498217062494,
+            "width": 503.0125950411398,
+            "height": 7.994999516874998
+          },
+          "text": "数据持久化:PostgreSQL、Redis与主服务的代理运⾏时数据(记忆/⼯作区/SOP/技能归档)、附件、删除前备份、资源镜像、⽇志、隧道⼆进制缓",
+          "length": 75
+        },
+        {
+          "kind": "text",
+          "id": "block-be92c89aac9d",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 446.50498154562564,
+            "width": 485.8447965814662,
+            "height": 22.994998891873877
+          },
+          "text": "存分别绑定挂载到宿主。/data/A standalone subdirectory below(pg_data/redis_data/ai_dataWait, already.gitignore),DockerThe combination retains all data.(down-vIt also does not affect the binding.",
+          "length": 182
+        },
+        {
+          "kind": "text",
+          "id": "block-d63ee1ad1afb",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 481.0049801081256,
+            "width": 305.82025346578894,
+            "height": 7.994999516874998
+          },
+          "text": "Mount data, clear dataequalsSimply delete the corresponding subdirectory.). Backup example:",
+          "length": 91
+        },
+        {
+          "kind": "text",
+          "id": "block-cdfbdcb0d417",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 516.7049781706256,
+            "width": 353.6957829433907,
+            "height": 6.795000016875065
+          },
+          "text": "dockercomposeexec-Tpostgrespg_dump-Uai_ubule-dai-Lubricant-Fc>ai-lubricant.dump",
+          "length": 79
+        },
+        {
+          "kind": "text",
+          "id": "block-661f25b68f40",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 551.7524770853119,
+            "width": 80.7853561214433,
+            "height": 9.997499508437613
+          },
+          "text": "Local transportation",
+          "length": 20
+        },
+        {
+          "kind": "text",
+          "id": "block-673991d3646b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 580.0049759831251,
+            "width": 165.7182579283723,
+            "height": 7.994999516875055
+          },
+          "text": "needPython 3.11,PostgreSQL 16 +andRedis 6+:",
+          "length": 43
+        },
+        {
+          "kind": "text",
+          "id": "block-a2bbfcc83b86",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 615.7049740456251,
+            "width": 307.2361366792092,
+            "height": 6.795000016875065
+          },
+          "text": "reprography.Environment example. Environmental documentpipInstall-rrequirement.txtpythonmain.py",
+          "length": 95
+        },
+        {
+          "kind": "text",
+          "id": "block-08b0b285d93f",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 649.7549730768748,
+            "width": 239.32806873629673,
+            "height": 7.994999516875055
+          },
+          "text": "When a node is needed, start the node control service on another terminal.:",
+          "length": 75
+        },
+        {
+          "kind": "text",
+          "id": "block-049770aad1f1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 685.4549711393748,
+            "width": 65.74657307941163,
+            "height": 6.795000016875065
+          },
+          "text": "python-mNode server",
+          "length": 19
+        },
+        {
+          "kind": "text",
+          "id": "block-2d81af175039",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 719.5049701706245,
+            "width": 219.13666707760515,
+            "height": 7.994999516875055
+          },
+          "text": "When internal network penetration is required, then start the tunnel.:",
+          "length": 70
+        },
+        {
+          "kind": "text",
+          "id": "block-7542f8ac5303",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 755.2049682331245,
+            "width": 70.03657387566162,
+            "height": 6.795000016875065
+          },
+          "text": "python-mTunnel server",
+          "length": 21
+        },
+        {
+          "kind": "text",
+          "id": "block-b8dc56b9a4aa",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 791.204966733124,
+            "width": 480.63092152371075,
+            "height": 6.795000016875065
+          },
+          "text": ".environmentOnly save the connection, key, and startup-level options.;Channels, models, accounts,APIKeys and other business data are stored inPostgreSQL/Redis。",
+          "length": 159
+        },
+        {
+          "kind": "text",
+          "id": "block-f9de490e9514",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 806.9549660768745,
+            "width": 195.97077338455077,
+            "height": 6.795000016875065
+          },
+          "text": "env.ini.example仅⽤于兼容旧部署，新部署优先使⽤。env。",
+          "length": 36
+        },
+        {
+          "kind": "text",
+          "id": "block-4e8bc50b1884",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 833.7524653353115,
+            "width": 29.992478575313342,
+            "height": 9.997499508437613
+          },
+          "text": "桌⾯版",
+          "length": 3
+        },
+        {
+          "kind": "text",
+          "id": "block-ecbb5e4bcf28",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.16405961816406,
+            "y": 862.7549642018745,
+            "width": 108.1835429506522,
+            "height": 7.994999516875055
+          },
+          "text": "Windows桌⾯壳的构建⼊⼜为:",
+          "length": 17
+        },
+        {
+          "kind": "text",
+          "id": "block-5280894e4106",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 898.4549622643746,
+            "width": 157.99134219774254,
+            "height": 6.795000016875065
+          },
+          "text": "powershell-执⾏策略绕过-⽂件桌⾯/build.ps1",
+          "length": 32
+        },
+        {
+          "kind": "text",
+          "id": "block-c91d4fbd3b0c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 932.5049612956242,
+            "width": 359.9498112020905,
+            "height": 7.994999516875055
+          },
+          "text": "桌⾯版与本地服务使⽤相同的数据服务、节点控制服务和隧道运⾏时;构建前需要准备⽤户-前端/部分。",
+          "length": 47
+        },
+        {
+          "kind": "text",
+          "id": "block-8869e300d45e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.25780961425781,
+            "y": 960.74995996875,
+            "width": 42.41015448291016,
+            "height": 11.999999499999944
+          },
+          "text": "API⽰例",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-79b6942f628b",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 997.0049586081255,
+            "width": 50.199170366667815,
+            "height": 7.994999516875055
+          },
+          "text": "获取模型列表:",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-252e94a27bbc",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 1031.954956701874,
+            "width": 143.18258156477427,
+            "height": 6.795000016874987
+          },
+          "text": "curlhttp://localhost:3006/v1/models",
+          "length": 35
+        },
+        {
+          "kind": "text",
+          "id": "block-3e5e2331c695",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 1066.0049557331256,
+            "width": 62.83874569001881,
+            "height": 7.994999516875055
+          },
+          "text": "使⽤OpenAI SDK:",
+          "length": 13
+        }
+      ]
+    },
+    {
+      "page": 6,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "shape",
+          "id": "block-91213c6d12c1",
+          "translatable": false,
+          "bbox": {
+            "x": 85.4999964375,
+            "y": 35.99999849999949,
+            "width": 309.74998709375,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-636d02f20f5c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 77.24999678124999,
+            "y": 40.45499801437389,
+            "width": 444.478524310776,
+            "height": 6.795000016875065
+          },
+          "text": "fromopenaiimportOpenAIclient=OpenAI(base_url=\"http://localhost:3006/v1\"，api_key=\"yor-api-key\"，)响应e=client.",
+          "length": 106
+        },
+        {
+          "kind": "shape",
+          "id": "block-7dffe94792f6",
+          "translatable": false,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 42.74999821874917,
+            "width": 506.24997890624996,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-60ca1b5c5c4a",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 46.4999980624998,
+            "width": 519.7499783437501,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-0080e7f1d3fb",
+          "translatable": false,
+          "bbox": {
+            "x": 35.9999985,
+            "y": 51.74999784374995,
+            "width": 519.7499783437501,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-e34b1a0603a0",
+          "translatable": false,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 125.24999478125028,
+            "width": 484.49997981249993,
+            "height": 1
+          }
+        },
+        {
+          "kind": "shape",
+          "id": "block-4fbce1abae9d",
+          "translatable": false,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 139.4999941874994,
+            "width": 484.49997981249993,
+            "height": 1
+          }
+        },
+        {
+          "kind": "text",
+          "id": "block-d5541110f03e",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 168.2549931393748,
+            "width": 434.6395129900195,
+            "height": 7.994999516874998
+          },
+          "text": "本地直跑(pythonmain.py)时端⼜为8001。具体的流式响应、错误格式、兼容协议和鉴权⽅式⻅docs-site/users-api.html。",
+          "length": 76
+        },
+        {
+          "kind": "text",
+          "id": "block-c6dcc6a76bda",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 195.7499918437489,
+            "width": 47.999998000000005,
+            "height": 11.999999500000058
+          },
+          "text": "社区交流",
+          "length": 4
+        },
+        {
+          "kind": "text",
+          "id": "block-f22a0dfaf532",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 232.00499048312457,
+            "width": 383.759586435016,
+            "height": 7.994999516875006
+          },
+          "text": "欢迎加⼊交流群反馈问题与使⽤⼼得。进群领更多免费资源信息、包括主流国产⼤模型、内⽹穿透、域名等等",
+          "length": 48
+        },
+        {
+          "kind": "table",
+          "id": "block-f3954b058b46",
+          "translatable": true,
+          "bbox": {
+            "x": 68.999997125,
+            "y": 254.99998937499913,
+            "width": 277.4999884375,
+            "height": 254.99998937500095
+          },
+          "rows": 2,
+          "text": "QQ交流群 | 微信交流群 | Ai_润滑剂群号: | 群聊:⽆⼼、H-one、迈克尔⽉⽇⾯"
+        },
+        {
+          "kind": "text",
+          "id": "block-e8540031ab46",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 524.2499781562484,
+            "width": 23.999999000000003,
+            "height": 11.999999500000058
+          },
+          "text": "鸣谢",
+          "length": 2
+        },
+        {
+          "kind": "text",
+          "id": "block-cf2471a21010",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 85.17187145117187,
+            "y": 559.7549768268742,
+            "width": 486.3003650874835,
+            "height": 24.494998829375277
+          },
+          "text": "猴⼦代码(chaitin/猴⼦代码)--⽤户平台兼容层与⽤户⻔户前端的上游基础(AGPL-3.0)。jaychempan/代理-排⾏榜-资源中⼼接⼊的代理榜单数据源。通⽤代理(datahalechina)--本平台代理运⾏时(通⽤代理)架构的上游参考。L站--感谢L站。",
+          "length": 135
+        },
+        {
+          "kind": "text",
+          "id": "block-23ac712fd93c",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 605.2499747812482,
+            "width": 71.99999699999998,
+            "height": 11.999999500000058
+          },
+          "text": "发布与许可证",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-325fc000a000",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 640.754973451874,
+            "width": 499.771822976173,
+            "height": 27.494998704374325
+          },
+          "text": "本仓库⾃研部分采⽤业务来源许可证1.1(BSL1.1)。在更改⽇期到来前，个⼈、学习研究、内部评估和⾮商业使⽤按许可证约定进⾏;商业产品、商业服务、经营性活动或向第三⽅提供营利服务、需要事先取得著作权⼈的商业授权。更改⽇期和更改许可证以许可证为准。",
+          "length": 124
+        },
+        {
+          "kind": "text",
+          "id": "block-73132cbd135a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.16405961816406,
+            "y": 688.7549714518733,
+            "width": 496.5999290333341,
+            "height": 28.994998641875668
+          },
+          "text": "GitHub发布使⽤脚本/publish_github.sh⽣成快照。内部开发仓库保留完整历史，公开仓库只接收选定版本的发布快照。并发会话在途、需要只发布已提交内容时、加COMMITTED_ONLY=1:仅⽤户-前端/dot会被定向构建并提交，其余⼯作树脏改动原样保留不纳⼊",
+          "length": 137
+        },
+        {
+          "kind": "text",
+          "id": "block-fc76664e7b73",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 733.0049696081238,
+            "width": 316.84639301056643,
+            "height": 7.994999516875055
+          },
+          "text": "快照(前端除dot外必须⼲净，否则中⽌;或配合skip_front_build=1个直接发布当前各仓头).",
+          "length": 53
+        },
+        {
+          "kind": "text",
+          "id": "block-96b13b4b37e1",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 69.2460908647461,
+            "y": 760.0049684831243,
+            "width": 488.248471244488,
+            "height": 22.994998891873934
+          },
+          "text": "Each standalone module has its own license and attribution notice; when used or redistributed, you must comply with the licenses, notices, and upstream requirements contained in each respective directory. Root directory notification record repository",
+          "length": 250
+        },
+        {
+          "kind": "text",
+          "id": "block-91295decd574",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74218601074219,
+            "y": 816.2549661393747,
+            "width": 22.189224250571804,
+            "height": 7.994999516875006
+          },
+          "text": "release",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-d73d24f9bf89",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 45.70312309570312,
+            "y": 842.0024649915616,
+            "width": 17.29451031689537,
+            "height": 6.997499633437542
+          },
+          "text": "7a tag",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-5985964d255a",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74218601074219,
+            "y": 876.2549636393738,
+            "width": 35.52458633580767,
+            "height": 7.994999516875006
+          },
+          "text": "contributor",
+          "length": 11
+        },
+        {
+          "kind": "text",
+          "id": "block-53be8d50d224",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74218601074219,
+            "y": 902.9999623749983,
+            "width": 37.82812342382812,
+            "height": 5.99999975
+          },
+          "text": "No contributors",
+          "length": 15
+        },
+        {
+          "kind": "text",
+          "id": "block-7282af9bf621",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 35.74218601074219,
+            "y": 936.254961139373,
+            "width": 31.51930583681836,
+            "height": 7.994999516875006
+          },
+          "text": "Language",
+          "length": 8
+        }
+      ]
+    },
+    {
+      "page": 7,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "text",
+          "id": "block-b2e96741f909",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 43.74609192724609,
+            "y": 35.24999853124896,
+            "width": 38.651929164502896,
+            "height": 5.99999975
+          },
+          "text": "Python 93.2%",
+          "length": 12
+        },
+        {
+          "kind": "text",
+          "id": "block-b49184944939",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 100.04296458154296,
+            "y": 50.24999790624784,
+            "width": 24.947961685501525,
+            "height": 5.99999975
+          },
+          "text": "HTML4%",
+          "length": 6
+        },
+        {
+          "kind": "text",
+          "id": "block-df96187f35cb",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 145.04296645654279,
+            "y": 65.24999728124854,
+            "width": 38.26194883075203,
+            "height": 5.99999975
+          },
+          "text": "JavaScript2%",
+          "length": 12
+        },
+        {
+          "kind": "text",
+          "id": "block-8893aff20dba",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 203.77733900927717,
+            "y": 80.999996624999,
+            "width": 11.33203080783204,
+            "height": 5.99999975
+          },
+          "text": "shell",
+          "length": 5
+        },
+        {
+          "kind": "text",
+          "id": "block-2c826b0dace5",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 203.77733900927717,
+            "y": 95.99999599999788,
+            "width": 24.178194042575228,
+            "height": 5.999999750000001
+          },
+          "text": "case0.4%",
+          "length": 8
+        },
+        {
+          "kind": "text",
+          "id": "block-fa7abe1047b3",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 247.39452469189436,
+            "y": 110.99999537499858,
+            "width": 24.551961777001594,
+            "height": 5.99999975
+          },
+          "text": "CSS0.3%",
+          "length": 7
+        },
+        {
+          "kind": "text",
+          "id": "block-61450f5b64f9",
+          "translatable": true,
+          "role": "paragraph",
+          "bbox": {
+            "x": 292.78123780078124,
+            "y": 125.99999474999746,
+            "width": 20.100076712496787,
+            "height": 5.999999750000001
+          },
+          "text": "To0.1%",
+          "length": 6
+        }
+      ]
+    },
+    {
+      "page": 8,
+      "width": 595.91998,
+      "height": 1963.9199,
+      "blocks": [
+        {
+          "kind": "image",
+          "id": "block-d11c5af98ffe",
+          "translatable": false,
+          "bbox": {
+            "x": 0,
+            "y": 0,
+            "width": 595.91998,
+            "height": 1963.9199
+          }
+        }
+      ]
+    }
+  ]
+}

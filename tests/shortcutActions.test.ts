@@ -37,6 +37,14 @@ test('网页阅读器快捷键应复用空白打开与已存在窗口聚焦，�
   assert.match(webReader, /if \(this\.window\.isMinimized\(\)\) this\.window\.restore\(\)/u)
 })
 
+test('文档翻译快捷键应聚焦已有工作台，否则打开文档翻译窗口', () => {
+  assert.match(main, /documentTranslationHotkey[\s\S]{0,100}openDocumentWorkspaceFromShortcut\(\)/u)
+  assert.match(
+    main,
+    /function openDocumentWorkspaceFromShortcut[\s\S]*?focusOrOpenExistingWindow\(\)[\s\S]*?workspace\.open\(\{ bringToFront: true \}\)/u
+  )
+})
+
 test('已可见但被遮挡的网页阅读器窗口也应重新获得焦点', () => {
   const webReader = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const start = webReader.indexOf('focusOrOpenExistingWindow(): boolean {')

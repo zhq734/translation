@@ -7,7 +7,9 @@ type PackageJson = {
   overrides?: Record<string, string>
   build?: {
     electronDist?: string
+    files?: string[]
     win?: {
+      files?: string[]
       target?: Array<string | { target: string; arch?: string[] }>
       extraResources?: Array<{ from: string; to: string; filter?: string[] }>
     }
@@ -56,6 +58,43 @@ test('Windows 打包前应准备并校验目标架构 sharp 运行时', () => {
   assert.match(prepareScript, /'x64', 'arm64'/u)
   assert.match(prepareScript, /sharp-win32-\$\{arch\}\.node/u)
   assert.match(prepareScript, /libvips-42\.dll/u)
+})
+
+/**
+ * 校验 Windows 交叉打包会预取 x64/arm64 的 N-API Canvas 平台包，避免 electron-builder
+ * 在 ARM64 阶段回退到需要 GTK/Cairo 的 node-canvas 源码编译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 打包前应准备并校验目标架构 N-API Canvas 运行时', () => {
+  const prepareScript = readFileSync('scripts/prepare-windows-ocr-runtime.mjs', 'utf8')
+  assert.match(prepareScript, /expectedCanvasVersion\s*=\s*'1\.1\.0'/u)
+  assert.match(prepareScript, /@napi-rs\/canvas-win32-\$\{arch\}-msvc/u)
+  assert.match(prepareScript, /skia\.win32-\$\{arch\}-msvc\.node/u)
+  assert.match(prepareScript, /icudtl\.dat/u)
+})
+
+/**
+ * 校验 Windows 安装包只携带 Windows 目标架构的 Canvas 平台包，避免交叉打包
+ * 把 Linux 与 macOS 的大体积 Skia binding 一并带入 NSIS 产物。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Windows 打包配置应排除非 Windows 的 N-API Canvas 平台包', () => {
+  const files = packageJson.build?.win?.files ?? []
+  assert.ok(files.includes('node_modules/@napi-rs/**/*'), '@napi-rs 平台包应进入 Windows 安装包')
+  for (const pattern of [
+    '!node_modules/@napi-rs/canvas-linux-*/**/*',
+    '!node_modules/@napi-rs/canvas-darwin-*/**/*',
+    '!node_modules/@napi-rs/canvas-android-*/**/*',
+    '!node_modules/@napi-rs/canvas-freebsd-*/**/*'
+  ]) {
+    assert.ok(files.includes(pattern), `Windows 打包应排除 ${pattern}`)
+  }
+  assert.ok(
+    !files.some((pattern) => pattern.startsWith('!node_modules/@napi-rs/canvas-win32-')),
+    '一次构建同时产出 x64/arm64，不能排除任一 Windows 架构包'
+  )
 })
 
 /**
@@ -108,7 +147,8 @@ test('Windows 桌面与开始菜单快捷方式应显式使用安装后的应用
   assert.deepEqual(packageJson.build?.win?.extraResources, [
     { from: 'build/icon.ico', to: 'app-icon.ico' },
     { from: 'helpers/windows-uia-reader', to: '.', filter: ['windows-uia-reader.exe'] },
-    { from: 'build/build-info.json', to: 'build-info.json' }
+    { from: 'build/build-info.json', to: 'build-info.json' },
+    { from: 'assets/fonts', to: 'assets/fonts' }
   ])
   assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh')
   assert.equal(existsSync('build/installer.nsh'), true)

@@ -9,8 +9,14 @@ const uiohookPackageRoot = dirname(require.resolve('uiohook-napi/package.json', 
 const prebuildsRoot = join(uiohookPackageRoot, 'prebuilds')
 const bundledRoot = join(projectRoot, 'build', 'uiohook-prebuilds')
 
-/** Linux 目标架构与其对应 npm 预编译目录。 */
-const LINUX_ARCHITECTURES = ['x64', 'arm64']
+/**
+ * Linux 目标架构及其对应 prebuildify 文件名。
+ * @electron/rebuild 对 arm64 使用 armv8 扩展名，对 x64 使用 node 扩展名。
+ */
+const LINUX_ARCHITECTURES = {
+  x64: 'node.napi.node',
+  arm64: 'node.napi.armv8.node'
+}
 /** npm 包自带、但不会用于 AppImage 且引用 glibc 2.34 的预编译目录。 */
 const UNUSED_PREBUILD_DIRECTORIES = ['linux-loong64']
 /** AppImageHub 兼容性检查要求 glibc 不高于 2.28（Ubuntu 20.04 / Debian 10）。 */
@@ -23,7 +29,7 @@ const MAX_GLIBC_VERSION = '2.28'
  * @author zhenghq
  */
 function bundledBindingPath(arch) {
-  return join(bundledRoot, `linux-${arch}`, 'uiohook-napi.node')
+  return join(bundledRoot, `linux-${arch}`, LINUX_ARCHITECTURES[arch])
 }
 
 /**
@@ -104,7 +110,7 @@ function prepareLinuxUiohookRuntime() {
     throw new Error('未找到 uiohook-napi，请先执行 npm install')
   }
 
-  for (const arch of LINUX_ARCHITECTURES) {
+  for (const arch of Object.keys(LINUX_ARCHITECTURES)) {
     verifyBundledBinding(arch)
     const targetDirectory = packagePrebuildDirectory(arch)
     rmSync(targetDirectory, { recursive: true, force: true })
@@ -115,8 +121,8 @@ function prepareLinuxUiohookRuntime() {
     rmSync(join(prebuildsRoot, directory), { recursive: true, force: true })
   }
 
-  for (const arch of LINUX_ARCHITECTURES) {
-    const targetPath = join(packagePrebuildDirectory(arch), 'uiohook-napi.node')
+  for (const [arch, bindingFilename] of Object.entries(LINUX_ARCHITECTURES)) {
+    const targetPath = join(packagePrebuildDirectory(arch), bindingFilename)
     if (!existsSync(targetPath)) {
       throw new Error(`替换后缺少 Linux ${arch} 的 uiohook 预编译产物: ${targetPath}`)
     }
@@ -127,7 +133,9 @@ function prepareLinuxUiohookRuntime() {
   }
 
   const remaining = existsSync(prebuildsRoot) ? readdirSync(prebuildsRoot).sort() : []
-  console.log(`Linux uiohook runtime 已就绪: ${LINUX_ARCHITECTURES.join(', ')}；剩余预编译目录: ${remaining.join(', ')}`)
+  console.log(
+    `Linux uiohook runtime 已就绪: ${Object.keys(LINUX_ARCHITECTURES).join(', ')}；剩余预编译目录: ${remaining.join(', ')}`
+  )
 }
 
 try {

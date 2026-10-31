@@ -32,11 +32,19 @@
   --page-bg: #f5f5f7;
   --panel-bg: #ffffff;
   --panel-shadow: rgba(0, 0, 0, 0.04);
+  /* PDF 纸张在明暗主题中保持可读的原生白纸观感，左右栏共享同一语义颜色。 */
+  --document-paper-bg: #ffffff;
+  --document-paper-text: #111827;
+  /* 译文水印只使用黑白纸张语义色，避免主题预设把品牌水印染成彩色。 */
+  --document-watermark-ink: rgba(17, 24, 39, 0.11);
+  --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
   --bg-secondary: #f2f2f7;
   --control-bg: #ffffff;
   --control-disabled-bg: #ededf2;
   --border-default: #e5e5ea;
   --border-control: #d1d1d6;
+  /* 表格最终外边界需要比普通控件边框更醒目，避免空白单元格底边在纸张上消失。 */
+  --document-table-boundary: #6b7280;
   --focus-ring: rgba(59, 130, 246, 0.16);
   --button-secondary-bg: #f2f2f7;
   --button-secondary-hover: #e5e5ea;
@@ -84,11 +92,16 @@
     --page-bg: #17171a;
     --panel-bg: #232327;
     --panel-shadow: rgba(0, 0, 0, 0.22);
+    --document-paper-bg: #ffffff;
+    --document-paper-text: #111827;
+    --document-watermark-ink: rgba(17, 24, 39, 0.11);
+    --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
     --bg-secondary: #303035;
     --control-bg: #29292e;
     --control-disabled-bg: #202024;
     --border-default: #3a3a40;
     --border-control: #4a4a52;
+    --document-table-boundary: #9ca3af;
     --focus-ring: rgba(59, 130, 246, 0.28);
     --button-secondary-bg: #303036;
     --button-secondary-hover: #3b3b42;
@@ -156,6 +169,7 @@
   --control-disabled-bg: #fce7f3;
   --border-default: #f5c2d9;
   --border-control: #e9a4c2;
+  --document-table-boundary: #9d4f72;
   --focus-ring: rgba(236, 72, 153, 0.22);
   --button-secondary-bg: #fff0f6;
   --button-secondary-hover: #fce7f3;
@@ -187,6 +201,7 @@
   --control-disabled-bg: #2d1d28;
   --border-default: #63334d;
   --border-control: #7c3f5e;
+  --document-table-boundary: #d18aaa;
   --focus-ring: rgba(244, 114, 182, 0.3);
   --button-secondary-bg: #48263a;
   --button-secondary-hover: #5b2d47;
@@ -219,6 +234,7 @@
   --control-disabled-bg: #dff5ed;
   --border-default: #b7e5d4;
   --border-control: #8bd2ba;
+  --document-table-boundary: #25725f;
   --focus-ring: rgba(5, 150, 105, 0.2);
   --button-secondary-bg: #e8faf4;
   --button-secondary-hover: #d1fae5;
@@ -250,6 +266,7 @@
   --control-disabled-bg: #0d2521;
   --border-default: #28594e;
   --border-control: #367466;
+  --document-table-boundary: #6ee7b7;
   --focus-ring: rgba(52, 211, 153, 0.3);
   --button-secondary-bg: #173b34;
   --button-secondary-hover: #205047;
@@ -288,6 +305,7 @@
   --control-disabled-bg: #17243c;
   --border-default: #37547e;
   --border-control: #4a6b9c;
+  --document-table-boundary: #93c5fd;
   --focus-ring: rgba(96, 165, 250, 0.3);
   --button-secondary-bg: #24385c;
   --button-secondary-hover: #304a76;
@@ -319,6 +337,7 @@
   --control-disabled-bg: #e1e8fb;
   --border-default: #c4d0ee;
   --border-control: #9eafd8;
+  --document-table-boundary: #3a5a8c;
   --focus-ring: rgba(30, 58, 138, 0.2);
   --button-secondary-bg: #e9efff;
   --button-secondary-hover: #dbe5ff;
@@ -348,6 +367,7 @@
   --control-disabled-bg: #131f3b;
   --border-default: #344e83;
   --border-control: #4968a3;
+  --document-table-boundary: #93c5fd;
   --focus-ring: rgba(96, 165, 250, 0.32);
   --button-secondary-bg: #20345f;
   --button-secondary-hover: #2b4477;
@@ -378,6 +398,7 @@
   --control-disabled-bg: #e3e6eb;
   --border-default: #c9ced7;
   --border-control: #adb4c0;
+  --document-table-boundary: #525b68;
   --focus-ring: rgba(71, 85, 105, 0.2);
   --button-secondary-bg: #e9ebef;
   --button-secondary-hover: #dfe3e9;
@@ -407,6 +428,7 @@
   --control-disabled-bg: #14171c;
   --border-default: #343a46;
   --border-control: #48515f;
+  --document-table-boundary: #cbd5e1;
   --focus-ring: rgba(203, 213, 225, 0.3);
   --button-secondary-bg: #20242c;
   --button-secondary-hover: #2a303a;

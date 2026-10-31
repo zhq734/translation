@@ -305,6 +305,7 @@ export const enUSBase = defineCatalog({
   'settings.trigger.globalHotkey': 'Global hotkey',
   'settings.trigger.manualHotkey': 'Manual translation',
   'settings.trigger.webReaderHotkey': 'Web reader',
+  'settings.trigger.documentHotkey': 'Document translation',
   'settings.trigger.clearHotkey': 'Clear',
   'settings.trigger.hotkeyRegistrationFailed': 'Shortcut registration failed: {message}',
   'settings.trigger.hotkeyPlaceholder': 'Click, then press a shortcut',

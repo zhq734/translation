@@ -117,4 +117,52 @@ test('翻译 Prompt 应包含源语言和目标语言并要求只输出译文', 
   assert.match(system.content as string, /译文/u)
   // 网页跨块合并依赖模型原样保留分段标记，提示词必须显式约束。
   assert.match(system.content as string, /ST-SEG/u)
+  // 文档表格行会在单元格之间插入内部标记，模型同样不能丢失或改写。
+  assert.match(system.content as string, /ST-DOC-CELL/u)
+})
+
+test('文档上下文应把命中术语和相邻摘要注入三种 AI 协议的系统提示', () => {
+  const context = {
+    glossaryVersion: 'glossary-v3',
+    glossaryContext: 'workspace => 工作区',
+    contextSummary: '上一段：Open the workspace\n下一段：Save the workspace'
+  }
+  const requests = (['ollama', 'openai', 'claude-code'] as const).map((protocol) => buildAiTranslationRequest({
+    protocol,
+    baseUrl: 'https://api.example.com',
+    model: 'model',
+    apiKey: null,
+    text: 'workspace',
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    context
+  }))
+
+  for (const req of requests) {
+    const body = JSON.parse(req.body as string)
+    const system = req.url.includes('/api/chat') || req.url.includes('/chat/completions')
+      ? body.messages.find((message: { role: string }) => message.role === 'system').content
+      : body.system
+    assert.match(system as string, /术语/u)
+    assert.match(system as string, /workspace => 工作区/u)
+    assert.match(system as string, /上一段：Open the workspace/u)
+    assert.match(system as string, /下一段：Save the workspace/u)
+    assert.match(system as string, /不得输出上下文/u)
+  }
+})
+
+test('无文档上下文时系统提示不得包含空术语或空上下文段落', () => {
+  const req = buildAiTranslationRequest({
+    protocol: 'openai',
+    baseUrl: 'https://api.example.com',
+    model: 'gpt-4o',
+    apiKey: null,
+    text: 'hello',
+    sourceLang: 'EN',
+    targetLang: 'ZH'
+  })
+  const body = JSON.parse(req.body as string)
+  const system = body.messages.find((message: { role: string }) => message.role === 'system').content as string
+  assert.doesNotMatch(system, /术语约束/u)
+  assert.doesNotMatch(system, /相邻上下文/u)
 })

@@ -84,6 +84,26 @@ test('normalizePaddleLines 同行文本应按 X 排序后拼接', () => {
 })
 
 /**
+ * 校验同一视觉高度上横向间距过大的标签不能被误合并为整行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('normalizePaddleLines 同行远距离独立标签必须保留各自包围盒', () => {
+  const items = [
+    makeItem('Front', [[20, 100], [120, 100], [120, 130], [20, 130]], 0.95),
+    makeItem('Side', [[320, 100], [410, 100], [410, 130], [320, 130]], 0.95),
+    makeItem('Back', [[610, 100], [700, 100], [700, 130], [610, 130]], 0.95)
+  ]
+  const lines = normalizePaddleLines(items)
+  assert.deepEqual(lines.map((line) => line.text), ['Front', 'Side', 'Back'])
+  assert.deepEqual(lines.map((line) => line.box), [
+    { x: 20, y: 100, width: 100, height: 30 },
+    { x: 320, y: 100, width: 90, height: 30 },
+    { x: 610, y: 100, width: 90, height: 30 }
+  ])
+})
+
+/**
  * 校验不同行的文本按 Y 顺序排列。
  * @returns 无返回值。
  * @author zhenghq

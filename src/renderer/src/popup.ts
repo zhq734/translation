@@ -10,11 +10,13 @@ import {
   clearManualTranslation,
   createManualTranslationState,
   failManualTranslation,
+  insertManualClipboardText,
   updateManualDraft,
   validateManualTranslationText,
   type ManualTranslationState
 } from '../../shared/manualTranslationBehavior'
 import type {
+  DocumentPlatformCapability,
   PronunciationDefinition,
   PronunciationResult,
   PronunciationVariant,
@@ -126,6 +128,7 @@ const ocrCopyBtn = document.getElementById('ocr-copy') as HTMLButtonElement
 const pinBtn = document.getElementById('pin') as HTMLButtonElement
 const pinLabelEl = document.getElementById('pin-label') as HTMLElement
 const webReaderBtn = document.getElementById('open-web-reader') as HTMLButtonElement
+const documentTranslationBtn = document.getElementById('open-document-translation') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
 const closeBtn = document.getElementById('close') as HTMLButtonElement
 
@@ -146,6 +149,7 @@ let manualProvider: TranslatePayload['provider'] | undefined
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 let pinned = false
 let currentSettings: Settings | null = null
+let documentTranslationCapability: DocumentPlatformCapability | null = null
 let mode: 'selection' | 'manual' = 'selection'
 let manualState: ManualTranslationState = createManualTranslationState()
 let selectionSpeechLanguage = ''
@@ -2042,6 +2046,7 @@ function handleLocaleChanged(): void {
   }
   renderMode()
   renderPinnedState(pinned)
+  renderDocumentTranslationCapability()
 }
 
 /**
@@ -2099,6 +2104,51 @@ function openSettings(): void { window.api.openSettings() }
 function openWebReader(): void { window.api.openWebReader() }
 
 /**
+ * 根据平台能力刷新文档翻译入口的禁用状态和提示。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderDocumentTranslationCapability(): void {
+  const supported = documentTranslationCapability?.supported ?? false
+  documentTranslationBtn.disabled = !supported
+  if (supported) {
+    const label = t('popup.openDocumentTranslation')
+    documentTranslationBtn.title = label
+    documentTranslationBtn.setAttribute('aria-label', label)
+    return
+  }
+  const reason = documentTranslationCapability?.reason === 'windows-7-unsupported'
+    ? t('document.error.windows7Unsupported')
+    : t('settings.document.unsupported')
+  documentTranslationBtn.title = reason
+  documentTranslationBtn.setAttribute('aria-label', reason)
+}
+
+/**
+ * 打开独立文档翻译工作台。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openDocumentTranslation(): void {
+  if (!documentTranslationCapability?.supported) return
+  window.api.openDocumentWorkspace()
+}
+
+/**
+ * 查询平台能力并初始化文档翻译入口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+async function initializeDocumentTranslationEntry(): Promise<void> {
+  try {
+    documentTranslationCapability = await window.api.getDocumentPlatformCapability()
+  } catch {
+    documentTranslationCapability = { supported: false, reason: 'unsupported-platform' }
+  }
+  renderDocumentTranslationCapability()
+}
+
+/**
  * 关闭翻译弹窗。
  * @returns 无返回值。
  * @author zhenghq
@@ -2135,6 +2185,45 @@ function handleManualSourceKeydown(event: KeyboardEvent): void {
   // Shift + Enter 退化为换行，其余组合键同样保留默认行为。
   if (event.shiftKey || event.altKey) return
   event.preventDefault()
+  void submitManualTranslation()
+}
+
+/**
+ * 处理手动输入框右键：读取剪贴板、替换选区并自动提交翻译。
+ *
+ * 右键不展示原生菜单，避免用户还需要再点一次粘贴；空白剪贴板只恢复焦点，
+ * 不覆盖已有草稿，也不发起无效请求。
+ * @param event 当前鼠标事件。
+ * @returns 剪贴板读取和处理完成后的 Promise。
+ * @author zhenghq
+ */
+async function handleManualSourceContextMenu(event: MouseEvent): Promise<void> {
+  event.preventDefault()
+  // 鼠标事件结束后焦点或选区可能变化，先固定本次右键位置，再异步读取剪贴板。
+  const selectionStart = manualSourceEl.selectionStart ?? manualSourceEl.value.length
+  const selectionEnd = manualSourceEl.selectionEnd ?? selectionStart
+  let clipboardText = ''
+  try {
+    clipboardText = await window.api.readClipboardText()
+  } catch {
+    manualSourceEl.focus()
+    return
+  }
+  const insertion = insertManualClipboardText(
+    manualSourceEl.value,
+    clipboardText,
+    selectionStart,
+    selectionEnd
+  )
+  if (!insertion.changed) {
+    manualSourceEl.focus()
+    manualSourceEl.setSelectionRange(insertion.cursor, insertion.cursor)
+    return
+  }
+  manualState = updateManualDraft(manualState, insertion.value)
+  renderManualState()
+  manualSourceEl.focus()
+  manualSourceEl.setSelectionRange(insertion.cursor, insertion.cursor)
   void submitManualTranslation()
 }
 
@@ -2322,6 +2411,7 @@ manualClearBtn.addEventListener('click', () => {
 })
 manualSubmitBtn.addEventListener('click', () => void submitManualTranslation())
 manualSourceEl.addEventListener('keydown', handleManualSourceKeydown)
+manualSourceEl.addEventListener('contextmenu', handleManualSourceContextMenu)
 copyBtn.addEventListener('click', copyTranslation)
 manualCopyBtn.addEventListener('click', copyTranslation)
 ocrCopyBtn.addEventListener('click', () => {
@@ -2331,6 +2421,7 @@ ocrCopyBtn.addEventListener('click', () => {
 })
 pinBtn.addEventListener('click', togglePinned)
 webReaderBtn.addEventListener('click', openWebReader)
+documentTranslationBtn.addEventListener('click', openDocumentTranslation)
 settingsBtn.addEventListener('click', openSettings)
 closeBtn.addEventListener('click', closePopup)
 document.addEventListener('keydown', handleKeydown)
@@ -2348,3 +2439,4 @@ renderPinnedState(false)
 renderMode()
 syncSpeechButton()
 void initializeSelectors()
+void initializeDocumentTranslationEntry()

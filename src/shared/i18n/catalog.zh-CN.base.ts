@@ -317,6 +317,7 @@ export const zhCNBase = defineCatalog({
   'settings.trigger.globalHotkey': '全局快捷键',
   'settings.trigger.manualHotkey': '手动翻译',
   'settings.trigger.webReaderHotkey': '网页阅读器',
+  'settings.trigger.documentHotkey': '文档翻译',
   'settings.trigger.clearHotkey': '清除',
   'settings.trigger.hotkeyRegistrationFailed': '快捷键注册失败：{message}',
   'settings.trigger.hotkeyPlaceholder': '点击后按下快捷键',

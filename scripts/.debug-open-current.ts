@@ -1,0 +1,14 @@
+import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { parsePdfDocument } from '../src/main/documentPdfParser'
+const document = await PDFDocument.create()
+const page = document.addPage([595.3, 841.9])
+const font = await document.embedFont(StandardFonts.Courier)
+const drawY = (y: number): number => page.getHeight() - y
+const left = 89.14, right = 517.29
+const codeLines = ['public interface Converter {','  String convert(String value);','}']
+codeLines.forEach((line,index)=>page.drawText(line,{x:102,y:drawY(535+index*18),size:9,font}))
+page.drawLine({start:{x:left,y:drawY(82)},end:{x:left,y:drawY(703)},thickness:1})
+page.drawLine({start:{x:right,y:drawY(82)},end:{x:right,y:drawY(703)},thickness:1})
+for (const y of [81.1,125.75,496.45,540.25]) page.drawLine({start:{x:left,y:drawY(y)},end:{x:right,y:drawY(y)},thickness:1})
+const model=await parsePdfDocument({path:'/tmp/x.pdf',fileName:'x.pdf',format:'pdf',sha256:'a'.repeat(64),bytes:await document.save()})
+console.dir(model.pages[0]!.blocks,{depth:8})

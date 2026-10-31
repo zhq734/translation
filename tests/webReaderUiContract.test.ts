@@ -24,7 +24,7 @@ test('网页阅读器应提供原位翻译工具栏、原生 View 占位和自�
   const css = readFileSync('src/renderer/src/webReader.css', 'utf8')
   const vite = readFileSync('electron.vite.config.ts', 'utf8')
 
-  for (const id of ['web-address', 'web-back', 'web-forward', 'web-reload', 'web-source-lang', 'web-target-lang', 'web-translate', 'web-cancel', 'web-mode', 'web-view-slot']) {
+  for (const id of ['web-address', 'web-back', 'web-forward', 'web-reload', 'web-source-lang', 'web-target-lang', 'web-translate', 'web-cancel', 'web-export-pdf', 'web-mode', 'web-view-slot']) {
     assert.match(html, new RegExp(`id="${id}"`, 'u'))
   }
   assert.match(html, /value="source"/u)
@@ -65,7 +65,7 @@ test('网页翻译 IPC、preload 与托盘入口应完整且受限', () => {
   for (const channel of [
     'webview:open', 'webview:close', 'webview:back', 'webview:forward', 'webview:reload',
     'webview:set-bounds', 'web-translate:extract', 'web-translate:run', 'web-translate:cancel',
-    'web-translate:set-mode', 'web-translate:page-updated'
+    'web-translate:set-mode', 'web-translate:page-updated', 'web-translate:export-pdf'
   ]) {
     assert.match(`${main}\n${manager}`, new RegExp(channel, 'u'))
     assert.match(preload, new RegExp(channel, 'u'))
@@ -205,6 +205,56 @@ test('网页翻译界面应净化 IPC 错误前缀', () => {
   const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
   assert.match(renderer, /normalizeWebTranslationError/u)
   assert.match(renderer, /normalizeWebTranslationError\(error, t\('webReader\.translationFailed'\)\)/u)
+})
+
+test('网页阅读器导出 PDF 应复用译文状态并反馈导出结果', () => {
+  const html = readFileSync('src/renderer/web-reader.html', 'utf8')
+  const renderer = readFileSync('src/renderer/src/webReader.ts', 'utf8')
+  const exportMethodStart = renderer.indexOf('async function exportPagePdf(')
+  const exportMethodEnd = renderer.indexOf('addressForm.addEventListener', exportMethodStart)
+  const exportMethod = exportMethodStart >= 0 && exportMethodEnd > exportMethodStart
+    ? renderer.slice(exportMethodStart, exportMethodEnd)
+    : ''
+  const updateMethodStart = renderer.indexOf('function updateExportButtonState(')
+  const updateMethodEnd = renderer.indexOf('/**', updateMethodStart + 1)
+  const updateMethod = updateMethodStart >= 0 && updateMethodEnd > updateMethodStart
+    ? renderer.slice(updateMethodStart, updateMethodEnd)
+    : ''
+
+  assert.match(html, /id="web-export-pdf"[^>]*data-i18n="webReader\.exportPdf"/u)
+  assert.match(renderer, /getElementById\('web-export-pdf'\)/u)
+  assert.match(updateMethod, /translationDone/u)
+  assert.match(updateMethod, /translating/u)
+  assert.match(updateMethod, /exportingPdf/u)
+  assert.match(exportMethod, /window\.api\.exportWebPagePdf\(\)/u)
+  assert.match(exportMethod, /t\('webReader\.exportingPdf'\)/u)
+  assert.match(exportMethod, /t\('webReader\.pdfExported'\)/u)
+  assert.match(exportMethod, /t\('webReader\.pdfExportCancelled'\)/u)
+  assert.match(exportMethod, /t\('webReader\.pdfExportFailed'\)/u)
+  assert.match(renderer, /exportButton\.addEventListener\('click', \(\) => void exportPagePdf\(\)\)/u)
+  // 水印只允许由主进程打印样式注入，阅读器界面不得出现水印节点或样式。
+  assert.doesNotMatch(`${html}\n${renderer}`, /watermark|水印/iu)
+})
+
+test('网页 PDF 导出应先确认保存位置，打印译文后恢复原显示模式', () => {
+  const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
+  const exportMethod = manager.slice(
+    manager.indexOf('async exportPdf(): Promise<WebPagePdfExportResult>'),
+    manager.indexOf('/** 生成网页 PDF 的默认文件名')
+  )
+  const saveDialogIndex = exportMethod.indexOf('this.options.showSaveDialog')
+  const targetModeIndex = exportMethod.indexOf("this.setMode('target')")
+  const printIndex = exportMethod.indexOf('printWebPageToPdf')
+  const writeIndex = exportMethod.indexOf('this.options.writeFile')
+  const restoreIndex = exportMethod.indexOf('await this.setMode(previousMode)')
+
+  assert.ok(saveDialogIndex >= 0 && saveDialogIndex < targetModeIndex, '取消保存时不应切换译文模式')
+  assert.ok(targetModeIndex < printIndex && printIndex < writeIndex, '必须先打印译文再写入用户选择的位置')
+  assert.ok(restoreIndex > writeIndex, '导出结束后必须恢复用户原显示模式')
+  assert.match(exportMethod, /finally\s*\{/u)
+  assert.match(exportMethod, /this\.translatedUnits\.length === 0/u)
+  assert.match(exportMethod, /status: 'cancelled'/u)
+  assert.match(exportMethod, /status: 'rejected', code: 'export-failed'/u)
 })
 
 test('远程 frame 导航销毁时增量写回应安全跳过', () => {

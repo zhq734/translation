@@ -5,7 +5,7 @@ import { decodePng } from './pngCodec'
 import { lumaOf, type RgbaImage } from '../shared/imagePreprocess'
 import { OcrEngineError, type OcrEngine, type OcrRecognizeInput, type OcrRecognizeResult } from '../shared/ocrEngine'
 import { joinOcrLines } from '../shared/ocrEngine'
-import type { OcrTextLine } from '../shared/types'
+import type { OcrBoundingBox, OcrTextLine } from '../shared/types'
 import type { TranslationParams } from '../shared/i18n'
 import { translateMain } from './messages'
 
@@ -77,7 +77,7 @@ function toVisionLanguages(language: string): string[] {
 
 /**
  * 生成用于 osascript 执行的内联 Swift 脚本，调用 Vision VNRecognizeTextRequest 识别图片文字。
- * 每行识别结果单独一行输出到 stdout。
+ * 每行识别结果以 JSON 输出，并保留 Vision 归一化坐标对应的左上角像素框。
  * @param imagePath 图片本地路径（PNG/JPEG）。
  * @param language 语言偏好，'auto' 时由 Vision 自动判断。
  * @returns Swift 脚本字符串。
@@ -113,33 +113,87 @@ if !langs.isEmpty {
 let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
 try? handler.perform([request])
 
+let imageWidth = CGFloat(ciImage.extent.width)
+let imageHeight = CGFloat(ciImage.extent.height)
+var lines: [[String: Any]] = []
 if let results = request.results {
   for observation in results {
-    if let candidate = observation.topCandidates(1).first {
-      let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !text.isEmpty {
-        print(text)
-      }
-    }
+    guard let candidate = observation.topCandidates(1).first else { continue }
+    let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.isEmpty { continue }
+    let bounds = observation.boundingBox
+    let x = bounds.minX * imageWidth
+    let y = (1 - bounds.maxY) * imageHeight
+    lines.append([
+      "text": text,
+      "box": [
+        "x": Double(x),
+        "y": Double(y),
+        "width": Double(bounds.width * imageWidth),
+        "height": Double(bounds.height * imageHeight)
+      ]
+    ])
   }
+}
+let data = try JSONSerialization.data(withJSONObject: ["lines": lines], options: [])
+if let json = String(data: data, encoding: .utf8) {
+  print(json)
 }
 `.trim()
 }
 
 /**
- * 解析 Vision OCR 脚本的 stdout 输出，每行映射为一个 OcrTextLine。
- * 空行和仅空白行自动过滤。
+ * 解析 Vision OCR 脚本的 stdout 输出。
+ * 优先读取结构化 JSON 行框；旧 helper 的逐行纯文本输出仍兼容。
  * @param output osascript 的 stdout 字符串。
  * @returns 文本行数组。
  * @author zhenghq
  */
 export function parseVisionOcrOutput(output: string): OcrTextLine[] {
-  if (!output || !output.trim()) return []
-  return output
+  const raw = String(output ?? '').trim()
+  if (!raw) return []
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as { lines?: unknown }
+      if (!Array.isArray(parsed.lines)) return []
+      return parsed.lines
+        .map((line): OcrTextLine | null => {
+          if (!line || typeof line !== 'object') return null
+          const candidate = line as { text?: unknown; box?: unknown }
+          const text = typeof candidate.text === 'string' ? candidate.text.trim() : ''
+          if (!text) return null
+          const box = parseOcrBoundingBox(candidate.box)
+          return box ? { text, box } : { text }
+        })
+        .filter((line): line is OcrTextLine => line !== null)
+    } catch {
+      // 非结构化 JSON 继续按旧纯文本输出解析。
+    }
+  }
+  return raw
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .map((text) => ({ text }))
+}
+
+/**
+ * 解析 OCR 引擎输出的像素包围盒，过滤无效尺寸。
+ * @param value 待解析的包围盒对象。
+ * @returns 有效像素包围盒；缺字段或尺寸非正时返回 undefined。
+ * @author zhenghq
+ */
+function parseOcrBoundingBox(value: unknown): OcrBoundingBox | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const item = value as Record<string, unknown>
+  const x = Number(item.x)
+  const y = Number(item.y)
+  const width = Number(item.width)
+  const height = Number(item.height)
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return undefined
+  }
+  return { x, y, width, height }
 }
 
 /**
@@ -229,7 +283,16 @@ export function parseWindowsOcrStructuredOutput(output: string): WindowsOcrStruc
             })
             .filter((word): word is WindowsOcrWordBox => word !== null)
           : []
-        return words.length > 0 ? { text, words } : { text }
+        if (words.length === 0) return { text }
+        const left = Math.min(...words.map((word) => word.x))
+        const top = Math.min(...words.map((word) => word.y))
+        const right = Math.max(...words.map((word) => word.x + word.width))
+        const bottom = Math.max(...words.map((word) => word.y + word.height))
+        return {
+          text,
+          words,
+          box: { x: left, y: top, width: right - left, height: bottom - top }
+        }
       })
       .filter((line): line is WindowsOcrStructuredLine => line !== null)
   } catch {
@@ -518,7 +581,10 @@ export class MacOsVisionOcrEngine implements OcrEngine {
         this.availabilityCheck = Promise.resolve(false)
       } else {
         this.availabilityCheck = this.deps.execFile(helperPath, ['--version'], { timeout: 2000 })
-          .then(() => {
+          .then(({ stdout }) => {
+            if (!stdout.includes('macos-vision-ocr')) {
+              throw new Error('Vision helper version output missing')
+            }
             this.unavailableReasonKey = undefined
             this.unavailableReasonParams = undefined
             return true

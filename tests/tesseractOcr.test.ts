@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   buildTesseractWorkerOptions,
   ensureTessDataDirectory,
+  normalizeTesseractBlocks,
   resolveTesseractLangPath,
   resolveTesseractLangPathForLanguage,
   resolveTesseractWorkerPath,
@@ -274,6 +275,80 @@ test('TesseractOcrEngine 正常识别应返回文本行', async () => {
   assert.equal(result.engine, 'tesseract')
   assert.equal(result.lines.length, 2)
   assert.equal(result.lines[0]!.text, '你好世界')
+})
+
+/**
+ * 校验 Tesseract blocks 被规范化为带像素行框和 0-1 置信度的文本行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Tesseract blocks 应保留行框并归一化置信度', () => {
+  const lines = normalizeTesseractBlocks([{
+    paragraphs: [{
+      lines: [{
+        text: '第一行',
+        confidence: 92,
+        bbox: { x0: 10, y0: 20, x1: 110, y1: 50 }
+      }, {
+        text: '第二行',
+        confidence: 140,
+        bbox: { x0: 20, y0: 60, x1: 180, y1: 90 }
+      }]
+    }]
+  }])
+
+  assert.deepEqual(lines, [{
+    text: '第一行',
+    confidence: 0.92,
+    box: { x: 10, y: 20, width: 100, height: 30 }
+  }, {
+    text: '第二行',
+    confidence: 1,
+    box: { x: 20, y: 60, width: 160, height: 30 }
+  }])
+})
+
+/**
+ * 校验 Tesseract 引擎显式请求 blocks，并把结构化行框返回给文档流水线。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('TesseractOcrEngine 应请求并返回结构化行框', async () => {
+  let receivedOutput: unknown
+  const engine = new TesseractOcrEngine({
+    tessDataPath: '/tmp/tessdata',
+    createWorker: async () => ({
+      recognize: async (_input: unknown, _options?: unknown, output?: unknown) => {
+        receivedOutput = output
+        return {
+          data: {
+            text: '结构化文本',
+            blocks: [{
+              paragraphs: [{
+                lines: [{
+                  text: '结构化文本',
+                  confidence: 88,
+                  bbox: { x0: 12, y0: 24, x1: 132, y1: 54 }
+                }]
+              }]
+            }]
+          }
+        }
+      },
+      setParameters: async () => undefined,
+      terminate: async () => undefined
+    })
+  })
+
+  const result = await engine.recognize({
+    imageBytes: Buffer.from([1, 2, 3]),
+    language: 'zh',
+    timeoutMs: 500
+  })
+
+  assert.deepEqual(receivedOutput, { text: true, blocks: true })
+  assert.deepEqual(result.lines[0]!.box, { x: 12, y: 24, width: 120, height: 30 })
+  assert.equal(result.lines[0]!.confidence, 0.88)
 })
 
 /**

@@ -25,7 +25,8 @@ function discoverTestEntries() {
 async function runTests() {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'selection-translator-tests-'))
   try {
-    const entryPoints = discoverTestEntries()
+    const requestedTests = process.argv.slice(2).map((file) => file.replace(/^\.\//u, ''))
+    const entryPoints = requestedTests.length > 0 ? requestedTests : discoverTestEntries()
     await build({
       entryPoints,
       bundle: true,
@@ -43,6 +44,10 @@ async function runTests() {
         'koffi',
         '@gutenye/ocr-node',
         'tesseract.js',
+        // PDF.js 内部仍硬编码 require("canvas")；生产代码直接使用 N-API Canvas。
+        // 两者都必须外部化，单元测试通过注入的栅格化器替代真实绘制。
+        '@napi-rs/canvas',
+        'canvas',
         // TypeScript 以 CommonJS 发布，测试内通过 createRequire 从项目根目录加载，避免打进 ESM 后动态 require 失败。
         'typescript'
       ]
