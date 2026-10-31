@@ -13,8 +13,12 @@ import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
 import type { DocumentPlatformCapability } from './documentPlatformCapability'
 import type {
   DocumentAssetResult,
+  DocumentApprovedAssetRequest,
+  DocumentApprovedSourceRequest,
+  DocumentExportProgress,
   DocumentExportRequest,
   DocumentExportResult,
+  DocumentHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
@@ -30,8 +34,12 @@ export type {
 export type { DocumentPlatformCapability } from './documentPlatformCapability'
 export type {
   DocumentAssetResult,
+  DocumentApprovedAssetRequest,
+  DocumentApprovedSourceRequest,
+  DocumentExportProgress,
   DocumentExportRequest,
   DocumentExportResult,
+  DocumentHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
   DocumentSourceResult,
@@ -1245,10 +1253,30 @@ export interface Api {
   releaseDocumentJob(jobId: string): Promise<boolean>
   /** 校验当前任务并导出完整或已确认的部分 PDF。 */
   exportDocumentPdf(request: DocumentExportRequest): Promise<DocumentExportResult>
+  /** 取消当前正在执行的 PDF 导出，任务终态保持不变。 */
+  cancelDocumentExport(jobId: string, generation: number): Promise<boolean>
+  /** 在系统文件管理器中定位当前任务最近一次成功导出的 PDF。 */
+  openDocumentExportFolder(jobId: string, generation: number): Promise<boolean>
+  /** 订阅不包含路径或正文的 PDF 导出阶段进度。 */
+  onDocumentExportProgress(
+    callback: (progress: DocumentExportProgress) => void
+  ): () => void
+  /** 读取按更新时间倒序排列的文档任务安全摘要。 */
+  listDocumentHistory(): Promise<DocumentHistoryEntry[]>
+  /** 打开指定历史任务的完整只读快照。 */
+  openDocumentHistory(jobId: string): Promise<{ snapshot: DocumentWorkspaceSnapshot } | null>
+  /** 删除指定任务历史及其源文件对应的翻译缓存。 */
+  deleteDocumentHistory(jobId: string): Promise<boolean>
+  /** 清空全部文档翻译缓存与任务历史，不修改用户设置。 */
+  clearDocumentCache(): Promise<void>
   /** 读取指定任务中的受控图片资源。 */
   getDocumentAsset(jobId: string, assetId: string): Promise<DocumentAssetResult>
   /** 读取指定 PDF 任务的原始字节，供 PDF.js 原生预览。 */
   getDocumentSource(jobId: string): Promise<DocumentSourceResult>
+  /** 读取已重新授权历史文件的受控图片资源。 */
+  getApprovedDocumentAsset(request: DocumentApprovedAssetRequest): Promise<DocumentAssetResult>
+  /** 读取已重新授权历史文件的源预览字节。 */
+  getApprovedDocumentSource(request: DocumentApprovedSourceRequest): Promise<DocumentSourceResult>
   /** 订阅文档翻译进度。 */
   onDocumentProgress(callback: (snapshot: DocumentWorkspaceSnapshot) => void): () => void
   /** 订阅单个翻译区块的增量更新。 */

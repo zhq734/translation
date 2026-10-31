@@ -42,6 +42,58 @@ export interface DocumentOcrFlowRect {
   bottom: number
 }
 
+/** 图片在原始 bbox 内按自然宽高比缩放后的居中内容框。 */
+export interface DocumentImageContentBox {
+  /** 内容框左边界，相对图片区块。 */
+  x: number
+  /** 内容框上边界，相对图片区块。 */
+  y: number
+  /** 内容框宽度。 */
+  width: number
+  /** 内容框高度。 */
+  height: number
+}
+
+/** OCR 译文在图片内可使用的横向位置与宽度，单位均为归一化坐标。 */
+export interface DocumentOcrTranslationHorizontalBounds {
+  /** 译文左边界，范围 0 到 1。 */
+  x: number
+  /** 译文可用宽度，范围大于 0 且不超过图片剩余宽度。 */
+  width: number
+}
+
+/**
+ * 计算图片在目标边界内按原始宽高比等比缩放后的居中内容框。
+ * @param naturalWidth 图片自然宽度。
+ * @param naturalHeight 图片自然高度。
+ * @param targetWidth 图片区块目标宽度。
+ * @param targetHeight 图片区块目标高度。
+ * @returns 等比内容框；图片尺寸无效时回退到完整目标边界。
+ * @author zhenghq
+ */
+export function resolveDocumentImageContentBox(
+  naturalWidth: number,
+  naturalHeight: number,
+  targetWidth: number,
+  targetHeight: number
+): DocumentImageContentBox {
+  const safeTargetWidth = Number.isFinite(targetWidth) && targetWidth > 0 ? targetWidth : 1
+  const safeTargetHeight = Number.isFinite(targetHeight) && targetHeight > 0 ? targetHeight : 1
+  if (!Number.isFinite(naturalWidth) || !Number.isFinite(naturalHeight) ||
+    naturalWidth <= 0 || naturalHeight <= 0) {
+    return { x: 0, y: 0, width: safeTargetWidth, height: safeTargetHeight }
+  }
+  const scale = Math.min(safeTargetWidth / naturalWidth, safeTargetHeight / naturalHeight)
+  const width = naturalWidth * scale
+  const height = naturalHeight * scale
+  return {
+    x: (safeTargetWidth - width) / 2,
+    y: (safeTargetHeight - height) / 2,
+    width,
+    height
+  }
+}
+
 /**
  * 将 OCR 区域坐标归一化到图片范围内，并保证透明文字层始终具有可命中尺寸。
  * @param bbox OCR 引擎返回的原始区域坐标。
@@ -82,6 +134,64 @@ export function resolveDocumentOcrOverlayBox(
   bbox: DocumentOcrNormalizedBox
 ): DocumentOcrNormalizedBox {
   return normalizeDocumentOcrRegionBox(bbox)
+}
+
+/**
+ * 计算左对齐 OCR 译文的横向可用宽度。
+ * 中文译文通常比英文原文更长，若继续沿用窄识别框会逐字折行并把后续区域不断下推；
+ * 因此扩展到同一行右侧最近区域的起点，没有同行邻居时止于图片右边界。
+ * 居中、右对齐译文必须保持原识别框宽度，否则会改变对齐基准。
+ * @param region 当前 OCR 区域。
+ * @param regions 图片内全部 OCR 区域，用于识别同一行右侧的内容。
+ * @returns 归一化后的译文左边界与可用宽度。
+ * @author zhenghq
+ */
+export function resolveDocumentOcrTranslationHorizontalBounds(
+  region: DocumentOcrRegion,
+  regions: readonly DocumentOcrRegion[]
+): DocumentOcrTranslationHorizontalBounds {
+  const box = normalizeDocumentOcrRegionBox(region.bbox)
+  if (region.textAlign === 'center' || region.textAlign === 'right') {
+    return { x: box.x, width: box.width }
+  }
+
+  const currentTop = box.y
+  const currentBottom = box.y + box.height
+  // 同一行不同识别框可能存在数像素的基线误差，允许半行高度且限制在图片高度的 0.6% 内。
+  const rowTolerance = Math.min(0.006, Math.max(0.001, box.height / 2))
+  let right = 1
+  for (const candidate of regions) {
+    if (candidate === region || candidate.regionId === region.regionId) continue
+    const candidateBox = normalizeDocumentOcrRegionBox(candidate.bbox)
+    if (candidateBox.x <= box.x + 0.000001) continue
+    const candidateBottom = candidateBox.y + candidateBox.height
+    const sharesRow = candidateBox.y <= currentBottom + rowTolerance &&
+      candidateBottom >= currentTop - rowTolerance
+    if (sharesRow) right = Math.min(right, candidateBox.x)
+  }
+  return {
+    x: box.x,
+    width: Math.round(Math.max(box.width, right - box.x) * 1_000_000) / 1_000_000
+  }
+}
+
+/**
+ * 计算 OCR 原识别框占扩宽译文框的宽度比例。
+ * 可见译文元素会向右扩展以容纳中文，但白底只能覆盖原识别框；
+ * CSS 渐变百分比相对译文元素自身宽度，因此不能直接使用图片归一化宽度。
+ * @param sourceBox 已归一化的原 OCR 识别框。
+ * @param horizontalBounds 译文元素实际使用的横向范围。
+ * @returns 白底渐变终点相对译文元素宽度的比例，范围为 0 到 1。
+ * @author zhenghq
+ */
+export function resolveDocumentOcrSourceWidthRatio(
+  sourceBox: Pick<DocumentOcrNormalizedBox, 'width'>,
+  horizontalBounds: Pick<DocumentOcrTranslationHorizontalBounds, 'width'>
+): number {
+  const sourceWidth = Number.isFinite(sourceBox.width) ? Math.max(0, sourceBox.width) : 0
+  const elementWidth = Number.isFinite(horizontalBounds.width) ? horizontalBounds.width : 0
+  if (elementWidth <= 0) return 1
+  return Math.min(1, Math.max(0, sourceWidth / elementWidth))
 }
 
 /**

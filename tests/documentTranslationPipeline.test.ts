@@ -22,6 +22,7 @@ import type { DocumentLanguagePair } from '../src/shared/documentLanguageDirecti
 import {
   buildDocumentTranslationCacheKey,
   DOCUMENT_PROTECTION_RULES_VERSION,
+  DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
   type DocumentGlossary,
   type DocumentTranslationCacheEntry
 } from '../src/shared/documentTranslation.ts'
@@ -1348,7 +1349,8 @@ test('OCR 多行结果必须生成归一化局部区域并按区域翻译', asyn
   assert.equal(image.ocrRegions?.[0]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
   assert.equal(image.ocrRegions?.[1]?.text, 'second line')
   assert.equal(image.ocrRegions?.[1]?.style?.fontSize, DOCUMENT_OCR_UNIFORM_FONT_SIZE)
-  assert.deepEqual(calls, ['first line\n[[[ST-SEG-0]]]\nsecond line'])
+  // OCR 区域之间禁止合并，避免模型吞掉前序标记后把译文整体写到上一区域。
+  assert.deepEqual(calls, ['first line', 'second line'])
 })
 
 test('文档翻译每批最多合并五十个短目标以优先减少请求数', async () => {
@@ -1438,7 +1440,7 @@ test('表格文本必须在字符上限内按大块翻译并保持单元格对�
   )), ['T(Cell A)', 'T(Cell B)', 'T(Cell C)', 'T(Cell D)', 'T(Cell E)', 'T(Cell F)'])
 })
 
-test('PDF 表格单元格内的原始文本行必须在译文中保留换行边界', async () => {
+test('非 PDF 表格单元格内的真实段落必须在译文中保留换行边界', async () => {
   const source = model([{
     kind: 'table',
     blockId: 'table-multiline-cell',
@@ -1488,6 +1490,59 @@ test('PDF 表格单元格内的原始文本行必须在译文中保留换行边�
   if (table.kind !== 'table') return
   const firstCellBlock = table.rows[0]!.cells[0]!.blocks[0] as DocumentTextBlock
   assert.equal(firstCellBlock.runs[0]!.text, 'T(First source line\nSecond source line)')
+})
+
+test('PDF 表格单元格的视觉行必须合并为连续译文，不能沿用原文断行', async () => {
+  const source = model([{
+    kind: 'table',
+    blockId: 'table-pdf-visual-lines',
+    readingOrder: 0,
+    translatable: true,
+    rows: [{
+      rowId: 'table-pdf-visual-lines-row',
+      cells: [{
+        cellId: 'table-pdf-visual-lines-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [
+          textBlock('table-pdf-visual-line-1', [{
+            runId: 'table-pdf-visual-run-1',
+            text: 'First source line'
+          }]),
+          textBlock('table-pdf-visual-line-2', [{
+            runId: 'table-pdf-visual-run-2',
+            text: 'Second source line'
+          }])
+        ]
+      }]
+    }]
+  }])
+  source.source.format = 'pdf'
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      return translateMergedText(text, (part) => `T(${part})`)
+    },
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.pdf', fileName: 'test.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-pdf-visual-lines', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(calls, ['First source line Second source line'])
+  const table = result.translation.pages[0]!.blocks[0]
+  assert.equal(table.kind, 'table')
+  if (table.kind !== 'table') return
+  const firstCellBlock = table.rows[0]!.cells[0]!.blocks[0] as DocumentTextBlock
+  assert.equal(firstCellBlock.runs[0]!.text, 'T(First source line Second source line)')
 })
 
 test('表格行请求丢失单元格标记时必须逐单元格回退翻译', async () => {
@@ -1743,6 +1798,226 @@ test('合并请求丢失分段标记时必须逐段回退翻译', async () => {
   assert.equal(result.task.status, 'completed')
   assert.equal((result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, 'T(first)')
   assert.equal((result.translation.pages[0]!.blocks[1] as DocumentTextBlock).runs[0]!.text, 'T(second)')
+})
+
+test('OCR 区域不得跨目标合并，避免模型吞并前序分隔标记后整体错位', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-ocr-order',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-ocr-order',
+    bbox: { x: 0, y: 0, width: 600, height: 800 },
+    ocrRegions: [
+      {
+        regionId: 'ocr-title',
+        pageId: 'page-1',
+        blockId: 'image-ocr-order',
+        assetId: 'asset-ocr-order',
+        bbox: { x: 0.05, y: 0.05, width: 0.1, height: 0.02 },
+        text: 'Agent2API',
+        confidence: 0.99,
+        status: 'recognized'
+      },
+      {
+        regionId: 'ocr-status',
+        pageId: 'page-1',
+        blockId: 'image-ocr-order',
+        assetId: 'asset-ocr-order',
+        bbox: { x: 0.16, y: 0.04, width: 0.7, height: 0.02 },
+        text: 'Reports Gateway Running · Not Logged In',
+        confidence: 0.99,
+        status: 'recognized'
+      }
+    ]
+  }])
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      // 模拟模型把前两个短区域合并成一段，只保留第二个分隔标记的故障响应。
+      if (text.includes('ST-SEG')) return 'Agent2API / Reports Gateway Running\n[[[ST-SEG-0]]]\nNot Logged In'
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'png', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-order', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(calls, ['Agent2API', 'Reports Gateway Running · Not Logged In'])
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.deepEqual(image.ocrRegions?.map((region) => region.translatedText), [
+    'T(Agent2API)',
+    'T(Reports Gateway Running · Not Logged In)'
+  ])
+})
+
+test('三个 OCR 区域即使模拟模型重排后仍可解析，也必须独立翻译并按区域写回', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-ocr-three-regions',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-ocr-three-regions',
+    bbox: { x: 0, y: 0, width: 600, height: 800 },
+    ocrRegions: [
+      {
+        regionId: 'ocr-title',
+        pageId: 'page-1',
+        blockId: 'image-ocr-three-regions',
+        assetId: 'asset-ocr-three-regions',
+        bbox: { x: 0.05, y: 0.05, width: 0.2, height: 0.04 },
+        text: 'Agent2API',
+        status: 'recognized'
+      },
+      {
+        regionId: 'ocr-gateway',
+        pageId: 'page-1',
+        blockId: 'image-ocr-three-regions',
+        assetId: 'asset-ocr-three-regions',
+        bbox: { x: 0.3, y: 0.05, width: 0.2, height: 0.04 },
+        text: 'Reports Gateway',
+        status: 'recognized'
+      },
+      {
+        regionId: 'ocr-status',
+        pageId: 'page-1',
+        blockId: 'image-ocr-three-regions',
+        assetId: 'asset-ocr-three-regions',
+        bbox: { x: 0.55, y: 0.05, width: 0.3, height: 0.04 },
+        text: 'Running · Not Logged In',
+        status: 'recognized'
+      }
+    ]
+  }])
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      // 如果三个区域被错误合并，这个响应仍能通过标记数量与顺序校验，但语义已经错位。
+      if (text.includes('ST-SEG')) {
+        return 'Reports Gateway\n[[[ST-SEG-0]]]\nRunning · Not Logged In\n[[[ST-SEG-1]]]\nAgent2API'
+      }
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'png', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-three-regions', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(calls, ['Agent2API', 'Reports Gateway', 'Running · Not Logged In'])
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.deepEqual(image.ocrRegions?.map((region) => [region.regionId, region.translatedText]), [
+    ['ocr-title', 'T(Agent2API)'],
+    ['ocr-gateway', 'T(Reports Gateway)'],
+    ['ocr-status', 'T(Running · Not Logged In)']
+  ])
+})
+
+test('OCR 重试必须按 regionId 回填，不能因译文模型区域顺序变化写到相邻区域', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-ocr-retry',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-ocr-retry',
+    bbox: { x: 0, y: 0, width: 600, height: 800 },
+    ocrRegions: [
+      {
+        regionId: 'region-a',
+        pageId: 'page-1',
+        blockId: 'image-ocr-retry',
+        assetId: 'asset-ocr-retry',
+        bbox: { x: 0.05, y: 0.05, width: 0.2, height: 0.05 },
+        text: 'Alpha',
+        status: 'recognized'
+      },
+      {
+        regionId: 'region-b',
+        pageId: 'page-1',
+        blockId: 'image-ocr-retry',
+        assetId: 'asset-ocr-retry',
+        bbox: { x: 0.05, y: 0.15, width: 0.2, height: 0.05 },
+        text: 'Beta',
+        status: 'recognized'
+      }
+    ]
+  }])
+  const initial = model([{
+    ...(source.pages[0]!.blocks[0] as Extract<DocumentBlock, { kind: 'image' }>),
+    ocrRegions: [
+      {
+        ...(source.pages[0]!.blocks[0] as Extract<DocumentBlock, { kind: 'image' }>).ocrRegions![1]!,
+        translatedText: '旧译文 B'
+      },
+      {
+        ...(source.pages[0]!.blocks[0] as Extract<DocumentBlock, { kind: 'image' }>).ocrRegions![0]!,
+        translatedText: '旧译文 A'
+      }
+    ]
+  }])
+  let retrying = false
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      if (!retrying && text === 'Alpha') throw new Error('provider failed')
+      return `T(${text})`
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+
+  const failed = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.png', fileName: 'test.png', format: 'png', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-ocr-region-retry', 1),
+    new AbortController().signal,
+    deps
+  )
+  assert.equal(failed.task.status, 'partial')
+
+  retrying = true
+  const retried = await retryFailedDocumentTranslationPipeline(
+    failed.source,
+    initial,
+    ['0:0:ocr:region-a'],
+    { ...failed.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    failed.languageResolution!
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  const image = retried.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.deepEqual(image.ocrRegions?.map((region) => [region.regionId, region.translatedText]), [
+    ['region-b', '旧译文 B'],
+    ['region-a', 'T(Alpha)']
+  ])
 })
 
 test('文档翻译默认最多同时执行三个合并请求', async () => {
@@ -2594,7 +2869,8 @@ test('完整目标缓存命中必须跳过提供方请求、写回译文并推�
     languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
     modelFingerprint: 'provider:model',
     glossaryVersion: 'none',
-    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION
   })
   const deps: DocumentPipelineDeps = {
     parse: async () => source,
@@ -2614,6 +2890,7 @@ test('完整目标缓存命中必须跳过提供方请求、写回译文并推�
           languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
           glossaryVersion: 'none',
           protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+          translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
           status: 'completed',
           translation: '缓存译文'
         }
@@ -2784,7 +3061,8 @@ test('重试缓存命中必须跳过提供方请求并写回已缓存译文', as
     languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
     modelFingerprint: 'provider:retry-model',
     glossaryVersion: 'none',
-    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION
   })
   const deps: DocumentPipelineDeps = {
     parse: async () => source,
@@ -2805,6 +3083,7 @@ test('重试缓存命中必须跳过提供方请求并写回已缓存译文', as
           languagePair: { sourceLang: 'auto', targetLang: 'ZH' },
           glossaryVersion: 'none',
           protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+          translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
           status: 'completed',
           translation: '重试缓存译文'
         }

@@ -1550,6 +1550,47 @@ test('PDF 原生表格应识别矢量网格并保留单元格文字与列宽', a
   assert.equal(new Set(runIds).size, runIds.length)
 })
 
+test('PDF 表格单元格的多个视觉行必须合并为一个翻译块', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  page.drawText('Description', { x: 82, y: 695, size: 12, font })
+  page.drawText('Status', { x: 310, y: 695, size: 12, font })
+  page.drawText('The translated paragraph must keep', { x: 82, y: 655, size: 10, font })
+  page.drawText('its complete sentence together.', { x: 82, y: 640, size: 10, font })
+  page.drawText('Approved', { x: 310, y: 655, size: 10, font })
+  for (const y of [720, 680, 620]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 620 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-multiline-cell.pdf',
+    fileName: 'table-multiline-cell.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const descriptionCell = table.rows[1]!.cells[0]!
+  const descriptionBlocks = descriptionCell.blocks.filter((block) => block.kind === 'text')
+  assert.equal(descriptionBlocks.length, 1,
+    '同一单元格内的视觉换行必须交给一次翻译，不能拆成多个独立折行块')
+  assert.equal(descriptionBlocks[0]!.runs.map((run) => run.text).join(''),
+    'The translated paragraph must keep its complete sentence together.')
+  assert.deepEqual(translatableText(model), [
+    'Description',
+    'Status',
+    'The translated paragraph must keep its complete sentence together.',
+    'Approved'
+  ])
+})
+
 test('PDF 细长填充矩形应恢复表格边框，大面积背景与裁剪路径仍应忽略', async () => {
   const document = await PDFDocument.create()
   const page = document.addPage([600, 800])
@@ -3130,6 +3171,89 @@ test('PDF 目录页应使用目录框横线推断正文区右边界，避免标�
   const titleBlock = model.pages[0]!.blocks.find((block) =>
     block.kind === 'text' && block.runs.map((run) => run.text).join('') === title)
   assert.equal(titleBlock?.kind === 'text' ? titleBlock.textAlign : undefined, 'center')
+})
+
+test('PDF 右侧表格与缩进框线应扩宽正文区，但不能把译文铺到物理纸张边缘', async () => {
+  const document = await PDFDocument.create()
+  const regular = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([612, 792])
+  const contentLeft = 70
+  const bodyRight = 407.69
+  const tableRight = 548
+  const bodySize = 10.5
+
+  // 正文自然换行后右边界明显短于页面内容区；右侧表格才是实际版心证据。
+  ;[
+    'This paragraph wraps before the table column begins.',
+    'The second line also stays inside the narrow text column.',
+    'A third line keeps the paragraph visually balanced.',
+    'The final line ends with a short word.'
+  ].forEach((line, index) => {
+    page.drawText(line, { x: contentLeft, y: 700 - index * 20, size: bodySize, font: regular })
+  })
+  page.drawRectangle({
+    x: 412,
+    y: 520,
+    width: tableRight - 412,
+    height: 120,
+    borderWidth: 1
+  })
+  page.drawLine({
+    start: { x: 412, y: 580 },
+    end: { x: tableRight, y: 580 },
+    thickness: 1
+  })
+  page.drawText('Status', { x: 420, y: 600, size: bodySize, font: regular })
+  page.drawText('Approved', { x: 470, y: 600, size: bodySize, font: regular })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/right-table-content-area.pdf',
+    fileName: 'right-table-content-area.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.ok(model.pages[0]!.contentArea)
+  assert.ok(Math.abs(model.pages[0]!.contentArea!.left - contentLeft) <= 2)
+  assert.ok(model.pages[0]!.contentArea!.right > bodyRight + 80,
+    '右侧表格应作为正文内容区的有效边界证据')
+  assert.ok(model.pages[0]!.contentArea!.right <= 612 - 8,
+    '内容区必须保留右侧页边距，不能直接等于物理纸张宽度')
+})
+
+test('PDF 页码与表格单元格不得把正文左边界带偏', async () => {
+  const document = await PDFDocument.create()
+  const regular = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([612, 792])
+  const contentLeft = 72
+  const bodySize = 11
+
+  ;[
+    'The first body paragraph starts at the stable left margin.',
+    'The second body paragraph also starts at the same margin.',
+    'The third body paragraph keeps the common body alignment.',
+    'The fourth body paragraph provides another strong left edge sample.'
+  ].forEach((line, index) => {
+    page.drawText(line, { x: contentLeft, y: 700 - index * 24, size: bodySize, font: regular })
+  })
+  // 页脚页码与表格单元格各出现多次，但都不是正文左边界。
+  for (let index = 0; index < 4; index += 1) {
+    page.drawText(String(index + 1), { x: 300, y: 20 + index * 2, size: 8, font: regular })
+    page.drawText(`Cell ${index + 1}`, { x: 180, y: 560 - index * 18, size: 8, font: regular })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/content-left-outliers.pdf',
+    fileName: 'content-left-outliers.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  assert.ok(model.pages[0]!.contentArea)
+  assert.ok(Math.abs(model.pages[0]!.contentArea!.left - contentLeft) <= 2,
+    '正文左边界不能被页码或表格单元格的重复坐标带偏')
 })
 
 test('PDF 接近整页的页面边框不能被识别为表格，封面文字仍应保持文本区块', async () => {

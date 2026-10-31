@@ -1,3 +1,5 @@
+import type { DocumentHistoryEntry } from '../../shared/documentWorkspace'
+
 /** 文件翻译历史最多保留的条目数，避免本地存储无限增长。 */
 export const DOCUMENT_FILE_HISTORY_LIMIT = 20
 
@@ -17,6 +19,29 @@ export interface DocumentFileHistoryEntry {
   /** 最近一次选择该文件的时间戳。 */
   lastUsedAt: number
 }
+
+/** 文件历史下拉中的统一条目；任务历史可只读回放，文件历史可重新授权并开始任务。 */
+export type DocumentHistoryListItem =
+  | {
+    /** 任务历史条目。 */
+    kind: 'task'
+    /** 任务标识。 */
+    jobId: string
+    /** 最近更新时间。 */
+    updatedAt: number
+    /** 完整任务摘要。 */
+    task: DocumentHistoryEntry
+  }
+  | {
+    /** 本地文件历史条目。 */
+    kind: 'file'
+    /** 文件绝对路径。 */
+    path: string
+    /** 最近使用时间。 */
+    updatedAt: number
+    /** 文件元数据。 */
+    file: DocumentFileHistoryEntry
+  }
 
 /**
  * 判断一个未知值是否为有效的文件翻译历史记录。
@@ -96,4 +121,55 @@ export function filterDocumentFileHistory(
     entry.name.toLocaleLowerCase().includes(normalizedQuery) ||
     entry.path.toLocaleLowerCase().includes(normalizedQuery)
   )
+}
+
+/**
+ * 合并任务历史与本地文件历史；同一文件名优先保留任务摘要，避免重复入口。
+ * @param taskEntries 主进程返回的任务摘要。
+ * @param fileEntries 本地可重新选择的文件历史。
+ * @returns 按更新时间倒序排列的统一历史条目。
+ * @author zhenghq
+ */
+export function mergeDocumentHistoryEntries(
+  taskEntries: readonly DocumentHistoryEntry[],
+  fileEntries: readonly DocumentFileHistoryEntry[]
+): DocumentHistoryListItem[] {
+  const taskNames = new Set(taskEntries.map((entry) => entry.fileName.toLocaleLowerCase()))
+  const taskItems: DocumentHistoryListItem[] = taskEntries.map((entry) => ({
+    kind: 'task',
+    jobId: entry.jobId,
+    updatedAt: entry.updatedAt,
+    task: entry
+  }))
+  const fileItems: DocumentHistoryListItem[] = fileEntries
+    .filter((entry) => !taskNames.has(entry.name.toLocaleLowerCase()))
+    .map((entry) => ({
+      kind: 'file',
+      path: entry.path,
+      updatedAt: entry.lastUsedAt,
+      file: entry
+    }))
+  return [...taskItems, ...fileItems].sort((left, right) => right.updatedAt - left.updatedAt)
+}
+
+/**
+ * 按文件名、语言方向或状态过滤任务历史；空白查询返回完整列表。
+ * @param entries 完整任务历史。
+ * @param query 用户输入的搜索文本。
+ * @returns 与查询匹配的任务历史。
+ * @author zhenghq
+ */
+export function filterDocumentTaskHistory(
+  entries: readonly DocumentHistoryEntry[],
+  query: string
+): DocumentHistoryEntry[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  if (!normalizedQuery) return [...entries]
+  return entries.filter((entry) => {
+    const direction = `${entry.languagePair.sourceLang} → ${entry.languagePair.targetLang}`
+    return entry.fileName.toLocaleLowerCase().includes(normalizedQuery) ||
+      direction.toLocaleLowerCase().includes(normalizedQuery) ||
+      entry.status.toLocaleLowerCase().includes(normalizedQuery) ||
+      entry.format.toLocaleLowerCase().includes(normalizedQuery)
+  })
 }

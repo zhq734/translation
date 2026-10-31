@@ -11,6 +11,7 @@ import {
   DOCUMENT_WORKER_PROTOCOL_VERSION,
   createDocumentWorkerAssetResultMessage,
   createDocumentWorkerCancelledMessage,
+  createDocumentWorkerExportProgressMessage,
   createDocumentWorkerFailureMessage,
   createDocumentWorkerProgressMessage,
   createDocumentWorkerResultMessage,
@@ -374,7 +375,14 @@ export interface DocumentWorkerProductionDependencies {
   ): Promise<string>
   /** 读取可嵌入 PDF 的字体字节。 */
   loadFontBytes(): Promise<Uint8Array | null>
-  /** 将完整或部分导出模型写入 PDF 字节。 */
+  /**
+   * 将完整或部分导出模型写入 PDF 字节。
+   * @param model 待导出的译文或源文档模型。
+   * @param dependencies 字体、资源与原始 PDF 读取依赖。
+   * @param options 导出布局、源模型、文字层、取消信号与页级进度。
+   * @returns PDF 字节与可降级告警。
+   * @author zhenghq
+   */
   exportPdf(model: DocumentModel, dependencies: {
     /** 读取字体字节。 */
     loadFontBytes(): Promise<Uint8Array | null>
@@ -382,7 +390,22 @@ export interface DocumentWorkerProductionDependencies {
     loadAssetBytes(assetId: string): Promise<Uint8Array | null>
     /** 原始 PDF 字节；仅 OCR 原文导出 PDF 时提供。 */
     sourcePdfBytes?: Uint8Array
-  }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean): Promise<{
+  }, options: {
+    /** 部分导出的原文回退摘要。 */
+    partialExport?: DocumentPartialExportSummary
+    /** 是否追加透明 OCR 原文文字层。 */
+    textLayer?: boolean
+    /** 是否仅导出 OCR 原文 PDF。 */
+    sourceOnly?: boolean
+    /** 译文单栏或左右双语布局。 */
+    layout?: 'translation' | 'bilingual'
+    /** 取消导出时触发的中止信号。 */
+    signal?: AbortSignal
+    /** 合成阶段页级进度回调。 */
+    onProgress?: (progress: { completedPages: number; totalPages: number }) => void
+    /** 双语导出的原文模型。 */
+    sourceModel?: DocumentModel
+  }): Promise<{
     /** PDF 字节。 */
     bytes: Uint8Array
     /** 可降级告警。 */
@@ -894,7 +917,24 @@ export function createDocumentWorkerExecutor(
       loadFontBytes: () => dependencies.loadFontBytes(),
       loadAssetBytes: async (assetId) => job.assetBytes.get(assetId) ?? null,
       ...(ocrOnly && job.input.format === 'pdf' ? { sourcePdfBytes: job.input.bytes } : {})
-    }, partial?.summary, message.request.textLayer)
+    }, {
+      ...(partial ? { partialExport: partial.summary } : {}),
+      ...(message.request.textLayer !== undefined ? { textLayer: message.request.textLayer } : {}),
+      sourceOnly: ocrOnly,
+      layout: message.request.layout ?? 'translation',
+      signal,
+      sourceModel: job.source,
+      onProgress: (progress) => {
+        emit(createDocumentWorkerExportProgressMessage(message.jobId, message.generation, {
+          phase: 'composing',
+          percent: Math.min(80, Math.max(1, Math.round(
+            progress.completedPages / Math.max(1, progress.totalPages) * 80
+          ))),
+          completedPages: progress.completedPages,
+          totalPages: progress.totalPages
+        }))
+      }
+    })
     const payload: DocumentWorkerExportPayload = {
       bytes: output.bytes,
       warnings: output.warnings,

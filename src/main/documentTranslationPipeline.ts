@@ -49,6 +49,7 @@ import { evaluateOcrQuality } from '../shared/ocrQuality.ts'
 import type { DocumentRunMode } from '../shared/documentWorkspace.ts'
 import {
   DOCUMENT_PROTECTION_RULES_VERSION,
+  DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
   applyDocumentGlossary,
   buildDocumentTranslationCacheKey,
   parseDocumentTranslationCacheEntry,
@@ -244,8 +245,8 @@ interface TranslationTarget {
   cells?: TranslationTableCellRange[]
   /** 表格行在所属表格中的索引；写回时不能从区块路径推断。 */
   tableRowIndex?: number
-  /** OCR 区域索引；文本目标不使用。 */
-  regionIndex?: number
+  /** OCR 区域稳定标识；文本目标不使用。 */
+  regionId?: string
   /** 待翻译原文，包含首尾空白。 */
   text: string
   /** 首部空白，合并翻译后需要恢复。 */
@@ -761,16 +762,15 @@ function collectCellTextRanges(
 function collectCellOcrRegions(
   blocks: DocumentBlock[],
   path: DocumentBlockPath = []
-): Array<{ blockPath: DocumentBlockPath; regionIndex: number; region: DocumentOcrRegion }> {
-  const output: Array<{ blockPath: DocumentBlockPath; regionIndex: number; region: DocumentOcrRegion }> = []
+): Array<{ blockPath: DocumentBlockPath; region: DocumentOcrRegion }> {
+  const output: Array<{ blockPath: DocumentBlockPath; region: DocumentOcrRegion }> = []
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
     const block = blocks[blockIndex]!
     const blockPath = [...path, blockIndex]
     if (block.kind === 'image' && block.ocrRegions) {
-      for (let regionIndex = 0; regionIndex < block.ocrRegions.length; regionIndex += 1) {
-        const region = block.ocrRegions[regionIndex]!
+      for (const region of block.ocrRegions) {
         if (region.status !== 'recognized' || !region.text.trim()) continue
-        output.push({ blockPath, regionIndex, region })
+        output.push({ blockPath, region })
       }
       continue
     }
@@ -791,16 +791,18 @@ function collectCellOcrRegions(
 /**
  * 将单元格内的多个文本块拼接为翻译原文，并在块边界补充必要空白。
  * @param blocks 单元格内文本块及 run 区间。
+ * @param visualLinesOnly 是否只包含 PDF 视觉行；为 true 时使用空格避免把排版断行带入译文。
  * @returns 单元格待翻译原文。
  * @author zhenghq
  */
 function joinCellTextRanges(
-  blocks: Array<{ blockPath: DocumentBlockPath; runs: TranslationRunRange[] }>
+  blocks: Array<{ blockPath: DocumentBlockPath; runs: TranslationRunRange[] }>,
+  visualLinesOnly = false
 ): string {
   let output = ''
   for (const block of blocks) {
-    // PDF 等格式会把同一单元格的视觉行拆成独立文本块，翻译前必须保留块间换行。
-    if (output && block.runs.length > 0) output += '\n'
+    // PDF 的独立文本块只是视觉行，不能把版面断行当成语义段落；其他格式仍保留真实换行。
+    if (output && block.runs.length > 0) output += visualLinesOnly ? ' ' : '\n'
     for (const run of block.runs) {
       if (needsRunSeparator(output, run.text)) output += ' '
       output += run.text
@@ -934,6 +936,7 @@ async function translateTableRowCells(
  * @param pageIndex 页面索引。
  * @param path 当前区块路径。
  * @param targets 目标收集数组。
+ * @param visualLinesOnly 是否把表格单元格内的文本块视为 PDF 视觉行。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -941,7 +944,8 @@ function collectBlockTargets(
   blocks: DocumentBlock[],
   pageIndex: number,
   path: DocumentBlockPath,
-  targets: TranslationTarget[]
+  targets: TranslationTarget[],
+  visualLinesOnly = false
 ): void {
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
     const block = blocks[blockIndex]!
@@ -966,8 +970,7 @@ function collectBlockTargets(
       continue
     }
     if (block.kind === 'image' && block.ocrRegions) {
-      for (let regionIndex = 0; regionIndex < block.ocrRegions.length; regionIndex += 1) {
-        const region = block.ocrRegions[regionIndex]!
+      for (const region of block.ocrRegions) {
         if (region.status !== 'recognized' || !region.text.trim()) continue
         const whitespace = splitBoundaryWhitespace(region.text)
         targets.push({
@@ -975,7 +978,7 @@ function collectBlockTargets(
           kind: 'ocr-region',
           pageIndex,
           path: blockPath,
-          regionIndex,
+          regionId: region.regionId,
           text: region.text,
           leadingWhitespace: whitespace.leading,
           trailingWhitespace: whitespace.trailing
@@ -991,7 +994,7 @@ function collectBlockTargets(
           const cell = row.cells[cellIndex]!
           const cellPath = [...blockPath, { row: rowIndex, cell: cellIndex }]
           const cellBlocks = collectCellTextRanges(cell.blocks)
-          const text = joinCellTextRanges(cellBlocks)
+          const text = joinCellTextRanges(cellBlocks, visualLinesOnly)
           if (!text.trim()) continue
           cells.push({
             cellIndex,
@@ -1013,7 +1016,7 @@ function collectBlockTargets(
               kind: 'ocr-region',
               pageIndex,
               path: regionPath,
-              regionIndex: ocr.regionIndex,
+              regionId: ocr.region.regionId,
               text: ocr.region.text,
               leadingWhitespace: whitespace.leading,
               trailingWhitespace: whitespace.trailing
@@ -1048,8 +1051,9 @@ function collectBlockTargets(
  */
 function collectTranslationTargets(model: DocumentModel): TranslationTarget[] {
   const targets: TranslationTarget[] = []
+  const visualLinesOnly = model.source.format === 'pdf'
   for (let pageIndex = 0; pageIndex < model.pages.length; pageIndex += 1) {
-    collectBlockTargets(model.pages[pageIndex]!.blocks, pageIndex, [], targets)
+    collectBlockTargets(model.pages[pageIndex]!.blocks, pageIndex, [], targets, visualLinesOnly)
   }
   return targets
 }
@@ -1303,7 +1307,7 @@ function readTargetTranslation(
     return translatedRuns.map((run) => run.text).join('')
   }
   if (target.kind === 'ocr-region' && block.kind === 'image') {
-    const region = block.ocrRegions?.[target.regionIndex ?? -1]
+    const region = block.ocrRegions?.find((candidate) => candidate.regionId === target.regionId)
     return region?.translatedText
   }
   if (target.kind === 'table-row' && block.kind === 'table') {
@@ -1547,19 +1551,52 @@ function toWebSegment(segment: DocumentBatchSegment): WebTranslationSegment {
 function buildDocumentTranslationBatches(segments: DocumentBatchSegment[]): DocumentTranslationBatch[] {
   const webSegments = segments.map(toWebSegment)
   const segmentsById = new Map(segments.map((segment) => [segment.segmentId, segment]))
+  // OCR 区域通常极短且视觉顺序紧凑，模型容易把相邻区域合并翻译并吞掉前序分隔标记。
+  // 一旦标记数量碰巧与批次段数相同，按位置回填会把后续译文整体错放到上一区域。
+  // OCR 目标因此只允许同一目标内部的超长分段合并，绝不跨不同区域合并。
+  const isolatedOcrSegmentIds = new Set(segments
+    .filter((segment) => segment.target.kind === 'ocr-region')
+    .map((segment) => segment.segmentId))
   const batches = buildWebTranslationBatches(webSegments, {
     maxChars: DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS,
     maxBlocksPerBatch: DOCUMENT_TRANSLATION_MAX_TARGETS_PER_BATCH
   })
-  return batches.map((batch) => {
+  return batches.flatMap((batch) => {
     const sourceSegments = batch.segments.map((webSegment) => segmentsById.get(webSegment.segmentId))
       .filter((segment): segment is DocumentBatchSegment => segment !== undefined)
-    return {
-      batch,
-      segments: sourceSegments,
-      merged: batch.mergeable
+    if (!sourceSegments.some((segment) => isolatedOcrSegmentIds.has(segment.segmentId))) {
+      return [{
+        batch,
+        segments: sourceSegments,
+        merged: batch.mergeable
+      }]
     }
+    // 共享分块器可能把 OCR 与普通文本放在同一批次；只要混入 OCR，就按来源段
+    // 全部拆成单段请求，确保任何 OCR 标记都不会因同批合并而错位。
+    return sourceSegments.map((segment) => ({
+      batch: {
+        ...createDocumentSingleSegmentBatch(segment),
+        segments: [toWebSegment(segment)]
+      },
+      segments: [segment],
+      merged: false
+    }))
   })
+}
+
+/**
+ * 为单个文档分段构造不包含合并标记的翻译批次。
+ * @param segment 需要独立翻译的文档分段。
+ * @returns 可直接交给翻译提供方的单段批次。
+ * @author zhenghq
+ */
+function createDocumentSingleSegmentBatch(segment: DocumentBatchSegment): WebTranslationBatch {
+  return {
+    batchId: segment.segmentId,
+    segments: [toWebSegment(segment)],
+    text: segment.text,
+    mergeable: false
+  }
 }
 
 /**
@@ -1672,7 +1709,7 @@ function replaceTargetInBlocks(
       } else if (target.kind === 'ocr-region' && block.kind === 'image' && block.ocrRegions) {
         updated = {
           ...block,
-          ocrRegions: block.ocrRegions.map((region, index) => index === target.regionIndex
+          ocrRegions: block.ocrRegions.map((region) => region.regionId === target.regionId
             ? { ...region, translatedText }
             : region)
         }
@@ -2542,7 +2579,8 @@ export async function runDocumentTranslationPipeline(
     languagePair,
     modelFingerprint,
     glossaryVersion,
-    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION
   }
   const cacheBaseKey = buildDocumentTranslationCacheKey(cacheContext)
   /** 读取目标级成功缓存；任何持久化异常都不得阻断翻译主任务。 */
@@ -2565,6 +2603,7 @@ export async function runDocumentTranslationPipeline(
     try {
       await deps.writeTranslationCache(`${cacheBaseKey}|target:${target.targetId}`, {
         sourceSha256: ocrSource.source.sha256,
+        translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
         languagePair: { ...languagePair },
         glossaryVersion,
         protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
@@ -3110,7 +3149,8 @@ export async function retryFailedDocumentTranslationPipeline(
     languagePair,
     modelFingerprint,
     glossaryVersion,
-    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION
+    protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION
   }
   const cacheBaseKey = buildDocumentTranslationCacheKey(cacheContext)
 
@@ -3146,6 +3186,7 @@ export async function retryFailedDocumentTranslationPipeline(
     try {
       await deps.writeTranslationCache(`${cacheBaseKey}|target:${target.targetId}`, {
         sourceSha256: source.source.sha256,
+        translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
         languagePair: { ...languagePair },
         glossaryVersion,
         protectionRulesVersion: DOCUMENT_PROTECTION_RULES_VERSION,

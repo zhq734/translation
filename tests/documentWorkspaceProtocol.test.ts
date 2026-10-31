@@ -4,6 +4,9 @@ import type { DocumentModel, DocumentTextBlock } from '../src/shared/documentTyp
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
   applyDocumentWorkspaceTranslationUpdate,
+  normalizeDocumentRunRequest,
+  normalizeDocumentTargetId,
+  normalizeDocumentTaskIdentityRequest,
   type DocumentWorkspaceTranslationUpdate,
   type DocumentWorkspaceSnapshot
 } from '../src/shared/documentWorkspace.ts'
@@ -111,6 +114,96 @@ function update(): DocumentWorkspaceTranslationUpdate {
 
 test('文档工作台协议必须暴露独立的块增量通道', () => {
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.blockTranslated, 'document:block-translated')
+})
+
+test('文档工作台协议必须暴露历史与缓存管理通道', () => {
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.listHistory, 'document:list-history')
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.openHistory, 'document:open-history')
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.deleteHistory, 'document:delete-history')
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.clearCache, 'document:clear-cache')
+})
+
+test('文档运行请求必须只保留白名单字段并校验模式与代际', () => {
+  assert.deepEqual(normalizeDocumentRunRequest({
+    path: '/tmp/example.pdf',
+    generation: 3,
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    mode: 'translation'
+  }), {
+    path: '/tmp/example.pdf',
+    generation: 3,
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    mode: 'translation'
+  })
+
+  assert.deepEqual(normalizeDocumentRunRequest({
+    path: '/tmp/example.pdf',
+    generation: 4,
+    mode: 'ocr',
+    filePath: '/tmp/escape.pdf',
+    url: 'file:///tmp/escape.pdf',
+    command: 'open /tmp'
+  }), {
+    path: '/tmp/example.pdf',
+    generation: 4,
+    mode: 'ocr'
+  })
+
+  assert.equal(normalizeDocumentRunRequest(null), null)
+  assert.equal(normalizeDocumentRunRequest([]), null)
+  assert.equal(normalizeDocumentRunRequest({ path: '', generation: 1 }), null)
+  assert.equal(normalizeDocumentRunRequest({ path: '/tmp/example.pdf', generation: 0 }), null)
+  assert.equal(normalizeDocumentRunRequest({ path: '/tmp/example.pdf', generation: 1.5 }), null)
+  assert.equal(normalizeDocumentRunRequest({ path: '/tmp/example.pdf', generation: 1, mode: 'invalid' }), null)
+})
+
+test('文档运行请求必须拒绝 URL、空字节、换行与命令式路径', () => {
+  const invalidPaths = [
+    'https://example.com/example.pdf',
+    'http://example.com/example.pdf',
+    'file:///tmp/example.pdf',
+    '/tmp/example.pdf\u0000.txt',
+    '/tmp/example.pdf\nopen /tmp',
+    '/tmp/example.pdf\r\nopen /tmp',
+    '$(open /tmp)',
+    '`open /tmp`',
+    'open /tmp',
+    'document.pdf'
+  ]
+
+  for (const path of invalidPaths) {
+    assert.equal(
+      normalizeDocumentRunRequest({ path, generation: 1, mode: 'translation' }),
+      null,
+      `应拒绝非本机绝对路径：${JSON.stringify(path)}`
+    )
+  }
+})
+
+test('文档任务身份必须拒绝伪造代际、路径式任务标识与控制字符', () => {
+  assert.deepEqual(normalizeDocumentTaskIdentityRequest({ jobId: 'job-1', generation: 2 }), {
+    jobId: 'job-1',
+    generation: 2
+  })
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: 'job-1', generation: 0 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: 'job-1', generation: -1 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: 'job-1', generation: 1.5 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: 'job-1', generation: Number.MAX_SAFE_INTEGER + 1 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: '', generation: 1 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: ' ', generation: 1 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: 'job\u0000-1', generation: 1 }), null)
+  assert.equal(normalizeDocumentTaskIdentityRequest({ jobId: '/tmp/sample.pdf', generation: 1 }) !== null, true)
+})
+
+test('文档目标标识必须拒绝空值、控制字符和超长输入', () => {
+  assert.equal(normalizeDocumentTargetId('0:0:text:run-1'), '0:0:text:run-1')
+  assert.equal(normalizeDocumentTargetId(''), null)
+  assert.equal(normalizeDocumentTargetId('   '), null)
+  assert.equal(normalizeDocumentTargetId('0:0:text:run\n1'), null)
+  assert.equal(normalizeDocumentTargetId('x'.repeat(513)), null)
+  assert.equal(normalizeDocumentTargetId(42), null)
 })
 
 test('块增量必须原位替换匹配译文区块并同步翻译进度', () => {

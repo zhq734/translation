@@ -2,6 +2,7 @@ import type { PrintToPDFOptions } from 'electron'
 import type { DocumentModel, DocumentWarning } from '../shared/documentTypes.ts'
 import type { DocumentPdfExportResult } from './documentWorkspaceTaskService.ts'
 import type { DocumentPartialExportSummary } from '../shared/documentPartialExport.ts'
+import type { DocumentExportLayout } from '../shared/documentWorkspace.ts'
 import { resolveTranslationWatermarkHorizontalOffset } from '../renderer/src/documentPdfLayout.ts'
 
 /** 默认 A4 页面宽度，单位为 PDF 点。 */
@@ -268,15 +269,23 @@ function resolvePrintWatermarkHorizontalOffset(model: DocumentModel): number {
  * 使导出的换行、字号和段间距与屏幕上的译文保持一致。
  * @param model 文档模型，用于读取页面尺寸。
  * @param pageHeightOverridePt 可选的打印页高，单位为 PDF 点；译文超过原页时用于保留完整内容。
+ * @param layout 导出布局；双语模式同时保留原文栏与译文栏。
  * @returns 可注入文档窗口的打印 CSS。
  * @author zhenghq
  */
-export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt?: number): string {
+export function buildDocumentPrintCss(
+  model: DocumentModel,
+  pageHeightOverridePt?: number,
+  layout: DocumentExportLayout = 'translation'
+): string {
   const { width, height } = resolvePrintPageSize(model)
   const isMarkdown = model.source.format === 'markdown'
+  const isBilingual = layout === 'bilingual'
   const printHeight = Number.isFinite(pageHeightOverridePt) && (pageHeightOverridePt ?? 0) > 0
     ? roundPrintPoints(pageHeightOverridePt as number)
     : height
+  const hiddenColumnSelector = isBilingual ? '' : '  .document-column:first-child,\n'
+  const visibleColumnSelector = isBilingual ? '.document-column,' : '.document-column:last-child,'
   return `@media print {
   @page {
     size: ${width}pt ${printHeight}pt;
@@ -308,8 +317,7 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   .document-toolbar,
   .document-workbench-header,
   .document-progress-panel,
-  .document-column:first-child,
-  .document-column-header,
+${hiddenColumnSelector}  .document-column-header,
   .document-warning-list,
   #document-upload-panel,
   #document-batch-panel {
@@ -319,7 +327,7 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   .document-shell,
   #document-workbench,
   .document-columns,
-  .document-column:last-child,
+  ${visibleColumnSelector}
   #document-translation-content,
   .document-preview-host,
   .document-preview-host[data-preview-kind='paged'],
@@ -373,10 +381,32 @@ export function buildDocumentPrintCss(model: DocumentModel, pageHeightOverridePt
   }
 
   #document-translation-content,
-  .document-column:last-child,
+  ${visibleColumnSelector}
   .document-columns {
     width: 100% !important;
   }
+
+  ${isBilingual ? `.document-columns {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    gap: 0 !important;
+    align-items: start !important;
+  }
+
+  .document-column {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .document-column:last-child {
+    border-left: 1px solid color-mix(in srgb, var(--document-paper-text) 18%, transparent) !important;
+  }` : ''}
 
   #document-translation-content .document-page {
     --document-page-scale: ${CSS_PX_PER_PDF_POINT} !important;
@@ -590,6 +620,27 @@ function roundPrintPoints(value: number): number {
 }
 
 /**
+ * 创建统一的中止错误，确保打印取消不会被包装成普通导出失败。
+ * @returns 名称为 AbortError 的错误。
+ * @author zhenghq
+ */
+function createAbortError(): Error {
+  const error = new Error('PDF print cancelled')
+  error.name = 'AbortError'
+  return error
+}
+
+/**
+ * 判断错误是否表示用户取消。
+ * @param error 待判断的异常。
+ * @returns 是否为 AbortError。
+ * @author zhenghq
+ */
+function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+/**
  * 从页面脚本结果中读取译文页最大高度。
  * @param result executeJavaScript 的返回值。
  * @returns 页面高度，单位为 CSS 像素。
@@ -612,6 +663,9 @@ function resolveMeasuredPageHeightCssPx(result: unknown): number {
  * @param model 当前译文模型，用于确定打印页面尺寸。
  * @param partialExport 可选的部分导出统计；存在时打印前插入部分结果标记。
  * @param textLayer 是否等待并打印原图上的透明 OCR 文字层。
+ * @param layout 导出布局；双语模式同时打印原文栏和译文栏。
+ * @param signal 取消打印时触发的中止信号。
+ * @param onProgress 打印页级进度回调。
  * @returns PDF 字节与可降级告警。
  * @author zhenghq
  */
@@ -619,16 +673,22 @@ export async function printDocumentPreviewToPdf(
   webContents: DocumentPrintWebContents,
   model: DocumentModel,
   partialExport?: DocumentPartialExportSummary,
-  textLayer?: boolean
+  textLayer?: boolean,
+  layout: DocumentExportLayout = 'translation',
+  signal?: AbortSignal,
+  onProgress?: (progress: { completedPages: number; totalPages: number }) => void
 ): Promise<DocumentPdfExportResult> {
+  if (signal?.aborted) throw createAbortError()
   if (!model || !Array.isArray(model.pages) || model.pages.length === 0) {
     throw new DocumentPdfPrintError('invalid-document', 'Document has no pages')
   }
 
   const { width, height } = resolvePrintPageSize(model)
+  const totalPages = model.pages.length
   const insertedCssKeys: string[] = []
   try {
-    insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model)))
+    onProgress?.({ completedPages: 0, totalPages })
+    insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model, undefined, layout)))
     if (partialExport) {
       await webContents.executeJavaScript(buildPreparePartialExportScript(
         resolvePrintWatermarkHorizontalOffset(model),
@@ -649,8 +709,9 @@ export async function printDocumentPreviewToPdf(
     const printHeightPt = Math.max(height, measuredHeightPt)
     if (printHeightPt > height) {
       // CSS 页面尺寸会覆盖 printToPDF 的 pageSize，内容变高时必须同步更新 @page，否则浏览器会额外分页。
-      insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model, printHeightPt)))
+      insertedCssKeys.push(await webContents.insertCSS(buildDocumentPrintCss(model, printHeightPt, layout)))
     }
+    if (signal?.aborted) throw createAbortError()
     const bytes = await webContents.printToPDF({
       printBackground: true,
       displayHeaderFooter: false,
@@ -658,9 +719,12 @@ export async function printDocumentPreviewToPdf(
       preferCSSPageSize: true,
       pageSize: { width: width / 72, height: printHeightPt / 72 }
     })
+    if (signal?.aborted) throw createAbortError()
+    onProgress?.({ completedPages: totalPages, totalPages })
     const warnings: DocumentWarning[] = []
     return { bytes: new Uint8Array(bytes), warnings }
   } catch (error) {
+    if (isAbortError(error)) throw error
     if (error instanceof DocumentPdfPrintError) throw error
     throw new DocumentPdfPrintError('export-failed', 'PDF print failed')
   } finally {

@@ -278,3 +278,35 @@ test('部分导出构建器拒绝状态 completed 但仍含未解决目标的报
     /completion-mismatch/u
   )
 })
+
+test('部分导出回退 OCR 目标必须按 regionId 定位，不能依赖源译文区域顺序', () => {
+  const source = partialExportModel(false)
+  const translation = partialExportModel(true)
+  const sourceImage = source.pages[0]!.blocks[1]!
+  const translationImage = translation.pages[0]!.blocks[1]!
+  if (sourceImage.kind !== 'image' || translationImage.kind !== 'image') return
+  sourceImage.ocrRegions = [
+    { ...sourceImage.ocrRegions![0]!, regionId: 'region-a', text: 'Alpha' },
+    { ...sourceImage.ocrRegions![0]!, regionId: 'region-b', text: 'Beta' }
+  ]
+  translationImage.ocrRegions = [
+    { ...translationImage.ocrRegions![0]!, regionId: 'region-b', text: 'Beta', translatedText: '乙' },
+    { ...translationImage.ocrRegions![0]!, regionId: 'region-a', text: 'Alpha', translatedText: '甲' }
+  ]
+  const report = completionReport([
+    { targetId: '0:0:text:run-1', sourceText: 'HelloWorld', state: 'translated' },
+    { targetId: '0:1:ocr:region-a', sourceText: 'Alpha', state: 'failed' },
+    { targetId: '0:1:ocr:region-b', sourceText: 'Beta', state: 'translated' },
+    { targetId: '0:2:row:row-1', sourceText: 'Alpha\nBeta', state: 'translated' },
+    { targetId: '1:0:text:run-3', sourceText: 'Third page', state: 'translated' }
+  ])
+
+  const result = buildPartialExportDocument(source, translation, report)
+  const image = result.model.pages[0]!.blocks[1]!
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.deepEqual(image.ocrRegions?.map((region) => [region.regionId, region.translatedText]), [
+    ['region-b', '乙'],
+    ['region-a', undefined]
+  ])
+})

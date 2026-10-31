@@ -341,14 +341,14 @@ body {
 
 .document-history-item-copy strong,
 .document-history-item-copy span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .document-history-item-copy span {
   color: var(--text-muted);
   font-size: var(--font-size-caption);
+  line-height: 1.45;
 }
 
 .document-history-item-check {
@@ -357,6 +357,122 @@ body {
   place-items: center;
   width: var(--control-height);
   color: var(--button-bg);
+}
+
+.document-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: var(--space-1);
+  min-width: 0;
+  border-radius: var(--radius-control);
+}
+
+.document-history-row:hover,
+.document-history-row:focus-within {
+  background: var(--button-secondary-hover);
+}
+
+.document-history-item-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding-right: var(--space-1);
+}
+
+.document-history-action {
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.document-history-action:hover:not(:disabled) {
+  border-color: var(--border-default);
+  background: var(--control-bg);
+  color: var(--text-primary);
+}
+
+.document-history-action-danger {
+  color: var(--status-error);
+}
+
+.document-history-action:focus-visible,
+.document-history-confirm-dialog button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.document-history-confirm-dialog {
+  width: min(480px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(80vh, 560px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: var(--border-width) solid var(--popup-border);
+  border-radius: var(--radius-overlay);
+  background: var(--overlay-bg);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text-primary);
+}
+
+.document-history-confirm-dialog::backdrop {
+  background: var(--ocr-overlay-bg);
+}
+
+.document-history-confirm-content {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  overflow: auto;
+}
+
+.document-history-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.document-history-confirm-header h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  line-height: 1.25;
+}
+
+.document-history-confirm-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: var(--border-width) solid var(--status-error);
+  border-radius: var(--radius-pill);
+  color: var(--status-error);
+  font-weight: 700;
+}
+
+.document-history-confirm-description {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.document-history-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.document-history-confirm-actions button {
+  min-height: var(--control-height-primary);
 }
 
 .document-primary-button {
@@ -799,6 +915,195 @@ body {
   white-space: nowrap;
 }
 
+.document-export-dialog {
+  display: flex;
+  width: min(620px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(86vh, 720px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text-primary);
+}
+
+.document-export-dialog:not([open]) {
+  display: none;
+}
+
+.document-export-dialog::backdrop {
+  background: var(--ocr-overlay-bg);
+}
+
+.document-export-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  max-height: inherit;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  overflow: auto;
+}
+
+.document-export-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.document-export-header h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  line-height: 1.25;
+}
+
+.document-export-description {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.document-export-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.document-export-close:hover,
+.document-export-close:focus-visible {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.document-export-layouts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.document-export-layouts legend {
+  margin-bottom: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.document-export-layout-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--button-secondary-bg);
+  cursor: pointer;
+}
+
+.document-export-layout-option:has(input:checked) {
+  border-color: var(--button-bg);
+  background: color-mix(in srgb, var(--button-bg) 12%, var(--button-secondary-bg));
+}
+
+.document-export-layout-option span {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.document-export-layout-option small {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.document-export-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.document-export-summary-item,
+.document-export-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.document-export-notice {
+  border: var(--border-width) solid var(--status-warning);
+  color: var(--text-primary);
+}
+
+.document-export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+}
+
+.document-export-progress-copy {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.document-export-progress-track {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--border-default);
+}
+
+.document-export-progressbar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-gradient);
+  transition: width var(--duration-normal) var(--ease-standard);
+}
+
+.document-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.document-export-dialog button:focus-visible,
+.document-export-layout-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .document-partial-export-dialog {
   width: min(560px, calc(100vw - 32px));
   max-width: none;
@@ -1158,6 +1463,12 @@ body {
   overflow-anchor: none;
 }
 
+#document-source-content,
+#document-translation-content {
+  /* 阅读区必须允许用户选择和复制原文、译文与 OCR 文本。 */
+  user-select: text;
+}
+
 .document-page-scroll[data-preview-kind='html-source'] {
   display: flex;
   flex-direction: column;
@@ -1273,8 +1584,22 @@ body {
 }
 
 .document-page[data-layout='translation-flow'] .document-image-block[data-geometry='source'] .document-page-image {
-  /* 图片资源本身就是原图 bbox 的栅格化裁切，必须铺满该边界，避免 contain 在比例误差下缩成左侧小块。 */
-  object-fit: fill;
+  /* 图片按自然宽高比缩放到 bbox 内的居中内容框，放大时不能改变原始比例。 */
+  position: absolute;
+  left: calc(
+    var(--document-image-content-left, 0px) * var(--document-page-scale, 1)
+  );
+  top: calc(
+    var(--document-image-content-top, 0px) * var(--document-page-scale, 1)
+  );
+  width: calc(
+    var(--document-image-content-width, 100%) * var(--document-page-scale, 1)
+  );
+  height: calc(
+    var(--document-image-content-height, auto) * var(--document-page-scale, 1)
+  );
+  max-width: none;
+  object-fit: contain;
 }
 
 .document-page[data-layout='translation-flow'] .document-image-block[data-ocr-translation='true'] {
@@ -1289,13 +1614,7 @@ body {
 
 .document-page[data-layout='translation-flow'] .document-image-block[data-ocr-translation='true'] > .document-page-image {
   /* OCR 覆盖层参与流式布局，底图绝对定位并固定为原图高度，不能被容器增长拉伸。 */
-  position: absolute;
-  inset: 0 auto auto 0;
-  width: 100%;
-  height: calc(
-    var(--document-image-height, 100%) * var(--document-page-scale, 1)
-  );
-  object-fit: fill;
+  pointer-events: none;
 }
 
 .document-page[data-layout='translation-flow'] .document-flow-group {
@@ -1348,9 +1667,17 @@ body {
   position: relative;
   display: block;
   box-sizing: border-box;
-  width: 100%;
+  width: calc(
+    var(--document-image-content-width, 100%) * var(--document-page-scale, 1)
+  );
+  margin-left: calc(
+    var(--document-image-content-left, 0px) * var(--document-page-scale, 1)
+  );
+  margin-top: calc(
+    var(--document-image-content-top, 0px) * var(--document-page-scale, 1)
+  );
   min-height: calc(
-    var(--document-image-height, 0px) * var(--document-page-scale, 1)
+    var(--document-image-content-height, 0px) * var(--document-page-scale, 1)
   );
 }
 
@@ -1427,7 +1754,14 @@ body {
   overflow: hidden;
   border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-control);
-  background: var(--document-paper-bg);
+  /* 译文允许向右扩展排版，但白色遮罩必须止于原 OCR 框，避免覆盖同一行右侧的原文。 */
+  background: linear-gradient(
+    to right,
+    var(--document-paper-bg) 0,
+    var(--document-paper-bg) var(--document-ocr-source-width, 100%),
+    transparent var(--document-ocr-source-width, 100%),
+    transparent 100%
+  );
   color: var(--document-paper-text);
   box-shadow: 0 8px 28px var(--panel-shadow);
   content-visibility: auto;
@@ -1717,6 +2051,25 @@ body {
   overflow: hidden;
 }
 
+.document-page[data-layout='translation-flow']
+  .document-image-block[data-geometry='source'] > .document-ocr-text-layer {
+  /* 透明文字层必须与等比后的底图共用内容框，否则选择区域会落在留白上。 */
+  left: calc(
+    var(--document-image-content-left, 0px) * var(--document-page-scale, 1)
+  );
+  top: calc(
+    var(--document-image-content-top, 0px) * var(--document-page-scale, 1)
+  );
+  right: auto;
+  bottom: auto;
+  width: calc(
+    var(--document-image-content-width, 100%) * var(--document-page-scale, 1)
+  );
+  height: calc(
+    var(--document-image-content-height, 100%) * var(--document-page-scale, 1)
+  );
+}
+
 .document-image-block[data-ocr-text='true'] > .document-ocr-text-layer {
   /* 文字层必须显式位于底图之上，否则图片会截获指针导致 OCR 原文无法选择。 */
   z-index: 2;
@@ -1785,7 +2138,14 @@ body {
   padding: calc(var(--document-ocr-padding-y, 2px) * var(--document-page-scale, 1))
     calc(var(--document-ocr-padding-x, 3px) * var(--document-page-scale, 1));
   border-radius: 2px;
-  background: var(--document-paper-bg);
+  /* 译文允许向右扩展排版，但白色遮罩必须止于原 OCR 框，避免覆盖同一行右侧的原文。 */
+  background: linear-gradient(
+    to right,
+    var(--document-paper-bg) 0,
+    var(--document-paper-bg) var(--document-ocr-source-width, 100%),
+    transparent var(--document-ocr-source-width, 100%),
+    transparent 100%
+  );
   color: var(--document-paper-text);
   font-size: calc(
     var(--document-ocr-font-size-pt, 12) * var(--document-page-scale, 1) * 1px
@@ -2114,6 +2474,29 @@ body {
 }
 
 @media (max-width: 620px) {
+  .document-export-dialog {
+    width: calc(100vw - var(--space-4));
+    max-height: calc(100vh - var(--space-4));
+  }
+
+  .document-export-content {
+    gap: var(--space-3);
+    padding: var(--space-4);
+  }
+
+  .document-export-layouts,
+  .document-export-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .document-export-actions {
+    flex-direction: column-reverse;
+  }
+
+  .document-export-actions button {
+    width: 100%;
+  }
+
   .document-toolbar-main {
     align-items: stretch;
     flex-direction: column;
@@ -2166,6 +2549,23 @@ body {
     transform: translateY(-50%);
   }
 
+  .document-history-confirm-dialog {
+    width: calc(100vw - var(--space-6));
+    max-height: min(80vh, 560px);
+  }
+
+  .document-history-confirm-content {
+    padding: var(--space-4);
+  }
+
+  .document-history-confirm-actions {
+    flex-direction: column-reverse;
+  }
+
+  .document-history-confirm-actions button {
+    width: 100%;
+  }
+
   .document-upload-panel {
     padding: var(--space-3);
   }
@@ -2213,5 +2613,21 @@ body {
   .document-workbench-primary {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-progressbar {
+    transition: none;
+  }
+
+  .document-export-progressbar {
+    transition: none;
+  }
+
+  .document-file-tab,
+  .document-history-action,
+  .document-history-confirm-dialog {
+    transition: none;
   }
 }

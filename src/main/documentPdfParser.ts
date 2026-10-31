@@ -4048,20 +4048,37 @@ function inferPdfContentArea(
   const pageEdgeMargin = Math.max(8, pageWidth * 0.02)
   // 目录、表单等页面的可见内容宽度可能由框线而非文字右边缘决定。目录项通常
   // 分成两列且右侧留白很大，只看文本会把正文区误缩到第一列附近。
-  // 只采纳从正文左边界出发、长度足够且未贴物理纸张右边缘的水平线，
-  // 避免整页边框或页眉装饰线把译文铺到纸张边缘。
+  // 横线起点允许略早于正文左边界，以兼容缩进正文和带内边距的表格；同时要求
+  // 横线覆盖正文区域并达到最小宽度，过滤页眉、页码等局部装饰线。
   const boundaryLineRights = gridLines
     .filter((line) => line.orientation === 'horizontal' &&
-      Math.abs(line.start - left) <= alignmentTolerance &&
+      line.start <= left + alignmentTolerance &&
+      line.end >= left + pageWidth * 0.25 &&
+      line.start >= left - pageWidth * 0.15 &&
       line.end - line.start >= pageWidth * 0.25 &&
-      line.end > left + pageWidth * 0.25 &&
       line.end <= pageWidth - pageEdgeMargin)
     .map((line) => line.end)
     .filter((right) => Number.isFinite(right))
     .sort((a, b) => a - b)
   const boundaryRight = boundaryLineRights[boundaryLineRights.length - 1]
-  const right = Math.max(textRight ?? left, boundaryRight ?? left)
-  if (textRight === undefined && boundaryRight === undefined) return undefined
+  // 正文右侧的独立表格可能从正文列之后才开始，其横线仍能证明实际版心宽度。
+  // 仅接受与正文纵向范围有交集的表格边界，避免把页脚宽线误纳入正文区。
+  const bodyTop = Math.min(...lines.map((line) => line.bbox.y))
+  const bodyBottom = Math.max(...lines.map((line) => line.bbox.y + line.bbox.height))
+  const tableLineRights = gridLines
+    .filter((line) => line.orientation === 'horizontal' &&
+      line.start > left + alignmentTolerance &&
+      line.start < pageWidth - pageEdgeMargin &&
+      line.end > line.start + pageWidth * 0.08 &&
+      line.end <= pageWidth - pageEdgeMargin &&
+      line.position >= bodyTop - pageWidth * 0.02 &&
+      line.position <= bodyBottom + pageWidth * 0.02)
+    .map((line) => line.end)
+    .filter((right) => Number.isFinite(right))
+    .sort((a, b) => a - b)
+  const tableRight = tableLineRights[tableLineRights.length - 1]
+  const right = Math.max(textRight ?? left, boundaryRight ?? left, tableRight ?? left)
+  if (textRight === undefined && boundaryRight === undefined && tableRight === undefined) return undefined
   if (right - left < pageWidth * 0.25) return undefined
   return { left, right, center: (left + right) / 2 }
 }
@@ -4369,6 +4386,10 @@ function createPdfTableBlock(
   const outputRowBands = sourceRowIndexes.map((sourceRowIndex) => ({
     ...rowBands[sourceRowIndex]!
   }))
+  const lineByItem = new Map<PdfTextItem, PdfLine>()
+  for (const line of lines) {
+    for (const item of line.items) lineByItem.set(item, line)
+  }
   const rows: DocumentTableRow[] = sourceRowIndexes.map((sourceRowIndex, rowIndex) => {
     const cells = cellItems[sourceRowIndex]!
     return {
@@ -4382,37 +4403,12 @@ function createPdfTableBlock(
         const sortedEntries = [...entries].sort((left, right) =>
           left.bbox.y - right.bbox.y || left.bbox.x - right.bbox.x)
         const childBlocks: DocumentTextBlock[] = []
-        let currentEntries: typeof sortedEntries = []
-        let currentLine: PdfLine | undefined
-        for (const entry of sortedEntries) {
-          const sourceLine = lines.find((line) => line.items.includes(entry.item))
-          if (currentLine && sourceLine !== currentLine) {
-            childBlocks.push(createPdfTableCellTextBlock(
-              currentEntries,
-              cellId,
-              childBlocks.length,
-              currentLine,
-              pageWidth,
-              bodyFontSize,
-              styles,
-              lineHeights,
-              contentArea,
-              cellLeft,
-              cellRight,
-              cellTop,
-              cellBottom
-            ))
-            currentEntries = []
-          }
-          currentEntries.push(entry)
-          currentLine = sourceLine
-        }
-        if (currentEntries.length > 0 && currentLine) {
+        if (sortedEntries.length > 0) {
           childBlocks.push(createPdfTableCellTextBlock(
-            currentEntries,
+            sortedEntries,
             cellId,
-            childBlocks.length,
-            currentLine,
+            0,
+            lineByItem,
             pageWidth,
             bodyFontSize,
             styles,
@@ -4534,7 +4530,7 @@ function createPdfTableCellBlockId(cellId: string, readingOrder: number): string
  * @param entries 单元格内的文本项及边界。
  * @param cellId 单元格标识。
  * @param readingOrder 单元格内阅读顺序。
- * @param line 文本项所属的原始行。
+ * @param lineByItem 文本项到原始视觉行的映射，用于逐行保留行高与换行分隔。
  * @param pageWidth 页面宽度。
  * @param bodyFontSize 页面正文主字号。
  * @param styles 字体样式映射。
@@ -4551,7 +4547,7 @@ function createPdfTableCellTextBlock(
   entries: ReadonlyArray<{ item: PdfTextItem; bbox: DocumentBoundingBox }>,
   cellId: string,
   readingOrder: number,
-  line: PdfLine,
+  lineByItem: ReadonlyMap<PdfTextItem, PdfLine>,
   pageWidth: number,
   bodyFontSize: number,
   styles: Record<string, PdfTextStyle>,
@@ -4563,19 +4559,32 @@ function createPdfTableCellTextBlock(
   cellBottom: number
 ): DocumentTextBlock {
   const blockId = createPdfTableCellBlockId(cellId, readingOrder)
-  const lineHeight = lineHeights.get(line)
-  const runs: DocumentTextRun[] = entries.map(({ item }, index) => {
+  const runs: DocumentTextRun[] = []
+  let previousLine: PdfLine | undefined
+  let currentLineText = ''
+  for (const { item } of entries) {
+    const line = lineByItem.get(item)
+    if (line && previousLine && line !== previousLine) {
+      const separator = needsPdfLineSeparator(currentLineText, item.str) ? ' ' : ''
+      if (separator && runs.length > 0) {
+        runs[runs.length - 1]!.text = `${runs[runs.length - 1]!.text}${separator}`
+      }
+      currentLineText = ''
+    }
+    if (!previousLine) previousLine = line
+    currentLineText += item.str
     const fontStyle = item.fontName ? styles[item.fontName] : undefined
     const style = pdfTextStyle(item, {
       ...fontStyle,
       ...(item.fontName ? { key: item.fontName } : {})
     })
-    return {
-      runId: createTextRunId(blockId, index),
+    const lineHeight = line ? lineHeights.get(line) : undefined
+    runs.push({
+      runId: createTextRunId(blockId, runs.length),
       text: sanitizeDocumentText(item.str),
       style: lineHeight === undefined ? style : { ...style, lineHeight }
-    }
-  })
+    })
+  }
   const bbox = {
     x: Math.max(cellLeft, Math.min(...entries.map((entry) => entry.bbox.x))),
     y: Math.max(cellTop, Math.min(...entries.map((entry) => entry.bbox.y))),

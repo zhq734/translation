@@ -28,6 +28,7 @@ import {
   resolveOcrRegionLineHeight,
   resolveOcrRegionPadding
 } from '../shared/documentOcrLayout.ts'
+import type { DocumentExportLayout } from '../shared/documentWorkspace.ts'
 import { resolveTranslationFlowGroupGeometry } from '../renderer/src/documentPdfLayout.ts'
 
 /** PDF 导出稳定错误分类。 */
@@ -55,10 +56,39 @@ export class DocumentPdfExportError extends Error {
   }
 }
 
+/**
+ * 创建 PDF 合成取消错误，避免被统一包装成导出失败。
+ * @returns 名称为 AbortError 的错误。
+ * @author zhenghq
+ */
+function createExportAbortError(): Error {
+  const error = new Error('PDF export cancelled')
+  error.name = 'AbortError'
+  return error
+}
+
+/**
+ * 判断异常是否表示用户取消导出。
+ * @param error 待判断的异常。
+ * @returns 是否为 AbortError。
+ * @author zhenghq
+ */
+function isExportAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 /** PDF 导出选项。 */
 export interface DocumentPdfExportOptions {
   /** 为图片区块追加透明的 OCR 原文文字层，生成可检索的双层 PDF。 */
   includeOcrTextLayer?: boolean
+  /** 导出布局；双语模式在同一页面并排输出原文与译文。 */
+  layout?: DocumentExportLayout
+  /** 双语导出的原文模型；未提供时回退到译文模型。 */
+  sourceModel?: DocumentModel
+  /** 取消导出时触发的中止信号。 */
+  signal?: AbortSignal
+  /** 每完成一页后上报的合成进度。 */
+  onProgress?: (progress: { completedPages: number; totalPages: number }) => void
 }
 
 /** PDF 导出依赖。 */
@@ -1791,24 +1821,42 @@ async function drawPageBlocks(
   pageModel: DocumentPage,
   dependencies: DocumentPdfExportDependencies,
   document: PDFDocument,
-  includeOcrTextLayer = false
+  includeOcrTextLayer = false,
+  transform?: {
+    /** 绘制区域横向偏移，单位为 PDF 点。 */
+    offsetX: number
+    /** 绘制区域最大宽度，单位为 PDF 点。 */
+    width: number
+  }
 ): Promise<void> {
-  const composer = createPageComposer(document, context, pageModel)
+  const pageModelForDraw = transform
+    ? {
+        ...pageModel,
+        width: transform.width,
+        blocks: pageModel.blocks.map((block) => ({
+          ...block,
+          ...(block.bbox
+            ? { bbox: { ...block.bbox, x: block.bbox.x + transform.offsetX } }
+            : {})
+        }))
+      }
+    : pageModel
+  const composer = createPageComposer(document, context, pageModelForDraw)
   for (let blockIndex = 0; blockIndex < pageModel.blocks.length; blockIndex += 1) {
-    const block = pageModel.blocks[blockIndex]!
+    const block = pageModelForDraw.blocks[blockIndex]!
     if (block.flowGroupId) {
       const group: DocumentBlock[] = [block]
       let nextIndex = blockIndex + 1
-      while (nextIndex < pageModel.blocks.length &&
-        pageModel.blocks[nextIndex]?.flowGroupId === block.flowGroupId) {
-        group.push(pageModel.blocks[nextIndex]!)
+      while (nextIndex < pageModelForDraw.blocks.length &&
+        pageModelForDraw.blocks[nextIndex]?.flowGroupId === block.flowGroupId) {
+        group.push(pageModelForDraw.blocks[nextIndex]!)
         nextIndex += 1
       }
       if (group.length > 1) {
         await drawFlowGroup(
           context,
           group,
-          pageModel,
+          pageModelForDraw,
           dependencies,
           composer,
           document,
@@ -1819,12 +1867,12 @@ async function drawPageBlocks(
       }
     }
     if (block.kind === 'text') {
-      composer.cursor = drawTextBlock(context, block, pageModel, composer.cursor, composer, document)
+      composer.cursor = drawTextBlock(context, block, pageModelForDraw, composer.cursor, composer, document)
     } else if (block.kind === 'table') {
       composer.cursor = await drawTableBlock(
         context,
         block,
-        pageModel,
+        pageModelForDraw,
         composer.cursor,
         dependencies,
         composer,
@@ -1850,7 +1898,7 @@ async function drawPageBlocks(
       composer.cursor = await drawImageBlock(
         context,
         imageBlock,
-        pageModel,
+        pageModelForDraw,
         dependencies,
         composer,
         document,
@@ -1861,7 +1909,7 @@ async function drawPageBlocks(
         bbox ? bbox.y + bbox.height : composer.cursor
       )
     } else if (block.kind === 'formula') {
-      composer.cursor = drawFormulaBlock(context, block, pageModel, composer.cursor, composer, document)
+      composer.cursor = drawFormulaBlock(context, block, pageModelForDraw, composer.cursor, composer, document)
     } else if (block.kind === 'shape' && block.bbox) {
       if (block.bbox.y > composer.cursor) composer.cursor = block.bbox.y
       const shapeTop = ensureGeometryBlockSpace(
@@ -1919,6 +1967,7 @@ export async function exportDocumentToPdf(
   dependencies: DocumentPdfExportDependencies,
   options: DocumentPdfExportOptions = {}
 ): Promise<DocumentPdfExportResult> {
+  if (options.signal?.aborted) throw createExportAbortError()
   if (!model || !Array.isArray(model.pages) || model.pages.length === 0) {
     throw new DocumentPdfExportError('invalid-document', 'Document has no pages')
   }
@@ -1934,6 +1983,7 @@ export async function exportDocumentToPdf(
     const fonts = await resolveFonts(document, model, dependencies)
     const images = new Map<string, PDFImage | null>()
     const warnings: DocumentWarning[] = []
+    const totalPages = model.pages.length
     if (sourcePdfBytes) {
       const sourcePageCount = document.getPageCount()
       if (sourcePageCount !== model.pages.length) {
@@ -1946,6 +1996,7 @@ export async function exportDocumentToPdf(
       const pagesByIndex = new Map(model.pages.map((page) => [page.index, page]))
       let writtenOcrTextCount = 0
       for (let pageIndex = 0; pageIndex < sourcePageCount; pageIndex += 1) {
+        if (options.signal?.aborted) throw createExportAbortError()
         const pageModel = pagesByIndex.get(pageIndex)
         if (!pageModel) continue
         const page = document.getPage(pageIndex)
@@ -1966,11 +2017,19 @@ export async function exportDocumentToPdf(
           message: 'No OCR text was available to write into the source PDF text layer.'
         })
       }
-      return { bytes: await document.save(), warnings }
+      if (options.signal?.aborted) throw createExportAbortError()
+      const bytes = await document.save()
+      if (options.signal?.aborted) throw createExportAbortError()
+      options.onProgress?.({ completedPages: totalPages, totalPages })
+      return { bytes, warnings }
     }
-    for (const pageModel of model.pages) {
+    const sourceModel = options.layout === 'bilingual' ? options.sourceModel ?? model : undefined
+    for (let pageIndex = 0; pageIndex < model.pages.length; pageIndex += 1) {
+      if (options.signal?.aborted) throw createExportAbortError()
+      const pageModel = model.pages[pageIndex]!
+      const sourcePageModel = sourceModel?.pages[pageIndex]
       const page = createComposedPage(document, pageModel)
-      await drawPageBlocks({
+      const context: DrawContext = {
         page,
         regular: fonts.regular,
         bold: fonts.bold,
@@ -1978,10 +2037,33 @@ export async function exportDocumentToPdf(
         boldItalic: fonts.boldItalic,
         images,
         warnings
-      }, pageModel, dependencies, document, options.includeOcrTextLayer)
+      }
+      if (sourceModel) {
+        const columnWidth = pageModel.width / 2
+        if (sourcePageModel) {
+          await drawPageBlocks(context, sourcePageModel, dependencies, document, options.includeOcrTextLayer, {
+            offsetX: 0,
+            width: columnWidth
+          })
+        }
+        if (options.signal?.aborted) throw createExportAbortError()
+        context.page = page
+        await drawPageBlocks(context, pageModel, dependencies, document, options.includeOcrTextLayer, {
+          offsetX: columnWidth,
+          width: columnWidth
+        })
+      } else {
+        await drawPageBlocks(context, pageModel, dependencies, document, options.includeOcrTextLayer)
+      }
+      if (options.signal?.aborted) throw createExportAbortError()
+      options.onProgress?.({ completedPages: pageIndex + 1, totalPages })
     }
-    return { bytes: await document.save(), warnings }
+    if (options.signal?.aborted) throw createExportAbortError()
+    const bytes = await document.save()
+    if (options.signal?.aborted) throw createExportAbortError()
+    return { bytes, warnings }
   } catch (error) {
+    if (isExportAbortError(error)) throw error
     if (error instanceof DocumentPdfExportError) throw error
     throw new DocumentPdfExportError('export-failed', 'PDF export failed')
   }

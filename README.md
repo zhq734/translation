@@ -26,6 +26,7 @@
 - [Grant Accessibility Permission](#grant-accessibility-permission)
 - [Quick Start](#quick-start)
 - [Web Page Translation](#web-page-translation)
+- [Document Translation Workspace](#document-translation-workspace)
 - [Configuration](#configuration)
 - [Translation Providers and Fallback](#translation-providers-and-fallback)
 - [Configure Self-hosted DeepLX](#configure-self-hosted-deeplx)
@@ -384,6 +385,46 @@ Privacy and extraction boundaries:
 - Extraction reads only the currently rendered and visible DOM in the main document, including visible image candidates when image text OCR is enabled. It does not cross into iframes, traverse Shadow DOM, read CSS pseudo-elements, or scroll the page to trigger lazy loading;
 - Extraction is read-only. The separate controlled apply script only changes matching text-node values and never rewrites image bytes; image fetching uses the reader's isolated session and is skipped entirely when image text OCR is disabled;
 - Extracted text and OCR-recognized image text are sent only through the translation providers currently enabled by the user; image bytes stay local and are never uploaded as images. Review those providers' privacy and data-retention terms before translating sensitive pages.
+
+## Document Translation Workspace
+
+Open the document workspace from the translation popup, the menu-bar/tray menu, or settings. The workspace accepts one local file at a time, then parses, OCRs, translates, displays source and translated blocks side by side, and exports the result to PDF. Batch translation and `PPTX`/`XLSX` are not part of this version.
+
+Supported input formats:
+
+- **Documents:** PDF, DOCX, EPUB, HTML, Markdown, TXT, JSON, CSV, SRT, and VTT;
+- **Images:** PNG, JPG/JPEG, WebP, GIF, and BMP, processed through local OCR before translation.
+
+### OCR behavior
+
+- Native text is preferred whenever a document provides a usable text layer. Scanned PDF pages are rasterized and sent to the local OCR engine; embedded images in DOCX, EPUB, and PDF documents enter the same OCR queue and remain bound to their original regions.
+- Image bytes, page screenshots, and formula crops stay on the local device. Only text selected for translation, including text obtained from OCR, may be sent to the translation provider configured by the user.
+- OCR and translation run in a worker so parsing and layout work do not block the main window. The workspace reports OCR progress, skipped regions, and low-confidence warnings instead of silently dropping content.
+
+### Formulas and layout
+
+- Formulas are treated as non-translatable blocks and are preserved by default.
+- When a document exposes usable LaTeX or MathML, the workspace retains that representation; otherwise it keeps the original formula image or region. Full automatic conversion of arbitrary formulas into editable equations is not guaranteed.
+- The workspace reconstructs page and block order, tables, images, columns, and styling where the source format exposes them. Complex vectors, artistic text, cross-page tables, and vertical writing may produce layout warnings; fidelity is best-effort rather than pixel-perfect.
+
+### Privacy boundaries
+
+- A file is read only after you explicitly choose or drag it into the workspace; the app does not watch folders or scan files in the background.
+- HTML and EPUB scripts, iframes, event handlers, remote resources, and unsafe URLs are removed before content is rendered. Embedded resources are limited to the document package.
+- Document history and reusable cache data are stored locally and can be deleted per entry or cleared entirely from the workspace.
+- Logs record stable error categories and error names only. They do not record file names, paths, document text, or OCR text.
+
+### Export modes
+
+- **Translated PDF** keeps the reconstructed layout, including page size, block position, fonts, tables, images, and formulas where possible. Text overflow is handled by controlled font reduction and reflow, with warnings for unresolved overflow.
+- **Bilingual PDF** places source and translation side by side. Reflowable documents are repaginated by aligned blocks; fixed-layout PDFs use the original page or a thumbnail as the source side.
+- If some blocks fail translation, the export dialog shows the unfinished count and offers either retrying those blocks or exporting a partial result. Partial export requires explicit confirmation, keeps every page, and leaves failed, unfinished, or suspect blocks in the source language. The file name, export summary, and document marker identify the result as partial.
+- Exports are written atomically through a temporary file. Cancelling or failing an export removes the temporary file, and the completed export can reveal the output in the system file manager.
+
+### Platform support
+
+- Document translation is available on modern macOS, Windows, and Linux builds. The document entry is disabled with a clear reason on unsupported platforms.
+- Windows 7 is not supported for document translation and shows the localized `document.error.windows7Unsupported` message; existing selection, screenshot OCR, and web translation features remain available according to their own platform capabilities.
 
 ## Configuration
 

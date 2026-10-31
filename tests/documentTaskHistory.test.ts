@@ -174,6 +174,37 @@ test('打开历史任务必须返回可恢复快照，删除后不可再打开',
   }
 })
 
+test('历史摘要必须提供匹配任务的源文件哈希供缓存删除使用', async () => {
+  const directory = await temporaryDirectory()
+  try {
+    const store = new DocumentTaskHistoryStore({
+      directory,
+      maxEntries: 10,
+      now: () => 1000
+    })
+    await store.save(snapshot('job-sha', 1000))
+    assert.equal(await store.getSourceSha256('job-sha'), 'sha-job-sha')
+    assert.equal(await store.getSourceSha256('job-missing'), null)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('损坏历史摘要不得泄露源文件哈希', async () => {
+  const directory = await temporaryDirectory()
+  try {
+    await writeFile(join(directory, 'task-history.json'), '{broken', 'utf8')
+    const store = new DocumentTaskHistoryStore({
+      directory,
+      maxEntries: 10,
+      now: () => 1000
+    })
+    assert.equal(await store.getSourceSha256('job-broken'), null)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('清空历史缓存必须删除恢复快照但保留设置文件', async () => {
   const directory = await temporaryDirectory()
   try {

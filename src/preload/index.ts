@@ -45,8 +45,12 @@ import type {
   , DocumentFileSelectionResult
   , DocumentPlatformCapability
   , DocumentAssetResult
+  , DocumentApprovedAssetRequest
+  , DocumentApprovedSourceRequest
+  , DocumentExportProgress
   , DocumentExportRequest
   , DocumentExportResult
+  , DocumentHistoryEntry
   , DocumentRunRequest
   , DocumentRunResult
   , DocumentSourceResult
@@ -354,6 +358,69 @@ const api: Api = {
   exportDocumentPdf: (request: DocumentExportRequest): Promise<DocumentExportResult> =>
     ipcRenderer.invoke('document:export-pdf', request),
   /**
+   * 取消当前正在执行的文档 PDF 导出。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否实际中止了导出。
+   * @author zhenghq
+   */
+  cancelDocumentExport: (jobId: string, generation: number): Promise<boolean> =>
+    ipcRenderer.invoke('document:cancel-export', { jobId, generation }),
+  /**
+   * 在系统文件管理器中定位当前任务最近一次成功导出的文件。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否成功打开文件管理器。
+   * @author zhenghq
+   */
+  openDocumentExportFolder: (jobId: string, generation: number): Promise<boolean> =>
+    ipcRenderer.invoke('document:open-export-folder', { jobId, generation }),
+  /**
+   * 订阅文档 PDF 导出进度。
+   * @param callback 接收阶段、总百分比与页级计数的回调。
+   * @returns 取消订阅函数。
+   * @author zhenghq
+   */
+  onDocumentExportProgress: (
+    callback: (progress: DocumentExportProgress) => void
+  ): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: DocumentExportProgress): void => {
+      callback(progress)
+    }
+    ipcRenderer.on('document:export-progress', listener)
+    return () => ipcRenderer.removeListener('document:export-progress', listener)
+  },
+  /**
+   * 读取按更新时间倒序排列的文档任务安全摘要。
+   * @returns 历史列表；不包含正文、源路径或资源字节。
+   * @author zhenghq
+   */
+  listDocumentHistory: (): Promise<DocumentHistoryEntry[]> =>
+    ipcRenderer.invoke('document:list-history'),
+  /**
+   * 打开指定历史任务的完整只读快照。
+   * @param jobId 任务标识。
+   * @returns 可恢复快照；任务不存在时返回 null。
+   * @author zhenghq
+   */
+  openDocumentHistory: (jobId: string): Promise<{ snapshot: DocumentWorkspaceSnapshot } | null> =>
+    ipcRenderer.invoke('document:open-history', jobId),
+  /**
+   * 删除指定任务历史及其源文件对应的翻译缓存。
+   * @param jobId 任务标识。
+   * @returns 是否实际删除了历史条目。
+   * @author zhenghq
+   */
+  deleteDocumentHistory: (jobId: string): Promise<boolean> =>
+    ipcRenderer.invoke('document:delete-history', jobId),
+  /**
+   * 清空全部文档翻译缓存与任务历史，不修改用户设置。
+   * @returns 清空完成后的 Promise。
+   * @author zhenghq
+   */
+  clearDocumentCache: (): Promise<void> =>
+    ipcRenderer.invoke('document:clear-cache'),
+  /**
    * 读取当前任务中的受控图片资源。
    * @param jobId 任务标识。
    * @param assetId 解析阶段生成的资源标识。
@@ -370,6 +437,22 @@ const api: Api = {
    */
   getDocumentSource: (jobId: string): Promise<DocumentSourceResult> =>
     ipcRenderer.invoke('document:get-source', jobId),
+  /**
+   * 读取重新授权历史文件中的受控图片资源。
+   * @param request 源文件快照与资源元数据。
+   * @returns 资源字节或稳定错误分类。
+   * @author zhenghq
+   */
+  getApprovedDocumentAsset: (request: DocumentApprovedAssetRequest): Promise<DocumentAssetResult> =>
+    ipcRenderer.invoke('document:get-approved-asset', request),
+  /**
+   * 读取重新授权历史文件的源预览字节。
+   * @param request 源文件路径、格式、大小与 SHA-256。
+   * @returns 源预览字节或稳定错误分类。
+   * @author zhenghq
+   */
+  getApprovedDocumentSource: (request: DocumentApprovedSourceRequest): Promise<DocumentSourceResult> =>
+    ipcRenderer.invoke('document:get-approved-source', request),
   /**
    * 订阅文档翻译进度事件。
    * @param callback 进度快照回调。

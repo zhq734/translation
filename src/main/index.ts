@@ -270,9 +270,19 @@ import { exportDocumentToPdf } from './documentPdfExport'
 import { printDocumentPreviewToPdf } from './documentPdfPrint'
 import { loadDocumentPdfFontBytes } from './documentPdfFont'
 import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
+import { DocumentApprovedResourceService } from './documentApprovedResourceService'
 import { DocumentTranslationCacheStore } from './documentTranslationCache'
+import { DocumentTaskHistoryStore } from './documentTaskHistory'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
+  normalizeDocumentExportCancelRequest,
+  normalizeDocumentExportRequest,
+  normalizeDocumentOpenExportFolderRequest,
+  normalizeDocumentRunRequest,
+  normalizeDocumentTargetId,
+  normalizeDocumentTaskIdentityRequest,
+  type DocumentApprovedAssetRequest,
+  type DocumentApprovedSourceRequest,
   type DocumentExportRequest,
   type DocumentRunRequest
 } from '../shared/documentWorkspace'
@@ -428,6 +438,47 @@ let documentWorkspace: DocumentWorkspaceManager | null = null
 const approvedDocumentPaths = new Set<string>()
 /** 当前文档窗口按 jobId 隔离的解析、OCR、翻译与导出任务服务。 */
 const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>()
+
+/** 历史与恢复 Tab 的受控资源读取服务；只读取当前窗口已批准路径。 */
+const documentApprovedResourceService = new DocumentApprovedResourceService({
+  isApprovedPath: (path) => approvedDocumentPaths.has(path)
+})
+
+/** 当前窗口共享的文档翻译缓存；缓存按源文件哈希跨任务复用。 */
+let documentTranslationCache: DocumentTranslationCacheStore | null = null
+
+/** 当前窗口共享的文档任务历史，避免每个任务各自读取不同实例。 */
+let documentTaskHistory: DocumentTaskHistoryStore | null = null
+
+/**
+ * 返回主进程共享的文档翻译缓存，并在首次访问时按当前设置创建。
+ * @returns 文档翻译缓存存储。
+ * @author zhenghq
+ */
+function getDocumentTranslationCacheStore(): DocumentTranslationCacheStore {
+  if (!documentTranslationCache) {
+    const settings = getSettings()
+    documentTranslationCache = new DocumentTranslationCacheStore({
+      directory: join(app.getPath('userData'), 'document-translation-cache'),
+      maxBytes: settings.documentTranslationCacheMaxBytes,
+      maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
+    })
+  }
+  return documentTranslationCache
+}
+
+/**
+ * 返回主进程共享的文档任务历史存储。
+ * @returns 文档任务历史存储。
+ * @author zhenghq
+ */
+function getDocumentTaskHistoryStore(): DocumentTaskHistoryStore {
+  documentTaskHistory ??= new DocumentTaskHistoryStore({
+    directory: join(app.getPath('userData'), 'document-task-history'),
+    maxEntries: 100
+  })
+  return documentTaskHistory
+}
 /** 主进程当前界面语言运行时；应用设置加载后初始化。 */
 let mainI18n: MainI18nRuntime | null = null
 
@@ -690,11 +741,8 @@ function releaseDocumentWorkspaceTask(jobId: string): boolean {
  */
 function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
   const settings = getSettings()
-  const cacheStore = new DocumentTranslationCacheStore({
-    directory: join(app.getPath('userData'), 'document-translation-cache'),
-    maxBytes: settings.documentTranslationCacheMaxBytes,
-    maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
-  })
+  const cacheStore = getDocumentTranslationCacheStore()
+  const historyStore = getDocumentTaskHistoryStore()
   return new DocumentWorkspaceTaskService({
     isApprovedPath: (path) => approvedDocumentPaths.has(path),
     sendProgress: (snapshot) => {
@@ -703,8 +751,14 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     sendTranslationUpdate: (update) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.blockTranslated, update)
     },
+    sendExportProgress: (progress) => {
+      documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.exportProgress, progress)
+    },
     sendCompleted: (snapshot) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
+    },
+    openExportFolder: async (filePath) => {
+      shell.showItemInFolder(filePath)
     },
     parse: async (input, registerAssetBytes, signal, options) => {
       if (input.format !== 'pdf' && input.format !== 'image') {
@@ -774,6 +828,9 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     glossary: () => undefined,
     readTranslationCache: (key) => cacheStore.read(key),
     writeTranslationCache: (key, value) => cacheStore.write(key, value),
+    saveHistory: (snapshot) => historyStore.save(snapshot),
+    updateHistoryExportStatus: (jobId, generation, status) =>
+      historyStore.updateExportStatus(jobId, generation, status),
     getParserVersion: () => 'document-parser-v1',
     getTranslationConcurrency: () => getSettings().webTranslationConcurrency,
     getOcrConcurrency: () => 2,
@@ -792,16 +849,29 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
-    exportPdf: (model, dependencies, partialExport, textLayer, sourceOnly) => {
+    exportPdf: (model, dependencies, exportOptions) => {
       // OCR 原文必须直接写回 PDF 文字对象；Chromium 打印会丢弃完全透明的 DOM 文字层。
-      if (sourceOnly) {
+      if (exportOptions.sourceOnly) {
         return exportDocumentToPdf(model, dependencies, {
-          includeOcrTextLayer: textLayer !== false
+          // OCR 原文默认写入透明文字层；只有调用方明确传 false 时才关闭。
+          includeOcrTextLayer: exportOptions.textLayer !== false,
+          ...(exportOptions.layout ? { layout: exportOptions.layout } : {}),
+          ...(exportOptions.sourceModel ? { sourceModel: exportOptions.sourceModel } : {}),
+          ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
+          ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
         })
       }
       const window = documentWorkspace?.getWindow()
       if (!window) throw new Error('document-window-unavailable')
-      return printDocumentPreviewToPdf(window.webContents, model, partialExport, textLayer)
+      return printDocumentPreviewToPdf(
+        window.webContents,
+        model,
+        exportOptions.partialExport,
+        exportOptions.textLayer,
+        exportOptions.layout,
+        exportOptions.signal,
+        exportOptions.onProgress
+      )
     },
     showSaveDialog: async (suggestedName) => {
       const window = documentWorkspace?.getWindow()
@@ -6098,11 +6168,15 @@ function registerIpc(): void {
     if (!getSettings().documentTranslationEnabled) {
       return { accepted: false, code: 'disabled' }
     }
+    const normalizedRequest = normalizeDocumentRunRequest(request)
+    if (!normalizedRequest || !isAbsolute(normalizedRequest.path)) {
+      return { accepted: false, code: 'invalid-request' }
+    }
     const service = createDocumentWorkspaceTaskService()
     let acceptedJobId: string | null = null
     try {
       // 首条进度会携带图片资源声明；必须先登记服务，Renderer 才能按 jobId 读取资源。
-      const result = await service.run(request as DocumentRunRequest, (jobId) => {
+      const result = await service.run(normalizedRequest, (jobId) => {
         acceptedJobId = jobId
         documentWorkspaceTaskServices.set(jobId, service)
       })
@@ -6150,12 +6224,16 @@ function registerIpc(): void {
     generation: unknown,
     targetId: unknown
   ) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
-      !Number.isInteger(generation) || typeof targetId !== 'string' ||
-      targetId.length === 0 || targetId.length > 512 || parseDocumentTargetId(targetId) === null) {
+    if (!isDocumentWorkspaceSender(event.sender)) {
       return { accepted: false, code: 'invalid-request' }
     }
-    return documentWorkspaceTaskServices.get(jobId)?.retryFailedTarget(generation as number, targetId) ??
+    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation })
+    const normalizedTargetId = normalizeDocumentTargetId(targetId)
+    if (!identity || !normalizedTargetId || parseDocumentTargetId(normalizedTargetId) === null) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    return documentWorkspaceTaskServices.get(identity.jobId)
+      ?.retryFailedTarget(identity.generation, normalizedTargetId) ??
       { accepted: false, code: 'not-ready' }
   })
   /**
@@ -6167,9 +6245,11 @@ function registerIpc(): void {
    * @author zhenghq
    */
   ipcMain.handle('document:cancel', (event, jobId: unknown, generation: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
-      !Number.isInteger(generation)) return false
-    return documentWorkspaceTaskServices.get(jobId)?.cancel(jobId, generation as number) ?? false
+    if (!isDocumentWorkspaceSender(event.sender)) return false
+    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation })
+    if (!identity) return false
+    return documentWorkspaceTaskServices.get(identity.jobId)
+      ?.cancel(identity.jobId, identity.generation) ?? false
   })
   /**
    * 释放已关闭文档标签对应的任务和内存资源。
@@ -6179,8 +6259,10 @@ function registerIpc(): void {
    * @author zhenghq
    */
   ipcMain.handle('document:release', (event, jobId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string') return false
-    return releaseDocumentWorkspaceTask(jobId)
+    if (!isDocumentWorkspaceSender(event.sender)) return false
+    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation: 1 })
+    if (!identity) return false
+    return releaseDocumentWorkspaceTask(identity.jobId)
   })
   /**
    * 将当前译文导出为 PDF。
@@ -6193,10 +6275,91 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { status: 'rejected', code: 'unreadable' }
     }
-    const jobId = (request as Partial<DocumentExportRequest> | null)?.jobId
-    return (typeof jobId === 'string' ? documentWorkspaceTaskServices.get(jobId) : undefined)
-      ?.exportPdf(request as DocumentExportRequest) ??
+    const normalizedRequest = normalizeDocumentExportRequest(request)
+    if (!normalizedRequest) return { status: 'rejected', code: 'invalid-request' }
+    return documentWorkspaceTaskServices.get(normalizedRequest.jobId)
+      ?.exportPdf(normalizedRequest) ??
       { status: 'rejected', code: 'not-ready' }
+  })
+  /**
+   * 取消当前正在执行的 PDF 导出；任务终态与已完成译文保持不变。
+   * @param event IPC 事件对象。
+   * @param request 当前任务标识与代际。
+   * @returns 是否实际中止了导出。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:cancel-export', (event, request: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return false
+    const normalized = normalizeDocumentExportCancelRequest(request)
+    if (!normalized) return false
+    return documentWorkspaceTaskServices.get(normalized.jobId)
+      ?.cancelExport(normalized.jobId, normalized.generation) ?? false
+  })
+  /**
+   * 打开当前任务最近一次成功导出文件所在目录。
+   * 文件路径只来自任务服务记录，Renderer 无法指定任意路径。
+   * @param event IPC 事件对象。
+   * @param request 当前任务标识与代际。
+   * @returns 是否成功调用系统文件管理器。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:open-export-folder', async (event, request: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return false
+    const normalized = normalizeDocumentOpenExportFolderRequest(request)
+    if (!normalized) return false
+    return documentWorkspaceTaskServices.get(normalized.jobId)
+      ?.openExportFolder(normalized.jobId, normalized.generation) ?? false
+  })
+  /**
+   * 读取文档任务历史的安全摘要列表。
+   * @param event IPC 事件对象。
+   * @returns 按更新时间倒序排列的历史摘要。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:list-history', async (event) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return []
+    return getDocumentTaskHistoryStore().list()
+  })
+  /**
+   * 打开指定文档任务的只读恢复快照。
+   * @param event IPC 事件对象。
+   * @param jobId 任务标识。
+   * @returns 可恢复快照；任务不存在或请求非法时返回 null。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:open-history', async (event, jobId: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return null
+    return getDocumentTaskHistoryStore().open(jobId)
+  })
+  /**
+   * 删除指定文档任务历史及其源文件对应的翻译缓存。
+   * @param event IPC 事件对象。
+   * @param jobId 任务标识。
+   * @returns 是否实际删除了历史条目。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:delete-history', async (event, jobId: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return false
+    const historyStore = getDocumentTaskHistoryStore()
+    const sourceSha256 = await historyStore.getSourceSha256(jobId)
+    const removed = await historyStore.delete(jobId)
+    if (removed && sourceSha256) {
+      await getDocumentTranslationCacheStore().deleteBySourceSha256(sourceSha256)
+    }
+    return removed
+  })
+  /**
+   * 清空全部文档翻译缓存与任务历史，不修改用户设置。
+   * @param event IPC 事件对象。
+   * @returns 清空完成后的 Promise。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:clear-cache', async (event) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return
+    const documentTranslationCache = getDocumentTranslationCacheStore()
+    const documentTaskHistory = getDocumentTaskHistoryStore()
+    await documentTranslationCache.clear()
+    await documentTaskHistory.clear()
   })
   /**
    * 读取当前任务中的受控图片资源。
@@ -6227,6 +6390,28 @@ function registerIpc(): void {
     }
     return documentWorkspaceTaskServices.get(jobId)?.getSource() ??
       { ok: false, code: 'source-not-found' }
+  })
+  /**
+   * 读取已重新授权历史文件的受控图片资源。
+   * @param event IPC 事件对象。
+   * @param request 源文件快照与资源元数据。
+   * @returns 资源字节或稳定错误分类。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:get-approved-asset', async (event, request: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'asset-not-found' }
+    return documentApprovedResourceService.getAsset(request as DocumentApprovedAssetRequest)
+  })
+  /**
+   * 读取已重新授权历史文件的源预览字节。
+   * @param event IPC 事件对象。
+   * @param request 源文件路径、格式、大小与 SHA-256。
+   * @returns 源预览字节或稳定错误分类。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:get-approved-source', async (event, request: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'source-not-approved' }
+    return documentApprovedResourceService.getSource(request as DocumentApprovedSourceRequest)
   })
   ipcMain.on('webview:open', (_event, url: unknown) => {
     openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)

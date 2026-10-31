@@ -1,6 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { DocumentTranslationCacheEntry } from '../shared/documentTranslation.ts'
+import {
+  DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
+  type DocumentTranslationCacheEntry
+} from '../shared/documentTranslation.ts'
 
 /** 文档翻译持久化缓存结构版本；不兼容变更时必须递增。 */
 export const DOCUMENT_TRANSLATION_CACHE_SCHEMA_VERSION = 1
@@ -55,6 +58,7 @@ function isCacheEntry(value: unknown): value is DocumentTranslationCacheEntry {
   return typeof entry.sourceSha256 === 'string' && entry.sourceSha256.length > 0 &&
     Boolean(languagePair) && typeof languagePair?.sourceLang === 'string' &&
     typeof languagePair.targetLang === 'string' &&
+    entry.translationProtocolVersion === DOCUMENT_TRANSLATION_PROTOCOL_VERSION &&
     typeof entry.glossaryVersion === 'string' &&
     typeof entry.protectionRulesVersion === 'string' &&
     entry.status === 'completed' &&

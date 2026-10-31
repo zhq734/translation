@@ -6,7 +6,9 @@ import {
 } from '../../shared/documentFormat'
 import type {
   DocumentBlock,
+  DocumentBoundingBox,
   DocumentContentArea,
+  DocumentAsset,
   DocumentFormulaBlock,
   DocumentImageBlock,
   DocumentModel,
@@ -20,8 +22,11 @@ import type {
 } from '../../shared/documentTypes'
 import {
   normalizeDocumentOcrRegionBox,
+  resolveDocumentImageContentBox,
   resolveDocumentOcrRegionFlowTop,
   resolveDocumentOcrOverlayBox,
+  resolveDocumentOcrSourceWidthRatio,
+  resolveDocumentOcrTranslationHorizontalBounds,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -30,20 +35,27 @@ import {
 } from '../../shared/documentOcrLayout'
 import type {
   DocumentAssetResult,
+  DocumentExportProgress,
+  DocumentExportRequest,
   DocumentExportResult,
   DocumentFileSelectionResult,
   DocumentPlatformCapability,
   DocumentRunResult,
+  DocumentSourceResult,
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../../shared/types'
 import type { DocumentPartialExportSummary } from '../../shared/documentPartialExport'
-import type { Settings } from '../../shared/types'
+import type { DocumentHistoryEntry, Settings } from '../../shared/types'
 import { LANGUAGES, langLabel } from '../../shared/langs'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
 import { canApplyDocumentTaskEvent } from '../../shared/documentTask'
 import { applyDocumentWorkspaceTranslationUpdate } from '../../shared/documentWorkspace'
 import { findDocumentTarget } from '../../shared/documentTargetLocator'
+import {
+  countVisibleDocumentWarnings,
+  filterVisibleDocumentWarnings
+} from '../../shared/documentWarnings'
 import {
   resolveDocumentRetryActionState
 } from '../../shared/documentCompletion'
@@ -54,9 +66,12 @@ import { startLocaleRuntime } from './locale'
 import {
   DOCUMENT_FILE_HISTORY_STORAGE_KEY,
   filterDocumentFileHistory,
+  filterDocumentTaskHistory,
+  mergeDocumentHistoryEntries,
   normalizeDocumentFileHistory,
   recordDocumentFileHistory,
-  type DocumentFileHistoryEntry
+  type DocumentFileHistoryEntry,
+  type DocumentHistoryListItem
 } from './documentHistory'
 import {
   occupiesDocumentTranslationFlow,
@@ -65,6 +80,7 @@ import {
   type DocumentFlowDecorationAnchor,
   type DocumentFlowObstacle,
   resolveTranslationFlowGroupGeometry,
+  resolveTranslationTableColumnWidths,
   resolveTranslationWatermarkHorizontalOffset
 } from './documentPdfLayout'
 import {
@@ -75,6 +91,7 @@ import {
   clampDocumentZoom,
   createRestoredDocumentWorkspaceSnapshot,
   DOCUMENT_VIEWER_STATE_STORAGE_KEY,
+  DOCUMENT_VIEWER_STATE_VERSION,
   parseDocumentViewerState,
   parseDocumentPageNumber,
   resolveDocumentBlockHighlight,
@@ -84,7 +101,9 @@ import {
   serializeDocumentViewerState,
   validateRestoredDocumentViewerFile,
   type DocumentViewerFileState,
+  type DocumentViewerMode,
   type DocumentViewerState,
+  type DocumentViewerTabState,
   type DocumentNavigationTarget
 } from './documentViewer'
 
@@ -148,6 +167,8 @@ type DocumentTabStatus = 'idle' | 'starting' | 'running' | 'completed' | 'partia
 interface DocumentWorkspaceTab {
   /** 当前窗口内稳定的 Tab 标识。 */
   id: string
+  /** Tab 的来源；历史任务为只读回放，不得取消或释放原任务。 */
+  sourceKind: 'task' | 'restored' | 'history'
   /** 已通过主进程批准的文件元数据。 */
   selection: DocumentSelectionState
   /** 最近一次属于该 Tab 的任务快照。 */
@@ -164,18 +185,30 @@ interface DocumentWorkspaceTab {
   status: DocumentTabStatus
   /** 原文栏和译文栏的滚动位置。 */
   scrollPositions: DocumentScrollPositions
+  /** 该 Tab 自己的用户缩放比例。 */
+  zoom: number
+  /** 该 Tab 自己的原文、译文或双栏显示模式。 */
+  viewMode: DocumentViewerMode
+  /** 该 Tab 当前阅读页，从 1 开始。 */
+  pageNumber: number
+  /** 该 Tab 的双栏滚动同步开关。 */
+  scrollSyncEnabled: boolean
   /** 该 Tab 提交给任务的源语言。 */
   sourceLang: string
   /** 该 Tab 提交给任务的目标语言。 */
   targetLang: string
   /** 图片 OCR 原文与译文的展示方式。 */
   ocrDisplayMode: 'ocr-text' | 'translation'
+  /** 该 Tab 当前高亮的稳定区块标识。 */
+  activeBlockId: string | null
   /** 启动完成后仍需按最新语言重译。 */
   pendingLanguageRetranslation: boolean
   /** 启动完成后仍需按最新 OCR 模式重启。 */
   pendingOcrModeRestart: boolean
   /** 当前 Tab 的语言切换序号，用于丢弃过期重译请求。 */
   languageRevision: number
+  /** 只读历史/恢复 Tab 的源文件是否已重新授权且通过快照校验。 */
+  sourceAuthorized: boolean
 }
 
 /** 初始空选择状态。 */
@@ -202,6 +235,12 @@ const documentHistorySearch = document.getElementById('document-history-search')
 const documentHistoryList = document.getElementById('document-history-list') as HTMLUListElement
 const documentHistoryEmpty = document.getElementById('document-history-empty') as HTMLElement
 const documentHistoryStatus = document.getElementById('document-history-status') as HTMLElement
+const documentHistoryClearButton = document.getElementById('document-history-clear') as HTMLButtonElement
+const documentHistoryConfirmDialog = document.getElementById('document-history-confirm-dialog') as HTMLDialogElement
+const documentHistoryConfirmTitle = document.getElementById('document-history-confirm-title') as HTMLElement
+const documentHistoryConfirmDescription = document.getElementById('document-history-confirm-description') as HTMLElement
+const documentHistoryConfirmCancel = document.getElementById('document-history-confirm-cancel') as HTMLButtonElement
+const documentHistoryConfirmDelete = document.getElementById('document-history-confirm-delete') as HTMLButtonElement
 const sourceLanguageSelect = document.getElementById('document-source-lang') as HTMLSelectElement
 const targetLanguageSelect = document.getElementById('document-target-lang') as HTMLSelectElement
 const actualLanguage = document.getElementById('document-actual-language') as HTMLElement
@@ -212,6 +251,10 @@ const workbenchName = document.getElementById('document-workbench-name') as HTML
 const workbenchMeta = document.getElementById('document-workbench-meta') as HTMLElement
 const progressStage = document.getElementById('document-progress-stage') as HTMLElement
 const progressCount = document.getElementById('document-progress-count') as HTMLElement
+const progressPages = document.getElementById('document-progress-pages') as HTMLElement
+const progressBlocks = document.getElementById('document-progress-blocks') as HTMLElement
+const progressWarnings = document.getElementById('document-progress-warnings') as HTMLElement
+const progressRemaining = document.getElementById('document-progress-remaining') as HTMLElement
 const progressbar = document.getElementById('document-progressbar') as HTMLElement
 const sourceContent = document.getElementById('document-source-content') as HTMLElement
 const sourceOcrMode = document.getElementById('document-source-ocr-mode') as HTMLElement
@@ -237,6 +280,22 @@ const exportButton = document.getElementById('document-export-button') as HTMLBu
 const retryButton = document.getElementById('document-retry-button') as HTMLButtonElement
 const documentWorkbenchReplaceButton = document.getElementById('document-workbench-replace') as HTMLButtonElement
 const partialStatus = document.getElementById('document-partial-status') as HTMLElement
+const exportDialog = document.getElementById('document-export-dialog') as HTMLDialogElement
+const exportLayoutTranslation = document.getElementById('document-export-layout-translation') as HTMLInputElement
+const exportLayoutBilingual = document.getElementById('document-export-layout-bilingual') as HTMLInputElement
+const exportIncomplete = document.getElementById('document-export-incomplete') as HTMLElement
+const exportWarningCount = document.getElementById('document-export-warning-count') as HTMLElement
+const exportIncompleteNotice = document.getElementById('document-export-incomplete-notice') as HTMLElement
+const exportRetryButton = document.getElementById('document-export-retry') as HTMLButtonElement
+const exportConfirmButton = document.getElementById('document-export-confirm') as HTMLButtonElement
+const exportCancelButton = document.getElementById('document-export-cancel') as HTMLButtonElement
+const exportProgress = document.getElementById('document-export-progress') as HTMLElement
+const exportProgressStage = document.getElementById('document-export-progress-stage') as HTMLElement
+const exportProgressPage = document.getElementById('document-export-progress-page') as HTMLElement
+const exportProgressPercent = document.getElementById('document-export-progress-percent') as HTMLElement
+const exportProgressTrack = exportProgress.querySelector<HTMLElement>('[role="progressbar"]') as HTMLElement
+const exportProgressbar = document.getElementById('document-export-progressbar') as HTMLElement
+const exportOpenFolderButton = document.getElementById('document-export-open-folder') as HTMLButtonElement
 const partialExportDialog = document.getElementById('document-partial-export-dialog') as HTMLDialogElement
 const partialExportSummary = document.getElementById('document-partial-export-summary') as HTMLElement
 const partialExportRetryButton = document.getElementById('document-partial-export-retry') as HTMLButtonElement
@@ -252,8 +311,26 @@ let selectionState: DocumentSelectionState = { ...EMPTY_SELECTION }
 let documentFileHistory: DocumentFileHistoryEntry[] = []
 /** 当前搜索条件下实际展示的历史记录，用于把列表项索引映射回完整记录。 */
 let visibleDocumentFileHistory: DocumentFileHistoryEntry[] = []
+/** 主进程持久化的文档任务历史摘要。 */
+let documentTaskHistory: DocumentHistoryEntry[] = []
+/** 当前搜索条件下实际展示的任务历史，用于把列表项索引映射回完整记录。 */
+let visibleDocumentTaskHistory: DocumentHistoryEntry[] = []
+/** 当前搜索条件下合并展示的任务与文件历史，用于统一键盘和指针导航。 */
+let visibleDocumentHistory: DocumentHistoryListItem[] = []
 let platformCapability: DocumentPlatformCapability | null = null
 let dragDepth = 0
+/** 导出对话框当前对应的任务身份；为空表示尚未打开或已结束。 */
+let documentExportTarget: { jobId: string; generation: number } | null = null
+/** 导出对话框当前布局；用户切换单选后立即同步。 */
+let selectedDocumentExportLayout: 'translation' | 'bilingual' = 'translation'
+/** 当前是否正在等待 PDF 导出结束。 */
+let documentExportInFlight = false
+/** 当前导出是否已成功保存，用于显示打开目录入口。 */
+let documentExportSaved = false
+/** 当前导出进度百分比，避免迟到事件造成回退。 */
+let documentExportPercent = 0
+/** 各任务首次观察到运行进度的本地时间，用于在不改变 IPC 快照协议的前提下估算剩余时间。 */
+const documentTaskStartedAt = new Map<string, number>()
 /** 当前 Renderer 任务代际；每次开始翻译递增。 */
 let generation = readPersistedGeneration()
 /** 当前主进程任务标识；未启动时为 null。 */
@@ -314,10 +391,18 @@ const pendingProgrammaticScrollTops = new WeakMap<HTMLElement, number>()
 const DOCUMENT_HEAD_BYTES = 8192
 /** 已渲染的源预览身份；PDF 只按文件指纹复用，避免流式事件重载 Canvas。 */
 let renderedSourcePreviewIdentity = ''
+/** 已渲染源预览所属的 Tab；切换文件后禁止复用上一 Tab 的原文身份。 */
+let renderedSourcePreviewTabId: string | null = null
+/** 已渲染源预览对应的文件 SHA-256；同一 Tab 内容变化时也必须重绘。 */
+let renderedSourcePreviewSha256 = ''
 /** 已渲染的源告警签名；告警变化时只更新告警层。 */
 let renderedSourceWarningSignature = ''
 /** 已渲染的译文内容签名。 */
 let renderedTranslationSignature = ''
+/** 已渲染译文所属的 Tab；切换文件后禁止复用上一 Tab 的译文 DOM。 */
+let renderedTranslationTabId: string | null = null
+/** 已渲染译文对应的文件 SHA-256；同一 Tab 内容变化时也必须重绘。 */
+let renderedTranslationSha256 = ''
 /** 当前译文预览的渲染方式；结构变化时才允许回退整页重绘。 */
 let renderedTranslationPreviewKind: DocumentPreviewKind | null = null
 /** 是否已完成过译文栏首次渲染；空模型与空签名不能省略初始等待态。 */
@@ -348,6 +433,13 @@ let activeDocumentTabId: string | null = null
 let nextDocumentTabSequence = 1
 /** 是否正在执行历史文件切换，阻止快速重复点击创建并发切换。 */
 let documentHistorySwitchInFlight = false
+/** 当前等待用户确认的历史操作；null 表示没有待确认操作。 */
+let pendingDocumentHistoryAction:
+  | { kind: 'delete'; entry: DocumentHistoryEntry }
+  | { kind: 'clear' }
+  | null = null
+/** 历史确认对话框关闭后应恢复焦点的触发按钮。 */
+let documentHistoryFocusTarget: HTMLElement | null = null
 
 /**
  * 使用当前界面语言翻译词条。
@@ -535,66 +627,74 @@ async function initializeDocumentLanguages(): Promise<void> {
  */
 async function restoreDocumentViewerState(): Promise<void> {
   const state = readDocumentViewerState()
-  if (!state.file || !state.source || !state.translation || !platformCapability?.supported) return
-  try {
-    const authorized = await window.api.approveDocumentFile(state.file.path)
-    const validation = validateRestoredDocumentViewerFile(state.file, authorized)
-    if (!validation.ok) return
-    const snapshot = createRestoredDocumentWorkspaceSnapshot(state)
-    const tab: DocumentWorkspaceTab = {
-      id: `document-tab-${nextDocumentTabSequence++}`,
-      selection: {
-        path: state.file.path,
-        name: state.file.name,
-        size: state.file.size,
-        format: state.file.format,
-        sha256: state.file.sha256,
-        error: null
-      },
-      snapshot,
-      activeJobId: null,
-      expectedJobId: null,
-      generation: 0,
-      startInFlight: false,
-      status: 'completed',
-      scrollPositions: { ...state.scroll },
-      sourceLang: state.sourceLang,
-      targetLang: state.targetLang,
-      ocrDisplayMode: 'translation',
-      pendingLanguageRetranslation: false,
-      pendingOcrModeRestart: false,
-      languageRevision: 0
+  if (state.tabs.length === 0 || !platformCapability?.supported) return
+  const restoredTabs: DocumentWorkspaceTab[] = []
+  let restoredActiveTabId: string | null = null
+  for (const savedTab of state.tabs) {
+    try {
+      const authorized = await window.api.approveDocumentFile(savedTab.selection.path)
+      if (!validateRestoredDocumentViewerFile(savedTab.selection, authorized).ok) continue
+      const tab = createRestoredDocumentWorkspaceTab(savedTab)
+      restoredTabs.push(tab)
+      if (savedTab.id === state.activeTabId) restoredActiveTabId = tab.id
+    } catch {
+      // 单个文件移动、删除或内容变化时只丢弃该 Tab，不能阻断其他历史文件恢复。
     }
-    tab.activeJobId = null
-    tab.expectedJobId = null
-    tab.generation = 0
-    tab.startInFlight = false
-    documentTabs = [tab]
-    activeDocumentTabId = tab.id
-    documentViewMode = state.viewMode
-    documentZoom = state.zoom
-    persistDocumentViewMode(documentViewMode)
-    syncDocumentViewModeControls()
-    renderDocumentTabs()
-    renderActiveDocumentTab(tab)
-    requestAnimationFrame(() => {
-      if (!documentTabs.includes(tab) || tab.id !== activeDocumentTabId) return
-      applyDocumentZoom(state.zoom)
-      sourceContent.scrollTop = state.scroll.source
-      translationContent.scrollTop = state.scroll.translation
-      const model = snapshot.source ?? snapshot.translation
-      const page = state.activePageId
-        ? model?.pages.find((candidate) => candidate.pageId === state.activePageId)
-        : undefined
-      if (model && page) {
-        currentDocumentPageNumber = model.pages.indexOf(page) + 1
-        documentPageInput.value = String(currentDocumentPageNumber)
-      }
-      if (state.activeBlockId) highlightDocumentBlock(state.activeBlockId)
-      else clearDocumentBlockHighlight()
-    })
-  } catch {
-    // 文件可能已移动、删除或内容变化；恢复失败时保持上传态，不展示旧译文。
+  }
+  if (restoredTabs.length === 0) return
+  documentTabs = restoredTabs
+  activeDocumentTabId = restoredActiveTabId ?? restoredTabs[0]!.id
+  syncActiveTabMirror(getActiveDocumentTab())
+  syncDocumentViewModeControls()
+  renderDocumentTabs()
+  renderActiveDocumentTab(getActiveDocumentTab()!)
+  // 模型 DOM 挂载后才能恢复持久化高亮，不能在渲染前操作旧节点。
+  const activeBlockId = getActiveDocumentTab()?.activeBlockId
+  if (activeBlockId) requestAnimationFrame(() => highlightDocumentBlock(activeBlockId))
+}
+
+/**
+ * 将已重新授权的持久化 Tab 转换为只读工作台 Tab。
+ * @param savedTab 已通过文件内容指纹校验的持久化 Tab。
+ * @returns 使用固定恢复任务身份、保留独立阅读状态的工作台 Tab。
+ * @author zhenghq
+ */
+function createRestoredDocumentWorkspaceTab(savedTab: DocumentViewerTabState): DocumentWorkspaceTab {
+  const snapshot = createRestoredDocumentWorkspaceSnapshot(savedTab)
+  const restoredModel = snapshot.source ?? snapshot.translation
+  const restoredPageIndex = restoredModel && savedTab.activePageId
+    ? restoredModel.pages.findIndex((page) => page.pageId === savedTab.activePageId)
+    : -1
+  return {
+    id: `document-tab-${nextDocumentTabSequence++}`,
+    sourceKind: 'restored',
+    selection: {
+      path: savedTab.selection.path,
+      name: savedTab.selection.name,
+      size: savedTab.selection.size,
+      format: savedTab.selection.format,
+      sha256: savedTab.selection.sha256,
+      error: null
+    },
+    snapshot,
+    activeJobId: null,
+    expectedJobId: null,
+    generation: 0,
+    startInFlight: false,
+    status: 'completed',
+    scrollPositions: { ...savedTab.scroll },
+    zoom: savedTab.zoom,
+    viewMode: savedTab.viewMode,
+    pageNumber: restoredPageIndex >= 0 ? restoredPageIndex + 1 : savedTab.pageNumber,
+    scrollSyncEnabled: savedTab.scrollSyncEnabled,
+    sourceLang: savedTab.sourceLang,
+    targetLang: savedTab.targetLang,
+    ocrDisplayMode: savedTab.ocrDisplayMode,
+    activeBlockId: savedTab.activeBlockId,
+    pendingLanguageRetranslation: false,
+    pendingOcrModeRestart: false,
+    languageRevision: 0,
+    sourceAuthorized: true
   }
 }
 
@@ -629,6 +729,8 @@ async function retranslateDocumentAfterLanguageChange(): Promise<void> {
   appliedLanguagePair = nextPair
   scheduleDocumentViewerStatePersist()
   const revision = ++tab.languageRevision
+  // 只读回放中的历史任务标识属于持久化快照，不是当前主进程可取消的活动任务。
+  if (isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)) return
   const jobId = tab.activeJobId ?? tab.expectedJobId
   const jobGeneration = tab.generation
   await cancelDocumentJob(jobId, jobGeneration)
@@ -697,41 +799,152 @@ function rememberSelectedDocument(selection: Pick<DocumentFileHistoryEntry, 'pat
 }
 
 /**
- * 根据当前搜索词渲染历史文件下拉列表。
+ * 从主进程读取持久化的文档任务历史并刷新下拉列表。
+ * @returns 读取完成后的 Promise；失败时保留当前列表并显示脱敏提示。
+ * @author zhenghq
+ */
+async function loadDocumentTaskHistory(): Promise<void> {
+  try {
+    documentTaskHistory = await window.api.listDocumentHistory()
+    renderDocumentHistory()
+  } catch {
+    documentHistoryStatus.textContent = t('document.historyLoadFailed')
+    documentHistoryStatus.hidden = false
+  }
+}
+
+/**
+ * 将任务状态转换为当前语言下的简短标签。
+ * @param status 历史任务的终态。
+ * @returns 可展示的状态文本。
+ * @author zhenghq
+ */
+function historyStatusLabel(status: DocumentHistoryEntry['status']): string {
+  const keys: Partial<Record<DocumentHistoryEntry['status'], string>> = {
+    completed: 'document.progress.completed',
+    partial: 'document.partial',
+    failed: 'document.progress.failed',
+    cancelled: 'document.progress.cancelled'
+  }
+  return t(keys[status] ?? 'document.progress.preparing')
+}
+
+/**
+ * 格式化历史条目的最近更新时间。
+ * @param timestamp 毫秒时间戳。
+ * @returns 当前界面语言下的日期和时间。
+ * @author zhenghq
+ */
+function formatDocumentHistoryTime(timestamp: number): string {
+  try {
+    return new Intl.DateTimeFormat(localeRuntime.locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(new Date(timestamp))
+  } catch {
+    return new Date(timestamp).toLocaleString()
+  }
+}
+
+/**
+ * 创建历史列表中的操作按钮。
+ * @param label 按钮的可访问文本。
+ * @param className 附加样式类。
+ * @param action 按钮动作类型。
+ * @param id 任务标识或文件路径。
+ * @returns 已完成事件数据绑定的按钮。
+ * @author zhenghq
+ */
+function createDocumentHistoryActionButton(
+  label: string,
+  className: string,
+  action: 'open' | 'delete',
+  id: string
+): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = className
+  button.textContent = label
+  button.dataset.historyAction = action
+  button.dataset.historyTargetId = id
+  return button
+}
+
+/**
+ * 根据当前搜索词渲染任务与文件历史下拉列表。
  * @returns 无返回值。
  * @author zhenghq
  */
 function renderDocumentHistory(): void {
-  visibleDocumentFileHistory = filterDocumentFileHistory(documentFileHistory, documentHistorySearch.value)
+  const query = documentHistorySearch.value
+  visibleDocumentTaskHistory = filterDocumentTaskHistory(documentTaskHistory, query)
+  visibleDocumentFileHistory = filterDocumentFileHistory(documentFileHistory, query)
+  visibleDocumentHistory = mergeDocumentHistoryEntries(
+    visibleDocumentTaskHistory,
+    visibleDocumentFileHistory
+  )
   documentHistoryList.replaceChildren()
-  documentHistoryEmpty.hidden = visibleDocumentFileHistory.length > 0
-  documentHistoryEmpty.textContent = documentFileHistory.length === 0
+  documentHistoryEmpty.hidden = visibleDocumentHistory.length > 0
+  documentHistoryEmpty.textContent = documentTaskHistory.length === 0 && documentFileHistory.length === 0
     ? t('document.historyEmpty')
     : t('document.historyNoResults')
+  documentHistoryClearButton.disabled =
+    documentTaskHistory.length === 0 && documentFileHistory.length === 0
 
-  visibleDocumentFileHistory.forEach((entry, index) => {
+  visibleDocumentHistory.forEach((entry, index) => {
     const item = document.createElement('li')
-    const button = document.createElement('button')
+    item.className = 'document-history-row'
+    const openButton = document.createElement('button')
     const copy = document.createElement('span')
     const name = document.createElement('strong')
     const meta = document.createElement('span')
     const check = document.createElement('span')
-    const isCurrent = findDocumentTabByPath(entry.path) !== null
-    button.type = 'button'
-    button.className = 'document-history-item'
-    button.dataset.historyIndex = String(index)
-    button.setAttribute('role', 'option')
-    button.setAttribute('aria-selected', String(isCurrent))
-    button.title = entry.path
+    const actions = document.createElement('span')
+    const isCurrent = entry.kind === 'task'
+      ? documentTabs.some((tab) => tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId)
+      : findDocumentTabByPath(entry.path) !== null
+    openButton.type = 'button'
+    openButton.className = 'document-history-item'
+    openButton.dataset.historyIndex = String(index)
+    openButton.dataset.historyAction = 'open'
+    openButton.dataset.historyTargetId = entry.kind === 'task' ? entry.jobId : entry.path
+    openButton.setAttribute('role', 'option')
+    openButton.setAttribute('aria-selected', String(isCurrent))
+    openButton.title = entry.kind === 'task' ? entry.task.fileName : entry.path
     copy.className = 'document-history-item-copy'
-    name.textContent = entry.name
-    meta.textContent = `${entry.format.toUpperCase()} · ${formatFileSize(entry.size)}`
+    name.textContent = entry.kind === 'task' ? entry.task.fileName : entry.file.name
+    if (entry.kind === 'task') {
+      const direction = `${langLabel(entry.task.languagePair.sourceLang, localeRuntime.locale)} → ${langLabel(entry.task.languagePair.targetLang, localeRuntime.locale)}`
+      const exportLabel = entry.task.exportStatus === 'saved'
+        ? t('document.historyExported')
+        : t('document.historyNotExported')
+      meta.textContent = `${entry.task.format.toUpperCase()} · ${direction} · ${historyStatusLabel(entry.task.status)} · ${Math.round(entry.task.percent)}% · ${formatDocumentHistoryTime(entry.task.updatedAt)} · ${exportLabel}`
+    } else {
+      meta.textContent = `${entry.file.format.toUpperCase()} · ${formatFileSize(entry.file.size)} · ${formatDocumentHistoryTime(entry.file.lastUsedAt)}`
+    }
     check.className = 'document-history-item-check'
     check.setAttribute('aria-hidden', 'true')
     check.textContent = isCurrent ? '✓' : ''
     copy.append(name, meta)
-    button.append(copy, check)
-    item.append(button)
+    openButton.append(copy, check)
+    actions.className = 'document-history-item-actions'
+    actions.append(createDocumentHistoryActionButton(
+      t('document.historyOpen'),
+      'document-history-action',
+      'open',
+      entry.kind === 'task' ? entry.jobId : entry.path
+    ))
+    if (entry.kind === 'task') {
+      actions.append(createDocumentHistoryActionButton(
+        t('document.historyDelete'),
+        'document-history-action document-history-action-danger',
+        'delete',
+        entry.jobId
+      ))
+    }
+    item.append(openButton, actions)
     documentHistoryList.append(item)
   })
 }
@@ -755,6 +968,21 @@ function setDocumentHistoryOpen(open: boolean, restoreFocus = false): void {
   } else if (restoreFocus) {
     historyButton.focus()
   }
+}
+
+/**
+ * 关闭历史操作确认框并恢复触发按钮焦点。
+ * @param restoreFocus 是否把焦点恢复到打开确认框前的元素。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closeDocumentHistoryConfirmation(restoreFocus = true): void {
+  pendingDocumentHistoryAction = null
+  const target = documentHistoryFocusTarget
+  documentHistoryFocusTarget = null
+  if (documentHistoryConfirmDialog.open) documentHistoryConfirmDialog.close()
+  else documentHistoryConfirmDialog.removeAttribute('open')
+  if (restoreFocus && target?.isConnected) target.focus()
 }
 
 /**
@@ -793,6 +1021,185 @@ async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Pr
   } finally {
     documentHistorySwitchInFlight = false
     historyButton.disabled = !platformCapability?.supported
+  }
+}
+
+/**
+ * 以只读方式打开持久化的历史任务快照，不创建、取消或释放主进程活动任务。
+ * @param entry 待打开的任务历史摘要。
+ * @returns 打开完成后的 Promise。
+ * @author zhenghq
+ */
+async function openDocumentHistoryTask(entry: DocumentHistoryEntry): Promise<void> {
+  if (documentHistorySwitchInFlight) return
+  const existingTab = documentTabs.find((tab) =>
+    tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId
+  )
+  if (existingTab) {
+    await activateDocumentTab(existingTab.id)
+    setDocumentHistoryOpen(false, true)
+    return
+  }
+  documentHistorySwitchInFlight = true
+  documentHistoryStatus.hidden = true
+  try {
+    const result = await window.api.openDocumentHistory(entry.jobId)
+    if (!result) {
+      documentHistoryStatus.textContent = t('document.historyLoadFailed')
+      documentHistoryStatus.hidden = false
+      return
+    }
+    const snapshot = result.snapshot
+    const source = snapshot.source?.source
+    let sourceAuthorized = false
+    if (source?.path && source.sha256 && Number.isSafeInteger(source.size) && source.size > 0) {
+      try {
+        const authorized = await window.api.approveDocumentFile(source.path)
+        sourceAuthorized = authorized.status === 'selected' &&
+          authorized.path === source.path &&
+          authorized.format === source.format &&
+          authorized.size === source.size &&
+          authorized.sha256 === source.sha256
+      } catch {
+        // 源文件已移动、删除或不可读时仍允许回放已保存译文，但不能读取源资源。
+        sourceAuthorized = false
+      }
+    }
+    const tab: DocumentWorkspaceTab = {
+      id: `document-tab-${nextDocumentTabSequence++}`,
+      sourceKind: 'history',
+      selection: {
+        path: source?.path ?? '',
+        name: entry.fileName,
+        size: source?.size ?? 0,
+        format: entry.format,
+        sha256: source?.sha256 ?? '',
+        error: null
+      },
+      snapshot: result.snapshot,
+      activeJobId: null,
+      expectedJobId: null,
+      generation: snapshot.generation,
+      startInFlight: false,
+      status: resolveDocumentTabStatus(snapshot),
+      scrollPositions: { source: 0, translation: 0 },
+      zoom: documentZoom,
+      viewMode: documentViewMode,
+      pageNumber: 1,
+      scrollSyncEnabled: documentScrollSyncEnabled,
+      sourceLang: snapshot.sourcePreference ?? entry.sourcePreference,
+      targetLang: snapshot.targetPreference ?? entry.targetPreference,
+      ocrDisplayMode: snapshot.runMode === 'ocr' ? 'ocr-text' : 'translation',
+      activeBlockId: null,
+      pendingLanguageRetranslation: false,
+      pendingOcrModeRestart: false,
+      languageRevision: 0,
+      sourceAuthorized
+    }
+    documentTabs.push(tab)
+    await activateDocumentTab(tab.id)
+    setDocumentHistoryOpen(false, true)
+  } catch {
+    documentHistoryStatus.textContent = t('document.historyLoadFailed')
+    documentHistoryStatus.hidden = false
+  } finally {
+    documentHistorySwitchInFlight = false
+  }
+}
+
+/**
+ * 从历史列表中打开任务摘要或重新授权本地文件。
+ * @param entry 统一历史条目。
+ * @returns 打开完成后的 Promise。
+ * @author zhenghq
+ */
+async function openDocumentHistoryEntry(entry: DocumentHistoryListItem): Promise<void> {
+  if (entry.kind === 'task') {
+    await openDocumentHistoryTask(entry.task)
+    return
+  }
+  await switchToDocumentHistoryEntry(entry.file)
+}
+
+/**
+ * 打开历史删除或清空确认对话框。
+ * @param action 待确认操作；null 表示关闭对话框。
+ * @param focusTarget 对话框关闭后恢复焦点的元素。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setDocumentHistoryConfirmation(
+  action: NonNullable<typeof pendingDocumentHistoryAction> | null,
+  focusTarget?: HTMLElement | null
+): void {
+  if (!action) {
+    if (focusTarget) documentHistoryFocusTarget = focusTarget
+    closeDocumentHistoryConfirmation()
+    return
+  }
+  pendingDocumentHistoryAction = action
+  documentHistoryFocusTarget = focusTarget ?? (document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null)
+  const isClear = action.kind === 'clear'
+  documentHistoryConfirmDialog.setAttribute('aria-modal', 'true')
+  documentHistoryConfirmTitle.textContent = t(isClear
+    ? 'document.historyClearTitle'
+    : 'document.historyDeleteTitle')
+  documentHistoryConfirmDescription.textContent = t(isClear
+    ? 'document.historyClearDescription'
+    : 'document.historyDeleteDescription')
+  documentHistoryConfirmDelete.textContent = t(isClear
+    ? 'document.historyConfirmClear'
+    : 'document.historyConfirmDelete')
+  documentHistoryConfirmDelete.dataset.action = action.kind
+  documentHistoryConfirmDialog.dataset.action = action.kind
+  if (typeof documentHistoryConfirmDialog.showModal === 'function') {
+    documentHistoryConfirmDialog.showModal()
+  } else {
+    documentHistoryConfirmDialog.setAttribute('open', '')
+  }
+  requestAnimationFrame(() => documentHistoryConfirmCancel.focus())
+}
+
+/**
+ * 执行已确认的历史删除或清空操作，并同步本地文件历史与缓存状态。
+ * @returns 操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function confirmDocumentHistoryAction(): Promise<void> {
+  const action = pendingDocumentHistoryAction
+  if (!action) return
+  const focusTarget = documentHistoryFocusTarget
+  documentHistoryConfirmDelete.disabled = true
+  try {
+    if (action.kind === 'delete') {
+      const jobId = action.entry.jobId
+      const removed = await window.api.deleteDocumentHistory(jobId)
+      documentTaskHistory = documentTaskHistory.filter((entry) => entry.jobId !== action.entry.jobId)
+      // 同名本地文件入口可能只是该任务的重新授权记录，删除任务时一并移除避免残留重复项。
+      documentFileHistory = documentFileHistory.filter((entry) => entry.name !== action.entry.fileName)
+      writeDocumentFileHistory(documentFileHistory)
+      renderDocumentHistory()
+      documentHistoryStatus.textContent = removed
+        ? t('document.historyDeleted')
+        : t('document.historyLoadFailed')
+      documentHistoryStatus.hidden = false
+    } else {
+      await window.api.clearDocumentCache()
+      documentTaskHistory = []
+      documentFileHistory = []
+      writeDocumentFileHistory(documentFileHistory)
+      renderDocumentHistory()
+      documentHistoryStatus.textContent = t('document.historyCleared')
+      documentHistoryStatus.hidden = false
+    }
+    setDocumentHistoryConfirmation(null, focusTarget ?? undefined)
+  } catch {
+    documentHistoryStatus.textContent = t('document.historyLoadFailed')
+    documentHistoryStatus.hidden = false
+  } finally {
+    documentHistoryConfirmDelete.disabled = false
   }
 }
 
@@ -848,6 +1255,101 @@ function isRestoredDocumentTab(tab: DocumentWorkspaceTab | null | undefined): bo
 }
 
 /**
+ * 判断 Tab 是否只能只读回放，不能重新读取资源或操作主进程任务。
+ * @param tab 待检查的文档 Tab。
+ * @returns 历史快照或本地恢复快照返回 true。
+ * @author zhenghq
+ */
+function isReadOnlyDocumentTab(tab: DocumentWorkspaceTab | null | undefined): boolean {
+  return tab?.sourceKind === 'history' || tab?.sourceKind === 'restored' || isRestoredDocumentTab(tab)
+}
+
+/**
+ * 构造只读 Tab 的受控源文件请求；快照与 Tab 必须一致且已重新授权。
+ * @param tab 只读文档 Tab。
+ * @returns 主进程可校验的源文件请求；未授权或元数据不完整时返回 null。
+ * @author zhenghq
+ */
+function approvedDocumentSourceRequest(tab: DocumentWorkspaceTab) {
+  const source = tab.snapshot?.source?.source
+  if (!isReadOnlyDocumentTab(tab) || !tab.sourceAuthorized || !source ||
+    !source.path || !source.sha256 || !Number.isSafeInteger(source.size) || source.size < 1 ||
+    source.sha256 !== tab.selection.sha256 || source.size !== tab.selection.size) {
+    return null
+  }
+  return {
+    path: source.path,
+    sourceSha256: source.sha256,
+    sourceSize: source.size,
+    format: source.format
+  }
+}
+
+/**
+ * 从快照源模型或译文模型中查找资源元数据。
+ * @param tab 资源所属文档 Tab。
+ * @param assetId 稳定资源标识。
+ * @returns 匹配的资源元数据；不存在时返回 undefined。
+ * @author zhenghq
+ */
+function findDocumentAssetMetadata(
+  tab: DocumentWorkspaceTab,
+  assetId: string
+): DocumentAsset | undefined {
+  return tab.snapshot?.source?.assets.find((asset) => asset.assetId === assetId) ??
+    tab.snapshot?.translation?.assets.find((asset) => asset.assetId === assetId)
+}
+
+/**
+ * 在页面区块及表格单元格中查找指定图片资源。
+ * @param blocks 待遍历区块。
+ * @param assetId 图片资源标识。
+ * @returns 匹配的图片区块；不存在时返回 undefined。
+ * @author zhenghq
+ */
+function findDocumentImageBlock(
+  blocks: readonly DocumentBlock[],
+  assetId: string
+): DocumentImageBlock | undefined {
+  for (const block of blocks) {
+    if (block.kind === 'image') {
+      if (block.assetId === assetId) return block
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) {
+        const image = findDocumentImageBlock(cell.blocks, assetId)
+        if (image) return image
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * 定位历史 PDF 图片所属页面及原始 bbox，供主进程重新解析后恢复同一资源。
+ * @param tab 图片所属文档 Tab。
+ * @param assetId 图片资源标识。
+ * @returns 页面索引与 bbox；非 PDF 或无法唯一定位时返回 undefined。
+ * @author zhenghq
+ */
+function findDocumentPdfImageLocation(
+  tab: DocumentWorkspaceTab,
+  assetId: string
+): { pageIndex: number; bbox: DocumentBoundingBox } | undefined {
+  const model = tab.snapshot?.source ?? tab.snapshot?.translation
+  if (model?.source.format !== 'pdf') return undefined
+  const matches: Array<{ pageIndex: number; bbox: DocumentBoundingBox }> = []
+  for (const page of model.pages) {
+    const block = findDocumentImageBlock(page.blocks, assetId)
+    if (!block?.bbox) continue
+    matches.push({ pageIndex: page.index, bbox: { ...block.bbox } })
+  }
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+/**
  * 读取本地保存的文档查看器状态；存储缺失或损坏时安全回退为空状态。
  * @returns 可安全恢复的查看器状态。
  * @author zhenghq
@@ -875,7 +1377,21 @@ function writeDocumentViewerState(state: DocumentViewerState): void {
 }
 
 /**
- * 将当前激活 Tab 的文件、阅读位置和已完成模型保存到本地存储。
+ * 删除本地保存的文档查看器状态。
+ * 关闭全部文件 Tab 后必须移除旧快照，避免下次打开页面恢复已经关闭的文件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function removeDocumentViewerState(): void {
+  try {
+    localStorage.removeItem(DOCUMENT_VIEWER_STATE_STORAGE_KEY)
+  } catch {
+    // 存储不可用时没有可恢复的旧状态，保持当前窗口正常关闭即可。
+  }
+}
+
+/**
+ * 将所有已完成的文件 Tab、阅读位置和模型保存到本地存储。
  * 未完成翻译或没有源/译文模型的 Tab 不写入，避免下次恢复出不完整任务。
  * @returns 无返回值。
  * @author zhenghq
@@ -885,10 +1401,38 @@ function persistActiveDocumentViewerState(): void {
     window.clearTimeout(documentViewerStatePersistTimer)
     documentViewerStatePersistTimer = null
   }
-  const tab = getActiveDocumentTab()
-  const snapshot = tab?.snapshot
-  if (!tab?.selection.path || !tab.selection.sha256 || !snapshot?.source || !snapshot.translation) return
-  saveDocumentTabScroll(tab)
+  const activeTab = getActiveDocumentTab()
+  if (activeTab) {
+    saveDocumentTabScroll(activeTab)
+    saveDocumentTabViewerState(activeTab)
+  }
+  const tabs = documentTabs.flatMap((tab) => {
+    const savedTab = createPersistedDocumentViewerTab(tab)
+    return savedTab ? [savedTab] : []
+  })
+  if (tabs.length === 0) {
+    removeDocumentViewerState()
+    return
+  }
+  const activeTabId = tabs.find((tab) => tab.id === activeTab?.id)?.id ?? tabs[0]!.id
+  writeDocumentViewerState({
+    version: DOCUMENT_VIEWER_STATE_VERSION,
+    activeTabId,
+    tabs
+  })
+}
+
+/**
+ * 将单个已完成 Tab 转换为可持久化状态。
+ * @param tab 待保存的工作台 Tab。
+ * @returns 具备完整双模型和文件指纹的持久化 Tab；不完整时返回 null。
+ * @author zhenghq
+ */
+function createPersistedDocumentViewerTab(tab: DocumentWorkspaceTab): DocumentViewerTabState | null {
+  const snapshot = tab.snapshot
+  if (!tab.selection.path || !tab.selection.sha256 || !snapshot?.source || !snapshot.translation) {
+    return null
+  }
   const file: DocumentViewerFileState = {
     path: tab.selection.path,
     name: tab.selection.name,
@@ -896,22 +1440,22 @@ function persistActiveDocumentViewerState(): void {
     format: tab.selection.format,
     sha256: tab.selection.sha256
   }
-  writeDocumentViewerState({
-    version: 2,
-    file,
+  return {
+    id: tab.id,
+    selection: file,
     sourceLang: tab.sourceLang,
     targetLang: tab.targetLang,
-    viewMode: documentViewMode,
-    zoom: documentZoom,
-    scroll: {
-      source: tab.scrollPositions.source,
-      translation: tab.scrollPositions.translation
-    },
+    viewMode: tab.viewMode,
+    zoom: tab.zoom,
+    scroll: { ...tab.scrollPositions },
+    scrollSyncEnabled: tab.scrollSyncEnabled,
+    pageNumber: tab.pageNumber,
+    ocrDisplayMode: tab.ocrDisplayMode,
     activePageId: findActiveDocumentPageId(tab),
-    activeBlockId: activeDocumentBlockId,
+    activeBlockId: tab.activeBlockId,
     source: snapshot.source,
     translation: snapshot.translation
-  })
+  }
 }
 
 /**
@@ -936,13 +1480,14 @@ function scheduleDocumentViewerStatePersist(): void {
 function findActiveDocumentPageId(tab: DocumentWorkspaceTab): string | null {
   const model = tab.snapshot?.source ?? tab.snapshot?.translation
   if (!model) return null
-  if (activeDocumentBlockId) {
-    const page = model.pages.find((candidate) => candidate.blocks.some((block) =>
-      block.blockId === activeDocumentBlockId
-    ))
-    if (page) return page.pageId
+  if (tab.activeBlockId) {
+    // 后台 Tab 不得读取当前可见 Tab 的全局高亮，否则保存时会串用其他文件的页面锚点。
+    const activePage = model.pages.find((page) =>
+      resolveDocumentBlockHighlight(model, page.pageId, tab.activeBlockId as string) !== null
+    )
+    if (activePage) return activePage.pageId
   }
-  return model.pages[Math.max(0, currentDocumentPageNumber - 1)]?.pageId ?? model.pages[0]?.pageId ?? null
+  return model.pages[Math.max(0, tab.pageNumber - 1)]?.pageId ?? model.pages[0]?.pageId ?? null
 }
 
 /**
@@ -992,6 +1537,8 @@ function syncActiveTabMirror(tab: DocumentWorkspaceTab | null): void {
   expectedJobId = tab?.expectedJobId ?? null
   latestSnapshot = tab?.snapshot ?? null
   ocrDisplayMode = tab?.ocrDisplayMode ?? 'translation'
+  documentViewMode = tab?.viewMode ?? readDocumentViewMode()
+  activeDocumentBlockId = tab?.activeBlockId ?? null
   documentStartInFlight = tab?.startInFlight ?? false
   pendingLanguageRetranslation = tab?.pendingLanguageRetranslation ?? false
   pendingOcrModeRestart = tab?.pendingOcrModeRestart ?? false
@@ -1017,6 +1564,8 @@ function refreshActiveTabMirror(tab: DocumentWorkspaceTab): void {
   expectedJobId = tab.expectedJobId
   latestSnapshot = tab.snapshot
   ocrDisplayMode = tab.ocrDisplayMode
+  documentViewMode = tab.viewMode
+  activeDocumentBlockId = tab.activeBlockId
   documentStartInFlight = tab.startInFlight
   pendingLanguageRetranslation = tab.pendingLanguageRetranslation
   pendingOcrModeRestart = tab.pendingOcrModeRestart
@@ -1141,6 +1690,12 @@ function routeDocumentSnapshot(snapshot: DocumentWorkspaceSnapshot, terminal: bo
   // OCR 模式切换期间旧任务的取消终态和迟到进度都必须丢弃，等待新模式重新建立任务身份。
   if (tab.pendingOcrModeRestart) return false
   if (!terminal && !canApplyDocumentTabProgressSnapshot(tab, snapshot)) return false
+  // 在首次有效运行进度到达时固定 ETA 起点；后续进度必须基于同一时间计算，
+  // 否则每次重算都会把已耗时清零，剩余时间会被严重低估。
+  const taskKey = `${snapshot.jobId}:${snapshot.generation}`
+  if (!terminal && !documentTaskStartedAt.has(taskKey)) {
+    documentTaskStartedAt.set(taskKey, Date.now())
+  }
   updateDocumentTabSnapshot(tab, snapshot)
   if (tab.id !== activeDocumentTabId) return true
   refreshActiveTabMirror(tab)
@@ -1225,6 +1780,37 @@ function saveDocumentTabScroll(tab: DocumentWorkspaceTab): void {
 }
 
 /**
+ * 将当前可见阅读控件状态保存到指定 Tab。
+ * @param tab 需要保存阅读状态的 Tab。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveDocumentTabViewerState(tab: DocumentWorkspaceTab): void {
+  tab.zoom = documentZoom
+  tab.viewMode = documentViewMode
+  tab.pageNumber = currentDocumentPageNumber
+  tab.scrollSyncEnabled = documentScrollSyncEnabled
+  tab.activeBlockId = activeDocumentBlockId
+}
+
+/**
+ * 将指定 Tab 的阅读控件状态恢复到当前可见页面。
+ * @param tab 即将激活的 Tab。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function restoreDocumentTabViewerState(tab: DocumentWorkspaceTab): void {
+  documentZoom = clampDocumentZoom(tab.zoom)
+  documentViewMode = tab.viewMode
+  activeDocumentBlockId = tab.activeBlockId
+  currentDocumentPageNumber = tab.pageNumber
+  documentScrollSyncEnabled = tab.scrollSyncEnabled
+  documentPageInput.value = String(currentDocumentPageNumber)
+  syncDocumentViewModeControls()
+  syncDocumentScrollSyncControl()
+}
+
+/**
  * 恢复指定 Tab 的双栏滚动位置。
  * @param tab 要恢复的 Tab。
  * @returns 无返回值。
@@ -1236,6 +1822,37 @@ function restoreDocumentTabScroll(tab: DocumentWorkspaceTab): void {
     sourceContent.scrollTop = tab.scrollPositions.source
     translationContent.scrollTop = tab.scrollPositions.translation
   })
+}
+
+/**
+ * 清理 Tab 切换或关闭后遗留的区块高亮、用户滚动意图和双栏联动方向。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetDocumentTabInteractionState(): void {
+  clearDocumentBlockHighlight()
+  const activeTab = getActiveDocumentTab()
+  if (activeTab) activeTab.activeBlockId = null
+  if (userScrollIntentTimer !== null) {
+    window.clearTimeout(userScrollIntentTimer)
+    userScrollIntentTimer = null
+  }
+  userScrollSide = null
+  documentScrollSyncedSide = null
+}
+
+/**
+ * 释放滚动容器及其内层预览宿主登记的 PDF.js 文档、渲染任务和观察器。
+ * PDF 渲染清理函数登记在内层宿主，切换 Tab 时必须同时检查外层容器与现有子宿主。
+ * @param container 原文或译文的滚动容器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function cleanupPdfPreview(container: HTMLElement): void {
+  pdfPreviewCleanups.get(container)?.()
+  for (const previewHost of container.querySelectorAll<HTMLElement>('.document-preview-host')) {
+    pdfPreviewCleanups.get(previewHost)?.()
+  }
 }
 
 /**
@@ -1254,15 +1871,19 @@ function clearActiveTabPreview(): void {
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
   renderedSourcePreviewIdentity = ''
+  renderedSourcePreviewTabId = null
+  renderedSourcePreviewSha256 = ''
   renderedSourceWarningSignature = ''
   renderedTranslationSignature = ''
+  renderedTranslationTabId = null
+  renderedTranslationSha256 = ''
   renderedTranslationPreviewKind = null
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
   revokeAssetUrls()
   releaseHtmlPreviewUrl()
-  pdfPreviewCleanups.get(sourceContent)?.()
-  pdfPreviewCleanups.get(translationContent)?.()
+  cleanupPdfPreview(sourceContent)
+  cleanupPdfPreview(translationContent)
   sourceContent.replaceChildren()
   translationContent.replaceChildren()
   sourceContent.dataset.previewKind = ''
@@ -1290,10 +1911,12 @@ function clearActiveTabTranslationPreview(): void {
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
   renderedTranslationSignature = ''
+  renderedTranslationTabId = null
+  renderedTranslationSha256 = ''
   renderedTranslationPreviewKind = null
   hasRenderedTranslation = false
   renderedTranslationWarningSignature = ''
-  pdfPreviewCleanups.get(translationContent)?.()
+  cleanupPdfPreview(translationContent)
   translationContent.replaceChildren()
   translationContent.dataset.previewKind = ''
   translationPageCount.textContent = ''
@@ -1307,6 +1930,7 @@ function clearActiveTabTranslationPreview(): void {
  */
 function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
   syncActiveTabMirror(tab)
+  restoreDocumentTabViewerState(tab)
   uploadPanel.hidden = true
   workbench.hidden = false
   workbenchName.textContent = tab.selection.name
@@ -1318,8 +1942,8 @@ function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
   syncOcrDisplayModeControls()
   sourceOcrMode.hidden = !(tab.selection.format === 'pdf' || tab.selection.format === 'image' || Boolean(tab.snapshot?.source && hasOcrSourceText(tab.snapshot.source)))
   if (tab.snapshot) {
-    renderSnapshot(tab.snapshot)
-    renderTaskState(tab.snapshot)
+    renderSnapshot(tab.snapshot, tab)
+    renderTaskState(tab.snapshot, tab)
   } else {
     progressStage.textContent = tab.status === 'starting'
       ? t('document.progress.preparing')
@@ -1345,14 +1969,22 @@ function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
 async function activateDocumentTab(tabId: string): Promise<void> {
   if (tabId === activeDocumentTabId) return
   const currentTab = getActiveDocumentTab()
-  if (currentTab) saveDocumentTabScroll(currentTab)
+  if (currentTab) {
+    saveDocumentTabScroll(currentTab)
+    saveDocumentTabViewerState(currentTab)
+  }
   const tab = documentTabs.find((candidate) => candidate.id === tabId)
   if (!tab) return
+  // 阅读联动状态属于上一 Tab，切换后必须清空，避免旧栏位继续驱动新文档滚动。
+  resetDocumentTabInteractionState()
   clearActiveTabPreview()
   activeDocumentTabId = tab.id
   syncActiveTabMirror(tab)
+  restoreDocumentTabViewerState(tab)
   renderDocumentTabs()
   renderActiveDocumentTab(tab)
+  if (tab.activeBlockId) highlightDocumentBlock(tab.activeBlockId)
+  else clearDocumentBlockHighlight()
 }
 
 /**
@@ -1369,7 +2001,12 @@ async function createDocumentTab(
   if (result.status !== 'selected') return null
   const existing = findDocumentTabByPath(result.path)
   if (existing) {
+    const selectionChanged = existing.selection.sha256 !== result.sha256 ||
+      existing.selection.size !== result.size ||
+      existing.selection.format !== result.format
     // 同一路径内容变化时必须使用新的哈希与模型，不能继续复用旧文件的任务快照。
+    const previousJobId = existing.activeJobId ?? existing.expectedJobId
+    const previousGeneration = existing.generation
     existing.selection = {
       path: result.path,
       name: result.fileName,
@@ -1378,11 +2015,41 @@ async function createDocumentTab(
       sha256: result.sha256,
       error: null
     }
+    if (selectionChanged) {
+      // 先推进代际，再异步取消旧任务；旧启动请求和旧进度事件都不能写入新文件身份。
+      existing.generation = nextGeneration()
+      existing.snapshot = null
+      existing.activeJobId = null
+      existing.expectedJobId = null
+      existing.startInFlight = false
+      existing.status = 'idle'
+      existing.scrollPositions = { source: 0, translation: 0 }
+      existing.zoom = 1
+      existing.viewMode = readDocumentViewMode()
+      existing.pageNumber = 1
+      existing.scrollSyncEnabled = true
+      existing.activeBlockId = null
+      existing.pendingLanguageRetranslation = false
+      existing.pendingOcrModeRestart = false
+      existing.languageRevision += 1
+      if (existing.id === activeDocumentTabId) {
+        clearActiveTabPreview()
+        refreshActiveTabMirror(existing)
+        renderActiveDocumentTab(existing)
+      }
+      if (previousJobId) {
+        void cancelDocumentJob(previousJobId, previousGeneration)
+          .then(() => releaseDocumentJob(previousJobId))
+      }
+    }
     if (options.activate !== false) await activateDocumentTab(existing.id)
+    else renderDocumentTabs()
+    if (selectionChanged && options.start !== false) await startDocumentTabTranslation(existing)
     return existing
   }
   const tab: DocumentWorkspaceTab = {
     id: `document-tab-${nextDocumentTabSequence++}`,
+    sourceKind: 'task',
     selection: {
       path: result.path,
       name: result.fileName,
@@ -1398,12 +2065,18 @@ async function createDocumentTab(
     startInFlight: false,
     status: 'idle',
     scrollPositions: { source: 0, translation: 0 },
+    zoom: 1,
+    viewMode: documentViewMode,
+    pageNumber: 1,
+    scrollSyncEnabled: true,
     sourceLang: sourceLanguageSelect.value || 'auto',
     targetLang: targetLanguageSelect.value || 'auto',
     ocrDisplayMode,
+    activeBlockId: null,
     pendingLanguageRetranslation: false,
     pendingOcrModeRestart: false,
-    languageRevision: 0
+    languageRevision: 0,
+    sourceAuthorized: true
   }
   documentTabs.push(tab)
   if (tab.selection.path) {
@@ -1433,13 +2106,13 @@ async function closeDocumentTab(tabId: string): Promise<void> {
   const wasActive = tab.id === activeDocumentTabId
   if (wasActive) {
     saveDocumentTabScroll(tab)
-    persistActiveDocumentViewerState()
   }
   documentTabs = documentTabs.filter((candidate) => candidate.id !== tab.id)
   tab.status = 'cancelled'
   if (wasActive) {
     activeDocumentTabId = null
     const nextTab = documentTabs[Math.min(index, documentTabs.length - 1)]
+    resetDocumentTabInteractionState()
     clearActiveTabPreview()
     if (nextTab) {
       activeDocumentTabId = nextTab.id
@@ -1453,6 +2126,11 @@ async function closeDocumentTab(tabId: string): Promise<void> {
     }
   }
   renderDocumentTabs()
+  // 删除 Tab 后再写入剩余集合；删除前持久化会把刚关闭的文件重新带回下次恢复。
+  persistActiveDocumentViewerState()
+  // 历史与恢复快照是只读回放，没有可取消或释放的活动任务，不能误伤同标识的任务。
+  if (isRestoredDocumentTab(tab)) return
+  if (isReadOnlyDocumentTab(tab)) return
   const jobId = tab.activeJobId ?? tab.expectedJobId
   if (jobId) {
     await cancelDocumentJob(jobId, tab.generation)
@@ -1495,14 +2173,21 @@ async function addDocumentSelectionResults(
       continue
     }
     selectedCount += 1
-    const existed = findDocumentTabByPath(result.path) !== null
+    const existingTab = findDocumentTabByPath(result.path)
+    const existed = existingTab !== null
+    const previousSelection = existingTab?.selection
     const tab = await createDocumentTab(result, { activate: false, start: false })
     if (!tab) {
       rejectedCount += 1
       continue
     }
+    const selectionChanged = Boolean(previousSelection && (
+      previousSelection.sha256 !== tab.selection.sha256 ||
+      previousSelection.size !== tab.selection.size ||
+      previousSelection.format !== tab.selection.format
+    ))
     if (existed) lastActivatedTab = tab
-    else newTabs.push(tab)
+    if (!existed || selectionChanged) newTabs.push(tab)
   }
   const activeTab = newTabs.at(-1) ?? lastActivatedTab
   if (activeTab) await activateDocumentTab(activeTab.id)
@@ -1635,12 +2320,20 @@ function releaseHtmlPreviewUrl(): void {
 
 /**
  * 读取图片资源并缓存 Blob URL；同一资源在单次任务内只读取一次。
- * @param assetId 受控资源标识。
+ * @param block 待加载的图片区块。
+ * @param tab 资源所属的文档 Tab。
  * @returns 可用于 img.src 的 Blob URL；资源不可用时返回 null。
  * @author zhenghq
  */
-async function resolveAssetUrl(jobId: string, assetId: string): Promise<string | null> {
-  const cacheKey = `${jobId}:${assetId}`
+async function resolveAssetUrl(
+  jobId: string,
+  block: DocumentImageBlock,
+  tab: DocumentWorkspaceTab
+): Promise<string | null> {
+  const assetId = block.assetId
+  // 恢复态共用固定 jobId；缓存键必须同时包含 Tab 与源文件 SHA，避免多 Tab 串图。
+  const sourceSha256 = tab.selection.sha256
+  const cacheKey = `${tab.id}:${sourceSha256}:${assetId}`
   const cached = assetUrls.get(cacheKey)
   if (cached) return cached
   const pending = assetRequests.get(cacheKey)
@@ -1649,7 +2342,30 @@ async function resolveAssetUrl(jobId: string, assetId: string): Promise<string |
   const request = (async (): Promise<string | null> => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const asset: DocumentAssetResult = await window.api.getDocumentAsset(jobId, assetId)
+        const approvedSource = isReadOnlyDocumentTab(tab)
+          ? approvedDocumentSourceRequest(tab)
+          : null
+        const asset: DocumentAssetResult = isReadOnlyDocumentTab(tab)
+          ? approvedSource
+            ? await (async (): Promise<DocumentAssetResult> => {
+                const metadata = findDocumentAssetMetadata(tab, assetId)
+                const pdfLocation = findDocumentPdfImageLocation(tab, assetId)
+                return window.api.getApprovedDocumentAsset({
+                  ...approvedSource,
+                  assetId,
+                  assetSha256: metadata?.sha256 ?? '',
+                  assetByteLength: metadata?.byteLength ?? 0,
+                  ...(metadata?.storageKey ? { storageKey: metadata.storageKey } : {}),
+                  ...(metadata?.mimeType ? { mimeType: metadata.mimeType } : {}),
+                  ...(pdfLocation
+                    ? { pageIndex: pdfLocation.pageIndex, bbox: pdfLocation.bbox }
+                    : block.bbox && approvedSource.format === 'pdf'
+                      ? { bbox: block.bbox }
+                      : {})
+                })
+              })()
+            : { ok: false, code: 'asset-not-found' }
+          : await window.api.getDocumentAsset(jobId, assetId)
         if (requestEpoch !== assetUrlEpoch) return null
         if (!asset.ok || !asset.bytes) return null
         const bytes = new Uint8Array(asset.bytes)
@@ -1683,14 +2399,22 @@ async function resolveAssetUrl(jobId: string, assetId: string): Promise<string |
  * 在图片区块内追加独立占位提示，避免资源异步失败时覆盖已经挂载的 OCR 文字层。
  * @param wrapper 图片区块容器。
  * @param block 图片区块。
+ * @param state 占位状态；pending 表示等待 OCR，error 表示原图不可用。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderDocumentImagePlaceholder(wrapper: HTMLElement, block: DocumentImageBlock): void {
+function renderDocumentImagePlaceholder(
+  wrapper: HTMLElement,
+  block: DocumentImageBlock,
+  state: 'pending' | 'error' = 'pending'
+): void {
   wrapper.querySelector<HTMLElement>(':scope > .document-image-placeholder')?.remove()
   const placeholder = document.createElement('span')
   placeholder.className = 'document-image-placeholder'
-  placeholder.textContent = block.alt || t('document.ocr.pendingRender')
+  placeholder.dataset.state = state
+  placeholder.textContent = state === 'error'
+    ? t('document.imageUnavailable')
+    : block.alt || t('document.ocr.pendingRender')
   wrapper.append(placeholder)
 }
 
@@ -1699,6 +2423,8 @@ function renderDocumentImagePlaceholder(wrapper: HTMLElement, block: DocumentIma
  * @param wrapper 图片区块容器。
  * @param image 待加载的图片元素。
  * @param block 图片区块。
+ * @param jobId 图片所属任务标识。
+ * @param tab 图片所属文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -1706,7 +2432,8 @@ function loadDocumentImageAsset(
   wrapper: HTMLElement,
   image: HTMLImageElement,
   block: DocumentImageBlock,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): void {
   // 异步资源返回时旧页面可能已被新快照替换；只有仍挂载的当前图片才允许更新状态。
   const isCurrentImage = (): boolean =>
@@ -1714,13 +2441,13 @@ function loadDocumentImageAsset(
     image.parentElement === wrapper &&
     wrapper.querySelector(':scope > img.document-page-image') === image
   wrapper.dataset.assetState = 'loading'
-  void resolveAssetUrl(jobId, block.assetId).then((url) => {
+  void resolveAssetUrl(jobId, block, tab).then((url) => {
     if (!url) {
       if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'error'
-      wrapper.dataset.pending = 'true'
+      delete wrapper.dataset.pending
       image.remove()
-      renderDocumentImagePlaceholder(wrapper, block)
+      renderDocumentImagePlaceholder(wrapper, block, 'error')
       scheduleTranslationPageLayout()
       return
     }
@@ -1728,14 +2455,16 @@ function loadDocumentImageAsset(
       if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'loaded'
       delete wrapper.dataset.pending
+      // 图片加载完成后按自然尺寸计算居中内容框。
+      applyTranslationImageContentGeometry(wrapper, image, block)
       scheduleTranslationPageLayout()
     }, { once: true })
     image.addEventListener('error', () => {
       if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'error'
-      wrapper.dataset.pending = 'true'
+      delete wrapper.dataset.pending
       image.remove()
-      renderDocumentImagePlaceholder(wrapper, block)
+      renderDocumentImagePlaceholder(wrapper, block, 'error')
       scheduleTranslationPageLayout()
     }, { once: true })
     image.src = url
@@ -1984,7 +2713,7 @@ function setCssPixelPropertyIfChanged(
  */
 function setInlinePixelPropertyIfChanged(
   element: HTMLElement,
-  property: 'top' | 'height',
+  property: 'top' | 'height' | 'minHeight',
   value: number
 ): boolean {
   if (!Number.isFinite(value)) return false
@@ -2009,16 +2738,25 @@ function normalizeOcrTranslationLayout(page: HTMLElement): void {
     const imageBlock = layer.closest<HTMLElement>('.document-image-block')
     if (!imageBlock) continue
     const imageHeight = Math.max(1, Number.parseFloat(
+      imageBlock.style.getPropertyValue('--document-image-content-height')
+    ) || 1)
+    const sourceImageHeight = Math.max(1, Number.parseFloat(
       imageBlock.style.getPropertyValue('--document-image-height')
     ) || 1)
+    const contentScale = imageHeight / sourceImageHeight
     const layerRect = layer.getBoundingClientRect()
     const placedRegions: DocumentOcrFlowRect[] = []
     let layerBottom = imageHeight * scale
     for (const region of layer.querySelectorAll<HTMLElement>(':scope > .document-ocr-region')) {
       const sourceTop = Number(region.dataset.sourceTop)
+      const sourceHeight = Number(region.dataset.sourceHeight)
       const sourceGap = Number(region.dataset.sourceGapBefore)
       const sourceTopPx = (Number.isFinite(sourceTop) ? Math.max(0, sourceTop) : 0) * imageHeight * scale
-      const gapPx = (Number.isFinite(sourceGap) ? Math.max(0, sourceGap) : 0) * scale
+      const sourceHeightPx = (Number.isFinite(sourceHeight) ? Math.max(0, sourceHeight) : 0) *
+        imageHeight * scale
+      const gapPx = (Number.isFinite(sourceGap) ? Math.max(0, sourceGap) : 0) *
+        contentScale * scale
+      setInlinePixelPropertyIfChanged(region, 'minHeight', sourceHeightPx)
       const regionRect = region.getBoundingClientRect()
       const left = regionRect.left - layerRect.left
       const right = regionRect.right - layerRect.left
@@ -2259,7 +2997,43 @@ function applyTranslationImageGeometry(
   element.style.setProperty('--document-image-left', `${left}px`)
   element.style.setProperty('--document-image-width', `${Math.max(1, right - left)}px`)
   element.style.setProperty('--document-image-height', `${Math.max(1, block.bbox.height)}px`)
+  element.style.setProperty('--document-image-content-left', '0px')
+  element.style.setProperty('--document-image-content-top', '0px')
+  element.style.setProperty('--document-image-content-width', `${Math.max(1, right - left)}px`)
+  element.style.setProperty('--document-image-content-height', `${Math.max(1, block.bbox.height)}px`)
   element.dataset.geometry = 'source'
+}
+
+/**
+ * 按图片自然宽高比计算 bbox 内的居中内容框，并写入底图和 OCR 层共享的 CSS 变量。
+ * @param element 译文图片区块。
+ * @param image 已加载的图片元素。
+ * @param block 图片区块。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function applyTranslationImageContentGeometry(
+  element: HTMLElement,
+  image: HTMLImageElement,
+  block: DocumentImageBlock
+): void {
+  if (!block.bbox || element.dataset.geometry !== 'source') return
+  const targetWidth = Math.max(1, Number.parseFloat(
+    element.style.getPropertyValue('--document-image-width')
+  ) || block.bbox.width)
+  const targetHeight = Math.max(1, Number.parseFloat(
+    element.style.getPropertyValue('--document-image-height')
+  ) || block.bbox.height)
+  const contentBox = resolveDocumentImageContentBox(
+    image.naturalWidth,
+    image.naturalHeight,
+    targetWidth,
+    targetHeight
+  )
+  element.style.setProperty('--document-image-content-left', `${contentBox.x}px`)
+  element.style.setProperty('--document-image-content-top', `${contentBox.y}px`)
+  element.style.setProperty('--document-image-content-width', `${contentBox.width}px`)
+  element.style.setProperty('--document-image-content-height', `${contentBox.height}px`)
 }
 
 /**
@@ -2477,21 +3251,29 @@ function renderOcrRegion(
   element.className = 'document-ocr-region'
   element.dataset.status = region.status
   element.dataset.regionId = region.regionId
-  // 译文和原文遮罩共用同一个 OCR 安全框；长译文只向下换行，不能横向侵入相邻插图。
+  // 纵向沿用 OCR 安全框；左对齐译文可扩展到同行右侧区域前，避免中文在窄框内逐字换行。
   const box = resolveDocumentOcrOverlayBox(region.bbox)
+  const horizontalBounds = resolveDocumentOcrTranslationHorizontalBounds(
+    region,
+    imageBlock.ocrRegions ?? []
+  )
   const imageHeight = Math.max(1, imageBlock.bbox?.height ?? 1)
   const imageWidth = Math.max(1, imageBlock.bbox?.width ?? 1)
   const fontSize = resolveOcrRegionFontSize(region, imageHeight)
   const lineHeight = resolveOcrRegionLineHeight(fontSize)
   const padding = resolveOcrRegionPadding(imageWidth, imageHeight, region)
-  element.style.left = `${box.x * 100}%`
-  element.style.width = `${box.width * 100}%`
+  element.style.left = `${horizontalBounds.x * 100}%`
+  element.style.width = `${horizontalBounds.width * 100}%`
   element.dataset.sourceTop = String(box.y)
+  element.dataset.sourceHeight = String(box.height)
   const sourceGapBefore = resolveOcrRegionGapBefore(region, previousRegion, imageHeight)
   element.dataset.sourceGapBefore = String(sourceGapBefore)
   // CSS 变量使用原图像素坐标，再由页面缩放比例统一换算到预览尺寸。
   element.style.setProperty('--document-ocr-source-top', `${box.y * imageHeight}px`)
   element.style.setProperty('--document-ocr-source-height', `${box.height * imageHeight}px`)
+  // 白底只覆盖原识别框；横向扩展仅用于给译文提供排版空间，不能让遮罩覆盖右侧正文。
+  const sourceWidthRatio = resolveDocumentOcrSourceWidthRatio(box, horizontalBounds)
+  element.style.setProperty('--document-ocr-source-width', `${sourceWidthRatio * 100}%`)
   // 独立图片会随预览栏缩放，百分比坐标可与底图保持同一纵向基准。
   element.style.setProperty('--document-ocr-source-top-percent', `${box.y * 100}%`)
   element.style.setProperty('--document-ocr-source-height-percent', `${box.height * 100}%`)
@@ -2587,16 +3369,18 @@ function createOcrTextLayer(block: DocumentImageBlock): HTMLElement | null {
  * @param wrapper 图片区块容器。
  * @param block 图片区块。
  * @param side 当前渲染侧。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
 function appendImageOcrLayers(
   wrapper: HTMLElement,
   block: DocumentImageBlock,
-  side: DocumentRenderSide
+  side: DocumentRenderSide,
+  tab: DocumentWorkspaceTab
 ): void {
   if (side === 'source') {
-    if (ocrDisplayMode !== 'ocr-text') return
+    if (tab.ocrDisplayMode !== 'ocr-text') return
     const textLayer = createOcrTextLayer(block)
     if (!textLayer) return
     wrapper.dataset.ocrText = 'true'
@@ -2610,7 +3394,7 @@ function appendImageOcrLayers(
     wrapper.dataset.ocrText = 'true'
     wrapper.append(textLayer)
   }
-  if (ocrDisplayMode === 'ocr-text') return
+  if (tab.ocrDisplayMode === 'ocr-text') return
   const translationLayer = createOcrTranslationLayer(block)
   if (!translationLayer) return
   wrapper.dataset.ocrTranslation = 'true'
@@ -2795,10 +3579,27 @@ function createPdfOcrTextLayer(page: DocumentPage): HTMLElement | null {
 }
 
 /**
+ * 解析图片当前是否仍处于运行期 OCR 占位状态。
+ * 只读恢复/历史快照中的 renderPending 已过时，必须忽略并立即尝试受控资源加载。
+ * @param block 图片区块模型。
+ * @param tab 图片所属的文档 Tab。
+ * @returns 仅活动任务确实等待图片生成时返回 true。
+ * @author zhenghq
+ */
+function resolveDocumentImageRenderPending(
+  block: DocumentImageBlock,
+  tab: DocumentWorkspaceTab
+): boolean {
+  return block.renderPending === true && !isReadOnlyDocumentTab(tab)
+}
+
+/**
  * 创建图片区块；资源加载成功前使用占位区域，加载完成后填入图片。
  * @param block 图片区块。
  * @param side 当前渲染侧。
  * @param pageWidth 原始页面宽度。
+ * @param jobId 图片所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 图片区块元素。
  * @author zhenghq
  */
@@ -2806,18 +3607,16 @@ function renderImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  jobId = ''
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
   wrapper.dataset.blockId = block.blockId
   applyBlockGeometry(wrapper, block)
   if (side === 'translation') applyTranslationImageGeometry(wrapper, block, pageWidth)
-  if (jobId === RESTORED_DOCUMENT_JOB_ID) {
-    // 恢复态没有可重新授权读取的旧任务资源，图片只能显示可读占位。
-    wrapper.dataset.pending = 'true'
-    renderDocumentImagePlaceholder(wrapper, block)
-  } else if (block.renderPending) {
+  const renderPending = resolveDocumentImageRenderPending(block, tab)
+  if (renderPending) {
     wrapper.dataset.pending = 'true'
     renderDocumentImagePlaceholder(wrapper, block)
   } else {
@@ -2826,9 +3625,9 @@ function renderImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block, jobId)
+    loadDocumentImageAsset(wrapper, image, block, jobId, tab)
   }
-  appendImageOcrLayers(wrapper, block, side)
+  appendImageOcrLayers(wrapper, block, side, tab)
   return wrapper
 }
 
@@ -2837,6 +3636,8 @@ function renderImageBlock(
  * @param block 表格区块。
  * @param side 当前渲染侧。
  * @param pageWidth 原始页面宽度，用于约束表格横向范围。
+ * @param jobId 表格所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 表格区块元素。
  * @author zhenghq
  */
@@ -2844,7 +3645,8 @@ function renderTableBlock(
   block: DocumentTableBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  jobId = ''
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-table-block'
@@ -2879,7 +3681,7 @@ function renderTableBlock(
         tableCell.scope = 'col'
         tableCell.colSpan = Math.max(1, cell.colSpan)
         tableCell.rowSpan = Math.max(1, cell.rowSpan)
-        for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId))
+        for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId, tab))
         tableRow.append(tableCell)
       }
       head.append(tableRow)
@@ -2894,7 +3696,7 @@ function renderTableBlock(
       const tableCell = document.createElement('td')
       tableCell.colSpan = Math.max(1, cell.colSpan)
       tableCell.rowSpan = Math.max(1, cell.rowSpan)
-      for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId))
+      for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId, tab))
       tableRow.append(tableCell)
     }
     body.append(tableRow)
@@ -2908,18 +3710,21 @@ function renderTableBlock(
  * 渲染表格单元格内容；译文单元格是独立流式区域，不能沿用 PDF 页面的绝对坐标。
  * @param block 单元格子区块。
  * @param side 当前渲染侧。
+ * @param jobId 单元格内容所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 单元格子区块元素。
  * @author zhenghq
  */
 function renderTableCellBlock(
   block: DocumentBlock,
   side: DocumentRenderSide,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   const pageWidth = 1
   const element = block.kind === 'image'
-    ? renderTableCellImageBlock(block, side, jobId)
-    : renderBlock(block, side, pageWidth, undefined, jobId)
+    ? renderTableCellImageBlock(block, side, jobId, tab)
+    : renderBlock(block, side, pageWidth, undefined, jobId, tab)
   // 单元格内子区块的 bbox 是整页坐标，标记后由 CSS 清除页面级偏移并限制在单元格内。
   element.dataset.tableCellContent = 'true'
   return element
@@ -2929,13 +3734,16 @@ function renderTableCellBlock(
  * 创建表格单元格图片；图片进入单元格普通流并按列宽等比缩放。
  * @param block 表格单元格内的图片区块。
  * @param side 当前渲染侧。
+ * @param jobId 图片所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 不继承页面绝对坐标的图片区块元素。
  * @author zhenghq
  */
 function renderTableCellImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
-  jobId = ''
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -2943,10 +3751,8 @@ function renderTableCellImageBlock(
   wrapper.dataset.tableCellImage = 'true'
   wrapper.dataset.tableCellContent = 'true'
   if (side === 'translation') wrapper.dataset.renderSide = side
-  if (jobId === RESTORED_DOCUMENT_JOB_ID) {
-    wrapper.dataset.pending = 'true'
-    renderDocumentImagePlaceholder(wrapper, block)
-  } else if (block.renderPending) {
+  const renderPending = resolveDocumentImageRenderPending(block, tab)
+  if (renderPending) {
     wrapper.dataset.pending = 'true'
     renderDocumentImagePlaceholder(wrapper, block)
   } else {
@@ -2955,9 +3761,9 @@ function renderTableCellImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block, jobId)
+    loadDocumentImageAsset(wrapper, image, block, jobId, tab)
   }
-  appendImageOcrLayers(wrapper, block, side)
+  appendImageOcrLayers(wrapper, block, side, tab)
   return wrapper
 }
 
@@ -2976,7 +3782,7 @@ function normalizeTableColumnWidths(
   const total = validWidths.reduce((sum, value) => sum + value, 0)
   if (total <= 0) return Array.from({ length: columnWidths.length }, () => 1)
   if (!tableWidth || !Number.isFinite(tableWidth) || tableWidth <= 0) return validWidths
-  return validWidths.map((value) => value / total * tableWidth)
+  return resolveTranslationTableColumnWidths(validWidths, tableWidth)
 }
 
 /**
@@ -3026,6 +3832,8 @@ function renderFormulaBlock(block: Extract<DocumentBlock, { kind: 'formula' }>):
  * @param side 当前渲染侧。
  * @param pageWidth 原始页面宽度。
  * @param contentArea 原文正文内容区。
+ * @param jobId 区块所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 区块元素。
  * @author zhenghq
  */
@@ -3033,13 +3841,14 @@ function renderBlock(
   block: DocumentBlock,
   side: DocumentRenderSide,
   pageWidth: number,
-  contentArea?: DocumentContentArea,
-  jobId = ''
+  contentArea: DocumentContentArea | undefined,
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   switch (block.kind) {
     case 'text': return renderTextBlock(block, side, pageWidth, contentArea)
-    case 'image': return renderImageBlock(block, side, pageWidth, jobId)
-    case 'table': return renderTableBlock(block, side, pageWidth, jobId)
+    case 'image': return renderImageBlock(block, side, pageWidth, jobId, tab)
+    case 'table': return renderTableBlock(block, side, pageWidth, jobId, tab)
     case 'formula': return renderFormulaBlock(block)
     case 'shape': return renderShapeBlock(block)
     case 'break': {
@@ -3055,14 +3864,18 @@ function renderBlock(
  * 创建单页容器并渲染全部区块。
  * @param page 文档页面。
  * @param side 当前渲染侧。
+ * @param translationInitialScale 译文页初始缩放比例。
+ * @param jobId 页面所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 页面元素。
  * @author zhenghq
  */
 function renderPage(
   page: DocumentPage,
   side: DocumentRenderSide,
-  translationInitialScale = 1,
-  jobId = ''
+  translationInitialScale: number,
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): HTMLElement {
   const element = document.createElement('article')
   element.className = 'document-page'
@@ -3111,7 +3924,7 @@ function renderPage(
     previousBottom = minY
   }
   for (const block of page.blocks) {
-    const rendered = renderBlock(block, side, page.width, page.contentArea, jobId)
+    const rendered = renderBlock(block, side, page.width, page.contentArea, jobId, tab)
     const occupiesFlow = occupiesDocumentTranslationFlow(block)
     rendered.dataset.flowOccupiesSpace = String(occupiesFlow)
     const continuesFlowGroup = element.dataset.layout === 'translation-flow' &&
@@ -3290,11 +4103,16 @@ function createTranslationWatermarkPattern(): SVGSVGElement {
  * 在译文容器内创建覆盖全部内容的水印层，屏幕预览与打印 PDF 共用同一 DOM。
  * @param container 译文预览宿主；原文侧传入时不创建水印。
  * @param side 当前渲染侧。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function appendTranslationWatermark(container: HTMLElement, side: DocumentRenderSide): void {
-  if (side !== 'translation' || ocrDisplayMode === 'ocr-text') return
+function appendTranslationWatermark(
+  container: HTMLElement,
+  side: DocumentRenderSide,
+  tab: DocumentWorkspaceTab
+): void {
+  if (side !== 'translation' || tab.ocrDisplayMode === 'ocr-text') return
   watermarkResizeObserver?.disconnect()
   watermarkResizeObserver = null
   const watermark = document.createElement('div')
@@ -3339,19 +4157,35 @@ function resolvePreviewKind(model: DocumentModel, side: DocumentRenderSide): Doc
  * 异步请求通过文件指纹令牌隔离，旧请求不能覆盖新文档；切换文件和窗口关闭时释放 Blob URL。
  * @param container 源文滚动容器。
  * @param model 当前 HTML 文档模型。
+ * @param jobId 当前任务标识；历史/恢复态仍用于请求身份日志。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderHtmlSourcePreview(container: HTMLElement, model: DocumentModel, jobId: string): void {
+function renderHtmlSourcePreview(
+  container: HTMLElement,
+  model: DocumentModel,
+  jobId: string,
+  tab: DocumentWorkspaceTab
+): void {
   const requestIdentity = `html:${model.source.sha256}`
-  htmlPreviewRequestIdentity = requestIdentity
   releaseHtmlPreviewUrl()
+  // 释放旧 Blob 时会清空请求身份，新身份必须在释放之后登记。
+  htmlPreviewRequestIdentity = requestIdentity
   const webview = document.createElement('webview')
   webview.className = 'document-html-preview'
   webview.setAttribute('partition', 'document-html-preview')
   webview.setAttribute('aria-label', t('document.source'))
   container.append(webview)
-  void window.api.getDocumentSource(jobId).then((source) => {
+  const approvedSource = isReadOnlyDocumentTab(tab)
+    ? approvedDocumentSourceRequest(tab)
+    : null
+  const sourceRequest: Promise<DocumentSourceResult> = isReadOnlyDocumentTab(tab)
+    ? approvedSource
+      ? window.api.getApprovedDocumentSource(approvedSource)
+      : Promise.resolve<DocumentSourceResult>({ ok: false, code: 'source-not-approved' })
+    : window.api.getDocumentSource(jobId)
+  void sourceRequest.then((source) => {
     if (htmlPreviewRequestIdentity !== requestIdentity || !webview.isConnected) return
     if (!source.ok || !source.bytes) {
       webview.remove()
@@ -3390,10 +4224,17 @@ function renderTextRuns(block: DocumentTextBlock): DocumentFragment {
  * 按 Markdown 语义创建单个区块元素。
  * @param block 文档区块。
  * @param side 当前渲染侧。
+ * @param jobId 区块所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 语义化区块元素。
  * @author zhenghq
  */
-function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide, jobId: string): HTMLElement {
+function renderMarkdownBlock(
+  block: DocumentBlock,
+  side: DocumentRenderSide,
+  jobId: string,
+  tab: DocumentWorkspaceTab
+): HTMLElement {
   if (block.kind === 'text') {
     if (block.role === 'code') {
       const pre = document.createElement('pre')
@@ -3425,7 +4266,7 @@ function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide, job
       return list
     }
   }
-  return renderBlock(block, side, 1, undefined, jobId)
+  return renderBlock(block, side, 1, undefined, jobId, tab)
 }
 
 /**
@@ -3433,6 +4274,8 @@ function renderMarkdownBlock(block: DocumentBlock, side: DocumentRenderSide, job
  * @param container 目标滚动容器。
  * @param model 当前文档模型。
  * @param side 当前渲染侧。
+ * @param jobId 文档所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -3440,12 +4283,13 @@ function renderMarkdownDocument(
   container: HTMLElement,
   model: DocumentModel,
   side: DocumentRenderSide,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): void {
   const article = document.createElement('article')
   article.className = 'document-markdown-preview'
   for (const page of model.pages) {
-    for (const block of page.blocks) article.append(renderMarkdownBlock(block, side, jobId))
+    for (const block of page.blocks) article.append(renderMarkdownBlock(block, side, jobId, tab))
   }
   container.append(article)
 }
@@ -3455,6 +4299,8 @@ function renderMarkdownDocument(
  * @param container 目标滚动容器。
  * @param model 当前文档模型。
  * @param side 当前渲染侧。
+ * @param jobId 文档所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -3462,12 +4308,15 @@ function renderTableDocument(
   container: HTMLElement,
   model: DocumentModel,
   side: DocumentRenderSide,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): void {
   const article = document.createElement('article')
   article.className = 'document-table-preview'
   for (const page of model.pages) {
-    for (const block of page.blocks) article.append(renderBlock(block, side, page.width, undefined, jobId))
+    for (const block of page.blocks) {
+      article.append(renderBlock(block, side, page.width, undefined, jobId, tab))
+    }
   }
   container.append(article)
 }
@@ -3477,6 +4326,8 @@ function renderTableDocument(
  * @param container 目标滚动容器。
  * @param model 当前文档模型。
  * @param side 当前渲染侧。
+ * @param jobId 文档所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -3484,7 +4335,8 @@ function renderSubtitleDocument(
   container: HTMLElement,
   model: DocumentModel,
   side: DocumentRenderSide,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): void {
   const article = document.createElement('article')
   article.className = 'document-subtitle-preview'
@@ -3498,7 +4350,7 @@ function renderSubtitleDocument(
         timing.textContent = block.timing
         item.append(timing)
       }
-      item.append(renderBlock(block, side, page.width, undefined, jobId))
+      item.append(renderBlock(block, side, page.width, undefined, jobId, tab))
       article.append(item)
     }
   }
@@ -3510,6 +4362,8 @@ function renderSubtitleDocument(
  * @param container 目标滚动容器。
  * @param model 当前文档模型。
  * @param side 当前渲染侧。
+ * @param jobId 文档所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -3517,7 +4371,8 @@ function renderFlowDocument(
   container: HTMLElement,
   model: DocumentModel,
   side: DocumentRenderSide,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): void {
   if (!hasVisibleFlowContent(model, side)) {
     const empty = document.createElement('p')
@@ -3532,7 +4387,7 @@ function renderFlowDocument(
   article.className = 'document-flow-preview'
   for (const page of model.pages) {
     // HTML 译文同样使用流式页面：保留原页宽和段落间距，但让译文高度参与后续排版。
-    article.append(renderPage(page, side, 1, jobId))
+    article.append(renderPage(page, side, 1, jobId, tab))
   }
   container.append(article)
 }
@@ -3542,15 +4397,18 @@ function renderFlowDocument(
  * 只有原文侧使用该渲染器；译文侧始终由结构化流式 DOM 承载。
  * @param container 源文预览滚动容器。
  * @param model 当前文档模型，用于同步页面占位尺寸。
+ * @param jobId 文档所属任务标识。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
 async function renderPdfPages(
   container: HTMLElement,
   model: DocumentModel,
-  jobId: string
+  jobId: string,
+  tab: DocumentWorkspaceTab
 ): Promise<void> {
-  pdfPreviewCleanups.get(container)?.()
+  cleanupPdfPreview(container)
   const renderToken = Symbol('pdf-preview')
   pdfRenderTokens.set(container, renderToken)
   container.replaceChildren()
@@ -3622,11 +4480,18 @@ async function renderPdfPages(
     } catch (error) {
       article.dataset.pdfRendered = 'false'
       if (!isCurrentRender()) return
-      console.error('Failed to render PDF page', pageNumber, error)
+      console.error('document-pdf-page-render-failed', error instanceof Error ? error.name : 'unknown')
     }
   }
   try {
-    const source = await window.api.getDocumentSource(jobId)
+    const approvedSource = isReadOnlyDocumentTab(tab)
+      ? approvedDocumentSourceRequest(tab)
+      : null
+    const source: DocumentSourceResult = isReadOnlyDocumentTab(tab)
+      ? approvedSource
+        ? await window.api.getApprovedDocumentSource(approvedSource)
+        : { ok: false, code: 'source-not-approved' }
+      : await window.api.getDocumentSource(jobId)
     if (!source.ok || !source.bytes) throw new Error(source.code ?? 'source-not-found')
     if (!isCurrentRender()) return
     const loadingTask = pdfjsModule.getDocument({
@@ -3670,11 +4535,11 @@ async function renderPdfPages(
       observer.observe(article)
     }
     // PDF.js 首屏占位完成后重新应用目标状态，避免异步替换 DOM 丢失失败与缓存标记。
-    if (latestSnapshot) markDocumentTargetStatuses(latestSnapshot)
+    if (tab.id === activeDocumentTabId && tab.snapshot) markDocumentTargetStatuses(tab.snapshot)
     sourcePageCount.textContent = t('document.pageCount', { count: pdfDocument.numPages })
   } catch (error) {
     if (!isCurrentRender()) return
-    console.error('Failed to render PDF preview', error)
+    console.error('document-pdf-preview-failed', error instanceof Error ? error.name : 'unknown')
     container.replaceChildren()
     const failed = document.createElement('p')
     failed.className = 'document-empty-state'
@@ -3700,6 +4565,8 @@ function observeTranslationPageScale(scrollContainer: HTMLElement, previewHost: 
   }
   translationLayoutUpdating = false
   pendingTranslationLayoutScrollPositions = null
+  // 调度器归属于创建时的 Tab；切换后旧 RAF 不得继续读取或恢复新 Tab 的滚动位置。
+  const layoutTabId = activeDocumentTabId
   const pages = Array.from(previewHost.querySelectorAll<HTMLElement>(".document-page[data-layout='translation-flow']"))
   if (pages.length === 0 || typeof ResizeObserver === 'undefined') return
   // 最近一次实际写入页面缩放时使用的容器宽度；高度变化不得改变该基准。
@@ -3716,6 +4583,7 @@ function observeTranslationPageScale(scrollContainer: HTMLElement, previewHost: 
     if (pageLayoutFrame !== null) cancelAnimationFrame(pageLayoutFrame)
     pageLayoutFrame = requestAnimationFrame(() => {
       pageLayoutFrame = null
+      if (layoutTabId === null || layoutTabId !== activeDocumentTabId) return
       const scrollPositions = pendingTranslationLayoutScrollPositions ?? captureDocumentScrollPositions()
       translationLayoutUpdating = true
       try {
@@ -3869,12 +4737,13 @@ function cancelTranslationPageLayout(): void {
  */
 function renderDocumentWarnings(container: HTMLElement, warnings: readonly DocumentWarning[] = []): void {
   container.querySelector(':scope > .document-warning-list')?.remove()
-  if (warnings.length === 0) return
+  const visibleWarnings = filterVisibleDocumentWarnings(warnings)
+  if (visibleWarnings.length === 0) return
   const notice = document.createElement('aside')
   notice.className = 'document-warning-list'
   notice.setAttribute('role', 'status')
   notice.setAttribute('aria-live', 'polite')
-  for (const warning of warnings) {
+  for (const warning of visibleWarnings) {
     const item = document.createElement('p')
     item.className = 'document-warning-item'
     item.dataset.severity = warning.severity
@@ -3891,13 +4760,17 @@ function renderDocumentWarnings(container: HTMLElement, warnings: readonly Docum
  * @param element 已渲染的文本区块。
  * @param block 最新文本区块模型。
  * @param side 当前渲染侧。
+ * @param pageWidth 区块所属页面宽度。
+ * @param contentArea 区块所属页面的正文内容区。
  * @returns 是否已原位更新成功。
  * @author zhenghq
  */
 function patchTranslationTextBlock(
   element: HTMLElement,
   block: DocumentTextBlock,
-  side: DocumentRenderSide
+  side: DocumentRenderSide,
+  pageWidth: number,
+  contentArea?: DocumentContentArea
 ): boolean {
   if (side !== 'translation') return false
   if (block.toc) {
@@ -3915,6 +4788,9 @@ function patchTranslationTextBlock(
     if (pageNumber.textContent !== block.toc.pageNumber) {
       pageNumber.textContent = block.toc.pageNumber
     }
+    if (element.dataset.tableCellContent !== 'true') {
+      applyTranslationBlockGeometry(element, block, pageWidth, contentArea)
+    }
     return true
   }
   const existingRuns = Array.from(element.querySelectorAll<HTMLElement>('.document-text-run'))
@@ -3926,6 +4802,10 @@ function patchTranslationTextBlock(
     if (existingRun.textContent !== run.text) existingRun.textContent = run.text
     applyScalableTextStyle(existingRun, effectiveTextStyle(block, run))
   }
+  // 流式更新只替换文本节点时仍须按最新页面正文区重算宽度，否则会沿用首次较窄的 bbox。
+  if (element.dataset.tableCellContent !== 'true') {
+    applyTranslationBlockGeometry(element, block, pageWidth, contentArea)
+  }
   return true
 }
 
@@ -3933,19 +4813,22 @@ function patchTranslationTextBlock(
  * 原位更新图片 OCR 覆盖层；底图节点与资源 URL 保持不变，只替换覆盖层内容。
  * @param element 已渲染的图片区块。
  * @param block 最新图片区块模型。
+ * @param tab 图片所属的文档 Tab。
  * @returns 是否已原位更新成功。
  * @author zhenghq
  */
 function patchTranslationOcrLayer(
   element: HTMLElement,
-  block: DocumentImageBlock
+  block: DocumentImageBlock,
+  tab: DocumentWorkspaceTab
 ): boolean {
   if (!element.classList.contains('document-image-block')) return false
   const renderPending = element.dataset.pending === 'true'
+  const nextRenderPending = resolveDocumentImageRenderPending(block, tab)
   const assetFailed = element.dataset.assetState === 'error'
-  if (!assetFailed && renderPending !== Boolean(block.renderPending)) return false
+  if (!assetFailed && renderPending !== nextRenderPending) return false
   const image = element.querySelector<HTMLImageElement>(':scope > img.document-page-image')
-  if (!block.renderPending && !image && !assetFailed) return false
+  if (!nextRenderPending && !image && !assetFailed) return false
   if (image) image.alt = block.alt ?? ''
   const existingTextLayer = element.querySelector<HTMLElement>(':scope > .document-ocr-text-layer')
   const nextTextLayer = createOcrTextLayer(block)
@@ -3982,13 +4865,15 @@ function patchTranslationOcrLayer(
  * @param element 已渲染的表格区块。
  * @param block 最新表格区块模型。
  * @param takeBlockElement 按 DOM 顺序取得区块元素。
+ * @param tab 表格所属的文档 Tab。
  * @returns 是否已原位更新成功。
  * @author zhenghq
  */
 function patchTranslationTableBlock(
   element: HTMLElement,
   block: DocumentTableBlock,
-  takeBlockElement: (blockId: string) => HTMLElement | undefined
+  takeBlockElement: (blockId: string) => HTMLElement | undefined,
+  tab: DocumentWorkspaceTab
 ): boolean {
   if (!element.classList.contains('document-table-block')) return false
   const table = element.querySelector<HTMLTableElement>(':scope > table')
@@ -4014,7 +4899,7 @@ function patchTranslationTableBlock(
           ? renderedBlocks[blockIndex]
           : takeBlockElement(child.blockId)
         if (!(renderedBlock instanceof HTMLElement) ||
-          !patchTranslationBlock(child, renderedBlock, takeBlockElement)) {
+          !patchTranslationBlock(child, renderedBlock, takeBlockElement, tab, 1)) {
           return false
         }
       }
@@ -4028,23 +4913,29 @@ function patchTranslationTableBlock(
  * @param block 最新区块模型。
  * @param element 已渲染区块元素；分隔符没有稳定 DOM 标识时为 undefined。
  * @param takeBlockElement 按 DOM 顺序取得区块元素。
+ * @param tab 区块所属的文档 Tab。
+ * @param pageWidth 区块所属页面宽度。
+ * @param contentArea 区块所属页面的正文内容区。
  * @returns 是否已原位更新成功。
  * @author zhenghq
  */
 function patchTranslationBlock(
   block: DocumentBlock,
   element: HTMLElement | undefined,
-  takeBlockElement: (blockId: string) => HTMLElement | undefined
+  takeBlockElement: (blockId: string) => HTMLElement | undefined,
+  tab: DocumentWorkspaceTab,
+  pageWidth: number,
+  contentArea?: DocumentContentArea
 ): boolean {
   if (block.kind === 'break') return true
   if (!element) return false
   switch (block.kind) {
     case 'text':
-      return patchTranslationTextBlock(element, block, 'translation')
+      return patchTranslationTextBlock(element, block, 'translation', pageWidth, contentArea)
     case 'image':
-      return patchTranslationOcrLayer(element, block)
+      return patchTranslationOcrLayer(element, block, tab)
     case 'table':
-      return patchTranslationTableBlock(element, block, takeBlockElement)
+      return patchTranslationTableBlock(element, block, takeBlockElement, tab)
     case 'formula':
       return element.classList.contains('document-formula-block')
     case 'shape':
@@ -4074,10 +4965,15 @@ function collectDocumentBlockIds(block: DocumentBlock, blockIds: string[]): void
  * 在现有译文 DOM 上原位更新流式内容；只有结构变化时才返回失败并允许整页重绘。
  * @param container 译文滚动容器。
  * @param model 最新译文模型。
+ * @param tab 译文所属的文档 Tab。
  * @returns 是否已原位更新成功。
  * @author zhenghq
  */
-function patchTranslationPreview(container: HTMLElement, model: DocumentModel | undefined): boolean {
+function patchTranslationPreview(
+  container: HTMLElement,
+  model: DocumentModel | undefined,
+  tab: DocumentWorkspaceTab
+): boolean {
   if (!model || renderedTranslationPreviewKind === null) return false
   const previewHost = container.querySelector<HTMLElement>(':scope > .document-preview-host')
   if (!previewHost) return false
@@ -4108,7 +5004,14 @@ function patchTranslationPreview(container: HTMLElement, model: DocumentModel | 
     for (const page of model.pages) {
       for (const block of page.blocks) {
         collectDocumentBlockIds(block, expectedBlockIds)
-        if (!patchTranslationBlock(block, block.kind === 'break' ? undefined : takeBlockElement(block.blockId), takeBlockElement)) {
+        if (!patchTranslationBlock(
+          block,
+          block.kind === 'break' ? undefined : takeBlockElement(block.blockId),
+          takeBlockElement,
+          tab,
+          page.width,
+          page.contentArea
+        )) {
           patched = false
           break
         }
@@ -4135,7 +5038,9 @@ function patchTranslationPreview(container: HTMLElement, model: DocumentModel | 
  * @param model 文档模型。
  * @param emptyKey 空状态词条。
  * @param side 当前渲染侧。
+ * @param jobId 文档所属任务标识。
  * @param warnings 当前文档解析与翻译告警。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -4145,18 +5050,22 @@ function renderDocumentModel(
   emptyKey: string,
   side: DocumentRenderSide,
   jobId: string,
-  warnings: readonly DocumentWarning[] = []
+  warnings: readonly DocumentWarning[] | undefined,
+  tab: DocumentWorkspaceTab
 ): void {
-  pageScaleObserver?.disconnect()
-  pageScaleObserver = null
-  activePageLayoutScheduler = null
-  if (pageLayoutFrame !== null) {
-    cancelAnimationFrame(pageLayoutFrame)
-    pageLayoutFrame = null
+  if (container === translationContent) {
+    // 页面缩放、流式重排与水印观察器只属于译文容器；重绘左侧不能断开右侧布局观察器。
+    pageScaleObserver?.disconnect()
+    pageScaleObserver = null
+    activePageLayoutScheduler = null
+    if (pageLayoutFrame !== null) {
+      cancelAnimationFrame(pageLayoutFrame)
+      pageLayoutFrame = null
+    }
+    pendingTranslationLayoutScrollPositions = null
+    translationLayoutUpdating = false
   }
-  pendingTranslationLayoutScrollPositions = null
-  translationLayoutUpdating = false
-  pdfPreviewCleanups.get(container)?.()
+  cleanupPdfPreview(container)
   // 仅替换译文侧时清理旧水印观察器；原文重绘不能中断仍然保留的译文水印。
   if (container === translationContent) {
     watermarkResizeObserver?.disconnect()
@@ -4182,23 +5091,20 @@ function renderDocumentModel(
     // 独立图片沿用原始像素尺寸；宿主格式标记用于启用 contain，避免窄栏把图片压扁。
     previewHost.dataset.documentFormat = model.source.format
     nextContent.append(previewHost)
-    if (isRestoredDocumentTab(getActiveDocumentTab()) && side === 'source') {
-      // 恢复态只展示已保存的结构化源模型，不读取旧任务的 HTML/PDF/图片资源。
-      renderRestoredDocumentSourcePreview(previewHost, model)
-    } else if (side === 'source' && model.source.format === 'html') {
-      renderHtmlSourcePreview(previewHost, model, jobId)
+    if (side === 'source' && model.source.format === 'html') {
+      renderHtmlSourcePreview(previewHost, model, jobId, tab)
     } else if (kind === 'paged') {
       const usePdfCanvas = model.source.format === 'pdf' && side === 'source'
       if (model.source.format === 'pdf' && side === 'source') {
         container.dataset.previewKind = kind
         // PDF.js 异步渲染要求宿主已连接；此时只挂载空宿主，PDF 数据仍由旧内容保留到加载完成。
         container.replaceChildren(previewHost)
-        void renderPdfPages(previewHost, model, jobId)
-      } else if (model.source.format === 'pdf' && ocrDisplayMode === 'ocr-text') {
+        void renderPdfPages(previewHost, model, jobId, tab)
+      } else if (model.source.format === 'pdf' && tab.ocrDisplayMode === 'ocr-text') {
         // OCR 原文模式在右侧复用 PDF 原文 Canvas，并叠加可检索文字层。
         container.dataset.previewKind = kind
         container.replaceChildren(previewHost)
-        void renderPdfPages(previewHost, model, jobId)
+        void renderPdfPages(previewHost, model, jobId, tab)
       } else {
         for (const page of model.pages) {
           // 横竖混排 PDF 的每页宽度不同，必须在首次挂载前按自身宽度计算比例，
@@ -4207,22 +5113,22 @@ function renderDocumentModel(
             ? initialTranslationPageScale(container, page.width)
             : 1
           // 图片 OCR 原文右侧必须复用源页绝对定位；译文流式布局会拆散底图与透明文字层的坐标。
-          const pageRenderSide = ocrDisplayMode === 'ocr-text' && model.source.format === 'image'
+          const pageRenderSide = tab.ocrDisplayMode === 'ocr-text' && model.source.format === 'image'
             ? 'source'
             : side
-          previewHost.append(renderPage(page, pageRenderSide, pageScale, jobId))
+          previewHost.append(renderPage(page, pageRenderSide, pageScale, jobId, tab))
         }
       }
     } else if (kind === 'markdown') {
-      renderMarkdownDocument(previewHost, model, side, jobId)
+      renderMarkdownDocument(previewHost, model, side, jobId, tab)
     } else if (kind === 'table') {
-      renderTableDocument(previewHost, model, side, jobId)
+      renderTableDocument(previewHost, model, side, jobId, tab)
     } else if (kind === 'subtitle') {
-      renderSubtitleDocument(previewHost, model, side, jobId)
+      renderSubtitleDocument(previewHost, model, side, jobId, tab)
     } else {
-      renderFlowDocument(previewHost, model, side, jobId)
+      renderFlowDocument(previewHost, model, side, jobId, tab)
     }
-    appendTranslationWatermark(previewHost, side)
+    appendTranslationWatermark(previewHost, side, tab)
     container.dataset.previewKind = kind
     if (previewHost.parentNode !== container) container.replaceChildren(nextContent)
     if (side === 'translation') renderedTranslationPreviewKind = kind
@@ -4231,7 +5137,7 @@ function renderDocumentModel(
     }
     renderDocumentWarnings(container, warnings)
   } catch (error) {
-    console.error('Failed to render document model', error)
+    console.error('document-model-render-failed', error instanceof Error ? error.name : 'unknown')
     if (side === 'translation') renderedTranslationPreviewKind = null
     container.replaceChildren(previousContent)
     const failedContent = document.createDocumentFragment()
@@ -4241,24 +5147,6 @@ function renderDocumentModel(
     failedContent.append(failed)
     container.replaceChildren(failedContent)
   }
-}
-
-/**
- * 渲染恢复态原文的结构化只读预览，避免重新访问已失效的旧任务资源。
- * @param container 预览宿主。
- * @param model 已保存的源文档模型。
- * @returns 无返回值。
- * @author zhenghq
- */
-function renderRestoredDocumentSourcePreview(container: HTMLElement, model: DocumentModel): void {
-  container.dataset.restoredPreview = 'true'
-  const article = document.createElement('article')
-  article.className = 'document-flow-preview document-restored-preview'
-  for (const page of model.pages) {
-    // 恢复态沿用普通结构化布局，但图片分支会固定渲染占位而不请求旧任务资源。
-    article.append(renderPage(page, 'source', 1, RESTORED_DOCUMENT_JOB_ID))
-  }
-  container.append(article)
 }
 
 /**
@@ -4452,7 +5340,7 @@ function documentPreviewIdentity(model: DocumentModel | undefined): string {
  * @author zhenghq
  */
 function documentWarningSignature(warnings: readonly DocumentWarning[] = []): string {
-  return JSON.stringify(warnings.map((warning) => ({
+  return JSON.stringify(filterVisibleDocumentWarnings(warnings).map((warning) => ({
     code: warning.code,
     severity: warning.severity,
     message: warning.message,
@@ -4464,22 +5352,33 @@ function documentWarningSignature(warnings: readonly DocumentWarning[] = []): st
 /**
  * 仅在正文模型实际变化时释放并重建当前文档页面 DOM。
  * @param snapshot 当前任务快照。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
+function renderSnapshot(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorkspaceTab): void {
+  // 快照渲染与 Tab 切换共享同一套界面节点，过期回调不得覆盖当前文件。
+  if (tab.id !== activeDocumentTabId) return
   renderActualLanguage(snapshot.languagePair)
-  // 新模式准备中的快照可能暂时缺少源模型，此时沿用已渲染的左侧身份，避免重复加载原文。
+  // 新模式准备中的快照可能暂时缺少源模型；只有同一 Tab 与同一文件指纹才可复用已渲染原文。
+  const canReuseRenderedSourcePreview = renderedSourcePreviewTabId === tab.id &&
+    renderedSourcePreviewSha256 === tab.selection.sha256
   const sourcePreviewIdentity = snapshot.source
     ? documentPreviewIdentity(snapshot.source)
-    : renderedSourcePreviewIdentity
-  const translationPaneModel = ocrDisplayMode === 'ocr-text' ? snapshot.source : snapshot.translation
+    : canReuseRenderedSourcePreview
+      ? renderedSourcePreviewIdentity
+      : ''
+  const displayMode = tab.ocrDisplayMode
+  const translationPaneModel = displayMode === 'ocr-text' ? snapshot.source : snapshot.translation
   const translationSignature = documentContentSignature(translationPaneModel)
   const sourceWarningSignature = documentWarningSignature(snapshot.source?.warnings)
   const translationWarningSignature = documentWarningSignature(translationPaneModel?.warnings)
   const sourceChanged = renderedSourcePreviewIdentity !== sourcePreviewIdentity
   const sourceWarningsChanged = renderedSourceWarningSignature !== sourceWarningSignature
+  const canReuseRenderedTranslation = renderedTranslationTabId === tab.id &&
+    renderedTranslationSha256 === tab.selection.sha256
   const translationChanged = !hasRenderedTranslation ||
+    !canReuseRenderedTranslation ||
     renderedTranslationSignature !== translationSignature
   const translationWarningsChanged = renderedTranslationWarningSignature !== translationWarningSignature
   // 只有源文件身份变化才释放图片资源；译文流式增量不能破坏仍在使用的源预览。
@@ -4492,9 +5391,12 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
       'document.waitingSource',
       'source',
       snapshot.jobId,
-      snapshot.source?.warnings
+      snapshot.source?.warnings,
+      tab
     )
     renderedSourcePreviewIdentity = sourcePreviewIdentity
+    renderedSourcePreviewTabId = tab.id
+    renderedSourcePreviewSha256 = tab.selection.sha256
     renderedSourceWarningSignature = sourceWarningSignature
   } else if (sourceWarningsChanged) {
     renderDocumentWarnings(sourceContent, snapshot.source?.warnings)
@@ -4502,8 +5404,8 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
   }
   if (translationChanged) {
     // OCR 原文模式展示源模型和透明文字层，不能走针对流式译文的原位补丁路径。
-    const patched = ocrDisplayMode === 'translation' && hasRenderedTranslation &&
-      patchTranslationPreview(translationContent, snapshot.translation)
+    const patched = displayMode === 'translation' && hasRenderedTranslation &&
+      patchTranslationPreview(translationContent, snapshot.translation, tab)
     if (!patched) {
       renderDocumentModel(
         translationContent,
@@ -4511,10 +5413,13 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
         'document.waitingTranslation',
         'translation',
         snapshot.jobId,
-        translationPaneModel?.warnings
+        translationPaneModel?.warnings,
+        tab
       )
     }
     renderedTranslationSignature = translationSignature
+    renderedTranslationTabId = tab.id
+    renderedTranslationSha256 = tab.selection.sha256
     hasRenderedTranslation = true
     renderedTranslationWarningSignature = translationWarningSignature
   } else if (translationWarningsChanged) {
@@ -4529,16 +5434,18 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot): void {
   translationPageCount.textContent = translationPaneModel
     ? t('document.pageCount', { count: translationPaneModel.pages.length })
     : ''
-  translationContent.dataset.ocrDisplayMode = ocrDisplayMode
+  translationContent.dataset.ocrDisplayMode = displayMode
   translationHeading.textContent = t(
-    ocrDisplayMode === 'ocr-text' ? 'document.ocr.source' : 'document.translation'
+    displayMode === 'ocr-text' ? 'document.ocr.source' : 'document.translation'
   )
-  renderOcrDisplayModeControls(snapshot)
+  renderOcrDisplayModeControls(snapshot, tab)
   // 模型重绘会替换页面 DOM，旧高亮节点已失效；统一清理后再恢复当前缩放和导航状态。
-  clearDocumentBlockHighlight()
+  clearDocumentBlockDomHighlight()
   applyDocumentZoom(documentZoom)
   renderDocumentToc()
   markDocumentTargetStatuses(snapshot)
+  // DOM 重绘不能抹掉 Tab 的持久化区块锚点，必须在挂载新节点后按锚点恢复高亮。
+  if (tab.activeBlockId) highlightDocumentBlock(tab.activeBlockId)
   scheduleCurrentDocumentPageUpdate()
 }
 
@@ -4747,10 +5654,11 @@ async function preparePartialExport(
  */
 function restorePrintPreview(): { restored: true } {
   translationContent.querySelectorAll('.document-partial-export-notice').forEach((notice) => notice.remove())
-  if (latestSnapshot) {
+  const tab = getActiveDocumentTab()
+  if (latestSnapshot && tab?.snapshot === latestSnapshot) {
     renderedTranslationSignature = ''
     hasRenderedTranslation = false
-    renderSnapshot(latestSnapshot)
+    renderSnapshot(latestSnapshot, tab)
   }
   return { restored: true }
 }
@@ -4808,14 +5716,21 @@ function exposeDocumentPrintPreview(): void {
 /**
  * 更新进度、任务状态和操作按钮。
  * @param snapshot 当前任务快照。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
+function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorkspaceTab): void {
+  // 异步任务状态可能晚于 Tab 切换到达，只有仍处于活动状态时才允许覆盖共享界面。
+  if (tab.id !== activeDocumentTabId) return
   const status = snapshot.task.status
-  const restored = isRestoredDocumentTab(getActiveDocumentTab())
+  const restored = isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)
   const report = snapshot.completionReport
   const retryAction = resolveDocumentRetryActionState(snapshot)
+  const warningCount = countVisibleDocumentWarnings(
+    snapshot.source?.warnings ?? [],
+    snapshot.translation?.warnings ?? []
+  )
   const { failed, pending, suspectUntranslated, reverted } = retryAction
   const hasUsableTranslation = snapshot.runMode === 'ocr'
     ? status === 'completed'
@@ -4841,6 +5756,27 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
   progressCount.textContent = snapshot.task.progress.total > 0
     ? `${snapshot.task.progress.completed} / ${snapshot.task.progress.total} · ${percent}%`
     : `${percent}%`
+  const pageTotal = snapshot.source?.pages.length ?? snapshot.translation?.pages.length ?? 0
+  const currentPage = pageTotal > 0
+    ? Math.max(1, Math.min(pageTotal, tab.pageNumber))
+    : 0
+  progressPages.textContent = pageTotal > 0
+    ? t('document.progress.pages', { current: currentPage, total: pageTotal })
+    : ''
+  const completedTargets = report
+    ? report.translated + report.unchanged
+    : snapshot.task.progress.completed
+  const totalTargets = report ? report.total : snapshot.task.progress.total
+  progressBlocks.textContent = totalTargets > 0
+    ? t('document.progress.blocks', { completed: completedTargets, total: totalTargets })
+    : ''
+  progressWarnings.textContent = t('document.progress.warnings', {
+    count: warningCount
+  })
+  const remaining = resolveDocumentRemainingTime(snapshot)
+  progressRemaining.textContent = remaining === null
+    ? ''
+    : t('document.progress.remaining', { time: formatDocumentDuration(remaining) })
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(status)
   cancelButton.hidden = terminal
   exportButton.disabled = status === 'completed'
@@ -4859,10 +5795,10 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
   }
   partialStatus.hidden = status !== 'partial' && status !== 'failed' && status !== 'cancelled'
   if (status === 'partial') {
-    partialStatus.textContent = t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: snapshot.task.warningCount })
+    partialStatus.textContent = t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: warningCount })
   } else if (status === 'failed') {
     partialStatus.textContent = hasUsableTranslation
-      ? t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: snapshot.task.warningCount })
+      ? t('document.partialSummary', { failed, pending, suspectUntranslated, reverted, warnings: warningCount })
       : t('document.run.failed')
   } else if (status === 'cancelled') {
     partialStatus.textContent = t('document.cancelled')
@@ -4872,6 +5808,40 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot): void {
     partialStatus.hidden = true
   }
   workbench.dataset.state = status
+}
+
+/**
+ * 根据当前阶段进度和已用时间估算剩余时间。
+ * @param snapshot 当前任务快照。
+ * @returns 预计剩余毫秒数；尚无足够进度信息时返回 null。
+ * @author zhenghq
+ */
+function resolveDocumentRemainingTime(snapshot: DocumentWorkspaceSnapshot): number | null {
+  const progress = snapshot.task.progress
+  if (progress.completed <= 0 || progress.total <= 0 || snapshot.percent <= 0 || snapshot.percent >= 100) {
+    return null
+  }
+  const taskKey = `${snapshot.jobId}:${snapshot.generation}`
+  const startedAt = documentTaskStartedAt.get(taskKey) ?? Date.now()
+  if (!documentTaskStartedAt.has(taskKey)) documentTaskStartedAt.set(taskKey, startedAt)
+  const elapsed = Date.now() - startedAt
+  if (elapsed <= 0) return null
+  const remainingPercent = 100 - snapshot.percent
+  return Math.max(0, Math.round(elapsed / snapshot.percent * remainingPercent))
+}
+
+/**
+ * 将毫秒时长格式化为紧凑的分钟/秒文本。
+ * @param milliseconds 毫秒数。
+ * @returns 面向进度栏的时长文本。
+ * @author zhenghq
+ */
+function formatDocumentDuration(milliseconds: number): string {
+  const seconds = Math.max(1, Math.ceil(milliseconds / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`
 }
 
 /**
@@ -4890,8 +5860,8 @@ function scheduleSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: Docum
     pendingRenderFrame = null
     if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
     latestSnapshot = snapshot
-    renderSnapshot(snapshot)
-    renderTaskState(snapshot)
+    renderSnapshot(snapshot, tab)
+    renderTaskState(snapshot, tab)
   })
 }
 
@@ -4910,8 +5880,8 @@ function flushSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: Document
     pendingRenderFrame = null
   }
   latestSnapshot = snapshot
-  renderSnapshot(snapshot)
-  renderTaskState(snapshot)
+  renderSnapshot(snapshot, tab)
+  renderTaskState(snapshot, tab)
 }
 
 /**
@@ -4993,8 +5963,8 @@ function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab | null = getAct
  */
 async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<void> {
   if (!tab.selection.path || !platformCapability?.supported) return
-  // 恢复态只读；需要新任务时应重新选择文件，不能复用固定恢复身份发起旧任务请求。
-  if (isRestoredDocumentTab(tab)) return
+  // 历史与恢复态只读；需要新任务时应重新选择文件，不能复用旧任务身份发起请求。
+  if (isReadOnlyDocumentTab(tab)) return
   if (tab.startInFlight) {
     // 同一 Tab 的模式或语言变更必须等当前启动请求返回后再执行，避免主进程拒绝并发任务。
     tab.pendingLanguageRetranslation = true
@@ -5131,8 +6101,8 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
 async function startDocumentTranslation(): Promise<void> {
   const tab = getActiveDocumentTab()
   if (!tab) return
-  if (isRestoredDocumentTab(tab)) {
-    // 恢复态不可继续使用旧任务身份，显式重新选择同一文件即可开始新的翻译任务。
+  if (isReadOnlyDocumentTab(tab)) {
+    // 只读回放不可继续使用旧任务身份，显式重新选择同一文件即可开始新的翻译任务。
     await chooseDocumentFiles()
     return
   }
@@ -5165,7 +6135,7 @@ async function retryFailedDocumentTranslation(): Promise<void> {
   const tab = getActiveDocumentTab()
   const snapshot = tab?.snapshot
   if (!tab || !snapshot?.translation) return
-  if (isRestoredDocumentTab(tab)) return
+  if (isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)) return
   if (resolveDocumentRetryActionState(snapshot).retryDisabled) return
   const previousGeneration = tab.generation
   let jobGeneration = nextGeneration()
@@ -5247,7 +6217,7 @@ async function retryFailedDocumentTarget(targetId: string): Promise<void> {
     refreshActiveTabMirror(tab)
     cancelButton.hidden = true
     exportButton.disabled = !hasUsableExportResult(snapshot)
-    renderTaskState(snapshot)
+    renderTaskState(snapshot, tab)
     renderDocumentTabs()
   }
   try {
@@ -5290,53 +6260,186 @@ async function exportTranslatedPdf(): Promise<void> {
   const tab = getActiveDocumentTab()
   const snapshot = tab?.snapshot
   if (!tab || !snapshot?.translation) return
-  if (isRestoredDocumentTab(tab)) return
-  // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
+  if (isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)) return
+  // 导出入口可能在最后一帧译文尚未提交时触发，必须先同步刷新快照，避免导出旧的流式内容。
   flushSnapshotRenderForTab(tab, snapshot)
+  await openDocumentExportDialog(snapshot)
+}
+
+/**
+ * 打开导出对话框，展示布局、未完成项与告警，并保留旧的部分导出二次确认。
+ * @param snapshot 当前任务快照。
+ * @returns 对话框关闭或导出流程结束后的 Promise。
+ * @author zhenghq
+ */
+async function openDocumentExportDialog(snapshot: DocumentWorkspaceSnapshot): Promise<void> {
+  const tab = getActiveDocumentTab()
+  if (!tab || tab.snapshot?.jobId !== snapshot.jobId || tab.snapshot.generation !== snapshot.generation) {
+    return
+  }
+  const retryAction = resolveDocumentRetryActionState(snapshot)
+  const incomplete = retryAction.reverted
+  const complete = snapshot.task.status === 'completed'
+  documentExportTarget = { jobId: snapshot.jobId, generation: snapshot.generation }
+  documentExportSaved = false
+  documentExportPercent = 0
+  selectedDocumentExportLayout = exportLayoutBilingual.checked ? 'bilingual' : 'translation'
+  exportLayoutTranslation.checked = selectedDocumentExportLayout === 'translation'
+  exportLayoutBilingual.checked = selectedDocumentExportLayout === 'bilingual'
+  exportIncomplete.textContent = t('document.export.incompleteCount', {
+    count: incomplete
+  })
+  const warningCount = countVisibleDocumentWarnings(
+    snapshot.source?.warnings ?? [],
+    snapshot.translation?.warnings ?? []
+  )
+  exportWarningCount.textContent = t('document.export.warningCount', {
+    count: warningCount
+  })
+  exportIncompleteNotice.hidden = complete || incomplete === 0
+  exportIncompleteNotice.textContent = t('document.export.partialNotice', {
+    count: incomplete
+  })
+  exportRetryButton.hidden = complete || retryAction.retryDisabled
+  exportConfirmButton.disabled = false
+  exportConfirmButton.textContent = complete
+    ? t('document.export.confirm')
+    : t('document.export.confirmPartial')
+  exportCancelButton.disabled = false
+  exportOpenFolderButton.hidden = true
+  exportProgress.hidden = true
+  exportProgressStage.textContent = ''
+  exportProgressPage.textContent = ''
+  exportProgressPercent.textContent = ''
+  exportProgressTrack.setAttribute('aria-valuenow', '0')
+  exportProgressbar.style.width = '0%'
+  if (typeof exportDialog.showModal === 'function') exportDialog.showModal()
+  else exportDialog.setAttribute('open', '')
+}
+
+/**
+ * 更新导出对话框中的阶段、百分比和页级进度。
+ * @param progress 主进程推送的受控导出进度。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateDocumentExportProgress(progress: DocumentExportProgress): void {
+  if (!documentExportTarget || progress.jobId !== documentExportTarget.jobId ||
+    progress.generation !== documentExportTarget.generation) return
+  documentExportPercent = Math.max(documentExportPercent, Math.round(progress.percent))
+  exportProgress.hidden = false
+  exportProgressStage.textContent = t(`document.export.phase.${progress.phase}`)
+  exportProgressPage.textContent = progress.completedPages !== undefined && progress.totalPages !== undefined
+    ? t('document.export.progressPages', {
+      completed: progress.completedPages,
+      total: progress.totalPages
+    })
+    : ''
+  exportProgressPercent.textContent = `${documentExportPercent}%`
+  exportProgressTrack.setAttribute('aria-valuenow', String(documentExportPercent))
+  exportProgressbar.style.width = `${documentExportPercent}%`
+  if (progress.warningCount !== undefined) {
+    exportWarningCount.textContent = t('document.export.warningCount', {
+      count: progress.warningCount
+    })
+  }
+}
+
+/**
+ * 关闭导出对话框并清空当前导出身份。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closeDocumentExportDialog(): void {
+  if (exportDialog.open) exportDialog.close()
+  else exportDialog.removeAttribute('open')
+  documentExportTarget = null
+  documentExportInFlight = false
+  documentExportSaved = false
+}
+
+/**
+ * 提交当前导出对话框选择，完成部分导出确认并等待主进程导出结果。
+ * @returns 导出结束后的 Promise。
+ * @author zhenghq
+ */
+async function confirmDocumentExport(): Promise<void> {
+  const target = documentExportTarget
+  const tab = getActiveDocumentTab()
+  const snapshot = tab?.snapshot
+  if (!target || !tab || !snapshot || snapshot.jobId !== target.jobId ||
+    snapshot.generation !== target.generation || documentExportInFlight) return
   const isComplete = snapshot.task.status === 'completed'
   if (!isComplete) {
     revealFirstIncompleteTarget(snapshot)
     const confirmed = await confirmPartialExport(snapshot)
     if (!confirmed) {
-      partialStatus.textContent = t('document.export.cancelled')
-      partialStatus.hidden = false
+      if (exportDialog.open) exportConfirmButton.focus()
       return
     }
-    if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation) return
-    if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
-    flushSnapshotRenderForTab(tab, snapshot)
   }
-  exportButton.disabled = true
+  if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation ||
+    documentExportTarget !== target) return
+  if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
+  // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
+  flushSnapshotRenderForTab(tab, snapshot)
+  documentExportInFlight = true
+  exportConfirmButton.disabled = true
+  exportCancelButton.disabled = false
+  exportRetryButton.hidden = true
+  exportOpenFolderButton.hidden = true
   try {
+    // 使用显式对象分支固定导出语义，避免后续修改把部分结果误标为完整导出。
+    const exportMode: Pick<DocumentExportRequest, 'mode'> = isComplete
+      ? { mode: 'complete' }
+      : { mode: 'partial' }
     const result: DocumentExportResult = await window.api.exportDocumentPdf({
       jobId: snapshot.jobId,
       generation: snapshot.generation,
-      ...(isComplete ? { mode: 'complete' as const } : { mode: 'partial' as const }),
+      mode: exportMode.mode,
+      layout: selectedDocumentExportLayout,
       // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
       textLayer: true
     })
-    if (!documentTabs.includes(tab)) return
+    if (!documentTabs.includes(tab) || documentExportTarget !== target) return
     if (result.status === 'saved') {
+      documentExportSaved = true
+      exportOpenFolderButton.hidden = false
+      exportProgressStage.textContent = t('document.export.phase.completed')
+      exportProgressPercent.textContent = '100%'
+      exportProgressTrack.setAttribute('aria-valuenow', '100')
+      exportProgressbar.style.width = '100%'
       partialStatus.textContent = result.warnings && result.warnings.length > 0
         ? `${t('document.export.saved')} ${result.warnings.map(localizeDocumentWarning).join(' ')}`
         : t('document.export.saved')
-    }
-    else if (result.status === 'cancelled') partialStatus.textContent = t('document.export.cancelled')
-    else {
+    } else if (result.status === 'cancelled') {
+      partialStatus.textContent = t('document.export.cancelled')
+      exportProgressStage.textContent = t('document.export.cancelled')
+    } else {
       partialStatus.textContent = result.code === 'font-missing'
         ? t('document.fontMissing')
         : t('document.export.failed')
+      exportProgressStage.textContent = t('document.export.failed')
     }
     partialStatus.hidden = false
   } catch {
     partialStatus.textContent = t('document.export.failed')
     partialStatus.hidden = false
+    exportProgressStage.textContent = t('document.export.failed')
   } finally {
-    const currentSnapshot = tab.snapshot
-    exportButton.disabled = !currentSnapshot || (
-      currentSnapshot.task.status !== 'completed' &&
-      !hasUsableExportResult(currentSnapshot)
-    )
+    documentExportInFlight = false
+    if (documentExportTarget === target) {
+      exportConfirmButton.disabled = documentExportSaved
+      exportConfirmButton.textContent = documentExportSaved
+        ? t('document.export.saved')
+        : t('document.export.confirm')
+      exportCancelButton.disabled = false
+      const currentSnapshot = tab.snapshot
+      exportButton.disabled = !currentSnapshot || (
+        currentSnapshot.task.status !== 'completed' &&
+        !hasUsableExportResult(currentSnapshot)
+      )
+    }
   }
 }
 
@@ -5403,6 +6506,8 @@ function syncDocumentScrollSyncControl(): void {
 function setDocumentScrollSync(enabled: boolean): void {
   documentScrollSyncEnabled = enabled
   documentScrollSyncedSide = null
+  const tab = getActiveDocumentTab()
+  if (tab) tab.scrollSyncEnabled = enabled
   syncDocumentScrollSyncControl()
 }
 
@@ -5416,6 +6521,8 @@ function setDocumentZoom(nextZoom: number): void {
   const normalized = clampDocumentZoom(nextZoom)
   if (Math.abs(normalized - documentZoom) < 0.001) return
   applyDocumentZoom(normalized)
+  const tab = getActiveDocumentTab()
+  if (tab) tab.zoom = normalized
   scheduleDocumentViewerStatePersist()
 }
 
@@ -5435,7 +6542,9 @@ function stepDocumentZoom(delta: number): void {
  * @author zhenghq
  */
 function scheduleCurrentDocumentPageUpdate(): void {
+  const tabId = activeDocumentTabId
   requestAnimationFrame(() => {
+    if (tabId === null || tabId !== activeDocumentTabId) return
     const side: DocumentScrollSide = documentViewMode === 'translation' ? 'translation' : 'source'
     updateCurrentDocumentPage(side)
   })
@@ -5453,6 +6562,8 @@ function updateCurrentDocumentPage(side: DocumentScrollSide = 'source'): number 
   const total = latestSnapshot?.source?.pages.length ?? pages.length
   if (total < 1) {
     currentDocumentPageNumber = 1
+    const tab = getActiveDocumentTab()
+    if (tab) tab.pageNumber = currentDocumentPageNumber
     documentPageInput.value = ''
     documentPageInput.max = '1'
     documentPagePreviousButton.disabled = true
@@ -5472,6 +6583,8 @@ function updateCurrentDocumentPage(side: DocumentScrollSide = 'source'): number 
     }
   })
   currentDocumentPageNumber = Math.min(total, Math.max(1, visiblePageIndex + 1))
+  const tab = getActiveDocumentTab()
+  if (tab) tab.pageNumber = currentDocumentPageNumber
   documentPageInput.value = String(currentDocumentPageNumber)
   documentPageInput.max = String(total)
   documentPagePreviousButton.disabled = currentDocumentPageNumber <= 1
@@ -5505,6 +6618,8 @@ function scrollToDocumentTarget(
     found = true
   }
   currentDocumentPageNumber = target.pageNumber
+  const tab = getActiveDocumentTab()
+  if (tab) tab.pageNumber = target.pageNumber
   documentPageInput.value = String(target.pageNumber)
   if (target.blockId) highlightDocumentBlock(target.blockId)
   else clearDocumentBlockHighlight()
@@ -5523,8 +6638,11 @@ function scrollToDocumentTarget(
  * @author zhenghq
  */
 function highlightDocumentBlock(blockId: string): void {
-  clearDocumentBlockHighlight()
+  // 高亮新区块只替换 DOM 标记，不能先清除随后还要写入 Tab 的持久化锚点。
+  clearDocumentBlockDomHighlight()
   activeDocumentBlockId = blockId
+  const tab = getActiveDocumentTab()
+  if (tab) tab.activeBlockId = blockId
   for (const container of [sourceContent, translationContent]) {
     const blocks = container.querySelectorAll<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
     for (const block of blocks) {
@@ -5542,7 +6660,17 @@ function highlightDocumentBlock(blockId: string): void {
  * @author zhenghq
  */
 function clearDocumentBlockHighlight(): void {
-  if (activeDocumentBlockId === null) return
+  const tab = getActiveDocumentTab()
+  if (tab) tab.activeBlockId = null
+  clearDocumentBlockDomHighlight()
+}
+
+/**
+ * 仅清除双栏 DOM 中的区块高亮及活动区块标记，保留 Tab 的持久化锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearDocumentBlockDomHighlight(): void {
   for (const container of [sourceContent, translationContent]) {
     for (const block of container.querySelectorAll<HTMLElement>('.document-block-active')) {
       block.classList.remove('document-block-active')
@@ -5694,6 +6822,9 @@ function fitDocumentToWidth(): void {
  */
 function setDocumentViewMode(nextMode: DocumentViewMode): void {
   if (documentViewMode === nextMode) return
+  const layoutTabId = activeDocumentTabId
+  const tab = getActiveDocumentTab()
+  if (tab) tab.viewMode = nextMode
   documentViewMode = nextMode
   persistDocumentViewMode(documentViewMode)
   syncDocumentViewModeControls()
@@ -5701,7 +6832,11 @@ function setDocumentViewMode(nextMode: DocumentViewMode): void {
   // 单面切换后译文栏宽度改变，只为已渲染的 PDF 页面重新计算缩放。
   const hasPdfPages = Boolean(translationContent.querySelector(".document-page[data-layout='translation-flow']"))
   if (nextMode === 'translation' && hasPdfPages) {
-    requestAnimationFrame(() => scheduleTranslationPageLayout(true))
+    requestAnimationFrame(() => {
+      // 延迟布局属于发起切换的 Tab；用户快速切换文件后不得重排并恢复新 Tab 的滚动位置。
+      if (layoutTabId === null || layoutTabId !== activeDocumentTabId) return
+      scheduleTranslationPageLayout(true)
+    })
   }
   scheduleDocumentViewerStatePersist()
 }
@@ -5709,14 +6844,18 @@ function setDocumentViewMode(nextMode: DocumentViewMode): void {
 /**
  * 根据当前快照决定原文栏 OCR 切换控件是否可见。
  * 仅当源模型存在带识别原文的图片时显示控件，避免普通文档出现无意义的分段开关。
- * 准备中的快照可能尚未包含源模型，此时回退到当前 Tab 已识别的文件格式，避免控件闪烁隐藏。
+ * 准备中的快照可能尚未包含源模型，此时回退到快照所属 Tab 已识别的文件格式，避免控件闪烁隐藏。
  * @param snapshot 当前任务快照。
+ * @param tab 快照所属的文档 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderOcrDisplayModeControls(snapshot: DocumentWorkspaceSnapshot): void {
+function renderOcrDisplayModeControls(
+  snapshot: DocumentWorkspaceSnapshot,
+  tab: DocumentWorkspaceTab
+): void {
   // PDF 扫描件可能整体被判定为低置信度或暂无译文；只要 OCR 任务已尝试，就保留顶部切换入口。
-  const format = snapshot.source?.source.format ?? getActiveDocumentTab()?.selection.format
+  const format = snapshot.source?.source.format ?? tab.selection.format
   sourceOcrMode.hidden = !(format === 'pdf' || format === 'image' || hasOcrSourceText(snapshot.source))
 }
 
@@ -5781,6 +6920,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   await initializePlatformCapability()
   await initializeDocumentLanguages()
   await restoreDocumentViewerState()
+  await loadDocumentTaskHistory()
 
   dropZone.addEventListener('click', () => void chooseDocumentFiles())
   dropZone.addEventListener('keydown', (event) => {
@@ -5834,6 +6974,46 @@ async function initializeDocumentWorkspace(): Promise<void> {
     // 点击遮罩等原生关闭路径不会经过按钮；统一按取消处理，避免导出 Promise 悬挂。
     if (resolvePartialExportConfirmation) closePartialExportDialog(false)
   })
+  exportLayoutTranslation.addEventListener('change', () => {
+    if (exportLayoutTranslation.checked) selectedDocumentExportLayout = 'translation'
+  })
+  exportLayoutBilingual.addEventListener('change', () => {
+    if (exportLayoutBilingual.checked) selectedDocumentExportLayout = 'bilingual'
+  })
+  exportConfirmButton.addEventListener('click', () => void confirmDocumentExport())
+  exportRetryButton.addEventListener('click', () => {
+    closeDocumentExportDialog()
+    void retryFailedDocumentTranslation()
+  })
+  exportCancelButton.addEventListener('click', () => {
+    const target = documentExportTarget
+    if (documentExportInFlight && target) {
+      void window.api.cancelDocumentExport(target.jobId, target.generation)
+      exportCancelButton.disabled = true
+      return
+    }
+    closeDocumentExportDialog()
+  })
+  exportOpenFolderButton.addEventListener('click', () => {
+    const target = documentExportTarget
+    if (target) void window.api.openDocumentExportFolder(target.jobId, target.generation)
+  })
+  exportDialog.addEventListener('cancel', (event) => {
+    event.preventDefault()
+    if (documentExportInFlight) {
+      const target = documentExportTarget
+      if (target) void window.api.cancelDocumentExport(target.jobId, target.generation)
+      exportCancelButton.disabled = true
+      return
+    }
+    closeDocumentExportDialog()
+  })
+  exportDialog.addEventListener('close', () => {
+    if (!documentExportInFlight) {
+      documentExportTarget = null
+      documentExportSaved = false
+    }
+  })
   sourceLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   targetLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   for (const button of Array.from(sourceOcrMode.querySelectorAll<HTMLButtonElement>('[data-ocr-mode]'))) {
@@ -5841,6 +7021,14 @@ async function initializeDocumentWorkspace(): Promise<void> {
       const nextMode = button.dataset.ocrMode === 'ocr-text' ? 'ocr-text' : 'translation'
       const tab = getActiveDocumentTab()
       if (!tab || tab.ocrDisplayMode === nextMode) return
+      // 历史任务没有活动主进程任务，只允许切换本地展示，不得取消或重启旧任务。
+      if (isReadOnlyDocumentTab(tab)) {
+        tab.ocrDisplayMode = nextMode
+        ocrDisplayMode = nextMode
+        syncOcrDisplayModeControls()
+        renderActiveDocumentTab(tab)
+        return
+      }
       tab.ocrDisplayMode = nextMode
       ocrDisplayMode = nextMode
       syncOcrDisplayModeControls()
@@ -5916,8 +7104,11 @@ async function initializeDocumentWorkspace(): Promise<void> {
   documentZoomFitButton.addEventListener('click', fitDocumentToWidth)
   documentFileHistory = readDocumentFileHistory()
   renderDocumentHistory()
-  window.api.onDocumentProgress((snapshot) => {
-    routeDocumentSnapshot(snapshot, false)
+  // 订阅任务进度前先同步当前 OCR 展示模式，确保启动期间切换模式时旧事件不会污染新状态。
+  syncOcrDisplayModeControls()
+  window.api.onDocumentProgress((snapshot) => { routeDocumentSnapshot(snapshot, false) })
+  window.api.onDocumentExportProgress((progress) => {
+    updateDocumentExportProgress(progress)
   })
   window.api.onDocumentBlockTranslated((update: DocumentWorkspaceTranslationUpdate) => {
     const tab = findDocumentTabByTranslationUpdate(update)
@@ -5973,13 +7164,26 @@ async function initializeDocumentWorkspace(): Promise<void> {
     releaseHtmlPreviewUrl()
   })
   historyButton.addEventListener('click', () => setDocumentHistoryOpen(historyPopover.hidden))
+  documentHistoryClearButton.addEventListener('click', () => {
+    setDocumentHistoryConfirmation({ kind: 'clear' }, documentHistoryClearButton)
+  })
+  documentHistoryConfirmDelete.addEventListener('click', () => void confirmDocumentHistoryAction())
+  documentHistoryConfirmCancel.addEventListener('click', () => closeDocumentHistoryConfirmation())
+  documentHistoryConfirmDialog.addEventListener('cancel', (event) => {
+    event.preventDefault()
+    closeDocumentHistoryConfirmation()
+  })
+  documentHistoryConfirmDialog.addEventListener('close', () => {
+    // 原生关闭路径只清理待确认状态；焦点由显式按钮或 cancel 路径恢复，避免重复 focus。
+    if (pendingDocumentHistoryAction) closeDocumentHistoryConfirmation(false)
+  })
   documentHistorySearch.addEventListener('input', renderDocumentHistory)
   documentHistorySearch.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
-      const firstEntry = visibleDocumentFileHistory[0]
+      const firstEntry = visibleDocumentHistory[0]
       if (firstEntry) {
         event.preventDefault()
-        void switchToDocumentHistoryEntry(firstEntry)
+        void openDocumentHistoryEntry(firstEntry)
       }
       return
     }
@@ -5988,26 +7192,43 @@ async function initializeDocumentWorkspace(): Promise<void> {
     documentHistoryList.querySelector<HTMLButtonElement>('[data-history-index]')?.focus()
   })
   documentHistoryList.addEventListener('click', (event) => {
-    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-index]')
-    const entry = item ? visibleDocumentFileHistory[Number(item.dataset.historyIndex)] : undefined
-    if (entry) void switchToDocumentHistoryEntry(entry)
+    const actionButton = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action]')
+    if (!actionButton) return
+    const action = actionButton.dataset.historyAction
+    if (action === 'open') {
+      const entry = visibleDocumentHistory[Number(actionButton.dataset.historyIndex)]
+      if (entry) void openDocumentHistoryEntry(entry)
+      return
+    }
+    if (action !== 'delete') return
+    // 先按渲染时写入的 data-history-target-id 查找任务，避免误用文件路径或列表索引。
+    const historyTargetId = actionButton.dataset.historyTargetId
+    const entry = visibleDocumentHistory.find((candidate) =>
+      candidate.kind === 'task' && candidate.jobId === historyTargetId
+    )
+    if (entry?.kind === 'task') {
+      setDocumentHistoryConfirmation({ kind: 'delete', entry: entry.task }, actionButton)
+    }
   })
   documentHistoryList.addEventListener('keydown', (event) => {
-    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-index]')
+    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action]')
     if (!item) return
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      const entry = visibleDocumentFileHistory[Number(item.dataset.historyIndex)]
-      if (entry) void switchToDocumentHistoryEntry(entry)
+      item.click()
       return
     }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault()
-      const offset = event.key === 'ArrowDown' ? 1 : -1
-      const buttons = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('[data-history-index]'))
-      const next = buttons[(buttons.indexOf(item) + offset + buttons.length) % buttons.length]
-      next?.focus()
-    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    // 打开与删除按钮都属于同一键盘导航序列，避免删除操作只能依赖鼠标。
+    const buttons = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('[data-history-action]'))
+    const currentIndex = buttons.indexOf(item)
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? buttons.length - 1
+        : (Math.max(0, currentIndex) + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+    buttons[nextIndex]?.focus()
   })
   document.addEventListener('click', (event) => {
     if (historyPopover.hidden || historyPopover.contains(event.target as Node) || historyButton.contains(event.target as Node)) return
@@ -6020,7 +7241,8 @@ async function initializeDocumentWorkspace(): Promise<void> {
     setDocumentTocOpen(false)
   })
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !historyPopover.hidden) {
+    // 确认框打开时由原生 cancel 处理 Escape，避免同时关闭其背后的历史面板。
+    if (event.key === 'Escape' && !historyPopover.hidden && !documentHistoryConfirmDialog.open) {
       event.preventDefault()
       setDocumentHistoryOpen(false, true)
     }
@@ -6032,15 +7254,16 @@ async function initializeDocumentWorkspace(): Promise<void> {
       populateDocumentLanguages(currentSettings, sourceLanguageSelect.value, targetLanguageSelect.value)
     }
     renderWindowMaximizedState(windowMaximizeButton.dataset.maximized === 'true')
-    if (latestSnapshot) {
+    const tab = getActiveDocumentTab()
+    if (latestSnapshot && tab?.snapshot === latestSnapshot) {
       renderedSourcePreviewIdentity = ''
       renderedSourceWarningSignature = ''
       renderedTranslationSignature = ''
       renderedTranslationPreviewKind = null
       hasRenderedTranslation = false
       renderedTranslationWarningSignature = ''
-      renderSnapshot(latestSnapshot)
-      renderTaskState(latestSnapshot)
+      renderSnapshot(latestSnapshot, tab)
+      renderTaskState(latestSnapshot, tab)
     }
   })
 }

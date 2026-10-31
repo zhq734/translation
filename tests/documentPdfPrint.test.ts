@@ -533,3 +533,55 @@ test('OCR 原文导出必须等待 PDF Canvas 并测量 PDF 页面高度以生�
   assert.match(fake.executedScripts[0] ?? '', /\.document-pdf-canvas/u)
   assert.match(fake.executedScripts[1] ?? '', /\.document-pdf-page/u)
 })
+
+test('双语打印必须同时保留原文栏和译文栏', () => {
+  const css = buildDocumentPrintCss(documentModel(), undefined, 'bilingual')
+
+  assert.doesNotMatch(css, /\.document-column:first-child\s*,/u)
+  assert.match(css, /\.document-columns[\s\S]*?display:\s*grid\s*!important/u)
+  assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)\s*!important/u)
+  assert.match(css, /\.document-column[\s\S]*?display:\s*block\s*!important/u)
+})
+
+test('双语打印必须按页上报合成进度并响应取消', async () => {
+  const fake = createSequencedWebContentsFake([
+    { ready: true },
+    { pageHeightCssPx: 1056 }
+  ])
+  const progress: Array<{ completedPages: number; totalPages: number }> = []
+
+  await printDocumentPreviewToPdf(
+    fake.webContents,
+    documentModel(),
+    undefined,
+    false,
+    'bilingual',
+    undefined,
+    (event) => progress.push(event)
+  )
+
+  assert.deepEqual(progress, [
+    { completedPages: 0, totalPages: 1 },
+    { completedPages: 1, totalPages: 1 }
+  ])
+})
+
+test('打印前已取消时必须抛出 AbortError 且不注入样式', async () => {
+  const fake = createWebContentsFake()
+  const controller = new AbortController()
+  controller.abort()
+
+  await assert.rejects(
+    printDocumentPreviewToPdf(
+      fake.webContents,
+      documentModel(),
+      undefined,
+      false,
+      'translation',
+      controller.signal
+    ),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError'
+  )
+  assert.equal(fake.insertedCss.length, 0)
+  assert.equal(fake.printOptions.length, 0)
+})

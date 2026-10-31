@@ -25,8 +25,8 @@ interface PartialExportTarget {
   path: PartialExportBlockPath
   /** 文本目标覆盖的 run 标识。 */
   runIds?: string[]
-  /** OCR 区域索引。 */
-  regionIndex?: number
+  /** OCR 区域稳定标识。 */
+  regionId?: string
   /** 表格行索引。 */
   rowIndex?: number
   /** 表格行内每个单元格覆盖的文本区块与 run 标识。 */
@@ -194,15 +194,14 @@ function collectBlockTargets(
       continue
     }
     if (block.kind === 'image' && block.ocrRegions) {
-      for (let regionIndex = 0; regionIndex < block.ocrRegions.length; regionIndex += 1) {
-        const region = block.ocrRegions[regionIndex]!
+      for (const region of block.ocrRegions) {
         if (region.status !== 'recognized' || !region.text.trim()) continue
         targets.push({
           targetId: `${pageIndex}:${blockPath.join('.')}:ocr:${region.regionId}`,
           kind: 'ocr',
           pageIndex,
           path: blockPath,
-          regionIndex
+          regionId: region.regionId
         })
       }
       continue
@@ -285,7 +284,7 @@ function hasSuccessfulTranslation(translation: DocumentModel, target: PartialExp
     return Boolean(text.trim())
   }
   if (target.kind === 'ocr' && block.kind === 'image') {
-    const region = block.ocrRegions?.[target.regionIndex ?? -1]
+    const region = block.ocrRegions?.find((candidate) => candidate.regionId === target.regionId)
     return Boolean(region?.translatedText?.trim())
   }
   if (target.kind === 'table-row' && block.kind === 'table') {
@@ -348,7 +347,7 @@ function restoreTextTarget(
 function restoreOcrTarget(targetModel: DocumentModel, target: PartialExportTarget): void {
   const block = resolveBlock(targetModel.pages[target.pageIndex]?.blocks ?? [], target.path)
   if (block?.kind !== 'image') throw new DocumentPartialExportError('ocr-target-missing')
-  const region = block.ocrRegions?.[target.regionIndex ?? -1]
+  const region = block.ocrRegions?.find((candidate) => candidate.regionId === target.regionId)
   if (!region) throw new DocumentPartialExportError('ocr-region-missing')
   delete region.translatedText
 }

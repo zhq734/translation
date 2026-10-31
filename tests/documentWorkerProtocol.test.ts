@@ -6,6 +6,7 @@ import {
   createDocumentWorkerAssetResultMessage,
   createDocumentWorkerFailureMessage,
   createDocumentWorkerCancelledMessage,
+  createDocumentWorkerExportProgressMessage,
   createDocumentWorkerProgressMessage,
   createDocumentWorkerResultMessage,
   createDocumentWorkerTranslationSnapshotMessage,
@@ -19,6 +20,102 @@ import {
   resolveDocumentWorkerErrorCode,
   sanitizeDocumentWorkerError
 } from '../src/shared/documentWorkerProtocol.ts'
+
+/**
+ * 构造合法的 worker 导出请求。
+ * @returns 导出请求消息。
+ * @author zhenghq
+ */
+function exportRequest() {
+  return {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'export' as const,
+    jobId: 'job-1',
+    generation: 1,
+    request: {
+      mode: 'complete' as const,
+      layout: 'bilingual' as const,
+      textLayer: true,
+      confirmPartialExport: false
+    }
+  }
+}
+
+/**
+ * 构造合法的 worker 导出进度消息。
+ * @returns 导出进度消息。
+ * @author zhenghq
+ */
+function exportProgress() {
+  return createDocumentWorkerExportProgressMessage('job-1', 2, {
+    phase: 'composing',
+    percent: 40,
+    completedPages: 2,
+    totalPages: 5,
+    warningCount: 1
+  })
+}
+
+test('worker 导出请求必须保留双语布局并丢弃额外路径字段', () => {
+  const parsed = parseDocumentWorkerRequest({
+    ...exportRequest(),
+    request: {
+      ...exportRequest().request,
+      filePath: '/tmp/escape.pdf',
+      command: 'open /tmp'
+    }
+  })
+  assert.ok(parsed?.type === 'export')
+  assert.equal(parsed.request.layout, 'bilingual')
+  assert.equal(parsed.request.textLayer, true)
+  assert.deepEqual(parsed.request, {
+    mode: 'complete',
+    layout: 'bilingual',
+    textLayer: true,
+    confirmPartialExport: false
+  })
+  assert.equal(parseDocumentWorkerRequest({
+    ...exportRequest(),
+    request: { ...exportRequest().request, layout: 'side-by-side' }
+  }), null)
+})
+
+test('worker 导出进度必须严格校验阶段、百分比、页面计数和任务代际', () => {
+  const progress = exportProgress()
+  assert.deepEqual(parseDocumentWorkerResponse(progress), progress)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, phase: 'rendering' }
+  }), null)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, percent: 101 }
+  }), null)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, completedPages: 6 }
+  }), null)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, warningCount: -1 }
+  }), null)
+  assert.equal(parseDocumentWorkerResponse({ ...progress, generation: 0 }), null)
+})
+
+test('worker 导出进度不得被其他解析器误接收或混入额外字段', () => {
+  const progress = exportProgress()
+  assert.equal(parseDocumentWorkerAssetResult(progress), null)
+  assert.equal(isDocumentWorkerResponseMessage(progress), true)
+  assert.equal(parseDocumentWorkerRequest(progress), null)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, jobId: 'forged-job' }
+  }), null)
+  assert.equal(parseDocumentWorkerResponse({
+    ...progress,
+    payload: { ...progress.payload, filePath: '/tmp/escape.pdf' }
+  }), null)
+})
 
 test('文档 worker 协议应使用固定版本并校验 jobId、generation 与请求类型', () => {
   assert.equal(DOCUMENT_WORKER_PROTOCOL_VERSION, 1)

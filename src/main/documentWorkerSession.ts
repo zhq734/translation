@@ -24,6 +24,7 @@ import {
 import type { DocumentLanguagePair } from '../shared/documentLanguageDirection.ts'
 import type {
   DocumentAssetResult,
+  DocumentExportProgress,
   DocumentExportRequest,
   DocumentExportResult,
   DocumentRunRequest,
@@ -32,7 +33,10 @@ import type {
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
-import { applyDocumentWorkspaceTranslationUpdate } from '../shared/documentWorkspace.ts'
+import {
+  applyDocumentWorkspaceTranslationUpdate,
+  createDocumentExportProgress
+} from '../shared/documentWorkspace.ts'
 import {
   DocumentWorkerClient,
   type DocumentWorkerProcess
@@ -66,6 +70,10 @@ export interface DocumentWorkerSessionDependencies {
   sendCompleted(snapshot: DocumentWorkspaceSnapshot): void
   /** 推送可立即渲染的单个译文区块。 */
   sendTranslationUpdate?(update: DocumentWorkspaceTranslationUpdate): void
+  /** 推送受控 PDF 导出进度。 */
+  sendExportProgress?(progress: DocumentExportProgress): void
+  /** 在系统文件管理器中定位最近一次成功导出的文件。 */
+  openExportFolder?(filePath: string): Promise<void>
   /** 使用主进程凭据执行流式翻译。 */
   translate(
     request: DocumentWorkerTranslationRpcRequest,
@@ -98,6 +106,8 @@ interface SessionJob {
   settled: boolean
   /** 导出请求等待器。 */
   exportRequest: PendingExport | null
+  /** 本代际最近一次成功导出的文件路径。 */
+  lastExportPath?: string
 }
 
 /** 当前等待 worker 返回的导出请求。 */
@@ -257,6 +267,7 @@ export class DocumentWorkerSession {
     job.snapshot = snapshot
     job.settled = false
     job.exportRequest = null
+    job.lastExportPath = undefined
     this.highestGeneration = generation
     this.dependencies.sendProgress(snapshot)
     const sent = this.client.send({
@@ -327,6 +338,7 @@ export class DocumentWorkerSession {
       generation: job.generation,
       request: {
         mode: request.mode,
+        layout: request.layout === 'bilingual' ? 'bilingual' : 'translation',
         ...(request.textLayer !== undefined ? { textLayer: request.textLayer } : {}),
         completionReport: job.snapshot.completionReport,
         ...(request.mode === 'partial' ? { confirmPartialExport: true } : {})
@@ -337,6 +349,39 @@ export class DocumentWorkerSession {
       return { status: 'rejected', code: 'worker-unavailable' }
     }
     return result
+  }
+
+  /**
+   * 取消当前正在执行的 PDF 导出，不改变已完成任务的终态快照。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否向 worker 发送了取消请求。
+   * @author zhenghq
+   */
+  cancelExport(jobId: string, generation: number): boolean {
+    if (this.disposed || !this.isCurrent(jobId, generation)) return false
+    const pending = this.active?.exportRequest
+    if (!pending || pending.jobId !== jobId || pending.generation !== generation) return false
+    return this.client.cancel(jobId, generation)
+  }
+
+  /**
+   * 打开当前任务本会话最近一次成功导出的文件所在目录。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否成功调用系统文件管理器。
+   * @author zhenghq
+   */
+  async openExportFolder(jobId: string, generation: number): Promise<boolean> {
+    if (this.disposed || !this.isCurrent(jobId, generation)) return false
+    const job = this.active
+    if (!job?.lastExportPath || !this.dependencies.openExportFolder) return false
+    try {
+      await this.dependencies.openExportFolder(job.lastExportPath)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -505,6 +550,21 @@ export class DocumentWorkerSession {
   private handleResponse(message: DocumentWorkerResponseMessage): void {
     const job = this.active
     if (!job || job.jobId !== message.jobId || job.generation !== message.generation) return
+    if (message.type === 'export-progress') {
+      if (!job.exportRequest) return
+      this.dependencies.sendExportProgress?.(createDocumentExportProgress(
+        message.jobId,
+        message.generation,
+        message.payload
+      ))
+      return
+    }
+    if (message.type === 'cancelled' && job.exportRequest) {
+      const pending = job.exportRequest
+      job.exportRequest = null
+      pending.resolve({ status: 'cancelled' })
+      return
+    }
     // 导出是终态后的独立命令，其响应仍必须交付给等待中的导出 Promise。
     if (message.type === 'result' && message.payload.export) {
       void this.finishExport(job, message.payload.export)
@@ -641,8 +701,10 @@ export class DocumentWorkerSession {
         rename: (source, target) => this.dependencies.rename(source, target),
         unlink: (path) => this.dependencies.unlink(path)
       })
+      job.lastExportPath = save.filePath
       pending.resolve({
         status: 'saved',
+        filePath: save.filePath,
         ...(payload.warnings.length > 0 ? { warnings: payload.warnings } : {})
       })
     } catch {

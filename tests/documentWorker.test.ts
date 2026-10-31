@@ -931,6 +931,73 @@ test('生产执行器部分导出应保留未完成目标原文并返回 PDF 字
   assert.equal(exported.payload.export?.partial?.reverted, 1)
 })
 
+test('生产执行器导出必须透传源模型、布局、取消信号与页级进度', async () => {
+  const source = workerModel('doc-export-options', 'hello')
+  const observed: Array<{
+    sourceModel?: DocumentModel
+    layout?: string
+    signal?: AbortSignal
+    textLayer?: boolean
+  }> = []
+  const dependencies = productionDependencies(
+    source,
+    async (text) => `译:${text}`,
+    async (model, _dependencies, options) => {
+      observed.push({
+        sourceModel: options.sourceModel,
+        layout: options.layout,
+        signal: options.signal,
+        textLayer: options.textLayer
+      })
+      options.onProgress?.({ completedPages: 1, totalPages: 1 })
+      return { bytes: new Uint8Array([1]), warnings: [] }
+    }
+  )
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const emit = (message: DocumentWorkerResponseMessage): void => {
+    responses.push(message)
+  }
+  await executor.execute(
+    request('job-export-options', 1, 'run', workerFixture('export-options')),
+    new AbortController().signal,
+    emit
+  )
+  const runResult = responses.find((message) => message.type === 'result')
+  assert.ok(runResult && runResult.type === 'result')
+  if (!runResult || runResult.type !== 'result') return
+
+  const exportController = new AbortController()
+  await executor.execute({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'export',
+    jobId: 'job-export-options',
+    generation: 1,
+    request: {
+      mode: 'complete',
+      layout: 'bilingual',
+      textLayer: true,
+      ...(runResult.payload.completionReport
+        ? { completionReport: runResult.payload.completionReport }
+        : {})
+    }
+  }, exportController.signal, emit)
+
+  assert.equal(observed.length, 1)
+  assert.equal(observed[0]?.sourceModel?.documentId, 'doc-export-options')
+  assert.equal(observed[0]?.layout, 'bilingual')
+  assert.equal(observed[0]?.signal, exportController.signal)
+  assert.equal(observed[0]?.textLayer, true)
+  const progress = responses.find((message) => message.type === 'export-progress')
+  assert.ok(progress && progress.type === 'export-progress')
+  if (!progress || progress.type !== 'export-progress') return
+  assert.equal(progress.jobId, 'job-export-options')
+  assert.equal(progress.generation, 1)
+  assert.equal(progress.payload.phase, 'composing')
+  assert.equal(progress.payload.completedPages, 1)
+  assert.equal(progress.payload.totalPages, 1)
+})
+
 test('worker 宿主应独立读取当前任务已声明资源且不启动新的执行任务', async () => {
   const responses: DocumentWorkerResponseMessage[] = []
   const source = workerModelWithAsset('doc-host-asset', 'hello')

@@ -61,6 +61,56 @@ export interface DocumentTranslationImageFlowGapInput {
   obstacles: readonly DocumentFlowObstacle[]
 }
 
+/** 译文窄表列宽可读性阈值，单位为原始 PDF 点。 */
+export const DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH = 36
+
+/**
+ * 在保持表格总宽的前提下为过窄列重新分配列宽。
+ * PDF 的合并单元格常被识别成 20pt 左右的首列，逐字竖排会严重破坏译文；
+ * 这里只提升低于可读阈值的列，并从同表宽列按比例回收空间。
+ * @param columnWidths 原始列宽。
+ * @param tableWidth 表格总宽度；缺失或非法时保留原始列宽。
+ * @returns 总和不超过表格总宽的新列宽。
+ * @author zhenghq
+ */
+export function resolveTranslationTableColumnWidths(
+  columnWidths: readonly number[],
+  tableWidth: number | undefined
+): number[] {
+  const widths = columnWidths.map((value) => Number.isFinite(value) && value > 0 ? value : 0)
+  const total = widths.reduce((sum, width) => sum + width, 0)
+  if (total <= 0 || !tableWidth || !Number.isFinite(tableWidth) || tableWidth <= 0) {
+    return widths
+  }
+  const normalized = widths.map((width) => width / total * tableWidth)
+  const narrowIndexes = normalized
+    .map((width, index) => ({ width, index }))
+    .filter(({ width }) => width > 0 && width < DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH)
+    .map(({ index }) => index)
+  if (narrowIndexes.length === 0) return normalized
+  const requiredExtra = narrowIndexes.reduce((sum, index) =>
+    sum + DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH - normalized[index]!, 0)
+  const donorIndexes = normalized
+    .map((width, index) => ({ width, index }))
+    .filter(({ width, index }) => width > DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH && !narrowIndexes.includes(index))
+    .map(({ index }) => index)
+  const donorCapacity = donorIndexes.reduce((sum, index) =>
+    sum + normalized[index]! - DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH, 0)
+  if (donorIndexes.length === 0 || donorCapacity <= 0) return normalized
+  const distributable = Math.min(requiredExtra, donorCapacity)
+  const result = [...normalized]
+  // 窄列先按缺口比例获得空间；若宽列容量不足，所有窄列同比缩小增益，总宽仍保持不变。
+  for (const index of narrowIndexes) {
+    const deficit = DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH - normalized[index]!
+    result[index] = normalized[index]! + distributable * deficit / requiredExtra
+  }
+  const donorTotal = donorIndexes.reduce((sum, index) => sum + normalized[index]!, 0)
+  for (const index of donorIndexes) {
+    result[index] = normalized[index]! - distributable * normalized[index]! / donorTotal
+  }
+  return result
+}
+
 /**
  * 判断两个横向范围是否存在实际重叠。
  * 边界刚好相接视为不重叠，避免相邻列被误判为碰撞。

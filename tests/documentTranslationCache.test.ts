@@ -7,7 +7,10 @@ import {
   DocumentTranslationCacheStore,
   DOCUMENT_TRANSLATION_CACHE_SCHEMA_VERSION
 } from '../src/main/documentTranslationCache.ts'
-import type { DocumentTranslationCacheEntry } from '../src/shared/documentTranslation.ts'
+import {
+  DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
+  type DocumentTranslationCacheEntry
+} from '../src/shared/documentTranslation.ts'
 
 /**
  * 创建独立缓存目录，避免测试之间共享状态。
@@ -30,10 +33,35 @@ function entry(translation: string): DocumentTranslationCacheEntry {
     languagePair: { sourceLang: 'EN', targetLang: 'ZH' },
     glossaryVersion: 'none',
     protectionRulesVersion: 'protection-v1',
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
     status: 'completed',
     translation
   }
 }
+
+test('文档翻译缓存必须拒绝缺失或不匹配翻译协议版本的条目', async () => {
+  const directory = temporaryDirectory()
+  try {
+    const store = new DocumentTranslationCacheStore({
+      directory,
+      maxBytes: 1024 * 1024,
+      maxAgeMs: 60_000,
+      now: () => 1000
+    })
+    const withoutProtocol = { ...entry('旧译文') } as Record<string, unknown>
+    delete withoutProtocol.translationProtocolVersion
+    await store.write('missing-protocol', withoutProtocol as DocumentTranslationCacheEntry)
+    await store.write('old-protocol', {
+      ...entry('旧协议译文'),
+      translationProtocolVersion: 'document-translation-protocol-v1'
+    })
+
+    assert.equal(await store.read('missing-protocol'), null)
+    assert.equal(await store.read('old-protocol'), null)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('文档翻译缓存必须持久化、读取并清空条目', async () => {
   const directory = temporaryDirectory()

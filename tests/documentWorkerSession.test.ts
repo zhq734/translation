@@ -11,6 +11,8 @@ import type { DocumentModel } from '../src/shared/documentTypes.ts'
 import {
   createDocumentWorkerAssetRequestMessage,
   createDocumentWorkerAssetResultMessage,
+  createDocumentWorkerCancelledMessage,
+  createDocumentWorkerExportProgressMessage,
   createDocumentWorkerProgressMessage,
   createDocumentWorkerResultMessage,
   createDocumentWorkerTranslationSnapshotMessage,
@@ -183,6 +185,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
   written: Array<{ path: string; bytes: Uint8Array }>
   renamed: Array<{ source: string; target: string }>
   unlinked: string[]
+  exportProgress: Array<{ jobId: string; generation: number; phase: string; percent: number }>
+  openedFolders: string[]
   translated: Array<{ text: string; languagePair: DocumentLanguagePair }>
 } {
   const progress: DocumentWorkspaceSnapshot[] = []
@@ -190,6 +194,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
   const written: Array<{ path: string; bytes: Uint8Array }> = []
   const renamed: Array<{ source: string; target: string }> = []
   const unlinked: string[] = []
+  const exportProgress: Array<{ jobId: string; generation: number; phase: string; percent: number }> = []
+  const openedFolders: string[] = []
   const translated: Array<{ text: string; languagePair: DocumentLanguagePair }> = []
   return {
     progress,
@@ -197,6 +203,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
     written,
     renamed,
     unlinked,
+    exportProgress,
+    openedFolders,
     translated,
     dependencies: {
       isApprovedPath: (path) => path === '/tmp/sample.txt',
@@ -204,6 +212,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
       startOptions: () => startOptions(),
       sendProgress: (snapshot) => progress.push(snapshot),
       sendCompleted: (snapshot) => completed.push(snapshot),
+      sendExportProgress: (progressEvent) => exportProgress.push(progressEvent),
+      openExportFolder: async (filePath) => openedFolders.push(filePath),
       translate: async (request, _signal, onDelta) => {
         translated.push({ text: request.text, languagePair: request.languagePair })
         onDelta('你')
@@ -373,11 +383,17 @@ test('session 导出必须使用当前完成报告、保存 worker 字节并拒�
     runMode: 'translation'
   }))
 
-  const pending = session.exportPdf({ jobId, generation: 1, mode: 'complete' })
+  const pending = session.exportPdf({
+    jobId,
+    generation: 1,
+    mode: 'complete',
+    layout: 'bilingual'
+  })
   const exportRequest = process.sent.findLast((message) => (
     message && typeof message === 'object' && (message as { type?: unknown }).type === 'export'
-  )) as { request?: { completionReport?: unknown } } | undefined
+  )) as { request?: { completionReport?: unknown; layout?: unknown } } | undefined
   assert.deepEqual(exportRequest?.request?.completionReport, completionReport)
+  assert.equal(exportRequest?.request?.layout, 'bilingual')
   process.emitMessage(createDocumentWorkerResultMessage(jobId, 1, {
     status: 'completed',
     percent: 100,
@@ -386,13 +402,105 @@ test('session 导出必须使用当前完成报告、保存 worker 字节并拒�
       warnings: []
     }
   }))
-  assert.deepEqual(await pending, { status: 'saved' })
+  assert.deepEqual(await pending, { status: 'saved', filePath: '/tmp/out.pdf' })
   const written = fixture.written[0]
   assert.ok(written)
   assert.match(written.path, /^\/tmp\/out\.pdf\..+\.tmp$/u)
   assert.deepEqual([...written.bytes], [37, 80, 68, 70])
   assert.deepEqual(fixture.renamed, [{ source: written.path, target: '/tmp/out.pdf' }])
   assert.deepEqual(fixture.unlinked, [])
+  session.dispose()
+})
+
+test('session 必须转发合法导出进度并拒绝旧代际事件', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const session = new DocumentWorkerSession(fixture.dependencies)
+  const accepted = await session.run({ path: '/tmp/sample.txt', generation: 1 })
+  const jobId = accepted.jobId!
+  emitCompletedResult(process, jobId, model('/tmp/sample.txt'))
+
+  const pending = session.exportPdf({ jobId, generation: 1, mode: 'complete' })
+  process.emitMessage(createDocumentWorkerExportProgressMessage(jobId, 1, {
+    phase: 'composing',
+    percent: 40,
+    completedPages: 2,
+    totalPages: 5,
+    warningCount: 1
+  }))
+  process.emitMessage(createDocumentWorkerExportProgressMessage(jobId, 2, {
+    phase: 'writing',
+    percent: 90
+  }))
+
+  assert.deepEqual(fixture.exportProgress, [{
+    jobId,
+    generation: 1,
+    phase: 'composing',
+    percent: 40,
+    completedPages: 2,
+    totalPages: 5,
+    warningCount: 1
+  }])
+  assert.equal(fixture.completed.at(-1)?.task.status, 'completed')
+
+  process.emitMessage(createDocumentWorkerResultMessage(jobId, 1, {
+    status: 'completed',
+    percent: 100,
+    export: { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }))
+  assert.equal((await pending).status, 'saved')
+  session.dispose()
+})
+
+test('session 取消导出必须发送取消请求且不得把已完成任务改成 cancelled', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const session = new DocumentWorkerSession(fixture.dependencies)
+  const accepted = await session.run({ path: '/tmp/sample.txt', generation: 1 })
+  const jobId = accepted.jobId!
+  emitCompletedResult(process, jobId, model('/tmp/sample.txt'))
+  const terminal = fixture.completed.at(-1)
+  const pending = session.exportPdf({ jobId, generation: 1, mode: 'complete' })
+
+  assert.equal(session.cancelExport(jobId, 1), true)
+  const cancelMessage = process.sent.findLast((message) => (
+    message && typeof message === 'object' && (message as { type?: unknown }).type === 'cancel'
+  ))
+  assert.deepEqual(cancelMessage, {
+    version: 1,
+    type: 'cancel',
+    jobId,
+    generation: 1
+  })
+  process.emitMessage(createDocumentWorkerCancelledMessage(jobId, 1))
+
+  assert.deepEqual(await pending, { status: 'cancelled' })
+  assert.deepEqual(fixture.completed.at(-1), terminal)
+  assert.equal(session.cancelExport(jobId, 2), false)
+  session.dispose()
+})
+
+test('session 打开导出目录只能使用本会话成功保存的路径', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const session = new DocumentWorkerSession(fixture.dependencies)
+  const accepted = await session.run({ path: '/tmp/sample.txt', generation: 1 })
+  const jobId = accepted.jobId!
+  emitCompletedResult(process, jobId, model('/tmp/sample.txt'))
+
+  assert.equal(await session.openExportFolder(jobId, 1), false)
+  const pending = session.exportPdf({ jobId, generation: 1, mode: 'complete' })
+  process.emitMessage(createDocumentWorkerResultMessage(jobId, 1, {
+    status: 'completed',
+    percent: 100,
+    export: { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }))
+  assert.equal((await pending).status, 'saved')
+  assert.equal(await session.openExportFolder(jobId, 2), false)
+  assert.equal(await session.openExportFolder('unknown-job', 1), false)
+  assert.equal(await session.openExportFolder(jobId, 1), true)
+  assert.deepEqual(fixture.openedFolders, ['/tmp/out.pdf'])
   session.dispose()
 })
 

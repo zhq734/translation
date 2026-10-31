@@ -35,6 +35,8 @@ import {
 } from '../shared/documentPartialExport.ts'
 import type {
   DocumentAssetResult,
+  DocumentExportLayout,
+  DocumentExportProgress,
   DocumentExportRequest,
   DocumentExportResult,
   DocumentRunRequest,
@@ -43,6 +45,7 @@ import type {
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
+import { createDocumentExportProgress } from '../shared/documentWorkspace.ts'
 import { parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
 import type {
@@ -123,9 +126,7 @@ export interface DocumentWorkspaceTaskServiceDependencies {
    * 将文档模型导出为 PDF；部分导出时携带回退摘要，双层导出时追加透明 OCR 文字层。
    * @param model 待导出的文档模型。
    * @param dependencies 字体与资源读取依赖。
-   * @param partialExport 部分导出的回退摘要。
-   * @param textLayer 是否追加透明 OCR 文字层。
-   * @param sourceOnly 是否为仅保留 OCR 原文的双层 PDF 导出。
+   * @param options 部分导出摘要、文字层、布局、取消信号、页级进度与双语源模型。
    * @returns 已生成的 PDF 字节与可降级告警。
    * @author zhenghq
    */
@@ -134,7 +135,26 @@ export interface DocumentWorkspaceTaskServiceDependencies {
     loadAssetBytes(assetId: string): Promise<Uint8Array | null>
     /** 原始 PDF 字节；仅 OCR 原文导出 PDF 时提供。 */
     sourcePdfBytes?: Uint8Array
-  }, partialExport?: DocumentPartialExportSummary, textLayer?: boolean, sourceOnly?: boolean): Promise<DocumentPdfExportResult>
+  }, options: {
+    /** 部分导出的原文回退摘要。 */
+    partialExport?: DocumentPartialExportSummary
+    /** 是否追加透明 OCR 原文文字层。 */
+    textLayer?: boolean
+    /** 是否仅导出 OCR 原文 PDF。 */
+    sourceOnly?: boolean
+    /** 译文单栏或左右双语布局。 */
+    layout?: DocumentExportLayout
+    /** 取消导出时触发的中止信号。 */
+    signal?: AbortSignal
+    /** 合成阶段页级进度回调。 */
+    onProgress?: (progress: { completedPages: number; totalPages: number }) => void
+    /** 双语导出的原文模型。 */
+    sourceModel?: DocumentModel
+  }): Promise<DocumentPdfExportResult>
+  /** 推送导出阶段进度。 */
+  sendExportProgress?(progress: DocumentExportProgress): void
+  /** 在系统文件管理器中定位本会话已成功导出的文件。 */
+  openExportFolder?(filePath: string): Promise<void>
   /** 显示 PDF 保存对话框。 */
   showSaveDialog(suggestedName: string): Promise<DocumentSaveDialogResult>
   /** 将 PDF 字节写入用户选择的位置。 */
@@ -245,6 +265,14 @@ interface ActiveDocumentJob {
   lastSnapshot?: DocumentWorkspaceSnapshot
   /** 当前代际是否已经尝试保存完整历史快照。 */
   historySaved: boolean
+  /** 当前正在执行的 PDF 导出取消控制器。 */
+  exportController?: AbortController
+  /** 当前代际最近一次成功写入的导出路径；只供主进程打开目录使用。 */
+  lastExportPath?: string
+  /** 当前导出已经发送的最大百分比，保证进度不回退。 */
+  exportPercent: number
+  /** 当前导出已发送的最大完成页数，保证页数不回退。 */
+  exportCompletedPages: number
 }
 
 /**
@@ -401,7 +429,9 @@ export class DocumentWorkspaceTaskService {
         assetBytes: new Map(),
         cancelled: false,
         settled: false,
-        historySaved: false
+        historySaved: false,
+        exportPercent: 0,
+        exportCompletedPages: 0
       }
       this.highestGeneration = request.generation
       this.active = job
@@ -615,6 +645,7 @@ export class DocumentWorkspaceTaskService {
     if (request.jobId !== job.jobId || request.generation !== job.generation) {
       return { status: 'rejected', code: 'completion-mismatch' }
     }
+    if (job.exportController) return { status: 'rejected', code: 'export-busy' }
     if (!job.completionReport || !job.source) {
       return { status: 'rejected', code: 'completion-mismatch' }
     }
@@ -656,7 +687,36 @@ export class DocumentWorkspaceTaskService {
       job.completionReport.translated + job.completionReport.unchanged === 0) {
       return { status: 'rejected', code: 'not-ready' }
     }
+    const layout = request.layout === 'bilingual' ? 'bilingual' : 'translation'
+    const controller = new AbortController()
+    job.exportController = controller
+    job.exportPercent = 0
+    job.exportCompletedPages = 0
+    let totalPages = job.source.pages.length
+    let warningCount = 0
+    const emitProgress = (
+      phase: DocumentExportProgress['phase'],
+      percent: number,
+      completedPages?: number
+    ): void => {
+      job.exportPercent = Math.max(job.exportPercent, percent)
+      if (completedPages !== undefined) {
+        job.exportCompletedPages = Math.max(job.exportCompletedPages, completedPages)
+      }
+      this.dependencies.sendExportProgress?.(createDocumentExportProgress(
+        job.jobId,
+        job.generation,
+        {
+          phase,
+          percent: job.exportPercent,
+          completedPages: job.exportCompletedPages,
+          totalPages,
+          warningCount
+        }
+      ))
+    }
     try {
+      emitProgress('preparing', 0, 0)
       // OCR 原文没有部分译文回退语义，直接导出已完成 OCR 的源模型。
       const exportDocument = !ocrOnly && request.mode === 'partial'
         ? buildPartialExportDocument(job.source, job.translation, job.completionReport)
@@ -675,6 +735,7 @@ export class DocumentWorkspaceTaskService {
       if (save.canceled || !save.filePath) return { status: 'cancelled' }
       // OCR 原文导出明确使用任务源模型，避免流水线返回结构变化时误把翻译模型写入双层 PDF。
       const exportModel = ocrOnly ? job.source : exportDocument?.model ?? job.translation
+      totalPages = exportModel.pages.length
       const result = await this.dependencies.exportPdf(exportModel, {
         loadFontBytes: () => this.dependencies.loadFontBytes(),
         loadAssetBytes: async (assetId) => {
@@ -682,12 +743,32 @@ export class DocumentWorkspaceTaskService {
           return asset ? this.loadAsset(job, asset) : null
         },
         ...(ocrOnly && job.input.format === 'pdf' ? { sourcePdfBytes: job.input.bytes } : {})
-      }, exportDocument?.summary, request.textLayer, ocrOnly)
+      }, {
+        ...(exportDocument ? { partialExport: exportDocument.summary } : {}),
+        ...(request.textLayer !== undefined ? { textLayer: request.textLayer } : {}),
+        sourceOnly: ocrOnly,
+        layout,
+        signal: controller.signal,
+        sourceModel: job.source,
+        onProgress: (progress) => {
+          totalPages = Math.max(1, progress.totalPages)
+          emitProgress(
+            'composing',
+            Math.min(80, Math.max(1, Math.round(progress.completedPages / totalPages * 80))),
+            progress.completedPages
+          )
+        }
+      })
+      // 生产导出器通过回调报告合成页数；不回调的旧实现由写入阶段以模型总页数收口，
+      // 避免服务重复发送同阶段事件造成界面进度抖动。
+      job.exportCompletedPages = Math.max(job.exportCompletedPages, totalPages)
+      warningCount = result.warnings.length
+      emitProgress('writing', 90, totalPages)
       await writeDocumentFileAtomically(save.filePath, result.bytes, {
         writeFile: (path, bytes) => this.dependencies.writeFile(path, bytes),
         rename: (source, target) => this.dependencies.rename(source, target),
         unlink: (path) => this.dependencies.unlink(path)
-      })
+      }, controller.signal)
       try {
         await this.dependencies.updateHistoryExportStatus?.(
           job.jobId,
@@ -697,12 +778,56 @@ export class DocumentWorkspaceTaskService {
       } catch {
         // PDF 已经成功落盘，历史状态更新失败不能反向把导出结果标记为失败。
       }
+      job.lastExportPath = save.filePath
+      emitProgress('completed', 100, totalPages)
       return {
         status: 'saved',
+        filePath: save.filePath,
         ...(result.warnings.length > 0 ? { warnings: result.warnings } : {})
       }
     } catch (error) {
+      if (controller.signal.aborted ||
+        (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')) {
+        return { status: 'cancelled' }
+      }
       return { status: 'rejected', code: errorCode(error, 'export-failed') }
+    } finally {
+      if (job.exportController === controller) job.exportController = undefined
+    }
+  }
+
+  /**
+   * 取消当前任务正在执行的 PDF 导出；任务终态本身保持不变。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否找到并中止了正在执行的导出。
+   * @author zhenghq
+   */
+  cancelExport(jobId: string, generation: number): boolean {
+    const job = this.active
+    if (!job || job.jobId !== jobId || job.generation !== generation || !job.exportController) {
+      return false
+    }
+    job.exportController.abort()
+    return true
+  }
+
+  /**
+   * 打开当前任务本会话最近一次成功导出文件所在目录。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @returns 是否成功调用系统文件管理器。
+   * @author zhenghq
+   */
+  async openExportFolder(jobId: string, generation: number): Promise<boolean> {
+    const job = this.active
+    if (!job || job.jobId !== jobId || job.generation !== generation ||
+      !job.lastExportPath || !this.dependencies.openExportFolder) return false
+    try {
+      await this.dependencies.openExportFolder(job.lastExportPath)
+      return true
+    } catch {
+      return false
     }
   }
 

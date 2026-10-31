@@ -171,8 +171,8 @@ export class DocumentWorkerClient {
     if (!this.isCurrent(response.jobId, response.generation)) return
     const active = this.active
     if (!active || active.settled) return
-    if (response.type === 'progress' || response.type === 'translation-snapshot' ||
-      response.type === 'translation-update') {
+    if (response.type === 'progress' || response.type === 'export-progress' ||
+      response.type === 'translation-snapshot' || response.type === 'translation-update') {
       this.options.onMessage(response)
       return
     }

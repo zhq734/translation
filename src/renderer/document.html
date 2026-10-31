@@ -43,6 +43,9 @@
                 <p id="document-history-status" class="document-history-status" role="status" aria-live="polite" hidden></p>
                 <p id="document-history-empty" class="document-history-empty" role="status" aria-live="polite"></p>
                 <ul id="document-history-list" class="document-history-list" role="listbox" data-i18n-attr="aria-label:document.history" aria-label="History"></ul>
+                <div class="document-history-footer">
+                  <button id="document-history-clear" class="document-text-button document-history-clear" type="button" data-i18n="document.historyClear">Clear cache</button>
+                </div>
               </div>
             </div>
           </div>
@@ -158,6 +161,10 @@
         <div class="document-progress-copy">
           <span id="document-progress-stage" data-i18n="document.progress.ready">Ready</span>
           <span id="document-progress-count"></span>
+          <span id="document-progress-pages"></span>
+          <span id="document-progress-blocks"></span>
+          <span id="document-progress-warnings"></span>
+          <span id="document-progress-remaining"></span>
           <span id="document-partial-status" class="document-partial-status" role="status" aria-live="polite" hidden></span>
         </div>
         <div class="document-progress-track">
@@ -165,6 +172,54 @@
         </div>
       </footer>
     </main>
+    <dialog id="document-export-dialog" class="document-export-dialog flat-overlay" aria-labelledby="document-export-title" aria-describedby="document-export-description">
+      <form class="document-export-content" method="dialog">
+        <header class="document-export-header">
+          <div>
+            <h2 id="document-export-title" data-i18n="document.export.dialogTitle">Export PDF</h2>
+            <p id="document-export-description" class="document-export-description" data-i18n="document.export.dialogDescription">Choose a layout. A PDF is created from the current translated result.</p>
+          </div>
+          <button id="document-export-cancel" class="document-export-close" type="button" data-i18n-attr="aria-label:document.export.cancel;title:document.export.cancel" aria-label="Cancel export" title="Cancel export">×</button>
+        </header>
+        <fieldset class="document-export-layouts">
+          <legend data-i18n="document.export.layoutLabel">PDF layout</legend>
+          <label class="document-export-layout-option">
+            <input id="document-export-layout-translation" type="radio" name="document-export-layout" value="translation" checked />
+            <span>
+              <strong data-i18n="document.export.layout.translation">Translated PDF</strong>
+              <small data-i18n="document.export.layout.translationDescription">Translated content only, preserving the original page layout.</small>
+            </span>
+          </label>
+          <label class="document-export-layout-option">
+            <input id="document-export-layout-bilingual" type="radio" name="document-export-layout" value="bilingual" />
+            <span>
+              <strong data-i18n="document.export.layout.bilingual">Bilingual PDF</strong>
+              <small data-i18n="document.export.layout.bilingualDescription">Original and translated content side by side.</small>
+            </span>
+          </label>
+        </fieldset>
+        <div class="document-export-summary-grid">
+          <p id="document-export-incomplete" class="document-export-summary-item"></p>
+          <p id="document-export-warning-count" class="document-export-summary-item"></p>
+        </div>
+        <p id="document-export-incomplete-notice" class="document-export-notice" hidden></p>
+        <section id="document-export-progress" class="document-export-progress" aria-live="polite" hidden>
+          <div class="document-export-progress-copy">
+            <span id="document-export-progress-stage"></span>
+            <span id="document-export-progress-page"></span>
+            <span id="document-export-progress-percent"></span>
+          </div>
+          <div class="document-export-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="document-export-progressbar" class="document-export-progressbar"></div>
+          </div>
+        </section>
+        <div class="document-export-actions">
+          <button id="document-export-open-folder" class="document-secondary-button" type="button" data-i18n="document.export.openFolder" hidden>Open folder</button>
+          <button id="document-export-retry" class="document-secondary-button" type="button" data-i18n="document.export.retryIncomplete">Retry incomplete items</button>
+          <button id="document-export-confirm" class="document-primary-button" type="button" data-i18n="document.export.confirm">Export</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="document-partial-export-dialog" class="document-partial-export-dialog flat-overlay" aria-labelledby="document-partial-export-title" aria-describedby="document-partial-export-summary">
       <div class="document-partial-export-content">
         <header class="document-partial-export-header">
@@ -176,6 +231,19 @@
           <button id="document-partial-export-cancel" class="document-secondary-button" type="button" data-i18n="document.partialExport.cancel">Back</button>
           <button id="document-partial-export-retry" class="document-secondary-button" type="button" data-i18n="document.partialExport.retry">Retry incomplete items</button>
           <button id="document-partial-export-confirm" class="document-primary-button" type="button" data-i18n="document.partialExport.confirm">Export partial result</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="document-history-confirm-dialog" class="document-history-confirm-dialog flat-overlay" role="alertdialog" aria-modal="true" aria-labelledby="document-history-confirm-title" aria-describedby="document-history-confirm-description">
+      <div class="document-history-confirm-content">
+        <header class="document-history-confirm-header">
+          <span class="document-history-confirm-icon" aria-hidden="true">!</span>
+          <h2 id="document-history-confirm-title" data-i18n="document.historyDeleteTitle">Delete this history record?</h2>
+        </header>
+        <p id="document-history-confirm-description" class="document-history-confirm-description" data-i18n="document.historyDeleteDescription">The task history and its cached translation will be deleted. This action cannot be undone.</p>
+        <div class="document-history-confirm-actions">
+          <button id="document-history-confirm-cancel" class="document-secondary-button" type="button" data-i18n="document.historyCancel">Cancel</button>
+          <button id="document-history-confirm-delete" class="document-history-danger-button" type="button" data-i18n="document.historyConfirmDelete">Delete</button>
         </div>
       </div>
     </dialog>

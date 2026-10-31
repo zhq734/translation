@@ -88,6 +88,75 @@ test('PDF 导出返回有效 PDF 字节并保留页面尺寸', async () => {
   assert.deepEqual(result.warnings, [])
 })
 
+test('双语 PDF 导出必须同时包含原文与译文并逐页上报进度', async () => {
+  const model = documentWithText('Translated document')
+  const sourceModel = documentWithText('Source document')
+  const progress: Array<{ completedPages: number; totalPages: number }> = []
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  }, {
+    layout: 'bilingual',
+    sourceModel,
+    onProgress: (event) => progress.push(event)
+  })
+
+  const text = await extractFirstPageText(bytes)
+  assert.match(text, /Source document/u)
+  assert.match(text, /Translated document/u)
+  assert.deepEqual(progress, [{ completedPages: 1, totalPages: 1 }])
+})
+
+test('PDF 合成导出必须在开始前响应取消信号', async () => {
+  const controller = new AbortController()
+  controller.abort()
+
+  await assert.rejects(
+    exportDocumentToPdf(documentWithText('Cancelled'), {
+      loadFontBytes: async () => null,
+      loadAssetBytes: async () => null
+    }, { signal: controller.signal }),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError'
+  )
+})
+
+test('PDF 导出必须逐页上报进度并支持中途取消', async () => {
+  const model = documentWithText('Page one')
+  model.pages.push({
+    ...model.pages[0]!,
+    pageId: 'page-2',
+    index: 1,
+    blocks: [{
+      kind: 'text',
+      blockId: 'block-2',
+      readingOrder: 0,
+      translatable: true,
+      role: 'paragraph',
+      bbox: { x: 40, y: 50, width: 500, height: 80 },
+      runs: [{ runId: 'run-2', text: 'Page two', style: { fontSize: 12 } }]
+    }]
+  })
+  const progress: Array<{ completedPages: number; totalPages: number }> = []
+  const controller = new AbortController()
+
+  await assert.rejects(
+    exportDocumentToPdf(model, {
+      loadFontBytes: async () => null,
+      loadAssetBytes: async () => null
+    }, {
+      signal: controller.signal,
+      onProgress: (event) => {
+        progress.push(event)
+        if (event.completedPages === 1) controller.abort()
+      }
+    }),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError'
+  )
+
+  assert.deepEqual(progress, [{ completedPages: 1, totalPages: 2 }])
+})
+
 test('PDF 导出必须为表格单元格绘制边框并保留单元格文字', async () => {
   const model = documentWithText('')
   model.pages[0]!.blocks = [{

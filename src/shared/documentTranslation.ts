@@ -132,6 +132,8 @@ export interface DocumentTranslationCacheContext {
   fileSha256: string
   /** 解析器版本。 */
   parserVersion: string
+  /** 翻译合并与 OCR 回填协议版本。 */
+  translationProtocolVersion: string
   /** 任务冻结的实际语言方向。 */
   languagePair: DocumentLanguagePair
   /** 提供方与模型稳定指纹。 */
@@ -146,6 +148,8 @@ export interface DocumentTranslationCacheContext {
 export interface DocumentTranslationCacheEntry {
   /** 源文件内容哈希。 */
   sourceSha256: string
+  /** 写入条目时使用的翻译合并与回填协议版本。 */
+  translationProtocolVersion: string
   /** 实际语言方向。 */
   languagePair: DocumentLanguagePair
   /** 术语表版本。 */
@@ -183,6 +187,7 @@ export type DocumentTranslationCacheParseResult =
     ok: false
     code:
       | 'source-mismatch'
+      | 'protocol-mismatch'
       | 'language-mismatch'
       | 'glossary-mismatch'
       | 'protection-mismatch'
@@ -196,6 +201,9 @@ export type DocumentTranslationCacheParseResult =
 
 /** 当前保护协议版本；规则语义变化时必须递增。 */
 export const DOCUMENT_PROTECTION_RULES_VERSION = 'protection-v1'
+
+/** 文档翻译合并与 OCR 稳定回填协议版本；不兼容变化时必须递增。 */
+export const DOCUMENT_TRANSLATION_PROTOCOL_VERSION = 'document-translation-protocol-v2'
 
 /** 内部占位符前缀；源文本中出现时必须拒绝。 */
 const DOCUMENT_PROTECTED_PLACEHOLDER_PREFIX = '[[[ST-DOC-PROTECTED-'
@@ -699,6 +707,7 @@ export function buildDocumentTranslationCacheKey(context: DocumentTranslationCac
   const fields = [
     context.fileSha256,
     context.parserVersion,
+    context.translationProtocolVersion,
     context.languagePair.sourceLang,
     context.languagePair.targetLang,
     context.modelFingerprint,
@@ -724,6 +733,9 @@ export function parseDocumentTranslationCacheEntry(
   }
   if (value.sourceSha256 !== context.fileSha256) {
     return { ok: false, code: 'source-mismatch', reason: 'Source fingerprint changed.' }
+  }
+  if (value.translationProtocolVersion !== context.translationProtocolVersion) {
+    return { ok: false, code: 'protocol-mismatch', reason: 'Translation protocol changed.' }
   }
   if (!isLanguagePair(value.languagePair) ||
     value.languagePair.sourceLang !== context.languagePair.sourceLang ||

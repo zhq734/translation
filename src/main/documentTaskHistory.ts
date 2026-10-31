@@ -361,6 +361,21 @@ export class DocumentTaskHistoryStore {
   }
 
   /**
+   * 读取指定任务摘要中的源文件内容哈希。
+   * @param jobId 任务标识。
+   * @returns 匹配任务的源文件哈希；任务不存在或摘要损坏时返回 null。
+   * @author zhenghq
+   */
+  async getSourceSha256(jobId: string): Promise<string | null> {
+    let result: string | null = null
+    await this.enqueue(async () => {
+      const entry = (await this.loadSummaries()).find((candidate) => candidate.jobId === jobId)
+      if (entry) result = entry.sourceSha256
+    })
+    return result
+  }
+
+  /**
    * 删除一个任务的全部代际摘要与恢复快照。
    * @param jobId 任务标识。
    * @returns 是否实际删除了历史条目。

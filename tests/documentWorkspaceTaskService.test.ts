@@ -778,7 +778,7 @@ test('任务服务仅允许 completed 任务执行完整导出', async () => {
     assert.equal(completed.completionReport?.status, 'completed')
     assert.deepEqual(
       await service.exportPdf(exportRequest(completed, 'complete')),
-      { status: 'saved' }
+      { status: 'saved', filePath: join(directory, 'out.pdf') }
     )
     assert.equal(saveDialogCalls, 1)
     assert.equal(exportCalls, 1)
@@ -796,8 +796,8 @@ test('普通译文导出不得被识别为 OCR 原文专用导出', async () => 
   const events: DocumentWorkspaceSnapshot[] = []
   let exportedSourceOnly: boolean | undefined
   const deps = dependencies(path, events)
-  deps.exportPdf = async (_model, _dependencies, _partialExport, _textLayer, sourceOnly) => {
-    exportedSourceOnly = sourceOnly
+  deps.exportPdf = async (_model, _dependencies, options) => {
+    exportedSourceOnly = options.sourceOnly
     return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
   }
   const service = new DocumentWorkspaceTaskService(deps)
@@ -806,9 +806,136 @@ test('普通译文导出不得被识别为 OCR 原文专用导出', async () => 
     const completed = await waitForTerminal(events)
     assert.deepEqual(
       await service.exportPdf(exportRequest(completed, 'complete')),
-      { status: 'saved' }
+      { status: 'saved', filePath: join(tmpdir(), 'translated.pdf') }
     )
     assert.equal(exportedSourceOnly, false)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务导出必须透传双语布局并返回已保存文件路径', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let exportedLayout: unknown
+  const deps = dependencies(path, events)
+  deps.exportPdf = async (_model, _dependencies, options) => {
+    exportedLayout = options.layout
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    const result = await service.exportPdf({
+      ...exportRequest(completed, 'complete'),
+      layout: 'bilingual'
+    })
+
+    assert.equal(exportedLayout, 'bilingual')
+    assert.equal(result.status, 'saved')
+    assert.equal(result.filePath, join(tmpdir(), 'translated.pdf'))
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务导出必须按准备、合成、写入、完成顺序上报单调进度', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const exportEvents: Array<{ phase: string; percent: number; completedPages?: number; totalPages?: number }> = []
+  const deps = dependencies(path, events)
+  deps.sendExportProgress = (progress) => exportEvents.push(progress)
+  deps.exportPdf = async (_model, _dependencies, options) => {
+    options.onProgress?.({ completedPages: 1, totalPages: 2 })
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    await service.exportPdf(exportRequest(completed, 'complete'))
+
+    assert.deepEqual(exportEvents.map((event) => event.phase), [
+      'preparing',
+      'composing',
+      'writing',
+      'completed'
+    ])
+    for (let index = 1; index < exportEvents.length; index += 1) {
+      assert.ok(exportEvents[index]!.percent >= exportEvents[index - 1]!.percent)
+    }
+    assert.equal(exportEvents.at(-1)?.percent, 100)
+    assert.equal(exportEvents.at(-1)?.completedPages, 2)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务取消导出必须停止合成、清理临时文件并保留原文件', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  const output = join(directory, 'existing.pdf')
+  await writeFile(path, 'Hello')
+  await writeFile(output, 'original')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let exportSignal: AbortSignal | undefined
+  deps.showSaveDialog = async () => ({ canceled: false, filePath: output })
+  deps.exportPdf = async (_model, _dependencies, options) => {
+    exportSignal = options.signal
+    return await new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }))
+      }, { once: true })
+    })
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    const pending = service.exportPdf(exportRequest(completed, 'complete'))
+    const deadline = Date.now() + 1000
+    while (!exportSignal && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.ok(exportSignal)
+    assert.equal(service.cancelExport(completed.jobId, completed.generation), true)
+
+    assert.deepEqual(await pending, { status: 'cancelled' })
+    assert.equal(await readFile(output, 'utf8'), 'original')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务只允许打开本会话成功导出的文件目录', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  const output = join(directory, 'out.pdf')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const opened: string[] = []
+  const deps = dependencies(path, events)
+  deps.showSaveDialog = async () => ({ canceled: false, filePath: output })
+  deps.openExportFolder = async (filePath) => {
+    opened.push(filePath)
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.equal(await service.openExportFolder(completed.jobId, completed.generation), false)
+    await service.exportPdf(exportRequest(completed, 'complete'))
+    assert.equal(await service.openExportFolder(completed.jobId, completed.generation), true)
+    assert.equal(await service.openExportFolder(completed.jobId, completed.generation + 1), false)
+    assert.deepEqual(opened, [output])
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -915,7 +1042,7 @@ test('任务服务允许已确认的 partial 任务导出部分结果', async ()
     assert.equal(partial.task.status, 'partial')
     assert.deepEqual(
       await service.exportPdf(exportRequest(partial, 'partial')),
-      { status: 'saved' }
+      { status: 'saved', filePath: join(tmpdir(), 'translated.pdf') }
     )
     const exportedBlocks = exportedModel?.pages[0]?.blocks
     assert.equal(exportedBlocks?.[0]?.kind, 'text')
@@ -1208,8 +1335,8 @@ test('部分导出文件名和打印摘要必须明确包含回退原文数量',
     suggestedName = name
     return { canceled: true }
   }
-  deps.exportPdf = async (_model, _dependencies, summary) => {
-    partialSummary = summary
+  deps.exportPdf = async (_model, _dependencies, options) => {
+    partialSummary = options.partialExport
     return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
   }
   const service = new DocumentWorkspaceTaskService(deps)
@@ -1576,7 +1703,10 @@ test('任务服务 PDF 导出必须原子替换目标文件且不残留临时文
   try {
     await service.run({ path, generation: 1 })
     const completed = await waitForTerminal(events)
-    assert.deepEqual(await service.exportPdf(exportRequest(completed, 'complete')), { status: 'saved' })
+    assert.deepEqual(await service.exportPdf(exportRequest(completed, 'complete')), {
+      status: 'saved',
+      filePath: output
+    })
     assert.deepEqual([...await readFile(output)], [37, 80, 68, 70])
     assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith('.tmp')), [])
   } finally {
@@ -1747,6 +1877,7 @@ test('任务服务导出必须把图片资源告警返回给界面', async () =>
     const result = await service.exportPdf(exportRequest(completed, 'complete'))
     assert.deepEqual(result, {
       status: 'saved',
+      filePath: join(tmpdir(), 'translated.pdf'),
       warnings: [{
         code: 'image-asset-unavailable',
         severity: 'warning',
@@ -1881,11 +2012,11 @@ test('OCR 原文任务必须显式走源模型双层 PDF 导出，不能按译�
   deps.translate = async () => {
     throw new Error('OCR 原文任务不应执行翻译')
   }
-  deps.exportPdf = async (exported, exportDependencies, _partialExport, textLayer, sourceOnly) => {
+  deps.exportPdf = async (exported, exportDependencies, options) => {
     exportedModel = exported
     exportedSourcePdfBytes = exportDependencies.sourcePdfBytes
-    exportedTextLayer = textLayer
-    exportedSourceOnly = sourceOnly
+    exportedTextLayer = options.textLayer
+    exportedSourceOnly = options.sourceOnly
     return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
   }
   deps.showSaveDialog = async (name) => {
@@ -1899,7 +2030,7 @@ test('OCR 原文任务必须显式走源模型双层 PDF 导出，不能按译�
     assert.equal(completed.runMode, 'ocr')
     assert.deepEqual(
       await service.exportPdf({ ...exportRequest(completed, 'complete'), textLayer: true }),
-      { status: 'saved' }
+      { status: 'saved', filePath: join(directory, 'scan-ocr.pdf') }
     )
     assert.equal(exportedTextLayer, true)
     assert.equal(exportedSourceOnly, true)

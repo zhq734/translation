@@ -5,6 +5,7 @@ import {
   type DocumentWorkerTranslationRpc,
   type DocumentWorkerTranslationRpcRequest
 } from '../src/main/documentWorkerProductionDependencies.ts'
+import type { DocumentModel } from '../src/shared/documentTypes.ts'
 
 /**
  * 创建最小生产依赖选项。
@@ -108,4 +109,64 @@ test('生产依赖应透传显式文档 OCR 并发配置', () => {
   })
 
   assert.equal(dependencies.getOcrConcurrency?.(), 3)
+})
+
+test('生产依赖应把双语源模型、布局、取消信号、文字层与进度传给 PDF 导出器', async () => {
+  const rpc: DocumentWorkerTranslationRpc = {
+    async translate() {
+      return '译文'
+    },
+    getModelFingerprint: () => 'model:test',
+    getTranslationConcurrency: () => 1
+  }
+  const calls: Array<Record<string, unknown>> = []
+  const model = {
+    schemaVersion: 1,
+    documentId: 'production-export',
+    source: {
+      path: '/tmp/production-export.txt',
+      fileName: 'production-export.txt',
+      format: 'txt',
+      sha256: 'hash',
+      size: 1
+    },
+    pages: [],
+    assets: [],
+    warnings: [],
+    metadata: { direction: 'ltr' }
+  } as DocumentModel
+  const sourceModel = { ...model, documentId: 'production-source' } as DocumentModel
+  const signal = new AbortController().signal
+  const dependencies = createDocumentWorkerProductionDependencies({
+    ...options(rpc),
+    exportDocumentToPdf: async (...args) => {
+      calls.push({ args })
+      return { bytes: new Uint8Array([1]), warnings: [] }
+    }
+  } as never)
+
+  await dependencies.exportPdf(
+    model,
+    { loadFontBytes: async () => null, loadAssetBytes: async () => null },
+    {
+      textLayer: true,
+      sourceOnly: false,
+      layout: 'bilingual',
+      signal,
+      onProgress: () => undefined,
+      sourceModel
+    }
+  )
+
+  assert.equal(calls.length, 1)
+  const args = calls[0]?.args as unknown[]
+  assert.equal(args[0], model)
+  assert.deepEqual(args[2], {
+    includeOcrTextLayer: true,
+    layout: 'bilingual',
+    sourceModel,
+    signal,
+    onProgress: args[2] && (args[2] as { onProgress?: unknown }).onProgress
+  })
+  assert.equal(typeof (args[2] as { onProgress?: unknown }).onProgress, 'function')
 })

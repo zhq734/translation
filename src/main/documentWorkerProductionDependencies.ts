@@ -89,6 +89,8 @@ export interface DocumentWorkerProductionDependencyOptions {
   ocrConcurrency?: number
   /** 主进程受控翻译 RPC。 */
   translationRpc: DocumentWorkerTranslationRpc
+  /** 可注入的 PDF 导出实现，生产环境默认使用 pdf-lib 导出器。 */
+  exportDocumentToPdf?: typeof exportDocumentToPdf
   /** 可注入平台，测试时用于固定 OCR 队列。 */
   platform?: NodeJS.Platform
   /** 可注入 Win7 判定，测试时避免读取宿主环境。 */
@@ -181,6 +183,7 @@ export function createDocumentWorkerProductionDependencies(
       options.ocrLang,
       options.ocrEnginePreference
     ])).digest('hex')
+  const exportDocument = options.exportDocumentToPdf ?? exportDocumentToPdf
 
   return {
     async parse(
@@ -238,16 +241,21 @@ export function createDocumentWorkerProductionDependencies(
       appPath: options.appPath,
       resourcesPath: options.resourcesPath
     }),
-    exportPdf: (model, dependencies, partialExport, textLayer) => exportDocumentToPdf(
+    exportPdf: (model, dependencies, exportOptions) => exportDocument(
       model,
       dependencies,
       {
-        ...(textLayer !== undefined ? { includeOcrTextLayer: textLayer } : {})
+        ...(exportOptions.textLayer !== undefined
+          ? { includeOcrTextLayer: exportOptions.textLayer }
+          : {}),
+        ...(exportOptions.layout ? { layout: exportOptions.layout } : {}),
+        ...(exportOptions.sourceModel ? { sourceModel: exportOptions.sourceModel } : {}),
+        ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
+        ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
       }
-    ).then((result) => ({
+    ).then((result: Awaited<ReturnType<typeof exportDocumentToPdf>>) => ({
       bytes: result.bytes,
-      warnings: result.warnings,
-      ...(partialExport ? {} : {})
+      warnings: result.warnings
     })),
     getModelFingerprint: () => options.getModelFingerprint?.() ?? modelFingerprint,
     getTranslationConcurrency: () => options.translationRpc.getTranslationConcurrency(),

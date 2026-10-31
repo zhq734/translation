@@ -20,6 +20,7 @@ import {
   buildDocumentTranslationCacheKey,
   collectDocumentTranslationUnits,
   createDocumentProtectedText,
+  DOCUMENT_TRANSLATION_PROTOCOL_VERSION,
   parseDocumentTranslationCacheEntry,
   restoreDocumentProtectedText,
   splitDocumentTranslationUnits,
@@ -388,6 +389,36 @@ test('缓存键必须包含文件哈希、解析器、实际语言方向、模�
   assert.notEqual(key, buildDocumentTranslationCacheKey({ ...context, parserVersion: 'parser-v5' }))
 })
 
+test('翻译协议版本必须隔离缓存键并拒绝旧版或缺失版本的条目', () => {
+  const context = cacheContext()
+  const key = buildDocumentTranslationCacheKey(context)
+  const changedProtocol = buildDocumentTranslationCacheKey({
+    ...context,
+    translationProtocolVersion: 'document-translation-protocol-v3'
+  })
+  const successful = {
+    sourceSha256: context.fileSha256,
+    languagePair: languagePair(),
+    glossaryVersion: context.glossaryVersion,
+    protectionRulesVersion: context.protectionRulesVersion,
+    translationProtocolVersion: context.translationProtocolVersion,
+    status: 'completed' as const,
+    translation: '已完成'
+  }
+
+  assert.equal(context.translationProtocolVersion, DOCUMENT_TRANSLATION_PROTOCOL_VERSION)
+  assert.match(key, /document-translation-protocol-v2/u)
+  assert.notEqual(key, changedProtocol)
+  assert.equal(parseDocumentTranslationCacheEntry(context, successful).ok, true)
+  assert.equal(parseDocumentTranslationCacheEntry(context, {
+    ...successful,
+    translationProtocolVersion: 'document-translation-protocol-v1'
+  }).ok, false)
+  const withoutProtocol = { ...successful } as Record<string, unknown>
+  delete withoutProtocol.translationProtocolVersion
+  assert.equal(parseDocumentTranslationCacheEntry(context, withoutProtocol).ok, false)
+})
+
 test('失败、取消、疑似未翻译、空译文和不完整结果不得写入成功缓存', () => {
   const context = cacheContext()
   const successful = {
@@ -395,6 +426,7 @@ test('失败、取消、疑似未翻译、空译文和不完整结果不得写�
     languagePair: languagePair(),
     glossaryVersion: context.glossaryVersion,
     protectionRulesVersion: context.protectionRulesVersion,
+    translationProtocolVersion: context.translationProtocolVersion,
     status: 'completed' as const,
     translation: '已完成'
   }
@@ -434,7 +466,8 @@ function cacheContext(): DocumentTranslationCacheContext {
     languagePair: languagePair(),
     modelFingerprint: 'provider-a:model-b',
     glossaryVersion: 'glossary-v2',
-    protectionRulesVersion: 'protection-v1'
+    protectionRulesVersion: 'protection-v1',
+    translationProtocolVersion: DOCUMENT_TRANSLATION_PROTOCOL_VERSION
   }
 }
 

@@ -6,7 +6,13 @@ import type {
 } from './documentTypes.ts'
 import { parseDocumentBlock, parseDocumentModel } from './documentTypes.ts'
 import { DOCUMENT_TASK_PHASES } from './documentTask.ts'
-import type { DocumentRunMode, DocumentRunRequest } from './documentWorkspace.ts'
+import type {
+  DocumentExportLayout,
+  DocumentExportProgress,
+  DocumentRunMode,
+  DocumentRunRequest
+} from './documentWorkspace.ts'
+import { parseDocumentExportProgress } from './documentWorkspace.ts'
 import type { DocumentCompletionReport } from './documentCompletion.ts'
 import type { DocumentLanguageResolution } from './documentLanguageDirection.ts'
 import type { DocumentPartialExportSummary } from './documentPartialExport.ts'
@@ -57,6 +63,8 @@ export interface DocumentWorkerExportRequestMessage extends DocumentWorkerReques
   request: {
     /** 完整导出或用户确认的部分导出。 */
     mode: 'complete' | 'partial'
+    /** 译文单栏或左右双语布局。 */
+    layout: DocumentExportLayout
     /** 是否追加 OCR 原文文字层。 */
     textLayer?: boolean
     /** 导出前复验使用的当前代际完成报告。 */
@@ -180,6 +188,14 @@ export interface DocumentWorkerProgressMessage extends DocumentWorkerRequestEnve
   payload: DocumentWorkerProgressPayload
 }
 
+/** worker 导出阶段进度消息；不携带输出路径或文档正文。 */
+export interface DocumentWorkerExportProgressMessage extends DocumentWorkerRequestEnvelope {
+  /** 消息类型。 */
+  type: 'export-progress'
+  /** 导出阶段、百分比与页面计数。 */
+  payload: Omit<DocumentExportProgress, 'jobId' | 'generation'>
+}
+
 /** worker 块级增量译文消息；成功区块无需等待整份文档完成即可展示。 */
 export interface DocumentWorkerTranslationUpdateMessage extends DocumentWorkerRequestEnvelope {
   /** 消息类型。 */
@@ -242,6 +258,7 @@ export interface DocumentWorkerAssetResultMessage extends DocumentWorkerRequestE
 /** 文档 worker 响应联合类型。 */
 export type DocumentWorkerResponseMessage =
   | DocumentWorkerProgressMessage
+  | DocumentWorkerExportProgressMessage
   | DocumentWorkerTranslationSnapshotMessage
   | DocumentWorkerTranslationUpdateMessage
   | DocumentWorkerResultMessage
@@ -252,6 +269,7 @@ export type DocumentWorkerResponseMessage =
 /** worker 响应类型白名单。 */
 const DOCUMENT_WORKER_RESPONSE_TYPES = new Set([
   'progress',
+  'export-progress',
   'translation-snapshot',
   'translation-update',
   'result',
@@ -450,6 +468,37 @@ function parseExportPayload(value: unknown): DocumentWorkerExportPayload | null 
 }
 
 /**
+ * 校验并解析 worker 导出进度载荷。
+ * @param value 未信任载荷。
+ * @returns 仅含白名单字段的导出进度载荷或 null。
+ * @author zhenghq
+ */
+function parseExportProgressPayload(
+  jobId: string,
+  generation: number,
+  value: unknown
+): DocumentWorkerExportProgressMessage['payload'] | null {
+  if (!isRecord(value)) return null
+  const allowedKeys = new Set([
+    'phase',
+    'percent',
+    'completedPages',
+    'totalPages',
+    'warningCount'
+  ])
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null
+  const parsed = parseDocumentExportProgress({ ...value, jobId, generation })
+  if (!parsed) return null
+  return {
+    phase: parsed.phase,
+    percent: parsed.percent,
+    ...(parsed.completedPages !== undefined ? { completedPages: parsed.completedPages } : {}),
+    ...(parsed.totalPages !== undefined ? { totalPages: parsed.totalPages } : {}),
+    ...(parsed.warningCount !== undefined ? { warningCount: parsed.warningCount } : {})
+  }
+}
+
+/**
  * 校验并解析 worker 成功终态载荷。
  * @param value 未信任载荷。
  * @returns 合法终态载荷或 null。
@@ -518,6 +567,16 @@ export function parseDocumentWorkerResponse(value: unknown): DocumentWorkerRespo
     return payload ? {
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
       type: 'progress',
+      jobId: value.jobId,
+      generation: value.generation,
+      payload
+    } : null
+  }
+  if (value.type === 'export-progress') {
+    const payload = parseExportProgressPayload(value.jobId, value.generation, value.payload)
+    return payload ? {
+      version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+      type: 'export-progress',
       jobId: value.jobId,
       generation: value.generation,
       payload
@@ -662,6 +721,8 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
   if (!isRecord(value.request)) return null
   if (value.type === 'export') {
     if (value.request.mode !== 'complete' && value.request.mode !== 'partial') return null
+    const layout = value.request.layout ?? 'translation'
+    if (layout !== 'translation' && layout !== 'bilingual') return null
     if (value.request.completionReport !== undefined && !isRecord(value.request.completionReport)) return null
     return {
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
@@ -670,6 +731,7 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
       generation: value.generation,
       request: {
         mode: value.request.mode,
+        layout,
         ...(typeof value.request.textLayer === 'boolean'
           ? { textLayer: value.request.textLayer }
           : {}),
@@ -759,6 +821,28 @@ export function createDocumentWorkerProgressMessage(
   return {
     version: DOCUMENT_WORKER_PROTOCOL_VERSION,
     type: 'progress',
+    jobId,
+    generation,
+    payload
+  }
+}
+
+/**
+ * 创建 worker 导出进度消息。
+ * @param jobId 任务标识。
+ * @param generation 任务代际。
+ * @param payload 导出阶段、百分比与页面计数。
+ * @returns 导出进度消息。
+ * @author zhenghq
+ */
+export function createDocumentWorkerExportProgressMessage(
+  jobId: string,
+  generation: number,
+  payload: DocumentWorkerExportProgressMessage['payload']
+): DocumentWorkerExportProgressMessage {
+  return {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'export-progress',
     jobId,
     generation,
     payload
