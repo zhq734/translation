@@ -87,6 +87,7 @@ import {
   shouldSyncDocumentScroll,
   type DocumentScrollSide
 } from './documentScrollSync'
+import { resolveDocumentPdfImageAssetLocation } from './documentAssetRequest'
 import { shouldRevealActiveDocumentTab } from './documentTabScroll'
 import {
   clampDocumentZoom,
@@ -1326,55 +1327,6 @@ function findDocumentAssetMetadata(
 }
 
 /**
- * 在页面区块及表格单元格中查找指定图片资源。
- * @param blocks 待遍历区块。
- * @param assetId 图片资源标识。
- * @returns 匹配的图片区块；不存在时返回 undefined。
- * @author zhenghq
- */
-function findDocumentImageBlock(
-  blocks: readonly DocumentBlock[],
-  assetId: string
-): DocumentImageBlock | undefined {
-  for (const block of blocks) {
-    if (block.kind === 'image') {
-      if (block.assetId === assetId) return block
-      continue
-    }
-    if (block.kind !== 'table') continue
-    for (const row of block.rows) {
-      for (const cell of row.cells) {
-        const image = findDocumentImageBlock(cell.blocks, assetId)
-        if (image) return image
-      }
-    }
-  }
-  return undefined
-}
-
-/**
- * 定位历史 PDF 图片所属页面及原始 bbox，供主进程重新解析后恢复同一资源。
- * @param tab 图片所属文档 Tab。
- * @param assetId 图片资源标识。
- * @returns 页面索引与 bbox；非 PDF 或无法唯一定位时返回 undefined。
- * @author zhenghq
- */
-function findDocumentPdfImageLocation(
-  tab: DocumentWorkspaceTab,
-  assetId: string
-): { pageIndex: number; bbox: DocumentBoundingBox } | undefined {
-  const model = tab.snapshot?.source ?? tab.snapshot?.translation
-  if (model?.source.format !== 'pdf') return undefined
-  const matches: Array<{ pageIndex: number; bbox: DocumentBoundingBox }> = []
-  for (const page of model.pages) {
-    const block = findDocumentImageBlock(page.blocks, assetId)
-    if (!block?.bbox) continue
-    matches.push({ pageIndex: page.index, bbox: { ...block.bbox } })
-  }
-  return matches.length === 1 ? matches[0] : undefined
-}
-
-/**
  * 读取本地保存的文档查看器状态；存储缺失或损坏时安全回退为空状态。
  * @returns 可安全恢复的查看器状态。
  * @author zhenghq
@@ -2351,18 +2303,20 @@ function releaseHtmlPreviewUrl(): void {
  * 读取图片资源并缓存 Blob URL；同一资源在单次任务内只读取一次。
  * @param block 待加载的图片区块。
  * @param tab 资源所属的文档 Tab。
+ * @param pageIndex 图片所在页面索引。
  * @returns 可用于 img.src 的 Blob URL；资源不可用时返回 null。
  * @author zhenghq
  */
 async function resolveAssetUrl(
   jobId: string,
   block: DocumentImageBlock,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): Promise<string | null> {
   const assetId = block.assetId
-  // 恢复态共用固定 jobId；缓存键必须同时包含 Tab 与源文件 SHA，避免多 Tab 串图。
+  // 恢复态共用固定 jobId；缓存键同时包含 Tab、源文件 SHA 与页面，避免多 Tab 或跨页串图。
   const sourceSha256 = tab.selection.sha256
-  const cacheKey = `${tab.id}:${sourceSha256}:${assetId}`
+  const cacheKey = `${tab.id}:${sourceSha256}:${assetId}:${pageIndex}`
   const cached = assetUrls.get(cacheKey)
   if (cached) return cached
   const pending = assetRequests.get(cacheKey)
@@ -2378,7 +2332,11 @@ async function resolveAssetUrl(
           ? approvedSource
             ? await (async (): Promise<DocumentAssetResult> => {
                 const metadata = findDocumentAssetMetadata(tab, assetId)
-                const pdfLocation = findDocumentPdfImageLocation(tab, assetId)
+                const pdfLocation = resolveDocumentPdfImageAssetLocation(
+                  tab.snapshot?.source ?? tab.snapshot?.translation,
+                  block,
+                  pageIndex
+                )
                 return window.api.getApprovedDocumentAsset({
                   ...approvedSource,
                   assetId,
@@ -2454,6 +2412,7 @@ function renderDocumentImagePlaceholder(
  * @param block 图片区块。
  * @param jobId 图片所属任务标识。
  * @param tab 图片所属文档 Tab。
+ * @param pageIndex 图片所在页面索引。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -2462,7 +2421,8 @@ function loadDocumentImageAsset(
   image: HTMLImageElement,
   block: DocumentImageBlock,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): void {
   // 异步资源返回时旧页面可能已被新快照替换；只有仍挂载的当前图片才允许更新状态。
   const isCurrentImage = (): boolean =>
@@ -2470,7 +2430,7 @@ function loadDocumentImageAsset(
     image.parentElement === wrapper &&
     wrapper.querySelector(':scope > img.document-page-image') === image
   wrapper.dataset.assetState = 'loading'
-  void resolveAssetUrl(jobId, block, tab).then((url) => {
+  void resolveAssetUrl(jobId, block, tab, pageIndex).then((url) => {
     if (!url) {
       if (!isCurrentImage()) return
       wrapper.dataset.assetState = 'error'
@@ -3629,6 +3589,7 @@ function resolveDocumentImageRenderPending(
  * @param pageWidth 原始页面宽度。
  * @param jobId 图片所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 图片所在页面索引。
  * @returns 图片区块元素。
  * @author zhenghq
  */
@@ -3637,7 +3598,8 @@ function renderImageBlock(
   side: DocumentRenderSide,
   pageWidth: number,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -3654,7 +3616,7 @@ function renderImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block, jobId, tab)
+    loadDocumentImageAsset(wrapper, image, block, jobId, tab, pageIndex)
   }
   appendImageOcrLayers(wrapper, block, side, tab)
   return wrapper
@@ -3667,6 +3629,7 @@ function renderImageBlock(
  * @param pageWidth 原始页面宽度，用于约束表格横向范围。
  * @param jobId 表格所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 表格所在页面索引。
  * @returns 表格区块元素。
  * @author zhenghq
  */
@@ -3675,7 +3638,8 @@ function renderTableBlock(
   side: DocumentRenderSide,
   pageWidth: number,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-table-block'
@@ -3710,7 +3674,9 @@ function renderTableBlock(
         tableCell.scope = 'col'
         tableCell.colSpan = Math.max(1, cell.colSpan)
         tableCell.rowSpan = Math.max(1, cell.rowSpan)
-        for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId, tab))
+        for (const child of cell.blocks) {
+          tableCell.append(renderTableCellBlock(child, side, jobId, tab, pageIndex))
+        }
         tableRow.append(tableCell)
       }
       head.append(tableRow)
@@ -3725,7 +3691,9 @@ function renderTableBlock(
       const tableCell = document.createElement('td')
       tableCell.colSpan = Math.max(1, cell.colSpan)
       tableCell.rowSpan = Math.max(1, cell.rowSpan)
-      for (const child of cell.blocks) tableCell.append(renderTableCellBlock(child, side, jobId, tab))
+      for (const child of cell.blocks) {
+        tableCell.append(renderTableCellBlock(child, side, jobId, tab, pageIndex))
+      }
       tableRow.append(tableCell)
     }
     body.append(tableRow)
@@ -3741,6 +3709,7 @@ function renderTableBlock(
  * @param side 当前渲染侧。
  * @param jobId 单元格内容所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 单元格所在页面索引。
  * @returns 单元格子区块元素。
  * @author zhenghq
  */
@@ -3748,12 +3717,13 @@ function renderTableCellBlock(
   block: DocumentBlock,
   side: DocumentRenderSide,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   const pageWidth = 1
   const element = block.kind === 'image'
-    ? renderTableCellImageBlock(block, side, jobId, tab)
-    : renderBlock(block, side, pageWidth, undefined, jobId, tab)
+    ? renderTableCellImageBlock(block, side, jobId, tab, pageIndex)
+    : renderBlock(block, side, pageWidth, undefined, jobId, tab, pageIndex)
   // 单元格内子区块的 bbox 是整页坐标，标记后由 CSS 清除页面级偏移并限制在单元格内。
   element.dataset.tableCellContent = 'true'
   return element
@@ -3765,6 +3735,7 @@ function renderTableCellBlock(
  * @param side 当前渲染侧。
  * @param jobId 图片所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 图片所在页面索引。
  * @returns 不继承页面绝对坐标的图片区块元素。
  * @author zhenghq
  */
@@ -3772,7 +3743,8 @@ function renderTableCellImageBlock(
   block: DocumentImageBlock,
   side: DocumentRenderSide,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   const wrapper = document.createElement('div')
   wrapper.className = 'document-image-block'
@@ -3790,7 +3762,7 @@ function renderTableCellImageBlock(
     image.alt = block.alt ?? ''
     image.decoding = 'async'
     wrapper.append(image)
-    loadDocumentImageAsset(wrapper, image, block, jobId, tab)
+    loadDocumentImageAsset(wrapper, image, block, jobId, tab, pageIndex)
   }
   appendImageOcrLayers(wrapper, block, side, tab)
   return wrapper
@@ -3863,6 +3835,7 @@ function renderFormulaBlock(block: Extract<DocumentBlock, { kind: 'formula' }>):
  * @param contentArea 原文正文内容区。
  * @param jobId 区块所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 区块所在页面索引。
  * @returns 区块元素。
  * @author zhenghq
  */
@@ -3872,12 +3845,13 @@ function renderBlock(
   pageWidth: number,
   contentArea: DocumentContentArea | undefined,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   switch (block.kind) {
     case 'text': return renderTextBlock(block, side, pageWidth, contentArea)
-    case 'image': return renderImageBlock(block, side, pageWidth, jobId, tab)
-    case 'table': return renderTableBlock(block, side, pageWidth, jobId, tab)
+    case 'image': return renderImageBlock(block, side, pageWidth, jobId, tab, pageIndex)
+    case 'table': return renderTableBlock(block, side, pageWidth, jobId, tab, pageIndex)
     case 'formula': return renderFormulaBlock(block)
     case 'shape': return renderShapeBlock(block)
     case 'break': {
@@ -3953,7 +3927,7 @@ function renderPage(
     previousBottom = minY
   }
   for (const block of page.blocks) {
-    const rendered = renderBlock(block, side, page.width, page.contentArea, jobId, tab)
+    const rendered = renderBlock(block, side, page.width, page.contentArea, jobId, tab, page.index)
     const occupiesFlow = occupiesDocumentTranslationFlow(block)
     rendered.dataset.flowOccupiesSpace = String(occupiesFlow)
     const continuesFlowGroup = element.dataset.layout === 'translation-flow' &&
@@ -4255,6 +4229,7 @@ function renderTextRuns(block: DocumentTextBlock): DocumentFragment {
  * @param side 当前渲染侧。
  * @param jobId 区块所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param pageIndex 区块所在页面索引。
  * @returns 语义化区块元素。
  * @author zhenghq
  */
@@ -4262,7 +4237,8 @@ function renderMarkdownBlock(
   block: DocumentBlock,
   side: DocumentRenderSide,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  pageIndex: number
 ): HTMLElement {
   if (block.kind === 'text') {
     if (block.role === 'code') {
@@ -4295,7 +4271,7 @@ function renderMarkdownBlock(
       return list
     }
   }
-  return renderBlock(block, side, 1, undefined, jobId, tab)
+  return renderBlock(block, side, 1, undefined, jobId, tab, pageIndex)
 }
 
 /**
@@ -4318,7 +4294,9 @@ function renderMarkdownDocument(
   const article = document.createElement('article')
   article.className = 'document-markdown-preview'
   for (const page of model.pages) {
-    for (const block of page.blocks) article.append(renderMarkdownBlock(block, side, jobId, tab))
+    for (const block of page.blocks) {
+      article.append(renderMarkdownBlock(block, side, jobId, tab, page.index))
+    }
   }
   container.append(article)
 }
@@ -4344,7 +4322,7 @@ function renderTableDocument(
   article.className = 'document-table-preview'
   for (const page of model.pages) {
     for (const block of page.blocks) {
-      article.append(renderBlock(block, side, page.width, undefined, jobId, tab))
+      article.append(renderBlock(block, side, page.width, undefined, jobId, tab, page.index))
     }
   }
   container.append(article)
@@ -4379,7 +4357,7 @@ function renderSubtitleDocument(
         timing.textContent = block.timing
         item.append(timing)
       }
-      item.append(renderBlock(block, side, page.width, undefined, jobId, tab))
+      item.append(renderBlock(block, side, page.width, undefined, jobId, tab, page.index))
       article.append(item)
     }
   }

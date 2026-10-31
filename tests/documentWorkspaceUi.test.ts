@@ -504,10 +504,10 @@ test('快照、任务状态与图片渲染链必须显式绑定快照所属 Tab'
   assert.match(taskStateSource, /isReadOnlyDocumentTab\(tab\)/u)
   assert.doesNotMatch(imageSource, /if \(isReadOnlyDocumentTab\(tab\)/u,
     '只读 Tab 也必须尝试重新读取已授权资源，不能无条件显示 pending 占位')
-  assert.match(imageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab\)/u)
+  assert.match(imageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab, pageIndex\)/u)
   assert.doesNotMatch(imageSource, /getActiveDocumentTab\(\)/u)
   assert.doesNotMatch(cellImageSource, /if \(isReadOnlyDocumentTab\(tab\)/u)
-  assert.match(cellImageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab\)/u)
+  assert.match(cellImageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab, pageIndex\)/u)
   assert.doesNotMatch(cellImageSource, /getActiveDocumentTab\(\)/u)
 })
 
@@ -2086,9 +2086,9 @@ test('PDF 译文图片必须沿用原图边界并按页面比例缩放，不能�
   assert.match(source, /dataset\.geometry = 'source'/u)
   assert.match(
     source,
-    /function renderImageBlock\(\s*block: DocumentImageBlock,\s*side: DocumentRenderSide,\s*pageWidth: number,\s*jobId: string,\s*tab: DocumentWorkspaceTab\s*\)/u
+    /function renderImageBlock\(\s*block: DocumentImageBlock,\s*side: DocumentRenderSide,\s*pageWidth: number,\s*jobId: string,\s*tab: DocumentWorkspaceTab,\s*pageIndex: number\s*\)/u
   )
-  assert.match(source, /case 'image': return renderImageBlock\(block, side, pageWidth, jobId, tab\)/u)
+  assert.match(source, /case 'image': return renderImageBlock\(block, side, pageWidth, jobId, tab, pageIndex\)/u)
   assert.match(
     css,
     /\.document-page\[data-layout='translation-flow'\] \.document-image-block\[data-geometry='source'\][\s\S]*?width:\s*calc\(\s*var\(--document-image-width[^;]*var\(--document-page-scale/su
@@ -2225,7 +2225,7 @@ test('PDF 图片异步资源在节点插入页面前解析完成时不得被丢�
   const renderEnd = source.indexOf('/**', renderStart + 1)
   const imageRenderSource = source.slice(renderStart, renderEnd)
 
-  assert.match(imageRenderSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab\)/u)
+  assert.match(imageRenderSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab, pageIndex\)/u)
   assert.doesNotMatch(imageRenderSource, /image\.isConnected/u)
   assert.match(source, /assetRequests = new Map<string, Promise<string \| null>>/u)
   assert.match(source, /assetUrlEpoch/u)
@@ -2453,11 +2453,11 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   )
   assert.match(
     source,
-    /function renderBlock\(\s*block: DocumentBlock,\s*side: DocumentRenderSide,\s*pageWidth: number,\s*contentArea: DocumentContentArea \| undefined,\s*jobId: string,\s*tab: DocumentWorkspaceTab\s*\)/u
+    /function renderBlock\(\s*block: DocumentBlock,\s*side: DocumentRenderSide,\s*pageWidth: number,\s*contentArea: DocumentContentArea \| undefined,\s*jobId: string,\s*tab: DocumentWorkspaceTab,\s*pageIndex: number\s*\)/u
   )
   assert.match(source, /renderPage\(page, side, 1, jobId, tab\)/u)
-  assert.match(source, /renderBlock\(block, side, page\.width, page\.contentArea, jobId, tab\)/u)
-  assert.match(source, /renderTableCellBlock\(child, side, jobId, tab\)/u)
+  assert.match(source, /renderBlock\(block, side, page\.width, page\.contentArea, jobId, tab, page\.index\)/u)
+  assert.match(source, /renderTableCellBlock\(child, side, jobId, tab, pageIndex\)/u)
   assert.match(source, /--document-ocr-font-size-pt/u)
   assert.match(source, /resolveOcrRegionFontSize\(region, imageHeight\)/u)
   assert.match(source, /region\.textAlign/u)
@@ -2767,7 +2767,7 @@ test('PDF 译文表格图片必须限制在单元格内，不能继承页面图�
   const cellImageRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-image-block\[data-table-cell-image='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const cellImageContentRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-image-block\[data-table-cell-image='true'\]\s+\.document-page-image\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
-  assert.match(tableCellSource, /renderTableCellImageBlock\(block, side, jobId, tab\)/u)
+  assert.match(tableCellSource, /renderTableCellImageBlock\(block, side, jobId, tab, pageIndex\)/u)
   assert.doesNotMatch(tableCellSource, /renderBlock\(block, side, 1\)/u)
   assert.match(tableCellImageSource, /createElement\('img'\)/u)
   assert.doesNotMatch(tableCellImageSource, /applyBlockGeometry\(/u)
@@ -3733,7 +3733,7 @@ test('历史任务必须以真实任务标识只读打开，关闭时不得取�
   assert.match(openSource, /expectedJobId:\s*null/u)
   assert.match(openSource, /sourceKind:\s*'history'/u)
   assert.match(closeSource, /if \(isReadOnlyDocumentTab\(tab\)\) return/u)
-  assert.match(imageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab\)/u)
+  assert.match(imageSource, /loadDocumentImageAsset\(wrapper, image, block, jobId, tab, pageIndex\)/u)
   assert.match(source, /if \(isReadOnlyDocumentTab\(tab\)\) return/u)
 })
 
