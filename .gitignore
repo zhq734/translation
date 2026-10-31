@@ -1,6 +1,9 @@
 node_modules/
 .npm-cache/
 .electron-cache/
+.electron-gyp/
+.electron-home/
+.translation-partial-index/
 out/
 dist/
 dist-win7/
