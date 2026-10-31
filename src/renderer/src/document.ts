@@ -87,6 +87,7 @@ import {
   shouldSyncDocumentScroll,
   type DocumentScrollSide
 } from './documentScrollSync'
+import { shouldRevealActiveDocumentTab } from './documentTabScroll'
 import {
   clampDocumentZoom,
   createRestoredDocumentWorkspaceSnapshot,
@@ -429,6 +430,8 @@ let appliedLanguagePair = ''
 let documentTabs: DocumentWorkspaceTab[] = []
 /** 当前激活 Tab 标识；没有打开文件时为 null。 */
 let activeDocumentTabId: string | null = null
+/** 上一次已自动滚动到可视区的激活 Tab；用于区分切换与普通状态刷新。 */
+let lastRevealedActiveDocumentTabId: string | null = null
 /** 下一个 Tab 序号，用于生成稳定且不重复的标识。 */
 let nextDocumentTabSequence = 1
 /** 是否正在执行历史文件切换，阻止快速重复点击创建并发切换。 */
@@ -1750,6 +1753,7 @@ function findDocumentTabByTranslationUpdate(
  * @author zhenghq
  */
 function renderDocumentTabs(): void {
+  const previousScrollLeft = documentWorkspaceTabs.scrollLeft
   documentWorkspaceTabs.replaceChildren()
   for (const tab of documentTabs) {
     const item = document.createElement('div')
@@ -1784,8 +1788,11 @@ function renderDocumentTabs(): void {
     })
     documentWorkspaceTabs.append(item)
   }
+  documentWorkspaceTabs.scrollLeft = previousScrollLeft
+  if (!shouldRevealActiveDocumentTab(activeDocumentTabId, lastRevealedActiveDocumentTabId)) return
   const activeElement = documentWorkspaceTabs.querySelector<HTMLElement>('[aria-selected="true"]')
   activeElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  lastRevealedActiveDocumentTabId = activeDocumentTabId
 }
 
 /**

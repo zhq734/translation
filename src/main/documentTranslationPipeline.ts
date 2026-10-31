@@ -42,6 +42,7 @@ import {
 import {
   collectRetryableDocumentTargetIds,
   evaluateDocumentCompletion,
+  isLikelyUntranslatedTranslation,
   type DocumentCompletionReport,
   type DocumentCompletionTarget
 } from '../shared/documentCompletion.ts'
@@ -1171,6 +1172,50 @@ function isCacheableDocumentTargetTranslation(
 }
 
 /**
+ * 判断完整目标译文是否可以安全写回模型；语言回退不能进入成功结果。
+ * @param target 已完成目标。
+ * @param translatedText 完整目标译文。
+ * @param languagePair 本任务冻结的实际语言方向。
+ * @param targetPreference 用户选择的原始目标语言偏好。
+ * @returns 可写回时返回 true。
+ * @author zhenghq
+ */
+function isAcceptableDocumentTargetTranslation(
+  target: TranslationTarget,
+  translatedText: string,
+  languagePair: DocumentLanguagePair,
+  targetPreference: string
+): boolean {
+  if (!translatedText.trim()) return false
+  if (!isTableRowTranslationValid(target, translatedText)) return false
+  // 自动目标语言沿用既有兼容行为；用户显式选择语言时才拒绝短文本语言回退，
+  // 避免把 Markdown 等历史自动模式结果误判为失败。
+  if (targetPreference.toLowerCase() === 'auto') return true
+  return !isLikelyUntranslatedTranslation(target.text, translatedText, languagePair)
+}
+
+/**
+ * 在目标全部译文通过最终校验后标记成功，确保校验失败时仍可回滚原文。
+ * @param targetStates 全部目标状态。
+ * @param segment 当前完成分段。
+ * @param translation 已通过校验的完整译文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function acceptTargetTranslation(
+  targetStates: Map<string, TargetTranslationState>,
+  segment: DocumentBatchSegment,
+  translation: string
+): void {
+  const state = targetStates.get(segment.target.targetId)
+  if (!state || state.finished) return
+  state.failed = false
+  state.finished = true
+  state.translation = translation
+  state.failureReason = undefined
+}
+
+/**
  * 将翻译目标拆成可合并批次的分段；超长目标先按句边界拆分。
  * @param targets 按阅读顺序排列的翻译目标。
  * @returns 带目标元数据的分段列表。
@@ -1617,9 +1662,7 @@ function applySegmentTranslation(
   if (state.pieces[segment.pieceIndex] !== undefined) return { finished: false, failed: false }
   const piece = translated.trim()
   if (!piece) {
-    state.failed = true
-    state.finished = true
-    state.failureReason = 'empty-translation'
+    // 失败收尾统一交给 failTarget，确保统计、失败原因和原文回滚只发生一次。
     return { finished: true, failed: true }
   }
   const pieces = state.pieces.slice()
@@ -1636,8 +1679,8 @@ function applySegmentTranslation(
   }
   state.pieces = pieces
   state.completed = completed
-  state.finished = true
-  state.translation = translation
+  // 最终语言校验由调用方在写回前完成；此处不能提前收尾，否则拒绝译文时
+  // failTarget 会因 finished=true 直接返回，导致流式英文残留在界面。
   return {
     finished: true,
     failed: false,
@@ -1665,8 +1708,7 @@ function completeTableRowFallback(
   }
   state.pieces = state.pieces.map((_piece, index) => index === segment.pieceIndex ? translation : undefined)
   state.completed = state.pieceTotal
-  state.finished = true
-  state.translation = translation
+  // 与普通分段一致，等最终语言校验通过后再由调用方标记成功。
   return { finished: true, failed: false, translation }
 }
 
@@ -2769,13 +2811,24 @@ export async function runDocumentTranslationPipeline(
   const applyTranslation = async (segment: DocumentBatchSegment, translated: string): Promise<void> => {
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (!applied.finished) return
-    stats.completed += 1
-    if (applied.failed) stats.failed += 1
-    publishProgress()
-    if (applied.translation !== undefined) {
-      commitTarget(segment.target, applied.translation)
-      await persistTargetCache(segment.target, applied.translation)
+    if (applied.failed || applied.translation === undefined) {
+      failTarget(segment, applied.failed ? 'empty-translation' : 'translation-failed')
+      return
     }
+    if (!isAcceptableDocumentTargetTranslation(
+      segment.target,
+      applied.translation,
+      languagePair,
+      languageResolution.targetPreference
+    )) {
+      failTarget(segment, 'suspect-untranslated')
+      return
+    }
+    acceptTargetTranslation(targetStates, segment, applied.translation)
+    stats.completed += 1
+    publishProgress()
+    commitTarget(segment.target, applied.translation)
+    await persistTargetCache(segment.target, applied.translation)
   }
 
   /**
@@ -2808,12 +2861,24 @@ export async function runDocumentTranslationPipeline(
           if (completedFallback.needsTableRowFallback) failTarget(segment)
           return
         }
+        if (completedFallback.translation === undefined) {
+          failTarget(segment)
+          return
+        }
+        if (!isAcceptableDocumentTargetTranslation(
+          segment.target,
+          completedFallback.translation,
+          languagePair,
+          languageResolution.targetPreference
+        )) {
+          failTarget(segment, 'suspect-untranslated')
+          return
+        }
+        acceptTargetTranslation(targetStates, segment, completedFallback.translation)
         stats.completed += 1
         publishProgress()
-        if (completedFallback.translation !== undefined) {
-          commitTarget(segment.target, completedFallback.translation)
-          await persistTargetCache(segment.target, completedFallback.translation)
-        }
+        commitTarget(segment.target, completedFallback.translation)
+        await persistTargetCache(segment.target, completedFallback.translation)
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -2821,31 +2886,45 @@ export async function runDocumentTranslationPipeline(
       return
     }
     if (!applied.finished) return
-    stats.completed += 1
-    if (applied.failed) stats.failed += 1
-    publishProgress()
-    if (applied.translation !== undefined) {
-      commitTarget(segment.target, applied.translation)
-      await persistTargetCache(segment.target, applied.translation)
+    if (applied.failed || applied.translation === undefined) {
+      failTarget(segment, applied.failed ? 'empty-translation' : 'translation-failed')
+      return
     }
+    if (!isAcceptableDocumentTargetTranslation(
+      segment.target,
+      applied.translation,
+      languagePair,
+      languageResolution.targetPreference
+    )) {
+      failTarget(segment, 'suspect-untranslated')
+      return
+    }
+    acceptTargetTranslation(targetStates, segment, applied.translation)
+    stats.completed += 1
+    publishProgress()
+    commitTarget(segment.target, applied.translation)
+    await persistTargetCache(segment.target, applied.translation)
   }
 
   /**
    * 标记目标失败并保留原文；目标已收尾时不重复统计。
    * @param segment 失败分段。
+   * @param reason 稳定失败原因。
    * @returns 无返回值。
    * @author zhenghq
    */
-  const failTarget = (segment: DocumentBatchSegment): void => {
+  const failTarget = (segment: DocumentBatchSegment, reason = 'translation-failed'): void => {
     const state = targetStates.get(segment.target.targetId)
     if (!state || state.finished) return
     state.failed = true
     state.finished = true
-    state.failureReason = 'translation-failed'
+    state.failureReason = reason
+    state.translation = undefined
     stats.completed += 1
     stats.failed += 1
     failedTargetIds.add(segment.target.targetId)
     publishProgress()
+    // 流式增量可能已经写入错误语言，失败终态必须强制恢复原文。
     commitTarget(segment.target, segment.target.text)
   }
 
@@ -2876,12 +2955,24 @@ export async function runDocumentTranslationPipeline(
             if (completedFallback.needsTableRowFallback) failTarget(segment)
             continue
           }
+          if (completedFallback.translation === undefined) {
+            failTarget(segment)
+            continue
+          }
+          if (!isAcceptableDocumentTargetTranslation(
+            segment.target,
+            completedFallback.translation,
+            languagePair,
+            languageResolution.targetPreference
+          )) {
+            failTarget(segment, 'suspect-untranslated')
+            continue
+          }
+          acceptTargetTranslation(targetStates, segment, completedFallback.translation)
           stats.completed += 1
           publishProgress()
-          if (completedFallback.translation !== undefined) {
-            commitTarget(segment.target, completedFallback.translation)
-            await persistTargetCache(segment.target, completedFallback.translation)
-          }
+          commitTarget(segment.target, completedFallback.translation)
+          await persistTargetCache(segment.target, completedFallback.translation)
         } catch (error) {
           if (isAbortError(error, signal)) throw error
           failTarget(segment)
@@ -3305,13 +3396,24 @@ export async function retryFailedDocumentTranslationPipeline(
   const applyTranslation = async (segment: DocumentBatchSegment, translated: string): Promise<void> => {
     const applied = applySegmentTranslation(targetStates, segment, translated)
     if (!applied.finished) return
-    completed += 1
-    if (applied.failed) retryFailedIds.add(segment.target.targetId)
-    publishProgress()
-    if (applied.translation !== undefined) {
-      commitTarget(segment.target, applied.translation)
-      await persistTargetCache(segment.target, applied.translation)
+    if (applied.failed || applied.translation === undefined) {
+      failTarget(segment, applied.failed ? 'empty-translation' : 'translation-failed')
+      return
     }
+    if (!isAcceptableDocumentTargetTranslation(
+      segment.target,
+      applied.translation,
+      languagePair,
+      languageResolution.targetPreference
+    )) {
+      failTarget(segment, 'suspect-untranslated')
+      return
+    }
+    acceptTargetTranslation(targetStates, segment, applied.translation)
+    completed += 1
+    publishProgress()
+    commitTarget(segment.target, applied.translation)
+    await persistTargetCache(segment.target, applied.translation)
   }
 
   /**
@@ -3344,12 +3446,24 @@ export async function retryFailedDocumentTranslationPipeline(
           if (completedFallback.needsTableRowFallback) failTarget(segment)
           return
         }
+        if (completedFallback.translation === undefined) {
+          failTarget(segment)
+          return
+        }
+        if (!isAcceptableDocumentTargetTranslation(
+          segment.target,
+          completedFallback.translation,
+          languagePair,
+          languageResolution.targetPreference
+        )) {
+          failTarget(segment, 'suspect-untranslated')
+          return
+        }
+        acceptTargetTranslation(targetStates, segment, completedFallback.translation)
         completed += 1
         publishProgress()
-        if (completedFallback.translation !== undefined) {
-          commitTarget(segment.target, completedFallback.translation)
-          await persistTargetCache(segment.target, completedFallback.translation)
-        }
+        commitTarget(segment.target, completedFallback.translation)
+        await persistTargetCache(segment.target, completedFallback.translation)
       } catch (error) {
         if (isAbortError(error, signal)) throw error
         failTarget(segment)
@@ -3357,30 +3471,44 @@ export async function retryFailedDocumentTranslationPipeline(
       return
     }
     if (!applied.finished) return
-    completed += 1
-    if (applied.failed) retryFailedIds.add(segment.target.targetId)
-    publishProgress()
-    if (applied.translation !== undefined) {
-      commitTarget(segment.target, applied.translation)
-      await persistTargetCache(segment.target, applied.translation)
+    if (applied.failed || applied.translation === undefined) {
+      failTarget(segment, applied.failed ? 'empty-translation' : 'translation-failed')
+      return
     }
+    if (!isAcceptableDocumentTargetTranslation(
+      segment.target,
+      applied.translation,
+      languagePair,
+      languageResolution.targetPreference
+    )) {
+      failTarget(segment, 'suspect-untranslated')
+      return
+    }
+    acceptTargetTranslation(targetStates, segment, applied.translation)
+    completed += 1
+    publishProgress()
+    commitTarget(segment.target, applied.translation)
+    await persistTargetCache(segment.target, applied.translation)
   }
 
   /**
-   * 标记重试目标仍失败，并继续保留原译文或原文。
+   * 标记重试目标仍失败，并强制回滚到原文。
    * @param segment 失败分段。
    * @returns 无返回值。
    * @author zhenghq
    */
-  const failTarget = (segment: DocumentBatchSegment): void => {
+  const failTarget = (segment: DocumentBatchSegment, reason = 'translation-failed'): void => {
     const state = targetStates.get(segment.target.targetId)
     if (!state || state.finished) return
     state.failed = true
     state.finished = true
-    state.failureReason = 'translation-failed'
+    state.failureReason = reason
+    state.translation = undefined
     completed += 1
     retryFailedIds.add(segment.target.targetId)
     publishProgress()
+    // 重试流式预览可能已经写入错误语言，失败终态必须恢复原文。
+    commitTarget(segment.target, segment.target.text)
   }
 
   /**
@@ -3410,12 +3538,24 @@ export async function retryFailedDocumentTranslationPipeline(
             if (completedFallback.needsTableRowFallback) failTarget(segment)
             continue
           }
+          if (completedFallback.translation === undefined) {
+            failTarget(segment)
+            continue
+          }
+          if (!isAcceptableDocumentTargetTranslation(
+            segment.target,
+            completedFallback.translation,
+            languagePair,
+            languageResolution.targetPreference
+          )) {
+            failTarget(segment, 'suspect-untranslated')
+            continue
+          }
+          acceptTargetTranslation(targetStates, segment, completedFallback.translation)
           completed += 1
           publishProgress()
-          if (completedFallback.translation !== undefined) {
-            commitTarget(segment.target, completedFallback.translation)
-            await persistTargetCache(segment.target, completedFallback.translation)
-          }
+          commitTarget(segment.target, completedFallback.translation)
+          await persistTargetCache(segment.target, completedFallback.translation)
         } catch (error) {
           if (isAbortError(error, signal)) throw error
           failTarget(segment)

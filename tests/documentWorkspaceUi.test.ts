@@ -11,6 +11,7 @@ import {
   resolveTranslationWatermarkHorizontalOffset,
   resolveTranslationTableColumnWidths
 } from '../src/renderer/src/documentPdfLayout.ts'
+import { shouldRevealActiveDocumentTab } from '../src/renderer/src/documentTabScroll.ts'
 import type { DocumentBlock } from '../src/shared/documentTypes.ts'
 
 /**
@@ -117,6 +118,24 @@ test('多 Tab 栏必须使用主题变量、横向滚动并支持逐个关闭', 
   assert.match(en, /'document\.upload\.addFiles'/u)
   assert.match(en, /'document\.tab\.close'/u)
   assert.match(en, /'document\.files\.invalid'/u)
+})
+
+test('文件 Tab 横向滚动必须保留用户位置，仅在激活项变化时自动定位', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('function renderDocumentTabs(): void {')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+
+  assert.equal(shouldRevealActiveDocumentTab('tab-a', null), true)
+  assert.equal(shouldRevealActiveDocumentTab('tab-a', 'tab-a'), false)
+  assert.equal(shouldRevealActiveDocumentTab('tab-b', 'tab-a'), true)
+  assert.equal(shouldRevealActiveDocumentTab(null, 'tab-a'), false)
+  assert.ok(renderStart > -1)
+  assert.match(renderSource, /const previousScrollLeft = documentWorkspaceTabs\.scrollLeft/u)
+  assert.match(renderSource, /documentWorkspaceTabs\.scrollLeft = previousScrollLeft/u)
+  assert.match(
+    renderSource,
+    /if \(!shouldRevealActiveDocumentTab\(activeDocumentTabId, lastRevealedActiveDocumentTabId\)\) return/u
+  )
 })
 
 test('文档翻译顶部两栏必须分层排布并在多文件时保持文件标签可读', () => {

@@ -301,6 +301,30 @@ test('中文目标收到长段英文时标记疑似未翻译并保留原文', ()
   assert.equal(report.translated, 0)
 })
 
+test('自动源语言的中文目标收到短英文时也必须标记疑似未翻译', () => {
+  const pair: DocumentLanguagePair = { sourceLang: 'auto', targetLang: 'ZH' }
+  const source = '其他相关证明文件'
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-short', source, 'Other relevant supporting documents')
+  ], { languagePair: pair }))
+
+  assert.equal(report.status, 'failed')
+  assert.equal(report.suspectUntranslated, 1)
+  assert.deepEqual(report.suspectUntranslatedTargetIds, ['target-short'])
+  assert.equal(report.translated, 0)
+})
+
+test('原文已经是目标语言但模型改成外语时不得计为成功', () => {
+  const pair: DocumentLanguagePair = { sourceLang: 'auto', targetLang: 'ZH' }
+  const report = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-regressed', '其他相关证明文件', 'Other relevant supporting documents')
+  ], { languagePair: pair }))
+
+  assert.equal(report.status, 'failed')
+  assert.equal(report.suspectUntranslated, 1)
+  assert.deepEqual(report.suspectUntranslatedTargetIds, ['target-regressed'])
+})
+
 test('英文目标收到长段中文时标记疑似未翻译', () => {
   const pair: DocumentLanguagePair = { sourceLang: 'ZH', targetLang: 'EN' }
   const source = '这是一段用于验证英文目标方向的中文说明文字，包含完整的业务规则。'

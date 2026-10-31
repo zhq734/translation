@@ -268,6 +268,15 @@ const SOURCE_SCRIPT_DOMINANCE_RATIO = 0.75
 /** 中文目标至少需要出现的 CJK 占比，低于该值视为未完成目标语言转换。 */
 const CHINESE_TARGET_MIN_CJK_RATIO = 0.25
 
+/** 短文本发生目标语言回退时，译文至少需要包含的拉丁字母数。 */
+const TARGET_LANGUAGE_REGRESSION_MIN_LATIN_LETTERS = 12
+
+/** 短文本发生目标语言回退时，译文至少需要包含的小写英文单词数。 */
+const TARGET_LANGUAGE_REGRESSION_MIN_LOWERCASE_WORDS = 2
+
+/** 短文本发生目标语言回退时，译文至少需要包含的中文字符数。 */
+const TARGET_LANGUAGE_REGRESSION_MIN_CHINESE_CHARACTERS = 6
+
 /** 常见占位符与受保护协议标记。 */
 const PLACEHOLDER_PATTERNS: readonly RegExp[] = [
   /\{\{[^{}\n]+\}\}/gu,
@@ -376,6 +385,22 @@ function containsTargetLanguage(translation: string, targetLang: string): boolea
 }
 
 /**
+ * 判断文本是否含有足量的目标语言自然语言，供“无需翻译”豁免使用。
+ * 与译文比例判断不同，这里不会把纯数字或符号误认为已满足中文目标。
+ * @param text 待判断文本。
+ * @param targetLang 实际目标语言。
+ * @returns 文本包含目标语言主体时返回 true。
+ * @author zhenghq
+ */
+function containsTargetLanguageBody(text: string, targetLang: string): boolean {
+  const chineseCharacters = countMatches(text, /[\u3400-\u9fff]/gu)
+  const latinLetters = countMatches(text, /[A-Za-z]/gu)
+  if (targetLang === 'ZH') return chineseCharacters >= 2
+  if (targetLang === 'EN') return latinLetters >= 2
+  return false
+}
+
+/**
  * 判断原文本身是否已经以目标语言为主，用于把模型原样返回的内容归为无需翻译。
  * @param sourceText 目标原文。
  * @param targetLang 实际目标语言。
@@ -385,7 +410,40 @@ function containsTargetLanguage(translation: string, targetLang: string): boolea
 function sourceAlreadyUsesTargetLanguage(sourceText: string, targetLang: string): boolean {
   const text = stripNonLanguageText(sourceText)
   if (!text.trim()) return false
+  if (!containsTargetLanguageBody(text, targetLang)) return false
   return containsTargetLanguage(text, targetLang)
+}
+
+/**
+ * 判断原文已处于目标语言、但译文反而切换成足量外语的语言回退。
+ * 短专有名词和产品标识因缺少小写自然语言单词而保持豁免。
+ * @param sourceText 目标原文。
+ * @param translatedText 模型返回的译文。
+ * @param targetLang 实际目标语言。
+ * @returns 明确发生目标语言回退时返回 true。
+ * @author zhenghq
+ */
+function isTargetLanguageRegression(
+  sourceText: string,
+  translatedText: string,
+  targetLang: string
+): boolean {
+  if (targetLang !== 'ZH' && targetLang !== 'EN') return false
+  const source = stripNonLanguageText(sourceText)
+  const translation = stripNonLanguageText(translatedText)
+  if (!source.trim() || !translation.trim()) return false
+  if (!containsTargetLanguageBody(source, targetLang)) return false
+  if (containsTargetLanguage(translation, targetLang)) return false
+
+  if (targetLang === 'ZH') {
+    const latinLetters = countMatches(translation, /[A-Za-z]/gu)
+    const lowercaseWords = translation.match(/\b[a-z]{2,}\b/gu) ?? []
+    return latinLetters >= TARGET_LANGUAGE_REGRESSION_MIN_LATIN_LETTERS &&
+      lowercaseWords.length >= TARGET_LANGUAGE_REGRESSION_MIN_LOWERCASE_WORDS
+  }
+
+  const chineseCharacters = countMatches(translation, /[\u3400-\u9fff]/gu)
+  return chineseCharacters >= TARGET_LANGUAGE_REGRESSION_MIN_CHINESE_CHARACTERS
 }
 
 /**
@@ -403,6 +461,7 @@ export function isLikelyUntranslatedTranslation(
 ): boolean {
   const sourceLang = languagePair.sourceLang.toUpperCase()
   const targetLang = languagePair.targetLang.toUpperCase()
+  if (isTargetLanguageRegression(sourceText, translatedText, targetLang)) return true
   const englishToChinese = (sourceLang === 'EN' || sourceLang === 'AUTO') && targetLang === 'ZH'
   const chineseToEnglish = (sourceLang === 'ZH' || sourceLang === 'AUTO') && targetLang === 'EN'
   if (!englishToChinese && !chineseToEnglish) return false
@@ -440,6 +499,9 @@ function classifyTarget(
   languagePair: DocumentLanguagePair
 ): { state: DocumentCompletionTargetState; reason?: string } {
   if (target.state === 'failed') {
+    if (target.failureReason === 'suspect-untranslated') {
+      return { state: 'suspect-untranslated', reason: 'suspect-untranslated' }
+    }
     return { state: 'failed', reason: target.failureReason ?? 'translation-failed' }
   }
   if (target.state === 'pending') return { state: 'pending', reason: 'translation-pending' }

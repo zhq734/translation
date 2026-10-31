@@ -2954,6 +2954,7 @@ test('失败、取消、空译文和疑似未翻译目标不得写入成功缓�
     ])
   ])
   const writes: unknown[] = []
+  const progress = progressCollector()
   const result = await runDocumentTranslationPipeline(
     { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
     createDocumentTaskState('job-cache-negative', 1),
@@ -2967,7 +2968,7 @@ test('失败、取消、空译文和疑似未翻译目标不得写入成功缓�
         if (text.includes('Empty')) return '   '
         return text
       },
-      onProgress: () => undefined,
+      onProgress: progress.onProgress,
       concurrency: 1,
       writeTranslationCache: async (_key, value) => {
         writes.push(value)
@@ -2977,7 +2978,138 @@ test('失败、取消、空译文和疑似未翻译目标不得写入成功缓�
   )
 
   assert.equal(result.task.status, 'failed')
+  assert.equal(result.completionReport.failed, 2)
+  assert.equal(result.completionReport.suspectUntranslated, 1)
+  assert.equal(result.completionReport.failureReasons['0:1:text:re'], 'empty-translation')
+  assert.equal(progress.states.filter((state) => state.phase === 'translate').at(-1)?.progress.completed, 3)
   assert.deepEqual(writes, [])
+})
+
+test('自动源语言下短文本被模型翻成英文时必须保留原文并进入可重试目标', async () => {
+  const source = model([
+    textBlock('block-regressed', [{ runId: 'run-regressed', text: '其他相关证明文件' }])
+  ])
+  const writes: unknown[] = []
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-short-suspect', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async () => 'Other relevant supporting documents',
+      onProgress: () => undefined,
+      concurrency: 1,
+      writeTranslationCache: async (_key, value) => {
+        writes.push(value)
+      }
+    },
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'failed')
+  assert.deepEqual(result.completionReport.suspectUntranslatedTargetIds, [
+    '0:0:text:run-regressed'
+  ])
+  assert.deepEqual(result.retryableTargetIds, ['0:0:text:run-regressed'])
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '其他相关证明文件'
+  )
+  assert.deepEqual(writes, [])
+})
+
+test('显式中文目标流式返回英文时必须回滚原文且不保留错误预览', async () => {
+  const source = model([
+    textBlock('block-regressed-stream', [{ runId: 'run-regressed-stream', text: '其他相关证明文件' }])
+  ])
+  const published = translationCollector()
+  const writes: unknown[] = []
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-short-suspect-stream', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async (_text, _signal, _languagePair, onDelta) => {
+        onDelta?.('Other relevant ')
+        onDelta?.('supporting documents')
+        return 'Other relevant supporting documents'
+      },
+      onProgress: () => undefined,
+      publishTranslation: published.publishTranslation,
+      concurrency: 1,
+      writeTranslationCache: async (_key, value) => {
+        writes.push(value)
+      }
+    },
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'failed')
+  assert.deepEqual(result.completionReport.suspectUntranslatedTargetIds, [
+    '0:0:text:run-regressed-stream'
+  ])
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '其他相关证明文件'
+  )
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '其他相关证明文件'
+  )
+  assert.deepEqual(writes, [])
+})
+
+test('显式中文目标重试流式返回英文时同样必须回滚原文', async () => {
+  const source = model([
+    textBlock('block-retry-regressed', [{ runId: 'run-retry-regressed', text: '其他相关证明文件' }])
+  ])
+  const initial = model([
+    textBlock('block-retry-regressed', [{ runId: 'run-retry-regressed', text: '其他相关证明文件' }])
+  ])
+  const published = translationCollector()
+  const result = await retryFailedDocumentTranslationPipeline(
+    source,
+    initial,
+    ['0:0:text:run-retry-regressed'],
+    createDocumentTaskState('job-short-suspect-retry-stream', 2),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async (_text, _signal, _languagePair, onDelta) => {
+        onDelta?.('Other relevant ')
+        onDelta?.('supporting documents')
+        return 'Other relevant supporting documents'
+      },
+      onProgress: () => undefined,
+      publishTranslation: published.publishTranslation,
+      concurrency: 1
+    },
+    {
+      sourcePreference: 'auto',
+      targetPreference: 'ZH',
+      languagePair: { sourceLang: 'auto', targetLang: 'ZH' }
+    }
+  )
+
+  assert.equal(result.task.status, 'failed')
+  assert.deepEqual(result.completionReport.suspectUntranslatedTargetIds, [
+    '0:0:text:run-retry-regressed'
+  ])
+  assert.equal(
+    (result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '其他相关证明文件'
+  )
+  assert.equal(
+    (published.translations.at(-1)!.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text,
+    '其他相关证明文件'
+  )
 })
 
 test('重试必须使用完整源文档相邻上下文并透传命中的术语', async () => {
