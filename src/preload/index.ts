@@ -56,6 +56,25 @@ function getSelectionTranslatorLocale(): Locale {
 
 contextBridge.exposeInMainWorld('getSelectionTranslatorLocale', getSelectionTranslatorLocale)
 
+/**
+ * 同步读取主进程是否启用 Windows 7 兼容外观。
+ * @returns 当前运行时启用 Win7 兼容模式时返回 true。
+ * @author zhenghq
+ */
+function getSelectionTranslatorWin7Compatibility(): boolean {
+  try {
+    return ipcRenderer.sendSync('app:get-win7-compatibility') === true
+  } catch {
+    // 同步通道不可用时保持现代系统外观，避免 preload 异常阻断其余 API。
+    return false
+  }
+}
+
+contextBridge.exposeInMainWorld(
+  'getSelectionTranslatorWin7Compatibility',
+  getSelectionTranslatorWin7Compatibility
+)
+
 const api: Api = {
   /**
    * 最小化当前受信任窗口。

@@ -403,6 +403,17 @@ function registerLocaleIpc(): void {
 }
 
 /**
+ * 注册首屏 Windows 7 兼容外观同步 IPC，供 preload 在主题样式应用前读取。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function registerWin7CompatibilityIpc(): void {
+  ipcMain.on('app:get-win7-compatibility', (event) => {
+    event.returnValue = isWindows7CompatibilityRuntime()
+  })
+}
+
+/**
  * 使用当前界面语言翻译主进程用户可见文案。
  * 初始化完成前回退到英文目录，保证启动早期对话框不会出现中文硬编码。
  * @param key 语义化词条 key。
@@ -1223,6 +1234,7 @@ async function onReady(): Promise<boolean> {
   })
   // 窗口创建早于 registerIpc，必须在这里先注册同步语言通道，保证 preload 首屏可用。
   registerLocaleIpc()
+  registerWin7CompatibilityIpc()
   const openSettingsOnInitialLaunch = shouldOpenSettingsOnInitialLaunch(process.platform)
   await configureMacOSMenuBarApplication(
     getSettings().showDockIcon,
@@ -2504,10 +2516,13 @@ function whenOcrSelectionWindowReady(win: BrowserWindow): Promise<void> {
  */
 function getScreenshotToastWindow(): BrowserWindow {
   if (screenshotToastWin && !screenshotToastWin.isDestroyed()) return screenshotToastWin
+  const win7Compatibility = isWindows7CompatibilityRuntime()
   screenshotToastWin = new BrowserWindow({
     show: false,
     frame: false,
-    transparent: true,
+    // Win7 的透明窗口合成会在提示胶囊边缘留下黑边，兼容模式改用不透明原生背景。
+    transparent: !win7Compatibility,
+    backgroundColor: win7Compatibility ? '#f5f5f7' : '#00000000',
     resizable: false,
     movable: false,
     minimizable: false,

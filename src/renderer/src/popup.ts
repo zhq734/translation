@@ -53,6 +53,7 @@ import {
 } from './edgeSpeechPlayback'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
+import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 import {
   beginPronunciationLookup,
   closePronunciationCard,
@@ -72,6 +73,7 @@ import {
 } from './pronunciationPlayback'
 import { startPronunciationSpeechFallback } from './pronunciationSpeechFallback'
 
+applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 
