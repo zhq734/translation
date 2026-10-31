@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import { logCandidateProbe } from '../shared/activateDiagnostics'
+import { isWindows7CompatibilityRuntime } from './platformCompatibility'
 
 const BUTTON_SIZE = 36
 const EDGE_GAP = 8
@@ -82,6 +83,7 @@ export function createSelectionButton(
   preloadPath: string,
   onInternalWindowHidden?: () => void
 ): BrowserWindow {
+  const win7Compatibility = isWindows7CompatibilityRuntime()
   rendererReady = false
   pendingAnchor = null
   onInternalWindowHiddenCallback = onInternalWindowHidden ?? null
@@ -90,7 +92,8 @@ export function createSelectionButton(
     height: BUTTON_SIZE,
     show: false,
     frame: false,
-    transparent: true,
+    transparent: !win7Compatibility,
+    backgroundColor: win7Compatibility ? '#ffffff' : '#00000000',
     resizable: false,
     movable: false,
     minimizable: false,

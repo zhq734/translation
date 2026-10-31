@@ -20,6 +20,25 @@ body {
   user-select: none;
 }
 
+/* Win7 + Electron 22 的透明窗口合成不稳定，不透明平面外观可消除图标与弹窗黑边。 */
+:root[data-win7-compatibility='true'],
+:root[data-win7-compatibility='true'] html,
+:root[data-win7-compatibility='true'] body {
+  background: var(--panel-bg);
+  border-radius: 0;
+  clip-path: none;
+}
+
+:root[data-win7-compatibility='true'] body {
+  padding: 0;
+}
+
+:root[data-win7-compatibility='true'] #popup {
+  border-radius: 0;
+  clip-path: none;
+  box-shadow: none;
+}
+
 #popup {
   width: 100%;
   height: 100%;

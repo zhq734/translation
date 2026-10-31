@@ -56,6 +56,25 @@ function getSelectionTranslatorLocale(): Locale {
 
 contextBridge.exposeInMainWorld('getSelectionTranslatorLocale', getSelectionTranslatorLocale)
 
+/**
+ * 同步读取主进程是否启用 Windows 7 兼容外观。
+ * @returns 当前运行时启用 Win7 兼容模式时返回 true。
+ * @author zhenghq
+ */
+function getSelectionTranslatorWin7Compatibility(): boolean {
+  try {
+    return ipcRenderer.sendSync('app:get-win7-compatibility') === true
+  } catch {
+    // 同步通道不可用时保持现代系统外观，避免 preload 异常阻断其余 API。
+    return false
+  }
+}
+
+contextBridge.exposeInMainWorld(
+  'getSelectionTranslatorWin7Compatibility',
+  getSelectionTranslatorWin7Compatibility
+)
+
 const api: Api = {
   /**
    * 最小化当前受信任窗口。
@@ -574,15 +593,22 @@ const api: Api = {
    * @param text 待朗读译文。
    * @param language 目标语言代码。
    * @param requestId 可选请求标识，由 Renderer 生成并用于取消。
+   * @param ipa 可选 IPA 音标；提供时由 Edge 按音素精确合成。
    * @returns 临时音频或脱敏错误。
    * @author zhenghq
    */
-  synthesizeEdgeSpeech: (text: string, language: string, requestId?: string): Promise<EdgeSpeechResult> =>
+  synthesizeEdgeSpeech: (
+    text: string,
+    language: string,
+    requestId?: string,
+    ipa?: string
+  ): Promise<EdgeSpeechResult> =>
     ipcRenderer.invoke(
       'speech:edge-synthesize',
       requestId || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       text,
-      language
+      language,
+      ipa
     ),
 
   /**

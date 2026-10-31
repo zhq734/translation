@@ -42,7 +42,12 @@ export interface EdgeAudioContextLike {
 }
 
 interface EdgePlaybackOptions {
-  synthesize(text: string, language: string, signal?: AbortSignal): Promise<EdgeSpeechResult>
+  synthesize(
+    text: string,
+    language: string,
+    signal?: AbortSignal,
+    ipa?: string
+  ): Promise<EdgeSpeechResult>
   createAudio(url: string): EdgeAudioLike
   createObjectUrl(blob: Blob): string
   revokeObjectUrl(url: string): void
@@ -71,7 +76,7 @@ interface ActivePlayback {
 /** Edge 在线音频播放控制器。 */
 export interface EdgePlaybackController {
   /** 开始合成并播放译文。 */
-  start(text: string, language: string): Promise<SpeechStartResult>
+  start(text: string, language: string, ipa?: string): Promise<SpeechStartResult>
   /** 停止当前音频和网络请求。 */
   stop(): void
   /** 判断当前是否存在播放会话。 */
@@ -170,13 +175,15 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @param text 待合成的文本片段。
    * @param language 目标语言。
    * @param activeSession 当前播放会话序号。
+   * @param ipa 可选 IPA 音标；单词发音时用于精确指定音素。
    * @returns Edge 合成结果。
    * @author zhenghq
    */
   async function synthesizeChunk(
     text: string,
     language: string,
-    activeSession: number
+    activeSession: number,
+    ipa?: string
   ): Promise<EdgeSpeechResult> {
     if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
     const abort = new AbortController()
@@ -184,7 +191,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     currentAbort = abort
     options.onSynthesisStart?.(text, language)
     try {
-      return await options.synthesize(text, language, abort.signal)
+      return await options.synthesize(text, language, abort.signal, ipa)
     } finally {
       activeAborts.delete(abort)
       if (currentAbort === abort) currentAbort = null
@@ -234,6 +241,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @param index 当前片段索引。
    * @param language 目标语言。
    * @param activeSession 当前播放会话序号。
+   * @param ipa 可选 IPA 音标；单词发音时用于精确指定音素。
    * @returns 已加载的活动音频或合成结果错误。
    * @author zhenghq
    */
@@ -241,10 +249,11 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     chunks: readonly SpeechSegment[],
     index: number,
     language: string,
-    activeSession: number
+    activeSession: number,
+    ipa?: string
   ): Promise<{ playback: ActivePlayback | null; error?: string }> {
     const chunk = chunks[index]
-    const result = await synthesizeChunk(chunk.text, chunk.language, activeSession)
+    const result = await synthesizeChunk(chunk.text, chunk.language, activeSession, ipa)
     if (activeSession !== sessionId) return { playback: null, error: msg('rendererSpeech.edge.cancelled') }
     if (!result.ok || !result.audio || result.audio.length === 0) {
       return { playback: null, error: result.error ?? msg('rendererSpeech.edge.unavailable') }
@@ -302,6 +311,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
    * @param language 目标语言。
    * @param activeSession 当前播放会话序号。
    * @param context 当前 AudioContext。
+   * @param ipa 可选 IPA 音标；单词发音时用于精确指定音素。
    * @returns 播放结果。
    * @author zhenghq
    */
@@ -309,7 +319,8 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
     chunks: readonly SpeechSegment[],
     language: string,
     activeSession: number,
-    context: EdgeAudioContextLike
+    context: EdgeAudioContextLike,
+    ipa?: string
   ): Promise<SpeechStartResult> {
     const prefetchAhead = Math.max(0, Math.floor(options.prefetchAhead ?? 2))
     const pending = new Map<number, Promise<{ decoded: EdgeAudioBufferLike } | { error: string }>>()
@@ -327,7 +338,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       while (nextToRequest <= maxRequestedIndex) {
         const index = nextToRequest
         const chunk = chunks[index]
-        pending.set(index, synthesizeChunk(chunk.text, chunk.language, activeSession).then(async (result) => {
+        pending.set(index, synthesizeChunk(chunk.text, chunk.language, activeSession, ipa).then(async (result) => {
           if (activeSession !== sessionId) return { error: msg('rendererSpeech.edge.cancelled') }
           if (!result.ok || !result.audio || result.audio.length === 0) {
             return { error: result.error ?? msg('rendererSpeech.edge.unavailable') }
@@ -413,7 +424,7 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
   }
 
   return {
-    async start(text: string, language: string): Promise<SpeechStartResult> {
+    async start(text: string, language: string, ipa?: string): Promise<SpeechStartResult> {
       const normalizedText = text.trim()
       if (!normalizedText) return { ok: false, error: msg('rendererSpeech.error.noText') }
       this.stop()
@@ -423,15 +434,15 @@ export function createEdgePlaybackController(options: EdgePlaybackOptions): Edge
       setSpeaking(true)
       const audioContext = options.createAudioContext?.()
       if (audioContext) {
-        return startAudioContextPlayback(chunks, language, activeSession, audioContext)
+        return startAudioContextPlayback(chunks, language, activeSession, audioContext, ipa)
       }
-      let prepared = await prepareChunk(chunks, 0, language, activeSession)
+      let prepared = await prepareChunk(chunks, 0, language, activeSession, ipa)
       if (!prepared.playback) return fail(activeSession, prepared.error ?? msg('rendererSpeech.edge.unavailable'))
 
       for (let index = 0; index < chunks.length; index += 1) {
         if (activeSession !== sessionId) return { ok: false, error: msg('rendererSpeech.edge.cancelled') }
         const nextPreparedPromise = index + 1 < chunks.length
-          ? prepareChunk(chunks, index + 1, language, activeSession)
+          ? prepareChunk(chunks, index + 1, language, activeSession, ipa)
           : null
         const played = await playPlayback(prepared.playback, activeSession)
         if (!played) {

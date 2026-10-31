@@ -17,6 +17,7 @@ import {
 import type {
   PronunciationDefinition,
   PronunciationResult,
+  PronunciationVariant,
   Settings,
   TranslateDeltaPayload,
   TranslatePayload
@@ -52,6 +53,7 @@ import {
 } from './edgeSpeechPlayback'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
+import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 import {
   beginPronunciationLookup,
   closePronunciationCard,
@@ -71,6 +73,7 @@ import {
 } from './pronunciationPlayback'
 import { startPronunciationSpeechFallback } from './pronunciationSpeechFallback'
 
+applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 
@@ -209,7 +212,7 @@ const systemSpeechController: SpeechController = createSpeechController({
 })
 const edgeSpeechController: EdgePlaybackController = createEdgePlaybackController({
   getMessage: (key: string) => t(key),
-  synthesize: (text, language, signal) => {
+  synthesize: (text, language, signal, ipa) => {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
     let aborted = signal?.aborted === true
 
@@ -226,7 +229,7 @@ const edgeSpeechController: EdgePlaybackController = createEdgePlaybackControlle
     signal?.addEventListener('abort', abort, { once: true })
     if (aborted) return Promise.resolve({ ok: false, error: t('popup.edgeSpeechCancelled') })
     return window.api
-      .synthesizeEdgeSpeech(text, language, requestId)
+      .synthesizeEdgeSpeech(text, language, requestId, ipa)
       .then((result) => aborted
         ? { ok: false, error: t('popup.edgeSpeechCancelled') }
         : result)
@@ -1092,7 +1095,7 @@ async function toggleWordPlayback(variantId?: string): Promise<void> {
       if (pronunciationAudioRequestId === audioRequestId) pronunciationAudioRequestId = ''
       if (!lease.isCurrent()) return
       if (result.ok) {
-        await playWordAudio(result.audio, result.mimeType, lease)
+        await playWordAudio(result.audio, result.mimeType, lease, variant)
         return
       }
     } catch {
@@ -1104,6 +1107,7 @@ async function toggleWordPlayback(variantId?: string): Promise<void> {
   if (!lease.isCurrent()) return
   const started = await startPronunciationSpeechFallback(word, {
     speechProvider: currentSettings?.speechProvider,
+    variant,
     edge: edgeSpeechController,
     system: systemSpeechController
   })
@@ -1132,13 +1136,15 @@ async function toggleWordPlayback(variantId?: string): Promise<void> {
  * @param bytes 音频字节。
  * @param mimeType 音频 MIME 类型。
  * @param lease 当前单词播放会话租约。
+ * @param variant 当前点击的音标变体；词典音频播放失败时保留其 IPA。
  * @returns 播放结束后的 Promise。
  * @author zhenghq
  */
 function playWordAudio(
   bytes: Uint8Array,
   mimeType: string,
-  lease: PronunciationPlaybackLease
+  lease: PronunciationPlaybackLease,
+  variant?: PronunciationVariant
 ): Promise<void> {
   return new Promise((resolve) => {
     if (!lease.isCurrent()) {
@@ -1165,13 +1171,13 @@ function playWordAudio(
         return
       }
       releaseWordAudio()
-      void fallbackWordSpeech(pronunciationCard.word, lease)
+      void fallbackWordSpeech(pronunciationCard.word, lease, variant)
       resolve()
     }
     audio.play().catch(() => {
       if (lease.isCurrent()) {
         releaseWordAudio()
-        void fallbackWordSpeech(pronunciationCard.word, lease)
+        void fallbackWordSpeech(pronunciationCard.word, lease, variant)
       }
       resolve()
     })
@@ -1182,15 +1188,18 @@ function playWordAudio(
  * 词典音频无法播放时按当前语音偏好回退 TTS，并监听自然结束。
  * @param word 待朗读的英文单词。
  * @param lease 当前单词播放会话租约。
+ * @param variant 当前点击的音标变体；用于选择口音和 IPA。
  * @returns 播放启动完成后的 Promise。
  * @author zhenghq
  */
 async function fallbackWordSpeech(
   word: string,
-  lease: PronunciationPlaybackLease
+  lease: PronunciationPlaybackLease,
+  variant?: PronunciationVariant
 ): Promise<void> {
   const started = await startPronunciationSpeechFallback(word, {
     speechProvider: currentSettings?.speechProvider,
+    variant,
     edge: edgeSpeechController,
     system: systemSpeechController
   })
