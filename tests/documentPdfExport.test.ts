@@ -3062,6 +3062,84 @@ test('PDF 文本跨页后签名、日期与底边必须紧跟续页正文', asyn
   }
 })
 
+test('PDF 续页首个尾注不能继承旧页的大段间距', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.height = 260
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'continuation-body',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 100, width: 160, height: 50 },
+    runs: [{
+      runId: 'continuation-body-run',
+      // 固定宽度的英文正文跨越两页，末行必须留在第二页。
+      text: `${'A'.repeat(190)} BODYEND`,
+      style: { fontSize: 12, lineHeight: 18 }
+    }]
+  }, {
+    kind: 'text',
+    blockId: 'continuation-signature',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 220, width: 160, height: 12 },
+    runs: [{ runId: 'continuation-signature-run', text: 'SIGNATURE_TAIL', style: { fontSize: 10, lineHeight: 12 } }]
+  }, {
+    kind: 'text',
+    blockId: 'continuation-id',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 235, width: 160, height: 12 },
+    runs: [{ runId: 'continuation-id-run', text: 'ID_TAIL', style: { fontSize: 10, lineHeight: 12 } }]
+  }, {
+    kind: 'text',
+    blockId: 'continuation-date',
+    readingOrder: 3,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 250, width: 160, height: 9 },
+    runs: [{ runId: 'continuation-date-run', text: 'DATE_TAIL', style: { fontSize: 10, lineHeight: 12 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 2, '长正文和尾注必须落在两页内')
+    const continuationPage = await exportedPdf.getPage(2)
+    const pageHeight = continuationPage.getViewport({ scale: 1 }).height
+    const content = await continuationPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const textTop = (item: { transform: number[] }): number => pageHeight - (item.transform[5] ?? pageHeight)
+    const continuationEnd = items.find((item) => item.str.includes('BODYEND'))
+    const signature = items.find((item) => item.str.includes('SIGNATURE_TAIL'))
+    const id = items.find((item) => item.str.includes('ID_TAIL'))
+    const date = items.find((item) => item.str.includes('DATE_TAIL'))
+    assert.ok(continuationEnd && signature && id && date,
+      `续页必须保留正文末尾与全部尾注，实际文本=${items.map((item) => item.str).join('|')}`)
+    const continuationTop = textTop(continuationEnd)
+    const signatureTop = textTop(signature)
+    const idTop = textTop(id)
+    const dateTop = textTop(date)
+    assert.ok(signatureTop - continuationTop < 40,
+      `首个尾注不能继承旧页 70pt 大段距：正文=${continuationTop}，签名=${signatureTop}`)
+    assert.ok(signatureTop < idTop && idTop < dateTop, '签名、ID 和日期必须保持原有先后顺序')
+    assert.ok(Math.abs((idTop - signatureTop) - 15) < 2,
+      `首个尾注压缩后，后续 ID 仍须保留源相对间距：签名=${signatureTop}，ID=${idTop}`)
+    assert.ok(Math.abs((dateTop - idTop) - 15) < 2,
+      `ID 到日期仍须保留源相对间距：ID=${idTop}，日期=${dateTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('PDF 正文跨页后结构竖线必须续绘到续页正文底部', async () => {
   const model = documentWithText('')
   const page = model.pages[0]!

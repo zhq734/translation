@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { translatorForTest } from './helpers/i18n.ts'
 
-/** 需要验证动态本地化文案的九个 Renderer 入口源码。 */
+/** 需要验证动态本地化文案的七个 Renderer 入口源码。 */
 const RENDERER_MODULES = [
   'src/renderer/src/popup.ts',
   'src/renderer/src/settings.ts',
@@ -11,8 +11,6 @@ const RENDERER_MODULES = [
   'src/renderer/src/toast.ts',
   'src/renderer/src/webReader.ts',
   'src/renderer/src/document.ts',
-  'src/renderer/src/longCapture.ts',
-  'src/renderer/src/longPreview.ts',
   'src/renderer/src/pin.ts'
 ] as const
 
@@ -26,7 +24,7 @@ function readRenderer(file: string): string {
   return readFileSync(file, 'utf8')
 }
 
-test('九个 Renderer 的动态用户文案应通过当前语言翻译器生成', () => {
+test('七个 Renderer 的动态用户文案应通过当前语言翻译器生成', () => {
   for (const file of RENDERER_MODULES) {
     const source = readRenderer(file)
     assert.match(source, /startLocaleRuntime\(window\.api\)/u, `${file} 未接入 locale runtime`)

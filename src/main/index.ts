@@ -262,14 +262,6 @@ import type {
 import { WebReaderManager } from './webReaderWindow'
 import { DocumentWorkspaceManager } from './documentWorkspaceWindow'
 import {
-  createScreenshotLongCaptureWindowManager,
-  type ScreenshotLongCaptureWindowManager
-} from './screenshotLongCaptureWindow'
-import {
-  createMacosLongCaptureCapture,
-  type MacosLongCaptureCapture
-} from './macosLongCaptureCapture'
-import {
   createScreenshotPinWindowManager,
   type ScreenshotPinWindowManager
 } from './screenshotPinWindow'
@@ -454,12 +446,6 @@ let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let webReader: WebReaderManager | null = null
 let documentWorkspace: DocumentWorkspaceManager | null = null
-/** 长截图控制窗管理器；同一时刻只维护一个采集会话。 */
-let screenshotLongCaptureManager: ScreenshotLongCaptureWindowManager | null = null
-/** macOS 长截图常驻抓帧客户端；复用 helper 进程降低连续采样开销。 */
-let macosLongCaptureCapture: MacosLongCaptureCapture | null = null
-/** macOS 长截图 helper 是否已确认不可用；熔断后避免每帧重复失败和回退卡顿。 */
-let macosLongCaptureHelperUnavailable = false
 /** 贴图窗口管理器；负责置顶窗口、缩放、透明度与数量上限。 */
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
@@ -638,8 +624,6 @@ let ocrInteractionToken: number | null = null
  * 否则用户会看到「截屏复制后设置页自动弹出」。
  */
 let ocrSessionAppWasFrontmost = true
-/** 覆盖窗口隐藏后待执行的一次性动作，例如启动长截图。 */
-let ocrSelectionAfterHideAction: (() => void) | null = null
 /**
  * 退化方案里恢复应用内窗口的延迟（毫秒）。
  * app.hide() 由 macOS 异步生效，同一 tick（含 setTimeout 0）内 app.show() 会被随后的隐藏动作覆盖，
@@ -1864,39 +1848,6 @@ async function onReady(): Promise<boolean> {
       join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE),
       bounds
     )
-  })
-  macosLongCaptureCapture = process.platform === 'darwin'
-    ? createMacosLongCaptureCapture({
-        resourcesPath: process.resourcesPath,
-        cwd: process.cwd()
-      })
-    : null
-  macosLongCaptureHelperUnavailable = false
-  screenshotLongCaptureManager = createScreenshotLongCaptureWindowManager({
-    preloadPath: PRELOAD_PATH,
-    captureOcrSelectionPng: async (bounds) => {
-      // macOS 长截图优先复用常驻 ScreenCaptureKit helper，避免每帧冷启动 screencapture。
-      // helper 未打包、系统版本过低或权限异常时保留既有 screencapture 回退，保证功能可用。
-      if (process.platform === 'darwin' && macosLongCaptureCapture && !macosLongCaptureHelperUnavailable) {
-        try {
-          return await macosLongCaptureCapture.capture(bounds)
-        } catch (error) {
-          macosLongCaptureHelperUnavailable = true
-          console.log('[long-capture] macOS helper failed, falling back to screencapture', {
-            message: error instanceof Error ? error.message : String(error)
-          })
-        }
-      }
-      return captureOcrSelectionPng(bounds, getSettings())
-    },
-    loadPage: (win) => loadRendererHtml(win, 'long-capture.html'),
-    loadPreviewPage: (win) => loadRendererHtml(win, 'long-preview.html'),
-    buildFileName: buildScreenshotSaveFileName,
-    translate: t,
-    showToast: (message, displayTimeMs, kind) => showScreenshotToast(message, displayTimeMs, kind),
-    onSessionEnded: restoreSelectionListenerAfterOcr,
-    registerGlobalShortcut: (accelerator, callback) => globalShortcut.register(accelerator, callback),
-    unregisterGlobalShortcut: (accelerator) => globalShortcut.unregister(accelerator)
   })
   screenshotPinManager = createScreenshotPinWindowManager({
     preloadPath: PRELOAD_PATH,
@@ -3228,11 +3179,6 @@ function hideOcrSelectionWindow(): boolean {
     ocrSelectionWin.setSimpleFullScreen(false)
   }
   ocrSelectionWin?.hide()
-  if (wasVisible) {
-    const afterHide = ocrSelectionAfterHideAction
-    ocrSelectionAfterHideAction = null
-    afterHide?.()
-  }
   return wasVisible
 }
 
@@ -3331,7 +3277,6 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
 async function openOcrSelection(): Promise<void> {
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
-  ocrSelectionAfterHideAction = null
   // 覆盖窗口显示后应用会成为前台应用，这里先记录截图前的状态，供收尾时决定是否归还前台。
   ocrSessionAppWasFrontmost = BrowserWindow.getFocusedWindow() !== null
   // 采集截图前最前的应用：必须赶在覆盖窗口显示之前，且与随后的屏幕采集并发进行，
@@ -3504,17 +3449,6 @@ function returnFrontmostThenHideOcrSelection(): void {
     hideOverlay()
     restoreAppWindowsByHidingApp()
   })
-}
-
-/**
- * 交还前台并收起覆盖窗口后执行指定收尾动作。
- * @param afterHide 覆盖窗口隐藏后执行的回调。
- * @returns 无返回值。
- * @author zhenghq
- */
-function returnFrontmostThenHideOcrSelectionWith(afterHide: () => void): void {
-  ocrSelectionAfterHideAction = afterHide
-  returnFrontmostThenHideOcrSelection()
 }
 
 /**
@@ -4583,22 +4517,6 @@ function isScreenshotOcrRequestActive(requestId: string, sessionId: number): boo
 }
 
 /**
- * 校验长截图控制窗 IPC 来源与当前会话是否匹配。
- * @param event IPC 事件。
- * @param sessionId 请求携带的会话标识。
- * @returns 来源为当前长截图窗口且会话一致时返回 true。
- * @author zhenghq
- */
-function isLongCaptureSender(event: Electron.IpcMainEvent, sessionId: number): boolean {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  return Boolean(
-    win &&
-    screenshotLongCaptureManager?.ownsWindow(win) &&
-    screenshotLongCaptureManager.currentSessionId() === sessionId
-  )
-}
-
-/**
  * 校验贴图窗口 IPC 来源、贴图实例与请求结构。
  * @param event IPC 事件。
  * @param pinId 请求携带的贴图实例标识。
@@ -4622,35 +4540,6 @@ function isOcrSelectionSender(event: Electron.IpcMainEvent | Electron.IpcMainInv
     !ocrSelectionWin.isDestroyed() &&
     BrowserWindow.fromWebContents(event.sender) === ocrSelectionWin
   )
-}
-
-/**
- * 启动长截图：先隐藏截图覆盖层，再创建控制窗并开始滚动采集。
- * @param event IPC 事件。
- * @param value 长截图启动请求。
- * @returns 无返回值。
- * @author zhenghq
- */
-function startScreenshotLongCapture(
-  event: Electron.IpcMainEvent,
-  value: unknown
-): void {
-  if (!isOcrSelectionSender(event)) return
-  const raw = value as { sessionId?: unknown; bounds?: unknown } | null
-  const sessionId = raw?.sessionId
-  if (typeof sessionId !== 'number' || sessionId !== ocrSelectionSessionSeq) return
-  // 覆盖窗口仍存在时才能把窗口内坐标转换为全局屏幕坐标。
-  const bounds = normalizeOcrSelectionBounds(raw?.bounds)
-  if (!bounds) return
-  const manager = screenshotLongCaptureManager
-  if (!manager) return
-  returnFrontmostThenHideOcrSelectionWith(() => {
-    if (sessionId !== ocrSelectionSessionSeq) return
-    // 每次新会话都重新探测 helper：上次失败可能只是瞬时权限/进程状态问题，
-    // 若永久熔断会让后续长截图一直退化为每帧冷启动 screencapture。
-    macosLongCaptureHelperUnavailable = false
-    void manager.start(sessionId, bounds)
-  })
 }
 
 /**
@@ -6729,32 +6618,6 @@ function registerIpc(): void {
     if (typeof sessionId !== 'number' || sessionId !== ocrSelectionSessionSeq) return
     resolveOcrSelectionReady(true)
   })
-  ipcMain.on('ocr-selection:start-long-capture', startScreenshotLongCapture)
-  ipcMain.on('screenshot-long-capture:sample', (event, sessionId: unknown) => {
-    if (typeof sessionId !== 'number' || !isLongCaptureSender(event, sessionId)) return
-    void screenshotLongCaptureManager?.sample(sessionId)
-  })
-  ipcMain.on('screenshot-long-capture:undo', (event, sessionId: unknown) => {
-    if (typeof sessionId !== 'number' || !isLongCaptureSender(event, sessionId)) return
-    screenshotLongCaptureManager?.undo(sessionId)
-  })
-  ipcMain.on('screenshot-long-capture:finish', (event, payload: unknown) => {
-    const raw = payload as { sessionId?: unknown; action?: unknown } | null
-    const sessionId = raw?.sessionId
-    const action = raw?.action
-    if (typeof sessionId !== 'number' || (action !== 'copy' && action !== 'save') ||
-        !isLongCaptureSender(event, sessionId)) return
-    void screenshotLongCaptureManager?.finish(sessionId, action).then(() => {
-      if (screenshotLongCaptureManager?.currentSessionId() === null) {
-        restoreSelectionListenerAfterOcr()
-      }
-    })
-  })
-  ipcMain.on('screenshot-long-capture:cancel', (event, sessionId: unknown) => {
-    if (typeof sessionId !== 'number' || !isLongCaptureSender(event, sessionId)) return
-    screenshotLongCaptureManager?.cancel(sessionId)
-    restoreSelectionListenerAfterOcr()
-  })
   ipcMain.handle('ocr-selection:create-pin', createScreenshotPin)
   ipcMain.on('screenshot-pin:drag', (event, request: unknown) => {
     const raw = request as { pinId?: unknown } | null
@@ -7095,10 +6958,6 @@ function cleanupBeforeQuit(): void {
   resetDocumentWorkspaceSession()
   documentWorkspace?.dispose()
   documentWorkspace = null
-  screenshotLongCaptureManager?.dispose()
-  screenshotLongCaptureManager = null
-  macosLongCaptureCapture?.dispose()
-  macosLongCaptureCapture = null
   screenshotPinManager?.dispose()
   screenshotPinManager = null
   webReader?.dispose()

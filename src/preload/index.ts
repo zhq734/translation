@@ -31,10 +31,6 @@ import type {
   ScreenshotAnnotatedExportRequest,
   ScreenshotExportImageRequest,
   ScreenshotExportImageResult,
-  ScreenshotLongCaptureStartRequest,
-  ScreenshotLongCaptureState,
-  ScreenshotLongCapturePreview,
-  ScreenshotLongCaptureActionResult,
   ScreenshotPinCreateRequest,
   ScreenshotPinCreateResult,
   ScreenshotPinDragRequest,
@@ -791,85 +787,6 @@ const api: Api = {
    */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest) {
     ipcRenderer.send('ocr-selection:save-annotated-image', request)
-  },
-  /**
-   * 以当前截图选区启动长截图控制窗。
-   * @param request 长截图启动请求。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  startScreenshotLongCapture(request: ScreenshotLongCaptureStartRequest) {
-    ipcRenderer.send('ocr-selection:start-long-capture', request)
-  },
-  /**
-   * 请求长截图控制窗立即采集一帧。
-   * @param sessionId 长截图会话标识。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  sampleScreenshotLongCapture(sessionId: number) {
-    ipcRenderer.send('screenshot-long-capture:sample', sessionId)
-  },
-  /**
-   * 撤销长截图最近一次成功拼接。
-   * @param sessionId 长截图会话标识。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  undoScreenshotLongCapture(sessionId: number) {
-    ipcRenderer.send('screenshot-long-capture:undo', sessionId)
-  },
-  /**
-   * 完成长截图并执行复制或保存。
-   * @param sessionId 长截图会话标识。
-   * @param action 完成动作。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  finishScreenshotLongCapture(sessionId: number, action: 'copy' | 'save') {
-    ipcRenderer.send('screenshot-long-capture:finish', { sessionId, action })
-  },
-  /**
-   * 取消长截图并释放采集状态。
-   * @param sessionId 长截图会话标识。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  cancelScreenshotLongCapture(sessionId: number) {
-    ipcRenderer.send('screenshot-long-capture:cancel', sessionId)
-  },
-  /**
-   * 订阅长截图状态变化。
-   * @param callback 状态回调。
-   * @returns 取消订阅方法。
-   * @author zhenghq
-   */
-  onScreenshotLongCaptureState(callback: (state: ScreenshotLongCaptureState) => void) {
-    const listener = (_event: unknown, state: ScreenshotLongCaptureState): void => callback(state)
-    ipcRenderer.on('screenshot-long-capture:state', listener)
-    return () => ipcRenderer.removeListener('screenshot-long-capture:state', listener)
-  },
-  /**
-   * 订阅长截图实时预览。
-   * @param callback 预览回调。
-   * @returns 取消订阅方法。
-   * @author zhenghq
-   */
-  onScreenshotLongCapturePreview(callback: (preview: ScreenshotLongCapturePreview) => void) {
-    const listener = (_event: unknown, preview: ScreenshotLongCapturePreview): void => callback(preview)
-    ipcRenderer.on('screenshot-long-capture:preview', listener)
-    return () => ipcRenderer.removeListener('screenshot-long-capture:preview', listener)
-  },
-  /**
-   * 订阅长截图完成动作结果。
-   * @param callback 动作结果回调。
-   * @returns 取消订阅方法。
-   * @author zhenghq
-   */
-  onScreenshotLongCaptureAction(callback: (result: ScreenshotLongCaptureActionResult) => void) {
-    const listener = (_event: unknown, result: ScreenshotLongCaptureActionResult): void => callback(result)
-    ipcRenderer.on('screenshot-long-capture:action', listener)
-    return () => ipcRenderer.removeListener('screenshot-long-capture:action', listener)
   },
   /**
    * 将当前带标注截图创建为独立置顶贴图窗口。

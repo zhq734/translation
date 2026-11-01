@@ -67,5 +67,18 @@ test('贴图透明度应只由 Renderer 应用，避免窗口与内容透明度�
 
 test('贴图会话应使用初始适配倍率，避免大图首次缩放跳变', () => {
   const manager = source('src/main/screenshotPinWindow.ts')
-  assert.match(manager, /scale:\s*clampPinScale\(fitPinScale\(request, display\.workArea\)\)/u)
+  assert.match(manager, /const initialView = computePinInitialView\(/u)
+  assert.match(manager, /scale:\s*initialView\.scale/u)
+})
+
+test('贴图初始尺寸应复用截图选区逻辑尺寸而非 PNG 物理像素', () => {
+  const manager = source('src/main/screenshotPinWindow.ts')
+  const selection = source('src/renderer/src/selection.ts')
+  assert.match(selection, /displayWidth:\s*exportPayload\.bounds\.width/u)
+  assert.match(selection, /displayHeight:\s*exportPayload\.bounds\.height/u)
+  assert.match(manager, /computePinInitialView\(/u)
+  assert.doesNotMatch(
+    manager,
+    /fitPinBounds\(\s*\{ x: 0, y: 0, width: request\.width, height: request\.height \}/u
+  )
 })

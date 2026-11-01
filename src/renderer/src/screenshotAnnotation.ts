@@ -1296,6 +1296,17 @@ export class ScreenshotAnnotationController {
   }
 
   /**
+   * 获取当前应绘制到标注画布上的标注集合。
+   * 正在编辑的文字由透明输入框负责显示，需从画布集合中排除以避免重影。
+   * @returns 可用于显示层绘制的标注数组。
+   * @author zhenghq
+   */
+  get visibleAnnotations(): ScreenshotAnnotation[] {
+    if (this.textEditingIndex === null) return this.store.annotations
+    return this.store.annotations.filter((_, index) => index !== this.textEditingIndex)
+  }
+
+  /**
    * 查找命中指定坐标的文字标注，按绘制顺序从上层向下层匹配。
    * @param point 选区内相对坐标。
    * @returns 命中的文字标注；未命中时返回 null。

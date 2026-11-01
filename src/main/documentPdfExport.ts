@@ -175,6 +175,8 @@ interface PageComposer {
   continuationTextBlocks: DocumentBlock[]
   /** 已跨页文本在续页上的实际底部坐标，用于闭合结构竖线。 */
   continuationActualBottom: number
+  /** 跨页正文之后的首个尾注是否已开始排版。 */
+  continuationTailStarted: boolean
   /** 续页第一条细装饰线的原始顶部坐标；用于后续装饰线保留源间距。 */
   continuationDecorationSourceTop?: number
   /** 续页第一条细装饰线的实际顶部坐标。 */
@@ -232,6 +234,9 @@ const CJK_TEXT_PATTERN = /[\u2e80-\u2fff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\
 
 /** PDF 结构框线统一线宽；预览侧同样把 1pt 以上框线渲染为结构线。 */
 const PDF_STRUCTURAL_LINE_THICKNESS = 1.5
+
+/** 跨页尾注在续页上的最大首段间距，避免继承旧页正文到签名的整段留白。 */
+const PDF_CONTINUATION_TAIL_GAP_MAX = 12
 
 /**
  * 判断文本是否包含需要 CJK 字体的字符。
@@ -502,7 +507,8 @@ function createPageComposer(
     flowContinuationActive: false,
     flowPages: [context.page],
     continuationTextBlocks: [],
-    continuationActualBottom: Math.max(0, firstGeometryTop)
+    continuationActualBottom: Math.max(0, firstGeometryTop),
+    continuationTailStarted: false
   }
 }
 
@@ -779,11 +785,17 @@ function resolvePdfContinuationTop(
   if (!composer.previousBlock?.bbox) return Math.max(composer.cursor, fallbackTop)
   // 普通后续正文从续页内容顶部继续；只有仍紧邻跨页正文且位于源页物理范围内的尾注，
   // 才沿用原文相对间距，避免签名和日期被推回旧页底部或重复下推。
-  const previousBbox = composer.previousBlock.bbox
   const sourceGap = Math.max(0, sourceTop - composer.flowSourceBottom)
   const shortTailBlock = sourceTop >= composer.flowSourceBottom && sourceTop <= composer.page.getHeight()
   if (!shortTailBlock) return composer.contentTop
-  return composer.flowActualBottom + sourceGap
+  // 源页底部的大段距属于旧页版式；只压缩跨页正文后的首个尾注，后续 ID、日期仍按原相对间距顺延。
+  const isSourceTailArea = sourceTop >= composer.page.getHeight() * 0.75
+  const isFirstContinuationTail = isSourceTailArea && !composer.continuationTailStarted
+  const continuationGap = isFirstContinuationTail
+    ? Math.min(sourceGap, PDF_CONTINUATION_TAIL_GAP_MAX)
+    : sourceGap
+  if (isFirstContinuationTail) composer.continuationTailStarted = true
+  return composer.flowActualBottom + continuationGap
 }
 
 /**
@@ -2261,7 +2273,8 @@ function drawTextBlock(
     flowContinuationActive: false,
     flowPages: [],
     continuationTextBlocks: [],
-    continuationActualBottom: 0
+    continuationActualBottom: 0,
+    continuationTailStarted: false
   }, bbox.y, absoluteTop)
   if (block.toc) {
     if (composer && document) ensurePageSpace(composer, document, context, Math.max(1, bbox.height))

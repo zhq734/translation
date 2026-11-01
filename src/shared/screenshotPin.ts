@@ -31,6 +31,16 @@ export interface PinSize {
   height: number
 }
 
+/** 贴图首次显示时的窗口尺寸与实际缩放倍率。 */
+export interface PinInitialView {
+  /** 窗口逻辑宽度。 */
+  width: number
+  /** 窗口逻辑高度。 */
+  height: number
+  /** 当前窗口逻辑尺寸相对 PNG 物理像素的缩放倍率。 */
+  scale: number
+}
+
 /**
  * 将贴图缩放倍率限制在可用范围内。
  * @param scale 原始缩放倍率。
@@ -86,6 +96,33 @@ export function fitPinBounds(imageBounds: PinBounds, workArea: PinBounds): PinBo
     y: Math.round(workArea.y + (workArea.height - height) / 2),
     width,
     height
+  }
+}
+
+/**
+ * 按截图选区逻辑尺寸计算贴图初始窗口，避免 Retina 物理像素把图片放大。
+ * @param pixelSize PNG 物理像素尺寸。
+ * @param displaySize 截图选区逻辑尺寸。
+ * @param workArea 目标显示器工作区。
+ * @returns 首次显示尺寸以及相对 PNG 像素的缩放倍率。
+ * @author zhenghq
+ */
+export function computePinInitialView(
+  pixelSize: PinSize,
+  displaySize: PinSize,
+  workArea: PinSize
+): PinInitialView {
+  const logicalWidth = Math.max(1, displaySize.width)
+  const logicalHeight = Math.max(1, displaySize.height)
+  const fitScale = fitPinScale({ width: logicalWidth, height: logicalHeight }, workArea)
+  const width = Math.max(1, Math.round(logicalWidth * fitScale))
+  const height = Math.max(1, Math.round(logicalHeight * fitScale))
+  const scaleX = width / Math.max(1, pixelSize.width)
+  const scaleY = height / Math.max(1, pixelSize.height)
+  return {
+    width,
+    height,
+    scale: clampPinScale((scaleX + scaleY) / 2)
   }
 }
 

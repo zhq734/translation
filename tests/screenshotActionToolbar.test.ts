@@ -17,24 +17,23 @@ const toastHtml = readFileSync('src/renderer/toast.html', 'utf8')
 const toastRenderer = readFileSync('src/renderer/src/toast.ts', 'utf8')
 
 /**
- * 校验截图工具条提供七个图标按钮，并带有中文提示与无障碍名称。
+ * 校验截图工具条提供六个图标按钮，并带有中文提示与无障碍名称。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('截图工具条应提供识别、翻译、复制、保存、长截图、贴图和取消七个图标按钮', () => {
+test('截图工具条应提供识别、翻译、复制、保存、贴图和取消六个图标按钮', () => {
   const toolbarStart = selectionHtml.indexOf('id="ocr-toolbar"')
   assert.notEqual(toolbarStart, -1)
   const toolbarStart2 = selectionHtml.indexOf('data-group="screenshot-actions"', toolbarStart)
   const toolbarEnd = selectionHtml.indexOf('</div>', toolbarStart2)
   const toolbarSource = selectionHtml.slice(toolbarStart2, toolbarEnd)
 
-  // 七个按钮齐全，title 与 aria-label 均从 data-i18n-attr 读取并按当前兜底语言生成期望值。
+  // 六个按钮齐全，title 与 aria-label 均从 data-i18n-attr 读取并按当前兜底语言生成期望值。
   for (const [id, key] of [
     ['ocr-recognize', 'selection.recognize'],
     ['ocr-translate', 'selection.translate'],
     ['ocr-copy-image', 'selection.copyImage'],
     ['ocr-save-image', 'selection.saveImage'],
-    ['ocr-long-capture', 'selection.longCapture'],
     ['ocr-pin-image', 'selection.pinImage'],
     ['ocr-cancel', 'common.cancel']
   ]) {
@@ -48,7 +47,7 @@ test('截图工具条应提供识别、翻译、复制、保存、长截图、�
 
   // 按钮使用内联 SVG 图标表达，不再依赖第三方图标库
   const svgCount = (toolbarSource.match(/<svg/gu) ?? []).length
-  assert.equal(svgCount, 7)
+  assert.equal(svgCount, 6)
 })
 
 /**
@@ -216,12 +215,11 @@ test('截图翻译动作应复用现有 OCR 翻译流程', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Renderer 应接入七个截图动作并防止识别重复提交', () => {
+test('Renderer 应接入六个截图动作并防止识别重复提交', () => {
   assert.match(selectionRenderer, /window\.api\.recognizeOcrSelection\(/u)
   assert.match(selectionRenderer, /window\.api\.translateOcrSelection\(/u)
   assert.match(selectionRenderer, /window\.api\.copyAnnotatedOcrSelectionImage\(/u)
   assert.match(selectionRenderer, /window\.api\.saveAnnotatedOcrSelectionImage\(/u)
-  assert.match(selectionRenderer, /window\.api\.startScreenshotLongCapture\(/u)
   assert.match(selectionRenderer, /window\.api\.createScreenshotPin\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrRecognizeResult\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrActionResult\(/u)
@@ -437,7 +435,6 @@ test('复制和保存点击应先显示处理中提示并立即建立重复提�
   assert.match(selectionRenderer, /const exportPending = screenshotActionPending !== null \|\| pendingScreenshotRequestId !== null/u)
   assert.match(selectionRenderer, /ocrCopyImageButton\.disabled = blocked \|\| exportPending/u)
   assert.match(selectionRenderer, /ocrSaveImageButton\.disabled = blocked \|\| exportPending/u)
-  assert.match(selectionRenderer, /ocrLongCaptureButton\.disabled = blocked \|\| exportPending/u)
   assert.match(selectionRenderer, /ocrPinImageButton\.disabled = blocked \|\| exportPending/u)
 })
 

@@ -61,7 +61,6 @@ const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButto
 const ocrTranslateButton = document.getElementById('ocr-translate') as HTMLButtonElement
 const ocrCopyImageButton = document.getElementById('ocr-copy-image') as HTMLButtonElement
 const ocrSaveImageButton = document.getElementById('ocr-save-image') as HTMLButtonElement
-const ocrLongCaptureButton = document.getElementById('ocr-long-capture') as HTMLButtonElement
 const ocrPinImageButton = document.getElementById('ocr-pin-image') as HTMLButtonElement
 const ocrCancelButton = document.getElementById('ocr-cancel') as HTMLButtonElement
 const ocrAnnotationToolButtons = Array.from(
@@ -133,7 +132,7 @@ let ocrSnapshotSourcePending = false
 /** 当前截图完成动画定时器及其所属会话。 */
 let screenshotAutoCloseTimer: number | null = null
 /** 当前图片动作的局部处理中状态，避免导出期间的普通提示覆盖即时反馈。 */
-let screenshotActionPending: 'copy-image' | 'save-image' | 'long-capture' | 'pin-image' | null = null
+let screenshotActionPending: 'copy-image' | 'save-image' | 'pin-image' | null = null
 // 截图“文字识别”进行中标记：防止同一识别请求重复提交。
 let screenshotRecognizePending = false
 // 当前截图动作请求 ID：仅响应当前请求的结果事件，丢弃旧回调。
@@ -1044,7 +1043,7 @@ function redrawAnnotations(): void {
     width: ocrSnapshot.width,
     height: ocrSnapshot.height
   })
-  drawAnnotations(ctx, annotationController.annotations, {
+  drawAnnotations(ctx, annotationController.visibleAnnotations, {
     sampleColor: sampleSnapshotColor,
     drawSourceRegion: (target, bounds, radius) => {
       drawBlurredSourceRegion(
@@ -1195,10 +1194,9 @@ function resizeTextInput(): void {
  * @author zhenghq
  */
 function commitTextInput(): void {
-  if (annotationController.commitText(ocrTextInput.value)) {
-    redrawAnnotations()
-    updateAnnotationUi()
-  }
+  const wasEditing = annotationController.textEditorPoint !== null
+  if (annotationController.commitText(ocrTextInput.value)) updateAnnotationUi()
+  if (wasEditing) redrawAnnotations()
   updateTextInput()
 }
 
@@ -1210,6 +1208,7 @@ function commitTextInput(): void {
  */
 function beginTextAnnotationEdit(annotation: ScreenshotAnnotation): void {
   if (annotation.type !== 'text' || !annotationController.beginTextEdit(annotation)) return
+  redrawAnnotations()
   updateTextInput()
 }
 
@@ -1624,28 +1623,6 @@ function saveCurrentOcrSelectionImage(): void {
 }
 
 /**
- * 以当前选区启动长截图：先复制会话与选区，再退出框选界面。
- * 主进程会在后台采集并拼接滚动画面，因此这里不能调用取消截图接口。
- * @returns 无返回值。
- * @author zhenghq
- */
-function startCurrentOcrLongCapture(): void {
-  if (pendingScreenshotRequestId || screenshotActionPending) return
-  if (!ocrMode || !currentRect) return
-  if (currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) return
-
-  const request = {
-    sessionId: currentOcrSessionId,
-    bounds: { ...currentRect }
-  }
-  screenshotActionPending = 'long-capture'
-  updateOcrImageActionAvailability()
-  renderOcrTip(t('selection.longCaptureStarting'))
-  leaveOcrSelectionMode()
-  window.api.startScreenshotLongCapture(request)
-}
-
-/**
  * 将当前带标注截图创建为屏幕贴图，成功后退出截图会话。
  * @returns 无返回值。
  * @author zhenghq
@@ -1665,6 +1642,8 @@ function pinCurrentOcrSelectionImage(): void {
         requestId: exportPayload.requestId,
         width: exportPayload.width,
         height: exportPayload.height,
+        displayWidth: exportPayload.bounds.width,
+        displayHeight: exportPayload.bounds.height,
         png: exportPayload.png
       })
       if (!result.ok) throw new Error(result.error || t('selection.pinImageFailed'))
@@ -1784,11 +1763,9 @@ function renderOcrTip(message?: string): void {
     ? t('selection.copyingImage')
     : screenshotActionPending === 'save-image'
       ? t('selection.preparingSave')
-      : screenshotActionPending === 'long-capture'
-        ? t('selection.longCaptureStarting')
-        : screenshotActionPending === 'pin-image'
-          ? t('selection.pinImageCreating')
-          : null
+      : screenshotActionPending === 'pin-image'
+        ? t('selection.pinImageCreating')
+        : null
   ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
     ? t('selection.tip')
     : t('selection.tipLoading'))
@@ -1808,7 +1785,6 @@ function updateOcrImageActionAvailability(): void {
   const exportPending = screenshotActionPending !== null || pendingScreenshotRequestId !== null
   ocrCopyImageButton.disabled = blocked || exportPending
   ocrSaveImageButton.disabled = blocked || exportPending
-  ocrLongCaptureButton.disabled = blocked || exportPending
   ocrPinImageButton.disabled = blocked || exportPending
 }
 
@@ -2165,6 +2141,7 @@ function handleKeyDown(event: KeyboardEvent): void {
   if (event.target === ocrTextInput) return
   if (event.key === 'Escape' && annotationController.cancelAnnotationInput()) {
     redrawAnnotationPreview()
+    redrawAnnotations()
     updateTextInput()
     return
   }
@@ -2208,7 +2185,7 @@ function handleKeyDown(event: KeyboardEvent): void {
 function handleTextInputKeyDown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault()
-    annotationController.cancelText()
+    if (annotationController.cancelText()) redrawAnnotations()
     updateTextInput()
   }
 }
@@ -2220,10 +2197,9 @@ function handleTextInputKeyDown(event: KeyboardEvent): void {
  */
 function handleTextInputBlur(): void {
   // 失焦通常表示用户点击了工具栏，需要先保存已有文字；空白输入仍由模型层过滤。
-  if (annotationController.commitText(ocrTextInput.value)) {
-    redrawAnnotations()
-    updateAnnotationUi()
-  }
+  const wasEditing = annotationController.textEditorPoint !== null
+  if (annotationController.commitText(ocrTextInput.value)) updateAnnotationUi()
+  if (wasEditing) redrawAnnotations()
   updateTextInput()
 }
 
@@ -2238,7 +2214,6 @@ ocrRecognizeButton.addEventListener('click', recognizeCurrentOcrSelection)
 ocrTranslateButton.addEventListener('click', translateCurrentOcrSelection)
 ocrCopyImageButton.addEventListener('click', copyCurrentOcrSelectionImage)
 ocrSaveImageButton.addEventListener('click', saveCurrentOcrSelectionImage)
-ocrLongCaptureButton.addEventListener('click', startCurrentOcrLongCapture)
 ocrPinImageButton.addEventListener('click', pinCurrentOcrSelectionImage)
 ocrCancelButton.addEventListener('click', cancelOcrSelection)
 for (const button of ocrAnnotationToolButtons) {

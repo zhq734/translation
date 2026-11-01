@@ -16,8 +16,6 @@ const ENTRY_FILES = [
   'toast.html',
   'web-reader.html',
   'document.html',
-  'long-capture.html',
-  'long-preview.html',
   'pin.html'
 ] as const
 

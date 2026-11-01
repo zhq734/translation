@@ -229,6 +229,31 @@ test('已有文字应支持编辑和拖动位置', () => {
 })
 
 /**
+ * 校验编辑已有文字时显示层隐藏原文字，避免与透明输入框叠加产生重影。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('编辑已有文字时可见标注应排除正在编辑的文字', () => {
+  const controller = createController()
+  controller.setTool('text')
+  controller.beginText({ x: 140, y: 140 })
+  assert.equal(controller.commitText('原始文字'), true)
+  const annotation = controller.annotations[0] as ScreenshotTextAnnotation
+
+  assert.deepEqual(controller.visibleAnnotations, [annotation])
+  assert.equal(controller.beginTextEdit(annotation), true)
+  assert.equal(controller.annotations.length, 1, '正式标注必须保留以支持导出')
+  assert.deepEqual(controller.visibleAnnotations, [], '编辑中的文字不得由画布重复绘制')
+
+  assert.equal(controller.commitText('修改后'), true)
+  assert.equal(controller.visibleAnnotations.length, 1, '提交后应恢复画布文字')
+
+  assert.equal(controller.beginTextEdit(controller.annotations[0] as ScreenshotTextAnnotation), true)
+  assert.equal(controller.cancelText(), true)
+  assert.equal(controller.visibleAnnotations.length, 1, '取消编辑后应恢复原文字')
+})
+
+/**
  * 校验复制后重新进入截图时不会继承上一次激活的绘制工具。
  * @returns 无返回值。
  * @author zhenghq
@@ -719,6 +744,39 @@ test('文字标注应支持双击编辑、点击确认和拖动', () => {
   assert.match(selectionRenderer, /commitTextInput/u)
   assert.match(selectionRenderer, /textMoveState/u)
   assert.match(selectionRenderer, /updateTextPosition/u)
+})
+
+/**
+ * 校验 Renderer 仅隐藏编辑中的画布文字，并保留完整标注用于导出。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文字编辑重绘应使用可见标注且不影响导出', () => {
+  const redrawStart = selectionRenderer.indexOf('function redrawAnnotations')
+  const redrawEnd = selectionRenderer.indexOf('\n/**', redrawStart)
+  const redrawSource = selectionRenderer.slice(redrawStart, redrawEnd)
+  assert.match(redrawSource, /annotationController\.visibleAnnotations/u)
+  assert.doesNotMatch(redrawSource, /annotationController\.annotations/u)
+
+  const beginStart = selectionRenderer.indexOf('function beginTextAnnotationEdit')
+  const beginEnd = selectionRenderer.indexOf('\n}', beginStart)
+  assert.match(selectionRenderer.slice(beginStart, beginEnd), /redrawAnnotations\(\)/u)
+
+  const textKeyStart = selectionRenderer.indexOf('function handleTextInputKeyDown')
+  const textKeyEnd = selectionRenderer.indexOf('\n}', textKeyStart)
+  assert.match(selectionRenderer.slice(textKeyStart, textKeyEnd), /redrawAnnotations\(\)/u)
+
+  for (const functionName of ['commitTextInput', 'handleTextInputBlur']) {
+    const start = selectionRenderer.indexOf(`function ${functionName}`)
+    const end = selectionRenderer.indexOf('\n}', start)
+    const source = selectionRenderer.slice(start, end)
+    assert.match(source, /wasEditing/u, `${functionName} 应识别正在编辑的旧文字`)
+    assert.match(source, /redrawAnnotations\(\)/u, `${functionName} 退出编辑后应恢复画布文字`)
+  }
+
+  const exportStart = selectionRenderer.indexOf('async function buildAnnotatedExportPayload')
+  const exportEnd = selectionRenderer.indexOf('\n/**', exportStart)
+  assert.match(selectionRenderer.slice(exportStart, exportEnd), /annotationController\.annotations/u)
 })
 
 /**

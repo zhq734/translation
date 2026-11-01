@@ -5,6 +5,7 @@ import {
   clampPinBounds,
   clampPinOpacity,
   clampPinScale,
+  computePinInitialView,
   fitPinScale,
   fitPinBounds
 } from '../src/shared/screenshotPin'
@@ -63,6 +64,55 @@ test('贴图大图初始适配后首次缩放不应跳变', () => {
   )
   assert.equal(scale, 0.3)
   assert.ok(Math.abs(scale * 4000 * (1 - 0.08) - 1104) < 1)
+})
+
+/**
+ * 校验 Retina 截图贴图按选区逻辑尺寸显示，而不是按 PNG 物理像素放大。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('贴图初始窗口应使用截图逻辑尺寸而不是物理像素尺寸', () => {
+  const view = computePinInitialView(
+    { width: 800, height: 600 },
+    { width: 400, height: 300 },
+    { x: 0, y: 0, width: 1920, height: 1080 }
+  )
+  assert.equal(view.width, 400)
+  assert.equal(view.height, 300)
+  assert.equal(view.scale, 0.5)
+})
+
+/**
+ * 校验超出工作区的贴图只等比缩小，且滚轮缩放基准仍与实际显示尺寸一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('贴图超出工作区时应缩小且保持实际显示比例', () => {
+  const view = computePinInitialView(
+    { width: 8000, height: 4000 },
+    { width: 4000, height: 2000 },
+    { x: 0, y: 0, width: 1200, height: 800 }
+  )
+  assert.equal(view.width, 1200)
+  assert.equal(view.height, 600)
+  assert.equal(view.scale, 0.15)
+})
+
+/**
+ * 校验非整数缩放比例下，滚轮缩放仍以 PNG 实际显示比例为基准。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('贴图非整数缩放比例不应产生宽高跳变', () => {
+  const view = computePinInitialView(
+    { width: 1000, height: 700 },
+    { width: 501, height: 351 },
+    { x: 0, y: 0, width: 1920, height: 1080 }
+  )
+  assert.equal(view.width, 501)
+  assert.equal(view.height, 351)
+  const expectedScale = (501 / 1000 + 351 / 700) / 2
+  assert.ok(Math.abs(view.scale - expectedScale) < 0.000_001)
 })
 
 /**

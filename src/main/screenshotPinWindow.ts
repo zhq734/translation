@@ -13,8 +13,8 @@ import {
   clampPinBounds,
   clampPinOpacity,
   clampPinScale,
+  computePinInitialView,
   fitPinScale,
-  fitPinBounds,
   type PinBounds
 } from '../shared/screenshotPin'
 import type {
@@ -64,6 +64,10 @@ interface PinSession {
   pixelWidth: number
   /** 图像物理高度。 */
   pixelHeight: number
+  /** 截图选区逻辑宽度。 */
+  displayWidth: number
+  /** 截图选区逻辑高度。 */
+  displayHeight: number
   /** 当前缩放倍率。 */
   scale: number
   /** 当前透明度。 */
@@ -117,6 +121,10 @@ function normalizeCreateRequest(value: unknown): {
       (raw.height as number) > SCREENSHOT_EXPORT_LIMITS.maxHeight) {
     return { ok: false, error: 'invalid-pin-dimensions' }
   }
+  if (!Number.isFinite(raw.displayWidth) || !Number.isFinite(raw.displayHeight) ||
+      (raw.displayWidth as number) <= 0 || (raw.displayHeight as number) <= 0) {
+    return { ok: false, error: 'invalid-pin-dimensions' }
+  }
   const png = raw.png instanceof Uint8Array
     ? Buffer.from(raw.png)
     : Buffer.isBuffer(raw.png)
@@ -141,6 +149,8 @@ function normalizeCreateRequest(value: unknown): {
       requestId: raw.requestId,
       width: Math.round(raw.width as number),
       height: Math.round(raw.height as number),
+      displayWidth: Math.max(1, Math.round(raw.displayWidth as number)),
+      displayHeight: Math.max(1, Math.round(raw.displayHeight as number)),
       png
     }
   }
@@ -266,10 +276,17 @@ export function createScreenshotPinWindowManager(
       const request = normalized.request
       nextPinId += 1
       const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-      const bounds = fitPinBounds(
-        { x: 0, y: 0, width: request.width, height: request.height },
+      const initialView = computePinInitialView(
+        { width: request.width, height: request.height },
+        { width: request.displayWidth, height: request.displayHeight },
         display.workArea
       )
+      const bounds = {
+        x: Math.round(display.workArea.x + (display.workArea.width - initialView.width) / 2),
+        y: Math.round(display.workArea.y + (display.workArea.height - initialView.height) / 2),
+        width: initialView.width,
+        height: initialView.height
+      }
       const win = new BrowserWindow({
         ...bounds,
         show: false,
@@ -299,7 +316,9 @@ export function createScreenshotPinWindowManager(
         png: request.png,
         pixelWidth: request.width,
         pixelHeight: request.height,
-        scale: clampPinScale(fitPinScale(request, display.workArea)),
+        displayWidth: request.displayWidth,
+        displayHeight: request.displayHeight,
+        scale: initialView.scale,
         opacity: 1,
         bordered: true,
         pointerOffsetX: 0,
@@ -339,8 +358,8 @@ export function createScreenshotPinWindowManager(
       } else {
         session.scale = clampPinScale(session.scale * (1 + direction * PIN_WHEEL_SCALE_STEP))
         const current = session.win.getBounds()
-        const width = Math.max(1, Math.round(session.pixelWidth * session.scale))
-        const height = Math.max(1, Math.round(session.pixelHeight * session.scale))
+        const width = Math.max(1, Math.round(session.displayWidth * session.scale))
+        const height = Math.max(1, Math.round(session.displayHeight * session.scale))
         const bounds = clampToNearestDisplay({
           x: current.x + Math.round((current.width - width) / 2),
           y: current.y + Math.round((current.height - height) / 2),

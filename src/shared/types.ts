@@ -792,71 +792,6 @@ export interface ScreenshotExportImageResult {
   dataUrl: string
 }
 
-/** 长截图启动请求：以当前截图选区作为固定采集视口。 */
-export interface ScreenshotLongCaptureStartRequest {
-  /** 所属截图会话序号。 */
-  sessionId: number
-  /** 当前选区在截图窗口内的逻辑坐标。 */
-  bounds: OcrSelectionBounds
-}
-
-/** 长截图运行状态：由主进程在初始化、采样和撤销后统一下发。 */
-export interface ScreenshotLongCaptureState {
-  /** 当前长截图会话标识。 */
-  sessionId: number
-  /** 当前累计帧数。 */
-  frameCount: number
-  /** 当前输出高度（物理像素）。 */
-  height: number
-  /** 固定采集视口宽度（物理像素）。 */
-  width: number
-  /** 是否还有可撤销步骤。 */
-  canUndo: boolean
-  /** 是否达到最大输出高度。 */
-  truncated: boolean
-  /** 最近一次采样的可信滚动偏移；0 表示尚未移动或无法匹配。 */
-  offset: number
-  /** 连续无法定位滚动位置的采样次数；达到 2 次时提示放慢滚动。 */
-  locateFailures: number
-  /** 最近一次采样是否新增了内容。 */
-  appended: boolean
-  /** 当前是否正在采样。 */
-  sampling: boolean
-  /** 采样失败时的用户可读提示。 */
-  error?: string
-}
-
-/** 长截图实时预览：只传压缩 PNG，避免每次采样跨进程复制整张 RGBA 图像。 */
-export interface ScreenshotLongCapturePreview {
-  /** 当前长截图会话标识。 */
-  sessionId: number
-  /** 拼接结果 PNG data URL。 */
-  dataUrl: string
-  /** 图像物理宽度。 */
-  width: number
-  /** 图像物理高度。 */
-  height: number
-}
-
-/** 长截图控制动作。 */
-export type ScreenshotLongCaptureAction = 'copy' | 'save' | 'cancel'
-
-/** 长截图控制动作结果。 */
-export interface ScreenshotLongCaptureActionResult {
-  /** 当前长截图会话标识。 */
-  sessionId: number
-  /** 本次动作。 */
-  action: ScreenshotLongCaptureAction
-  /** 动作是否成功；取消保存对话框也视为成功。 */
-  ok: boolean
-  /** 用户是否取消了保存对话框。 */
-  canceled?: boolean
-  /** 保存成功后的本地路径。 */
-  filePath?: string
-  /** 失败时的用户可读描述。 */
-  error?: string
-}
-
 /** 创建贴图请求：接收 Renderer 已合成的带标注 PNG。 */
 export interface ScreenshotPinCreateRequest {
   /** 所属截图会话序号。 */
@@ -867,6 +802,10 @@ export interface ScreenshotPinCreateRequest {
   width: number
   /** 合成图片像素高度。 */
   height: number
+  /** 截图选区逻辑宽度；用于在 Retina 等高 DPI 屏幕上保持原始显示大小。 */
+  displayWidth: number
+  /** 截图选区逻辑高度；用于在 Retina 等高 DPI 屏幕上保持原始显示大小。 */
+  displayHeight: number
   /** 合成后的 PNG 字节。 */
   png: Uint8Array
 }
@@ -1597,22 +1536,6 @@ export interface Api {
   copyAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
   /** 请求将 Renderer 合成的带标注 PNG 保存到本地磁盘。 */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
-  /** 以当前截图选区启动长截图控制窗。 */
-  startScreenshotLongCapture(request: ScreenshotLongCaptureStartRequest): void
-  /** 请求长截图控制窗立即采集一帧。 */
-  sampleScreenshotLongCapture(sessionId: number): void
-  /** 撤销长截图最近一次成功拼接。 */
-  undoScreenshotLongCapture(sessionId: number): void
-  /** 完成长截图并复制或保存 PNG。 */
-  finishScreenshotLongCapture(sessionId: number, action: 'copy' | 'save'): void
-  /** 取消长截图并释放采集状态。 */
-  cancelScreenshotLongCapture(sessionId: number): void
-  /** 订阅长截图状态变化。 */
-  onScreenshotLongCaptureState(cb: (state: ScreenshotLongCaptureState) => void): () => void
-  /** 订阅长截图实时预览。 */
-  onScreenshotLongCapturePreview(cb: (preview: ScreenshotLongCapturePreview) => void): () => void
-  /** 订阅长截图完成动作结果。 */
-  onScreenshotLongCaptureAction(cb: (result: ScreenshotLongCaptureActionResult) => void): () => void
   /** 将当前带标注截图创建为独立置顶贴图窗口。 */
   createScreenshotPin(request: ScreenshotPinCreateRequest): Promise<ScreenshotPinCreateResult>
   /** 拖动指定贴图到新的全局位置。 */
