@@ -782,6 +782,7 @@ export const enUSBase = defineCatalog({
   'screenshot.longCapture.captureFailed': 'Long screenshot capture failed. Try again.',
   'screenshot.longCapture.dimensionsChanged': 'The captured area changed size. Cancel and select the area again.',
   'screenshot.longCapture.finishFailed': 'Long screenshot action failed. Try again.',
+  'screenshot.longCapture.slowDown': 'Could not locate the scroll position. Scroll more slowly.',
   'screenshot.longCapture.truncated': 'Maximum height reached; the long screenshot was truncated.',
   'screenshot.pin.windowTitle': 'Pinned screenshot',
   'screenshot.pin.copy': 'Copy image',

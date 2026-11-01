@@ -816,6 +816,8 @@ export interface ScreenshotLongCaptureState {
   truncated: boolean
   /** 最近一次采样的可信滚动偏移；0 表示尚未移动或无法匹配。 */
   offset: number
+  /** 连续无法定位滚动位置的采样次数；达到 2 次时提示放慢滚动。 */
+  locateFailures: number
   /** 最近一次采样是否新增了内容。 */
   appended: boolean
   /** 当前是否正在采样。 */

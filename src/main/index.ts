@@ -458,6 +458,8 @@ let documentWorkspace: DocumentWorkspaceManager | null = null
 let screenshotLongCaptureManager: ScreenshotLongCaptureWindowManager | null = null
 /** macOS 长截图常驻抓帧客户端；复用 helper 进程降低连续采样开销。 */
 let macosLongCaptureCapture: MacosLongCaptureCapture | null = null
+/** macOS 长截图 helper 是否已确认不可用；熔断后避免每帧重复失败和回退卡顿。 */
+let macosLongCaptureHelperUnavailable = false
 /** 贴图窗口管理器；负责置顶窗口、缩放、透明度与数量上限。 */
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
@@ -1869,15 +1871,17 @@ async function onReady(): Promise<boolean> {
         cwd: process.cwd()
       })
     : null
+  macosLongCaptureHelperUnavailable = false
   screenshotLongCaptureManager = createScreenshotLongCaptureWindowManager({
     preloadPath: PRELOAD_PATH,
     captureOcrSelectionPng: async (bounds) => {
       // macOS 长截图优先复用常驻 ScreenCaptureKit helper，避免每帧冷启动 screencapture。
       // helper 未打包、系统版本过低或权限异常时保留既有 screencapture 回退，保证功能可用。
-      if (process.platform === 'darwin' && macosLongCaptureCapture) {
+      if (process.platform === 'darwin' && macosLongCaptureCapture && !macosLongCaptureHelperUnavailable) {
         try {
           return await macosLongCaptureCapture.capture(bounds)
         } catch (error) {
+          macosLongCaptureHelperUnavailable = true
           console.log('[long-capture] macOS helper failed, falling back to screencapture', {
             message: error instanceof Error ? error.message : String(error)
           })
@@ -1890,7 +1894,9 @@ async function onReady(): Promise<boolean> {
     buildFileName: buildScreenshotSaveFileName,
     translate: t,
     showToast: (message, displayTimeMs, kind) => showScreenshotToast(message, displayTimeMs, kind),
-    onSessionEnded: restoreSelectionListenerAfterOcr
+    onSessionEnded: restoreSelectionListenerAfterOcr,
+    registerGlobalShortcut: (accelerator, callback) => globalShortcut.register(accelerator, callback),
+    unregisterGlobalShortcut: (accelerator) => globalShortcut.unregister(accelerator)
   })
   screenshotPinManager = createScreenshotPinWindowManager({
     preloadPath: PRELOAD_PATH,
@@ -4640,6 +4646,9 @@ function startScreenshotLongCapture(
   if (!manager) return
   returnFrontmostThenHideOcrSelectionWith(() => {
     if (sessionId !== ocrSelectionSessionSeq) return
+    // 每次新会话都重新探测 helper：上次失败可能只是瞬时权限/进程状态问题，
+    // 若永久熔断会让后续长截图一直退化为每帧冷启动 screencapture。
+    macosLongCaptureHelperUnavailable = false
     void manager.start(sessionId, bounds)
   })
 }

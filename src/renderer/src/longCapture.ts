@@ -52,8 +52,11 @@ function renderState(state: ScreenshotLongCaptureState): void {
     ? t('screenshot.longCapture.sampling')
     : t('screenshot.longCapture.waiting')
   sampling.dataset.busy = String(state.sampling)
-  status.textContent = state.error ?? (state.truncated ? t('screenshot.longCapture.truncated') : '')
-  status.dataset.kind = state.error ? 'error' : state.truncated ? 'warning' : 'neutral'
+  status.textContent = state.error ??
+    (state.locateFailures >= 2
+      ? t('screenshot.longCapture.slowDown')
+      : state.truncated ? t('screenshot.longCapture.truncated') : '')
+  status.dataset.kind = state.error ? 'error' : state.locateFailures >= 2 || state.truncated ? 'warning' : 'neutral'
   sampleButton.disabled = actionPending || state.sampling
   undoButton.disabled = actionPending || !state.canUndo
   saveButton.disabled = actionPending || state.height <= 0
@@ -80,9 +83,18 @@ function renderPreview(payload: ScreenshotLongCapturePreview): void {
 function handleActionResult(result: ScreenshotLongCaptureActionResult): void {
   if (currentSessionId !== null && result.sessionId !== currentSessionId) return
   actionPending = false
-  if (!result.ok) status.textContent = result.error ?? t('screenshot.longCapture.finishFailed')
-  status.dataset.kind = result.ok ? 'neutral' : 'error'
-  if (latestState) renderState(latestState)
+  if (!result.ok && latestState) {
+    latestState = {
+      ...latestState,
+      error: result.error ?? t('screenshot.longCapture.finishFailed')
+    }
+  }
+  if (latestState) {
+    renderState(latestState)
+  } else if (!result.ok) {
+    status.textContent = result.error ?? t('screenshot.longCapture.finishFailed')
+    status.dataset.kind = 'error'
+  }
 }
 
 /**

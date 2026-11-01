@@ -8,7 +8,6 @@ import {
   resolveDocumentImageContentBox,
   resolveDocumentOcrOverlayBox,
   resolveDocumentOcrRegionFlowTop,
-  resolveDocumentOcrSourceWidthRatio,
   resolveDocumentOcrTranslationHorizontalBounds,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
@@ -160,27 +159,6 @@ test('OCR 左对齐译文必须扩展到同行右侧区域之前，避免窄框�
   assert.deepEqual(
     resolveDocumentOcrTranslationHorizontalBounds(current, [current, sameRow, lowerRow]),
     { x: 0.05, width: 0.27 }
-  )
-})
-
-test('OCR 白底宽度必须按原识别框占扩宽译文框的比例计算', () => {
-  const sourceBox = { x: 0.05, y: 0.2, width: 0.04, height: 0.02 }
-  const horizontalBounds = { x: 0.05, width: 0.27 }
-
-  assert.equal(
-    resolveDocumentOcrSourceWidthRatio(sourceBox, horizontalBounds),
-    0.04 / 0.27
-  )
-  assert.equal(
-    resolveDocumentOcrSourceWidthRatio(
-      { ...sourceBox, width: 0.3 },
-      horizontalBounds
-    ),
-    1
-  )
-  assert.equal(
-    resolveDocumentOcrSourceWidthRatio(sourceBox, { x: 0.05, width: 0 }),
-    1
   )
 })
 

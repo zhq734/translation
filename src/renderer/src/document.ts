@@ -25,7 +25,6 @@ import {
   resolveDocumentImageContentBox,
   resolveDocumentOcrRegionFlowTop,
   resolveDocumentOcrOverlayBox,
-  resolveDocumentOcrSourceWidthRatio,
   resolveDocumentOcrTranslationHorizontalBounds,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
@@ -3358,9 +3357,6 @@ function renderOcrRegion(
   // CSS 变量使用原图像素坐标，再由页面缩放比例统一换算到预览尺寸。
   element.style.setProperty('--document-ocr-source-top', `${box.y * imageHeight}px`)
   element.style.setProperty('--document-ocr-source-height', `${box.height * imageHeight}px`)
-  // 白底只覆盖原识别框；横向扩展仅用于给译文提供排版空间，不能让遮罩覆盖右侧正文。
-  const sourceWidthRatio = resolveDocumentOcrSourceWidthRatio(box, horizontalBounds)
-  element.style.setProperty('--document-ocr-source-width', `${sourceWidthRatio * 100}%`)
   // 独立图片会随预览栏缩放，百分比坐标可与底图保持同一纵向基准。
   element.style.setProperty('--document-ocr-source-top-percent', `${box.y * 100}%`)
   element.style.setProperty('--document-ocr-source-height-percent', `${box.height * 100}%`)
@@ -3377,7 +3373,11 @@ function renderOcrRegion(
   element.style.fontFamily = pdfPreviewFontFamily(region.style?.fontFamily ?? 'Noto Sans SC')
   if (region.style?.italic) element.style.fontStyle = 'italic'
   if (region.textAlign) element.style.textAlign = region.textAlign
-  element.textContent = translatedText
+  // 白底由译文文字本身绘制，换行后每一行只覆盖实际内容宽度，避免继续沿用原文识别框。
+  const textElement = document.createElement('span')
+  textElement.className = 'document-ocr-region-text'
+  textElement.textContent = translatedText
+  element.append(textElement)
   return element
 }
 

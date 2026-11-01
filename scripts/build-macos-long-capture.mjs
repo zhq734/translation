@@ -33,6 +33,9 @@ function buildHelper() {
     // macOS 发布包同时包含 Intel 与 Apple Silicon；统一编译为通用二进制。
     '-arch', 'arm64',
     '-arch', 'x86_64',
+    // SCScreenshotManager.captureImageInRect 从 macOS 15.2 提供；不显式声明时，
+    // 新 SDK 会把 helper 错误标记为当前构建系统版本，旧系统将直接拒绝加载。
+    '-mmacosx-version-min=15.2',
     '-fobjc-arc',
     sourcePath,
     '-O2',

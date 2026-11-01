@@ -176,25 +176,6 @@ export function resolveDocumentOcrTranslationHorizontalBounds(
 }
 
 /**
- * 计算 OCR 原识别框占扩宽译文框的宽度比例。
- * 可见译文元素会向右扩展以容纳中文，但白底只能覆盖原识别框；
- * CSS 渐变百分比相对译文元素自身宽度，因此不能直接使用图片归一化宽度。
- * @param sourceBox 已归一化的原 OCR 识别框。
- * @param horizontalBounds 译文元素实际使用的横向范围。
- * @returns 白底渐变终点相对译文元素宽度的比例，范围为 0 到 1。
- * @author zhenghq
- */
-export function resolveDocumentOcrSourceWidthRatio(
-  sourceBox: Pick<DocumentOcrNormalizedBox, 'width'>,
-  horizontalBounds: Pick<DocumentOcrTranslationHorizontalBounds, 'width'>
-): number {
-  const sourceWidth = Number.isFinite(sourceBox.width) ? Math.max(0, sourceBox.width) : 0
-  const elementWidth = Number.isFinite(horizontalBounds.width) ? horizontalBounds.width : 0
-  if (elementWidth <= 0) return 1
-  return Math.min(1, Math.max(0, sourceWidth / elementWidth))
-}
-
-/**
  * 计算 OCR 译文的最终顶部位置：优先保持原文坐标，只有横向相交且前序译文越过时才向下避让。
  * 该规则避免同一排的多个短区域被前一项的实际高度逐级推偏，同时保证长译文不会互相覆盖。
  * @param sourceTop 当前区域由 OCR 坐标换算出的原始顶部位置。

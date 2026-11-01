@@ -175,6 +175,12 @@ interface PageComposer {
   continuationTextBlocks: DocumentBlock[]
   /** 已跨页文本在续页上的实际底部坐标，用于闭合结构竖线。 */
   continuationActualBottom: number
+  /** 续页第一条细装饰线的原始顶部坐标；用于后续装饰线保留源间距。 */
+  continuationDecorationSourceTop?: number
+  /** 续页第一条细装饰线的实际顶部坐标。 */
+  continuationDecorationActualTop?: number
+  /** 续页最后一条结构水平线的实际顶部坐标，用于闭合结构竖线。 */
+  continuationStructuralBottom?: number
 }
 
 /** 表格单元格在占用矩阵中的实际排版位置。 */
@@ -223,6 +229,9 @@ interface FlowTextLine {
 
 /** CJK 字符探测表达式。 */
 const CJK_TEXT_PATTERN = /[\u2e80-\u2fff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u
+
+/** PDF 结构框线统一线宽；预览侧同样把 1pt 以上框线渲染为结构线。 */
+const PDF_STRUCTURAL_LINE_THICKNESS = 1.5
 
 /**
  * 判断文本是否包含需要 CJK 字体的字符。
@@ -608,8 +617,52 @@ function resolvePdfHorizontalDecorationTop(
   fallbackTop: number
 ): number {
   if (!pdfDecorationOverlapsFlow(composer, block)) return fallbackTop
-  const resolved = resolvePdfDecorationTop(composer, block.bbox?.y ?? fallbackTop)
+  const sourceTop = block.bbox?.y ?? fallbackTop
+  // 跨页正文内的细装饰线不能继续使用旧页绝对坐标；首条细线从续页正文实际底边开始，
+  // 后续细线按原 PDF 中的相对间距顺延，保证正文下划线与签名区不会落回原页底部。
+  if (composer.flowContinuationActive && !isPdfStructuralLine(block)) {
+    if (composer.continuationDecorationSourceTop !== undefined &&
+        composer.continuationDecorationActualTop !== undefined) {
+      return composer.continuationDecorationActualTop +
+        (sourceTop - composer.continuationDecorationSourceTop)
+    }
+    if (sourceTop <= composer.flowSourceBottom) {
+      return composer.continuationActualBottom
+    }
+  }
+  const resolved = resolvePdfDecorationTop(composer, sourceTop)
   return resolved !== undefined && Number.isFinite(resolved) ? resolved : fallbackTop
+}
+
+/**
+ * 记录续页第一条细装饰线的源坐标与实际坐标，供后续细线按源间距顺延。
+ * 结构水平线不参与该锚点，避免表格底边反向影响正文下划线的位置。
+ * @param composer 页面排版器。
+ * @param block 已绘制的水平装饰线。
+ * @param actualTop 装饰线实际顶部坐标。
+ * @author zhenghq
+ */
+function recordPdfContinuationDecorationAnchor(
+  composer: PageComposer,
+  block: DocumentBlock,
+  actualTop: number
+): void {
+  if (!composer.flowContinuationActive || isPdfStructuralLine(block) || !block.bbox) return
+  if (composer.continuationDecorationSourceTop !== undefined) return
+  composer.continuationDecorationSourceTop = block.bbox.y
+  composer.continuationDecorationActualTop = actualTop
+}
+
+/**
+ * 判断 PDF 形状区块是否为需要与表格外边界统一的结构框线。
+ * 原生表格外框通常为 1pt 以上，而原文下划线多为 0.5–0.75pt；仅统一前者，
+ * 避免把正文中的细下划线误画成表格边界。
+ * @param block 形状区块。
+ * @returns 是否为结构框线。
+ * @author zhenghq
+ */
+function isPdfStructuralLine(block: DocumentBlock): boolean {
+  return block.kind === 'shape' && Boolean(block.line && (block.line.thickness ?? 1) >= 1)
 }
 
 /**
@@ -668,7 +721,7 @@ function drawStructuralVerticalLine(
   page.drawLine({
     start: { x: block.bbox.x, y: pdfY(pageHeight, top, lineHeight) },
     end: { x: block.bbox.x, y: pdfY(pageHeight, top, 0) },
-    thickness: Math.max(0.5, block.line.thickness ?? 1),
+    thickness: PDF_STRUCTURAL_LINE_THICKNESS,
     color: parseColor(block.line.color, [0.8, 0.82, 0.85])
   })
 }
@@ -699,7 +752,10 @@ function drawPdfStructuralVerticalLines(
       const isLastPage = page === lastPage
       const top = composer.contentTop
       const bottom = isLastPage
-        ? Math.max(top, Math.min(page.getHeight(), composer.continuationActualBottom))
+        ? Math.max(top, Math.min(
+            page.getHeight(),
+            composer.continuationStructuralBottom ?? composer.continuationActualBottom
+          ))
         : page.getHeight() - composer.contentBottom
       drawStructuralVerticalLine(page, line, top, bottom)
     }
@@ -1043,17 +1099,17 @@ function drawOcrRegion(
       ensurePageSpace(composer, document, context, lineHeight)
       y = composer.cursor
     }
-    // 每行先铺纸张底色再写字，避免译文扩展后仍透出原扫描文字。
+    const lineWidth = Math.min(availableWidth, font.widthOfTextAtSize(line, fontSize))
+    const lineX = alignedTextX(regionX + padding.x, availableWidth, lineWidth, region.textAlign)
+    // 白底按当前译文行实际宽度绘制，不能继续沿用原文识别框而截断译文或漏出扫描原文。
     context.page.drawRectangle({
-      x: regionX,
+      x: lineX - padding.x,
       y: pdfY(context.page.getHeight(), y, lineHeight),
-      width: regionWidth,
+      width: Math.min(regionWidth, lineWidth + padding.x * 2),
       height: lineHeight,
       color: rgb(1, 1, 1),
       opacity: 0.94
     })
-    const lineWidth = Math.min(availableWidth, font.widthOfTextAtSize(line, fontSize))
-    const lineX = alignedTextX(regionX + padding.x, availableWidth, lineWidth, region.textAlign)
     context.page.drawText(line, {
       x: lineX,
       y: pdfY(context.page.getHeight(), y + (lineHeight - fontSize) / 2, fontSize),
@@ -2839,14 +2895,19 @@ async function drawPageBlocks(
         context.page.drawLine({
           start: { x: block.bbox.x, y: pdfY(physicalBottom, clampedTop, 0) },
           end: { x: block.bbox.x + block.bbox.width, y: pdfY(physicalBottom, clampedTop, 0) },
-          thickness: Math.max(0.5, block.line.thickness ?? 1),
+          thickness: isPdfStructuralLine(block)
+            ? PDF_STRUCTURAL_LINE_THICKNESS
+            : Math.max(0.5, block.line.thickness ?? 1),
           color: parseColor(block.line.color, [0.8, 0.82, 0.85])
         })
         composer.cursor = Math.max(composer.cursor, physicalBottom)
-        composer.continuationActualBottom = Math.max(
-          composer.continuationActualBottom,
-          clampedTop + block.bbox.height
-        )
+        recordPdfContinuationDecorationAnchor(composer, block, clampedTop)
+        if (isPdfStructuralLine(block)) {
+          composer.continuationStructuralBottom = Math.max(
+            composer.continuationStructuralBottom ?? 0,
+            clampedTop + block.bbox.height
+          )
+        }
         composer.previousBlock = block
         continue
       }
@@ -2860,14 +2921,19 @@ async function drawPageBlocks(
           context.page.drawLine({
             start: { x: block.bbox.x, y: pdfY(physicalBottom, clampedTop, 0) },
             end: { x: block.bbox.x + block.bbox.width, y: pdfY(physicalBottom, clampedTop, 0) },
-            thickness: Math.max(0.5, block.line.thickness ?? 1),
+            thickness: isPdfStructuralLine(block)
+              ? PDF_STRUCTURAL_LINE_THICKNESS
+              : Math.max(0.5, block.line.thickness ?? 1),
             color: parseColor(block.line.color, [0.8, 0.82, 0.85])
           })
           composer.cursor = Math.max(composer.cursor, physicalBottom)
-          composer.continuationActualBottom = Math.max(
-            composer.continuationActualBottom,
-            clampedTop + block.bbox.height
-          )
+          recordPdfContinuationDecorationAnchor(composer, block, clampedTop)
+          if (isPdfStructuralLine(block)) {
+            composer.continuationStructuralBottom = Math.max(
+              composer.continuationStructuralBottom ?? 0,
+              clampedTop + block.bbox.height
+            )
+          }
           composer.previousBlock = block
           continue
         }
@@ -2878,13 +2944,18 @@ async function drawPageBlocks(
         context.page.drawLine({
           start: { x: block.bbox.x, y },
           end: { x: block.bbox.x + block.bbox.width, y },
-          thickness: Math.max(0.5, block.line.thickness ?? 1),
+          thickness: isPdfStructuralLine(block)
+            ? PDF_STRUCTURAL_LINE_THICKNESS
+            : Math.max(0.5, block.line.thickness ?? 1),
           color: parseColor(block.line.color, [0.8, 0.82, 0.85])
         })
-        composer.continuationActualBottom = Math.max(
-          composer.continuationActualBottom,
-          finalTop + block.bbox.height
-        )
+        recordPdfContinuationDecorationAnchor(composer, block, finalTop)
+        if (isPdfStructuralLine(block)) {
+          composer.continuationStructuralBottom = Math.max(
+            composer.continuationStructuralBottom ?? 0,
+            finalTop + block.bbox.height
+          )
+        }
       } else if (block.line?.orientation === 'vertical') {
         const x = block.bbox.x
         context.page.drawLine({

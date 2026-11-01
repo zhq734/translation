@@ -1743,14 +1743,7 @@ body {
   overflow: hidden;
   border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-control);
-  /* 译文允许向右扩展排版，但白色遮罩必须止于原 OCR 框，避免覆盖同一行右侧的原文。 */
-  background: linear-gradient(
-    to right,
-    var(--document-paper-bg) 0,
-    var(--document-paper-bg) var(--document-ocr-source-width, 100%),
-    transparent var(--document-ocr-source-width, 100%),
-    transparent 100%
-  );
+  background: var(--document-paper-bg);
   color: var(--document-paper-text);
   box-shadow: 0 8px 28px var(--panel-shadow);
   content-visibility: auto;
@@ -2127,14 +2120,8 @@ body {
   padding: calc(var(--document-ocr-padding-y, 2px) * var(--document-page-scale, 1))
     calc(var(--document-ocr-padding-x, 3px) * var(--document-page-scale, 1));
   border-radius: 2px;
-  /* 译文允许向右扩展排版，但白色遮罩必须止于原 OCR 框，避免覆盖同一行右侧的原文。 */
-  background: linear-gradient(
-    to right,
-    var(--document-paper-bg) 0,
-    var(--document-paper-bg) var(--document-ocr-source-width, 100%),
-    transparent var(--document-ocr-source-width, 100%),
-    transparent 100%
-  );
+  /* 定位容器只负责排版，白底由实际译文文字逐行绘制，避免遮罩继续沿用原文识别框。 */
+  background: transparent;
   color: var(--document-paper-text);
   font-size: calc(
     var(--document-ocr-font-size-pt, 12) * var(--document-page-scale, 1) * 1px
@@ -2143,6 +2130,13 @@ body {
   font-family: 'Noto Sans SC', "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
   overflow-wrap: anywhere;
   text-align: left;
+}
+
+.document-ocr-region-text {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  /* 每行白底随译文宽度变化，长译文换行后仍能完整遮住扫描原文。 */
+  background: var(--document-paper-bg);
 }
 
 .document-ocr-region[data-status='pending'] {

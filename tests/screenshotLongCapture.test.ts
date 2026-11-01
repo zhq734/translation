@@ -92,10 +92,35 @@ test('长截图在重复帧后仍应继续拼接滚动内容', () => {
   const first = createScrollFrame(30, 20)
   const stitcher = new LongCaptureStitcher(4, 20)
   assert.equal(stitcher.appendFrame(first, 20), true)
+  assert.equal(stitcher.canUndo, false)
   assert.equal(stitcher.appendFrame(first, 20), false)
+  assert.equal(stitcher.canUndo, false)
   assert.equal(stitcher.appendFrame(createScrollFrame(34, 20), 20), true)
   assert.equal(stitcher.height, 24)
   assert.equal(stitcher.offset, 4)
+  assert.equal(stitcher.canUndo, true)
+})
+
+/**
+ * 校验光标闪烁或轻微动画不会让静止帧被误判为滚动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('长截图轻微变化帧应判定为静止', () => {
+  const previous = createScrollFrame(30, 20)
+  const next = previous.slice()
+  next[0] = 1
+  const match = locateScrollOffset(previous, next, 4, 20)
+  assert.equal(match.confident, true)
+  assert.equal(match.offset, 0)
+  assert.equal(match.start, 20)
+  assert.equal(match.end, 20)
+
+  const stitcher = new LongCaptureStitcher(4, 20)
+  assert.equal(stitcher.appendFrame(previous, 20), true)
+  assert.equal(stitcher.appendFrame(next, 20), false)
+  assert.equal(stitcher.height, 20)
+  assert.equal(stitcher.canUndo, false)
 })
 
 /**
@@ -179,6 +204,43 @@ test('长截图应拒绝无法可靠匹配的帧', () => {
 })
 
 /**
+ * 校验存在多个达标位移时采用最小位移，避免重复内容导致过度追加。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('长截图重叠匹配应优先采用最小可信滚动位移', () => {
+  // 前 12 行完全相同，使 offset=4、8、12 都满足完整重叠校验；
+  // 只有 12 之后的唯一内容能证明真实位移是 12，不能因重复内容误取更大的重叠区。
+  const rows = [
+    ...Array.from({ length: 12 }, (_, index) => 40 + index % 3),
+    ...Array.from({ length: 8 }, (_, index) => 100 + index)
+  ]
+  const previous = createFrame(rows)
+  const next = createFrame([...rows.slice(12), ...Array.from({ length: 12 }, (_, index) => 200 + index)])
+  const match = locateScrollOffset(previous, next, 4, 20)
+  assert.equal(match.confident, true)
+  assert.equal(match.offset, 12)
+})
+
+/**
+ * 校验连续出现无法定位的新帧时会暴露可提示的失败次数。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('长截图连续定位失败时应累计失败次数并在成功后清零', () => {
+  const stitcher = new LongCaptureStitcher(4, 20)
+  stitcher.appendFrame(createScrollFrame(10, 20), 20)
+  const firstFailed = createFrame(Array.from({ length: 20 }, (_, index) => (index * 17 + 3) % 251))
+  const secondFailed = createFrame(Array.from({ length: 20 }, (_, index) => (index * 29 + 7) % 251))
+  assert.equal(stitcher.appendFrame(firstFailed, 20), false)
+  assert.equal(stitcher.locateFailures, 1)
+  assert.equal(stitcher.appendFrame(secondFailed, 20), false)
+  assert.equal(stitcher.locateFailures, 2)
+  assert.equal(stitcher.appendFrame(createScrollFrame(14, 20), 20), true)
+  assert.equal(stitcher.locateFailures, 0)
+})
+
+/**
  * 校验快速滚动只剩四行重叠时仍能可靠续接。
  * @returns 无返回值。
  * @author zhenghq
@@ -215,6 +277,7 @@ test('长截图应支持撤销到上一帧', () => {
   assert.equal(stitcher.undo(), false)
 
   stitcher.appendFrame(createScrollFrame(10, 20), 20)
+  assert.equal(stitcher.canUndo, false)
   stitcher.appendFrame(createScrollFrame(14, 20), 20)
   assert.equal(stitcher.height, 24)
   assert.equal(stitcher.offset, 4)
@@ -223,7 +286,7 @@ test('长截图应支持撤销到上一帧', () => {
   assert.equal(stitcher.undo(), true)
   assert.equal(stitcher.height, 20)
   assert.equal(stitcher.offset, 0)
-  assert.equal(stitcher.canUndo, true)
+  assert.equal(stitcher.canUndo, false)
   assert.deepEqual([...stitcher.snapshot()], [...createScrollFrame(10, 20)])
 })
 
@@ -237,9 +300,27 @@ test('长截图重复帧不应产生撤销记录', () => {
   const stitcher = new LongCaptureStitcher(4, 18)
   stitcher.appendFrame(frame, 18)
   stitcher.appendFrame(frame, 18)
-  assert.equal(stitcher.undo(), true)
-  assert.equal(stitcher.height, 0)
   assert.equal(stitcher.canUndo, false)
+  assert.equal(stitcher.undo(), false)
+  assert.equal(stitcher.height, 18)
+})
+
+/**
+ * 校验多帧向下滚动后只保留新增行，撤销时恢复上一段高度与内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('长截图多帧滚动与撤销应保持分块画布顺序', () => {
+  const stitcher = new LongCaptureStitcher(4, 20)
+  for (const start of [0, 4, 8, 12]) {
+    assert.equal(stitcher.appendFrame(createScrollFrame(start, 20), 20), true)
+  }
+  assert.equal(stitcher.height, 32)
+  assert.deepEqual([...stitcher.snapshot()], [...createScrollFrame(0, 32)])
+
+  assert.equal(stitcher.undo(), true)
+  assert.equal(stitcher.height, 28)
+  assert.deepEqual([...stitcher.snapshot()], [...createScrollFrame(0, 28)])
 })
 
 /**

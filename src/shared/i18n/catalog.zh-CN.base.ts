@@ -781,6 +781,7 @@ export const zhCNBase = defineCatalog({
   'screenshot.longCapture.captureFailed': '长截图采集失败，请重试',
   'screenshot.longCapture.dimensionsChanged': '采集区域尺寸发生变化，请取消后重新框选',
   'screenshot.longCapture.finishFailed': '长截图处理失败，请重试',
+  'screenshot.longCapture.slowDown': '拼接定位失败，请放慢滚动',
   'screenshot.longCapture.truncated': '已达到最大高度，长截图已截断',
   'screenshot.pin.windowTitle': '贴图',
   'screenshot.pin.copy': '复制图片',

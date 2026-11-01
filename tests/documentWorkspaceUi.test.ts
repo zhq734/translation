@@ -2559,7 +2559,7 @@ test('解析告警必须按稳定 code 本地化并在双栏中可见', () => {
   assert.match(css, /\.document-warning-list/u)
 })
 
-test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖，译文锚定原位置且只在相交时避让', () => {
+test('文档双栏预览的 OCR 遮罩必须贴合译文文字，并支持在源文栏切换原文与译文覆盖', () => {
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
 
@@ -2600,10 +2600,11 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
     /const horizontalBounds = resolveDocumentOcrTranslationHorizontalBounds\([\s\S]*?element\.style\.left = `\$\{horizontalBounds\.x \* 100\}%`[\s\S]*?element\.style\.width = `\$\{horizontalBounds\.width \* 100\}%`/u,
     '可见译文必须使用横向可用宽度，不能继续沿用窄 OCR 原框导致中文逐字换行'
   )
+  assert.doesNotMatch(source, /resolveDocumentOcrSourceWidthRatio/u)
   assert.match(
     source,
-    /const sourceWidthRatio = resolveDocumentOcrSourceWidthRatio\(box, horizontalBounds\)[\s\S]*?--document-ocr-source-width[^\n]*sourceWidthRatio \* 100/u,
-    'OCR 白底必须按原识别框占扩宽译文框的比例记录宽度，不能覆盖右侧正文'
+    /const textElement = document\.createElement\('span'\)[\s\S]*?textElement\.className = 'document-ocr-region-text'[\s\S]*?textElement\.textContent = translatedText/u,
+    'OCR 译文必须由独立行内文字元素承载，遮罩才能随每行实际文字宽度变化'
   )
   assert.match(source, /function normalizeOcrTranslationLayout\(/u)
   assert.match(source, /dataset\.sourceTop = String\(box\.y\)/u)
@@ -2621,8 +2622,18 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   assert.match(source, /dataset\.ocrTranslation = 'true'/u)
   assert.match(
     css,
-    /\.document-ocr-region\s*\{[^}]*background:\s*linear-gradient\([^}]*var\(--document-ocr-source-width/su,
-    'OCR 白底只能覆盖原识别框，不能跟随译文可用宽度铺满整行'
+    /\.document-ocr-region\s*\{[^}]*background:\s*transparent/su,
+    'OCR 定位容器不能继续按原文识别框绘制白底'
+  )
+  assert.match(
+    css,
+    /\.document-ocr-region-text\s*\{[^}]*background:\s*var\(--document-paper-bg\)/su,
+    'OCR 白底必须由译文文字本身绘制，尺寸随实际内容变化'
+  )
+  assert.match(
+    css,
+    /\.document-ocr-region-text\s*\{[^}]*box-decoration-break:\s*clone/su,
+    '多行译文的每一行都必须获得独立且贴合文字的白底'
   )
   assert.match(css, /\.document-ocr-region\s*\{[^}]*color:\s*var\(--document-paper-text\)/su)
   assert.match(css, /\.document-ocr-region\s*\{[^}]*var\(--document-ocr-font-size-pt[^;]*\*\s*var\(--document-page-scale[^;]*\*\s*1px/su)

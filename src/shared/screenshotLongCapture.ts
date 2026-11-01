@@ -71,8 +71,8 @@ export interface LongCapturePreviewOptions {
 
 /** 长截图撤销快照。 */
 interface LongCaptureHistoryEntry {
-  /** 拼接主体像素。 */
-  body: Uint8ClampedArray | null
+  /** 拼接主体像素分块；每个分块按完整行边界切分。 */
+  bodyChunks: Uint8ClampedArray[]
   /** 拼接主体高度。 */
   bodyHeight: number
   /** 顶部固定区域像素。 */
@@ -329,15 +329,21 @@ export function locateScrollOffset(
   if (!hasValidDimensions(previous, width, height) || !hasValidDimensions(next, width, height)) {
     return { confident: false, offset: 0, start: height, end: height }
   }
-  if (rowsEqual(previous, next, width, 0, 0) &&
-    previous.every((value, index) => value === next[index])) {
+  const previousHashes = hashRows(previous, width, height)
+  const nextHashes = hashRows(next, width, height)
+  let unchangedRows = 0
+  for (let row = 0; row < height; row += 1) {
+    if (previousHashes[row] === nextHashes[row] &&
+      rowsEqual(previous, next, width, row, row)) {
+      unchangedRows += 1
+    }
+  }
+  // 光标闪烁、加载动画等只改变少量像素，不能据此推进画布或写入撤销历史。
+  if (unchangedRows / height >= minMatchRatio) {
     return { confident: true, offset: 0, start: height, end: height }
   }
 
-  const previousHashes = hashRows(previous, width, height)
-  const nextHashes = hashRows(next, width, height)
-  let best: { offset: number; ratio: number; overlap: number } | null = null
-
+  let downwardOffset: number | null = null
   for (let offset = 1; offset < height; offset += 1) {
     const overlap = height - offset
     if (overlap < MIN_OVERLAP_ROWS) break
@@ -351,12 +357,13 @@ export function locateScrollOffset(
       }
     }
     const ratio = equalRows / overlap
-    if (ratio >= minMatchRatio &&
-      (!best || ratio > best.ratio || (ratio === best.ratio && overlap > best.overlap))) {
-      best = { offset, ratio, overlap }
+    if (ratio >= minMatchRatio) {
+      downwardOffset = offset
+      break
     }
   }
 
+  let upwardOffset: number | null = null
   for (let offset = 1; offset < height; offset += 1) {
     const overlap = height - offset
     if (overlap < MIN_OVERLAP_ROWS) break
@@ -370,17 +377,20 @@ export function locateScrollOffset(
       }
     }
     const ratio = equalRows / overlap
-    if (ratio >= minMatchRatio &&
-      (!best || ratio > best.ratio || (ratio === best.ratio && overlap > best.overlap))) {
-      best = { offset: -offset, ratio, overlap }
+    if (ratio >= minMatchRatio) {
+      upwardOffset = offset
+      break
     }
   }
 
-  if (!best) return { confident: false, offset: 0, start: height, end: height }
-  if (best.offset > 0) {
-    return { confident: true, offset: best.offset, start: height - best.offset, end: height }
+  // 优先最小可信位移；两侧同时成立时向下滚动优先，避免重复内容造成过度追加。
+  if (downwardOffset === null && upwardOffset === null) {
+    return { confident: false, offset: 0, start: height, end: height }
   }
-  return { confident: true, offset: best.offset, start: 0, end: -best.offset }
+  if (downwardOffset !== null && (upwardOffset === null || downwardOffset <= upwardOffset)) {
+    return { confident: true, offset: downwardOffset, start: height - downwardOffset, end: height }
+  }
+  return { confident: true, offset: -upwardOffset!, start: 0, end: upwardOffset! }
 }
 
 /**
@@ -449,6 +459,60 @@ function concatRows(parts: Uint8ClampedArray[]): Uint8ClampedArray {
 }
 
 /**
+ * 按行切片一组像素分块，仅在边界处复制必要的数据。
+ * @param chunks 按从上到下排列的像素分块。
+ * @param width 图像宽度。
+ * @param startRow 起始行（包含）。
+ * @param endRow 结束行（不包含）。
+ * @returns 只包含指定行范围的新分块数组。
+ * @author zhenghq
+ */
+function sliceRowChunks(
+  chunks: Uint8ClampedArray[],
+  width: number,
+  startRow: number,
+  endRow: number
+): Uint8ClampedArray[] {
+  const rowBytes = width * 4
+  const totalRows = chunks.reduce((sum, chunk) => sum + chunk.length / rowBytes, 0)
+  const start = Math.max(0, Math.min(totalRows, Math.floor(startRow)))
+  const end = Math.max(start, Math.min(totalRows, Math.floor(endRow)))
+  if (start === end) return []
+
+  const result: Uint8ClampedArray[] = []
+  let chunkStart = 0
+  for (const chunk of chunks) {
+    const chunkRows = chunk.length / rowBytes
+    const chunkEnd = chunkStart + chunkRows
+    const overlapStart = Math.max(start, chunkStart)
+    const overlapEnd = Math.min(end, chunkEnd)
+    if (overlapStart < overlapEnd) {
+      if (overlapStart === chunkStart && overlapEnd === chunkEnd) {
+        result.push(chunk)
+      } else {
+        result.push(chunk.slice(
+          (overlapStart - chunkStart) * rowBytes,
+          (overlapEnd - chunkStart) * rowBytes
+        ))
+      }
+    }
+    if (chunkEnd >= end) break
+    chunkStart = chunkEnd
+  }
+  return result
+}
+
+/**
+ * 将像素分块合并成连续 RGBA 数据。
+ * @param chunks 按从上到下排列的像素分块。
+ * @returns 连续像素。
+ * @author zhenghq
+ */
+function concatRowChunks(chunks: Uint8ClampedArray[]): Uint8ClampedArray {
+  return concatRows(chunks)
+}
+
+/**
  * 将长截图结果按比例缩小为实时预览图；小于限制时原样返回，绝不放大。
  * 使用最近邻采样，避免预览生成在主进程额外承担双线性插值开销。
  * @param data 拼接后的 RGBA 像素。
@@ -506,8 +570,8 @@ export class LongCaptureStitcher {
   private readonly viewportHeight: number
   /** 拼接选项。 */
   private readonly options: Required<LongCaptureOptions>
-  /** 去重后的主体像素。 */
-  private body: Uint8ClampedArray | null = null
+  /** 去重后的主体像素分块；每个分块按完整行边界切分。 */
+  private bodyChunks: Uint8ClampedArray[] = []
   /** 当前主体高度。 */
   private bodyHeight = 0
   /** 已识别的顶部固定像素。 */
@@ -518,6 +582,8 @@ export class LongCaptureStitcher {
   private lastFrame: Uint8ClampedArray | null = null
   /** 最近一次可信滚动偏移。 */
   offset = 0
+  /** 连续无法定位新内容的采样次数，用于提示用户放慢滚动。 */
+  locateFailures = 0
   /** 是否曾因最大高度限制而截断或触顶。 */
   truncated = false
   /** 可撤销的历史快照栈。 */
@@ -558,10 +624,10 @@ export class LongCaptureStitcher {
    * @author zhenghq
    */
   snapshot(): Uint8ClampedArray {
-    if (!this.body) return new Uint8ClampedArray(0)
+    if (this.bodyChunks.length === 0) return new Uint8ClampedArray(0)
     return concatRows([
       this.fixedTopData ?? new Uint8ClampedArray(0),
-      this.body,
+      ...this.bodyChunks,
       this.fixedBottomData ?? new Uint8ClampedArray(0)
     ])
   }
@@ -590,11 +656,11 @@ export class LongCaptureStitcher {
    */
   appendFrame(data: Uint8ClampedArray, height: number): boolean {
     if (!hasValidDimensions(data, this.width, height) || height !== this.viewportHeight) return false
-    if (!this.lastFrame || !this.body) {
-      this.history.push(this.createHistoryEntry())
-      this.body = data.slice()
+    if (!this.lastFrame || this.bodyChunks.length === 0) {
+      this.bodyChunks = [data.slice()]
       this.bodyHeight = height
       this.lastFrame = data.slice()
+      this.locateFailures = 0
       return true
     }
 
@@ -612,13 +678,16 @@ export class LongCaptureStitcher {
         fixedTop = detected.top
         fixedBottom = detected.bottom
         this.fixedTopData = detected.top > 0
-          ? sliceRows(this.body, this.width, 0, detected.top)
+          ? concatRowChunks(sliceRowChunks(this.bodyChunks, this.width, 0, detected.top))
           : null
         this.fixedBottomData = detected.bottom > 0
-          ? sliceRows(this.body, this.width, height - detected.bottom, height)
+          ? concatRowChunks(sliceRowChunks(this.bodyChunks, this.width, height - detected.bottom, height))
           : null
-        this.body = sliceRows(this.body, this.width, detected.top, height - detected.bottom)
-        this.bodyHeight = this.body.length / (this.width * 4)
+        this.bodyChunks = sliceRowChunks(this.bodyChunks, this.width, detected.top, height - detected.bottom)
+        this.bodyHeight = this.bodyChunks.reduce(
+          (sum, chunk) => sum + chunk.length / (this.width * 4),
+          0
+        )
       }
     }
 
@@ -631,17 +700,40 @@ export class LongCaptureStitcher {
       previousBody.length / (this.width * 4),
       this.options.minMatchRatio
     )
+    if (!match.confident) {
+      // 失败帧不能覆盖最后可信帧，否则用户放慢滚动后也无法重新接回页面。
+      this.locateFailures += 1
+      return false
+    }
     this.lastFrame = data.slice()
-    if (!match.confident || match.offset === 0) return false
+    // 画面静止说明之前的一次错位已失效，恢复正常的滚动提示状态。
+    if (match.offset === 0) {
+      this.locateFailures = 0
+      return false
+    }
     this.history.push(historyEntry)
     this.offset = match.offset
+    this.locateFailures = 0
 
     if (match.offset > 0) {
-      this.body = concatRows([this.body, sliceRows(nextBody, this.width, match.start, match.end)])
+      this.bodyChunks.push(...sliceRowChunks(
+        [nextBody],
+        this.width,
+        match.start,
+        match.end
+      ))
     } else {
-      this.body = concatRows([sliceRows(nextBody, this.width, match.start, match.end), this.body])
+      this.bodyChunks.unshift(...sliceRowChunks(
+        [nextBody],
+        this.width,
+        match.start,
+        match.end
+      ))
     }
-    this.bodyHeight = this.body.length / (this.width * 4)
+    this.bodyHeight = this.bodyChunks.reduce(
+      (sum, chunk) => sum + chunk.length / (this.width * 4),
+      0
+    )
     this.enforceMaxHeight(match.offset > 0)
     return true
   }
@@ -654,13 +746,14 @@ export class LongCaptureStitcher {
   undo(): boolean {
     const previous = this.history.pop()
     if (!previous) return false
-    this.body = previous.body?.slice() ?? null
+    this.bodyChunks = previous.bodyChunks
     this.bodyHeight = previous.bodyHeight
-    this.fixedTopData = previous.fixedTopData?.slice() ?? null
-    this.fixedBottomData = previous.fixedBottomData?.slice() ?? null
-    this.lastFrame = previous.lastFrame?.slice() ?? null
+    this.fixedTopData = previous.fixedTopData
+    this.fixedBottomData = previous.fixedBottomData
+    this.lastFrame = previous.lastFrame
     this.offset = previous.offset
     this.truncated = previous.truncated
+    this.locateFailures = 0
     return true
   }
 
@@ -671,11 +764,11 @@ export class LongCaptureStitcher {
    */
   private createHistoryEntry(): LongCaptureHistoryEntry {
     return {
-      body: this.body?.slice() ?? null,
+      bodyChunks: [...this.bodyChunks],
       bodyHeight: this.bodyHeight,
-      fixedTopData: this.fixedTopData?.slice() ?? null,
-      fixedBottomData: this.fixedBottomData?.slice() ?? null,
-      lastFrame: this.lastFrame?.slice() ?? null,
+      fixedTopData: this.fixedTopData,
+      fixedBottomData: this.fixedBottomData,
+      lastFrame: this.lastFrame,
       offset: this.offset,
       truncated: this.truncated
     }
@@ -696,10 +789,13 @@ export class LongCaptureStitcher {
     const fixedBottom = (this.fixedBottomData?.length ?? 0) / (this.width * 4)
     const allowedBody = Math.max(0, this.options.maxHeight - fixedTop - fixedBottom)
     const remove = this.bodyHeight - allowedBody
-    if (remove <= 0 || !this.body) return
-    this.body = appendedDown
-      ? sliceRows(this.body, this.width, 0, allowedBody)
-      : sliceRows(this.body, this.width, remove, this.bodyHeight)
-    this.bodyHeight = this.body.length / (this.width * 4)
+    if (remove <= 0 || this.bodyChunks.length === 0) return
+    this.bodyChunks = appendedDown
+      ? sliceRowChunks(this.bodyChunks, this.width, 0, allowedBody)
+      : sliceRowChunks(this.bodyChunks, this.width, remove, this.bodyHeight)
+    this.bodyHeight = this.bodyChunks.reduce(
+      (sum, chunk) => sum + chunk.length / (this.width * 4),
+      0
+    )
   }
 }

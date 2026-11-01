@@ -1872,6 +1872,16 @@ test('OCR 译文超出原区域时必须扩展绘制且保留完整可检索文�
   }
 })
 
+test('PDF OCR 白底必须按每行译文宽度绘制，不能沿用原文识别框宽度', async () => {
+  const source = readFileSync('src/main/documentPdfExport.ts', 'utf8')
+
+  assert.match(
+    source,
+    /const lineWidth = Math\.min\(availableWidth, font\.widthOfTextAtSize\(line, fontSize\)\)[\s\S]*?context\.page\.drawRectangle\(\{[\s\S]*?width: Math\.min\(regionWidth, lineWidth \+ padding\.x \* 2\)/u,
+    'OCR 白底必须按当前译文行的实际文字宽度绘制，不能固定为原文识别框宽度'
+  )
+})
+
 test('PDF 中相邻 OCR 译文变高后必须顺延，不能覆盖后续 OCR 行', async () => {
   const model = documentWithText('English document')
   model.pages[0]!.blocks = [{
@@ -3132,6 +3142,175 @@ test('PDF 正文跨页后结构竖线必须续绘到续页正文底部', async (
       assert.ok(line.start <= 16 && line.end >= textTop,
         `结构竖线必须覆盖续页正文：x=${x}，范围=${line.start}-${line.end}，正文顶=${textTop}`)
     }
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 续页内下划线必须跟随正文，结构框线只能闭合到日期下方底边', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 594.95996
+  page.height = 841.91998
+  page.blocks = [{
+    kind: 'shape',
+    blockId: 'continuation-structural-left',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 60.375, y: 616.25, width: 1, height: 187.375 },
+    line: { orientation: 'vertical', color: '#000000', thickness: 1 }
+  }, {
+    kind: 'shape',
+    blockId: 'continuation-structural-right',
+    readingOrder: 1,
+    translatable: false,
+    bbox: { x: 535.125, y: 616.25, width: 1, height: 187.375 },
+    line: { orientation: 'vertical', color: '#000000', thickness: 1 }
+  }, {
+    kind: 'text',
+    blockId: 'continuation-body',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 65.25, y: 620.25, width: 459, height: 76.5 },
+    runs: [{
+      runId: 'continuation-body-run',
+      text: 'The applicant confirms that all submitted information is true and accurate. '.repeat(24),
+      style: { fontSize: 9, lineHeight: 13.5 }
+    }]
+  }, {
+    kind: 'shape',
+    blockId: 'continuation-underline-wide',
+    readingOrder: 3,
+    translatable: false,
+    bbox: { x: 65.25, y: 670.5, width: 459, height: 1 },
+    line: { orientation: 'horizontal', color: '#000000', thickness: 0.75 }
+  }, {
+    kind: 'shape',
+    blockId: 'continuation-underline-short',
+    readingOrder: 4,
+    translatable: false,
+    bbox: { x: 65.25, y: 684, width: 63, height: 1 },
+    line: { orientation: 'horizontal', color: '#000000', thickness: 0.75 }
+  }, {
+    kind: 'text',
+    blockId: 'continuation-signature',
+    readingOrder: 5,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 307.5, y: 737.25, width: 99, height: 9 },
+    runs: [{ runId: 'continuation-signature-run', text: 'Applicant (Natural Person) Signature:', style: { fontSize: 9 } }]
+  }, {
+    kind: 'text',
+    blockId: 'continuation-id',
+    readingOrder: 6,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 352.5, y: 752.25, width: 54, height: 9 },
+    runs: [{ runId: 'continuation-id-run', text: 'ID Number:', style: { fontSize: 9 } }]
+  }, {
+    kind: 'text',
+    blockId: 'continuation-date',
+    readingOrder: 7,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 444.8906, y: 782.25, width: 81.6029, height: 9 },
+    textAlign: 'right',
+    runs: [{ runId: 'continuation-date-run', text: 'October 12, 2026', style: { fontSize: 9 } }]
+  }, {
+    kind: 'shape',
+    blockId: 'continuation-structural-bottom',
+    readingOrder: 8,
+    translatable: false,
+    bbox: { x: 60.375, y: 803.625, width: 474.75, height: 1 },
+    line: { orientation: 'horizontal', color: '#000000', thickness: 1 }
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 2, '续页尾注不能制造第三页')
+    const continuationPage = await exportedPdf.getPage(2)
+    const pageHeight = continuationPage.getViewport({ scale: 1 }).height
+    const operatorList = await continuationPage.getOperatorList()
+    const lines: Array<{
+      lineWidth: number
+      orientation: 'horizontal' | 'vertical'
+      x: number
+      top: number
+      bottom: number
+      width: number
+    }> = []
+    let lineWidth = 1
+    for (let index = 0; index < operatorList.fnArray.length; index += 1) {
+      const operation = operatorList.fnArray[index]
+      if (operation === pdfjs.OPS.setLineWidth) {
+        lineWidth = Number(operatorList.argsArray[index]?.[0] ?? lineWidth)
+        continue
+      }
+      if (operation !== pdfjs.OPS.constructPath) continue
+      const pathOperations = operatorList.argsArray[index]?.[0]
+      const coordinates = operatorList.argsArray[index]?.[1]
+      if (!Array.isArray(pathOperations) || !Array.isArray(coordinates) ||
+        !pathOperations.includes(pdfjs.OPS.moveTo) ||
+        !pathOperations.includes(pdfjs.OPS.lineTo) ||
+        pathOperations.includes(pdfjs.OPS.rectangle)) continue
+      const xValues = coordinates.filter((_, coordinateIndex) => coordinateIndex % 2 === 0)
+        .map(Number)
+      const yValues = coordinates.filter((_, coordinateIndex) => coordinateIndex % 2 === 1)
+        .map(Number)
+      if (!xValues.every(Number.isFinite) || !yValues.every(Number.isFinite)) continue
+      const uniqueX = [...new Set(xValues)]
+      const uniqueY = [...new Set(yValues)]
+      if (uniqueX.length === 1 && uniqueY.length >= 2) {
+        lines.push({
+          lineWidth,
+          orientation: 'vertical',
+          x: uniqueX[0]!,
+          top: pageHeight - Math.max(...yValues),
+          bottom: pageHeight - Math.min(...yValues),
+          width: 0
+        })
+      } else if (uniqueY.length === 1 && uniqueX.length >= 2) {
+        lines.push({
+          lineWidth,
+          orientation: 'horizontal',
+          x: Math.min(...uniqueX),
+          top: pageHeight - uniqueY[0]!,
+          bottom: pageHeight - uniqueY[0]!,
+          width: Math.max(...uniqueX) - Math.min(...uniqueX)
+        })
+      }
+    }
+
+    const underlines = lines.filter((line) =>
+      line.orientation === 'horizontal' && Math.abs(line.lineWidth - 0.75) < 0.05)
+    assert.equal(underlines.length, 2, '续页必须保留两条正文下划线')
+    assert.ok(underlines.every((line) => line.top < 200),
+      `正文下划线必须跟随续页正文，不能落回原页底部：${underlines.map((line) => line.top).join(',')}`)
+
+    const bottomBorder = lines
+      .filter((line) => line.orientation === 'horizontal' && line.width > 400)
+      .sort((left, right) => right.top - left.top)[0]
+    assert.ok(bottomBorder, '续页必须绘制结构底边')
+    assert.ok(bottomBorder.top < 250, `结构底边必须位于日期下方，实际 y=${bottomBorder.top}`)
+
+    for (const x of [60.375, 535.125]) {
+      const vertical = lines.find((line) =>
+        line.orientation === 'vertical' && Math.abs(line.x - x) < 1)
+      assert.ok(vertical, `续页必须续绘 x=${x} 的结构竖线`)
+      assert.ok(vertical.bottom < 250,
+        `结构竖线只能闭合到底边，不能贯穿续页：x=${x}，底部=${vertical.bottom}`)
+      assert.ok(Math.abs(vertical.bottom - bottomBorder.top) < 2,
+        `结构竖线必须闭合到底边：竖线=${vertical.bottom}，底边=${bottomBorder.top}`)
+      assert.ok(Math.abs(vertical.lineWidth - 1.5) < 0.05,
+        `结构竖线必须与顶部框线统一为 1.5pt，实际=${vertical.lineWidth}`)
+    }
+    assert.ok(Math.abs(bottomBorder.lineWidth - 1.5) < 0.05,
+      `结构底边必须与顶部框线统一为 1.5pt，实际=${bottomBorder.lineWidth}`)
   } finally {
     await exportedPdf.destroy()
   }
