@@ -81,6 +81,7 @@ export const documentEnUS = {
   'document.export.confirmPartial': 'Export partial result',
   'document.export.cancel': 'Cancel export',
   'document.export.openFolder': 'Open containing folder',
+  'document.export.openFolderFailed': 'Unable to open the file location. Make sure the exported file still exists.',
   'document.export.phase.preparing': 'Preparing export',
   'document.export.phase.composing': 'Composing PDF layout',
   'document.export.phase.writing': 'Writing PDF file',

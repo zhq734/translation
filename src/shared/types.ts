@@ -792,6 +792,141 @@ export interface ScreenshotExportImageResult {
   dataUrl: string
 }
 
+/** 长截图启动请求：以当前截图选区作为固定采集视口。 */
+export interface ScreenshotLongCaptureStartRequest {
+  /** 所属截图会话序号。 */
+  sessionId: number
+  /** 当前选区在截图窗口内的逻辑坐标。 */
+  bounds: OcrSelectionBounds
+}
+
+/** 长截图运行状态：由主进程在初始化、采样和撤销后统一下发。 */
+export interface ScreenshotLongCaptureState {
+  /** 当前长截图会话标识。 */
+  sessionId: number
+  /** 当前累计帧数。 */
+  frameCount: number
+  /** 当前输出高度（物理像素）。 */
+  height: number
+  /** 固定采集视口宽度（物理像素）。 */
+  width: number
+  /** 是否还有可撤销步骤。 */
+  canUndo: boolean
+  /** 是否达到最大输出高度。 */
+  truncated: boolean
+  /** 最近一次采样的可信滚动偏移；0 表示尚未移动或无法匹配。 */
+  offset: number
+  /** 最近一次采样是否新增了内容。 */
+  appended: boolean
+  /** 当前是否正在采样。 */
+  sampling: boolean
+  /** 采样失败时的用户可读提示。 */
+  error?: string
+}
+
+/** 长截图实时预览：只传压缩 PNG，避免每次采样跨进程复制整张 RGBA 图像。 */
+export interface ScreenshotLongCapturePreview {
+  /** 当前长截图会话标识。 */
+  sessionId: number
+  /** 拼接结果 PNG data URL。 */
+  dataUrl: string
+  /** 图像物理宽度。 */
+  width: number
+  /** 图像物理高度。 */
+  height: number
+}
+
+/** 长截图控制动作。 */
+export type ScreenshotLongCaptureAction = 'copy' | 'save' | 'cancel'
+
+/** 长截图控制动作结果。 */
+export interface ScreenshotLongCaptureActionResult {
+  /** 当前长截图会话标识。 */
+  sessionId: number
+  /** 本次动作。 */
+  action: ScreenshotLongCaptureAction
+  /** 动作是否成功；取消保存对话框也视为成功。 */
+  ok: boolean
+  /** 用户是否取消了保存对话框。 */
+  canceled?: boolean
+  /** 保存成功后的本地路径。 */
+  filePath?: string
+  /** 失败时的用户可读描述。 */
+  error?: string
+}
+
+/** 创建贴图请求：接收 Renderer 已合成的带标注 PNG。 */
+export interface ScreenshotPinCreateRequest {
+  /** 所属截图会话序号。 */
+  sessionId: number
+  /** Renderer 生成的请求 ID。 */
+  requestId: string
+  /** 合成图片像素宽度。 */
+  width: number
+  /** 合成图片像素高度。 */
+  height: number
+  /** 合成后的 PNG 字节。 */
+  png: Uint8Array
+}
+
+/** 贴图创建结果：只回传状态与数量，不暴露窗口对象。 */
+export interface ScreenshotPinCreateResult {
+  /** 是否成功创建。 */
+  ok: boolean
+  /** 当前贴图数量。 */
+  count: number
+  /** 失败时的用户可读描述。 */
+  error?: string
+}
+
+/** 贴图窗口初始化负载。 */
+export interface ScreenshotPinInitPayload {
+  /** 贴图实例标识。 */
+  pinId: number
+  /** 图片 data URL。 */
+  dataUrl: string
+  /** 初始窗口宽度（逻辑像素）。 */
+  width: number
+  /** 初始窗口高度（逻辑像素）。 */
+  height: number
+  /** 初始缩放倍率。 */
+  scale: number
+  /** 初始透明度。 */
+  opacity: number
+  /** 是否显示边框。 */
+  bordered: boolean
+}
+
+/** 贴图拖动请求：Renderer 使用 screenX/screenY 发送全局屏幕坐标。 */
+export interface ScreenshotPinDragRequest {
+  /** 贴图实例标识。 */
+  pinId: number
+  /** 指针当前全局 x 坐标。 */
+  screenX: number
+  /** 指针当前全局 y 坐标。 */
+  screenY: number
+  /** 指针相对贴图窗口左上角的 x 偏移。 */
+  pointerOffsetX?: number
+  /** 指针相对贴图窗口左上角的 y 偏移。 */
+  pointerOffsetY?: number
+}
+
+/** 贴图滚轮请求。 */
+export interface ScreenshotPinWheelRequest {
+  /** 贴图实例标识。 */
+  pinId: number
+  /** 垂直滚动量。 */
+  deltaY: number
+  /** 是否按住 Ctrl/Cmd，用于调整透明度。 */
+  modifier: boolean
+}
+
+/** 贴图右键菜单请求。 */
+export interface ScreenshotPinContextMenuRequest {
+  /** 贴图实例标识。 */
+  pinId: number
+}
+
 /** OCR 引擎与模型资产状态，用于设置页展示版本、许可和就绪状态。 */
 export interface OcrStatus {
   /** 当前是否为 Windows 7 兼容运行时；Win7 固定使用 Tesseract.js。 */
@@ -1319,8 +1454,8 @@ export interface Api {
   ): Promise<DocumentExportResult>
   /** 取消当前正在执行的 PDF 导出，任务终态保持不变。 */
   cancelDocumentExport(jobId: string, generation: number): Promise<boolean>
-  /** 在系统文件管理器中定位当前任务最近一次成功导出的 PDF。 */
-  openDocumentExportFolder(jobId: string, generation: number): Promise<boolean>
+  /** 在系统文件管理器中定位当前任务或历史任务指定成功导出的 PDF。 */
+  openDocumentExportFolder(jobId: string, generation: number, filePath?: string): Promise<boolean>
   /** 订阅不包含路径或正文的 PDF 导出阶段进度。 */
   onDocumentExportProgress(
     callback: (progress: DocumentExportProgress) => void
@@ -1460,6 +1595,34 @@ export interface Api {
   copyAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
   /** 请求将 Renderer 合成的带标注 PNG 保存到本地磁盘。 */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest): void
+  /** 以当前截图选区启动长截图控制窗。 */
+  startScreenshotLongCapture(request: ScreenshotLongCaptureStartRequest): void
+  /** 请求长截图控制窗立即采集一帧。 */
+  sampleScreenshotLongCapture(sessionId: number): void
+  /** 撤销长截图最近一次成功拼接。 */
+  undoScreenshotLongCapture(sessionId: number): void
+  /** 完成长截图并复制或保存 PNG。 */
+  finishScreenshotLongCapture(sessionId: number, action: 'copy' | 'save'): void
+  /** 取消长截图并释放采集状态。 */
+  cancelScreenshotLongCapture(sessionId: number): void
+  /** 订阅长截图状态变化。 */
+  onScreenshotLongCaptureState(cb: (state: ScreenshotLongCaptureState) => void): () => void
+  /** 订阅长截图实时预览。 */
+  onScreenshotLongCapturePreview(cb: (preview: ScreenshotLongCapturePreview) => void): () => void
+  /** 订阅长截图完成动作结果。 */
+  onScreenshotLongCaptureAction(cb: (result: ScreenshotLongCaptureActionResult) => void): () => void
+  /** 将当前带标注截图创建为独立置顶贴图窗口。 */
+  createScreenshotPin(request: ScreenshotPinCreateRequest): Promise<ScreenshotPinCreateResult>
+  /** 拖动指定贴图到新的全局位置。 */
+  dragScreenshotPin(request: ScreenshotPinDragRequest): void
+  /** 调整贴图缩放或透明度。 */
+  wheelScreenshotPin(request: ScreenshotPinWheelRequest): void
+  /** 关闭指定贴图。 */
+  closeScreenshotPin(pinId: number): void
+  /** 打开指定贴图的右键菜单。 */
+  showScreenshotPinContextMenu(request: ScreenshotPinContextMenuRequest): void
+  /** 订阅贴图窗口初始化负载。 */
+  onScreenshotPinInit(cb: (payload: ScreenshotPinInitPayload) => void): () => void
   /** 按当前选区请求原始分辨率原图，供带标注导出合成使用。 */
   requestOcrSelectionExportImage(
     request: ScreenshotExportImageRequest

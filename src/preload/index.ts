@@ -31,6 +31,16 @@ import type {
   ScreenshotAnnotatedExportRequest,
   ScreenshotExportImageRequest,
   ScreenshotExportImageResult,
+  ScreenshotLongCaptureStartRequest,
+  ScreenshotLongCaptureState,
+  ScreenshotLongCapturePreview,
+  ScreenshotLongCaptureActionResult,
+  ScreenshotPinCreateRequest,
+  ScreenshotPinCreateResult,
+  ScreenshotPinDragRequest,
+  ScreenshotPinWheelRequest,
+  ScreenshotPinContextMenuRequest,
+  ScreenshotPinInitPayload,
   ScreenshotOcrRecognizeResult,
   WebReaderState,
   WebPagePdfExportResult,
@@ -381,11 +391,16 @@ const api: Api = {
    * 在系统文件管理器中定位当前任务最近一次成功导出的文件。
    * @param jobId 任务标识。
    * @param generation 任务代际。
+   * @param filePath 主进程成功导出时返回的最终文件路径。
    * @returns 是否成功打开文件管理器。
    * @author zhenghq
    */
-  openDocumentExportFolder: (jobId: string, generation: number): Promise<boolean> =>
-    ipcRenderer.invoke('document:open-export-folder', { jobId, generation }),
+  openDocumentExportFolder: (
+    jobId: string,
+    generation: number,
+    filePath?: string
+  ): Promise<boolean> =>
+    ipcRenderer.invoke('document:open-export-folder', { jobId, generation, filePath }),
   /**
    * 订阅文档 PDF 导出进度。
    * @param callback 接收阶段、总百分比与页级计数的回调。
@@ -776,6 +791,141 @@ const api: Api = {
    */
   saveAnnotatedOcrSelectionImage(request: ScreenshotAnnotatedExportRequest) {
     ipcRenderer.send('ocr-selection:save-annotated-image', request)
+  },
+  /**
+   * 以当前截图选区启动长截图控制窗。
+   * @param request 长截图启动请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  startScreenshotLongCapture(request: ScreenshotLongCaptureStartRequest) {
+    ipcRenderer.send('ocr-selection:start-long-capture', request)
+  },
+  /**
+   * 请求长截图控制窗立即采集一帧。
+   * @param sessionId 长截图会话标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  sampleScreenshotLongCapture(sessionId: number) {
+    ipcRenderer.send('screenshot-long-capture:sample', sessionId)
+  },
+  /**
+   * 撤销长截图最近一次成功拼接。
+   * @param sessionId 长截图会话标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  undoScreenshotLongCapture(sessionId: number) {
+    ipcRenderer.send('screenshot-long-capture:undo', sessionId)
+  },
+  /**
+   * 完成长截图并执行复制或保存。
+   * @param sessionId 长截图会话标识。
+   * @param action 完成动作。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  finishScreenshotLongCapture(sessionId: number, action: 'copy' | 'save') {
+    ipcRenderer.send('screenshot-long-capture:finish', { sessionId, action })
+  },
+  /**
+   * 取消长截图并释放采集状态。
+   * @param sessionId 长截图会话标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  cancelScreenshotLongCapture(sessionId: number) {
+    ipcRenderer.send('screenshot-long-capture:cancel', sessionId)
+  },
+  /**
+   * 订阅长截图状态变化。
+   * @param callback 状态回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onScreenshotLongCaptureState(callback: (state: ScreenshotLongCaptureState) => void) {
+    const listener = (_event: unknown, state: ScreenshotLongCaptureState): void => callback(state)
+    ipcRenderer.on('screenshot-long-capture:state', listener)
+    return () => ipcRenderer.removeListener('screenshot-long-capture:state', listener)
+  },
+  /**
+   * 订阅长截图实时预览。
+   * @param callback 预览回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onScreenshotLongCapturePreview(callback: (preview: ScreenshotLongCapturePreview) => void) {
+    const listener = (_event: unknown, preview: ScreenshotLongCapturePreview): void => callback(preview)
+    ipcRenderer.on('screenshot-long-capture:preview', listener)
+    return () => ipcRenderer.removeListener('screenshot-long-capture:preview', listener)
+  },
+  /**
+   * 订阅长截图完成动作结果。
+   * @param callback 动作结果回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onScreenshotLongCaptureAction(callback: (result: ScreenshotLongCaptureActionResult) => void) {
+    const listener = (_event: unknown, result: ScreenshotLongCaptureActionResult): void => callback(result)
+    ipcRenderer.on('screenshot-long-capture:action', listener)
+    return () => ipcRenderer.removeListener('screenshot-long-capture:action', listener)
+  },
+  /**
+   * 将当前带标注截图创建为独立置顶贴图窗口。
+   * @param request 贴图创建请求。
+   * @returns 创建结果与当前贴图数量。
+   * @author zhenghq
+   */
+  createScreenshotPin(request: ScreenshotPinCreateRequest): Promise<ScreenshotPinCreateResult> {
+    return ipcRenderer.invoke('ocr-selection:create-pin', request)
+  },
+  /**
+   * 拖动指定贴图到新的全局位置。
+   * @param request 拖动请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  dragScreenshotPin(request: ScreenshotPinDragRequest) {
+    ipcRenderer.send('screenshot-pin:drag', request)
+  },
+  /**
+   * 调整指定贴图的缩放或透明度。
+   * @param request 滚轮请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  wheelScreenshotPin(request: ScreenshotPinWheelRequest) {
+    ipcRenderer.send('screenshot-pin:wheel', request)
+  },
+  /**
+   * 关闭指定贴图。
+   * @param pinId 贴图实例标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  closeScreenshotPin(pinId: number) {
+    ipcRenderer.send('screenshot-pin:close', pinId)
+  },
+  /**
+   * 打开指定贴图的右键菜单。
+   * @param request 菜单请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  showScreenshotPinContextMenu(request: ScreenshotPinContextMenuRequest) {
+    ipcRenderer.send('screenshot-pin:context-menu', request)
+  },
+  /**
+   * 订阅贴图窗口初始化负载。
+   * @param callback 初始化回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onScreenshotPinInit(callback: (payload: ScreenshotPinInitPayload) => void) {
+    const listener = (_event: unknown, payload: ScreenshotPinInitPayload): void => callback(payload)
+    ipcRenderer.on('screenshot-pin:init', listener)
+    return () => ipcRenderer.removeListener('screenshot-pin:init', listener)
   },
   /**
    * 请求主进程按当前选区返回原始分辨率 PNG，供带标注导出合成底图。

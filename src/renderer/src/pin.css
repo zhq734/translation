@@ -1,0 +1,47 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  user-select: none;
+}
+
+.pin-root {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: transparent;
+  cursor: grab;
+  -webkit-app-region: no-drag;
+}
+
+.pin-root:active {
+  cursor: grabbing;
+}
+
+.pin-root[data-bordered='true'] {
+  outline: var(--border-width) solid var(--selection-button-border);
+  outline-offset: calc(var(--border-width) * -1);
+  box-shadow: var(--shadow-overlay);
+}
+
+.pin-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+:root[data-win7-compatibility='true'] .pin-root[data-bordered='true'] {
+  outline: 0;
+  box-shadow: none;
+}

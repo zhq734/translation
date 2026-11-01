@@ -57,6 +57,7 @@ import {
   filterVisibleDocumentWarnings
 } from '../../shared/documentWarnings'
 import {
+  isDocumentSnapshotCompleteForExport,
   resolveDocumentRetryActionState
 } from '../../shared/documentCompletion'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
@@ -335,6 +336,8 @@ let documentExportTarget: {
   generation: number
   /** 历史导出没有旧任务身份，不能在导出过程中调用任务取消接口。 */
   canCancel: boolean
+  /** 主进程本次成功导出后返回的最终文件路径，用于精确定位目录。 */
+  filePath?: string
 } | null = null
 /** 当前是否正在等待 PDF 导出结束。 */
 let documentExportInFlight = false
@@ -3882,7 +3885,19 @@ function normalizeTableColumnWidths(
 }
 
 /**
- * 创建可随页面缩放的直线装饰区块；线宽与颜色使用原始 PDF 信息。
+ * 判断 PDF 形状区块是否为需要与表格外边界统一的结构框线。
+ * 原生表格外框通常为 1pt 以上，而原文下划线多为 0.5–0.75pt；仅统一前者，
+ * 避免把正文中的细下划线误画成表格边界。
+ * @param block 形状区块。
+ * @returns 是否为结构框线。
+ * @author zhenghq
+ */
+function isPdfStructuralLine(block: Extract<DocumentBlock, { kind: 'shape' }>): boolean {
+  return Boolean(block.line && (block.line.thickness ?? 1) >= 1)
+}
+
+/**
+ * 创建可随页面缩放的直线装饰区块；结构框线复用表格边界样式，细线保留原始 PDF 信息。
  * @param block 形状区块。
  * @returns 形状区块元素。
  * @author zhenghq
@@ -3895,8 +3910,14 @@ function renderShapeBlock(block: Extract<DocumentBlock, { kind: 'shape' }>): HTM
   applyBlockGeometry(element, block)
   if (block.line) {
     element.dataset.lineOrientation = block.line.orientation
-    element.style.setProperty('--document-line-color', block.line.color ?? 'var(--document-paper-text)')
-    element.style.setProperty('--document-line-thickness', `${Math.max(0.5, block.line.thickness ?? 1)}px`)
+    if (isPdfStructuralLine(block)) {
+      element.dataset.structuralLine = 'true'
+      element.style.setProperty('--document-line-color', 'var(--document-table-boundary)')
+      element.style.setProperty('--document-line-thickness', '2px')
+    } else {
+      element.style.setProperty('--document-line-color', block.line.color ?? 'var(--document-paper-text)')
+      element.style.setProperty('--document-line-thickness', `${Math.max(0.5, block.line.thickness ?? 1)}px`)
+    }
     if (block.bbox) {
       element.style.setProperty('--document-shape-left', `${Math.max(0, block.bbox.x)}px`)
       element.style.setProperty('--document-shape-top', `${Math.max(0, block.bbox.y)}px`)
@@ -5864,8 +5885,12 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorks
   const percent = Math.max(0, Math.min(100, Math.round(snapshot.percent)))
   progressbar.setAttribute('aria-valuenow', String(percent))
   progressbar.style.width = `${percent}%`
-  progressCount.textContent = snapshot.task.progress.total > 0
-    ? `${snapshot.task.progress.completed} / ${snapshot.task.progress.total} · ${percent}%`
+  const progressCompleted = report
+    ? report.translated + report.unchanged
+    : snapshot.task.progress.completed
+  const progressTotal = report ? report.total : snapshot.task.progress.total
+  progressCount.textContent = progressTotal > 0
+    ? `${progressCompleted} / ${progressTotal} · ${percent}%`
     : `${percent}%`
   const pageTotal = snapshot.source?.pages.length ?? snapshot.translation?.pages.length ?? 0
   const currentPage = pageTotal > 0
@@ -6468,7 +6493,7 @@ async function openDocumentExportDialog(snapshot: DocumentWorkspaceSnapshot): Pr
   const readOnly = isReadOnlyDocumentTab(tab)
   const retryAction = resolveDocumentRetryActionState(snapshot)
   const incomplete = readOnly ? 0 : retryAction.reverted
-  const complete = readOnly || snapshot.task.status === 'completed'
+  const complete = readOnly || isDocumentSnapshotCompleteForExport(snapshot)
   documentExportTarget = {
     jobId: snapshot.jobId,
     generation: snapshot.generation,
@@ -6566,7 +6591,7 @@ async function confirmDocumentExport(): Promise<void> {
     partialStatus.hidden = false
     return
   }
-  const isComplete = readOnly || snapshot.task.status === 'completed'
+  const isComplete = readOnly || isDocumentSnapshotCompleteForExport(snapshot)
   if (!isComplete) {
     revealFirstIncompleteTarget(snapshot)
     const confirmed = await confirmPartialExport(snapshot)
@@ -6606,7 +6631,9 @@ async function confirmDocumentExport(): Promise<void> {
     if (!documentTabs.includes(tab) || documentExportTarget !== target) return
     if (result.status === 'saved') {
       documentExportSaved = true
-      exportOpenFolderButton.hidden = readOnly
+      target.filePath = result.filePath
+      // 历史文档和当前任务导出都记录了成功路径，成功保存后统一提供目录入口。
+      exportOpenFolderButton.hidden = false
       exportProgressStage.textContent = t('document.export.phase.completed')
       exportProgressPercent.textContent = '100%'
       exportProgressTrack.setAttribute('aria-valuenow', '100')
@@ -6620,12 +6647,16 @@ async function confirmDocumentExport(): Promise<void> {
     } else {
       partialStatus.textContent = result.code === 'font-missing'
         ? t('document.fontMissing')
-        : t('document.export.failed')
+        : `${t('document.export.failed')} ${t('document.run.failedCode', {
+            code: result.code ?? 'export-failed'
+          })}`
       exportProgressStage.textContent = t('document.export.failed')
     }
     partialStatus.hidden = false
   } catch {
-    partialStatus.textContent = t('document.export.failed')
+    partialStatus.textContent = `${t('document.export.failed')} ${t('document.run.failedCode', {
+      code: 'export-failed'
+    })}`
     partialStatus.hidden = false
     exportProgressStage.textContent = t('document.export.failed')
   } finally {
@@ -7235,9 +7266,26 @@ async function initializeDocumentWorkspace(): Promise<void> {
     }
     closeDocumentExportDialog()
   })
-  exportOpenFolderButton.addEventListener('click', () => {
+  exportOpenFolderButton.addEventListener('click', async () => {
     const target = documentExportTarget
-    if (target) void window.api.openDocumentExportFolder(target.jobId, target.generation)
+    if (!target) return
+    exportOpenFolderButton.disabled = true
+    try {
+      const opened = await window.api.openDocumentExportFolder(
+        target.jobId,
+        target.generation,
+        target.filePath
+      )
+      if (!opened) {
+        exportIncompleteNotice.textContent = t('document.export.openFolderFailed')
+        exportIncompleteNotice.hidden = false
+      }
+    } catch {
+      exportIncompleteNotice.textContent = t('document.export.openFolderFailed')
+      exportIncompleteNotice.hidden = false
+    } finally {
+      if (documentExportTarget === target) exportOpenFolderButton.disabled = false
+    }
   })
   exportDialog.addEventListener('cancel', (event) => {
     event.preventDefault()

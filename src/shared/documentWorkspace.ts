@@ -250,8 +250,11 @@ export interface DocumentExportCancelRequest {
   generation: number
 }
 
-/** 打开导出文件所在目录的请求；路径由主进程白名单决定。 */
-export type DocumentOpenExportFolderRequest = DocumentExportCancelRequest
+/** 打开导出文件所在目录的请求；路径必须命中主进程成功导出白名单。 */
+export interface DocumentOpenExportFolderRequest extends DocumentExportCancelRequest {
+  /** 主进程成功导出时返回的最终文件路径；旧版 Renderer 可省略。 */
+  filePath?: string
+}
 
 /** PDF 导出请求；任务标识、代际和显式模式共同构成导出授权。 */
 export interface DocumentExportRequest {
@@ -520,15 +523,22 @@ export function normalizeDocumentExportCancelRequest(value: unknown): DocumentEx
 }
 
 /**
- * 校验打开导出目录请求；实际路径始终由主进程成功导出记录提供。
+ * 校验打开导出目录请求；路径只作为白名单查找键，不能直接交给文件管理器。
  * @param value 未信任的打开目录请求。
- * @returns 规范化任务身份；字段非法时返回 null。
+ * @returns 规范化任务身份与可选文件路径；字段非法时返回 null。
  * @author zhenghq
  */
 export function normalizeDocumentOpenExportFolderRequest(
   value: unknown
 ): DocumentOpenExportFolderRequest | null {
-  return normalizeDocumentExportCancelRequest(value)
+  const identity = normalizeDocumentExportCancelRequest(value)
+  if (!identity || !value || typeof value !== 'object' || Array.isArray(value)) return null
+  const filePath = (value as Record<string, unknown>).filePath
+  if (filePath !== undefined &&
+    (typeof filePath !== 'string' || !filePath.trim() || filePath.length > 32_768)) {
+    return null
+  }
+  return { ...identity, ...(filePath !== undefined ? { filePath } : {}) }
 }
 
 /**

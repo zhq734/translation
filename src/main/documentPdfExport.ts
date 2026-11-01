@@ -167,6 +167,14 @@ interface PageComposer {
   flowWidth: number
   /** 上一个已绘制区块，用于沿用 PDF 原始段间距。 */
   previousBlock?: DocumentBlock
+  /** 是否已有文本块在当前页序列中跨页续排。 */
+  flowContinuationActive: boolean
+  /** 当前源页面在流式排版中创建的全部物理页面，用于续绘跨页结构线。 */
+  flowPages: PDFPage[]
+  /** 已跨页的文本区块原始范围，用于识别哪些结构线需要续绘。 */
+  continuationTextBlocks: DocumentBlock[]
+  /** 已跨页文本在续页上的实际底部坐标，用于闭合结构竖线。 */
+  continuationActualBottom: number
 }
 
 /** 表格单元格在占用矩阵中的实际排版位置。 */
@@ -481,7 +489,11 @@ function createPageComposer(
     flowActualBottom: Math.max(0, firstGeometryTop),
     // 首个流式区块绘制前没有可锚定对象，空横向范围避免原始页眉框被初始游标带动。
     flowLeft: 0,
-    flowWidth: 0
+    flowWidth: 0,
+    flowContinuationActive: false,
+    flowPages: [context.page],
+    continuationTextBlocks: [],
+    continuationActualBottom: Math.max(0, firstGeometryTop)
   }
 }
 
@@ -504,6 +516,7 @@ function ensurePageSpace(
   if (composer.cursor + requiredHeight <= pageHeight - composer.contentBottom) return false
   composer.page = createComposedPage(document, composer.pageModel)
   context.page = composer.page
+  composer.flowPages.push(composer.page)
   composer.cursor = composer.contentTop
   composer.sourceBottom = composer.contentTop
   composer.flowSourceTop = composer.contentTop
@@ -597,6 +610,124 @@ function resolvePdfHorizontalDecorationTop(
   if (!pdfDecorationOverlapsFlow(composer, block)) return fallbackTop
   const resolved = resolvePdfDecorationTop(composer, block.bbox?.y ?? fallbackTop)
   return resolved !== undefined && Number.isFinite(resolved) ? resolved : fallbackTop
+}
+
+/**
+ * 判断区块是否为可跨页续绘的页面结构竖线，排除整页外框等非流式装饰。
+ * @param block 待检查的区块。
+ * @param pageHeight 当前物理页面高度。
+ * @returns 是否为局部结构竖线。
+ * @author zhenghq
+ */
+function isPdfStructuralVerticalLine(block: DocumentBlock, pageHeight: number): boolean {
+  return block.kind === 'shape' &&
+    block.bbox !== undefined &&
+    block.line?.orientation === 'vertical' &&
+    block.bbox.height > 0 &&
+    block.bbox.height < pageHeight * 0.85
+}
+
+/**
+ * 判断结构竖线是否与已跨页文本的原始范围相交。
+ * @param block 结构竖线区块。
+ * @param composer 页面排版器。
+ * @returns 与任一跨页文本纵向相交时返回 true。
+ * @author zhenghq
+ */
+function verticalLineIntersectsContinuationText(
+  block: DocumentBlock,
+  composer: PageComposer
+): boolean {
+  const lineBbox = block.bbox
+  if (!lineBbox) return false
+  return composer.continuationTextBlocks.some((textBlock) => {
+    const textBbox = textBlock.bbox
+    if (!textBbox) return false
+    return lineBbox.y < textBbox.y + textBbox.height &&
+      lineBbox.y + lineBbox.height > textBbox.y
+  })
+}
+
+/**
+ * 在指定页面按原始线宽与颜色绘制结构竖线。
+ * @param page 目标物理页面。
+ * @param block 结构竖线区块。
+ * @param top 实际顶部坐标。
+ * @param bottom 实际底部坐标。
+ * @author zhenghq
+ */
+function drawStructuralVerticalLine(
+  page: PDFPage,
+  block: Extract<DocumentBlock, { kind: 'shape' }>,
+  top: number,
+  bottom: number
+): void {
+  if (!block.bbox || !block.line) return
+  const pageHeight = page.getHeight()
+  const lineHeight = Math.max(0.5, bottom - top)
+  page.drawLine({
+    start: { x: block.bbox.x, y: pdfY(pageHeight, top, lineHeight) },
+    end: { x: block.bbox.x, y: pdfY(pageHeight, top, 0) },
+    thickness: Math.max(0.5, block.line.thickness ?? 1),
+    color: parseColor(block.line.color, [0.8, 0.82, 0.85])
+  })
+}
+
+/**
+ * 绘制页面中的结构竖线；正文跨页时，与跨页文本相交的竖线会在续页同步续绘。
+ * @param pageModel 当前页面模型。
+ * @param composer 页面排版器。
+ * @author zhenghq
+ */
+function drawPdfStructuralVerticalLines(
+  pageModel: DocumentPage,
+  composer: PageComposer
+): void {
+  const lines = pageModel.blocks.filter((block): block is Extract<DocumentBlock, { kind: 'shape' }> =>
+    isPdfStructuralVerticalLine(block, pageModel.height))
+  if (lines.length === 0) return
+  const firstPage = composer.flowPages[0] ?? composer.page
+  const continuationPages = composer.flowContinuationActive && composer.flowPages.length > 1
+    ? composer.flowPages.slice(1)
+    : []
+  const lastPage = composer.flowPages[composer.flowPages.length - 1]
+  for (const line of lines) {
+    const bbox = line.bbox!
+    drawStructuralVerticalLine(firstPage, line, bbox.y, bbox.y + bbox.height)
+    if (!continuationPages.length || !verticalLineIntersectsContinuationText(line, composer)) continue
+    for (const page of continuationPages) {
+      const isLastPage = page === lastPage
+      const top = composer.contentTop
+      const bottom = isLastPage
+        ? Math.max(top, Math.min(page.getHeight(), composer.continuationActualBottom))
+        : page.getHeight() - composer.contentBottom
+      drawStructuralVerticalLine(page, line, top, bottom)
+    }
+  }
+}
+
+/**
+ * 在文本续页后按相邻区块的原文段间距，把区块接到续页实际底边之后。
+ * @param composer 页面排版器。
+ * @param sourceTop 区块原始顶部坐标。
+ * @param fallbackTop 无可用续排锚点时的回退顶部坐标。
+ * @returns 当前页实际顶部坐标。
+ * @author zhenghq
+ */
+function resolvePdfContinuationTop(
+  composer: PageComposer,
+  sourceTop: number,
+  fallbackTop: number
+): number {
+  if (!composer.flowContinuationActive) return fallbackTop
+  if (!composer.previousBlock?.bbox) return Math.max(composer.cursor, fallbackTop)
+  // 普通后续正文从续页内容顶部继续；只有仍紧邻跨页正文且位于源页物理范围内的尾注，
+  // 才沿用原文相对间距，避免签名和日期被推回旧页底部或重复下推。
+  const previousBbox = composer.previousBlock.bbox
+  const sourceGap = Math.max(0, sourceTop - composer.flowSourceBottom)
+  const shortTailBlock = sourceTop >= composer.flowSourceBottom && sourceTop <= composer.page.getHeight()
+  if (!shortTailBlock) return composer.contentTop
+  return composer.flowActualBottom + sourceGap
 }
 
 /**
@@ -1384,7 +1515,8 @@ function drawFlowTextLines(
     // 编辑安全区只约束后续正文，不能把页脚日期强制推到下一页。
     const nativeFirstLineFitsPage = lineIndex === 0 &&
       block.bbox !== undefined &&
-      Math.abs(lineTop - block.bbox.y) < 0.01 &&
+      (Math.abs(lineTop - block.bbox.y) < 0.01 || composer?.flowContinuationActive === true) &&
+      block.bbox.y + lineHeight <= context.page.getHeight() &&
       lineTop + lineHeight <= context.page.getHeight()
     if (composer && document &&
       !nativeFirstLineFitsPage &&
@@ -2056,7 +2188,25 @@ function drawTextBlock(
   const flowX = block.textAlign === 'center'
     ? blockCenter - flowWidth / 2
     : bbox.x
-  const blockTop = hasGeometry ? Math.max(bbox.y, cursor) : cursor
+  const absoluteTop = hasGeometry ? Math.max(bbox.y, cursor) : cursor
+  const blockTop = resolvePdfContinuationTop(composer ?? {
+    page: context.page,
+    pageModel: page,
+    contentTop: 0,
+    contentBottom: 0,
+    cursor,
+    sourceBottom: 0,
+    flowSourceTop: 0,
+    flowActualTop: 0,
+    flowSourceBottom: 0,
+    flowActualBottom: 0,
+    flowLeft: 0,
+    flowWidth: 0,
+    flowContinuationActive: false,
+    flowPages: [],
+    continuationTextBlocks: [],
+    continuationActualBottom: 0
+  }, bbox.y, absoluteTop)
   if (block.toc) {
     if (composer && document) ensurePageSpace(composer, document, context, Math.max(1, bbox.height))
     const tocTop = composer?.cursor ?? blockTop
@@ -2079,6 +2229,7 @@ function drawTextBlock(
   }
   // 普通正文与表格一样按视觉行排版；同一区块内的碎片 run 属于连续文本流，
   // 不能逐个 run 单独换行，否则中文 PDF 会退化为逐字竖排并产生大量空白页。
+  const pageCountBeforeText = composer?.flowPages.length ?? 0
   const lines = layoutFlowTextLines(context, block, flowWidth, flowTextRunStyle)
   if (composer) composer.cursor = blockTop
   const used = drawFlowTextLines(
@@ -2092,11 +2243,30 @@ function drawTextBlock(
     document
   )
   const drawnBottom = composer?.cursor ?? blockTop + used
-  const bottom = Math.max(drawnBottom, cursor, hasGeometry ? bbox.y + bbox.height : 0)
+  const continuedAcrossPages = composer !== undefined && composer.flowPages.length > pageCountBeforeText
+  // 续页后后续区块已按新页流式坐标重排，不能再让旧页绝对底边参与最小值计算。
+  const continuationWasActive = composer?.flowContinuationActive ?? false
+  const bottom = continuationWasActive
+    ? drawnBottom
+    : Math.max(drawnBottom, cursor, hasGeometry ? bbox.y + bbox.height : 0)
   if (composer) {
     composer.cursor = bottom + (hasGeometry ? 10 : 12)
-    composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    if (!continuationWasActive) {
+      composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    }
     recordPdfFlowAnchor(composer, block, blockTop, drawnBottom)
+    if (continuedAcrossPages) {
+      composer.flowContinuationActive = true
+      composer.continuationTextBlocks.push(block)
+      composer.continuationActualBottom = drawnBottom
+    }
+    if (composer.flowContinuationActive) {
+      composer.continuationActualBottom = Math.max(composer.continuationActualBottom, drawnBottom)
+    }
+    // 一旦发生续排，后续区块必须沿新页实际底边继续，不能再回填旧页坐标。
+    if (composer.cursor > context.page.getHeight() - composer.contentBottom) {
+      composer.flowContinuationActive = true
+    }
   }
   return composer?.cursor ?? bottom + (hasGeometry ? 10 : 12)
 }
@@ -2614,26 +2784,41 @@ async function drawPageBlocks(
     } else if (block.kind === 'formula') {
       composer.cursor = drawFormulaBlock(context, block, pageModelForDraw, composer.cursor, composer, document)
     } else if (block.kind === 'shape' && block.bbox) {
-      if (block.bbox.y > composer.cursor) composer.cursor = block.bbox.y
       const isVertical = block.line?.orientation === 'vertical'
+      // 局部结构竖线统一在页面末尾绘制，正文跨页时才能判断是否需要续绘。
+      if (isVertical && isPdfStructuralVerticalLine(block, context.page.getHeight())) {
+        composer.previousBlock = block
+        continue
+      }
+      if (isVertical && composer.flowContinuationActive) {
+        composer.previousBlock = block
+        continue
+      }
+      if (block.bbox.y > composer.cursor && !composer.flowContinuationActive) {
+        composer.cursor = block.bbox.y
+      }
       const fitsSourcePage = block.bbox.y >= 0 &&
         block.bbox.y + block.bbox.height <= context.page.getHeight()
       const fallbackTop = isVertical && fitsSourcePage
         ? block.bbox.y
-        : ensureGeometryBlockSpace(
-            composer,
-            document,
-            context,
-            composer.cursor,
-            block.bbox.height,
-            block.bbox.y,
-            block.bbox.height
-          )
+        : block.line?.orientation === 'horizontal' && composer.flowContinuationActive
+          // 续排后的水平线已由流式锚点重定位，不能先用旧页游标触发一次换页。
+          ? Math.max(block.bbox.y, composer.cursor)
+          : ensureGeometryBlockSpace(
+              composer,
+              document,
+              context,
+              composer.cursor,
+              block.bbox.height,
+              block.bbox.y,
+              block.bbox.height
+            )
       const shapeTop = block.line?.orientation === 'horizontal'
         ? resolvePdfHorizontalDecorationTop(composer, block, fallbackTop)
         : fallbackTop
       // 装饰线移动后仍可能越过当前页底，必须在绘制前重新检查一次可用空间。
-      const finalTop = shapeTop > fallbackTop
+      const finalTop = shapeTop > fallbackTop &&
+          !(block.line?.orientation === 'horizontal' && composer.flowContinuationActive)
         ? ensureGeometryBlockSpace(
             composer,
             document,
@@ -2644,6 +2829,49 @@ async function drawPageBlocks(
             block.bbox.height
           )
         : shapeTop
+      const physicalBottom = context.page.getHeight()
+      if (block.line?.orientation === 'horizontal' &&
+          composer.flowContinuationActive &&
+          finalTop + block.bbox.height > physicalBottom) {
+        // 续排后的底边可能刚好越过物理页底；原线仍完整位于源页面内时，
+        // 只夹紧到页底，不能因此再生成一张只有框线的空白页。
+        const clampedTop = Math.max(0, physicalBottom - block.bbox.height)
+        context.page.drawLine({
+          start: { x: block.bbox.x, y: pdfY(physicalBottom, clampedTop, 0) },
+          end: { x: block.bbox.x + block.bbox.width, y: pdfY(physicalBottom, clampedTop, 0) },
+          thickness: Math.max(0.5, block.line.thickness ?? 1),
+          color: parseColor(block.line.color, [0.8, 0.82, 0.85])
+        })
+        composer.cursor = Math.max(composer.cursor, physicalBottom)
+        composer.continuationActualBottom = Math.max(
+          composer.continuationActualBottom,
+          clampedTop + block.bbox.height
+        )
+        composer.previousBlock = block
+        continue
+      }
+      if (block.line?.orientation === 'horizontal' && composer.flowContinuationActive) {
+        // 续排后的尾注和底边已经脱离原页坐标；只要其实际位置仍在物理页内，
+        // 就不能再因为编辑安全区留白而创建空白第三页。
+        if (finalTop + block.bbox.height <= physicalBottom) {
+          composer.cursor = Math.max(composer.cursor, finalTop + block.bbox.height)
+        } else {
+          const clampedTop = Math.max(0, physicalBottom - block.bbox.height)
+          context.page.drawLine({
+            start: { x: block.bbox.x, y: pdfY(physicalBottom, clampedTop, 0) },
+            end: { x: block.bbox.x + block.bbox.width, y: pdfY(physicalBottom, clampedTop, 0) },
+            thickness: Math.max(0.5, block.line.thickness ?? 1),
+            color: parseColor(block.line.color, [0.8, 0.82, 0.85])
+          })
+          composer.cursor = Math.max(composer.cursor, physicalBottom)
+          composer.continuationActualBottom = Math.max(
+            composer.continuationActualBottom,
+            clampedTop + block.bbox.height
+          )
+          composer.previousBlock = block
+          continue
+        }
+      }
       if (!isVertical) composer.cursor = finalTop
       if (block.line?.orientation === 'horizontal') {
         const y = pdfY(context.page.getHeight(), finalTop, 0)
@@ -2653,6 +2881,10 @@ async function drawPageBlocks(
           thickness: Math.max(0.5, block.line.thickness ?? 1),
           color: parseColor(block.line.color, [0.8, 0.82, 0.85])
         })
+        composer.continuationActualBottom = Math.max(
+          composer.continuationActualBottom,
+          finalTop + block.bbox.height
+        )
       } else if (block.line?.orientation === 'vertical') {
         const x = block.bbox.x
         context.page.drawLine({
@@ -2673,10 +2905,13 @@ async function drawPageBlocks(
       }
       // 竖线是页面装饰而非普通流内容；推进游标会让后续正文错误换页。
       if (!isVertical) composer.cursor = finalTop + block.bbox.height
-      composer.sourceBottom = Math.max(composer.sourceBottom, block.bbox.y + block.bbox.height)
+      if (!composer.flowContinuationActive) {
+        composer.sourceBottom = Math.max(composer.sourceBottom, block.bbox.y + block.bbox.height)
+      }
     }
     composer.previousBlock = block
   }
+  drawPdfStructuralVerticalLines(pageModelForDraw, composer)
 }
 
 /**

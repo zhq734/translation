@@ -26,6 +26,7 @@ import type {
 import type { DocumentCompletionReport } from '../shared/documentCompletion.ts'
 import {
   collectRetryableDocumentTargetIds,
+  isDocumentSnapshotCompleteForExport,
   selectDocumentWorkspaceSnapshot,
   validateDocumentCompletionReport
 } from '../shared/documentCompletion.ts'
@@ -662,22 +663,26 @@ export class DocumentWorkspaceTaskService {
     if (!validation.ok) {
       return { status: 'rejected', code: validation.code }
     }
-    if (job.task.status === 'completed') {
+    // completed 是面向用户的完整语义；报告自称完整却仍含失败、未完成或疑似
+    // 未翻译目标时属于报告内部矛盾，必须与普通的“部分结果未确认”区分。
+    if (job.completionReport.status === 'completed' &&
+      (job.completionReport.failed > 0 ||
+        job.completionReport.pending > 0 ||
+        job.completionReport.suspectUntranslated > 0)) {
+      return { status: 'rejected', code: 'completion-mismatch' }
+    }
+    // 完成报告绑定任务代际，是导出语义的唯一真相；job.task 可能因迟到的运行态事件
+    // 暂时落后，不能让它把完整报告误判成部分结果，也不能让 completed 绕过部分报告。
+    const complete = isDocumentSnapshotCompleteForExport({
+      task: job.task,
+      completionReport: job.completionReport
+    })
+    if (complete) {
       if (request.mode !== 'complete') {
         return { status: 'rejected', code: 'completion-mismatch' }
       }
-      // completed 是面向用户的完整语义，必须与完成报告中的目标终态同时成立；
-      // 仅校验计数不变量会放过“completed + failed/pending/suspect > 0”的伪造或陈旧报告。
-      if (job.completionReport.status !== 'completed' ||
-        job.completionReport.failed !== 0 ||
-        job.completionReport.pending !== 0 ||
-        job.completionReport.suspectUntranslated !== 0) {
-        return { status: 'rejected', code: 'completion-mismatch' }
-      }
-    } else if (job.task.status === 'partial') {
-      if (request.mode === 'complete') {
-        return { status: 'rejected', code: 'partial-export-not-confirmed' }
-      }
+    } else if (request.mode === 'complete') {
+      return { status: 'rejected', code: 'partial-export-not-confirmed' }
     } else if (!ocrOnly &&
       job.completionReport.translated + job.completionReport.unchanged === 0) {
       return { status: 'rejected', code: 'not-ready' }
@@ -817,6 +822,30 @@ export class DocumentWorkspaceTaskService {
       !job.lastExportPath || !this.dependencies.openExportFolder) return false
     try {
       await this.dependencies.openExportFolder(job.lastExportPath)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 打开本任务指定成功导出文件所在目录。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @param filePath 主进程曾成功导出的文件路径。
+   * @returns 路径属于当前任务本次代际且文件管理器调用成功时返回 true。
+   * @author zhenghq
+   */
+  async openExportFolderPath(
+    jobId: string,
+    generation: number,
+    filePath: string
+  ): Promise<boolean> {
+    const job = this.active
+    if (!job || job.jobId !== jobId || job.generation !== generation ||
+      job.lastExportPath !== filePath || !this.dependencies.openExportFolder) return false
+    try {
+      await this.dependencies.openExportFolder(filePath)
       return true
     } catch {
       return false
@@ -1112,8 +1141,22 @@ export class DocumentWorkspaceTaskService {
    */
   private snapshot(job: ActiveDocumentJob, task: DocumentTaskState): DocumentWorkspaceSnapshot {
     const retryableTargetIds = this.resolveRetryableTargetIds(job)
-    const completionStatus = this.resolveCompletionStatus(job)
-    const effectiveTask = completionStatus ? { ...task, status: completionStatus } : task
+    const completionReport = this.resolveCompletionReport(job)
+    // 完成报告描述的是目标级终态；快照必须同步校正阶段、计数和失败数，
+    // 否则迟到的运行态任务状态会让界面停留在 80% 或误判导出条件。
+    const effectiveTask = completionReport
+      ? {
+          ...task,
+          status: completionReport.status,
+          phase: 'export' as const,
+          progress: {
+            completed: completionReport.translated + completionReport.unchanged,
+            total: completionReport.total
+          },
+          phaseCompleted: true,
+          failedBlocks: completionReport.failed
+        }
+      : task
     return {
       jobId: job.jobId,
       generation: job.generation,
@@ -1147,11 +1190,23 @@ export class DocumentWorkspaceTaskService {
   private resolveCompletionStatus(
     job: ActiveDocumentJob | null | undefined
   ): DocumentCompletionReport['status'] | undefined {
+    return this.resolveCompletionReport(job)?.status
+  }
+
+  /**
+   * 读取与当前任务标识和代际严格匹配的完成报告。
+   * @param job 当前任务；尚未创建时省略。
+   * @returns 同代际完成报告；没有有效报告时返回 undefined。
+   * @author zhenghq
+   */
+  private resolveCompletionReport(
+    job: ActiveDocumentJob | null | undefined
+  ): DocumentCompletionReport | undefined {
     const report = job?.completionReport
     if (!job || !report || report.jobId !== job.jobId || report.generation !== job.generation) {
       return undefined
     }
-    return report.status
+    return report
   }
 
   /**

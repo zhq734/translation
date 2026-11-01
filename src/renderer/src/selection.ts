@@ -22,6 +22,7 @@ import {
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
 import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
+import { resolveScreenshotOcrPanelAutoSize } from './screenshotOcrPanelSize'
 
 applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
@@ -60,6 +61,8 @@ const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButto
 const ocrTranslateButton = document.getElementById('ocr-translate') as HTMLButtonElement
 const ocrCopyImageButton = document.getElementById('ocr-copy-image') as HTMLButtonElement
 const ocrSaveImageButton = document.getElementById('ocr-save-image') as HTMLButtonElement
+const ocrLongCaptureButton = document.getElementById('ocr-long-capture') as HTMLButtonElement
+const ocrPinImageButton = document.getElementById('ocr-pin-image') as HTMLButtonElement
 const ocrCancelButton = document.getElementById('ocr-cancel') as HTMLButtonElement
 const ocrAnnotationToolButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>('[data-annotation-tool]')
@@ -130,7 +133,7 @@ let ocrSnapshotSourcePending = false
 /** 当前截图完成动画定时器及其所属会话。 */
 let screenshotAutoCloseTimer: number | null = null
 /** 当前图片动作的局部处理中状态，避免导出期间的普通提示覆盖即时反馈。 */
-let screenshotActionPending: 'copy-image' | 'save-image' | null = null
+let screenshotActionPending: 'copy-image' | 'save-image' | 'long-capture' | 'pin-image' | null = null
 // 截图“文字识别”进行中标记：防止同一识别请求重复提交。
 let screenshotRecognizePending = false
 // 当前截图动作请求 ID：仅响应当前请求的结果事件，丢弃旧回调。
@@ -382,6 +385,107 @@ function avoidOcrToolbarPanelOverlap(): void {
 }
 
 /**
+ * 解析元素计算样式中的像素数值，无法解析时返回回退值。
+ * @param value CSS 数值文本。
+ * @param fallback 解析失败时的回退值。
+ * @returns 可用于尺寸计算的像素值。
+ * @author zhenghq
+ */
+function parseCssPixelValue(value: string, fallback = 0): number {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+/**
+ * 测量 OCR 文本在指定字体下不换行时的最大行宽。
+ * @param text OCR 原始文本。
+ * @param style 文本区的计算样式。
+ * @returns 最长一行对应的像素宽度。
+ * @author zhenghq
+ */
+function measureOcrPanelNaturalTextWidth(text: string, style: CSSStyleDeclaration): number {
+  if (!text) return 0
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return 0
+  context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+  return text
+    .split(/\r?\n/u)
+    .reduce((widest, line) => Math.max(widest, context.measureText(line.replace(/\t/gu, '    ')).width), 0)
+}
+
+/**
+ * 在未手动调整尺寸时，根据识别结果内容自动计算 OCR 侧栏宽高。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncOcrPanelAutoSize(): void {
+  if (ocrPanelState === 'hidden' || ocrPanelUserSize) return
+
+  const viewport = getOverlaySize()
+  const panelStyle = getComputedStyle(ocrPanel)
+  const textStyle = getComputedStyle(ocrPanelText)
+  const statusStyle = getComputedStyle(ocrPanelStatus)
+  const textVisible = ocrPanelState === 'ready'
+  const panelHorizontalChrome = parseCssPixelValue(panelStyle.paddingLeft) +
+    parseCssPixelValue(panelStyle.paddingRight) +
+    parseCssPixelValue(panelStyle.borderLeftWidth) +
+    parseCssPixelValue(panelStyle.borderRightWidth)
+  const panelVerticalChrome = parseCssPixelValue(panelStyle.paddingTop) +
+    parseCssPixelValue(panelStyle.paddingBottom) +
+    parseCssPixelValue(panelStyle.borderTopWidth) +
+    parseCssPixelValue(panelStyle.borderBottomWidth)
+  const textHorizontalChrome = parseCssPixelValue(textStyle.paddingLeft) +
+    parseCssPixelValue(textStyle.paddingRight) +
+    parseCssPixelValue(textStyle.borderLeftWidth) +
+    parseCssPixelValue(textStyle.borderRightWidth)
+  const textVerticalChrome = parseCssPixelValue(textStyle.paddingTop) +
+    parseCssPixelValue(textStyle.paddingBottom) +
+    parseCssPixelValue(textStyle.borderTopWidth) +
+    parseCssPixelValue(textStyle.borderBottomWidth)
+  const rowGap = textVisible ? parseCssPixelValue(panelStyle.rowGap) : 0
+  const contentWidth = Math.max(
+    measureOcrPanelNaturalTextWidth(ocrPanelText.value, textStyle),
+    measureOcrPanelNaturalTextWidth(ocrPanelStatus.textContent ?? '', statusStyle)
+  )
+
+  // 先确定宽度，再让 textarea 以该宽度换行测量自然高度。
+  const initialSize = resolveScreenshotOcrPanelAutoSize({
+    contentWidth,
+    contentHeight: 0,
+    chromeWidth: panelHorizontalChrome + (textVisible ? textHorizontalChrome : 0),
+    chromeHeight: panelVerticalChrome + (textVisible ? textVerticalChrome : 0) + rowGap,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height
+  })
+  ocrPanel.style.width = `${initialSize.width}px`
+
+  const statusHeight = ocrPanelStatus.getBoundingClientRect().height ||
+    (ocrPanelStatus.textContent ? parseCssPixelValue(statusStyle.lineHeight) : 0)
+  const previousTextHeight = ocrPanelText.style.height
+  let contentHeight = 0
+  if (ocrPanelState === 'ready' && ocrPanelText.value) {
+    ocrPanelText.style.height = '0px'
+    contentHeight = Math.max(
+      0,
+      ocrPanelText.scrollHeight - parseCssPixelValue(textStyle.paddingTop) -
+        parseCssPixelValue(textStyle.paddingBottom)
+    )
+    ocrPanelText.style.height = previousTextHeight
+  }
+
+  const autoSize = resolveScreenshotOcrPanelAutoSize({
+    contentWidth,
+    contentHeight,
+    chromeWidth: panelHorizontalChrome + (textVisible ? textHorizontalChrome : 0),
+    chromeHeight: panelVerticalChrome + (textVisible ? textVerticalChrome : 0) + rowGap + statusHeight,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height
+  })
+  ocrPanel.style.width = `${autoSize.width}px`
+  ocrPanel.style.height = `${autoSize.height}px`
+}
+
+/**
  * 计算 OCR 侧栏位置：优先位于当前选区右侧，空间不足时回退左侧，
  * 仍不足时放置在覆盖层内部可用区域，并限制在可视范围内。
  * @returns 无返回值。
@@ -389,9 +493,13 @@ function avoidOcrToolbarPanelOverlap(): void {
  */
 function layoutOcrPanel(): void {
   if (ocrPanelState === 'hidden' || !currentRect) return
+  syncOcrPanelAutoSize()
   const size = getOverlaySize()
-  const panelWidth = ocrPanelUserSize?.width ?? (ocrPanel.offsetWidth || 260)
-  const panelHeight = ocrPanelUserSize?.height ?? (ocrPanel.offsetHeight || 200)
+  // 自动尺寸可能已在 syncOcrPanelAutoSize 中写入；offsetWidth 会受当前定位后的 CSS
+  // 收缩结果影响，必须读取实际矩形，否则短文本会被误判为放不下并再次缩宽。
+  const panelRect = ocrPanel.getBoundingClientRect()
+  const panelWidth = ocrPanelUserSize?.width ?? (panelRect.width || 260)
+  const panelHeight = ocrPanelUserSize?.height ?? (panelRect.height || 200)
   // 用户手动调整过尺寸时优先使用该尺寸，并限制在覆盖层可视范围内。
   if (ocrPanelUserSize) {
     ocrPanel.style.width = `${Math.round(panelWidth)}px`
@@ -1516,6 +1624,65 @@ function saveCurrentOcrSelectionImage(): void {
 }
 
 /**
+ * 以当前选区启动长截图：先复制会话与选区，再退出框选界面。
+ * 主进程会在后台采集并拼接滚动画面，因此这里不能调用取消截图接口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function startCurrentOcrLongCapture(): void {
+  if (pendingScreenshotRequestId || screenshotActionPending) return
+  if (!ocrMode || !currentRect) return
+  if (currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) return
+
+  const request = {
+    sessionId: currentOcrSessionId,
+    bounds: { ...currentRect }
+  }
+  screenshotActionPending = 'long-capture'
+  updateOcrImageActionAvailability()
+  renderOcrTip(t('selection.longCaptureStarting'))
+  leaveOcrSelectionMode()
+  window.api.startScreenshotLongCapture(request)
+}
+
+/**
+ * 将当前带标注截图创建为屏幕贴图，成功后退出截图会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function pinCurrentOcrSelectionImage(): void {
+  if (pendingScreenshotRequestId || screenshotActionPending) return
+  screenshotActionPending = 'pin-image'
+  updateOcrImageActionAvailability()
+  renderOcrTip(t('selection.pinImageCreating'))
+  void (async () => {
+    try {
+      const exportPayload = await buildAnnotatedExportPayload('copy-image')
+      if (!exportPayload?.png) throw new Error(t('selection.screenshotNotReady'))
+
+      const result = await window.api.createScreenshotPin({
+        sessionId: exportPayload.sessionId,
+        requestId: exportPayload.requestId,
+        width: exportPayload.width,
+        height: exportPayload.height,
+        png: exportPayload.png
+      })
+      if (!result.ok) throw new Error(result.error || t('selection.pinImageFailed'))
+      leaveOcrSelectionMode()
+    } catch (error) {
+      screenshotActionPending = null
+      updateOcrImageActionAvailability()
+      renderOcrTip()
+      window.api.showScreenshotToast({
+        message: error instanceof Error ? error.message : t('selection.pinImageFailed'),
+        kind: 'error',
+        displayTimeMs: 3000
+      })
+    }
+  })()
+}
+
+/**
  * 处理主进程回传的图片复制/保存动作反馈：
  * 恢复按钮状态、给出非阻塞提示，并在成功后延迟退出截图。
  * @param result 动作反馈事件负载。
@@ -1617,7 +1784,11 @@ function renderOcrTip(message?: string): void {
     ? t('selection.copyingImage')
     : screenshotActionPending === 'save-image'
       ? t('selection.preparingSave')
-      : null
+      : screenshotActionPending === 'long-capture'
+        ? t('selection.longCaptureStarting')
+        : screenshotActionPending === 'pin-image'
+          ? t('selection.pinImageCreating')
+          : null
   ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
     ? t('selection.tip')
     : t('selection.tipLoading'))
@@ -1637,6 +1808,8 @@ function updateOcrImageActionAvailability(): void {
   const exportPending = screenshotActionPending !== null || pendingScreenshotRequestId !== null
   ocrCopyImageButton.disabled = blocked || exportPending
   ocrSaveImageButton.disabled = blocked || exportPending
+  ocrLongCaptureButton.disabled = blocked || exportPending
+  ocrPinImageButton.disabled = blocked || exportPending
 }
 
 /**
@@ -2065,6 +2238,8 @@ ocrRecognizeButton.addEventListener('click', recognizeCurrentOcrSelection)
 ocrTranslateButton.addEventListener('click', translateCurrentOcrSelection)
 ocrCopyImageButton.addEventListener('click', copyCurrentOcrSelectionImage)
 ocrSaveImageButton.addEventListener('click', saveCurrentOcrSelectionImage)
+ocrLongCaptureButton.addEventListener('click', startCurrentOcrLongCapture)
+ocrPinImageButton.addEventListener('click', pinCurrentOcrSelectionImage)
 ocrCancelButton.addEventListener('click', cancelOcrSelection)
 for (const button of ocrAnnotationToolButtons) {
   button.addEventListener('click', handleAnnotationToolClick)

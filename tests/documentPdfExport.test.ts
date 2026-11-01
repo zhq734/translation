@@ -2958,3 +2958,181 @@ test('PDF 表格单元格同排正文与页码只能累计一次视觉行高度'
     await exportedPdf.destroy()
   }
 })
+
+test('PDF 文本跨页后签名、日期与底边必须紧跟续页正文', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.height = 240
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'flow-before-signature',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 140, width: 160, height: 40 },
+    runs: [{
+      runId: 'flow-before-signature-run',
+      text: `${'A'.repeat(240)}FLOW_CONTINUATION_END`,
+      style: { fontSize: 12, lineHeight: 18 }
+    }]
+  }, {
+    kind: 'text',
+    blockId: 'signature-after-flow',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 190, width: 160, height: 12 },
+    runs: [{ runId: 'signature-after-flow-run', text: 'SIGNATURE_AFTER_FLOW', style: { fontSize: 10, lineHeight: 12 } }]
+  }, {
+    kind: 'text',
+    blockId: 'date-after-flow',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 210, width: 160, height: 12 },
+    runs: [{ runId: 'date-after-flow-run', text: 'DATE_AFTER_FLOW', style: { fontSize: 10, lineHeight: 12 } }]
+  }, {
+    kind: 'shape',
+    blockId: 'bottom-after-flow',
+    readingOrder: 3,
+    translatable: false,
+    bbox: { x: 40, y: 230, width: 160, height: 1 },
+    line: { orientation: 'horizontal', thickness: 1 }
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 2, '续页后的签名和底边不能制造第三页')
+    const lastPage = await exportedPdf.getPage(exportedPdf.numPages)
+    const pageHeight = lastPage.getViewport({ scale: 1 }).height
+    const content = await lastPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const continuationEnd = items.find((item) => item.str.includes('NTINUATION_END'))
+    const signature = items.find((item) => item.str.includes('SIGNATURE_AFTER_FLOW'))
+    const date = items.find((item) => item.str.includes('DATE_AFTER_FLOW'))
+    assert.ok(continuationEnd, '续页必须保留正文末尾')
+    assert.ok(signature, '签名必须出现在续页')
+    assert.ok(date, '日期必须出现在续页')
+    const textTop = (item: { transform: number[] }): number => pageHeight - (item.transform[5] ?? pageHeight)
+    const continuationTop = textTop(continuationEnd)
+    const signatureTop = textTop(signature)
+    const dateTop = textTop(date)
+    assert.ok(signatureTop - continuationTop < 40,
+      `签名必须紧跟续页正文，不能跳回原页底部：正文=${continuationTop}，签名=${signatureTop}`)
+    assert.ok(dateTop - signatureTop < 40,
+      `日期必须紧跟签名：签名=${signatureTop}，日期=${dateTop}`)
+
+    const operatorList = await lastPage.getOperatorList()
+    let bottomLineTop: number | undefined
+    for (let index = 0; index < operatorList.fnArray.length; index += 1) {
+      if (operatorList.fnArray[index] !== pdfjs.OPS.constructPath) continue
+      const pathOperations = operatorList.argsArray[index]?.[0]
+      if (!Array.isArray(pathOperations) ||
+        !pathOperations.includes(pdfjs.OPS.moveTo) ||
+        !pathOperations.includes(pdfjs.OPS.lineTo) ||
+        pathOperations.includes(pdfjs.OPS.rectangle)) continue
+      const pathArguments = operatorList.argsArray[index]?.[1]
+      if (!Array.isArray(pathArguments)) continue
+      const yValues = pathArguments.filter((_, argumentIndex) => argumentIndex % 2 === 1)
+        .filter((value): value is number => typeof value === 'number')
+      if (yValues.length > 0 && new Set(yValues).size === 1) {
+        bottomLineTop = pageHeight - yValues[0]!
+      }
+    }
+    assert.ok(bottomLineTop !== undefined, '续页必须绘制底部框线')
+    assert.ok(bottomLineTop - dateTop < 40,
+      `底部框线必须跟随日期实际底边：日期=${dateTop}，框线=${bottomLineTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 正文跨页后结构竖线必须续绘到续页正文底部', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.height = 240
+  page.blocks = [{
+    kind: 'shape',
+    blockId: 'continuation-frame-left',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 30, width: 1, height: 180 },
+    line: { orientation: 'vertical', thickness: 1 }
+  }, {
+    kind: 'text',
+    blockId: 'continuation-frame-text',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 50, y: 40, width: 120, height: 20 },
+    runs: [{
+      runId: 'continuation-frame-text-run',
+      // 240 个字符可在第二页结束，避免测试把正文跨到第三页而检查错页。
+      text: `${'A'.repeat(240)}FRAME_CONTINUATION_END`,
+      style: { fontSize: 12, lineHeight: 18 }
+    }]
+  }, {
+    kind: 'shape',
+    blockId: 'continuation-frame-right',
+    readingOrder: 2,
+    translatable: false,
+    bbox: { x: 180, y: 30, width: 1, height: 180 },
+    line: { orientation: 'vertical', thickness: 1 }
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.ok(exportedPdf.numPages >= 2)
+    const continuationPage = await exportedPdf.getPage(2)
+    const pageHeight = continuationPage.getViewport({ scale: 1 }).height
+    const textContent = await continuationPage.getTextContent()
+    const continuationText = [...textContent.items]
+      .reverse()
+      .find((item): item is typeof item & { str: string; transform: number[] } =>
+        'str' in item && 'transform' in item && item.str.trim().length > 0)
+    assert.ok(continuationText, '续页必须保留正文末尾')
+    const textTop = pageHeight - (continuationText.transform[5] ?? pageHeight)
+    const operatorList = await continuationPage.getOperatorList()
+    const verticalLines: Array<{ x: number; start: number; end: number }> = []
+    for (let index = 0; index < operatorList.fnArray.length; index += 1) {
+      if (operatorList.fnArray[index] !== pdfjs.OPS.constructPath) continue
+      const pathOperations = operatorList.argsArray[index]?.[0]
+      const pathArguments = operatorList.argsArray[index]
+      if (!Array.isArray(pathOperations) || !Array.isArray(pathArguments) ||
+        !pathOperations.includes(pdfjs.OPS.moveTo) ||
+        !pathOperations.includes(pdfjs.OPS.lineTo) ||
+        pathOperations.includes(pdfjs.OPS.rectangle)) continue
+      // pdf-lib 的 constructPath 参数为 [操作数组, 坐标数组, 包围盒]。
+      const coordinates = pathArguments[1]
+      if (!Array.isArray(coordinates)) continue
+      const points = coordinates.map(Number)
+      const xValues = points.filter((_, pointIndex) => pointIndex % 2 === 0)
+      const yValues = points.filter((_, pointIndex) => pointIndex % 2 === 1)
+      if (points.every(Number.isFinite) && xValues.length >= 2 && new Set(xValues).size === 1 &&
+        yValues.length >= 2 && new Set(yValues).size === 2) {
+        verticalLines.push({
+          x: Number(xValues[0]),
+          start: pageHeight - Math.max(...yValues.map(Number)),
+          end: pageHeight - Math.min(...yValues.map(Number))
+        })
+      }
+    }
+    for (const x of [40, 180]) {
+      const line = verticalLines.find((candidate) => Math.abs(candidate.x - x) < 1)
+      assert.ok(line, `续页必须续绘 x=${x} 的结构竖线`)
+      assert.ok(line.start <= 16 && line.end >= textTop,
+        `结构竖线必须覆盖续页正文：x=${x}，范围=${line.start}-${line.end}，正文顶=${textTop}`)
+    }
+  } finally {
+    await exportedPdf.destroy()
+  }
+})

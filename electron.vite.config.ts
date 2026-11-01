@@ -34,7 +34,10 @@ export default defineConfig({
           settings: resolve('src/renderer/settings.html'),
           'web-reader': resolve('src/renderer/web-reader.html'),
           document: resolve('src/renderer/document.html'),
-          toast: resolve('src/renderer/toast.html')
+          toast: resolve('src/renderer/toast.html'),
+          'long-capture': resolve('src/renderer/long-capture.html'),
+          'long-preview': resolve('src/renderer/long-preview.html'),
+          pin: resolve('src/renderer/pin.html')
         }
       }
     }

@@ -54,6 +54,8 @@ export interface DocumentApprovedExportServiceDependencies {
   rename(source: string, target: string): Promise<void>
   /** 清理失败或取消后的临时文件。 */
   unlink(path: string): Promise<void>
+  /** 在系统文件管理器中定位成功导出的文件。 */
+  openExportFolder(filePath: string): Promise<void>
 }
 
 /** 图片资源在译文模型中的定位信息。 */
@@ -123,6 +125,10 @@ function suggestedTranslatedFileName(fileName: string): string {
  */
 export class DocumentApprovedExportService {
   private readonly dependencies: DocumentApprovedExportServiceDependencies
+  /** 本会话最近一次历史文档成功导出的最终文件路径。 */
+  private lastExportPath: string | null = null
+  /** 本会话所有历史文档成功导出的最终文件路径，只用于校验 Renderer 回传的打开请求。 */
+  private readonly exportedPaths = new Set<string>()
 
   /**
    * 创建历史文档导出服务。
@@ -195,6 +201,9 @@ export class DocumentApprovedExportService {
         rename: (source, target) => this.dependencies.rename(source, target),
         unlink: (path) => this.dependencies.unlink(path)
       })
+      // 只有原子写入成功后才会更新目录入口，取消或失败时继续保留上一次成功路径。
+      this.lastExportPath = save.filePath
+      this.exportedPaths.add(save.filePath)
       return {
         status: 'saved',
         filePath: save.filePath,
@@ -204,5 +213,36 @@ export class DocumentApprovedExportService {
       return { status: 'rejected', code: exportErrorCode(error) }
     }
   }
-}
 
+  /**
+   * 在系统文件管理器中定位本会话最近一次成功导出的历史文档。
+   * @returns 存在成功路径且文件管理器调用成功时返回 true。
+   * @author zhenghq
+   */
+  async openLastExportFolder(): Promise<boolean> {
+    if (!this.lastExportPath) return false
+    try {
+      await this.dependencies.openExportFolder(this.lastExportPath)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 打开本会话指定历史导出文件所在目录。
+   * Renderer 只能回传主进程已记录的成功路径，不能借此打开任意本地位置。
+   * @param filePath 主进程曾成功导出的历史文件路径。
+   * @returns 文件属于本会话成功导出记录且文件管理器调用成功时返回 true。
+   * @author zhenghq
+   */
+  async openExportFolder(filePath: string): Promise<boolean> {
+    if (!this.exportedPaths.has(filePath)) return false
+    try {
+      await this.dependencies.openExportFolder(filePath)
+      return true
+    } catch {
+      return false
+    }
+  }
+}

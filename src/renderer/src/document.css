@@ -1703,6 +1703,8 @@ body {
   /* 横向滚动仍由该容器承担；纵向明确裁切，避免纵向滚动条挤占布局并截断末行底边。 */
   overflow-x: auto;
   overflow-y: clip;
+  /* 末行外边界绘制在盒模型边缘，裁切容器需要留出 2px 安全区，否则底边会被裁掉。 */
+  padding-bottom: 2px;
 }
 
 .document-page[data-layout='translation-flow'] .document-text-run {
@@ -2174,6 +2176,8 @@ body {
 .document-page[data-layout='translation-flow'] .document-table-block table {
   /* 译文列宽必须沿用原文列宽，固定布局可防止长译文改变列边界。 */
   table-layout: fixed;
+  /* 顶部边界由源 PDF 的独立分割线表示，表格自身不再重复补顶边。 */
+  border-top: 0;
   /* 最终外边界使用专用高对比语义色，避免与内部行线混在一起而视觉消失。 */
   border-bottom: 2px solid var(--document-table-boundary);
 }
@@ -2195,6 +2199,11 @@ body {
   border: var(--border-width) solid var(--border-default);
   overflow-wrap: break-word;
   word-break: normal;
+}
+
+.document-page[data-layout='translation-flow'] .document-table-block thead th {
+  /* 表头单元格的折叠顶边也会形成外框，必须与表格顶边一起归零。 */
+  border-top: 0;
 }
 
 .document-page[data-layout='translation-flow'] .document-table-block tbody tr:last-child td {
@@ -2313,13 +2322,22 @@ body {
   border-left: var(--document-line-thickness, 1px) solid var(--document-line-color, var(--border-default));
 }
 
+.document-shape-block[data-structural-line='true'][data-line-orientation='horizontal'] {
+  /* 结构框线与表格外边界保持同一语义色和线宽，细正文下划线不受影响。 */
+  border-top: 2px solid var(--document-table-boundary);
+}
+
+.document-shape-block[data-structural-line='true'][data-line-orientation='vertical'] {
+  border-left: 2px solid var(--document-table-boundary);
+}
+
 .document-page[data-layout='translation-flow'] .document-shape-block[data-line-orientation='horizontal'] {
   /* 普通分隔线脱离普通流，沿用 PDF 原始起止位置，不能被 flex 容器拉伸成整页宽。 */
   position: absolute !important;
   top: calc(
     var(--document-shape-top, 0px) * var(--document-page-scale, 1) +
     var(--document-shape-flow-offset, 0px)
-  );
+  ) !important;
   pointer-events: none;
   width: calc(
     var(--document-shape-width, 100%) * var(--document-page-scale, 1)
@@ -2336,7 +2354,7 @@ body {
   top: calc(
     var(--document-shape-top, 0px) * var(--document-page-scale, 1) +
     var(--document-shape-flow-offset, 0px)
-  );
+  ) !important;
   pointer-events: none;
   width: var(--document-line-thickness, 1px) !important;
   height: calc(var(--document-shape-height, 0px) * var(--document-page-scale, 1)) !important;

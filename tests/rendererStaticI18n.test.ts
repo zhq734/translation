@@ -15,7 +15,10 @@ const ENTRY_FILES = [
   'settings.html',
   'toast.html',
   'web-reader.html',
-  'document.html'
+  'document.html',
+  'long-capture.html',
+  'long-preview.html',
+  'pin.html'
 ] as const
 
 /** 必须由 data-i18n-attr 或显式白名单覆盖的静态属性。 */

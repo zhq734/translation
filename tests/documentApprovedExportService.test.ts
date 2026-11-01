@@ -80,9 +80,56 @@ function createDependencies(
     writeFile: async () => undefined,
     rename: async () => undefined,
     unlink: async () => undefined,
+    openExportFolder: async () => undefined,
     ...overrides
   }
 }
+
+test('历史导出只记录成功文件并允许打开最近一次导出目录', async () => {
+  const opened: string[] = []
+  const service = new DocumentApprovedExportService(createDependencies({
+    openExportFolder: async (filePath) => {
+      opened.push(filePath)
+    }
+  }))
+
+  assert.equal(await service.openLastExportFolder(), false)
+  assert.deepEqual(await service.exportPdf(createRequest()), {
+    status: 'saved',
+    filePath: '/tmp/exported.pdf'
+  })
+  assert.equal(await service.openLastExportFolder(), true)
+  assert.deepEqual(opened, ['/tmp/exported.pdf'])
+})
+
+test('历史导出取消时不得记录可打开的导出目录', async () => {
+  const opened: string[] = []
+  const service = new DocumentApprovedExportService(createDependencies({
+    showSaveDialog: async () => ({ canceled: true }),
+    openExportFolder: async (filePath) => {
+      opened.push(filePath)
+    }
+  }))
+
+  assert.deepEqual(await service.exportPdf(createRequest()), { status: 'cancelled' })
+  assert.equal(await service.openLastExportFolder(), false)
+  assert.deepEqual(opened, [])
+})
+
+test('历史导出只能打开本会话实际成功写出的指定路径', async () => {
+  const opened: string[] = []
+  const service = new DocumentApprovedExportService(createDependencies({
+    openExportFolder: async (filePath) => {
+      opened.push(filePath)
+    }
+  }))
+
+  assert.equal(await service.openExportFolder('/tmp/arbitrary.pdf'), false)
+  await service.exportPdf(createRequest())
+  assert.equal(await service.openExportFolder('/tmp/arbitrary.pdf'), false)
+  assert.equal(await service.openExportFolder('/tmp/exported.pdf'), true)
+  assert.deepEqual(opened, ['/tmp/exported.pdf'])
+})
 
 test('历史导出在源文件校验失败时直接拒绝且不打开保存框', async () => {
   for (const code of ['source-not-approved', 'source-changed', 'source-not-found'] as const) {
@@ -288,4 +335,3 @@ test('历史导出返回合成告警并在写入失败时清理临时文件', as
   })
   assert.equal(unlinkCalls, 1)
 })
-

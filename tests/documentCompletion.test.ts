@@ -4,6 +4,7 @@ import {
   canRetryDocumentSnapshot,
   countRetryableDocumentTargets,
   evaluateDocumentCompletion,
+  isDocumentSnapshotCompleteForExport,
   isLikelyUntranslatedTranslation,
   resolveDocumentRetryActionState,
   resolveRetryableDocumentTargetCount,
@@ -162,6 +163,32 @@ test('界面重试数量必须优先复用完成报告并兼容缺失或过期�
   }), 0)
   assert.equal(resolveRetryableDocumentTargetCount({ retryableFailedBlocks: 3 }), 3)
   assert.equal(resolveRetryableDocumentTargetCount({}), 0)
+})
+
+test('完整导出判定必须以同代际完成报告为准并兼容旧快照状态', () => {
+  const completedReport = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    translatedTarget('target-2', 'Install the application', '安装应用程序')
+  ]))
+  const partialReport = evaluateDocumentCompletion(completionInput([
+    translatedTarget('target-1', 'Hello world', '你好，世界'),
+    { targetId: 'target-2', sourceText: 'Install the application', state: 'failed' }
+  ]))
+
+  assert.equal(isDocumentSnapshotCompleteForExport({
+    task: { status: 'translating' },
+    completionReport: completedReport
+  }), true)
+  assert.equal(isDocumentSnapshotCompleteForExport({
+    task: { status: 'completed' },
+    completionReport: partialReport
+  }), false)
+  assert.equal(isDocumentSnapshotCompleteForExport({
+    task: { status: 'completed' }
+  }), true)
+  assert.equal(isDocumentSnapshotCompleteForExport({
+    task: { status: 'partial' }
+  }), false)
 })
 
 test('部分结果含失败 1 与疑似未翻译 16 时必须启用重新翻译入口', () => {

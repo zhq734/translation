@@ -644,6 +644,13 @@ test('任务快照必须以同代际完成报告校正矛盾状态并允许重�
     }).snapshot(active.active, active.active.task)
     assert.equal(snapshot.completionReport?.status, 'partial')
     assert.equal(snapshot.task.status, 'partial')
+    assert.equal(snapshot.task.phase, 'export')
+    assert.equal(snapshot.task.phaseCompleted, true)
+    assert.deepEqual(snapshot.task.progress, {
+      completed: snapshot.completionReport!.translated + snapshot.completionReport!.unchanged,
+      total: snapshot.completionReport!.total
+    })
+    assert.equal(snapshot.percent, 100)
 
     retrying = true
     const accepted = service.retryFailed(2)
@@ -936,8 +943,16 @@ test('任务服务只允许打开本会话成功导出的文件目录', async ()
     assert.equal(await service.openExportFolder(completed.jobId, completed.generation), false)
     await service.exportPdf(exportRequest(completed, 'complete'))
     assert.equal(await service.openExportFolder(completed.jobId, completed.generation), true)
+    assert.equal(
+      await service.openExportFolderPath(completed.jobId, completed.generation, '/tmp/arbitrary.pdf'),
+      false
+    )
+    assert.equal(
+      await service.openExportFolderPath(completed.jobId, completed.generation, output),
+      true
+    )
     assert.equal(await service.openExportFolder(completed.jobId, completed.generation + 1), false)
-    assert.deepEqual(opened, [output])
+    assert.deepEqual(opened, [output, output])
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -1052,6 +1067,83 @@ test('任务服务允许已确认的 partial 任务导出部分结果', async ()
     if (exportedBlocks?.[0]?.kind !== 'text' || exportedBlocks[1]?.kind !== 'text') return
     assert.equal(exportedBlocks[0].runs[0]?.text, '译:Hello')
     assert.equal(exportedBlocks[1].runs[0]?.text, 'World')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务完整导出必须以同代际完成报告为准而不是滞后的任务状态', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let exported = false
+  const deps = dependencies(path, events)
+  deps.exportPdf = async () => {
+    exported = true
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.completionReport?.status, 'completed')
+    const active = service as unknown as {
+      active?: { task: { status: string } }
+    }
+    assert.ok(active.active)
+    // 模拟运行态快照迟到，旧任务状态不得覆盖同代际完成报告的完整结论。
+    active.active.task = { ...active.active.task, status: 'translating' }
+
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'saved', filePath: join(tmpdir(), 'translated.pdf') }
+    )
+    assert.equal(exported, true)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务必须按完成报告拒绝滞后的 completed 状态与部分报告组合', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  let exported = false
+  const deps = dependencies(path, events)
+  deps.exportPdf = async () => {
+    exported = true
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    const report = completed.completionReport
+    assert.ok(report)
+    const active = service as unknown as {
+      active?: { task: { status: string }; completionReport?: typeof report }
+    }
+    assert.ok(active.active)
+    active.active.task = { ...active.active.task, status: 'completed' }
+    active.active.completionReport = {
+      ...report,
+      status: 'partial',
+      translated: 0,
+      unchanged: 0,
+      failed: 1,
+      failedTargetIds: ['0:0'],
+      failureReasons: { '0:0': 'translation-failed' }
+    }
+
+    assert.deepEqual(
+      await service.exportPdf(exportRequest(completed, 'complete')),
+      { status: 'rejected', code: 'partial-export-not-confirmed' }
+    )
+    assert.equal(exported, false)
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })

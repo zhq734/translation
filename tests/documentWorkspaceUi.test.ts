@@ -1445,7 +1445,7 @@ test('文档工作台必须提供完整导出对话框与导出进度闭环', ()
 
   assert.match(types, /DocumentExportProgress/u)
   assert.match(types, /cancelDocumentExport\(jobId: string, generation: number\)/u)
-  assert.match(types, /openDocumentExportFolder\(jobId: string, generation: number\)/u)
+  assert.match(types, /openDocumentExportFolder\(jobId: string, generation: number, filePath\?: string\)/u)
   assert.match(types, /onDocumentExportProgress\(/u)
   assert.match(preload, /document:cancel-export/u)
   assert.match(preload, /document:open-export-folder/u)
@@ -3034,6 +3034,17 @@ test('PDF 译文表格最后一行空单元格必须使用高对比外边界', (
   )
 })
 
+test('PDF 译文表格不得额外绘制顶边，避免与原文独立分割线形成双线', () => {
+  const css = read('src/renderer/src/document.css')
+  const translationTableRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+table\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const translationHeaderRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+thead\s+th\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(translationTableRule, /border-top:\s*0/u,
+    '源 PDF 的分割线已经由独立 shape 区块绘制，表格不能重复补顶边')
+  assert.match(translationHeaderRule, /border-top:\s*0/u,
+    '表头单元格同样不能补顶边，否则会绕过表格外框再次形成双线')
+})
+
 test('PDF 译文表格底边不得被横向滚动容器裁切', () => {
   const css = read('src/renderer/src/document.css')
   const translationTableWrapperRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s*\{([^}]*overflow-x:\s*auto[^}]*)\}/u.exec(css)?.[1] ?? ''
@@ -3042,6 +3053,8 @@ test('PDF 译文表格底边不得被横向滚动容器裁切', () => {
     '表格仍需保留窄窗口横向滚动能力')
   assert.match(translationTableWrapperRule, /overflow-y:\s*clip/u,
     '纵向必须明确裁切，避免纵向滚动条占用布局并把末行底边挤出可视区域')
+  assert.match(translationTableWrapperRule, /padding-bottom:\s*2px/u,
+    '滚动容器必须为表格末行外边界预留裁切安全区，否则底边会落在裁切边缘而消失')
 })
 
 test('PDF 译文代码块必须保留等宽换行、主题边框和横向滚动', () => {
@@ -3086,7 +3099,11 @@ test('PDF 译文分隔线必须按原文坐标叠放，不能进入普通流把�
   assert.match(positionedShapeRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
   assert.match(positionedShapeRule, /pointer-events:\s*none/u)
   assert.match(horizontalRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
+  assert.match(horizontalRule, /top:\s*calc\([^;]+\)\s*!important/u,
+    '通用流式规则使用 top: auto !important，水平线定位必须同样提升优先级才能生效')
   assert.match(verticalRule, /top:\s*calc\(\s*var\(--document-shape-top[^;]*var\(--document-page-scale/u)
+  assert.match(verticalRule, /top:\s*calc\([^;]+\)\s*!important/u,
+    '通用流式规则使用 top: auto !important，竖线定位必须同样提升优先级才能生效')
 })
 
 test('PDF 绝对定位装饰线不得推进译文普通流底边，后续正文仍按原文坐标回到标题位置', () => {
@@ -3131,6 +3148,17 @@ test('PDF 分隔线缺少显式颜色时必须使用纸张前景色兜底，白�
 
   assert.match(shapeRenderSource, /block\.line\.color\s*\?\?\s*'var\(--document-paper-text\)'/u)
   assert.doesNotMatch(shapeRenderSource, /block\.line\.color\s*\?\?\s*'var\(--border-default\)'/u)
+})
+
+test('PDF 译文结构框线必须与表格外边界使用相同线宽和语义色', () => {
+  const source = read('src/renderer/src/document.ts')
+
+  assert.match(source, /isPdfStructuralLine/u,
+    '必须区分结构框线与原文细下划线，不能把所有线条都强行统一')
+  assert.match(source, /--document-table-boundary/u,
+    '结构框线必须复用表格外边界语义色')
+  assert.match(source, /isPdfStructuralLine[\s\S]*?2px/u,
+    '结构框线必须与表格外边界使用相同的 2px 线宽')
 })
 
 test('PDF 同行图片与文字必须渲染在横向分组中，文字自然占满右侧可用宽度', () => {
@@ -4126,6 +4154,87 @@ test('历史 Tab 译文可用时必须允许导出，并走已批准文档导出
   assert.match(preload, /document:export-approved-pdf/u)
   assert.match(main, /document:export-approved-pdf/u)
   assert.match(source, /if \(!target\.canCancel\) return/u)
+})
+
+test('历史导出成功后必须显示打开文件位置入口', () => {
+  const source = read('src/renderer/src/document.ts')
+  const main = read('src/main/index.ts')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+  const confirmStart = source.indexOf('async function confirmDocumentExport(')
+  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const openFolderStart = main.indexOf("ipcMain.handle('document:open-export-folder'")
+  const openFolderSource = main.slice(
+    openFolderStart,
+    main.indexOf("ipcMain.handle('document:list-history'", openFolderStart)
+  )
+
+  assert.match(confirmSource, /if \(result\.status === 'saved'\) \{[\s\S]*?documentExportSaved = true[\s\S]*?exportOpenFolderButton\.hidden = false/u,
+    '普通与历史导出成功后都必须显示打开文件位置按钮')
+  assert.doesNotMatch(confirmSource, /exportOpenFolderButton\.hidden = readOnly/u,
+    '历史只读 Tab 导出成功后不能隐藏打开文件位置按钮')
+  assert.match(openFolderSource, /documentApprovedExportService\.openLastExportFolder\(\)/u,
+    '历史导出没有活动任务服务时，打开目录必须回退到已批准导出服务记录的成功路径')
+  assert.match(openFolderSource, /if \(normalized\.filePath\) \{[\s\S]*?openExportFolderPath\(/u,
+    'Renderer 指定成功导出路径时必须优先按该路径定位')
+  assert.match(openFolderSource, /documentApprovedExportService\.openExportFolder\(normalized\.filePath\)/u,
+    '任务路径不匹配时必须回退到历史导出白名单中的指定路径')
+  const explicitPathBranch = openFolderSource.slice(
+    openFolderSource.indexOf('if (normalized.filePath) {'),
+    openFolderSource.indexOf('} else if (await taskService.openExportFolder')
+  )
+  assert.doesNotMatch(explicitPathBranch, /taskService\.openExportFolder\(/u,
+    '指定历史路径失败时不得改开当前任务最近导出的另一份文件')
+  assert.match(main, /import \{ openDocumentExportFolder \} from '\.\/documentExportFolder'/u)
+  assert.match(main, /showItemInFolder: \([^)]*\) => shell\.showItemInFolder\([^)]*\)/u,
+    'macOS 下必须优先使用可稳定定位文件的 showItemInFolder')
+  assert.match(main, /openPath: \(path\) => shell\.openPath\(path\)/u,
+    '仅在定位异常时才允许回退到打开父目录')
+  assert.doesNotMatch(main, /openDocumentExportFolder\(filePath, \{[\s\S]*?\bstat,/u,
+    '打开导出目录不得用 stat 预检文件，否则会重现历史版本之后出现的定位失败')
+  assert.match(source, /const opened = await window\.api\.openDocumentExportFolder\(\s*target\.jobId,\s*target\.generation,\s*target\.filePath\s*\)/u,
+    '打开目录按钮必须等待主进程返回实际打开结果')
+  assert.match(source, /document\.export\.openFolderFailed/u,
+    '打开目录失败后必须在导出对话框内显示反馈')
+  assert.match(zh, /'document\.export\.openFolderFailed'/u)
+  assert.match(en, /'document\.export\.openFolderFailed'/u)
+})
+
+test('完整导出与进度展示必须使用完成报告而不是滞后的任务计数', () => {
+  const source = read('src/renderer/src/document.ts')
+  const taskStart = source.indexOf('function renderTaskState(')
+  const taskSource = source.slice(taskStart, source.indexOf('/**', taskStart + 1))
+  const confirmStart = source.indexOf('async function confirmDocumentExport(')
+  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const openStart = source.indexOf('async function openDocumentExportDialog(')
+  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+
+  assert.match(source, /import \{\s*isDocumentSnapshotCompleteForExport,\s*resolveDocumentRetryActionState\s*\} from '\.\.\/\.\.\/shared\/documentCompletion'/u)
+  assert.match(taskSource, /const progressCompleted = report\s*\? report\.translated \+ report\.unchanged/u)
+  assert.match(taskSource, /const progressTotal = report \? report\.total : snapshot\.task\.progress\.total/u)
+  assert.match(taskSource, /progressCount\.textContent = progressTotal > 0[\s\S]*?\$\{progressCompleted\} \/ \$\{progressTotal\}/u)
+  assert.match(openSource, /isDocumentSnapshotCompleteForExport\(snapshot\)/u)
+  assert.match(confirmSource, /isDocumentSnapshotCompleteForExport\(snapshot\)/u)
+  assert.doesNotMatch(openSource, /snapshot\.task\.status === 'completed'/u)
+  assert.doesNotMatch(confirmSource, /snapshot\.task\.status === 'completed'/u)
+})
+
+test('PDF 导出失败必须在界面显示稳定错误码且主进程记录脱敏结果', () => {
+  const source = read('src/renderer/src/document.ts')
+  const main = read('src/main/index.ts')
+  const confirmStart = source.indexOf('async function confirmDocumentExport(')
+  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const exportStart = main.indexOf("ipcMain.handle('document:export-pdf'")
+  const approvedStart = main.indexOf("ipcMain.handle('document:export-approved-pdf'")
+  const cancelExportStart = main.indexOf("ipcMain.handle('document:cancel-export'")
+  const exportSource = main.slice(exportStart, cancelExportStart)
+  const approvedSource = main.slice(approvedStart, cancelExportStart)
+
+  assert.match(confirmSource, /t\('document\.run\.failedCode',\s*\{\s*code:\s*result\.code \?\? 'export-failed'\s*\}\)/u)
+  assert.match(confirmSource, /t\('document\.run\.failedCode',\s*\{\s*code:\s*'export-failed'\s*\}\)/u)
+  assert.match(exportSource, /console\.warn\([\s\S]*?document-export[\s\S]*?jobId[\s\S]*?generation[\s\S]*?mode[\s\S]*?status[\s\S]*?code/u)
+  assert.match(approvedSource, /console\.warn\([\s\S]*?document-export-approved[\s\S]*?status[\s\S]*?code/u)
+  assert.doesNotMatch(exportSource, /console\.(?:warn|error)\([\s\S]*?filePath/u)
 })
 
 test('打开历史任务必须重新授权源文件并校验路径、格式、大小和 SHA-256', () => {

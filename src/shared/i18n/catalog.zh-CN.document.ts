@@ -81,6 +81,7 @@ export const documentZhCN = {
   'document.export.confirmPartial': '导出部分结果',
   'document.export.cancel': '取消导出',
   'document.export.openFolder': '打开所在文件夹',
+  'document.export.openFolderFailed': '无法打开文件所在位置，请确认导出文件仍然存在。',
   'document.export.phase.preparing': '正在准备导出',
   'document.export.phase.composing': '正在合成 PDF 版面',
   'document.export.phase.writing': '正在写入 PDF 文件',

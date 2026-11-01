@@ -149,6 +149,30 @@ export function resolveRetryableDocumentTargetCount(snapshot: {
 }
 
 /**
+ * 判断工作台快照是否已经满足完整导出条件。
+ * 完成报告存在时它是目标级终态的唯一真相；报告缺失时仅为兼容旧快照回退到任务状态。
+ * @param snapshot 包含任务状态和可选完成报告的工作台快照片段。
+ * @returns 所有目标均已翻译、无需翻译或安全完成时返回 true。
+ * @author zhenghq
+ */
+export function isDocumentSnapshotCompleteForExport(snapshot: {
+  /** 当前任务状态。 */
+  task: {
+    /** 任务终态或运行态。 */
+    status: string
+  }
+  /** 当前任务代际对应的完整完成报告。 */
+  completionReport?: DocumentCompletionReport
+}): boolean {
+  const report = snapshot.completionReport
+  if (!report) return snapshot.task.status === 'completed'
+  return report.status === 'completed' &&
+    report.failed === 0 &&
+    report.pending === 0 &&
+    report.suspectUntranslated === 0
+}
+
+/**
  * 判断终态快照是否允许重新翻译未完成目标。
  * 摘要、按钮状态与点击入口必须共用此判定，避免显示部分结果但入口仍被禁用。
  * @param snapshot 包含任务状态、完成报告或旧版失败块计数的快照片段。
