@@ -82,7 +82,7 @@ test('文档导出进度必须校验阶段、百分比和页面计数，并拒�
   assert.equal(parseDocumentExportProgress({ ...progress, warningCount: -1 }), null)
 })
 
-test('文档导出取消与打开目录请求只能携带任务身份', () => {
+test('文档导出取消只携带任务身份，打开目录仅保留已导出路径查找键', () => {
   assert.deepEqual(normalizeDocumentExportCancelRequest({ jobId: 'job-1', generation: 2 }), {
     jobId: 'job-1',
     generation: 2
@@ -93,7 +93,11 @@ test('文档导出取消与打开目录请求只能携带任务身份', () => {
     filePath: '/tmp/escape.pdf',
     path: 'https://example.com/escape.pdf',
     command: 'open /tmp'
-  }), { jobId: 'job-1', generation: 2 })
+  }), {
+    jobId: 'job-1',
+    generation: 2,
+    filePath: '/tmp/escape.pdf'
+  })
   assert.equal(normalizeDocumentExportCancelRequest({ jobId: 'job-1', generation: 0 }), null)
   assert.equal(normalizeDocumentOpenExportFolderRequest({ jobId: '', generation: 1 }), null)
 })
