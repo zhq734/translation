@@ -10,6 +10,9 @@ dist-win7/
 .DS_Store
 *.log
 
+# 本地临时调试产物
+.tmp-*
+
 # WorkBuddy AI 本地工作数据
 .workbuddy-ai/
 
