@@ -1395,19 +1395,17 @@ test('失败块必须支持单目标重试并显示可定位状态，但不在�
   assert.doesNotMatch(en, /'document\.retryBlock'/u)
 })
 
-test('生产 PDF 导出必须分流 OCR 原文双层导出与普通译文打印', () => {
+test('生产 PDF 导出必须统一按文档模型合成，普通译文不得走页面打印', () => {
   const main = read('src/main/index.ts')
 
-  assert.match(main, /import \{ printDocumentPreviewToPdf \} from '\.\/documentPdfPrint'/u)
   assert.match(main, /import \{ exportDocumentToPdf \} from '\.\/documentPdfExport'/u)
+  assert.doesNotMatch(main, /printDocumentPreviewToPdf/u)
   assert.match(
     main,
-    /exportPdf:\s*\(model,\s*dependencies,\s*exportOptions\)\s*=>\s*\{[\s\S]*?if \(exportOptions\.sourceOnly\)[\s\S]*?exportDocumentToPdf\(model,\s*dependencies,\s*\{[\s\S]*?includeOcrTextLayer:\s*exportOptions\.textLayer !== false/u
+    /exportPdf:\s*\(model,\s*dependencies,\s*exportOptions\)\s*=>\s*exportDocumentToPdf\(model,\s*dependencies,\s*\{[\s\S]*?includeOcrTextLayer:\s*exportOptions\.textLayer !== false[\s\S]*?exportOptions\.signal[\s\S]*?exportOptions\.onProgress/u
   )
-  assert.match(
-    main,
-    /documentWorkspace\?\.getWindow\(\)[\s\S]*?printDocumentPreviewToPdf\(\s*window\.webContents,\s*model,\s*exportOptions\.partialExport,\s*exportOptions\.textLayer,\s*exportOptions\.layout,\s*exportOptions\.signal,\s*exportOptions\.onProgress\s*\)/u
-  )
+  assert.doesNotMatch(main, /exportOptions\.layout/u)
+  assert.doesNotMatch(main, /exportOptions\.sourceModel/u)
 })
 
 test('文档工作台必须提供完整导出对话框与导出进度闭环', () => {
@@ -1421,8 +1419,8 @@ test('文档工作台必须提供完整导出对话框与导出进度闭环', ()
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
 
   assert.match(html, /<dialog[^>]+id="document-export-dialog"/u)
-  assert.match(html, /id="document-export-layout-translation"/u)
-  assert.match(html, /id="document-export-layout-bilingual"/u)
+  assert.doesNotMatch(html, /document-export-layout/u)
+  assert.doesNotMatch(html, /document\.export\.layout/u)
   assert.match(html, /id="document-export-incomplete"/u)
   assert.match(html, /id="document-export-warning-count"/u)
   assert.match(html, /id="document-export-retry"/u)
@@ -1435,7 +1433,8 @@ test('文档工作台必须提供完整导出对话框与导出进度闭环', ()
 
   assert.match(source, /function openDocumentExportDialog\(/u)
   assert.match(source, /function updateDocumentExportProgress\(/u)
-  assert.match(source, /layout:\s*selectedDocumentExportLayout/u)
+  assert.doesNotMatch(source, /selectedDocumentExportLayout/u)
+  assert.doesNotMatch(source, /layout:\s*selectedDocumentExportLayout/u)
   assert.match(source, /mode:\s*.*partial/su)
   assert.match(source, /onDocumentExportProgress\(/u)
   assert.match(source, /cancelDocumentExport\(/u)
@@ -1457,10 +1456,10 @@ test('文档工作台必须提供完整导出对话框与导出进度闭环', ()
   assert.match(main, /sendExportProgress:/u)
   assert.match(main, /openExportFolder:/u)
 
-  assert.match(zh, /'document\.export\.layout\.translation'/u)
-  assert.match(zh, /'document\.export\.layout\.bilingual'/u)
-  assert.match(en, /'document\.export\.layout\.translation'/u)
-  assert.match(en, /'document\.export\.layout\.bilingual'/u)
+  assert.doesNotMatch(zh, /'document\.export\.layout\./u)
+  assert.doesNotMatch(en, /'document\.export\.layout\./u)
+  assert.doesNotMatch(zh, /选择 PDF 布局/u)
+  assert.doesNotMatch(en, /Choose a PDF layout/u)
 })
 
 test('文档 IPC 必须在主进程规范化请求并只使用已批准路径', () => {
@@ -1592,11 +1591,26 @@ test('文档终态与导出前必须同步刷新最新译文快照，不能停�
   assert.ok(flushStart > -1, '必须提供可绕过帧合并的同步快照刷新入口')
   assert.match(flushSource, /cancelAnimationFrame\(pendingRenderFrame\)/u)
   assert.match(flushSource, /latestSnapshot = snapshot/u)
-  assert.match(flushSource, /renderSnapshot\(snapshot, tab\)/u)
-  assert.match(flushSource, /renderTaskState\(snapshot, tab\)/u)
+  assert.match(flushSource, /renderSnapshotAndTaskState\(snapshot, tab\)/u)
   assert.match(completedSource, /routeDocumentSnapshot\(snapshot, true\)/u)
   assert.match(source, /flushSnapshotRenderForTab\(tab, snapshot\)/u)
   assert.match(exportSource, /flushSnapshotRenderForTab\(tab, snapshot\)/u)
+})
+
+test('快照正文重绘异常不得阻断终态任务状态刷新', () => {
+  const source = read('src/renderer/src/document.ts')
+  const helperStart = source.indexOf('function renderSnapshotAndTaskState(')
+  assert.ok(helperStart > -1, '必须提供统一的快照与任务状态刷新入口')
+  const helperSource = source.slice(helperStart, source.indexOf('/**', helperStart + 1))
+  const scheduleStart = source.indexOf('function scheduleSnapshotRenderForTab(')
+  const scheduleSource = source.slice(scheduleStart, source.indexOf('/**', scheduleStart + 1))
+  const flushStart = source.indexOf('function flushSnapshotRenderForTab(')
+  const flushSource = source.slice(flushStart, source.indexOf('/**', flushStart + 1))
+
+  assert.match(helperSource, /try\s*\{[\s\S]*?renderSnapshot\(snapshot, tab\)[\s\S]*?\}\s*catch\s*\([\s\S]*?\)\s*\{[\s\S]*?console\.error\('document-snapshot-render-failed'/u)
+  assert.match(helperSource, /finally\s*\{[\s\S]*?renderTaskState\(snapshot, tab\)/u)
+  assert.match(scheduleSource, /renderSnapshotAndTaskState\(snapshot, tab\)/u)
+  assert.match(flushSource, /renderSnapshotAndTaskState\(snapshot, tab\)/u)
 })
 
 test('译文栏首次快照必须立即渲染等待状态，避免初始签名相同导致空白', () => {
@@ -2275,6 +2289,20 @@ test('PDF 译文图片碰撞检测必须允许纵向重叠但横向错开的前�
 
   // 前序内容只占据左侧且与图片纵向重叠时，图片应回填到原文锚点（42 - 90）。
   assert.equal(gap, -48)
+})
+
+test('PDF 译文图片不能因前序内容未碰撞而回填到已排版图片内部', () => {
+  const gap = resolveTranslationImageFlowGap({
+    anchoredTop: 291.6,
+    previousBottom: 438,
+    flowOrigin: 80.759,
+    imageRange: { left: 90, right: 114 },
+    imageHeight: 24,
+    obstacles: [{ left: 114, right: 306, top: 294, bottom: 438 }]
+  })
+
+  // 小图标与大图横向错开，但前序大图已经把它所在行推到实际底边之后；不能把图标推回大图内部。
+  assert.equal(gap, 0)
 })
 
 test('PDF 后续普通区块必须避让横向相交的已下推图片及同列障碍', () => {
@@ -4032,7 +4060,7 @@ test('关闭页面后恢复首个历史 Tab 时，必须串行恢复并使用正
   assert.match(modelSource, /model\.source\.format === 'pdf' && side === 'source'/u)
 })
 
-test('恢复快照不得复用旧任务身份，且必须禁用旧任务操作与资源预览', () => {
+test('恢复快照不得复用旧任务身份，且必须限制旧任务操作与资源预览', () => {
   const source = read('src/renderer/src/document.ts')
   const renderStart = source.indexOf('function renderDocumentModel(')
   const renderEnd = source.indexOf('/**', renderStart + 1)
@@ -4059,11 +4087,45 @@ test('恢复快照不得复用旧任务身份，且必须禁用旧任务操作�
   assert.match(renderSource, /renderHtmlSourcePreview\(previewHost, model, jobId, tab\)/u)
   assert.match(renderSource, /renderPdfPages\(previewHost, model, jobId, tab\)/u)
   assert.match(taskSource, /isRestoredDocumentTab\(/u)
-  assert.match(taskSource, /exportButton\.disabled = true/u)
+  assert.match(taskSource, /exportButton\.disabled\s*=\s*restored\s*\?/u)
+  assert.match(taskSource, /approvedDocumentSourceRequest\(tab\)/u)
   assert.match(taskSource, /retryButton\.disabled = true/u)
   assert.match(taskSource, /cancelButton\.hidden = true/u)
-  assert.match(exportSource, /isRestoredDocumentTab\(tab\)/u)
+  assert.doesNotMatch(exportSource, /if \(isRestoredDocumentTab\(tab\) \|\| isReadOnlyDocumentTab\(tab\)\) return/u,
+    '历史 Tab 可以导出已保存译文，不能沿用旧的恢复态拦截')
   assert.match(retrySource, /isRestoredDocumentTab\(tab\)/u)
+})
+
+test('历史 Tab 译文可用时必须允许导出，并走已批准文档导出通道', () => {
+  const source = read('src/renderer/src/document.ts')
+  const types = read('src/shared/types.ts')
+  const preload = read('src/preload/index.ts')
+  const main = read('src/main/index.ts')
+  const taskStart = source.indexOf('function renderTaskState(')
+  const taskSource = source.slice(taskStart, source.indexOf('/**', taskStart + 1))
+  const exportStart = source.indexOf('async function exportTranslatedPdf(')
+  const exportSource = source.slice(exportStart, source.indexOf('/**', exportStart + 1))
+  const confirmStart = source.indexOf('async function confirmDocumentExport(')
+  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const openStart = source.indexOf('async function openDocumentExportDialog(')
+  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+
+  assert.ok(taskStart > -1)
+  assert.ok(exportStart > -1)
+  assert.ok(confirmStart > -1)
+  assert.ok(openStart > -1)
+  assert.match(taskSource, /exportButton\.disabled\s*=\s*restored\s*\?\s*!hasUsableExportResult\(snapshot\)/u,
+    '历史或恢复 Tab 有可用译文时不得无条件禁用导出按钮')
+  assert.match(openSource, /canCancel:\s*!readOnly/u,
+    '历史导出必须标记为不可取消，避免误调用旧任务取消接口')
+  assert.match(exportSource, /openDocumentExportDialog\(snapshot\)/u)
+  assert.doesNotMatch(exportSource, /if \(isRestoredDocumentTab\(tab\) \|\| isReadOnlyDocumentTab\(tab\)\) return/u,
+    '历史 Tab 的导出入口不能被只读保护直接拦截')
+  assert.match(confirmSource, /window\.api\.exportApprovedDocumentPdf\(/u)
+  assert.match(types, /exportApprovedDocumentPdf\(/u)
+  assert.match(preload, /document:export-approved-pdf/u)
+  assert.match(main, /document:export-approved-pdf/u)
+  assert.match(source, /if \(!target\.canCancel\) return/u)
 })
 
 test('打开历史任务必须重新授权源文件并校验路径、格式、大小和 SHA-256', () => {

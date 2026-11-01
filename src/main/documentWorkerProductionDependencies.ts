@@ -248,8 +248,6 @@ export function createDocumentWorkerProductionDependencies(
         ...(exportOptions.textLayer !== undefined
           ? { includeOcrTextLayer: exportOptions.textLayer }
           : {}),
-        ...(exportOptions.layout ? { layout: exportOptions.layout } : {}),
-        ...(exportOptions.sourceModel ? { sourceModel: exportOptions.sourceModel } : {}),
         ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
         ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
       }

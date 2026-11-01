@@ -203,7 +203,7 @@ export type DocumentTranslationCacheParseResult =
 export const DOCUMENT_PROTECTION_RULES_VERSION = 'protection-v1'
 
 /** 文档翻译合并与 OCR 稳定回填协议版本；不兼容变化时必须递增。 */
-export const DOCUMENT_TRANSLATION_PROTOCOL_VERSION = 'document-translation-protocol-v2'
+export const DOCUMENT_TRANSLATION_PROTOCOL_VERSION = 'document-translation-protocol-v3'
 
 /** 内部占位符前缀；源文本中出现时必须拒绝。 */
 const DOCUMENT_PROTECTED_PLACEHOLDER_PREFIX = '[[[ST-DOC-PROTECTED-'

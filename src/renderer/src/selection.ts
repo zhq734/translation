@@ -1,5 +1,6 @@
 import type {
   ScreenshotAnnotation,
+  ScreenshotAnnotationRect,
   OcrSelectionBeginPayload,
   OcrSelectionBounds,
   OcrSelectionFailedPayload,
@@ -14,7 +15,9 @@ import {
   SCREENSHOT_ANNOTATION_LIMITS,
   computeExportCanvasSize,
   computeExportScale,
-  drawAnnotations
+  drawAnnotations,
+  isScreenshotAnnotationTool,
+  type ScreenshotAnnotationResizeHandle
 } from './screenshotAnnotation'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
@@ -47,6 +50,10 @@ const ocrSnapshot = document.getElementById('ocr-snapshot') as HTMLCanvasElement
 const ocrSnapshotSource = new Image()
 const ocrAnnotationCanvas = document.getElementById('ocr-annotation-canvas') as HTMLCanvasElement
 const ocrAnnotationPreview = document.getElementById('ocr-annotation-preview') as HTMLCanvasElement
+const ocrAnnotationSelection = document.getElementById('ocr-annotation-selection') as HTMLElement
+const ocrAnnotationResizeHandles = Array.from(
+  document.querySelectorAll<HTMLElement>('[data-annotation-handle]')
+)
 const ocrSelectionBox = document.getElementById('ocr-selection-box') as HTMLElement
 const ocrToolbar = document.getElementById('ocr-toolbar') as HTMLElement
 const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButtonElement
@@ -62,10 +69,14 @@ const ocrColorPanel = document.getElementById('ocr-color-panel') as HTMLElement
 const ocrColorCustom = document.getElementById('ocr-color-custom') as HTMLInputElement
 const ocrColorIndicator = document.getElementById('ocr-color-indicator') as HTMLElement
 const ocrStrokeWidth = document.getElementById('ocr-stroke-width') as HTMLInputElement
+const ocrFillToggle = document.getElementById('ocr-fill-toggle') as HTMLButtonElement
+const ocrFillOpacity = document.getElementById('ocr-fill-opacity') as HTMLInputElement
+const ocrCornerRadius = document.getElementById('ocr-corner-radius') as HTMLInputElement
 const ocrFontSize = document.getElementById('ocr-font-size') as HTMLInputElement
 const ocrTextBold = document.getElementById('ocr-text-bold') as HTMLButtonElement
 const ocrMosaicBrush = document.getElementById('ocr-mosaic-brush') as HTMLInputElement
 const ocrMosaicIntensity = document.getElementById('ocr-mosaic-intensity') as HTMLInputElement
+const ocrBlurRadius = document.getElementById('ocr-blur-radius') as HTMLInputElement
 const ocrUndoButton = document.getElementById('ocr-undo') as HTMLButtonElement
 const ocrRedoButton = document.getElementById('ocr-redo') as HTMLButtonElement
 const ocrClearAnnotationsButton = document.getElementById(
@@ -140,12 +151,16 @@ let ocrPanelResizeState: {
   start: { x: number; y: number }
   initial: { width: number; height: number }
 } | null = null
+/** 工具栏内容尺寸观察器：样式控件显隐或换行后重新校正浮动位置。 */
+let ocrToolbarResizeObserver: ResizeObserver | null = null
 /** 截图标注控制器：管理工具、绘制草稿、样式与历史。 */
 const annotationController = new ScreenshotAnnotationController()
 /** 当前标注指针捕获目标。 */
 let annotationPointerTarget: HTMLElement | null = null
 /** 当前文字标注拖动状态。 */
 let textMoveState: { annotation: ScreenshotAnnotation } | null = null
+/** 当前标注对象是否正在通过控制柄或对象内部拖动。 */
+let annotationTransformActive = false
 /** 当前选区原图采样器，用于预览与导出共享马赛克颜色。 */
 let snapshotSampler: ((x: number, y: number) => string) | null = null
 
@@ -305,8 +320,30 @@ function renderOcrToolbar(): void {
   ocrToolbar.style.left = `${Math.round(x)}px`
   ocrToolbar.style.top = `${Math.round(y)}px`
   ocrToolbar.hidden = false
+  syncOcrToolbarLayout()
   layoutOcrPanel()
   avoidOcrToolbarPanelOverlap()
+}
+
+/**
+ * 根据工具栏当前实际尺寸重新校正浮动位置。
+ * 样式控件显隐或窄屏换行会改变工具栏宽高，必须基于新尺寸重新夹紧，
+ * 否则 fixed 工具栏会保留旧位置，在右侧形成大块空白。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncOcrToolbarLayout(): void {
+  if (!currentRect || ocrToolbar.hidden) return
+  const size = getOverlaySize()
+  const toolbarRect = ocrToolbar.getBoundingClientRect()
+  const toolbarWidth = toolbarRect.width || ocrToolbar.offsetWidth || 128
+  const toolbarHeight = toolbarRect.height || ocrToolbar.offsetHeight || 36
+  const maxLeft = Math.max(8, size.width - toolbarWidth - 8)
+  const maxTop = Math.max(8, size.height - toolbarHeight - 8)
+  const currentLeft = Number.parseFloat(ocrToolbar.style.left) || toolbarRect.left
+  const currentTop = Number.parseFloat(ocrToolbar.style.top) || toolbarRect.top
+  ocrToolbar.style.left = `${Math.round(clamp(currentLeft, 8, maxLeft))}px`
+  ocrToolbar.style.top = `${Math.round(clamp(currentTop, 8, maxTop))}px`
 }
 
 /**
@@ -598,6 +635,61 @@ function loadScreenshotExportImage(dataUrl: string): Promise<HTMLImageElement | 
 }
 
 /**
+ * 从源画布复制指定区域，应用高斯模糊后绘回目标画布。
+ * @param target 目标画布上下文。
+ * @param source 原始底图画布。
+ * @param bounds 待模糊区域（目标画布逻辑坐标）。
+ * @param radius 高斯模糊半径（逻辑像素）。
+ * @param scaleX 源图到目标画布的水平缩放比例。
+ * @param scaleY 源图到目标画布的垂直缩放比例。
+ * @param offsetX 源图中选区左上角的水平像素偏移。
+ * @param offsetY 源图中选区左上角的垂直像素偏移。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawBlurredSourceRegion(
+  target: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  bounds: ScreenshotAnnotationRect,
+  radius: number,
+  scaleX: number,
+  scaleY: number,
+  offsetX = 0,
+  offsetY = 0
+): void {
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return
+  const sourceX = offsetX + bounds.x * scaleX
+  const sourceY = offsetY + bounds.y * scaleY
+  const sourceWidth = bounds.width * scaleX
+  const sourceHeight = bounds.height * scaleY
+  if (sourceWidth <= 0 || sourceHeight <= 0) return
+  const patch = document.createElement('canvas')
+  patch.width = Math.max(1, Math.ceil(sourceWidth))
+  patch.height = Math.max(1, Math.ceil(sourceHeight))
+  const patchContext = patch.getContext('2d')
+  if (!patchContext) return
+  patchContext.filter = `blur(${Math.max(0, radius) * Math.max(scaleX, scaleY)}px)`
+  patchContext.drawImage(
+    source,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    patch.width,
+    patch.height
+  )
+  target.drawImage(
+    patch,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height
+  )
+}
+
+/**
  * 将当前选区原图与全部标注合成为带标注 PNG。
  * @returns 带标注导出请求；合成失败时返回 null。
  * @author zhenghq
@@ -643,7 +735,18 @@ async function buildAnnotatedExportPayload(
   )
   ctx.setTransform(canvasSize.scaleX, 0, 0, canvasSize.scaleY, 0, 0)
   drawAnnotations(ctx, annotationController.annotations, {
-    sampleColor: (x, y) => sampleSnapshotColor(x, y)
+    sampleColor: (x, y) => sampleSnapshotColor(x, y),
+    drawSourceRegion: (target, bounds, radius) => {
+      drawBlurredSourceRegion(
+        target,
+        exportImage,
+        bounds,
+        radius,
+        exportScale.scaleX,
+        exportScale.scaleY
+      )
+    },
+    viewport: { width: currentRect.width, height: currentRect.height }
   })
   const dataUrl = canvas.toDataURL('image/png')
   const base64 = dataUrl.slice('data:image/png;base64,'.length)
@@ -826,9 +929,30 @@ function createSnapshotSampler(): ((x: number, y: number) => string) | null {
  */
 function redrawAnnotations(): void {
   const ctx = getCommittedAnnotationContext()
-  if (!ctx || !currentRect) return
-  ctx.clearRect(0, 0, currentRect.width, currentRect.height)
-  drawAnnotations(ctx, annotationController.annotations, { sampleColor: sampleSnapshotColor })
+  const rect = currentRect
+  if (!ctx || !rect) return
+  ctx.clearRect(0, 0, rect.width, rect.height)
+  const snapshotScale = computeExportScale(getOverlaySize(), {
+    width: ocrSnapshot.width,
+    height: ocrSnapshot.height
+  })
+  drawAnnotations(ctx, annotationController.annotations, {
+    sampleColor: sampleSnapshotColor,
+    drawSourceRegion: (target, bounds, radius) => {
+      drawBlurredSourceRegion(
+        target,
+        ocrSnapshot,
+        bounds,
+        radius,
+        snapshotScale.scaleX,
+        snapshotScale.scaleY,
+        rect.x * snapshotScale.scaleX,
+        rect.y * snapshotScale.scaleY
+      )
+    },
+    viewport: { width: rect.width, height: rect.height }
+  })
+  updateAnnotationSelectionBox()
 }
 
 /**
@@ -838,12 +962,32 @@ function redrawAnnotations(): void {
  */
 function redrawAnnotationPreview(): void {
   const ctx = ocrAnnotationPreview.getContext('2d')
-  if (!ctx || !currentRect) return
+  const rect = currentRect
+  if (!ctx || !rect) return
   const dpr = Math.max(1, window.devicePixelRatio || 1)
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.clearRect(0, 0, currentRect.width, currentRect.height)
+  ctx.clearRect(0, 0, rect.width, rect.height)
   if (annotationController.preview) {
-    drawAnnotations(ctx, [annotationController.preview], { sampleColor: sampleSnapshotColor })
+    const snapshotScale = computeExportScale(getOverlaySize(), {
+      width: ocrSnapshot.width,
+      height: ocrSnapshot.height
+    })
+    drawAnnotations(ctx, [annotationController.preview], {
+      sampleColor: sampleSnapshotColor,
+      drawSourceRegion: (target, bounds, radius) => {
+        drawBlurredSourceRegion(
+          target,
+          ocrSnapshot,
+          bounds,
+          radius,
+          snapshotScale.scaleX,
+          snapshotScale.scaleY,
+          rect.x * snapshotScale.scaleX,
+          rect.y * snapshotScale.scaleY
+        )
+      },
+      viewport: { width: rect.width, height: rect.height }
+    })
   }
 }
 
@@ -857,18 +1001,49 @@ function updateAnnotationUi(): void {
   for (const button of ocrAnnotationToolButtons) {
     button.setAttribute('aria-pressed', String(button.dataset['annotationTool'] === tool))
   }
-  ocrStrokeWidth.hidden = tool === 'text' || tool === 'mosaic'
-  ocrColorToggle.hidden = tool === 'mosaic'
+  ocrStrokeWidth.hidden = tool !== 'rect' && tool !== 'ellipse' && tool !== 'arrow' && tool !== 'brush'
+  const rectangleStyleVisible = tool === 'rect' || annotationController.selectedAnnotation?.type === 'rect'
+  ocrFillToggle.hidden = !rectangleStyleVisible
+  ocrFillOpacity.hidden = !rectangleStyleVisible
+  ocrCornerRadius.hidden = !rectangleStyleVisible
+  ocrColorToggle.hidden = tool === 'mosaic' || tool === 'blur' || tool === 'spotlight'
   ocrFontSize.hidden = tool !== 'text'
   ocrTextBold.hidden = tool !== 'text'
   ocrMosaicBrush.hidden = tool !== 'mosaic'
   ocrMosaicIntensity.hidden = tool !== 'mosaic'
+  ocrBlurRadius.hidden = tool !== 'blur'
   ocrUndoButton.disabled = !annotationController.canUndo
   ocrRedoButton.disabled = !annotationController.canRedo
   ocrClearAnnotationsButton.disabled = annotationController.annotations.length === 0
   ocrSelectionBox.style.pointerEvents = tool ? 'none' : 'auto'
   ocrColorIndicator.style.color = annotationController.style.color
   ocrColorIndicator.style.background = annotationController.style.color
+  ocrFillToggle.setAttribute('aria-pressed', String(annotationController.style.filled))
+  ocrFillOpacity.value = String(annotationController.style.fillOpacity)
+  ocrCornerRadius.value = String(annotationController.style.cornerRadius)
+  updateAnnotationSelectionBox()
+  syncOcrToolbarLayout()
+}
+
+/**
+ * 将当前选中标注的包围盒同步到覆盖层选择框。
+ * 选择框只负责显示边界与控制柄，实际命中与变换仍由标注控制器完成。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateAnnotationSelectionBox(): void {
+  const bounds = annotationController.selectedAnnotationBounds
+  if (!ocrMode || !currentRect || !bounds) {
+    ocrAnnotationSelection.hidden = true
+    for (const handle of ocrAnnotationResizeHandles) handle.hidden = true
+    return
+  }
+  ocrAnnotationSelection.hidden = false
+  ocrAnnotationSelection.style.left = `${currentRect.x + bounds.x}px`
+  ocrAnnotationSelection.style.top = `${currentRect.y + bounds.y}px`
+  ocrAnnotationSelection.style.width = `${bounds.width}px`
+  ocrAnnotationSelection.style.height = `${bounds.height}px`
+  for (const handle of ocrAnnotationResizeHandles) handle.hidden = false
 }
 
 /**
@@ -951,7 +1126,7 @@ function toAnnotationPoint(point: { x: number; y: number }): { x: number; y: num
 function handleAnnotationToolClick(event: Event): void {
   const button = event.currentTarget as HTMLButtonElement
   const tool = button.dataset['annotationTool']
-  if (tool !== 'rect' && tool !== 'ellipse' && tool !== 'arrow' && tool !== 'brush' && tool !== 'text' && tool !== 'mosaic') return
+  if (!isScreenshotAnnotationTool(tool)) return
   annotationController.setTool(tool)
   updateTextInput()
   updateAnnotationUi()
@@ -978,10 +1153,12 @@ function handleAnnotationColorSelect(event: Event): void {
   const target = event.target as HTMLElement
   const color = target instanceof HTMLInputElement ? target.value : target.dataset['color']
   annotationController.setColor(color)
+  annotationController.commitStyleChange()
   ocrColorCustom.value = annotationController.style.color
   ocrColorPanel.hidden = true
   updateTextInput()
   updateAnnotationUi()
+  redrawAnnotations()
 }
 
 /**
@@ -1007,11 +1184,12 @@ function handleAnnotationPointerDown(event: PointerEvent): void {
   if (annotationController.textEditorPoint) commitTextInput()
   if ((event.target as HTMLElement).closest('#ocr-toolbar')) return
   const point = getPointerEventPoint(event)
+  const annotationPoint = toAnnotationPoint(point)
   if (annotationController.tool === 'text') {
     // 文字输入需要立即独占本次指针事件，避免后续 mousedown 选区处理抢走焦点。
     event.preventDefault()
     event.stopPropagation()
-    const hit = annotationController.findTextAt(toAnnotationPoint(point))
+    const hit = annotationController.findTextAt(annotationPoint)
     if (hit && event.detail >= 2) {
       // 双击的第二次按下可能紧接在第一次拖动结束之前，先结束旧拖动再进入编辑。
       if (textMoveState) {
@@ -1031,6 +1209,50 @@ function handleAnnotationPointerDown(event: PointerEvent): void {
     if (annotationController.beginText(point)) updateTextInput()
     return
   }
+  const handleElement = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-handle]')
+  const handle = handleElement?.dataset['annotationHandle'] as ScreenshotAnnotationResizeHandle | undefined
+  const selected = annotationController.selectedAnnotation
+  if (handle && selected) {
+    if (!annotationController.beginAnnotationTransform(handle)) return
+    annotationTransformActive = true
+    annotationPointerTarget = event.currentTarget as HTMLElement
+    annotationPointerTarget.setPointerCapture(event.pointerId)
+    annotationController.updateAnnotationTransform(annotationPoint, event.shiftKey)
+    redrawAnnotations()
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  const selectedBounds = annotationController.selectedAnnotationBounds
+  const insideSelected = selected && selectedBounds &&
+    annotationPoint.x >= selectedBounds.x && annotationPoint.x <= selectedBounds.x + selectedBounds.width &&
+    annotationPoint.y >= selectedBounds.y && annotationPoint.y <= selectedBounds.y + selectedBounds.height
+  if (insideSelected && annotationController.beginAnnotationTransform('move')) {
+    annotationTransformActive = true
+    annotationPointerTarget = event.currentTarget as HTMLElement
+    annotationPointerTarget.setPointerCapture(event.pointerId)
+    annotationController.updateAnnotationTransform(annotationPoint, event.shiftKey)
+    redrawAnnotations()
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  const hit = annotationController.findAnnotationAt(annotationPoint)
+  if (hit && annotationController.selectAnnotation(hit)) {
+    if (annotationController.beginAnnotationTransform('move')) {
+      annotationTransformActive = true
+      annotationPointerTarget = event.currentTarget as HTMLElement
+      annotationPointerTarget.setPointerCapture(event.pointerId)
+      annotationController.updateAnnotationTransform(annotationPoint, event.shiftKey)
+    }
+    redrawAnnotations()
+    updateAnnotationUi()
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  annotationController.clearSelection()
+  updateAnnotationUi()
   if (!annotationController.beginStroke(point)) return
   annotationPointerTarget = event.currentTarget as HTMLElement
   annotationPointerTarget.setPointerCapture(event.pointerId)
@@ -1048,6 +1270,15 @@ function handleAnnotationPointerDown(event: PointerEvent): void {
 function handleAnnotationPointerMove(event: PointerEvent): void {
   if (textMoveState) {
     annotationController.updateTextPosition(getPointerEventPoint(event))
+    redrawAnnotations()
+    event.preventDefault()
+    return
+  }
+  if (annotationTransformActive) {
+    annotationController.updateAnnotationTransform(
+      toAnnotationPoint(getPointerEventPoint(event)),
+      event.shiftKey
+    )
     redrawAnnotations()
     event.preventDefault()
     return
@@ -1073,6 +1304,18 @@ function handleAnnotationPointerUp(event: PointerEvent): void {
     annotationPointerTarget = null
     if (annotationController.endTextMove()) updateAnnotationUi()
     redrawAnnotations()
+    event.preventDefault()
+    return
+  }
+  if (annotationTransformActive) {
+    if (annotationPointerTarget?.hasPointerCapture(event.pointerId)) {
+      annotationPointerTarget.releasePointerCapture(event.pointerId)
+    }
+    annotationPointerTarget = null
+    annotationTransformActive = false
+    annotationController.endAnnotationTransform()
+    redrawAnnotations()
+    updateAnnotationUi()
     event.preventDefault()
     return
   }
@@ -1111,6 +1354,7 @@ function resetAnnotationSession(): void {
   annotationController.resetForNewSession()
   annotationPointerTarget = null
   textMoveState = null
+  annotationTransformActive = false
   ocrColorPanel.hidden = true
   ocrTextInput.hidden = true
   syncAnnotationCanvas()
@@ -1343,6 +1587,7 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
     ocrSelectionBox.hidden = true
     currentRect = null
     updateResizeHandlePositions()
+    updateAnnotationSelectionBox()
     renderOcrToolbar()
     return
   }
@@ -1755,6 +2000,28 @@ function handleKeyDown(event: KeyboardEvent): void {
     updateAnnotationUi()
     return
   }
+  if (event.key === 'Escape' && annotationController.selectedAnnotation) {
+    annotationController.clearSelection()
+    redrawAnnotations()
+    updateAnnotationUi()
+    return
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (annotationController.deleteSelectedAnnotation()) {
+      redrawAnnotations()
+      updateAnnotationUi()
+      event.preventDefault()
+    }
+    return
+  }
+  const nudgeX = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0
+  const nudgeY = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+  if ((nudgeX || nudgeY) && annotationController.nudgeSelectedAnnotation(nudgeX, nudgeY, event.shiftKey)) {
+    redrawAnnotations()
+    updateAnnotationUi()
+    event.preventDefault()
+    return
+  }
   if (event.key === 'Escape') cancelOcrSelection()
   if ((event.key === 'Enter' || event.key === ' ') && ocrMode) submitCurrentOcrSelection()
 }
@@ -1806,22 +2073,58 @@ ocrColorToggle.addEventListener('click', toggleColorPanel)
 ocrColorPanel.addEventListener('click', (event) => {
   if ((event.target as HTMLElement).dataset['color']) handleAnnotationColorSelect(event)
 })
+if (typeof ResizeObserver !== 'undefined') {
+  ocrToolbarResizeObserver = new ResizeObserver(() => {
+    syncOcrToolbarLayout()
+  })
+  ocrToolbarResizeObserver.observe(ocrToolbar)
+}
 ocrColorCustom.addEventListener('input', handleAnnotationColorSelect)
+ocrColorCustom.addEventListener('change', () => annotationController.commitStyleChange())
 ocrStrokeWidth.addEventListener('input', () => {
   annotationController.setStrokeWidth(ocrStrokeWidth.value)
   updateAnnotationUi()
+  redrawAnnotations()
 })
+ocrStrokeWidth.addEventListener('change', () => annotationController.commitStyleChange())
+ocrFillToggle.addEventListener('click', () => {
+  annotationController.setFilled(!annotationController.style.filled)
+  annotationController.commitStyleChange()
+  updateAnnotationUi()
+  redrawAnnotations()
+})
+ocrFillOpacity.addEventListener('input', () => {
+  annotationController.setFillOpacity(ocrFillOpacity.value)
+  updateAnnotationUi()
+  redrawAnnotations()
+})
+ocrFillOpacity.addEventListener('change', () => annotationController.commitStyleChange())
+ocrCornerRadius.addEventListener('input', () => {
+  annotationController.setCornerRadius(ocrCornerRadius.value)
+  updateAnnotationUi()
+  redrawAnnotations()
+})
+ocrCornerRadius.addEventListener('change', () => annotationController.commitStyleChange())
 ocrFontSize.addEventListener('input', () => {
   annotationController.setFontSize(ocrFontSize.value)
   updateTextInput()
 })
+ocrFontSize.addEventListener('change', () => annotationController.commitStyleChange())
 ocrTextBold.addEventListener('click', () => {
   annotationController.setBold(!annotationController.style.bold)
+  annotationController.commitStyleChange()
   ocrTextBold.setAttribute('aria-pressed', String(annotationController.style.bold))
   updateTextInput()
 })
 ocrMosaicBrush.addEventListener('input', () => annotationController.setMosaicBrushSize(ocrMosaicBrush.value))
+ocrMosaicBrush.addEventListener('change', () => annotationController.commitStyleChange())
 ocrMosaicIntensity.addEventListener('input', () => annotationController.setMosaicIntensity(ocrMosaicIntensity.value))
+ocrMosaicIntensity.addEventListener('change', () => annotationController.commitStyleChange())
+ocrBlurRadius.addEventListener('input', () => annotationController.setBlurRadius(ocrBlurRadius.value))
+ocrBlurRadius.addEventListener('change', () => annotationController.commitStyleChange())
+window.addEventListener('keyup', (event) => {
+  if (event.key.startsWith('Arrow')) annotationController.commitNudge()
+})
 ocrUndoButton.addEventListener('click', () => {
   if (annotationController.undo()) {
     redrawAnnotations()

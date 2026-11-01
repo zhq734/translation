@@ -310,3 +310,65 @@ test('部分导出回退 OCR 目标必须按 regionId 定位，不能依赖源�
     ['region-a', undefined]
   ])
 })
+
+test('表格单元格内多个 run 区间只写回首段时仍视为成功译文', () => {
+  const source = partialExportModel(false)
+  const translation = partialExportModel(true)
+  const sourceTable = source.pages[0]!.blocks[2]!
+  const translationTable = translation.pages[0]!.blocks[2]!
+  assert.equal(sourceTable.kind, 'table')
+  assert.equal(translationTable.kind, 'table')
+  if (sourceTable.kind !== 'table' || translationTable.kind !== 'table') return
+
+  sourceTable.rows[0]!.cells[0]!.blocks = [
+    {
+      kind: 'text',
+      blockId: 'cell-text-1',
+      readingOrder: 0,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'cell-run-1', text: 'Alpha' }]
+    },
+    {
+      kind: 'text',
+      blockId: 'cell-text-2',
+      readingOrder: 1,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'cell-run-2', text: 'Beta' }]
+    }
+  ]
+  translationTable.rows[0]!.cells[0]!.blocks = [
+    {
+      kind: 'text',
+      blockId: 'cell-text-1',
+      readingOrder: 0,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'cell-run-1', text: '甲乙' }]
+    },
+    {
+      kind: 'text',
+      blockId: 'cell-text-2',
+      readingOrder: 1,
+      translatable: true,
+      role: 'paragraph',
+      runs: [{ runId: 'cell-run-2', text: '' }]
+    }
+  ]
+  const report = completionReport([
+    { targetId: '0:0:text:run-1', sourceText: 'HelloWorld', state: 'translated' },
+    { targetId: '0:1:ocr:region-1', sourceText: 'Scanned text', state: 'translated' },
+    { targetId: '0:2:row:row-1', sourceText: 'Alpha\nBeta', state: 'translated' },
+    { targetId: '1:0:text:run-3', sourceText: 'Third page', state: 'translated' }
+  ])
+
+  const result = buildPartialExportDocument(source, translation, report)
+  const row = (result.model.pages[0]!.blocks[2] as Extract<DocumentModel['pages'][number]['blocks'][number], { kind: 'table' }>).rows[0]!
+  const firstCellText = row.cells[0]!.blocks[0]!
+  assert.equal(firstCellText.kind, 'text')
+  if (firstCellText.kind !== 'text') return
+  assert.equal(firstCellText.runs[0]?.text, '甲乙')
+  assert.equal(result.summary.translated, 4)
+  assert.equal(result.summary.reverted, 0)
+})

@@ -6,9 +6,12 @@ import type {
   ScreenshotAnnotationStyle,
   ScreenshotAnnotationTool,
   ScreenshotArrowAnnotation,
+  ScreenshotBlurAnnotation,
   ScreenshotBrushAnnotation,
+  ScreenshotHighlightAnnotation,
   ScreenshotMosaicAnnotation,
   ScreenshotShapeAnnotation,
+  ScreenshotSpotlightAnnotation,
   ScreenshotTextAnnotation
 } from '../../shared/types'
 
@@ -38,7 +41,13 @@ export const SCREENSHOT_ANNOTATION_LIMITS = {
   /** 马赛克笔刷直径范围。 */
   mosaicBrushSize: { min: 12, max: 80, default: 28 },
   /** 马赛克像素块边长范围。 */
-  mosaicBlockSize: { min: 4, max: 32, default: 10 }
+  mosaicBlockSize: { min: 4, max: 32, default: 10 },
+  /** 高斯模糊半径范围。 */
+  blurRadius: { min: 2, max: 40, default: 12 },
+  /** 矩形填充透明度范围。 */
+  fillOpacity: { min: 0.05, max: 1, default: 0.25 },
+  /** 矩形圆角半径范围。 */
+  cornerRadius: { min: 0, max: 64, default: 0 }
 } as const satisfies Record<string, number | NumericRange>
 
 /** 截图标注预置颜色，保证默认颜色可用且全部为合法十六进制值。 */
@@ -60,11 +69,65 @@ export const DEFAULT_SCREENSHOT_ANNOTATION_STYLE: ScreenshotAnnotationStyle = {
   fontSize: SCREENSHOT_ANNOTATION_LIMITS.fontSize.default,
   bold: false,
   mosaicBrushSize: SCREENSHOT_ANNOTATION_LIMITS.mosaicBrushSize.default,
-  mosaicBlockSize: SCREENSHOT_ANNOTATION_LIMITS.mosaicBlockSize.default
+  mosaicBlockSize: SCREENSHOT_ANNOTATION_LIMITS.mosaicBlockSize.default,
+  blurRadius: SCREENSHOT_ANNOTATION_LIMITS.blurRadius.default,
+  filled: false,
+  fillOpacity: SCREENSHOT_ANNOTATION_LIMITS.fillOpacity.default,
+  cornerRadius: SCREENSHOT_ANNOTATION_LIMITS.cornerRadius.default
 }
 
 /** 判断两个标注点之间的最小距离，用于过滤空操作与抽稀。 */
 const MIN_POINT_DISTANCE = 2
+
+/**
+ * 深拷贝标注集合中的可变坐标与点集，避免变换历史被后续拖动污染。
+ * @param annotations 原始标注集合。
+ * @returns 独立快照。
+ * @author zhenghq
+ */
+function snapshotAnnotations(annotations: ScreenshotAnnotation[]): ScreenshotAnnotation[] {
+  return annotations.map((annotation) => {
+    if (annotation.type === 'text') {
+      return { ...annotation, position: { ...annotation.position } }
+    }
+    if (annotation.type === 'arrow') {
+      return { ...annotation, start: { ...annotation.start }, end: { ...annotation.end } }
+    }
+    if (annotation.type === 'brush' || annotation.type === 'mosaic') {
+      return { ...annotation, points: annotation.points.map((point) => ({ ...point })) }
+    }
+    return { ...annotation, bounds: { ...annotation.bounds } }
+  })
+}
+
+/**
+ * 判断两个标注对象的几何数据是否完全一致，用于过滤无位移变换历史。
+ * @param left 待比较的标注对象。
+ * @param right 另一个标注对象。
+ * @returns 几何位置与尺寸是否一致。
+ * @author zhenghq
+ */
+function areAnnotationsEqual(left: ScreenshotAnnotation, right: ScreenshotAnnotation): boolean {
+  if (left.type !== right.type) return false
+  if (left.type === 'text' && right.type === 'text') {
+    return left.position.x === right.position.x && left.position.y === right.position.y &&
+      left.fontSize === right.fontSize
+  }
+  if (left.type === 'arrow' && right.type === 'arrow') {
+    return left.start.x === right.start.x && left.start.y === right.start.y &&
+      left.end.x === right.end.x && left.end.y === right.end.y
+  }
+  if ((left.type === 'brush' || left.type === 'mosaic') &&
+      (right.type === 'brush' || right.type === 'mosaic')) {
+    return left.points.length === right.points.length && left.points.every((point, index) => {
+      const other = right.points[index]
+      return Boolean(other && point.x === other.x && point.y === other.y)
+    })
+  }
+  if (!('bounds' in left) || !('bounds' in right)) return false
+  return left.bounds.x === right.bounds.x && left.bounds.y === right.bounds.y &&
+    left.bounds.width === right.bounds.width && left.bounds.height === right.bounds.height
+}
 
 /**
  * 判断未知值是否为受支持的截图标注工具。
@@ -79,7 +142,10 @@ export function isScreenshotAnnotationTool(value: unknown): value is ScreenshotA
     value === 'arrow' ||
     value === 'brush' ||
     value === 'text' ||
-    value === 'mosaic'
+    value === 'mosaic' ||
+    value === 'highlight' ||
+    value === 'blur' ||
+    value === 'spotlight'
   )
 }
 
@@ -156,6 +222,41 @@ export function normalizeMosaicBlockSize(value: unknown): number {
 }
 
 /**
+ * 归一化高斯模糊半径。
+ * @param value 待归一化的模糊半径。
+ * @returns 合法模糊半径。
+ * @author zhenghq
+ */
+export function normalizeBlurRadius(value: unknown): number {
+  return normalizeNumericValue(value, SCREENSHOT_ANNOTATION_LIMITS.blurRadius)
+}
+
+/**
+ * 归一化矩形填充透明度。
+ * @param value 待归一化的透明度。
+ * @returns 限制在合法范围内的透明度。
+ * @author zhenghq
+ */
+export function normalizeFillOpacity(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return SCREENSHOT_ANNOTATION_LIMITS.fillOpacity.default
+  return Math.min(
+    SCREENSHOT_ANNOTATION_LIMITS.fillOpacity.max,
+    Math.max(SCREENSHOT_ANNOTATION_LIMITS.fillOpacity.min, numeric)
+  )
+}
+
+/**
+ * 归一化矩形圆角半径。
+ * @param value 待归一化的圆角半径。
+ * @returns 合法圆角半径。
+ * @author zhenghq
+ */
+export function normalizeCornerRadius(value: unknown): number {
+  return normalizeNumericValue(value, SCREENSHOT_ANNOTATION_LIMITS.cornerRadius)
+}
+
+/**
  * 将用户可感知的马赛克强度档位映射为像素块大小。
  * @param value 强度档位：weak / medium / strong，或直接数字。
  * @returns 有限范围内的像素块边长。
@@ -182,7 +283,11 @@ export function normalizeAnnotationStyle(value: unknown): ScreenshotAnnotationSt
     fontSize: normalizeFontSize(raw.fontSize),
     bold: Boolean(raw.bold),
     mosaicBrushSize: normalizeMosaicBrushSize(raw.mosaicBrushSize),
-    mosaicBlockSize: normalizeMosaicBlockSize(raw.mosaicBlockSize)
+    mosaicBlockSize: normalizeMosaicBlockSize(raw.mosaicBlockSize),
+    blurRadius: normalizeBlurRadius(raw.blurRadius),
+    filled: Boolean(raw.filled),
+    fillOpacity: normalizeFillOpacity(raw.fillOpacity),
+    cornerRadius: normalizeCornerRadius(raw.cornerRadius)
   }
 }
 
@@ -403,7 +508,10 @@ export function createShapeAnnotation(
     type,
     bounds,
     color: style.color,
-    strokeWidth: style.strokeWidth
+    strokeWidth: style.strokeWidth,
+    filled: type === 'rect' && style.filled,
+    fillOpacity: normalizeFillOpacity(style.fillOpacity),
+    cornerRadius: type === 'rect' ? normalizeCornerRadius(style.cornerRadius) : 0
   }
 }
 
@@ -497,6 +605,66 @@ export function getTextAnnotationBounds(
 }
 
 /**
+ * 计算矩形实际可用的圆角半径，避免半径超过短边的一半。
+ * @param bounds 矩形边界。
+ * @param cornerRadius 期望圆角半径。
+ * @returns 合法的实际圆角半径。
+ * @author zhenghq
+ */
+export function getEffectiveCornerRadius(
+  bounds: ScreenshotAnnotationRect,
+  cornerRadius: number
+): number {
+  const radius = normalizeCornerRadius(cornerRadius)
+  return Math.min(radius, Math.max(0, Math.min(bounds.width, bounds.height) / 2))
+}
+
+/**
+ * 计算任意标注对象的包围盒，供命中测试、选择框和缩放复用。
+ * @param annotation 待计算的标注。
+ * @param measureLine 可选的文字单行宽度测量函数。
+ * @returns 覆盖整个标注的包围盒。
+ * @author zhenghq
+ */
+export function getAnnotationBounds(
+  annotation: ScreenshotAnnotation,
+  measureLine?: (line: string) => number
+): ScreenshotAnnotationRect {
+  if (annotation.type === 'text') {
+    return getTextAnnotationBounds(annotation, measureLine)
+  }
+  if (annotation.type === 'arrow') {
+    const padding = Math.max(2, annotation.strokeWidth)
+    const x = Math.min(annotation.start.x, annotation.end.x) - padding
+    const y = Math.min(annotation.start.y, annotation.end.y) - padding
+    return {
+      x,
+      y,
+      width: Math.abs(annotation.end.x - annotation.start.x) + padding * 2,
+      height: Math.abs(annotation.end.y - annotation.start.y) + padding * 2
+    }
+  }
+  if (annotation.type === 'brush' || annotation.type === 'mosaic') {
+    const padding = annotation.type === 'brush'
+      ? annotation.strokeWidth
+      : annotation.brushSize / 2
+    const xs = annotation.points.map((point) => point.x)
+    const ys = annotation.points.map((point) => point.y)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    return {
+      x: minX - padding,
+      y: minY - padding,
+      width: Math.max(1, maxX - minX + padding * 2),
+      height: Math.max(1, maxY - minY + padding * 2)
+    }
+  }
+  return { ...annotation.bounds }
+}
+
+/**
  * 创建马赛克标注，抽稀轨迹点并冻结当前笔刷与像素块设置。
  * @param points 马赛克轨迹点集合。
  * @param style 当前标注样式。
@@ -514,6 +682,73 @@ export function createMosaicAnnotation(
     points: simplified,
     brushSize: style.mosaicBrushSize,
     blockSize: style.mosaicBlockSize
+  }
+}
+
+/**
+ * 创建高亮区域标注，冻结当前颜色与固定透明度。
+ * @param start 拖拽起点（选区相对坐标）。
+ * @param end 拖拽终点（选区相对坐标）。
+ * @param style 当前标注样式。
+ * @returns 新标注；位移过小时返回 null。
+ * @author zhenghq
+ */
+export function createHighlightAnnotation(
+  start: ScreenshotAnnotationPoint,
+  end: ScreenshotAnnotationPoint,
+  style: ScreenshotAnnotationStyle
+): ScreenshotHighlightAnnotation | null {
+  const bounds = normalizeRectFromPoints(start, end)
+  if (bounds.width < MIN_POINT_DISTANCE || bounds.height < MIN_POINT_DISTANCE) return null
+  return {
+    type: 'highlight',
+    bounds,
+    color: style.color,
+    opacity: 0.55
+  }
+}
+
+/**
+ * 创建高斯模糊区域标注，冻结当前模糊半径。
+ * @param start 拖拽起点（选区相对坐标）。
+ * @param end 拖拽终点（选区相对坐标）。
+ * @param style 当前标注样式。
+ * @returns 新标注；位移过小时返回 null。
+ * @author zhenghq
+ */
+export function createBlurAnnotation(
+  start: ScreenshotAnnotationPoint,
+  end: ScreenshotAnnotationPoint,
+  style: ScreenshotAnnotationStyle
+): ScreenshotBlurAnnotation | null {
+  const bounds = normalizeRectFromPoints(start, end)
+  if (bounds.width < MIN_POINT_DISTANCE || bounds.height < MIN_POINT_DISTANCE) return null
+  return {
+    type: 'blur',
+    bounds,
+    radius: style.blurRadius
+  }
+}
+
+/**
+ * 创建聚光灯区域标注，冻结区域外遮罩透明度。
+ * @param start 拖拽起点（选区相对坐标）。
+ * @param end 拖拽终点（选区相对坐标）。
+ * @param style 当前标注样式。
+ * @returns 新标注；位移过小时返回 null。
+ * @author zhenghq
+ */
+export function createSpotlightAnnotation(
+  start: ScreenshotAnnotationPoint,
+  end: ScreenshotAnnotationPoint,
+  style: ScreenshotAnnotationStyle
+): ScreenshotSpotlightAnnotation | null {
+  const bounds = normalizeRectFromPoints(start, end)
+  if (bounds.width < MIN_POINT_DISTANCE || bounds.height < MIN_POINT_DISTANCE) return null
+  return {
+    type: 'spotlight',
+    bounds,
+    opacity: 0.62
   }
 }
 
@@ -647,14 +882,22 @@ export class ScreenshotAnnotationStore {
    * @returns 标注数组快照。
    */
   private snapshot(): ScreenshotAnnotation[] {
-    return [...this.items]
+    return snapshotAnnotations(this.items)
   }
 }
 
-/** Canvas 马赛克渲染可选配置。 */
+/** Canvas 区域标注渲染可选配置。 */
 export interface AnnotationRenderOptions {
   /** 从原图采样指定区域颜色的函数；未提供时使用默认马赛克填充色。 */
   sampleColor?: (x: number, y: number, size?: number) => string
+  /** 从底图重绘指定区域并应用模糊的函数；未提供时模糊区域退化为半透明遮罩。 */
+  drawSourceRegion?: (
+    ctx: CanvasRenderingContext2D,
+    bounds: ScreenshotAnnotationRect,
+    radius: number
+  ) => void
+  /** 当前选区逻辑尺寸；聚光灯依赖它绘制区域外的四块遮罩。 */
+  viewport?: { width: number; height: number }
 }
 
 /**
@@ -725,18 +968,24 @@ export function drawAnnotations(
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     switch (annotation.type) {
-      case 'rect':
+      case 'rect': {
         ctx.strokeStyle = annotation.color
         ctx.lineWidth = annotation.strokeWidth
         ctx.beginPath()
-        ctx.rect(
-          annotation.bounds.x,
-          annotation.bounds.y,
-          annotation.bounds.width,
-          annotation.bounds.height
+        traceRoundedRect(
+          ctx,
+          annotation.bounds,
+          getEffectiveCornerRadius(annotation.bounds, annotation.cornerRadius)
         )
+        if (annotation.filled) {
+          ctx.globalAlpha = annotation.fillOpacity
+          ctx.fillStyle = annotation.color
+          ctx.fill()
+          ctx.globalAlpha = 1
+        }
         ctx.stroke()
         break
+      }
       case 'ellipse':
         ctx.strokeStyle = annotation.color
         ctx.lineWidth = annotation.strokeWidth
@@ -803,9 +1052,126 @@ export function drawAnnotations(
       case 'mosaic':
         drawMosaicAnnotation(ctx, annotation, options)
         break
+      case 'highlight':
+        drawHighlightAnnotation(ctx, annotation)
+        break
+      case 'blur':
+        drawBlurAnnotation(ctx, annotation, options)
+        break
+      case 'spotlight':
+        drawSpotlightAnnotation(ctx, annotation, options.viewport)
+        break
     }
     ctx.restore()
   }
+}
+
+/**
+ * 沿圆角矩形路径描边，圆角为 0 时退化为普通矩形。
+ * @param ctx Canvas 2D 上下文。
+ * @param bounds 矩形边界。
+ * @param radius 已限制范围的圆角半径。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function traceRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  bounds: ScreenshotAnnotationRect,
+  radius: number
+): void {
+  if (radius <= 0) {
+    ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height)
+    return
+  }
+  const { x, y, width, height } = bounds
+  const right = x + width
+  const bottom = y + height
+  ctx.moveTo(x + radius, y)
+  ctx.lineTo(right - radius, y)
+  ctx.quadraticCurveTo(right, y, right, y + radius)
+  ctx.lineTo(right, bottom - radius)
+  ctx.quadraticCurveTo(right, bottom, right - radius, bottom)
+  ctx.lineTo(x + radius, bottom)
+  ctx.quadraticCurveTo(x, bottom, x, bottom - radius)
+  ctx.lineTo(x, y + radius)
+  ctx.quadraticCurveTo(x, y, x + radius, y)
+  ctx.closePath()
+}
+
+/**
+ * 绘制高亮区域，使用正片叠底保留底层文字的可读性。
+ * @param ctx Canvas 2D 上下文。
+ * @param annotation 高亮标注。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawHighlightAnnotation(
+  ctx: CanvasRenderingContext2D,
+  annotation: ScreenshotHighlightAnnotation
+): void {
+  ctx.globalCompositeOperation = 'multiply'
+  ctx.globalAlpha = annotation.opacity
+  ctx.fillStyle = annotation.color
+  ctx.fillRect(
+    annotation.bounds.x,
+    annotation.bounds.y,
+    annotation.bounds.width,
+    annotation.bounds.height
+  )
+}
+
+/**
+ * 绘制高斯模糊区域；优先从底图采样，缺少底图能力时使用降级遮罩。
+ * @param ctx Canvas 2D 上下文。
+ * @param annotation 模糊标注。
+ * @param options 区域标注渲染配置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawBlurAnnotation(
+  ctx: CanvasRenderingContext2D,
+  annotation: ScreenshotBlurAnnotation,
+  options: AnnotationRenderOptions
+): void {
+  if (options.drawSourceRegion) {
+    options.drawSourceRegion(ctx, annotation.bounds, annotation.radius)
+    return
+  }
+  ctx.globalAlpha = 0.58
+  ctx.fillStyle = 'rgba(96, 96, 96, 1)'
+  ctx.fillRect(
+    annotation.bounds.x,
+    annotation.bounds.y,
+    annotation.bounds.width,
+    annotation.bounds.height
+  )
+}
+
+/**
+ * 绘制聚光灯遮罩，将选区四周压暗而保留目标区域原亮度。
+ * @param ctx Canvas 2D 上下文。
+ * @param annotation 聚光灯标注。
+ * @param viewport 当前选区逻辑尺寸。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawSpotlightAnnotation(
+  ctx: CanvasRenderingContext2D,
+  annotation: ScreenshotSpotlightAnnotation,
+  viewport?: { width: number; height: number }
+): void {
+  if (!viewport || viewport.width <= 0 || viewport.height <= 0) return
+  const { x, y, width, height } = annotation.bounds
+  const right = Math.max(0, viewport.width - x - width)
+  const bottom = Math.max(0, viewport.height - y - height)
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = annotation.opacity
+  ctx.fillStyle = '#000000'
+  // 用四块矩形拼出中空遮罩，避免 destination-out 误擦除已绘制的其它标注。
+  ctx.fillRect(0, 0, viewport.width, Math.max(0, y))
+  ctx.fillRect(0, y + height, viewport.width, bottom)
+  ctx.fillRect(0, y, Math.max(0, x), height)
+  ctx.fillRect(x + width, y, right, height)
 }
 
 /**
@@ -874,7 +1240,7 @@ function drawMosaicAnnotation(
 /** 进行中的笔迹状态。 */
 type StrokeDraft =
   | {
-      tool: 'rect' | 'ellipse' | 'arrow'
+      tool: 'rect' | 'ellipse' | 'arrow' | 'highlight' | 'blur' | 'spotlight'
       start: ScreenshotAnnotationPoint
       current: ScreenshotAnnotationPoint
     }
@@ -882,6 +1248,12 @@ type StrokeDraft =
       tool: 'brush' | 'mosaic'
       points: ScreenshotAnnotationPoint[]
     }
+
+/** 标注对象八向缩放控制柄。 */
+export type ScreenshotAnnotationResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+
+/** 标注对象变换模式。 */
+type AnnotationTransformMode = 'move' | ScreenshotAnnotationResizeHandle
 
 /**
  * 截图标注控制器，维护工具状态、绘制预览、文字编辑与历史。
@@ -896,6 +1268,14 @@ export class ScreenshotAnnotationController {
   private textEditingIndex: number | null = null
   private textMoveIndex: number | null = null
   private textMoveOriginal: ScreenshotAnnotation[] | null = null
+  private selectedIndex: number | null = null
+  private transformMode: AnnotationTransformMode | null = null
+  private transformStartPoint: ScreenshotAnnotationPoint | null = null
+  private transformStartBounds: ScreenshotAnnotationRect | null = null
+  private transformOriginal: ScreenshotAnnotation[] | null = null
+  private transformChanged = false
+  private styleChangeOriginal: ScreenshotAnnotation[] | null = null
+  private nudgeOriginal: ScreenshotAnnotation[] | null = null
   private currentStyle: ScreenshotAnnotationStyle = { ...DEFAULT_SCREENSHOT_ANNOTATION_STYLE }
   preview: ScreenshotAnnotation | null = null
 
@@ -929,6 +1309,97 @@ export class ScreenshotAnnotationController {
           point.y >= bounds.y && point.y <= bounds.y + bounds.height) return annotation
     }
     return null
+  }
+
+  /**
+   * 查找命中指定坐标的标注对象，按绘制顺序从上层向下层匹配。
+   * @param point 选区内相对坐标。
+   * @returns 命中的标注；未命中时返回 null。
+   * @author zhenghq
+   */
+  findAnnotationAt(point: ScreenshotAnnotationPoint): ScreenshotAnnotation | null {
+    for (let index = this.store.annotations.length - 1; index >= 0; index -= 1) {
+      const annotation = this.store.annotations[index]!
+      const bounds = getAnnotationBounds(annotation)
+      if (
+        point.x >= bounds.x - 2 &&
+        point.x <= bounds.x + bounds.width + 2 &&
+        point.y >= bounds.y - 2 &&
+        point.y <= bounds.y + bounds.height + 2
+      ) {
+        return annotation
+      }
+    }
+    return null
+  }
+
+  /**
+   * 获取当前选中的标注对象。
+   * @returns 选中的标注；未选中时返回 null。
+   * @author zhenghq
+   */
+  get selectedAnnotation(): ScreenshotAnnotation | null {
+    if (this.selectedIndex === null) return null
+    return this.store.annotations[this.selectedIndex] ?? null
+  }
+
+  /**
+   * 获取选中对象的包围盒。
+   * @returns 选中对象边界；未选中时返回 null。
+   * @author zhenghq
+   */
+  get selectedAnnotationBounds(): ScreenshotAnnotationRect | null {
+    const annotation = this.selectedAnnotation
+    return annotation ? getAnnotationBounds(annotation) : null
+  }
+
+  /**
+   * 选中指定标注对象。
+   * @param annotation 待选中的标注。
+   * @returns 是否成功选中。
+   * @author zhenghq
+   */
+  selectAnnotation(annotation: ScreenshotAnnotation): boolean {
+    const index = this.store.annotations.indexOf(annotation)
+    if (index < 0) return false
+    if (this.selectedIndex !== index) this.commitStyleChange()
+    this.selectedIndex = index
+    this.syncStyleFromAnnotation(annotation)
+    return true
+  }
+
+  /**
+   * 清除当前标注对象选择。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  clearSelection(): void {
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    this.selectedIndex = null
+    this.transformMode = null
+    this.transformStartPoint = null
+    this.transformStartBounds = null
+    this.transformOriginal = null
+    this.transformChanged = false
+  }
+
+  /**
+   * 删除当前选中的标注对象，并记录一次撤销历史。
+   * @returns 是否删除了对象。
+   * @author zhenghq
+   */
+  deleteSelectedAnnotation(): boolean {
+    if (this.selectedIndex === null) return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    const previous = snapshotAnnotations(this.store.annotations)
+    this.store.commitExternalChange(previous)
+    this.store.annotations.splice(this.selectedIndex, 1)
+    this.selectedIndex = null
+    return true
   }
 
   /**
@@ -989,6 +1460,9 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setTool(tool: ScreenshotAnnotationTool | null): void {
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
     this.cancelAnnotationInput()
     this.activeTool = this.activeTool === tool ? null : tool
   }
@@ -1039,10 +1513,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setColor(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       color: normalizeAnnotationColor(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1051,10 +1527,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setStrokeWidth(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       strokeWidth: normalizeStrokeWidth(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1063,10 +1541,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setFontSize(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       fontSize: normalizeFontSize(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1075,10 +1555,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setBold(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       bold: Boolean(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1087,10 +1569,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setMosaicBrushSize(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       mosaicBrushSize: normalizeMosaicBrushSize(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1099,10 +1583,12 @@ export class ScreenshotAnnotationController {
    * @returns 无返回值。
    */
   setMosaicBlockSize(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       mosaicBlockSize: normalizeMosaicBlockSize(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
@@ -1112,26 +1598,141 @@ export class ScreenshotAnnotationController {
    * @author zhenghq
    */
   setMosaicIntensity(value: unknown): void {
+    this.beginStyleChange()
     this.currentStyle = {
       ...this.currentStyle,
       mosaicBlockSize: normalizeMosaicIntensity(value)
     }
+    this.applyStyleToSelection()
   }
 
   /**
-   * 开始一次形状、箭头、画笔或马赛克绘制。
+   * 更新高斯模糊半径。
+   * @param value 待设置模糊半径。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setBlurRadius(value: unknown): void {
+    this.beginStyleChange()
+    this.currentStyle = {
+      ...this.currentStyle,
+      blurRadius: normalizeBlurRadius(value)
+    }
+    this.applyStyleToSelection()
+  }
+
+  /**
+   * 更新矩形填充开关。
+   * @param value 是否填充。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setFilled(value: unknown): void {
+    this.beginStyleChange()
+    this.currentStyle = { ...this.currentStyle, filled: Boolean(value) }
+    this.applyStyleToSelection()
+  }
+
+  /**
+   * 更新矩形填充透明度。
+   * @param value 待设置的透明度。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setFillOpacity(value: unknown): void {
+    this.beginStyleChange()
+    this.currentStyle = { ...this.currentStyle, fillOpacity: normalizeFillOpacity(value) }
+    this.applyStyleToSelection()
+  }
+
+  /**
+   * 更新矩形圆角半径。
+   * @param value 待设置的圆角半径。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setCornerRadius(value: unknown): void {
+    this.beginStyleChange()
+    this.currentStyle = { ...this.currentStyle, cornerRadius: normalizeCornerRadius(value) }
+    this.applyStyleToSelection()
+  }
+
+  /**
+   * 在第一次样式修改前记录选中对象快照，使连续调整只生成一次撤销记录。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private beginStyleChange(): void {
+    if (this.selectedAnnotation && !this.styleChangeOriginal) {
+      this.styleChangeOriginal = snapshotAnnotations(this.store.annotations)
+    }
+  }
+
+  /**
+   * 将当前样式应用到选中对象，矩形额外同步填充与圆角。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private applyStyleToSelection(): void {
+    const annotation = this.selectedAnnotation
+    if (!annotation) return
+    if (annotation.type === 'text') {
+      annotation.color = this.currentStyle.color
+      annotation.fontSize = this.currentStyle.fontSize
+      annotation.bold = this.currentStyle.bold
+    } else if (annotation.type === 'rect') {
+      annotation.color = this.currentStyle.color
+      annotation.strokeWidth = this.currentStyle.strokeWidth
+      annotation.filled = this.currentStyle.filled
+      annotation.fillOpacity = this.currentStyle.fillOpacity
+      annotation.cornerRadius = this.currentStyle.cornerRadius
+    } else if (annotation.type === 'ellipse') {
+      annotation.color = this.currentStyle.color
+      annotation.strokeWidth = this.currentStyle.strokeWidth
+    } else if (annotation.type === 'arrow' || annotation.type === 'brush') {
+      annotation.color = this.currentStyle.color
+      annotation.strokeWidth = this.currentStyle.strokeWidth
+    } else if (annotation.type === 'mosaic') {
+      annotation.brushSize = this.currentStyle.mosaicBrushSize
+      annotation.blockSize = this.currentStyle.mosaicBlockSize
+    } else if (annotation.type === 'blur') {
+      annotation.radius = this.currentStyle.blurRadius
+    } else if (annotation.type === 'highlight') {
+      annotation.color = this.currentStyle.color
+    }
+  }
+
+  /**
+   * 提交本轮连续样式修改，并清空临时快照。
+   * @returns 是否有样式变更被提交。
+   * @author zhenghq
+   */
+  commitStyleChange(): boolean {
+    const previous = this.styleChangeOriginal
+    this.styleChangeOriginal = null
+    if (!previous) return false
+    this.store.commitExternalChange(previous)
+    return true
+  }
+
+  /**
+   * 开始一次图形、画笔、马赛克或区域效果绘制。
    * @param point 覆盖层坐标。
    * @returns 是否成功开始绘制。
    */
   beginStroke(point: ScreenshotAnnotationPoint): boolean {
-    if (!this.selection || !this.activeTool || this.activeTool === 'text') return false
+    const tool = this.activeTool
+    if (!this.selection || !tool || tool === 'text') return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
     if (!isPointInsideSelection(point, this.selection)) return false
     const relative = toSelectionRelativePoint(point, this.selection)
     const clamped = clampPointToSelection(relative, this.selection)
-    if (this.activeTool === 'brush' || this.activeTool === 'mosaic') {
-      this.draft = { tool: this.activeTool, points: [clamped] }
+    if (tool === 'brush' || tool === 'mosaic') {
+      this.draft = { tool, points: [clamped] }
     } else {
-      this.draft = { tool: this.activeTool, start: clamped, current: clamped }
+      this.draft = { tool, start: clamped, current: clamped }
     }
     this.preview = this.buildPreview()
     return true
@@ -1147,12 +1748,12 @@ export class ScreenshotAnnotationController {
     const relative = toSelectionRelativePoint(point, this.selection)
     const clamped = clampPointToSelection(relative, this.selection)
     const draft = this.draft
-    if (draft.tool === 'brush' || draft.tool === 'mosaic') {
+    if ('points' in draft) {
       const last = draft.points[draft.points.length - 1]
       if (!last || Math.hypot(clamped.x - last.x, clamped.y - last.y) >= 0.5) {
         draft.points.push(clamped)
       }
-    } else if (draft.tool === 'rect' || draft.tool === 'ellipse' || draft.tool === 'arrow') {
+    } else {
       draft.current = clamped
     }
     this.preview = this.buildPreview()
@@ -1189,6 +1790,9 @@ export class ScreenshotAnnotationController {
    */
   beginText(point: ScreenshotAnnotationPoint): boolean {
     if (!this.selection || this.activeTool !== 'text') return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
     if (!isPointInsideSelection(point, this.selection)) return false
     const relative = toSelectionRelativePoint(point, this.selection)
     this.textPoint = clampPointToSelection(relative, this.selection)
@@ -1206,6 +1810,9 @@ export class ScreenshotAnnotationController {
     if (!this.selection || this.activeTool !== 'text') return false
     const index = this.store.annotations.indexOf(annotation)
     if (index < 0) return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
     this.textPoint = { ...annotation.position }
     this.textEditingIndex = index
     return true
@@ -1246,6 +1853,9 @@ export class ScreenshotAnnotationController {
   beginTextMove(annotation: ScreenshotTextAnnotation): boolean {
     const index = this.store.annotations.indexOf(annotation)
     if (index < 0) return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
     this.textMoveIndex = index
     this.textMoveOriginal = this.store.annotations.map((item) => item.type === 'text'
       ? { ...item, position: { ...item.position } }
@@ -1263,8 +1873,8 @@ export class ScreenshotAnnotationController {
     if (!this.selection || this.textMoveIndex === null) return
     const annotation = this.store.annotations[this.textMoveIndex]
     if (!annotation || annotation.type !== 'text') return
-    const relative = clampPointToSelection(toSelectionRelativePoint(point, this.selection), this.selection)
-    annotation.position = relative
+    const relative = toSelectionRelativePoint(point, this.selection)
+    annotation.position = clampPointToSelection(relative, this.selection)
   }
 
   /**
@@ -1310,7 +1920,12 @@ export class ScreenshotAnnotationController {
    * @returns 是否执行了撤销。
    */
   undo(): boolean {
-    return this.store.undo()
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    const changed = this.store.undo()
+    this.syncSelectionAfterHistoryChange()
+    return changed
   }
 
   /**
@@ -1318,7 +1933,12 @@ export class ScreenshotAnnotationController {
    * @returns 是否执行了重做。
    */
   redo(): boolean {
-    return this.store.redo()
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    const changed = this.store.redo()
+    this.syncSelectionAfterHistoryChange()
+    return changed
   }
 
   /**
@@ -1326,7 +1946,174 @@ export class ScreenshotAnnotationController {
    * @returns 是否实际清空了标注。
    */
   clearAnnotations(): boolean {
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    this.clearSelection()
     return this.store.clear()
+  }
+
+  /**
+   * 开始移动或缩放当前选中对象。
+   * @param mode 变换模式，move 表示拖动，其它值表示对应的控制柄。
+   * @returns 是否成功开始变换。
+   * @author zhenghq
+   */
+  beginAnnotationTransform(mode: AnnotationTransformMode): boolean {
+    const annotation = this.selectedAnnotation
+    if (!annotation) return false
+    this.commitStyleChange()
+    this.commitNudge()
+    this.endAnnotationTransform()
+    this.transformMode = mode
+    this.transformStartBounds = getAnnotationBounds(annotation)
+    this.transformStartPoint = null
+    this.transformOriginal = snapshotAnnotations(this.store.annotations)
+    this.transformChanged = false
+    return true
+  }
+
+  /**
+   * 更新当前对象变换，坐标以选区相对坐标传入。
+   * @param point 当前指针位置。
+   * @param shiftKey 是否保持宽高比。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  updateAnnotationTransform(point: ScreenshotAnnotationPoint, shiftKey = false): void {
+    const annotation = this.selectedAnnotation
+    const startBounds = this.transformStartBounds
+    const mode = this.transformMode
+    if (!annotation || !startBounds || !mode || !this.selection) return
+    // 对象变换接口接收选区相对坐标，调用方负责把 PointerEvent 的覆盖层坐标换算后再传入。
+    const relative = point
+    if (!this.transformStartPoint) this.transformStartPoint = relative
+    const deltaX = relative.x - this.transformStartPoint.x
+    const deltaY = relative.y - this.transformStartPoint.y
+    if (mode === 'move') {
+      this.moveAnnotationToStart(annotation, deltaX, deltaY)
+    } else {
+      this.resizeAnnotation(annotation, startBounds, mode, relative, shiftKey)
+    }
+    const original = this.transformOriginal?.[this.selectedIndex ?? -1]
+    if (original && !areAnnotationsEqual(annotation, original)) this.transformChanged = true
+  }
+
+  /**
+   * 在撤销或重做替换标注数组后校正选择索引，避免选中悬空或错误对象。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private syncSelectionAfterHistoryChange(): void {
+    if (this.selectedIndex === null) return
+    if (!this.store.annotations[this.selectedIndex]) {
+      this.selectedIndex = null
+      this.transformMode = null
+      this.transformStartPoint = null
+      this.transformStartBounds = null
+      this.transformOriginal = null
+      this.transformChanged = false
+      return
+    }
+    this.syncStyleFromAnnotation(this.store.annotations[this.selectedIndex]!)
+  }
+
+  /**
+   * 将选中对象的当前样式同步到样式状态，保证后续控件调整从对象真实值继续。
+   * @param annotation 当前选中的标注对象。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private syncStyleFromAnnotation(annotation: ScreenshotAnnotation): void {
+    if (annotation.type === 'text') {
+      this.currentStyle = {
+        ...this.currentStyle,
+        color: annotation.color,
+        fontSize: annotation.fontSize,
+        bold: annotation.bold
+      }
+      return
+    }
+    if (annotation.type === 'rect') {
+      this.currentStyle = {
+        ...this.currentStyle,
+        color: annotation.color,
+        strokeWidth: annotation.strokeWidth,
+        filled: annotation.filled,
+        fillOpacity: annotation.fillOpacity,
+        cornerRadius: annotation.cornerRadius
+      }
+      return
+    }
+    if (annotation.type === 'ellipse' || annotation.type === 'arrow' || annotation.type === 'brush') {
+      this.currentStyle = {
+        ...this.currentStyle,
+        color: annotation.color,
+        strokeWidth: annotation.strokeWidth
+      }
+      return
+    }
+    if (annotation.type === 'mosaic') {
+      this.currentStyle = {
+        ...this.currentStyle,
+        mosaicBrushSize: annotation.brushSize,
+        mosaicBlockSize: annotation.blockSize
+      }
+      return
+    }
+    if (annotation.type === 'blur') {
+      this.currentStyle = { ...this.currentStyle, blurRadius: annotation.radius }
+      return
+    }
+    if (annotation.type === 'highlight') {
+      this.currentStyle = { ...this.currentStyle, color: annotation.color }
+    }
+  }
+
+  /**
+   * 结束对象变换，仅在位置或尺寸变化时提交一次撤销历史。
+   * @returns 是否发生了有效变换。
+   * @author zhenghq
+   */
+  endAnnotationTransform(): boolean {
+    const changed = this.transformChanged && this.transformOriginal !== null
+    if (changed) this.store.commitExternalChange(this.transformOriginal!)
+    this.transformMode = null
+    this.transformStartPoint = null
+    this.transformStartBounds = null
+    this.transformOriginal = null
+    this.transformChanged = false
+    return changed
+  }
+
+  /**
+   * 按像素微调选中对象；连续方向键操作合并为一次撤销记录。
+   * @param deltaX 水平位移。
+   * @param deltaY 垂直位移。
+   * @param accelerated 是否使用加速步长。
+   * @returns 是否实际移动了对象。
+   * @author zhenghq
+   */
+  nudgeSelectedAnnotation(deltaX: number, deltaY: number, accelerated = false): boolean {
+    const annotation = this.selectedAnnotation
+    if (!annotation || !this.selection) return false
+    this.commitStyleChange()
+    if (!this.nudgeOriginal) this.nudgeOriginal = snapshotAnnotations(this.store.annotations)
+    const step = accelerated ? 5 : 1
+    this.translateAnnotation(annotation, Math.sign(deltaX) * step, Math.sign(deltaY) * step)
+    return true
+  }
+
+  /**
+   * 提交方向键微调产生的历史记录。
+   * @returns 是否提交了微调历史。
+   * @author zhenghq
+   */
+  commitNudge(): boolean {
+    if (!this.nudgeOriginal) return false
+    this.store.commitExternalChange(this.nudgeOriginal)
+    this.nudgeOriginal = null
+    return true
   }
 
   /**
@@ -1342,6 +2129,9 @@ export class ScreenshotAnnotationController {
     this.textEditingIndex = null
     this.textMoveIndex = null
     this.textMoveOriginal = null
+    this.clearSelection()
+    this.styleChangeOriginal = null
+    this.nudgeOriginal = null
     this.store.reset()
   }
 
@@ -1364,6 +2154,189 @@ export class ScreenshotAnnotationController {
     if (draft.tool === 'mosaic') {
       return createMosaicAnnotation(draft.points, this.currentStyle)
     }
+    if (draft.tool === 'highlight') {
+      return createHighlightAnnotation(draft.start, draft.current, this.currentStyle)
+    }
+    if (draft.tool === 'blur') {
+      return createBlurAnnotation(draft.start, draft.current, this.currentStyle)
+    }
+    if (draft.tool === 'spotlight') {
+      return createSpotlightAnnotation(draft.start, draft.current, this.currentStyle)
+    }
     return null
+  }
+
+  /**
+   * 将标注整体平移并限制在选区内部。
+   * @param annotation 待移动的标注。
+   * @param deltaX 水平位移。
+   * @param deltaY 垂直位移。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private translateAnnotation(
+    annotation: ScreenshotAnnotation,
+    deltaX: number,
+    deltaY: number
+  ): void {
+    if (!this.selection) return
+    const bounds = getAnnotationBounds(annotation)
+    const x = Math.min(
+      Math.max(0, bounds.x + deltaX),
+      Math.max(0, this.selection.width - bounds.width)
+    )
+    const y = Math.min(
+      Math.max(0, bounds.y + deltaY),
+      Math.max(0, this.selection.height - bounds.height)
+    )
+    const dx = x - bounds.x
+    const dy = y - bounds.y
+    if (annotation.type === 'text') {
+      annotation.position.x += dx
+      annotation.position.y += dy
+    } else if (annotation.type === 'arrow') {
+      annotation.start.x += dx
+      annotation.start.y += dy
+      annotation.end.x += dx
+      annotation.end.y += dy
+    } else if (annotation.type === 'brush' || annotation.type === 'mosaic') {
+      for (const point of annotation.points) {
+        point.x += dx
+        point.y += dy
+      }
+    } else {
+      annotation.bounds.x += dx
+      annotation.bounds.y += dy
+    }
+  }
+
+  /**
+   * 基于变换起点平移标注，避免连续指针事件重复叠加位移。
+   * @param annotation 待移动的标注。
+   * @param deltaX 相对变换起点的水平位移。
+   * @param deltaY 相对变换起点的垂直位移。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private moveAnnotationToStart(
+    annotation: ScreenshotAnnotation,
+    deltaX: number,
+    deltaY: number
+  ): void {
+    const start = this.transformOriginal?.[this.selectedIndex ?? -1]
+    if (!start || !this.selection) return
+    const currentBounds = getAnnotationBounds(annotation)
+    const startBounds = getAnnotationBounds(start)
+    const x = Math.min(
+      Math.max(0, startBounds.x + deltaX),
+      Math.max(0, this.selection.width - startBounds.width)
+    )
+    const y = Math.min(
+      Math.max(0, startBounds.y + deltaY),
+      Math.max(0, this.selection.height - startBounds.height)
+    )
+    const dx = x - currentBounds.x
+    const dy = y - currentBounds.y
+    if (annotation.type === 'text') {
+      annotation.position.x += dx
+      annotation.position.y += dy
+    } else if (annotation.type === 'arrow') {
+      annotation.start.x += dx
+      annotation.start.y += dy
+      annotation.end.x += dx
+      annotation.end.y += dy
+    } else if (annotation.type === 'brush' || annotation.type === 'mosaic') {
+      for (const point of annotation.points) {
+        point.x += dx
+        point.y += dy
+      }
+    } else {
+      annotation.bounds.x += dx
+      annotation.bounds.y += dy
+    }
+  }
+
+  /**
+   * 根据控制柄调整标注尺寸，支持 Shift 等比缩放。
+   * @param annotation 待缩放的标注。
+   * @param start 变换开始时的边界。
+   * @param handle 拖动的控制柄。
+   * @param point 当前相对坐标。
+   * @param shiftKey 是否保持宽高比。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private resizeAnnotation(
+    annotation: ScreenshotAnnotation,
+    start: ScreenshotAnnotationRect,
+    handle: ScreenshotAnnotationResizeHandle,
+    point: ScreenshotAnnotationPoint,
+    shiftKey: boolean
+  ): void {
+    if (!this.selection) return
+    let left = start.x
+    let top = start.y
+    let right = start.x + start.width
+    let bottom = start.y + start.height
+    if (handle.includes('w')) left = Math.min(right - 8, Math.max(0, point.x))
+    if (handle.includes('e')) right = Math.max(left + 8, Math.min(this.selection.width, point.x))
+    if (handle.includes('n')) top = Math.min(bottom - 8, Math.max(0, point.y))
+    if (handle.includes('s')) bottom = Math.max(top + 8, Math.min(this.selection.height, point.y))
+
+    let width = right - left
+    let height = bottom - top
+    if (shiftKey) {
+      const ratio = start.width / Math.max(1, start.height)
+      if (width / height > ratio) width = height * ratio
+      else height = width / ratio
+      if (handle.includes('w')) left = right - width
+      if (handle.includes('n')) top = bottom - height
+    }
+    const next = { x: left, y: top, width, height }
+    this.applyBoundsToAnnotation(annotation, start, next)
+  }
+
+  /**
+   * 将新的包围盒映射回具体标注类型。
+   * @param annotation 待修改的标注。
+   * @param previous 变换前边界。
+   * @param next 变换后边界。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private applyBoundsToAnnotation(
+    annotation: ScreenshotAnnotation,
+    previous: ScreenshotAnnotationRect,
+    next: ScreenshotAnnotationRect
+  ): void {
+    if (annotation.type === 'text') {
+      annotation.position = { x: next.x, y: next.y }
+      const scale = next.height / Math.max(1, previous.height)
+      annotation.fontSize = Math.max(12, Math.min(48, annotation.fontSize * scale))
+      return
+    }
+    if (annotation.type === 'arrow') {
+      const scaleX = next.width / Math.max(1, previous.width)
+      const scaleY = next.height / Math.max(1, previous.height)
+      annotation.start = {
+        x: next.x + (annotation.start.x - previous.x) * scaleX,
+        y: next.y + (annotation.start.y - previous.y) * scaleY
+      }
+      annotation.end = {
+        x: next.x + (annotation.end.x - previous.x) * scaleX,
+        y: next.y + (annotation.end.y - previous.y) * scaleY
+      }
+      return
+    }
+    if (annotation.type === 'brush' || annotation.type === 'mosaic') {
+      const scaleX = next.width / Math.max(1, previous.width)
+      const scaleY = next.height / Math.max(1, previous.height)
+      for (const point of annotation.points) {
+        point.x = next.x + (point.x - previous.x) * scaleX
+        point.y = next.y + (point.y - previous.y) * scaleY
+      }
+      return
+    }
+    annotation.bounds = next
   }
 }

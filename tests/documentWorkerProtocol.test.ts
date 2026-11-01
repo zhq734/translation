@@ -34,7 +34,6 @@ function exportRequest() {
     generation: 1,
     request: {
       mode: 'complete' as const,
-      layout: 'bilingual' as const,
       textLayer: true,
       confirmPartialExport: false
     }
@@ -56,7 +55,7 @@ function exportProgress() {
   })
 }
 
-test('worker 导出请求必须保留双语布局并丢弃额外路径字段', () => {
+test('worker 导出请求必须保留文字层字段并丢弃额外路径字段', () => {
   const parsed = parseDocumentWorkerRequest({
     ...exportRequest(),
     request: {
@@ -66,18 +65,12 @@ test('worker 导出请求必须保留双语布局并丢弃额外路径字段', (
     }
   })
   assert.ok(parsed?.type === 'export')
-  assert.equal(parsed.request.layout, 'bilingual')
   assert.equal(parsed.request.textLayer, true)
   assert.deepEqual(parsed.request, {
     mode: 'complete',
-    layout: 'bilingual',
     textLayer: true,
     confirmPartialExport: false
   })
-  assert.equal(parseDocumentWorkerRequest({
-    ...exportRequest(),
-    request: { ...exportRequest().request, layout: 'side-by-side' }
-  }), null)
 })
 
 test('worker 导出进度必须严格校验阶段、百分比、页面计数和任务代际', () => {

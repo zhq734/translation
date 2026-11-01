@@ -111,7 +111,7 @@ test('生产依赖应透传显式文档 OCR 并发配置', () => {
   assert.equal(dependencies.getOcrConcurrency?.(), 3)
 })
 
-test('生产依赖应把双语源模型、布局、取消信号、文字层与进度传给 PDF 导出器', async () => {
+test('生产依赖应把取消信号、文字层与进度传给译文 PDF 导出器', async () => {
   const rpc: DocumentWorkerTranslationRpc = {
     async translate() {
       return '译文'
@@ -135,7 +135,6 @@ test('生产依赖应把双语源模型、布局、取消信号、文字层与�
     warnings: [],
     metadata: { direction: 'ltr' }
   } as DocumentModel
-  const sourceModel = { ...model, documentId: 'production-source' } as DocumentModel
   const signal = new AbortController().signal
   const dependencies = createDocumentWorkerProductionDependencies({
     ...options(rpc),
@@ -151,10 +150,8 @@ test('生产依赖应把双语源模型、布局、取消信号、文字层与�
     {
       textLayer: true,
       sourceOnly: false,
-      layout: 'bilingual',
       signal,
-      onProgress: () => undefined,
-      sourceModel
+      onProgress: () => undefined
     }
   )
 
@@ -163,8 +160,6 @@ test('生产依赖应把双语源模型、布局、取消信号、文字层与�
   assert.equal(args[0], model)
   assert.deepEqual(args[2], {
     includeOcrTextLayer: true,
-    layout: 'bilingual',
-    sourceModel,
     signal,
     onProgress: args[2] && (args[2] as { onProgress?: unknown }).onProgress
   })

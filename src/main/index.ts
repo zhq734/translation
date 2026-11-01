@@ -267,15 +267,16 @@ import {
 import { parseDocument } from './documentParser'
 import { createProductionPdfRasterizer } from './documentPdfRuntime'
 import { exportDocumentToPdf } from './documentPdfExport'
-import { printDocumentPreviewToPdf } from './documentPdfPrint'
 import { loadDocumentPdfFontBytes } from './documentPdfFont'
 import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
 import { DocumentApprovedResourceService } from './documentApprovedResourceService'
+import { DocumentApprovedExportService } from './documentApprovedExportService'
 import { DocumentTranslationCacheStore } from './documentTranslationCache'
 import { DocumentTaskHistoryStore } from './documentTaskHistory'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
   normalizeDocumentExportCancelRequest,
+  normalizeDocumentApprovedExportRequest,
   normalizeDocumentExportRequest,
   normalizeDocumentOpenExportFolderRequest,
   normalizeDocumentRunRequest,
@@ -442,6 +443,45 @@ const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskServi
 /** 历史与恢复 Tab 的受控资源读取服务；只读取当前窗口已批准路径。 */
 const documentApprovedResourceService = new DocumentApprovedResourceService({
   isApprovedPath: (path) => approvedDocumentPaths.has(path)
+})
+
+/** 历史与恢复 Tab 的单语译文导出服务；不复用旧任务，只使用已保存译文模型。 */
+const documentApprovedExportService = new DocumentApprovedExportService({
+  validateSource: (request) => documentApprovedResourceService.validateSource(request),
+  getAsset: (request) => documentApprovedResourceService.getAsset(request),
+  loadFontBytes: () => loadDocumentPdfFontBytes({
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath
+  }),
+  exportPdf: (model, dependencies, options) => exportDocumentToPdf(model, dependencies, {
+    includeOcrTextLayer: options?.includeOcrTextLayer !== false
+  }),
+  showSaveDialog: async (suggestedName) => {
+    const window = documentWorkspace?.getWindow()
+    const result = window
+      ? await dialog.showSaveDialog(window, {
+        title: t('document.export'),
+        defaultPath: suggestedName,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+      : await dialog.showSaveDialog({
+        title: t('document.export'),
+        defaultPath: suggestedName,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+    return {
+      canceled: result.canceled,
+      ...(result.filePath ? { filePath: result.filePath } : {})
+    }
+  },
+  writeFile: async (path, bytes) => {
+    await writeFile(path, bytes)
+  },
+  rename: async (source, target) => {
+    await rename(source, target)
+  },
+  unlink
 })
 
 /** 当前窗口共享的文档翻译缓存；缓存按源文件哈希跨任务复用。 */
@@ -854,30 +894,13 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
-    exportPdf: (model, dependencies, exportOptions) => {
-      // OCR 原文必须直接写回 PDF 文字对象；Chromium 打印会丢弃完全透明的 DOM 文字层。
-      if (exportOptions.sourceOnly) {
-        return exportDocumentToPdf(model, dependencies, {
-          // OCR 原文默认写入透明文字层；只有调用方明确传 false 时才关闭。
-          includeOcrTextLayer: exportOptions.textLayer !== false,
-          ...(exportOptions.layout ? { layout: exportOptions.layout } : {}),
-          ...(exportOptions.sourceModel ? { sourceModel: exportOptions.sourceModel } : {}),
-          ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
-          ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
-        })
-      }
-      const window = documentWorkspace?.getWindow()
-      if (!window) throw new Error('document-window-unavailable')
-      return printDocumentPreviewToPdf(
-        window.webContents,
-        model,
-        exportOptions.partialExport,
-        exportOptions.textLayer,
-        exportOptions.layout,
-        exportOptions.signal,
-        exportOptions.onProgress
-      )
-    },
+    // 所有导出统一按文档模型合成，避免把文档窗口中的弹层等界面元素写入 PDF。
+    exportPdf: (model, dependencies, exportOptions) => exportDocumentToPdf(model, dependencies, {
+        // OCR 原文默认写入透明文字层；只有调用方明确传 false 时才关闭。
+        includeOcrTextLayer: exportOptions.textLayer !== false,
+        ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
+        ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
+      }),
     showSaveDialog: async (suggestedName) => {
       const window = documentWorkspace?.getWindow()
       const result = window
@@ -6285,6 +6308,21 @@ function registerIpc(): void {
     return documentWorkspaceTaskServices.get(normalizedRequest.jobId)
       ?.exportPdf(normalizedRequest) ??
       { status: 'rejected', code: 'not-ready' }
+  })
+  /**
+   * 导出已重新授权历史文档中的已保存译文；不复用旧任务身份。
+   * @param event IPC 事件对象。
+   * @param request 已批准源信息、建议文件名与译文模型。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:export-approved-pdf', async (event, request: unknown) => {
+    if (!isDocumentWorkspaceSender(event.sender)) {
+      return { status: 'rejected', code: 'unreadable' }
+    }
+    const normalizedRequest = normalizeDocumentApprovedExportRequest(request)
+    if (!normalizedRequest) return { status: 'rejected', code: 'invalid-request' }
+    return documentApprovedExportService.exportPdf(normalizedRequest)
   })
   /**
    * 取消当前正在执行的 PDF 导出；任务终态与已完成译文保持不变。

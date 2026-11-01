@@ -338,7 +338,6 @@ export class DocumentWorkerSession {
       generation: job.generation,
       request: {
         mode: request.mode,
-        layout: request.layout === 'bilingual' ? 'bilingual' : 'translation',
         ...(request.textLayer !== undefined ? { textLayer: request.textLayer } : {}),
         completionReport: job.snapshot.completionReport,
         ...(request.mode === 'partial' ? { confirmPartialExport: true } : {})

@@ -122,20 +122,24 @@ test('标注工具激活时选区边缘应优先响应缩放', () => {
 })
 
 /**
- * 校验上下文样式矩阵：马赛克不显示颜色，文字显示字号与加粗。
+ * 校验上下文样式矩阵：基础绘图显示线宽，无颜色工具隐藏颜色，文字显示字号与加粗。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('上下文样式矩阵应隐藏马赛克颜色控件', () => {
+test('上下文样式矩阵应按工具类型显示对应控件', () => {
   const uiStart = selectionRenderer.indexOf('function updateAnnotationUi')
   const uiEnd = selectionRenderer.indexOf('\n/**', uiStart)
   const uiSource = selectionRenderer.slice(uiStart, uiEnd)
 
-  assert.match(uiSource, /ocrColorToggle\.hidden = tool === 'mosaic'/u)
-  assert.match(uiSource, /ocrStrokeWidth\.hidden = tool === 'text' \|\| tool === 'mosaic'/u)
+  assert.match(
+    uiSource,
+    /ocrStrokeWidth\.hidden = tool !== 'rect' && tool !== 'ellipse' && tool !== 'arrow' && tool !== 'brush'/u
+  )
+  assert.match(uiSource, /ocrColorToggle\.hidden = tool === 'mosaic' \|\| tool === 'blur' \|\| tool === 'spotlight'/u)
   assert.match(uiSource, /ocrFontSize\.hidden = tool !== 'text'/u)
   assert.match(uiSource, /ocrMosaicBrush\.hidden = tool !== 'mosaic'/u)
   assert.match(uiSource, /ocrMosaicIntensity\.hidden = tool !== 'mosaic'/u)
+  assert.match(uiSource, /ocrBlurRadius\.hidden = tool !== 'blur'/u)
   const mosaicIntensity = findOpeningTagById(selectionHtml, 'ocr-mosaic-intensity')
   assert.ok(mosaicIntensity, '缺少马赛克强度控件')
   const mosaicIntensityKey = readAttributeI18nKey(mosaicIntensity, 'aria-label')

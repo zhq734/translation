@@ -89,23 +89,20 @@ test('PDF 导出返回有效 PDF 字节并保留页面尺寸', async () => {
   assert.deepEqual(result.warnings, [])
 })
 
-test('双语 PDF 导出必须同时包含原文与译文并逐页上报进度', async () => {
+test('译文 PDF 导出必须只包含译文并逐页上报进度', async () => {
   const model = documentWithText('Translated document')
-  const sourceModel = documentWithText('Source document')
   const progress: Array<{ completedPages: number; totalPages: number }> = []
 
   const { bytes } = await exportDocumentToPdf(model, {
     loadFontBytes: async () => null,
     loadAssetBytes: async () => null
   }, {
-    layout: 'bilingual',
-    sourceModel,
     onProgress: (event) => progress.push(event)
   })
 
   const text = await extractFirstPageText(bytes)
-  assert.match(text, /Source document/u)
   assert.match(text, /Translated document/u)
+  assert.doesNotMatch(text, /Source document/u)
   assert.deepEqual(progress, [{ completedPages: 1, totalPages: 1 }])
 })
 
@@ -235,7 +232,7 @@ test('PDF 导出必须为表格单元格绘制边框并保留单元格文字', a
   }]
 
   const { bytes } = await exportDocumentToPdf(model, {
-    loadFontBytes: async () => null,
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
     loadAssetBytes: async () => null
   })
   const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
@@ -315,7 +312,7 @@ test('PDF 导出必须按跨行单元格占用后的真实列定位后续单元�
   }]
 
   const { bytes } = await exportDocumentToPdf(model, {
-    loadFontBytes: async () => null,
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
     loadAssetBytes: async () => null
   })
   const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
@@ -437,7 +434,7 @@ test('PDF 表格跨页后必须重复表头行', async () => {
   }]
 
   const { bytes } = await exportDocumentToPdf(model, {
-    loadFontBytes: async () => null,
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
     loadAssetBytes: async () => null
   })
   const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
@@ -2177,6 +2174,79 @@ test('多 run 长文本跨页后，后续 run 必须从新页游标继续绘制'
   }
 })
 
+test('PDF 普通正文的连续碎片 run 必须按文本流排版，不能逐字竖排', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'fragmented-flow-paragraph',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 65.25, y: 100, width: 459, height: 76.5 },
+    runs: Array.from({ length: 201 }, (_, index) => ({
+      runId: `fragmented-flow-run-${index}`,
+      text: '用户中心权限申请审批流程测试'.at(index % 13)!,
+      style: { fontSize: 9, lineHeight: 13.5 }
+    }))
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1, '短正文不能因碎片 run 被逐字竖排而膨胀成多页')
+    const textContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = textContent.items.filter((item): item is typeof item & { transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const baselines = [...new Set(items.map((item) => Math.round((item.transform[5] ?? 0) * 10) / 10))]
+    assert.ok(baselines.length <= 6, `正文应横向排成少量视觉行，实际基线数: ${baselines.length}`)
+    const firstBaselineItems = items.filter((item) =>
+      Math.abs((item.transform[5] ?? 0) - (items[0]!.transform[5] ?? 0)) < 1)
+    const left = Math.min(...firstBaselineItems.map((item) => item.transform[4] ?? 0))
+    const right = Math.max(...firstBaselineItems.map((item) => (item.transform[4] ?? 0) + item.width))
+    assert.ok(right - left > 300, `同一视觉行的文本必须横向连续排版，实际跨度: ${right - left}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 普通正文自动换行后必须保留混合 run 的样式', async () => {
+  const model = documentWithText('')
+  const block = model.pages[0]!.blocks[0]
+  assert.equal(block.kind, 'text')
+  if (block.kind !== 'text') return
+  block.bbox = { x: 40, y: 50, width: 150, height: 40 }
+  block.runs = [
+    { runId: 'flow-style-regular', text: 'Regular text ', style: { fontSize: 12, color: '#123456' } },
+    { runId: 'flow-style-bold', text: 'BOLD_MARKER', style: { fontSize: 14, color: '#654321', fontWeight: 700 } },
+    { runId: 'flow-style-tail', text: ' tail text', style: { fontSize: 12, color: '#123456' } }
+  ]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const content = await page.getTextContent()
+    const boldItem = content.items.find((item) => 'str' in item && item.str.includes('BOLD_MARKER'))
+    assert.ok(boldItem && 'transform' in boldItem && 'fontName' in boldItem)
+    const transform = boldItem.transform as number[]
+    const fontSize = Math.hypot(transform[2] ?? 0, transform[3] ?? 0)
+    assert.ok(Math.abs(fontSize - 14) < 1, `粗体片段字号必须保留: ${fontSize}`)
+    await page.getOperatorList()
+    const font = page.commonObjs.get(boldItem.fontName) as { name?: string; bold?: boolean }
+    assert.equal(font.bold, true)
+    assert.equal(font.name, 'Helvetica-Bold')
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('PDF 译文换行增高后，后续文本块必须顺延而不能覆盖原文坐标', async () => {
   const model = documentWithText('')
   const page = model.pages[0]!
@@ -2277,6 +2347,214 @@ test('表格跨页后必须在新页面内容区顶部开始绘制，不能沿�
   }
 })
 
+test('表格结束后的正文必须衔接表格实际底边，不能继承原文整表高度导致额外分页', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  const sourceRows = [
+    { y: 45, text: 'ROW_0' },
+    { y: 75, text: 'ROW_1' },
+    { y: 105, text: 'ROW_2' }
+  ]
+  page.blocks = [{
+    kind: 'table',
+    blockId: 'table-followed-by-paragraph',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 40, y: 40, width: 400, height: 90 },
+    columnWidths: [400],
+    rows: sourceRows.map((sourceRow, rowIndex) => ({
+      rowId: `table-followed-by-paragraph-row-${rowIndex}`,
+      cells: [{
+        cellId: `table-followed-by-paragraph-cell-${rowIndex}`,
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text' as const,
+          blockId: `table-followed-by-paragraph-text-${rowIndex}`,
+          readingOrder: rowIndex,
+          translatable: true,
+          role: 'paragraph' as const,
+          bbox: { x: 45, y: sourceRow.y, width: 100, height: 13.5 },
+          runs: [{ runId: `table-followed-by-paragraph-run-${rowIndex}`, text: sourceRow.text, style: { fontSize: 9, lineHeight: 13.5 } }]
+        }]
+      }]
+    }))
+  }, {
+    kind: 'text',
+    blockId: 'paragraph-after-compact-table',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 135, width: 400, height: 20 },
+    runs: [{ runId: 'paragraph-after-compact-table-run', text: 'PARAGRAPH_AFTER_COMPACT_TABLE', style: { fontSize: 9, lineHeight: 13.5 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1, '紧凑表格后的正文不能被额外间距推到新页')
+    const pageContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const paragraph = pageContent.items.find((item) => 'str' in item && item.str === 'PARAGRAPH_AFTER_COMPACT_TABLE')
+    assert.ok(paragraph && 'transform' in paragraph)
+    const paragraphTop = page.height - (paragraph.transform[5] ?? page.height)
+    // 正文顶部由表格最后一条行带底边再叠加 10pt 块间距得到；
+    // 这里验证的是不额外继承整表高度，而不是断言某个精确字号基线坐标。
+    assert.ok(paragraphTop < 160, `正文必须紧随表格实际底边，实际顶部: ${paragraphTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 原生表格必须按原始单元格 Y 坐标保留行带高度，不能压缩原有留白', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  const sourceRows = [
+    { y: 45, text: 'FIRST_ROW' },
+    { y: 105, text: 'SECOND_ROW' },
+    { y: 165, text: 'THIRD_ROW' }
+  ]
+  page.blocks = [{
+    kind: 'table',
+    blockId: 'table-with-source-row-heights',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 40, y: 40, width: 400, height: 150 },
+    columnWidths: [400],
+    rows: sourceRows.map((sourceRow, rowIndex) => ({
+      rowId: `table-with-source-row-heights-row-${rowIndex}`,
+      cells: [{
+        cellId: `table-with-source-row-heights-cell-${rowIndex}`,
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text' as const,
+          blockId: `table-with-source-row-heights-text-${rowIndex}`,
+          readingOrder: rowIndex,
+          translatable: true,
+          role: 'paragraph' as const,
+          bbox: { x: 45, y: sourceRow.y, width: 100, height: 13.5 },
+          runs: [{ runId: `table-with-source-row-heights-run-${rowIndex}`, text: sourceRow.text, style: { fontSize: 9, lineHeight: 13.5 } }]
+        }]
+      }]
+    }))
+  }, {
+    kind: 'text',
+    blockId: 'paragraph-after-source-height-table',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 200, width: 400, height: 20 },
+    runs: [{ runId: 'paragraph-after-source-height-table-run', text: 'PARAGRAPH_AFTER_SOURCE_HEIGHT_TABLE', style: { fontSize: 9, lineHeight: 13.5 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const pageContent = await (await exportedPdf.getPage(1)).getTextContent()
+    const items = pageContent.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item)
+    const rowTops = ['FIRST_ROW', 'SECOND_ROW', 'THIRD_ROW'].map((text) => {
+      const item = items.find((candidate) => candidate.str === text)
+      assert.ok(item, `表格行文本缺失: ${text}`)
+      return page.height - (item.transform[5] ?? page.height)
+    })
+    assert.ok(rowTops[1]! - rowTops[0]! > 50, `第二行必须保留原始 60pt 行带: ${rowTops.join(',')}`)
+    assert.ok(rowTops[2]! - rowTops[1]! > 50, `第三行必须保留原始 60pt 行带: ${rowTops.join(',')}`)
+    const paragraph = items.find((item) => item.str === 'PARAGRAPH_AFTER_SOURCE_HEIGHT_TABLE')
+    assert.ok(paragraph, '表格后的正文必须导出')
+    const paragraphTop = page.height - (paragraph.transform[5] ?? page.height)
+    assert.ok(paragraphTop > 185 && paragraphTop < 215, `正文必须衔接原始表格底边，实际顶部: ${paragraphTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 原生正文增高后，后续竖线边框仍必须保持原始页面坐标', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.height = 240
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'text-inside-native-frame',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 60, width: 200, height: 20 },
+    runs: [{
+      runId: 'text-inside-native-frame-run',
+      // 两段文本足以让译文从原单行增高并换行，同时仍完整位于 240pt 物理页面内。
+      // 这样测试只会暴露竖线错误推进游标的问题，不会把正文自身超过页高误判为回归。
+      text: 'TRANSLATED_TEXT_INSIDE_FRAME '.repeat(2),
+      style: { fontSize: 12, lineHeight: 18 }
+    }]
+  }, {
+    kind: 'shape',
+    blockId: 'native-vertical-frame',
+    readingOrder: 1,
+    translatable: false,
+    bbox: { x: 40, y: 50, width: 1, height: 170 },
+    line: { orientation: 'vertical', thickness: 1 }
+  }, {
+    kind: 'text',
+    blockId: 'text-after-native-frame',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 190, width: 200, height: 18 },
+    runs: [{ runId: 'text-after-native-frame-run', text: 'AFTER_NATIVE_FRAME', style: { fontSize: 12, lineHeight: 18 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1, '原生竖线边框不能把仍在原页的后续正文推到新页')
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    const item = content.items.find((candidate) => 'str' in candidate && candidate.str === 'AFTER_NATIVE_FRAME')
+    assert.ok(item && 'transform' in item)
+    const top = page.height - (item.transform[5] ?? page.height)
+    assert.ok(top > 185 && top < 210, `后续正文必须保持原始顶部坐标，实际顶部: ${top}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 原生页脚文本位于物理页面内时不能被编辑留白强制分页', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.height = 240
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'native-footer-text',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 226, width: 160, height: 9 },
+    runs: [{ runId: 'native-footer-text-run', text: 'NATIVE_FOOTER', style: { fontSize: 9, lineHeight: 12 } }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1, '仍位于原物理页面内的页脚不能被额外分页')
+    const content = await (await exportedPdf.getPage(1)).getTextContent()
+    assert.ok(content.items.some((item) => 'str' in item && item.str === 'NATIVE_FOOTER'))
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
 test('公式跨页后必须在新页面内容区顶部开始绘制，不能沿用旧页坐标', async () => {
   const model = documentWithText('')
   const page = model.pages[0]!
@@ -2358,6 +2636,324 @@ test('PDF 文本跨页后结束游标必须位于新页，不能把后续区块�
     assert.ok('transform' in item)
     const top = page.height - (item.transform[5] ?? page.height)
     assert.ok(top < 80, `following text must continue near the new page top, got ${top}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格单元格同一视觉行的多个文本片段必须同基线连续绘制', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-fragmented-cell-runs',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 40, y: 50, width: 400, height: 40 },
+    columnWidths: [160, 240],
+    rows: [{
+      rowId: 'table-fragmented-cell-runs-row',
+      cells: [{
+        cellId: 'table-fragmented-cell-runs-first',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-fragmented-cell-runs-first-text',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          runs: [
+            { runId: 'table-fragmented-cell-runs-a', text: '证', style: { fontSize: 9, lineHeight: 13.5 } },
+            { runId: 'table-fragmented-cell-runs-b', text: '书份', style: { fontSize: 9, lineHeight: 13.5 } },
+            { runId: 'table-fragmented-cell-runs-c', text: '数', style: { fontSize: 9, lineHeight: 13.5 } }
+          ]
+        }]
+      }, {
+        cellId: 'table-fragmented-cell-runs-second',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-fragmented-cell-runs-second-text',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          textAlign: 'right',
+          runs: [
+            { runId: 'table-fragmented-cell-runs-d', text: 'RIGHT', style: { fontSize: 9, lineHeight: 13.5 } },
+            { runId: 'table-fragmented-cell-runs-e', text: ' ALIGNED', style: { fontSize: 9, lineHeight: 13.5 } }
+          ]
+        }]
+      }]
+    }, {
+      rowId: 'table-fragmented-cell-runs-next-row',
+      cells: [{
+        cellId: 'table-fragmented-cell-runs-next',
+        rowSpan: 1,
+        colSpan: 2,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-fragmented-cell-runs-next-text',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'table-fragmented-cell-runs-next-run', text: 'NEXT_TABLE_ROW', style: { fontSize: 9 } }]
+        }]
+      }]
+    }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    assert.equal(exportedPdf.numPages, 1, '短表格不能因单元格 run 碎片化而异常分页')
+    const page = await exportedPdf.getPage(1)
+    const content = await page.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && 'width' in item && item.str.trim().length > 0)
+    const fragments = items.filter((item) =>
+      ['证', '书份', '数'].includes(item.str))
+    assert.deepEqual(fragments.map((item) => item.str), ['证', '书份', '数'])
+    const baselines = fragments.map((item) => item.transform[5] ?? 0)
+    assert.ok(Math.max(...baselines) - Math.min(...baselines) < 1, `同一视觉行必须共享基线: ${baselines.join(',')}`)
+    assert.ok(fragments[1]!.transform[4]! > fragments[0]!.transform[4]!)
+    assert.ok(fragments[2]!.transform[4]! > fragments[1]!.transform[4]!)
+
+    const rightFragments = items.filter((item) => /RIGHT|ALIGNED/u.test(item.str))
+    assert.ok(rightFragments.length >= 1, '右对齐文本必须完整导出')
+    assert.equal(
+      rightFragments.map((item) => item.str).join(' ').replace(/\s+/gu, ' ').trim(),
+      'RIGHT ALIGNED',
+      `右对齐文本导出不完整: ${rightFragments.map((item) => item.str).join('|')}`
+    )
+    const lastRightFragment = rightFragments[rightFragments.length - 1]!
+    const rightEdge = (lastRightFragment.transform[4] ?? 0) + lastRightFragment.width
+    assert.ok(Math.abs(rightEdge - 435) < 2, `右对齐片段必须保持整行右边界: ${rightEdge}`)
+    const nextRow = items.find((item) => item.str === 'NEXT_TABLE_ROW')
+    assert.ok(nextRow)
+    const firstRowTop = page.getViewport({ scale: 1 }).height - (fragments[0]!.transform[5] ?? 0)
+    const nextRowTop = page.getViewport({ scale: 1 }).height - (nextRow.transform[5] ?? 0)
+    assert.ok(nextRowTop > firstRowTop + 10, '下一行必须避开单元格内容，不能被首行覆盖')
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格单元格内同排正文与页码必须保持原始横向位置和同一顶部', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-cell-side-by-side',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 60.375, y: 100, width: 474.75, height: 60 },
+    columnWidths: [80.625, 394.125],
+    rows: [{
+      rowId: 'table-cell-side-by-side-row',
+      cells: [{
+        cellId: 'table-cell-side-by-side-label',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-label-text',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          textAlign: 'center',
+          bbox: { x: 83.25, y: 109.875, width: 36, height: 10 },
+          runs: [{ runId: 'table-cell-side-by-side-label-run', text: '申请表', style: { fontSize: 9, lineHeight: 13.5 } }]
+        }]
+      }, {
+        cellId: 'table-cell-side-by-side-value',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-body',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 145.5, y: 109.875, width: 250, height: 10 },
+          runs: [{
+            runId: 'table-cell-side-by-side-body-run',
+            text: '这是一段需要换行的较长正文内容，用于模拟左侧正文和右侧页码在同一单元格内共享原始视觉行。',
+            style: { fontSize: 9, lineHeight: 13.5 }
+          }]
+        }, {
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-page-number',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          textAlign: 'right',
+          bbox: { x: 515.847, y: 109.875, width: 15, height: 10 },
+          runs: [{ runId: 'table-cell-side-by-side-page-number-run', text: '4页', style: { fontSize: 9, lineHeight: 13.5 } }]
+        }]
+      }]
+    }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const content = await page.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[]; width: number } =>
+      'str' in item && 'transform' in item && 'width' in item && item.str.trim().length > 0)
+    const pageNumber = items.find((item) => item.str.includes('4') && (item.transform[4] as number) > 470)
+    const bodyStart = items.find((item) => item.str.includes('这是一段'))
+    assert.ok(pageNumber, '右侧页码必须导出')
+    assert.ok(bodyStart, '左侧正文必须导出')
+    const pageHeight = page.getViewport({ scale: 1 }).height
+    const pageNumberTop = pageHeight - (pageNumber.transform[5] as number)
+    const bodyTop = pageHeight - (bodyStart.transform[5] as number)
+    assert.ok(Math.abs(pageNumberTop - bodyTop) < 2,
+      `同排正文和页码顶部必须一致，正文=${bodyTop}，页码=${pageNumberTop}`)
+    assert.ok(pageNumber.transform[4]! > 470,
+      `页码必须保持在单元格右侧，实际 X=${pageNumber.transform[4]}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格单元格内的图片必须先于其后的文本绘制，不能被纵坐标排序挪到后面', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-cell-image-order',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 60, y: 100, width: 400, height: 100 },
+    columnWidths: [400],
+    rows: [{
+      rowId: 'table-cell-image-order-row',
+      cells: [{
+        cellId: 'table-cell-image-order-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: 'table-cell-image-order-image',
+          readingOrder: 0,
+          translatable: false,
+          assetId: 'table-cell-image-order-asset',
+          bbox: { x: 65, y: 105, width: 120, height: 60 }
+        }, {
+          kind: 'text',
+          blockId: 'table-cell-image-order-text',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 65, y: 105, width: 120, height: 12 },
+          runs: [{ runId: 'table-cell-image-order-run', text: 'IMAGE_CAPTION_AFTER', style: { fontSize: 10 } }]
+        }]
+      }]
+    }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const operatorList = await page.getOperatorList()
+    const paintIndex = operatorList.fnArray.indexOf(pdfjs.OPS.paintImageXObject)
+    const textContent = await page.getTextContent()
+    const caption = textContent.items.find((item) => 'str' in item && item.str.includes('IMAGE_CAPTION_AFTER'))
+    assert.ok(paintIndex >= 0, '单元格图片必须导出')
+    assert.ok(caption && 'transform' in caption, '图片后的文本必须导出')
+    const pageHeight = page.getViewport({ scale: 1 }).height
+    const captionTop = pageHeight - (caption.transform[5] ?? 0)
+    const imageBottom = 105 + 60
+    assert.ok(captionTop >= imageBottom, `图片后的文本必须排在图片下方，图片底=${imageBottom}，文本顶=${captionTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格单元格同排正文与页码只能累计一次视觉行高度', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-cell-side-by-side-height',
+    readingOrder: 0,
+    translatable: true,
+    bbox: { x: 60, y: 100, width: 450, height: 30 },
+    columnWidths: [450],
+    rows: [{
+      rowId: 'table-cell-side-by-side-height-row',
+      cells: [{
+        cellId: 'table-cell-side-by-side-height-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-height-body',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 65, y: 105, width: 350, height: 10 },
+          runs: [{ runId: 'table-cell-side-by-side-height-body-run', text: 'SHORT_BODY', style: { fontSize: 10, lineHeight: 13 } }]
+        }, {
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-height-page',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          textAlign: 'right',
+          bbox: { x: 475, y: 105, width: 30, height: 10 },
+          runs: [{ runId: 'table-cell-side-by-side-height-page-run', text: '4页', style: { fontSize: 10, lineHeight: 13 } }]
+        }]
+      }]
+    }, {
+      rowId: 'table-cell-side-by-side-height-next-row',
+      cells: [{
+        cellId: 'table-cell-side-by-side-height-next-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'text',
+          blockId: 'table-cell-side-by-side-height-next-text',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 65, y: 130, width: 350, height: 10 },
+          runs: [{ runId: 'table-cell-side-by-side-height-next-run', text: 'NEXT_ROW_AFTER_SIDE_BY_SIDE', style: { fontSize: 10, lineHeight: 13 } }]
+        }]
+      }]
+    }]
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => null
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const content = await page.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const body = items.find((item) => item.str.includes('SHORT_BODY'))
+    const pageNumber = items.find((item) => item.str.includes('4') && (item.transform[4] ?? 0) > 430)
+    const nextRow = items.find((item) => item.str.includes('NEXT_ROW_AFTER_SIDE_BY_SIDE'))
+    assert.ok(body && pageNumber && nextRow)
+    const pageHeight = page.getViewport({ scale: 1 }).height
+    const bodyTop = pageHeight - (body.transform[5] ?? 0)
+    const pageNumberTop = pageHeight - (pageNumber.transform[5] ?? 0)
+    const nextRowTop = pageHeight - (nextRow.transform[5] ?? 0)
+    assert.ok(Math.abs(bodyTop - pageNumberTop) < 2, '正文和页码必须共享同一视觉行')
+    assert.ok(nextRowTop >= bodyTop + 12,
+      `下一行必须避开同一视觉行，正文顶=${bodyTop}，下一行顶=${nextRowTop}`)
   } finally {
     await exportedPdf.destroy()
   }

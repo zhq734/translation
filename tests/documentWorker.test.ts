@@ -931,23 +931,21 @@ test('生产执行器部分导出应保留未完成目标原文并返回 PDF 字
   assert.equal(exported.payload.export?.partial?.reverted, 1)
 })
 
-test('生产执行器导出必须透传源模型、布局、取消信号与页级进度', async () => {
+test('生产执行器导出必须透传译文模型、取消信号与页级进度', async () => {
   const source = workerModel('doc-export-options', 'hello')
   const observed: Array<{
-    sourceModel?: DocumentModel
-    layout?: string
     signal?: AbortSignal
     textLayer?: boolean
+    model?: DocumentModel
   }> = []
   const dependencies = productionDependencies(
     source,
     async (text) => `译:${text}`,
     async (model, _dependencies, options) => {
       observed.push({
-        sourceModel: options.sourceModel,
-        layout: options.layout,
         signal: options.signal,
-        textLayer: options.textLayer
+        textLayer: options.textLayer,
+        model
       })
       options.onProgress?.({ completedPages: 1, totalPages: 1 })
       return { bytes: new Uint8Array([1]), warnings: [] }
@@ -975,7 +973,6 @@ test('生产执行器导出必须透传源模型、布局、取消信号与页�
     generation: 1,
     request: {
       mode: 'complete',
-      layout: 'bilingual',
       textLayer: true,
       ...(runResult.payload.completionReport
         ? { completionReport: runResult.payload.completionReport }
@@ -984,8 +981,10 @@ test('生产执行器导出必须透传源模型、布局、取消信号与页�
   }, exportController.signal, emit)
 
   assert.equal(observed.length, 1)
-  assert.equal(observed[0]?.sourceModel?.documentId, 'doc-export-options')
-  assert.equal(observed[0]?.layout, 'bilingual')
+  assert.equal(observed[0]?.model?.documentId, 'doc-export-options')
+  assert.equal(observed[0]?.model?.pages[0]?.blocks[0]?.kind === 'text'
+    ? observed[0]?.model?.pages[0]?.blocks[0]?.runs[0]?.text
+    : undefined, '译:hello')
   assert.equal(observed[0]?.signal, exportController.signal)
   assert.equal(observed[0]?.textLayer, true)
   const progress = responses.find((message) => message.type === 'export-progress')

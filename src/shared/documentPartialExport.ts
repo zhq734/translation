@@ -293,14 +293,17 @@ function hasSuccessfulTranslation(translation: DocumentModel, target: PartialExp
     return target.cellRuns.every((cellRange) => {
       const cell = row.cells[cellRange.cellIndex]
       if (!cell) return false
-      return cellRange.blocks.every((range) => {
+      let translated = ''
+      for (const range of cellRange.blocks) {
         const textBlock = resolveBlock(cell.blocks, range.path)
         if (!textBlock || textBlock.kind !== 'text') return false
         const runIds = new Set(range.runIds)
-        return textBlock.runs
+        translated += textBlock.runs
           .filter((run) => runIds.has(run.runId))
-          .some((run) => Boolean(run.text.trim()))
-      })
+          .map((run) => run.text)
+          .join('')
+      }
+      return Boolean(translated.trim())
     })
   }
   return false

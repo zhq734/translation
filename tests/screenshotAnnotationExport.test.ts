@@ -5,9 +5,12 @@ import {
   SCREENSHOT_ANNOTATION_LIMITS,
   computeExportCanvasSize,
   createArrowAnnotation,
+  createBlurAnnotation,
   createBrushAnnotation,
+  createHighlightAnnotation,
   createMosaicAnnotation,
   createShapeAnnotation,
+  createSpotlightAnnotation,
   createTextAnnotation,
   drawAnnotations,
   normalizeAnnotationStyle,
@@ -132,6 +135,32 @@ test('标注绘制应覆盖六种标注类型', () => {
 })
 
 /**
+ * 校验矩形填充与圆角会映射为 Canvas 填充和圆角路径，并保持描边。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('矩形绘制应支持填充与圆角', () => {
+  const style = normalizeAnnotationStyle({
+    color: '#0a84ff',
+    strokeWidth: 5,
+    filled: true,
+    fillOpacity: 0.35,
+    cornerRadius: 18
+  })
+  const rect = createShapeAnnotation('rect', { x: 10, y: 20 }, { x: 90, y: 80 }, style)!
+  const { ctx, calls } = createContextStub()
+  drawAnnotations(ctx as unknown as CanvasRenderingContext2D, [rect])
+
+  assert.ok(calls.some((call) => call.startsWith('moveTo(')))
+  assert.ok(calls.some((call) => call.startsWith('quadraticCurveTo(')))
+  assert.ok(calls.includes('fill()'))
+  assert.ok(calls.includes('stroke()'))
+  assert.equal(ctx['fillStyle'], '#0a84ff')
+  assert.equal(ctx['strokeStyle'], '#0a84ff')
+  assert.equal(ctx['globalAlpha'], 1)
+})
+
+/**
  * 校验马赛克标注在提供原图采样器时执行像素化，且不修改采样区域之外内容。
  * @returns 无返回值。
  * @author zhenghq
@@ -188,6 +217,41 @@ test('马赛克应对覆盖块采样并使用不透明颜色遮盖文字', () =>
   assert.ok(sampled.length > 0)
   assert.ok(calls.some((call) => call.startsWith('fillRect(')))
   assert.equal(ctx['globalAlpha'], 1)
+})
+
+/**
+ * 校验高亮使用半透明正片叠底，模糊复用底图区域，聚光灯以遮罩留出亮区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('区域标注应正确合成高亮、模糊与聚光灯效果', () => {
+  const style = normalizeAnnotationStyle({ color: '#ffcc00', blurRadius: 12 })
+  const highlight = createHighlightAnnotation({ x: 10, y: 10 }, { x: 60, y: 40 }, style)!
+  const { ctx, calls } = createContextStub()
+  drawAnnotations(ctx as unknown as CanvasRenderingContext2D, [highlight])
+  assert.equal(ctx['globalCompositeOperation'], 'multiply')
+  assert.ok((ctx['globalAlpha'] as number) > 0 && (ctx['globalAlpha'] as number) < 1)
+  assert.ok(calls.some((call) => call.startsWith('fillRect(')))
+
+  const blur = createBlurAnnotation({ x: 20, y: 20 }, { x: 80, y: 60 }, style)!
+  const blurred: Array<{ bounds: unknown; radius: number }> = []
+  drawAnnotations(ctx as unknown as CanvasRenderingContext2D, [blur], {
+    drawSourceRegion: (_target, bounds, radius) => {
+      blurred.push({ bounds, radius })
+    }
+  })
+  assert.deepEqual(blurred, [
+    { bounds: { x: 20, y: 20, width: 60, height: 40 }, radius: 12 }
+  ])
+
+  const spotlight = createSpotlightAnnotation({ x: 30, y: 25 }, { x: 90, y: 75 }, style)!
+  const before = calls.filter((call) => call.startsWith('fillRect(')).length
+  drawAnnotations(ctx as unknown as CanvasRenderingContext2D, [spotlight], {
+    viewport: { width: 200, height: 100 }
+  })
+  const spotlightFills = calls.filter((call) => call.startsWith('fillRect(')).length - before
+  assert.equal(spotlightFills, 4, '聚光灯应由上下左右四块遮罩包围亮区')
+  assert.equal(ctx['globalCompositeOperation'], 'source-over')
 })
 
 /**

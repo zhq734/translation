@@ -167,7 +167,10 @@ export function resolveTranslationImageFlowGap(
     Number.isFinite(obstacle.bottom) &&
     obstacle.bottom > anchoredTop &&
     obstacle.top < imageBottom &&
-    rangesOverlapHorizontally(safeRange, obstacle)
+    // 图片与译文边界相接时也必须避让：字号行盒和抗锯齿可能越出测量边界，
+    // 若按“严格横向相交”放行，窄图标会回填到前序增高内容内部并产生视觉重叠。
+    obstacle.left <= safeRange.right &&
+    obstacle.right >= safeRange.left
   )
   const gap = anchoredTop - previousBottom
   // 横向错开时允许回填；但图片顶部仍不能越过页面内容起点。

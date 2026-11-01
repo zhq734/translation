@@ -7,7 +7,6 @@ import type {
 import { parseDocumentBlock, parseDocumentModel } from './documentTypes.ts'
 import { DOCUMENT_TASK_PHASES } from './documentTask.ts'
 import type {
-  DocumentExportLayout,
   DocumentExportProgress,
   DocumentRunMode,
   DocumentRunRequest
@@ -63,8 +62,6 @@ export interface DocumentWorkerExportRequestMessage extends DocumentWorkerReques
   request: {
     /** 完整导出或用户确认的部分导出。 */
     mode: 'complete' | 'partial'
-    /** 译文单栏或左右双语布局。 */
-    layout: DocumentExportLayout
     /** 是否追加 OCR 原文文字层。 */
     textLayer?: boolean
     /** 导出前复验使用的当前代际完成报告。 */
@@ -721,8 +718,6 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
   if (!isRecord(value.request)) return null
   if (value.type === 'export') {
     if (value.request.mode !== 'complete' && value.request.mode !== 'partial') return null
-    const layout = value.request.layout ?? 'translation'
-    if (layout !== 'translation' && layout !== 'bilingual') return null
     if (value.request.completionReport !== undefined && !isRecord(value.request.completionReport)) return null
     return {
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
@@ -731,7 +726,6 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
       generation: value.generation,
       request: {
         mode: value.request.mode,
-        layout,
         ...(typeof value.request.textLayer === 'boolean'
           ? { textLayer: value.request.textLayer }
           : {}),

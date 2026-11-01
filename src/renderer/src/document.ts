@@ -293,8 +293,6 @@ const rerunButton = document.getElementById('document-rerun-button') as HTMLButt
 const documentWorkbenchReplaceButton = document.getElementById('document-workbench-replace') as HTMLButtonElement
 const partialStatus = document.getElementById('document-partial-status') as HTMLElement
 const exportDialog = document.getElementById('document-export-dialog') as HTMLDialogElement
-const exportLayoutTranslation = document.getElementById('document-export-layout-translation') as HTMLInputElement
-const exportLayoutBilingual = document.getElementById('document-export-layout-bilingual') as HTMLInputElement
 const exportIncomplete = document.getElementById('document-export-incomplete') as HTMLElement
 const exportWarningCount = document.getElementById('document-export-warning-count') as HTMLElement
 const exportIncompleteNotice = document.getElementById('document-export-incomplete-notice') as HTMLElement
@@ -332,9 +330,12 @@ let visibleDocumentHistory: DocumentHistoryListItem[] = []
 let platformCapability: DocumentPlatformCapability | null = null
 let dragDepth = 0
 /** 导出对话框当前对应的任务身份；为空表示尚未打开或已结束。 */
-let documentExportTarget: { jobId: string; generation: number } | null = null
-/** 导出对话框当前布局；用户切换单选后立即同步。 */
-let selectedDocumentExportLayout: 'translation' | 'bilingual' = 'translation'
+let documentExportTarget: {
+  jobId: string
+  generation: number
+  /** 历史导出没有旧任务身份，不能在导出过程中调用任务取消接口。 */
+  canCancel: boolean
+} | null = null
 /** 当前是否正在等待 PDF 导出结束。 */
 let documentExportInFlight = false
 /** 当前导出是否已成功保存，用于显示打开目录入口。 */
@@ -5889,11 +5890,13 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorks
     : t('document.progress.remaining', { time: formatDocumentDuration(remaining) })
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(status)
   cancelButton.hidden = terminal
-  exportButton.disabled = status === 'completed'
-    ? false
-    : status === 'partial' || status === 'failed'
-      ? !hasUsableTranslation
-      : true
+  exportButton.disabled = restored
+    ? !hasUsableExportResult(snapshot) || !approvedDocumentSourceRequest(tab)
+    : status === 'completed'
+      ? false
+      : status === 'partial' || status === 'failed'
+        ? !hasUsableTranslation
+        : true
   // phaseCompleted 只表示阶段流程结束，不代表没有可重试目标；partial 终态
   // 仍需与摘要共用同一动作状态，按失败、未完成和疑似未翻译目标决定按钮状态。
   retryButton.disabled = retryAction.retryDisabled
@@ -5903,8 +5906,7 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorks
     snapshot.task.status === 'ocr' || snapshot.task.status === 'translating' ||
     snapshot.task.status === 'rendering' || snapshot.task.status === 'exporting'
   if (restored) {
-    // 恢复态没有活动主进程任务；旧任务导出、重试和取消入口必须保持不可用。
-    exportButton.disabled = true
+    // 恢复态没有活动主进程任务，但已有译文仍可走受控历史导出通道。
     retryButton.disabled = true
     cancelButton.hidden = true
   }
@@ -5960,6 +5962,26 @@ function formatDocumentDuration(milliseconds: number): string {
 }
 
 /**
+ * 同步刷新正文快照与任务状态；正文重绘异常不能阻断终态进度和操作按钮更新。
+ * @param snapshot 当前任务快照。
+ * @param tab 快照所属的文档 Tab。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderSnapshotAndTaskState(
+  snapshot: DocumentWorkspaceSnapshot,
+  tab: DocumentWorkspaceTab
+): void {
+  try {
+    renderSnapshot(snapshot, tab)
+  } catch (error) {
+    console.error('document-snapshot-render-failed', error instanceof Error ? error.name : 'unknown')
+  } finally {
+    renderTaskState(snapshot, tab)
+  }
+}
+
+/**
  * 在下一帧合并快照重绘，避免高频进度事件反复重建大文档 DOM。
  * @param tab 快照所属的 Tab。
  * @param snapshot 最新任务快照。
@@ -5975,8 +5997,7 @@ function scheduleSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: Docum
     pendingRenderFrame = null
     if (!canRenderDocumentTabSnapshot(tab, snapshot)) return
     latestSnapshot = snapshot
-    renderSnapshot(snapshot, tab)
-    renderTaskState(snapshot, tab)
+    renderSnapshotAndTaskState(snapshot, tab)
   })
 }
 
@@ -5995,8 +6016,7 @@ function flushSnapshotRenderForTab(tab: DocumentWorkspaceTab, snapshot: Document
     pendingRenderFrame = null
   }
   latestSnapshot = snapshot
-  renderSnapshot(snapshot, tab)
-  renderTaskState(snapshot, tab)
+  renderSnapshotAndTaskState(snapshot, tab)
 }
 
 /**
@@ -6428,7 +6448,7 @@ async function exportTranslatedPdf(): Promise<void> {
   const tab = getActiveDocumentTab()
   const snapshot = tab?.snapshot
   if (!tab || !snapshot?.translation) return
-  if (isRestoredDocumentTab(tab) || isReadOnlyDocumentTab(tab)) return
+  if (isReadOnlyDocumentTab(tab) && !approvedDocumentSourceRequest(tab)) return
   // 导出入口可能在最后一帧译文尚未提交时触发，必须先同步刷新快照，避免导出旧的流式内容。
   flushSnapshotRenderForTab(tab, snapshot)
   await openDocumentExportDialog(snapshot)
@@ -6445,15 +6465,17 @@ async function openDocumentExportDialog(snapshot: DocumentWorkspaceSnapshot): Pr
   if (!tab || tab.snapshot?.jobId !== snapshot.jobId || tab.snapshot.generation !== snapshot.generation) {
     return
   }
+  const readOnly = isReadOnlyDocumentTab(tab)
   const retryAction = resolveDocumentRetryActionState(snapshot)
-  const incomplete = retryAction.reverted
-  const complete = snapshot.task.status === 'completed'
-  documentExportTarget = { jobId: snapshot.jobId, generation: snapshot.generation }
+  const incomplete = readOnly ? 0 : retryAction.reverted
+  const complete = readOnly || snapshot.task.status === 'completed'
+  documentExportTarget = {
+    jobId: snapshot.jobId,
+    generation: snapshot.generation,
+    canCancel: !readOnly
+  }
   documentExportSaved = false
   documentExportPercent = 0
-  selectedDocumentExportLayout = exportLayoutBilingual.checked ? 'bilingual' : 'translation'
-  exportLayoutTranslation.checked = selectedDocumentExportLayout === 'translation'
-  exportLayoutBilingual.checked = selectedDocumentExportLayout === 'bilingual'
   exportIncomplete.textContent = t('document.export.incompleteCount', {
     count: incomplete
   })
@@ -6468,7 +6490,7 @@ async function openDocumentExportDialog(snapshot: DocumentWorkspaceSnapshot): Pr
   exportIncompleteNotice.textContent = t('document.export.partialNotice', {
     count: incomplete
   })
-  exportRetryButton.hidden = complete || retryAction.retryDisabled
+  exportRetryButton.hidden = readOnly || complete || retryAction.retryDisabled
   exportConfirmButton.disabled = false
   exportConfirmButton.textContent = complete
     ? t('document.export.confirm')
@@ -6537,7 +6559,14 @@ async function confirmDocumentExport(): Promise<void> {
   const snapshot = tab?.snapshot
   if (!target || !tab || !snapshot || snapshot.jobId !== target.jobId ||
     snapshot.generation !== target.generation || documentExportInFlight) return
-  const isComplete = snapshot.task.status === 'completed'
+  const readOnly = isReadOnlyDocumentTab(tab)
+  const approvedSource = readOnly ? approvedDocumentSourceRequest(tab) : null
+  if (readOnly && (!approvedSource || !snapshot.translation)) {
+    partialStatus.textContent = t('document.error.unreadable')
+    partialStatus.hidden = false
+    return
+  }
+  const isComplete = readOnly || snapshot.task.status === 'completed'
   if (!isComplete) {
     revealFirstIncompleteTarget(snapshot)
     const confirmed = await confirmPartialExport(snapshot)
@@ -6549,11 +6578,11 @@ async function confirmDocumentExport(): Promise<void> {
   if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation ||
     documentExportTarget !== target) return
   if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
-  // 打印直接读取当前 DOM；先同步最新终态，避免保存对话框打开前仍显示流式部分译文。
+  // 导出前先同步最新终态，确保文档模型与当前界面使用同一份翻译结果。
   flushSnapshotRenderForTab(tab, snapshot)
   documentExportInFlight = true
   exportConfirmButton.disabled = true
-  exportCancelButton.disabled = false
+  exportCancelButton.disabled = !target.canCancel
   exportRetryButton.hidden = true
   exportOpenFolderButton.hidden = true
   try {
@@ -6561,18 +6590,23 @@ async function confirmDocumentExport(): Promise<void> {
     const exportMode: Pick<DocumentExportRequest, 'mode'> = isComplete
       ? { mode: 'complete' }
       : { mode: 'partial' }
-    const result: DocumentExportResult = await window.api.exportDocumentPdf({
-      jobId: snapshot.jobId,
-      generation: snapshot.generation,
-      mode: exportMode.mode,
-      layout: selectedDocumentExportLayout,
-      // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
-      textLayer: true
-    })
+    const result: DocumentExportResult = readOnly && approvedSource && snapshot.translation
+      ? await window.api.exportApprovedDocumentPdf({
+        source: approvedSource,
+        fileName: tab.selection.name,
+        translation: snapshot.translation
+      })
+      : await window.api.exportDocumentPdf({
+        jobId: snapshot.jobId,
+        generation: snapshot.generation,
+        ...exportMode,
+        // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
+        textLayer: true
+      })
     if (!documentTabs.includes(tab) || documentExportTarget !== target) return
     if (result.status === 'saved') {
       documentExportSaved = true
-      exportOpenFolderButton.hidden = false
+      exportOpenFolderButton.hidden = readOnly
       exportProgressStage.textContent = t('document.export.phase.completed')
       exportProgressPercent.textContent = '100%'
       exportProgressTrack.setAttribute('aria-valuenow', '100')
@@ -6603,10 +6637,8 @@ async function confirmDocumentExport(): Promise<void> {
         : t('document.export.confirm')
       exportCancelButton.disabled = false
       const currentSnapshot = tab.snapshot
-      exportButton.disabled = !currentSnapshot || (
-        currentSnapshot.task.status !== 'completed' &&
-        !hasUsableExportResult(currentSnapshot)
-      )
+      exportButton.disabled = !currentSnapshot || !hasUsableExportResult(currentSnapshot) ||
+        (isReadOnlyDocumentTab(tab) && !approvedDocumentSourceRequest(tab))
     }
   }
 }
@@ -7188,12 +7220,6 @@ async function initializeDocumentWorkspace(): Promise<void> {
     // 点击遮罩等原生关闭路径不会经过按钮；统一按取消处理，避免导出 Promise 悬挂。
     if (resolvePartialExportConfirmation) closePartialExportDialog(false)
   })
-  exportLayoutTranslation.addEventListener('change', () => {
-    if (exportLayoutTranslation.checked) selectedDocumentExportLayout = 'translation'
-  })
-  exportLayoutBilingual.addEventListener('change', () => {
-    if (exportLayoutBilingual.checked) selectedDocumentExportLayout = 'bilingual'
-  })
   exportConfirmButton.addEventListener('click', () => void confirmDocumentExport())
   exportRetryButton.addEventListener('click', () => {
     closeDocumentExportDialog()
@@ -7202,6 +7228,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   exportCancelButton.addEventListener('click', () => {
     const target = documentExportTarget
     if (documentExportInFlight && target) {
+      if (!target.canCancel) return
       void window.api.cancelDocumentExport(target.jobId, target.generation)
       exportCancelButton.disabled = true
       return
@@ -7216,6 +7243,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
     event.preventDefault()
     if (documentExportInFlight) {
       const target = documentExportTarget
+      if (!target?.canCancel) return
       if (target) void window.api.cancelDocumentExport(target.jobId, target.generation)
       exportCancelButton.disabled = true
       return

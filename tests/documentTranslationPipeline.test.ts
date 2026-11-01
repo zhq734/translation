@@ -1694,6 +1694,81 @@ test('非 PDF 表格单元格内的真实段落必须在译文中保留换行边
   if (table.kind !== 'table') return
   const firstCellBlock = table.rows[0]!.cells[0]!.blocks[0] as DocumentTextBlock
   assert.equal(firstCellBlock.runs[0]!.text, 'T(First source line\nSecond source line)')
+  assert.equal(result.task.status, 'completed')
+  assert.equal(result.completionReport?.status, 'completed')
+})
+
+test('多单元格表格仅在首段写回整格译文时仍必须完成并保留可读映射', async () => {
+  const source = model([{
+    kind: 'table',
+    blockId: 'table-multiblock-cell',
+    readingOrder: 0,
+    translatable: true,
+    rows: [{
+      rowId: 'table-multiblock-cell-row',
+      cells: [{
+        cellId: 'table-multiblock-cell-first',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [
+          textBlock('table-multiblock-cell-line-1', [{
+            runId: 'table-multiblock-cell-run-1',
+            text: 'First source line'
+          }]),
+          textBlock('table-multiblock-cell-line-2', [{
+            runId: 'table-multiblock-cell-run-2',
+            text: 'Second source line'
+          }])
+        ]
+      }, {
+        cellId: 'table-multiblock-cell-second',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [textBlock('table-multiblock-cell-other', [{
+          runId: 'table-multiblock-cell-run-3',
+          text: 'Other cell'
+        }])]
+      }]
+    }]
+  }])
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      return translateMergedText(text, (part) => part === 'Other cell'
+        ? '其他单元格'
+        : '第一源行第二源行')
+    },
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-multiblock-cell', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.deepEqual(calls, ['First source line\nSecond source line\n[[[ST-DOC-CELL-0]]]\nOther cell'])
+  const table = result.translation.pages[0]!.blocks[0]
+  assert.equal(table.kind, 'table')
+  if (table.kind !== 'table') return
+  const firstCellBlocks = table.rows[0]!.cells[0]!.blocks as DocumentTextBlock[]
+  assert.equal(firstCellBlocks[0]!.runs[0]!.text, '第一源行第二源行')
+  assert.equal(firstCellBlocks[1]!.runs[0]!.text, '')
+  assert.equal(
+    result.task.status,
+    'completed',
+    JSON.stringify({
+      task: result.task,
+      report: result.completionReport,
+      retryable: result.retryableTargetIds
+    })
+  )
+  assert.equal(result.completionReport?.status, 'completed')
 })
 
 test('PDF 表格单元格的视觉行必须合并为连续译文，不能沿用原文断行', async () => {
@@ -1747,6 +1822,59 @@ test('PDF 表格单元格的视觉行必须合并为连续译文，不能沿用�
   if (table.kind !== 'table') return
   const firstCellBlock = table.rows[0]!.cells[0]!.blocks[0] as DocumentTextBlock
   assert.equal(firstCellBlock.runs[0]!.text, 'T(First source line Second source line)')
+})
+
+test('PDF 表格行必须隔离翻译，避免单单元格行吞并后续行译文', async () => {
+  const source = model([tableBlock('table-pdf-row-isolation', [
+    ['材料类型', '材料名称'],
+    ['', '提交申请材料清单'],
+    ['申请表', '身份证明文件']
+  ])])
+  source.source.format = 'pdf'
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      // 模拟模型吞掉后续表格行标记：分段数量仍合法，但第二段被塞入第三行内容。
+      if (text.includes('ST-SEG')) {
+        return [
+          'T(材料类型)\n[[[ST-DOC-CELL-0]]]\nT(材料名称)',
+          'T(提交申请材料清单) T(申请表)\n[[[ST-DOC-CELL-0]]]\nT(身份证明文件)',
+          'T(申请表)\n[[[ST-DOC-CELL-0]]]\nT(身份证明文件)'
+        ].join('\n[[[ST-SEG-0]]]\n').replace(
+          '\n[[[ST-SEG-0]]]\nT(申请表)\n[[[ST-DOC-CELL-0]]]\nT(身份证明文件)',
+          '\n[[[ST-SEG-1]]]\nT(申请表)\n[[[ST-DOC-CELL-0]]]\nT(身份证明文件)'
+        )
+      }
+      return translateMergedText(text, (part) => `T(${part})`)
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.pdf', fileName: 'test.pdf', format: 'pdf', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-pdf-row-isolation', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  assert.equal(calls.length, 3)
+  assert.equal(calls.some((text) => text.includes('ST-SEG')), false)
+  assert.equal(result.task.status, 'completed')
+  const table = result.translation.pages[0]!.blocks[0]
+  assert.equal(table.kind, 'table')
+  if (table.kind !== 'table') return
+  assert.deepEqual(table.rows.map((row) => row.cells.map((cell) =>
+    (cell.blocks[0] as DocumentTextBlock).runs[0]!.text
+  )), [
+    ['T(材料类型)', 'T(材料名称)'],
+    ['', 'T(提交申请材料清单)'],
+    ['T(申请表)', 'T(身份证明文件)']
+  ])
 })
 
 test('表格行请求丢失单元格标记时必须逐单元格回退翻译', async () => {

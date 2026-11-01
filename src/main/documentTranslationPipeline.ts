@@ -252,6 +252,8 @@ interface TranslationTarget {
   regionId?: string
   /** 待翻译原文，包含首尾空白。 */
   text: string
+  /** 是否禁止与其他目标合并在同一批次；PDF 表格行必须逐行请求。 */
+  isolateBatch?: boolean
   /** 首部空白，合并翻译后需要恢复。 */
   leadingWhitespace: string
   /** 尾部空白，合并翻译后需要恢复。 */
@@ -1037,6 +1039,8 @@ function collectBlockTargets(
             cells,
             tableRowIndex: rowIndex,
             text,
+            // PDF 表格行的列结构由逐行标记承载；跨行合并会放大模型吞标记后的错位风险。
+            ...(visualLinesOnly ? { isolateBatch: true } : {}),
             leadingWhitespace: whitespace.leading,
             trailingWhitespace: whitespace.trailing
           })
@@ -1540,10 +1544,10 @@ function readCellTranslation(
       .filter((run) => runIds.has(run.runId))
       .map((run) => run.text)
       .join('')
-    if (!translated) return undefined
     translatedBlocks.push(translated)
   }
-  return translatedBlocks.join('\n')
+  const translated = translatedBlocks.join('\n')
+  return translated.trim() ? translated : undefined
 }
 
 /**
@@ -1600,9 +1604,10 @@ function buildDocumentTranslationBatches(segments: DocumentBatchSegment[]): Docu
   const segmentsById = new Map(segments.map((segment) => [segment.segmentId, segment]))
   // OCR 区域通常极短且视觉顺序紧凑，模型容易把相邻区域合并翻译并吞掉前序分隔标记。
   // 一旦标记数量碰巧与批次段数相同，按位置回填会把后续译文整体错放到上一区域。
-  // OCR 目标因此只允许同一目标内部的超长分段合并，绝不跨不同区域合并。
-  const isolatedOcrSegmentIds = new Set(segments
-    .filter((segment) => segment.target.kind === 'ocr-region')
+  // PDF 表格行同样按行承载单元格边界；单单元格行一旦错位会吞并后续整行。
+  // 两类目标因此只允许同一目标内部的超长分段合并，绝不跨不同区域或表格行合并。
+  const isolatedSegmentIds = new Set(segments
+    .filter((segment) => segment.target.kind === 'ocr-region' || segment.target.isolateBatch)
     .map((segment) => segment.segmentId))
   const batches = buildWebTranslationBatches(webSegments, {
     maxChars: DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS,
@@ -1611,15 +1616,15 @@ function buildDocumentTranslationBatches(segments: DocumentBatchSegment[]): Docu
   return batches.flatMap((batch) => {
     const sourceSegments = batch.segments.map((webSegment) => segmentsById.get(webSegment.segmentId))
       .filter((segment): segment is DocumentBatchSegment => segment !== undefined)
-    if (!sourceSegments.some((segment) => isolatedOcrSegmentIds.has(segment.segmentId))) {
+    if (!sourceSegments.some((segment) => isolatedSegmentIds.has(segment.segmentId))) {
       return [{
         batch,
         segments: sourceSegments,
         merged: batch.mergeable
       }]
     }
-    // 共享分块器可能把 OCR 与普通文本放在同一批次；只要混入 OCR，就按来源段
-    // 全部拆成单段请求，确保任何 OCR 标记都不会因同批合并而错位。
+    // 共享分块器可能把隔离目标与普通文本放在同一批次；只要混入隔离目标，
+    // 就按来源段全部拆成单段请求，确保 OCR 与 PDF 表格行标记都不会错位。
     return sourceSegments.map((segment) => ({
       batch: {
         ...createDocumentSingleSegmentBatch(segment),

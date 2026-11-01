@@ -72,6 +72,7 @@ Typical use cases include:
 - **Provider fallback** across DingTalk, Microsoft Translator, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
 - **Translation cache and circuit breaker** to reuse successful results and temporarily skip failing providers.
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
+- **Screenshot annotation** with rectangles, ellipses, arrows, freehand brush, text, mosaic, highlight, Gaussian blur, and spotlight tools, plus contextual color, stroke, font, and blur controls.
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
 - **Microsoft Translator integration** through the Bing web translator flow, with no Azure account, subscription key, or region required.

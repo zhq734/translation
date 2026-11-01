@@ -397,14 +397,10 @@ export interface DocumentWorkerProductionDependencies {
     textLayer?: boolean
     /** 是否仅导出 OCR 原文 PDF。 */
     sourceOnly?: boolean
-    /** 译文单栏或左右双语布局。 */
-    layout?: 'translation' | 'bilingual'
     /** 取消导出时触发的中止信号。 */
     signal?: AbortSignal
     /** 合成阶段页级进度回调。 */
     onProgress?: (progress: { completedPages: number; totalPages: number }) => void
-    /** 双语导出的原文模型。 */
-    sourceModel?: DocumentModel
   }): Promise<{
     /** PDF 字节。 */
     bytes: Uint8Array
@@ -921,9 +917,7 @@ export function createDocumentWorkerExecutor(
       ...(partial ? { partialExport: partial.summary } : {}),
       ...(message.request.textLayer !== undefined ? { textLayer: message.request.textLayer } : {}),
       sourceOnly: ocrOnly,
-      layout: message.request.layout ?? 'translation',
       signal,
-      sourceModel: job.source,
       onProgress: (progress) => {
         emit(createDocumentWorkerExportProgressMessage(message.jobId, message.generation, {
           phase: 'composing',

@@ -124,6 +124,23 @@ export class DocumentApprovedResourceService {
   }
 
   /**
+   * 校验历史文档源文件是否仍属于当前窗口授权集合且内容未变化。
+   * 该入口只返回格式与稳定结果，不向调用方暴露源文件字节。
+   * @param request 历史快照中的源文件元数据。
+   * @returns 校验成功后的实际格式，或稳定错误分类。
+   * @author zhenghq
+   */
+  async validateSource(
+    request: DocumentApprovedSourceRequest
+  ): Promise<
+    { ok: true; format: DocumentFormat } |
+    { ok: false; code: 'source-not-approved' | 'source-changed' | 'source-not-found' }
+  > {
+    const loaded = await this.loadApprovedSource(request)
+    return loaded.ok ? { ok: true, format: loaded.format } : loaded
+  }
+
+  /**
    * 读取历史快照引用的图片资源。
    * @param request 源文件与资源快照元数据。
    * @returns 校验通过的图片字节或稳定错误分类。

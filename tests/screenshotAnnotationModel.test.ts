@@ -6,14 +6,22 @@ import {
   SCREENSHOT_ANNOTATION_PRESET_COLORS,
   ScreenshotAnnotationStore,
   createArrowAnnotation,
+  createBlurAnnotation,
   createBrushAnnotation,
+  createHighlightAnnotation,
   createMosaicAnnotation,
   createShapeAnnotation,
+  createSpotlightAnnotation,
   createTextAnnotation,
+  getAnnotationBounds,
+  getEffectiveCornerRadius,
   getTextAnnotationBounds,
   isScreenshotAnnotationTool,
   normalizeAnnotationColor,
   normalizeAnnotationStyle,
+  normalizeBlurRadius,
+  normalizeCornerRadius,
+  normalizeFillOpacity,
   normalizeAnnotationText,
   normalizeFontSize,
   normalizeMosaicBlockSize,
@@ -22,12 +30,12 @@ import {
 } from '../src/renderer/src/screenshotAnnotation.ts'
 
 /**
- * 校验六种标注工具标识可被识别，其它值一律拒绝。
+ * 校验九种标注工具标识可被识别，其它值一律拒绝。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('标注工具标识应只接受六种截图标注工具', () => {
-  for (const tool of ['rect', 'ellipse', 'arrow', 'brush', 'text', 'mosaic']) {
+test('标注工具标识应只接受九种截图标注工具', () => {
+  for (const tool of ['rect', 'ellipse', 'arrow', 'brush', 'text', 'mosaic', 'highlight', 'blur', 'spotlight']) {
     assert.equal(isScreenshotAnnotationTool(tool), true)
   }
   for (const invalid of ['select', '', 'RECT', null, undefined, 1, {}]) {
@@ -66,7 +74,7 @@ test('颜色归一化应只接受十六进制颜色并回退默认值', () => {
 })
 
 /**
- * 校验线宽、字号、马赛克笔刷与像素块大小被限制在约定范围内。
+ * 校验线宽、字号、马赛克笔刷、像素块与模糊半径被限制在约定范围内。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -75,7 +83,8 @@ test('样式数值应被限制在约定范围内', () => {
     [normalizeStrokeWidth, SCREENSHOT_ANNOTATION_LIMITS.strokeWidth],
     [normalizeFontSize, SCREENSHOT_ANNOTATION_LIMITS.fontSize],
     [normalizeMosaicBrushSize, SCREENSHOT_ANNOTATION_LIMITS.mosaicBrushSize],
-    [normalizeMosaicBlockSize, SCREENSHOT_ANNOTATION_LIMITS.mosaicBlockSize]
+    [normalizeMosaicBlockSize, SCREENSHOT_ANNOTATION_LIMITS.mosaicBlockSize],
+    [normalizeBlurRadius, SCREENSHOT_ANNOTATION_LIMITS.blurRadius]
   ] as const
   for (const [normalize, range] of cases) {
     assert.equal(normalize(range.min - 100), range.min)
@@ -102,6 +111,68 @@ test('样式对象归一化应补齐缺省字段', () => {
     strokeWidth: SCREENSHOT_ANNOTATION_LIMITS.strokeWidth.max,
     bold: true
   })
+})
+
+/**
+ * 校验矩形填充与圆角样式会被限制在合法范围内，并冻结到新创建的矩形标注。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('矩形填充与圆角应归一化并冻结到标注', () => {
+  const style = normalizeAnnotationStyle({
+    filled: true,
+    fillOpacity: 2,
+    cornerRadius: 9999
+  })
+  assert.equal(style.filled, true)
+  assert.equal(style.fillOpacity, 1)
+  assert.equal(style.cornerRadius, SCREENSHOT_ANNOTATION_LIMITS.cornerRadius.max)
+  assert.equal(normalizeFillOpacity(-1), SCREENSHOT_ANNOTATION_LIMITS.fillOpacity.min)
+  assert.equal(normalizeCornerRadius(-1), SCREENSHOT_ANNOTATION_LIMITS.cornerRadius.min)
+
+  const rect = createShapeAnnotation('rect', { x: 10, y: 10 }, { x: 90, y: 60 }, style)!
+  assert.equal(rect.filled, true)
+  assert.equal(rect.fillOpacity, 1)
+  assert.equal(rect.cornerRadius, SCREENSHOT_ANNOTATION_LIMITS.cornerRadius.max)
+
+  // 创建后修改样式不得影响已经冻结的矩形。
+  style.filled = false
+  style.fillOpacity = 0.1
+  style.cornerRadius = 0
+  assert.equal(rect.filled, true)
+  assert.equal(rect.fillOpacity, 1)
+  assert.equal(rect.cornerRadius, SCREENSHOT_ANNOTATION_LIMITS.cornerRadius.max)
+  assert.equal(getEffectiveCornerRadius(rect.bounds, rect.cornerRadius), 25)
+})
+
+/**
+ * 校验通用对象边界覆盖区域、箭头、画笔与文字标注，供选择和缩放复用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('通用标注边界应覆盖全部标注类型', () => {
+  const style = normalizeAnnotationStyle({ strokeWidth: 4, mosaicBrushSize: 12 })
+  const rect = createShapeAnnotation('rect', { x: 10, y: 20 }, { x: 50, y: 60 }, style)!
+  assert.deepEqual(getAnnotationBounds(rect), { x: 10, y: 20, width: 40, height: 40 })
+
+  const arrow = createArrowAnnotation({ x: 10, y: 20 }, { x: 50, y: 40 }, style)!
+  // 包围盒需要覆盖 4px 描边，因此四周各扩展 4px。
+  assert.deepEqual(getAnnotationBounds(arrow), { x: 6, y: 16, width: 48, height: 28 })
+
+  const brush = createBrushAnnotation([{ x: 10, y: 20 }, { x: 50, y: 40 }], style)!
+  assert.deepEqual(getAnnotationBounds(brush), { x: 6, y: 16, width: 48, height: 28 })
+
+  const text = createTextAnnotation({ x: 12, y: 24 }, '两行\n文字', style)!
+  const textBounds = getAnnotationBounds(text, (line) => line.length * 20)
+  assert.deepEqual(textBounds, {
+    x: 12,
+    y: 24,
+    width: 40,
+    height: 2 * style.fontSize * 1.3
+  })
+
+  const highlight = createHighlightAnnotation({ x: 5, y: 6 }, { x: 30, y: 40 }, style)!
+  assert.deepEqual(getAnnotationBounds(highlight), { x: 5, y: 6, width: 25, height: 34 })
 })
 
 /**
@@ -189,6 +260,35 @@ test('箭头、画笔、文字与马赛克标注应过滤空操作', () => {
   assert.equal(mosaic.brushSize, style.mosaicBrushSize)
   assert.equal(mosaic.blockSize, style.mosaicBlockSize)
   assert.equal(createMosaicAnnotation([], style), null)
+})
+
+/**
+ * 校验高亮、模糊与聚光灯均按拖拽区域创建，并冻结各自的显示参数。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('区域标注应规范化边界并冻结高亮、模糊与聚光参数', () => {
+  const style = normalizeAnnotationStyle({ color: '#ffcc00', blurRadius: 16 })
+  const highlight = createHighlightAnnotation({ x: 80, y: 60 }, { x: 20, y: 10 }, style)
+  assert.ok(highlight)
+  assert.equal(highlight.type, 'highlight')
+  assert.deepEqual(highlight.bounds, { x: 20, y: 10, width: 60, height: 50 })
+  assert.equal(highlight.color, '#ffcc00')
+  assert.ok(highlight.opacity > 0 && highlight.opacity < 1)
+
+  const blur = createBlurAnnotation({ x: 10, y: 10 }, { x: 70, y: 50 }, style)
+  assert.ok(blur)
+  assert.equal(blur.type, 'blur')
+  assert.equal(blur.radius, 16)
+
+  const spotlight = createSpotlightAnnotation({ x: 20, y: 30 }, { x: 90, y: 80 }, style)
+  assert.ok(spotlight)
+  assert.equal(spotlight.type, 'spotlight')
+  assert.deepEqual(spotlight.bounds, { x: 20, y: 30, width: 70, height: 50 })
+
+  assert.equal(createHighlightAnnotation({ x: 0, y: 0 }, { x: 1, y: 1 }, style), null)
+  assert.equal(createBlurAnnotation({ x: 0, y: 0 }, { x: 1, y: 1 }, style), null)
+  assert.equal(createSpotlightAnnotation({ x: 0, y: 0 }, { x: 1, y: 1 }, style), null)
 })
 
 /**

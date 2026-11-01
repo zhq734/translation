@@ -186,8 +186,7 @@ async function runIntegration(format: 'pdf' | 'docx'): Promise<void> {
     const exported = await service.exportPdf({
       jobId: completed.jobId,
       generation: completed.generation,
-      mode: 'complete',
-      layout: 'translation'
+      mode: 'complete'
     })
     assert.deepEqual(exported, { status: 'saved', filePath: exportPath })
     assert.equal(exportModels.length, 1)

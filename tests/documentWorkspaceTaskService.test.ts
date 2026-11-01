@@ -815,27 +815,29 @@ test('普通译文导出不得被识别为 OCR 原文专用导出', async () => 
   }
 })
 
-test('任务服务导出必须透传双语布局并返回已保存文件路径', async () => {
+test('任务服务导出必须只导出译文并返回已保存文件路径', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'sample.txt')
   await writeFile(path, 'Hello')
   const events: DocumentWorkspaceSnapshot[] = []
-  let exportedLayout: unknown
+  let exportedModel: DocumentModel | undefined
+  let exportOptions: Record<string, unknown> | undefined
   const deps = dependencies(path, events)
-  deps.exportPdf = async (_model, _dependencies, options) => {
-    exportedLayout = options.layout
+  deps.exportPdf = async (model, _dependencies, options) => {
+    exportedModel = model
+    exportOptions = options
     return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
   }
   const service = new DocumentWorkspaceTaskService(deps)
   try {
     await service.run({ path, generation: 1 })
     const completed = await waitForTerminal(events)
-    const result = await service.exportPdf({
-      ...exportRequest(completed, 'complete'),
-      layout: 'bilingual'
-    })
+    const result = await service.exportPdf(exportRequest(completed, 'complete'))
 
-    assert.equal(exportedLayout, 'bilingual')
+    assert.deepEqual(exportedModel, completed.translation)
+    assert.equal(exportOptions?.sourceOnly, false)
+    assert.equal(exportOptions && 'layout' in exportOptions, false)
+    assert.equal(exportOptions && 'sourceModel' in exportOptions, false)
     assert.equal(result.status, 'saved')
     assert.equal(result.filePath, join(tmpdir(), 'translated.pdf'))
   } finally {

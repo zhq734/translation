@@ -1022,51 +1022,6 @@ body {
   color: var(--text-primary);
 }
 
-.document-export-layouts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.document-export-layouts legend {
-  margin-bottom: var(--space-2);
-  color: var(--text-secondary);
-  font-size: var(--font-size-caption);
-}
-
-.document-export-layout-option {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-3);
-  border: var(--border-width) solid var(--border-control);
-  border-radius: var(--radius-control);
-  background: var(--button-secondary-bg);
-  cursor: pointer;
-}
-
-.document-export-layout-option:has(input:checked) {
-  border-color: var(--button-bg);
-  background: color-mix(in srgb, var(--button-bg) 12%, var(--button-secondary-bg));
-}
-
-.document-export-layout-option span {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.document-export-layout-option small {
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
 .document-export-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1131,8 +1086,7 @@ body {
   gap: var(--space-2);
 }
 
-.document-export-dialog button:focus-visible,
-.document-export-layout-option:has(input:focus-visible) {
+.document-export-dialog button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -2517,7 +2471,6 @@ body {
     padding: var(--space-4);
   }
 
-  .document-export-layouts,
   .document-export-summary-grid {
     grid-template-columns: minmax(0, 1fr);
   }

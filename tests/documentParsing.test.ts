@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import JSZip from 'jszip'
+import fontkit from '@pdf-lib/fontkit'
 import {
   PDFDocument,
   StandardFonts,
@@ -1550,6 +1551,171 @@ test('PDF 原生表格应识别矢量网格并保留单元格文字与列宽', a
   assert.equal(new Set(runIds).size, runIds.length)
 })
 
+test('PDF 表格单元格必须按单元格边界而不是整页边界推断对齐', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  // 第一列范围为 72-272，Helvetica 12pt 文本宽 66，x=139 时中心为 172。
+  page.drawText('CENTERED', { x: 139, y: 695, size: 12, font })
+  // 第二列范围为 272-528，文字右边界贴近单元格右边界，应识别为单元格内右对齐。
+  page.drawText('RIGHT', { x: 489, y: 695, size: 12, font })
+  page.drawText('LEFT_BODY', { x: 82, y: 655, size: 12, font })
+  page.drawText('42', { x: 506, y: 655, size: 12, font })
+  for (const y of [720, 680, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 272, 528]) {
+    page.drawLine({ start: { x, y: 640 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-alignment.pdf',
+    fileName: 'table-cell-alignment.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const textBlocks = table.rows.flatMap((row) => row.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'text')))
+  const centered = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === 'CENTERED')
+  const right = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === 'RIGHT')
+  assert.equal(centered?.textAlign, 'center', '第一列居中文字必须按单元格中心识别')
+  assert.equal(right?.textAlign, 'right', '单元格内贴右文字必须识别为右对齐')
+})
+
+test('PDF 表格左右留白均衡的短文本必须优先识别为居中', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const centeredText = 'CENTERED'
+  const textWidth = font.widthOfTextAtSize(centeredText, 12)
+  // 第一列范围为 72-144，文本右边界距单元格右边界仅 3pt，但左右留白均衡。
+  const textX = 72 + (72 - textWidth) / 2
+  page.drawText(centeredText, { x: textX, y: 695, size: 12, font })
+  page.drawText('RIGHT', { x: 489, y: 695, size: 12, font })
+  page.drawText('LEFT_BODY', { x: 82, y: 655, size: 12, font })
+  page.drawText('42', { x: 506, y: 655, size: 12, font })
+  for (const y of [720, 680, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 144, 528]) {
+    page.drawLine({ start: { x, y: 640 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-balanced-alignment.pdf',
+    fileName: 'table-cell-balanced-alignment.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const textBlocks = table.rows.flatMap((row) => row.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'text')))
+  const centered = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === centeredText)
+  const right = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === 'RIGHT')
+  assert.equal(centered?.textAlign, 'center', '左右留白均衡时必须优先识别为居中')
+  assert.equal(right?.textAlign, 'right', '仅贴右且左侧留白明显更大的文本仍必须识别为右对齐')
+})
+
+test('PDF 表格单元格正文后的页码必须拆成同一视觉行的独立右对齐块', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  page.drawText('材料类型', { x: 82, y: 695, size: 10, font })
+  page.drawText('BODY_TEXT', { x: 310, y: 695, size: 10, font })
+  // 真实 PDF 常把页码拆成数字与“页”两个文本项，必须用整段页码的右边界判断是否贴右。
+  page.drawText('4', { x: 505, y: 695, size: 10, font })
+  page.drawText('页', { x: 512, y: 695, size: 10, font })
+  for (const y of [720, 680]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 680 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-page-number.pdf',
+    fileName: 'table-cell-page-number.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const bodyCell = table.rows[0]!.cells.find((cell) =>
+    cell.blocks.some((block) => block.kind === 'text' &&
+      block.runs.map((run) => run.text).join('').includes('BODY_TEXT')))
+  assert.ok(bodyCell, '正文单元格必须存在')
+  const textBlocks = bodyCell!.blocks.filter((block) => block.kind === 'text')
+  assert.equal(textBlocks.length, 2, '正文和页码必须拆成两个文本块')
+  const body = textBlocks.find((block) => block.runs.map((run) => run.text).join('').includes('BODY_TEXT'))
+  const pageNumber = textBlocks.find((block) => block.runs.map((run) => run.text).join('').includes('页'))
+  assert.ok(body && pageNumber, '正文和页码文本块必须同时存在')
+  assert.ok(pageNumber.bbox && body.bbox && pageNumber.bbox.x > body.bbox.x + 100,
+    '页码必须保留原始靠右横坐标')
+  assert.ok(pageNumber.bbox && body.bbox && Math.abs(pageNumber.bbox.y - body.bbox.y) <= 1,
+    '正文和页码必须保持同一视觉行顶部')
+  assert.equal(pageNumber.textAlign, 'right', '页码必须右对齐')
+  assert.equal(pageNumber.runs.every((run) => run.protected === true), true,
+    '页码不能送入翻译')
+})
+
+test('PDF 表格多行正文中的右侧页数必须保留为正文', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  page.drawText('BODY_FIRST', { x: 310, y: 695, size: 10, font })
+  page.drawText('60', { x: 500, y: 695, size: 10, font })
+  page.drawText('页', { x: 512, y: 695, size: 10, font })
+  page.drawText('BODY_SECOND', { x: 310, y: 675, size: 10, font })
+  page.drawText('17', { x: 500, y: 675, size: 10, font })
+  page.drawText('页', { x: 512, y: 675, size: 10, font })
+  for (const y of [720, 650]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 650 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-multiple-page-counts.pdf',
+    fileName: 'table-cell-multiple-page-counts.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const bodyCell = table.rows[0]!.cells.find((cell) =>
+    cell.blocks.some((block) => block.kind === 'text' &&
+      block.runs.map((run) => run.text).join('').includes('BODY_FIRST')))
+  assert.ok(bodyCell, '正文单元格必须存在')
+  const textBlocks = bodyCell!.blocks.filter((block) => block.kind === 'text')
+  assert.equal(textBlocks.length, 1, '多行正文中的多个页数不能拆成页码块')
+  assert.equal(textBlocks[0]!.runs.some((run) => run.protected === true), false,
+    '多行正文中的页数仍属于可翻译正文')
+})
+
 test('PDF 表格应把第二行缺失列分隔线的区域识别为横向合并单元格', async () => {
   const document = await PDFDocument.create()
   const page = document.addPage([600, 800])
@@ -1588,6 +1754,54 @@ test('PDF 表格应把第二行缺失列分隔线的区域识别为横向合并�
       block.kind === 'text' ? [block.runs.map((run) => run.text).join('')] : []),
     ['MERGED_BOTTOM']
   )
+})
+
+test('PDF 表格内部竖线恢复后不得把后续表单内容并入表头合并单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.28, 841.89])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const left = 60
+  const split = 141
+  const right = 535.5
+  const rowPositions = [100, 130, 160, 220, 280, 340, 400, 460, 520, 580]
+
+  // 表头是跨两列的标题；从下一行开始，内部竖线恢复并把左右两列分开。
+  for (const y of rowPositions) {
+    page.drawLine({ start: { x: left, y: drawY(y) }, end: { x: right, y: drawY(y) }, thickness: 1 })
+  }
+  page.drawLine({ start: { x: left, y: drawY(100) }, end: { x: left, y: drawY(580) }, thickness: 1 })
+  page.drawLine({ start: { x: right, y: drawY(100) }, end: { x: right, y: drawY(580) }, thickness: 1 })
+  page.drawLine({ start: { x: split, y: drawY(130) }, end: { x: split, y: drawY(580) }, thickness: 1 })
+
+  page.drawText('MERGED_TITLE', { x: 270, y: drawY(118), size: 10, font })
+  page.drawText('LABEL_A', { x: 82, y: drawY(148), size: 10, font })
+  page.drawText('BODY_A', { x: 145.5, y: drawY(148), size: 10, font })
+  page.drawText('LABEL_B', { x: 82, y: drawY(208), size: 10, font })
+  page.drawText('BODY_B', { x: 145.5, y: drawY(208), size: 10, font })
+  page.drawText('LABEL_C', { x: 82, y: drawY(268), size: 10, font })
+  page.drawText('BODY_C', { x: 145.5, y: drawY(268), size: 10, font })
+  page.drawText('SIGNATURE', { x: 145.5, y: drawY(568), size: 10, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-header-then-split-columns.pdf',
+    fileName: 'table-header-then-split-columns.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 9, `主表必须保留 9 行，实际 ${table.rows.length}`)
+  assert.equal(table.rows[0]!.cells.length, 1, '跨列表头应保持一个单元格')
+  assert.equal(table.rows[0]!.cells[0]!.colSpan, 2)
+  assert.equal(table.rows[0]!.cells[0]!.rowSpan, 1, '表头不能吞并后续表单行')
+  assert.equal(table.rows[1]!.cells.length, 2, '竖线恢复后的下一行必须保留两列')
+  const firstCellTexts = table.rows[1]!.cells.map((cell) => cell.blocks
+    .flatMap((block) => block.kind === 'text' ? [block.runs.map((run) => run.text).join('')] : []))
+  assert.deepEqual(firstCellTexts, [['LABEL_A'], ['BODY_A']])
 })
 
 test('PDF 合并单元格内的图片必须插入合并后的单元格而不是页面级区块', async () => {
@@ -4476,6 +4690,130 @@ test('PDF 表单的页面外框、T 型表头接缝与签名横线不能破坏�
     Math.abs((block.bbox?.y ?? 0) - 802.5) <= 1.5)
   assert.ok(formBottom, '表单容器底边必须保留，不能随页面外框一起被过滤')
   assert.ok(Math.abs((formBottom.bbox?.width ?? 0) - 475.5) <= 2)
+})
+
+test('PDF 表单承诺书与签名位于数据表外时不能因表框延续被并入合并单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.28, 841.89])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const tableLeft = 60.375
+  const splitX = 141
+  const tableRight = 535.125
+  const tableRows = [109.875, 132.75, 154.5, 176.25, 198, 281.25, 364.5, 447.75, 531, 614.25]
+
+  // 复现真实表单：数据表外框继续延伸到承诺书和签名区域，但内部两列在最后一条数据行结束。
+  page.drawLine({ start: { x: tableLeft, y: drawY(109.875) }, end: { x: tableLeft, y: drawY(802.5) }, thickness: 1 })
+  page.drawLine({ start: { x: tableRight, y: drawY(109.875) }, end: { x: tableRight, y: drawY(802.5) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(802.5) }, end: { x: tableRight, y: drawY(802.5) }, thickness: 1 })
+  // 真实 PDF 会把每条横线在内部列边界处拆成相邻线段；不能因为没有单条线
+  // 覆盖整行就误判为跨行合并单元格。
+  for (const y of tableRows) {
+    page.drawLine({ start: { x: tableLeft, y: drawY(y) }, end: { x: splitX, y: drawY(y) }, thickness: 0.75 })
+    page.drawLine({ start: { x: splitX, y: drawY(y) }, end: { x: tableRight, y: drawY(y) }, thickness: 0.75 })
+  }
+  // 首行是跨两列标题，后续数据行恢复内部竖线。
+  page.drawLine({ start: { x: splitX, y: drawY(132.75) }, end: { x: splitX, y: drawY(614.25) }, thickness: 0.75 })
+  page.drawText('Certificate copies', { x: 82, y: drawY(120), size: 10, font })
+  page.drawText('Required materials', { x: 82, y: drawY(143), size: 10, font })
+  page.drawText('Application form', { x: 82, y: drawY(165), size: 10, font })
+  page.drawText('Print and sign the form', { x: 145.5, y: drawY(165), size: 10, font })
+  page.drawText('Commitment and signature', { x: 65.25, y: drawY(630), size: 10, font })
+  page.drawText('Applicant signature', { x: 307.5, y: drawY(746.25), size: 10, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/form-table-external-signature.pdf',
+    fileName: 'form-table-external-signature.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => null,
+    renderPageRegionToImage: async () => null
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.ok(Math.abs(table.bbox.y + table.bbox.height - 614.25) <= 1.5,
+    `数据表必须停在最后一条内部列线处，实际底边 ${table.bbox.y + table.bbox.height}`)
+  assert.equal(table.rows.length, 9, `主表必须保留 9 行，实际 ${table.rows.length}`)
+  assert.equal(table.rows[0]!.cells[0]!.colSpan, 2, '表头应保持跨两列')
+  assert.equal(table.rows[0]!.cells[0]!.rowSpan, 1, '表头不能吞并后续数据行')
+  assert.equal(table.rows[1]!.cells.length, 2, '内部竖线恢复后的行必须保留两列')
+  const tableText = table.rows.flatMap((row) => row.cells).flatMap((cell) => cell.blocks)
+    .flatMap((block) => block.kind === 'text' ? [block.runs.map((run) => run.text).join('')] : [])
+  assert.equal(tableText.some((text) => text.includes('Commitment')), false,
+    '承诺书必须留在表格外')
+  assert.equal(translatableText(model).some((text) => text.includes('Commitment')), true,
+    '承诺书仍必须作为正文保留')
+  assert.equal(translatableText(model).some((text) => text.includes('Applicant signature')), true,
+    '签名必须作为正文保留')
+})
+
+test('PDF 内部列线拆成多段时数据表底边仍必须停在最后一行', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595.28, 841.89])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const drawY = (y: number): number => page.getHeight() - y
+  const tableLeft = 60.375
+  const splitX = 141
+  const tableRight = 535.125
+  const tableRows = [109.875, 132.75, 154.5, 176.25, 198, 281.25, 364.5, 447.75, 531, 614.25]
+
+  // 复现真实 PDF：外框贯穿承诺书区域，内部列线被拆成互不相接的片段。
+  page.drawLine({ start: { x: tableLeft, y: drawY(109.875) }, end: { x: tableLeft, y: drawY(802.5) }, thickness: 1 })
+  page.drawLine({ start: { x: tableRight, y: drawY(109.875) }, end: { x: tableRight, y: drawY(802.5) }, thickness: 1 })
+  page.drawLine({ start: { x: tableLeft, y: drawY(802.5) }, end: { x: tableRight, y: drawY(802.5) }, thickness: 1 })
+  for (const y of tableRows) {
+    page.drawLine({ start: { x: tableLeft, y: drawY(y) }, end: { x: splitX, y: drawY(y) }, thickness: 0.75 })
+    page.drawLine({ start: { x: splitX, y: drawY(y) }, end: { x: tableRight, y: drawY(y) }, thickness: 0.75 })
+  }
+  for (const [start, end] of [
+    [110.25, 133.5],
+    [176.999, 198.75],
+    [198.75, 281.999],
+    [281.999, 365.25],
+    [365.25, 448.5],
+    [448.5, 531.75],
+    [531.75, 614.999]
+  ]) {
+    page.drawLine({ start: { x: splitX, y: drawY(start!) }, end: { x: splitX, y: drawY(end!) }, thickness: 0.75 })
+  }
+  page.drawText('Certificate copies', { x: 82, y: drawY(120), size: 10, font })
+  page.drawText('Required materials', { x: 82, y: drawY(143), size: 10, font })
+  page.drawText('Application form', { x: 82, y: drawY(165), size: 10, font })
+  page.drawText('Print and sign the form', { x: 145.5, y: drawY(165), size: 10, font })
+  page.drawText('Commitment and signature', { x: 65.25, y: drawY(630), size: 10, font })
+  page.drawText('Applicant signature', { x: 307.5, y: drawY(746.25), size: 10, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/form-table-split-interior-line.pdf',
+    fileName: 'form-table-split-interior-line.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => null,
+    renderPageRegionToImage: async () => null
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.ok(Math.abs(table.bbox.y + table.bbox.height - 614.25) <= 1.5,
+    `数据表必须停在拆段内部列线的真实终点，实际底边 ${table.bbox.y + table.bbox.height}`)
+  assert.equal(table.rows.length, 9, `主表必须保留 9 行，实际 ${table.rows.length}`)
+  const tableText = table.rows.flatMap((row) => row.cells).flatMap((cell) => cell.blocks)
+    .flatMap((block) => block.kind === 'text' ? [block.runs.map((run) => run.text).join('')] : [])
+  assert.equal(tableText.some((text) => text.includes('Commitment')), false,
+    '承诺书必须留在表格外')
+  assert.equal(translatableText(model).some((text) => text.includes('Commitment')), true,
+    '承诺书仍必须作为正文保留')
+  assert.equal(translatableText(model).some((text) => text.includes('Applicant signature')), true,
+    '签名必须作为正文保留')
 })
 
 test('PDF 贴纸张边缘的整页装饰线不能进入译文预览', async () => {

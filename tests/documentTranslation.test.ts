@@ -394,7 +394,7 @@ test('翻译协议版本必须隔离缓存键并拒绝旧版或缺失版本的�
   const key = buildDocumentTranslationCacheKey(context)
   const changedProtocol = buildDocumentTranslationCacheKey({
     ...context,
-    translationProtocolVersion: 'document-translation-protocol-v3'
+    translationProtocolVersion: 'document-translation-protocol-v4'
   })
   const successful = {
     sourceSha256: context.fileSha256,
@@ -407,7 +407,7 @@ test('翻译协议版本必须隔离缓存键并拒绝旧版或缺失版本的�
   }
 
   assert.equal(context.translationProtocolVersion, DOCUMENT_TRANSLATION_PROTOCOL_VERSION)
-  assert.match(key, /document-translation-protocol-v2/u)
+  assert.match(key, /document-translation-protocol-v3/u)
   assert.notEqual(key, changedProtocol)
   assert.equal(parseDocumentTranslationCacheEntry(context, successful).ok, true)
   assert.equal(parseDocumentTranslationCacheEntry(context, {

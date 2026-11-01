@@ -35,7 +35,6 @@ import {
 } from '../shared/documentPartialExport.ts'
 import type {
   DocumentAssetResult,
-  DocumentExportLayout,
   DocumentExportProgress,
   DocumentExportRequest,
   DocumentExportResult,
@@ -126,7 +125,7 @@ export interface DocumentWorkspaceTaskServiceDependencies {
    * 将文档模型导出为 PDF；部分导出时携带回退摘要，双层导出时追加透明 OCR 文字层。
    * @param model 待导出的文档模型。
    * @param dependencies 字体与资源读取依赖。
-   * @param options 部分导出摘要、文字层、布局、取消信号、页级进度与双语源模型。
+   * @param options 部分导出摘要、文字层、取消信号与页级进度。
    * @returns 已生成的 PDF 字节与可降级告警。
    * @author zhenghq
    */
@@ -142,14 +141,10 @@ export interface DocumentWorkspaceTaskServiceDependencies {
     textLayer?: boolean
     /** 是否仅导出 OCR 原文 PDF。 */
     sourceOnly?: boolean
-    /** 译文单栏或左右双语布局。 */
-    layout?: DocumentExportLayout
     /** 取消导出时触发的中止信号。 */
     signal?: AbortSignal
     /** 合成阶段页级进度回调。 */
     onProgress?: (progress: { completedPages: number; totalPages: number }) => void
-    /** 双语导出的原文模型。 */
-    sourceModel?: DocumentModel
   }): Promise<DocumentPdfExportResult>
   /** 推送导出阶段进度。 */
   sendExportProgress?(progress: DocumentExportProgress): void
@@ -687,7 +682,6 @@ export class DocumentWorkspaceTaskService {
       job.completionReport.translated + job.completionReport.unchanged === 0) {
       return { status: 'rejected', code: 'not-ready' }
     }
-    const layout = request.layout === 'bilingual' ? 'bilingual' : 'translation'
     const controller = new AbortController()
     job.exportController = controller
     job.exportPercent = 0
@@ -747,9 +741,7 @@ export class DocumentWorkspaceTaskService {
         ...(exportDocument ? { partialExport: exportDocument.summary } : {}),
         ...(request.textLayer !== undefined ? { textLayer: request.textLayer } : {}),
         sourceOnly: ocrOnly,
-        layout,
         signal: controller.signal,
-        sourceModel: job.source,
         onProgress: (progress) => {
           totalPages = Math.max(1, progress.totalPages)
           emitProgress(

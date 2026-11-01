@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
   createDocumentExportProgress,
+  normalizeDocumentApprovedExportRequest,
   normalizeDocumentExportCancelRequest,
   normalizeDocumentOpenExportFolderRequest,
   normalizeDocumentExportRequest,
@@ -29,20 +30,17 @@ test('文档导出协议必须暴露进度、取消与打开目录通道', () =>
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.openExportFolder, 'document:open-export-folder')
 })
 
-test('文档导出请求必须校验任务、代际、模式和布局字段', () => {
+test('文档导出请求必须校验任务、代际、模式和文字层字段', () => {
   assert.deepEqual(normalizeDocumentExportRequest(request()), {
     jobId: 'job-1',
     generation: 1,
-    mode: 'complete',
-    layout: 'translation'
+    mode: 'complete'
   })
   assert.deepEqual(normalizeDocumentExportRequest({ ...request(), layout: 'bilingual' }), {
     jobId: 'job-1',
     generation: 1,
-    mode: 'complete',
-    layout: 'bilingual'
+    mode: 'complete'
   })
-  assert.equal(normalizeDocumentExportRequest({ ...request(), layout: 'side-by-side' }), null)
   assert.equal(normalizeDocumentExportRequest({ ...request(), jobId: ' ' }), null)
   assert.equal(normalizeDocumentExportRequest({ ...request(), generation: 0 }), null)
   assert.equal(normalizeDocumentExportRequest({ ...request(), generation: 1.5 }), null)
@@ -62,8 +60,7 @@ test('文档导出请求不得接受 Renderer 提供的路径、URL 或命令', 
   assert.deepEqual(normalized, {
     jobId: 'job-1',
     generation: 1,
-    mode: 'complete',
-    layout: 'translation'
+    mode: 'complete'
   })
 })
 
@@ -99,4 +96,63 @@ test('文档导出取消与打开目录请求只能携带任务身份', () => {
   }), { jobId: 'job-1', generation: 2 })
   assert.equal(normalizeDocumentExportCancelRequest({ jobId: 'job-1', generation: 0 }), null)
   assert.equal(normalizeDocumentOpenExportFolderRequest({ jobId: '', generation: 1 }), null)
+})
+
+test('历史文档导出请求必须校验重新授权信息并保留译文模型', () => {
+  const request = {
+    source: {
+      path: '/tmp/history.pdf',
+      format: 'pdf' as const,
+      sourceSha256: 'a'.repeat(64),
+      sourceSize: 128
+    },
+    fileName: 'history.pdf',
+    translation: {
+      schemaVersion: 1,
+      documentId: 'history-document',
+      source: {
+        path: '/tmp/history.pdf',
+        fileName: 'history.pdf',
+        format: 'pdf',
+        sha256: 'a'.repeat(64),
+        size: 128,
+        pageCount: 1
+      },
+      metadata: { direction: 'ltr' },
+      pages: [{
+        pageId: 'page-1',
+        index: 0,
+        width: 600,
+        height: 800,
+        blocks: [{
+          kind: 'text',
+          blockId: 'block-1',
+          readingOrder: 0,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-1', text: '译文' }]
+        }]
+      }],
+      assets: [],
+      warnings: []
+    }
+  }
+
+  assert.deepEqual(normalizeDocumentApprovedExportRequest(request), request)
+  assert.equal(normalizeDocumentApprovedExportRequest({
+    ...request,
+    source: { ...request.source, path: 'relative.pdf' }
+  }), null)
+  assert.equal(normalizeDocumentApprovedExportRequest({
+    ...request,
+    source: { ...request.source, sourceSha256: 'not-a-sha' }
+  }), null)
+  assert.equal(normalizeDocumentApprovedExportRequest({
+    ...request,
+    translation: { ...request.translation, documentId: '' }
+  }), null)
+  assert.equal(normalizeDocumentApprovedExportRequest({
+    ...request,
+    translation: null
+  }), null)
 })

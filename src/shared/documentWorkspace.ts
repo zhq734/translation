@@ -3,6 +3,7 @@ import type {
   DocumentModel,
   DocumentWarning
 } from './documentTypes.ts'
+import { parseDocumentModel } from './documentTypes.ts'
 import type { DocumentTaskState } from './documentTask.ts'
 import type { DocumentLanguagePair } from './documentLanguageDirection.ts'
 import type { DocumentCompletionReport } from './documentCompletion.ts'
@@ -220,9 +221,6 @@ export interface DocumentRunResult {
   suggestedGeneration?: number
 }
 
-/** PDF 导出布局；译文模式仅输出译文，双语模式按原页与译文页并排输出。 */
-export type DocumentExportLayout = 'translation' | 'bilingual'
-
 /** PDF 导出进度阶段。 */
 export type DocumentExportPhase = 'preparing' | 'composing' | 'writing' | 'completed'
 
@@ -265,8 +263,6 @@ export interface DocumentExportRequest {
   mode: 'complete' | 'partial'
   /** 是否在图片上追加透明 OCR 原文文字层，生成可检索的双层 PDF。 */
   textLayer?: boolean
-  /** 导出布局；省略时保持仅译文 PDF。 */
-  layout?: DocumentExportLayout
 }
 
 /** PDF 导出结果。 */
@@ -317,6 +313,16 @@ export interface DocumentApprovedSourceRequest {
   format: import('./documentTypes.ts').DocumentFormat
 }
 
+/** 已批准历史文档的导出请求；只允许导出快照中的译文，不复用旧任务身份。 */
+export interface DocumentApprovedExportRequest {
+  /** 已重新授权且必须与译文源信息一致的本地源文件。 */
+  source: DocumentApprovedSourceRequest
+  /** 原始文件名，仅用于生成安全的默认 PDF 文件名。 */
+  fileName: string
+  /** 历史快照中的已保存译文模型。 */
+  translation: DocumentModel
+}
+
 /** 只读历史/恢复 Tab 的受控资源请求；资源元数据必须与快照完全一致。 */
 export interface DocumentApprovedAssetRequest extends DocumentApprovedSourceRequest {
   /** 解析阶段生成的稳定资源标识。 */
@@ -343,6 +349,7 @@ export const DOCUMENT_WORKSPACE_CHANNELS = {
   retryFailed: 'document:retry-failed',
   retryFailedTarget: 'document:retry-failed-target',
   exportPdf: 'document:export-pdf',
+  exportApprovedPdf: 'document:export-approved-pdf',
   exportProgress: 'document:export-progress',
   cancelExport: 'document:cancel-export',
   openExportFolder: 'document:open-export-folder',
@@ -361,7 +368,7 @@ export const DOCUMENT_WORKSPACE_CHANNELS = {
 
 /**
  * 校验并规范化来自 Renderer 的 PDF 导出请求。
- * 只保留任务身份、模式和布局等白名单字段，忽略任何路径、URL 或命令。
+ * 只保留任务身份、模式和文字层等白名单字段，忽略任何路径、URL 或命令。
  * @param value 未信任的导出请求。
  * @returns 规范化请求；字段非法时返回 null。
  * @author zhenghq
@@ -372,15 +379,80 @@ export function normalizeDocumentExportRequest(value: unknown): DocumentExportRe
   const identity = normalizeDocumentTaskIdentityRequest(candidate)
   if (!identity) return null
   if (candidate.mode !== 'complete' && candidate.mode !== 'partial') return null
-  if (candidate.layout !== undefined &&
-    candidate.layout !== 'translation' && candidate.layout !== 'bilingual') return null
   if (candidate.textLayer !== undefined && typeof candidate.textLayer !== 'boolean') return null
   return {
     jobId: identity.jobId,
     generation: identity.generation,
     mode: candidate.mode,
-    layout: candidate.layout === 'bilingual' ? 'bilingual' : 'translation',
     ...(candidate.textLayer !== undefined ? { textLayer: candidate.textLayer } : {})
+  }
+}
+
+/**
+ * 校验并规范化历史/恢复文档的导出请求。
+ *
+ * 该请求不携带任务身份，避免 Renderer 借历史快照重新获得旧任务控制权。
+ * 主进程仍会重新校验路径授权、文件指纹、实际格式以及译文模型的源信息。
+ * @param value 未信任的历史文档导出请求。
+ * @returns 规范化请求；字段非法或译文模型无效时返回 null。
+ * @author zhenghq
+ */
+export function normalizeDocumentApprovedExportRequest(
+  value: unknown
+): DocumentApprovedExportRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  const source = candidate.source
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null
+  const sourceCandidate = source as Record<string, unknown>
+  if (typeof sourceCandidate.path !== 'string' || !sourceCandidate.path.trim() ||
+    sourceCandidate.path.length > 32_768 ||
+    hasUnsafeDocumentPathCharacters(sourceCandidate.path) ||
+    sourceCandidate.path.startsWith('file:') || sourceCandidate.path.includes('://') ||
+    (!sourceCandidate.path.startsWith('/') && !sourceCandidate.path.startsWith('\\\\') &&
+      !/^[A-Za-z]:[\\/]/u.test(sourceCandidate.path))) {
+    return null
+  }
+  if (typeof sourceCandidate.sourceSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/iu.test(sourceCandidate.sourceSha256) ||
+    !Number.isSafeInteger(sourceCandidate.sourceSize) ||
+    (sourceCandidate.sourceSize as number) < 1) {
+    return null
+  }
+  if (sourceCandidate.format !== 'pdf' && sourceCandidate.format !== 'docx' &&
+    sourceCandidate.format !== 'epub' && sourceCandidate.format !== 'html' &&
+    sourceCandidate.format !== 'markdown' && sourceCandidate.format !== 'txt' &&
+    sourceCandidate.format !== 'json' && sourceCandidate.format !== 'csv' &&
+    sourceCandidate.format !== 'srt' && sourceCandidate.format !== 'vtt' &&
+    sourceCandidate.format !== 'image') {
+    return null
+  }
+  if (typeof candidate.fileName !== 'string' || !candidate.fileName.trim() ||
+    candidate.fileName.length > 512 ||
+    /[\u0000-\u001f\u007f]/u.test(candidate.fileName)) {
+    return null
+  }
+  let translation: DocumentModel
+  try {
+    translation = parseDocumentModel(candidate.translation)
+  } catch {
+    return null
+  }
+  if (translation.source.path !== sourceCandidate.path ||
+    translation.source.sha256.toLowerCase() !== sourceCandidate.sourceSha256.toLowerCase() ||
+    translation.source.size !== sourceCandidate.sourceSize ||
+    translation.source.format !== sourceCandidate.format) {
+    return null
+  }
+  return {
+    source: {
+      path: sourceCandidate.path,
+      sourceSha256: sourceCandidate.sourceSha256.toLowerCase(),
+      sourceSize: sourceCandidate.sourceSize as number,
+      format: sourceCandidate.format
+    },
+    fileName: candidate.fileName,
+    translation
   }
 }
 

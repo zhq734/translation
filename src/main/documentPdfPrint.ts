@@ -2,7 +2,6 @@ import type { PrintToPDFOptions } from 'electron'
 import type { DocumentModel, DocumentWarning } from '../shared/documentTypes.ts'
 import type { DocumentPdfExportResult } from './documentWorkspaceTaskService.ts'
 import type { DocumentPartialExportSummary } from '../shared/documentPartialExport.ts'
-import type { DocumentExportLayout } from '../shared/documentWorkspace.ts'
 import { resolveTranslationWatermarkHorizontalOffset } from '../renderer/src/documentPdfLayout.ts'
 
 /** 默认 A4 页面宽度，单位为 PDF 点。 */
@@ -276,7 +275,7 @@ function resolvePrintWatermarkHorizontalOffset(model: DocumentModel): number {
 export function buildDocumentPrintCss(
   model: DocumentModel,
   pageHeightOverridePt?: number,
-  layout: DocumentExportLayout = 'translation'
+  layout: 'translation' | 'bilingual' = 'translation'
 ): string {
   const { width, height } = resolvePrintPageSize(model)
   const isMarkdown = model.source.format === 'markdown'
@@ -291,6 +290,7 @@ export function buildDocumentPrintCss(
     size: ${width}pt ${printHeight}pt;
     margin: ${isMarkdown ? '0.35in' : '0'};
   }
+
 }
 
 @media screen, print {
@@ -674,7 +674,7 @@ export async function printDocumentPreviewToPdf(
   model: DocumentModel,
   partialExport?: DocumentPartialExportSummary,
   textLayer?: boolean,
-  layout: DocumentExportLayout = 'translation',
+  layout: 'translation' | 'bilingual' = 'translation',
   signal?: AbortSignal,
   onProgress?: (progress: { completedPages: number; totalPages: number }) => void
 ): Promise<DocumentPdfExportResult> {

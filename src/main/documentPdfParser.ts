@@ -1417,7 +1417,7 @@ function pdfGridLineCovers(
  * @param position 边界位置。
  * @param start 区间起点。
  * @param end 区间终点。
- * @returns 存在覆盖该区间的线段时返回 true。
+ * @returns 存在一组首尾相接的线段共同覆盖该区间时返回 true。
  * @author zhenghq
  */
 function pdfGridBoundaryCovered(
@@ -1427,9 +1427,20 @@ function pdfGridBoundaryCovered(
   start: number,
   end: number
 ): boolean {
-  return lines.some((line) => line.orientation === orientation &&
-    Math.abs(line.position - position) <= PDF_TABLE_LINE_TOLERANCE &&
-    pdfGridLineCovers(line, start, end))
+  const targetStart = Math.min(start, end)
+  const targetEnd = Math.max(start, end)
+  const segments = lines
+    .filter((line) => line.orientation === orientation &&
+      Math.abs(line.position - position) <= PDF_TABLE_LINE_TOLERANCE)
+    .sort((left, right) => left.start - right.start)
+  let coveredUntil = targetStart
+  for (const segment of segments) {
+    if (segment.end < coveredUntil - PDF_TABLE_LINE_TOLERANCE) continue
+    if (segment.start > coveredUntil + PDF_TABLE_LINE_TOLERANCE) return false
+    coveredUntil = Math.max(coveredUntil, segment.end)
+    if (coveredUntil >= targetEnd - PDF_TABLE_LINE_TOLERANCE) return true
+  }
+  return false
 }
 
 /** 解析阶段识别出的表格合并单元格。 */
@@ -1532,33 +1543,56 @@ function trimPdfFormContainerBottom(
   const bottom = grid.bbox.y + grid.bbox.height
   if (grid.rows.length < 2) return grid
   const vertical = lines.filter((line) => line.orientation === 'vertical')
+  const horizontal = lines.filter((line) => line.orientation === 'horizontal')
   const gridRight = grid.bbox.x + grid.bbox.width
-  const interiorLines = vertical.filter((line) =>
-    line.position > grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
-    line.position < gridRight - PDF_TABLE_LINE_TOLERANCE &&
-    line.start <= (grid.rows[2] ?? grid.rows[1] ?? grid.bbox.y) + PDF_TABLE_LINE_TOLERANCE &&
-    line.end < bottom - PDF_TABLE_LINE_TOLERANCE)
+  // PDF 生成器会把同一条内部列线拆成多个首尾相接或不连续的小段。
+  // 先按列位置收集全部片段，再取该列真实终点；不能只检查从表头附近
+  // 开始的片段，否则会把数据表误裁到第一段内部列线的末尾。
+  const interiorPositions = grid.columns.filter((column) =>
+    column > grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+    column < gridRight - PDF_TABLE_LINE_TOLERANCE)
+  const interiorLines = interiorPositions.flatMap((position) => vertical.filter((line) =>
+    Math.abs(line.position - position) <= PDF_TABLE_LINE_TOLERANCE &&
+    line.end > grid.bbox.y + PDF_TABLE_LINE_TOLERANCE &&
+    line.start < bottom - PDF_TABLE_LINE_TOLERANCE))
   if (interiorLines.length === 0) return grid
-  const interiorBottom = Math.min(...interiorLines.map((line) => line.end))
+  const rawInteriorBottom = Math.max(...interiorLines.map((line) => line.end))
+  // 原始线段可能因线宽或 PDF 坐标精度比最后一条行线多出不到 1pt。
+  // 将终点吸附到最近的真实行边界，避免表格高度出现细微误差。
+  const snappedInteriorBottom = grid.rows.reduce((nearest, row) =>
+    Math.abs(row - rawInteriorBottom) < Math.abs(nearest - rawInteriorBottom) ? row : nearest,
+  grid.rows[0]!)
+  const interiorBottom = Math.abs(snappedInteriorBottom - rawInteriorBottom) <=
+    PDF_TABLE_LINE_TOLERANCE ? snappedInteriorBottom : rawInteriorBottom
   if (interiorBottom >= bottom - PDF_TABLE_LINE_TOLERANCE) return grid
   const borderLines = vertical.filter((line) =>
     (Math.abs(line.position - grid.bbox.x) <= PDF_TABLE_LINE_TOLERANCE ||
       Math.abs(line.position - (grid.bbox.x + grid.bbox.width)) <= PDF_TABLE_LINE_TOLERANCE) &&
     line.end >= bottom - PDF_TABLE_LINE_TOLERANCE)
   if (borderLines.length < 2) return grid
-  // 表单容器底部可能同时包含真实的最后一行数据。只要候选底边内仍有文本中心
-  // 落在待裁掉的行中，就必须保留该行；否则会把最后一行单元格和边框一起删除。
-  const hasTextInTrimmedRows = textLines.some((line) => {
+  // 承诺书、签名和日期常位于表单外框内，仅凭“待裁区域还有文本”不能证明
+  // 数据表仍在延续。内部列线之后若还存在完整行线，且该行包含文本，才说明
+  // 只是该列在合并单元格中中断，表格仍应保留。承诺书区域只有外框底边，
+  // 不会形成内部完整行线，因此仍会按内部列线终点裁剪。
+  const hasTextBelowInterior = textLines.some((line) => {
     const centerY = line.bbox.y + line.bbox.height / 2
-    const rowHeights = grid.rows.slice(1).map((row, index) => row - grid.rows[index]!)
-      .filter((height) => height > PDF_TABLE_LINE_TOLERANCE)
-    const typicalRowHeight = rowHeights.length > 0 ? Math.min(...rowHeights) : 0
     return centerY > interiorBottom + PDF_TABLE_LINE_TOLERANCE &&
-      centerY <= interiorBottom + Math.max(typicalRowHeight * 2, PDF_MIN_TABLE_SIZE) + PDF_TABLE_LINE_TOLERANCE &&
+      centerY < bottom - PDF_TABLE_LINE_TOLERANCE &&
       line.bbox.x + line.bbox.width >= grid.bbox.x - PDF_TABLE_LINE_TOLERANCE &&
-      line.bbox.x <= grid.bbox.x + grid.bbox.width + PDF_TABLE_LINE_TOLERANCE
+      line.bbox.x <= gridRight + PDF_TABLE_LINE_TOLERANCE
   })
-  if (hasTextInTrimmedRows) return grid
+  const rowHeights = grid.rows.slice(1).map((row, index) => row - grid.rows[index]!)
+    .filter((height) => height > PDF_TABLE_LINE_TOLERANCE)
+  const typicalRowHeight = rowHeights.length > 0 ? Math.min(...rowHeights) : PDF_MIN_TABLE_SIZE
+  const immediateBottomLimit = interiorBottom +
+    Math.max(typicalRowHeight * 1.5, PDF_MIN_TABLE_SIZE) + PDF_TABLE_LINE_TOLERANCE
+  const hasCompleteRowBelowInterior = horizontal.some((line) =>
+    line.position > interiorBottom + PDF_TABLE_LINE_TOLERANCE &&
+    (line.position < bottom - PDF_TABLE_LINE_TOLERANCE || line.position <= immediateBottomLimit) &&
+    line.start <= grid.bbox.x + PDF_TABLE_LINE_TOLERANCE &&
+    line.end >= gridRight - PDF_TABLE_LINE_TOLERANCE &&
+    pdfHorizontalLineHasVerticalSupports(line, vertical))
+  if (hasTextBelowInterior && hasCompleteRowBelowInterior) return grid
   const rows = grid.rows.filter((row) => row <= interiorBottom + PDF_TABLE_LINE_TOLERANCE)
   if (rows.length < 2) return grid
   const nextBottom = rows[rows.length - 1]!
@@ -4447,6 +4481,38 @@ function inferPdfTextAlignment(
 }
 
 /**
+ * 根据单元格边界推断单元格内文本对齐，避免短单元格文本被整页中心线误判。
+ * @param bbox 单元格文本边界。
+ * @param cellLeft 单元格左边界。
+ * @param cellRight 单元格右边界。
+ * @param fontSize 文本字号。
+ * @returns 推断出的单元格对齐方式；无法可靠判断时返回 undefined。
+ * @author zhenghq
+ */
+function inferPdfTableCellTextAlignment(
+  bbox: DocumentBoundingBox,
+  cellLeft: number,
+  cellRight: number,
+  fontSize: number
+): DocumentTextAlign | undefined {
+  const cellWidth = cellRight - cellLeft
+  if (!Number.isFinite(cellWidth) || cellWidth <= 0 || bbox.width <= 0) return undefined
+  const tolerance = Math.max(2, Math.min(6, fontSize * 0.45))
+  const textCenter = bbox.x + bbox.width / 2
+  const cellCenter = cellLeft + cellWidth / 2
+  const textRight = bbox.x + bbox.width
+  const leftGap = bbox.x - cellLeft
+  const rightGap = cellRight - textRight
+  // 短文本同时接近单元格中心和右边界时，左右留白是否均衡比单侧距离更可靠。
+  // 必须先判断居中，否则居中文本因字体侧边距贴近右边界时会被误判为右对齐。
+  if (Math.abs(textCenter - cellCenter) <= tolerance &&
+    Math.abs(leftGap - rightGap) <= tolerance * 2) return 'center'
+  if (Math.abs(textRight - cellRight) <= tolerance) return 'right'
+  if (Math.abs(textCenter - cellCenter) <= tolerance) return 'center'
+  return undefined
+}
+
+/**
  * 将 PDF 文本行转换为统一文本区块。
  * @param items 同一行文本项。
  * @param pageId 页面标识。
@@ -4698,21 +4764,62 @@ function createPdfTableBlock(
         left.bbox.y - right.bbox.y || left.bbox.x - right.bbox.x)
       const childBlocks: DocumentTextBlock[] = []
       if (sortedEntries.length > 0) {
-        childBlocks.push(createPdfTableCellTextBlock(
+        const pageNumberSplit = findPdfTableCellPageNumberSplit(
           sortedEntries,
-          cellId,
-          0,
           lineByItem,
-          pageWidth,
-          bodyFontSize,
-          styles,
-          lineHeights,
-          contentArea,
-          cellLeft,
-          cellRight,
-          cellTop,
-          cellBottom
-        ))
+          cellRight
+        )
+        if (pageNumberSplit === undefined) {
+          childBlocks.push(createPdfTableCellTextBlock(
+            sortedEntries,
+            cellId,
+            0,
+            lineByItem,
+            pageWidth,
+            bodyFontSize,
+            styles,
+            lineHeights,
+            contentArea,
+            cellLeft,
+            cellRight,
+            cellTop,
+            cellBottom
+          ))
+        } else {
+          childBlocks.push(
+            createPdfTableCellTextBlock(
+              sortedEntries.slice(0, pageNumberSplit),
+              cellId,
+              0,
+              lineByItem,
+              pageWidth,
+              bodyFontSize,
+              styles,
+              lineHeights,
+              contentArea,
+              cellLeft,
+              cellRight,
+              cellTop,
+              cellBottom
+            ),
+            createPdfTableCellTextBlock(
+              sortedEntries.slice(pageNumberSplit),
+              cellId,
+              1,
+              lineByItem,
+              pageWidth,
+              bodyFontSize,
+              styles,
+              lineHeights,
+              contentArea,
+              cellLeft,
+              cellRight,
+              cellTop,
+              cellBottom,
+              true
+            )
+          )
+        }
       }
       cells.push({
         cellId,
@@ -4901,7 +5008,8 @@ function createPdfTableCellTextBlock(
   cellLeft: number,
   cellRight: number,
   cellTop: number,
-  cellBottom: number
+  cellBottom: number,
+  protectedText = false
 ): DocumentTextBlock {
   const blockId = createPdfTableCellBlockId(cellId, readingOrder)
   const runs: DocumentTextRun[] = []
@@ -4927,7 +5035,8 @@ function createPdfTableCellTextBlock(
     runs.push({
       runId: createTextRunId(blockId, runs.length),
       text: sanitizeDocumentText(item.str),
-      style: lineHeight === undefined ? style : { ...style, lineHeight }
+      style: lineHeight === undefined ? style : { ...style, lineHeight },
+      ...(protectedText ? { protected: true } : {})
     })
   }
   const bbox = {
@@ -4939,7 +5048,9 @@ function createPdfTableCellTextBlock(
       Math.max(cellTop, Math.min(...entries.map((entry) => entry.bbox.y))))
   }
   const primaryFontSize = runs[0]?.style?.fontSize ?? 0
-  const textAlign = inferPdfTextAlignment(bbox, pageWidth, primaryFontSize, bodyFontSize, contentArea)
+  const textAlign = protectedText
+    ? 'right' as const
+    : inferPdfTableCellTextAlignment(bbox, cellLeft, cellRight, primaryFontSize)
   return {
     kind: 'text',
     blockId,
@@ -4950,6 +5061,67 @@ function createPdfTableCellTextBlock(
     ...(textAlign ? { textAlign } : {}),
     runs
   }
+}
+
+/**
+ * 判断表格单元格文本项之间是否足以证明正文和页码属于两个独立文本块。
+ * @param entries 单元格内按阅读顺序排列的文本项。
+ * @param lineByItem 文本项到原始视觉行的映射。
+ * @param cellRight 单元格右边界。
+ * @returns 需要拆分时返回页码起始索引；否则返回 undefined。
+ * @author zhenghq
+ */
+function findPdfTableCellPageNumberSplit(
+  entries: ReadonlyArray<{ item: PdfTextItem; bbox: DocumentBoundingBox }>,
+  lineByItem: ReadonlyMap<PdfTextItem, PdfLine>,
+  cellRight: number
+): number | undefined {
+  if (entries.length < 2) return undefined
+  for (let index = entries.length - 1; index > 0; index -= 1) {
+    const pageNumberText = entries.slice(index).map((entry) => entry.item.str).join('').trim()
+    if (!/^\d+\s*[页⻚]$/u.test(pageNumberText)) continue
+    const pageNumber = entries[index]!
+    const pageNumberLine = lineByItem.get(pageNumber.item)
+    if (!pageNumberLine) continue
+    // 页码后缀必须完整位于同一视觉行；跨行的数字和“页”不是页码。
+    if (entries.slice(index).some((entry) => lineByItem.get(entry.item) !== pageNumberLine)) continue
+    // “程序鉴别材料-一般交存60页 / 文档鉴别材料-一般交存17页”这类多行正文
+    // 每行都可能以页数结尾。若前一行也以页数结尾，当前项属于正文材料页数，
+    // 不能按单元格页码保护，否则会破坏正文的翻译与重排。
+    const earlierLineTexts = new Map<PdfLine, string>()
+    for (const entry of entries.slice(0, index)) {
+      const line = lineByItem.get(entry.item)
+      if (!line || line === pageNumberLine) continue
+      earlierLineTexts.set(line, `${earlierLineTexts.get(line) ?? ''}${entry.item.str}`)
+    }
+    if ([...earlierLineTexts.values()].some((text) => /\d+\s*[页⻚]\s*$/u.test(text))) continue
+    // 页码本身也可能被 PDF.js 拆成数字和“页”两个相邻片段，因此从右侧
+    // 页码片段向左查找真正的大间隙，不能只比较紧邻的前一个文本项。
+    let splitIndex = index
+    let previous = entries[splitIndex - 1]
+    while (previous && lineByItem.get(previous.item) === pageNumberLine) {
+      const current = entries[splitIndex]!
+      const gap = current.bbox.x - (previous.bbox.x + previous.bbox.width)
+      if (gap >= Math.max(24, (current.item.height ?? 0) * 2.5)) break
+      splitIndex -= 1
+      previous = entries[splitIndex - 1]
+    }
+    if (!previous) continue
+    const gap = entries[splitIndex]!.bbox.x - (previous.bbox.x + previous.bbox.width)
+    const fontSize = Math.max(
+      previous.item.height ?? 0,
+      pageNumber.item.height ?? 0,
+      previous.item.transform?.[0] ?? 0,
+      pageNumber.item.transform?.[0] ?? 0
+    )
+    // 页码可能被拆成数字和“页”多个片段，必须使用整段后缀的最右边界判断是否贴右。
+    const pageNumberRight = Math.max(...entries.slice(index).map((entry) =>
+      entry.bbox.x + entry.bbox.width))
+    if (gap < Math.max(24, fontSize * 2.5)) continue
+    if (Math.abs(pageNumberRight - cellRight) > Math.max(6, fontSize * 0.8)) continue
+    return splitIndex
+  }
+  return undefined
 }
 
 /**

@@ -5,7 +5,11 @@ import {
   ScreenshotAnnotationController,
   SCREENSHOT_ANNOTATION_LIMITS
 } from '../src/renderer/src/screenshotAnnotation.ts'
-import type { ScreenshotTextAnnotation } from '../src/shared/types.ts'
+import type {
+  ScreenshotAnnotationRect,
+  ScreenshotShapeAnnotation,
+  ScreenshotTextAnnotation
+} from '../src/shared/types.ts'
 
 const selectionRenderer = readFileSync('src/renderer/src/selection.ts', 'utf8')
 
@@ -71,6 +75,24 @@ test('标注只在选区内创建并提供实时预览', () => {
   assert.equal(controller.preview, null)
   assert.equal(controller.annotations.length, 1)
   assert.deepEqual(controller.annotations[0]!.bounds, { x: 20, y: 20, width: 80, height: 80 })
+})
+
+/**
+ * 校验高亮、模糊与聚光灯共用区域拖拽交互，并能提交对应标注。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('区域工具应支持拖拽预览并提交高亮、模糊与聚光标注', () => {
+  const controller = createController()
+  for (const tool of ['highlight', 'blur', 'spotlight'] as const) {
+    controller.setTool(tool)
+    assert.equal(controller.beginStroke({ x: 120, y: 120 }), true)
+    controller.updateStroke({ x: 220, y: 200 })
+    assert.equal(controller.preview?.type, tool)
+    assert.equal(controller.endStroke(), true)
+    assert.equal(controller.annotations.at(-1)?.type, tool)
+  }
+  assert.equal(controller.annotations.length, 3)
 })
 
 /**
@@ -252,6 +274,248 @@ test('样式修改不应影响已有标注', () => {
 })
 
 /**
+ * 校验对象命中按从上层向下层顺序返回，并可选中、取消选中与删除。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('标注对象应支持命中选择与删除', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 220 })
+  controller.endStroke()
+  controller.setColor('#34c759')
+  controller.beginStroke({ x: 140, y: 140 })
+  controller.updateStroke({ x: 200, y: 200 })
+  controller.endStroke()
+
+  const hit = controller.findAnnotationAt({ x: 60, y: 60 })
+  assert.equal(hit, controller.annotations[1])
+  assert.equal(controller.selectAnnotation(hit!), true)
+  assert.equal(controller.selectedAnnotation, hit)
+  assert.deepEqual(controller.selectedAnnotationBounds, {
+    x: 40,
+    y: 40,
+    width: 60,
+    height: 60
+  })
+
+  assert.equal(controller.deleteSelectedAnnotation(), true)
+  assert.equal(controller.annotations.length, 1)
+  assert.equal(controller.selectedAnnotation, null)
+  assert.equal(controller.undo(), true)
+  assert.equal(controller.annotations.length, 2)
+  controller.clearSelection()
+  assert.equal(controller.selectedAnnotation, null)
+})
+
+/**
+ * 校验对象拖动、八向缩放、Shift 等比缩放与一次撤销记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('标注对象应支持拖动、缩放与单次撤销', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 200 })
+  controller.endStroke()
+  const rect = controller.annotations[0] as ScreenshotShapeAnnotation
+
+  assert.equal(controller.selectAnnotation(rect), true)
+  assert.equal(controller.beginAnnotationTransform('move'), true)
+  controller.updateAnnotationTransform({ x: 150, y: 150 })
+  controller.updateAnnotationTransform({ x: 170, y: 160 })
+  assert.equal(controller.endAnnotationTransform(), true)
+  // 变换坐标以选区左上角为原点：指针从 (50,50) 移到 (70,60)，因此右移 20、下移 10。
+  assert.deepEqual(rect.bounds, { x: 40, y: 30, width: 100, height: 80 })
+  assert.equal(controller.undo(), true)
+  assert.deepEqual((controller.annotations[0] as ScreenshotShapeAnnotation).bounds, {
+    x: 20,
+    y: 20,
+    width: 100,
+    height: 80
+  })
+
+  assert.equal(controller.selectAnnotation(controller.annotations[0]!), true)
+  assert.equal(controller.beginAnnotationTransform('se'), true)
+  controller.updateAnnotationTransform({ x: 160, y: 140 })
+  assert.equal(controller.endAnnotationTransform(), true)
+  assert.deepEqual((controller.annotations[0] as ScreenshotShapeAnnotation).bounds, {
+    x: 20,
+    y: 20,
+    width: 140,
+    height: 120
+  })
+
+  controller.undo()
+  assert.equal(controller.selectAnnotation(controller.annotations[0]!), true)
+  assert.equal(controller.beginAnnotationTransform('se'), true)
+  controller.updateAnnotationTransform({ x: 160, y: 140 }, true)
+  assert.equal(controller.endAnnotationTransform(), true)
+  const proportional = (controller.annotations[0] as ScreenshotShapeAnnotation).bounds
+  assert.ok(Math.abs(proportional.width / proportional.height - 100 / 80) < 1e-6)
+})
+
+/**
+ * 校验仅点击选中对象而没有实际位移时，不应写入空撤销记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('未产生位移的对象变换不应写入撤销历史', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 200 })
+  controller.endStroke()
+  const rect = controller.annotations[0] as ScreenshotShapeAnnotation
+
+  controller.selectAnnotation(rect)
+  assert.equal(controller.beginAnnotationTransform('move'), true)
+  controller.updateAnnotationTransform({ x: 50, y: 50 })
+  assert.equal(controller.endAnnotationTransform(), false)
+
+  // 若空变换被写入历史，这里只会弹出相同快照，标注仍会保留。
+  assert.equal(controller.undo(), true)
+  assert.equal(controller.annotations.length, 0)
+})
+
+/**
+ * 校验方向键微调 1 像素、Shift 加速 5 像素，并合并为一次撤销记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('选中标注应支持方向键微调', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 200 })
+  controller.endStroke()
+  const rect = controller.annotations[0] as ScreenshotShapeAnnotation
+  controller.selectAnnotation(rect)
+
+  assert.equal(controller.nudgeSelectedAnnotation(1, 0), true)
+  assert.equal(controller.nudgeSelectedAnnotation(0, 1), true)
+  assert.equal(controller.nudgeSelectedAnnotation(-1, 0, true), true)
+  assert.deepEqual(rect.bounds, { x: 16, y: 21, width: 100, height: 80 })
+  assert.equal(controller.undo(), true)
+  assert.deepEqual((controller.annotations[0] as ScreenshotShapeAnnotation).bounds, {
+    x: 20,
+    y: 20,
+    width: 100,
+    height: 80
+  })
+})
+
+/**
+ * 校验选中对象后修改样式会实时应用，且连续样式修改合并为一次撤销。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('选中对象的样式修改应实时应用并合并历史', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 200 })
+  controller.endStroke()
+  const rect = controller.annotations[0] as ScreenshotShapeAnnotation
+  controller.selectAnnotation(rect)
+
+  controller.setColor('#34c759')
+  controller.setStrokeWidth(7)
+  controller.setFilled(true)
+  controller.setFillOpacity(0.4)
+  controller.setCornerRadius(12)
+  assert.equal(rect.color, '#34c759')
+  assert.equal(rect.strokeWidth, 7)
+  assert.equal(rect.filled, true)
+  assert.equal(rect.fillOpacity, 0.4)
+  assert.equal(rect.cornerRadius, 12)
+
+  assert.equal(controller.undo(), true)
+  const restored = controller.annotations[0] as ScreenshotShapeAnnotation
+  assert.equal(restored.color, '#ff3b30')
+  assert.equal(restored.strokeWidth, 3)
+  assert.equal(restored.filled, false)
+  assert.equal(restored.cornerRadius, 0)
+})
+
+/**
+ * 校验切换选中对象时会先提交上一对象的样式修改，避免两次样式操作合并。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('切换选中对象时样式历史应按对象拆分', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 200, y: 180 })
+  controller.endStroke()
+  controller.setColor('#34c759')
+  controller.beginStroke({ x: 220, y: 200 })
+  controller.updateStroke({ x: 280, y: 250 })
+  controller.endStroke()
+
+  controller.selectAnnotation(controller.annotations[0]!)
+  controller.setColor('#0a84ff')
+  controller.selectAnnotation(controller.annotations[1]!)
+  controller.setColor('#ff9500')
+
+  assert.equal(controller.undo(), true)
+  assert.equal(controller.annotations[0]!.color, '#0a84ff')
+  assert.equal(controller.annotations[1]!.color, '#34c759')
+  assert.equal(controller.undo(), true)
+  assert.equal(controller.annotations[0]!.color, '#ff3b30')
+  assert.equal(controller.annotations[1]!.color, '#34c759')
+})
+
+/**
+ * 校验撤销移除当前选中对象后会清理选择状态，重做时也不会悬空选中新对象。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('撤销移除选中对象后应清理选择状态', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 180, y: 180 })
+  controller.endStroke()
+  controller.beginStroke({ x: 220, y: 200 })
+  controller.updateStroke({ x: 280, y: 250 })
+  controller.endStroke()
+  controller.selectAnnotation(controller.annotations[1]!)
+
+  assert.equal(controller.undo(), true)
+  assert.equal(controller.selectedAnnotation, null)
+  assert.equal(controller.redo(), true)
+  assert.equal(controller.selectedAnnotation, null)
+})
+
+/**
+ * 校验缩放后矩形圆角不会超过短边一半，并且对象不会越出选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('标注对象变换应保持边界与圆角合法', () => {
+  const controller = createController()
+  controller.setTool('rect')
+  controller.setCornerRadius(40)
+  controller.beginStroke({ x: 120, y: 120 })
+  controller.updateStroke({ x: 220, y: 200 })
+  controller.endStroke()
+  const rect = controller.annotations[0] as ScreenshotShapeAnnotation
+  controller.selectAnnotation(rect)
+  controller.beginAnnotationTransform('se')
+  controller.updateAnnotationTransform({ x: 120, y: 120 })
+  controller.endAnnotationTransform()
+  const bounds = (controller.annotations[0] as ScreenshotShapeAnnotation).bounds
+  assert.ok(bounds.x >= 0 && bounds.y >= 0)
+  assert.ok(bounds.x + bounds.width <= selection.width)
+  assert.ok(bounds.y + bounds.height <= selection.height)
+  assert.ok(bounds.width >= 8 && bounds.height >= 8)
+})
+
+/**
  * 校验撤销、重做与清空标注在控制器层可用，并同步历史可用状态。
  * @returns 无返回值。
  * @author zhenghq
@@ -333,6 +597,21 @@ test('Renderer 应通过 Pointer Events 接入标注交互', () => {
   const keyEnd = selectionRenderer.indexOf('\ntranslateButton', keyStart)
   const keySource = selectionRenderer.slice(keyStart, keyEnd)
   assert.match(keySource, /cancelStroke\(\)|cancelAnnotationInput\(\)/u)
+})
+
+/**
+ * 校验 Renderer 接入高亮、模糊与聚光灯，并为模糊和聚光灯提供底图与视口参数。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Renderer 应接入高亮、模糊和聚光灯的底图合成', () => {
+  assert.match(selectionRenderer, /isScreenshotAnnotationTool/u)
+  assert.match(selectionRenderer, /getElementById\('ocr-blur-radius'\)/u)
+  assert.match(selectionRenderer, /ocrBlurRadius\.addEventListener\('input'/u)
+  assert.match(selectionRenderer, /setBlurRadius\(ocrBlurRadius\.value\)/u)
+  assert.match(selectionRenderer, /drawSourceRegion:/u)
+  assert.match(selectionRenderer, /viewport: \{ width: currentRect\.width, height: currentRect\.height \}/u)
+  assert.match(selectionRenderer, /\.filter = `blur\(/u)
 })
 
 /**
@@ -440,4 +719,90 @@ test('文字标注应支持双击编辑、点击确认和拖动', () => {
   assert.match(selectionRenderer, /commitTextInput/u)
   assert.match(selectionRenderer, /textMoveState/u)
   assert.match(selectionRenderer, /updateTextPosition/u)
+})
+
+/**
+ * 校验 Renderer 将指针事件接入对象命中、拖动与八向缩放，并支持方向键微调。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Renderer 应接入对象选择、变换与键盘微调', () => {
+  assert.match(selectionRenderer, /ocrAnnotationSelection/u)
+  assert.match(selectionRenderer, /data-annotation-handle/u)
+  assert.match(selectionRenderer, /findAnnotationAt/u)
+  assert.match(selectionRenderer, /beginAnnotationTransform/u)
+  assert.match(selectionRenderer, /updateAnnotationTransform/u)
+  assert.match(selectionRenderer, /endAnnotationTransform/u)
+  assert.match(selectionRenderer, /nudgeSelectedAnnotation/u)
+  assert.match(selectionRenderer, /event\.shiftKey/u)
+  const keyStart = selectionRenderer.indexOf('function handleKeyDown')
+  const keyEnd = selectionRenderer.indexOf('\n}', keyStart)
+  const keySource = selectionRenderer.slice(keyStart, keyEnd)
+  assert.match(keySource, /ArrowLeft/u)
+  assert.match(keySource, /ArrowRight/u)
+  assert.match(keySource, /ArrowUp/u)
+  assert.match(keySource, /ArrowDown/u)
+})
+
+/**
+ * 校验选中对象后颜色、线宽、填充与圆角控件会立即同步到标注。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Renderer 样式控件应实时更新选中对象', () => {
+  assert.match(selectionRenderer, /setFilled/u)
+  assert.match(selectionRenderer, /setFillOpacity/u)
+  assert.match(selectionRenderer, /setCornerRadius/u)
+  assert.match(selectionRenderer, /ocrFillToggle\.addEventListener/u)
+  assert.match(selectionRenderer, /ocrFillOpacity\.addEventListener/u)
+  assert.match(selectionRenderer, /ocrCornerRadius\.addEventListener/u)
+  assert.match(selectionRenderer, /redrawAnnotations\(\)/u)
+})
+
+/**
+ * 校验立即型样式控件在修改后提交历史，滑杆在 change 时提交，避免跨对象合并。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Renderer 样式控件应在操作结束时提交历史', () => {
+  const colorHandlerStart = selectionRenderer.indexOf('function handleAnnotationColorSelect(')
+  const colorHandlerEnd = selectionRenderer.indexOf('\n}', colorHandlerStart) + 2
+  assert.ok(colorHandlerStart > -1 && colorHandlerEnd > 1, '缺少颜色选择处理函数')
+  assert.match(selectionRenderer.slice(colorHandlerStart, colorHandlerEnd), /commitStyleChange\(\)/u)
+
+  for (const control of [
+    'ocrColorCustom',
+    'ocrStrokeWidth',
+    'ocrFontSize',
+    'ocrMosaicBrush',
+    'ocrMosaicIntensity',
+    'ocrBlurRadius',
+    'ocrFillOpacity',
+    'ocrCornerRadius'
+  ]) {
+    assert.match(
+      selectionRenderer,
+      new RegExp(`${control}\\.addEventListener\\('change',[^\\n]*commitStyleChange\\(\\)`, 'u'),
+      `${control} 应在 change 时提交样式历史`
+    )
+  }
+  for (const control of ['ocrFillToggle', 'ocrTextBold']) {
+    assert.match(
+      selectionRenderer,
+      new RegExp(`${control}\\.addEventListener\\('click',[\\s\\S]*?commitStyleChange\\(\\)`, 'u'),
+      `${control} 应在点击后提交样式历史`
+    )
+  }
+})
+
+/**
+ * 校验选区被清空时会同步隐藏对象选择框，避免残留旧控制柄。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('清空选区时应同步隐藏对象选择框', () => {
+  const renderStart = selectionRenderer.indexOf('function renderSelectionRect(')
+  const renderEnd = selectionRenderer.indexOf('/**', renderStart + 1)
+  const renderSource = selectionRenderer.slice(renderStart, renderEnd)
+  assert.match(renderSource, /updateAnnotationSelectionBox\(\)/u)
 })

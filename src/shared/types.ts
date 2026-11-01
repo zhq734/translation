@@ -13,6 +13,7 @@ import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
 import type { DocumentPlatformCapability } from './documentPlatformCapability'
 import type {
   DocumentAssetResult,
+  DocumentApprovedExportRequest,
   DocumentApprovedAssetRequest,
   DocumentApprovedSourceRequest,
   DocumentExportProgress,
@@ -34,6 +35,7 @@ export type {
 export type { DocumentPlatformCapability } from './documentPlatformCapability'
 export type {
   DocumentAssetResult,
+  DocumentApprovedExportRequest,
   DocumentApprovedAssetRequest,
   DocumentApprovedSourceRequest,
   DocumentExportProgress,
@@ -564,10 +566,19 @@ export interface ScreenshotOcrActionResult {
   error?: string
 }
 
-/** 截图标注工具类型：矩形、椭圆、箭头、画笔、文字与马赛克。
+/** 截图标注工具类型：基础图形、画笔、文字、马赛克、高亮、模糊与聚光灯。
  * @author zhenghq
  */
-export type ScreenshotAnnotationTool = 'rect' | 'ellipse' | 'arrow' | 'brush' | 'text' | 'mosaic'
+export type ScreenshotAnnotationTool =
+  | 'rect'
+  | 'ellipse'
+  | 'arrow'
+  | 'brush'
+  | 'text'
+  | 'mosaic'
+  | 'highlight'
+  | 'blur'
+  | 'spotlight'
 
 /** 标注坐标点，以当前选区左上角为原点的逻辑坐标。
  * @author zhenghq
@@ -605,6 +616,14 @@ export interface ScreenshotAnnotationStyle {
   mosaicBrushSize: number
   /** 马赛克像素块边长（像素）。 */
   mosaicBlockSize: number
+  /** 高斯模糊半径（像素）。 */
+  blurRadius: number
+  /** 矩形是否填充。 */
+  filled: boolean
+  /** 矩形填充透明度，范围 0-1。 */
+  fillOpacity: number
+  /** 矩形圆角半径（像素）。 */
+  cornerRadius: number
 }
 
 /** 矩形或椭圆标注。
@@ -619,6 +638,12 @@ export interface ScreenshotShapeAnnotation {
   color: string
   /** 创建时冻结的线宽。 */
   strokeWidth: number
+  /** 创建时冻结的填充开关。 */
+  filled: boolean
+  /** 创建时冻结的填充透明度。 */
+  fillOpacity: number
+  /** 创建时冻结的圆角半径。 */
+  cornerRadius: number
 }
 
 /** 箭头标注。
@@ -683,6 +708,38 @@ export interface ScreenshotMosaicAnnotation {
   blockSize: number
 }
 
+/** 高亮标注：以半透明正片叠底覆盖指定区域，不遮挡底层文字。 */
+export interface ScreenshotHighlightAnnotation {
+  /** 标注类型。 */
+  type: 'highlight'
+  /** 高亮区域边界。 */
+  bounds: ScreenshotAnnotationRect
+  /** 创建时冻结的高亮颜色。 */
+  color: string
+  /** 创建时冻结的透明度。 */
+  opacity: number
+}
+
+/** 高斯模糊标注：对指定区域重新采样并做模糊处理。 */
+export interface ScreenshotBlurAnnotation {
+  /** 标注类型。 */
+  type: 'blur'
+  /** 模糊区域边界。 */
+  bounds: ScreenshotAnnotationRect
+  /** 创建时冻结的模糊半径。 */
+  radius: number
+}
+
+/** 聚光灯标注：压暗区域外内容，仅保留指定区域原有亮度。 */
+export interface ScreenshotSpotlightAnnotation {
+  /** 标注类型。 */
+  type: 'spotlight'
+  /** 需要保持明亮的区域边界。 */
+  bounds: ScreenshotAnnotationRect
+  /** 区域外遮罩透明度。 */
+  opacity: number
+}
+
 /** 截图标注联合类型。
  * @author zhenghq
  */
@@ -692,6 +749,9 @@ export type ScreenshotAnnotation =
   | ScreenshotBrushAnnotation
   | ScreenshotTextAnnotation
   | ScreenshotMosaicAnnotation
+  | ScreenshotHighlightAnnotation
+  | ScreenshotBlurAnnotation
+  | ScreenshotSpotlightAnnotation
 
 /** 带标注图片导出动作：仅复制图片与保存到本地。
  * @author zhenghq
@@ -1253,6 +1313,10 @@ export interface Api {
   releaseDocumentJob(jobId: string): Promise<boolean>
   /** 校验当前任务并导出完整或已确认的部分 PDF。 */
   exportDocumentPdf(request: DocumentExportRequest): Promise<DocumentExportResult>
+  /** 导出已重新授权历史文档中的已保存译文，不恢复旧任务。 */
+  exportApprovedDocumentPdf(
+    request: DocumentApprovedExportRequest
+  ): Promise<DocumentExportResult>
   /** 取消当前正在执行的 PDF 导出，任务终态保持不变。 */
   cancelDocumentExport(jobId: string, generation: number): Promise<boolean>
   /** 在系统文件管理器中定位当前任务最近一次成功导出的 PDF。 */

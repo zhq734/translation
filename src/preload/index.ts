@@ -47,6 +47,7 @@ import type {
   , DocumentAssetResult
   , DocumentApprovedAssetRequest
   , DocumentApprovedSourceRequest
+  , DocumentApprovedExportRequest
   , DocumentExportProgress
   , DocumentExportRequest
   , DocumentExportResult
@@ -357,6 +358,16 @@ const api: Api = {
    */
   exportDocumentPdf: (request: DocumentExportRequest): Promise<DocumentExportResult> =>
     ipcRenderer.invoke('document:export-pdf', request),
+  /**
+   * 导出已重新授权历史文档中的已保存译文，不恢复旧任务。
+   * @param request 已批准源信息、建议文件名与译文模型。
+   * @returns 保存、取消或拒绝结果。
+   * @author zhenghq
+   */
+  exportApprovedDocumentPdf: (
+    request: DocumentApprovedExportRequest
+  ): Promise<DocumentExportResult> =>
+    ipcRenderer.invoke('document:export-approved-pdf', request),
   /**
    * 取消当前正在执行的文档 PDF 导出。
    * @param jobId 任务标识。

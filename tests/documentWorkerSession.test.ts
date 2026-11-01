@@ -386,14 +386,12 @@ test('session 导出必须使用当前完成报告、保存 worker 字节并拒�
   const pending = session.exportPdf({
     jobId,
     generation: 1,
-    mode: 'complete',
-    layout: 'bilingual'
+    mode: 'complete'
   })
   const exportRequest = process.sent.findLast((message) => (
     message && typeof message === 'object' && (message as { type?: unknown }).type === 'export'
-  )) as { request?: { completionReport?: unknown; layout?: unknown } } | undefined
+  )) as { request?: { completionReport?: unknown } } | undefined
   assert.deepEqual(exportRequest?.request?.completionReport, completionReport)
-  assert.equal(exportRequest?.request?.layout, 'bilingual')
   process.emitMessage(createDocumentWorkerResultMessage(jobId, 1, {
     status: 'completed',
     percent: 100,

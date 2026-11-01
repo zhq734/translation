@@ -5,6 +5,7 @@ import {
   clampPointToSelection,
   computeArrowHeadPoints,
   computeExportScale,
+  getEffectiveCornerRadius,
   isPointInsideSelection,
   normalizeAnnotationStyle,
   normalizeRectFromPoints,
@@ -42,6 +43,19 @@ test('矩形规范化应处理四个拖拽方向', () => {
     width: 40,
     height: 50
   })
+})
+
+/**
+ * 校验圆角在绘制前被限制为短边的一半，避免极端圆角破坏矩形轮廓。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('矩形圆角应限制在短边一半以内', () => {
+  const bounds = { x: 0, y: 0, width: 100, height: 40 }
+  assert.equal(getEffectiveCornerRadius(bounds, 10), 10)
+  assert.equal(getEffectiveCornerRadius(bounds, 40), 20)
+  assert.equal(getEffectiveCornerRadius(bounds, -4), 0)
+  assert.equal(getEffectiveCornerRadius({ x: 0, y: 0, width: 0, height: 0 }, 12), 0)
 })
 
 /**
