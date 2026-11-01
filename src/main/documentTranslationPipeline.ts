@@ -180,6 +180,8 @@ export interface DocumentPipelineDeps {
   writeTranslationCache?(key: string, value: DocumentTranslationCacheEntry): Promise<void>
   /** 读取解析器版本，用于文档缓存隔离。 */
   getParserVersion?(): string
+  /** 是否跳过文档级缓存读取；为 true 时成功结果仍会写回缓存。 */
+  bypassCache?: boolean
 }
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
@@ -2627,7 +2629,7 @@ export async function runDocumentTranslationPipeline(
   const cacheBaseKey = buildDocumentTranslationCacheKey(cacheContext)
   /** 读取目标级成功缓存；任何持久化异常都不得阻断翻译主任务。 */
   const readTargetCache = async (target: TranslationTarget): Promise<string | undefined> => {
-    if (!deps.readTranslationCache) return undefined
+    if (deps.bypassCache || !deps.readTranslationCache) return undefined
     try {
       const value = await deps.readTranslationCache(`${cacheBaseKey}|target:${target.targetId}`)
       const parsed = parseDocumentTranslationCacheEntry(cacheContext, value)
@@ -3252,7 +3254,7 @@ export async function retryFailedDocumentTranslationPipeline(
    * @author zhenghq
    */
   const readTargetCache = async (target: TranslationTarget): Promise<string | undefined> => {
-    if (!deps.readTranslationCache) return undefined
+    if (deps.bypassCache || !deps.readTranslationCache) return undefined
     try {
       const value = await deps.readTranslationCache(`${cacheBaseKey}|target:${target.targetId}`)
       const parsed = parseDocumentTranslationCacheEntry(cacheContext, value)

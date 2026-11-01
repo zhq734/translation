@@ -1550,6 +1550,192 @@ test('PDF 原生表格应识别矢量网格并保留单元格文字与列宽', a
   assert.equal(new Set(runIds).size, runIds.length)
 })
 
+test('PDF 表格应把第二行缺失列分隔线的区域识别为横向合并单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  page.drawText('LEFT_TOP', { x: 82, y: 695, size: 12, font })
+  page.drawText('RIGHT_TOP', { x: 310, y: 695, size: 12, font })
+  page.drawText('MERGED_BOTTOM', { x: 82, y: 655, size: 12, font })
+  for (const y of [720, 680, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 528]) {
+    page.drawLine({ start: { x, y: 640 }, end: { x, y: 720 }, thickness: 1 })
+  }
+  page.drawLine({ start: { x: 300, y: 680 }, end: { x: 300, y: 720 }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-colspan.pdf',
+    fileName: 'table-colspan.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows.length, 2)
+  assert.equal(table.rows[0]!.cells.length, 2,
+    `第一行应保留两列，实际列宽=${JSON.stringify(table.columnWidths)}`)
+  assert.equal(table.rows[0]!.cells.length, 2)
+  assert.equal(table.rows[1]!.cells.length, 1)
+  assert.equal(table.rows[1]!.cells[0]!.colSpan, 2)
+  assert.equal(table.rows[1]!.cells[0]!.rowSpan, 1)
+  assert.deepEqual(
+    table.rows[1]!.cells[0]!.blocks.flatMap((block) =>
+      block.kind === 'text' ? [block.runs.map((run) => run.text).join('')] : []),
+    ['MERGED_BOTTOM']
+  )
+})
+
+test('PDF 合并单元格内的图片必须插入合并后的单元格而不是页面级区块', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawText('LEFT_TOP', { x: 82, y: 695, size: 12, font })
+  page.drawText('RIGHT_TOP', { x: 310, y: 695, size: 12, font })
+  page.drawText('MERGED_BOTTOM', { x: 82, y: 655, size: 12, font })
+  page.drawImage(image, { x: 360, y: 645, width: 80, height: 30 })
+  for (const y of [720, 680, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 528]) {
+    page.drawLine({ start: { x, y: 640 }, end: { x, y: 720 }, thickness: 1 })
+  }
+  page.drawLine({ start: { x: 300, y: 680 }, end: { x: 300, y: 720 }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-colspan-image.pdf',
+    fileName: 'table-colspan-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 9, 9])
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows[1]!.cells.length, 1)
+  const mergedCell = table.rows[1]!.cells[0]!
+  assert.equal(mergedCell.colSpan, 2)
+  assert.equal(mergedCell.blocks.filter((block) => block.kind === 'image').length, 1,
+    '跨列合并单元格内的图片必须进入该单元格')
+  assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 0,
+    '合并单元格内的图片不能重复输出为页面级图片')
+})
+
+test('PDF 跨行合并旁的第二行单元格图片必须进入自身单元格', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawText('ROWSPAN_TOP_LEFT', { x: 82, y: 695, size: 12, font })
+  page.drawText('ROWSPAN_TOP_RIGHT', { x: 310, y: 695, size: 12, font })
+  page.drawText('ROWSPAN_BOTTOM_RIGHT', { x: 310, y: 655, size: 12, font })
+  // 图片位于第二行右侧，和左侧跨两行单元格不在同一列。
+  page.drawImage(image, { x: 360, y: 645, width: 80, height: 30 })
+  // 中间横线在左列留出极短接缝，形成左侧跨两行的 T 形合并。
+  for (const y of [720, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  page.drawLine({ start: { x: 302, y: 680 }, end: { x: 528, y: 680 }, thickness: 1 })
+  page.drawLine({ start: { x: 72, y: 640 }, end: { x: 72, y: 720 }, thickness: 1 })
+  page.drawLine({ start: { x: 528, y: 640 }, end: { x: 528, y: 720 }, thickness: 1 })
+  page.drawLine({ start: { x: 300, y: 640 }, end: { x: 300, y: 720 }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-rowspan-adjacent-image.pdf',
+    fileName: 'table-rowspan-adjacent-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 9, 9])
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  assert.equal(table.rows[0]!.cells[0]!.rowSpan, 2, '左列必须识别为跨两行单元格')
+  assert.equal(table.rows[1]!.cells.length, 1, '第二行只应保留右侧独立单元格')
+  const topRightCell = table.rows[0]!.cells[1]!
+  const bottomRightCell = table.rows[1]!.cells[0]!
+  assert.equal(topRightCell.blocks.filter((block) => block.kind === 'image').length, 0,
+    '第二行图片不能被错误插入第一行右侧单元格')
+  assert.equal(bottomRightCell.blocks.filter((block) => block.kind === 'image').length, 1,
+    '第二行图片必须进入第二行右侧单元格')
+  assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 0,
+    '跨行合并旁的表格图片不能退回页面级图片')
+})
+
+test('PDF 同时跨行跨列的合并单元格图片必须按真实占用矩阵归属', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawText('MERGED_TOP_LEFT', { x: 82, y: 695, size: 12, font })
+  page.drawText('TOP_RIGHT', { x: 298, y: 695, size: 12, font })
+  page.drawText('MIDDLE_RIGHT', { x: 298, y: 655, size: 12, font })
+  page.drawText('BOTTOM_LEFT', { x: 82, y: 615, size: 12, font })
+  page.drawText('BOTTOM_MIDDLE', { x: 190, y: 615, size: 12, font })
+  page.drawText('BOTTOM_RIGHT', { x: 298, y: 615, size: 12, font })
+  // 图片位于 2×2 合并区域的右下物理格，必须归属到左上合并单元格。
+  page.drawImage(image, { x: 200, y: 645, width: 60, height: 30 })
+  for (const y of [720, 640, 600]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  // 中间横线从第二条内部竖线开始，形成 2×2 合并区域与右侧两行的 T 形边界。
+  page.drawLine({ start: { x: 288, y: 680 }, end: { x: 528, y: 680 }, thickness: 1 })
+  for (const x of [72, 288, 396, 528]) {
+    page.drawLine({ start: { x, y: 600 }, end: { x, y: 720 }, thickness: 1 })
+  }
+  // 第一条内部竖线只在最后一行存在，用于证明前两行确实跨列合并。
+  page.drawLine({ start: { x: 180, y: 600 }, end: { x: 180, y: 640 }, thickness: 1 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-row-col-span-image.pdf',
+    fileName: 'table-row-col-span-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => new Uint8Array([137, 80, 78, 71, 8, 8])
+  })
+
+  const parsedPage = model.pages[0]!
+  const table = parsedPage.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const mergedCell = table.rows[0]!.cells[0]!
+  assert.equal(mergedCell.rowSpan, 2)
+  assert.equal(mergedCell.colSpan, 2)
+  assert.equal(mergedCell.blocks.filter((block) => block.kind === 'image').length, 1,
+    '2×2 合并区域右下物理格的图片必须进入合并单元格')
+  assert.equal(table.rows[1]!.cells.some((cell) => cell.cellId === mergedCell.cellId), false,
+    '合并单元格不能重复出现在第二行')
+  assert.equal(parsedPage.blocks.filter((block) => block.kind === 'image').length, 0,
+    '合并单元格内的图片不能退回页面级图片')
+})
+
 test('PDF 表格单元格的多个视觉行必须合并为一个翻译块', async () => {
   const document = await PDFDocument.create()
   const page = document.addPage([600, 800])

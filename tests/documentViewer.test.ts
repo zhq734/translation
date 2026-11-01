@@ -13,6 +13,7 @@ import {
   resolveDocumentBlockHighlight,
   resolveDocumentPageJump,
   resolveDocumentTocTarget,
+  resolveDocumentFitZoom,
   resolveFitDocumentZoom,
   serializeDocumentViewerState,
   validateRestoredDocumentViewerFile,
@@ -158,6 +159,13 @@ test('缩放必须限制在 50% 到 200%，适合宽度按页面宽度计算', (
   assert.equal(resolveFitDocumentZoom(100, 360), 2)
   assert.equal(resolveFitDocumentZoom(1200, 100), 0.5)
   assert.equal(resolveFitDocumentZoom(0, 360), 1)
+})
+
+test('适合宽度和适合高度必须按容器比例铺满且不继承手动缩放上下限', () => {
+  assert.equal(resolveDocumentFitZoom(100, 360), 3.6)
+  assert.equal(resolveDocumentFitZoom(1200, 100), 100 / 1200)
+  assert.equal(resolveDocumentFitZoom(0, 360), 1)
+  assert.equal(resolveDocumentFitZoom(600, 0), 1)
 })
 
 test('块级双侧高亮必须解析顶层与嵌套区块，并拒绝未知页面或区块', () => {

@@ -781,7 +781,7 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         ...(signal ? { signal } : {})
       })
     },
-    translate: async (text, signal, _request, languagePair, onDelta, context) => {
+    translate: async (text, signal, request, languagePair, onDelta, context) => {
       const settingsSnapshot = getSettings()
       const settings = {
         ...settingsSnapshot,
@@ -797,7 +797,12 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         settings,
         dingTalkCredentials,
         aiApiKey,
-        { onDelta: onDelta ?? (() => undefined), signal, context }
+        {
+          onDelta: onDelta ?? (() => undefined),
+          signal,
+          context,
+          bypassCache: request.bypassCache === true
+        }
       )
       return output.translation
     },

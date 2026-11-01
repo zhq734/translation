@@ -23,13 +23,18 @@ import type {
   DocumentWarning
 } from '../shared/documentTypes.ts'
 import {
+  resolveDocumentOcrRegionFlowTop,
+  resolveDocumentOcrTranslationHorizontalBounds,
   resolveOcrRegionFontSize,
-  resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
-  resolveOcrRegionPadding
+  resolveOcrRegionPadding,
+  type DocumentOcrFlowRect
 } from '../shared/documentOcrLayout.ts'
 import type { DocumentExportLayout } from '../shared/documentWorkspace.ts'
-import { resolveTranslationFlowGroupGeometry } from '../renderer/src/documentPdfLayout.ts'
+import {
+  resolveTranslationFlowDecorationTop,
+  resolveTranslationFlowGroupGeometry
+} from '../renderer/src/documentPdfLayout.ts'
 
 /** PDF 导出稳定错误分类。 */
 export type DocumentPdfExportErrorCode =
@@ -161,8 +166,26 @@ interface PageComposer {
   flowSourceBottom: number
   /** 当前页最近一个占用普通流的区块实际底部坐标。 */
   flowActualBottom: number
+  /** 当前页最近一个占用普通流的区块在原始页面中的横向位置。 */
+  flowLeft: number
+  /** 当前页最近一个占用普通流的区块在原始页面中的宽度。 */
+  flowWidth: number
   /** 上一个已绘制区块，用于沿用 PDF 原始段间距。 */
   previousBlock?: DocumentBlock
+}
+
+/** 表格单元格在占用矩阵中的实际排版位置。 */
+interface TableCellPlacement {
+  /** 原始单元格。 */
+  cell: DocumentTableCell
+  /** 从零开始的物理行索引。 */
+  rowIndex: number
+  /** 从零开始的物理列索引。 */
+  columnIndex: number
+  /** 实际占用的行数。 */
+  rowSpan: number
+  /** 实际占用的列数。 */
+  colSpan: number
 }
 
 /** CJK 字符探测表达式。 */
@@ -430,7 +453,10 @@ function createPageComposer(
     flowSourceTop: Math.max(0, firstGeometryTop),
     flowActualTop: Math.max(0, firstGeometryTop),
     flowSourceBottom: Math.max(0, firstGeometryTop),
-    flowActualBottom: Math.max(0, firstGeometryTop)
+    flowActualBottom: Math.max(0, firstGeometryTop),
+    // 首个流式区块绘制前没有可锚定对象，空横向范围避免原始页眉框被初始游标带动。
+    flowLeft: 0,
+    flowWidth: 0
   }
 }
 
@@ -459,7 +485,93 @@ function ensurePageSpace(
   composer.flowActualTop = composer.contentTop
   composer.flowSourceBottom = composer.contentTop
   composer.flowActualBottom = composer.contentTop
+  // 新页没有已绘制的流式内容；空横向范围可阻止页眉/页脚装饰线错误继承旧页锚点。
+  composer.flowLeft = 0
+  composer.flowWidth = 0
   return true
+}
+
+/**
+ * 记录最近一个占用普通流区块的原始与实际纵向范围，供后续装饰线动态定位。
+ * @param composer 页面排版器。
+ * @param block 已绘制区块。
+ * @param actualTop 区块实际顶部坐标。
+ * @param actualBottom 区块实际内容底部坐标。
+ * @author zhenghq
+ */
+function recordPdfFlowAnchor(
+  composer: PageComposer,
+  block: DocumentBlock,
+  actualTop: number,
+  actualBottom: number
+): void {
+  const bbox = block.bbox
+  if (!bbox || !Number.isFinite(actualTop) || !Number.isFinite(actualBottom)) return
+  composer.flowSourceTop = bbox.y
+  composer.flowActualTop = actualTop
+  composer.flowSourceBottom = bbox.y + bbox.height
+  composer.flowActualBottom = actualBottom
+  composer.flowLeft = bbox.x
+  composer.flowWidth = Math.max(0, bbox.width)
+}
+
+/**
+ * 计算水平装饰线相对最近前序流式区块的实际顶部位置。
+ * 装饰线位于区块下方时沿用原始底边间距，位于区块内部时沿用原始相对偏移。
+ * @param composer 页面排版器。
+ * @param sourceTop 装饰线原始顶部坐标。
+ * @returns 重定位后的顶部坐标；没有可用前序锚点时返回 undefined。
+ * @author zhenghq
+ */
+function resolvePdfDecorationTop(
+  composer: PageComposer,
+  sourceTop: number
+): number | undefined {
+  if (composer.flowSourceBottom <= composer.flowSourceTop) return undefined
+  return resolveTranslationFlowDecorationTop(sourceTop, [{
+    sourceTop: composer.flowSourceTop,
+    sourceBottom: composer.flowSourceBottom,
+    actualTop: composer.flowActualTop,
+    actualBottom: composer.flowActualBottom
+  }], 1)
+}
+
+/**
+ * 判断水平装饰线是否与最近前序流式区块横向相交。
+ * 页眉框、页脚线和纸张外框常与表格纵向邻近，但横向位置不同，不能因此被表格锚点带走。
+ * @param composer 页面排版器。
+ * @param block 待绘制的形状区块。
+ * @returns 两者存在实际横向重叠时返回 true。
+ * @author zhenghq
+ */
+function pdfDecorationOverlapsFlow(
+  composer: PageComposer,
+  block: DocumentBlock
+): boolean {
+  const bbox = block.bbox
+  if (!bbox || bbox.width <= 0) return false
+  const left = Math.max(bbox.x, composer.flowLeft)
+  const right = Math.min(bbox.x + bbox.width, composer.flowLeft + composer.flowWidth)
+  return right > left
+}
+
+/**
+ * 计算水平装饰线应使用的当前页顶部坐标。
+ * 只有与前序流式区块横向相交时才启用动态锚定；分页后当前页没有有效锚点时保留原坐标。
+ * @param composer 页面排版器。
+ * @param block 待绘制的形状区块。
+ * @param fallbackTop 原坐标与当前游标得到的回退顶部。
+ * @returns 最终绘制顶部坐标。
+ * @author zhenghq
+ */
+function resolvePdfHorizontalDecorationTop(
+  composer: PageComposer,
+  block: DocumentBlock,
+  fallbackTop: number
+): number {
+  if (!pdfDecorationOverlapsFlow(composer, block)) return fallbackTop
+  const resolved = resolvePdfDecorationTop(composer, block.bbox?.y ?? fallbackTop)
+  return resolved !== undefined && Number.isFinite(resolved) ? resolved : fallbackTop
 }
 
 /**
@@ -538,13 +650,13 @@ function orderedOcrRegions(regions: readonly DocumentOcrRegion[]): DocumentOcrRe
 }
 
 /**
- * 计算 OCR 译文在图片内的横向边界；左对齐译文延伸到图片右边缘以减少逐字换行。
+ * 计算 OCR 原识别框在图片内的横向边界，供透明原文文字层使用。
  * @param imageBox 图片原始边界。
  * @param region OCR 区域。
  * @returns 区域左边界、宽度和内容左边界。
  * @author zhenghq
  */
-function ocrRegionHorizontalBounds(
+function ocrRegionSourceHorizontalBounds(
   imageBox: DocumentBoundingBox,
   region: DocumentOcrRegion
 ): { left: number; width: number; contentLeft: number } {
@@ -555,9 +667,32 @@ function ocrRegionHorizontalBounds(
   )
   const left = imageBox.x + normalizedLeft * imageBox.width
   const originalWidth = Math.max(1, (normalizedRight - normalizedLeft) * imageBox.width)
+  // 透明原文层必须延续原文字层的可提取范围；左对齐长文本延伸到图片右边缘，
+  // 避免因识别框过窄而拆成多个文本项，影响复制与检索。
   const width = region.textAlign === 'center' || region.textAlign === 'right'
     ? originalWidth
     : Math.max(1, imageBox.x + imageBox.width - left)
+  return { left, width, contentLeft: left }
+}
+
+/**
+ * 计算 OCR 译文在图片内的横向边界。
+ * 左对齐译文可扩展到同行右侧区域之前，没有右侧邻居时延伸到图片右边缘；
+ * 居中与右对齐译文保持原识别框宽度，确保对齐基准不漂移。
+ * @param imageBox 图片原始边界。
+ * @param region 当前 OCR 区域。
+ * @param regions 图片内全部 OCR 区域。
+ * @returns 译文左边界、宽度和内容左边界。
+ * @author zhenghq
+ */
+function ocrRegionTranslationHorizontalBounds(
+  imageBox: DocumentBoundingBox,
+  region: DocumentOcrRegion,
+  regions: readonly DocumentOcrRegion[]
+): { left: number; width: number; contentLeft: number } {
+  const bounds = resolveDocumentOcrTranslationHorizontalBounds(region, regions)
+  const left = imageBox.x + bounds.x * imageBox.width
+  const width = Math.max(1, bounds.width * imageBox.width)
   return { left, width, contentLeft: left }
 }
 
@@ -590,7 +725,7 @@ function drawOcrTextRegion(
 ): void {
   const text = region.text?.trim()
   if (!text) return
-  const { left: regionX, width: regionWidth } = ocrRegionHorizontalBounds(imageBox, region)
+  const { left: regionX, width: regionWidth } = ocrRegionSourceHorizontalBounds(imageBox, region)
   const padding = resolveOcrRegionPadding(imageBox.width, imageBox.height, region)
   const availableWidth = Math.max(1, regionWidth - padding.x * 2)
   const fontSize = resolveOcrRegionFontSize(region, imageBox.height)
@@ -714,6 +849,7 @@ function appendSourcePdfOcrTextLayers(
  * @param imageBox 图片原始边界。
  * @param region OCR 区域。
  * @param regionTop 当前 OCR 区域顶部坐标；前序译文增高后可能大于原始坐标。
+ * @param regions 图片内全部 OCR 区域，用于限制左对齐译文的横向扩展范围。
  * @param composer 页面排版器；传入后可在页底续页。
  * @param document PDF 文档。
  * @returns 当前 OCR 区域实际占用后的底部坐标。
@@ -724,12 +860,17 @@ function drawOcrRegion(
   imageBox: DocumentBoundingBox,
   region: DocumentOcrRegion,
   regionTop: number,
+  regions: readonly DocumentOcrRegion[],
   composer?: PageComposer,
   document?: PDFDocument
 ): number {
   const translated = region.translatedText?.trim()
   if (!translated || (region.status !== 'recognized' && region.status !== 'skipped')) return regionTop
-  const { left: regionX, width: regionWidth } = ocrRegionHorizontalBounds(imageBox, region)
+  const { left: regionX, width: regionWidth } = ocrRegionTranslationHorizontalBounds(
+    imageBox,
+    region,
+    regions
+  )
   const padding = resolveOcrRegionPadding(imageBox.width, imageBox.height, region)
   const availableWidth = Math.max(1, regionWidth - padding.x * 2)
   // 未提供原文字号时使用共享可读默认值；整图回退区域的高度不能当作单行高度。
@@ -771,7 +912,8 @@ function drawOcrRegion(
 }
 
 /**
- * 按阅读顺序绘制图片内全部 OCR 译文；每个区域使用实际换行高度并顺延后续区域。
+ * 按阅读顺序绘制图片内全部 OCR 译文。
+ * 每个区域优先锚定原 OCR 顶部，只有与已绘制译文横向相交且会被覆盖时才向下避让。
  * @param context 绘制上下文。
  * @param block 图片区块。
  * @param page 页面模型。
@@ -788,20 +930,38 @@ function drawOcrRegions(
   document?: PDFDocument
 ): number {
   const imageBox = block.bbox ?? { x: 24, y: 24, width: page.width - 48, height: 240 }
-  let previousRegion: DocumentOcrRegion | undefined
+  const regions = orderedOcrRegions(block.ocrRegions ?? [])
+  const placedRegions: DocumentOcrFlowRect[] = []
   let bottom = imageBox.y
-  for (const region of orderedOcrRegions(block.ocrRegions ?? [])) {
+  for (const region of regions) {
     const translated = region.translatedText?.trim()
     if (!translated || (region.status !== 'recognized' && region.status !== 'skipped')) continue
     const sourceTop = ocrRegionSourceTop(imageBox, region)
-    const sourceGap = resolveOcrRegionGapBefore(region, previousRegion, imageBox.height)
-    // 首条译文从原 OCR 坐标开始；后续区域只顺延实际译文高度和原文行间空白。
-    // 不能再次取 sourceTop，否则前序译文变短时会跳回原区域并留下大段空白。
-    const regionTop = previousRegion
-      ? bottom + sourceGap
-      : Math.max(imageBox.y, sourceTop)
-    bottom = drawOcrRegion(context, imageBox, region, regionTop, composer, document)
-    previousRegion = region
+    const horizontalBounds = ocrRegionTranslationHorizontalBounds(imageBox, region, regions)
+    const regionTop = resolveDocumentOcrRegionFlowTop(
+      sourceTop,
+      {
+        left: horizontalBounds.left,
+        right: horizontalBounds.left + horizontalBounds.width
+      },
+      placedRegions
+    )
+    const regionBottom = drawOcrRegion(
+      context,
+      imageBox,
+      region,
+      regionTop,
+      regions,
+      composer,
+      document
+    )
+    placedRegions.push({
+      left: horizontalBounds.left,
+      right: horizontalBounds.left + horizontalBounds.width,
+      top: regionTop,
+      bottom: regionBottom
+    })
+    bottom = Math.max(bottom, regionBottom)
   }
   return Math.max(imageBox.y + imageBox.height, bottom)
 }
@@ -1273,6 +1433,120 @@ function tableCellNaturalWidth(context: DrawContext, cell: DocumentTableCell): n
 }
 
 /**
+ * 计算表格真实列数；同时参考原始列宽和每行跨列总数。
+ * @param block 表格区块。
+ * @returns 至少为一的物理列数。
+ * @author zhenghq
+ */
+function tableColumnCount(block: DocumentTableBlock): number {
+  const rowColumnCounts = block.rows.map((row) =>
+    row.cells.reduce((sum, cell) => sum + Math.max(1, cell.colSpan), 0))
+  return Math.max(1, block.columnWidths?.length ?? 0, ...rowColumnCounts)
+}
+
+/**
+ * 按 HTML 表格语义把单元格放入行列占用矩阵，跳过前序跨行单元格占用的位置。
+ * @param rows 待排版的表格行。
+ * @param columnCount 物理列数。
+ * @returns 每个单元格对应的真实行列位置与实际跨距。
+ * @author zhenghq
+ */
+function layoutTableCells(
+  rows: readonly DocumentTableBlock['rows'][number][],
+  columnCount: number
+): TableCellPlacement[] {
+  const count = Math.max(1, columnCount)
+  const occupied = Array.from({ length: rows.length }, () =>
+    Array.from({ length: count }, () => false))
+  const placements: TableCellPlacement[] = []
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    let columnIndex = 0
+    for (const cell of rows[rowIndex]!.cells) {
+      while (columnIndex < count && occupied[rowIndex]![columnIndex]) columnIndex += 1
+      if (columnIndex >= count) break
+      const colSpan = Math.max(1, Math.min(cell.colSpan, count - columnIndex))
+      const rowSpan = Math.max(1, Math.min(cell.rowSpan, rows.length - rowIndex))
+      for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < colSpan; columnOffset += 1) {
+          occupied[rowIndex + rowOffset]![columnIndex + columnOffset] = true
+        }
+      }
+      placements.push({ cell, rowIndex, columnIndex, rowSpan, colSpan })
+      columnIndex += colSpan
+    }
+  }
+  return placements
+}
+
+/**
+ * 计算单元格跨越的实际宽度。
+ * @param widths 各物理列宽度。
+ * @param placement 单元格排版位置。
+ * @returns 单元格总宽度。
+ * @author zhenghq
+ */
+function tableCellPlacementWidth(
+  widths: readonly number[],
+  placement: TableCellPlacement
+): number {
+  return widths
+    .slice(placement.columnIndex, placement.columnIndex + placement.colSpan)
+    .reduce((sum, value) => sum + value, 0)
+}
+
+/**
+ * 计算表格各行高度，并保证跨行单元格的覆盖高度足以容纳其内容。
+ * @param context 绘制上下文。
+ * @param placements 已定位的单元格。
+ * @param rowCount 表格行数。
+ * @param widths 各物理列宽度。
+ * @param baseRowHeight 原始表格行高下限。
+ * @param dependencies 导出依赖。
+ * @returns 每个物理行最终使用的高度。
+ * @author zhenghq
+ */
+async function tableRowHeights(
+  context: DrawContext,
+  placements: readonly TableCellPlacement[],
+  rowCount: number,
+  widths: readonly number[],
+  baseRowHeight: number,
+  dependencies: DocumentPdfExportDependencies
+): Promise<number[]> {
+  const heights = Array.from({ length: rowCount }, () => Math.max(1, baseRowHeight))
+  const requiredHeights = new Map<TableCellPlacement, number>()
+  for (const placement of placements) {
+    requiredHeights.set(
+      placement,
+      await tableCellContentHeight(
+        context,
+        placement.cell,
+        tableCellPlacementWidth(widths, placement),
+        dependencies
+      ) + 10
+    )
+  }
+  // 单行单元格先扩展自身行；跨行单元格再补齐覆盖区间，避免行高反复振荡。
+  for (const placement of placements.filter((candidate) => candidate.rowSpan === 1)) {
+    heights[placement.rowIndex] = Math.max(
+      heights[placement.rowIndex]!,
+      requiredHeights.get(placement) ?? 0
+    )
+  }
+  for (const placement of placements
+    .filter((candidate) => candidate.rowSpan > 1)
+    .sort((left, right) => left.rowIndex - right.rowIndex || left.rowSpan - right.rowSpan)) {
+    const endRow = placement.rowIndex + placement.rowSpan
+    const coveredHeight = heights
+      .slice(placement.rowIndex, endRow)
+      .reduce((sum, value) => sum + value, 0)
+    const missing = (requiredHeights.get(placement) ?? 0) - coveredHeight
+    if (missing > 0) heights[endRow - 1] = heights[endRow - 1]! + missing
+  }
+  return heights
+}
+
+/**
  * 根据原列宽和译文内容计算自适应列宽，保证每列至少保留原文比例。
  * @param context 绘制上下文。
  * @param block 表格区块。
@@ -1289,15 +1563,12 @@ function adaptiveTableColumnWidths(
 ): number[] {
   const baseWidths = normalizeTableColumnWidths(block.columnWidths, columnCount, tableWidth)
   const contentWidths = Array.from({ length: columnCount }, () => 0)
-  for (const row of block.rows) {
-    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
-      const cell = row.cells[cellIndex]!
-      const span = Math.max(1, Math.min(cell.colSpan, columnCount - cellIndex))
-      const naturalWidth = tableCellNaturalWidth(context, cell) + 12
-      const perColumnWidth = naturalWidth / span
-      for (let offset = 0; offset < span; offset += 1) {
-        contentWidths[cellIndex + offset] = Math.max(contentWidths[cellIndex + offset]!, perColumnWidth)
-      }
+  for (const placement of layoutTableCells(block.rows, columnCount)) {
+    const naturalWidth = tableCellNaturalWidth(context, placement.cell) + 12
+    const perColumnWidth = naturalWidth / placement.colSpan
+    for (let offset = 0; offset < placement.colSpan; offset += 1) {
+      const index = placement.columnIndex + offset
+      contentWidths[index] = Math.max(contentWidths[index]!, perColumnWidth)
     }
   }
   // 原列宽作为下限；内容需求超出时按比例吸收剩余宽度，避免任一列因原文太窄而逐字换行。
@@ -1468,6 +1739,7 @@ function drawTextBlock(
     if (composer) {
       composer.cursor = bottom + (hasGeometry ? 10 : 12)
       composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+      recordPdfFlowAnchor(composer, block, tocTop, tocBottom)
     }
     return composer?.cursor ?? bottom + (hasGeometry ? 10 : 12)
   }
@@ -1482,6 +1754,7 @@ function drawTextBlock(
     if (composer) {
       composer.cursor = bottom + (hasGeometry ? 10 : 12)
       composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+      recordPdfFlowAnchor(composer, block, runTop, drawnBottom)
     }
     return composer?.cursor ?? bottom + (hasGeometry ? 10 : 12)
   }
@@ -1507,6 +1780,7 @@ function drawTextBlock(
   if (composer) {
     composer.cursor = bottom + (hasGeometry ? 10 : 12)
     composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    recordPdfFlowAnchor(composer, block, blockTop, drawnBottom)
   }
   return composer?.cursor ?? bottom + (hasGeometry ? 10 : 12)
 }
@@ -1593,7 +1867,8 @@ async function drawFlowGroup(
       continue
     }
     if (block.kind === 'shape' && block.bbox) {
-      const shapeTop = Math.max(block.bbox.y, groupTop)
+      const fallbackTop = Math.max(block.bbox.y, groupTop)
+      const shapeTop = fallbackTop
       if (block.line?.orientation === 'horizontal') {
         context.page.drawLine({
           start: { x: block.bbox.x, y: pdfY(context.page.getHeight(), shapeTop, 0) },
@@ -1662,100 +1937,198 @@ async function drawTableBlock(
     // 表格整体放不下时会先换页；换页后必须从新页内容区顶部开始，不能沿用旧页坐标。
     if (pageChanged) tableTop = composer.cursor
   }
-  const columnCount = Math.max(1, ...block.rows.map((row) => row.cells.length))
+  const columnCount = tableColumnCount(block)
   const widths = adaptiveTableColumnWidths(context, block, columnCount, bbox.width)
   const baseRowHeight = bbox.height / Math.max(1, block.rows.length)
+  const placements = layoutTableCells(block.rows, columnCount)
+  const rowHeights = await tableRowHeights(
+    context,
+    placements,
+    block.rows.length,
+    widths,
+    baseRowHeight,
+    dependencies
+  )
+  const headerCount = Math.max(0, Math.min(
+    block.headerRows ?? 0,
+    block.rows.length
+  ))
+  const headerPlacements = headerCount > 0
+    ? layoutTableCells(block.rows.slice(0, headerCount), columnCount)
+    : []
+  const headerHeight = rowHeights.slice(0, headerCount).reduce((sum, value) => sum + value, 0)
   let currentRowTop = tableTop
-  let hasTableText = false
-  for (let rowIndex = 0; rowIndex < block.rows.length; rowIndex += 1) {
-    let cellX = bbox.x
-    const row = block.rows[rowIndex]!
-    // 行高必须覆盖最高的单元格；译文换行后不能继续沿用原表格行高。
-    let rowHeight = baseRowHeight
-    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
-      const cell = row.cells[cellIndex]!
-      const cellWidth = widths
-        .slice(cellIndex, cellIndex + Math.max(1, cell.colSpan))
-        .reduce((sum, value) => sum + value, 0)
-      rowHeight = Math.max(
-        rowHeight,
-        await tableCellContentHeight(context, cell, cellWidth, dependencies) + 10
-      )
-    }
+  const textState = { hasTableText: false }
+  for (let headerRowIndex = 0; headerRowIndex < headerCount; headerRowIndex += 1) {
+    currentRowTop = await drawTableRowPlacements(
+      context,
+      headerPlacements.filter((placement) => placement.rowIndex === headerRowIndex),
+      currentRowTop,
+      rowHeights.slice(0, headerCount),
+      widths,
+      bbox.x,
+      page,
+      dependencies,
+      includeOcrTextLayer,
+      textState
+    )
+    if (composer) composer.cursor = currentRowTop
+  }
+  for (let rowIndex = headerCount; rowIndex < block.rows.length; rowIndex += 1) {
+    const rowPlacements = placements.filter((placement) => placement.rowIndex === rowIndex)
+    const requiredHeight = Math.max(
+      rowHeights[rowIndex]!,
+      ...rowPlacements.map((placement) => rowHeights
+        .slice(rowIndex, rowIndex + placement.rowSpan)
+        .reduce((sum, value) => sum + value, 0))
+    )
     if (composer && document) {
       composer.cursor = currentRowTop
-      const pageChanged = ensurePageSpace(composer, document, context, rowHeight)
-      if (pageChanged) currentRowTop = composer.cursor
-    }
-    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
-      const cell = row.cells[cellIndex]!
-      const cellWidth = widths.slice(cellIndex, cellIndex + Math.max(1, cell.colSpan)).reduce((sum, value) => sum + value, 0)
-      const cellY = currentRowTop
-      const pageHeight = context.page.getHeight()
-      context.page.drawRectangle({
-        x: cellX,
-        y: pdfY(pageHeight, cellY, rowHeight),
-        width: Math.max(1, cellWidth),
-        height: Math.max(1, rowHeight),
-        borderColor: rgb(0.72, 0.75, 0.79),
-        borderWidth: 0.6
-      })
-      let contentTop = cellY + 5
-      let hasCellText = false
-      for (const child of cell.blocks) {
-        if (child.kind === 'text') {
-          for (const run of child.runs) {
-            // 表格相邻单元格之间补空格，避免复制出的可检索文本丢失词语边界。
-            if (hasTableText && !hasCellText && run.text) {
-              const spacerWidth = context.regular.widthOfTextAtSize(' ', 10)
-              if (spacerWidth > 0 && cellX + 5 + spacerWidth <= cellX + cellWidth - 5) {
-                context.page.drawText(' ', {
-                  x: cellX + 5,
-                  y: pdfY(context.page.getHeight(), contentTop, 10),
-                  size: 10,
-                  font: context.regular,
-                  color: rgb(0, 0, 0)
-                })
-              }
-            }
-            contentTop += drawTextRun(
+      const pageChanged = ensurePageSpace(
+        composer,
+        document,
+        context,
+        requiredHeight + (rowIndex > headerCount ? headerHeight : 0)
+      )
+      if (pageChanged) {
+        currentRowTop = composer.cursor
+        // 新页没有上一页单元格的文本状态，避免重复表头首格多出一个前导空格。
+        textState.hasTableText = false
+        // 数据行跨页时重新绘制表头；表头自身不参与数据行循环，避免重复计数。
+        if (headerCount > 0) {
+          for (let headerRowIndex = 0; headerRowIndex < headerCount; headerRowIndex += 1) {
+            currentRowTop = await drawTableRowPlacements(
               context,
-              run,
-              cellX + 5,
-              contentTop,
-              cellWidth - 10,
-              { fontSize: 10 },
-              child.textAlign
+              headerPlacements.filter((placement) => placement.rowIndex === headerRowIndex),
+              currentRowTop,
+              rowHeights.slice(0, headerCount),
+              widths,
+              bbox.x,
+              page,
+              dependencies,
+              includeOcrTextLayer,
+              textState
             )
-            if (run.text) {
-              hasTableText = true
-              hasCellText = true
-            }
           }
-        } else if (child.kind === 'image') {
-          contentTop += await drawTableCellImage(
-            context,
-            child,
-            page,
-            cellX + 5,
-            contentTop,
-            cellWidth - 10,
-            dependencies,
-            includeOcrTextLayer
-          )
+          composer.cursor = currentRowTop
         }
       }
-      cellX += cellWidth
     }
-    currentRowTop += rowHeight
+    currentRowTop = await drawTableRowPlacements(
+      context,
+      rowPlacements,
+      currentRowTop,
+      rowHeights,
+      widths,
+      bbox.x,
+      page,
+      dependencies,
+      includeOcrTextLayer,
+      textState
+    )
     if (composer) composer.cursor = currentRowTop
   }
   const bottom = Math.max(cursor, currentRowTop, tableTop + Math.max(bbox.height, block.rows.length * 28))
   if (composer) {
     composer.cursor = bottom + 10
     composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    recordPdfFlowAnchor(composer, block, tableTop, currentRowTop)
   }
   return composer?.cursor ?? bottom + 10
+}
+
+/**
+ * 绘制一行中从当前物理行开始的表格单元格，并返回下一行的顶部坐标。
+ * @param context 绘制上下文。
+ * @param placements 当前行开始的单元格位置。
+ * @param rowTop 当前行顶部坐标。
+ * @param rowHeights 当前表格的全部行高；表头重复时传入表头行高。
+ * @param widths 各物理列宽度。
+ * @param tableLeft 表格左边界。
+ * @param page 页面模型，用于记录资源告警。
+ * @param dependencies 导出依赖，用于读取单元格内图片。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
+ * @param textState 表格文本状态，用于在相邻单元格之间补空格。
+ * @returns 当前行实际底边坐标。
+ * @author zhenghq
+ */
+async function drawTableRowPlacements(
+  context: DrawContext,
+  placements: readonly TableCellPlacement[],
+  rowTop: number,
+  rowHeights: readonly number[],
+  widths: readonly number[],
+  tableLeft: number,
+  page: DocumentPage,
+  dependencies: DocumentPdfExportDependencies,
+  includeOcrTextLayer: boolean,
+  textState: { hasTableText: boolean }
+): Promise<number> {
+  for (const placement of placements) {
+    const cellWidth = tableCellPlacementWidth(widths, placement)
+    const cellX = tableLeft + widths
+      .slice(0, placement.columnIndex)
+      .reduce((sum, value) => sum + value, 0)
+    const cellHeight = rowHeights
+      .slice(placement.rowIndex, placement.rowIndex + placement.rowSpan)
+      .reduce((sum, value) => sum + value, 0)
+    const pageHeight = context.page.getHeight()
+    context.page.drawRectangle({
+      x: cellX,
+      y: pdfY(pageHeight, rowTop, cellHeight),
+      width: Math.max(1, cellWidth),
+      height: Math.max(1, cellHeight),
+      borderColor: rgb(0.72, 0.75, 0.79),
+      borderWidth: 0.6
+    })
+    let contentTop = rowTop + 5
+    let hasCellText = false
+    for (const child of placement.cell.blocks) {
+      if (child.kind === 'text') {
+        for (const run of child.runs) {
+          // 表格相邻单元格之间补空格，避免复制出的可检索文本丢失词语边界。
+          if (textState.hasTableText && !hasCellText && run.text) {
+            const spacerWidth = context.regular.widthOfTextAtSize(' ', 10)
+            if (spacerWidth > 0 && cellX + 5 + spacerWidth <= cellX + cellWidth - 5) {
+              context.page.drawText(' ', {
+                x: cellX + 5,
+                y: pdfY(context.page.getHeight(), contentTop, 10),
+                size: 10,
+                font: context.regular,
+                color: rgb(0, 0, 0)
+              })
+            }
+          }
+          contentTop += drawTextRun(
+            context,
+            run,
+            cellX + 5,
+            contentTop,
+            cellWidth - 10,
+            { fontSize: 10 },
+            child.textAlign
+          )
+          if (run.text) {
+            textState.hasTableText = true
+            hasCellText = true
+          }
+        }
+      } else if (child.kind === 'image') {
+        contentTop += await drawTableCellImage(
+          context,
+          child,
+          page,
+          cellX + 5,
+          contentTop,
+          cellWidth - 10,
+          dependencies,
+          includeOcrTextLayer
+        )
+      }
+    }
+  }
+  const rowHeight = rowHeights[placements[0]?.rowIndex ?? 0] ?? 0
+  return rowTop + rowHeight
 }
 
 /**
@@ -1803,6 +2176,7 @@ function drawFormulaBlock(
   if (composer) {
     composer.cursor = bottom + 10
     composer.sourceBottom = Math.max(composer.sourceBottom, bbox.y + bbox.height)
+    recordPdfFlowAnchor(composer, block, formulaTop, formulaTop + bbox.height)
   }
   return composer?.cursor ?? bottom + 10
 }
@@ -1904,6 +2278,7 @@ async function drawPageBlocks(
         document,
         includeOcrTextLayer
       )
+      if (bbox) recordPdfFlowAnchor(composer, imageBlock, imageTop, composer.cursor)
       composer.sourceBottom = Math.max(
         composer.sourceBottom,
         bbox ? bbox.y + bbox.height : composer.cursor
@@ -1912,7 +2287,7 @@ async function drawPageBlocks(
       composer.cursor = drawFormulaBlock(context, block, pageModelForDraw, composer.cursor, composer, document)
     } else if (block.kind === 'shape' && block.bbox) {
       if (block.bbox.y > composer.cursor) composer.cursor = block.bbox.y
-      const shapeTop = ensureGeometryBlockSpace(
+      const fallbackTop = ensureGeometryBlockSpace(
         composer,
         document,
         context,
@@ -1921,9 +2296,24 @@ async function drawPageBlocks(
         block.bbox.y,
         block.bbox.height
       )
-      composer.cursor = shapeTop
+      const shapeTop = block.line?.orientation === 'horizontal'
+        ? resolvePdfHorizontalDecorationTop(composer, block, fallbackTop)
+        : fallbackTop
+      // 装饰线移动后仍可能越过当前页底，必须在绘制前重新检查一次可用空间。
+      const finalTop = shapeTop > fallbackTop
+        ? ensureGeometryBlockSpace(
+            composer,
+            document,
+            context,
+            shapeTop,
+            block.bbox.height,
+            block.bbox.y,
+            block.bbox.height
+          )
+        : shapeTop
+      composer.cursor = finalTop
       if (block.line?.orientation === 'horizontal') {
-        const y = pdfY(context.page.getHeight(), shapeTop, 0)
+        const y = pdfY(context.page.getHeight(), finalTop, 0)
         context.page.drawLine({
           start: { x: block.bbox.x, y },
           end: { x: block.bbox.x + block.bbox.width, y },
@@ -1933,22 +2323,22 @@ async function drawPageBlocks(
       } else if (block.line?.orientation === 'vertical') {
         const x = block.bbox.x
         context.page.drawLine({
-          start: { x, y: pdfY(context.page.getHeight(), shapeTop, block.bbox.height) },
-          end: { x, y: pdfY(context.page.getHeight(), shapeTop, 0) },
+          start: { x, y: pdfY(context.page.getHeight(), finalTop, block.bbox.height) },
+          end: { x, y: pdfY(context.page.getHeight(), finalTop, 0) },
           thickness: Math.max(0.5, block.line.thickness ?? 1),
           color: parseColor(block.line.color, [0.8, 0.82, 0.85])
         })
       } else {
         context.page.drawRectangle({
           x: block.bbox.x,
-          y: pdfY(context.page.getHeight(), shapeTop, block.bbox.height),
+          y: pdfY(context.page.getHeight(), finalTop, block.bbox.height),
           width: block.bbox.width,
           height: block.bbox.height,
           borderColor: rgb(0.8, 0.82, 0.85),
           borderWidth: 0.5
         })
       }
-      composer.cursor = shapeTop + block.bbox.height
+      composer.cursor = finalTop + block.bbox.height
       composer.sourceBottom = Math.max(composer.sourceBottom, block.bbox.y + block.bbox.height)
     }
     composer.previousBlock = block

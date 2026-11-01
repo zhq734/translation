@@ -135,6 +135,14 @@ test('OCR 译文必须优先锚定原文顶部，仅横向重叠时才避让前�
   )
 })
 
+test('同列前序 OCR 译文变短后，后续区域仍必须优先保留原文顶部', () => {
+  const previous = { left: 20, right: 120, top: 40, bottom: 56 }
+  assert.equal(
+    resolveDocumentOcrRegionFlowTop(120, { left: 20, right: 120 }, [previous], 4),
+    120
+  )
+})
+
 test('OCR 左对齐译文必须扩展到同行右侧区域之前，避免窄框逐字换行', () => {
   const current = {
     ...region({ x: 0.05, y: 0.2, width: 0.04, height: 0.02 }),

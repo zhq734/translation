@@ -943,7 +943,8 @@ export class DocumentWorkspaceTaskService {
           glossary: this.dependencies.glossary?.(),
           readTranslationCache: this.dependencies.readTranslationCache,
           writeTranslationCache: this.dependencies.writeTranslationCache,
-          getParserVersion: this.dependencies.getParserVersion
+          getParserVersion: this.dependencies.getParserVersion,
+          bypassCache: job.request.bypassCache === true
         },
         {
           sourcePreference: job.request.sourceLang ?? 'auto',
@@ -1050,7 +1051,8 @@ export class DocumentWorkspaceTaskService {
           glossary: this.dependencies.glossary?.(),
           readTranslationCache: this.dependencies.readTranslationCache,
           writeTranslationCache: this.dependencies.writeTranslationCache,
-          getParserVersion: this.dependencies.getParserVersion
+          getParserVersion: this.dependencies.getParserVersion,
+          bypassCache: job.request.bypassCache === true
         },
         languageResolution
       )

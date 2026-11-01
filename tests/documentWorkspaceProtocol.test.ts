@@ -159,6 +159,36 @@ test('文档运行请求必须只保留白名单字段并校验模式与代际',
   assert.equal(normalizeDocumentRunRequest({ path: '/tmp/example.pdf', generation: 1, mode: 'invalid' }), null)
 })
 
+test('文档运行请求必须支持严格布尔值的缓存穿透标记', () => {
+  assert.deepEqual(normalizeDocumentRunRequest({
+    path: '/tmp/example.pdf',
+    generation: 5,
+    mode: 'translation',
+    bypassCache: true
+  }), {
+    path: '/tmp/example.pdf',
+    generation: 5,
+    mode: 'translation',
+    bypassCache: true
+  })
+
+  assert.deepEqual(normalizeDocumentRunRequest({
+    path: '/tmp/example.pdf',
+    generation: 6,
+    bypassCache: false
+  }), {
+    path: '/tmp/example.pdf',
+    generation: 6,
+    bypassCache: false
+  })
+
+  assert.equal(normalizeDocumentRunRequest({
+    path: '/tmp/example.pdf',
+    generation: 7,
+    bypassCache: 'true'
+  }), null)
+})
+
 test('文档运行请求必须拒绝 URL、空字节、换行与命令式路径', () => {
   const invalidPaths = [
     'https://example.com/example.pdf',

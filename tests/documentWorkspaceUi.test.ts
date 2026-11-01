@@ -5,13 +5,18 @@ import { parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import {
   occupiesDocumentTranslationFlow,
   rangesOverlapHorizontally,
+  resolveTranslationFlowBlockGap,
   resolveTranslationImageFlowGap,
   resolveTranslationFlowDecorationTop,
   resolveTranslationFlowGroupGeometry,
   resolveTranslationWatermarkHorizontalOffset,
   resolveTranslationTableColumnWidths
 } from '../src/renderer/src/documentPdfLayout.ts'
-import { shouldRevealActiveDocumentTab } from '../src/renderer/src/documentTabScroll.ts'
+import {
+  resolveDocumentTabScrollState,
+  resolveDocumentTabScrollTarget,
+  shouldRevealActiveDocumentTab
+} from '../src/renderer/src/documentTabScroll.ts'
 import type { DocumentBlock } from '../src/shared/documentTypes.ts'
 
 /**
@@ -107,6 +112,12 @@ test('多 Tab 栏必须使用主题变量、横向滚动并支持逐个关闭', 
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
 
   assert.match(css, /\.document-file-tabs\s*\{[^}]*display:\s*flex[^}]*min-width:\s*0[^}]*overflow-x:\s*auto/su)
+  assert.match(css, /\.document-file-tabs\s*\{[^}]*scrollbar-width:\s*none/su,
+    '文件 Tab 栏必须隐藏横向滚动条但保留滚动能力')
+  assert.match(css, /\.document-file-tabs::-webkit-scrollbar\s*\{[^}]*display:\s*none/su,
+    'Chromium 下必须隐藏文件 Tab 栏滚动条')
+  assert.doesNotMatch(css, /\.document-file-tabs\s*\{[^}]*scrollbar-width:\s*thin/su,
+    '文件 Tab 栏不能继续显示细滚动条')
   assert.match(css, /\.document-file-tab\s*\{[^}]*min-width:\s*0/su)
   assert.match(css, /\.document-file-tab-close\s*\{/u)
   assert.doesNotMatch(css, /\.document-batch-panel/u)
@@ -136,6 +147,42 @@ test('文件 Tab 横向滚动必须保留用户位置，仅在激活项变化时
     renderSource,
     /if \(!shouldRevealActiveDocumentTab\(activeDocumentTabId, lastRevealedActiveDocumentTabId\)\) return/u
   )
+})
+
+test('文件 Tab 两侧必须提供左右滚动按钮并在边界禁用', () => {
+  const html = read('src/renderer/document.html')
+  const css = read('src/renderer/src/document.css')
+  const source = read('src/renderer/src/document.ts')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+  const tabs = /<div class="document-file-tabs-shell">([\s\S]*?)<\/div>\s*<div class="document-toolbar-actions">/u.exec(html)?.[1] ?? ''
+  const state = resolveDocumentTabScrollState(0, 300, 900)
+  const middleState = resolveDocumentTabScrollState(300, 300, 900)
+  const endState = resolveDocumentTabScrollState(600, 300, 900)
+
+  assert.match(tabs, /id="document-file-tabs-previous"[\s\S]*id="document-file-tabs"[\s\S]*id="document-file-tabs-next"/u)
+  assert.match(tabs, /id="document-file-tabs-previous"[^>]*data-i18n-attr="aria-label:document\.tabs\.previous;title:document\.tabs\.previous"/u)
+  assert.match(tabs, /id="document-file-tabs-next"[^>]*data-i18n-attr="aria-label:document\.tabs\.next;title:document\.tabs\.next"/u)
+  assert.match(tabs, /id="document-file-tabs-previous"[\s\S]*<svg[\s\S]*<\/svg>[\s\S]*id="document-file-tabs"[\s\S]*id="document-file-tabs-next"[\s\S]*<svg[\s\S]*<\/svg>/u)
+  assert.deepEqual(state, { canScrollBackward: false, canScrollForward: true })
+  assert.deepEqual(middleState, { canScrollBackward: true, canScrollForward: true })
+  assert.deepEqual(endState, { canScrollBackward: true, canScrollForward: false })
+  assert.equal(resolveDocumentTabScrollTarget(0, 300, 900, -1), 0)
+  assert.equal(resolveDocumentTabScrollTarget(0, 300, 900, 1), 225)
+  assert.equal(resolveDocumentTabScrollTarget(600, 300, 900, 1), 600)
+  assert.match(css, /\.document-file-tabs-shell\s*\{[^}]*display:\s*flex[^}]*flex:\s*1 1 0[^}]*min-width:\s*0/su)
+  assert.match(css, /\.document-file-tab-scroll\s*\{[^}]*display:\s*inline-grid[^}]*flex:\s*0 0 auto[^}]*place-items:\s*center/su)
+  assert.match(source, /documentFileTabsPreviousButton\.addEventListener\('click', \(\) => scrollDocumentTabs\(-1\)\)/u)
+  assert.match(source, /documentFileTabsNextButton\.addEventListener\('click', \(\) => scrollDocumentTabs\(1\)\)/u)
+  assert.match(source, /documentWorkspaceTabs\.addEventListener\('scroll', updateDocumentTabScrollButtons/u)
+  assert.match(source, /window\.addEventListener\('resize', updateDocumentTabScrollButtons\)/u)
+  assert.match(source, /function updateDocumentTabScrollButtons\(\): void/u)
+  assert.match(source, /resolveDocumentTabScrollState\(/u)
+  assert.match(source, /resolveDocumentTabScrollTarget\(/u)
+  assert.match(zh, /'document\.tabs\.previous': '向左滚动文件标签'/u)
+  assert.match(zh, /'document\.tabs\.next': '向右滚动文件标签'/u)
+  assert.match(en, /'document\.tabs\.previous': 'Scroll file tabs left'/u)
+  assert.match(en, /'document\.tabs\.next': 'Scroll file tabs right'/u)
 })
 
 test('文档翻译顶部两栏必须分层排布并在多文件时保持文件标签可读', () => {
@@ -695,7 +742,7 @@ test('文档翻译必须在文档级解析一次语言对并让任务服务冻�
   assert.match(source, /targetLanguageSelect\.value = selectedTarget \|\| 'auto'/u)
   assert.match(source, /populateDocumentLanguages\(\{ sourceLang: 'auto', targetLang: 'auto' \} as Settings\)/u)
   assert.doesNotMatch(serviceSource, /resolveLanguagePair\(text,/u)
-  assert.match(serviceSource, /translate: async \(text, signal, _request, languagePair, onDelta, context\)/u)
+  assert.match(serviceSource, /translate: async \(text, signal, request, languagePair, onDelta, context\)/u)
   assert.match(serviceSource, /sourceLang: languagePair\.sourceLang/u)
   assert.match(serviceSource, /targetLang: languagePair\.targetLang/u)
   assert.match(pipeline, /resolveDocumentLanguagePair\(/u)
@@ -784,7 +831,7 @@ test('文档任务生产接线必须注入动态限制、缓存和受控翻译�
   assert.match(main, /import \{ DocumentTranslationCacheStore \} from '\.\/documentTranslationCache'/u)
   assert.match(serviceSource, /parse: async \(input, registerAssetBytes, signal, options\)/u)
   assert.match(serviceSource, /parseDocument\(input, \{ registerAssetBytes, \.\.\.options \}\)/u)
-  assert.match(serviceSource, /translate: async \(text, signal, _request, languagePair, onDelta, context\)/u)
+  assert.match(serviceSource, /translate: async \(text, signal, request, languagePair, onDelta, context\)/u)
   assert.match(serviceSource, /maxFileBytes: \(\) => getSettings\(\)\.documentTranslationMaxFileBytes/u)
   assert.match(serviceSource, /maxPages: \(\) => getSettings\(\)\.documentTranslationMaxPages/u)
   assert.match(serviceSource, /maxOcrImages: \(\) => getSettings\(\)\.documentTranslationMaxOcrImages/u)
@@ -1047,7 +1094,7 @@ test('PDF 横竖混排译文必须在每页首次挂载时使用自己的宽度�
 
   assert.match(
     renderSource,
-    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'\s*\? initialTranslationPageScale\(container, page\.width\)\s*: 1[\s\S]*const pageRenderSide = tab\.ocrDisplayMode === 'ocr-text' && model\.source\.format === 'image'\s*\? 'source'\s*: side[\s\S]*previewHost\.append\(renderPage\(page, pageRenderSide, pageScale, jobId, tab\)\)/u,
+    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation' && !isImageDocument\s*\? initialTranslationPageScale\(container, page\.width\)\s*: 1[\s\S]*previewHost\.append\(renderPage\(\s*page,\s*side,\s*pageScale,\s*jobId,\s*tab,\s*isImageDocument \? 'absolute' : undefined\s*\)\)/u,
     '每页必须在挂载前按自身原始宽度计算缩放，横竖混排时不能先沿用第一页比例'
   )
   assert.doesNotMatch(renderSource, /initialTranslationPageScale\(container, model\.pages\[0\]/u,
@@ -1604,7 +1651,7 @@ test('HTML 非分页译文页面必须按内容自适应高度，不能被文本
 
   assert.match(
     source,
-    /element\.dataset\.layout = side === 'translation' && hasGeometry\s*\? 'translation-flow'\s*: hasGeometry \? 'absolute' : 'flow'/u
+    /const layout = layoutOverride \?\? \(side === 'translation' && hasGeometry\s*\? 'translation-flow'\s*: hasGeometry \? 'absolute' : 'flow'\)/u
   )
   assert.match(renderPageSource, /element\.dataset\.layout === 'translation-flow'/u)
   assert.doesNotMatch(renderPageSource, /element\.style\.minHeight\s*=/u)
@@ -1663,7 +1710,11 @@ test('HTML 译文必须按内容流式排版，避免译文换行后覆盖后续
   assert.doesNotMatch(source, /function renderHtmlTranslationPage/u)
   assert.doesNotMatch(source, /document-html-page-frame/u)
   assert.doesNotMatch(source, /preserveAbsoluteLayout/u)
-  assert.match(renderPageSource, /element\.dataset\.layout = side === 'translation' && hasGeometry/u)
+  assert.match(
+    renderPageSource,
+    /const layout = layoutOverride \?\? \(side === 'translation' && hasGeometry\s*\? 'translation-flow'\s*: hasGeometry \? 'absolute' : 'flow'\)/u,
+    '未指定图片布局覆盖时，HTML 等分页译文仍必须使用流式布局'
+  )
   assert.match(renderPageSource, /--document-flow-gap-before/u)
   assert.match(flowSource, /article\.append\(renderPage\(page, side, 1, jobId, tab\)\)/u)
   assert.match(translationRule, /height:\s*auto\s*!important/u)
@@ -1726,7 +1777,7 @@ test('PDF 预览必须使用 PDF.js 原生页面渲染而不是重建绝对定�
   assert.match(source, /page\.render\(\{/u)
   assert.match(source, /canvasContext/u)
   assert.match(source, /getDocumentSource\(jobId\)/u)
-  assert.match(source, /element\.dataset\.layout = side === 'translation' && hasGeometry/u)
+  assert.match(source, /const layout = layoutOverride \?\? \(side === 'translation' && hasGeometry/u)
   assert.match(css, /\.document-pdf-page\b/u)
   assert.match(css, /\.document-pdf-canvas\b/u)
   assert.match(css, /\.document-page\[data-layout='translation-flow'\]/u)
@@ -1791,7 +1842,7 @@ test('PDF 原文与译文必须共用同一页面可用宽度计算', () => {
   assert.equal((source.match(/documentPageAvailableWidth\(container\)/gu) ?? []).length >= 1, true)
   assert.equal((source.match(/documentPageContentWidth\(container\)/gu) ?? []).length >= 2, true)
   // 统一宽度公式只应封装在 helper 内，其他预览路径不得再直接复制留白计算。
-  assert.equal((source.match(/getComputedStyle\(container\)/gu) ?? []).length, 1)
+  assert.equal((source.match(/getComputedStyle\(container\)/gu) ?? []).length, 2)
   assert.match(source, /--border-width/u)
   assert.match(source, /paddingLeft/u)
   assert.match(source, /paddingRight/u)
@@ -1906,8 +1957,14 @@ test('PDF 只有原文复用 PDF.js Canvas，译文必须重建结构化流式 D
   )
   assert.match(renderSource, /model\.source\.format === 'pdf' && side === 'source'/u)
   assert.match(renderSource, /void renderPdfPages\(previewHost, model, jobId, tab\)/u)
-  assert.match(renderSource, /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation'/u)
-  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale, jobId, tab\)/u)
+  assert.match(
+    renderSource,
+    /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation' && !isImageDocument/u
+  )
+  assert.match(
+    renderSource,
+    /renderPage\(\s*page,\s*side,\s*pageScale,\s*jobId,\s*tab,\s*isImageDocument \? 'absolute' : undefined\s*\)/u
+  )
   assert.doesNotMatch(source, /createPdfTranslationOverlay/u)
 })
 
@@ -1918,7 +1975,7 @@ test('PDF 译文必须保留真实表格、图片与代码框，不能退化为 
   const tableSource = source.slice(tableStart, source.indexOf('/**', tableStart + 1))
 
   assert.match(source, /function renderPage\(/u)
-  assert.match(source, /dataset\.layout = side === 'translation' && hasGeometry/u)
+  assert.match(source, /const layout = layoutOverride \?\? \(side === 'translation' && hasGeometry/u)
   assert.match(tableSource, /createElement\('table'\)/u)
   assert.match(tableSource, /createElement\('tr'\)/u)
   assert.match(tableSource, /createElement\('td'\)/u)
@@ -1968,7 +2025,7 @@ test('PDF 译文页面初次挂载不能先按 scale=1 排版再跳到实际缩�
   assert.match(renderPageSource, /String\(translationInitialScale\)/u,
     'renderPage 必须直接写入调用方计算好的缩放值')
   assert.doesNotMatch(renderPageSource, /--document-page-scale',\s*'1'/u)
-  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale, jobId, tab\)/u,
+  assert.match(renderSource, /renderPage\(\s*page,\s*side,\s*pageScale,\s*jobId,\s*tab,\s*isImageDocument \? 'absolute' : undefined\s*\)/u,
     '译文页面创建时必须传入按自身页面宽度计算出的缩放值')
 })
 
@@ -2155,6 +2212,7 @@ test('PDF 译文图片必须锚定原文纵向坐标，并只避让横向相交�
   assert.match(source, /measureTranslationFlowBottom\(child\)/u)
   // 只有横向相交的前序内容才需要避让；横向错开的正文变高时允许图片回填到原文锚点。
   assert.match(normalizeSource, /resolveTranslationImageFlowGap\(/u)
+  assert.match(normalizeSource, /resolveTranslationFlowBlockGap\(/u)
   assert.match(normalizeSource, /flowObstacles/u)
   assert.match(normalizeSource, /measureTranslationFlowObstacle\(child, pageRect\)/u)
   assert.match(source, /classList\.contains\('document-flow-group'\)/u)
@@ -2217,6 +2275,40 @@ test('PDF 译文图片碰撞检测必须允许纵向重叠但横向错开的前�
 
   // 前序内容只占据左侧且与图片纵向重叠时，图片应回填到原文锚点（42 - 90）。
   assert.equal(gap, -48)
+})
+
+test('PDF 后续普通区块必须避让横向相交的已下推图片及同列障碍', () => {
+  const gap = resolveTranslationFlowBlockGap({
+    sourceGap: 16,
+    baseTop: 316,
+    blockHeight: 12,
+    flowOrigin: 80,
+    blockRange: { left: 90, right: 174 },
+    obstacles: [
+      { left: 90, right: 517, top: 80, bottom: 294 },
+      { left: 114, right: 306, top: 294, bottom: 438 },
+      { left: 90, right: 114, top: 438, bottom: 462 }
+    ]
+  })
+
+  // 原坐标 332 落入大图；大图底边之后又与同列小图标相交，最终必须继续顺延到两者实际底边之后。
+  assert.equal(gap, 162)
+})
+
+test('PDF 后续普通区块与障碍横向错开时仍必须允许回到原文坐标', () => {
+  const gap = resolveTranslationFlowBlockGap({
+    sourceGap: 16,
+    baseTop: 316,
+    blockHeight: 12,
+    flowOrigin: 80,
+    blockRange: { left: 90, right: 174 },
+    obstacles: [
+      { left: 300, right: 520, top: 220, bottom: 460 }
+    ]
+  })
+
+  // 障碍只占据右侧栏时，左侧正文不能被整页最大底边错误下推。
+  assert.equal(gap, 16)
 })
 
 test('PDF 图片异步资源在节点插入页面前解析完成时不得被丢弃', () => {
@@ -2449,7 +2541,7 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   assert.match(source, /if \(!translatedText\) return null/u)
   assert.match(
     source,
-    /function renderPage\(\s*page: DocumentPage,\s*side: DocumentRenderSide,\s*translationInitialScale: number,\s*jobId: string,\s*tab: DocumentWorkspaceTab\s*\): HTMLElement/u
+    /function renderPage\(\s*page: DocumentPage,\s*side: DocumentRenderSide,\s*translationInitialScale: number,\s*jobId: string,\s*tab: DocumentWorkspaceTab,\s*layoutOverride\?: 'absolute' \| 'translation-flow' \| 'flow'\s*\): HTMLElement/u
   )
   assert.match(
     source,
@@ -2530,12 +2622,12 @@ test('文档双栏预览必须支持在源文栏切换 OCR 原文与译文覆盖
   assert.match(
     css,
     /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s+\.document-ocr-translation-layer\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/su,
-    '只有独立图片原文页的 OCR 覆盖层必须与图片共享完整矩形，译文流式页不能脱离文档流'
+    '独立图片原文和译文页的 OCR 覆盖层都必须与图片共享完整矩形'
   )
   assert.match(
     css,
     /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s+\.document-ocr-region\s*\{[^}]*top:\s*var\(--document-ocr-source-top-percent/su,
-    '只有独立图片原文页使用百分比顶部坐标，译文流式页必须继续使用像素坐标'
+    '独立图片原文和译文页都必须使用同一百分比顶部坐标'
   )
   assert.doesNotMatch(css, /\.document-ocr-region\s*\{[^}]*margin-top:/su)
   assert.doesNotMatch(css, /\.document-ocr-translation-layer\s*\{[^}]*flex-direction:\s*column/su)
@@ -3301,7 +3393,12 @@ test('图片预览必须按原始宽高比完整显示，不能被容器拉伸�
   )
   assert.match(
     css,
-    /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s*\{[^}]*width:\s*100%\s*!important[^}]*aspect-ratio:\s*var\(--document-page-aspect-ratio\)/su
+    /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s*\{[^}]*width:\s*var\(--document-page-width\)\s*!important[^}]*aspect-ratio:\s*var\(--document-page-aspect-ratio\)/su
+  )
+  assert.doesNotMatch(
+    css,
+    /\.document-preview-host\[data-document-format='image'\]\s+\.document-page\[data-layout='absolute'\]\s*\{[^}]*width:\s*100%\s*!important/su,
+    '图片页不能用百分比宽度叠加 zoom，否则缩放会反向补偿并让适合宽度点击没有效果'
   )
   assert.match(
     css,
@@ -3356,7 +3453,10 @@ test('图片资源与源文件预览必须显式携带当前任务标识', () =>
     /window\.api\.getDocumentAsset\(jobId, assetId\)/u,
     '图片资源必须按任务读取，不能依赖启动返回前可能为空的 activeJobId'
   )
-  assert.match(source, /renderPage\(page, pageRenderSide, pageScale, jobId, tab\)/u)
+  assert.match(
+    source,
+    /renderPage\(\s*page,\s*side,\s*pageScale,\s*jobId,\s*tab,\s*isImageDocument \? 'absolute' : undefined\s*\)/u
+  )
   assert.match(source, /window\.api\.getDocumentSource\(jobId\)/u)
   assert.match(source, /renderDocumentModel\([\s\S]*?'source',[\s\S]*?snapshot\.jobId,/u)
   assert.match(source, /renderDocumentModel\([\s\S]*?'translation',[\s\S]*?snapshot\.jobId,/u)
@@ -3381,7 +3481,7 @@ test('OCR 原文模式必须允许直接选择透明文字层', () => {
   assert.match(source.slice(tableCellStart, tableCellEnd), /appendImageOcrLayers\(wrapper, block, side, tab\)/u)
 })
 
-test('图片 OCR 原文必须复用源页绝对布局并让透明文字层优先接收指针', () => {
+test('图片 OCR 原文和译文必须共用绝对布局并让透明文字层优先接收指针', () => {
   const source = read('src/renderer/src/document.ts')
   const css = read('src/renderer/src/document.css')
   const renderStart = source.indexOf('function renderDocumentModel(')
@@ -3390,9 +3490,13 @@ test('图片 OCR 原文必须复用源页绝对布局并让透明文字层优先
 
   assert.match(
     renderSource,
-    /const pageRenderSide = tab\.ocrDisplayMode === 'ocr-text' && model\.source\.format === 'image'\s*\? 'source'\s*: side/u
+    /const isImageDocument = model\.source\.format === 'image'/u
   )
-  assert.match(renderSource, /renderPage\(page, pageRenderSide, pageScale, jobId, tab\)/u)
+  assert.match(
+    renderSource,
+    /renderPage\(\s*page,\s*side,\s*pageScale,\s*jobId,\s*tab,\s*isImageDocument \? 'absolute' : undefined\s*\)/u,
+    '图片原文和译文必须保留各自渲染侧，并统一使用绝对布局'
+  )
   assert.match(
     css,
     /\.document-preview-host\[data-document-format='image'\][\s\S]*?\.document-image-block > \.document-page-image\s*\{[^}]*pointer-events:\s*none/su
@@ -3554,6 +3658,137 @@ test('文档工作台必须提供三模式、同步、页码、目录与缩放�
   assert.match(en, /'document\.syncScroll'/u)
   assert.match(zh, /'document\.zoom\.fit'/u)
   assert.match(en, /'document\.zoom\.fit'/u)
+})
+
+test('文档工具栏必须提供跳过缓存的重新翻译入口', () => {
+  const html = read('src/renderer/document.html')
+  const source = read('src/renderer/src/document.ts')
+  const main = read('src/main/index.ts')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+  const rerunStart = source.indexOf('async function rerunDocumentTranslation(')
+  const rerunSource = source.slice(rerunStart, source.indexOf('/**', rerunStart + 1))
+  const start = source.indexOf('async function startDocumentTabTranslation(')
+  const startSource = source.slice(start, source.indexOf('/**', start + 1))
+
+  assert.match(html, /id="document-rerun-button"[^>]*data-i18n="document\.rerun"/u)
+  assert.match(source, /const rerunButton = document\.getElementById\('document-rerun-button'\) as HTMLButtonElement/u)
+  assert.match(source, /rerunButton\.addEventListener\('click', \(\) => void rerunDocumentTranslation\(\)\)/u)
+  assert.ok(rerunStart > -1)
+  assert.match(rerunSource, /const jobId = tab\.activeJobId \?\? tab\.expectedJobId/u)
+  assert.match(rerunSource, /const jobGeneration = tab\.generation/u)
+  assert.match(rerunSource, /await cancelDocumentJob\(jobId, jobGeneration\)/u)
+  assert.match(rerunSource, /if \(jobId\) await releaseDocumentJob\(jobId\)/u)
+  assert.match(rerunSource, /tab\.snapshot = null/u)
+  assert.match(rerunSource, /startDocumentTabTranslation\(tab, \{ bypassCache: true \}\)/u)
+  assert.match(startSource, /options: \{ bypassCache\?: boolean \} = \{\}/u)
+  assert.equal((startSource.match(/bypassCache: options\.bypassCache === true/gu) ?? []).length, 2)
+  assert.match(main, /bypassCache: request\.bypassCache === true/u)
+  assert.match(zh, /'document\.rerun': '重新翻译'/u)
+  assert.match(zh, /'document\.rerunStarted': '正在重新翻译…'/u)
+  assert.match(en, /'document\.rerun': 'Retranslate'/u)
+  assert.match(en, /'document\.rerunStarted': 'Retranslating…'/u)
+})
+
+test('已重新授权的恢复态与历史态必须允许直接重新翻译', () => {
+  const source = read('src/renderer/src/document.ts')
+  const taskStart = source.indexOf('function renderTaskState(')
+  const taskSource = source.slice(taskStart, source.indexOf('/**', taskStart + 1))
+  const canRerunStart = source.indexOf('function canRetranslateDocumentTab(')
+  const canRerunSource = source.slice(canRerunStart, source.indexOf('/**', canRerunStart + 1))
+  const startRerunStart = source.indexOf('async function startDocumentTabTranslation(')
+  const startRerunSource = source.slice(startRerunStart, source.indexOf('/**', startRerunStart + 1))
+  const rerunStart = source.indexOf('async function rerunDocumentTranslation(')
+  const rerunSource = source.slice(rerunStart, source.indexOf('/**', rerunStart + 1))
+
+  assert.match(source, /function canRetranslateDocumentTab\(/u)
+  assert.match(source, /tab\.sourceAuthorized/u)
+  assert.doesNotMatch(canRerunSource, /tab\.startInFlight/u,
+    '重新翻译资格不能绑定启动请求忙碌状态，否则请求结束后按钮会残留禁用')
+  assert.match(taskSource, /rerunButton\.disabled = !canRetranslateDocumentTab\(tab\)/u,
+    '重新翻译按钮只能由可执行性决定，不能因为恢复态或历史态而一律禁用')
+  assert.match(taskSource, /tab\.startInFlight/u,
+    '重新翻译按钮必须在渲染任务状态时单独考虑当前启动请求是否忙碌')
+  assert.match(startRerunSource, /tab\.startInFlight = false[\s\S]*?renderTaskState\(tab\.snapshot, tab\)/u,
+    '启动请求结束后必须重新渲染任务状态，立即解除重新翻译按钮的忙碌禁用')
+  assert.doesNotMatch(taskSource,
+    /if \(restored\) \{[\s\S]*?rerunButton\.disabled = true[\s\S]*?\}/u,
+    '已授权源文件的恢复态与历史态不能被旧快照禁用重新翻译')
+  assert.match(rerunSource, /prepareDocumentTabForLanguageRetranslation\(tab\)/u,
+    '重新翻译前必须把已授权的只读 Tab 提升为可执行任务')
+  assert.match(rerunSource, /startDocumentTabTranslation\(tab, \{ bypassCache: true \}\)/u)
+})
+
+test('适合宽度必须铺满宽度，适合高度必须铺满高度并保持页面比例', () => {
+  const html = read('src/renderer/document.html')
+  const source = read('src/renderer/src/document.ts')
+  const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
+  const en = read('src/shared/i18n/catalog.en-US.document.ts')
+  const heightStart = source.indexOf('function fitDocumentToHeight(')
+  const heightEnd = source.indexOf('\n}\n', heightStart + 1) + 3
+  const heightSource = source.slice(heightStart, heightEnd)
+
+  assert.match(html, /id="document-zoom-fit-height"[^>]*data-i18n="document\.zoom\.fitHeight"/u)
+  assert.match(source, /const documentZoomFitHeightButton = document\.getElementById\('document-zoom-fit-height'\) as HTMLButtonElement/u)
+  assert.match(source, /documentZoomFitHeightButton\.addEventListener\('click', fitDocumentToHeight\)/u)
+  assert.ok(heightStart > -1)
+  assert.match(heightSource, /documentViewMode === 'source' \? sourceContent : translationContent/u)
+  assert.match(heightSource, /currentDocumentPageNumber/u)
+  assert.match(heightSource, /renderedHeight > 0[\s\S]*?renderedHeight \/ documentZoom/u)
+  assert.match(heightSource, /documentPageAvailableHeight\(container\)/u)
+  assert.match(heightSource, /resolveDocumentFitZoom\(baseHeight, availableHeight\)/u)
+  assert.match(source, /function documentPageAvailableHeight\(container: HTMLElement\): number/u)
+  assert.match(zh, /'document\.zoom\.fitHeight': '适合高度'/u)
+  assert.match(en, /'document\.zoom\.fitHeight': 'Fit height'/u)
+})
+
+test('图片预览适合宽度与适合高度必须使用一致的原始尺寸和容器测量逻辑', () => {
+  const source = read('src/renderer/src/document.ts')
+  const widthStart = source.indexOf('function fitDocumentToWidth(')
+  const widthEnd = source.indexOf('\n}\n', widthStart + 1) + 3
+  const widthSource = source.slice(widthStart, widthEnd)
+  const heightStart = source.indexOf('function fitDocumentToHeight(')
+  const heightEnd = source.indexOf('\n}\n', heightStart + 1) + 3
+  const heightSource = source.slice(heightStart, heightEnd)
+
+  assert.ok(widthStart > -1)
+  assert.match(widthSource, /source\.format === 'image'[\s\S]*?currentPage\?\.width/u,
+    '图片适合宽度必须使用稳定的原始页面宽度作为基准')
+  assert.match(
+    widthSource,
+    /const baseWidth = model\?\.source\.format === 'image'\s*\? currentPage\?\.width\s*: renderedWidth > 0 \? renderedWidth \/ documentZoom : currentPage\?\.width/u,
+    '图片适合宽度必须直接使用原始宽度，其他格式才从渲染尺寸还原基准'
+  )
+  assert.match(widthSource, /documentPageContentWidth\(container\)/u)
+  assert.match(widthSource, /resolveDocumentFitZoom\(baseWidth, availableWidth\)/u)
+  assert.match(heightSource, /source\.format === 'image'[\s\S]*?currentPage\?\.height/u,
+    '图片适合高度必须使用稳定的原始页面高度作为基准')
+  assert.match(
+    heightSource,
+    /const baseHeight = model\?\.source\.format === 'image'\s*\? currentPage\?\.height\s*: renderedHeight > 0 \? renderedHeight \/ documentZoom : currentPage\?\.height/u,
+    '图片适合高度必须直接使用原始高度，其他格式才从渲染尺寸还原基准'
+  )
+  assert.match(heightSource, /documentPageAvailableHeight\(container\)/u)
+  assert.match(heightSource, /resolveDocumentFitZoom\(baseHeight, availableHeight\)/u)
+})
+
+test('图片适配必须直接使用当前页原始尺寸，不能受缩放后的 DOM 尺寸影响', () => {
+  const source = read('src/renderer/src/document.ts')
+  const widthStart = source.indexOf('function fitDocumentToWidth(')
+  const widthEnd = source.indexOf('/**', widthStart + 1)
+  const widthSource = source.slice(widthStart, widthEnd)
+  const heightStart = source.indexOf('function fitDocumentToHeight(')
+  const heightEnd = source.indexOf('/**', heightStart + 1)
+  const heightSource = source.slice(heightStart, heightEnd)
+
+  assert.match(widthSource, /source\.format === 'image'[\s\S]*?currentPage\?\.width/u,
+    '图片适合宽度必须直接使用当前页原始宽度，否则会继续在已有缩放比例上反复计算')
+  assert.match(heightSource, /source\.format === 'image'[\s\S]*?currentPage\?\.height/u,
+    '图片适合高度必须直接使用当前页原始高度，保持与适合宽度相同的稳定基准')
+  assert.match(widthSource, /currentDocumentPageNumber - 1/u,
+    '图片适配必须取当前可见页的尺寸，不能始终使用第一页')
+  assert.match(heightSource, /currentDocumentPageNumber - 1/u,
+    '图片高度适配必须取当前可见页的尺寸，不能始终使用第一页')
 })
 
 test('文档历史必须通过受控 IPC 列出、打开、删除并清空缓存', () => {

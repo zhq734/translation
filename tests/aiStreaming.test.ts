@@ -326,6 +326,32 @@ test('相同正文使用不同文档术语上下文时不得复用普通翻译�
   assert.match(requestBodies[1]!, /workspace => 协作空间/u)
 })
 
+test('缓存穿透请求必须重新调用提供方并用新结果覆盖普通翻译缓存', async () => {
+  let requests = 0
+  const runtime = new TranslationRuntime({
+    fetch: async () => {
+      requests += 1
+      return streamingResponse([openAiDelta(`第${requests}次`) , 'data: [DONE]\n\n'])
+    }
+  })
+
+  const first = await runtime.translateStream('refresh', aiSettings(), null, 'sk-ai', {
+    onDelta: () => undefined
+  })
+  const refreshed = await runtime.translateStream('refresh', aiSettings(), null, 'sk-ai', {
+    onDelta: () => undefined,
+    bypassCache: true
+  })
+  const cached = await runtime.translateStream('refresh', aiSettings(), null, 'sk-ai', {
+    onDelta: () => undefined
+  })
+
+  assert.equal(first.translation, '第1次')
+  assert.equal(refreshed.translation, '第2次')
+  assert.equal(cached.translation, '第2次')
+  assert.equal(requests, 2)
+})
+
 test('非 AI 通道应忽略文档上下文并保持普通翻译结果', async () => {
   const runtime = new TranslationRuntime({
     fetch: async (url) => {

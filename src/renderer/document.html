@@ -32,8 +32,17 @@
 
       <nav class="document-toolbar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
         <div class="document-toolbar-main">
-          <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
+          <div class="document-file-tabs-shell">
+            <button id="document-file-tabs-previous" class="document-file-tab-scroll" type="button" data-i18n-attr="aria-label:document.tabs.previous;title:document.tabs.previous" aria-label="Scroll file tabs left" title="Scroll file tabs left" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m9.5 3.5-4.5 4.5 4.5 4.5" /></svg>
+            </button>
+            <div id="document-file-tabs" class="document-file-tabs" role="tablist" data-i18n-attr="aria-label:document.files.tabs" aria-label="Open document files"></div>
+            <button id="document-file-tabs-next" class="document-file-tab-scroll" type="button" data-i18n-attr="aria-label:document.tabs.next;title:document.tabs.next" aria-label="Scroll file tabs right" title="Scroll file tabs right" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" /></svg>
+            </button>
+          </div>
           <div class="document-toolbar-actions">
+            <button id="document-rerun-button" class="document-secondary-button" type="button" data-i18n="document.rerun" data-i18n-attr="aria-label:document.rerun;title:document.rerun" aria-label="Retranslate" title="Retranslate" disabled>Retranslate</button>
             <button id="document-retry-button" class="document-secondary-button" type="button" data-i18n="document.retryFailed" disabled>Retry incomplete items</button>
             <div class="document-history">
               <button id="document-history-button" class="document-secondary-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-history-popover" data-i18n="document.history">History</button>
@@ -89,7 +98,8 @@
                 <span id="document-zoom-value" class="document-zoom-value" aria-live="polite">100%</span>
                 <button id="document-zoom-in" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.in;title:document.zoom.in" aria-label="Zoom in" title="Zoom in">+</button>
                 <button id="document-zoom-reset" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.reset;title:document.zoom.reset" aria-label="Reset to 100%" title="Reset to 100%">100%</button>
-                <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit">Fit width</button>
+                <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit" data-i18n-attr="aria-label:document.zoom.fit;title:document.zoom.fit" aria-label="Fit width" title="Fit width">Fit width</button>
+                <button id="document-zoom-fit-height" class="document-reading-button" type="button" data-i18n="document.zoom.fitHeight" data-i18n-attr="aria-label:document.zoom.fitHeight;title:document.zoom.fitHeight" aria-label="Fit height" title="Fit height">Fit height</button>
               </div>
             </div>
           </div>

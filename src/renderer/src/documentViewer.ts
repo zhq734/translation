@@ -161,6 +161,20 @@ export function resolveFitDocumentZoom(pageWidth: number, availableWidth: number
 }
 
 /**
+ * 计算适合容器宽度或高度时的精确页面比例。
+ * 适配按钮必须真正铺满可用空间，因此不套用用户手动缩放的 50% 到 200% 限制。
+ * @param pageSize 页面原始宽度或高度。
+ * @param availableSize 容器可用于铺满的宽度或高度。
+ * @returns 精确适配比例；输入无效时回退为 1。
+ * @author zhenghq
+ */
+export function resolveDocumentFitZoom(pageSize: number, availableSize: number): number {
+  if (!Number.isFinite(pageSize) || pageSize <= 0 ||
+    !Number.isFinite(availableSize) || availableSize <= 0) return 1
+  return availableSize / pageSize
+}
+
+/**
  * 解析用户输入的从一起始页码。
  * @param value 页码输入值。
  * @param pageCount 当前文档总页数。

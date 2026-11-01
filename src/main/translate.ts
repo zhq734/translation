@@ -75,6 +75,8 @@ export interface TranslateStreamOptions {
   signal?: AbortSignal
   /** 可选的文档术语与相邻语义上下文；仅 AI 通道使用。 */
   context?: DocumentTranslationRequestContext
+  /** 是否跳过通用翻译缓存读取；为 true 时新结果仍会写回缓存。 */
+  bypassCache?: boolean
 }
 
 interface CachedTranslation extends TranslateOutput {
@@ -233,7 +235,7 @@ export class TranslationRuntime {
       settings.aiModel,
       options.context
     )
-    const hit = this.cache.get(key)
+    const hit = options.bypassCache ? undefined : this.cache.get(key)
     if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
 
     const channels = this.createChannels(input, settings, dingTalkCredentials, aiApiKey)

@@ -68,13 +68,49 @@ body {
   min-width: 0;
 }
 
+.document-file-tabs-shell {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
 .document-file-tabs {
   display: flex;
   flex: 1 1 0;
   min-width: 0;
   overflow-x: auto;
-  padding-bottom: 1px;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+/* 文件较多时仍可横向滚动，但不显示原生滚动条，避免挤压顶部 Tab 高度。 */
+.document-file-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.document-file-tab-scroll {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+  border: var(--border-width) solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--button-secondary-bg);
+  color: var(--text-primary);
+}
+
+.document-file-tab-scroll:hover:not(:disabled),
+.document-file-tab-scroll:focus-visible {
+  border-color: var(--button-bg);
+  background: var(--button-secondary-hover);
+}
+
+.document-file-tab-scroll:disabled {
+  color: var(--text-muted);
 }
 
 .document-file-tab {
@@ -1777,10 +1813,10 @@ body {
   object-fit: contain;
 }
 
-/* 独立图片铺满预览栏宽度，并由原始宽高比撑开高度；不能沿用 PDF 页面的固定像素高度。 */
+/* 独立图片以原始像素宽度作为缩放基准；不能用百分比宽度叠加 zoom，否则浏览器会反向补偿尺寸。 */
 .document-preview-host[data-document-format='image'] .document-page[data-layout='absolute'] {
-  width: 100% !important;
-  max-width: 100%;
+  width: var(--document-page-width) !important;
+  max-width: none;
   aspect-ratio: var(--document-page-aspect-ratio);
   height: auto !important;
   min-height: 0 !important;

@@ -75,6 +75,7 @@ import {
 } from './documentHistory'
 import {
   occupiesDocumentTranslationFlow,
+  resolveTranslationFlowBlockGap,
   resolveTranslationImageFlowGap,
   resolveTranslationFlowDecorationTop,
   type DocumentFlowDecorationAnchor,
@@ -88,7 +89,11 @@ import {
   type DocumentScrollSide
 } from './documentScrollSync'
 import { resolveDocumentPdfImageAssetLocation } from './documentAssetRequest'
-import { shouldRevealActiveDocumentTab } from './documentTabScroll'
+import {
+  resolveDocumentTabScrollState,
+  resolveDocumentTabScrollTarget,
+  shouldRevealActiveDocumentTab
+} from './documentTabScroll'
 import {
   clampDocumentZoom,
   createRestoredDocumentWorkspaceSnapshot,
@@ -97,6 +102,7 @@ import {
   parseDocumentViewerState,
   parseDocumentPageNumber,
   resolveDocumentBlockHighlight,
+  resolveDocumentFitZoom,
   resolveDocumentPageJump,
   resolveDocumentTocTarget,
   resolveFitDocumentZoom,
@@ -249,6 +255,8 @@ const actualLanguage = document.getElementById('document-actual-language') as HT
 const uploadPanel = document.getElementById('document-upload-panel') as HTMLElement
 const workbench = document.getElementById('document-workbench') as HTMLElement
 const documentWorkspaceTabs = document.getElementById('document-file-tabs') as HTMLElement
+const documentFileTabsPreviousButton = document.getElementById('document-file-tabs-previous') as HTMLButtonElement
+const documentFileTabsNextButton = document.getElementById('document-file-tabs-next') as HTMLButtonElement
 const workbenchName = document.getElementById('document-workbench-name') as HTMLElement
 const workbenchMeta = document.getElementById('document-workbench-meta') as HTMLElement
 const progressStage = document.getElementById('document-progress-stage') as HTMLElement
@@ -272,6 +280,7 @@ const documentZoomValue = document.getElementById('document-zoom-value') as HTML
 const documentZoomInButton = document.getElementById('document-zoom-in') as HTMLButtonElement
 const documentZoomResetButton = document.getElementById('document-zoom-reset') as HTMLButtonElement
 const documentZoomFitButton = document.getElementById('document-zoom-fit') as HTMLButtonElement
+const documentZoomFitHeightButton = document.getElementById('document-zoom-fit-height') as HTMLButtonElement
 const documentColumns = document.querySelector<HTMLElement>('.document-columns') as HTMLElement
 const translationContent = document.getElementById('document-translation-content') as HTMLElement
 const translationHeading = document.getElementById('document-translation-heading') as HTMLElement
@@ -280,6 +289,7 @@ const translationPageCount = document.getElementById('document-translation-page-
 const cancelButton = document.getElementById('document-cancel-button') as HTMLButtonElement
 const exportButton = document.getElementById('document-export-button') as HTMLButtonElement
 const retryButton = document.getElementById('document-retry-button') as HTMLButtonElement
+const rerunButton = document.getElementById('document-rerun-button') as HTMLButtonElement
 const documentWorkbenchReplaceButton = document.getElementById('document-workbench-replace') as HTMLButtonElement
 const partialStatus = document.getElementById('document-partial-status') as HTMLElement
 const exportDialog = document.getElementById('document-export-dialog') as HTMLDialogElement
@@ -765,6 +775,21 @@ function prepareDocumentTabForLanguageRetranslation(tab: DocumentWorkspaceTab): 
   tab.pendingOcrModeRestart = false
   tab.languageRevision += 1
   return true
+}
+
+/**
+ * 判断当前文档是否具备从源文件重新执行翻译的条件。
+ * 普通任务始终可重跑；恢复态与历史态只有在源文件已重新授权且文件指纹完整时才可提升。
+ * @param tab 待检查的文档 Tab。
+ * @returns 可执行重新翻译时返回 true。
+ * @author zhenghq
+ */
+function canRetranslateDocumentTab(
+  tab: DocumentWorkspaceTab | null | undefined
+): tab is DocumentWorkspaceTab {
+  if (!tab || !tab.selection.path) return false
+  if (!isReadOnlyDocumentTab(tab)) return true
+  return tab.sourceAuthorized && Boolean(tab.selection.sha256)
 }
 
 /**
@@ -1700,6 +1725,45 @@ function findDocumentTabByTranslationUpdate(
 }
 
 /**
+ * 根据文件 Tab 栏当前尺寸同步左右滚动按钮的禁用状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateDocumentTabScrollButtons(): void {
+  const state = resolveDocumentTabScrollState(
+    documentWorkspaceTabs.scrollLeft,
+    documentWorkspaceTabs.clientWidth,
+    documentWorkspaceTabs.scrollWidth
+  )
+  documentFileTabsPreviousButton.disabled = !state.canScrollBackward
+  documentFileTabsNextButton.disabled = !state.canScrollForward
+}
+
+/**
+ * 按可视宽度滚动文件 Tab 栏。
+ * @param direction -1 表示向左，1 表示向右。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scrollDocumentTabs(direction: -1 | 1): void {
+  const target = resolveDocumentTabScrollTarget(
+    documentWorkspaceTabs.scrollLeft,
+    documentWorkspaceTabs.clientWidth,
+    documentWorkspaceTabs.scrollWidth,
+    direction
+  )
+  documentWorkspaceTabs.scrollTo({ left: target, behavior: 'smooth' })
+  // 平滑滚动期间先按目标位置更新禁用态，避免连续点击仍落到已经越界的方向。
+  const nextState = resolveDocumentTabScrollState(
+    target,
+    documentWorkspaceTabs.clientWidth,
+    documentWorkspaceTabs.scrollWidth
+  )
+  documentFileTabsPreviousButton.disabled = !nextState.canScrollBackward
+  documentFileTabsNextButton.disabled = !nextState.canScrollForward
+}
+
+/**
  * 渲染顶栏文件 Tab，并同步选中态、状态点和逐个关闭入口。
  * @returns 无返回值。
  * @author zhenghq
@@ -1741,6 +1805,7 @@ function renderDocumentTabs(): void {
     documentWorkspaceTabs.append(item)
   }
   documentWorkspaceTabs.scrollLeft = previousScrollLeft
+  updateDocumentTabScrollButtons()
   if (!shouldRevealActiveDocumentTab(activeDocumentTabId, lastRevealedActiveDocumentTabId)) return
   const activeElement = documentWorkspaceTabs.querySelector<HTMLElement>('[aria-selected="true"]')
   activeElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -1935,6 +2000,7 @@ function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
     cancelButton.hidden = tab.status !== 'starting' && tab.status !== 'running'
     exportButton.disabled = true
     retryButton.disabled = true
+    rerunButton.disabled = true
     partialStatus.hidden = true
     workbench.dataset.state = tab.status
   }
@@ -2556,6 +2622,19 @@ function documentPageContentWidth(container: HTMLElement): number {
 }
 
 /**
+ * 计算文档预览栏扣除上下留白与边框后的可用高度。
+ * @param container 当前预览滚动容器。
+ * @returns 可用于单页高度适配的 CSS 像素高度。
+ * @author zhenghq
+ */
+function documentPageAvailableHeight(container: HTMLElement): number {
+  const style = getComputedStyle(container)
+  const padding = Number.parseFloat(style.paddingTop || '0') + Number.parseFloat(style.paddingBottom || '0')
+  const borderWidth = Number.parseFloat(style.getPropertyValue('--border-width')) || 0
+  return Math.max(1, container.clientHeight - padding - borderWidth * 2)
+}
+
+/**
  * 计算译文页面首次挂载时的缩放比例，避免先以 1 倍尺寸排版再跳到真实宽度。
  * @param container 译文滚动容器。
  * @param sourceWidth PDF 原始页面宽度。
@@ -2575,7 +2654,7 @@ function initialTranslationPageScale(container: HTMLElement, sourceWidth: number
  * @author zhenghq
  */
 function applyDocumentZoom(nextZoom: number): void {
-  documentZoom = clampDocumentZoom(nextZoom)
+  documentZoom = nextZoom
   documentColumns.style.setProperty('--document-user-zoom', String(documentZoom))
   documentZoomValue.textContent = `${Math.round(documentZoom * 100)}%`
   for (const page of sourceContent.querySelectorAll<HTMLElement>('.document-page, .document-pdf-page')) {
@@ -2816,6 +2895,8 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
     const sourceY = Number(child.dataset.sourceY)
     const sourceGap = Math.max(0, Number(child.dataset.sourceGapBefore) || 0)
     let gapPx = sourceGap * scale
+    // 先记录调整前的二维范围；应用段前后重新测量，避免后续区块读到本轮布局之前的旧坐标。
+    const currentObstacle = measureTranslationFlowObstacle(child, pageRect)
     if ((child.classList.contains('document-image-block') ||
       child.querySelector(':scope > .document-image-block')) && Number.isFinite(sourceY)) {
       const anchoredTop = flowOrigin + Math.max(0, sourceY - pageMarginTop) * scale
@@ -2840,10 +2921,23 @@ function normalizeTranslationFlowLayout(page: HTMLElement): void {
       })
       setCssPixelPropertyIfChanged(child, '--document-image-flow-gap-before', gapPx / scale)
     } else {
+      const currentGapPx = (Number.parseFloat(
+        child.style.getPropertyValue('--document-flow-gap-before')
+      ) || 0) * scale
+      // 从当前顶部扣除已应用的段前距离，得到稳定的前序内容底边，避免重复叠加历次布局结果。
+      const baseTop = child.getBoundingClientRect().top - currentGapPx
+      gapPx = resolveTranslationFlowBlockGap({
+        sourceGap: sourceGap * scale,
+        baseTop,
+        blockHeight: currentObstacle.bottom - currentObstacle.top,
+        flowOrigin,
+        blockRange: currentObstacle,
+        obstacles: flowObstacles
+      })
       setCssPixelPropertyIfChanged(child, '--document-flow-gap-before', gapPx / scale)
     }
     previousBottom = Math.max(previousBottom, measureTranslationFlowBottom(child))
-    // 每个已排版区块都要登记二维占位，供后续图片判断是否需要避让。
+    // 段前距离写入后再登记当前二维占位，供后续区块和图片判断是否需要避让。
     flowObstacles.push(measureTranslationFlowObstacle(child, pageRect))
     const sourceTop = Number(child.dataset.sourceTop)
     const sourceBottom = Number(child.dataset.sourceBottom)
@@ -3870,6 +3964,7 @@ function renderBlock(
  * @param translationInitialScale 译文页初始缩放比例。
  * @param jobId 页面所属任务标识。
  * @param tab 快照所属的文档 Tab。
+ * @param layoutOverride 可选的页面布局覆盖；独立图片必须让原文和译文共用绝对布局。
  * @returns 页面元素。
  * @author zhenghq
  */
@@ -3878,7 +3973,8 @@ function renderPage(
   side: DocumentRenderSide,
   translationInitialScale: number,
   jobId: string,
-  tab: DocumentWorkspaceTab
+  tab: DocumentWorkspaceTab,
+  layoutOverride?: 'absolute' | 'translation-flow' | 'flow'
 ): HTMLElement {
   const element = document.createElement('article')
   element.className = 'document-page'
@@ -3901,9 +3997,11 @@ function renderPage(
     // PDF 译文页统一使用纸张主题兜底；显式页面底色已在前面覆盖，空白页也不能露出深色容器。
     element.style.backgroundColor = 'var(--document-paper-bg)'
   }
-  element.dataset.layout = side === 'translation' && hasGeometry
+  // 独立图片的原文和译文都使用绝对布局与统一 zoom，避免两侧适配按钮采用不同缩放路径。
+  const layout = layoutOverride ?? (side === 'translation' && hasGeometry
     ? 'translation-flow'
-    : hasGeometry ? 'absolute' : 'flow'
+    : hasGeometry ? 'absolute' : 'flow')
+  element.dataset.layout = layout
   let previousBottom = 0
   let previousBlock: DocumentBlock | undefined
   let activeFlowGroup: HTMLElement | undefined
@@ -5113,17 +5211,22 @@ function renderDocumentModel(
         container.replaceChildren(previewHost)
         void renderPdfPages(previewHost, model, jobId, tab)
       } else {
+        const isImageDocument = model.source.format === 'image'
         for (const page of model.pages) {
           // 横竖混排 PDF 的每页宽度不同，必须在首次挂载前按自身宽度计算比例，
           // 不能先沿用第一页比例再等待观察器纠正，否则会造成可见缩放。
-          const pageScale = side === 'translation'
+          const pageScale = side === 'translation' && !isImageDocument
             ? initialTranslationPageScale(container, page.width)
             : 1
-          // 图片 OCR 原文右侧必须复用源页绝对定位；译文流式布局会拆散底图与透明文字层的坐标。
-          const pageRenderSide = tab.ocrDisplayMode === 'ocr-text' && model.source.format === 'image'
-            ? 'source'
-            : side
-          previewHost.append(renderPage(page, pageRenderSide, pageScale, jobId, tab))
+          // 图片保留实际渲染侧以挂载译文 OCR 覆盖层，只通过布局覆盖统一为绝对定位。
+          previewHost.append(renderPage(
+            page,
+            side,
+            pageScale,
+            jobId,
+            tab,
+            isImageDocument ? 'absolute' : undefined
+          ))
         }
       }
     } else if (kind === 'markdown') {
@@ -5794,6 +5897,11 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorks
   // phaseCompleted 只表示阶段流程结束，不代表没有可重试目标；partial 终态
   // 仍需与摘要共用同一动作状态，按失败、未完成和疑似未翻译目标决定按钮状态。
   retryButton.disabled = retryAction.retryDisabled
+  rerunButton.disabled = !canRetranslateDocumentTab(tab) ||
+    tab.startInFlight ||
+    snapshot.task.status === 'validating' || snapshot.task.status === 'parsing' ||
+    snapshot.task.status === 'ocr' || snapshot.task.status === 'translating' ||
+    snapshot.task.status === 'rendering' || snapshot.task.status === 'exporting'
   if (restored) {
     // 恢复态没有活动主进程任务；旧任务导出、重试和取消入口必须保持不可用。
     exportButton.disabled = true
@@ -5965,10 +6073,14 @@ function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab | null = getAct
  * 启动指定文件 Tab 的翻译或 OCR 任务。
  * 所有请求参数均从目标 Tab 捕获，后台 Tab 的启动结果不会覆盖当前可见 Tab。
  * @param tab 要启动的文件 Tab。
+ * @param options 启动选项；重新翻译时跳过两层缓存。
  * @returns 启动请求完成后的 Promise。
  * @author zhenghq
  */
-async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<void> {
+async function startDocumentTabTranslation(
+  tab: DocumentWorkspaceTab,
+  options: { bypassCache?: boolean } = {}
+): Promise<void> {
   if (!tab.selection.path || !platformCapability?.supported) return
   // 历史与恢复态只读；需要新任务时应重新选择文件，不能复用旧任务身份发起请求。
   if (isReadOnlyDocumentTab(tab)) return
@@ -6010,6 +6122,7 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
     cancelButton.hidden = false
     exportButton.disabled = true
     retryButton.disabled = true
+    rerunButton.disabled = false
     partialStatus.hidden = true
     closePartialExportDialog(false)
     startButton.disabled = true
@@ -6022,7 +6135,8 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
       generation: jobGeneration,
       sourceLang,
       targetLang,
-      mode
+      mode,
+      bypassCache: options.bypassCache === true
     })
     if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) {
       await cancelLateDocumentRunResult(result, jobGeneration)
@@ -6040,7 +6154,8 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
         generation: jobGeneration,
         sourceLang,
         targetLang,
-        mode
+        mode,
+        bypassCache: options.bypassCache === true
       })
     }
     if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) {
@@ -6095,9 +6210,55 @@ async function startDocumentTabTranslation(tab: DocumentWorkspaceTab): Promise<v
         tab.pendingLanguageRetranslation = false
         await startDocumentTabTranslation(tab)
       }
+      // 完成快照可能早于 runDocument 请求返回；忙碌标记清除后必须重绘任务状态，
+      // 否则重新翻译按钮会保留快照渲染时的禁用状态，直到下一次无关事件才恢复。
+      if (tab.id === activeDocumentTabId && tab.snapshot) {
+        renderTaskState(tab.snapshot, tab)
+      }
       renderDocumentTabs()
     }
   }
+}
+
+/**
+ * 取消当前任务并从源文件完整重新翻译，跳过文档缓存与通用翻译缓存。
+ * @returns 重新翻译启动完成后的 Promise。
+ * @author zhenghq
+ */
+async function rerunDocumentTranslation(): Promise<void> {
+  const tab = getActiveDocumentTab()
+  if (!canRetranslateDocumentTab(tab)) return
+  if (tab.startInFlight) return
+  if (isReadOnlyDocumentTab(tab) && !prepareDocumentTabForLanguageRetranslation(tab)) {
+    partialStatus.textContent = t('document.error.unreadable')
+    partialStatus.hidden = false
+    refreshActiveTabMirror(tab)
+    return
+  }
+  const jobId = tab.activeJobId ?? tab.expectedJobId
+  const jobGeneration = tab.generation
+  rerunButton.disabled = true
+  progressStage.textContent = t('document.rerunStarted')
+  progressCount.textContent = t('document.progress.pending')
+  progressbar.setAttribute('aria-valuenow', '0')
+  progressbar.style.width = '0%'
+  partialStatus.hidden = false
+  partialStatus.textContent = t('document.rerunStarted')
+  await cancelDocumentJob(jobId, jobGeneration)
+  if (!documentTabs.includes(tab)) return
+  if (jobId) await releaseDocumentJob(jobId)
+  if (!documentTabs.includes(tab)) return
+  // 清空旧任务身份和快照，避免取消终态或迟到事件混入新任务。
+  tab.snapshot = null
+  tab.activeJobId = null
+  tab.expectedJobId = null
+  if (tab.id === activeDocumentTabId) {
+    latestSnapshot = null
+    activeJobId = null
+    expectedJobId = null
+    clearActiveTabTranslationPreview()
+  }
+  await startDocumentTabTranslation(tab, { bypassCache: true })
 }
 
 /**
@@ -6534,6 +6695,21 @@ function setDocumentZoom(nextZoom: number): void {
 }
 
 /**
+ * 应用适合宽度或适合高度的精确缩放比例。
+ * 适配结果允许超出手动缩放的 50% 到 200% 范围，以确保页面真正铺满容器。
+ * @param nextZoom 已按页面与容器尺寸计算出的适配比例。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setDocumentFitZoom(nextZoom: number): void {
+  const normalized = Number.isFinite(nextZoom) && nextZoom > 0 ? nextZoom : 1
+  applyDocumentZoom(normalized)
+  const tab = getActiveDocumentTab()
+  if (tab) tab.zoom = normalized
+  scheduleDocumentViewerStatePersist()
+}
+
+/**
  * 按固定步长调整文档缩放，并保持 50% 到 200% 的边界。
  * @param delta 相对当前缩放比例的增量。
  * @returns 无返回值。
@@ -6813,12 +6989,37 @@ function stepDocumentPage(offset: number): void {
 function fitDocumentToWidth(): void {
   const model = latestSnapshot?.source ?? latestSnapshot?.translation
   const container = documentViewMode === 'source' ? sourceContent : translationContent
-  const renderedPage = container.querySelector<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]')
+  const renderedPages = Array.from(container.querySelectorAll<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]'))
+  const renderedPage = renderedPages[currentDocumentPageNumber - 1] ?? renderedPages[0]
   const availableWidth = documentPageContentWidth(container)
-  // PDF 源页和流式译文会先按容器宽度排版；使用当前渲染宽度除以用户缩放还原基准宽度，避免重复缩放。
+  const currentPage = model?.pages[currentDocumentPageNumber - 1] ?? model?.pages[0]
+  // 图片页的 zoom 会直接作用于原始像素宽度，必须使用模型尺寸作为稳定基准；
+  // 若从缩放后的 DOM 尺寸反推，每次点击都会把上一次结果当成新基准，无法一次铺满。
   const renderedWidth = renderedPage?.getBoundingClientRect().width ?? 0
-  const baseWidth = renderedWidth > 0 ? renderedWidth / documentZoom : model?.pages[0]?.width
-  setDocumentZoom(baseWidth ? resolveFitDocumentZoom(baseWidth, availableWidth) : 1)
+  const baseWidth = model?.source.format === 'image'
+    ? currentPage?.width
+    : renderedWidth > 0 ? renderedWidth / documentZoom : currentPage?.width
+  setDocumentFitZoom(baseWidth ? resolveDocumentFitZoom(baseWidth, availableWidth) : 1)
+}
+
+/**
+ * 将当前阅读页缩放到适合可用高度，保持页面原始宽高比例。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function fitDocumentToHeight(): void {
+  const model = latestSnapshot?.source ?? latestSnapshot?.translation
+  const container = documentViewMode === 'source' ? sourceContent : translationContent
+  const renderedPages = Array.from(container.querySelectorAll<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]'))
+  const renderedPage = renderedPages[currentDocumentPageNumber - 1] ?? renderedPages[0]
+  const availableHeight = documentPageAvailableHeight(container)
+  const currentPage = model?.pages[currentDocumentPageNumber - 1] ?? model?.pages[0]
+  // 图片页与适合宽度使用同一个原始尺寸基准；其他格式仍从渲染高度还原，兼容流式内容。
+  const renderedHeight = renderedPage?.getBoundingClientRect().height ?? 0
+  const baseHeight = model?.source.format === 'image'
+    ? currentPage?.height
+    : renderedHeight > 0 ? renderedHeight / documentZoom : currentPage?.height
+  setDocumentFitZoom(baseHeight ? resolveDocumentFitZoom(baseHeight, availableHeight) : 1)
 }
 
 /**
@@ -6928,6 +7129,11 @@ async function initializeDocumentWorkspace(): Promise<void> {
   await initializeDocumentLanguages()
   await restoreDocumentViewerState()
   await loadDocumentTaskHistory()
+  documentFileTabsPreviousButton.addEventListener('click', () => scrollDocumentTabs(-1))
+  documentFileTabsNextButton.addEventListener('click', () => scrollDocumentTabs(1))
+  documentWorkspaceTabs.addEventListener('scroll', updateDocumentTabScrollButtons)
+  window.addEventListener('resize', updateDocumentTabScrollButtons)
+  updateDocumentTabScrollButtons()
 
   dropZone.addEventListener('click', () => void chooseDocumentFiles())
   dropZone.addEventListener('keydown', (event) => {
@@ -6967,6 +7173,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   cancelButton.addEventListener('click', () => void cancelDocumentTranslation())
   exportButton.addEventListener('click', () => void exportTranslatedPdf())
   retryButton.addEventListener('click', () => void retryFailedDocumentTranslation())
+  rerunButton.addEventListener('click', () => void rerunDocumentTranslation())
   partialExportRetryButton.addEventListener('click', () => {
     closePartialExportDialog(false)
     void retryFailedDocumentTranslation()
@@ -7109,6 +7316,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   documentZoomInButton.addEventListener('click', () => stepDocumentZoom(0.1))
   documentZoomResetButton.addEventListener('click', () => setDocumentZoom(1))
   documentZoomFitButton.addEventListener('click', fitDocumentToWidth)
+  documentZoomFitHeightButton.addEventListener('click', fitDocumentToHeight)
   documentFileHistory = readDocumentFileHistory()
   renderDocumentHistory()
   // 订阅任务进度前先同步当前 OCR 展示模式，确保启动期间切换模式时旧事件不会污染新状态。

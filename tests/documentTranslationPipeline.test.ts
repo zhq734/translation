@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import test from 'node:test'
 import type {
   DocumentBlock,
@@ -18,6 +19,17 @@ import {
 } from '../src/main/documentTranslationPipeline.ts'
 import { parseHtmlDocument, parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
+import { encodePng } from '../src/main/pngCodec.ts'
+const requireFromProject = createRequire(`${process.cwd()}/package.json`)
+const { createCanvas } = requireFromProject('@napi-rs/canvas') as {
+  createCanvas(width: number, height: number): {
+    getContext(type: '2d'): {
+      fillStyle: string
+      fillRect(x: number, y: number, width: number, height: number): void
+    }
+    toBuffer(type: 'image/jpeg', options?: { quality?: number }): Buffer
+  }
+}
 import type { DocumentLanguagePair } from '../src/shared/documentLanguageDirection.ts'
 import {
   buildDocumentTranslationCacheKey,
@@ -861,6 +873,198 @@ test('OCR 文本写入 ocrRegions 并参与后续翻译', async () => {
   assert.equal(image.ocrRegions?.[0]?.status, 'recognized')
   assert.deepEqual(calls, ['OCR text'])
   assert.equal(image.ocrRegions?.[0]?.translatedText, 'T(OCR text)')
+})
+
+test('扫描表格 OCR 必须保持普通流式区域，不得把图片译文绑定到检测网格', async () => {
+  const width = 360
+  const height = 240
+  const pixels = new Uint8Array(width * height * 4).fill(255)
+  /**
+   * 在测试 PNG 上绘制实心矩形。
+   * @param x 起点横坐标。
+   * @param y 起点纵坐标。
+   * @param rectWidth 宽度。
+   * @param rectHeight 高度。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const drawRect = (x: number, y: number, rectWidth: number, rectHeight: number): void => {
+    for (let row = y; row < y + rectHeight; row += 1) {
+      for (let column = x; column < x + rectWidth; column += 1) {
+        const offset = (row * width + column) * 4
+        pixels[offset] = 20
+        pixels[offset + 1] = 20
+        pixels[offset + 2] = 20
+        pixels[offset + 3] = 255
+      }
+    }
+  }
+  for (const y of [20, 80, 200]) drawRect(20, y, 320, 2)
+  for (const x of [20, 140, 340]) drawRect(x, 20, 2, 180)
+  const png = encodePng({ width, height, data: pixels })
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-grid',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-grid',
+    bbox: { x: 40, y: 60, width: 360, height: 240 }
+  }])
+  source.assets.push({
+    assetId: 'asset-grid',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'grid-png',
+    byteLength: png.length,
+    width,
+    height
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => png,
+    recognizeImage: async () => ({
+      text: '材料类型材料名称\n申请表4页',
+      lines: [{
+        text: '材料类型材料名称',
+        confidence: 0.95,
+        box: { x: 24, y: 30, width: 312, height: 24 }
+      }, {
+        text: '申请表4页',
+        confidence: 0.95,
+        box: { x: 24, y: 100, width: 110, height: 24 }
+      }],
+      engine: 'system'
+    }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/grid.png', fileName: 'grid.png', format: 'image', bytes: png },
+    createDocumentTaskState('job-grid', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.equal(image.ocrTableGrid, undefined)
+  assert.equal(image.ocrRegions?.every((item) => item.tableCell === undefined), true)
+  assert.deepEqual(
+    image.ocrRegions?.map((item) => item.translatedText),
+    ['T(材料类型材料名称)', 'T(申请表4页)']
+  )
+  assert.equal(result.task.status, 'completed')
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'ocr-failed'), false)
+})
+
+test('JPEG 扫描表格 OCR 也必须保持普通流式区域，不得进入表格网格链路', async () => {
+  const width = 360
+  const height = 240
+  const canvas = createCanvas(width, height)
+  const context = canvas.getContext('2d')
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, width, height)
+  context.fillStyle = '#141414'
+  for (const y of [20, 80, 200]) context.fillRect(20, y, 320, 2)
+  for (const x of [20, 140, 340]) context.fillRect(x, 20, 2, 180)
+  const jpeg = canvas.toBuffer('image/jpeg', { quality: 0.92 })
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-grid-jpeg',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-grid-jpeg',
+    bbox: { x: 40, y: 60, width, height }
+  }])
+  source.assets.push({
+    assetId: 'asset-grid-jpeg',
+    kind: 'image',
+    mimeType: 'image/jpeg',
+    sha256: 'grid-jpeg',
+    byteLength: jpeg.length,
+    width,
+    height
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => jpeg,
+    recognizeImage: async () => ({
+      text: '材料类型材料名称\n申请表4页',
+      lines: [{
+        text: '材料类型材料名称',
+        confidence: 0.95,
+        box: { x: 24, y: 30, width: 312, height: 24 }
+      }, {
+        text: '申请表4页',
+        confidence: 0.95,
+        box: { x: 24, y: 100, width: 110, height: 24 }
+      }],
+      engine: 'system'
+    }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/grid.jpg', fileName: 'grid.jpg', format: 'image', bytes: jpeg },
+    createDocumentTaskState('job-grid-jpeg', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.equal(image.ocrTableGrid, undefined)
+  assert.equal(image.ocrRegions?.every((item) => item.tableCell === undefined), true)
+  assert.deepEqual(
+    image.ocrRegions?.map((item) => item.translatedText),
+    ['T(材料类型材料名称)', 'T(申请表4页)']
+  )
+  assert.equal(result.task.status, 'completed')
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'ocr-failed'), false)
+})
+
+test('PNG 无法解码时必须回退普通 OCR，不得把网格检测异常计为识别失败', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-invalid-png',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-invalid-png'
+  }])
+  source.assets.push({
+    assetId: 'asset-invalid-png',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'invalid-png',
+    byteLength: 3
+  })
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+    recognizeImage: async () => ({ text: 'ordinary scan text', lines: [], engine: 'system' }),
+    translate: async (text) => `T(${text})`,
+    onProgress: () => undefined
+  }
+
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/invalid.png', fileName: 'invalid.png', format: 'image', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-invalid-grid', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  const image = result.translation.pages[0]!.blocks[0]
+  assert.equal(image.kind, 'image')
+  if (image.kind !== 'image') return
+  assert.equal(image.ocrTableGrid, undefined)
+  assert.equal(image.ocrRegions?.[0]?.text, 'ordinary scan text')
+  assert.equal(image.ocrRegions?.[0]?.status, 'recognized')
+  assert.equal(result.task.status, 'completed')
+  assert.equal(result.translation.warnings.some((warning) => warning.code === 'ocr-failed'), false)
 })
 
 test('低置信度 OCR 区域必须保留原文和图片并跳过翻译', async () => {
@@ -2918,6 +3122,45 @@ test('完整目标缓存命中必须跳过提供方请求、写回译文并推�
   assert.equal((writes[0]!.value as DocumentTranslationCacheEntry).translation, '新鲜译文')
   const finalProgress = progress.states.filter((state) => state.phase === 'translate').at(-1)
   assert.equal(finalProgress?.progress.completed, 2)
+})
+
+test('重新翻译必须跳过文档缓存读取并仍写入新译文缓存', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'r1', text: 'Retranslate me.' }])])
+  let cacheReads = 0
+  let translateCalls = 0
+  const writes: Array<{ key: string; value: DocumentTranslationCacheEntry }> = []
+  const result = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-bypass-cache', 1),
+    new AbortController().signal,
+    {
+      parse: async () => source,
+      loadAssetBytes: async () => null,
+      recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+      translate: async () => {
+        translateCalls += 1
+        return '重新翻译结果'
+      },
+      onProgress: () => undefined,
+      bypassCache: true,
+      readTranslationCache: async () => {
+        cacheReads += 1
+        return null
+      },
+      writeTranslationCache: async (key, value) => {
+        writes.push({ key, value })
+      }
+    },
+    { sourcePreference: 'auto', targetPreference: 'ZH' }
+  )
+
+  assert.equal(result.task.status, 'completed')
+  assert.equal(cacheReads, 0)
+  assert.equal(translateCalls, 1)
+  assert.equal((result.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '重新翻译结果')
+  assert.equal(result.cacheHitTargetIds?.length ?? 0, 0)
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0]!.value.translation, '重新翻译结果')
 })
 
 test('缓存读写异常不得影响翻译主任务', async () => {

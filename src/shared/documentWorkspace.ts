@@ -22,6 +22,8 @@ export interface DocumentRunRequest {
   targetLang?: string
   /** 运行模式；省略时保持现有译文流程。 */
   mode?: DocumentRunMode
+  /** 是否跳过文档级与通用翻译缓存；重新翻译时为 true。 */
+  bypassCache?: boolean
 }
 
 /** 文档任务身份请求；取消、释放与历史操作只允许携带稳定任务标识和代际。 */
@@ -106,6 +108,9 @@ export function normalizeDocumentRunRequest(value: unknown): DocumentRunRequest 
   if (candidate.mode !== undefined && candidate.mode !== 'translation' && candidate.mode !== 'ocr') {
     return null
   }
+  if (candidate.bypassCache !== undefined && typeof candidate.bypassCache !== 'boolean') {
+    return null
+  }
   const normalizeLanguage = (field: unknown): string | undefined | null => {
     if (field === undefined) return undefined
     if (typeof field !== 'string' || !field.trim() || field.length > 32 ||
@@ -120,7 +125,8 @@ export function normalizeDocumentRunRequest(value: unknown): DocumentRunRequest 
     generation: candidate.generation as number,
     ...(sourceLang !== undefined ? { sourceLang } : {}),
     ...(targetLang !== undefined ? { targetLang } : {}),
-    ...(candidate.mode !== undefined ? { mode: candidate.mode } : {})
+    ...(candidate.mode !== undefined ? { mode: candidate.mode } : {}),
+    ...(candidate.bypassCache !== undefined ? { bypassCache: candidate.bypassCache } : {})
   }
 }
 

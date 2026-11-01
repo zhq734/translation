@@ -61,6 +61,22 @@ export interface DocumentTranslationImageFlowGapInput {
   obstacles: readonly DocumentFlowObstacle[]
 }
 
+/** 计算普通流式区块段前间距所需的二维排版信息。 */
+export interface DocumentTranslationFlowBlockGapInput {
+  /** 当前区块相对前序内容的原始段前距离。 */
+  sourceGap: number
+  /** 当前区块在未应用自身段前间距时的自然顶部坐标。 */
+  baseTop: number
+  /** 当前区块的实际高度。 */
+  blockHeight: number
+  /** 页面内容盒的顶部位置。 */
+  flowOrigin: number
+  /** 当前区块相对页面内容盒的横向范围。 */
+  blockRange: DocumentFlowHorizontalRange
+  /** 阅读顺序中此前已排版且占用普通流的区块范围。 */
+  obstacles: readonly DocumentFlowObstacle[]
+}
+
 /** 译文窄表列宽可读性阈值，单位为原始 PDF 点。 */
 export const DOCUMENT_TABLE_MIN_READABLE_COLUMN_WIDTH = 36
 
@@ -156,6 +172,48 @@ export function resolveTranslationImageFlowGap(
   const gap = anchoredTop - previousBottom
   // 横向错开时允许回填；但图片顶部仍不能越过页面内容起点。
   return hasCollision ? Math.max(0, gap) : Math.max(safeFlowOrigin - previousBottom, gap)
+}
+
+/**
+ * 计算普通流式区块需要追加的段前距离，避免后续内容回填到已下推图片或其他区块内部。
+ * 只避让与当前区块横向相交的障碍；左右并排或双栏错开的内容仍按原文段距回填。
+ * @param input 当前区块的自然位置、实际尺寸、横向范围与已排版障碍。
+ * @returns 普通流式区块的段前距离，不会小于原始段距。
+ * @author zhenghq
+ */
+export function resolveTranslationFlowBlockGap(
+  input: DocumentTranslationFlowBlockGapInput
+): number {
+  const { sourceGap, baseTop, blockHeight, flowOrigin, blockRange, obstacles } = input
+  const safeSourceGap = Number.isFinite(sourceGap) ? Math.max(0, sourceGap) : 0
+  if (!Number.isFinite(baseTop)) return safeSourceGap
+  const safeFlowOrigin = Number.isFinite(flowOrigin) ? flowOrigin : baseTop
+  const safeBaseTop = Math.max(safeFlowOrigin, baseTop)
+  const safeBlockHeight = Number.isFinite(blockHeight) ? Math.max(0, blockHeight) : 0
+  const safeRange = {
+    left: Number.isFinite(blockRange.left) ? blockRange.left : 0,
+    right: Number.isFinite(blockRange.right) ? blockRange.right : 0
+  }
+  let gap = safeSourceGap
+  // 下推后可能进入后续障碍，因此循环到当前横向范围内不再产生新的纵向碰撞为止。
+  for (let attempt = 0; attempt <= obstacles.length; attempt += 1) {
+    const candidateTop = safeBaseTop + gap
+    const candidateBottom = candidateTop + safeBlockHeight
+    let nextGap = gap
+    for (const obstacle of obstacles) {
+      if (
+        !Number.isFinite(obstacle.top) ||
+        !Number.isFinite(obstacle.bottom) ||
+        !rangesOverlapHorizontally(safeRange, obstacle) ||
+        candidateTop >= obstacle.bottom ||
+        candidateBottom <= obstacle.top
+      ) continue
+      nextGap = Math.max(nextGap, obstacle.bottom + safeSourceGap - safeBaseTop)
+    }
+    if (nextGap <= gap + 0.01) break
+    gap = nextGap
+  }
+  return gap
 }
 
 /**

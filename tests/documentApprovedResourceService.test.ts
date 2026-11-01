@@ -1,16 +1,39 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import JSZip from 'jszip'
+import {
+  PDFBool,
+  PDFDict,
+  PDFDocument,
+  PDFName,
+  PDFRawStream,
+  StandardFonts,
+  drawObject,
+  popGraphicsState,
+  pushGraphicsState,
+  scale,
+  translate
+} from 'pdf-lib'
 import { DocumentApprovedResourceService } from '../src/main/documentApprovedResourceService.ts'
 import { hashDocumentBytes } from '../src/main/documentParserShared.ts'
+import { parsePdfDocument } from '../src/main/documentPdfParser.ts'
+import { createProductionPdfRasterizer } from '../src/main/documentPdfRuntime.ts'
 import type { DocumentBoundingBox, DocumentModel } from '../src/shared/documentTypes.ts'
 import type {
   DocumentApprovedAssetRequest,
   DocumentApprovedSourceRequest
 } from '../src/shared/documentWorkspace.ts'
+
+const requireFromProject = createRequire(join(process.cwd(), 'package.json'))
+const { createCanvas } = requireFromProject('@napi-rs/canvas') as {
+  createCanvas(width: number, height: number): Parameters<typeof createProductionPdfRasterizer>[1] extends {
+    createCanvas?: infer T
+  } ? T : never
+}
 
 /**
  * 创建受控资源服务测试实例。
@@ -147,6 +170,96 @@ function createPdfService(
       renderEmbeddedImageToImage: async () => null
     })
   })
+}
+
+/**
+ * 递归查找文档模型中的第一张图片区块。
+ * @param model 待检查的文档模型。
+ * @returns 图片区块；不存在时返回 undefined。
+ * @author zhenghq
+ */
+function findImageBlock(model: DocumentModel) {
+  const find = (blocks: DocumentModel['pages'][number]['blocks']): DocumentModel['pages'][number]['blocks'][number] | undefined => {
+    for (const block of blocks) {
+      if (block.kind === 'image') return block
+      if (block.kind !== 'table') continue
+      for (const row of block.rows) {
+        for (const cell of row.cells) {
+          const image = find(cell.blocks)
+          if (image) return image
+        }
+      }
+    }
+    return undefined
+  }
+  for (const page of model.pages) {
+    const image = find(page.blocks)
+    if (image?.kind === 'image') return image
+  }
+  return undefined
+}
+
+/**
+ * 递归收集文档模型中的全部图片区块。
+ * @param model 待检查的文档模型。
+ * @returns 按页面和阅读顺序排列的图片区块。
+ * @author zhenghq
+ */
+function collectImageBlocks(model: DocumentModel): DocumentModel['pages'][number]['blocks'] {
+  const images: DocumentModel['pages'][number]['blocks'] = []
+  const collect = (blocks: DocumentModel['pages'][number]['blocks']): void => {
+    for (const block of blocks) {
+      if (block.kind === 'image') {
+        images.push(block)
+      } else if (block.kind === 'table') {
+        for (const row of block.rows) {
+          for (const cell of row.cells) collect(cell.blocks)
+        }
+      }
+    }
+  }
+  for (const page of model.pages) collect(page.blocks)
+  return images
+}
+
+/**
+ * 创建包含真实 ImageMask 图片的 PDF 测试文件。
+ * @param count 页面中绘制的 ImageMask 数量。
+ * @returns 页面含正文文本与指定数量 ImageMask 的 PDF 字节。
+ * @author zhenghq
+ */
+async function createImageMaskPdf(count = 1): Promise<Uint8Array> {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  page.drawText('Text before image mask', { x: 60, y: 720, size: 16, font })
+
+  const mask = PDFRawStream.of(PDFDict.withContext(document.context), new Uint8Array([
+    0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff
+  ]))
+  mask.dict.set(PDFName.of('Type'), PDFName.of('XObject'))
+  mask.dict.set(PDFName.of('Subtype'), PDFName.of('Image'))
+  mask.dict.set(PDFName.of('Width'), document.context.obj(8))
+  mask.dict.set(PDFName.of('Height'), document.context.obj(8))
+  mask.dict.set(PDFName.of('ImageMask'), PDFBool.True)
+  mask.dict.set(PDFName.of('BitsPerComponent'), document.context.obj(1))
+
+  const maskRef = document.context.register(mask)
+  const maskName = page.node.newXObject('Mask', maskRef)
+  for (let index = 0; index < count; index += 1) {
+    const column = index % 2
+    const row = Math.floor(index / 2)
+    page.pushOperators(
+      pushGraphicsState(),
+      // 六行绘制仍须完整落在页面内，避免测试误把页面裁剪当成区域提取失败。
+      translate(100 + column * 180, 420 - row * 60),
+      scale(count === 1 ? 240 : 120, count === 1 ? 160 : 80),
+      drawObject(maskName),
+      popGraphicsState()
+    )
+  }
+  return new Uint8Array(await document.save())
 }
 
 test('受控资源服务必须拒绝未批准路径和源文件变更', async () => {
@@ -346,6 +459,163 @@ test('历史 PDF 真实图片资源必须严格校验资源标识、哈希与大
       ...baseAsset,
       assetId: 'asset-forged'
     })), { ok: false, code: 'asset-unavailable' })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('重启后必须能从真实 PDF 重新解析并恢复内嵌图片', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'embedded-image.pdf')
+  const imageCanvas = createCanvas(24, 16)
+  const imageContext = imageCanvas.getContext('2d')
+  imageContext.fillStyle = '#e11d48'
+  imageContext.fillRect(0, 0, 24, 16)
+  const imageBytes = new Uint8Array(imageCanvas.toBuffer('image/png'))
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  page.drawText('Text before embedded image', { x: 60, y: 720, size: 16, font })
+  const embedded = await document.embedPng(imageBytes)
+  page.drawImage(embedded, { x: 100, y: 420, width: 240, height: 160 })
+  const sourceBytes = new Uint8Array(await document.save())
+  await writeFile(path, sourceBytes)
+  try {
+    const rasterizer = await createProductionPdfRasterizer(undefined, { createCanvas })
+    const registeredAssets = new Map<string, Uint8Array>()
+    const model = await parsePdfDocument({
+      path,
+      fileName: 'embedded-image.pdf',
+      format: 'pdf',
+      sha256: hashDocumentBytes(sourceBytes),
+      bytes: sourceBytes
+    }, {
+      renderPageToImage: rasterizer.renderPageToImage,
+      renderPageRegionToImage: rasterizer.renderPageRegionToImage,
+      renderEmbeddedImageToImage: rasterizer.renderEmbeddedImageToImage,
+      registerAssetBytes: (assetId, bytes) => registeredAssets.set(assetId, bytes)
+    })
+    const imageBlock = findImageBlock(model)
+    assert.ok(imageBlock, '真实 PDF 解析结果必须包含内嵌图片区块')
+    const imagePage = model.pages.find((candidate) => candidate.blocks.includes(imageBlock))
+    assert.ok(imagePage, '图片区块必须位于解析页面中')
+    assert.ok(imageBlock.bbox, '图片区块必须保留页面定位边界')
+    assert.equal(imageBlock.renderPending, false, '真实内嵌图片不能保留 renderPending')
+    assert.ok(registeredAssets.has(imageBlock.assetId), '首次解析必须登记真实图片字节')
+    const asset = model.assets.find((candidate) => candidate.assetId === imageBlock.assetId)
+    assert.ok(asset, '解析模型必须包含图片资源元数据')
+    const restartedService = new DocumentApprovedResourceService({
+      isApprovedPath: (candidate) => candidate === path,
+      createProductionPdfRasterizer: async () => createProductionPdfRasterizer(
+        undefined,
+        { createCanvas }
+      ),
+      parsePdfDocument: async (input, options) => {
+        return parsePdfDocument(input, options)
+      }
+    })
+    const result = await restartedService.getAsset(assetRequest(
+      sourceRequest(path, sourceBytes, 'pdf'),
+      {
+        assetId: imageBlock.assetId,
+        assetSha256: asset.sha256,
+        assetByteLength: asset.byteLength,
+        mimeType: asset.mimeType,
+        pageIndex: imagePage.index,
+        bbox: imageBlock.bbox
+      }
+    ))
+    assert.equal(result.ok, true)
+    assert.equal(result.ok ? result.mimeType : '', 'image/png')
+    assert.ok(result.ok && result.bytes.byteLength > 8)
+    // PDF.js 可能以 Buffer 返回图片字节；只比较实际内容，避免把容器原型差异误判为资源恢复失败。
+    assert.deepEqual(
+      new Uint8Array(result.ok ? result.bytes : []),
+      new Uint8Array(registeredAssets.get(imageBlock.assetId) ?? [])
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('重启后必须能恢复真实 PDF ImageMask 图片区域', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'image-mask.pdf')
+  const sourceBytes = await createImageMaskPdf()
+  await writeFile(path, sourceBytes)
+  try {
+    const rasterizer = await createProductionPdfRasterizer(undefined, { createCanvas })
+    const registeredAssets = new Map<string, Uint8Array>()
+    const model = await parsePdfDocument({
+      path,
+      fileName: 'image-mask.pdf',
+      format: 'pdf',
+      sha256: hashDocumentBytes(sourceBytes),
+      bytes: sourceBytes
+    }, {
+      renderPageToImage: rasterizer.renderPageToImage,
+      renderPageRegionToImage: rasterizer.renderPageRegionToImage,
+      renderEmbeddedImageToImage: rasterizer.renderEmbeddedImageToImage,
+      registerAssetBytes: (assetId, bytes) => registeredAssets.set(assetId, bytes)
+    })
+    const imageBlock = findImageBlock(model)
+    assert.ok(imageBlock, 'ImageMask 页面必须生成图片区块')
+    assert.deepEqual(imageBlock.bbox, { x: 100, y: 220, width: 240, height: 160 })
+    assert.equal(imageBlock.renderPending, false, 'ImageMask 必须通过页面区域栅格化生成资源')
+    const imagePage = model.pages.find((candidate) => candidate.blocks.includes(imageBlock))
+    assert.ok(imagePage)
+    const asset = model.assets.find((candidate) => candidate.assetId === imageBlock.assetId)
+    assert.ok(asset)
+    assert.ok(registeredAssets.has(imageBlock.assetId))
+
+    const restartedService = new DocumentApprovedResourceService({
+      isApprovedPath: (candidate) => candidate === path,
+      createProductionPdfRasterizer: async () => createProductionPdfRasterizer(
+        undefined,
+        { createCanvas }
+      )
+    })
+    const result = await restartedService.getAsset(assetRequest(
+      sourceRequest(path, sourceBytes, 'pdf'),
+      {
+        assetId: imageBlock.assetId,
+        assetSha256: asset.sha256,
+        assetByteLength: asset.byteLength,
+        mimeType: asset.mimeType,
+        pageIndex: imagePage.index,
+        bbox: imageBlock.bbox
+      }
+    ))
+    assert.equal(result.ok, true)
+    assert.equal(result.ok ? result.mimeType : '', 'image/png')
+    assert.ok(result.ok && result.bytes.byteLength > 8)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('重启后必须能恢复 PDF.js 合并的重复 ImageMask 图片区域', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'repeated-image-mask.pdf')
+  const sourceBytes = await createImageMaskPdf(12)
+  await writeFile(path, sourceBytes)
+  try {
+    const rasterizer = await createProductionPdfRasterizer(undefined, { createCanvas })
+    const model = await parsePdfDocument({
+      path,
+      fileName: 'repeated-image-mask.pdf',
+      format: 'pdf',
+      sha256: hashDocumentBytes(sourceBytes),
+      bytes: sourceBytes
+    }, {
+      renderPageToImage: rasterizer.renderPageToImage,
+      renderPageRegionToImage: rasterizer.renderPageRegionToImage,
+      renderEmbeddedImageToImage: rasterizer.renderEmbeddedImageToImage
+    })
+    const imageBlocks = collectImageBlocks(model)
+    assert.equal(imageBlocks.length, 12, '重复 ImageMask 的每个绘制区域都必须保留')
+    assert.ok(imageBlocks.every((block) => block.renderPending === false),
+      '重复 ImageMask 必须通过页面区域栅格化生成资源')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
