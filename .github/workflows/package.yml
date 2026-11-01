@@ -68,7 +68,7 @@ jobs:
           - name: macOS arm64
             platform: macos
             arch: arm64
-            os: macos-14
+            os: macos-15
             command: dist:mac:arm64:ci
             unsigned_command: dist:mac:arm64:unsigned
             artifact_name: packages-macos-arm64

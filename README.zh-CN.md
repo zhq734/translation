@@ -885,7 +885,7 @@ npm run release:checksums
 
 仓库内置 `.github/workflows/package.yml`，可在 GitHub 的 **Actions → 多平台打包 → Run workflow** 中手动执行。手动执行时可以填写版本号，例如 `V1.0.3`；留空则使用 `package.json` 中的版本。
 
-工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建现代 x64/arm64 安装包，并在 Windows 运行器额外构建 Win7 x64 兼容包，最后把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-14`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
+工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建现代 x64/arm64 安装包，并在 Windows 运行器额外构建 Win7 x64 兼容包，最后把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-15`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
 
 1. 使用标签中的版本号同步安装包版本；
 2. 汇总三个平台的安装包；

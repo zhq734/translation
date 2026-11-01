@@ -98,7 +98,7 @@ test('macOS 打包应按原生架构拆分并保留双架构更新清单', () =>
   )
   assert.match(
     packageWorkflow,
-    /name: macOS arm64[\s\S]*?os: macos-14[\s\S]*?command: dist:mac:arm64:ci/u
+    /name: macOS arm64[\s\S]*?os: macos-15[\s\S]*?command: dist:mac:arm64:ci/u
   )
   assert.match(packageWorkflow, /latest-mac-\$\{\{ matrix\.arch \}\}\.yml/u)
   assert.match(packageWorkflow, /merge-mac-update-info\.mjs/u)

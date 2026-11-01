@@ -721,7 +721,7 @@ npm run release:checksums
 
 The repository includes `.github/workflows/package.yml`. Run it manually from **Actions → Multi-Platform Packaging → Run workflow**. An optional version such as `V1.0.3` can be supplied; otherwise, the version from `package.json` is used.
 
-The workflow runs unit tests and type checking first, then builds modern x64/arm64 installers on native macOS, Windows, and Linux runners, additionally builds the Win7 x64 compatibility package on Windows, and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-14` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
+The workflow runs unit tests and type checking first, then builds modern x64/arm64 installers on native macOS, Windows, and Linux runners, additionally builds the Win7 x64 compatibility package on Windows, and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-15` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
 
 1. Synchronize the package version from the tag;
 2. Collect installers from all three platforms;

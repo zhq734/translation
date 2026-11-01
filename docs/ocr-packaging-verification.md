@@ -22,7 +22,7 @@ PaddleOCR 依赖链中包含 `sharp` 的 native binding。`npm ci` 只会为当�
 GitHub Actions 现在拆分为两个 macOS 原生任务：
 
 - `macos-15-intel` 只执行 `dist:mac:x64:*`，产出 x64 安装包；
-- `macos-14` 只执行 `dist:mac:arm64:*`，产出 arm64 安装包。
+- `macos-15` 只执行 `dist:mac:arm64:*`，产出 arm64 安装包。
 
 两个任务分别上传 `latest-mac-x64.yml` 与 `latest-mac-arm64.yml`，发布前由 `scripts/merge-mac-update-info.mjs` 合并为 electron-updater 使用的 `latest-mac.yml`。这样既保留双架构自动更新清单，也保证每个安装包内的 native binding 与应用架构一致。
 
