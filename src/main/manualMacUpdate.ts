@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { spawn } from 'node:child_process'
 import type { UpdateProgress } from '../shared/types'
+import { compareSemanticVersions } from '../shared/updateAvailability'
+import { MACOS_APPLICATION_PATH } from './macQuarantine'
 import { translateMain } from './messages'
 import { createUpdateProgressReporter } from './updateDownloadProgress'
 import { createUpdateDownloadError } from './updateDownloadError'
@@ -53,6 +57,8 @@ export interface ManualMacUpdateResult {
   path: string
   /** 是否已通过 sha512 完整性校验。 */
   verified: boolean
+  /** 是否已将自动替换任务交给后台 helper。 */
+  installScheduled?: boolean
 }
 
 /** 手动 macOS 更新服务的依赖和本地保存选项。 */
@@ -65,6 +71,28 @@ export interface ManualMacUpdateServiceOptions {
   fetch: UpdateDownloadFetch
   /** 当前 CPU 架构，用于生成可读的文件名。 */
   architecture?: string
+  /** 当前平台；默认读取 process.platform，测试可覆盖。 */
+  platform?: NodeJS.Platform
+  /** 固定安装目标应用包路径；默认 /Applications/划词翻译.app。 */
+  applicationPath?: string
+  /** 期望的应用 Bundle ID；默认 com.selection.translator。 */
+  expectedBundleId?: string
+  /** 执行系统命令的函数；必须使用参数数组，不能经过 shell。 */
+  runCommand?: (command: string, args: string[]) => Promise<void>
+  /** 读取命令标准输出的函数；用于 plutil 与 codesign 校验。 */
+  readCommand?: (command: string, args: string[]) => Promise<string>
+  /** 启动后台 helper 的函数；默认分离子进程并忽略标准流。 */
+  launchHelper?: (command: string, args: string[]) => void
+}
+
+/** 自动安装固定 macOS 应用所需的配置。 */
+interface AutomaticMacInstallConfig {
+  platform: NodeJS.Platform
+  applicationPath: string
+  expectedBundleId: string
+  runCommand: (command: string, args: string[]) => Promise<void>
+  readCommand: (command: string, args: string[]) => Promise<string>
+  launchHelper: (command: string, args: string[]) => void
 }
 
 /** 手动 macOS 更新服务接口，供更新管理器和测试替换实现。 */
@@ -82,6 +110,25 @@ export interface ManualMacUpdateService {
   downloadAndOpen(
     url: string,
     version: string,
+    onProgress?: (progress: UpdateProgress) => void,
+    integrity?: { sha512?: string; size?: number },
+    signal?: AbortSignal
+  ): Promise<ManualMacUpdateResult>
+  /**
+   * 下载、校验并调度后台替换固定 macOS 应用；未满足安全条件时不得自动覆盖。
+   * @param url 已从更新清单获取的 DMG 下载地址。
+   * @param version 更新版本号。
+   * @param currentVersion 当前应用版本。
+   * @param onProgress 下载进度回调。
+   * @param integrity 更新清单提供的 sha512 校验值与文件长度。
+   * @param signal 可选的取消信号。
+   * @returns 下载与安装调度结果；无法安全自动安装时返回 installScheduled=false。
+   * @author zhenghq
+   */
+  downloadAndInstall?(
+    url: string,
+    version: string,
+    currentVersion: string,
     onProgress?: (progress: UpdateProgress) => void,
     integrity?: { sha512?: string; size?: number },
     signal?: AbortSignal
@@ -455,6 +502,365 @@ async function finalizeDownload(params: {
 }
 
 /**
+ * 下载并校验 macOS DMG，按更新清单声明的大小与摘要复用断点续传记录。
+ * @param params 下载地址、版本、下载目录、架构、进度、完整性与取消信号。
+ * @returns 已保存并通过可选完整性校验的 DMG 结果。
+ * @throws 地址无效、下载失败或摘要不匹配时抛出异常。
+ * @author zhenghq
+ */
+async function downloadVerifiedMacDmg(params: {
+  url: string
+  version: string
+  onProgress?: (progress: UpdateProgress) => void
+  integrity?: { sha512?: string; size?: number }
+  signal?: AbortSignal
+  downloadsDirectory: string
+  architecture: string
+  fetcher: UpdateDownloadFetch
+}): Promise<ManualMacUpdateResult> {
+  // 取消信号到达时主动中断后续网络与写入流程。
+  const throwIfAborted = (): void => {
+    if (params.signal?.aborted) {
+      throw createUpdateDownloadError(
+        'cancelled',
+        translateMain('update.downloadError.cancelled')
+      )
+    }
+  }
+  throwIfAborted()
+  const validatedUrl = validateDmgUrl(params.url)
+  const destination = buildDmgPath(params.downloadsDirectory, params.version, params.architecture)
+  const temporaryPath = resumeTemporaryPath(destination)
+  await mkdir(params.downloadsDirectory, { recursive: true })
+
+  // 只有版本、总长度与校验值三者一致时才复用上次下载进度。
+  const expectedTotal = params.integrity?.size ?? 0
+  const resumeRecord = expectedTotal > 0
+    ? await loadDownloadResumeState(destination, {
+      version: params.version,
+      total: expectedTotal,
+      sha512: params.integrity?.sha512
+    })
+    : undefined
+  const completedBytes = resumeRecord
+    ? resumeRecord.segments.reduce((sum, segment) => sum + segment.completed, 0)
+    : 0
+  if (!resumeRecord) await clearDownloadResumeState(destination)
+
+  const headers: Record<string, string> = {}
+  if (completedBytes > 0) headers['range'] = `bytes=${completedBytes}-`
+
+  // 只有更新包大到能切出多个分片时才值得探测 Range，避免为小文件多付一次往返。
+  const plannedSegments = planDownloadSegments(expectedTotal, MAX_DOWNLOAD_CONCURRENCY)
+  const probe = plannedSegments.length > 1
+    ? await probeRangeSupport(params.fetcher, validatedUrl, expectedTotal)
+    : { supported: false, total: 0 }
+
+  if (probe.supported && probe.total > 0) {
+    const segments: DownloadResumeSegment[] = resumeRecord?.segments.length
+      ? resumeRecord.segments
+      : probe.total === expectedTotal
+        ? plannedSegments
+        : planDownloadSegments(probe.total, MAX_DOWNLOAD_CONCURRENCY)
+    await ensureTemporaryFileSize(temporaryPath, probe.total)
+    try {
+      await downloadSegments({
+        url: validatedUrl,
+        temporaryPath,
+        total: probe.total,
+        segments,
+        concurrency: MAX_DOWNLOAD_CONCURRENCY,
+        fetch: params.fetcher,
+        onProgress: params.onProgress,
+        signal: params.signal
+      })
+    } catch (error) {
+      // 保留各分片已完成偏移，供用户重试时继续下载。
+      await saveDownloadResumeState(destination, {
+        version: params.version,
+        total: probe.total,
+        ...(params.integrity?.sha512 ? { sha512: params.integrity.sha512 } : {}),
+        segments
+      })
+      throw error
+    }
+    return finalizeDownload({
+      destination,
+      temporaryPath,
+      sha512: params.integrity?.sha512,
+      openPath: async () => ''
+    })
+  }
+
+  const reporter = createUpdateProgressReporter({
+    total: expectedTotal,
+    onProgress: params.onProgress
+  })
+  reporter.start(completedBytes)
+
+  // 请求失败时保留临时文件与进度记录，供用户重试时继续下载。
+  const response = await requestWithRedirects(
+    params.fetcher,
+    validatedUrl,
+    headers,
+    params.signal
+  )
+
+  // 服务端忽略 Range 时会返回 200 并重新发送整包，此时必须从头写入。
+  const startOffset = completedBytes > 0 && response.status === 206 ? completedBytes : 0
+  if (startOffset === 0 && completedBytes > 0) {
+    reporter.start(0)
+    await rm(temporaryPath, { force: true }).catch(() => undefined)
+  }
+  reporter.setTotal(resolveResponseTotal(response, startOffset))
+
+  try {
+    await writeResponseToTemporaryFile(
+      response,
+      temporaryPath,
+      startOffset,
+      reporter,
+      params.signal
+    )
+  } catch (error) {
+    const total = expectedTotal > 0 ? expectedTotal : 0
+    const written = await stat(temporaryPath).then((info) => info.size).catch(() => 0)
+    if (total > 0 && written > 0) {
+      await saveDownloadResumeState(destination, {
+        version: params.version,
+        total,
+        ...(params.integrity?.sha512 ? { sha512: params.integrity.sha512 } : {}),
+        segments: [{ start: 0, end: total - 1, completed: written }]
+      })
+    } else {
+      await clearDownloadResumeState(destination)
+    }
+    throw error
+  }
+
+  reporter.setTotal(reporter.getTransferred())
+  reporter.finish()
+  return finalizeDownload({
+    destination,
+    temporaryPath,
+    sha512: params.integrity?.sha512,
+    openPath: async () => ''
+  })
+}
+
+/**
+ * 生成后台安装 helper 的固定 shell 脚本。
+ * 脚本只接收已校验的固定路径，使用参数数组调用，不拼接外部输入。
+ * @returns 可交给 /bin/sh 执行的安装脚本。
+ * @author zhenghq
+ */
+export function buildMacOSAutomaticInstallScript(): string {
+  return [
+    '#!/bin/sh',
+    'set -eu',
+    'parent_pid="$1"',
+    'staged_app="$2"',
+    'target_app="$3"',
+    'backup_app="$4"',
+    'while kill -0 "$parent_pid" 2>/dev/null; do sleep 1; done',
+    'if [ -e "$backup_app" ]; then rm -rf "$backup_app"; fi',
+    'restore() {',
+    '  if [ -e "$backup_app" ] && [ ! -e "$target_app" ]; then mv "$backup_app" "$target_app"; fi',
+    '}',
+    'trap restore EXIT HUP INT TERM',
+    'if [ -e "$target_app" ]; then mv "$target_app" "$backup_app"; fi',
+    'mv "$staged_app" "$target_app"',
+    'trap - EXIT HUP INT TERM',
+    '/usr/bin/xattr -dr com.apple.quarantine "$target_app" >/dev/null 2>&1 || true',
+    '/usr/bin/open "$target_app"',
+    'rm -rf "$backup_app"'
+  ].join('\n')
+}
+
+/**
+ * 在临时目录创建可执行的安装 helper 脚本。
+ * @returns helper 脚本路径。
+ * @author zhenghq
+ */
+async function createMacOSAutomaticInstallHelper(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'selection-translator-update-'))
+  const helperPath = join(directory, 'install-update.sh')
+  const { writeFile, chmod } = await import('node:fs/promises')
+  await writeFile(helperPath, buildMacOSAutomaticInstallScript(), { mode: 0o700 })
+  await chmod(helperPath, 0o700)
+  return helperPath
+}
+
+/**
+ * 默认执行命令并等待成功退出。
+ * @param command 命令绝对路径。
+ * @param args 参数数组。
+ * @returns 命令成功后的 Promise。
+ * @author zhenghq
+ */
+async function runSystemCommand(command: string, args: string[]): Promise<void> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  await promisify(execFile)(command, args)
+}
+
+/**
+ * 默认执行命令并返回标准输出。
+ * @param command 命令绝对路径。
+ * @param args 参数数组。
+ * @returns 命令标准输出。
+ * @author zhenghq
+ */
+async function readSystemCommand(command: string, args: string[]): Promise<string> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const result = await promisify(execFile)(command, args)
+  return result.stdout
+}
+
+/**
+ * 默认分离启动 helper，确保父应用退出后脚本继续运行。
+ * @param command helper 命令。
+ * @param args helper 参数数组。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function launchDetachedHelper(command: string, args: string[]): void {
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore'
+  })
+  child.unref()
+}
+
+/**
+ * 从挂载的 DMG 中寻找唯一可自动安装的 .app 应用包。
+ * @param mountPath DMG 挂载目录。
+ * @returns 唯一 .app 的绝对路径。
+ * @throws 找不到或多个 .app 时抛出异常。
+ * @author zhenghq
+ */
+async function resolveMountedApplication(mountPath: string): Promise<string> {
+  const entries = await readdir(mountPath, { withFileTypes: true })
+  const apps = entries
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
+    .map((entry) => join(mountPath, entry.name))
+  if (apps.length !== 1) {
+    throw createUpdateDownloadError(
+      'install-failed',
+      translateMain('update.downloadError.installFailedUniqueApp')
+    )
+  }
+  return apps[0]
+}
+
+/**
+ * 校验 DMG 内应用包的身份、版本与代码签名。
+ * @param appPath 挂载点内的应用包路径。
+ * @param version 期望的更新版本。
+ * @param currentVersion 当前应用版本。
+ * @param config 固定安装配置。
+ * @returns 校验完成后的 Promise。
+ * @throws 应用身份、版本或签名不符合要求时抛出异常。
+ * @author zhenghq
+ */
+async function validateMountedApplication(
+  appPath: string,
+  version: string,
+  currentVersion: string,
+  config: AutomaticMacInstallConfig
+): Promise<void> {
+  const infoPlist = join(appPath, 'Contents', 'Info.plist')
+  const bundleId = (await config.readCommand('/usr/bin/plutil', [
+    '-extract', 'CFBundleIdentifier', 'raw', '-o', '-', infoPlist
+  ])).trim()
+  const appVersion = (await config.readCommand('/usr/bin/plutil', [
+    '-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', infoPlist
+  ])).trim()
+  if (bundleId !== config.expectedBundleId) {
+    throw createUpdateDownloadError(
+      'install-failed',
+      translateMain('update.downloadError.installFailedBundleId')
+    )
+  }
+  if (compareSemanticVersions(appVersion, currentVersion) !== 1 || appVersion !== version) {
+    throw createUpdateDownloadError(
+      'install-failed',
+      translateMain('update.downloadError.installFailedVersion')
+    )
+  }
+  await config.runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath])
+}
+
+/**
+ * 下载并自动安装固定 macOS 应用。
+ * @param params 下载地址、版本、当前版本、进度、完整性与取消信号。
+ * @param config 固定安装配置。
+ * @returns 自动安装调度结果。
+ * @throws 下载、校验或调度失败时抛出异常。
+ * @author zhenghq
+ */
+async function downloadAndScheduleMacOSInstall(params: {
+  url: string
+  version: string
+  currentVersion: string
+  onProgress?: (progress: UpdateProgress) => void
+  integrity?: { sha512?: string; size?: number }
+  signal?: AbortSignal
+  downloadsDirectory: string
+  architecture: string
+  fetcher: UpdateDownloadFetch
+}, config: AutomaticMacInstallConfig): Promise<ManualMacUpdateResult> {
+  if (config.platform !== 'darwin') {
+    throw createUpdateDownloadError(
+      'install-failed',
+      translateMain('update.downloadError.installFailedUnsupportedPlatform')
+    )
+  }
+  if (config.applicationPath !== MACOS_APPLICATION_PATH) {
+    throw createUpdateDownloadError(
+      'install-failed',
+      translateMain('update.downloadError.installFailedUnsupportedPath', {
+        path: MACOS_APPLICATION_PATH
+      })
+    )
+  }
+  if (!params.integrity?.sha512) {
+    throw createUpdateDownloadError(
+      'integrity-failed',
+      translateMain('update.downloadError.integrityFailed')
+    )
+  }
+  const download = await downloadVerifiedMacDmg(params)
+
+  const mountPath = await mkdtemp(join(tmpdir(), 'selection-translator-dmg-'))
+  try {
+    await config.runCommand('/usr/bin/hdiutil', [
+      'attach', '-nobrowse', '-readonly', '-mountpoint', mountPath, download.path
+    ])
+    const mountedApp = await resolveMountedApplication(mountPath)
+    await validateMountedApplication(mountedApp, params.version, params.currentVersion, config)
+    const targetStem = config.applicationPath.replace(/\.app$/u, '')
+    const stagedApp = `${targetStem}.update-staged.app`
+    const backupApp = `${targetStem}.update-backup.app`
+    await rm(stagedApp, { recursive: true, force: true })
+    await config.runCommand('/usr/bin/ditto', [mountedApp, stagedApp])
+    const helperPath = await createMacOSAutomaticInstallHelper()
+    config.launchHelper('/bin/sh', [
+      helperPath,
+      String(process.pid),
+      stagedApp,
+      config.applicationPath,
+      backupApp
+    ])
+    return { path: download.path, verified: true, installScheduled: true }
+  } finally {
+    await config.runCommand('/usr/bin/hdiutil', ['detach', mountPath]).catch(() => undefined)
+    await rm(mountPath, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+/**
  * 创建手动 macOS DMG 下载、校验、保存和打开服务。
  * @param options 下载目录、打开器和网络请求依赖。
  * @returns 可注入更新管理器的手动更新服务。
@@ -465,6 +871,14 @@ export function createManualMacUpdateService(
 ): ManualMacUpdateService {
   const fetcher = options.fetch
   const architecture = options.architecture ?? process.arch
+  const platform = options.platform ?? process.platform
+  const applicationPath = options.applicationPath ?? MACOS_APPLICATION_PATH
+  const expectedBundleId = options.expectedBundleId ?? 'com.selection.translator'
+  const runCommand = options.runCommand ?? runSystemCommand
+  const readCommand = options.readCommand ?? readSystemCommand
+  const launchHelper = options.launchHelper ?? launchDetachedHelper
+  let installScheduled = false
+  let scheduledResult: ManualMacUpdateResult | undefined
 
   return {
     /**
@@ -484,120 +898,69 @@ export function createManualMacUpdateService(
       integrity?: { sha512?: string; size?: number },
       signal?: AbortSignal
     ): Promise<ManualMacUpdateResult> {
-      // 取消信号到达时主动中断后续网络与写入流程。
-      const throwIfAborted = (): void => {
-        if (signal?.aborted) {
-          throw createUpdateDownloadError(
-            'cancelled',
-            translateMain('update.downloadError.cancelled')
-          )
-        }
-      }
-      throwIfAborted()
-      const validatedUrl = validateDmgUrl(url)
-      const destination = buildDmgPath(options.downloadsDirectory, version, architecture)
-      const temporaryPath = resumeTemporaryPath(destination)
-      await mkdir(options.downloadsDirectory, { recursive: true })
-
-      // 只有版本、总长度与校验值三者一致时才复用上次下载进度。
-      const expectedTotal = integrity?.size ?? 0
-      const resumeRecord = expectedTotal > 0
-        ? await loadDownloadResumeState(destination, {
-          version,
-          total: expectedTotal,
-          sha512: integrity?.sha512
-        })
-        : undefined
-      const completedBytes = resumeRecord
-        ? resumeRecord.segments.reduce((sum, segment) => sum + segment.completed, 0)
-        : 0
-      if (!resumeRecord) await clearDownloadResumeState(destination)
-
-      const headers: Record<string, string> = {}
-      if (completedBytes > 0) headers['range'] = `bytes=${completedBytes}-`
-
-      // 只有更新包大到能切出多个分片时才值得探测 Range，避免为小文件多付一次往返。
-      const plannedSegments = planDownloadSegments(expectedTotal, MAX_DOWNLOAD_CONCURRENCY)
-      const probe = plannedSegments.length > 1
-        ? await probeRangeSupport(fetcher, validatedUrl, expectedTotal)
-        : { supported: false, total: 0 }
-
-      if (probe.supported && probe.total > 0) {
-        const segments: DownloadResumeSegment[] = resumeRecord?.segments.length
-          ? resumeRecord.segments
-          : probe.total === expectedTotal
-            ? plannedSegments
-            : planDownloadSegments(probe.total, MAX_DOWNLOAD_CONCURRENCY)
-        await ensureTemporaryFileSize(temporaryPath, probe.total)
-        try {
-          await downloadSegments({
-            url: validatedUrl,
-            temporaryPath,
-            total: probe.total,
-            segments,
-            concurrency: MAX_DOWNLOAD_CONCURRENCY,
-            fetch: fetcher,
-            onProgress,
-            signal
-          })
-        } catch (error) {
-          // 保留各分片已完成偏移，供用户重试时继续下载。
-          await saveDownloadResumeState(destination, {
-            version,
-            total: probe.total,
-            ...(integrity?.sha512 ? { sha512: integrity.sha512 } : {}),
-            segments
-          })
-          throw error
-        }
-        return finalizeDownload({
-          destination,
-          temporaryPath,
-          sha512: integrity?.sha512,
-          openPath: options.openPath
-        })
-      }
-
-      const reporter = createUpdateProgressReporter({ total: expectedTotal, onProgress })
-      reporter.start(completedBytes)
-
-      // 请求失败时保留临时文件与进度记录，供用户重试时继续下载。
-      const response = await requestWithRedirects(fetcher, validatedUrl, headers, signal)
-
-      // 服务端忽略 Range 时会返回 200 并重新发送整包，此时必须从头写入。
-      const startOffset = completedBytes > 0 && response.status === 206 ? completedBytes : 0
-      if (startOffset === 0 && completedBytes > 0) {
-        reporter.start(0)
-        await rm(temporaryPath, { force: true }).catch(() => undefined)
-      }
-      reporter.setTotal(resolveResponseTotal(response, startOffset))
-
-      try {
-        await writeResponseToTemporaryFile(response, temporaryPath, startOffset, reporter, signal)
-      } catch (error) {
-        const total = expectedTotal > 0 ? expectedTotal : 0
-        const written = await stat(temporaryPath).then((info) => info.size).catch(() => 0)
-        if (total > 0 && written > 0) {
-          await saveDownloadResumeState(destination, {
-            version,
-            total,
-            ...(integrity?.sha512 ? { sha512: integrity.sha512 } : {}),
-            segments: [{ start: 0, end: total - 1, completed: written }]
-          })
-        } else {
-          await clearDownloadResumeState(destination)
-        }
-        throw error
-      }
-
-      reporter.setTotal(reporter.getTransferred())
-      reporter.finish()
-      return finalizeDownload({
-        destination,
-        temporaryPath,
-        sha512: integrity?.sha512,
-        openPath: options.openPath
+      const download = await downloadVerifiedMacDmg({
+        url,
+        version,
+        onProgress,
+        integrity,
+        signal,
+        downloadsDirectory: options.downloadsDirectory,
+        architecture,
+        fetcher
       })
+      const openError = await options.openPath(download.path)
+      if (openError) {
+        throw createUpdateDownloadError(
+          'open-failed',
+          translateMain('update.downloadError.openFailed', { message: openError })
+        )
+      }
+      return download
+    },
+
+    /**
+     * 下载、校验并调度后台替换固定 Applications 应用。
+     * @param url 已从更新清单获取的 DMG 下载地址。
+     * @param version 更新版本号。
+     * @param currentVersion 当前应用版本。
+     * @param onProgress 下载进度回调。
+     * @param integrity 更新清单提供的 sha512 校验值与文件长度。
+     * @param signal 可选的取消信号。
+     * @returns 自动安装调度结果。
+     * @author zhenghq
+     */
+    async downloadAndInstall(
+      url: string,
+      version: string,
+      currentVersion: string,
+      onProgress?: (progress: UpdateProgress) => void,
+      integrity?: { sha512?: string; size?: number },
+      signal?: AbortSignal
+    ): Promise<ManualMacUpdateResult> {
+      if (installScheduled && scheduledResult) return scheduledResult
+      const result = await downloadAndScheduleMacOSInstall({
+        url,
+        version,
+        currentVersion,
+        onProgress,
+        integrity,
+        signal,
+        downloadsDirectory: options.downloadsDirectory,
+        architecture,
+        fetcher
+      }, {
+        platform,
+        applicationPath,
+        expectedBundleId,
+        runCommand,
+        readCommand,
+        launchHelper
+      })
+      if (result.installScheduled) {
+        installScheduled = true
+        scheduledResult = result
+      }
+      return result
     }
   }
 }

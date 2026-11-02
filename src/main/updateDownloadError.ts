@@ -23,6 +23,7 @@ export type UpdateDownloadErrorCode =
   | 'too-many-redirects'
   | 'download-http-failed'
   | 'integrity-failed'
+  | 'install-failed'
   | 'open-failed'
   | 'unknown'
 

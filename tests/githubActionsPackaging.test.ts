@@ -160,20 +160,28 @@ test('README 应包含未签名 macOS 测试包的安装说明', () => {
 })
 
 /**
- * 校验中英文文档明确未签名发布方式和 macOS 手动安装要求。
+ * 校验中英文文档明确未签名发布方式、自动升级安全条件与手动回退要求。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('README 应说明 macOS 未签名发布与手动安装方式', () => {
+test('README 应说明 macOS 未签名发布、自动升级条件与手动回退方式', () => {
   const chineseReadme = readChineseReadme()
   const englishReadme = readEnglishReadme()
 
   assert.match(chineseReadme, /版本标签[\s\S]*没有[\s\S]*Apple[\s\S]*未签名[\s\S]*Release/u)
-  assert.match(chineseReadme, /未签名[\s\S]*不能[\s\S]*应用内自动安装[\s\S]*GitHub Release[\s\S]*DMG/u)
+  assert.match(chineseReadme, /固定路径\s*`?\/Applications\/划词翻译\.app`?/u)
+  assert.match(chineseReadme, /sha512[\s\S]*Bundle ID[\s\S]*版本[\s\S]*代码签名/u)
+  assert.match(chineseReadme, /自动退出[\s\S]*备份旧应用[\s\S]*替换新应用[\s\S]*重新启动/u)
+  assert.match(chineseReadme, /DMG、下载目录或其他路径[\s\S]*手动安装/u)
+  assert.match(chineseReadme, /未签名[\s\S]*手动安装[\s\S]*代码签名校验/u)
   assert.match(chineseReadme, /拖入[“"]应用程序[”"][\s\S]*覆盖/u)
 
   assert.match(englishReadme, /version tag[\s\S]*without[\s\S]*Apple[\s\S]*unsigned[\s\S]*Release/iu)
-  assert.match(englishReadme, /unsigned[\s\S]*cannot[\s\S]*in-app automatic installation[\s\S]*GitHub Release[\s\S]*DMG/iu)
+  assert.match(englishReadme, /fixed\s+`?\/Applications\/划词翻译\.app`?/iu)
+  assert.match(englishReadme, /sha512[\s\S]*Bundle ID[\s\S]*version[\s\S]*code signature/iu)
+  assert.match(englishReadme, /quit[\s\S]*back up the old bundle[\s\S]*replace it[\s\S]*relaunch/iu)
+  assert.match(englishReadme, /DMG, Downloads, or another path[\s\S]*manual installation/iu)
+  assert.match(englishReadme, /Unsigned packages[\s\S]*manually[\s\S]*code-signature verification/iu)
   assert.match(englishReadme, /drag[\s\S]*Applications[\s\S]*replace/iu)
 })
 

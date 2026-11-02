@@ -12,6 +12,7 @@ import type { BuildMetadata } from '../shared/buildMetadata'
 import type { UpdateStatus } from '../shared/types'
 import { isMacOSDiskImageExecution } from './appLifecycle'
 import { readLocalBuildMetadata } from './localBuildMetadata'
+import { MACOS_APPLICATION_PATH } from './macQuarantine'
 import {
   createManualMacUpdateService,
   resolveManualMacDmgTarget
@@ -309,6 +310,10 @@ export async function createApplicationUpdateManager(
   onStatusChanged: (status: UpdateStatus) => void,
   logger?: UpdateDriverLogger
 ): Promise<UpdateManager> {
+  const currentBundlePath = resolveMacOSAppBundlePath(process.execPath)
+  const runningFromFixedApplications = process.platform === 'darwin' &&
+    currentBundlePath === MACOS_APPLICATION_PATH &&
+    !isMacOSDiskImageExecution(process.platform, process.execPath)
   const macSigned = process.platform === 'darwin' && app.isPackaged
     ? await isMacOSApplicationSigned(process.execPath)
     : false
@@ -317,7 +322,10 @@ export async function createApplicationUpdateManager(
     app.isPackaged,
     Boolean(process.env['APPIMAGE']),
     macSigned,
-    isMacOSDiskImageExecution(process.platform, process.execPath)
+    // 只有固定安装在 /Applications 的 macOS 应用才允许自动替换。从 DMG、
+    // Downloads 或其他路径启动时必须降级为手动安装，避免覆盖错误的目标。
+    isMacOSDiskImageExecution(process.platform, process.execPath) ||
+      (process.platform === 'darwin' && !runningFromFixedApplications)
   )
 
   const localBuild = await readLocalBuildMetadata({
@@ -337,9 +345,14 @@ export async function createApplicationUpdateManager(
       ? createManualMacUpdateService({
         downloadsDirectory: app.getPath('downloads'),
         fetch: translationFetch,
-        openPath: (path) => shell.openPath(path)
+        openPath: (path) => shell.openPath(path),
+        applicationPath: MACOS_APPLICATION_PATH,
+        platform: process.platform
       })
       : undefined,
+    ...(runningFromFixedApplications
+      ? { quitForInstall: () => app.quit() }
+      : {}),
     openExternal: async (url) => {
       await shell.openExternal(url)
     },

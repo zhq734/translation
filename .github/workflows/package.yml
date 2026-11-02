@@ -182,8 +182,8 @@ jobs:
             {
               echo '### ⚠️ macOS 未签名安装包'
               echo
-              echo '本次运行未配置 Apple 发布凭据，macOS 产物不支持应用内自动安装。'
-              echo '请从 Release 下载 DMG、拖入“应用程序”并覆盖旧版本；首次打开前请按 README 处理 Gatekeeper 隔离属性。'
+              echo '本次运行未配置 Apple 发布凭据，macOS 产物仍可手动安装，但无法通过自动升级前的代码签名校验。'
+              echo '固定安装在 /Applications/划词翻译.app 时，缺少有效签名的更新会安全降级为手动安装；首次打开前请按 README 处理 Gatekeeper 隔离属性。'
             } >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'macOS 发布凭据配置不完整，缺少: %s\n' "${missing[*]}" >&2

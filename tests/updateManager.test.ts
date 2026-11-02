@@ -75,11 +75,14 @@ class FakeUpdateDriver implements UpdateDriver {
 
 class FakeManualMacUpdateService implements ManualMacUpdateService {
   calls: Array<{ url: string; version: string }> = []
+  installCalls: Array<{ url: string; version: string; currentVersion: string }> = []
   progressCallbacks = 0
   /** 取消测试时用于挂起下载直到外部释放。 */
   blockSignal?: Promise<void>
   /** 最近一次下载收到的取消信号。 */
   lastSignal?: AbortSignal
+  /** 自动安装是否成功交给后台 helper。 */
+  installScheduled = true
 
   /**
    * 记录手动 macOS 更新包下载和打开请求，并模拟下载进度。
@@ -109,6 +112,38 @@ class FakeManualMacUpdateService implements ManualMacUpdateService {
     }
     return { path: `/Users/mac/Downloads/SelectionTranslator-${version}.dmg` }
   }
+
+  /**
+   * 记录下载并自动安装请求，模拟后台 helper 已成功接管。
+   * @param url DMG 下载地址。
+   * @param version 更新版本号。
+   * @param currentVersion 当前应用版本。
+   * @param onProgress 下载进度回调。
+   * @param integrity 更新清单提供的校验值与文件长度。
+   * @param signal 外部传入的取消信号。
+   * @returns 自动安装调度结果的 Promise。
+   * @author zhenghq
+   */
+  async downloadAndInstall(
+    url: string,
+    version: string,
+    currentVersion: string,
+    onProgress?: (progress: UpdateStatus['progress']) => void,
+    integrity?: { sha512?: string; size?: number },
+    signal?: AbortSignal
+  ): Promise<{ path: string; verified: boolean; installScheduled?: boolean }> {
+    this.installCalls.push({ url, version, currentVersion })
+    this.lastSignal = signal
+    if (onProgress) {
+      this.progressCallbacks += 1
+      onProgress({ percent: 100, transferred: 10, total: 10, bytesPerSecond: 10 })
+    }
+    return {
+      path: `/Users/mac/Downloads/SelectionTranslator-${version}.dmg`,
+      verified: Boolean(integrity?.sha512),
+      installScheduled: this.installScheduled
+    }
+  }
 }
 
 /**
@@ -129,11 +164,13 @@ function createManager(
   manualUpdate: FakeManualMacUpdateService
   openedUrls: string[]
   statuses: UpdateStatus[]
+  quitCalls: number[]
 } {
   const driver = new FakeUpdateDriver()
   const manualUpdate = new FakeManualMacUpdateService()
   const openedUrls: string[] = []
   const statuses: UpdateStatus[] = []
+  const quitCalls: number[] = []
   const manager = new UpdateManager({
     driver,
     currentVersion: '1.0.3',
@@ -145,9 +182,10 @@ function createManager(
     openExternal: async (url) => {
       openedUrls.push(url)
     },
+    quitForInstall: () => quitCalls.push(1),
     onStatusChanged: (status) => statuses.push(status)
   })
-  return { manager, driver, manualUpdate, openedUrls, statuses }
+  return { manager, driver, manualUpdate, openedUrls, statuses, quitCalls }
 }
 
 test('更新安装模式应根据打包状态、平台、签名和 AppImage 环境决定', () => {
@@ -313,10 +351,53 @@ test('自动更新应依次广播检查、发现、下载进度和已下载状�
   assert.equal(manager.getStatus().progress?.percent, 52.34)
 
   driver.listeners?.downloaded({ version: '1.0.4' })
-  assert.equal(manager.getStatus().phase, 'downloaded')
+  assert.equal(manager.getStatus().phase, 'installing')
+  assert.equal(driver.installCount, 1, '自动安装模式下载完成后应立即退出并重启安装')
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('zh-CN', 'update.installing', { version: '1.0.4' })
+  )
+  manager.installUpdate()
+  assert.equal(driver.installCount, 1, '自动安装触发后不得重复调用安装器')
+  assert.ok(statuses.length >= 5)
+})
+
+test('手动安装和同版本新构建下载完成时不得自动触发安装', () => {
+  const manual = createManager('manual')
+  manual.driver.listeners?.downloaded({ version: '1.0.4' })
+  assert.equal(manual.driver.installCount, 0)
+
+  const sameVersion = createManager('automatic')
+  sameVersion.driver.listeners?.notAvailable({
+    version: '1.0.3',
+    localBuild: { version: '1.0.3', buildId: 'build-old' },
+    remoteBuild: { version: '1.0.3', buildId: 'build-new' }
+  })
+  sameVersion.driver.listeners?.downloaded({ version: '1.0.3' })
+  assert.equal(sameVersion.driver.installCount, 0)
+})
+
+test('安装器重复的已下载事件不应触发第二次退出重启', async () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.available({ version: '1.0.4' })
+  await manager.downloadUpdate()
+  driver.listeners?.downloaded({ version: '1.0.4' })
+  driver.listeners?.downloaded({ version: '1.0.4' })
+
+  assert.equal(driver.installCount, 1)
+  assert.equal(manager.getStatus().phase, 'installing')
+})
+
+test('下载完成后的安装阶段应仍允许取消退出重启', async () => {
+  const { manager, driver } = createManager()
+
+  driver.listeners?.available({ version: '1.0.4' })
+  await manager.downloadUpdate()
+  driver.listeners?.downloaded({ version: '1.0.4' })
+  assert.equal(manager.getStatus().phase, 'installing')
   manager.installUpdate()
   assert.equal(driver.installCount, 1)
-  assert.ok(statuses.length >= 5)
 })
 
 test('Windows 与 Linux 自动更新初始化时应禁用差分下载，Windows 还应禁用 Web 安装器', () => {
@@ -507,6 +588,52 @@ test('手动安装模式应下载 DMG 到本地并打开安装界面', async () 
   assert.equal(manager.getStatus().manualDownloadAvailable, true)
   const manualDownloadedMessage = tForTest('zh-CN', 'update.manualDownloaded')
   assert.ok(manager.getStatus().message.includes(manualDownloadedMessage))
+})
+
+test('手动安装模式下载并通过 sha512 校验后应调度自动替换并只退出一次', async () => {
+  const { manager, driver, manualUpdate, quitCalls } = createManager('manual')
+
+  driver.listeners?.available({
+    version: '1.0.4',
+    checksumStatus: 'verified',
+    manualDownloadUrl: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg',
+    manualDownloadSha512: 'expected-sha512',
+    manualDownloadSize: 123456
+  })
+  await manager.downloadUpdate()
+
+  assert.deepEqual(manualUpdate.calls, [])
+  assert.deepEqual(manualUpdate.installCalls, [{
+    url: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg',
+    version: '1.0.4',
+    currentVersion: '1.0.3'
+  }])
+  assert.equal(manager.getStatus().phase, 'installing')
+  assert.equal(
+    manager.getStatus().message,
+    tForTest('zh-CN', 'update.installing', { version: '1.0.4' })
+  )
+  assert.deepEqual(quitCalls, [1], '自动替换调度成功后应退出应用以启动 helper')
+  manager.installUpdate()
+  assert.deepEqual(quitCalls, [1], '重复安装请求不得再次退出应用')
+})
+
+test('手动安装模式在 SHA256SUMS 摘要不一致时不得自动覆盖应用', async () => {
+  const { manager, driver, manualUpdate, quitCalls } = createManager('manual')
+
+  driver.listeners?.available({
+    version: '1.0.4',
+    checksumStatus: 'mismatch',
+    manualDownloadUrl: 'https://github.com/zhq734/translation/releases/download/v1.0.4/SelectionTranslator-1.0.4-mac-arm64.dmg',
+    manualDownloadSha512: 'expected-sha512',
+    manualDownloadSize: 123456
+  })
+  await manager.downloadUpdate()
+
+  assert.equal(manualUpdate.installCalls.length, 0)
+  assert.equal(manualUpdate.calls.length, 1)
+  assert.equal(manager.getStatus().phase, 'manual-downloaded')
+  assert.deepEqual(quitCalls, [])
 })
 
 test('驱动异常应转为可展示的错误状态并保留手动下载入口', async () => {

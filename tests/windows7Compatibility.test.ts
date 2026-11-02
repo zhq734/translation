@@ -179,6 +179,46 @@ test('Win7 构建必须排除文档翻译现代依赖与字体资源', () => {
   assert.match(config, /!assets\/fonts\/\*\*\/\*/u)
 })
 
+test('Win7 主进程启动入口不得静态加载文档翻译与 PDF 依赖', () => {
+  const source = read('src/main/index.ts')
+  const staticDocumentImports = [
+    './documentParser',
+    './documentPdfRuntime',
+    './documentPdfExport',
+    './documentPdfFont',
+    './documentWorkspaceTaskService',
+    './documentApprovedResourceService',
+    './documentApprovedExportService',
+    './documentTranslationCache',
+    './documentTaskHistory'
+  ]
+
+  for (const specifier of staticDocumentImports) {
+    assert.doesNotMatch(
+      source,
+      new RegExp(`^import[^\\n]*from ['"]${specifier.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}['"]`, 'mu'),
+      `Win7 启动入口不能静态导入 ${specifier}，否则会在主进程初始化时 require 被裁掉的 PDF 依赖`
+    )
+  }
+  assert.match(
+    source,
+    /async function loadDocumentRuntime\(\)/u,
+    '文档翻译依赖应通过受平台能力保护的动态加载函数获取'
+  )
+})
+
+test('Win7 构建后的主进程入口不得在顶层 require PDF 运行时', () => {
+  const entryPath = 'out/main/index.js'
+  if (!existsSync(entryPath)) return
+  const entry = read(entryPath)
+  const topLevelRequires = entry
+    .split('\n')
+    .filter((line) => /^require\(/u.test(line))
+
+  assert.doesNotMatch(topLevelRequires.join('\n'), /['"](?:@pdf-lib\/fontkit|pdf-lib)['"]/u,
+    '主入口顶层 require 会在 Win7 启动时立即执行，不能包含被裁剪的 PDF 依赖')
+})
+
 test('Win7 产物校验必须把 Windows asar 路径统一为 POSIX 形式', () => {
   assert.deepEqual(
     normalizeAsarEntries([

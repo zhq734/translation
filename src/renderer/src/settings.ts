@@ -730,7 +730,8 @@ function renderUpdateStatus(status: UpdateStatus): void {
   buildIdentityRow.hidden = buildLabels.length === 0
   buildIdentity.textContent = buildLabels.join(' → ') || t('settings.update.notChecked')
 
-  const busy = status.phase === 'checking' || status.phase === 'downloading'
+  const installing = status.phase === 'installing'
+  const busy = status.phase === 'checking' || status.phase === 'downloading' || installing
   const hasManualDownload = status.manualDownloadAvailable === true && (
     status.installMode === 'manual' ||
     status.updateAction === 'verified-manual-download'
@@ -745,12 +746,14 @@ function renderUpdateStatus(status: UpdateStatus): void {
   checkUpdateButton.disabled = busy || status.phase === 'disabled'
   updateActionButton.disabled = busy
   removeQuarantineButton.disabled = busy
-  updateActionButton.hidden = status.phase !== 'available' &&
+  updateActionButton.hidden = installing || (
+    status.phase !== 'available' &&
     status.phase !== 'downloaded' &&
     !manualDownloadActionAvailable
+  )
   // 仅下载中展示取消按钮，方便用户中断后重新点击升级。
-  updateCancelButton.hidden = status.phase !== 'downloading'
-  removeQuarantineButton.hidden = !manualDownloadReady
+  updateCancelButton.hidden = status.phase !== 'downloading' || installing
+  removeQuarantineButton.hidden = !manualDownloadReady || installing
   if (status.phase === 'downloaded' && !sameVersionNewBuild) {
     updateActionButton.textContent = t('settings.update.restartToInstall')
   } else if (openReleaseOnly) {
@@ -767,6 +770,7 @@ function renderUpdateStatus(status: UpdateStatus): void {
   updateProgress.hidden = !progress || (
     status.phase !== 'downloading' &&
     status.phase !== 'downloaded' &&
+    status.phase !== 'installing' &&
     status.phase !== 'manual-downloaded'
   )
   if (progress) {
@@ -783,6 +787,8 @@ function renderUpdateStatus(status: UpdateStatus): void {
     updateInstallHint.textContent = t('settings.update.hint.sameVersionManualDmg')
   } else if (openReleaseOnly) {
     updateInstallHint.textContent = t('settings.update.hint.openReleaseOnly')
+  } else if (installing) {
+    updateInstallHint.textContent = t('settings.update.hint.installing')
   } else if (hasManualDownload) {
     updateInstallHint.textContent = manualDownloadReady
       ? t('settings.update.hint.manualDownloaded')
@@ -862,7 +868,8 @@ async function removeMacOSQuarantine(): Promise<void> {
     removeQuarantineButton.disabled = !status ||
       status.installMode !== 'manual' ||
       status.phase === 'checking' ||
-      status.phase === 'downloading'
+      status.phase === 'downloading' ||
+      status.phase === 'installing'
   }
 }
 

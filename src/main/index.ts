@@ -275,15 +275,6 @@ import {
   getDocumentPlatformCapability,
   getDocumentPlatformUnsupportedMessageKey
 } from '../shared/documentPlatformCapability'
-import { parseDocument } from './documentParser'
-import { createProductionPdfRasterizer } from './documentPdfRuntime'
-import { exportDocumentToPdf } from './documentPdfExport'
-import { loadDocumentPdfFontBytes } from './documentPdfFont'
-import { DocumentWorkspaceTaskService } from './documentWorkspaceTaskService'
-import { DocumentApprovedResourceService } from './documentApprovedResourceService'
-import { DocumentApprovedExportService } from './documentApprovedExportService'
-import { DocumentTranslationCacheStore } from './documentTranslationCache'
-import { DocumentTaskHistoryStore } from './documentTaskHistory'
 import {
   DOCUMENT_WORKSPACE_CHANNELS,
   normalizeDocumentExportCancelRequest,
@@ -450,75 +441,161 @@ let documentWorkspace: DocumentWorkspaceManager | null = null
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
 const approvedDocumentPaths = new Set<string>()
+/** 文档任务服务类型；仅在类型层引用，不进入 Win7 启动时的运行时依赖图。 */
+type DocumentWorkspaceTaskService =
+  import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
 /** 当前文档窗口按 jobId 隔离的解析、OCR、翻译与导出任务服务。 */
 const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>()
+/** 文档运行时按需加载，避免 Win7 主进程启动时 require 被裁掉的 PDF 依赖。 */
+interface DocumentMainRuntime {
+  /** 文档解析入口。 */
+  parseDocument: typeof import('./documentParser').parseDocument
+  /** PDF 页面栅格化器工厂。 */
+  createProductionPdfRasterizer: typeof import('./documentPdfRuntime').createProductionPdfRasterizer
+  /** PDF 导出入口。 */
+  exportDocumentToPdf: typeof import('./documentPdfExport').exportDocumentToPdf
+  /** 内置 CJK 字体加载器。 */
+  loadDocumentPdfFontBytes: typeof import('./documentPdfFont').loadDocumentPdfFontBytes
+  /** 文档任务服务构造器。 */
+  DocumentWorkspaceTaskService: typeof import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
+  /** 历史文档资源服务构造器。 */
+  DocumentApprovedResourceService: typeof import('./documentApprovedResourceService').DocumentApprovedResourceService
+  /** 历史文档导出服务构造器。 */
+  DocumentApprovedExportService: typeof import('./documentApprovedExportService').DocumentApprovedExportService
+  /** 文档翻译缓存存储构造器。 */
+  DocumentTranslationCacheStore: typeof import('./documentTranslationCache').DocumentTranslationCacheStore
+  /** 文档任务历史存储构造器。 */
+  DocumentTaskHistoryStore: typeof import('./documentTaskHistory').DocumentTaskHistoryStore
+  /** 历史与恢复 Tab 的受控资源读取服务。 */
+  approvedResourceService: import('./documentApprovedResourceService').DocumentApprovedResourceService
+  /** 历史与恢复 Tab 的单语译文导出服务。 */
+  approvedExportService: import('./documentApprovedExportService').DocumentApprovedExportService
+}
 
-/** 历史与恢复 Tab 的受控资源读取服务；只读取当前窗口已批准路径。 */
-const documentApprovedResourceService = new DocumentApprovedResourceService({
-  isApprovedPath: (path) => approvedDocumentPaths.has(path)
-})
-
-/** 历史与恢复 Tab 的单语译文导出服务；不复用旧任务，只使用已保存译文模型。 */
-const documentApprovedExportService = new DocumentApprovedExportService({
-  validateSource: (request) => documentApprovedResourceService.validateSource(request),
-  getAsset: (request) => documentApprovedResourceService.getAsset(request),
-  loadFontBytes: () => loadDocumentPdfFontBytes({
-    isPackaged: app.isPackaged,
-    appPath: app.getAppPath(),
-    resourcesPath: process.resourcesPath
-  }),
-  exportPdf: (model, dependencies, options) => exportDocumentToPdf(model, dependencies, {
-    includeOcrTextLayer: options?.includeOcrTextLayer !== false
-  }),
-  showSaveDialog: async (suggestedName) => {
-    const window = documentWorkspace?.getWindow()
-    const result = window
-      ? await dialog.showSaveDialog(window, {
-        title: t('document.export'),
-        defaultPath: suggestedName,
-        filters: [{ name: 'PDF', extensions: ['pdf'] }]
-      })
-      : await dialog.showSaveDialog({
-        title: t('document.export'),
-        defaultPath: suggestedName,
-        filters: [{ name: 'PDF', extensions: ['pdf'] }]
-      })
-    return {
-      canceled: result.canceled,
-      ...(result.filePath ? { filePath: result.filePath } : {})
-    }
-  },
-  writeFile: async (path, bytes) => {
-    await writeFile(path, bytes)
-  },
-  rename: async (source, target) => {
-    await rename(source, target)
-  },
-  unlink,
-  openExportFolder: async (filePath) => {
-    const opened = await openDocumentExportFolder(filePath, {
-      showItemInFolder: (targetPath) => shell.showItemInFolder(targetPath),
-      openPath: (path) => shell.openPath(path)
-    })
-    if (!opened) throw new Error('open-export-folder-failed')
-  }
-})
-
+/** 文档运行时单例；仅在支持文档翻译的平台首次使用时加载。 */
+let documentMainRuntimePromise: Promise<DocumentMainRuntime> | null = null
 /** 当前窗口共享的文档翻译缓存；缓存按源文件哈希跨任务复用。 */
-let documentTranslationCache: DocumentTranslationCacheStore | null = null
-
+let documentTranslationCache: import('./documentTranslationCache').DocumentTranslationCacheStore | null = null
 /** 当前窗口共享的文档任务历史，避免每个任务各自读取不同实例。 */
-let documentTaskHistory: DocumentTaskHistoryStore | null = null
+let documentTaskHistory: import('./documentTaskHistory').DocumentTaskHistoryStore | null = null
+
+/**
+ * 按需加载文档翻译运行时。
+ *
+ * Win7 安装包会排除 PDF.js、Canvas、pdf-lib 与字体资源，因此这些模块不能在
+ * 主进程启动图中静态引用。只有平台能力校验通过后才加载；加载失败会清除缓存，
+ * 让后续请求可以重试并避免把半初始化状态永久保留。
+ * @returns 已初始化且可复用的文档运行时。
+ * @author zhenghq
+ */
+async function loadDocumentRuntime(): Promise<DocumentMainRuntime> {
+  const capability = getDocumentPlatformCapability()
+  if (!capability.supported) {
+    const messageKey = getDocumentPlatformUnsupportedMessageKey(capability)
+      ?? 'document.error.unsupportedPlatform'
+    throw new Error(t(messageKey))
+  }
+  documentMainRuntimePromise ??= (async () => {
+    const [
+      { parseDocument },
+      { createProductionPdfRasterizer },
+      { exportDocumentToPdf },
+      { loadDocumentPdfFontBytes },
+      { DocumentWorkspaceTaskService },
+      { DocumentApprovedResourceService },
+      { DocumentApprovedExportService },
+      { DocumentTranslationCacheStore },
+      { DocumentTaskHistoryStore }
+    ] = await Promise.all([
+      import('./documentParser'),
+      import('./documentPdfRuntime'),
+      import('./documentPdfExport'),
+      import('./documentPdfFont'),
+      import('./documentWorkspaceTaskService'),
+      import('./documentApprovedResourceService'),
+      import('./documentApprovedExportService'),
+      import('./documentTranslationCache'),
+      import('./documentTaskHistory')
+    ])
+    const approvedResourceService = new DocumentApprovedResourceService({
+      isApprovedPath: (path) => approvedDocumentPaths.has(path)
+    })
+    const approvedExportService = new DocumentApprovedExportService({
+      validateSource: (request) => approvedResourceService.validateSource(request),
+      getAsset: (request) => approvedResourceService.getAsset(request),
+      loadFontBytes: () => loadDocumentPdfFontBytes({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath
+      }),
+      exportPdf: (model, dependencies, options) => exportDocumentToPdf(model, dependencies, {
+        includeOcrTextLayer: options?.includeOcrTextLayer !== false
+      }),
+      showSaveDialog: async (suggestedName) => {
+        const window = documentWorkspace?.getWindow()
+        const result = window
+          ? await dialog.showSaveDialog(window, {
+            title: t('document.export'),
+            defaultPath: suggestedName,
+            filters: [{ name: 'PDF', extensions: ['pdf'] }]
+          })
+          : await dialog.showSaveDialog({
+            title: t('document.export'),
+            defaultPath: suggestedName,
+            filters: [{ name: 'PDF', extensions: ['pdf'] }]
+          })
+        return {
+          canceled: result.canceled,
+          ...(result.filePath ? { filePath: result.filePath } : {})
+        }
+      },
+      writeFile: async (path, bytes) => {
+        await writeFile(path, bytes)
+      },
+      rename: async (source, target) => {
+        await rename(source, target)
+      },
+      unlink,
+      openExportFolder: async (filePath) => {
+        const opened = await openDocumentExportFolder(filePath, {
+          showItemInFolder: (targetPath) => shell.showItemInFolder(targetPath),
+          openPath: (path) => shell.openPath(path)
+        })
+        if (!opened) throw new Error('open-export-folder-failed')
+      }
+    })
+    return {
+      parseDocument,
+      createProductionPdfRasterizer,
+      exportDocumentToPdf,
+      loadDocumentPdfFontBytes,
+      DocumentWorkspaceTaskService,
+      DocumentApprovedResourceService,
+      DocumentApprovedExportService,
+      DocumentTranslationCacheStore,
+      DocumentTaskHistoryStore,
+      approvedResourceService,
+      approvedExportService
+    }
+  })().catch((error) => {
+    documentMainRuntimePromise = null
+    throw error
+  })
+  return documentMainRuntimePromise
+}
 
 /**
  * 返回主进程共享的文档翻译缓存，并在首次访问时按当前设置创建。
+ * @param runtime 已加载的文档运行时。
  * @returns 文档翻译缓存存储。
  * @author zhenghq
  */
-function getDocumentTranslationCacheStore(): DocumentTranslationCacheStore {
+function getDocumentTranslationCacheStore(
+  runtime: DocumentMainRuntime
+): import('./documentTranslationCache').DocumentTranslationCacheStore {
   if (!documentTranslationCache) {
     const settings = getSettings()
-    documentTranslationCache = new DocumentTranslationCacheStore({
+    documentTranslationCache = new runtime.DocumentTranslationCacheStore({
       directory: join(app.getPath('userData'), 'document-translation-cache'),
       maxBytes: settings.documentTranslationCacheMaxBytes,
       maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
@@ -529,11 +606,14 @@ function getDocumentTranslationCacheStore(): DocumentTranslationCacheStore {
 
 /**
  * 返回主进程共享的文档任务历史存储。
+ * @param runtime 已加载的文档运行时。
  * @returns 文档任务历史存储。
  * @author zhenghq
  */
-function getDocumentTaskHistoryStore(): DocumentTaskHistoryStore {
-  documentTaskHistory ??= new DocumentTaskHistoryStore({
+function getDocumentTaskHistoryStore(
+  runtime: DocumentMainRuntime
+): import('./documentTaskHistory').DocumentTaskHistoryStore {
+  documentTaskHistory ??= new runtime.DocumentTaskHistoryStore({
     directory: join(app.getPath('userData'), 'document-task-history'),
     maxEntries: 100
   })
@@ -799,11 +879,14 @@ function releaseDocumentWorkspaceTask(jobId: string): boolean {
  * @returns 已创建的任务服务。
  * @author zhenghq
  */
-function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
+async function createDocumentWorkspaceTaskService(): Promise<
+  import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
+> {
+  const runtime = await loadDocumentRuntime()
   const settings = getSettings()
-  const cacheStore = getDocumentTranslationCacheStore()
-  const historyStore = getDocumentTaskHistoryStore()
-  return new DocumentWorkspaceTaskService({
+  const cacheStore = getDocumentTranslationCacheStore(runtime)
+  const historyStore = getDocumentTaskHistoryStore(runtime)
+  return new runtime.DocumentWorkspaceTaskService({
     isApprovedPath: (path) => approvedDocumentPaths.has(path),
     sendProgress: (snapshot) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.progress, snapshot)
@@ -826,17 +909,17 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
     },
     parse: async (input, registerAssetBytes, signal, options) => {
       if (input.format !== 'pdf' && input.format !== 'image') {
-        return parseDocument(input, { registerAssetBytes, ...options })
+        return runtime.parseDocument(input, { registerAssetBytes, ...options })
       }
       if (input.format === 'image') {
-        return parseDocument(input, { registerAssetBytes, ...options })
+        return runtime.parseDocument(input, { registerAssetBytes, ...options })
       }
       const {
         renderPageToImage,
         renderPageRegionToImage,
         renderEmbeddedImageToImage
-      } = await createProductionPdfRasterizer(signal)
-      return parseDocument(input, {
+      } = await runtime.createProductionPdfRasterizer(signal)
+      return runtime.parseDocument(input, {
         registerAssetBytes,
         renderPageToImage,
         renderPageRegionToImage,
@@ -913,13 +996,13 @@ function createDocumentWorkspaceTaskService(): DocumentWorkspaceTaskService {
         settings.aiModel
       ])).digest('hex')
     },
-    loadFontBytes: () => loadDocumentPdfFontBytes({
+    loadFontBytes: () => runtime.loadDocumentPdfFontBytes({
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath
     }),
     // 所有导出统一按文档模型合成，避免把文档窗口中的弹层等界面元素写入 PDF。
-    exportPdf: (model, dependencies, exportOptions) => exportDocumentToPdf(model, dependencies, {
+    exportPdf: (model, dependencies, exportOptions) => runtime.exportDocumentToPdf(model, dependencies, {
         // OCR 原文默认写入透明文字层；只有调用方明确传 false 时才关闭。
         includeOcrTextLayer: exportOptions.textLayer !== false,
         ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
@@ -6195,6 +6278,9 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return [{ status: 'rejected', code: 'unreadable' }]
     }
+    if (!getDocumentPlatformCapability().supported) {
+      return [{ status: 'rejected', code: 'unreadable' }]
+    }
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow) return [{ status: 'rejected', code: 'unreadable' }]
     const result = await dialog.showOpenDialog(senderWindow, {
@@ -6230,6 +6316,9 @@ function registerIpc(): void {
     if (!isDocumentWorkspaceSender(event.sender)) {
       return { status: 'rejected', code: 'unreadable' }
     }
+    if (!getDocumentPlatformCapability().supported) {
+      return { status: 'rejected', code: 'unreadable' }
+    }
     if (typeof path !== 'string') return { status: 'rejected', code: 'unreadable' }
     const selected = await validateApprovedDocumentPath(path)
     if (selected.status === 'selected') {
@@ -6247,6 +6336,9 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:approve-files', async (event, paths: unknown): Promise<DocumentFileSelectionResult[]> => {
     if (!isDocumentWorkspaceSender(event.sender)) {
+      return [{ status: 'rejected', code: 'unreadable' }]
+    }
+    if (!getDocumentPlatformCapability().supported) {
       return [{ status: 'rejected', code: 'unreadable' }]
     }
     if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== 'string')) {
@@ -6283,7 +6375,7 @@ function registerIpc(): void {
     if (!normalizedRequest || !isAbsolute(normalizedRequest.path)) {
       return { accepted: false, code: 'invalid-request' }
     }
-    const service = createDocumentWorkspaceTaskService()
+    const service = await createDocumentWorkspaceTaskService()
     let acceptedJobId: string | null = null
     try {
       // 首条进度会携带图片资源声明；必须先登记服务，Renderer 才能按 jobId 读取资源。
@@ -6415,7 +6507,8 @@ function registerIpc(): void {
     }
     const normalizedRequest = normalizeDocumentApprovedExportRequest(request)
     if (!normalizedRequest) return { status: 'rejected', code: 'invalid-request' }
-    const result = await documentApprovedExportService.exportPdf(normalizedRequest)
+    const runtime = await loadDocumentRuntime()
+    const result = await runtime.approvedExportService.exportPdf(normalizedRequest)
     if (result.status === 'rejected') {
       console.warn('[document-export-approved]', {
         status: result.status,
@@ -6464,6 +6557,8 @@ function registerIpc(): void {
       )) return true
     }
     // Renderer 指定路径时只回退到历史导出白名单，不能打开当前任务的另一份文件。
+    const runtime = await loadDocumentRuntime()
+    const documentApprovedExportService = runtime.approvedExportService
     return normalized.filePath
       ? documentApprovedExportService.openExportFolder(normalized.filePath)
       : documentApprovedExportService.openLastExportFolder()
@@ -6476,7 +6571,8 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:list-history', async (event) => {
     if (!isDocumentWorkspaceSender(event.sender)) return []
-    return getDocumentTaskHistoryStore().list()
+    const runtime = await loadDocumentRuntime()
+    return getDocumentTaskHistoryStore(runtime).list()
   })
   /**
    * 打开指定文档任务的只读恢复快照。
@@ -6487,7 +6583,8 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:open-history', async (event, jobId: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return null
-    return getDocumentTaskHistoryStore().open(jobId)
+    const runtime = await loadDocumentRuntime()
+    return getDocumentTaskHistoryStore(runtime).open(jobId)
   })
   /**
    * 删除指定文档任务历史及其源文件对应的翻译缓存。
@@ -6498,11 +6595,12 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:delete-history', async (event, jobId: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return false
-    const historyStore = getDocumentTaskHistoryStore()
+    const runtime = await loadDocumentRuntime()
+    const historyStore = getDocumentTaskHistoryStore(runtime)
     const sourceSha256 = await historyStore.getSourceSha256(jobId)
     const removed = await historyStore.delete(jobId)
     if (removed && sourceSha256) {
-      await getDocumentTranslationCacheStore().deleteBySourceSha256(sourceSha256)
+      await getDocumentTranslationCacheStore(runtime).deleteBySourceSha256(sourceSha256)
     }
     return removed
   })
@@ -6514,8 +6612,9 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:clear-cache', async (event) => {
     if (!isDocumentWorkspaceSender(event.sender)) return
-    const documentTranslationCache = getDocumentTranslationCacheStore()
-    const documentTaskHistory = getDocumentTaskHistoryStore()
+    const runtime = await loadDocumentRuntime()
+    const documentTranslationCache = getDocumentTranslationCacheStore(runtime)
+    const documentTaskHistory = getDocumentTaskHistoryStore(runtime)
     await documentTranslationCache.clear()
     await documentTaskHistory.clear()
   })
@@ -6558,7 +6657,8 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:get-approved-asset', async (event, request: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'asset-not-found' }
-    return documentApprovedResourceService.getAsset(request as DocumentApprovedAssetRequest)
+    const runtime = await loadDocumentRuntime()
+    return runtime.approvedResourceService.getAsset(request as DocumentApprovedAssetRequest)
   })
   /**
    * 读取已重新授权历史文件的源预览字节。
@@ -6569,7 +6669,8 @@ function registerIpc(): void {
    */
   ipcMain.handle('document:get-approved-source', async (event, request: unknown) => {
     if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'source-not-approved' }
-    return documentApprovedResourceService.getSource(request as DocumentApprovedSourceRequest)
+    const runtime = await loadDocumentRuntime()
+    return runtime.approvedResourceService.getSource(request as DocumentApprovedSourceRequest)
   })
   ipcMain.on('webview:open', (_event, url: unknown) => {
     openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)

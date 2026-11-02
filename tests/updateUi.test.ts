@@ -51,6 +51,9 @@ test('主进程应初始化自动更新、静默检查并注册完整 IPC', () =
   )
   assert.match(updaterSource, /downloadsDirectory:\s*app\.getPath\('downloads'\)/u)
   assert.match(updaterSource, /openPath:\s*\(path\) => shell\.openPath\(path\)/u)
+  assert.match(updaterSource, /MACOS_APPLICATION_PATH/u)
+  assert.match(updaterSource, /applicationPath:\s*MACOS_APPLICATION_PATH/u)
+  assert.match(updaterSource, /quitForInstall:\s*\(\) => app\.quit\(\)/u)
   assert.match(
     mainSource,
     /async function removeApplicationQuarantine\(\)[\s\S]*?dialog\.showMessageBox\([\s\S]*?result\.response !== 1[\s\S]*?removeMacOSApplicationQuarantine\(\)/u
@@ -86,8 +89,10 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
   assert.match(source, /status\.phase === 'manual-downloaded'/u)
   assert.match(source, /status\.manualDownloadAvailable === true/u)
   assert.match(source, /const manualDownloadActionAvailable = hasManualDownload/u)
+  assert.match(source, /status\.phase === 'installing'/u)
   assert.doesNotMatch(source, /status\.installMode === 'manual'\) await removeMacOSQuarantine\(\)/u)
   assert.match(source, /t\('settings\.update\.hint\.manualDownloaded'\)/u)
+  assert.match(source, /t\('settings\.update\.hint\.installing'\)/u)
 
   assert.match(css, /\.update-actions\s*\{[\s\S]*display:\s*flex/u)
   assert.match(css, /\.update-progress/u)

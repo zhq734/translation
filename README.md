@@ -198,13 +198,13 @@ $env:GROKBUILD_VERSION = 'v0.2.0'
 irm https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1 | iex
 ```
 
-Linux installs an AppImage at `~/.local/bin/selection-translator` and creates a desktop entry. macOS installs to `~/Applications` by default. Windows silently runs the NSIS installer and creates Start Menu/desktop shortcuts. macOS still requires Accessibility permission on first launch.
+Linux installs an AppImage at `~/.local/bin/selection-translator` and creates a desktop entry. macOS installs to `~/Applications` by default. Windows silently runs the NSIS installer and creates Start Menu/desktop shortcuts. macOS still requires Accessibility permission on first launch. In-app automatic upgrades require the fixed `/Applications/划词翻译.app` path; when the one-click script installed to `~/Applications`, move the app to that path first.
 
 ### Option 2: Download a GitHub Release
 
 For manual installation, download the matching asset from GitHub [Releases](../../releases):
 
-- **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`;
+- **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`; install it at `/Applications/划词翻译.app`. Running from a DMG, Downloads, or any other location falls back to manual upgrades;
 - **Linux**: use `SelectionTranslator-<version>-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-arm64.AppImage` for ARM64;
 - **Windows 10/11**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
 - **Windows 7 SP1 x64**: use the dedicated `SelectionTranslator-<version>-Setup-win7-x64.exe` installer.
@@ -216,15 +216,16 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Modern Window
 ### In-app update checks and upgrades
 
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
-- Open **Settings → About** to view the current version, check manually, and monitor download progress. Platforms that support automatic installation can restart into a downloaded update;
+- Open **Settings → About** to view the current version, check manually, and monitor download progress. When macOS is installed at `/Applications/划词翻译.app`, the app quits, replaces itself, and relaunches automatically after download and verification;
 - Windows NSIS builds support in-app download and restart installation. Linux supports automatic replacement only when running as an AppImage; other Linux installations open the GitHub Release page;
 - Windows 7 packages use a lightweight GitHub Release API check and does not load `electron-updater`. They never download or install updates automatically; use **Settings → About** to open the Release page and manually download the latest `Setup-win7-x64.exe` package;
-- On macOS, automatic installation is enabled only when the `.app` passes code-signature verification. In manual mode, clicking update downloads the DMG for the current architecture into Downloads and opens it. After dragging Selection Translator into Applications and replacing the old copy, return to Settings and click **Remove macOS quarantine attribute**;
+- On macOS, automatic installation requires the fixed `/Applications/划词翻译.app` location. Clicking update downloads the matching-architecture DMG and verifies its sha512, Bundle ID, version, and code signature. Only when all checks pass does the app quit, back up the old bundle, replace it, remove quarantine, and relaunch without opening the DMG or dragging;
+- Running macOS from a DMG, Downloads, or another path falls back to manual installation so the wrong bundle is never replaced. Automatic replacement is also refused when sha512 is missing or `SHA256SUMS` reports a mismatch;
 - Update checks and package downloads share the app's proxy session, using the same proxy configuration as translation requests;
 - Downloads probe the source for HTTP Range support: when supported, the package is fetched with up to 4 concurrent segments; otherwise the download falls back to a single connection;
 - Interrupted downloads resume from the completed bytes on retry, restarting only when the version, package size, or checksum changes;
 - Update checks also read `SHA256SUMS` from the same Release and compare it with GitHub Release asset digests; even when the version is unchanged, a missing or mismatched checksum prompts an upgrade;
-- Manual macOS updates verify the DMG's sha512 before opening it. A mismatch deletes the file and reports the failure; when the update manifest has no matching checksum, the status explicitly states the package was not integrity-checked;
+- macOS automatic updates require a matching sha512. A missing digest or a `SHA256SUMS` mismatch blocks automatic replacement. Manual downloads also verify an available sha512 before opening the DMG; a mismatch deletes the file and reports the failure;
 - If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
 #### Same-version rebuild detection
@@ -754,25 +755,25 @@ Convert the `.p12` to a single-line Base64 value with:
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-Unsigned mode explicitly disables certificate auto-discovery and notarization, then applies an ad-hoc signature that requires no Apple certificate so Apple Silicon bundles do not retain an invalid signature. This mode needs neither a developer certificate nor an Apple account. Its artifacts may be published to GitHub Releases, but Gatekeeper may block them and they cannot use in-app automatic installation. When the app detects a new version, clicking update in Settings downloads the DMG for the current architecture into Downloads and opens it. GitHub Releases is opened only as a fallback when the update metadata does not provide a directly resolvable DMG.
+Unsigned mode explicitly disables certificate auto-discovery and notarization, then applies an ad-hoc signature that requires no Apple certificate so Apple Silicon bundles do not retain an invalid signature. This mode needs neither a developer certificate nor an Apple account. Its artifacts may be published to GitHub Releases, but Gatekeeper may block them. Unsigned packages can still be installed manually; automatic replacement requires code-signature verification, so unsigned or signature-mismatched updates fall back to manual installation. GitHub Releases is opened only as a fallback when the update metadata does not provide a directly resolvable DMG.
 
-If an older release used `Apple Development`, another signature, or no signature, the native macOS updater may reject the replacement because its signing requirement changed. Do not keep retrying the in-app installer: download the DMG from GitHub Releases and manually replace the old app. In-app automatic installation is enabled only when releases consistently use the same team's `Developer ID Application` signature.
+If an older release used `Apple Development`, another signature, or no signature, the native macOS updater may reject the replacement because its signing requirement changed. Download the DMG from GitHub Releases and manually replace the old app. Automatic replacement requires both the installed app and the downloaded bundle to pass code-signature verification, with a matching Bundle ID, expected version, and the fixed target path.
 
 #### Install an unsigned macOS package
 
 Use the following steps only when the package came from this repository's trusted GitHub Actions run or Release and you have verified its origin:
 
-1. In **Settings → About**, click **Download and open DMG** and wait for the app to save the update in Downloads and open the installer. If automatic resolution fails, use **Open release page** to download it manually;
-2. Drag Selection Translator into Applications and choose Replace when an older version already exists;
-3. Return to Settings, click **Remove macOS quarantine attribute**, and confirm that replacement is complete;
-4. Launch the application again. You can also run the fixed command below manually in Terminal.
+1. Install Selection Translator manually at `/Applications/划词翻译.app`; when running from a DMG or another path, the app automatically falls back to manual upgrades;
+2. In **Settings → About**, click **Download and open DMG** and wait for the update to download and open. If automatic resolution fails, use **Open release page** to download it manually;
+3. Drag Selection Translator into Applications and choose Replace when an older version already exists;
+4. Return to Settings, click **Remove macOS quarantine attribute**, and confirm before launching the app again. You can also run the fixed command below manually in Terminal.
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-This command must run after the downloaded application has replaced the old copy. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. The Settings page shows **Remove macOS quarantine attribute** only after the DMG has downloaded successfully and opened. After the user completes the drag-and-replace step and explicitly clicks the button, the app asks for confirmation and runs the command only for `/Applications/划词翻译.app`. It never invokes `sudo`, and a failure still shows the manual command. Configuring all Apple credentials avoids most Gatekeeper work and restores in-app automatic installation, but it is not required to generate Release installers.
+This command must run after the downloaded application has replaced the old copy. GitHub Actions cannot permanently remove an attribute that the receiving Mac adds later. The Settings page shows **Remove macOS quarantine attribute** only after the DMG has downloaded successfully and opened. After the user completes the drag-and-replace step and explicitly clicks the button, the app asks for confirmation and runs the command only for `/Applications/划词翻译.app`. It never invokes `sudo`, and a failure still shows the manual command. When the fixed install path, a matching sha512, and code-signature verification all pass, the newer app clears quarantine and relaunches automatically without manual steps.
 
 Prefer lowercase version tags. For example, to publish `v1.0.4`:
 
@@ -833,7 +834,7 @@ xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-Previously generated unsigned artifacts do not become signed automatically. They can still be published and installed manually; configure all five secrets and rebuild only if you want fewer Gatekeeper prompts and in-app automatic installation.
+Previously generated unsigned artifacts do not become signed automatically. They can still be published and installed manually. Automatic replacement requires code-signature verification; configure all five secrets and rebuild if you want fewer Gatekeeper prompts and automatic upgrades.
 
 To diagnose an extracted application, run:
 
@@ -845,7 +846,7 @@ spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 
 GitHub Actions and local development packages created without Apple release credentials may still be blocked by Gatekeeper and are not Apple-verified releases. They can be installed manually after their origin has been verified.
 
-If the in-app updater reports `Code signature ... did not pass validation` or says the code did not satisfy its designated requirement, the installed app and update package use incompatible signing requirements. Click update in Settings; the app downloads the DMG for the current architecture into Downloads and opens it. Drag Selection Translator into Applications, replace the old version, return to Settings, and click **Remove macOS quarantine attribute**. This only removes Gatekeeper's download quarantine attribute; it does not repair a signing-requirement mismatch, so the updater still uses the manual replacement flow. Use **Open release page** if the DMG cannot be resolved automatically.
+If the in-app updater reports `Code signature ... did not pass validation` or says the code did not satisfy its designated requirement, the installed app and update package use incompatible signing requirements. Automatic replacement is refused; click update in Settings, and the app downloads the matching-architecture DMG into Downloads and opens it. Drag Selection Translator into Applications, replace the old version, return to Settings, and click **Remove macOS quarantine attribute**. This only removes Gatekeeper's download quarantine attribute and does not repair a signing-requirement mismatch. Use **Open release page** if the DMG cannot be resolved automatically.
 
 ### DingTalk Secret cannot be saved
 
@@ -868,7 +869,7 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - GitHub Actions creates unsigned macOS test packages when all Apple release credentials are absent. Those packages and the currently unsigned Windows installers may still show system security warnings; production macOS releases still require signing and notarization;
-- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; locally unsigned macOS builds and non-AppImage Linux builds fall back to manual installation;
+- No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; macOS builds outside the fixed `/Applications/划词翻译.app` path, unsigned or signature-mismatched macOS builds, and non-AppImage Linux builds fall back to manual installation;
 - Windows 7 compatibility is limited to SP1 x64 and has no 32-bit build. OCR uses Tesseract.js WebAssembly with bundled Simplified Chinese, Traditional Chinese, and English models; only other languages may download language data on first use. `TESSERACT_LANG_PATH` can override the model source. Update checks use the GitHub Release API without loading `electron-updater`, and updates require manually downloading and installing the new package. Electron 22 is end-of-life, so upgrading to Windows 10/11 is still recommended.
 
 ## Roadmap

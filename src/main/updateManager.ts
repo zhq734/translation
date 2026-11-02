@@ -159,6 +159,12 @@ export interface UpdateManagerOptions {
   /** 下载并打开手动 macOS 更新包的受限服务。 */
   manualUpdate?: ManualMacUpdateService
   /**
+   * 请求主进程退出，让后台安装 helper 替换应用并重新启动。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  quitForInstall?(): void
+  /**
    * 获取当前界面语言翻译器；语言变化后返回新实例，用于状态文案热切换。
    * @returns 当前界面语言翻译器。
    * @author zhenghq
@@ -397,6 +403,8 @@ export class UpdateManager {
   private manualDownloadIntegrity: { sha512?: string; size?: number } | undefined
   /** 手动 DMG 下载的取消控制器；仅下载期间存在。 */
   private manualDownloadAbort: AbortController | undefined
+  /** 是否已经触发过安装，防止重复下载事件或用户点击再次退出。 */
+  private installTriggered = false
 
   /**
    * 创建自动更新管理器并连接底层驱动事件。
@@ -574,7 +582,12 @@ export class UpdateManager {
    */
   installUpdate(): void {
     if (this.status.updateReason === 'same-version-new-build') return
-    if (this.status.installMode !== 'automatic' || this.status.phase !== 'downloaded') return
+    if (this.status.installMode !== 'automatic' ||
+        (this.status.phase !== 'downloaded' && this.status.phase !== 'installing') ||
+        this.installTriggered) {
+      return
+    }
+    this.installTriggered = true
     this.options.driver.installUpdate()
   }
 
@@ -799,6 +812,22 @@ export class UpdateManager {
   private handleDownloaded(info: UpdateDriverInfo): void {
     // 用户取消后底层驱动可能仍补发下载完成事件，忽略以保持已取消状态。
     if (this.status.phase !== 'downloading') return
+    const autoInstall = this.status.installMode === 'automatic' &&
+      this.status.updateReason === 'higher-version' &&
+      !this.installTriggered
+    if (autoInstall) {
+      this.installTriggered = true
+      this.setStatus({
+        phase: 'installing',
+        latestVersion: info.version,
+        message: this.currentTranslator().t('update.installing', { version: info.version }),
+        progress: this.status.progress
+          ? { ...this.status.progress, percent: 100 }
+          : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 }
+      })
+      this.options.driver.installUpdate()
+      return
+    }
     this.setStatus({
       phase: 'downloaded',
       latestVersion: info.version,
@@ -853,13 +882,28 @@ export class UpdateManager {
     try {
       const abortController = new AbortController()
       this.manualDownloadAbort = abortController
-      const downloadPromise = this.options.manualUpdate.downloadAndOpen(
-        this.manualDownloadUrl,
-        version,
-        (progress) => this.handleProgress(progress),
-        this.manualDownloadIntegrity,
-        abortController.signal
-      )
+      const canAutoInstall = this.status.updateReason === 'higher-version' &&
+        this.status.checksumStatus !== 'mismatch' &&
+        Boolean(this.manualDownloadIntegrity?.sha512) &&
+        Boolean(this.options.manualUpdate.downloadAndInstall) &&
+        Boolean(this.options.quitForInstall) &&
+        !this.installTriggered
+      const downloadPromise = canAutoInstall
+        ? this.options.manualUpdate.downloadAndInstall!(
+            this.manualDownloadUrl,
+            version,
+            this.status.currentVersion,
+            (progress) => this.handleProgress(progress),
+            this.manualDownloadIntegrity,
+            abortController.signal
+          )
+        : this.options.manualUpdate.downloadAndOpen(
+            this.manualDownloadUrl,
+            version,
+            (progress) => this.handleProgress(progress),
+            this.manualDownloadIntegrity,
+            abortController.signal
+          )
       let result
       try {
         result = await downloadPromise
@@ -871,6 +915,19 @@ export class UpdateManager {
       // 下载期间用户取消时，迟到的下载完成结果不得覆盖已取消状态。
       if ((this.status.phase as UpdatePhase) !== 'downloading') return this.getStatus()
       const translator = this.currentTranslator()
+      if (result.installScheduled) {
+        this.installTriggered = true
+        this.setStatus({
+          phase: 'installing',
+          message: translator.t('update.installing', { version }),
+          progress: this.status.progress
+            ? { ...this.status.progress, percent: 100 }
+            : { percent: 100, transferred: 0, total: 0, bytesPerSecond: 0 },
+          manualDownloadPath: result.path
+        })
+        this.options.quitForInstall?.()
+        return this.getStatus()
+      }
       const integrityNotice = result.verified
         ? ''
         : translator.t('update.integrityNoticeMissing')

@@ -828,7 +828,11 @@ test('文档任务生产接线必须注入动态限制、缓存和受控翻译�
   const validationEnd = main.indexOf('/**', validationStart + 1)
   const validationSource = main.slice(validationStart, validationEnd)
 
-  assert.match(main, /import \{ DocumentTranslationCacheStore \} from '\.\/documentTranslationCache'/u)
+  assert.match(
+    main,
+    /import\('\.\/documentTranslationCache'\)/u,
+    '缓存存储必须通过动态导入加载，避免 Win7 启动时加载文档运行时'
+  )
   assert.match(serviceSource, /parse: async \(input, registerAssetBytes, signal, options\)/u)
   assert.match(serviceSource, /parseDocument\(input, \{ registerAssetBytes, \.\.\.options \}\)/u)
   assert.match(serviceSource, /translate: async \(text, signal, request, languagePair, onDelta, context\)/u)
@@ -837,12 +841,12 @@ test('文档任务生产接线必须注入动态限制、缓存和受控翻译�
   assert.match(serviceSource, /maxOcrImages: \(\) => getSettings\(\)\.documentTranslationMaxOcrImages/u)
   assert.match(serviceSource, /getParserVersion: \(\) => 'document-parser-v1'/u)
   assert.match(serviceSource, /glossary: \(\) => undefined/u)
-  assert.match(main, /function getDocumentTranslationCacheStore\(\)/u)
-  assert.match(main, /new DocumentTranslationCacheStore\(/u)
+  assert.match(main, /function getDocumentTranslationCacheStore\(/u)
+  assert.match(main, /new runtime\.DocumentTranslationCacheStore\(/u)
   assert.match(main, /join\(app\.getPath\('userData'\), 'document-translation-cache'\)/u)
   assert.match(main, /documentTranslationCacheMaxBytes/u)
   assert.match(main, /documentTranslationCacheMaxAgeDays \* 24 \* 60 \* 60 \* 1000/u)
-  assert.match(main, /function getDocumentTaskHistoryStore\(\)/u)
+  assert.match(main, /function getDocumentTaskHistoryStore\(/u)
   assert.match(main, /join\(app\.getPath\('userData'\), 'document-task-history'\)/u)
   assert.match(serviceSource, /saveHistory: \(snapshot\) => historyStore\.save\(snapshot\)/u)
   assert.match(serviceSource, /updateHistoryExportStatus:/u)
@@ -1320,7 +1324,7 @@ test('文档工作台必须接入运行、取消、导出、进度与资源事�
   assert.match(types, /approveDocumentFile\(/u)
   assert.match(preload, /document:approve-file/u)
   assert.match(main, /document:approve-file/u)
-  assert.match(main, /new DocumentWorkspaceTaskService/u)
+  assert.match(main, /new runtime\.DocumentWorkspaceTaskService/u)
 })
 
 test('文档块级翻译增量必须通过受控 IPC 原位更新当前任务界面', () => {
@@ -1398,11 +1402,15 @@ test('失败块必须支持单目标重试并显示可定位状态，但不在�
 test('生产 PDF 导出必须统一按文档模型合成，普通译文不得走页面打印', () => {
   const main = read('src/main/index.ts')
 
-  assert.match(main, /import \{ exportDocumentToPdf \} from '\.\/documentPdfExport'/u)
+  assert.match(
+    main,
+    /import\('\.\/documentPdfExport'\)/u,
+    'PDF 导出模块必须动态加载，避免 Win7 主进程启动时加载被裁剪的依赖'
+  )
   assert.doesNotMatch(main, /printDocumentPreviewToPdf/u)
   assert.match(
     main,
-    /exportPdf:\s*\(model,\s*dependencies,\s*exportOptions\)\s*=>\s*exportDocumentToPdf\(model,\s*dependencies,\s*\{[\s\S]*?includeOcrTextLayer:\s*exportOptions\.textLayer !== false[\s\S]*?exportOptions\.signal[\s\S]*?exportOptions\.onProgress/u
+    /exportPdf:\s*\(model,\s*dependencies,\s*exportOptions\)\s*=>\s*runtime\.exportDocumentToPdf\(model,\s*dependencies,\s*\{[\s\S]*?includeOcrTextLayer:\s*exportOptions\.textLayer !== false[\s\S]*?exportOptions\.signal[\s\S]*?exportOptions\.onProgress/u
   )
   assert.doesNotMatch(main, /exportOptions\.layout/u)
   assert.doesNotMatch(main, /exportOptions\.sourceModel/u)

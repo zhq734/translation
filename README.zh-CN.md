@@ -211,13 +211,13 @@ $env:GROKBUILD_VERSION = 'v0.2.0'
 irm https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.ps1 | iex
 ```
 
-Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面入口；macOS 默认安装到 `~/Applications`；Windows 会静默运行 NSIS 安装程序并创建开始菜单/桌面快捷方式。macOS 首次启动仍需在“系统设置 → 隐私与安全性 → 辅助功能”中授权。
+Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面入口；macOS 默认安装到 `~/Applications`；Windows 会静默运行 NSIS 安装程序并创建开始菜单/桌面快捷方式。macOS 首次启动仍需在“系统设置 → 隐私与安全性 → 辅助功能”中授权。应用内自动升级仅支持固定路径 `/Applications/划词翻译.app`，通过一键脚本安装到 `~/Applications` 时需要先手动移动到该路径。
 
 ### 方式二：下载 GitHub Release
 
 如果需要手动安装，可在 GitHub 的 [Releases](../../releases) 页面下载对应系统的文件：
 
-- **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，打开后将“划词翻译”拖入 `Applications`；
+- **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，安装到 `/Applications/划词翻译.app`；从 DMG、下载目录或其他位置运行时只能手动升级；
 - **Linux**：x64 下载 `SelectionTranslator-<版本>-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-arm64.AppImage`，添加执行权限后运行；
 - **Windows 10/11**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
 - **Windows 7 SP1 x64**：下载专用包 `SelectionTranslator-<版本>-Setup-win7-x64.exe`，运行安装向导。
@@ -229,15 +229,16 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 ### 应用内检查与升级
 
 - 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
-- 可在 **设置 → 关于** 查看当前版本、手动检查更新和观察下载进度；支持自动安装的平台可在下载完成后点击“立即重启升级”；
+- 可在 **设置 → 关于** 查看当前版本、手动检查更新和观察下载进度；macOS 固定安装在 `/Applications/划词翻译.app` 时，下载与校验完成后会自动退出、替换并重新启动；
 - Windows NSIS 安装包支持应用内下载与重启安装；Linux 仅在从 AppImage 运行时支持自动替换，其他 Linux 安装方式会打开 GitHub Release；
 - Windows 7 专用包通过 GitHub Release API 检查版本，不加载 `electron-updater`，不会自动下载或安装更新；发现新版后请在 **设置 → 关于** 打开 Release 页面，手动下载新版 `Setup-win7-x64.exe` 覆盖安装；
-- macOS 只有通过代码签名校验的 `.app` 才启用自动安装。手动安装模式下，点击升级会把当前架构的 DMG 下载到系统“下载”文件夹并自动打开；用户将“划词翻译”拖入“应用程序”覆盖旧版本后，再回到设置页点击“解除 macOS 隔离属性”；
+- macOS 自动升级仅适用于固定路径 `/Applications/划词翻译.app`。点击升级后，应用会下载当前架构的 DMG，校验 sha512、DMG 内 Bundle ID、版本和代码签名；全部通过后自动退出、备份旧应用、替换新应用、清除 quarantine 并重新启动，无需打开 DMG 或拖拽；
+- 从 DMG、下载目录或其他路径运行 macOS 应用时，自动覆盖会降级为手动安装，避免替换错误目标；缺少 sha512 或 `SHA256SUMS` 摘要不一致时不会自动覆盖；
 - 更新检查与更新包下载都走应用统一的代理会话，与翻译请求使用同一套代理配置；
 - 更新包下载会先探测下载源是否支持 Range：支持时按最多 4 个分片并发下载，不支持或探测失败则自动回退单连接下载；
 - 下载中断后重试会从已完成字节继续，仅在版本、更新包长度或校验值变化时重新完整下载；
 - 检查更新时还会读取同一 Release 的 `SHA256SUMS`，并与 GitHub Release 资产摘要比较；即使版本号没有变化，只要校验值缺失或不一致，也会提示升级；
-- 手动 macOS 更新在打开 DMG 前会校验 sha512：校验失败会删除文件并提示，更新清单没有对应校验值时会明确说明该安装包未经完整性校验；
+- macOS 自动更新必须同时取得并匹配 sha512；缺少摘要或 `SHA256SUMS` 标记为不一致时，自动覆盖会被拒绝。手动下载模式在打开 DMG 前也会校验可用的 sha512，校验失败会删除文件并提示；
 - 无法从更新清单解析出对应 DMG 时会打开 GitHub Release 作为兜底。源码开发模式不会访问更新服务，检查或下载发生异常时设置页也会保留“打开发布页”入口。
 
 #### 同版本重新构建检测
@@ -917,25 +918,25 @@ macOS 流水线支持签名发布和未签名发布两种模式：
 base64 < DeveloperIDApplication.p12 | tr -d '\n'
 ```
 
-未签名模式会显式关闭证书自动发现与公证，并使用不依赖 Apple 证书的 ad-hoc 签名重新封装应用，避免 Apple Silicon 包残留无效签名。该模式不需要开发者证书或 Apple 账号，产物可以进入 GitHub Release，但可能被 Gatekeeper 阻止，也不能使用应用内自动安装。应用检测到新版本后，用户在设置页点击升级即可把对应架构的 DMG 下载到系统“下载”文件夹并自动打开；只有更新清单无法提供可直接下载的 DMG 时，才会打开 GitHub Release 作为兜底。
+未签名模式会显式关闭证书自动发现与公证，并使用不依赖 Apple 证书的 ad-hoc 签名重新封装应用，避免 Apple Silicon 包残留无效签名。该模式不需要开发者证书或 Apple 账号，产物可以进入 GitHub Release，但可能被 Gatekeeper 阻止。未签名包仍可手动安装；应用内自动替换前必须通过代码签名校验，因此未签名或签名不匹配的更新会降级为手动安装。只有更新清单无法提供可直接下载的 DMG 时，才会打开 GitHub Release 作为兜底。
 
-如果历史版本使用 `Apple Development` 签名、其他签名或未签名，macOS 原生更新器都可能因为签名要求不同而拒绝覆盖。此时无需继续重试应用内安装，直接从 GitHub Release 下载 DMG 并手动覆盖旧版本即可。只有持续使用同一团队的 `Developer ID Application` 签名时，才启用应用内自动安装。
+如果历史版本使用 `Apple Development` 签名、其他签名或未签名，macOS 原生更新器都可能因为签名要求不同而拒绝覆盖。此时直接从 GitHub Release 下载 DMG 并手动覆盖旧版本即可。自动替换要求当前应用与更新包都通过代码签名校验，并且更新包 Bundle ID、版本和目标固定路径均匹配。
 
 #### 安装未签名的 macOS 安装包
 
 仅当安装包来自本仓库可信的 GitHub Actions 或 Release，并且你确认文件来源无误时，才使用下面的处理方式：
 
-1. 在 **设置 → 关于** 点击“下载并打开 DMG”，等待应用把更新包保存到系统“下载”文件夹并打开安装界面；如果自动解析失败，可使用“打开发布页”手动下载；
-2. 把“划词翻译”拖入“应用程序”；已有旧版本时选择覆盖；
-3. 回到设置页，点击“解除 macOS 隔离属性”，在确认框中确认已经完成覆盖安装；
-4. 再启动应用。也可以在终端手动执行下面的固定命令。
+1. 将“划词翻译”手动安装到 `/Applications/划词翻译.app`；如果从 DMG 或其他路径运行，应用会自动降级为手动升级；
+2. 在 **设置 → 关于** 点击“下载并打开 DMG”，等待更新包保存到“下载”文件夹并打开安装界面；如果自动解析失败，可使用“打开发布页”手动下载；
+3. 把“划词翻译”拖入“应用程序”并覆盖旧版本；
+4. 回到设置页，点击“解除 macOS 隔离属性”，确认后再启动应用。也可以在终端手动执行下面的固定命令。
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-该命令必须在下载并覆盖应用后执行，无法在 GitHub Actions 打包阶段预先永久移除隔离属性。新版设置页只有在 DMG 下载成功并打开后才显示“解除 macOS 隔离属性”；用户完成拖拽覆盖并主动点击该按钮后，应用会再次确认，然后只对固定路径 `/Applications/划词翻译.app` 执行该命令。应用不会调用 `sudo`，失败时会显示可手动执行的命令。配置完整 Apple 凭据可免去大多数 Gatekeeper 手动处理并恢复应用内自动安装，但不是生成 Release 安装包的硬性条件。
+该命令必须在下载并覆盖应用后执行，无法在 GitHub Actions 打包阶段预先永久移除隔离属性。设置页只有在 DMG 下载成功并打开后才显示“解除 macOS 隔离属性”；用户完成拖拽覆盖并主动点击该按钮后，应用会再次确认，然后只对固定路径 `/Applications/划词翻译.app` 执行该命令。应用不会调用 `sudo`，失败时会显示可手动执行的命令。固定安装路径、有效 sha512 和代码签名校验都满足时，新版会自动清除 quarantine 并重新启动，无需手动操作。
 
 建议统一使用小写版本标签，例如发布 `v1.0.4`：
 
@@ -1011,7 +1012,7 @@ xattr -dr com.apple.quarantine "/Applications/划词翻译.app"
 open "/Applications/划词翻译.app"
 ```
 
-此前生成的未签名产物不会自动变成已签名包。未签名包仍可发布和手动安装；如果希望减少 Gatekeeper 提示并启用应用内自动安装，再配置全部五个 Secrets 后重新构建。
+此前生成的未签名产物不会自动变成已签名包。未签名包仍可发布和手动安装；自动替换前必须通过代码签名校验，如果希望减少 Gatekeeper 提示并启用自动升级，再配置全部五个 Secrets 后重新构建。
 
 如果需要排查已解压的应用，可运行：
 
@@ -1023,7 +1024,7 @@ spctl --assess --type execute --verbose=4 "/Applications/划词翻译.app"
 
 未配置 Apple 发布凭据时生成的 GitHub Actions 和本地开发包仍可能被 Gatekeeper 阻止，也不属于经过 Apple 验证的发行包；确认来源可信后可以按上面的步骤手动安装。
 
-如果应用内更新提示 `Code signature ... did not pass validation` 或“代码未能满足指定的代码要求”，说明当前应用与更新包的签名要求不一致。请在设置页点击升级，应用会自动把对应架构的 DMG 下载到系统“下载”文件夹并打开；把“划词翻译”拖入“应用程序”并覆盖旧版本后，回到设置页点击“解除 macOS 隔离属性”。该操作只解除 Gatekeeper 下载隔离属性，不会修复代码签名不匹配，因此更新器仍采用手动覆盖安装流程；如果无法解析 DMG，使用“打开发布页”手动下载即可。
+如果应用内更新提示 `Code signature ... did not pass validation` 或“代码未能满足指定的代码要求”，说明当前应用与更新包的签名要求不一致。此时自动替换会被拒绝，请在设置页点击升级，应用会把对应架构的 DMG 下载到“下载”文件夹并打开；把“划词翻译”拖入“应用程序”覆盖旧版本后，回到设置页点击“解除 macOS 隔离属性”。该操作只解除 Gatekeeper 下载隔离属性，不会修复代码签名不匹配；如果无法解析 DMG，使用“打开发布页”手动下载即可。
 
 ### 6. 钉钉 Secret 保存失败
 
@@ -1046,7 +1047,7 @@ Electron `safeStorage` 不可用时，应用会拒绝写入明文凭证。请确
 - 翻译请求依赖网络和第三方服务，AI 通道、钉钉、微软翻译、自建/公共 DeepLX、Google 和 MyMemory 均可能受上游变更影响；其中微软通道使用非官方 Bing 网页接口，可能在没有通知的情况下变化或停止工作；
 - 单次输入最长处理 5000 个字符，部分兜底通道有更短的请求限制；
 - GitHub Actions 在缺少全部 Apple 发布凭据时会生成未签名 macOS 测试包；该产物以及尚未签名的 Windows 安装包仍可能显示系统安全警告，正式 macOS 发布仍要求签名和公证；
-- 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，本地未签名 macOS 构建和非 AppImage Linux 构建会降级为手动安装。
+- 项目暂未提供账号体系和云端同步；自动更新依赖 GitHub Release 元数据，macOS 非固定 `/Applications/划词翻译.app` 安装、未签名或签名不匹配构建，以及非 AppImage Linux 构建会降级为手动安装。
 - Windows 7 兼容包仅支持 SP1 x64，不支持 32 位 Win7；OCR 固定使用 Tesseract.js WebAssembly，并内置简体中文、繁体中文和英文模型，只有其他语言首次识别可能联网下载；应用内检查更新使用轻量 GitHub Release API，不加载 `electron-updater`，只支持手动下载安装包覆盖更新。Electron 22 已停止安全更新，长期使用仍建议升级到 Windows 10/11。
 
 ## 后续方向

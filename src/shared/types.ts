@@ -204,6 +204,7 @@ export type UpdatePhase =
   | 'not-available'
   | 'downloading'
   | 'downloaded'
+  | 'installing'
   | 'manual-downloaded'
   | 'error'
 
