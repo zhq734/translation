@@ -1193,6 +1193,171 @@ input[type='number']:disabled {
   min-height: 18px;
 }
 
+/* 快捷动作引导入口：与设置表单行保持一致的留白和响应式换行。 */
+.shortcut-guide-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+}
+
+.shortcut-guide-entry > div {
+  min-width: 0;
+}
+
+.shortcut-guide-entry .field-hint {
+  margin-top: 3px;
+}
+
+.shortcut-guide-entry .btn {
+  flex: 0 0 auto;
+}
+
+/* 快捷动作引导弹层：自适应宽高，颜色全部来自主题 token。 */
+.shortcut-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(16px, 4vw, 32px);
+  background: var(--overlay-backdrop);
+  backdrop-filter: blur(5px);
+}
+
+.shortcut-guide-backdrop[hidden] {
+  display: none;
+}
+
+.shortcut-guide-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(760px, 100%);
+  max-height: 100%;
+  min-height: 0;
+  padding: clamp(18px, 3vw, 26px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-overlay);
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-overlay);
+  overflow-y: auto;
+}
+
+.shortcut-guide-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.shortcut-guide-heading > div {
+  min-width: 0;
+}
+
+.shortcut-guide-eyebrow {
+  color: var(--button-bg);
+  font-size: var(--font-size-caption);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.shortcut-guide-heading h2 {
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: clamp(18px, 3vw, 22px);
+}
+
+.shortcut-guide-heading p {
+  max-width: 62ch;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-size-label);
+  line-height: 1.55;
+}
+
+.shortcut-guide-close {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--button-secondary-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.shortcut-guide-close:hover {
+  background: var(--button-secondary-hover);
+  color: var(--text-primary);
+}
+
+.shortcut-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: var(--space-3);
+}
+
+.shortcut-guide-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-secondary);
+}
+
+.shortcut-guide-key {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-pill);
+  background: var(--control-bg);
+  color: var(--button-bg);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shortcut-guide-card h3 {
+  color: var(--text-primary);
+  font-size: var(--font-size-label);
+}
+
+.shortcut-guide-card p {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.shortcut-guide-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .shortcut-guide-entry,
+  .shortcut-guide-heading {
+    flex-direction: column;
+  }
+
+  .shortcut-guide-entry .btn {
+    width: 100%;
+  }
+}
+
 .logs-list {
   flex: 1;
   min-height: 0;

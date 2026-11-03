@@ -30,6 +30,12 @@
                 <path d="M6 9h.01M9.5 9h.01M13 9h.01M16.5 9h.01M6 12.5h.01M9.5 12.5h.01M13 12.5h.01M16.5 12.5h.01M8 16h8" />
               </svg>
             </button>
+            <button id="open-history" class="header-action-button" type="button" data-i18n-attr="title:popup.openHistory;aria-label:popup.openHistory" title="Translation history" aria-label="Translation history" aria-pressed="false">
+              <svg class="header-action-icon history-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7" />
+                <path d="M4 4v4.7h4.7M12 7.5V12l3 2" />
+              </svg>
+            </button>
             <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
               <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <circle cx="12" cy="12" r="9" />
@@ -103,6 +109,24 @@
           </div>
           <div id="manual-result" class="manual-result" aria-live="polite"></div>
         </div>
+      </section>
+      <section id="history-view" class="history-view" data-i18n-attr="aria-label:popup.historyTitle" aria-label="Translation history" hidden>
+        <div class="history-header">
+          <div>
+            <h2 class="history-title" data-i18n="popup.historyTitle">Translation history</h2>
+            <p class="history-subtitle" data-i18n="popup.historySubtitle">Selection, OCR, and manual translations are saved together</p>
+          </div>
+          <button id="history-clear-unfavorited" class="history-clear-button" type="button" data-i18n="popup.historyClearUnfavorited" data-i18n-attr="title:popup.historyClearUnfavorited;aria-label:popup.historyClearUnfavorited" title="Clear unstarred history" aria-label="Clear unstarred history">Clear unstarred</button>
+        </div>
+        <label class="history-search-wrap" for="history-search">
+          <svg class="history-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m16 16 4 4" />
+          </svg>
+          <input id="history-search" type="search" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:popup.historySearchPlaceholder;aria-label:popup.historySearchPlaceholder" placeholder="Search history" aria-label="Search history" />
+        </label>
+        <div id="history-list" class="history-list" role="list" aria-live="polite"></div>
+        <p id="history-empty" class="history-empty" data-i18n="popup.historyEmpty" hidden>No translation history yet</p>
       </section>
       <div class="footer popup-status-actions" data-i18n-attr="aria-label:popup.statusActions" aria-label="Translation status and actions">
         <button id="speak" class="header-action-button" type="button" data-i18n-attr="title:popup.speakUnavailable;aria-label:popup.speakUnavailable" title="No translation to read aloud" aria-label="No translation to read aloud" aria-pressed="false" disabled>

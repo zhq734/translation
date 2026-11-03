@@ -405,6 +405,30 @@ export type OcrEnginePreference = 'auto' | 'system' | 'paddle' | 'tesseract'
 /** 实际产出 OCR 结果的引擎。 */
 export type OcrEngineId = 'system' | 'paddle' | 'tesseract'
 
+/** 可持久化的统一翻译历史记录，仅包含文本与元数据，不包含截图或图片字节。 */
+export interface TranslationHistoryEntry {
+  /** 稳定记录标识，用于收藏、删除与重新翻译。 */
+  id: string
+  /** 成功翻译时提交的原文。 */
+  sourceText: string
+  /** 成功翻译得到的译文。 */
+  translatedText: string
+  /** 实际或用户选择的源语言。 */
+  sourceLang: string
+  /** 实际或用户选择的目标语言。 */
+  targetLang: string
+  /** 成功完成翻译的 API。 */
+  provider?: TranslationProviderId
+  /** 翻译入口来源。 */
+  origin: TranslationOrigin
+  /** 记录创建或最近一次重复翻译的时间。 */
+  createdAt: number
+  /** 是否由用户收藏。 */
+  favorite: boolean
+  /** OCR 翻译实际使用的识别引擎。 */
+  ocrEngine?: OcrEngineId
+}
+
 /** OCR 请求的细分错误分类，用于弹窗差异化提示。 */
 export type OcrErrorCode =
   | 'permission'
@@ -997,6 +1021,8 @@ export interface Settings {
   ocrHotkey: string
   /** 快捷 OCR 翻译快捷键：框选松开后自动识别并翻译。 */
   ocrQuickHotkey: string
+  /** 是否已查看首次快捷动作引导。 */
+  shortcutGuideSeen: boolean
   /** OCR 语言，auto 表示自动。 */
   ocrLang: string
   /** OCR 前图像放大倍率（1~3）。 */
@@ -1575,6 +1601,16 @@ export interface Api {
   retranslate(sourceLang: string, targetLang: string, origin?: TranslationOrigin): Promise<void>
   /** 提交一条手动翻译请求。 */
   translateManual(request: ManualTranslateRequest): Promise<void>
+  /** 读取统一翻译历史，收藏项优先。 */
+  listTranslationHistory(): Promise<TranslationHistoryEntry[]>
+  /** 设置指定历史记录的收藏状态并返回最新列表。 */
+  setTranslationHistoryFavorite(id: string, favorite: boolean): Promise<TranslationHistoryEntry[]>
+  /** 删除指定历史记录并返回最新列表。 */
+  deleteTranslationHistory(id: string): Promise<TranslationHistoryEntry[]>
+  /** 清空非收藏历史并返回剩余收藏项。 */
+  clearUnfavoritedTranslationHistory(): Promise<TranslationHistoryEntry[]>
+  /** 使用历史记录中的原文与语言重新翻译。 */
+  retranslateHistoryEntry(id: string): Promise<void>
 
   /**
    * 请求主进程使用 Edge 在线服务合成一段临时音频。
@@ -1604,6 +1640,10 @@ export interface Api {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void
+  /** 标记快捷动作引导已查看。 */
+  dismissShortcutGuide(): Promise<Settings>
+  /** 订阅从托盘或设置页重新打开快捷动作引导。 */
+  onShortcutGuideOpen(cb: () => void): () => void
   /**
    * 查询各全局快捷键最近一次注册结果。
    * @returns 按固定字段顺序排列的注册状态。

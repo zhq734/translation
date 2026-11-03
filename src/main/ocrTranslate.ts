@@ -3,7 +3,7 @@ import { scoreOcrText, isMostlyNoise } from '../shared/ocrScoring'
 import { resolveLanguagePair } from '../shared/selectionBehavior'
 import type { OcrRecognizeResult } from '../shared/ocrEngine'
 import type { TranslateOutput } from './translate'
-import type { Settings } from '../shared/types'
+import type { Settings, TranslationProviderId } from '../shared/types'
 import type { DingTalkCredentials } from './dingtalkConfig'
 
 /** OCR 翻译结果：合并翻译输出与 OCR 元信息。 */
@@ -13,7 +13,7 @@ export interface OcrTranslateResult {
   /** 检测到的语言。 */
   detectedLang?: string
   /** 实际使用的翻译通道。 */
-  provider?: string
+  provider?: TranslationProviderId
   /** 实际使用的翻译子通道。 */
   channel?: string
   /** 清洗后的 OCR 原文；噪声/空时仍返回清洗结果。 */

@@ -42,6 +42,18 @@ test('气泡提示应跟随浅深与多彩主题使用语义颜色', () => {
   assert.match(css, /--toast-border:\s*var\(--popup-border\)/u)
 })
 
+test('显式明暗模式必须覆盖历史与引导遮罩颜色', () => {
+  const css = readFileSync('src/renderer/src/theme.css', 'utf8')
+  assert.match(
+    css,
+    /:root\[data-theme-mode='light'\]\s*\{[^}]*--overlay-backdrop:\s*rgba\(15,\s*23,\s*42,\s*0\.28\)/u
+  )
+  assert.match(
+    css,
+    /:root\[data-theme-mode='dark'\]\s*\{[^}]*--overlay-backdrop:\s*rgba\(0,\s*0,\s*0,\s*0\.48\)/u
+  )
+})
+
 test('覆盖层提示胶囊应为反色胶囊并在五套主题与浅深模式下都有定义', () => {
   const css = readFileSync('src/renderer/src/theme.css', 'utf8')
   const toastCss = readFileSync('src/renderer/src/toast.css', 'utf8')

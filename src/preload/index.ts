@@ -58,6 +58,7 @@ import type {
   , DocumentExportRequest
   , DocumentExportResult
   , DocumentHistoryEntry
+  , TranslationHistoryEntry
   , DocumentRunRequest
   , DocumentRunResult
   , DocumentSourceResult
@@ -938,6 +939,45 @@ const api: Api = {
    */
   translateManual: (request: ManualTranslateRequest): Promise<void> =>
     ipcRenderer.invoke('manual-translate:submit', request),
+  /**
+   * 读取统一翻译历史，收藏项优先。
+   * @returns 统一翻译历史列表。
+   * @author zhenghq
+   */
+  listTranslationHistory: (): Promise<TranslationHistoryEntry[]> =>
+    ipcRenderer.invoke('translation-history:list'),
+  /**
+   * 设置指定历史记录的收藏状态。
+   * @param id 历史记录标识。
+   * @param favorite 是否收藏。
+   * @returns 更新后的统一翻译历史列表。
+   * @author zhenghq
+   */
+  setTranslationHistoryFavorite: (id: string, favorite: boolean): Promise<TranslationHistoryEntry[]> =>
+    ipcRenderer.invoke('translation-history:set-favorite', id, favorite),
+  /**
+   * 删除指定历史记录。
+   * @param id 历史记录标识。
+   * @returns 删除后的统一翻译历史列表。
+   * @author zhenghq
+   */
+  deleteTranslationHistory: (id: string): Promise<TranslationHistoryEntry[]> =>
+    ipcRenderer.invoke('translation-history:delete', id),
+  /**
+   * 清空所有非收藏历史记录。
+   * @returns 仅保留收藏项的翻译历史列表。
+   * @author zhenghq
+   */
+  clearUnfavoritedTranslationHistory: (): Promise<TranslationHistoryEntry[]> =>
+    ipcRenderer.invoke('translation-history:clear-unfavorited'),
+  /**
+   * 使用历史记录中的原文和语言重新翻译。
+   * @param id 历史记录标识。
+   * @returns 重新翻译完成后的 Promise。
+   * @author zhenghq
+   */
+  retranslateHistoryEntry: (id: string): Promise<void> =>
+    ipcRenderer.invoke('translation-history:retranslate', id),
 
   /**
    * 请求主进程生成 Edge 在线语音临时音频。
@@ -1011,6 +1051,23 @@ const api: Api = {
     const listener = (_event: unknown, settings: Settings): void => callback(settings)
     ipcRenderer.on('settings:changed', listener)
     return () => ipcRenderer.removeListener('settings:changed', listener)
+  },
+  /**
+   * 标记快捷动作引导已查看。
+   * @returns 保存后的完整设置。
+   * @author zhenghq
+   */
+  dismissShortcutGuide: (): Promise<Settings> => ipcRenderer.invoke('shortcut-guide:dismiss'),
+  /**
+   * 订阅托盘或菜单发起的快捷动作引导展示请求。
+   * @param callback 引导展示回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onShortcutGuideOpen(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('shortcut-guide:open', listener)
+    return () => ipcRenderer.removeListener('shortcut-guide:open', listener)
   },
   /**
    * 获取内存缓冲中的近期主进程日志。

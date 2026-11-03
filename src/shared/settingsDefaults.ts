@@ -4,7 +4,7 @@ import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
 
-export const SETTINGS_SCHEMA_VERSION = 22
+export const SETTINGS_SCHEMA_VERSION = 23
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -58,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ocrEnginePreference: 'auto',
   ocrHotkey: 'Alt+O',
   ocrQuickHotkey: 'Alt+S',
+  shortcutGuideSeen: false,
   ocrLang: 'auto',
   ocrScale: 1,
   ocrTesseractEnabled: true,
@@ -325,6 +326,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       rawSettings.ocrQuickHotkey,
       DEFAULT_SETTINGS.ocrQuickHotkey
     ),
+    // 第二十三版新增首次快捷动作引导状态；旧配置迁移后必须再次展示引导。
+    shortcutGuideSeen: schemaVersion >= 23 && rawSettings.shortcutGuideSeen === true,
     ocrLang: String(merged.ocrLang || 'auto').trim(),
     ocrScale: normalizeOcrScale(merged.ocrScale),
     ocrTesseractEnabled: merged.ocrTesseractEnabled !== false,

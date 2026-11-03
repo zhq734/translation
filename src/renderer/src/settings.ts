@@ -152,6 +152,10 @@ const settingsTitlebar = document.getElementById('settings-titlebar') as HTMLEle
 const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
 const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
 const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement
+const shortcutGuideEl = document.getElementById('shortcut-guide') as HTMLElement
+const shortcutGuideCloseButton = document.getElementById('shortcut-guide-close') as HTMLButtonElement
+const shortcutGuideConfirmButton = document.getElementById('shortcut-guide-confirm') as HTMLButtonElement
+const reopenShortcutGuideButton = document.getElementById('reopen-shortcut-guide') as HTMLButtonElement
 
 type SettingsTabId = 'general' | 'ai' | 'ocr' | 'translation-services' | 'advanced' | 'logs' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
@@ -653,11 +657,50 @@ function populateLanguageSelects(): void {
 async function initialize(): Promise<void> {
   populateLanguageSelects()
 
-  renderSettings(await window.api.getSettings())
+  const settings = await window.api.getSettings()
+  renderSettings(settings)
   renderShortcutRegistrationStates(await window.api.getShortcutRegistrationStates())
   renderOcrStatus(await window.api.getOcrStatus())
   dockerCmd.value = await window.api.getDockerCommand(1189)
   renderUpdateStatus(await window.api.getUpdateStatus())
+  if (!settings.shortcutGuideSeen) showShortcutGuide()
+}
+
+/**
+ * 展示快捷动作引导弹层。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showShortcutGuide(): void {
+  shortcutGuideEl.hidden = false
+  shortcutGuideConfirmButton.focus()
+}
+
+/**
+ * 将快捷动作引导标记为已查看并关闭弹层。
+ * @returns 关闭完成后的 Promise。
+ * @author zhenghq
+ */
+async function dismissShortcutGuide(): Promise<void> {
+  shortcutGuideEl.hidden = true
+  try {
+    renderSettings(await window.api.dismissShortcutGuide())
+  } catch {
+    // 保存失败时仍关闭本次弹层，避免阻断设置页操作；下次启动会再次展示。
+  }
+}
+
+/**
+ * 处理快捷动作引导弹层内的 Escape 关闭。
+ * @param event 当前键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleShortcutGuideKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && !shortcutGuideEl.hidden) {
+    event.preventDefault()
+    void dismissShortcutGuide()
+  }
 }
 
 /**
@@ -2075,6 +2118,11 @@ window.api.onSettingsChanged((settings) => {
   if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
 })
 window.api.onUpdateStatusChanged(renderUpdateStatus)
+window.api.onShortcutGuideOpen(showShortcutGuide)
+reopenShortcutGuideButton.addEventListener('click', showShortcutGuide)
+shortcutGuideCloseButton.addEventListener('click', () => void dismissShortcutGuide())
+shortcutGuideConfirmButton.addEventListener('click', () => void dismissShortcutGuide())
+document.addEventListener('keydown', handleShortcutGuideKeydown)
 
 void initialize()
 

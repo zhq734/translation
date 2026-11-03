@@ -63,6 +63,7 @@
   --ocr-overlay-bg: rgba(15, 23, 42, 0.18);
   --ocr-selection-bg: rgba(255, 255, 255, 0.12);
   --ocr-selection-mask: rgba(0, 0, 0, 0.24);
+  --overlay-backdrop: rgba(15, 23, 42, 0.28);
   --popup-shadow: rgba(0, 0, 0, 0.26);
   --toast-bg: var(--popup-bg);
   --toast-text: var(--text-primary);
@@ -117,6 +118,7 @@
     --ocr-overlay-bg: rgba(0, 0, 0, 0.22);
     --ocr-selection-bg: rgba(255, 255, 255, 0.10);
     --ocr-selection-mask: rgba(0, 0, 0, 0.34);
+    --overlay-backdrop: rgba(0, 0, 0, 0.48);
     --popup-shadow: rgba(0, 0, 0, 0.4);
     --hint-pill-bg: rgba(244, 244, 247, 0.94);
     --hint-pill-text: #17171a;
@@ -132,6 +134,7 @@
 /* 用户显式选择的明暗模式必须压过系统外观，否则系统深色 + 应用浅色时胶囊会取错配色。
    这两组的优先级高于上面的 :root 与 @media 块，但低于各主题预设块。 */
 :root[data-theme-mode='light'] {
+  --overlay-backdrop: rgba(15, 23, 42, 0.28);
   --hint-pill-bg: rgba(15, 23, 42, 0.9);
   --hint-pill-text: #ffffff;
   --hint-pill-icon-success: #34c759;
@@ -140,6 +143,7 @@
 }
 
 :root[data-theme-mode='dark'] {
+  --overlay-backdrop: rgba(0, 0, 0, 0.48);
   --hint-pill-bg: rgba(244, 244, 247, 0.94);
   --hint-pill-text: #17171a;
   --hint-pill-icon-success: #248a3d;

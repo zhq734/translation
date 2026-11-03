@@ -22,9 +22,11 @@ import type {
   PronunciationVariant,
   Settings,
   TranslateDeltaPayload,
-  TranslatePayload
+  TranslatePayload,
+  TranslationHistoryEntry
 } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
+import { filterTranslationHistory } from '../../shared/translationHistory'
 import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
 import { createThrottledScheduler } from '../../shared/throttledScheduler'
 import {
@@ -94,6 +96,12 @@ const sourceLangEl = document.getElementById('source-lang') as HTMLSelectElement
 const targetLangEl = document.getElementById('target-lang') as HTMLSelectElement
 const selectionViewEl = document.getElementById('selection-view') as HTMLElement
 const manualViewEl = document.getElementById('manual-view') as HTMLElement
+const historyViewEl = document.getElementById('history-view') as HTMLElement
+const historyListEl = document.getElementById('history-list') as HTMLElement
+const historySearchEl = document.getElementById('history-search') as HTMLInputElement
+const historyEmptyEl = document.getElementById('history-empty') as HTMLElement
+const historyClearUnfavoritedBtn = document.getElementById('history-clear-unfavorited') as HTMLButtonElement
+const historyBtn = document.getElementById('open-history') as HTMLButtonElement
 const sourceSectionHeadEl = document.getElementById('source-section-head') as HTMLElement
 const resultEl = document.getElementById('result') as HTMLElement
 const originalEl = document.getElementById('original') as HTMLElement
@@ -151,6 +159,12 @@ let pinned = false
 let currentSettings: Settings | null = null
 let documentTranslationCapability: DocumentPlatformCapability | null = null
 let mode: 'selection' | 'manual' = 'selection'
+/** 历史面板是否打开；独立于翻译模式，关闭后恢复此前视图。 */
+let historyOpen = false
+/** 当前从主进程加载的统一翻译历史。 */
+let translationHistory: TranslationHistoryEntry[] = []
+/** 历史列表请求序号，用于丢弃迟到的旧响应。 */
+let historyLoadSequence = 0
 let manualState: ManualTranslationState = createManualTranslationState()
 let selectionSpeechLanguage = ''
 let manualSpeechLanguage = ''
@@ -1674,8 +1688,10 @@ function renderManualState(): void {
  */
 function renderMode(): void {
   const manual = mode === 'manual'
-  manualViewEl.hidden = !manual
-  selectionViewEl.hidden = manual
+  manualViewEl.hidden = historyOpen || !manual
+  selectionViewEl.hidden = historyOpen || manual
+  historyViewEl.hidden = !historyOpen
+  historyBtn.setAttribute('aria-pressed', String(historyOpen))
   manualModeBtn.setAttribute('aria-pressed', String(manual))
   manualModeBtn.title = manual ? t('popup.switchToSelection') : t('popup.manualMode')
   manualModeBtn.setAttribute('aria-label', manualModeBtn.title)
@@ -1687,6 +1703,175 @@ function renderMode(): void {
   renderManualState()
   syncSpeechButton()
   requestAutoResize()
+}
+
+/**
+ * 将一条历史记录渲染为安全的文本节点与操作按钮。
+ * @param entry 待展示的历史记录。
+ * @returns 历史条目元素。
+ * @author zhenghq
+ */
+function createHistoryItem(entry: TranslationHistoryEntry): HTMLElement {
+  const item = document.createElement('article')
+  item.className = 'history-item'
+  item.setAttribute('role', 'listitem')
+  item.dataset.historyId = entry.id
+
+  const heading = document.createElement('div')
+  heading.className = 'history-item-heading'
+  const origin = document.createElement('span')
+  origin.className = 'history-origin'
+  origin.textContent = t(
+    entry.origin === 'ocr'
+      ? 'popup.historyOriginOcr'
+      : entry.origin === 'manual'
+        ? 'popup.historyOriginManual'
+        : 'popup.historyOriginSelection'
+  )
+  const direction = document.createElement('span')
+  direction.className = 'history-direction'
+  direction.textContent = `${entry.sourceLang} → ${entry.targetLang}`
+  const time = document.createElement('time')
+  time.className = 'history-time'
+  time.dateTime = new Date(entry.createdAt).toISOString()
+  time.textContent = new Intl.DateTimeFormat(localeRuntime.locale, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(entry.createdAt)
+  heading.append(origin, direction, time)
+
+  const source = document.createElement('p')
+  source.className = 'history-source'
+  source.textContent = entry.sourceText
+  const translated = document.createElement('p')
+  translated.className = 'history-translation'
+  translated.textContent = entry.translatedText
+
+  const actions = document.createElement('div')
+  actions.className = 'history-actions'
+  const favorite = document.createElement('button')
+  favorite.type = 'button'
+  favorite.className = 'history-action history-favorite'
+  favorite.dataset.action = 'favorite'
+  favorite.dataset.historyId = entry.id
+  favorite.setAttribute('aria-pressed', String(entry.favorite))
+  favorite.textContent = entry.favorite
+    ? t('popup.historyUnfavorite')
+    : t('popup.historyFavorite')
+  const retranslate = document.createElement('button')
+  retranslate.type = 'button'
+  retranslate.className = 'history-action'
+  retranslate.dataset.action = 'retranslate'
+  retranslate.dataset.historyId = entry.id
+  retranslate.textContent = t('popup.historyRetranslate')
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.className = 'history-action history-delete'
+  remove.dataset.action = 'delete'
+  remove.dataset.historyId = entry.id
+  remove.textContent = t('popup.historyDelete')
+  actions.append(favorite, retranslate, remove)
+  item.append(heading, source, translated, actions)
+  return item
+}
+
+/**
+ * 按当前搜索词重绘历史列表与空状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderHistoryList(): void {
+  const visible = filterTranslationHistory(translationHistory, historySearchEl.value)
+  historyListEl.replaceChildren(...visible.map(createHistoryItem))
+  historyEmptyEl.hidden = visible.length > 0
+  historyClearUnfavoritedBtn.disabled = !translationHistory.some((entry) => !entry.favorite)
+  requestAutoResize()
+}
+
+/**
+ * 从主进程加载统一翻译历史并刷新面板。
+ * @returns 加载完成后的 Promise。
+ * @author zhenghq
+ */
+async function loadTranslationHistory(): Promise<void> {
+  const sequence = ++historyLoadSequence
+  try {
+    const entries = await window.api.listTranslationHistory()
+    if (sequence !== historyLoadSequence) return
+    translationHistory = entries
+    renderHistoryList()
+  } catch {
+    if (sequence !== historyLoadSequence) return
+    translationHistory = []
+    renderHistoryList()
+  }
+}
+
+/**
+ * 打开统一翻译历史面板并加载最新记录。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openHistory(): void {
+  stopPronunciationPlayback()
+  closePronunciation()
+  stopSpeech()
+  settleActiveReveal()
+  stopProgressiveReveal()
+  historyOpen = true
+  setPronunciationInteraction(true)
+  renderMode()
+  historySearchEl.focus()
+  void loadTranslationHistory()
+}
+
+/**
+ * 关闭历史面板并恢复此前的翻译视图。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closeHistory(): void {
+  if (!historyOpen) return
+  historyOpen = false
+  setPronunciationInteraction(false)
+  historySearchEl.value = ''
+  renderMode()
+}
+
+/**
+ * 执行历史条目上的收藏、重译或删除操作。
+ * @param action 操作名称。
+ * @param id 历史记录标识。
+ * @returns 操作完成后的 Promise。
+ * @author zhenghq
+ */
+async function handleHistoryAction(action: string, id: string): Promise<void> {
+  const entry = translationHistory.find((item) => item.id === id)
+  if (!entry) return
+  try {
+    if (action === 'favorite') {
+      translationHistory = await window.api.setTranslationHistoryFavorite(id, !entry.favorite)
+      renderHistoryList()
+      return
+    }
+    if (action === 'delete') {
+      translationHistory = await window.api.deleteTranslationHistory(id)
+      renderHistoryList()
+      return
+    }
+    if (action === 'retranslate') {
+      closeHistory()
+      mode = 'selection'
+      renderMode()
+      await window.api.retranslateHistoryEntry(id)
+    }
+  } catch {
+    // 主进程不可用时保留当前列表，避免一次失败让历史面板进入不一致状态。
+    renderHistoryList()
+    flashStatus(t('popup.historyActionFailed'))
+  }
 }
 
 /**
@@ -1831,6 +2016,8 @@ function handleManualOpen(): void {
   stopPronunciationPlayback()
   closePronunciation()
   stopSpeech()
+  historyOpen = false
+  setPronunciationInteraction(false)
   mode = 'manual'
   renderMode()
   manualSourceEl.focus()
@@ -1847,12 +2034,14 @@ function handleManualOpen(): void {
  * @author zhenghq
  */
 function handleSelectionOpen(): void {
-  if (mode === 'selection') return
+  if (mode === 'selection' && !historyOpen) return
   stopPronunciationPlayback()
   closePronunciation()
   stopSpeech()
   settleActiveReveal()
   stopProgressiveReveal()
+  historyOpen = false
+  setPronunciationInteraction(false)
   mode = 'selection'
   renderMode()
 }
@@ -2236,6 +2425,10 @@ async function handleManualSourceContextMenu(event: MouseEvent): Promise<void> {
  */
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
+    if (historyOpen) {
+      closeHistory()
+      return
+    }
     closePopup()
     return
   }
@@ -2374,6 +2567,25 @@ sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguag
 targetLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
 translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
 manualModeBtn.addEventListener('click', () => mode === 'manual' ? leaveManualMode() : enterManualMode())
+historyBtn.addEventListener('click', () => historyOpen ? closeHistory() : openHistory())
+historySearchEl.addEventListener('input', renderHistoryList)
+historyClearUnfavoritedBtn.addEventListener('click', async () => {
+  try {
+    translationHistory = await window.api.clearUnfavoritedTranslationHistory()
+    renderHistoryList()
+  } catch {
+    renderHistoryList()
+    flashStatus(t('popup.historyActionFailed'))
+  }
+})
+historyListEl.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return
+  const button = event.target.closest<HTMLButtonElement>('.history-action')
+  if (!button) return
+  const id = button.dataset.historyId
+  const action = button.dataset.action
+  if (id && action) void handleHistoryAction(action, id)
+})
 speakBtn.addEventListener('click', () => togglePronunciationPlayback('translation'))
 readOriginalBtn.addEventListener('click', () => togglePronunciationPlayback('source'))
 pronunciationCloseBtn.addEventListener('click', closePronunciation)

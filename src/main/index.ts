@@ -26,6 +26,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { openDocumentExportFolder } from './documentExportFolder'
 import { loadSettings, saveSettings, getSettings } from './settings'
+import { TranslationHistoryStore } from './translationHistory'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
 import { maybeSendInstallUpgradeNotification } from './installUpgradeNotification'
 import { createAppLogger, type LogEntry } from './logging'
@@ -178,6 +179,8 @@ import type {
   UpdateStatus,
   ManualTranslateRequest,
   TranslationOrigin,
+  TranslationHistoryEntry,
+  TranslationProviderId,
   TranslatePayload,
   TranslateDeltaPayload,
   DocumentFileSelectionResult
@@ -3188,8 +3191,9 @@ function handleSelectionCaptureResult(
  * @param text 待翻译文本。
  * @param anchor 首次展示弹窗时使用的选区锚点。
  * @param preferences 可选的语言偏好。
- * @param origin 翻译来源。
+ * @param origin 当前翻译结果使用的展示来源。
  * @param interactionToken 当前选区交互 token；省略时不释放选区交互状态。
+ * @param historyOrigin 写入统一历史时使用的来源；默认与展示来源一致。
  * @returns 翻译流程完成后的 Promise。
  * @author zhenghq
  */
@@ -3198,7 +3202,8 @@ async function translateText(
   anchor?: { x: number; y: number },
   preferences?: { sourceLang: string; targetLang: string },
   origin: TranslationOrigin = 'selection',
-  interactionToken?: number
+  interactionToken?: number,
+  historyOrigin: TranslationOrigin = origin
 ): Promise<void> {
   const settings = getSettings()
   const sourcePreference = preferences?.sourceLang ?? settings.sourceLang
@@ -3266,7 +3271,8 @@ async function translateText(
       }
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
-    recordTranslationUsage(origin, output.provider)
+    recordTranslationUsage(historyOrigin, output.provider)
+    void recordTranslationHistory(text, output, pair, historyOrigin)
     showPopup(
       {
         ok: true,
@@ -4509,6 +4515,7 @@ function showOcrTranslationResult(
     return
   }
   const pair = resolveLanguagePair(result.ocrText, sourcePreference, targetPreference)
+  void recordTranslationHistory(result.ocrText, result, pair, 'ocr')
   showPopup({
     ok: true,
     origin: 'ocr',
@@ -4520,7 +4527,7 @@ function showOcrTranslationResult(
     targetLang: pair.targetLang,
     sourcePreference,
     targetPreference,
-    provider: result.provider as never,
+    provider: result.provider,
     channel: result.channel,
     ocrText: result.ocrText,
     ocrRawText: result.ocrRawText,
@@ -6548,6 +6555,66 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+/** 统一翻译历史存储的懒初始化实例。 */
+let translationHistoryStore: TranslationHistoryStore | null = null
+
+/**
+ * 获取统一翻译历史存储，并在首次调用时绑定当前用户数据目录。
+ * @returns 统一翻译历史存储实例。
+ * @author zhenghq
+ */
+function getTranslationHistoryStore(): TranslationHistoryStore {
+  if (!translationHistoryStore) {
+    translationHistoryStore = new TranslationHistoryStore({
+      directory: app.getPath('userData')
+    })
+  }
+  return translationHistoryStore
+}
+
+/**
+ * 记录一次成功翻译，持久化失败时仅写日志而不影响翻译结果展示。
+ * @param text 成功翻译的原文。
+ * @param output 成功翻译结果。
+ * @param pair 实际使用的语言对。
+ * @param origin 翻译入口来源。
+ * @returns 记录完成后的 Promise。
+ * @author zhenghq
+ */
+async function recordTranslationHistory(
+  text: string,
+  output: { translation?: string; provider?: TranslationProviderId },
+  pair: { sourceLang: string; targetLang: string },
+  origin: TranslationOrigin
+): Promise<void> {
+  try {
+    await getTranslationHistoryStore().record({
+      sourceText: text,
+      translatedText: output.translation ?? '',
+      sourceLang: pair.sourceLang,
+      targetLang: pair.targetLang,
+      provider: output.provider,
+      origin,
+      ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
+    })
+  } catch (error) {
+    appLogger.append('warn', [
+      `[translation-history] write failed: ${error instanceof Error ? error.message : String(error)}`
+    ], 'main')
+  }
+}
+
+/**
+ * 按记录 ID 查找统一翻译历史条目。
+ * @param id 历史记录标识。
+ * @returns 找到的记录；不存在时返回 null。
+ * @author zhenghq
+ */
+async function findTranslationHistoryEntry(id: string): Promise<TranslationHistoryEntry | null> {
+  const entries = await getTranslationHistoryStore().list()
+  return entries.find((entry) => entry.id === id) ?? null
+}
+
 /**
  * 校验来自 Renderer 的原生 View 矩形。
  * @param value 未信任的 IPC 负载。
@@ -7356,6 +7423,50 @@ function registerIpc(): void {
     }, origin === 'ocr' ? 'ocr' : 'selection')
   })
 
+  /** 返回统一翻译历史，收藏项优先。 */
+  ipcMain.handle('translation-history:list', () => getTranslationHistoryStore().list())
+  /** 设置指定历史记录的收藏状态并返回最新列表。 */
+  ipcMain.handle('translation-history:set-favorite', async (_event, id: unknown, favorite: unknown) => {
+    const store = getTranslationHistoryStore()
+    const normalizedId = typeof id === 'string' ? id.trim() : ''
+    if (normalizedId) await store.setFavorite(normalizedId, favorite === true)
+    return store.list()
+  })
+  /** 删除指定历史记录并返回最新列表。 */
+  ipcMain.handle('translation-history:delete', async (_event, id: unknown) => {
+    const store = getTranslationHistoryStore()
+    const normalizedId = typeof id === 'string' ? id.trim() : ''
+    if (normalizedId) await store.delete(normalizedId)
+    return store.list()
+  })
+  /** 清空所有非收藏历史并返回保留的收藏项。 */
+  ipcMain.handle('translation-history:clear-unfavorited', async () => {
+    const store = getTranslationHistoryStore()
+    await store.clearNonFavorites()
+    return store.list()
+  })
+  /** 使用历史记录中的原文和语言重新翻译。 */
+  ipcMain.handle('translation-history:retranslate', async (_event, id: unknown) => {
+    const normalizedId = typeof id === 'string' ? id.trim() : ''
+    if (!normalizedId) return
+    const entry = await findTranslationHistoryEntry(normalizedId)
+    if (!entry) return
+    await translateText(
+      entry.sourceText,
+      undefined,
+      {
+        sourceLang: entry.sourceLang,
+        targetLang: entry.targetLang
+      },
+      entry.origin === 'manual' ? 'selection' : entry.origin,
+      undefined,
+      entry.origin
+    )
+  })
+
+  /** 标记快捷动作引导已查看。 */
+  ipcMain.handle('shortcut-guide:dismiss', () => applySettingsPatch({ shortcutGuideSeen: true }))
+
   ipcMain.handle('settings:get', () => getSettings())
   ipcMain.handle('shortcuts:get-registration', () => shortcutRegistrationStates)
   /**
@@ -7554,6 +7665,20 @@ function buildTrayMenu(): Menu {
     { label: t.t('menu.targetLanguage'), submenu: targetSubmenu },
     { label: t.t('menu.sourceLanguage'), submenu: sourceSubmenu },
     { type: 'separator' },
+    {
+      label: t.t('menu.shortcutGuide'),
+      click: () => {
+        void openSettings({ bringToFront: true, explicitEntry: true })
+          .then(() => {
+            if (settingsWin && !settingsWin.isDestroyed()) {
+              settingsWin.webContents.send('shortcut-guide:open')
+            }
+          })
+          .catch((error: unknown) => {
+            console.error('[settings] 打开快捷动作使用指南失败:', error)
+          })
+      }
+    },
     { label: t.t('menu.settings'), click: () => void openSettings({ explicitEntry: true }) },
     { label: t.t('menu.quit'), click: () => stopApplicationService() }
   ])
