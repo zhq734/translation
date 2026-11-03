@@ -523,6 +523,30 @@ test('划词隐藏后任何迟到的窗口显示都必须被立即撤销，直�
     '首次划词仍必须主动隐藏设置页')
 })
 
+test('划词隐藏设置页时必须立即失效旧置前意图并阻止统一入口继续显示', () => {
+  const hideSource = stripComments(
+    extractFunction(mainSource, 'function suspendSettingsWindowForExternalSelection(')
+  )
+  const completeSource = stripComments(
+    extractFunction(mainSource, 'function canCompleteSettingsBringToFront(')
+  )
+
+  // hide() 与后续 suppressSelectionActivationWindowGap() 之间仍有同步调用边界。
+  // 启动首开可能恰好停在 await 之后，若隐藏动作不立即递增代际，旧置前仍会执行。
+  assert.match(
+    hideSource,
+    /settingsWindowHiddenForSelection\s*=\s*true[\s\S]*?settingsBringToFrontEpoch\s*\+=\s*1/u,
+    '隐藏设置页时必须同步递增置前代际'
+  )
+  // 即使有其它调用方只隐藏窗口而没有续期保护期，统一置前入口也必须以隐藏态
+  // 作为最终门禁，避免 moveTop()/focus() 把刚隐藏的设置页重新带回前台。
+  assert.match(
+    completeSource,
+    /settingsWindowHiddenForSelection/u,
+    '统一置前入口必须拒绝仍处于划词隐藏状态的设置页'
+  )
+})
+
 test('设置窗口销毁时必须复位划词隐藏标记，避免新窗口被旧状态误隐藏', () => {
   const closedStart = mainSource.indexOf("settingsWin.on('closed'")
   const closedEnd = mainSource.indexOf('/**', closedStart)

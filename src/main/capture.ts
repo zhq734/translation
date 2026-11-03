@@ -60,6 +60,7 @@ import {
   activateMacosWindowSnapshot,
   enumerateMacosWindows,
   isFailedWindowActivation,
+  retryMacosNativeSelectionAfterApplicationActivation,
   type MacosWindowActivationResult
 } from './macosWindowActivation'
 import { chromiumProcessDetector } from './chromiumProcessDetector'
@@ -1223,6 +1224,50 @@ async function captureByCopy(
           }
         }
       }
+      // Safari 等应用的后台窗口可以 raise，但 AXFocusedUIElement 不可读。
+      // 首次直读仍未可信时，按源进程激活应用并重新确认同一目标窗口，再做
+      // 一次有界重读。最终结果仍走统一可信判断，避免读到同进程其它窗口。
+      if (context?.pid !== undefined && !signal?.aborted &&
+          !isTrustedNativeSelection(native, context)) {
+        const snapshot = toWindowSnapshot(context)
+        if (snapshot) {
+          const applicationRetry = await retryMacosNativeSelectionAfterApplicationActivation(
+            native,
+            {
+              isTrustedSelection: (result) => isTrustedNativeSelection(result, context),
+              isAborted: () => signal?.aborted === true,
+              activateAndConfirmWindow: () => activateMacosApplicationAndConfirmWindow(snapshot, {
+                activateApplication: activateMacosApplication,
+                enumerateWindows: enumerateMacosWindows,
+                now: Date.now,
+                sleep
+              }),
+              readSelection: () => readSelectionViaMacosHelper(
+                signal,
+                context.windowNumber,
+                context.pid,
+                context.bounds,
+                context.titleFingerprint
+              )
+            }
+          )
+          console.log(
+            `[capture] post-application-activate-native-read ` +
+            `status=${applicationRetry.result?.status ?? 'unknown'} ` +
+            `activation=${applicationRetry.activation?.outcome ?? 'skipped'} ` +
+            `elapsedMs=${Date.now() - nativeStartedAt}`
+          )
+          const retried = applicationRetry.result
+          if (retried && isTrustedNativeSelection(retried, context)) {
+            native = retried
+            nativeStatus = retried.status
+            if (retried.reason === 'api-disabled') apiDisabledDetected = true
+          } else if (retried) {
+            nativeStatus = retried.status
+            if (retried.reason === 'api-disabled') apiDisabledDetected = true
+          }
+        }
+      }
     }
     console.log(
       `[capture] post-activate-native-read status=${nativeStatus} ` +
@@ -1442,8 +1487,7 @@ async function captureByCopy(
       const shouldBlockChromiumShortcut = process.platform === 'darwin' &&
         isChromiumBundleId(context?.bundleId) &&
         chromeAxUnavailable &&
-        menuItem === 'unavailable' &&
-        syntheticCopyObserved === false
+        menuItem === 'unavailable'
       if (shouldBlockChromiumShortcut) {
         const failureReason: SelectionFailureReason =
           apiDisabledDetected ? 'api-disabled' : 'timeout'

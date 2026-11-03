@@ -1317,6 +1317,9 @@ function suspendSettingsWindowForExternalSelection(): void {
   // 先登记再隐藏：hide 事件会同步清理焦点租约，若顺序相反，事件回调可能看不到
   // “本轮隐藏是划词触发的”这一语义。显式入口会统一解除该标记。
   settingsWindowHiddenForSelection = true
+  // 隐藏本身就是一次新的前台意图：必须同步递增代际，使已经越过 await 的启动
+  // 首开或 Dock 激活收尾立即失效，不能等到后续 suppressSelectionActivationWindowGap()。
+  settingsBringToFrontEpoch += 1
   settingsWin.hide()
   logCandidateProbe('settings-hidden-for-selection', false)
 }
@@ -1610,6 +1613,10 @@ function canCompleteSettingsBringToFront(
   bringToFrontEpoch: number,
   explicitPopupSource: boolean
 ): boolean {
+  // 划词隐藏是比保护期更强的状态：窗口已经被移出窗口服务器候选集合，任何
+  // 迟到的 show()/moveTop()/focus() 都会重新制造前台闪现。显式入口必须先通过
+  // resumeSettingsWindowAfterExternalSelection() 清除该状态，不能在这里绕过。
+  if (settingsWindowHiddenForSelection) return false
   if (explicitPopupSource) return true
   return bringToFrontEpoch === settingsBringToFrontEpoch &&
     !isSelectionWindowRaiseGuardActive() &&
@@ -2032,6 +2039,9 @@ async function configureMacOSMenuBarApplication(
 ): Promise<void> {
   if (!isMac) return
   dockIconEnabled = showDockIcon
+  // npm run dev 直接运行 Electron.app，系统默认展示 electron.icns。这里必须在
+  // 任何窗口创建和 Dock 可见性刷新之前主动覆盖，否则启动首屏会短暂显示框架图标。
+  app.dock?.setIcon(loadMacOSDockIcon())
   if (!showDockIcon || !settingsWillOpen) await applyMacOSDockVisibility(showDockIcon)
   Menu.setApplicationMenu(null)
 }

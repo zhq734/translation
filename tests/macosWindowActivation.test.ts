@@ -10,6 +10,7 @@ import {
   isFailedWindowActivation,
   MACOS_WINDOW_ENUMERATION_TIMEOUT_MS,
   MACOS_WINDOW_ENUMERATION_RETRY_TIMEOUT_MS,
+  retryMacosNativeSelectionAfterApplicationActivation,
   runWindowHelperWithListRetry,
   type MacosWindowActivationResult,
   type MacosWindowActivationDeps,
@@ -207,6 +208,88 @@ test('进程级激活后确认同一目标窗口位于最前时应报告精确�
     windowMatched: true
   })
   assert.equal(enumerationCount, 1, '激活后必须重新枚举并确认同一目标窗口')
+})
+
+/**
+ * 校验首次 AX 直读不可信时，会按应用级激活结果受控重读一次。
+ * Safari 的窗口级 raise 不会保证应用成为前台，必须在 AX 失败后再激活应用。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('原生直读失败后应受控激活应用并重读一次', async () => {
+  const activation: MacosWindowActivationResult = {
+    activated: true,
+    confirmed: true,
+    outcome: 'exact',
+    windowCount: 2,
+    windowMatched: true
+  }
+  let activationCalls = 0
+  let readCalls = 0
+  const retried = await retryMacosNativeSelectionAfterApplicationActivation(
+    { status: 'unknown' as const, text: '' },
+    {
+      isTrustedSelection: (result) => result?.status === 'present',
+      isAborted: () => false,
+      activateAndConfirmWindow: async () => {
+        activationCalls += 1
+        return activation
+      },
+      readSelection: async () => {
+        readCalls += 1
+        return { status: 'present' as const, text: 'Safari 选区' }
+      }
+    }
+  )
+
+  assert.equal(activationCalls, 1, '首次 AX 失败后只允许发起一次应用级激活')
+  assert.equal(readCalls, 1, '应用级激活成功后只允许重读一次')
+  assert.deepEqual(retried.activation, activation)
+  assert.equal(retried.result?.text, 'Safari 选区')
+})
+
+/**
+ * 校验应用级激活未精确确认或已取消时不得继续重读 AX。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('应用级激活未确认或取消时不得继续原生直读', async () => {
+  let readCalls = 0
+  const failedActivation = await retryMacosNativeSelectionAfterApplicationActivation(
+    { status: 'unknown' as const, text: '' },
+    {
+      isTrustedSelection: () => false,
+      isAborted: () => false,
+      activateAndConfirmWindow: async () => ({
+        activated: true,
+        confirmed: false,
+        outcome: 'failed',
+        windowMatched: true
+      }),
+      readSelection: async () => {
+        readCalls += 1
+        return null
+      }
+    }
+  )
+  const aborted = await retryMacosNativeSelectionAfterApplicationActivation(
+    { status: 'unknown' as const, text: '' },
+    {
+      isTrustedSelection: () => false,
+      isAborted: () => true,
+      activateAndConfirmWindow: async () => {
+        throw new Error('取消后不得激活应用')
+      },
+      readSelection: async () => {
+        readCalls += 1
+        return null
+      }
+    }
+  )
+
+  assert.equal(failedActivation.activation?.outcome, 'failed')
+  assert.equal(aborted.activation, null)
+  assert.equal(readCalls, 0, '未精确确认或已取消时不得继续读取 AX')
 })
 
 /**

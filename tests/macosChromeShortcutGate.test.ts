@@ -59,6 +59,37 @@ test('Chrome AX 和菜单不可用时应停止快捷键盲发', () => {
   )
 })
 
+/**
+ * 校验复制事件观测不能绕过 Chrome 安全门禁。
+ *
+ * 全局事件钩子看到的是本程序注入的按键，不是 Chrome 已消费按键并写入
+ * 剪贴板。AX 与菜单都不可用时，即使 eventObserved=true 也必须停止盲重试，
+ * 否则只会延长取词超时并放大剪贴板被错误改写的时间窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Chrome 已观测模拟复制事件时仍不得绕过 AX 安全门禁', () => {
+  const source = readCaptureSource()
+  const copyStart = source.indexOf('async function captureByCopy(')
+  const copyEnd = source.indexOf('/**\n * 捕获当前选中文字', copyStart)
+  const copySource = source.slice(copyStart, copyEnd)
+  const gateStart = copySource.indexOf('const shouldBlockChromiumShortcut')
+  const gateEnd = copySource.indexOf('if (shouldBlockChromiumShortcut)', gateStart)
+
+  assert.ok(gateStart >= 0 && gateEnd > gateStart, '应存在 Chromium 专用门禁')
+  const gateSource = copySource.slice(gateStart, gateEnd)
+  assert.doesNotMatch(
+    gateSource,
+    /syntheticCopyObserved\s*===\s*false/u,
+    '模拟按键被全局钩子观测到不等于目标应用已消费复制命令'
+  )
+  assert.match(
+    gateSource,
+    /menuItem\s*===\s*'unavailable'/u,
+    'AX 与菜单均不可用时必须命中门禁'
+  )
+})
+
 test('Safari 不得命中 Chromium 专用门禁', () => {
   const source = readCaptureSource()
   const copyStart = source.indexOf('async function captureByCopy(')
@@ -97,7 +128,16 @@ test('AX helper 必须区分焦点就绪和焦点失配', () => {
   )
 
   assert.match(windowRead, /if \(focusStatus\) \*focusStatus = @"ready"/u, '焦点窗口匹配时应输出 ready')
-  assert.match(windowRead, /if \(focusStatus\) \*focusStatus = @"target-mismatch"/u, '焦点窗口失配时应输出 target-mismatch')
+  assert.match(
+    windowRead,
+    /if \(focusStatus && !applicationFocusMatchesTarget\) \*focusStatus = @"target-mismatch"/u,
+    '应用焦点窗口失配时应输出 target-mismatch'
+  )
+  assert.match(
+    windowRead,
+    /if \(result && focusStatus\) \*focusStatus = @"ready"/u,
+    '目标窗口焦点元素命中时必须把焦点状态更新为 ready'
+  )
 })
 
 test('AX helper 必须输出脱敏焦点阶段诊断', () => {

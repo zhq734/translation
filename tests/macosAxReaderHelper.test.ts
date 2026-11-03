@@ -164,6 +164,26 @@ test('祖先链读取的每一层都应保留 AXSelectedTextMarkerRange 回退',
 })
 
 /**
+ * 校验 WebKit 的 marker range 必须通过 AXStringForTextMarkerRange 读取，
+ * 并保留 AXTextForRange 作为旧版应用兼容回退。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('WebKit marker range 应优先使用 AXStringForTextMarkerRange', () => {
+  const source = readHelperSource()
+  const markerBody = extractFunction(source, 'static NSString *CopySelectedTextViaMarkerRange')
+  const correctAttributeAt = markerBody.indexOf('AXStringForTextMarkerRange')
+  const legacyAttributeAt = markerBody.indexOf('AXTextForRange')
+
+  assert.ok(correctAttributeAt >= 0,
+    'WebKit marker range 必须使用 AXStringForTextMarkerRange 参数化属性')
+  assert.ok(legacyAttributeAt > correctAttributeAt,
+    'AXStringForTextMarkerRange 失败后应保留 AXTextForRange 兼容回退')
+  assert.match(markerBody, /AXUIElementCopyParameterizedAttributeValue/u,
+    '必须通过 AX 参数化属性读取 marker range 文本')
+})
+
+/**
  * 校验 Safari/WebKit 的选中文字位于 focused element 的祖先节点时，
  * 窗口级与系统级读取都必须沿完整祖先链查找，而不是只检查当前元素。
  * @returns 无返回值。
@@ -293,6 +313,77 @@ test('窗口级 AX 读取应先在目标窗口上触发后代树构建', () => {
   const focusedReadAt = windowBody.indexOf('kAXFocusedUIElementAttribute')
   assert.ok(touchAt >= 0 && focusedReadAt > touchAt,
     'touch 必须发生在窗口级 focused element 读取之前')
+})
+
+/**
+ * 校验窗口已精确命中但焦点元素没有选区时，仍保留真实窗口命中诊断，
+ * 避免最终失败汇总把 exact/windowMatched=true 覆盖成 failed/false。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('目标窗口命中但无选区时应保留 windowMatched 诊断', () => {
+  const source = readHelperSource()
+  const windowBody = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+
+  assert.match(windowBody, /BOOL \*windowMatched/u,
+    '窗口级读取必须通过输出参数返回是否命中目标窗口')
+  assert.match(windowBody, /if \(windowMatched\) \*windowMatched = YES;/u,
+    '窗口定位成功后必须立即记录命中状态')
+  assert.match(readBody, /CopySelectedTextFromWindow\([^;]*&windowMatched/u,
+    '共享读取入口必须接收窗口命中状态')
+  assert.match(readBody, /result\.windowMatched = windowMatched;/u,
+    '外层必须保存窗口命中状态，而不是只在取到文本时写 true')
+  assert.match(readBody, /if \(windowMatched\)[\s\S]*?result\.windowLocate = @"exact"/u,
+    '窗口命中时应写入 exact 诊断')
+  assert.match(readBody, /if \(options\.hasWindowArgument && !result\.windowMatched\)[\s\S]*?result\.windowLocate = @"failed"/u,
+    '只有未命中窗口时才允许在最终汇总写入 failed')
+})
+
+/**
+ * 校验系统焦点或鼠标位置兜底成功时不会把非窗口级读取误报为 exact。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('非窗口级 AX 兜底成功应标记 app-fallback 且 windowMatched=false', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+
+  assert.match(
+    readBody,
+    /result\.windowLocate = @"fallback";[\s\S]{0,120}?result\.windowMatched = NO;/u,
+    '系统焦点或鼠标位置兜底命中时必须同时清除窗口命中标记'
+  )
+})
+
+/**
+ * 校验目标窗口命中后会优先搜索 AXWebArea 后代，并设置深度与节点数硬上限。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('目标窗口应有界搜索 AXWebArea 后代选区', () => {
+  const source = readHelperSource()
+  const searchBody = extractFunction(source, 'static NSString *CopySelectedTextFromDescendants')
+  const windowBody = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+
+  assert.match(searchBody, /AXWebArea/u, '必须优先识别 AXWebArea 节点')
+  assert.match(searchBody, /kAXChildrenAttribute/u, '必须通过 AXChildren 遍历后代')
+  assert.match(searchBody, /kMaxAxSelectionSearchDepth/u, '搜索必须有深度上限')
+  assert.match(searchBody, /kMaxAxSelectionSearchNodeCount/u, '搜索必须有节点数量上限')
+  assert.match(searchBody, /CopySelectedTextFromAncestry\(element, 1\)/u,
+    '搜索树的每个节点都必须复用选中文本属性读取')
+  assert.match(windowBody, /CopySelectedTextFromDescendants\(window/u,
+    '窗口级 focused element 未命中后必须搜索目标窗口后代')
+  const focusedAt = windowBody.indexOf('kAXFocusedUIElementAttribute')
+  const descendantSearchAt = windowBody.indexOf('CopySelectedTextFromDescendants(window')
+  assert.ok(focusedAt >= 0 && descendantSearchAt > focusedAt,
+    '后代搜索必须位于 focused element 读取之后')
 })
 
 /**
@@ -472,11 +563,45 @@ test('application 焦点元素读取前必须确认 focused window 属于目标�
   assert.match(body, /FocusedWindowBelongsToTarget/u, '必须显式校验 focused window 是否属于目标窗口')
   assert.match(
     body,
-    /if \([^\n]*FocusedWindowBelongsToTarget[\s\S]*?kAXFocusedUIElementAttribute/u,
+    /if \([^\n]*applicationFocusMatchesTarget\)[\s\S]*?application,\s*kAXFocusedUIElementAttribute/u,
     '只有归属校验通过后才允许读取 application 焦点元素'
   )
   assert.match(body, /CopySelectedTextFromAncestry\(\(AXUIElementRef\)focusedValue/u,
     '窗口焦点元素也必须复用祖先链读取，保留 marker range 回退')
+})
+
+/**
+ * 校验精确命中的目标窗口在 application AXFocusedWindow 不可读时，
+ * 仍允许读取该窗口自己的 AXFocusedUIElement。
+ *
+ * Safari 后台窗口会出现 AXWindows 可精确匹配、application focused window
+ * 读取失败，但 window focused element 可读的情况。此时目标窗口身份已经由
+ * AXWindows 命中确认，不能再把窗口级焦点入口一并跳过。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('精确目标窗口的应用级焦点不可读时仍应读取窗口焦点元素', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+  const applicationFocusAt = body.indexOf(
+    'AXUIElementCopyAttributeValue(\n      application, kAXFocusedUIElementAttribute'
+  )
+  const windowFocusAt = body.indexOf(
+    'AXUIElementCopyAttributeValue(\n      window, kAXFocusedUIElementAttribute'
+  )
+
+  assert.ok(applicationFocusAt >= 0, '应保留 application 焦点元素入口')
+  assert.ok(windowFocusAt > applicationFocusAt, '应保留目标窗口焦点元素入口')
+  assert.doesNotMatch(
+    body,
+    /if \(FocusedWindowBelongsToTarget\([\s\S]*?if \(!result\) \{/u,
+    'application focused window 不可读时不得跳过 window focused element'
+  )
+  assert.match(
+    body,
+    /AXUIElementCopyAttributeValue\(\s*window,\s*kAXFocusedUIElementAttribute/u,
+    '目标窗口焦点元素必须独立尝试'
+  )
 })
 
 /**
@@ -510,6 +635,170 @@ test('窗口级 AX 读取失败后应保留原有应用级与鼠标位置兜底'
   assert.ok(windowReadAt >= 0, '共享读取函数应先执行窗口级读取')
   assert.ok(systemFocusedAt > windowReadAt, '窗口级失败后才进入 application 焦点读取')
   assert.ok(mouseReadAt > systemFocusedAt, '最后才进入鼠标位置兜底')
+})
+
+/**
+ * 校验窗口入口返回 APIDisabled 时不得提前结束多入口读取。
+ * -25211 可能只影响目标应用的窗口级 AX 入口，系统焦点或鼠标位置入口
+ * 仍可能返回可用元素；只有所有入口均失败后才允许输出 api-disabled。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口入口 APIDisabled 后仍应尝试系统焦点与鼠标位置入口', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const windowReadAt = readBody.indexOf('CopySelectedTextFromWindow(')
+  const systemFocusedAt = readBody.indexOf('kAXFocusedUIElementAttribute', windowReadAt)
+  const mouseReadAt = readBody.indexOf('CopyElementAtMousePosition', systemFocusedAt)
+
+  assert.ok(windowReadAt >= 0, '应存在窗口级读取入口')
+  assert.ok(systemFocusedAt > windowReadAt, '应存在系统焦点读取入口')
+  assert.ok(mouseReadAt > systemFocusedAt, '应存在鼠标位置读取入口')
+
+  const windowToFocusedSource = readBody.slice(windowReadAt, systemFocusedAt)
+  const focusedToMouseSource = readBody.slice(systemFocusedAt, mouseReadAt)
+  assert.doesNotMatch(
+    windowToFocusedSource,
+    /if \(apiDisabled\)[\s\S]*?return result;/u,
+    '窗口入口 APIDisabled 时不得跳过系统焦点入口'
+  )
+  assert.doesNotMatch(
+    focusedToMouseSource,
+    /return result;/u,
+    '系统焦点入口处理期间不得提前返回，鼠标位置入口必须继续可达'
+  )
+})
+
+/**
+ * 校验共享读取函数只在一个出口释放 systemWide。
+ *
+ * 鼠标位置入口返回 APIDisabled 后仍需走到函数尾部汇总错误；若该分支
+ * 提前释放 systemWide，尾部会再次释放同一 CoreFoundation 对象并触发
+ * SIGTRAP，导致进程内 N-API addon 把 Electron 主进程一起带崩。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('多入口 AX 读取不得重复释放 systemWide', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const systemWideCreations = readBody.match(/AXUIElementCreateSystemWide\(\)/gu) ?? []
+  const systemWideReleases = readBody.match(/CFRelease\(systemWide\)/gu) ?? []
+  const mouseReadAt = readBody.lastIndexOf('CopyElementAtMousePosition')
+  const systemWideReleaseAt = readBody.lastIndexOf('CFRelease(systemWide)')
+
+  assert.equal(systemWideCreations.length, 1, '共享读取函数应只创建一次 systemWide')
+  assert.equal(systemWideReleases.length, 1, '共享读取函数应只在一个出口释放 systemWide')
+  assert.ok(
+    mouseReadAt >= 0 && systemWideReleaseAt > mouseReadAt,
+    '统一释放应位于鼠标位置入口之后，确保所有入口都已尝试'
+  )
+})
+
+/**
+ * 校验统一出口不会把已命中的读取结果覆盖成失败诊断。
+ *
+ * 尾部失败汇总只能在所有入口均未命中时执行；否则窗口入口成功后仍会被
+ * 写成 windowLocate=failed，系统焦点或鼠标入口成功后也会丢失 fallback 语义。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('多入口 AX 读取成功时不得被尾部失败汇总覆盖', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const terminalBody = readBody.slice(readBody.indexOf('CFRelease(systemWide)'))
+  const failureSummaryAt = terminalBody.indexOf('if (!completed)')
+  const returnAt = terminalBody.indexOf('return result;')
+  assert.ok(
+    failureSummaryAt >= 0 && returnAt > failureSummaryAt,
+    '应在返回前设置受 completed 保护的失败汇总块'
+  )
+  const failureSummary = terminalBody.slice(failureSummaryAt, returnAt)
+  const beforeFailureSummary = terminalBody.slice(0, failureSummaryAt)
+
+  assert.match(
+    failureSummary,
+    /if \(apiDisabled\)[\s\S]*?result\.reason = @"api-disabled"/u,
+    '未命中时应保留 api-disabled 原因'
+  )
+  assert.match(failureSummary, /if \(options\.hasWindowArgument && !result\.windowMatched\)/u,
+    '仅在窗口未命中时才汇总窗口定位失败')
+  assert.match(failureSummary, /result\.windowLocate = @"failed"/u,
+    '未命中时应输出 failed 诊断')
+  assert.doesNotMatch(beforeFailureSummary, /result\.(?:reason|windowLocate)\s*=/u,
+    '失败汇总不得位于 completed 保护之外，避免覆盖 exact 或 fallback')
+})
+
+/**
+ * 校验 AX 读取的核心 API 调用失败分支都释放系统级 AX 元素。
+ *
+ * `ReadMacosAxSelection` 只在函数尾部统一释放 `systemWide`，因此中途任何
+ * `return result` 都会泄漏对象。更危险的是 addon 在 libuv 线程池反复执行，
+ * 泄漏最终可能在 CoreFoundation 内部触发进程级 SIGTRAP。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX 读取核心路径不得在释放 systemWide 前提前返回', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const systemWideCreationAt = readBody.indexOf('AXUIElementCreateSystemWide()')
+  const systemWideReleaseAt = readBody.lastIndexOf('CFRelease(systemWide)')
+  assert.ok(systemWideCreationAt >= 0 && systemWideReleaseAt > systemWideCreationAt,
+    '应存在 systemWide 创建与统一释放出口')
+  const beforeRelease = readBody.slice(systemWideCreationAt, systemWideReleaseAt)
+  const earlyReturnCount = (beforeRelease.match(/return result;/gu) ?? []).length
+
+  assert.equal(earlyReturnCount, 1,
+    '仅允许创建 systemWide 失败时提前返回，其余路径必须走到统一释放出口')
+  assert.match(
+    beforeRelease,
+    /if \(!systemWide\) return result;/u,
+    '唯一提前返回必须是 systemWide 创建失败分支'
+  )
+})
+
+/**
+ * 校验窗口级命中后不会覆盖已记录的焦点诊断。
+ *
+ * `CopySelectedTextFromWindow` 会把 focusStatus 设为 ready 或 target-mismatch；
+ * 外层若在窗口入口后无条件写回 unknown，就会丢失可观测的焦点阶段，
+ * 使 Safari/Chrome 的取词排障再次退化为只有 windowLocate 信息。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口级读取后不得用 unknown 覆盖已记录的焦点状态', () => {
+  const source = readHelperSource()
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const windowBlockStart = readBody.indexOf('if (options.hasWindowArgument)')
+  const windowBlockEnd = readBody.indexOf('// 第一级与第二级', windowBlockStart)
+  const windowBlock = readBody.slice(windowBlockStart, windowBlockEnd)
+
+  assert.match(windowBlock, /result\.focusStatus = focusStatus;/u,
+    '窗口入口必须保存读取阶段返回的焦点状态')
+  assert.match(
+    windowBlock,
+    /if \(!result\.focusStatus\) \{\s*result\.focusStatus = @"unknown";\s*\}/u,
+    '仅在窗口入口未返回焦点状态时才允许写入 unknown'
+  )
+  assert.doesNotMatch(
+    windowBlock,
+    /(?<!if \(!result\.focusStatus\) \{\s*)result\.focusStatus = @"unknown";/u,
+    '不得在窗口入口后无条件把 ready 或 target-mismatch 覆盖为 unknown'
+  )
 })
 
 /**

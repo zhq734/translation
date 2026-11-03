@@ -207,6 +207,36 @@ test('带窗口上下文的原生直读必须精确命中目标窗口', () => {
   )
 })
 
+/**
+ * 校验 Safari 等后台应用在首次 AX 焦点不可读时，会先做一次应用级激活再重读。
+ * 该重试必须位于 Chromium 增强之后、剪贴板兜底之前，且仍使用同一目标窗口约束。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX 失败后应在复制兜底前做一次应用级激活重读', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const copyStart = source.indexOf('async function captureByCopy(')
+  const copyEnd = source.indexOf('/**\n * 捕获当前选中文字', copyStart)
+  assert.ok(copyStart >= 0 && copyEnd > copyStart, '应存在 captureByCopy 实现')
+  const copySource = source.slice(copyStart, copyEnd)
+  const activationRetryAt = copySource.indexOf(
+    'retryMacosNativeSelectionAfterApplicationActivation('
+  )
+  const chromiumEnhanceAt = copySource.indexOf('performChromiumEnhancedAx(context.pid, signal)')
+  const clipboardAt = copySource.indexOf('const originalImage = clipboard.readImage()')
+
+  assert.ok(activationRetryAt > chromiumEnhanceAt,
+    '应用级激活重读必须排在 Chromium AX 增强之后')
+  assert.ok(activationRetryAt < clipboardAt,
+    '应用级激活重读必须发生在剪贴板兜底之前')
+  assert.match(copySource, /activateAndConfirmWindow:\s*\(\)\s*=>[\s\S]*?activateMacosApplicationAndConfirmWindow/u,
+    '必须复用带目标窗口确认的进程级激活入口')
+  assert.match(copySource, /const retried = applicationRetry\.result[\s\S]*?isTrustedNativeSelection\(retried, context\)/u,
+    '应用级激活重读结果仍必须满足统一可信判断')
+  assert.match(copySource, /post-application-activate-native-read[\s\S]{0,40}status=/u,
+    '应用级激活重读应输出脱敏诊断日志')
+})
+
 test('主进程取词实现应包含 Windows Ctrl+C、Linux primary selection 与直读优先编排', () => {
   const source = readFileSync('src/main/capture.ts', 'utf8')
 

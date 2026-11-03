@@ -132,3 +132,23 @@ test('macOS 动态显示 Dock 时应显式使用自定义应用图标', () => {
     /if \(presentation\.dockVisible\)[\s\S]*?app\.dock\?\.setIcon\([\s\S]*?app\.dock\?\.show\(\)/u
   )
 })
+
+/**
+ * 校验 macOS 开发模式在窗口状态刷新之前就覆盖 Electron 默认 Dock 图标。
+ * `npm run dev` 运行的是 Electron.app，若不主动设置，启动首屏会显示框架图标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS 开发启动时应立即覆盖 Electron 默认 Dock 图标', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8')
+  const configureBlock = source.match(
+    /async function configureMacOSMenuBarApplication\([\s\S]*?\): Promise<void> \{([\s\S]*?)\n\}/u
+  )
+
+  assert.ok(configureBlock, '缺少 macOS 菜单栏应用初始化函数')
+  const setIconIndex = configureBlock[1].indexOf("app.dock?.setIcon(loadMacOSDockIcon())")
+  const visibilityIndex = configureBlock[1].indexOf('await applyMacOSDockVisibility(showDockIcon)')
+  assert.ok(setIconIndex >= 0, '开发启动时必须显式设置自定义 Dock 图标')
+  assert.ok(visibilityIndex >= 0, '仍需保留 Dock 可见性刷新')
+  assert.ok(setIconIndex < visibilityIndex, '自定义 Dock 图标必须在可见性刷新前设置')
+})

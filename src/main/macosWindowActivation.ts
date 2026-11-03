@@ -409,6 +409,56 @@ export interface MacosApplicationWindowActivationDeps {
   sleep: (ms: number) => Promise<void>
 }
 
+/** 应用级激活后重读原生选区的依赖。 */
+export interface MacosNativeSelectionActivationRetryDeps<T> {
+  /** 判断原生直读结果是否可信。 */
+  isTrustedSelection: (result: T | null | undefined) => boolean
+  /** 判断本轮取词是否已取消。 */
+  isAborted: () => boolean
+  /** 激活目标应用并重新确认同一目标窗口位于最前。 */
+  activateAndConfirmWindow: () => Promise<MacosWindowActivationResult>
+  /** 在精确窗口确认后重新读取原生选区。 */
+  readSelection: () => Promise<T | null>
+}
+
+/** 应用级激活后重读原生选区的结果。 */
+export interface MacosNativeSelectionActivationRetryResult<T> {
+  /** 应用级激活结果；未执行激活时为 null。 */
+  activation: MacosWindowActivationResult | null
+  /** 重读得到的原生选区；未重读时为 null。 */
+  result: T | null
+}
+
+/**
+ * 首次 AX 直读不可信时，按源进程激活应用并在精确确认目标窗口后重读一次。
+ *
+ * Safari 等应用的后台窗口无法读取 AXFocusedUIElement，而窗口级 AXRaise
+ * 只提升窗口、不保证应用成为前台。因此只在首次读取失败后发起一次应用级
+ * 激活；激活本身必须重新确认同一目标窗口位于最前，否则不得继续读取或复制。
+ * 已取消、激活失败或激活确认超时均立即返回，不进行无界重试。
+ * @param initialResult 首次原生直读结果，仅用于判断是否仍需要重试。
+ * @param deps 可信判断、取消状态、应用激活与重读依赖。
+ * @returns 应用级激活结果与重读结果。
+ * @author zhenghq
+ */
+export async function retryMacosNativeSelectionAfterApplicationActivation<T>(
+  initialResult: T | null | undefined,
+  deps: MacosNativeSelectionActivationRetryDeps<T>
+): Promise<MacosNativeSelectionActivationRetryResult<T>> {
+  if (deps.isTrustedSelection(initialResult) || deps.isAborted()) {
+    return { activation: null, result: null }
+  }
+  const activation = await deps.activateAndConfirmWindow()
+  if (deps.isAborted() ||
+      !isExactWindowActivationConfirmed(activation)) {
+    return { activation, result: null }
+  }
+  return {
+    activation,
+    result: await deps.readSelection()
+  }
+}
+
 /**
  * 精确窗口激活失败后按进程激活，并确认同一目标窗口确实成为全局最前窗口。
  *
