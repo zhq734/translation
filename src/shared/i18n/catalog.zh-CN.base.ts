@@ -717,6 +717,7 @@ export const zhCNBase = defineCatalog({
   'settings.update.hint.dev': '开发环境不会访问更新服务，请使用正式安装包验证自动更新。',
   'settings.update.hint.sameVersionOpenRelease': '发现同版本的新构建；当前平台不支持应用内自动安装，请打开 GitHub Release 手动下载覆盖安装。',
   'settings.update.hint.sameVersionManualDmg': '发现同版本的新构建；点击后会下载并校验对应架构的 DMG，仍由你确认拖入“应用程序”覆盖旧版本。',
+  'settings.update.hint.sameVersionAutomatic': '发现同版本的新构建；点击后会下载并校验对应架构的 DMG，完成后自动退出、替换并重新启动，无需手动拖拽。',
   'settings.update.hint.openReleaseOnly': '当前更新需要在 GitHub Release 手动下载安装包并覆盖安装。',
   'settings.update.hint.installing': '更新已下载并通过校验，应用正在自动退出、替换并重新启动，无需手动拖拽。',
   'settings.update.hint.manualDownloaded': '更新包已下载到“下载”文件夹并打开 DMG；请手动拖入“应用程序”覆盖旧版本，再点击“解除 macOS 隔离属性”。',

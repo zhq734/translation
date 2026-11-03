@@ -17,6 +17,7 @@ import {
   validateReleaseChecksum,
   validateReleaseChecksums
 } from '../src/main/releaseChecksums.ts'
+import { createBuildMetadata } from '../src/shared/buildMetadata.ts'
 import type { UpdateStatus } from '../src/shared/types.ts'
 
 class FakeUpdateDriver implements UpdateDriver {
@@ -616,6 +617,42 @@ test('手动安装模式下载并通过 sha512 校验后应调度自动替换并
   assert.deepEqual(quitCalls, [1], '自动替换调度成功后应退出应用以启动 helper')
   manager.installUpdate()
   assert.deepEqual(quitCalls, [1], '重复安装请求不得再次退出应用')
+})
+
+test('同版本新构建在固定 Applications 且摘要可信时也应自动替换并重启', async () => {
+  const { manager, driver, manualUpdate, quitCalls } = createManager('manual')
+  const localBuild = createBuildMetadata({
+    version: '1.0.3',
+    sourceCommit: '1111111111111111111111111111111111111111',
+    workflowRunId: '111',
+    workflowRunAttempt: '1'
+  })
+  const remoteBuild = createBuildMetadata({
+    version: '1.0.3',
+    sourceCommit: '2222222222222222222222222222222222222222',
+    workflowRunId: '222',
+    workflowRunAttempt: '1'
+  })
+
+  driver.listeners?.notAvailable({
+    version: '1.0.3',
+    checksumStatus: 'verified',
+    localBuild,
+    remoteBuild,
+    manualDownloadUrl: 'https://github.com/zhq734/translation/releases/download/v1.0.3/SelectionTranslator-1.0.3-mac-arm64.dmg',
+    manualDownloadSha512: 'expected-sha512',
+    manualDownloadSize: 123456
+  })
+  await manager.downloadUpdate()
+
+  assert.deepEqual(manualUpdate.calls, [])
+  assert.deepEqual(manualUpdate.installCalls, [{
+    url: 'https://github.com/zhq734/translation/releases/download/v1.0.3/SelectionTranslator-1.0.3-mac-arm64.dmg',
+    version: '1.0.3',
+    currentVersion: '1.0.3'
+  }])
+  assert.equal(manager.getStatus().phase, 'installing')
+  assert.deepEqual(quitCalls, [1], '同版本新构建调度成功后应退出应用以启动 helper')
 })
 
 test('手动安装模式在 SHA256SUMS 摘要不一致时不得自动覆盖应用', async () => {

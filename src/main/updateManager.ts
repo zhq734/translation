@@ -642,6 +642,7 @@ export class UpdateManager {
       manualDownloadAvailable: this.options.manualUpdate && info.manualDownloadUrl
         ? true
         : undefined,
+      automaticMacInstallAvailable: this.canAutoInstallManualMacUpdate(info),
       checksumStatus: info.checksumStatus,
       updateReason: 'higher-version',
       updateAction: this.status.installMode === 'automatic'
@@ -677,6 +678,24 @@ export class UpdateManager {
     return this.options.manualUpdate && info.manualDownloadUrl
       ? 'verified-manual-download'
       : 'open-release'
+  }
+
+  /**
+   * 判断当前更新能否交给后台 helper 自动替换并重启应用。
+   * 固定安装位置由主进程仅在 /Applications 运行时注入退出回调，因此同时具备
+   * 下载安装能力和退出回调即可避免从 DMG 等临时路径误判为可自动替换。
+   * @param info 驱动上报的更新信息。
+   * @returns 当前更新具备可信 DMG 摘要和自动安装能力时返回 true。
+   * @author zhenghq
+   */
+  private canAutoInstallManualMacUpdate(info: UpdateDriverInfo): boolean {
+    return Boolean(
+      this.options.manualUpdate?.downloadAndInstall &&
+      this.options.quitForInstall &&
+      info.manualDownloadUrl &&
+      info.manualDownloadSha512 &&
+      info.checksumStatus !== 'mismatch'
+    )
   }
 
   /**
@@ -752,6 +771,7 @@ export class UpdateManager {
       manualDownloadAvailable: needsUpdate && this.options.manualUpdate && info.manualDownloadUrl
         ? true
         : undefined,
+      automaticMacInstallAvailable: needsUpdate && this.canAutoInstallManualMacUpdate(info),
       checksumStatus: info.checksumStatus,
       updateReason: sameVersionNewBuild ? 'same-version-new-build' : undefined,
       updateAction: needsUpdate ? this.resolveManualUpdateAction(info) : undefined,
@@ -882,7 +902,10 @@ export class UpdateManager {
     try {
       const abortController = new AbortController()
       this.manualDownloadAbort = abortController
-      const canAutoInstall = this.status.updateReason === 'higher-version' &&
+      const canAutoInstall = (
+        this.status.updateReason === 'higher-version' ||
+        this.status.updateReason === 'same-version-new-build'
+      ) &&
         this.status.checksumStatus !== 'mismatch' &&
         Boolean(this.manualDownloadIntegrity?.sha512) &&
         Boolean(this.options.manualUpdate.downloadAndInstall) &&

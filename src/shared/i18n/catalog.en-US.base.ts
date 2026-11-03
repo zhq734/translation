@@ -718,6 +718,7 @@ export const enUSBase = defineCatalog({
   'settings.update.hint.dev': 'The development build never contacts the update service; verify auto-update with an official installer.',
   'settings.update.hint.sameVersionOpenRelease': 'A new build of the same version is available; this platform cannot install it in-app, so open the GitHub Release and download it manually.',
   'settings.update.hint.sameVersionManualDmg': 'A new build of the same version is available; clicking downloads and verifies the matching-architecture DMG, and you still confirm dragging it into Applications.',
+  'settings.update.hint.sameVersionAutomatic': 'A new build of the same version is available; clicking downloads and verifies the matching-architecture DMG, then quits, replaces, and relaunches automatically with no manual dragging.',
   'settings.update.hint.openReleaseOnly': 'This update must be downloaded manually from the GitHub Release and installed over the current version.',
   'settings.update.hint.installing': 'The update was downloaded and verified. The app is quitting, replacing itself, and relaunching automatically; no manual dragging is required.',
   'settings.update.hint.manualDownloaded': 'The update was downloaded to your Downloads folder and the DMG was opened; drag the app into Applications to replace the old version, then click “Remove macOS quarantine”.',

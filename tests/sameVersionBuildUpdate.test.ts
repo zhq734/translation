@@ -56,6 +56,7 @@ class RecordingDriver implements UpdateDriver {
 
 class RecordingManualUpdate implements ManualMacUpdateService {
   calls: Array<{ url: string; version: string; integrity?: { sha512?: string; size?: number } }> = []
+  installCalls: Array<{ url: string; version: string; currentVersion: string }> = []
 
   /**
    * 记录手动 DMG 下载请求。
@@ -75,6 +76,27 @@ class RecordingManualUpdate implements ManualMacUpdateService {
     this.calls.push({ url, version, integrity })
     onProgress?.({ percent: 100, transferred: 4, total: 4, bytesPerSecond: 4 })
     return { path: `/Users/mac/Downloads/App-${version}.dmg`, verified: true }
+  }
+
+  /**
+   * 记录并模拟固定 Applications 安装请求。
+   * @param url DMG 下载地址。
+   * @param version 更新版本号。
+   * @param currentVersion 当前安装版本号。
+   * @returns 已调度后台安装的结果。
+   * @author zhenghq
+   */
+  async downloadAndInstall(
+    url: string,
+    version: string,
+    currentVersion: string
+  ): Promise<{ path: string; verified: boolean; installScheduled: boolean }> {
+    this.installCalls.push({ url, version, currentVersion })
+    return {
+      path: `/Users/mac/Downloads/App-${version}.dmg`,
+      verified: true,
+      installScheduled: true
+    }
   }
 }
 
@@ -103,7 +125,8 @@ function build(runId: string, version = '1.1.2'): BuildMetadata {
  */
 function createManager(
   installMode: UpdateStatus['installMode'] = 'automatic',
-  withManualUpdate = true
+  withManualUpdate = true,
+  automaticMacInstallAvailable = false
 ): {
   manager: UpdateManager
   driver: RecordingDriver
@@ -120,6 +143,11 @@ function createManager(
     installMode,
     releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
     manualUpdate: withManualUpdate ? manualUpdate : undefined,
+    ...(automaticMacInstallAvailable
+      ? {
+          quitForInstall: () => undefined
+        }
+      : {}),
     openExternal: async (url) => {
       openedUrls.push(url)
     },
@@ -147,6 +175,22 @@ test('同版本但构建标识不同时应进入可操作的同版本新构建�
   assert.equal(status.localBuildLabel, '#111.1')
   assert.equal(status.remoteBuildLabel, '#222.1')
   assert.equal(status.buildMetadataAvailable, true)
+  assert.equal(status.automaticMacInstallAvailable, false)
+})
+
+test('同版本新构建应仅在固定 Applications 安装能力可用时标记自动替换', () => {
+  const fixedInstall = createManager('manual', true, true)
+
+  fixedInstall.driver.listeners?.notAvailable({
+    version: '1.1.2',
+    checksumStatus: 'verified',
+    localBuild: build('111'),
+    remoteBuild: build('222'),
+    manualDownloadUrl: DMG_URL,
+    manualDownloadSha512: 'expected-sha512'
+  })
+
+  assert.equal(fixedInstall.manager.getStatus().automaticMacInstallAvailable, true)
 })
 
 test('同版本且构建标识相同时应保持最新状态且不提供更新动作', () => {
@@ -389,6 +433,7 @@ test('设置页应区分更高版本与同版本新构建并提供手动入口',
   assert.match(source, /status\.updateAction === 'open-release'/u)
   assert.match(source, /t\('settings\.update\.openReleaseManual'\)/u)
   assert.match(source, /t\('settings\.update\.hint\.sameVersionOpenRelease'\)/u)
+  assert.match(source, /t\('settings\.update\.hint\.sameVersionAutomatic'\)/u)
   assert.match(source, /remoteBuildLabel/u)
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}/u)
 })

@@ -11,6 +11,7 @@ test('共享类型和预加载层应只暴露受限的自动更新接口', () =>
   assert.match(typesSource, /export interface UpdateStatus/u)
   assert.match(typesSource, /'manual-downloaded'/u)
   assert.match(typesSource, /manualDownloadAvailable\?: boolean/u)
+  assert.match(typesSource, /automaticMacInstallAvailable\?: boolean/u)
   assert.match(typesSource, /getUpdateStatus\(\): Promise<UpdateStatus>/u)
   assert.match(typesSource, /checkForUpdates\(\): Promise<UpdateStatus>/u)
   assert.match(typesSource, /downloadUpdate\(\): Promise<UpdateStatus>/u)
@@ -93,6 +94,8 @@ test('设置页应提供自适应且支持主题的版本检查、进度和安�
   assert.doesNotMatch(source, /status\.installMode === 'manual'\) await removeMacOSQuarantine\(\)/u)
   assert.match(source, /t\('settings\.update\.hint\.manualDownloaded'\)/u)
   assert.match(source, /t\('settings\.update\.hint\.installing'\)/u)
+  assert.match(source, /t\('settings\.update\.hint\.sameVersionAutomatic'\)/u)
+  assert.match(source, /status\.automaticMacInstallAvailable === true/u)
 
   assert.match(css, /\.update-actions\s*\{[\s\S]*display:\s*flex/u)
   assert.match(css, /\.update-progress/u)

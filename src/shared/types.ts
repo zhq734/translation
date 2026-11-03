@@ -250,6 +250,8 @@ export interface UpdateStatus {
   manualDownloadPath?: string
   /** 当前更新是否提供可直接下载的 macOS DMG。 */
   manualDownloadAvailable?: boolean
+  /** 当前更新是否可在应用内自动替换固定安装的 macOS 应用并重启。 */
+  automaticMacInstallAvailable?: boolean
   /** 最新安装包在 SHA256SUMS 中的校验状态。 */
   checksumStatus?: 'verified' | 'missing' | 'mismatch' | 'unreachable'
   /** 本次更新可用的原因；没有可用更新时不存在。 */

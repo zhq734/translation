@@ -783,7 +783,9 @@ async function validateMountedApplication(
       translateMain('update.downloadError.installFailedBundleId')
     )
   }
-  if (compareSemanticVersions(appVersion, currentVersion) !== 1 || appVersion !== version) {
+  // 同版本新构建允许覆盖安装；仅拒绝低于当前版本或与更新清单版本不一致的包。
+  const versionComparison = compareSemanticVersions(appVersion, currentVersion)
+  if (versionComparison === null || versionComparison < 0 || appVersion !== version) {
     throw createUpdateDownloadError(
       'install-failed',
       translateMain('update.downloadError.installFailedVersion')

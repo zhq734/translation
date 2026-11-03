@@ -204,6 +204,67 @@ test('自动安装应校验 Bundle ID、版本和代码签名后才启动 helper
   }
 })
 
+test('自动安装应允许同版本新构建并启动 helper', async () => {
+  const { directory, cleanup } = await createDownloadsDirectory()
+  const harness = createCommandHarness()
+  const { service } = createInstaller(directory, {
+    runCommand: async (command, args) => {
+      await harness.runCommand(command, args)
+      if (command === '/usr/bin/hdiutil' && args[0] === 'attach') {
+        await mkdir(join(args[4], '划词翻译.app'), { recursive: true })
+      }
+    },
+    readCommand: harness.readCommand,
+    launchHelper: harness.launchHelper
+  })
+
+  try {
+    const result = await service.downloadAndInstall!(
+      'https://example.com/SelectionTranslator-1.0.4-mac-arm64.dmg',
+      '1.0.4',
+      '1.0.4',
+      undefined,
+      { sha512: dmgSha512, size: dmgContent.byteLength }
+    )
+
+    assert.equal(result.installScheduled, true)
+    assert.equal(harness.launches.length, 1)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('自动安装仍应拒绝低于当前版本的安装包', async () => {
+  const { directory, cleanup } = await createDownloadsDirectory()
+  const harness = createCommandHarness()
+  const { service } = createInstaller(directory, {
+    runCommand: async (command, args) => {
+      await harness.runCommand(command, args)
+      if (command === '/usr/bin/hdiutil' && args[0] === 'attach') {
+        await mkdir(join(args[4], '划词翻译.app'), { recursive: true })
+      }
+    },
+    readCommand: harness.readCommand,
+    launchHelper: harness.launchHelper
+  })
+
+  try {
+    await assert.rejects(
+      service.downloadAndInstall!(
+        'https://example.com/SelectionTranslator-1.0.4-mac-arm64.dmg',
+        '1.0.4',
+        '1.0.5',
+        undefined,
+        { sha512: dmgSha512, size: dmgContent.byteLength }
+      ),
+      (error) => getUpdateDownloadErrorCode(error) === 'install-failed'
+    )
+    assert.deepEqual(harness.launches, [])
+  } finally {
+    await cleanup()
+  }
+})
+
 test('自动安装应在应用身份或版本校验失败时清理挂载且不启动 helper', async () => {
   const { directory, cleanup } = await createDownloadsDirectory()
   const harness = createCommandHarness()

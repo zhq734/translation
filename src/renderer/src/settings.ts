@@ -760,6 +760,8 @@ function renderUpdateStatus(status: UpdateStatus): void {
   )
   const manualDownloadReady = hasManualDownload &&
     status.phase === 'manual-downloaded'
+  const sameVersionAutomaticInstall = sameVersionNewBuild &&
+    status.automaticMacInstallAvailable === true
   const manualDownloadActionAvailable = hasManualDownload && (
     status.phase === 'available' ||
     status.phase === 'error' ||
@@ -805,6 +807,8 @@ function renderUpdateStatus(status: UpdateStatus): void {
     updateInstallHint.textContent = t('settings.update.hint.dev')
   } else if (sameVersionNewBuild && openReleaseOnly) {
     updateInstallHint.textContent = t('settings.update.hint.sameVersionOpenRelease')
+  } else if (sameVersionAutomaticInstall) {
+    updateInstallHint.textContent = t('settings.update.hint.sameVersionAutomatic')
   } else if (sameVersionNewBuild) {
     updateInstallHint.textContent = t('settings.update.hint.sameVersionManualDmg')
   } else if (openReleaseOnly) {
