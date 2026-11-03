@@ -50,13 +50,16 @@ export interface OcrTranslateDeps {
    * @param settings 当前设置快照。
    * @param dingTalkCredentials 钉钉凭证（可选）。
    * @param aiApiKey AI 密钥（可选）。
+   * @param onDelta 翻译流式安全增量回调（可选）。
    * @returns 翻译结果。
+   * @author zhenghq
    */
   translate(
     text: string,
     settings?: Settings,
     dingTalkCredentials?: DingTalkCredentials | null,
-    aiApiKey?: string | null
+    aiApiKey?: string | null,
+    onDelta?: (delta: string) => void
   ): Promise<TranslateOutput>
   /**
    * 有效 OCR 文本完成清洗与质量门禁后、调用翻译前的可选回调。
@@ -66,6 +69,13 @@ export interface OcrTranslateDeps {
    * @author zhenghq
    */
   onRecognized?(recognized: OcrRecognizedResult): void
+  /**
+   * 翻译实现产生安全增量文本时回调，供界面在最终结果到达前渐进展示。
+   * @param delta 本次新增的译文片段。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  onDelta?(delta: string): void
   /** 取消信号（可选）。 */
   signal?: AbortSignal
 }
@@ -121,7 +131,13 @@ export async function translateOcrResult(
       sourceLang: pair.sourceLang,
       targetLang: pair.targetLang
     }
-    const translateResult = await deps.translate(cleaned, requestSettings, null, null)
+    const translateResult = await deps.translate(
+      cleaned,
+      requestSettings,
+      null,
+      null,
+      deps.onDelta
+    )
     return {
       ...base,
       translation: translateResult.translation,

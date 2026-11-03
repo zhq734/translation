@@ -314,7 +314,7 @@ export interface TranslatePayload {
   error?: string
 }
 
-/** 流式翻译增量事件负载，用于划词与手动翻译的渐进展示。 */
+/** 流式翻译增量事件负载，用于划词、手动与 OCR 翻译的渐进展示。 */
 export interface TranslateDeltaPayload {
   /** 本次增量属于划词、手动还是 OCR 翻译。 */
   origin: TranslationOrigin
@@ -1380,7 +1380,7 @@ export interface Api {
   onWindowMaximizedChanged(cb: (maximized: boolean) => void): () => void
   // 悬浮窗
   onResult(cb: (p: TranslatePayload) => void): () => void
-  /** 订阅流式翻译增量，用于划词与手动翻译的渐进展示。 */
+  /** 订阅流式翻译增量，用于划词、手动与 OCR 翻译的渐进展示。 */
   onTranslateDelta(cb: (p: TranslateDeltaPayload) => void): () => void
   /** 订阅主进程打开手动翻译模式的通知。 */
   onManualTranslateOpen(cb: () => void): () => void

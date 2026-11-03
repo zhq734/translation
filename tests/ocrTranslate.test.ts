@@ -191,6 +191,33 @@ test('translateOcrResult 应在翻译完成前回调已识别文本', async () =
 })
 
 /**
+ * 校验 OCR 翻译会把流式增量回调传给翻译实现，使首个安全片段可在最终结果前展示。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('translateOcrResult 应转发 OCR 翻译流式增量', async () => {
+  const deltas: string[] = []
+  let resolveTranslation: ((value: { translation: string; provider: 'ai' }) => void) | undefined
+  const translation = new Promise<{ translation: string; provider: 'ai' }>((resolve) => {
+    resolveTranslation = resolve
+  })
+
+  const pending = translateOcrResult(makeOcrResult('Hello World'), makeSettings(), {
+    onDelta: (delta) => deltas.push(delta),
+    translate: async (_text, _settings, _dingTalkCredentials, _aiApiKey, onDelta) => {
+      onDelta?.('你好')
+      onDelta?.('，世界')
+      return translation
+    }
+  })
+
+  assert.deepEqual(deltas, ['你好', '，世界'])
+  resolveTranslation?.({ translation: '你好，世界', provider: 'ai' })
+  const result = await pending
+  assert.equal(result.translation, '你好，世界')
+})
+
+/**
  * 校验空文本和噪声不会触发 OCR 原文中间态，避免界面短暂展示伪成功内容。
  * @returns 测试完成后的 Promise。
  * @author zhenghq

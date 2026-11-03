@@ -207,7 +207,10 @@ test('截图翻译动作应复用现有 OCR 翻译流程', () => {
   // 翻译继续走既有 submitOcrSelection 核心路径（隐藏窗口并打开翻译弹窗）
   assert.match(main, /cropOcrSnapshotSelection\(bounds\)/u)
   // 翻译仍通过统一 OCR 流程执行一次预处理，并在识别完成后先展示原文。
-  assert.match(main, /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u)
+  assert.match(
+    main,
+    /processOcrImageBytes\(\s*imageBytes,\s*settings,\s*showRecognizedOcrPopup,\s*sendOcrDelta\s*\)/u
+  )
 })
 
 /**

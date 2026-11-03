@@ -4582,26 +4582,30 @@ function showRecognizedOcrText(
  * @param ocr OCR 识别结果。
  * @param settings 当前设置。
  * @param onRecognized 有效原文就绪时的可选回调。
+ * @param onDelta 翻译安全增量就绪时的可选回调。
  * @returns OCR 翻译结果。
  * @author zhenghq
  */
 async function translateRecognizedOcrResult(
   ocr: OcrRecognizeResult,
   settings: Settings,
-  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void
+  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void,
+  onDelta?: (delta: string) => void
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
   return translateOcrResult(ocr, settings, {
     onRecognized,
-    translate: async (text, requestSettings) => {
+    onDelta,
+    translate: async (text, requestSettings, _dingTalkCredentials, _aiApiKey, streamDelta) => {
       const dingTalkCredentials = settings.dingTalkEnabled
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      return translate(
+      return translateStream(
         text,
         requestSettings ?? settings,
         dingTalkCredentials,
-        aiApiKey
+        aiApiKey,
+        { onDelta: streamDelta ?? (() => undefined) }
       )
     }
   })
@@ -4612,13 +4616,15 @@ async function translateRecognizedOcrResult(
  * @param imageBytes PNG 图片字节。
  * @param settings 当前设置。
  * @param onRecognized 有效原文就绪时的可选回调。
+ * @param onDelta 翻译安全增量就绪时的可选回调。
  * @returns OCR 翻译结果。
  * @author zhenghq
  */
 async function processOcrImageBytes(
   imageBytes: Buffer,
   settings: Settings,
-  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void
+  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void,
+  onDelta?: (delta: string) => void
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
   const dispatcher = await createOcrDispatcher(settings)
   const ocr = await recognizeAdaptiveOcr(
@@ -4636,7 +4642,7 @@ async function processOcrImageBytes(
         }, resolveOcrEnginePreference(settings))
     }
   )
-  return translateRecognizedOcrResult(ocr, settings, onRecognized)
+  return translateRecognizedOcrResult(ocr, settings, onRecognized, onDelta)
 }
 
 /**
@@ -5527,6 +5533,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
   const requestId = ++latestTranslationRequest
   const anchor = { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
   const closeVersion = getPopupCloseVersion()
+  let deltaSequence = 0
   // 缓存键里的会话序号必须与识别动作写入时一致；提交时该序号仍是当前会话。
   const sessionId = ocrSelectionSessionSeq
   // 会话识别结果必须在显示 loading 之前取出：一来命中时可以给出准确的提示文案，
@@ -5550,6 +5557,18 @@ async function submitOcrSelection(value: unknown): Promise<void> {
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showRecognizedOcrText(recognized, settings, requestId, anchor)
   }
+  const sendOcrDelta = (delta: string): void => {
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    const payload: TranslateDeltaPayload = {
+      origin: 'ocr',
+      requestId,
+      delta,
+      sequence: deltaSequence,
+      final: false
+    }
+    deltaSequence += 1
+    sendPopupDelta(payload)
+  }
   // macOS 上覆盖窗口是应用内最后一个 key window：一旦隐藏，系统会把应用内下一个窗口
   // （通常是设置页）提升为 key window 并顶到其它应用之上。
   // 因此先显示「正在识别」弹窗接管 key window，再收起覆盖窗口；
@@ -5571,7 +5590,12 @@ async function submitOcrSelection(value: unknown): Promise<void> {
       // 未命中路径在裁剪完成后为 Windows 显示 loading 弹窗；命中路径跳过了裁剪，
       // 这里补上同样的反馈，避免翻译期间界面上没有任何进度提示。
       if (!isMac) showLoadingPopup(t('selection.loadingTranslating'))
-      const cachedResult = await translateRecognizedOcrResult(cached, settings, showRecognizedOcrPopup)
+      const cachedResult = await translateRecognizedOcrResult(
+        cached,
+        settings,
+        showRecognizedOcrPopup,
+        sendOcrDelta
+      )
       if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
       showOcrTranslationResult(cachedResult, settings, requestId, anchor)
       return
@@ -5579,7 +5603,12 @@ async function submitOcrSelection(value: unknown): Promise<void> {
     const imageBytes = await cropOcrSnapshotSelection(bounds)
     restoreSelectionListener()
     if (!isMac) showLoadingPopup()
-    const result = await processOcrImageBytes(imageBytes, settings, showRecognizedOcrPopup)
+    const result = await processOcrImageBytes(
+      imageBytes,
+      settings,
+      showRecognizedOcrPopup,
+      sendOcrDelta
+    )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showOcrTranslationResult(result, settings, requestId, anchor)
   } catch (error) {
@@ -5618,6 +5647,7 @@ async function translateClipboardImage(): Promise<void> {
   const anchor = screen.getCursorScreenPoint()
   const requestId = ++latestTranslationRequest
   const closeVersion = getPopupCloseVersion()
+  let deltaSequence = 0
   const clipboardImage = readClipboardImage(clipboard)
   if (clipboardImage.kind !== 'image' || !clipboardImage.png) {
     showPopup({
@@ -5646,13 +5676,26 @@ async function translateClipboardImage(): Promise<void> {
   }, 0, anchor)
 
   try {
+    const sendOcrDelta = (delta: string): void => {
+      if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+      const payload: TranslateDeltaPayload = {
+        origin: 'ocr',
+        requestId,
+        delta,
+        sequence: deltaSequence,
+        final: false
+      }
+      deltaSequence += 1
+      sendPopupDelta(payload)
+    }
     const result = await processOcrImageBytes(
       clipboardImage.png,
       settings,
       (recognized) => {
         if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
         showRecognizedOcrText(recognized, settings, requestId, anchor)
-      }
+      },
+      sendOcrDelta
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showOcrTranslationResult(result, settings, requestId, anchor)

@@ -78,9 +78,18 @@ test('OCR 识别完成应先展示原文并异步等待译文', () => {
   const renderSource = popupRenderer.slice(renderStart, renderEnd)
 
   assert.match(processSource, /onRecognized/u, '图片识别管线应接收识别完成回调')
-  assert.match(processSource, /translateRecognizedOcrResult\(ocr,\s*settings,\s*onRecognized\)/u)
-  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u)
-  assert.match(submitSource, /translateRecognizedOcrResult\(cached,\s*settings,\s*showRecognizedOcrPopup\)/u)
+  assert.match(
+    processSource,
+    /translateRecognizedOcrResult\(ocr,\s*settings,\s*onRecognized,\s*onDelta\)/u
+  )
+  assert.match(
+    submitSource,
+    /processOcrImageBytes\(\s*imageBytes,\s*settings,\s*showRecognizedOcrPopup,\s*sendOcrDelta\s*\)/u
+  )
+  assert.match(
+    submitSource,
+    /translateRecognizedOcrResult\(\s*cached,\s*settings,\s*showRecognizedOcrPopup,\s*sendOcrDelta\s*\)/u
+  )
   const showRecognizedStart = main.indexOf('function showRecognizedOcrText')
   const showRecognizedEnd = main.indexOf('/**', showRecognizedStart + 1)
   const showRecognizedSource = main.slice(showRecognizedStart, showRecognizedEnd)
@@ -96,6 +105,31 @@ test('OCR 识别完成应先展示原文并异步等待译文', () => {
     popupRenderer,
     /hasRecognizedOcr[\s\S]*?payload\.loadingMessage \?\? t\('popup\.translating'\)/u
   )
+})
+
+/**
+ * 校验 OCR 与划词共用流式翻译链路，首个增量可在最终结果前更新同一弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 翻译应复用划词流式增量展示', () => {
+  const translateStart = main.indexOf('async function translateRecognizedOcrResult')
+  const translateEnd = main.indexOf('/**', translateStart + 1)
+  const translateSource = main.slice(translateStart, translateEnd)
+  const deltaStart = popupRenderer.indexOf('function handleTranslateDelta')
+  const deltaEnd = popupRenderer.indexOf('/**', deltaStart + 1)
+  const deltaSource = popupRenderer.slice(deltaStart, deltaEnd)
+
+  assert.match(translateSource, /onDelta,/u, 'OCR 翻译装配必须接收流式增量回调')
+  assert.match(translateSource, /translateStream\(/u, 'OCR 应复用划词的 translateStream 链路')
+  const submitStart = main.indexOf('async function submitOcrSelection')
+  const submitEnd = main.indexOf('/**', submitStart + 1)
+  const submitSource = main.slice(submitStart, submitEnd)
+  assert.match(submitSource, /origin:\s*'ocr'/u, 'OCR 增量必须使用 OCR 来源')
+  assert.match(submitSource, /sendPopupDelta\(payload\)/u, 'OCR 增量必须投递到划词同一流式通道')
+  assert.match(submitSource, /requestId !== latestTranslationRequest/u, 'OCR 增量必须校验当前请求')
+  assert.match(submitSource, /closeVersion !== getPopupCloseVersion\(\)/u, 'OCR 增量必须校验弹窗会话')
+  assert.match(deltaSource, /payload\.requestId !== latestSelectionRequestId/u, 'OCR 增量应沿用请求序号隔离')
 })
 
 /**
@@ -260,7 +294,10 @@ test('OCR 截图应先清理框选会话，再把隐藏采集的快照传给 Ren
     'begin 事件必须早于屏幕采集'
   )
   assert.match(submitSource, /cropOcrSnapshotSelection\(bounds\)/u)
-  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u)
+  assert.match(
+    submitSource,
+    /processOcrImageBytes\(\s*imageBytes,\s*settings,\s*showRecognizedOcrPopup,\s*sendOcrDelta\s*\)/u
+  )
   assert.doesNotMatch(submitSource, /await sleep\(OCR_CAPTURE_SETTLE_DELAY_MS\)/u)
   assert.doesNotMatch(submitSource, /captureOcrSelectionPng\(bounds,\s*settings\)/u)
 })
