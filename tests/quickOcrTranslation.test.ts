@@ -29,7 +29,7 @@ function sliceFunction(source: string, signature: string): string {
 }
 
 test('快捷 OCR 翻译应使用默认 Alt+S 并升级设置版本', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 22)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 23)
   assert.equal(DEFAULT_SETTINGS.ocrQuickHotkey, 'Alt+S')
   assert.equal(DEFAULT_SETTINGS.ocrHotkey, 'Alt+O')
 })
@@ -85,6 +85,7 @@ test('快捷 OCR 应仅在一次有效的新框选松开后自动提交', () => 
   const flushSource = sliceFunction(selection, 'function flushPendingQuickOcrSelection(')
   const enterSource = sliceFunction(selection, 'function enterOcrSelectionMode(')
   const loadSource = sliceFunction(selection, 'function handleOcrSnapshotLoad(')
+  const applySource = sliceFunction(selection, 'function applyOcrSnapshot(')
 
   assert.match(enterSource, /quickOcrAutoTranslate\s*=\s*payload\.autoTranslate\s*===\s*true/u)
   assert.match(mouseUpSource, /dragState\.type === 'draw'/u)
@@ -93,10 +94,17 @@ test('快捷 OCR 应仅在一次有效的新框选松开后自动提交', () => 
   assert.match(mouseUpSource, /flushPendingQuickOcrSelection\(\)/u)
   assert.match(flushSource, /quickOcrAutoTranslate/u)
   assert.match(flushSource, /pendingQuickOcrSubmit/u)
-  assert.match(flushSource, /ocrSnapshotState === 'ready'/u)
+  assert.match(flushSource, /ocrSnapshotAvailable/u)
   assert.match(flushSource, /MIN_SELECTION_SIZE/u)
   assert.match(flushSource, /translateCurrentOcrSelection\(\)/u)
   assert.match(loadSource, /flushPendingQuickOcrSelection\(\)/u)
+  assert.match(applySource, /ocrSnapshotAvailable = true/u)
+  assert.match(applySource, /flushPendingQuickOcrSelection\(\)/u)
+  assert.match(
+    applySource,
+    /flushPendingQuickOcrSelection\(\)[\s\S]*?if \(quickOcrAutoTranslate\) return/u,
+    '快捷模式提交后应立即返回，不能继续解码即将被清空的整屏预览'
+  )
 })
 
 test('快捷 OCR 模式应只保留选框并隐藏截图工作台辅助界面', () => {

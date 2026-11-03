@@ -150,6 +150,11 @@ let ocrPanelStatusMode: 'recognizing' | 'complete' | 'completeWithEngine' | 'emp
 let ocrPanelStatusEngine = ''
 /** 当前截图资源状态：只有完成解码后才允许合成带标注图片。 */
 let ocrSnapshotState: 'loading' | 'ready' | 'error' = 'loading'
+/**
+ * 主进程是否已持有当前会话的屏幕快照。
+ * 快捷 OCR 只需主进程内存中的原图即可裁剪识别，不必等待 Renderer 完成整屏预览解码。
+ */
+let ocrSnapshotAvailable = false
 // OCR 侧栏用户手动调整的尺寸；为 null 时按默认自适应尺寸布局。
 let ocrPanelUserSize: { width: number; height: number } | null = null
 // OCR 侧栏尺寸拖拽状态：记录起点与初始尺寸。
@@ -1567,7 +1572,8 @@ function localizedOcrPanelStatus(): string {
  * @author zhenghq
  */
 function translateCurrentOcrSelection(): void {
-  if (ocrSnapshotState !== 'ready') return
+  // 快捷模式在主进程持有快照后即可提交；完整截图工作台仍等待预览解码，保持原有交互。
+  if (quickOcrAutoTranslate ? !ocrSnapshotAvailable : ocrSnapshotState !== 'ready') return
   const request = buildScreenshotActionRequest('translate')
   if (!request) return
   leaveOcrSelectionMode()
@@ -1822,9 +1828,14 @@ function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
   if (!ocrMode || payload.sessionId !== currentOcrSessionId) return
   const loadToken = ++ocrSnapshotLoadToken
   ocrSnapshotState = 'loading'
+  ocrSnapshotAvailable = true
   snapshotSampler = null
   updateOcrImageActionAvailability()
   renderOcrTip()
+  // 快捷 OCR 只依赖主进程内存快照，收到负载即可提交，避免等待整屏 PNG 解码与画布拷贝。
+  flushPendingQuickOcrSelection()
+  // 提交会同步退出并清空当前会话，后续预览解码与画布写入已无意义。
+  if (quickOcrAutoTranslate) return
   ocrSnapshot.dataset.sessionId = String(payload.sessionId)
   ocrSnapshot.dataset.loadToken = String(loadToken)
   // Windows GDI 直采路径直接贴原始像素，同步完成，不需要等解码回调。
@@ -1970,6 +1981,7 @@ function resetOcrSessionUi(): void {
   snapshotSampler = null
   // 回到 loading 态：画布已被清空，若仍停留在 ready，动作按钮会短暂可用并读取空白像素。
   ocrSnapshotState = 'loading'
+  ocrSnapshotAvailable = false
   // 复用窗口可能残留上一轮的关闭淡出标记：先禁用过渡再清除，避免下一轮显示时
   // 从半透明状态淡入。微信截图按下快捷键就是直接出现遮罩，没有任何过渡动画。
   ocrOverlay.style.transition = 'none'
@@ -2186,7 +2198,7 @@ function handleOcrMouseUp(): void {
  */
 function flushPendingQuickOcrSelection(): void {
   if (!(quickOcrAutoTranslate && pendingQuickOcrSubmit && ocrMode &&
-      ocrSnapshotState === 'ready' && currentRect &&
+      ocrSnapshotAvailable && currentRect &&
       currentRect.width >= MIN_SELECTION_SIZE && currentRect.height >= MIN_SELECTION_SIZE)) return
   pendingQuickOcrSubmit = false
   translateCurrentOcrSelection()
