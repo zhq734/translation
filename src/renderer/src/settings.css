@@ -1343,6 +1343,18 @@ input[type='number']:disabled {
   line-height: 1.55;
 }
 
+.shortcut-guide-card .btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.settings-subsection-title {
+  margin: var(--space-4) 0 var(--space-3);
+  color: var(--text-primary);
+  font-size: var(--font-size-label);
+  font-weight: 650;
+}
+
 .shortcut-guide-actions {
   display: flex;
   justify-content: flex-end;

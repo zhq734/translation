@@ -744,6 +744,27 @@ function handleShortcutGuideKeydown(event: KeyboardEvent): void {
 }
 
 /**
+ * 从快捷动作指南跳转到对应功能的快捷键设置并聚焦录入框。
+ * @param button 携带目标页签和输入框标识的指南按钮。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openShortcutGuideTarget(button: HTMLButtonElement): void {
+  const tabId = button.dataset.settingsTab ?? null
+  const focusId = button.dataset.settingsFocus ?? null
+  if (!isSettingsTabId(tabId) || !focusId) return
+
+  shortcutGuideEl.hidden = true
+  activateSettingsTab(tabId, false, 'push')
+  requestAnimationFrame(() => {
+    const target = document.getElementById(focusId)
+    if (!(target instanceof HTMLInputElement)) return
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    target.focus({ preventScroll: true })
+  })
+}
+
+/**
  * 将全局快捷键注册结果渲染为设置页状态提示。
  * @param states 主进程返回的注册状态列表。
  * @returns 无返回值。
@@ -2162,6 +2183,9 @@ window.api.onShortcutGuideOpen(showShortcutGuide)
 reopenShortcutGuideButton.addEventListener('click', showShortcutGuide)
 shortcutGuideCloseButton.addEventListener('click', () => void dismissShortcutGuide())
 shortcutGuideConfirmButton.addEventListener('click', () => void dismissShortcutGuide())
+for (const button of document.querySelectorAll<HTMLButtonElement>('[data-settings-tab][data-settings-focus]')) {
+  button.addEventListener('click', () => openShortcutGuideTarget(button))
+}
 document.addEventListener('keydown', handleShortcutGuideKeydown)
 
 void initialize()

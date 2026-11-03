@@ -536,6 +536,7 @@
             <p id="ocr-win7-hint" class="field-hint" data-i18n="settings.ocr.win7FixedEngine" hidden>
               The Windows 7 compatibility build always uses Tesseract.js WebAssembly OCR; engine selection and the Tesseract fallback switch cannot be changed in this build.
             </p>
+            <h3 class="settings-subsection-title" data-i18n="settings.ocr.hotkeysTitle">Shortcuts</h3>
             <div class="row">
               <label for="ocr-hotkey" data-i18n="settings.ocr.hotkey">Screenshot hotkey</label>
               <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.ocr.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
@@ -898,16 +899,19 @@
             <span id="shortcut-guide-selection-key" class="shortcut-guide-key">Alt+T</span>
             <h3 data-i18n="settings.shortcutGuide.selectionTitle">Select text to translate</h3>
             <p id="shortcutGuideSelection" data-i18n="settings.shortcutGuide.selection">Select text in any app, then press the translation shortcut to open the translation popup. Best for words, sentences, and paragraphs you can already select.</p>
+            <button id="shortcut-guide-selection-settings" class="btn" type="button" data-settings-tab="general" data-settings-focus="hotkey" data-i18n="settings.shortcutGuide.configure">Set shortcut</button>
           </article>
           <article class="shortcut-guide-card">
             <span id="shortcut-guide-quick-ocr-key" class="shortcut-guide-key">Alt+S</span>
             <h3 data-i18n="settings.shortcutGuide.quickOcrTitle">Quick OCR translation</h3>
             <p id="shortcutGuideQuickOcr" data-i18n="settings.shortcutGuide.quickOcr">Press the quick OCR shortcut, drag a box, and release to recognize and translate automatically. Best for images, videos, and text that cannot be selected.</p>
+            <button id="shortcut-guide-quick-ocr-settings" class="btn" type="button" data-settings-tab="ocr" data-settings-focus="ocr-quick-hotkey" data-i18n="settings.shortcutGuide.configure">Set shortcut</button>
           </article>
           <article class="shortcut-guide-card">
             <span id="shortcut-guide-ocr-editor-key" class="shortcut-guide-key">Alt+O</span>
             <h3 data-i18n="settings.shortcutGuide.ocrEditorTitle">Full screenshot editor</h3>
             <p id="shortcutGuideOcrEditor" data-i18n="settings.shortcutGuide.ocrEditor">Press the screenshot editor shortcut to open the full screenshot editor. Select an area, then choose Recognize or Translate manually; annotations and image export are also available.</p>
+            <button id="shortcut-guide-ocr-editor-settings" class="btn" type="button" data-settings-tab="ocr" data-settings-focus="ocr-hotkey" data-i18n="settings.shortcutGuide.configure">Set shortcut</button>
           </article>
         </div>
         <div class="shortcut-guide-actions">

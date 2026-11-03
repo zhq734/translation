@@ -103,3 +103,45 @@ test('快捷动作指南与下方触发方式必须保留清晰间距', () => {
 
   assert.match(guideEntryCss, /(?:^|\n)\s*margin-bottom:\s*var\(--space-4\);/u)
 })
+
+test('快捷动作指南必须提供直达对应快捷键设置的入口', () => {
+  const expectedTargets = [
+    ['shortcut-guide-selection-settings', 'general', 'hotkey'],
+    ['shortcut-guide-quick-ocr-settings', 'ocr', 'ocr-quick-hotkey'],
+    ['shortcut-guide-ocr-editor-settings', 'ocr', 'ocr-hotkey']
+  ] as const
+
+  for (const [buttonId, tabId, inputId] of expectedTargets) {
+    const tag = settingsHtml.match(new RegExp(`<button[^>]*id="${buttonId}"[^>]*>`, 'u'))?.[0] ?? ''
+    assert.match(tag, /class="btn"/u)
+    assert.match(tag, new RegExp(`data-settings-tab="${tabId}"`, 'u'))
+    assert.match(tag, new RegExp(`data-settings-focus="${inputId}"`, 'u'))
+    assert.match(tag, /data-i18n="settings\.shortcutGuide\.configure"/u)
+  }
+
+  assert.match(settingsSource, /function openShortcutGuideTarget\(button: HTMLButtonElement\): void/u)
+  assert.match(settingsSource, /activateSettingsTab\(tabId, false, 'push'\)/u)
+  assert.match(settingsSource, /shortcutGuideEl\.hidden = true/u)
+  assert.match(settingsSource, /requestAnimationFrame\(\(\) => \{[\s\S]*?focus\(\)[\s\S]*?scrollIntoView/u)
+  assert.match(settingsSource, /querySelectorAll<HTMLButtonElement>\('\[data-settings-tab\]\[data-settings-focus\]'\)/u)
+  assert.match(settingsSource, /openShortcutGuideTarget\(button\)/u)
+  assert.equal(tForTest('zh-CN', 'settings.shortcutGuide.configure'), '设置快捷键')
+  assert.equal(tForTest('en-US', 'settings.shortcutGuide.configure'), 'Set shortcut')
+})
+
+test('OCR 页的快捷键配置必须在独立小节中清晰展示', () => {
+  const panelStart = settingsHtml.indexOf('id="settings-panel-ocr"')
+  const panelEnd = settingsHtml.indexOf('id="settings-panel-translation-services"', panelStart)
+  const panel = settingsHtml.slice(panelStart, panelEnd)
+
+  assert.match(
+    panel,
+    /<h3[^>]*data-i18n="settings\.ocr.hotkeysTitle"[^>]*>[\s\S]*?<div class="row">[\s\S]*?id="ocr-hotkey"/u
+  )
+  assert.match(
+    panel,
+    /id="ocr-hotkey"[\s\S]*?id="ocr-quick-hotkey"[\s\S]*?id="ocr-quick-hotkey-clear"/u
+  )
+  assert.equal(tForTest('zh-CN', 'settings.ocr.hotkeysTitle'), '快捷键')
+  assert.equal(tForTest('en-US', 'settings.ocr.hotkeysTitle'), 'Shortcuts')
+})
