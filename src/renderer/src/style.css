@@ -875,10 +875,22 @@ body {
   min-width: 0;
   height: var(--control-height);
   border: 0;
+  -webkit-appearance: none;
+  appearance: none;
   background: transparent;
+  box-shadow: none;
   color: var(--text-primary);
   font: inherit;
   outline: none;
+}
+
+/* 关闭 Chromium 原生搜索控件装饰，焦点边框只由外层容器统一绘制。 */
+.history-search-wrap input::-webkit-search-decoration,
+.history-search-wrap input::-webkit-search-cancel-button,
+.history-search-wrap input::-webkit-search-results-button,
+.history-search-wrap input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .history-search-wrap input::placeholder {

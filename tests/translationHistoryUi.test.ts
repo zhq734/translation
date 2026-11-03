@@ -70,6 +70,15 @@ test('翻译历史面板必须复用主题变量且不硬编码颜色', () => {
   assert.match(historyCss, /var\(--/u)
 })
 
+test('历史搜索框必须关闭原生 searchfield 外观，避免聚焦时出现双层边框', () => {
+  const searchInputCss =
+    popupCss.match(/\.history-search-wrap input\s*\{([\s\S]*?)\}/u)?.[1] ?? ''
+
+  assert.match(searchInputCss, /(?:^|\n)\s*-webkit-appearance:\s*none;/u)
+  assert.match(searchInputCss, /(?:^|\n)\s*appearance:\s*none;/u)
+  assert.match(searchInputCss, /(?:^|\n)\s*box-shadow:\s*none;/u)
+})
+
 test('历史面板打开期间必须暂停自动隐藏，关闭或切换视图后恢复', () => {
   const openHistory = popupSource.match(/function openHistory\(\): void \{[\s\S]*?\n\}/u)?.[0] ?? ''
   const closeHistory = popupSource.match(/function closeHistory\(\): void \{[\s\S]*?\n\}/u)?.[0] ?? ''
