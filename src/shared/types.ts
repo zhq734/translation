@@ -454,6 +454,8 @@ export interface OcrSelectionBeginPayload {
   sessionId: number
   /** 覆盖窗口对应的全局屏幕坐标区域。 */
   bounds: OcrSelectionBounds
+  /** 是否在用户完成首次有效框选并松开鼠标后自动识别并翻译。 */
+  autoTranslate: boolean
 }
 
 /** OCR 框选 Renderer 完成会话重置后的就绪确认负载。 */
@@ -993,6 +995,8 @@ export interface Settings {
   ocrEnginePreference: OcrEnginePreference
   /** 截图翻译快捷键。 */
   ocrHotkey: string
+  /** 快捷 OCR 翻译快捷键：框选松开后自动识别并翻译。 */
+  ocrQuickHotkey: string
   /** OCR 语言，auto 表示自动。 */
   ocrLang: string
   /** OCR 前图像放大倍率（1~3）。 */
@@ -1022,7 +1026,7 @@ export interface Settings {
 }
 
 /** 可注册的全局快捷键字段标识。 */
-export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'ocrQuickHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
 
 /** 单个全局快捷键的注册状态。 */
 export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'

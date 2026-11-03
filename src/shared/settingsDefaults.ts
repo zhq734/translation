@@ -4,7 +4,7 @@ import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
 
-export const SETTINGS_SCHEMA_VERSION = 21
+export const SETTINGS_SCHEMA_VERSION = 22
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -57,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
   speechProvider: 'system',
   ocrEnginePreference: 'auto',
   ocrHotkey: 'Alt+O',
+  ocrQuickHotkey: 'Alt+S',
   ocrLang: 'auto',
   ocrScale: 1,
   ocrTesseractEnabled: true,
@@ -319,6 +320,11 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       ? merged.ocrEnginePreference
       : 'auto',
     ocrHotkey: String(merged.ocrHotkey || '').trim(),
+    // 第二十二版新增快捷 OCR 快捷键；缺失时补默认值，显式清空必须原样保留。
+    ocrQuickHotkey: normalizeShortcutSetting(
+      rawSettings.ocrQuickHotkey,
+      DEFAULT_SETTINGS.ocrQuickHotkey
+    ),
     ocrLang: String(merged.ocrLang || 'auto').trim(),
     ocrScale: normalizeOcrScale(merged.ocrScale),
     ocrTesseractEnabled: merged.ocrTesseractEnabled !== false,

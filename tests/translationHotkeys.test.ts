@@ -7,8 +7,9 @@ import {
   findShortcutConflict
 } from '../src/main/globalShortcutRegistry.ts'
 
-test('设置默认值应包含手动翻译、网页阅读器与文档翻译快捷键', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 21)
+test('设置默认值应包含快捷 OCR、手动翻译、网页阅读器与文档翻译快捷键', () => {
+  assert.equal(SETTINGS_SCHEMA_VERSION, 22)
+  assert.equal(DEFAULT_SETTINGS.ocrQuickHotkey, 'Alt+S')
   assert.equal(DEFAULT_SETTINGS.manualTranslationHotkey, 'Alt+M')
   assert.equal(DEFAULT_SETTINGS.webReaderHotkey, 'Alt+P')
   assert.equal(DEFAULT_SETTINGS.documentTranslationHotkey, 'Alt+D')
@@ -18,7 +19,8 @@ test('旧配置升级应补齐新快捷键并保留已有快捷键', () => {
   const migrated = normalizeSettings({
     schemaVersion: 20,
     hotkey: 'Alt+Q',
-    ocrHotkey: 'Alt+W'
+    ocrHotkey: 'Alt+W',
+    ocrQuickHotkey: 'Alt+R'
   })
 
   assert.equal(migrated.manualTranslationHotkey, 'Alt+M')
@@ -26,17 +28,20 @@ test('旧配置升级应补齐新快捷键并保留已有快捷键', () => {
   assert.equal(migrated.documentTranslationHotkey, 'Alt+D')
   assert.equal(migrated.hotkey, 'Alt+Q')
   assert.equal(migrated.ocrHotkey, 'Alt+W')
+  assert.equal(migrated.ocrQuickHotkey, 'Alt+R')
 })
 
 test('用户清空的新快捷键必须保留为空而不是回填默认值', () => {
   const normalized = normalizeSettings({
     schemaVersion: SETTINGS_SCHEMA_VERSION,
+    ocrQuickHotkey: '',
     manualTranslationHotkey: '',
     webReaderHotkey: '',
     documentTranslationHotkey: ''
   })
 
   assert.equal(normalized.manualTranslationHotkey, '')
+  assert.equal(normalized.ocrQuickHotkey, '')
   assert.equal(normalized.webReaderHotkey, '')
   assert.equal(normalized.documentTranslationHotkey, '')
 })
@@ -44,12 +49,14 @@ test('用户清空的新快捷键必须保留为空而不是回填默认值', ()
 test('非法的新快捷键值应回退到默认值', () => {
   const normalized = normalizeSettings({
     schemaVersion: SETTINGS_SCHEMA_VERSION,
+    ocrQuickHotkey: 42 as unknown as string,
     manualTranslationHotkey: 42 as unknown as string,
     webReaderHotkey: null as unknown as string,
     documentTranslationHotkey: {} as unknown as string
   })
 
   assert.equal(normalized.manualTranslationHotkey, 'Alt+M')
+  assert.equal(normalized.ocrQuickHotkey, 'Alt+S')
   assert.equal(normalized.webReaderHotkey, 'Alt+P')
   assert.equal(normalized.documentTranslationHotkey, 'Alt+D')
 })
@@ -58,6 +65,7 @@ test('快捷键冲突校验应拒绝系统复制、重复绑定，并忽略空�
   const base = {
     hotkey: 'Alt+T',
     ocrHotkey: 'Alt+O',
+    ocrQuickHotkey: 'Alt+S',
     manualTranslationHotkey: 'Alt+M',
     webReaderHotkey: 'Alt+P',
     documentTranslationHotkey: 'Alt+D'
@@ -81,6 +89,10 @@ test('快捷键冲突校验应拒绝系统复制、重复绑定，并忽略空�
     kind: 'duplicate',
     owner: 'manualTranslationHotkey'
   })
+  assert.deepEqual(findShortcutConflict('ocrQuickHotkey', 'Alt+O', base), {
+    kind: 'duplicate',
+    owner: 'ocrHotkey'
+  })
   assert.equal(findShortcutConflict('webReaderHotkey', '', base), null)
   assert.equal(findShortcutConflict('manualTranslationHotkey', 'Alt+M', {
     ...base,
@@ -93,6 +105,7 @@ test('快捷键注册应汇总成功、占用、非法、空值和部分失败�
   const states = collectShortcutRegistrationStates({
     hotkey: 'Alt+T',
     ocrHotkey: 'Alt+O',
+    ocrQuickHotkey: 'Alt+S',
     manualTranslationHotkey: 'Alt+M',
     webReaderHotkey: '',
     documentTranslationHotkey: 'Alt+D',
@@ -110,11 +123,12 @@ test('快捷键注册应汇总成功、占用、非法、空值和部分失败�
   assert.deepEqual(states.map((state) => [state.id, state.status]), [
     ['hotkey', 'registered'],
     ['ocrHotkey', 'registered'],
+    ['ocrQuickHotkey', 'registered'],
     ['manualTranslationHotkey', 'occupied'],
     ['webReaderHotkey', 'skipped'],
     ['documentTranslationHotkey', 'registered']
   ])
-  assert.deepEqual(registered, ['Alt+T', 'Alt+O', 'Alt+D'])
+  assert.deepEqual(registered, ['Alt+T', 'Alt+O', 'Alt+S', 'Alt+D'])
 })
 
 test('快捷键修改时应先注销旧注册再注册全部非空快捷键', () => {
@@ -122,6 +136,7 @@ test('快捷键修改时应先注销旧注册再注册全部非空快捷键', ()
   collectShortcutRegistrationStates({
     hotkey: 'Alt+T',
     ocrHotkey: '',
+    ocrQuickHotkey: 'Alt+S',
     manualTranslationHotkey: 'Alt+M',
     webReaderHotkey: 'Alt+P',
     documentTranslationHotkey: 'Alt+D'
@@ -136,6 +151,7 @@ test('快捷键修改时应先注销旧注册再注册全部非空快捷键', ()
   assert.deepEqual(calls, [
     'unregisterAll',
     'register:Alt+T',
+    'register:Alt+S',
     'register:Alt+M',
     'register:Alt+P',
     'register:Alt+D'
@@ -155,7 +171,9 @@ test('设置页应提供手动翻译、网页阅读器与文档翻译快捷键�
   assert.match(source, /manualTranslationHotkey\.addEventListener\('keydown'/u)
   assert.match(source, /webReaderHotkey\.addEventListener\('keydown'/u)
   assert.match(source, /documentTranslationHotkey\.addEventListener\('keydown'/u)
+  assert.match(source, /ocrQuickHotkey\.addEventListener\('keydown'/u)
   assert.match(source, /manual-translation-hotkey-clear/u)
   assert.match(source, /web-reader-hotkey-clear/u)
   assert.match(source, /document-translation-hotkey-clear/u)
+  assert.match(source, /ocr-quick-hotkey-clear/u)
 })

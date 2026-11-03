@@ -117,6 +117,10 @@ type DragState = {
 let ocrMode = false
 let dragState: DragState | null = null
 let currentRect: OcrSelectionBounds | null = null
+/** 当前快捷 OCR 会话是否应在首次有效框选松开后自动识别并翻译。 */
+let quickOcrAutoTranslate = false
+/** 快捷 OCR 已完成有效框选但仍在等待快照就绪的自动提交标记。 */
+let pendingQuickOcrSubmit = false
 // 当前 OCR 框选会话序号：与主进程 begin/snapshot 负载一致，用于丢弃跨会话残留事件。
 let currentOcrSessionId = 0
 /** 当前背景图加载令牌，防止被替换的图片回调污染新会话。 */
@@ -1867,6 +1871,7 @@ function handleOcrSnapshotLoad(): void {
     redrawAnnotations()
     redrawAnnotationPreview()
   }
+  flushPendingQuickOcrSelection()
 }
 
 /**
@@ -1898,6 +1903,7 @@ function handleOcrSnapshotError(): void {
 function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
   resetOcrSessionUi()
   currentOcrSessionId = payload.sessionId
+  quickOcrAutoTranslate = payload.autoTranslate === true
   ocrMode = true
   document.documentElement.setAttribute('data-ocr-mode', 'true')
   translateButton.hidden = true
@@ -1934,6 +1940,8 @@ function resetOcrSessionUi(): void {
   ocrSnapshotLoadToken += 1
   dragState = null
   currentRect = null
+  quickOcrAutoTranslate = false
+  pendingQuickOcrSubmit = false
   screenshotRecognizePending = false
   pendingScreenshotRequestId = null
   screenshotActionPending = null
@@ -2126,8 +2134,28 @@ function handleOcrMouseMove(event: MouseEvent): void {
  */
 function handleOcrMouseUp(): void {
   if (!ocrMode || !dragState) return
+  const shouldQuickSubmit = quickOcrAutoTranslate &&
+    dragState.type === 'draw' &&
+    dragState.activated === true
   dragState = null
   renderOcrToolbar()
+  if (shouldQuickSubmit) {
+    pendingQuickOcrSubmit = true
+    flushPendingQuickOcrSelection()
+  }
+}
+
+/**
+ * 快照就绪后提交等待中的快捷 OCR 框选，确保截图采集与用户拖拽可以并发。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function flushPendingQuickOcrSelection(): void {
+  if (!(quickOcrAutoTranslate && pendingQuickOcrSubmit && ocrMode &&
+      ocrSnapshotState === 'ready' && currentRect &&
+      currentRect.width >= MIN_SELECTION_SIZE && currentRect.height >= MIN_SELECTION_SIZE)) return
+  pendingQuickOcrSubmit = false
+  translateCurrentOcrSelection()
 }
 
 /**

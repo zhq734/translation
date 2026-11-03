@@ -533,6 +533,14 @@
               <label for="ocr-hotkey" data-i18n="settings.ocr.hotkey">Screenshot hotkey</label>
               <input id="ocr-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.ocr.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
             </div>
+            <div class="row hotkey-row">
+              <label for="ocr-quick-hotkey" data-i18n="settings.ocr.quickHotkey">Quick OCR hotkey</label>
+              <div class="hotkey-control">
+                <input id="ocr-quick-hotkey" type="text" readonly data-hotkey-recorder data-i18n-attr="placeholder:settings.ocr.hotkeyPlaceholder" placeholder="Click, then press a shortcut" />
+                <button id="ocr-quick-hotkey-clear" class="btn" type="button" data-i18n="settings.trigger.clearHotkey">Clear</button>
+              </div>
+            </div>
+            <p class="field-hint" data-i18n="settings.ocr.quickHotkeyHint">Drag to select an area; OCR and translation start automatically when you release the mouse.</p>
             <div class="row">
               <label for="ocr-lang" data-i18n="settings.ocr.lang">Recognition language</label>
               <select id="ocr-lang">

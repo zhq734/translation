@@ -692,6 +692,8 @@ let pendingMacOSDockVisibilityTimer: ReturnType<typeof setTimeout> | null = null
 let latestOcrSnapshot: OcrSnapshot | null = null
 // OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
 let ocrSelectionSessionSeq = 0
+/** 下一次 OCR 框选是否在首次有效框选松开后自动识别并翻译。 */
+let nextOcrSelectionAutoTranslate = false
 // 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
 const activeScreenshotOcrRequests = new Map<string, number>()
 // 会话级 OCR 识别结果缓存：只保留最近一次识别结果，供同一会话、同一选区、
@@ -2420,6 +2422,8 @@ function onGlobalShortcut(accelerator: string): void {
     onHotkey()
   } else if (accelerator === settings.ocrHotkey) {
     onOcrHotkey()
+  } else if (accelerator === settings.ocrQuickHotkey) {
+    onOcrQuickHotkey()
   } else if (accelerator === settings.manualTranslationHotkey) {
     void openManualTranslation()
   } else if (accelerator === settings.webReaderHotkey) {
@@ -2521,6 +2525,28 @@ function onHotkey(): void {
 function onOcrHotkey(): void {
   latestSelectionGesture += 1
   hideSelectionButton()
+  requestOcrSelection(false)
+}
+
+/**
+ * 响应快捷 OCR 快捷键并打开自动翻译框选窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function onOcrQuickHotkey(): void {
+  latestSelectionGesture += 1
+  hideSelectionButton()
+  requestOcrSelection(true)
+}
+
+/**
+ * 记录本次 OCR 框选模式并打开覆盖窗口。
+ * @param autoTranslate 是否在首次有效框选松开后自动识别并翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function requestOcrSelection(autoTranslate: boolean): void {
+  nextOcrSelectionAutoTranslate = autoTranslate
   void openOcrSelection()
 }
 
@@ -3771,6 +3797,9 @@ function failOcrSelectionCapture(interactionToken: number, error: unknown, ancho
  * @author zhenghq
  */
 async function openOcrSelection(): Promise<void> {
+  // 每个入口只消费一次自动翻译意图，避免后续高级截图误继承快捷模式。
+  const autoTranslate = nextOcrSelectionAutoTranslate
+  nextOcrSelectionAutoTranslate = false
   // OCR 框选已经进行时拒绝重复入口，避免旧截图请求与新 token 互相恢复监听。
   if (selectionInteraction.snapshot().state === 'ocr-selecting') return
   // 覆盖窗口显示后应用会成为前台应用，这里先记录截图前的状态，供收尾时决定是否归还前台。
@@ -3832,7 +3861,8 @@ async function openOcrSelection(): Promise<void> {
     const rendererReadyPromise = waitForOcrSelectionReady(win, ocrSessionId)
     sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
       sessionId: ocrSessionId,
-      bounds: display.bounds
+      bounds: display.bounds,
+      autoTranslate
     })
     // Windows GDI BitBlt 与 macOS screencapture 都会读取当前屏幕合成结果；覆盖窗口若先显示，
     // 应用自身的半透明遮罩会进入快照，导致三个 OCR 引擎共享同一张无有效文字的输入图。
@@ -6572,7 +6602,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
 
   const previous = getSettings()
   const shortcutPatch: Partial<Pick<Settings, GlobalShortcutId>> = {}
-  for (const id of ['hotkey', 'ocrHotkey', 'manualTranslationHotkey', 'webReaderHotkey', 'documentTranslationHotkey'] as GlobalShortcutId[]) {
+  for (const id of ['hotkey', 'ocrHotkey', 'ocrQuickHotkey', 'manualTranslationHotkey', 'webReaderHotkey', 'documentTranslationHotkey'] as GlobalShortcutId[]) {
     if (patch[id] !== undefined) shortcutPatch[id] = String(patch[id]).trim()
   }
   const shortcutCandidate = { ...previous, ...shortcutPatch }
@@ -6603,6 +6633,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (
     (patch.hotkey !== undefined && settings.hotkey !== previous.hotkey) ||
     (patch.ocrHotkey !== undefined && settings.ocrHotkey !== previous.ocrHotkey) ||
+    (patch.ocrQuickHotkey !== undefined && settings.ocrQuickHotkey !== previous.ocrQuickHotkey) ||
     (patch.manualTranslationHotkey !== undefined && settings.manualTranslationHotkey !== previous.manualTranslationHotkey) ||
     (patch.webReaderHotkey !== undefined && settings.webReaderHotkey !== previous.webReaderHotkey) ||
     (patch.documentTranslationHotkey !== undefined && settings.documentTranslationHotkey !== previous.documentTranslationHotkey)
@@ -7208,7 +7239,7 @@ function registerIpc(): void {
     void translateSelectionButton()
   })
   ipcMain.on('ocr-selection:open', () => {
-    void openOcrSelection()
+    requestOcrSelection(false)
   })
   ipcMain.on('ocr-selection:ready', (_event, payload: unknown) => {
     const sessionId = (payload as { sessionId?: unknown })?.sessionId
@@ -7495,7 +7526,12 @@ function buildTrayMenu(): Menu {
     {
       label: t.t('menu.screenshotOcr'),
       enabled: true,
-      click: () => openOcrSelection()
+      click: () => requestOcrSelection(false)
+    },
+    {
+      label: t.t('menu.quickScreenshotOcr'),
+      enabled: true,
+      click: () => requestOcrSelection(true)
     },
     {
       label: t.t('menu.clipboardImageOcr'),

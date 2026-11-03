@@ -72,6 +72,8 @@ Typical use cases include:
 - **Provider fallback** across DingTalk, Microsoft Translator, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
 - **Translation cache and circuit breaker** to reuse successful results and temporarily skip failing providers.
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
+- **Quick OCR translation**: press `Alt+S`, drag a region with the left mouse button, and release to start OCR and translation automatically. It is intended for fast lookups in images, video subtitles, and interfaces whose text cannot be selected.
+- **Screenshot OCR workspace**: press `Alt+O` to adjust the region, preview OCR, annotate, copy, or save the image before manually submitting translation. Clipboard-image OCR is also supported.
 - **Screenshot annotation** with rectangles, ellipses, arrows, freehand brush, text, mosaic, highlight, Gaussian blur, and spotlight tools, plus contextual color, stroke, font, and blur controls.
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
@@ -333,6 +335,12 @@ Select text → press Option + T（⌥T）
 
 The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` as the translation shortcut; the app rejects system copy shortcuts to avoid interfering with normal copy behavior.
 
+### Quick OCR translation
+
+For text that cannot be selected, press `Alt+S`, drag a region with the left mouse button, and release. The app waits for the screen snapshot if necessary, then runs OCR and translation automatically. On macOS, `Alt` maps to `Option`.
+
+Use `Alt+O` instead when you want the full screenshot workspace: adjust the selection, preview OCR, annotate, copy, or save the image, then submit translation manually. Both OCR shortcuts can be changed or cleared under **Settings → OCR**. A click, a move/resize of an existing selection, or a toolbar action does not trigger the quick path.
+
 ### Popup controls
 
 - **Manual translation**: use the document icon to switch between selection translation and manual text input;
@@ -444,6 +452,8 @@ Settings are saved automatically and take effect immediately.
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
 | Microsoft Translator | Key-free Bing web translator channel | Disabled |
+| Quick OCR hotkey | Release-to-translate OCR selection | `Alt+S` |
+| Screenshot hotkey | Editable screenshot OCR workspace | `Alt+O` |
 | Web translation | Built-in reader and full-page translation entry | Enabled |
 | Web translation scope | Body content only or all visible extracted text | Body only |
 | Web translation limits | Maximum translated blocks and total characters | 1,000 blocks / 500,000 characters |

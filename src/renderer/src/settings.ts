@@ -108,6 +108,8 @@ const aiStatus = document.getElementById('ai-status') as HTMLElement
 const ocrEnginePreference = document.getElementById('ocr-engine-preference') as HTMLSelectElement
 const ocrWin7Hint = document.getElementById('ocr-win7-hint') as HTMLElement
 const ocrHotkey = document.getElementById('ocr-hotkey') as HTMLInputElement
+const ocrQuickHotkey = document.getElementById('ocr-quick-hotkey') as HTMLInputElement
+const ocrQuickHotkeyClear = document.getElementById('ocr-quick-hotkey-clear') as HTMLButtonElement
 const ocrLang = document.getElementById('ocr-lang') as HTMLSelectElement
 const ocrScale = document.getElementById('ocr-scale') as HTMLSelectElement
 const ocrTesseractEnabled = document.getElementById('ocr-tesseract-enabled') as HTMLInputElement
@@ -579,6 +581,7 @@ function renderSettings(settings: Settings): void {
   microsoftEnabled.checked = settings.microsoftEnabled
   ocrEnginePreference.value = settings.ocrEnginePreference
   ocrHotkey.value = settings.ocrHotkey
+  ocrQuickHotkey.value = settings.ocrQuickHotkey
   ocrLang.value = settings.ocrLang
   if (![...ocrScale.options].some((option) => option.value === String(settings.ocrScale))) {
     ocrScale.add(new Option(`${settings.ocrScale}×`, String(settings.ocrScale)))
@@ -674,6 +677,7 @@ function renderShortcutRegistrationStates(states: GlobalShortcutRegistrationStat
   const labels: Record<GlobalShortcutId, string> = {
     hotkey: t('settings.trigger.globalHotkey'),
     ocrHotkey: t('settings.ocr.hotkey'),
+    ocrQuickHotkey: t('settings.ocr.quickHotkey'),
     manualTranslationHotkey: t('settings.trigger.manualHotkey'),
     webReaderHotkey: t('settings.trigger.webReaderHotkey'),
     documentTranslationHotkey: t('settings.trigger.documentHotkey')
@@ -1180,16 +1184,24 @@ function saveWebTranslationSettings(): void {
  */
 function saveOcrSettings(): void {
   const accelerator = ocrHotkey.value.trim()
+  const quickAccelerator = ocrQuickHotkey.value.trim()
   if (isCopyShortcut(accelerator)) {
     flash(t('error.copyShortcutAsOcrHotkey'), 'warning')
     ocrHotkey.focus()
     ocrHotkey.select()
     return
   }
+  if (isCopyShortcut(quickAccelerator)) {
+    flash(t('error.copyShortcutAsOcrHotkey'), 'warning')
+    ocrQuickHotkey.focus()
+    ocrQuickHotkey.select()
+    return
+  }
   const win7 = latestOcrStatus?.win7Compatibility === true
   void save({
     ocrEnginePreference: win7 ? 'tesseract' : ocrEnginePreference.value as OcrEnginePreference,
     ocrHotkey: accelerator,
+    ocrQuickHotkey: quickAccelerator,
     ocrLang: ocrLang.value,
     ocrScale: Number(ocrScale.value),
     ocrTesseractEnabled: win7 ? true : ocrTesseractEnabled.checked
@@ -1208,6 +1220,31 @@ function handleOcrHotkeyKeydown(event: KeyboardEvent): void {
   const accelerator = formatKeyboardAccelerator(event, navigator.platform)
   if (!accelerator) return
   ocrHotkey.value = accelerator
+  saveOcrSettings()
+}
+
+/**
+ * 记录快捷 OCR 快捷键的键盘按下事件并立即保存。
+ * @param event 用户按下快捷键产生的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleOcrQuickHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  ocrQuickHotkey.value = accelerator
+  saveOcrSettings()
+}
+
+/**
+ * 清空快捷 OCR 快捷键并立即保存空值。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearOcrQuickHotkey(): void {
+  ocrQuickHotkey.value = ''
   saveOcrSettings()
 }
 
@@ -1965,6 +2002,9 @@ webTranslationImageOcrOverlay.addEventListener('change', saveWebTranslationSetti
 ocrEnginePreference.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('change', saveOcrSettings)
 ocrHotkey.addEventListener('keydown', handleOcrHotkeyKeydown)
+ocrQuickHotkey.addEventListener('change', saveOcrSettings)
+ocrQuickHotkey.addEventListener('keydown', handleOcrQuickHotkeyKeydown)
+ocrQuickHotkeyClear.addEventListener('click', clearOcrQuickHotkey)
 ocrLang.addEventListener('change', saveOcrSettings)
 ocrScale.addEventListener('change', saveOcrSettings)
 ocrTesseractEnabled.addEventListener('change', saveOcrSettings)
