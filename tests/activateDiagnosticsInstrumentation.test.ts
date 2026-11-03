@@ -55,6 +55,64 @@ test('app.dock.show 延迟重放路径应记录 dock-show-delayed 且保留保�
     '延迟重放必须保留交互状态判断')
 })
 
+test('应用已失活时同步与延迟 Dock 显示都不得重新激活应用', () => {
+  const applySource = extractFunction(mainSource, 'async function applyMacOSDockVisibility(')
+  const scheduleSource = extractFunction(
+    mainSource,
+    'function scheduleMacOSDockShowAfterSelectionGuard('
+  )
+
+  // app.dock.show() 会激活整个应用，后台设置页因此会随应用上屏。用户已经切到
+  // IntelliJ/Chrome 等外部应用时，无论同步刷新还是保护期结束后的延迟重放，
+  // 都不能再调用 dock.show()；Dock 呈现只能等真实显式入口重新应用。
+  for (const [name, source] of [
+    ['applyMacOSDockVisibility', applySource],
+    ['scheduleMacOSDockShowAfterSelectionGuard', scheduleSource]
+  ] as const) {
+    const showIndex = source.indexOf('app.dock?.show()')
+    const activeIndex = source.lastIndexOf('isMacAppActiveByEvents()', showIndex)
+    assert.ok(showIndex >= 0, `${name} 应保留 Dock 显示调用`)
+    assert.ok(activeIndex >= 0 && activeIndex < showIndex,
+      `${name} 调用 dock.show() 前必须确认应用仍由用户激活`)
+  }
+})
+
+test('失活时跳过的 Dock 显示不得被标记为已经应用', () => {
+  const applySource = extractFunction(mainSource, 'async function applyMacOSDockVisibility(')
+  const activeIndex = applySource.indexOf('isMacAppActiveByEvents()')
+  const showIndex = applySource.indexOf('app.dock?.show()', activeIndex)
+  const appliedIndex = applySource.indexOf('appliedMacOSDockPresentation = presentation', showIndex)
+
+  assert.ok(activeIndex >= 0 && showIndex > activeIndex && appliedIndex > showIndex,
+    '失活跳过 dock.show() 后不得写入 appliedMacOSDockPresentation')
+})
+
+test('应用失活时整个 Dock 呈现路径必须原子跳过', () => {
+  const applySource = extractFunction(mainSource, 'async function applyMacOSDockVisibility(')
+  const executableSource = applySource
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/\/\/[^\n]*/gu, '')
+  const activeIndex = executableSource.indexOf('isMacAppActiveByEvents()')
+  const policyIndex = executableSource.indexOf('app.setActivationPolicy(')
+  const hideIndex = executableSource.indexOf('app.dock?.hide()')
+  const showIndex = executableSource.indexOf('app.dock?.show()')
+  const appliedIndex = executableSource.indexOf('appliedMacOSDockPresentation = presentation')
+
+  // setActivationPolicy()/dock.hide() 与 dock.show() 一样会触发 macOS 应用级
+  // 窗口重排。应用失活时只拦 dock.show() 仍会把后台设置页闪到最前，因此必须在
+  // 解析并应用 presentation 之前整体短路，且不能登记为已应用状态。
+  assert.ok(activeIndex >= 0, 'Dock 呈现入口必须检查应用激活状态')
+  assert.ok(policyIndex > activeIndex, '失活门禁必须早于 setActivationPolicy()')
+  assert.ok(hideIndex > activeIndex, '失活门禁必须早于 dock.hide()')
+  assert.ok(showIndex > activeIndex, '失活门禁必须早于 dock.show()')
+  assert.ok(appliedIndex > activeIndex, '失活门禁必须早于 appliedMacOSDockPresentation 写入')
+  assert.match(
+    executableSource,
+    /isMacAppActiveByEvents\(\)\)\s*\{\s*logCandidateProbe\('dock-presentation-skipped-inactive'/u,
+    '失活跳过整个 Dock 呈现时必须记录明确诊断'
+  )
+})
+
 test('设置页显式入口与复用已可见分支置前都必须打点', () => {
   const activateSource = extractFunction(
     mainSource,

@@ -65,6 +65,37 @@ typedef struct {
   AXError enhancedError;
 } AXEnhancementResult;
 
+/** 进程内 AX 读取与 CLI helper 共用的结果状态。 */
+typedef enum {
+  MacosAxReadStatusPresent = 0,
+  MacosAxReadStatusEmpty,
+  MacosAxReadStatusUnknown,
+  MacosAxReadStatusPermission
+} MacosAxReadStatus;
+
+/** 一次 AX 选区读取的完整结果，供 CLI 与 N-API addon 共同消费。 */
+typedef struct {
+  MacosAxReadStatus status;
+  NSString *text;
+  NSString *reason;
+  NSString *windowLocate;
+  BOOL windowMatched;
+  CFIndex windowCount;
+  NSString *focusStatus;
+} MacosAxReadResult;
+
+/** AX 选区读取选项；字段均为可选，保持旧调用兼容。 */
+typedef struct {
+  BOOL hasWindowArgument;
+  BOOL hasWindowNumber;
+  long windowNumber;
+  BOOL hasPid;
+  pid_t pid;
+  BOOL hasBounds;
+  CGRect bounds;
+  NSString *titleFingerprint;
+} MacosAxReadOptions;
+
 /**
  * 向 stdout 输出状态标记与可选文本，协议为“状态行 + 可选文本行”。
  * @param status 状态标记（PRESENT / EMPTY / UNKNOWN / PERMISSION）。
@@ -231,11 +262,11 @@ static NSString *CopySelectedTextViaSelectedRange(AXUIElementRef element) {
   }
   CFRange range = {0, 0};
   BOOL isRange = CFGetTypeID(rangeValue) == AXValueGetTypeID() &&
-    AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &range);
+    AXValueGetValue((AXValueRef)rangeValue, (AXValueType)kAXValueCFRangeType, &range);
   CFRelease(rangeValue);
   if (!isRange || range.length <= 0) return nil;
 
-  CFTypeRef rangeObject = AXValueCreate(kAXValueCFRangeType, &range);
+  CFTypeRef rangeObject = AXValueCreate((AXValueType)kAXValueCFRangeType, &range);
   if (!rangeObject) return nil;
   CFTypeRef text = NULL;
   AXError error = AXUIElementCopyParameterizedAttributeValue(
@@ -530,8 +561,8 @@ static BOOL CopyAXWindowBounds(AXUIElementRef window, CGRect *bounds) {
   CGSize size = CGSizeZero;
   BOOL ok = CFGetTypeID(positionValue) == AXValueGetTypeID() &&
     CFGetTypeID(sizeValue) == AXValueGetTypeID() &&
-    AXValueGetValue((AXValueRef)positionValue, kAXValueCGPointType, &position) &&
-    AXValueGetValue((AXValueRef)sizeValue, kAXValueCGSizeType, &size);
+    AXValueGetValue((AXValueRef)positionValue, (AXValueType)kAXValueCGPointType, &position) &&
+    AXValueGetValue((AXValueRef)sizeValue, (AXValueType)kAXValueCGSizeType, &size);
   CFRelease(positionValue);
   CFRelease(sizeValue);
   if (!ok) return NO;
@@ -781,12 +812,16 @@ static CFIndex CopyWindowCount(AXUIElementRef application, BOOL *apiDisabled) {
 static NSString *CopySelectedTextFromWindow(
   AXUIElementRef application,
   WindowCaptureContext context,
-  BOOL *apiDisabled
+  BOOL *apiDisabled,
+  NSString **focusStatus
 ) {
-  if (!application) return nil;
+  if (!application) {
+    if (focusStatus) *focusStatus = @"unknown";
+    return nil;
+  }
   AXUIElementRef window = CopyWindowByContext(application, context, apiDisabled);
   if (!window) {
-    WriteFocusDiagnostic(@"unknown");
+    if (focusStatus) *focusStatus = @"unknown";
     return nil;
   }
   // raise 失败不阻断读取：部分应用不支持 kAXRaiseAction，但仍可读取窗口内焦点元素。
@@ -800,7 +835,7 @@ static NSString *CopySelectedTextFromWindow(
   // window 元素本身。只有 focused window 已确认属于目标窗口时才读取，
   // 防止同一进程的另一个窗口把错误选区返回给调用方。
   if (FocusedWindowBelongsToTarget(application, context, window, apiDisabled)) {
-    WriteFocusDiagnostic(@"ready");
+    if (focusStatus) *focusStatus = @"ready";
     CFTypeRef focusedValue = NULL;
     AXError focusedError = AXUIElementCopyAttributeValue(
       application, kAXFocusedUIElementAttribute, &focusedValue);
@@ -813,7 +848,7 @@ static NSString *CopySelectedTextFromWindow(
   }
   // 兼容仍把 focused UI element 暴露在窗口元素上的应用。
   if (!result) {
-    WriteFocusDiagnostic(@"target-mismatch");
+    if (focusStatus) *focusStatus = @"target-mismatch";
     CFTypeRef focusedValue = NULL;
     AXError focusedError = AXUIElementCopyAttributeValue(
       window, kAXFocusedUIElementAttribute, &focusedValue);
@@ -827,6 +862,164 @@ static NSString *CopySelectedTextFromWindow(
   CFRelease(window);
   return result;
 }
+
+/**
+ * 执行窗口级、系统焦点与鼠标位置三级 AX 选区读取。
+ *
+ * 该函数不写 stdout/stderr，CLI helper 与 N-API addon 共用同一套读取、
+ * 窗口校验和 APIDisabled 判定，避免两条调用链长期漂移。
+ * @param options 目标窗口、进程号、边界与标题指纹等可选上下文。
+ * @return 结构化读取结果，调用方负责按协议输出或转换为 JS 对象。
+ * @author zhenghq
+ */
+static MacosAxReadResult ReadMacosAxSelection(MacosAxReadOptions options) {
+  MacosAxReadResult result = {
+    MacosAxReadStatusUnknown, nil, nil, nil, NO, 0, nil
+  };
+  if (!AXIsProcessTrusted()) {
+    result.status = MacosAxReadStatusPermission;
+    result.reason = @"permission";
+    return result;
+  }
+
+  AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+  if (!systemWide) return result;
+
+  CFIndex targetWindowCount = 0;
+  BOOL apiDisabled = NO;
+  if (options.hasWindowArgument) {
+    WindowCaptureContext context = {0};
+    if (options.hasWindowNumber) context.windowNumber = options.windowNumber;
+    if (options.hasBounds) {
+      context.hasBounds = YES;
+      context.bounds = options.bounds;
+    }
+    if (options.titleFingerprint.length > 0) {
+      context.titleFingerprint = options.titleFingerprint;
+    }
+
+    if (context.windowNumber > 0 || context.hasBounds) {
+      AXUIElementRef application = NULL;
+      if (options.hasPid && options.pid > 0) {
+        application = AXUIElementCreateApplication(options.pid);
+      }
+      if (!application) {
+        CFTypeRef focusedAppValue = NULL;
+        if (AXUIElementCopyAttributeValue(
+              systemWide, kAXFocusedApplicationAttribute, &focusedAppValue) ==
+              kAXErrorSuccess &&
+            focusedAppValue &&
+            CFGetTypeID(focusedAppValue) == AXUIElementGetTypeID()) {
+          application = (AXUIElementRef)focusedAppValue;
+        } else if (focusedAppValue) {
+          CFRelease(focusedAppValue);
+        }
+      }
+      targetWindowCount = CopyWindowCount(application, &apiDisabled);
+      NSString *focusStatus = nil;
+      NSString *windowText = CopySelectedTextFromWindow(
+        application, context, &apiDisabled, &focusStatus);
+      result.focusStatus = focusStatus;
+      if (windowText) {
+        result.status = MacosAxReadStatusPresent;
+        result.text = windowText;
+        result.windowLocate = @"exact";
+        result.windowMatched = YES;
+        result.windowCount = targetWindowCount;
+        if (application) CFRelease(application);
+        CFRelease(systemWide);
+        return result;
+      }
+      if (apiDisabled) {
+        result.reason = @"api-disabled";
+        result.windowLocate = @"failed";
+        result.windowCount = targetWindowCount;
+        result.focusStatus = @"unknown";
+        if (application) CFRelease(application);
+        CFRelease(systemWide);
+        return result;
+      }
+      if (application) CFRelease(application);
+    }
+    result.focusStatus = @"unknown";
+  }
+
+  // 第一级与第二级：聚焦元素及其祖先链上的 AXSelectedText、marker range 与 text range。
+  CFTypeRef focused = NULL;
+  AXError focusedError = AXUIElementCopyAttributeValue(
+    systemWide, kAXFocusedUIElementAttribute, &focused);
+  if (RecordApiDisabledError(focusedError, &apiDisabled)) {
+    if (focused) CFRelease(focused);
+    CFRelease(systemWide);
+    result.reason = @"api-disabled";
+    if (options.hasWindowArgument) {
+      result.windowLocate = @"failed";
+      result.windowCount = targetWindowCount;
+    }
+    result.focusStatus = @"unknown";
+    return result;
+  }
+  if (focusedError == kAXErrorSuccess && focused &&
+      CFGetTypeID(focused) == AXUIElementGetTypeID()) {
+    AXUIElementRef focusedElement = (AXUIElementRef)focused;
+    NSString *text = CopySelectedTextFromAncestry(focusedElement, kMaxAncestorLevels);
+    CFRelease(focused);
+    if (text) {
+      result.status = MacosAxReadStatusPresent;
+      result.text = text;
+      if (options.hasWindowArgument) {
+        result.windowLocate = @"fallback";
+        result.windowCount = targetWindowCount;
+      }
+      CFRelease(systemWide);
+      return result;
+    }
+  } else if (focused) {
+    CFRelease(focused);
+  }
+
+  // 第三级：鼠标位置元素及其最多 kMaxAncestorLevels 层祖先的选中文本。
+  AXError hoverError = kAXErrorSuccess;
+  AXUIElementRef hoverElement = CopyElementAtMousePosition(systemWide, &hoverError);
+  if (RecordApiDisabledError(hoverError, &apiDisabled)) {
+    CFRelease(systemWide);
+    result.reason = @"api-disabled";
+    if (options.hasWindowArgument) {
+      result.windowLocate = @"failed";
+      result.windowCount = targetWindowCount;
+    }
+    result.focusStatus = @"unknown";
+    return result;
+  }
+  if (hoverElement) {
+    NSString *hoverText = CopySelectedTextFromAncestry(hoverElement, kMaxAncestorLevels);
+    CFRelease(hoverElement);
+    CFRelease(systemWide);
+    if (hoverText) {
+      result.status = MacosAxReadStatusPresent;
+      result.text = hoverText;
+      if (options.hasWindowArgument) {
+        result.windowLocate = @"fallback";
+        result.windowCount = targetWindowCount;
+      }
+      return result;
+    }
+    if (options.hasWindowArgument) {
+      result.windowLocate = @"failed";
+      result.windowCount = targetWindowCount;
+    }
+    return result;
+  }
+
+  CFRelease(systemWide);
+  if (options.hasWindowArgument) {
+    result.windowLocate = @"failed";
+    result.windowCount = targetWindowCount;
+  }
+  return result;
+}
+
+#ifndef MACOS_AX_READER_NO_MAIN
 
 /**
  * 入口：校验 Accessibility 授权后按三级顺序直读选区并输出协议结果。
@@ -883,24 +1076,15 @@ int main(int argc, const char *argv[]) {
       return 0;
     }
 
-    AXUIElementRef systemWide = AXUIElementCreateSystemWide();
-    if (!systemWide) {
-      WriteResult(@"UNKNOWN", nil);
-      return 0;
-    }
-
-    // 可选窗口级读取：调用方可传窗口编号和/或窗口边界。传入 pid 时直接
-    // 创建目标应用 AX 元素，避免短暂焦点漂移导致读到另一个应用；参数非法或
-    // 窗口不存在时回退原有三级读取，保持旧调用与跨应用兼容。
-    CFIndex targetWindowCount = 0;
-    BOOL apiDisabled = NO;
+    MacosAxReadOptions options = {0};
+    options.hasWindowArgument = argc > 1;
     if (argc > 1 && argv[1]) {
-      WindowCaptureContext context = {0};
       if (strcmp(argv[1], "-") != 0) {
         char *end = NULL;
         long parsedWindowNumber = strtol(argv[1], &end, 10);
         if (end && *end == '\0' && parsedWindowNumber > 0) {
-          context.windowNumber = parsedWindowNumber;
+          options.hasWindowNumber = YES;
+          options.windowNumber = parsedWindowNumber;
         }
       }
       if (argc > 3 && argv[3] && strcmp(argv[3], "-") != 0) {
@@ -917,111 +1101,45 @@ int main(int argc, const char *argv[]) {
           NSNumber *height = boundsObject[@"height"];
           if (x && y && width && height &&
             width.doubleValue > 0 && height.doubleValue > 0) {
-            context.hasBounds = YES;
-            context.bounds = CGRectMake(x.doubleValue, y.doubleValue,
+            options.hasBounds = YES;
+            options.bounds = CGRectMake(x.doubleValue, y.doubleValue,
                                         width.doubleValue, height.doubleValue);
           }
         }
       }
       if (argc > 4 && argv[4] && strcmp(argv[4], "-") != 0) {
-        context.titleFingerprint = [NSString stringWithUTF8String:argv[4]];
+        options.titleFingerprint = [NSString stringWithUTF8String:argv[4]];
       }
-      if (context.windowNumber > 0 || context.hasBounds) {
-        AXUIElementRef application = NULL;
-        if (argc > 2 && argv[2]) {
-          char *pidEnd = NULL;
-          long pid = strtol(argv[2], &pidEnd, 10);
-          if (pidEnd && *pidEnd == '\0' && pid > 0) {
-            application = AXUIElementCreateApplication((pid_t)pid);
-          }
+      if (argc > 2 && argv[2]) {
+        char *pidEnd = NULL;
+        long pid = strtol(argv[2], &pidEnd, 10);
+        if (pidEnd && *pidEnd == '\0' && pid > 0) {
+          options.hasPid = YES;
+          options.pid = (pid_t)pid;
         }
-        if (!application) {
-          CFTypeRef focusedAppValue = NULL;
-          if (AXUIElementCopyAttributeValue(
-                systemWide, kAXFocusedApplicationAttribute, &focusedAppValue) ==
-                kAXErrorSuccess &&
-              focusedAppValue &&
-              CFGetTypeID(focusedAppValue) == AXUIElementGetTypeID()) {
-            application = (AXUIElementRef)focusedAppValue;
-          } else if (focusedAppValue) {
-            CFRelease(focusedAppValue);
-          }
-        }
-        targetWindowCount = CopyWindowCount(application, &apiDisabled);
-        NSString *windowText = CopySelectedTextFromWindow(application, context, &apiDisabled);
-        if (windowText) {
-          WriteWindowDiagnostic(@"exact", targetWindowCount);
-          WriteResult(@"PRESENT", windowText);
-          if (application) CFRelease(application);
-          CFRelease(systemWide);
-          return 0;
-        }
-        if (apiDisabled) {
-          WriteWindowDiagnostic(@"failed", targetWindowCount);
-          WriteResult(@"UNKNOWN reason=api-disabled", nil);
-          if (application) CFRelease(application);
-          CFRelease(systemWide);
-          return 0;
-        }
-        if (application) CFRelease(application);
       }
-      WriteFocusDiagnostic(@"unknown");
     }
 
-    // 第一级与第二级：聚焦元素及其祖先链上的 AXSelectedText、marker range 与 text range。
-    CFTypeRef focused = NULL;
-    AXError focusedError = AXUIElementCopyAttributeValue(
-      systemWide, kAXFocusedUIElementAttribute, &focused);
-    if (RecordApiDisabledError(focusedError, &apiDisabled)) {
-      if (focused) CFRelease(focused);
-      CFRelease(systemWide);
-      if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
-      WriteResult(@"UNKNOWN reason=api-disabled", nil);
-      return 0;
+    MacosAxReadResult result = ReadMacosAxSelection(options);
+    if (result.windowLocate.length > 0) {
+      WriteWindowDiagnostic(result.windowLocate, result.windowCount);
     }
-    if (focusedError == kAXErrorSuccess && focused &&
-        CFGetTypeID(focused) == AXUIElementGetTypeID()) {
-      AXUIElementRef focusedElement = (AXUIElementRef)focused;
-      NSString *text =
-        CopySelectedTextFromAncestry(focusedElement, kMaxAncestorLevels);
-      CFRelease(focused);
-      if (text) {
-        if (argc > 1) WriteWindowDiagnostic(@"fallback", targetWindowCount);
-        WriteResult(@"PRESENT", text);
-        CFRelease(systemWide);
-        return 0;
-      }
+    if (result.focusStatus.length > 0) {
+      WriteFocusDiagnostic(result.focusStatus);
+    }
+    if (result.status == MacosAxReadStatusPresent) {
+      WriteResult(@"PRESENT", result.text);
+    } else if (result.status == MacosAxReadStatusEmpty) {
+      WriteResult(@"EMPTY", nil);
+    } else if (result.status == MacosAxReadStatusPermission) {
+      WriteResult(@"PERMISSION", nil);
+    } else if ([result.reason isEqualToString:@"api-disabled"]) {
+      WriteResult(@"UNKNOWN reason=api-disabled", nil);
     } else {
-      if (focused) CFRelease(focused);
-    }
-
-    // 第三级：鼠标位置元素及其最多 kMaxAncestorLevels 层祖先的选中文本。
-    AXError hoverError = kAXErrorSuccess;
-    AXUIElementRef hoverElement = CopyElementAtMousePosition(systemWide, &hoverError);
-    if (RecordApiDisabledError(hoverError, &apiDisabled)) {
-      CFRelease(systemWide);
-      if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
-      WriteResult(@"UNKNOWN reason=api-disabled", nil);
-      return 0;
-    }
-    if (hoverElement) {
-      NSString *hoverText =
-        CopySelectedTextFromAncestry(hoverElement, kMaxAncestorLevels);
-      CFRelease(hoverElement);
-      CFRelease(systemWide);
-      if (hoverText) {
-        if (argc > 1) WriteWindowDiagnostic(@"fallback", targetWindowCount);
-        WriteResult(@"PRESENT", hoverText);
-        return 0;
-      }
-      if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
       WriteResult(@"UNKNOWN", nil);
-      return 0;
     }
-
-    CFRelease(systemWide);
-    if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
-    WriteResult(@"UNKNOWN", nil);
     return 0;
   }
 }
+
+#endif

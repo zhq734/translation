@@ -12,6 +12,29 @@ export interface SettingsWindowFocusTarget {
   setFocusable(focusable: boolean): void
 }
 
+/** 设置页焦点挂起被跳过或实际执行的原因。 */
+export type SettingsWindowFocusSuspendReason =
+  | 'applied'
+  | 'already-suspended'
+  | 'unsupported-platform'
+  | 'no-target'
+  | 'destroyed'
+  | 'invisible'
+  | 'inactive-blocked'
+  | 'focused'
+
+/** 设置页焦点保护租约；除释放引用外，还携带本次调用是否真正取得保护。 */
+export interface SettingsWindowFocusLease {
+  /** 释放本次调用持有的引用；重复调用必须幂等。 */
+  (): void
+  /** 本次调用是否取得了有效租约；安全门禁跳过时为 false。 */
+  readonly acquired: boolean
+  /** 本次调用是否真正调用了 setFocusable(false)。 */
+  readonly applied: boolean
+  /** 本次调用的实际结果或跳过原因。 */
+  readonly reason: SettingsWindowFocusSuspendReason
+}
+
 /** 当前设置页焦点保护租约；同一窗口重复挂起时复用，避免短暂恢复候选资格。 */
 let activeFocusLease: {
   /** 保护所作用的设置窗口。 */
@@ -45,6 +68,8 @@ export interface SettingsWindowFocusSuspendOptions {
     appActive: boolean
     /** 是否实际调用了 setFocusable(false)。 */
     applied: boolean
+    /** 本次挂起实际执行或被跳过的具体原因。 */
+    reason: SettingsWindowFocusSuspendReason
   }) => void
 }
 
@@ -60,31 +85,47 @@ export interface SettingsWindowFocusSuspendOptions {
  * @param platform 当前运行平台。
  * @param target 可能被系统提升的设置窗口。
  * @param options 挂起上下文；通用弹窗关闭在应用失活时不得写入后台窗口状态。
- * @returns 幂等的恢复函数；无需保护时返回空操作。
+ * @returns 幂等的保护租约；无需保护时返回 `acquired=false` 的空操作。
  * @author zhenghq
  */
 export function suspendSettingsWindowFocusForPopupHide(
   platform: NodeJS.Platform,
   target: SettingsWindowFocusTarget | null,
   options: SettingsWindowFocusSuspendOptions = {}
-): () => void {
+): SettingsWindowFocusLease {
   const appActive = options.appActive ?? true
   const source = options.source ?? 'popup-hide'
   // did-resign-active 通常早于设置窗口 blur 到达。真实 blur 与首次划词已证明
   // 设置窗口不在接收用户输入，此时撤销候选资格是阻止 macOS 后续重选后台窗口
   // 的必要动作。其它来源在应用失活后写窗口能力仍可能触发重排，必须保持门禁。
   const canSuspendWhileAppInactive = source === 'window-blur' || source === 'selection'
-  const skip = platform !== 'darwin' ||
-    !target ||
-    target.isDestroyed() ||
-    !target.isVisible() ||
-    (!appActive && !canSuspendWhileAppInactive) ||
+  let skipReason: SettingsWindowFocusSuspendReason | null = null
+  if (platform !== 'darwin') {
+    skipReason = 'unsupported-platform'
+  } else if (!target) {
+    skipReason = 'no-target'
+  } else if (target.isDestroyed()) {
+    skipReason = 'destroyed'
+  } else if (!target.isVisible()) {
+    skipReason = 'invisible'
+  } else if (!appActive && !canSuspendWhileAppInactive) {
+    skipReason = 'inactive-blocked'
+  } else if (
     // 用户正在设置页输入时，窗口已经是当前 key window，不存在被系统重新
     // 选中的问题；此时撤销可聚焦性会抢走键盘输入，必须保持原状。
     target.isFocused()
-  if (skip) {
-    options.onDiagnostic?.({ source, appActive, applied: false })
-    return () => undefined
+  ) {
+    skipReason = 'focused'
+  }
+  if (skipReason || !target) {
+    const reason = skipReason ?? 'no-target'
+    options.onDiagnostic?.({ source, appActive, applied: false, reason })
+    const skippedLease = (() => undefined) as SettingsWindowFocusLease
+    return Object.assign(skippedLease, {
+      acquired: false,
+      applied: false,
+      reason
+    })
   }
 
   // 同一次弹窗关闭可能被多个生命周期回调重复触发。重复挂起必须复用当前租约，
@@ -99,18 +140,20 @@ export function suspendSettingsWindowFocusForPopupHide(
     : null
   const lease = reusableLease ?? { target, pendingSuspensions: 0, cancelled: false }
   let applied = false
+  let reason: SettingsWindowFocusSuspendReason = 'already-suspended'
   if (!reusableLease) {
     if (!focusSuspendedTargets.has(target)) {
       target.setFocusable(false)
       focusSuspendedTargets.add(target)
       applied = true
+      reason = 'applied'
     }
     activeFocusLease = lease
   }
-  options.onDiagnostic?.({ source, appActive, applied })
+  options.onDiagnostic?.({ source, appActive, applied, reason })
   lease.pendingSuspensions += 1
   let restored = false
-  return (): void => {
+  const restore = (): void => {
     if (restored || lease.cancelled) return
     restored = true
     lease.pendingSuspensions = Math.max(0, lease.pendingSuspensions - 1)
@@ -119,6 +162,11 @@ export function suspendSettingsWindowFocusForPopupHide(
     // 后台收尾只结束保护引用，不恢复 key window 候选资格。macOS 可能在
     // setFocusable(true) 的同步调用中重新选择设置页；恢复必须由显式用户入口驱动。
   }
+  return Object.assign(restore, {
+    acquired: true,
+    applied,
+    reason
+  })
 }
 
 /**

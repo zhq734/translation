@@ -93,6 +93,11 @@ test('主进程焦点恢复槽必须按关闭 token 校验所有权', () => {
 
   assert.match(code, /restoreSettingsWindowFocusAfterPopupFrontRecheck:\s*\{[\s\S]*?token:\s*number/u,
     '焦点恢复槽必须记录所属关闭轮次')
+  assert.match(
+    code,
+    /const lease = suspendSettingsWindowFocusForPopupHide\([\s\S]*?restoreSettingsWindowFocusAfterPopupHide = lease\.acquired \? lease : null[\s\S]*?restore: lease/u,
+    '关闭开始时被门禁跳过的空租约必须保留轮次占位，但不得冒充底层保护引用'
+  )
   assert.match(code, /onPopupCloseCancelled:\s*handlePopupCloseCancelled/u,
     '主进程必须接收关闭被新显示取消的通知')
 })

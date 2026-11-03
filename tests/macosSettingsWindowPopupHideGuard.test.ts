@@ -210,9 +210,14 @@ test('真实 blur 与首次划词也不得撤销正在聚焦的设置页', () =>
 
 test('焦点保护必须上报是否实际撤销候选资格及来源', () => {
   const fixture = createFocusTarget()
-  const events: Array<{ source: string; appActive: boolean; applied: boolean }> = []
+  const events: Array<{
+    source: string
+    appActive: boolean
+    applied: boolean
+    reason: string
+  }> = []
 
-  suspendSettingsWindowFocusForPopupHide(
+  const lease = suspendSettingsWindowFocusForPopupHide(
     'darwin',
     fixture.target,
     {
@@ -220,10 +225,96 @@ test('焦点保护必须上报是否实际撤销候选资格及来源', () => {
       source: 'selection',
       onDiagnostic: (event) => events.push(event)
     }
-  )()
+  )
 
-  assert.deepEqual(events, [{ source: 'selection', appActive: false, applied: true }],
+  assert.equal(lease.acquired, true, '实际执行保护时必须取得可用租约引用')
+  assert.equal(lease.applied, true, '实际执行保护时必须标记已写入系统能力')
+  lease()
+  assert.deepEqual(events, [{
+    source: 'selection',
+    appActive: false,
+    applied: true,
+    reason: 'applied'
+  }],
     '诊断必须准确记录真实 blur/首次划词是否实际执行了候选资格撤销')
+})
+
+test('跳过保护时必须返回未取得租约，调用方不得永久缓存空操作', () => {
+  const fixture = createFocusTarget({ focused: true })
+  const events: Array<{
+    source: string
+    appActive: boolean
+    reason: string
+    applied: boolean
+  }> = []
+  const skippedLease = suspendSettingsWindowFocusForPopupHide(
+    'darwin',
+    fixture.target,
+    {
+      source: 'selection',
+      onDiagnostic: (event) => events.push(event)
+    }
+  )
+
+  assert.equal(skippedLease.acquired, false, '设置页正在聚焦时不能把空操作当作已取得租约')
+  assert.equal(skippedLease.applied, false, '跳过时不得标记系统能力已写入')
+  assert.deepEqual(events, [{
+    source: 'selection',
+    appActive: true,
+    reason: 'focused',
+    applied: false
+  }],
+    '诊断必须说明跳过保护的具体原因')
+
+  // 同一设置页稍后进入后台时必须能够重新取得保护；调用方会依据 acquired
+  // 不缓存第一次跳过的空操作，因此这里直接验证下一次调用可以真正写入能力。
+  const backgroundFixture = createFocusTarget()
+  const retryLease = suspendSettingsWindowFocusForPopupHide(
+    'darwin',
+    backgroundFixture.target,
+    { source: 'selection' }
+  )
+  assert.equal(retryLease.acquired, true, '后续可保护时机必须重新取得租约')
+  assert.deepEqual(backgroundFixture.calls, [false], '重试时必须真正撤销后台窗口候选资格')
+})
+
+test('复用已有租约仍须取得引用，但不得重复写入系统窗口能力', () => {
+  const fixture = createFocusTarget()
+  const firstLease = suspendSettingsWindowFocusForPopupHide(
+    'darwin',
+    fixture.target,
+    { source: 'window-blur' }
+  )
+  const events: Array<{
+    source: string
+    appActive: boolean
+    reason: string
+    applied: boolean
+  }> = []
+  const sharedLease = suspendSettingsWindowFocusForPopupHide(
+    'darwin',
+    fixture.target,
+    {
+      source: 'selection',
+      onDiagnostic: (event) => events.push(event)
+    }
+  )
+
+  assert.equal(sharedLease.acquired, true, '复用共享租约的调用方也必须持有引用计数')
+  assert.equal(sharedLease.applied, false, '共享租约只允许首次调用写入系统能力')
+  assert.deepEqual(fixture.calls, [false], '复用期间不得重复切换可聚焦性')
+  assert.deepEqual(events, [{
+    source: 'selection',
+    appActive: true,
+    reason: 'already-suspended',
+    applied: false
+  }],
+    '诊断必须区分复用租约与安全门禁跳过')
+
+  firstLease()
+  assert.deepEqual(fixture.calls, [false], '一个引用释放后共享租约必须继续有效')
+  sharedLease()
+  assert.deepEqual(fixture.calls, [false], '最后一方释放仍不得在后台恢复可聚焦性')
 })
 
 test('连续快速划词复用租约时只能写入一次系统窗口能力', () => {

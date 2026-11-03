@@ -26,6 +26,7 @@ import {
   parseMacosAxReaderWindowDiagnostic,
   resolveSelectionCaptureStrategy,
   type MacosAxCopyStatus,
+  type MacosAxEnhancementResult,
   type NativeSelectionReadResult
 } from '../shared/platformCapture'
 import {
@@ -33,6 +34,11 @@ import {
   resolveMacosAxReaderPath,
   resolveWindowsUiaReaderPath
 } from './nativeReaderHost'
+import {
+  createMacosAxAddonLoader,
+  type MacosAxAddon,
+  type MacosAxAddonLoadFailure
+} from './macosAxAddon'
 import { parseNativeReaderResponseLine, type NativeReaderResult } from '../shared/nativeReaderProtocol'
 import {
   resolveCopyRetryPlan,
@@ -60,6 +66,12 @@ import { chromiumProcessDetector } from './chromiumProcessDetector'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+/** 主进程 AX addon 单例；加载失败时旧 CLI helper 继续作为兼容降级。 */
+const macosAxAddonLoader = createMacosAxAddonLoader({
+  resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
+    ? process.resourcesPath
+    : undefined
+})
 const CLIPBOARD_STABILITY_DELAY_MS = 120
 /** Chromium 应用 bundle id 白名单；用于限定 Chromium 专用 AX 门禁。 */
 const CHROMIUM_BUNDLE_ID_PATTERN =
@@ -98,6 +110,77 @@ const NATIVE_DIRECT_READ_TIMEOUT_MS = 300
 const WM_COPY_TIMEOUT_MS = 500
 /** 哨兵回读校验不一致时的重试次数。 */
 const SENTINEL_VERIFY_RETRY_COUNT = 1
+
+/** 进程内 AX 调用结果；只有 unavailable 允许回退旧 CLI helper。 */
+type MacosAxAddonOutcome<T> =
+  | { state: 'completed'; value: T }
+  | { state: 'unavailable'; failure: MacosAxAddonLoadFailure }
+  | { state: 'failed'; reason: 'aborted' | 'timeout' | 'error' }
+
+/**
+ * 将 addon 加载失败分类转换为固定日志标签。
+ * @param failure addon 加载失败分类。
+ * @returns 可安全写入日志的固定标签。
+ * @author zhenghq
+ */
+function resolveMacosAxAddonFailureLabel(failure: MacosAxAddonLoadFailure): string {
+  if (failure === 'missing') return 'addon-missing'
+  if (failure === 'load-error') return 'addon-load-error'
+  return 'addon-invalid-export'
+}
+
+/**
+ * 在固定超时与取消信号约束下执行进程内 AX 操作。
+ *
+ * Node-API 工作线程本身无法取消，因此超时或中止后只放弃等待，不再次执行
+ * 同一 AX 动作。调用方仅在返回 unavailable 时回退 CLI helper，避免重复 AXPress。
+ * @param operation 用于脱敏日志的操作名。
+ * @param invoke 实际调用 addon 的函数。
+ * @param signal 可选的取消信号。
+ * @param timeoutMs 最长等待时间（毫秒）。
+ * @returns 完成、addon 不可用或调用失败的结构化结果。
+ * @author zhenghq
+ */
+async function runMacosAxAddonOperation<T>(
+  operation: 'read' | 'copy' | 'enhance',
+  invoke: (addon: MacosAxAddon) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = SELECTION_INSPECTION_TIMEOUT_MS
+): Promise<MacosAxAddonOutcome<T>> {
+  const addon = macosAxAddonLoader.load()
+  if (!addon) {
+    const failure = macosAxAddonLoader.getLastFailure() ?? 'missing'
+    console.log(
+      `[capture] macos-ax-addon operation=${operation} status=unavailable ` +
+      `reason=${resolveMacosAxAddonFailureLabel(failure)} fallback=helper-fallback elapsedMs=0`
+    )
+    return { state: 'unavailable', failure }
+  }
+  if (signal?.aborted) return { state: 'failed', reason: 'aborted' }
+
+  let timeout: NodeJS.Timeout | undefined
+  let handleAbort: (() => void) | undefined
+  const interrupted = new Promise<MacosAxAddonOutcome<T>>((resolve) => {
+    timeout = setTimeout(() => resolve({ state: 'failed', reason: 'timeout' }), timeoutMs)
+    handleAbort = () => resolve({ state: 'failed', reason: 'aborted' })
+    signal?.addEventListener('abort', handleAbort, { once: true })
+  })
+
+  try {
+    return await Promise.race([
+      Promise.resolve()
+        .then(() => invoke(addon))
+        .then(
+          (value): MacosAxAddonOutcome<T> => ({ state: 'completed', value }),
+          (): MacosAxAddonOutcome<T> => ({ state: 'failed', reason: 'error' })
+        ),
+      interrupted
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (handleAbort) signal?.removeEventListener('abort', handleAbort)
+  }
+}
 
 /**
  * 将取词上下文转换为窗口激活模块可消费的快照。
@@ -246,6 +329,25 @@ async function requestChromiumEnhancedAx(
   pid: number,
   signal?: AbortSignal
 ): Promise<boolean> {
+  const addonOutcome = await performMacosAxEnhancementViaAddon(pid, signal)
+  if (addonOutcome.state === 'completed') {
+    const result = addonOutcome.value
+    console.log(
+      `[capture] chromium-enhanced-ax enhancedAx=${result.accepted ? 'enhanced-ui' : 'rejected'} ` +
+      `mode=${result.mode} pid=${pid}` +
+      (result.reason ? ` reason=${result.reason}` : '')
+    )
+    if (result.accepted) chromiumAxEnhancementsAccepted.add(pid)
+    return result.accepted
+  }
+  if (addonOutcome.state === 'failed') {
+    console.log(
+      `[capture] chromium-enhanced-ax enhancedAx=rejected mode=none pid=${pid} ` +
+      `reason=addon-${addonOutcome.reason}`
+    )
+    return false
+  }
+
   const helperPath = resolveMacosAxReaderPath({
     resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
       ? process.resourcesPath
@@ -272,6 +374,24 @@ async function requestChromiumEnhancedAx(
     )
     return false
   }
+}
+
+/**
+ * 通过主进程 N-API addon 为 Chromium 请求完整辅助功能树。
+ * @param pid 目标应用进程号。
+ * @param signal 用于在请求失效后停止等待的取消信号。
+ * @returns addon 结果；addon 不可用时由调用方回退旧 helper。
+ * @author zhenghq
+ */
+async function performMacosAxEnhancementViaAddon(
+  pid: number,
+  signal?: AbortSignal
+): Promise<MacosAxAddonOutcome<MacosAxEnhancementResult>> {
+  return runMacosAxAddonOperation(
+    'enhance',
+    (addon) => addon.enhanceAccessibility(pid),
+    signal
+  )
 }
 
 /**
@@ -392,6 +512,16 @@ async function readSelectionViaMacosHelper(
   bounds?: SelectionCaptureContext['bounds'],
   titleFingerprint?: string
 ): Promise<NativeSelectionReadResult | null> {
+  const addonOutcome = await readSelectionViaMacosAxAddon(
+    signal,
+    windowNumber,
+    pid,
+    bounds,
+    titleFingerprint
+  )
+  if (addonOutcome.state === 'completed') return addonOutcome.value
+  if (addonOutcome.state === 'failed') return null
+
   const helperPath = resolveMacosAxReaderPath({
     resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
       ? process.resourcesPath
@@ -438,6 +568,54 @@ async function readSelectionViaMacosHelper(
     )
     return null
   }
+}
+
+/**
+ * 通过主进程 N-API addon 读取 AX 选区。
+ * @param signal 用于在请求失效后停止等待的取消信号。
+ * @param windowNumber 可选目标窗口编号。
+ * @param pid 可选目标进程号。
+ * @param bounds 可选目标窗口边界。
+ * @param titleFingerprint 可选窗口标题哈希指纹。
+ * @returns addon 结果；addon 不可用时由调用方回退旧 helper。
+ * @author zhenghq
+ */
+async function readSelectionViaMacosAxAddon(
+  signal?: AbortSignal,
+  windowNumber?: number,
+  pid?: number,
+  bounds?: SelectionCaptureContext['bounds'],
+  titleFingerprint?: string
+): Promise<MacosAxAddonOutcome<NativeSelectionReadResult>> {
+  const startedAt = Date.now()
+  const outcome = await runMacosAxAddonOperation(
+    'read',
+    (addon) => addon.readSelection({
+      windowNumber,
+      pid,
+      bounds,
+      titleFingerprint
+    }),
+    signal
+  )
+  if (outcome.state === 'completed') {
+    const result = outcome.value
+    console.log(
+      `[capture] macos-ax-addon operation=read status=${result.status.toUpperCase()} ` +
+      `elapsedMs=${Date.now() - startedAt} fallback=false ` +
+      `windowLocate=${result.windowLocate ?? 'unknown'} ` +
+      `windowCount=${result.windowCount ?? 'unknown'} ` +
+      `windowMatched=${result.windowMatched ?? 'unknown'} ` +
+      `focus=${result.focusStatus ?? 'unknown'}` +
+      (result.reason ? ` reason=${result.reason}` : '')
+    )
+  } else if (outcome.state === 'failed') {
+    console.log(
+      `[capture] macos-ax-addon operation=read status=UNKNOWN ` +
+      `elapsedMs=${Date.now() - startedAt} fallback=false reason=${outcome.reason}`
+    )
+  }
+  return outcome
 }
 
 /**
@@ -880,6 +1058,20 @@ async function performMacosAxCopy(pid: number, signal?: AbortSignal): Promise<Ma
   if (process.platform !== 'darwin' || !Number.isInteger(pid) || pid <= 0 || signal?.aborted) {
     return 'unavailable'
   }
+  const addonOutcome = await performMacosAxCopyViaAddon(pid, signal)
+  if (addonOutcome.state === 'completed') {
+    const status = addonOutcome.value
+    console.log(`[capture] ax-copy-menu status=${status} elapsedMs=0 source=addon`)
+    return status
+  }
+  if (addonOutcome.state === 'failed') {
+    console.log(
+      `[capture] ax-copy-menu status=unknown elapsedMs=0 source=addon ` +
+      `reason=${addonOutcome.reason}`
+    )
+    return 'unknown'
+  }
+
   const helperPath = resolveMacosAxReaderPath({
     resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
       ? process.resourcesPath
@@ -907,6 +1099,24 @@ async function performMacosAxCopy(pid: number, signal?: AbortSignal): Promise<Ma
     )
     return 'unknown'
   }
+}
+
+/**
+ * 通过主进程 N-API addon 执行目标应用的原生 Command+C 菜单动作。
+ * @param pid 目标应用进程号。
+ * @param signal 用于在请求失效后停止等待的取消信号。
+ * @returns addon 结果；addon 不可用时由调用方回退旧 helper。
+ * @author zhenghq
+ */
+async function performMacosAxCopyViaAddon(
+  pid: number,
+  signal?: AbortSignal
+): Promise<MacosAxAddonOutcome<MacosAxCopyStatus>> {
+  return runMacosAxAddonOperation(
+    'copy',
+    (addon) => addon.performCopy(pid),
+    signal
+  )
 }
 
 

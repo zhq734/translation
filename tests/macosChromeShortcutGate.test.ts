@@ -96,15 +96,15 @@ test('AX helper 必须区分焦点就绪和焦点失配', () => {
     helper.indexOf('int main(')
   )
 
-  assert.match(windowRead, /WriteFocusDiagnostic\(@"ready"\)/u, '焦点窗口匹配时应输出 ready')
-  assert.match(windowRead, /WriteFocusDiagnostic\(@"target-mismatch"\)/u, '焦点窗口失配时应输出 target-mismatch')
+  assert.match(windowRead, /if \(focusStatus\) \*focusStatus = @"ready"/u, '焦点窗口匹配时应输出 ready')
+  assert.match(windowRead, /if \(focusStatus\) \*focusStatus = @"target-mismatch"/u, '焦点窗口失配时应输出 target-mismatch')
 })
 
 test('AX helper 必须输出脱敏焦点阶段诊断', () => {
   const source = readFileSync('helpers/macos-ax-reader/main.m', 'utf8')
   assert.match(source, /FOCUS\s+unknown\|ready\|target-mismatch/u, '协议注释必须声明 FOCUS 枚举')
   assert.match(source, /static void WriteFocusDiagnostic/u, '必须提供焦点诊断输出函数')
-  assert.match(source, /WriteFocusDiagnostic\(@"unknown"/u, '窗口级读取失败必须输出 unknown')
+  assert.match(source, /result\.focusStatus = @"unknown"/u, '窗口级读取失败必须输出 unknown')
 })
 
 test('Chromium AX UNKNOWN 后必须尝试增强 AX 并记录结果', () => {

@@ -123,7 +123,7 @@ test('弹窗内显式打开设置页必须豁免划词抑制并强制置前', ()
   )
   assert.match(
     indexSource,
-    /async function openSettings\(options:[^)]*source\?:[^)]*'popup'[^)]*\)/u,
+    /async function openSettings\([\s\S]*?source\?:[^}]*'popup'[\s\S]*?explicitEntry\?:[^}]*boolean/u,
     'openSettings 必须接收来源标记'
   )
   assert.match(
@@ -427,6 +427,11 @@ test('设置页失焦必须立即撤销后台 key window 候选资格，且仅�
     /suspendSettingsWindowFocusForPopupHide\([\s\S]*?process\.platform,[\s\S]*?settingsWin,[\s\S]*?appActive:\s*isMacAppActiveByEvents\(\)[\s\S]*?source:\s*'window-blur'/u,
     '真实 blur 来源必须允许在 did-resign-active 已先到达时仍撤销设置页候选资格'
   )
+  assert.match(
+    suspendSource,
+    /const lease = suspendSettingsWindowFocusForPopupHide\([\s\S]*?if \(!lease\.acquired\) return[\s\S]*?restoreSettingsWindowFocusAfterSettingsBlur = lease/u,
+    '失焦保护被安全门禁跳过时不得缓存空操作，下一次真实失焦必须重新尝试'
+  )
 
   const hideBlock = createSource.slice(hideIndex, closedIndex)
   const closedBlock = createSource.slice(closedIndex)
@@ -638,7 +643,7 @@ test('启动自动打开与 Dock activate 都必须把设置页置前', () => {
   )
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true \}\)/u,
+    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
     'Dock activate 是显式入口，必须把已可见设置页置前'
   )
   assert.doesNotMatch(

@@ -128,6 +128,11 @@ test('首次划词必须为从未失焦的后台设置页补做焦点保护', ()
     /suspendSettingsWindowFocusForPopupHide\([\s\S]*?process\.platform,[\s\S]*?settingsWin,[\s\S]*?appActive:\s*isMacAppActiveByEvents\(\)[\s\S]*?source:\s*'selection'/u,
     '首次划词必须使用 selection 来源，为可见但从未失焦的后台设置页补做保护'
   )
+  assert.match(
+    beginSource,
+    /const lease = suspendSettingsWindowFocusForPopupHide\([\s\S]*?if \(!lease\.acquired\) return[\s\S]*?restoreSelectionFocusLease = lease/u,
+    '只有真正取得保护时才能缓存租约；跳过后的空操作必须在后续划词时重试'
+  )
 })
 
 test('划词租约必须覆盖两次划词之间，且弹窗可见时不得提前恢复', () => {
@@ -333,7 +338,7 @@ test('Dock 激活路径不得为迟到 activate 恢复后台设置页可聚焦�
   // 误放行，也只返回 true、不重新 show()+focus()，不会把后台阅读器顶到最前。
   assert.match(activateSource, /webReader\?\.focusExistingWindow\(\)/u,
     'Dock 激活已有阅读器时必须走不会强制置前的恢复入口')
-  assert.match(activateSource, /openSettings\(\{ bringToFront: true \}\)/u,
+  assert.match(activateSource, /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
     '没有阅读器时 Dock 激活必须置前设置页')
 })
 

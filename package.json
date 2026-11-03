@@ -116,6 +116,10 @@
           "to": "macos-ax-reader"
         },
         {
+          "from": "build/macos-ax-reader.node",
+          "to": "macos-ax-reader.node"
+        },
+        {
           "from": "build/macos-window-helper",
           "to": "macos-window-helper"
         },

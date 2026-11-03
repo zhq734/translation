@@ -16,13 +16,19 @@ export const CANDIDATE_ACTIONS = [
   'dock-show-sync-before',
   'dock-show-sync-after',
   'dock-show-delayed',
+  'dock-presentation-skipped-inactive',
+  'dock-show-delayed-skipped-inactive',
   'settings-activate-entry',
   'settings-reuse-raise',
+  'settings-reveal-deferred',
   'popup-show',
   'popup-show-inactive',
   'popup-hide',
   'selection-button-show-inactive',
-  'selection-button-hide'
+  'selection-button-hide',
+  'settings-hidden-for-selection',
+  'settings-resume-explicit-entry',
+  'settings-show-suppressed-for-selection'
 ] as const
 
 /** 候选动作名称。 */

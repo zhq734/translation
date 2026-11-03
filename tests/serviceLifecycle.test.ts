@@ -55,8 +55,8 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
     /if \(isMac\) \{[\s\S]*?tray\.on\('right-click', \(\) => tray\?\.popUpContextMenu\(buildTrayMenu\(\)\)\)/u
   )
   assert.match(mainSource, /if \(!isMac\) tray\?\.setContextMenu\(buildTrayMenu\(\)\)/u)
-  assert.match(mainSource, /tray\.on\('click', \(\) => void openSettings\(\)\)/u)
-  assert.match(mainSource, /tray\.on\('double-click', \(\) => void openSettings\(\)\)/u)
+  assert.match(mainSource, /tray\.on\('click', \(\) => void openSettings\(\{ explicitEntry: true \}\)\)/u)
+  assert.match(mainSource, /tray\.on\('double-click', \(\) => void openSettings\(\{ explicitEntry: true \}\)\)/u)
   assert.match(mainSource, /app\.whenReady\(\)[\s\S]*?\.catch\(handleApplicationInitializationFailure\)/u)
 })
 
@@ -75,7 +75,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
   assert.match(mainSource, /function stopApplicationService\(\): void/u)
   assert.match(
     mainSource,
-    /label:\s*t\.t\('menu\.settings'\),[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\)/u
+    /label:\s*t\.t\('menu\.settings'\),[\s\S]*?click:\s*\(\)\s*=>\s*void openSettings\(\{ explicitEntry: true \}\)/u
   )
   assert.match(
     mainSource,

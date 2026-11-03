@@ -65,18 +65,21 @@ test('helper 输出协议应兼容现有 parseNativeSelectionReadOutput', () => 
  */
 test('helper 必须把 AX APIDisabled 输出为 api-disabled', () => {
   const source = readHelperSource()
-  const mainBody = source.slice(source.indexOf('int main'))
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
 
   assert.match(source, /kAXErrorAPIDisabled/u, '必须显式判断 -25211 对应的 APIDisabled 错误')
   assert.match(source, /UNKNOWN reason=api-disabled/u, '失败输出必须携带固定原因')
   assert.match(
-    mainBody,
+    readBody,
     /CopySelectedTextFromWindow\([^;]*&apiDisabled/u,
     '窗口读取必须把 APIDisabled 状态透传给入口'
   )
   assert.match(
-    mainBody,
-    /if \(apiDisabled\)[\s\S]*?UNKNOWN reason=api-disabled/u,
+    readBody,
+    /if \(apiDisabled\)[\s\S]*?result\.reason = @"api-disabled"/u,
     '窗口读取失败后必须优先输出 APIDisabled 原因，而不是继续折叠为 UNKNOWN'
   )
 })
@@ -111,9 +114,12 @@ test('helper 应按序执行三级读取且不引用 System Events', () => {
   assert.match(source, /kAXSelectedTextMarkerRangeAttribute/u)
   assert.match(source, /AXUIElementCopyElementAtPosition/u)
 
-  // 校验 main 中三级读取的调用顺序（函数定义顺序与注释提及不参与判定）。
-  const mainBody = source.slice(source.indexOf('int main'))
-  const focusedReadAt = mainBody.indexOf('CopySelectedTextFromAncestry(focusedElement')
+  // 校验共享读取函数中三级读取的调用顺序（函数定义顺序与注释提及不参与判定）。
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const focusedReadAt = readBody.indexOf('CopySelectedTextFromAncestry(focusedElement')
   const positionAt = source.indexOf('AXUIElementCopyElementAtPosition')
   assert.ok(focusedReadAt >= 0, '系统级焦点兜底应复用祖先链读取')
   assert.ok(positionAt > focusedReadAt,
@@ -166,14 +172,17 @@ test('祖先链读取的每一层都应保留 AXSelectedTextMarkerRange 回退',
 test('焦点元素读取必须沿完整祖先链查找选区', () => {
   const source = readHelperSource()
   const windowBody = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
-  const mainBody = source.slice(source.indexOf('int main'))
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
 
   assert.ok(
     (windowBody.match(/CopySelectedTextFromAncestry\(\(AXUIElementRef\)focusedValue, kMaxAncestorLevels\)/gu) ?? []).length >= 2,
     '窗口级 application/window focused element 都必须使用完整祖先链'
   )
   assert.match(
-    mainBody,
+    readBody,
     /CopySelectedTextFromAncestry\(focusedElement, kMaxAncestorLevels\)/u,
     '系统级 focused element 兜底必须使用完整祖先链'
   )
@@ -490,12 +499,15 @@ test('AX helper 应可选接收 bounds 与标题指纹并保持旧参数兼容',
  */
 test('窗口级 AX 读取失败后应保留原有应用级与鼠标位置兜底', () => {
   const source = readHelperSource()
-  const mainBody = source.slice(source.indexOf('int main'))
-  const windowReadAt = mainBody.indexOf('CopySelectedTextFromWindow(application')
-  const systemFocusedAt = mainBody.indexOf('kAXFocusedUIElementAttribute', windowReadAt)
-  const mouseReadAt = mainBody.indexOf('CopyElementAtMousePosition', systemFocusedAt)
+  const readBody = source.slice(
+    source.indexOf('static MacosAxReadResult ReadMacosAxSelection'),
+    source.indexOf('#ifndef MACOS_AX_READER_NO_MAIN')
+  )
+  const windowReadAt = readBody.indexOf('CopySelectedTextFromWindow(')
+  const systemFocusedAt = readBody.indexOf('kAXFocusedUIElementAttribute', windowReadAt)
+  const mouseReadAt = readBody.indexOf('CopyElementAtMousePosition', systemFocusedAt)
 
-  assert.ok(windowReadAt >= 0, 'main 应先执行窗口级读取')
+  assert.ok(windowReadAt >= 0, '共享读取函数应先执行窗口级读取')
   assert.ok(systemFocusedAt > windowReadAt, '窗口级失败后才进入 application 焦点读取')
   assert.ok(mouseReadAt > systemFocusedAt, '最后才进入鼠标位置兜底')
 })
@@ -546,9 +558,9 @@ test('AX helper 应输出固定窗口诊断且不泄露标题与选区文本', (
 
   assert.match(diagnosticSource, /StandardError/u, '窗口诊断必须写入 stderr，避免污染 stdout 文本协议')
   assert.match(source, /WINDOW %@ count=/u, '诊断格式必须由固定模板生成')
-  assert.match(source, /WriteWindowDiagnostic\(@"exact"/u, '精确命中必须写入 exact 诊断')
-  assert.match(source, /WriteWindowDiagnostic\(@"fallback"/u, '应用级退化必须写入 fallback 诊断')
-  assert.match(source, /WriteWindowDiagnostic\(@"failed"/u, '定位失败必须写入 failed 诊断')
+  assert.match(source, /result\.windowLocate = @"exact"/u, '精确命中必须写入 exact 诊断')
+  assert.match(source, /result\.windowLocate = @"fallback"/u, '应用级退化必须写入 fallback 诊断')
+  assert.match(source, /result\.windowLocate = @"failed"/u, '定位失败必须写入 failed 诊断')
   assert.doesNotMatch(diagnosticSource, /title|标题/iu, '诊断不得输出窗口标题')
   assert.doesNotMatch(diagnosticSource, /selectedText|选区文本/iu, '诊断不得输出选区文本')
 })
@@ -564,9 +576,9 @@ test('AX helper 应支持可选 pid 并定向读取目标应用窗口', () => {
   assert.match(source, /argv\[2\]/u, 'helper 应从 argv[2] 读取 pid')
   assert.match(source, /AXUIElementCreateApplication\(/u, '传入 pid 时应直接创建目标应用 AX 元素')
   assert.match(source, /CopyWindowCount\(/u, 'helper 应统计目标应用窗口数量')
-  assert.match(source, /WriteWindowDiagnostic\(@"exact"/u, '精确命中时应写入 exact 诊断')
-  assert.match(source, /WriteWindowDiagnostic\(@"fallback"/u, '旧路径命中时应写入 fallback 诊断')
-  assert.match(source, /WriteWindowDiagnostic\(@"failed"/u, '定位失败时应写入 failed 诊断')
+  assert.match(source, /result\.windowLocate = @"exact"/u, '精确命中时应写入 exact 诊断')
+  assert.match(source, /result\.windowLocate = @"fallback"/u, '旧路径命中时应写入 fallback 诊断')
+  assert.match(source, /result\.windowLocate = @"failed"/u, '定位失败时应写入 failed 诊断')
 })
 
 /**

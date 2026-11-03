@@ -120,6 +120,24 @@ test('划词开始回收层级后必须留下可核验的普通层级状态', ()
   )
 })
 
+test('划词开始必须先回收设置页层级再续期保护期', () => {
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
+
+  // lowerSettingsPanelRaiseLevel() 在保护期内只能清空内部登记，不会实际写窗口层级。
+  // 若先续期保护期再调用回收，真正的 setAlwaysOnTop(false) 永远不会发生；必须
+  // 先在旧的保护状态内完成实际回收，再续期本次划词的 activate 抑制。
+  const lowerIndex = scheduleSource.indexOf('lowerSettingsPanelRaiseLevel()')
+  const suppressIndex = scheduleSource.indexOf('suppressSelectionActivationWindowGap()')
+  assert.ok(lowerIndex >= 0, '划词开始必须回收设置页临时层级')
+  assert.ok(suppressIndex >= 0, '划词开始必须续期 activate 抑制')
+  assert.ok(
+    lowerIndex < suppressIndex,
+    '必须先在旧保护状态内实际回收层级，再续期本次划词保护期'
+  )
+})
+
 test('应用失活或处于划词保护期时不得对后台设置页调用 setAlwaysOnTop', () => {
   const lowerSource = stripComments(
     extractFunction(mainSource, 'function lowerSettingsPanelRaiseLevel(')
@@ -417,29 +435,124 @@ test('被延后的 Dock 呈现重放必须等划词保护期与交互都结束',
   }
 })
 
-test('首帧就绪时若已进入划词，不得聚焦或提升设置页层级', () => {
+test('首帧就绪时若已进入划词，不得显示或聚焦设置页', () => {
   const createStart = mainSource.indexOf('async function createSettingsWindow(')
   const createEnd = mainSource.indexOf('/**\n * 打开设置窗口。', createStart)
   const createSource = stripComments(mainSource.slice(createStart, createEnd))
 
-  // macOS panel 的 showInactive() 走 orderFrontRegardless，moveTop()/focus()
-  // 也会把窗口排到前台应用之上。首帧就绪时若用户已开始划词，只能以不聚焦、
-  // 不提升层级的方式让窗口安静上屏，绝不能走显式置前路径。
+  // 设置页是普通 BrowserWindow，show() 也可能激活整个应用并把后台窗口带上屏；
+  // 首帧就绪时若用户已开始划词，必须完全延迟显示，等托盘、菜单、Dock 或设置页内
+  // 点击等显式入口再展示，不能以“不聚焦、不提升层级”为由继续 show()。
   const readyIndex = createSource.indexOf('await readyToShow')
   const guardIndex = createSource.indexOf('isSelectionWindowRaiseGuardActive()', readyIndex)
-  const firstShowIndex = createSource.indexOf('showOwnWindowForInteraction(settingsWin,', readyIndex)
-  assert.ok(readyIndex >= 0 && guardIndex > readyIndex && firstShowIndex > guardIndex,
+  const guardEndIndex = createSource.indexOf('\n  }', guardIndex)
+  assert.ok(readyIndex >= 0 && guardIndex > readyIndex && guardEndIndex > guardIndex,
     '首帧就绪后必须先用划词保护期短路，再执行任何首开显示')
-  const guardSource = createSource.slice(readyIndex, guardIndex)
-  const guardedShowSource = createSource.slice(guardIndex, firstShowIndex + 160)
+  const guardedShowSource = createSource.slice(guardIndex, guardEndIndex + 4)
   assert.match(guardedShowSource, /selectionInteraction\.snapshot\(\)\.state\s*!==\s*'idle'/u,
     '首开显示短路必须同时判断划词交互仍在进行')
-  assert.match(guardedShowSource, /focus:\s*false/u,
-    '划词期间首开显示不得聚焦设置页')
-  assert.match(guardedShowSource, /moveTop:\s*false/u,
-    '划词期间首开显示不得把设置页提到前台应用之上')
-  assert.match(guardedShowSource, /raiseLevel:\s*false/u,
-    '划词期间首开显示不得提升设置页层级')
-  assert.doesNotMatch(guardedShowSource, /showInactive\(\)/u,
-    '划词期间首开显示不得使用 orderFrontRegardless 语义的 showInactive()')
+  assert.match(guardedShowSource, /settings-reveal-deferred/u,
+    '划词期间必须记录设置页显示被延迟')
+  assert.doesNotMatch(guardedShowSource, /showOwnWindowForInteraction\(|\.show\(\)|showInactive\(\)|\.focus\(\)|\.moveTop\(\)/u,
+    '划词期间不得显示、聚焦或移动设置页')
+})
+
+test('外部划词开始时必须暂时隐藏后台设置页，移除系统重选 key window 的竞态源', () => {
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
+  const gestureSource = stripComments(
+    extractFunction(mainSource, 'function handleSelectionGesture(')
+  )
+  const hideSource = stripComments(
+    extractFunction(mainSource, 'function suspendSettingsWindowForExternalSelection(')
+  )
+  const hotkeySource = stripComments(
+    extractFunction(mainSource, 'function onHotkey(): void {')
+  )
+
+  // 设置页是普通 BrowserWindow。macOS 在弹窗显隐、复制前交还前台或迟到的
+  // activate 中，可能从同一应用重新选择仍可见的后台设置页作为 key window。
+  // 仅在失焦后设置 focusable=false 仍存在事件时序窗口，因此外部划词入口必须在
+  // 同步阶段把设置页真正隐藏，直到用户通过显式入口再次打开它。
+  assert.match(
+    `${scheduleSource}\n${gestureSource}`,
+    /suspendSettingsWindowForExternalSelection\(\)/u,
+    '外部划词入口必须暂时隐藏后台设置页'
+  )
+  assert.match(hideSource, /settingsWin\.hide\(\)/u,
+    '设置页暂停入口必须实际隐藏窗口，而不只是修改焦点或层级')
+  assert.match(hideSource, /settingsWindowHiddenForSelection\s*=\s*true/u,
+    '隐藏设置页后必须记录待显式恢复状态')
+  assert.match(
+    mainSource,
+    /function resumeSettingsWindowAfterExternalSelection\(\): void \{[\s\S]*?settingsWindowHiddenForSelection\s*=\s*false/u,
+    '显式入口必须提供解除暂停状态的恢复函数'
+  )
+  assert.match(hotkeySource, /suspendSettingsWindowForExternalSelection\(\)/u,
+    '全局快捷键取词同样必须在复制与弹窗显隐前隐藏后台设置页')
+})
+
+test('划词隐藏后任何迟到的窗口显示都必须被立即撤销，直到显式入口恢复', () => {
+  const hideSource = stripComments(
+    extractFunction(mainSource, 'function suspendSettingsWindowForExternalSelection(')
+  )
+  const resumeSource = stripComments(
+    extractFunction(mainSource, 'function resumeSettingsWindowAfterExternalSelection(')
+  )
+  const showListenerStart = mainSource.indexOf("settingsWin.on('show'")
+  const showListenerEnd = mainSource.indexOf("settingsWin.on('hide'", showListenerStart)
+
+  // 外部划词可能触发 app.hide() → app.show()，后者会整体恢复应用内原本可见的
+  // 窗口；迟到的 Dock/activate 也可能再次调用 show()。只在划词入口 hide() 一次
+  // 无法覆盖这些后续路径，必须让 show 生命周期在暂停期间立即撤销显示。
+  assert.ok(showListenerStart >= 0 && showListenerEnd > showListenerStart,
+    '设置窗口必须注册独立的 show 生命周期兜底')
+  const showListener = stripComments(mainSource.slice(showListenerStart, showListenerEnd))
+  assert.match(showListener, /settingsWindowHiddenForSelection/u,
+    'show 生命周期必须判断当前是否处于划词隐藏期')
+  assert.match(showListener, /(?:settingsWin|createdWindow)\.hide\(\)/u,
+    '划词隐藏期内任何 show 都必须立即重新隐藏设置页')
+  assert.match(showListener, /settings-show-suppressed-for-selection/u,
+    '迟到 show 被撤销时必须留下诊断打点')
+  assert.match(resumeSource, /settingsWindowHiddenForSelection\s*=\s*false/u,
+    '只有显式入口可以解除 show 生命周期抑制')
+  assert.match(resumeSource, /settingsBringToFrontEpoch\s*\+=\s*1/u,
+    '显式恢复必须更新置前代际，使划词前旧异步动作失效')
+  assert.match(hideSource, /settingsWin\.hide\(\)/u,
+    '首次划词仍必须主动隐藏设置页')
+})
+
+test('设置窗口销毁时必须复位划词隐藏标记，避免新窗口被旧状态误隐藏', () => {
+  const closedStart = mainSource.indexOf("settingsWin.on('closed'")
+  const closedEnd = mainSource.indexOf('/**', closedStart)
+  assert.ok(closedStart >= 0 && closedEnd > closedStart, '必须存在设置窗口 closed 生命周期')
+  const closedListener = stripComments(mainSource.slice(closedStart, closedEnd))
+
+  // 标记是窗口实例级状态。用户关闭设置页后若仍保留 true，下一次显式打开新建
+  // 窗口会立刻被 show 生命周期再次隐藏，表现为托盘/Dock 点击完全无效。
+  assert.match(
+    closedListener,
+    /settingsWin === createdWindow[\s\S]*?settingsWindowHiddenForSelection\s*=\s*false/u,
+    '关闭当前设置窗口时必须复位划词隐藏标记'
+  )
+})
+
+test('所有设置页显式打开入口必须先恢复被划词隐藏的设置页', () => {
+  const openSource = stripComments(extractFunction(mainSource, 'async function openSettings('))
+  const activateSource = stripComments(
+    extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
+  )
+  const traySource = stripComments(extractFunction(mainSource, 'function createTray(): void {'))
+
+  assert.match(openSource, /resumeSettingsWindowAfterExternalSelection\(\)/u,
+    '托盘、菜单、Dock、弹窗设置入口都必须先解除划词隐藏状态')
+  assert.match(openSource, /explicitEntry\?:\s*boolean/u,
+    'openSettings 必须显式区分用户入口与自动 activate 路径')
+  assert.match(openSource, /if\s*\(options\.explicitEntry\)\s*resumeSettingsWindowAfterExternalSelection\(\)/u,
+    '只有显式入口才能解除划词隐藏，自动 activate 不得恢复后台设置页')
+  assert.match(activateSource, /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
+    '真实 Dock 激活属于显式入口，必须显式传参')
+  assert.match(traySource, /openSettings\(\{ explicitEntry: true \}\)/u,
+    '托盘点击属于显式入口，必须显式传参')
 })
