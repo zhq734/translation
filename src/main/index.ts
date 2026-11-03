@@ -4536,6 +4536,44 @@ function showOcrTranslationResult(
 }
 
 /**
+ * 在 OCR 识别完成后先更新弹窗原文，译文区域继续显示翻译中。
+ * @param recognized 已完成清洗与质量门禁的 OCR 识别结果。
+ * @param settings 当前设置。
+ * @param requestId 当前请求序号，用于让后续译文更新同一弹窗。
+ * @param anchor 弹窗锚点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function showRecognizedOcrText(
+  recognized: {
+    ocrText: string
+    ocrRawText: string
+    ocrEngine: OcrRecognizeResult['engine']
+  },
+  settings: Settings,
+  requestId: number,
+  anchor: { x: number; y: number }
+): void {
+  lastOcrEngine = recognized.ocrEngine
+  lastOcrText = recognized.ocrText
+  lastOcrAnchor = anchor
+  showPopup({
+    ok: true,
+    origin: 'ocr',
+    requestId,
+    loading: true,
+    loadingMessage: t('selection.loadingTranslating'),
+    original: recognized.ocrText,
+    ocrText: recognized.ocrText,
+    ocrRawText: recognized.ocrRawText,
+    ocrEngine: recognized.ocrEngine,
+    sourcePreference: settings.sourceLang,
+    targetPreference: settings.targetLang,
+    targetLang: settings.targetLang
+  }, 0, anchor)
+}
+
+/**
  * 把已得到的 OCR 结果接入现有多通道翻译管道。
  *
  * 识别动作与翻译动作共用本入口：命中会话识别结果缓存时直接复用识别结果，
@@ -4543,14 +4581,17 @@ function showOcrTranslationResult(
  * 清洗、质量门禁与翻译通道选择语义完全一致。
  * @param ocr OCR 识别结果。
  * @param settings 当前设置。
+ * @param onRecognized 有效原文就绪时的可选回调。
  * @returns OCR 翻译结果。
  * @author zhenghq
  */
 async function translateRecognizedOcrResult(
   ocr: OcrRecognizeResult,
-  settings: Settings
+  settings: Settings,
+  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
   return translateOcrResult(ocr, settings, {
+    onRecognized,
     translate: async (text, requestSettings) => {
       const dingTalkCredentials = settings.dingTalkEnabled
         ? getDingTalkConfiguration().getCredentialsSnapshot()
@@ -4570,12 +4611,14 @@ async function translateRecognizedOcrResult(
  * 对 PNG 图片字节执行 OCR 识别与翻译，并复用现有多通道翻译管道。
  * @param imageBytes PNG 图片字节。
  * @param settings 当前设置。
+ * @param onRecognized 有效原文就绪时的可选回调。
  * @returns OCR 翻译结果。
  * @author zhenghq
  */
 async function processOcrImageBytes(
   imageBytes: Buffer,
-  settings: Settings
+  settings: Settings,
+  onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
   const dispatcher = await createOcrDispatcher(settings)
   const ocr = await recognizeAdaptiveOcr(
@@ -4593,7 +4636,7 @@ async function processOcrImageBytes(
         }, resolveOcrEnginePreference(settings))
     }
   )
-  return translateRecognizedOcrResult(ocr, settings)
+  return translateRecognizedOcrResult(ocr, settings, onRecognized)
 }
 
 /**
@@ -5503,6 +5546,10 @@ async function submitOcrSelection(value: unknown): Promise<void> {
       targetLang: settings.targetLang
     }, 0, anchor)
   }
+  const showRecognizedOcrPopup = (recognized: Awaited<ReturnType<typeof translateOcrResult>>): void => {
+    if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+    showRecognizedOcrText(recognized, settings, requestId, anchor)
+  }
   // macOS 上覆盖窗口是应用内最后一个 key window：一旦隐藏，系统会把应用内下一个窗口
   // （通常是设置页）提升为 key window 并顶到其它应用之上。
   // 因此先显示「正在识别」弹窗接管 key window，再收起覆盖窗口；
@@ -5524,7 +5571,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
       // 未命中路径在裁剪完成后为 Windows 显示 loading 弹窗；命中路径跳过了裁剪，
       // 这里补上同样的反馈，避免翻译期间界面上没有任何进度提示。
       if (!isMac) showLoadingPopup(t('selection.loadingTranslating'))
-      const cachedResult = await translateRecognizedOcrResult(cached, settings)
+      const cachedResult = await translateRecognizedOcrResult(cached, settings, showRecognizedOcrPopup)
       if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
       showOcrTranslationResult(cachedResult, settings, requestId, anchor)
       return
@@ -5532,7 +5579,7 @@ async function submitOcrSelection(value: unknown): Promise<void> {
     const imageBytes = await cropOcrSnapshotSelection(bounds)
     restoreSelectionListener()
     if (!isMac) showLoadingPopup()
-    const result = await processOcrImageBytes(imageBytes, settings)
+    const result = await processOcrImageBytes(imageBytes, settings, showRecognizedOcrPopup)
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showOcrTranslationResult(result, settings, requestId, anchor)
   } catch (error) {
@@ -5599,7 +5646,14 @@ async function translateClipboardImage(): Promise<void> {
   }, 0, anchor)
 
   try {
-    const result = await processOcrImageBytes(clipboardImage.png, settings)
+    const result = await processOcrImageBytes(
+      clipboardImage.png,
+      settings,
+      (recognized) => {
+        if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
+        showRecognizedOcrText(recognized, settings, requestId, anchor)
+      }
+    )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     showOcrTranslationResult(result, settings, requestId, anchor)
   } catch (error) {

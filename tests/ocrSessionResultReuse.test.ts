@@ -154,7 +154,11 @@ test('翻译动作应在裁剪前查询缓存并跳过重复 OCR', () => {
   assert.notStrictEqual(cropIndex, -1, '未命中缓存时仍应裁剪快照')
   assert.ok(lookupIndex < cropIndex, '必须先查缓存再裁剪，避免命中时白丢快照')
   assert.match(source, /translateRecognizedOcrResult\(cached/u, '命中缓存时应复用识别结果进入翻译管道')
-  assert.match(source, /processOcrImageBytes\(imageBytes,\s*settings\)/u, '未命中缓存时应保持原有识别路径')
+  assert.match(
+    source,
+    /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u,
+    '未命中缓存时应保持原有识别路径并先展示识别原文'
+  )
 })
 
 /**

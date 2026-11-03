@@ -159,3 +159,53 @@ test('translateOcrResult 应按 OCR 文本解析自动目标语言后再调用�
   assert.equal(capturedSettings?.sourceLang, 'auto')
   assert.equal(capturedSettings?.targetLang, 'EN')
 })
+
+/**
+ * 校验有效 OCR 文本在翻译完成前先回调给界面，避免原文与译文一起延迟出现。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('translateOcrResult 应在翻译完成前回调已识别文本', async () => {
+  let recognizedText = ''
+  let translateStarted = false
+  let resolveTranslation: ((value: { translation: string; provider: 'google' }) => void) | undefined
+  const translation = new Promise<{ translation: string; provider: 'google' }>((resolve) => {
+    resolveTranslation = resolve
+  })
+
+  const pending = translateOcrResult(makeOcrResult('  你好\u200b世界  '), makeSettings(), {
+    onRecognized: (recognized) => {
+      assert.equal(translateStarted, false, '回调必须先于翻译调用')
+      recognizedText = recognized.ocrText
+    },
+    translate: async () => {
+      translateStarted = true
+      return translation
+    }
+  })
+
+  assert.equal(recognizedText, '你好世界')
+  assert.equal(translateStarted, true)
+  resolveTranslation?.({ translation: 'Hello World', provider: 'google' })
+  await pending
+})
+
+/**
+ * 校验空文本和噪声不会触发 OCR 原文中间态，避免界面短暂展示伪成功内容。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('translateOcrResult 不应对空文本或噪声回调已识别文本', async () => {
+  let callbackCount = 0
+  const deps: OcrTranslateDeps = {
+    onRecognized: () => {
+      callbackCount += 1
+    },
+    translate: async () => ({ translation: '', provider: 'google' as never })
+  }
+
+  await translateOcrResult(makeOcrResult(''), makeSettings(), deps)
+  await translateOcrResult(makeOcrResult('□□□□□□□□□□'), makeSettings(), deps)
+
+  assert.equal(callbackCount, 0)
+})

@@ -1376,6 +1376,11 @@ function renderOcrSource(payload: TranslatePayload): void {
  * @author zhenghq
  */
 function renderOcrLoading(payload: TranslatePayload): void {
+  // 识别完成后原文已经可用：保留正常原文样式，只让译文区域继续显示翻译中。
+  if (payload.ocrText || payload.ocrRawText) {
+    renderOcrSource(payload)
+    return
+  }
   resetOcrSourceState()
   ocrSourceEl.hidden = false
   ocrSourceTextEl.textContent = payload.original ?? t('popup.ocrRecognizing')
@@ -1393,6 +1398,7 @@ function renderOcrLoading(payload: TranslatePayload): void {
  */
 function renderSelection(payload: TranslatePayload): void {
   const visible = mode === 'selection'
+  const hasRecognizedOcr = payload.origin === 'ocr' && Boolean(payload.ocrText || payload.ocrRawText)
   if (visible) syncLanguageSelectors(payload)
   if (payload.requestId !== undefined) latestSelectionRequestId = payload.requestId
   currentSelectionOrigin = payload.origin ?? 'selection'
@@ -1423,7 +1429,7 @@ function renderSelection(payload: TranslatePayload): void {
       : t('popup.translating'))
     if (visible) renderTranslationProviderResult()
     resultEl.textContent = payload.origin === 'ocr'
-      ? (payload.original ?? t('popup.ocrRecognizing'))
+      ? (hasRecognizedOcr ? selectionStatus : (payload.original ?? t('popup.ocrRecognizing')))
       : (payload.loadingMessage ?? t('popup.translating'))
     resultEl.classList.add('loading')
     originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''

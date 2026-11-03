@@ -62,6 +62,43 @@ test('OCR loading 状态应展示识别中提示和 OCR 原文区域', () => {
 })
 
 /**
+ * 校验 OCR 识别完成后先展示原文，译文区域继续显示翻译中。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 识别完成应先展示原文并异步等待译文', () => {
+  const processStart = main.indexOf('async function processOcrImageBytes')
+  const processEnd = main.indexOf('/**', processStart + 1)
+  const processSource = main.slice(processStart, processEnd)
+  const submitStart = main.indexOf('async function submitOcrSelection')
+  const submitEnd = main.indexOf('/**', submitStart + 1)
+  const submitSource = main.slice(submitStart, submitEnd)
+  const renderStart = popupRenderer.indexOf('function renderOcrLoading(payload: TranslatePayload): void')
+  const renderEnd = popupRenderer.indexOf('/**', renderStart + 1)
+  const renderSource = popupRenderer.slice(renderStart, renderEnd)
+
+  assert.match(processSource, /onRecognized/u, '图片识别管线应接收识别完成回调')
+  assert.match(processSource, /translateRecognizedOcrResult\(ocr,\s*settings,\s*onRecognized\)/u)
+  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u)
+  assert.match(submitSource, /translateRecognizedOcrResult\(cached,\s*settings,\s*showRecognizedOcrPopup\)/u)
+  const showRecognizedStart = main.indexOf('function showRecognizedOcrText')
+  const showRecognizedEnd = main.indexOf('/**', showRecognizedStart + 1)
+  const showRecognizedSource = main.slice(showRecognizedStart, showRecognizedEnd)
+  assert.match(showRecognizedSource, /loadingMessage:\s*t\('selection\.loadingTranslating'\)/u)
+  assert.match(showRecognizedSource, /ocrText:\s*recognized\.ocrText/u)
+  assert.match(showRecognizedSource, /ocrRawText:\s*recognized\.ocrRawText/u)
+  assert.match(renderSource, /if \(payload\.ocrText \|\| payload\.ocrRawText\)[\s\S]*?renderOcrSource\(payload\)/u)
+  assert.match(
+    popupRenderer,
+    /const hasRecognizedOcr = payload\.origin === 'ocr' && Boolean\(payload\.ocrText \|\| payload\.ocrRawText\)/u
+  )
+  assert.match(
+    popupRenderer,
+    /hasRecognizedOcr[\s\S]*?payload\.loadingMessage \?\? t\('popup\.translating'\)/u
+  )
+})
+
+/**
  * 校验 OCR 结果不会被 Renderer 消息分发忽略，错误状态也会刷新 OCR 专用区域。
  * @returns 无返回值。
  * @author zhenghq
@@ -223,7 +260,7 @@ test('OCR 截图应先清理框选会话，再把隐藏采集的快照传给 Ren
     'begin 事件必须早于屏幕采集'
   )
   assert.match(submitSource, /cropOcrSnapshotSelection\(bounds\)/u)
-  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings\)/u)
+  assert.match(submitSource, /processOcrImageBytes\(imageBytes,\s*settings,\s*showRecognizedOcrPopup\)/u)
   assert.doesNotMatch(submitSource, /await sleep\(OCR_CAPTURE_SETTLE_DELAY_MS\)/u)
   assert.doesNotMatch(submitSource, /captureOcrSelectionPng\(bounds,\s*settings\)/u)
 })

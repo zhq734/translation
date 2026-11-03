@@ -6,6 +6,12 @@ import type { TranslateOutput } from './translate'
 import type { Settings, TranslationProviderId } from '../shared/types'
 import type { DingTalkCredentials } from './dingtalkConfig'
 
+/** OCR 翻译管道已识别文本的中间态负载。 */
+export type OcrRecognizedResult = Pick<
+  OcrTranslateResult,
+  'ocrText' | 'ocrRawText' | 'ocrScore' | 'ocrEngine'
+>
+
 /** OCR 翻译结果：合并翻译输出与 OCR 元信息。 */
 export interface OcrTranslateResult {
   /** 翻译结果文本；噪声/空时为空字符串。 */
@@ -52,6 +58,14 @@ export interface OcrTranslateDeps {
     dingTalkCredentials?: DingTalkCredentials | null,
     aiApiKey?: string | null
   ): Promise<TranslateOutput>
+  /**
+   * 有效 OCR 文本完成清洗与质量门禁后、调用翻译前的可选回调。
+   * 用于先展示原文，再继续异步等待译文，避免两个阶段串行阻塞界面。
+   * @param recognized 已识别并完成质量门禁的 OCR 文本与元信息。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  onRecognized?(recognized: OcrRecognizedResult): void
   /** 取消信号（可选）。 */
   signal?: AbortSignal
 }
@@ -95,6 +109,9 @@ export async function translateOcrResult(
   if (deps.signal?.aborted) {
     return { ...base, ocrCode: 'cancelled' }
   }
+
+  // 原文已经可用时立即交给界面，翻译继续在后续异步执行；空文本与噪声在上方已拦截。
+  deps.onRecognized?.(base)
 
   // 接入 TranslationRuntime
   try {
