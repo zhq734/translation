@@ -337,7 +337,7 @@ The shortcut can be changed in settings. Do not use `Command+C` or `Control+C` a
 
 ### Quick OCR translation
 
-For text that cannot be selected, press `Alt+S`, drag a region with the left mouse button, and release. The app waits for the screen snapshot if necessary, then runs OCR and translation automatically. On macOS, `Alt` maps to `Option`.
+For text that cannot be selected, press `Alt+S`, drag a region with the left mouse button, and release. The app waits for the screen snapshot if necessary, then runs OCR and translation automatically. Quick mode shows only the screenshot background and selection border, without the screenshot toolbar, annotations, resize handles, or OCR sidebar. On macOS, `Alt` maps to `Option`.
 
 Use `Alt+O` instead when you want the full screenshot workspace: adjust the selection, preview OCR, annotate, copy, or save the image, then submit translation manually. Both OCR shortcuts can be changed or cleared under **Settings → OCR**. A click, a move/resize of an existing selection, or a toolbar action does not trigger the quick path.
 

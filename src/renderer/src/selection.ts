@@ -298,7 +298,8 @@ function resizeSelectionRect(state: DragState, point: { x: number; y: number }):
  * @author zhenghq
  */
 function updateResizeHandlePositions(): void {
-  const hidden = !currentRect
+  // 快捷 OCR 只展示选区边框，不提供移动或缩放控制点。
+  const hidden = !currentRect || quickOcrAutoTranslate
   for (const handle of ocrResizeHandles) {
     handle.hidden = hidden
   }
@@ -310,6 +311,10 @@ function updateResizeHandlePositions(): void {
  * @author zhenghq
  */
 function renderOcrToolbar(): void {
+  if (quickOcrAutoTranslate) {
+    ocrToolbar.hidden = true
+    return
+  }
   if (!currentRect || currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) {
     ocrToolbar.hidden = true
     return
@@ -339,7 +344,7 @@ function renderOcrToolbar(): void {
  * @author zhenghq
  */
 function syncOcrToolbarLayout(): void {
-  if (!currentRect || ocrToolbar.hidden) return
+  if (quickOcrAutoTranslate || !currentRect || ocrToolbar.hidden) return
   const size = getOverlaySize()
   const toolbarRect = ocrToolbar.getBoundingClientRect()
   const toolbarWidth = toolbarRect.width || ocrToolbar.offsetWidth || 128
@@ -358,7 +363,7 @@ function syncOcrToolbarLayout(): void {
  * @author zhenghq
  */
 function avoidOcrToolbarPanelOverlap(): void {
-  if (ocrToolbar.hidden || ocrPanel.hidden) return
+  if (quickOcrAutoTranslate || ocrToolbar.hidden || ocrPanel.hidden) return
   const size = getOverlaySize()
   const toolbarRect = ocrToolbar.getBoundingClientRect()
   const panelRect = ocrPanel.getBoundingClientRect()
@@ -1108,6 +1113,12 @@ function redrawAnnotationPreview(): void {
  * @author zhenghq
  */
 function updateAnnotationUi(): void {
+  if (quickOcrAutoTranslate) {
+    ocrSelectionBox.style.pointerEvents = 'none'
+    ocrAnnotationSelection.hidden = true
+    for (const handle of ocrAnnotationResizeHandles) handle.hidden = true
+    return
+  }
   const tool = annotationController.tool
   for (const button of ocrAnnotationToolButtons) {
     button.setAttribute('aria-pressed', String(button.dataset['annotationTool'] === tool))
@@ -1164,7 +1175,7 @@ function updateAnnotationSelectionBox(): void {
  */
 function updateTextInput(): void {
   const point = annotationController.textEditorPoint
-  if (!ocrMode || !currentRect || !point) {
+  if (quickOcrAutoTranslate || !ocrMode || !currentRect || !point) {
     ocrTextInput.hidden = true
     return
   }
@@ -1289,7 +1300,7 @@ function getPointerEventPoint(event: PointerEvent): { x: number; y: number } {
  * @author zhenghq
  */
 function handleAnnotationPointerDown(event: PointerEvent): void {
-  if (!ocrMode || !annotationController.isAnnotating() || event.button !== 0) return
+  if (quickOcrAutoTranslate || !ocrMode || !annotationController.isAnnotating() || event.button !== 0) return
   if ((event.target as HTMLElement).closest('#ocr-text-input')) return
   // 点击其它控件或画布时先确认当前文字，避免失焦时丢失输入内容。
   if (annotationController.textEditorPoint) commitTextInput()
@@ -1448,7 +1459,7 @@ function handleAnnotationPointerUp(event: PointerEvent): void {
  * @author zhenghq
  */
 function handleAnnotationDoubleClick(event: MouseEvent): void {
-  if (!ocrMode || annotationController.tool !== 'text') return
+  if (quickOcrAutoTranslate || !ocrMode || annotationController.tool !== 'text') return
   const hit = annotationController.findTextAt(toAnnotationPoint(getEventPoint(event)))
   if (!hit) return
   event.preventDefault()
@@ -1735,6 +1746,7 @@ function scheduleScreenshotAutoClose(): void {
 function renderSelectionRect(rect: OcrSelectionBounds | null): void {
   if (!rect || rect.width <= 0 || rect.height <= 0) {
     ocrSelectionBox.hidden = true
+    ocrSelectionBox.style.pointerEvents = quickOcrAutoTranslate ? 'none' : 'auto'
     currentRect = null
     updateResizeHandlePositions()
     updateAnnotationSelectionBox()
@@ -1743,12 +1755,14 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
   }
   currentRect = rect
   ocrSelectionBox.hidden = false
+  ocrSelectionBox.style.pointerEvents = quickOcrAutoTranslate ? 'none' : 'auto'
   ocrSelectionBox.style.left = `${rect.x}px`
   ocrSelectionBox.style.top = `${rect.y}px`
   ocrSelectionBox.style.width = `${rect.width}px`
   ocrSelectionBox.style.height = `${rect.height}px`
   updateResizeHandlePositions()
   renderOcrToolbar()
+  if (quickOcrAutoTranslate) return
   annotationController.setSelection(rect)
   snapshotSampler = createSnapshotSampler()
   syncAnnotationCanvas()
@@ -1763,6 +1777,11 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
  * @author zhenghq
  */
 function renderOcrTip(message?: string): void {
+  if (quickOcrAutoTranslate) {
+    ocrTip.hidden = true
+    return
+  }
+  ocrTip.hidden = false
   const pendingMessage = screenshotActionPending === 'copy-image'
     ? t('selection.copyingImage')
     : screenshotActionPending === 'save-image'
@@ -1906,6 +1925,7 @@ function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
   quickOcrAutoTranslate = payload.autoTranslate === true
   ocrMode = true
   document.documentElement.setAttribute('data-ocr-mode', 'true')
+  document.documentElement.setAttribute('data-ocr-quick-mode', String(quickOcrAutoTranslate))
   translateButton.hidden = true
   // 采集尚未完成：清掉上一次的背景图，避免残留旧画面误导用户。
   ocrOverlay.hidden = false
@@ -1925,6 +1945,7 @@ function leaveOcrSelectionMode(): void {
   resetOcrSessionUi()
   ocrMode = false
   document.documentElement.removeAttribute('data-ocr-mode')
+  document.documentElement.removeAttribute('data-ocr-quick-mode')
   // OCR 使用独立窗口，退出时窗口随后会隐藏；不要恢复共用页面中的“译”按钮，避免关闭动画期间闪现。
   renderSelectionRect(null)
 }
@@ -1935,6 +1956,7 @@ function leaveOcrSelectionMode(): void {
  * @author zhenghq
  */
 function resetOcrSessionUi(): void {
+  document.documentElement.removeAttribute('data-ocr-quick-mode')
   if (screenshotAutoCloseTimer !== null) window.clearTimeout(screenshotAutoCloseTimer)
   screenshotAutoCloseTimer = null
   ocrSnapshotLoadToken += 1
@@ -2057,6 +2079,18 @@ function isNearSelectionEdge(point: { x: number; y: number }): boolean {
  */
 function handleOcrMouseDown(event: MouseEvent): void {
   if (!ocrMode || event.button !== 0) return
+  if (quickOcrAutoTranslate) {
+    // 快捷模式始终从空白处开始新框选，不复用移动、缩放或标注交互。
+    const point = getEventPoint(event)
+    dragState = {
+      type: 'draw',
+      start: point,
+      initial: { x: point.x, y: point.y, width: 0, height: 0 },
+      activated: false
+    }
+    event.preventDefault()
+    return
+  }
   if (textMoveState) return
   const target = event.target as HTMLElement
   if (target.closest('#ocr-toolbar')) return
@@ -2167,6 +2201,10 @@ function flushPendingQuickOcrSelection(): void {
 function handleKeyDown(event: KeyboardEvent): void {
   // 文字编辑框必须保留浏览器对空格和回车的原生输入行为，不能触发截图提交快捷键。
   if (event.target === ocrTextInput) return
+  if (quickOcrAutoTranslate) {
+    if (event.key === 'Escape') cancelOcrSelection()
+    return
+  }
   if (event.key === 'Escape' && annotationController.cancelAnnotationInput()) {
     redrawAnnotationPreview()
     redrawAnnotations()

@@ -182,6 +182,24 @@ body {
   display: none;
 }
 
+/* 快捷 OCR 只保留截图背景与选区边框，截图工作台的提示、工具和结果区域全部隐藏。 */
+:root[data-ocr-quick-mode='true'] #ocr-tip,
+:root[data-ocr-quick-mode='true'] #ocr-toolbar,
+:root[data-ocr-quick-mode='true'] .ocr-resize-handle,
+:root[data-ocr-quick-mode='true'] .ocr-annotation-canvas,
+:root[data-ocr-quick-mode='true'] .ocr-annotation-preview,
+:root[data-ocr-quick-mode='true'] .ocr-annotation-selection,
+:root[data-ocr-quick-mode='true'] #ocr-panel,
+:root[data-ocr-quick-mode='true'] #ocr-text-input,
+:root[data-ocr-quick-mode='true'] #ocr-tooltip {
+  display: none !important;
+}
+
+:root[data-ocr-quick-mode='true'] .ocr-selection-box {
+  cursor: crosshair;
+  pointer-events: none;
+}
+
 /* 与截图动作提示共用同一套反色胶囊 Token，保证同一张截图页上的两处提示视觉一致。 */
 .ocr-tip {
   position: relative;

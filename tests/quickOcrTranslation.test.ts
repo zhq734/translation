@@ -6,6 +6,7 @@ import { collectShortcutRegistrationStates } from '../src/main/globalShortcutReg
 
 const main = readFileSync('src/main/index.ts', 'utf8')
 const selection = readFileSync('src/renderer/src/selection.ts', 'utf8')
+const selectionCss = readFileSync('src/renderer/src/selection.css', 'utf8')
 const settingsHtml = readFileSync('src/renderer/settings.html', 'utf8')
 const settingsSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
@@ -96,6 +97,36 @@ test('快捷 OCR 应仅在一次有效的新框选松开后自动提交', () => 
   assert.match(flushSource, /MIN_SELECTION_SIZE/u)
   assert.match(flushSource, /translateCurrentOcrSelection\(\)/u)
   assert.match(loadSource, /flushPendingQuickOcrSelection\(\)/u)
+})
+
+test('快捷 OCR 模式应只保留选框并隐藏截图工作台辅助界面', () => {
+  const enterSource = sliceFunction(selection, 'function enterOcrSelectionMode(')
+  const leaveSource = sliceFunction(selection, 'function leaveOcrSelectionMode(')
+  const resetSource = sliceFunction(selection, 'function resetOcrSessionUi(')
+
+  assert.match(enterSource, /document\.documentElement\.setAttribute\('data-ocr-quick-mode', String\(quickOcrAutoTranslate\)\)/u)
+  assert.match(leaveSource, /document\.documentElement\.removeAttribute\('data-ocr-quick-mode'\)/u)
+  assert.match(resetSource, /document\.documentElement\.removeAttribute\('data-ocr-quick-mode'\)/u)
+  assert.match(
+    selectionCss,
+    /:root\[data-ocr-quick-mode='true'\]\s+#ocr-tip,[\s\S]*?#ocr-tooltip\s*\{[\s\S]*?display:\s*none/u
+  )
+})
+
+test('快捷 OCR 模式应禁用选区移动缩放和标注交互', () => {
+  const mouseDownSource = sliceFunction(selection, 'function handleOcrMouseDown(')
+  const annotationDownSource = sliceFunction(selection, 'function handleAnnotationPointerDown(')
+  const toolbarSource = sliceFunction(selection, 'function renderOcrToolbar(')
+  const selectionRectSource = sliceFunction(selection, 'function renderSelectionRect(')
+
+  assert.match(
+    mouseDownSource,
+    /if \(quickOcrAutoTranslate\) \{[\s\S]*?type: 'draw'[\s\S]*?event\.preventDefault\(\)[\s\S]*?return/u
+  )
+  assert.match(annotationDownSource, /if \(quickOcrAutoTranslate \|\| !ocrMode[\s\S]*?return/u)
+  assert.match(toolbarSource, /if \(quickOcrAutoTranslate\)[\s\S]*?ocrToolbar\.hidden = true[\s\S]*?return/u)
+  assert.match(selectionRectSource, /ocrSelectionBox\.style\.pointerEvents = quickOcrAutoTranslate \? 'none' : 'auto'/u)
+  assert.match(selectionRectSource, /if \(quickOcrAutoTranslate\) return/u)
 })
 
 test('快捷 OCR 设置页应提供快捷键录入、清除与注册失败标签', () => {
