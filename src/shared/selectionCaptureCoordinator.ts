@@ -13,6 +13,7 @@ export type SelectionFailureReason =
   | 'timeout'
   | 'unsupported'
   | 'permission'
+  | 'api-disabled'
   | 'clipboard-locked'
   | 'unknown'
 
@@ -36,6 +37,10 @@ export interface CaptureDiagnosticMeta {
   windowMatched?: boolean
   /** macOS 模拟复制事件是否至少被全局事件钩子观测到一次。 */
   copyObserved?: boolean
+  /** macOS 快捷键复制事件当前是否已被全局钩子观测到；未登记观测时缺失。 */
+  eventObserved?: boolean
+  /** macOS 超时失败阶段，用于区分 AX 读取、菜单复制、快捷键或剪贴板阶段。 */
+  phase?: 'ax-read' | 'menu-copy' | 'shortcut-copy' | 'clipboard'
 }
 
 /** 一次取词使用的源窗口上下文；字段缺失时保持应用级取词行为。 */
@@ -107,6 +112,10 @@ export interface CaptureDiagnosticInput {
   windowMatched?: boolean
   /** macOS 模拟复制事件是否至少被全局事件钩子观测到一次。 */
   copyObserved?: boolean
+  /** macOS 快捷键复制事件当前是否已被全局钩子观测到；未登记观测时缺失。 */
+  eventObserved?: boolean
+  /** macOS 超时失败阶段，用于区分 AX 读取、菜单复制、快捷键或剪贴板阶段。 */
+  phase?: 'ax-read' | 'menu-copy' | 'shortcut-copy' | 'clipboard'
 }
 
 type CaptureSelection = (

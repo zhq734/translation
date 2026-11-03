@@ -53,6 +53,16 @@ let win: BrowserWindow | null = null
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 let closeVersion = 0
 /**
+ * 弹窗显示/关闭生命周期 token。
+ *
+ * 上一轮关闭可能仍在异步交还，而下一轮结果已经重新显示同一个 BrowserWindow。
+ * 每次显示或关闭调用都递增该 token；所有异步收尾都必须先校验
+ * 自己仍是当前轮次，否则旧回调会把新弹窗隐藏掉或释放新轮次的状态。
+ */
+let popupLifecycleToken = 0
+/** 当前尚未完成全部异步收尾的关闭轮次；新显示会取消并释放该轮次。 */
+let activePopupCloseToken: number | null = null
+/**
  * 弹窗关闭是否正在进行中。
  *
  * macOS 外部点击与随后到达的 blur 可能在同一轮交互内连续触发关闭；前台交还是
@@ -73,8 +83,11 @@ let onPopupHiddenCallback: (() => void) | null = null
  * 外部点击关闭后，异步前台交还期间设置页可能仍保留临时最高层级；关闭入口与
  * win.hide() 完成后都必须同步回收该状态，避免迟到 activate 把设置页带到最前。
  */
-let onPopupCloseStartCallback: (() => void) | null = null
-let onPopupCloseEndCallback: (() => void) | null = null
+let onPopupCloseStartCallback: ((token: number) => void) | null = null
+let onPopupCloseEndCallback: ((token: number) => void) | null = null
+let onPopupCloseEndBeforeHideRestoreCallback: ((token: number) => void) | null = null
+let onFrontRecheckCompleteCallback: ((token: number, restored: boolean) => void) | null = null
+let onPopupCloseCancelledCallback: ((token: number) => void) | null = null
 let shownInactive = false
 /**
  * 设置窗口打开期间是否保护翻译弹窗不被失焦关闭。
@@ -126,9 +139,15 @@ export interface CreatePopupOptions {
   /** 弹窗隐藏后清理临时请求的回调。 */
   onPopupHidden?: () => void
   /** 弹窗关闭开始、异步前台交还之前的同步收尾回调。 */
-  onPopupCloseStart?: () => void
+  onPopupCloseStart?: (token: number) => void
   /** 弹窗真实隐藏完成后的同步恢复回调。 */
-  onPopupCloseEnd?: () => void
+  onPopupCloseEnd?: (token: number) => void
+  /** 弹窗真实隐藏后、延迟恢复前台设置窗口前需要同步收尾的回调。 */
+  onPopupCloseEndBeforeHideRestore?: (token: number) => void
+  /** 弹窗隐藏后的前台复核完成（含失败、异常与无需复核路径）时执行的回调。 */
+  onFrontRecheckComplete?: (token: number, restored: boolean) => void
+  /** 上一轮关闭尚未完成时弹窗重新显示；回调只释放该 token 的旧租约。 */
+  onPopupCloseCancelled?: (token: number) => void
 }
 
 /**
@@ -150,6 +169,9 @@ export function createPopup(options: CreatePopupOptions): BrowserWindow {
   onPopupHiddenCallback = options.onPopupHidden ?? null
   onPopupCloseStartCallback = options.onPopupCloseStart ?? null
   onPopupCloseEndCallback = options.onPopupCloseEnd ?? null
+  onPopupCloseEndBeforeHideRestoreCallback = options.onPopupCloseEndBeforeHideRestore ?? null
+  onFrontRecheckCompleteCallback = options.onFrontRecheckComplete ?? null
+  onPopupCloseCancelledCallback = options.onPopupCloseCancelled ?? null
   win = new BrowserWindow({
     width: 520,
     height: 360,
@@ -400,9 +422,16 @@ export function showPopup(
   activate = true
 ): void {
   if (!win) return
-  // 新一轮显示必须清除上一轮关闭状态；异步前台恢复异常时也不能让弹窗永久
-  // 无法关闭。重置发生在投递负载之前，保证本次显示立即恢复完整关闭语义。
+  // 新一轮显示必须让上一轮所有异步收尾失效。不能只重置 popupCloseInFlight：
+  // 旧轮次已经启动的 handBackFrontmostThen/延迟复核仍可能晚到，若没有 token
+  // 校验，它们会隐藏刚显示的新弹窗并释放新轮次的焦点租约。
+  const cancelledCloseToken = activePopupCloseToken
+  popupLifecycleToken += 1
   popupCloseInFlight = false
+  activePopupCloseToken = null
+  if (cancelledCloseToken !== null) {
+    onPopupCloseCancelledCallback?.(cancelledCloseToken)
+  }
   currentAutoHideMs = Math.max(0, autoHideMs)
   selectionCaptureLoading = payload.origin === 'selection' && payload.loading === true
   const alreadyVisible = win.isVisible()
@@ -536,11 +565,13 @@ export function hidePopup(
     return
   }
   popupCloseInFlight = true
+  const closeToken = ++popupLifecycleToken
+  activePopupCloseToken = closeToken
   console.log(`[popup] hide reason=${reason}`)
   // 关闭一开始就同步收尾并挂起后台设置页的 key window 候选资格：异步前台交还
   // 可能持续数十毫秒，期间设置页若残留最高层级，仍会被系统带到划词应用之前。
   // 不得在这里 await。
-  onPopupCloseStartCallback?.()
+  onPopupCloseStartCallback?.(closeToken)
   clearHide()
   closeVersion += 1
   pinned = false
@@ -551,15 +582,26 @@ export function hidePopup(
   win?.webContents.send('popup:pinned', false)
   if (!win || win.isDestroyed()) {
     try {
-      onPopupCloseEndCallback?.()
+      onPopupCloseEndBeforeHideRestoreCallback?.(closeToken)
+      onPopupCloseEndCallback?.(closeToken)
     } finally {
-      popupCloseInFlight = false
+      if (closeToken === popupLifecycleToken) {
+        popupCloseInFlight = false
+        activePopupCloseToken = null
+      }
     }
     return
   }
+  // macOS 异步交还路径必须把设置页可聚焦性恢复延迟到隐藏后的前台复核；
+  // 同步隐藏路径没有这个系统重新选 key window 的竞态，仍可立即恢复。
+  const restoreFocusAfterFrontRecheck =
+    process.platform === 'darwin' && handBackFrontmost
   // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
   // 后再执行，否则系统会先把同应用下一个可见窗口提升为 key window 顶到最前。
   const run = (): void => {
+    // 交还期间用户可能已经触发下一轮取词并重新显示弹窗。旧轮次只能静默退出，
+    // 不得隐藏新窗口、清理新轮次状态或发送任何关闭副作用。
+    if (closeToken !== popupLifecycleToken) return
     shownInactive = false
     logCandidateProbe('popup-hide', Boolean(win && !win.isDestroyed() && win.isVisible()))
     // Renderer 的关闭按钮会主动清理播放资源，但失焦、外部点击和自动隐藏
@@ -570,13 +612,19 @@ export function hidePopup(
     try {
       win?.hide()
     } finally {
-      // 真实隐藏完成后立即恢复关闭开始时挂起的设置页焦点能力。即使 hide()
-      // 抛错也必须恢复，不能让它永久失去键盘输入能力。
       try {
-        onPopupCloseEndCallback?.()
+        onPopupCloseEndBeforeHideRestoreCallback?.(closeToken)
+        if (!restoreFocusAfterFrontRecheck) onPopupCloseEndCallback?.(closeToken)
       } finally {
-        popupCloseInFlight = false
+        if (closeToken === popupLifecycleToken) {
+          popupCloseInFlight = false
+          if (!restoreFocusAfterFrontRecheck) activePopupCloseToken = null
+        }
       }
+    }
+    // 真实隐藏后先完成收尾；延迟交还路径的可聚焦恢复由前台复核回调执行。
+    if (!restoreFocusAfterFrontRecheck) {
+      onPopupCloseEndCallback?.(closeToken)
     }
     onPopupHiddenCallback?.()
     // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
@@ -586,7 +634,26 @@ export function hidePopup(
   if (process.platform === 'darwin' && handBackFrontmost) {
     // 结果弹窗可能以 showInactive 显示：它自身不是 key window，但应用仍可能
     // 因点击“译”处于最前，必须让 handBackFrontmostThen 走弹窗专用判定。
-    handBackFrontmostThen(win, run, undefined, true)
+    // 复核完成回调负责在延迟交还路径释放设置页焦点保护；缺省时退回通用
+    // 关闭收尾，确保未注入该回调的调用方也不会留下不可聚焦窗口。
+    handBackFrontmostThen(
+      win,
+      run,
+      undefined,
+      true,
+      (restored: boolean): void => {
+        if (closeToken !== popupLifecycleToken) return
+        try {
+          if (onFrontRecheckCompleteCallback) {
+            onFrontRecheckCompleteCallback(closeToken, restored)
+          } else {
+            onPopupCloseEndCallback?.(closeToken)
+          }
+        } finally {
+          if (closeToken === popupLifecycleToken) activePopupCloseToken = null
+        }
+      }
+    )
     return
   }
   // Windows 上弹窗处于激活状态时必须先让出前台，否则下一次取词的 WM_COPY

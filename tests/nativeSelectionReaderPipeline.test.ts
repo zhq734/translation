@@ -91,6 +91,16 @@ test('SelectionFailureReason 应包含 clipboard-locked', () => {
 })
 
 /**
+ * 校验 SelectionFailureReason 包含源应用 AX 接口禁用原因。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('SelectionFailureReason 应包含 api-disabled', () => {
+  const source = readFileSync('src/shared/selectionCaptureCoordinator.ts', 'utf8')
+  assert.match(source, /api-disabled/u)
+})
+
+/**
  * 校验 resolveSelectionCaptureFailureMessage 增加 clipboard-locked 对应文案。
  * @returns 无返回值。
  * @author zhenghq

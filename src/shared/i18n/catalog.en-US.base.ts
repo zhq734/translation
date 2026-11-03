@@ -768,6 +768,7 @@ export const enUSBase = defineCatalog({
   'selection.captureFailure.timeout': 'Selection timed out. Try again, or make sure the selected content can be copied.',
   'selection.captureFailure.unsupported': 'The current app does not support selection capture. Make sure the selected content can be copied.',
   'selection.captureFailure.permission': 'Accessibility permission is required to read the selected text. Grant it and try again.',
+  'selection.captureFailure.apiDisabled': 'The source app’s accessibility interface is unavailable. Restart the source app and try again.',
   'selection.captureFailure.clipboardLocked': 'The clipboard is busy. Close other clipboard tools and try again.',
   'selection.captureFailure.empty': 'No selected text was detected. Select the text again and click “Translate”.',
   'screenshot.defaultFileNamePrefix': 'screenshot',

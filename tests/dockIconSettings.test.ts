@@ -59,13 +59,13 @@ test('复用设置窗口先刷新策略再置前，新建设置窗口先置前�
   // 复用路径：窗口已经存在，先刷新 Dock 策略再走统一窗口级置前入口。
   assert.match(
     reusePath,
-    /await refreshMacOSDockVisibility\(\)[\s\S]*?showOwnWindowForInteraction\(/u
+    /await refreshMacOSDockVisibility\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(/u
   )
   // 新建路径：窗口仍处于 show:false，必须先显示再刷新 Dock 策略，
   // 否则 accessory/dock.hide() 会吞掉尚未上屏的首帧窗口。
   assert.match(
     createPath,
-    /showOwnWindowForInteraction\(settingsWin,[\s\S]*?await refreshMacOSDockVisibility\(\)/u
+    /bringSettingsWindowToFrontSafely\(settingsWin,[\s\S]*?await refreshMacOSDockVisibility\(\)/u
   )
   for (const path of [reusePath, createPath]) {
     // 置前一律走统一入口，不得激活整个应用。
@@ -117,9 +117,9 @@ test('启动首开设置页在 Dock 策略刷新后仅在未进入划词时再�
   const createPath = settingsWindowBlock[1].slice(
     settingsWindowBlock[1].indexOf('const createdWindow = new BrowserWindow')
   )
-  const firstShowIndex = createPath.indexOf('showOwnWindowForInteraction(settingsWin,')
+  const firstShowIndex = createPath.indexOf('bringSettingsWindowToFrontSafely(settingsWin,')
   const refreshIndex = createPath.indexOf('await refreshMacOSDockVisibility()', firstShowIndex)
-  const finalShowIndex = createPath.indexOf('showOwnWindowForInteraction(settingsWin, { raiseLevel: true })', refreshIndex)
+  const finalShowIndex = createPath.indexOf('bringSettingsWindowToFrontSafely(settingsWin,', refreshIndex)
 
   assert.ok(firstShowIndex >= 0, '新建设置窗口必须先显示目标窗口')
   assert.ok(refreshIndex > firstShowIndex, '新建设置窗口显示后必须刷新 Dock 策略')
@@ -156,8 +156,17 @@ test('首次创建设置窗口时不得在窗口显示前用 Dock 切换吞掉�
   // 新建窗口在 show:false 状态下进入 createSettingsWindow；此时 settingsWin 已非空，
   // 若先 refreshMacOSDockVisibility() 触发 accessory/dock.hide()，窗口会被系统吞掉，
   // 后面的 show() 不足以保证启动设置页可见。必须先显示目标窗口，再刷新 Dock 呈现。
-  const firstShowIndex = createPath.indexOf('showOwnWindowForInteraction(settingsWin,')
-  const firstRefreshIndex = createPath.indexOf('await refreshMacOSDockVisibility()')
+  // 新窗口创建分支之前还有“旧置前意图失效”等安全分支；这里只验证 ready-to-show
+  // 之后的首显路径，避免把更早的防御性调用误当成首屏显示。
+  const readyToShowIndex = createPath.indexOf('await readyToShow')
+  const firstShowIndex = createPath.indexOf(
+    'bringSettingsWindowToFrontSafely(settingsWin,',
+    readyToShowIndex
+  )
+  const firstRefreshIndex = createPath.indexOf(
+    'await refreshMacOSDockVisibility()',
+    firstShowIndex
+  )
   assert.ok(firstShowIndex >= 0, '新建设置窗口必须调用统一显示入口')
   assert.ok(firstRefreshIndex >= 0, '新建设置窗口必须刷新 Dock 呈现')
   assert.ok(

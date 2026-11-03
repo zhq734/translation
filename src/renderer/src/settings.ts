@@ -486,6 +486,23 @@ function updateSpeechProviderHint(provider: SpeechProvider): void {
 }
 
 /**
+ * AI 配置表单是否存在尚未保存成功的用户输入。
+ *
+ * 设置页会因语言、主题或其它配置广播触发整体重绘。若在用户输入期间无条件回填
+ * 主进程旧值，Base URL 和 Model 会被还原、API Key 会被清空，表现为输入框“不能改”。
+ */
+let aiFormDirty = false
+
+/**
+ * 把 AI 配置表单标记为未保存草稿，阻止后续设置广播覆盖当前输入。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function markAiFormDirty(): void {
+  aiFormDirty = true
+}
+
+/**
  * 将完整设置同步到页面控件。
  * @param settings 当前完整设置。
  * @returns 无返回值。
@@ -542,11 +559,16 @@ function renderSettings(settings: Settings): void {
     ? 'field-hint dingtalk-secret-status configured'
     : 'field-hint dingtalk-secret-status'
   dingTalkClearSecret.disabled = !settings.dingTalkSecretConfigured
-  aiEnabled.checked = settings.aiEnabled
-  aiProtocol.value = settings.aiProtocol
-  aiBaseUrl.value = settings.aiBaseUrl
-  aiModel.value = settings.aiModel
-  aiApiKey.value = ''
+  // AI 表单存在未保存输入时只刷新密钥状态，不回填主进程旧配置。设置页会持续
+  // 收到语言、主题、快捷键等无关广播；无条件回填会让用户刚输入的 Base URL 和
+  // Model 被覆盖，并清空刚填写的 API Key。
+  if (!aiFormDirty) {
+    aiEnabled.checked = settings.aiEnabled
+    aiProtocol.value = settings.aiProtocol
+    aiBaseUrl.value = settings.aiBaseUrl
+    aiModel.value = settings.aiModel
+    aiApiKey.value = ''
+  }
   aiApiKeyStatus.textContent = settings.aiApiKeyConfigured
     ? t('settings.ai.secretConfigured')
     : t('settings.ai.apiKeyMissing')
@@ -1475,6 +1497,9 @@ async function saveAiConfig(): Promise<void> {
       model: aiModel.value.trim(),
       apiKey: aiApiKey.value
     })
+    // 主进程会在 IPC Promise 返回前广播 settings:changed；保存期间必须继续保持
+    // 草稿保护，待确认写入成功后再清除，避免广播把刚提交的 Key 提前清空。
+    aiFormDirty = false
     renderSettings(settings)
     flash(t('settings.ai.saved'))
     await listAiModels()
@@ -1949,9 +1974,15 @@ aiSave.addEventListener('click', () => void saveAiConfig())
 aiRefreshModels.addEventListener('click', () => void refreshAiModels())
 aiCheck.addEventListener('click', () => void checkAi())
 aiClearKey.addEventListener('click', () => void clearAiApiKey())
+// 任一可编辑 AI 字段变化后都视为未保存草稿；在保存成功前，设置广播不得回填旧值。
+aiEnabled.addEventListener('change', markAiFormDirty)
+aiProtocol.addEventListener('change', markAiFormDirty)
+aiBaseUrl.addEventListener('input', markAiFormDirty)
+aiApiKey.addEventListener('input', markAiFormDirty)
 // 模型组合框交互：点击箭头展开、输入实时过滤、键盘导航、点击外部收起
 aiModelToggle.addEventListener('click', toggleAiModelOptions)
 aiModel.addEventListener('input', () => {
+  markAiFormDirty()
   if (!isAiModelOpen()) return
   renderAiModelOptions()
   updateAiModelOptionsPlacement()
@@ -1963,6 +1994,10 @@ aiModel.addEventListener('click', () => {
 })
 aiModel.addEventListener('keydown', handleAiModelKeydown)
 document.addEventListener('pointerdown', (event) => {
+  // 设置窗口可能是后台可见窗口，且其矩形与其它应用划词区域重叠。主进程
+  // 全局钩子无法区分真实点击与矩形重叠；只有事件送达本页面才能安全恢复
+  // 设置页的键盘输入能力。
+  window.api.notifySettingsWindowPointerDown()
   const target = event.target as Node | null
   if (target && aiModel.parentElement?.contains(target)) return
   closeAiModelOptions()

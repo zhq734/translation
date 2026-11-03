@@ -96,7 +96,7 @@ test('activate 路径复用已可见设置页不得提升到 screen-saver 层级
   )
   assert.match(
     visibleBranch,
-    /showOwnWindowForInteraction\(settingsWin,\s*\{\s*raiseLevel:\s*(?:false|explicitPopupSource)\s*\}\)/u,
+    /bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*explicitPopupSource/u,
     '复用已可见设置页必须改为不提升层级的窗口级置前'
   )
 })

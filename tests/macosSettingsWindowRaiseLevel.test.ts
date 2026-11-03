@@ -50,7 +50,11 @@ test('设置页临时提升层级后必须有界回收，不能只依赖 blur �
     extractFunction(mainSource, 'function scheduleSettingsPanelRaiseLevelReset(')
   )
   assert.match(resetSource, /setTimeout\(/u, '层级回收必须使用有界定时器')
-  assert.match(resetSource, /setAlwaysOnTop\(false\)/u, '定时器到期必须归还普通层级')
+  assert.match(
+    resetSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '定时器到期必须复用带后台保护判断的统一回收器归还普通层级'
+  )
 })
 
 test('网页阅读器临时提升层级后必须复用同一回收器', () => {
@@ -79,8 +83,8 @@ test('网页阅读器临时提升层级后必须复用同一回收器', () => {
   )
   assert.match(
     resetSource,
-    /raisedInteractionWindows/u,
-    '定时回收必须遍历所有被提升层级的自有窗口'
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '定时回收必须复用会遍历所有被提升窗口的统一回收器'
   )
 })
 
@@ -101,6 +105,131 @@ test('划词手势开始时必须主动把设置页降回普通层级', () => {
   )
 })
 
+test('划词开始回收层级后必须留下可核验的普通层级状态', () => {
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
+
+  // 真机日志只记录 initial-launch-final 时的 isAlwaysOnTop=true，后续划词入口
+  // 即使执行了回收也没有证据。必须在划词入口同步降级后记录窗口层级与焦点状态，
+  // 便于确认设置页确实已退出 screen-saver，而不是仅清空了内部登记集合。
+  assert.match(
+    scheduleSource,
+    /lowerSettingsPanelRaiseLevel\(\)[\s\S]*?logSettingsPanelBringToFront\([^)]*selection/u,
+    '划词入口必须在层级回收后记录设置页状态'
+  )
+})
+
+test('应用失活或处于划词保护期时不得对后台设置页调用 setAlwaysOnTop', () => {
+  const lowerSource = stripComments(
+    extractFunction(mainSource, 'function lowerSettingsPanelRaiseLevel(')
+  )
+  const resetSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSettingsPanelRaiseLevelReset(')
+  )
+
+  // 最新真机日志里设置页已经可见且 appActive=false，划词入口仍对后台窗口执行
+  // setAlwaysOnTop(false)。macOS 会因此重新计算窗口层级并可能把设置页选成 key
+  // window，表现为首次划词时设置页闪到最前。保护期内只能清理内部登记，不能
+  // 对后台窗口做任何层级写操作；定时回收也必须复用同一保护判断。
+  assert.match(
+    lowerSource,
+    /isMacAppActiveByEvents\(\)[\s\S]*?isSelectionWindowRaiseGuardActive\(\)/u,
+    '立即回收必须先判断应用激活状态与划词保护期'
+  )
+  assert.match(
+    lowerSource,
+    /isSelectionWindowRaiseGuardActive\(\)[\s\S]*?raisedInteractionWindows\.clear\(\)/u,
+    '保护期内必须只清理登记而不修改窗口层级'
+  )
+  assert.match(
+    resetSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '定时回收必须复用带后台保护判断的统一回收入口'
+  )
+})
+
+test('已可见的后台设置页不得被静默显示重复顶到前台', () => {
+  const helperSource = stripComments(
+    extractFunction(mainSource, 'function showOwnWindowForInteraction(')
+  )
+  const createStart = mainSource.indexOf('async function createSettingsWindow(')
+  const createEnd = mainSource.indexOf('/**\n * 打开设置窗口。', createStart)
+  const createSource = stripComments(mainSource.slice(createStart, createEnd))
+  const existingBranch = createSource.slice(
+    createSource.indexOf('if (settingsWin && !settingsWin.isDestroyed())'),
+    createSource.indexOf('const createdWindow = new BrowserWindow')
+  )
+
+  // 真机日志中设置页 isVisible=true、appActive=false，但弹窗关闭和 Dock 刷新
+  // 仍反复走 show()。macOS 的 BrowserWindow.show() 会参与 key window 与 z-order
+  // 重排，即使紧接着不 focus()/moveTop() 也可能让后台设置页闪现。统一入口必须
+  // 对已可见窗口保持静默；真正显式置前仍由后续 moveTop()/focus() 完成。
+  assert.match(
+    helperSource,
+    /if \(!win\.isVisible\(\)\) win\.show\(\)/u,
+    '统一入口只能在窗口不可见时调用 show()'
+  )
+  assert.doesNotMatch(
+    existingBranch,
+    /showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*false,\s*moveTop:\s*false,\s*raiseLevel:\s*false\s*\}\)/u,
+    '复用已可见窗口的后台刷新分支不得再调用静默显示入口'
+  )
+})
+
+test('设置页建窗在刷新 Dock 前后都必须复核划词保护状态', () => {
+  const createStart = mainSource.indexOf('async function createSettingsWindow(')
+  const createEnd = mainSource.indexOf('/**\n * 打开设置窗口。', createStart)
+  const createSource = stripComments(mainSource.slice(createStart, createEnd))
+  const existingIndex = createSource.indexOf('if (settingsWin && !settingsWin.isDestroyed())')
+  const firstAwaitIndex = createSource.indexOf('await refreshMacOSDockVisibility()', existingIndex)
+  const secondAwaitIndex = createSource.indexOf('await refreshMacOSDockVisibility()', firstAwaitIndex + 1)
+  const afterFirstAwait = createSource.slice(firstAwaitIndex, secondAwaitIndex)
+
+  assert.ok(existingIndex >= 0 && firstAwaitIndex > existingIndex)
+  assert.match(
+    createSource.slice(existingIndex, firstAwaitIndex),
+    /canCompleteSettingsBringToFront|isSelectionWindowRaiseGuardActive/u,
+    '复用窗口进入异步 Dock 刷新前必须先校验置前意图'
+  )
+  assert.match(
+    afterFirstAwait,
+    /bringToFrontEpochAtStart\s*!==\s*settingsBringToFrontEpoch[\s\S]*?isSelectionWindowRaiseGuardActive\(\)/u,
+    'Dock 刷新返回后必须再次校验代际与划词保护期'
+  )
+})
+
+test('弹窗关闭开始与真实隐藏后都必须回收设置页临时层级', () => {
+  const closeStartSource = stripComments(
+    extractFunction(mainSource, 'function handlePopupCloseStart(')
+  )
+  const closeEndSource = stripComments(
+    extractFunction(mainSource, 'function handlePopupCloseEnd(')
+  )
+  const transitionSource = stripComments(
+    extractFunction(mainSource, 'function handlePopupInternalWindowTransition(')
+  )
+
+  // 外部点击关闭弹窗后，前台交还和真实 hide 都是异步的；设置页若仍保留
+  // screen-saver 层级，系统会在隐藏 panel 时把它重新选为 key window。关闭开始
+  // 必须立即降级，真实隐藏完成后还要再降一次，覆盖交还期间重新提升的竞态。
+  assert.match(
+    closeStartSource,
+    /handlePopupInternalWindowTransition\(\)/u,
+    '弹窗关闭开始必须进入统一的内部窗口收尾流程'
+  )
+  assert.match(
+    closeEndSource,
+    /handlePopupInternalWindowTransition\(\)/u,
+    '弹窗真实隐藏后必须再次进入统一的内部窗口收尾流程'
+  )
+  assert.match(
+    transitionSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '统一收尾流程必须实际回收设置页临时层级'
+  )
+})
+
 test('划词流程收尾与结果弹窗显示时必须续期 activate 抑制，覆盖翻译耗时', () => {
   const releaseSource = stripComments(
     extractFunction(mainSource, 'function releaseSelectionInteraction(')
@@ -116,7 +245,7 @@ test('划词流程收尾与结果弹窗显示时必须续期 activate 抑制，�
   )
   assert.match(
     mainSource,
-    /createPopup\(\s*\{[\s\S]*?onWindowShown:\s*suppressSelectionActivationWindowGap,[\s\S]*?onPopupHidden:\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd\s*\}\s*\)/u,
+    /createPopup\(\s*\{[\s\S]*?onWindowShown:\s*suppressSelectionActivationWindowGap,[\s\S]*?onPopupHidden:\s*\(\)\s*=>\s*pronunciationRequests\.cancelAll\(\),[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEndBeforeHideRestore:\s*finishPopupInternalWindowTransitionBeforeFocusRestore,[\s\S]*?onFrontRecheckComplete:\s*releaseSettingsWindowFocusLeaseAfterFrontRecheck,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd,[\s\S]*?onPopupCloseCancelled:\s*handlePopupCloseCancelled\s*\}\s*\)/u,
     '翻译弹窗显示时必须回调续期抑制，隐藏时必须清理音标请求'
   )
 })

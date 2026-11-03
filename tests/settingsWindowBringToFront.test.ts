@@ -28,14 +28,14 @@ test('点击菜单栏“译”图标必须把已打开的设置页带到最前',
   // 其它可见窗口（翻译弹窗）一起带到最前。
   assert.match(
     createSource,
-    /if \(settingsWin\.isVisible\(\)\) \{[\s\S]*?if \(!bringToFront\) return settingsWin[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
-    '打开设置页必须走统一窗口级置前入口显示、聚焦窗口'
+    /if \(settingsWin\.isVisible\(\)\) \{[\s\S]*?if \(!bringToFront\) return settingsWin[\s\S]*?bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*explicitPopupSource/u,
+    '打开设置页必须走安全置前入口显示、聚焦窗口'
   )
   assert.doesNotMatch(createSource, /app\.focus\(/u, '窗口级置前不得激活整个应用')
   // 最小化窗口的 isVisible() 仍为 true，必须先恢复再聚焦。
   assert.match(
     createSource,
-    /if \(settingsWin\.isMinimized\(\)\) \{[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*raiseLevel:\s*bringToFront\s*\}\)/u,
+    /if \(settingsWin\.isMinimized\(\)\) \{[\s\S]*?bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*true/u,
     '最小化的设置页必须先恢复再聚焦'
   )
   // 窗口可能在 await 期间被销毁，复用前必须校验，避免访问已销毁窗口。
@@ -76,8 +76,8 @@ test('新建设置窗口必须消费 bringToFront，非显式入口不得强行�
   // 不能把新建的设置页越过用户当前正在使用的应用。
   assert.match(
     createSource,
-    /showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*bringToFront,\s*moveTop:\s*bringToFront,\s*raiseLevel:\s*bringToFront\s*\}\)/u,
-    '新建设置窗口必须按 bringToFront 决定是否聚焦与置前'
+    /if \(bringToFront\) \{[\s\S]*?bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*true[\s\S]*?\} else \{[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*false,\s*moveTop:\s*false,\s*raiseLevel:\s*false\s*\}\)/u,
+    '新建设置窗口必须按 bringToFront 决定是否安全置前'
   )
 })
 

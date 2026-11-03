@@ -66,7 +66,8 @@ test('设置页显式入口与复用已可见分支置前都必须打点', () =>
   const createSource = extractFunction(mainSource, 'async function createSettingsWindow(')
   const reuseIndex = createSource.indexOf("'settings-reuse-raise'")
   const raiseIndex = createSource.indexOf(
-    'showOwnWindowForInteraction(settingsWin, { raiseLevel: true })'
+    'bringSettingsWindowToFrontSafely(settingsWin, {',
+    reuseIndex
   )
   assert.ok(reuseIndex >= 0, '设置窗口复用已可见分支必须记录 settings-reuse-raise')
   assert.ok(raiseIndex >= 0, '设置窗口复用分支必须保留置前调用')

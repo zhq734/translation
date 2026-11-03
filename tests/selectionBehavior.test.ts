@@ -233,6 +233,10 @@ test('取词失败提示应按原因细分：空选区、超时与应用不支�
     resolveSelectionCaptureFailureMessage('permission', false, 'zh-CN'),
     tForTest('zh-CN', 'selection.captureFailure.permission')
   )
+  assert.equal(
+    resolveSelectionCaptureFailureMessage('api-disabled', false, 'zh-CN'),
+    tForTest('zh-CN', 'selection.captureFailure.apiDisabled')
+  )
 })
 
 /**

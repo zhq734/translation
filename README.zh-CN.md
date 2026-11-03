@@ -776,7 +776,7 @@ AI 翻译的 API Key 使用 `safeStorage` 加密后写入独立的 `ai-credentia
 
 ### 修复 macOS 划词服务
 
-macOS 上如果划词连续超时，通常是系统 `hiservices-xpcservice` 卡住。应用会在检测到连续超时后弹出提示，也可以随时从菜单栏/托盘选择"修复 macOS 划词服务…"手动触发。确认后应用会重启该 XPC 服务并重建划词监听，无需手动重启系统。
+macOS 上如果划词超时，通常是系统 `hiservices-xpcservice` 卡住。应用检测到一次明确的取词超时后会自动重启该 XPC 服务并重建划词监听，无需手动重启系统；也可以随时从菜单栏/托盘选择"修复 macOS 划词服务…"手动触发。
 
 ## 项目结构
 

@@ -1364,6 +1364,8 @@ export interface Api {
   resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
+  /** 通知主进程设置窗口收到了真实指针按下。 */
+  notifySettingsWindowPointerDown(): void
   /** 打开或聚焦独立文档翻译工作台。 */
   openDocumentWorkspace(): void
   /** 通过主进程文件选择器一次导入并校验多个本地文档。 */

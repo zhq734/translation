@@ -1,4 +1,4 @@
-import { LANGUAGES, langLabel } from '../../shared/langs'
+import { LANGUAGES, langLabel, localizedLanguages } from '../../shared/langs'
 import {
   isTranslationProviderAvailable,
   TRANSLATION_PROVIDERS,
@@ -361,8 +361,9 @@ function isSpeechPlaying(): boolean {
  * @author zhenghq
  */
 async function initializeSelectors(): Promise<void> {
-  const sourceOptions = [{ code: 'auto', label: t('popup.autoDetect') }, ...LANGUAGES]
-  const targetOptions = [{ code: 'auto', label: t('popup.autoBilingual') }, ...LANGUAGES]
+  const languages = localizedLanguages(localeRuntime.locale)
+  const sourceOptions = [{ code: 'auto', label: t('popup.autoDetect') }, ...languages]
+  const targetOptions = [{ code: 'auto', label: t('popup.autoBilingual') }, ...languages]
   for (const language of sourceOptions) sourceLangEl.add(new Option(language.label, language.code))
   for (const language of targetOptions) targetLangEl.add(new Option(language.label, language.code))
   const settings = await window.api.getSettings()

@@ -1226,7 +1226,7 @@ test('弹窗交还失败时不得执行整应用安全让出', () => {
   // 整应用安全让出仍仅供 OCR、阅读器与原生对话框等非弹窗场景使用。
   assert.match(
     source,
-    /const finishPopupWithoutAppYield\s*=\s*\(reason: string\): void => \{[\s\S]*?fallback\(\)/u,
+    /const finishPopupWithoutAppYield\s*=\s*\(\s*reason: string,[\s\S]*?fallback\(\)/u,
     '弹窗退化收尾必须只执行 fallback 隐藏弹窗自身'
   )
   assert.match(
@@ -1244,6 +1244,29 @@ test('弹窗交还失败时不得执行整应用安全让出', () => {
     /if \(keyWindowIsPopup\) \{\s*finishPopupWithoutAppYield\([\s\S]*?\} else \{\s*logFrontDiagnostic\([\s\S]*?yieldFrontmostApp\(fallback\)/u,
     '只有非弹窗路径才允许落入整应用安全让出'
   )
+})
+
+/**
+ * 校验弹窗交还失败时不得重复执行 fallback 收尾。
+ *
+ * `finishPopupWithoutAppYield()` 内部已经负责调用 fallback；调用方再次把它作为
+ * `afterRun` 传入会让隐藏、焦点释放等收尾动作执行两次，并可能引发窗口生命周期竞态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗退化收尾不得重复执行 fallback', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  const failedCalls = source.match(
+    /finishPopupWithoutAppYield\(`handback-failed[^`]*`(?:,\s*[^)]*)?\)/gu
+  ) ?? []
+
+  assert.equal(failedCalls.length, 2, '应覆盖缺失源应用与交还超时两条失败分支')
+  for (const call of failedCalls) {
+    assert.doesNotMatch(call, /,\s*fallback\)$/u,
+      '失败分支只能传入原因，fallback 必须由统一收尾函数内部执行一次')
+  }
 })
 
 /**
@@ -1282,8 +1305,13 @@ test('弹窗精确激活失败时应先按源进程激活并确认失活', () =>
   )
   assert.match(
     source,
-    /if \(restored\)[\s\S]*?finish\(true,\s*'popup-front-restored'\)[\s\S]*?finish\(false\)/u,
+    /\.then\(\(restored\)\s*=>\s*\{[\s\S]*?if \(restored\)[\s\S]*?finish\(true,\s*'popup-front-restored'\)[\s\S]*?finish\(false\)/u,
     '统一恢复成功后才允许按交还成功收尾，未确认成功时只收尾弹窗自身'
+  )
+  assert.match(
+    source,
+    /const finishPopupWithoutAppYield = \([\s\S]*?try \{\s*fallback\(\)[\s\S]*?\}\s*finally \{\s*if \(keyWindowIsPopup\) onFrontRecheckComplete\?\.\(false\)/u,
+    '弹窗退化收尾必须只执行 fallback 隐藏弹窗自身，并释放设置页焦点保护'
   )
   assert.doesNotMatch(
     source,
@@ -1691,5 +1719,123 @@ test('弹窗隐藏后复核必须复用带进程级兜底的恢复入口', () =>
     recheckSource,
     /void activateFrontmostSnapshot\(target\)/u,
     '弹窗延迟复核不得绕过进程级兜底直接重试 AX'
+  )
+})
+
+/**
+ * 校验弹窗隐藏后的前台复核必须先执行设置页焦点恢复回调。
+ *
+ * 真机日志显示 `popup-front-restored` 与 `popup-hide` 之间设置页可能被提升；
+ * 如果等到复核恢复源应用时仍保持不可聚焦，失败路径会让设置页永久无法聚焦，
+ * 成功路径也可能错过保护窗口。回调必须位于前台判断和源应用恢复之前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗隐藏后的前台复核完成时必须恢复设置页焦点候选资格', () => {
+  const source = readFileSync('src/main/macForeground.ts', 'utf8')
+  const popupSource = readFileSync('src/main/popup.ts', 'utf8')
+  const finishStart = source.indexOf("const finish = (handedBack: boolean")
+  const recheckEnd = source.indexOf('}, POST_HIDE_FRONT_RECHECK_DELAY_MS)', finishStart)
+  const finishSource = source.slice(finishStart, recheckEnd)
+  const recheckStart = finishSource.indexOf('if (keyWindowIsPopup) {\n        setTimeout')
+  const initialHide = finishSource.slice(0, recheckStart)
+  const recheck = finishSource.slice(recheckStart)
+  const runIndex = finishSource.indexOf('run()')
+  const callbackIndex = recheck.indexOf('onFrontRecheckComplete?.(')
+  const activeIndex = recheck.indexOf('isMacAppActiveByEvents()')
+
+  assert.ok(runIndex >= 0, '成功交还后必须隐藏弹窗')
+  assert.ok(recheckStart > runIndex, '延迟复核必须安排在真实隐藏之后')
+  assert.ok(activeIndex >= 0, '延迟复核必须判断本应用是否重新置前')
+  assert.doesNotMatch(
+    initialHide,
+    /onFrontRecheckComplete\?\.\(\)/u,
+    '首次隐藏后不得立即恢复设置页焦点，必须等待复核落定'
+  )
+  assert.match(
+    recheck,
+    /if \(!isMacAppActiveByEvents\(\)\) \{\s*onFrontRecheckComplete\?\.\(true\)\s*return/u,
+    '复核确认本应用未重新置前后才可恢复设置页焦点'
+  )
+  assert.match(
+    recheck,
+    /restoreFrontmostForPopup\(target\)[\s\S]*?\.finally\([\s\S]*?onFrontRecheckComplete\?\.\(!isMacAppActiveByEvents\(\)\)/u,
+    '复核发现本应用重新置前时必须等再次交还落定后再恢复设置页焦点'
+  )
+  assert.ok(callbackIndex > activeIndex, '恢复回调必须在复核判断完成后执行')
+  assert.match(popupSource, /handBackFrontmostThen\([\s\S]*?onFrontRecheckComplete/u,
+    '弹窗必须把设置页焦点恢复接线到前台复核完成回调')
+})
+
+/**
+ * 校验弹窗无需交还的提前返回路径也必须释放设置页焦点保护。
+ *
+ * 设置页焦点保护在 `hidePopup()` 入口就已挂起；若应用已经失活、窗口不是
+ * key window 或没有源应用记录时直接 `run()` 返回，关闭完成回调不会执行，
+ * 设置页会永久不可聚焦。所有同步提前返回路径都必须经统一收尾释放保护。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗无需交还的提前返回路径也必须释放设置页焦点保护', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  const earlyReturnSection = source.slice(
+    source.indexOf('const focused = BrowserWindow.getFocusedWindow()'),
+    source.indexOf('const target = pendingReturnApp')
+  )
+  const popupBranches = earlyReturnSection.match(
+    /if \(keyWindowIsPopup\)[\s\S]*?\n\s*\}/gu
+  ) ?? []
+
+  assert.ok(popupBranches.length >= 2, '应覆盖弹窗的提前返回分支')
+  for (const branch of popupBranches) {
+    assert.doesNotMatch(
+      branch,
+      /(?<!\w)run\(\)/u,
+      '弹窗提前返回路径不得裸调用 run()，否则会泄漏设置页焦点保护'
+    )
+  }
+  assert.match(
+    earlyReturnSection,
+    /finishPopupWithoutAppYield/u,
+    '弹窗提前返回必须复用统一退化收尾并释放焦点保护'
+  )
+})
+
+/**
+ * 校验弹窗关闭只释放自己的焦点租约，不得越过仍在进行的划词生命周期。
+ *
+ * 用户连续划词时，上一轮弹窗关闭可能晚于下一轮划词开始。关闭回调若直接恢复
+ * 设置页可聚焦性，macOS 会立即把它重新选为 key window 并顶到源应用之前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗关闭释放焦点后仍须尊重后续划词生命周期租约', () => {
+  const indexSource = readFileSync('src/main/index.ts', 'utf8')
+  const releaseSource = stripComments(
+    extractFunction(indexSource, 'function releaseSelectionInteraction(')
+  )
+  const recheckSource = stripComments(
+    extractFunction(
+      indexSource,
+      'function releaseSettingsWindowFocusLeaseAfterFrontRecheck('
+    )
+  )
+
+  assert.match(
+    recheckSource,
+    /const slot = restoreSettingsWindowFocusAfterPopupFrontRecheck[\s\S]*?if \(!slot \|\| slot\.token !== token\) return[\s\S]*?slot\.restore\(\)/u,
+    '弹窗关闭复核完成时必须释放关闭阶段取得的租约'
+  )
+  assert.match(
+    releaseSource,
+    /if \(!isPopupVisible\(\)\)[\s\S]*?releaseSelectionFocusLease\(\)/u,
+    '弹窗已经隐藏且交互收尾时才能释放划词生命周期租约'
+  )
+  assert.match(
+    indexSource,
+    /suspendSettingsWindowFocusForPopupHide\(\s*process\.platform,\s*settingsWin,\s*\{\s*appActive:\s*isMacAppActiveByEvents\(\)\s*\}\s*\)/u,
+    '划词生命周期与关闭阶段必须共用同一焦点租约实现'
   )
 })

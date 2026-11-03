@@ -4,6 +4,8 @@ import test from 'node:test'
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 const indexSource = readFileSync('src/main/index.ts', 'utf8')
+const preloadSource = readFileSync('src/preload/index.ts', 'utf8')
+const settingsRendererSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
 
 /**
  * 截取源码中指定函数的完整片段。
@@ -270,6 +272,121 @@ test('保护状态失效后点击可见设置页也不得走整应用关闭路�
   )
 })
 
+test('点击已可见设置页必须显式恢复焦点并释放划词租约', () => {
+  const pointerSource = extractFunction(indexSource, 'function handleSelectionPointerDown(')
+
+  // 后台收尾只释放租约、不恢复 setFocusable(true)，因此用户直接点击仍可见的
+  // 设置页就是显式恢复入口。该分支必须早于按下分类与外部点击关闭兜底，否则
+  // 设置页会保持不可聚焦，甚至被误判为弹窗外部点击。
+  const restoreIndex = pointerSource.indexOf(
+    'forceRestoreSettingsWindowFocus(process.platform, settingsWin)'
+  )
+  const classifyIndex = pointerSource.indexOf('classifySelectionPointerDown(')
+  const dismissIndex = pointerSource.indexOf('dismissPopupOnExternalPointerDown(point)')
+  assert.ok(restoreIndex >= 0, '点击已可见设置页必须恢复其可聚焦性')
+  assert.ok(classifyIndex > restoreIndex, '设置页显式恢复必须早于按下分类')
+  assert.ok(dismissIndex > restoreIndex, '设置页显式恢复必须早于外部点击关闭兜底')
+  assert.match(
+    pointerSource,
+    /primaryButton && canTreatVisibleSettingsWindowAsPointerTarget\(point\)[\s\S]*?forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)[\s\S]*?releaseSelectionFocusLease\(\)[\s\S]*?return 'ignore'/u,
+    '点击设置页必须恢复可聚焦性、释放租约并忽略本次按下'
+  )
+})
+
+test('后台设置页与划词位置重叠时不得按矩形误触发显式恢复', () => {
+  const pointerSource = stripComments(
+    extractFunction(indexSource, 'function handleSelectionPointerDown(')
+  )
+  const restoreBranchStart = pointerSource.indexOf(
+    'if (primaryButton && canTreatVisibleSettingsWindowAsPointerTarget(point))'
+  )
+  const restoreBranchEnd = pointerSource.indexOf('\n  }', restoreBranchStart)
+  assert.ok(restoreBranchStart >= 0 && restoreBranchEnd > restoreBranchStart,
+    '必须存在点击已可见设置页的显式恢复分支')
+  const restoreBranch = pointerSource.slice(restoreBranchStart, restoreBranchEnd)
+
+  // 设置页在后台仍可能可见，并与用户正在划词的 Chrome/IntelliJ 区域重叠。
+  // 仅按矩形命中会把真实外部划词误当成点击设置页，调用 setFocusable(true)
+  // 后 macOS 会立即把后台设置页提升到最前，表现为首次划词设置页闪现。
+  assert.match(
+    restoreBranch,
+    /canTreatVisibleSettingsWindowAsPointerTarget\(point\)/u,
+    '设置页显式恢复必须确认本次点击确实落在设置页，而不能只按后台矩形判断'
+  )
+  assert.doesNotMatch(
+    restoreBranch,
+    /if \(primaryButton && isPointInsideVisibleSettingsWindow\(point\)\)/u,
+    '裸矩形判断不得触发设置页显式恢复'
+  )
+})
+
+test('设置页真实命中判定必须受应用最前或顶层窗口校验保护', () => {
+  const helperSource = stripComments(
+    extractFunction(indexSource, 'function canTreatVisibleSettingsWindowAsPointerTarget(')
+  )
+
+  assert.match(
+    helperSource,
+    /isMacAppActiveByEvents\(\)/u,
+    '设置页点击判定必须读取应用激活事件状态'
+  )
+  assert.match(
+    helperSource,
+    /settingsWin\.isFocused\(\)/u,
+    '应用最前时仍需确认设置页持有焦点，避免后台矩形吞掉外部点击'
+  )
+  assert.match(
+    helperSource,
+    /isPointInsideVisibleSettingsWindow\(point\)/u,
+    '设置页命中判定必须保留可见矩形校验'
+  )
+})
+
+test('设置页真实 pointerdown 必须由设置窗口回执后恢复可聚焦性', () => {
+  // 后台设置页被 setFocusable(false) 后，主进程全局钩子无法可靠区分
+  // “矩形重叠的外部划词”和“真正点击设置页”。唯一可靠信号是事件确实送达
+  // 设置页 renderer，因此恢复动作必须走受 sender 校验的显式 IPC。
+  assert.match(
+    preloadSource,
+    /ipcRenderer\.send\('settings:pointerdown'\)/u,
+    'preload 必须提供设置页 pointerdown 回执通道'
+  )
+  assert.match(
+    settingsRendererSource,
+    /document\.addEventListener\('pointerdown',[\s\S]*?notifySettingsWindowPointerDown\(\)/u,
+    '设置页 renderer 必须在真实 pointerdown 时通知主进程'
+  )
+
+  const handlerStart = indexSource.indexOf("ipcMain.on('settings:pointerdown'")
+  assert.ok(handlerStart >= 0, '主进程必须注册 settings:pointerdown IPC')
+  const handlerEnd = indexSource.indexOf("ipcMain.on('settings:open'", handlerStart)
+  assert.ok(handlerEnd > handlerStart, 'settings:pointerdown 处理器必须位于 settings:open 之前')
+  const handlerSource = indexSource.slice(handlerStart, handlerEnd)
+  assert.match(handlerSource, /isSettingsWindowSender\(event\.sender\)/u,
+    '设置页 pointerdown 回执必须校验发送方窗口')
+  assert.match(
+    handlerSource,
+    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)[\s\S]*?releaseSelectionFocusLease\(\)/u,
+    '设置页真实 pointerdown 必须恢复焦点并释放划词租约'
+  )
+})
+
+test('设置窗口 focus 只有翻译弹窗可见时才开启弹窗失焦保护', () => {
+  const createSource = extractFunction(indexSource, 'async function createSettingsWindow(')
+  const focusIndex = createSource.indexOf("settingsWin.on('focus'")
+  const blurIndex = createSource.indexOf("settingsWin.on('blur'", focusIndex)
+  assert.ok(focusIndex >= 0 && blurIndex > focusIndex, '必须监听设置窗口 focus 与 blur')
+  const focusBlock = createSource.slice(focusIndex, blurIndex)
+
+  // 后台设置页可能因系统窗口重排短暂收到 focus。若此时翻译弹窗不可见，
+  // 无条件开启 guard 会污染全局按下判定，让设置页矩形继续吞掉外部划词。
+  assert.match(
+    focusBlock,
+    /if \(isPopupVisible\(\)\)[\s\S]*?beginPopupSettingsOpenGuard\(\)/u,
+    '设置窗口 focus 必须仅在翻译弹窗可见时开启失焦保护'
+  )
+})
+
 test('设置窗口只保留最小焦点挂起机制，复杂补偿链必须删除', () => {
   const code = stripComments(indexSource)
 
@@ -283,6 +400,59 @@ test('设置窗口只保留最小焦点挂起机制，复杂补偿链必须删�
   ]) {
     assert.ok(!code.includes(removed), `index.ts 不应再包含 ${removed}`)
   }
+})
+
+test('设置页失焦必须立即撤销后台 key window 候选资格，且仅由显式入口恢复', () => {
+  const createSource = stripComments(
+    extractFunction(indexSource, 'async function createSettingsWindow(')
+  )
+  const blurIndex = createSource.indexOf("settingsWin.on('blur'")
+  const hideIndex = createSource.indexOf("settingsWin.on('hide'", blurIndex)
+  const closedIndex = createSource.indexOf("settingsWin.on('closed'", hideIndex)
+  assert.ok(blurIndex >= 0 && hideIndex > blurIndex && closedIndex > hideIndex,
+    '设置窗口必须保留 blur、hide 与 closed 生命周期监听')
+
+  const blurBlock = createSource.slice(blurIndex, hideIndex)
+  const suspendIndex = blurBlock.indexOf('suspendSettingsWindowFocusAfterSettingsBlur()')
+  const lowerIndex = blurBlock.indexOf('lowerSettingsPanelRaiseLevel()')
+  assert.ok(suspendIndex >= 0, '设置页失焦时必须取得后台焦点租约')
+  assert.ok(lowerIndex > suspendIndex,
+    '必须先撤销 key window 候选资格，再写窗口层级，避免失焦事件本身触发窗口重排')
+
+  const suspendSource = stripComments(
+    extractFunction(indexSource, 'function suspendSettingsWindowFocusAfterSettingsBlur(')
+  )
+  assert.match(
+    suspendSource,
+    /suspendSettingsWindowFocusForPopupHide\([\s\S]*?process\.platform,[\s\S]*?settingsWin,[\s\S]*?appActive:\s*isMacAppActiveByEvents\(\)[\s\S]*?source:\s*'window-blur'/u,
+    '真实 blur 来源必须允许在 did-resign-active 已先到达时仍撤销设置页候选资格'
+  )
+
+  const hideBlock = createSource.slice(hideIndex, closedIndex)
+  const closedBlock = createSource.slice(closedIndex)
+  assert.match(hideBlock, /releaseSettingsWindowFocusAfterSettingsBlur\(\)/u,
+    '设置页隐藏后必须释放后台失焦租约引用')
+  assert.match(closedBlock, /releaseSettingsWindowFocusAfterSettingsBlur\(\)/u,
+    '设置页销毁后必须释放后台失焦租约引用')
+
+  const bringSource = stripComments(
+    extractFunction(indexSource, 'function bringSettingsWindowToFrontSafely(')
+  )
+  assert.match(
+    bringSource,
+    /forceRestoreSettingsWindowFocus\(process\.platform,\s*win\)[\s\S]*?releaseSettingsWindowFocusAfterSettingsBlur\(\)/u,
+    '显式置前恢复可聚焦性后必须清除后台失焦租约'
+  )
+
+  const pointerHandlerStart = indexSource.indexOf("ipcMain.on('settings:pointerdown'")
+  const pointerHandlerEnd = indexSource.indexOf("ipcMain.on('settings:open'", pointerHandlerStart)
+  assert.ok(pointerHandlerStart >= 0 && pointerHandlerEnd > pointerHandlerStart,
+    '必须保留设置页真实 pointerdown 回执入口')
+  assert.match(
+    indexSource.slice(pointerHandlerStart, pointerHandlerEnd),
+    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)[\s\S]*?releaseSettingsWindowFocusAfterSettingsBlur\(\)/u,
+    '只有真实设置页 pointerdown 才能清除后台失焦租约并恢复输入能力'
+  )
 })
 
 test('从翻译弹窗打开网页阅读器时必须只隐藏弹窗自身', () => {
@@ -473,7 +643,7 @@ test('启动自动打开与 Dock activate 都必须把设置页置前', () => {
   )
   assert.doesNotMatch(
     activateSource,
-    /explicit/u,
+    /settingsWindowExplicitlyOpened/u,
     '内部 activate 不应再依赖已删除的显式打开标记'
   )
 })

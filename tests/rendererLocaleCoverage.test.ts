@@ -86,3 +86,23 @@ test('语言切换处理器应保留各入口的用户状态', () => {
   assert.match(webReader, /targetValue/u)
   assert.match(webReader, /populateLanguages\(currentSettings\)/u)
 })
+
+test('翻译弹窗首次初始化语言下拉时必须使用当前界面语言', () => {
+  const popup = readRenderer('src/renderer/src/popup.ts')
+  const initializeStart = popup.indexOf('async function initializeSelectors')
+  const initializeEnd = popup.indexOf('/**', initializeStart + 1)
+  assert.ok(initializeStart >= 0, '未找到翻译弹窗初始化函数')
+  assert.ok(initializeEnd > initializeStart, '未找到翻译弹窗初始化函数结束位置')
+  const initializeSource = popup.slice(initializeStart, initializeEnd)
+
+  assert.match(
+    initializeSource,
+    /localizedLanguages\(localeRuntime\.locale\)/u,
+    '首次初始化必须按当前界面语言生成本地化语言名称'
+  )
+  assert.doesNotMatch(
+    initializeSource,
+    /\.\.\.LANGUAGES/u,
+    '首次初始化不能直接展开英文兜底语言列表'
+  )
+})

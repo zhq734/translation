@@ -5,7 +5,7 @@ export type CaptureDiagnosticEntry = 'button' | 'hotkey' | 'auto'
 export type CaptureDiagnosticLevel = 'native-read' | 'copy-polled' | 'copy-late' | 'failed'
 
 /** 取词失败原因枚举，与既有 SelectionFailureReason 保持一致。 */
-export type CaptureDiagnosticReason = 'empty' | 'timeout' | 'unsupported' | 'permission' | 'clipboard-locked' | 'unknown'
+export type CaptureDiagnosticReason = 'empty' | 'timeout' | 'unsupported' | 'permission' | 'api-disabled' | 'clipboard-locked' | 'unknown'
 
 /** 前台应用标识：macOS bundleId、Windows 进程名或 unknown。 */
 export type CaptureDiagnosticApp = string
@@ -99,6 +99,7 @@ const VALID_REASONS: readonly CaptureDiagnosticReason[] = [
   'timeout',
   'unsupported',
   'permission',
+  'api-disabled',
   'clipboard-locked',
   'unknown'
 ]

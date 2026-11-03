@@ -51,6 +51,34 @@ test('helper 输出协议应兼容现有 parseNativeSelectionReadOutput', () => 
   })
   assert.deepEqual(parseNativeSelectionReadOutput('EMPTY'), { status: 'empty', text: '' })
   assert.deepEqual(parseNativeSelectionReadOutput('UNKNOWN'), { status: 'unknown', text: '' })
+  assert.deepEqual(parseNativeSelectionReadOutput('UNKNOWN reason=api-disabled'), {
+    status: 'unknown',
+    text: '',
+    reason: 'api-disabled'
+  })
+})
+
+/**
+ * 校验 helper 在 AX 返回 kAXErrorAPIDisabled 时输出固定原因，而不是折叠成普通 UNKNOWN。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('helper 必须把 AX APIDisabled 输出为 api-disabled', () => {
+  const source = readHelperSource()
+  const mainBody = source.slice(source.indexOf('int main'))
+
+  assert.match(source, /kAXErrorAPIDisabled/u, '必须显式判断 -25211 对应的 APIDisabled 错误')
+  assert.match(source, /UNKNOWN reason=api-disabled/u, '失败输出必须携带固定原因')
+  assert.match(
+    mainBody,
+    /CopySelectedTextFromWindow\([^;]*&apiDisabled/u,
+    '窗口读取必须把 APIDisabled 状态透传给入口'
+  )
+  assert.match(
+    mainBody,
+    /if \(apiDisabled\)[\s\S]*?UNKNOWN reason=api-disabled/u,
+    '窗口读取失败后必须优先输出 APIDisabled 原因，而不是继续折叠为 UNKNOWN'
+  )
 })
 
 /**
@@ -85,13 +113,11 @@ test('helper 应按序执行三级读取且不引用 System Events', () => {
 
   // 校验 main 中三级读取的调用顺序（函数定义顺序与注释提及不参与判定）。
   const mainBody = source.slice(source.indexOf('int main'))
-  const selectedTextAt = mainBody.indexOf('CopyStringAttribute(focusedElement, kAXSelectedTextAttribute)')
-  const markerRangeAt = mainBody.indexOf('CopySelectedTextViaMarkerRange(focusedElement)')
+  const focusedReadAt = mainBody.indexOf('CopySelectedTextFromAncestry(focusedElement')
   const positionAt = source.indexOf('AXUIElementCopyElementAtPosition')
-  assert.ok(selectedTextAt >= 0 && markerRangeAt > selectedTextAt,
-    'AXSelectedTextMarkerRange 读取应位于 AXSelectedText 之后')
-  assert.ok(positionAt > markerRangeAt,
-    '鼠标位置元素兜底应位于 marker range 之后')
+  assert.ok(focusedReadAt >= 0, '系统级焦点兜底应复用祖先链读取')
+  assert.ok(positionAt > focusedReadAt,
+    '鼠标位置元素兜底应位于系统级焦点读取之后')
 
   // 鼠标位置兜底最多上溯 4 层祖先。
   assert.match(source, /4/u)
@@ -99,6 +125,7 @@ test('helper 应按序执行三级读取且不引用 System Events', () => {
   // 直读只依赖 Accessibility，代码中不得出现 System Events 引用（注释中的说明除外）。
   const codeOnly = source.split('\n').filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//') && !line.trim().startsWith('/*')).join('\n')
   assert.ok(!/System Events/u.test(codeOnly), 'helper 代码不得引用 System Events')
+})
 
 /**
  * 校验 CopySelectedTextFromAncestry 在祖先链每一层都保留 marker range 回退，
@@ -129,6 +156,134 @@ test('祖先链读取的每一层都应保留 AXSelectedTextMarkerRange 回退',
   assert.match(ancestryBody, /kAXParentAttribute/u)
   assert.match(ancestryBody, /break;/u)
 })
+
+/**
+ * 校验 Safari/WebKit 的选中文字位于 focused element 的祖先节点时，
+ * 窗口级与系统级读取都必须沿完整祖先链查找，而不是只检查当前元素。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('焦点元素读取必须沿完整祖先链查找选区', () => {
+  const source = readHelperSource()
+  const windowBody = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+  const mainBody = source.slice(source.indexOf('int main'))
+
+  assert.ok(
+    (windowBody.match(/CopySelectedTextFromAncestry\(\(AXUIElementRef\)focusedValue, kMaxAncestorLevels\)/gu) ?? []).length >= 2,
+    '窗口级 application/window focused element 都必须使用完整祖先链'
+  )
+  assert.match(
+    mainBody,
+    /CopySelectedTextFromAncestry\(focusedElement, kMaxAncestorLevels\)/u,
+    '系统级 focused element 兜底必须使用完整祖先链'
+  )
+  assert.doesNotMatch(windowBody, /CopySelectedTextFromAncestry\([^;]+, 1\)/u,
+    '窗口级读取不得退化为仅检查当前元素')
+})
+
+/**
+ * 校验只暴露 AXSelectedTextRange 的 Safari/WebKit 元素可通过
+ * AXStringForRange 参数化属性读取选区，作为 marker range 之后的兼容回退。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('祖先链读取应支持 AXSelectedTextRange 与 AXStringForRange 回退', () => {
+  const source = readHelperSource()
+  const rangeBody = extractFunction(source, 'static NSString *CopySelectedTextViaSelectedRange')
+  const ancestryBody = extractFunction(source, 'static NSString *CopySelectedTextFromAncestry')
+
+  assert.match(rangeBody, /AXSelectedTextRange/u, '必须读取 AXSelectedTextRange')
+  assert.match(rangeBody, /AXStringForRange/u, '必须通过 AXStringForRange 读取选区文字')
+  assert.match(rangeBody, /kAXValueCFRangeType/u, '必须校验 AXValue 为 CFRange 类型')
+  assert.match(rangeBody, /range\.length\s*<=\s*0/u, '空选区不得请求文本')
+  assert.match(
+    ancestryBody,
+    /CopySelectedTextViaMarkerRange\(current\)[\s\S]*?CopySelectedTextViaSelectedRange\(current\)/u,
+    'AXSelectedTextRange 回退必须位于 marker range 之后'
+  )
+})
+
+/**
+ * 校验 Chromium 增强优先请求 AXManualAccessibility，只有该属性被拒绝时
+ * 才请求 AXEnhancedUserInterface。Electron 对两个属性都会进入同一套
+ * 2 秒防抖计数，无条件同时设置会重复累积请求并反复重置定时器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Chromium 增强应优先 manual 且仅在拒绝时回退 enhanced', () => {
+  const source = readHelperSource()
+  const enhanceBody = extractFunction(source, 'static AXEnhancementResult EnableEnhancedUserInterface')
+  const touchBody = extractFunction(source, 'static void TouchDescendantElements')
+
+  assert.match(enhanceBody, /AXManualAccessibility/u, '必须设置 AXManualAccessibility')
+  assert.match(enhanceBody, /AXEnhancedUserInterface/u, '必须设置 AXEnhancedUserInterface')
+  const manualAt = enhanceBody.indexOf('AXManualAccessibility')
+  const manualFallbackAt = enhanceBody.indexOf('if (result.manualError', manualAt)
+  const enhancedAt = enhanceBody.indexOf('AXEnhancedUserInterface', manualAt)
+  assert.ok(manualFallbackAt > manualAt && enhancedAt > manualFallbackAt,
+    'manual 成功时必须跳过 enhanced，只有拒绝时才进入回退分支')
+  assert.match(enhanceBody, /TouchDescendantElements/u, '设置属性后必须触发目标窗口 AX 树构建')
+  assert.match(touchBody, /kAXChildrenAttribute/u, 'touch 必须读取 AX children')
+  assert.match(touchBody, /kMaxAxTouchDepth|maxDepth/u, 'touch 必须有深度上限')
+  assert.match(touchBody, /kMaxAxTouchNodeCount|visitedCount/u, 'touch 必须有节点数量上限')
+})
+
+/**
+ * 校验增强模式输出稳定的 mode/reason 原因码，避免把权限不足、目标不可访问
+ * 与 Chromium 拒绝属性混为同一个 REJECTED。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Chromium 增强应输出固定 mode 与 reason 诊断', () => {
+  const source = readHelperSource()
+  const enhanceBody = extractFunction(source, 'static AXEnhancementResult EnableEnhancedUserInterface')
+  const mainBody = source.slice(source.indexOf('int main'))
+
+  assert.match(source, /AXEnhancementResult/u, '增强函数必须返回结构化结果')
+  assert.match(enhanceBody, /AXIsProcessTrusted/u, '增强函数必须显式检查 Accessibility 权限')
+  assert.match(enhanceBody, /applicationAvailable/u, '必须单独记录应用 AX 元素是否可用')
+  assert.match(enhanceBody, /manualError|enhancedError/u, '必须保留两个属性的 AXError')
+  assert.match(mainBody, /ACCEPTED mode=manual/u, 'manual 成功必须输出固定 mode')
+  assert.match(mainBody, /ACCEPTED mode=enhanced/u, 'enhanced 成功必须输出固定 mode')
+  assert.match(mainBody, /REJECTED reason=/u, '失败必须输出固定 reason')
+  assert.match(mainBody, /REJECTED reason=permission/u, '权限失败必须使用固定 permission 原因码')
+  assert.match(mainBody, /manualError/u, 'manual 拒绝必须保留数字错误码')
+  assert.match(mainBody, /enhancedError/u, 'enhanced 拒绝必须保留数字错误码')
+})
+
+/**
+ * 校验窗口定位在 AXWindows 为空或未命中时，会依次尝试 focused/main window，
+ * 且回退窗口仍由编号、bounds 或标题指纹确认属于目标窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口定位应支持 AXWindows 为空时的 focused/main 受控回退', () => {
+  const source = readHelperSource()
+  const body = extractFunction(source, 'static AXUIElementRef CopyWindowByContext')
+
+  assert.match(body, /kAXFocusedWindowAttribute/u, 'AXWindows 未命中时必须尝试 focused window')
+  assert.match(body, /kAXMainWindowAttribute/u, 'focused window 未命中时必须尝试 main window')
+  assert.match(source, /WindowMatchesContext/u, 'focused/main window 必须复用目标窗口校验')
+  assert.match(body, /CopyAXWindowsAttribute|kAXWindowsAttribute/u, '仍必须优先读取 AXWindows')
+  assert.match(source, /windowCount/u, '回退诊断必须保留窗口数量语义')
+})
+
+/**
+ * 校验窗口级读取在获取焦点元素前会触发目标窗口的 AX 后代树构建，
+ * 以覆盖 Chromium、Word、Excel 等按需生成辅助功能树的应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('窗口级 AX 读取应先在目标窗口上触发后代树构建', () => {
+  const source = readHelperSource()
+  const windowBody = extractFunction(source, 'static NSString *CopySelectedTextFromWindow')
+
+  assert.match(windowBody, /TouchDescendantElements\(window/u,
+    '必须在读取 focused element 前 touch 目标窗口')
+  const touchAt = windowBody.indexOf('TouchDescendantElements(window')
+  const focusedReadAt = windowBody.indexOf('kAXFocusedUIElementAttribute')
+  assert.ok(touchAt >= 0 && focusedReadAt > touchAt,
+    'touch 必须发生在窗口级 focused element 读取之前')
 })
 
 /**
@@ -259,7 +414,7 @@ test('无标题指纹时 bounds 匹配必须要求唯一候选', () => {
 
   assert.match(body, /boundsCandidateCount/u, '必须统计 bounds 命中的候选数量')
   assert.match(body, /boundsCandidateCount\s*==\s*1/u, '只有唯一 bounds 候选时才允许返回窗口')
-  assert.match(body, /boundsCandidateCount\s*>\s*1/u, '多个 bounds 候选必须拒绝匹配')
+  assert.match(body, /boundsCandidateCount\s*==\s*1/u, '只有唯一 bounds 候选时才允许返回窗口')
   assert.match(body, /if \(boundsMatched\) CFRelease\(boundsMatched\);\s*boundsMatched = \(AXUIElementRef\)CFRetain\(window\);/u,
     '每个新的 bounds 候选都必须接管并释放上一个候选，避免长循环泄漏')
 })

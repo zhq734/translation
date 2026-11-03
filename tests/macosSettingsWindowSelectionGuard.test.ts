@@ -80,22 +80,27 @@ test('内部激活租约与延迟释放补偿必须整体删除', () => {
   }
 })
 
-test('取词流程不得再挂起设置窗口或阅读器焦点', () => {
+test('取词流程必须通过统一租约保护设置窗口，且不得直接切换可聚焦性', () => {
   const translateSource = stripComments(
     extractFunction(mainSource, 'async function translateSelectionButton(')
   )
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
 
-  assert.doesNotMatch(translateSource, /suspendSettingsWindowFocusForSelection/u,
-    '按钮取词不得再挂起设置页焦点')
-  assert.doesNotMatch(translateSource, /setFocusable\(/u,
-    '按钮取词不得再直接切换窗口可聚焦性')
+  assert.match(scheduleSource, /beginSelectionFocusLease\(\)/u,
+    '划词开始时必须取得设置页生命周期焦点租约')
+  assert.match(translateSource, /beginSelectionFocusLease\(\)/u,
+    '按钮取词入口必须持有同一设置页焦点租约')
+  assert.doesNotMatch(`${scheduleSource}\n${translateSource}`, /\.setFocusable\(/u,
+    '业务入口不得直接切换设置页可聚焦性')
   assert.doesNotMatch(translateSource, /renewInternalActivationLease/u)
   assert.doesNotMatch(translateSource, /waitForFrontmostAppReturn/u)
   assert.doesNotMatch(translateSource, /restoreFrontmostAppForCapture/u)
   assert.doesNotMatch(translateSource, /pendingPopupReleaseToken/u)
 })
 
-test('快捷键自动取词与自动模式划词也不得挂起窗口焦点', () => {
+test('快捷键自动取词与自动模式划词必须取得设置页生命周期焦点租约', () => {
   const hotkeySource = stripComments(
     extractFunction(mainSource, 'function onHotkey(): void {')
   )
@@ -103,11 +108,72 @@ test('快捷键自动取词与自动模式划词也不得挂起窗口焦点', ()
     extractFunction(mainSource, 'function scheduleSelectionAction(')
   )
 
-  // 阅读器与设置页都已是 nonactivating panel，不再需要任何焦点挂起补偿。
-  assert.doesNotMatch(hotkeySource, /suspendSettingsWindowFocusForSelection|setFocusable\(/u,
-    '快捷键取词不得挂起自有窗口焦点')
-  assert.doesNotMatch(scheduleSource, /suspendSettingsWindowFocusForSelection|setFocusable\(/u,
-    '自动模式划词不得挂起自有窗口焦点')
+  // 设置页仍是普通 BrowserWindow，弹窗隐藏/重新选 key window 时系统会把它
+  // 提升到前台；快捷键与自动模式都必须覆盖完整划词生命周期。
+  assert.match(hotkeySource, /beginSelectionFocusLease\(\)/u,
+    '快捷键取词必须取得设置页生命周期焦点租约')
+  assert.match(scheduleSource, /beginSelectionFocusLease\(\)/u,
+    '自动模式划词必须取得设置页生命周期焦点租约')
+  assert.doesNotMatch(`${hotkeySource}\n${scheduleSource}`, /\.setFocusable\(/u,
+    '取词入口不得直接切换设置页可聚焦性')
+})
+
+test('首次划词必须为从未失焦的后台设置页补做焦点保护', () => {
+  const beginSource = stripComments(
+    extractFunction(mainSource, 'function beginSelectionFocusLease(): void {')
+  )
+
+  assert.match(
+    beginSource,
+    /suspendSettingsWindowFocusForPopupHide\([\s\S]*?process\.platform,[\s\S]*?settingsWin,[\s\S]*?appActive:\s*isMacAppActiveByEvents\(\)[\s\S]*?source:\s*'selection'/u,
+    '首次划词必须使用 selection 来源，为可见但从未失焦的后台设置页补做保护'
+  )
+})
+
+test('划词租约必须覆盖两次划词之间，且弹窗可见时不得提前恢复', () => {
+  const scheduleSource = stripComments(
+    extractFunction(mainSource, 'function scheduleSelectionAction(')
+  )
+  const releaseSource = stripComments(
+    extractFunction(mainSource, 'function releaseSelectionInteraction(')
+  )
+
+  const leaseIndex = scheduleSource.indexOf('beginSelectionFocusLease()')
+  const invalidateIndex = scheduleSource.indexOf('invalidateSelectionFlowWithFocusCleanup()')
+  const showButtonIndex = scheduleSource.indexOf('showSelectionButton(anchor)')
+  const autoIndex = scheduleSource.indexOf('selectionInteraction.beginTranslation()')
+  assert.ok(leaseIndex >= 0, '划词开始必须取得焦点租约')
+  assert.ok(leaseIndex < invalidateIndex, '焦点保护必须先于旧流程失效和窗口动作')
+  assert.ok(leaseIndex < showButtonIndex, '按钮显示前必须已取得焦点保护')
+  assert.ok(leaseIndex < autoIndex, '自动取词开始前必须已取得焦点保护')
+
+  assert.match(releaseSource, /isPopupVisible\(\)/u,
+    '交互 token 释放时必须检查弹窗是否仍可见')
+  assert.match(releaseSource, /releaseSelectionFocusLease\(\)/u,
+    '弹窗不可见且没有新交互时必须释放划词租约')
+  const popupGuardIndex = releaseSource.indexOf('isPopupVisible()')
+  const leaseReleaseIndex = releaseSource.indexOf('releaseSelectionFocusLease()')
+  assert.ok(popupGuardIndex >= 0 && leaseReleaseIndex > popupGuardIndex,
+    '弹窗仍可见时不得提前释放划词焦点租约')
+})
+
+test('显式打开设置页不得在异步建窗前提前恢复焦点租约', () => {
+  const openSource = stripComments(
+    extractFunction(mainSource, 'async function openSettings(')
+  )
+  const restoreIndex = openSource.indexOf('forceRestoreSettingsWindowFocus(')
+  const createIndex = openSource.indexOf('createSettingsWindow(')
+
+  // 真机日志显示启动首开会在 createSettingsWindow() 的 ready-to-show、Dock 刷新与
+  // 事件循环让出期间继续等待。若在 await 之前恢复可聚焦性，用户此时切换应用并
+  // 划词，macOS 会把后台设置页重新选为 key window，表现为首次划词设置页闪现。
+  assert.ok(createIndex >= 0, 'openSettings() 必须继续创建或复用设置窗口')
+  assert.ok(
+    restoreIndex < 0 || restoreIndex > createIndex,
+    '恢复可聚焦性必须下沉到窗口确实准备置前的分支，不得在建窗前执行'
+  )
+  assert.match(openSource, /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
+    'openSettings() 必须把显式置前意图透传给窗口创建入口')
 })
 
 test('快捷键延迟取词必须在启动旧流程前校验交互 token', () => {
@@ -251,15 +317,18 @@ test('设置窗口创建与复用路径不得激活整个应用或恢复焦点�
   assert.match(createSource, /showOwnWindowForInteraction\(/u, '设置窗口必须走统一窗口级置前入口')
 })
 
-test('Dock 激活路径不得依赖焦点恢复入口', () => {
+test('Dock 激活路径不得为迟到 activate 恢复后台设置页可聚焦性', () => {
   const activateSource = stripComments(
     extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
   )
 
-  // Dock 是显式用户入口，只需复用并置前已有阅读器或打开设置页；焦点挂起机制
-  // 删除后，路径中不得再残留任何恢复调用，避免继续触发 app.hide() 类回归。
-  assert.doesNotMatch(activateSource, /resumeSettingsWindowFocusAfterSelection|setFocusable\(/u,
-    'Dock 激活路径不得依赖已删除的焦点恢复机制')
+  // macOS 会在切换应用、划词按钮和弹窗收尾时派发迟到 activate，无法仅凭
+  // activate 可靠区分真实 Dock 点击。后台已可见设置页收到这种事件时只能结束
+  // 焦点租约引用，不得 setFocusable(true)，否则系统会立即把设置页提到最前。
+  assert.doesNotMatch(activateSource, /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)/u,
+    '迟到 activate 不得恢复后台设置页可聚焦性')
+  assert.doesNotMatch(activateSource, /resumeSettingsWindowFocusAfterSelection|\.setFocusable\(/u,
+    'Dock 激活路径不得残留旧焦点恢复机制或直接切换窗口能力')
   // 已可见且未最小化的阅读器只走 focusExistingWindow()：即便内部 activate 被
   // 误放行，也只返回 true、不重新 show()+focus()，不会把后台阅读器顶到最前。
   assert.match(activateSource, /webReader\?\.focusExistingWindow\(\)/u,
@@ -268,7 +337,7 @@ test('Dock 激活路径不得依赖焦点恢复入口', () => {
     '没有阅读器时 Dock 激活必须置前设置页')
 })
 
-test('activate 复用已可见且未最小化的设置页时不得再次强制置前', () => {
+test('activate 复用已可见且未最小化的设置页时只释放租约而不恢复焦点', () => {
   const activateSource = stripComments(
     extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
   )
@@ -285,6 +354,19 @@ test('activate 复用已可见且未最小化的设置页时不得再次强制�
     visibleGuardIndex < openSettingsIndex,
     '已可见设置页短路必须发生在 openSettings() 置前之前'
   )
+  const visibleBranchStart = activateSource.indexOf('if (settingsWin && !settingsWin.isDestroyed()')
+  const visibleBranchEnd = activateSource.indexOf('void openSettings(', visibleBranchStart)
+  const visibleBranchSource = activateSource.slice(visibleBranchStart, visibleBranchEnd)
+  assert.doesNotMatch(
+    visibleBranchSource,
+    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)/u,
+    '已可见设置页复用分支不得把后台窗口重新变成 key window 候选'
+  )
+  assert.match(
+    visibleBranchSource,
+    /releaseSelectionFocusLease\(\)/u,
+    '显式 Dock 入口恢复设置页后必须释放后台划词租约'
+  )
 })
 
 test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选资格', () => {
@@ -295,12 +377,12 @@ test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选�
     extractFunction(popupSource, 'export function hidePopup(')
   )
   const hideIndex = hideSource.indexOf('win?.hide()')
-  const closeStartIndex = hideSource.indexOf('onPopupCloseStartCallback?.()')
-  const closeEndIndex = hideSource.indexOf('onPopupCloseEndCallback?.()', hideIndex)
+  const closeStartIndex = hideSource.indexOf('onPopupCloseStartCallback?.(closeToken)')
+  const closeEndIndex = hideSource.indexOf('onPopupCloseEndCallback?.(closeToken)', hideIndex)
 
-  assert.match(popupSource, /onPopupCloseStart\?:\s*\(\)\s*=>\s*void/u,
+  assert.match(popupSource, /onPopupCloseStart\?:\s*\(token:\s*number\)\s*=>\s*void/u,
     '弹窗创建入口必须接收关闭开始回调')
-  assert.match(popupSource, /onPopupCloseEnd\?:\s*\(\)\s*=>\s*void/u,
+  assert.match(popupSource, /onPopupCloseEnd\?:\s*\(token:\s*number\)\s*=>\s*void/u,
     '弹窗创建入口必须接收关闭结束回调')
   assert.match(createSource, /onPopupCloseStartCallback = options\.onPopupCloseStart \?\? null/u,
     '关闭开始回调必须保存到模块状态')
@@ -311,12 +393,78 @@ test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选�
   assert.ok(closeEndIndex > hideIndex, '焦点恢复必须晚于 win.hide()')
   assert.match(
     mainSource,
-    /createPopup\(\s*\{[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd\s*\}\s*\)/u,
+    /createPopup\(\s*\{[\s\S]*?onPopupCloseStart:\s*handlePopupCloseStart,[\s\S]*?onPopupCloseEndBeforeHideRestore:\s*finishPopupInternalWindowTransitionBeforeFocusRestore,[\s\S]*?onFrontRecheckComplete:\s*releaseSettingsWindowFocusLeaseAfterFrontRecheck,[\s\S]*?onPopupCloseEnd:\s*handlePopupCloseEnd,[\s\S]*?onPopupCloseCancelled:\s*handlePopupCloseCancelled\s*\}\s*\)/u,
     '主进程必须把弹窗隐藏前后焦点保护注入翻译弹窗'
   )
   assert.match(
     mainSource,
-    /suspendSettingsWindowFocusForPopupHide\(\s*process\.platform,\s*settingsWin\s*\)/u,
+    /suspendSettingsWindowFocusForPopupHide\(\s*process\.platform,\s*settingsWin,\s*\{\s*appActive:\s*isMacAppActiveByEvents\(\)\s*\}\s*\)/u,
     '主进程必须仅在 macOS 可见设置页上启用焦点保护'
   )
+})
+
+/**
+ * 校验设置页可聚焦性必须等到弹窗隐藏后的前台复核收尾才恢复。
+ *
+ * 真机日志显示源应用已恢复后，`popup-hide` 前仍可能短暂出现设置页；
+ * 若在 `win.hide()` 后立即恢复其 key window 候选资格，本应用再次置前时
+ * 会把设置页重新提升到翻译界面之前。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗隐藏后的设置页可聚焦性必须延迟到前台复核收尾恢复', () => {
+  const popupCreateSource = stripComments(
+    extractFunction(popupSource, 'export function createPopup(')
+  )
+  const hideSource = stripComments(
+    extractFunction(popupSource, 'export function hidePopup(')
+  )
+  const mainSourceStripped = stripComments(mainSource)
+  const beforeHideRestoreIndex = hideSource.indexOf(
+    'onPopupCloseEndBeforeHideRestoreCallback?.(closeToken)',
+    hideSource.indexOf('win?.hide()')
+  )
+  const fullEndRestoreIndex = hideSource.indexOf(
+    'onPopupCloseEndCallback?.(closeToken)',
+    beforeHideRestoreIndex
+  )
+
+  assert.match(popupSource, /onPopupCloseEndBeforeHideRestore\?:\s*\(token:\s*number\)\s*=>\s*void/u)
+  assert.match(popupSource, /onFrontRecheckComplete\?:\s*\(token:\s*number,\s*restored:\s*boolean\)\s*=>\s*void/u)
+  assert.match(popupCreateSource, /onPopupCloseEndBeforeHideRestoreCallback = options/u)
+  assert.match(popupCreateSource, /onFrontRecheckCompleteCallback = options/u)
+  assert.ok(beforeHideRestoreIndex > hideSource.indexOf('win?.hide()'))
+  assert.ok(fullEndRestoreIndex > beforeHideRestoreIndex)
+  assert.match(mainSourceStripped, /onPopupCloseEndBeforeHideRestore:/u)
+  assert.match(mainSourceStripped, /onFrontRecheckComplete:/u)
+  assert.match(
+    mainSourceStripped,
+    /function releaseSettingsWindowFocusLeaseAfterFrontRecheck[\s\S]*?const slot = restoreSettingsWindowFocusAfterPopupFrontRecheck[\s\S]*?if \(!slot \|\| slot\.token !== token\) return[\s\S]*?slot\.restore\(\)/u
+  )
+
+  // 回归：onPopupCloseEnd 此前仍会同步恢复 focusable，绕过复核延迟保护；
+  // 真实隐藏后的通用收尾不得执行 handlePopupCloseEnd。
+  assert.ok(
+    fullEndRestoreIndex > beforeHideRestoreIndex,
+    'win.hide() 后的通用收尾回调必须先于前台复核回调'
+  )
+  // 只允许带“非延迟交还路径”守卫的同步恢复调用；裸调用会绕过复核保护。
+  // 复核完成后的兜底回调不属于同步隐藏收尾，因此断言只检查到异步交还分支前。
+  const syncHideCleanupSource = hideSource.slice(
+    beforeHideRestoreIndex,
+    hideSource.indexOf('if (process.platform === \'darwin\' && handBackFrontmost)')
+  )
+  for (const match of syncHideCleanupSource.matchAll(
+    /onPopupCloseEndCallback\?\.\(closeToken\)/gu
+  )) {
+    const guard = syncHideCleanupSource.slice(
+      Math.max(0, match.index - 120),
+      match.index
+    )
+    assert.match(
+      guard,
+      /if \(!restoreFocusAfterFrontRecheck\)/u,
+      'macOS 延迟交还路径不得在隐藏后同步恢复设置页可聚焦性'
+    )
+  }
 })

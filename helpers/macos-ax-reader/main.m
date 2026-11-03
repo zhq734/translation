@@ -10,7 +10,10 @@
  *
  * 输出协议（与 src/shared/selectionBehavior.ts 的 parseNativeSelectionReadOutput 兼容）：
  *   首行状态标记（PRESENT / EMPTY / UNKNOWN / PERMISSION），
+ *   UNKNOWN 可附带固定原因 reason=api-disabled（AXError -25211），
  *   PRESENT 时其余行为选中文本；退出码恒为 0。
+ * stderr 另输出脱敏焦点阶段诊断：FOCUS unknown|ready|target-mismatch，
+ * 不包含窗口标题、选区内容或焦点元素路径。
  *
  * @author zhenghq
  */
@@ -26,6 +29,10 @@ static const CGFloat kWindowBoundsTolerance = 2.0;
 static const NSInteger kMaxMenuTraversalDepth = 8;
 /** 菜单栏复制动作允许检查的最大节点数，保证 helper 执行时间有界。 */
 static const NSInteger kMaxMenuNodeCount = 4096;
+/** 为触发 AX 树构建而读取后代元素的最大深度。 */
+static const NSInteger kMaxAxTouchDepth = 8;
+/** 为触发 AX 树构建而读取后代元素的最大节点数，避免异常 AX 树拖慢取词。 */
+static const NSInteger kMaxAxTouchNodeCount = 512;
 
 /** 调用方记录的窗口上下文，用于 AXWindowNumber 缺失时做二级匹配。 */
 typedef struct {
@@ -41,6 +48,22 @@ typedef struct {
   NSInteger visitedCount;
   NSInteger matchCount;
 } MenuCopySearchState;
+
+/** Chromium/Electron 增强 AX 属性的请求结果。 */
+typedef enum {
+  AXEnhancementModeNone = 0,
+  AXEnhancementModeManual,
+  AXEnhancementModeEnhanced
+} AXEnhancementMode;
+
+typedef struct {
+  BOOL permissionGranted;
+  BOOL applicationAvailable;
+  BOOL accepted;
+  AXEnhancementMode mode;
+  AXError manualError;
+  AXError enhancedError;
+} AXEnhancementResult;
 
 /**
  * 向 stdout 输出状态标记与可选文本，协议为“状态行 + 可选文本行”。
@@ -75,6 +98,34 @@ static void WriteWindowDiagnostic(NSString *outcome, CFIndex windowCount) {
 }
 
 /**
+ * 向 stderr 输出脱敏焦点阶段诊断。
+ * 只输出固定枚举，避免窗口标题或焦点元素路径进入日志。
+ * @param status 焦点阶段：unknown / ready / target-mismatch。
+ * @return 无返回值。
+ * @author zhenghq
+ */
+static void WriteFocusDiagnostic(NSString *status) {
+  NSString *line = [NSString stringWithFormat:@"FOCUS %@\n", status];
+  NSFileHandle *errorOutput = NSFileHandle.fileHandleWithStandardError;
+  [errorOutput writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+}
+
+/**
+ * 记录 AX 调用是否明确返回接口禁用错误（kAXErrorAPIDisabled，-25211）。
+ * helper 是单次短进程，调用方通过输出参数累计本轮状态；一旦命中，
+ * 最终必须输出 api-disabled，避免被普通 UNKNOWN 折叠成取词超时。
+ * @param error 本次 AXUIElement API 调用返回的错误码。
+ * @param apiDisabled 本轮 APIDisabled 状态；命中时置为 YES。
+ * @return 本次错误是否为 kAXErrorAPIDisabled。
+ * @author zhenghq
+ */
+static BOOL RecordApiDisabledError(AXError error, BOOL *apiDisabled) {
+  if (error != kAXErrorAPIDisabled) return NO;
+  if (apiDisabled) *apiDisabled = YES;
+  return YES;
+}
+
+/**
  * 读取 AX 元素的字符串属性，失败或非字符串时返回 nil。
  * @param element 目标 AX 元素。
  * @param attribute 属性名。
@@ -92,6 +143,43 @@ static NSString *CopyStringAttribute(AXUIElementRef element, CFStringRef attribu
   }
   NSString *text = (__bridge_transfer NSString *)value;
   return text.length > 0 ? text : nil;
+}
+
+/**
+ * 有界深度优先读取 AX 元素的后代，触发 Chromium、Word、Excel 等应用
+ * 按需构建辅助功能树。这里只读取 children，不修改元素或执行动作。
+ * @param element 起始 AX 元素。
+ * @param depth 剩余遍历深度。
+ * @param visitedCount 已访问节点计数，所有递归共享同一上限。
+ * @return 无返回值。
+ * @author zhenghq
+ */
+static void TouchDescendantElements(
+  AXUIElementRef element,
+  NSInteger depth,
+  NSInteger *visitedCount
+) {
+  if (!element || !visitedCount || depth <= 0 || depth > kMaxAxTouchDepth ||
+      *visitedCount >= kMaxAxTouchNodeCount) {
+    return;
+  }
+  *visitedCount += 1;
+  CFTypeRef childrenValue = NULL;
+  if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &childrenValue) !=
+        kAXErrorSuccess || !childrenValue ||
+      CFGetTypeID(childrenValue) != CFArrayGetTypeID()) {
+    if (childrenValue) CFRelease(childrenValue);
+    return;
+  }
+  CFArrayRef children = (CFArrayRef)childrenValue;
+  CFIndex count = CFArrayGetCount(children);
+  for (CFIndex index = 0; index < count && *visitedCount < kMaxAxTouchNodeCount; index += 1) {
+    AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, index);
+    if (child && CFGetTypeID(child) == AXUIElementGetTypeID()) {
+      TouchDescendantElements(child, depth - 1, visitedCount);
+    }
+  }
+  CFRelease(childrenValue);
 }
 
 /**
@@ -124,10 +212,49 @@ static NSString *CopySelectedTextViaMarkerRange(AXUIElementRef element) {
   NSString *result = (__bridge_transfer NSString *)text;
   return result.length > 0 ? result : nil;
 }
+
+/**
+ * 通过 AXSelectedTextRange 与 AXStringForRange 提取选中文本。
+ * 部分 Safari/WebKit 版本只暴露选区范围而不直接返回选中文字，
+ * 此时可用参数化属性按范围取回文本。
+ * @param element 目标 AX 元素。
+ * @return 提取到的非空文本；范围不可读、为空或取文本失败时返回 nil。
+ * @author zhenghq
+ */
+static NSString *CopySelectedTextViaSelectedRange(AXUIElementRef element) {
+  CFTypeRef rangeValue = NULL;
+  // 兼容旧 SDK：直接使用运行时属性名，避免头文件缺少常量时编译失败。
+  if (AXUIElementCopyAttributeValue(
+        element, CFSTR("AXSelectedTextRange"), &rangeValue) != kAXErrorSuccess ||
+      !rangeValue) {
+    return nil;
+  }
+  CFRange range = {0, 0};
+  BOOL isRange = CFGetTypeID(rangeValue) == AXValueGetTypeID() &&
+    AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &range);
+  CFRelease(rangeValue);
+  if (!isRange || range.length <= 0) return nil;
+
+  CFTypeRef rangeObject = AXValueCreate(kAXValueCFRangeType, &range);
+  if (!rangeObject) return nil;
+  CFTypeRef text = NULL;
+  AXError error = AXUIElementCopyParameterizedAttributeValue(
+    element, CFSTR("AXStringForRange"), rangeObject, &text);
+  CFRelease(rangeObject);
+  if (error != kAXErrorSuccess || !text) return nil;
+  if (CFGetTypeID(text) != CFStringGetTypeID()) {
+    CFRelease(text);
+    return nil;
+  }
+  NSString *result = (__bridge_transfer NSString *)text;
+  return result.length > 0 ? result : nil;
+}
+
 /**
  * 读取单个元素及其祖先链上的选中文本，命中第一个非空选区即返回。
- * 每层先读 AXSelectedText，失败后回退 AXSelectedTextMarkerRange，
- * 以覆盖 VS Code 注释、网页正文等不暴露 AXSelectedText 的自绘控件。
+ * 每层先读 AXSelectedText，失败后依次回退 AXSelectedTextMarkerRange
+ * 与 AXSelectedTextRange，以覆盖 VS Code 注释、网页正文及 Safari/WebKit
+ * 等不直接暴露 AXSelectedText 的自绘控件。
  * @param element 起始 AX 元素。
  * @param maxLevels 允许上溯的最大层数（含起始元素本身）。
  * @return 命中的非空选中文本；链上均无可读选区时返回 nil。
@@ -140,6 +267,9 @@ static NSString *CopySelectedTextFromAncestry(AXUIElementRef element, NSInteger 
     NSString *text = CopyStringAttribute(current, kAXSelectedTextAttribute);
     if (!text) {
       text = CopySelectedTextViaMarkerRange(current);
+    }
+    if (!text) {
+      text = CopySelectedTextViaSelectedRange(current);
     }
     if (text) {
       result = text;
@@ -209,6 +339,55 @@ static BOOL IsCommandCopyMenuItem(AXUIElementRef element) {
     kAXMenuItemModifierNoCommand;
   if ((modifiers & forbiddenModifiers) != 0) return NO;
   return CopyBooleanAttribute(element, kAXEnabledAttribute);
+}
+
+/**
+ * 请求目标应用启用完整辅助功能树，并通过读取窗口后代触发按需构建。
+ *
+ * Electron 明确支持 AXManualAccessibility，Chromium 则通过
+ * AXEnhancedUserInterface 进入延迟启用流程。两者都会重置 Chromium 的
+ * 2 秒防抖定时器，因此必须先尝试 manual，只有被拒绝时才回退 enhanced，
+ * 避免同一应用被重复计数。
+ * @param pid 目标应用进程号。
+ * @return 权限、应用可用性与两个属性的结构化结果。
+ * @author zhenghq
+ */
+static AXEnhancementResult EnableEnhancedUserInterface(pid_t pid) {
+  AXEnhancementResult result = {0};
+  result.permissionGranted = AXIsProcessTrusted();
+  if (!result.permissionGranted) return result;
+  AXUIElementRef application = AXUIElementCreateApplication(pid);
+  if (!application) return result;
+  result.applicationAvailable = YES;
+  result.manualError = AXUIElementSetAttributeValue(
+    application, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
+  if (result.manualError == kAXErrorSuccess) {
+    result.accepted = YES;
+    result.mode = AXEnhancementModeManual;
+  } else {
+    result.enhancedError = AXUIElementSetAttributeValue(
+      application, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
+    if (result.enhancedError == kAXErrorSuccess) {
+      result.accepted = YES;
+      result.mode = AXEnhancementModeEnhanced;
+    }
+  }
+  CFTypeRef windowsValue = NULL;
+  if (AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windowsValue) ==
+        kAXErrorSuccess && windowsValue && CFGetTypeID(windowsValue) == CFArrayGetTypeID()) {
+    CFArrayRef windows = (CFArrayRef)windowsValue;
+    CFIndex count = CFArrayGetCount(windows);
+    NSInteger visitedCount = 0;
+    for (CFIndex index = 0; index < count; index += 1) {
+      AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
+      if (window && CFGetTypeID(window) == AXUIElementGetTypeID()) {
+        TouchDescendantElements(window, kMaxAxTouchDepth, &visitedCount);
+      }
+    }
+  }
+  if (windowsValue) CFRelease(windowsValue);
+  CFRelease(application);
+  return result;
 }
 
 /**
@@ -289,16 +468,19 @@ static BOOL PerformCommandCopyMenuAction(pid_t pid) {
 /**
  * 读取当前鼠标位置下的 AX 元素，用于焦点与选区不一致时的兜底。
  * @param systemWide 系统级 AX 元素。
+ * @param error 输出 AXUIElementCopyElementAtPosition 的错误码，可为 NULL。
  * @return 鼠标位置元素；查询失败返回 nil。调用方负责 CFRelease。
  * @author zhenghq
  */
-static AXUIElementRef CopyElementAtMousePosition(AXUIElementRef systemWide) {
+static AXUIElementRef CopyElementAtMousePosition(AXUIElementRef systemWide, AXError *error) {
   CGEventRef event = CGEventCreate(NULL);
   CGPoint point = CGEventGetLocation(event);
   CFRelease(event);
   AXUIElementRef element = NULL;
-  if (AXUIElementCopyElementAtPosition(
-        systemWide, (float)point.x, (float)point.y, &element) != kAXErrorSuccess) {
+  AXError copyError = AXUIElementCopyElementAtPosition(
+    systemWide, (float)point.x, (float)point.y, &element);
+  if (error) *error = copyError;
+  if (copyError != kAXErrorSuccess) {
     return nil;
   }
   return element;
@@ -392,63 +574,134 @@ static BOOL WindowBoundsMatch(CGRect left, CGRect right) {
 }
 
 /**
+ * 判断候选 AX 窗口是否与调用方记录的窗口上下文匹配。
+ * 先按窗口编号精确匹配，再按 bounds 与标题指纹组合校验；不能仅凭
+ * focused/main window 的默认身份接受候选，否则可能读到同进程其它窗口。
+ * @param window 候选 AX 窗口。
+ * @param context 目标窗口上下文。
+ * @param requireTitleFingerprint 是否要求标题指纹同时命中。
+ * @return 候选窗口可确认属于目标窗口时返回 true。
+ * @author zhenghq
+ */
+static BOOL WindowMatchesContext(
+  AXUIElementRef window,
+  WindowCaptureContext context,
+  BOOL requireTitleFingerprint
+) {
+  if (!window) return NO;
+  if (context.windowNumber > 0 && CopyWindowNumber(window) == context.windowNumber) {
+    return YES;
+  }
+  if (!context.hasBounds) return NO;
+  CGRect windowBounds = CGRectZero;
+  if (!CopyAXWindowBounds(window, &windowBounds) ||
+      !WindowBoundsMatch(windowBounds, context.bounds)) {
+    return NO;
+  }
+  if (!requireTitleFingerprint) return YES;
+  if (context.titleFingerprint.length == 0) return NO;
+  NSString *title = CopyStringAttribute(window, kAXTitleAttribute);
+  NSString *fingerprint = CopyTitleFingerprint(title);
+  return fingerprint && [fingerprint isEqualToString:context.titleFingerprint];
+}
+
+/**
+ * 从指定 application 属性读取候选窗口，并仅在通过目标窗口校验时返回。
+ * @param application 目标应用 AX 元素。
+ * @param attribute focused/main window 属性。
+ * @param context 目标窗口上下文。
+ * @param apiDisabled 本轮 AX 接口禁用状态。
+ * @return 已确认属于目标的窗口；未命中返回 nil。调用方负责 CFRelease。
+ * @author zhenghq
+ */
+static AXUIElementRef CopyVerifiedWindowAttribute(
+  AXUIElementRef application,
+  CFStringRef attribute,
+  WindowCaptureContext context,
+  BOOL *apiDisabled
+) {
+  CFTypeRef value = NULL;
+  AXError error = AXUIElementCopyAttributeValue(application, attribute, &value);
+  RecordApiDisabledError(error, apiDisabled);
+  if (error != kAXErrorSuccess ||
+      !value || CFGetTypeID(value) != AXUIElementGetTypeID()) {
+    if (value) CFRelease(value);
+    return nil;
+  }
+  AXUIElementRef window = (AXUIElementRef)value;
+  if (!WindowMatchesContext(window, context, YES)) {
+    CFRelease(value);
+    return nil;
+  }
+  return window;
+}
+
+/**
  * 在目标应用的 AX 窗口列表中按窗口上下文查找窗口。
  * 先按 AXWindowNumber 精确匹配；Chrome 普通多窗口可能不暴露该属性，
  * 此时再用 CGWindow 记录下来的 bounds 与标题指纹做二级匹配。
  * @param application 目标应用 AX 元素。
  * @param context 目标窗口上下文。
+ * @param apiDisabled 本轮 AX 接口禁用状态。
  * @return 命中的 AX 窗口；未命中返回 nil。调用方负责 CFRelease。
  * @author zhenghq
  */
 static AXUIElementRef CopyWindowByContext(
   AXUIElementRef application,
-  WindowCaptureContext context
+  WindowCaptureContext context,
+  BOOL *apiDisabled
 ) {
   CFTypeRef windowsValue = NULL;
   AXError error = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windowsValue);
-  if (error != kAXErrorSuccess || !windowsValue ||
-      CFGetTypeID(windowsValue) != CFArrayGetTypeID()) {
-    if (windowsValue) CFRelease(windowsValue);
-    return nil;
-  }
-  CFArrayRef windows = (CFArrayRef)windowsValue;
+  BOOL apiUnavailable = RecordApiDisabledError(error, apiDisabled);
   AXUIElementRef matched = nil;
-  AXUIElementRef boundsMatched = nil;
-  CFIndex boundsCandidateCount = 0;
-  CFIndex count = CFArrayGetCount(windows);
-  for (CFIndex index = 0; index < count; index += 1) {
-    AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
-    if (!window || CFGetTypeID(window) != AXUIElementGetTypeID()) continue;
-    if (context.windowNumber > 0 && CopyWindowNumber(window) == context.windowNumber) {
-      matched = (AXUIElementRef)CFRetain(window);
-      break;
+  if (error == kAXErrorSuccess && windowsValue &&
+      CFGetTypeID(windowsValue) == CFArrayGetTypeID()) {
+    CFArrayRef windows = (CFArrayRef)windowsValue;
+    AXUIElementRef boundsMatched = nil;
+    CFIndex boundsCandidateCount = 0;
+    CFIndex count = CFArrayGetCount(windows);
+    for (CFIndex index = 0; index < count; index += 1) {
+      AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
+      if (!window || CFGetTypeID(window) != AXUIElementGetTypeID()) continue;
+      if (context.windowNumber > 0 && CopyWindowNumber(window) == context.windowNumber) {
+        matched = (AXUIElementRef)CFRetain(window);
+        break;
+      }
+      if (!context.hasBounds) continue;
+      CGRect windowBounds = CGRectZero;
+      if (!CopyAXWindowBounds(window, &windowBounds) ||
+          !WindowBoundsMatch(windowBounds, context.bounds)) {
+        continue;
+      }
+      NSString *title = CopyStringAttribute(window, kAXTitleAttribute);
+      NSString *fingerprint = CopyTitleFingerprint(title);
+      BOOL fingerprintMatches = context.titleFingerprint.length > 0 &&
+        fingerprint && [fingerprint isEqualToString:context.titleFingerprint];
+      // 标题指纹存在时必须同时匹配；标题为空时只允许唯一 bounds 候选，避免误读同尺寸窗口。
+      if (context.titleFingerprint.length > 0 && !fingerprintMatches) continue;
+      boundsCandidateCount += 1;
+      if (boundsMatched) CFRelease(boundsMatched);
+      boundsMatched = (AXUIElementRef)CFRetain(window);
     }
-    if (!context.hasBounds) continue;
-    CGRect windowBounds = CGRectZero;
-    if (!CopyAXWindowBounds(window, &windowBounds) || !WindowBoundsMatch(windowBounds, context.bounds)) {
-      continue;
+    BOOL hasUniqueBoundsMatch = boundsCandidateCount == 1;
+    if (!matched && hasUniqueBoundsMatch && boundsMatched) {
+      matched = boundsMatched;
+      boundsMatched = nil;
     }
-    NSString *title = CopyStringAttribute(window, kAXTitleAttribute);
-    NSString *fingerprint = CopyTitleFingerprint(title);
-    BOOL fingerprintMatches = context.titleFingerprint.length > 0 &&
-      fingerprint && [fingerprint isEqualToString:context.titleFingerprint];
-    // 标题指纹存在时必须同时匹配；标题为空时只允许唯一 bounds 候选，避免误读同尺寸窗口。
-    if (context.titleFingerprint.length > 0 && !fingerprintMatches) continue;
-    boundsCandidateCount += 1;
     if (boundsMatched) CFRelease(boundsMatched);
-    boundsMatched = (AXUIElementRef)CFRetain(window);
   }
-  BOOL hasUniqueBoundsMatch = boundsCandidateCount == 1;
-  if (!matched && hasUniqueBoundsMatch && boundsMatched) {
-    matched = boundsMatched;
-    boundsMatched = nil;
+  if (windowsValue) CFRelease(windowsValue);
+  // Chrome 偶发在 AXWindows 尚未构建时返回空数组；focused/main window 是
+  // 同一应用的备用入口，但必须经过编号、bounds 与标题指纹校验后才可采用。
+  if (!matched && !apiUnavailable) {
+    matched = CopyVerifiedWindowAttribute(
+      application, kAXFocusedWindowAttribute, context, apiDisabled);
   }
-  if (!matched && boundsCandidateCount > 1 && boundsMatched) {
-    CFRelease(boundsMatched);
-    boundsMatched = nil;
+  if (!matched && !apiUnavailable) {
+    matched = CopyVerifiedWindowAttribute(
+      application, kAXMainWindowAttribute, context, apiDisabled);
   }
-  if (boundsMatched) CFRelease(boundsMatched);
-  CFRelease(windowsValue);
   return matched;
 }
 
@@ -457,17 +710,21 @@ static AXUIElementRef CopyWindowByContext(
  * @param application 目标应用 AX 元素。
  * @param context 目标窗口上下文。
  * @param targetWindow 已定位的目标 AX 窗口。
+ * @param apiDisabled 本轮 AX 接口禁用状态。
  * @return focused window 可按编号或边界确认属于目标窗口时返回 true。
  * @author zhenghq
  */
 static BOOL FocusedWindowBelongsToTarget(
   AXUIElementRef application,
   WindowCaptureContext context,
-  AXUIElementRef targetWindow
+  AXUIElementRef targetWindow,
+  BOOL *apiDisabled
 ) {
   CFTypeRef focusedWindowValue = NULL;
-  if (AXUIElementCopyAttributeValue(
-        application, kAXFocusedWindowAttribute, &focusedWindowValue) != kAXErrorSuccess ||
+  AXError error = AXUIElementCopyAttributeValue(
+    application, kAXFocusedWindowAttribute, &focusedWindowValue);
+  RecordApiDisabledError(error, apiDisabled);
+  if (error != kAXErrorSuccess ||
       !focusedWindowValue || CFGetTypeID(focusedWindowValue) != AXUIElementGetTypeID()) {
     if (focusedWindowValue) CFRelease(focusedWindowValue);
     return NO;
@@ -490,14 +747,17 @@ static BOOL FocusedWindowBelongsToTarget(
 /**
  * 读取目标应用的普通窗口数量。
  * @param application 目标应用 AX 元素。
+ * @param apiDisabled 本轮 AX 接口禁用状态。
  * @return AX 窗口列表中的窗口数量；读取失败返回 0。
  * @author zhenghq
  */
-static CFIndex CopyWindowCount(AXUIElementRef application) {
+static CFIndex CopyWindowCount(AXUIElementRef application, BOOL *apiDisabled) {
   if (!application) return 0;
   CFTypeRef windowsValue = NULL;
-  if (AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windowsValue) !=
-        kAXErrorSuccess || !windowsValue ||
+  AXError error = AXUIElementCopyAttributeValue(
+    application, kAXWindowsAttribute, &windowsValue);
+  RecordApiDisabledError(error, apiDisabled);
+  if (error != kAXErrorSuccess || !windowsValue ||
       CFGetTypeID(windowsValue) != CFArrayGetTypeID()) {
     if (windowsValue) CFRelease(windowsValue);
     return 0;
@@ -514,40 +774,53 @@ static CFIndex CopyWindowCount(AXUIElementRef application) {
  * 窗口的焦点元素污染结果。窗口不存在、AX 属性不可读或没有选区时返回 nil。
  * @param application 目标应用 AX 元素。
  * @param context 目标窗口上下文。
+ * @param apiDisabled 本轮 AX 接口禁用状态。
  * @return 命中的非空选中文本；无法命中返回 nil。
  * @author zhenghq
  */
 static NSString *CopySelectedTextFromWindow(
   AXUIElementRef application,
-  WindowCaptureContext context
+  WindowCaptureContext context,
+  BOOL *apiDisabled
 ) {
   if (!application) return nil;
-  AXUIElementRef window = CopyWindowByContext(application, context);
+  AXUIElementRef window = CopyWindowByContext(application, context, apiDisabled);
   if (!window) {
+    WriteFocusDiagnostic(@"unknown");
     return nil;
   }
   // raise 失败不阻断读取：部分应用不支持 kAXRaiseAction，但仍可读取窗口内焦点元素。
   AXUIElementPerformAction(window, kAXRaiseAction);
+  // 部分应用只有在读取 children 后才构建完整 AX 树；必须在获取 focused element
+  // 之前触发，否则 Chrome、Word、Excel 等仍可能返回空的焦点元素。
+  NSInteger visitedCount = 0;
+  TouchDescendantElements(window, kMaxAxTouchDepth, &visitedCount);
   NSString *result = nil;
   // Chrome 等应用的选区挂在 application 的 focused UI element 上，而不是
   // window 元素本身。只有 focused window 已确认属于目标窗口时才读取，
   // 防止同一进程的另一个窗口把错误选区返回给调用方。
-  if (FocusedWindowBelongsToTarget(application, context, window)) {
+  if (FocusedWindowBelongsToTarget(application, context, window, apiDisabled)) {
+    WriteFocusDiagnostic(@"ready");
     CFTypeRef focusedValue = NULL;
-    if (AXUIElementCopyAttributeValue(
-          application, kAXFocusedUIElementAttribute, &focusedValue) == kAXErrorSuccess &&
+    AXError focusedError = AXUIElementCopyAttributeValue(
+      application, kAXFocusedUIElementAttribute, &focusedValue);
+    RecordApiDisabledError(focusedError, apiDisabled);
+    if (focusedError == kAXErrorSuccess &&
         focusedValue && CFGetTypeID(focusedValue) == AXUIElementGetTypeID()) {
-      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, 1);
+      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, kMaxAncestorLevels);
     }
     if (focusedValue) CFRelease(focusedValue);
   }
   // 兼容仍把 focused UI element 暴露在窗口元素上的应用。
   if (!result) {
+    WriteFocusDiagnostic(@"target-mismatch");
     CFTypeRef focusedValue = NULL;
-    if (AXUIElementCopyAttributeValue(
-          window, kAXFocusedUIElementAttribute, &focusedValue) == kAXErrorSuccess &&
+    AXError focusedError = AXUIElementCopyAttributeValue(
+      window, kAXFocusedUIElementAttribute, &focusedValue);
+    RecordApiDisabledError(focusedError, apiDisabled);
+    if (focusedError == kAXErrorSuccess &&
         focusedValue && CFGetTypeID(focusedValue) == AXUIElementGetTypeID()) {
-      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, 1);
+      result = CopySelectedTextFromAncestry((AXUIElementRef)focusedValue, kMaxAncestorLevels);
     }
     if (focusedValue) CFRelease(focusedValue);
   }
@@ -566,7 +839,8 @@ static NSString *CopySelectedTextFromWindow(
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     if (!AXIsProcessTrusted()) {
-      WriteResult(@"PERMISSION", nil);
+      BOOL isEnhanceMode = argc > 1 && argv[1] && strcmp(argv[1], "--enhance") == 0;
+      WriteResult(isEnhanceMode ? @"REJECTED reason=permission" : @"PERMISSION", nil);
       return 0;
     }
 
@@ -584,6 +858,31 @@ int main(int argc, const char *argv[]) {
       return 0;
     }
 
+    // Chromium 增强 AX 模式：只设置目标应用属性并输出固定状态，不读取任何内容。
+    if (argc > 1 && argv[1] && strcmp(argv[1], "--enhance") == 0) {
+      char *pidEnd = NULL;
+      long pid = argc > 2 && argv[2] ? strtol(argv[2], &pidEnd, 10) : 0;
+      if (!pidEnd || *pidEnd != '\0' || pid <= 0) {
+        WriteResult(@"REJECTED reason=invalid-pid", nil);
+        return 0;
+      }
+      AXEnhancementResult enhancement = EnableEnhancedUserInterface((pid_t)pid);
+      if (enhancement.accepted && enhancement.mode == AXEnhancementModeManual) {
+        WriteResult(@"ACCEPTED mode=manual", nil);
+      } else if (enhancement.accepted && enhancement.mode == AXEnhancementModeEnhanced) {
+        WriteResult(@"ACCEPTED mode=enhanced", nil);
+      } else if (!enhancement.permissionGranted) {
+        WriteResult(@"REJECTED reason=permission", nil);
+      } else if (!enhancement.applicationAvailable) {
+        WriteResult(@"REJECTED reason=application-unavailable", nil);
+      } else {
+        WriteResult([NSString stringWithFormat:
+          @"REJECTED reason=manual-%ld,enhanced-%ld",
+          (long)enhancement.manualError, (long)enhancement.enhancedError], nil);
+      }
+      return 0;
+    }
+
     AXUIElementRef systemWide = AXUIElementCreateSystemWide();
     if (!systemWide) {
       WriteResult(@"UNKNOWN", nil);
@@ -594,6 +893,7 @@ int main(int argc, const char *argv[]) {
     // 创建目标应用 AX 元素，避免短暂焦点漂移导致读到另一个应用；参数非法或
     // 窗口不存在时回退原有三级读取，保持旧调用与跨应用兼容。
     CFIndex targetWindowCount = 0;
+    BOOL apiDisabled = NO;
     if (argc > 1 && argv[1]) {
       WindowCaptureContext context = {0};
       if (strcmp(argv[1], "-") != 0) {
@@ -647,8 +947,8 @@ int main(int argc, const char *argv[]) {
             CFRelease(focusedAppValue);
           }
         }
-        targetWindowCount = CopyWindowCount(application);
-        NSString *windowText = CopySelectedTextFromWindow(application, context);
+        targetWindowCount = CopyWindowCount(application, &apiDisabled);
+        NSString *windowText = CopySelectedTextFromWindow(application, context, &apiDisabled);
         if (windowText) {
           WriteWindowDiagnostic(@"exact", targetWindowCount);
           WriteResult(@"PRESENT", windowText);
@@ -656,30 +956,38 @@ int main(int argc, const char *argv[]) {
           CFRelease(systemWide);
           return 0;
         }
+        if (apiDisabled) {
+          WriteWindowDiagnostic(@"failed", targetWindowCount);
+          WriteResult(@"UNKNOWN reason=api-disabled", nil);
+          if (application) CFRelease(application);
+          CFRelease(systemWide);
+          return 0;
+        }
         if (application) CFRelease(application);
       }
+      WriteFocusDiagnostic(@"unknown");
     }
 
-    // 第一级与第二级：聚焦元素的 AXSelectedText 与 AXSelectedTextMarkerRange。
+    // 第一级与第二级：聚焦元素及其祖先链上的 AXSelectedText、marker range 与 text range。
     CFTypeRef focused = NULL;
     AXError focusedError = AXUIElementCopyAttributeValue(
       systemWide, kAXFocusedUIElementAttribute, &focused);
+    if (RecordApiDisabledError(focusedError, &apiDisabled)) {
+      if (focused) CFRelease(focused);
+      CFRelease(systemWide);
+      if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
+      WriteResult(@"UNKNOWN reason=api-disabled", nil);
+      return 0;
+    }
     if (focusedError == kAXErrorSuccess && focused &&
         CFGetTypeID(focused) == AXUIElementGetTypeID()) {
       AXUIElementRef focusedElement = (AXUIElementRef)focused;
-      NSString *text = CopyStringAttribute(focusedElement, kAXSelectedTextAttribute);
+      NSString *text =
+        CopySelectedTextFromAncestry(focusedElement, kMaxAncestorLevels);
+      CFRelease(focused);
       if (text) {
         if (argc > 1) WriteWindowDiagnostic(@"fallback", targetWindowCount);
         WriteResult(@"PRESENT", text);
-        CFRelease(focused);
-        CFRelease(systemWide);
-        return 0;
-      }
-      NSString *markerText = CopySelectedTextViaMarkerRange(focusedElement);
-      CFRelease(focused);
-      if (markerText) {
-        if (argc > 1) WriteWindowDiagnostic(@"fallback", targetWindowCount);
-        WriteResult(@"PRESENT", markerText);
         CFRelease(systemWide);
         return 0;
       }
@@ -688,7 +996,14 @@ int main(int argc, const char *argv[]) {
     }
 
     // 第三级：鼠标位置元素及其最多 kMaxAncestorLevels 层祖先的选中文本。
-    AXUIElementRef hoverElement = CopyElementAtMousePosition(systemWide);
+    AXError hoverError = kAXErrorSuccess;
+    AXUIElementRef hoverElement = CopyElementAtMousePosition(systemWide, &hoverError);
+    if (RecordApiDisabledError(hoverError, &apiDisabled)) {
+      CFRelease(systemWide);
+      if (argc > 1) WriteWindowDiagnostic(@"failed", targetWindowCount);
+      WriteResult(@"UNKNOWN reason=api-disabled", nil);
+      return 0;
+    }
     if (hoverElement) {
       NSString *hoverText =
         CopySelectedTextFromAncestry(hoverElement, kMaxAncestorLevels);

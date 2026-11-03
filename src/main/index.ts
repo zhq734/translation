@@ -297,7 +297,10 @@ import {
 } from './documentWindowState'
 import { resolveMacOSDockPresentation, type MacOSDockPresentation } from './dockVisibility'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
-import { suspendSettingsWindowFocusForPopupHide } from './settingsWindowPopupHideGuard'
+import {
+  forceRestoreSettingsWindowFocus,
+  suspendSettingsWindowFocusForPopupHide
+} from './settingsWindowPopupHideGuard'
 import {
   buildLinuxAutostartEntry,
   buildLoginItemSettings,
@@ -850,6 +853,17 @@ function isWebReaderSender(sender: Electron.WebContents): boolean {
 }
 
 /**
+ * 判断 IPC 是否来自当前设置窗口。
+ * @param sender Renderer 的 WebContents。
+ * @returns 属于当前设置窗口时返回 true。
+ * @author zhenghq
+ */
+function isSettingsWindowSender(sender: Electron.WebContents): boolean {
+  const senderWindow = BrowserWindow.fromWebContents(sender)
+  return Boolean(senderWindow && settingsWin === senderWindow && !settingsWin.isDestroyed())
+}
+
+/**
  * 释放当前文档窗口批准的文件路径和任务服务。
  * @returns 无返回值。
  * @author zhenghq
@@ -1265,33 +1279,193 @@ function handlePopupInternalWindowTransition(): void {
   lowerSettingsPanelRaiseLevel()
 }
 
-/** 当前翻译弹窗隐藏期间持有的设置页焦点恢复函数；未启用保护时为 null。 */
+/** 当前翻译弹窗隐藏期间持有的设置页焦点租约释放函数；未启用保护时为 null。 */
 let restoreSettingsWindowFocusAfterPopupHide: (() => void) | null = null
+/** 翻译弹窗隐藏后尚未释放的设置页焦点租约；避免延迟复核路径丢失。 */
+let restoreSettingsWindowFocusAfterPopupFrontRecheck: {
+  /** 该恢复函数所属的弹窗关闭轮次。 */
+  token: number
+  /** 真正释放该轮次设置页焦点租约的函数。 */
+  restore: () => void
+} | null = null
+/** 当前划词生命周期持有的设置页焦点租约释放函数；同一轮流程只取得一次。 */
+let restoreSelectionFocusLease: (() => void) | null = null
+/** 设置页进入后台后持有的长期焦点租约；只有显式入口可以恢复其可聚焦性。 */
+let restoreSettingsWindowFocusAfterSettingsBlur: (() => void) | null = null
 
 /**
- * 在翻译弹窗真实隐藏前暂时撤销设置页的 key window 候选资格。
+ * 在设置页失焦时立即撤销其 key window 候选资格。
  *
- * 仅覆盖 win.hide() 前后的同步窗口期，避免 macOS 把同应用后台设置页提升到最前；
- * 不参与取词生命周期，也不使用定时器或异步恢复。
+ * 划词开始时应用通常已经失活，此时再申请焦点保护会因安全门禁直接跳过；
+ * 必须趁设置页刚失焦、应用仍处于激活状态时完成撤销，避免后续按钮或弹窗
+ * 显隐触发 macOS 重新选择后台设置页。该租约长期持有，仅由用户显式打开设置页
+ * 或设置页真实 pointerdown 恢复，隐藏和销毁只释放引用。
  * @returns 无返回值。
  * @author zhenghq
  */
-function suspendSettingsWindowFocusBeforePopupHide(): void {
-  restoreSettingsWindowFocusAfterPopupHide?.()
-  restoreSettingsWindowFocusAfterPopupHide = suspendSettingsWindowFocusForPopupHide(
+function suspendSettingsWindowFocusAfterSettingsBlur(): void {
+  if (restoreSettingsWindowFocusAfterSettingsBlur) return
+  restoreSettingsWindowFocusAfterSettingsBlur = suspendSettingsWindowFocusForPopupHide(
     process.platform,
-    settingsWin
+    settingsWin,
+    {
+      appActive: isMacAppActiveByEvents(),
+      source: 'window-blur',
+      onDiagnostic: logSettingsFocusSuspendDiagnostic
+    }
   )
 }
 
 /**
- * 在翻译弹窗真实隐藏后恢复设置页的 key window 候选资格。
+ * 记录设置页焦点保护是否实际写入系统窗口能力。
+ * @param event 本次挂起的来源、应用激活状态与实际执行结果。
  * @returns 无返回值。
  * @author zhenghq
  */
-function restoreSettingsWindowFocusAfterPopupHideCallback(): void {
-  restoreSettingsWindowFocusAfterPopupHide?.()
+function logSettingsFocusSuspendDiagnostic(event: {
+  source: 'popup-hide' | 'selection' | 'window-blur'
+  appActive: boolean
+  applied: boolean
+}): void {
+  console.log(
+    `[main] settings-focus-suspend source=${event.source} appActive=${event.appActive} applied=${event.applied}`
+  )
+}
+
+/**
+ * 释放设置页后台焦点租约引用，但不在后台恢复其可聚焦性。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSettingsWindowFocusAfterSettingsBlur(): void {
+  const restore = restoreSettingsWindowFocusAfterSettingsBlur
+  restoreSettingsWindowFocusAfterSettingsBlur = null
+  restore?.()
+}
+
+/**
+ * 取得覆盖完整划词生命周期的设置页焦点租约。
+ *
+ * 连续划词、按钮预取和结果弹窗会交错执行，重复调用必须复用同一份租约，
+ * 不能先恢复再挂起，否则 macOS 会在两次调用之间重新选择设置页为 key window。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginSelectionFocusLease(): void {
+  if (restoreSelectionFocusLease) return
+  // 启动时设置页可能只以 show({focus:false}) 上屏，从未获得焦点，因此也不会
+  // 派发 blur。首次划词时必须为这种后台窗口补一次保护。即使 blur 长期租约已经
+  // 存在，也要取得划词生命周期引用：隐藏设置页会释放长期引用，而划词可能仍在
+  // 进行，必须继续持有同一共享租约，避免窗口重新获得 key window 候选资格。
+  restoreSelectionFocusLease = suspendSettingsWindowFocusForPopupHide(
+    process.platform,
+    settingsWin,
+    {
+      appActive: isMacAppActiveByEvents(),
+      source: 'selection',
+      onDiagnostic: logSettingsFocusSuspendDiagnostic
+    }
+  )
+}
+
+/**
+ * 释放当前划词生命周期持有的设置页焦点租约。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSelectionFocusLease(): void {
+  const restore = restoreSelectionFocusLease
+  restoreSelectionFocusLease = null
+  restore?.()
+}
+
+/**
+ * 仅在划词交互、选区按钮和翻译弹窗均已收尾时释放划词焦点租约。
+ *
+ * 弹窗关闭回调可能晚于下一轮划词开始；若此时无条件恢复设置页，macOS 会立即
+ * 把它提升到用户正在划词的应用之前。因此必须同时校验所有可见交互状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSelectionFocusLeaseIfIdle(): void {
+  if (
+    selectionInteraction.snapshot().state !== 'idle' ||
+    isPopupVisible() ||
+    isSelectionButtonVisible()
+  ) {
+    return
+  }
+  releaseSelectionFocusLease()
+}
+
+/**
+ * 为一次弹窗关闭取得设置页焦点保护租约。
+ * @param token 弹窗关闭轮次。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function suspendSettingsWindowFocusForPopupClose(token: number): void {
+  restoreSettingsWindowFocusAfterPopupHide = suspendSettingsWindowFocusForPopupHide(
+    process.platform,
+    settingsWin,
+    { appActive: isMacAppActiveByEvents() }
+  )
+  restoreSettingsWindowFocusAfterPopupFrontRecheck = {
+    token,
+    restore: restoreSettingsWindowFocusAfterPopupHide
+  }
+}
+
+/**
+ * 在弹窗真实隐藏后、前台复核前完成不涉及设置页焦点的通用收尾。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function finishPopupInternalWindowTransitionBeforeFocusRestore(token: number): void {
+  if (restoreSettingsWindowFocusAfterPopupFrontRecheck?.token !== token) return
   restoreSettingsWindowFocusAfterPopupHide = null
+  handlePopupInternalWindowTransition()
+}
+
+/**
+ * 弹窗隐藏后的前台复核完成时释放设置页焦点保护租约。
+ *
+ * 复核可能因源应用已在前台而直接结束，也可能在再次恢复时异常；无论走哪条
+ * 分支，都必须释放关闭开始时取得的焦点保护租约，避免设置页永久不可聚焦。
+ * @param token 本次关闭的弹窗生命周期 token。
+ * @param restored 复核触发的再次交还是否确认成功；无需再次交还时为 true。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSettingsWindowFocusLeaseAfterFrontRecheck(token: number, restored: boolean): void {
+  const slot = restoreSettingsWindowFocusAfterPopupFrontRecheck
+  if (!slot || slot.token !== token) return
+  slot.restore()
+  if (restoreSettingsWindowFocusAfterPopupFrontRecheck === slot) {
+    restoreSettingsWindowFocusAfterPopupFrontRecheck = null
+  }
+  if (!restored) {
+    console.log('[main] 弹窗关闭后复核交还未确认，已释放设置页焦点保护')
+  }
+  releaseSelectionFocusLeaseIfIdle()
+}
+
+/**
+ * 在翻译弹窗真实隐藏后释放设置页焦点保护租约。
+ * @param token 本次关闭的弹窗生命周期 token。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function releaseSettingsWindowFocusAfterPopupHide(token: number): void {
+  const slot = restoreSettingsWindowFocusAfterPopupFrontRecheck
+  if (!slot || slot.token !== token) return
+  restoreSettingsWindowFocusAfterPopupHide?.()
+  slot.restore()
+  restoreSettingsWindowFocusAfterPopupHide = null
+  if (restoreSettingsWindowFocusAfterPopupFrontRecheck === slot) {
+    restoreSettingsWindowFocusAfterPopupFrontRecheck = null
+  }
+  releaseSelectionFocusLeaseIfIdle()
 }
 
 /**
@@ -1299,25 +1473,53 @@ function restoreSettingsWindowFocusAfterPopupHideCallback(): void {
  *
  * 先回收设置页临时层级并挂起后台设置页的 key window 候选资格，再让弹窗进入
  * 异步前台交还；两个动作都必须在关闭入口同步完成，不能等待 handBack。
+ * @param token 本次关闭的弹窗生命周期 token。
  * @returns 无返回值。
  * @author zhenghq
  */
-function handlePopupCloseStart(): void {
+function handlePopupCloseStart(token: number): void {
   handlePopupInternalWindowTransition()
-  suspendSettingsWindowFocusBeforePopupHide()
+  suspendSettingsWindowFocusForPopupClose(token)
 }
 
 /**
  * 处理翻译弹窗真实隐藏完成。
  *
- * 先恢复设置页焦点能力，再续期内部 activate 抑制并回收层级，覆盖 hide() 后
+ * 先释放设置页焦点保护租约，再续期内部 activate 抑制并回收层级，覆盖 hide() 后
  * 可能迟到的系统激活事件。
+ * @param token 本次关闭的弹窗生命周期 token。
  * @returns 无返回值。
  * @author zhenghq
  */
-function handlePopupCloseEnd(): void {
-  restoreSettingsWindowFocusAfterPopupHideCallback()
+function handlePopupCloseEnd(token: number): void {
+  releaseSettingsWindowFocusAfterPopupHide(token)
   handlePopupInternalWindowTransition()
+}
+
+/**
+ * 处理上一轮弹窗关闭被新一轮显示取消。
+ *
+ * 旧轮次不能再执行异步隐藏或影响当前轮次，但它已经取得的设置页焦点租约仍须
+ * 释放，否则窗口会永久不可聚焦。释放时必须校验 token，不能误伤新轮次。
+ * @param token 被新显示取消的旧关闭轮次。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupCloseCancelled(token: number): void {
+  const slot = restoreSettingsWindowFocusAfterPopupFrontRecheck
+  if (slot?.token === token) {
+    // 新显示取消旧关闭时，旧轮次已经取得的焦点租约必须真正释放，否则设置页
+    // 会永久失去 key window 候选资格。释放只结束引用，不会在后台恢复可聚焦性。
+    restoreSettingsWindowFocusAfterPopupHide?.()
+    slot.restore()
+    restoreSettingsWindowFocusAfterPopupHide = null
+    if (restoreSettingsWindowFocusAfterPopupFrontRecheck === slot) {
+      restoreSettingsWindowFocusAfterPopupFrontRecheck = null
+    }
+  }
+  // 关闭轮次 token 不能直接决定划词生命周期租约的归属：上一轮关闭可能在新一轮
+  // 划词已经开始后才被取消。共享租约只能在交互、按钮和弹窗全部空闲时释放。
+  releaseSelectionFocusLeaseIfIdle()
 }
 
 /**
@@ -1335,6 +1537,69 @@ function isSelectionWindowRaiseGuardActive(): boolean {
 }
 
 /**
+ * 判断一次设置页显式置前是否仍然有效。
+ *
+ * 显式入口在新建窗口、等待首帧和刷新 Dock 期间会经过多个异步边界。用户可能
+ * 已切换应用并开始新一轮划词；此时旧的置前意图必须失效，不能再恢复设置页
+ * 可聚焦性或调用 show()/moveTop()/focus()，否则 macOS 会把后台设置页提到最前。
+ * @param bringToFrontEpoch 本次显式置前开始时的代际。
+ * @param explicitPopupSource 是否来自翻译弹窗内真实点击。
+ * @returns 仍可安全执行显式置前时返回 true。
+ * @author zhenghq
+ */
+function canCompleteSettingsBringToFront(
+  bringToFrontEpoch: number,
+  explicitPopupSource: boolean
+): boolean {
+  if (explicitPopupSource) return true
+  return bringToFrontEpoch === settingsBringToFrontEpoch &&
+    !isSelectionWindowRaiseGuardActive() &&
+    selectionInteraction.snapshot().state === 'idle'
+}
+
+/**
+ * 仅在置前意图仍有效时恢复设置页可聚焦性并执行窗口级置前。
+ *
+ * 恢复 setFocusable(true) 本身会触发 macOS 重新选择 key window，因此不能放在
+ * openSettings() 等异步流程入口提前执行。只有目标窗口确实准备显示或置前时才
+ * 调用本函数；若划词已经抢占前台或置前代际已失效，则保持后台设置页不可聚焦。
+ * @param win 待置前的设置窗口。
+ * @param options.focus 是否让窗口取得键盘焦点。
+ * @param options.restore 是否先恢复最小化窗口。
+ * @param options.moveTop 是否调整窗口 z-order。
+ * @param options.raiseLevel 是否临时提升窗口层级。
+ * @param options.bringToFrontEpoch 本次置前开始时的代际。
+ * @param options.explicitPopupSource 是否为弹窗内真实点击。
+ * @returns 实际执行置前时返回 true；意图已失效时返回 false。
+ * @author zhenghq
+ */
+function bringSettingsWindowToFrontSafely(
+  win: BrowserWindow,
+  options: {
+    focus?: boolean
+    restore?: boolean
+    moveTop?: boolean
+    raiseLevel?: boolean
+    bringToFrontEpoch: number
+    explicitPopupSource: boolean
+  }
+): boolean {
+  if (
+    win.isDestroyed() ||
+    !canCompleteSettingsBringToFront(options.bringToFrontEpoch, options.explicitPopupSource)
+  ) {
+    return false
+  }
+  // 恢复可聚焦性只能发生在真正准备置前的同步分支内，避免后台等待期间由
+  // macOS 自动选中设置页。弹窗内点击同样必须先恢复，窗口才能接收键盘输入。
+  forceRestoreSettingsWindowFocus(process.platform, win)
+  releaseSettingsWindowFocusAfterSettingsBlur()
+  releaseSelectionFocusLease()
+  showOwnWindowForInteraction(win, options)
+  return true
+}
+
+/**
  * 释放当前交互 token。
  * @param token 需要释放的交互 token。
  * @returns 无返回值。
@@ -1347,6 +1612,11 @@ function releaseSelectionInteraction(token: number): void {
   // 否则它会被误判为 Dock 点击并把已打开的设置页拉到最前。
   if (released) {
     suppressSelectionActivationWindowGap()
+    // 弹窗仍可见时，后续关闭流程还要经历 hide() 与前台复核，划词租约必须继续
+    // 覆盖这段时间；等弹窗真正隐藏且按钮也已消失后，关闭回调再统一释放。
+    if (!isPopupVisible()) {
+      releaseSelectionFocusLease()
+    }
   }
 }
 
@@ -1384,6 +1654,11 @@ function activateExistingPageOrOpenSettings(): void {
   // 存在状态空档，无法与真实 Dock 点击区分，因此这里对已可见窗口只保留其现有
   // 层级，不再主动置前；被其它应用遮挡时的强制置前改由托盘/弹窗内显式入口负责。
   if (settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && !settingsWin.isMinimized()) {
+    // activate 可能由切换应用、划词按钮或弹窗收尾迟到触发，无法可靠证明用户
+    // 刚点击了 Dock。这里只结束焦点租约引用，不恢复 setFocusable(true)：后台
+    // 设置页一旦重新成为 key window 候选，macOS 会立即把它提到划词应用之前。
+    // 真实点击设置页由 settings:pointerdown 回执恢复输入能力。
+    releaseSelectionFocusLease()
     return
   }
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
@@ -1401,7 +1676,11 @@ function activateExistingPageOrOpenSettings(): void {
       if (isSelectionWindowRaiseGuardActive()) return
       // activate 路径复用已可见设置页时不得提升到 screen-saver：普通窗口的
       // moveTop() 已足以把设置页放到最前，最高层级提升只会放大误判后果。
-      showOwnWindowForInteraction(target, { raiseLevel: false })
+      bringSettingsWindowToFrontSafely(target, {
+        raiseLevel: false,
+        bringToFrontEpoch: settingsBringToFrontEpoch,
+        explicitPopupSource: false
+      })
     })
     .catch((error: unknown) => {
       console.error('[settings] Dock 激活打开设置窗口失败:', error)
@@ -1989,7 +2268,10 @@ async function onReady(): Promise<boolean> {
     onWindowShown: suppressSelectionActivationWindowGap,
     onPopupHidden: () => pronunciationRequests.cancelAll(),
     onPopupCloseStart: handlePopupCloseStart,
-    onPopupCloseEnd: handlePopupCloseEnd
+    onPopupCloseEndBeforeHideRestore: finishPopupInternalWindowTransitionBeforeFocusRestore,
+    onFrontRecheckComplete: releaseSettingsWindowFocusLeaseAfterFrontRecheck,
+    onPopupCloseEnd: handlePopupCloseEnd,
+    onPopupCloseCancelled: handlePopupCloseCancelled
   })
   createSelectionButton(PRELOAD_PATH, suppressSelectionActivationWindowGap)
   registerGlobalShortcuts(getSettings())
@@ -2071,6 +2353,7 @@ function onHotkey(): void {
   latestSelectionGesture += 1
   markHotkeyTrigger()
   selectionCapture.markEntry('hotkey')
+  beginSelectionFocusLease()
   invalidateSelectionFlowWithFocusCleanup()
   const interactionToken = selectionInteraction.beginTranslation()
   hideSelectionButton()
@@ -2244,6 +2527,26 @@ function isPointInsideVisibleSettingsWindow(point: { x: number; y: number }): bo
 }
 
 /**
+ * 判断可见设置窗口能否作为本次指针点击的真实目标。
+ *
+ * 后台设置窗口可能仍保持可见并与 Chrome/IntelliJ 的划词区域重叠，仅按矩形
+ * 命中会在外部划词时误调用 setFocusable(true)，让 macOS 立即把设置页提到最前。
+ * 只有应用激活事件确认本应用在最前，且设置页确实是当前 key window 时，
+ * 全局钩子才能把本次按下视为设置页点击。应用刚切换、焦点尚未同步的首次点击
+ * 由设置页 renderer 的 pointerdown 回执兜底，不依赖全局矩形。
+ * @param point 待判断的屏幕坐标。
+ * @returns 本次按下可安全视为设置页真实点击时返回 true。
+ * @author zhenghq
+ */
+function canTreatVisibleSettingsWindowAsPointerTarget(point: { x: number; y: number }): boolean {
+  if (!isPointInsideVisibleSettingsWindow(point)) return false
+  if (process.platform !== 'darwin') return true
+  return isMacAppActiveByEvents() && Boolean(
+    settingsWin && !settingsWin.isDestroyed() && settingsWin.isFocused()
+  )
+}
+
+/**
  * 判断屏幕坐标是否落在当前可见的网页阅读器窗口内部。
  *
  * 阅读器的 focus 事件可能晚于全局 mousedown 到达，此时 `isFocused()` 仍为 false，
@@ -2303,7 +2606,12 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
   // 避免鼠标抬起后的内部 activate 或残留 screen-saver 层级把设置页顶到最前。
   suppressSelectionActivationWindowGap()
   lowerSettingsPanelRaiseLevel()
+  // 真机日志此前只能看到 initial-launch-final 的 isAlwaysOnTop=true，无法确认
+  // 划词开始时层级是否真的已回收。这里同步记录降级后的真实窗口状态，便于排查
+  // 普通窗口仍被 screen-saver 层级或残留焦点带到前台的问题。
+  logSettingsPanelBringToFront('selection-start-lowered')
   const gestureId = ++latestSelectionGesture
+  beginSelectionFocusLease()
   invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
@@ -2408,6 +2716,14 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   // 进入分类或内部窗口兜底，弹窗可能被提前隐藏，后续 IPC 失去宿主窗口，
   // 表现为第二次点击直接关闭。弹窗自身命中必须在分类前短路。
   if (popupHit && primaryButton) return 'ignore'
+  // 后台收尾不再自动恢复 setFocusable(true)，直接点击仍可见的设置页就是显式
+  // 恢复入口。必须早于分类与外部点击兜底，否则设置页可能保持不可聚焦，或被
+  // 误判为弹窗外部点击。弹窗自身命中已在上方优先返回，不影响内部窗口切换。
+  if (primaryButton && canTreatVisibleSettingsWindowAsPointerTarget(point)) {
+    forceRestoreSettingsWindowFocus(process.platform, settingsWin)
+    releaseSelectionFocusLease()
+    return 'ignore'
+  }
   // 设置窗口的 focus 事件可能晚于全局 mousedown 到达，此时 isFocused() 仍为 false，
   // 点击设置页会被误分类为弹窗外部点击并关闭翻译弹窗。处于设置打开保护期时，
   // 直接按可见矩形把这次按下识别为应用内点击。这里不能叠加应用激活事件门禁：
@@ -2465,6 +2781,7 @@ function handleSelectionPointerDown(point: { x: number; y: number }, button = 1)
   invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
+  releaseSelectionFocusLeaseIfIdle()
   return primaryButton ? 'track' : 'ignore'
 }
 
@@ -2478,6 +2795,7 @@ function handleCopyShortcut(): void {
   invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
+  releaseSelectionFocusLeaseIfIdle()
 }
 
 /**
@@ -2490,6 +2808,7 @@ function handlePasteShortcut(): void {
   invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
+  releaseSelectionFocusLeaseIfIdle()
 }
 
 /**
@@ -2630,6 +2949,7 @@ async function translateSelectionButton(): Promise<void> {
   setPendingMacOSCommandWasDown(false)
   // 点击“译”按钮同样属于划词内部流程，续期租约覆盖弹窗显隐带来的 activate。
   suppressSelectionActivationWindowGap()
+  beginSelectionFocusLease()
   selectionCapture.markEntry('button')
   const interactionToken = selectionInteraction.beginButtonCapture()
   if (interactionToken === null) return
@@ -2699,7 +3019,7 @@ async function translateSelectionButton(): Promise<void> {
  * 处理取词结果，统一展示权限错误、空选区提示或启动翻译。
  * @param result 选中文字捕获结果。
  * @param interactionToken 当前取词流程 token；省略时仅处理结果而不管理交互状态。
- * @param trackMacCopyTimeout 是否追踪 macOS 按钮复制兜底的连续超时。
+ * @param trackMacCopyTimeout 是否追踪 macOS 按钮复制兜底的超时。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -5219,6 +5539,7 @@ function applySelectionListener(): void {
   invalidateSelectionFlowWithFocusCleanup()
   selectionCapture.invalidate()
   hideSelectionButton()
+  releaseSelectionFocusLeaseIfIdle()
   selectionListenerController.setMode(getSettings().triggerMode)
   if (getSettings().triggerMode !== 'hotkey' && !selectionListenerController.isRunning()) {
     console.warn('[autoTrigger] 划词监听未能启动，划词与双击将不可用，快捷键仍可使用')
@@ -5297,7 +5618,7 @@ async function autoRepairMacHiServices(): Promise<void> {
   hiServicesRepairRunning = true
   resetCopyTimeoutTracker()
   try {
-    console.warn('[main] 连续取词超时，自动重启 macOS hiservices 服务')
+    console.warn('[main] 检测到取词超时，自动重启 macOS hiservices 服务')
     const repairResult = await restartMacHiServices()
     if (repairResult.ok) {
       console.log('[main] macOS hiservices 自动修复完成')
@@ -5395,7 +5716,10 @@ function showOwnWindowForInteraction(
   // 普通窗口显式置前必须使用 show() 让目标窗口成为可交互窗口；showInactive()
   // 不会取得键盘焦点，窗口会继续留在其它应用后面。翻译弹窗等非激活 panel
   // 仍由各自模块直接 showInactive()，不经过本入口。
-  win.show()
+  // 已可见窗口再次 show() 也会参与 macOS key window 与 z-order 重排，
+  // 后台刷新因此可能把设置页闪现到前台应用之上。只有窗口实际不可见时才显示；
+  // 显式入口仍通过后续 moveTop()/focus() 表达置前。
+  if (!win.isVisible()) win.show()
   // moveTop() 只调整目标窗口自身的 z-order，不激活应用，也不会拉起同应用
   // 其它可见窗口，因此能补齐“显式打开窗口放到最前”的窗口级语义。
   if (isMac && moveTop) win.moveTop()
@@ -5445,6 +5769,13 @@ function lowerSettingsPanelRaiseLevel(): void {
     clearTimeout(settingsPanelRaiseLevelTimer)
     settingsPanelRaiseLevelTimer = null
   }
+  // 应用失活或划词保护期内，任何 setAlwaysOnTop() 调用都会让 macOS 重新
+  // 计算窗口层级并可能选中后台设置页。这里只清理内部登记，待后续显式入口
+  // 或已结束保护的正常收尾再处理真实窗口层级。
+  if (!isMacAppActiveByEvents() || isSelectionWindowRaiseGuardActive()) {
+    raisedInteractionWindows.clear()
+    return
+  }
   for (const win of raisedInteractionWindows) {
     if (win.isDestroyed()) {
       raisedInteractionWindows.delete(win)
@@ -5469,10 +5800,8 @@ function scheduleSettingsPanelRaiseLevelReset(): void {
   if (settingsPanelRaiseLevelTimer) clearTimeout(settingsPanelRaiseLevelTimer)
   settingsPanelRaiseLevelTimer = setTimeout(() => {
     settingsPanelRaiseLevelTimer = null
-    for (const win of raisedInteractionWindows) {
-      if (!win.isDestroyed()) win.setAlwaysOnTop(false)
-    }
-    raisedInteractionWindows.clear()
+    // 定时回收也必须复用统一入口：保护期或应用失活时不得写窗口层级。
+    lowerSettingsPanelRaiseLevel()
   }, SETTINGS_PANEL_RAISE_LEVEL_TIMEOUT_MS)
 }
 
@@ -5496,6 +5825,15 @@ async function createSettingsWindow(
   const bringToFrontEpochAtStart = settingsBringToFrontEpoch
   if (settingsWin && !settingsWin.isDestroyed()) {
     const existingWindow = settingsWin
+    // Dock 刷新是异步边界，进入前先让已经失效的显式置前意图直接退出；
+    // 刷新返回后还要再次复核，覆盖等待期间用户开始划词的情况。
+    if (
+      bringToFront &&
+      !explicitPopupSource &&
+      !canCompleteSettingsBringToFront(bringToFrontEpochAtStart, explicitPopupSource)
+    ) {
+      return existingWindow
+    }
     await refreshMacOSDockVisibility()
     if (settingsWin !== existingWindow || existingWindow.isDestroyed()) return existingWindow
     // 最小化的窗口 isVisible() 仍为 true，必须先恢复再聚焦，否则 Dock 激活看似无反应。
@@ -5510,7 +5848,13 @@ async function createSettingsWindow(
       ) {
         return settingsWin
       }
-      showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
+      if (bringToFront) {
+        bringSettingsWindowToFrontSafely(settingsWin, {
+          raiseLevel: true,
+          bringToFrontEpoch: bringToFrontEpochAtStart,
+          explicitPopupSource
+        })
+      }
       return settingsWin
     }
     if (settingsWin.isVisible()) {
@@ -5531,7 +5875,11 @@ async function createSettingsWindow(
       // 层级只保留给弹窗内显式点击等真实用户入口，activate 路径改用窗口级
       // moveTop() 表达“放到最前”，不再越过整个前台应用。
       logCandidateProbe('settings-reuse-raise', settingsWin.isVisible())
-      showOwnWindowForInteraction(settingsWin, { raiseLevel: explicitPopupSource })
+      bringSettingsWindowToFrontSafely(settingsWin, {
+        raiseLevel: explicitPopupSource,
+        bringToFrontEpoch: bringToFrontEpochAtStart,
+        explicitPopupSource
+      })
       return settingsWin
     }
     // 窗口可能被用户隐藏后重新打开，只提升设置窗口自身。
@@ -5543,7 +5891,13 @@ async function createSettingsWindow(
     ) {
       return settingsWin
     }
-    showOwnWindowForInteraction(settingsWin, { raiseLevel: bringToFront })
+    if (bringToFront) {
+      bringSettingsWindowToFrontSafely(settingsWin, {
+        raiseLevel: true,
+        bringToFrontEpoch: bringToFrontEpochAtStart,
+        explicitPopupSource
+      })
+    }
     return settingsWin
   }
 
@@ -5578,13 +5932,19 @@ async function createSettingsWindow(
     // 从翻译弹窗打开设置时，必须保证设置窗口取得焦点后仍处于保护期：
     // 复用已可见窗口可能不再派发 focus，因此 IPC 入口已提前开启保护，
     // 这里再次开启用于重置状态，确保随后到达的弹窗 blur 一定被吸收。
-    beginPopupSettingsOpenGuard()
+    // 后台设置页也可能因系统窗口重排收到 focus；翻译弹窗不可见时开启 guard
+    // 会让后续全局按下把整块设置页矩形误认为应用内点击，必须加可见性门禁。
+    if (isPopupVisible()) beginPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
       ? settingsWin.getBounds()
       : undefined
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('blur', () => {
+    // 设置页刚失焦时应用通常仍在激活状态，这是撤销其 key window 候选资格的
+    // 唯一可靠时机；等到划词开始再申请时应用已经失活，保护会被安全门禁跳过。
+    // 必须先完成能力撤销再回收层级，避免写层级时触发系统重排并选中设置页。
+    suspendSettingsWindowFocusAfterSettingsBlur()
     // 显式置前时临时提升的 screen-saver 层级必须在失焦后归还普通窗口语义，
     // 否则设置页会长期悬浮在其它应用之上。
     if (isMac && !createdWindow.isDestroyed()) {
@@ -5598,6 +5958,8 @@ async function createSettingsWindow(
     resetAutoTriggerPointerState(settingsBounds)
   })
   settingsWin.on('hide', () => {
+    // 隐藏只结束后台失焦租约引用，不得恢复可聚焦性；窗口仍可能被再次复用。
+    releaseSettingsWindowFocusAfterSettingsBlur()
     // 隐藏后设置窗口不再接收点击，必须解除保护，避免弹窗永久忽略失焦。
     endPopupSettingsOpenGuard()
     const settingsBounds = settingsWin && !settingsWin.isDestroyed()
@@ -5607,6 +5969,7 @@ async function createSettingsWindow(
   })
   settingsWin.on('closed', () => {
     // 窗口销毁后不会再有失焦/隐藏事件，必须在此清理窗口级状态。
+    releaseSettingsWindowFocusAfterSettingsBlur()
     lowerSettingsPanelRaiseLevel()
     endPopupSettingsOpenGuard()
     resetAutoTriggerPointerState()
@@ -5637,11 +6000,15 @@ async function createSettingsWindow(
   // panel 的 show()/focus() 只让设置窗口自身成为 key window，不激活应用。
   // 非显式后台建窗时 bringToFront 为 false：只让窗口存在，不抢焦点、
   // 不用 moveTop 越过用户当前正在使用的应用；启动首开等显式入口才置前。
-  showOwnWindowForInteraction(settingsWin, {
-    focus: bringToFront,
-    moveTop: bringToFront,
-    raiseLevel: bringToFront
-  })
+  if (bringToFront) {
+    bringSettingsWindowToFrontSafely(settingsWin, {
+      raiseLevel: true,
+      bringToFrontEpoch: bringToFrontEpochAtStart,
+      explicitPopupSource
+    })
+  } else {
+    showOwnWindowForInteraction(settingsWin, { focus: false, moveTop: false, raiseLevel: false })
+  }
   // 必须等设置窗口真正显示后再刷新 Dock 呈现：新建分支的 settingsWin 在首帧前
   // 已非空但窗口不可见，若提前切到 accessory 并 dock.hide()，窗口会被系统吞掉，
   // 启动时的设置页会因此一直不出现。显示后再刷新可让保留逻辑兜住可见窗口。
@@ -5663,8 +6030,15 @@ async function createSettingsWindow(
     ) {
       return createdWindow
     }
-    showOwnWindowForInteraction(settingsWin, { raiseLevel: true })
-    logSettingsPanelBringToFront('initial-launch-final')
+    if (
+      bringSettingsWindowToFrontSafely(settingsWin, {
+        raiseLevel: true,
+        bringToFrontEpoch: bringToFrontEpochAtStart,
+        explicitPopupSource
+      })
+    ) {
+      logSettingsPanelBringToFront('initial-launch-final')
+    }
   }
   return settingsWin
 }
@@ -5677,6 +6051,10 @@ async function createSettingsWindow(
  * @author zhenghq
  */
 async function openSettings(options: { bringToFront?: boolean; source?: 'popup' } = {}): Promise<void> {
+  // 这里只登记打开意图，不能提前恢复设置页可聚焦性。创建窗口可能等待首帧、
+  // 刷新 Dock 并让出事件循环；若用户在此期间切换应用并划词，提前恢复会让
+  // macOS 立即把后台设置页选为 key window，造成首次划词设置页闪现。
+  // 真正的恢复与置前由 createSettingsWindow() 在确认意图仍有效后统一执行。
   await createSettingsWindow(options.bringToFront ?? true, options.source)
 }
 
@@ -6261,6 +6639,14 @@ function registerIpc(): void {
    */
   ipcMain.on('pronunciation:interaction', (_event, active: unknown) => {
     setPronunciationInteraction(active === true)
+  })
+  ipcMain.on('settings:pointerdown', (event) => {
+    // 只有设置页自己的 renderer 能证明事件确实送达设置窗口。全局钩子的矩形
+    // 判定无法区分后台窗口重叠与真实点击，不能在该通道中恢复可聚焦性。
+    if (!isSettingsWindowSender(event.sender)) return
+    forceRestoreSettingsWindowFocus(process.platform, settingsWin)
+    releaseSettingsWindowFocusAfterSettingsBlur()
+    releaseSelectionFocusLease()
   })
   ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('document:open', () => openDocumentWorkspaceFromPopup())

@@ -4,6 +4,25 @@ export type SelectionCaptureStrategy =
   | 'linux-primary-selection'
   | 'unsupported'
 
+/** macOS Chromium 系应用可执行文件的已知框架标识。 */
+const CHROMIUM_EXECUTABLE_PATH_PATTERN =
+  /(?:Electron Framework\.framework|Google Chrome Framework\.framework|Chromium Framework\.framework|Microsoft Edge Framework\.framework|Brave Browser Framework\.framework|\/Contents\/MacOS\/(?:Electron|Google Chrome|Chromium|Microsoft Edge|Brave Browser)(?:\s|$))/iu
+
+/**
+ * 判断可执行文件路径是否属于 Chromium/Electron 系应用。
+ *
+ * 浏览器主进程路径通常包含具体 Framework，Electron 主进程则常以
+ * `Contents/MacOS/Electron` 结尾；只做路径分类，不读取进程或修改应用状态。
+ * @param executablePath 目标进程的可执行文件路径。
+ * @returns 命中 Chromium/Electron 系路径时返回 true。
+ * @author zhenghq
+ */
+export function isChromiumLikeExecutablePath(executablePath: unknown): boolean {
+  if (typeof executablePath !== 'string') return false
+  const normalized = executablePath.trim()
+  return normalized.length > 0 && CHROMIUM_EXECUTABLE_PATH_PATTERN.test(normalized)
+}
+
 /** 各平台原生直读选中文字的能力标识。 */
 export type NativeSelectionReadKind =
   | 'macos-accessibility'
@@ -25,13 +44,39 @@ export interface NativeSelectionReadResult {
   windowCount?: number
   /** 是否按窗口编号或边界精确匹配到目标窗口。 */
   windowMatched?: boolean
+  /** macOS helper 输出的焦点阶段诊断；缺失或 unknown 都表示无法确认。 */
+  focusStatus?: 'unknown' | 'ready' | 'target-mismatch'
 }
 
 /** 从 macOS AX helper stderr 中解析出的脱敏窗口诊断。 */
 export type MacosAxReaderWindowDiagnostic = Pick<
   NativeSelectionReadResult,
   'windowLocate' | 'windowCount' | 'windowMatched'
->
+> & {
+  /** 焦点阶段诊断；unknown 表示 AX 树或焦点状态不可确认。 */
+  focusStatus?: 'unknown' | 'ready' | 'target-mismatch'
+}
+
+/**
+ * 解析 macOS AX helper 写入 stderr 的固定焦点阶段诊断。
+ * 只接受 `FOCUS unknown|ready|target-mismatch`，忽略任何自由文本；
+ * helper 可能依次输出窗口阶段与最终回退阶段，因此取最后一条有效诊断。
+ * @param stderr helper 的标准错误输出，可为 Buffer、字符串或未知值。
+ * @returns 最终规范化焦点阶段；没有合法诊断行时为 undefined。
+ * @author zhenghq
+ */
+export function parseMacosAxReaderFocusDiagnostic(stderr: unknown):
+MacosAxReaderWindowDiagnostic['focusStatus'] {
+  const text = Buffer.isBuffer(stderr)
+    ? stderr.toString('utf8')
+    : typeof stderr === 'string'
+      ? stderr
+      : ''
+  const matches = [...text.matchAll(
+    /(?:^|\n)\s*FOCUS\s+(unknown|ready|target-mismatch)\s*(?=\n|$)/gu
+  )]
+  return matches.at(-1)?.[1] as MacosAxReaderWindowDiagnostic['focusStatus']
+}
 
 /** macOS AX helper 菜单复制动作的固定结果状态。 */
 export type MacosAxCopyStatus = 'performed' | 'unavailable' | 'permission' | 'unknown'
@@ -51,6 +96,51 @@ export function parseMacosAxCopyOutput(output: unknown): MacosAxCopyStatus {
   if (firstLine === 'UNAVAILABLE') return 'unavailable'
   if (firstLine === 'PERMISSION') return 'permission'
   return 'unknown'
+}
+
+/** macOS AX helper 增强属性请求结果。 */
+export interface MacosAxEnhancementResult {
+  /** 系统是否接受了至少一个增强属性。 */
+  accepted: boolean
+  /** 接受增强时使用的属性入口。 */
+  mode: 'manual' | 'enhanced' | 'none'
+  /** 失败原因；只允许固定分类或数字 AXError。 */
+  reason?: string
+}
+
+/**
+ * 解析 macOS AX helper `--enhance <pid>` 的结构化结果。
+ *
+ * helper 只应输出 `ACCEPTED mode=manual|enhanced` 或 `REJECTED reason=<固定码>`；
+ * 解析器再次做白名单校验，防止错误输出把窗口标题、选区或任意文本带进日志。
+ * @param output helper 的标准输出。
+ * @returns 规范化的增强结果；无法识别时返回 invalid-output。
+ * @author zhenghq
+ */
+export function parseMacosAxEnhancementOutput(output: unknown): MacosAxEnhancementResult {
+  const firstLine = String(output ?? '')
+    .replace(/\r\n?/gu, '\n')
+    .trim()
+    .split('\n')[0]
+    ?.trim() ?? ''
+  // 兼容旧版 helper：入口权限检查会直接输出 PERMISSION。
+  if (firstLine === 'PERMISSION') {
+    return { accepted: false, mode: 'none', reason: 'permission' }
+  }
+  const acceptedMatch = firstLine.match(/^ACCEPTED mode=(manual|enhanced)$/u)
+  if (acceptedMatch) {
+    return { accepted: true, mode: acceptedMatch[1] as 'manual' | 'enhanced' }
+  }
+  const rejectedMatch = firstLine.match(/^REJECTED reason=(\S+)$/u)
+  if (!rejectedMatch) return { accepted: false, mode: 'none', reason: 'invalid-output' }
+  const reason = rejectedMatch[1]
+  if (reason === 'permission' || reason === 'application-unavailable' || reason === 'invalid-pid') {
+    return { accepted: false, mode: 'none', reason }
+  }
+  if (/^(?:manual|enhanced)--?\d+(?:,(?:manual|enhanced)--?\d+)?$/u.test(reason)) {
+    return { accepted: false, mode: 'none', reason }
+  }
+  return { accepted: false, mode: 'none', reason: 'invalid-output' }
 }
 
 /**

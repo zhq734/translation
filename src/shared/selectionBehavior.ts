@@ -136,6 +136,8 @@ export function resolveSelectionCaptureFailureMessage(
       return translator.t('selection.captureFailure.unsupported')
     case 'permission':
       return translator.t('selection.captureFailure.permission')
+    case 'api-disabled':
+      return translator.t('selection.captureFailure.apiDisabled')
     case 'clipboard-locked':
       return translator.t('selection.captureFailure.clipboardLocked')
     case 'empty':
@@ -240,6 +242,9 @@ export function parseNativeSelectionReadOutput(output: unknown): NativeSelection
     return text ? { status: 'present', text } : { status: 'empty', text: '' }
   }
   if (status === 'EMPTY') return { status: 'empty', text: '' }
+  if (status === 'UNKNOWN REASON=API-DISABLED') {
+    return { status: 'unknown', text: '', reason: 'api-disabled' }
+  }
   if (status === 'UNKNOWN') return { status: 'unknown', text: '' }
   return { status: 'unknown', text: '' }
 }

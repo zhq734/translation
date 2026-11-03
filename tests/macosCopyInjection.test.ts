@@ -115,6 +115,47 @@ test('未启用复制事件观测时不得输出未观测诊断', () => {
 })
 
 /**
+ * 校验同一轮多次注入只初始化一次观测状态，后续结果必须累计 OR。
+ * 第一次已观测到事件后，第二次观测窗口漏掉事件不得把整体状态覆写回 false。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('同一轮多次复制注入的观测状态必须累计保留', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const captureStart = source.indexOf('async function captureByCopy(')
+  const captureEnd = source.indexOf('/**\n * 捕获当前选中文字', captureStart)
+  const captureSource = source.slice(captureStart, captureEnd)
+
+  assert.match(
+    captureSource,
+    /if \(syntheticCopyObserved === undefined\)\s*\{\s*syntheticCopyObserved = false\s*\}/u,
+    '只允许在首次登记观测时把状态初始化为 false'
+  )
+  assert.match(
+    captureSource,
+    /syntheticCopyObserved = \(await expectation\.finish\(\)\) \|\| syntheticCopyObserved === true/u,
+    '后续观测结果必须与已观测状态做累计 OR'
+  )
+})
+
+/**
+ * 校验 AX helper 明确报告 APIDisabled 时，复制兜底最终必须保留独立失败原因。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('AX 接口禁用应在复制兜底失败时保留 api-disabled 原因', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const captureStart = source.indexOf('async function captureByCopy(')
+  const captureEnd = source.indexOf('/**\n * 捕获当前选中文字', captureStart)
+  const captureSource = source.slice(captureStart, captureEnd)
+
+  assert.match(captureSource, /native\?\.reason === 'api-disabled'/u,
+    '必须从 AX helper 结果识别 APIDisabled')
+  assert.match(captureSource, /apiDisabledDetected \? 'api-disabled' : 'timeout'/u,
+    '复制兜底失败时必须优先返回 api-disabled')
+})
+
+/**
  * 校验 macOS 首次 Cmd+C 无剪贴板结果时，先尝试目标应用菜单栏的 AX 复制动作。
  * ynote 等应用可能观测到注入事件却不消费快捷键，AXPress 可直接触发其原生复制命令。
  * @returns 无返回值。

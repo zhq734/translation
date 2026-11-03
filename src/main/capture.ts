@@ -21,6 +21,8 @@ import { translateMain } from './messages'
 import {
   getSelectionCapturePlan,
   parseMacosAxCopyOutput,
+  parseMacosAxEnhancementOutput,
+  parseMacosAxReaderFocusDiagnostic,
   parseMacosAxReaderWindowDiagnostic,
   resolveSelectionCaptureStrategy,
   type MacosAxCopyStatus,
@@ -54,15 +56,36 @@ import {
   isFailedWindowActivation,
   type MacosWindowActivationResult
 } from './macosWindowActivation'
+import { chromiumProcessDetector } from './chromiumProcessDetector'
 
 const execFileP = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const CLIPBOARD_STABILITY_DELAY_MS = 120
+/** Chromium 应用 bundle id 白名单；用于限定 Chromium 专用 AX 门禁。 */
+const CHROMIUM_BUNDLE_ID_PATTERN =
+  /^(com\.google\.chrome|com\.microsoft\.edge|com\.brave\.browser|org\.chromium\.Chromium)$/i
+/**
+ * 判断 bundle id 是否属于 Chromium 应用。
+ * @param bundleId 源应用 bundle id。
+ * @returns 命中 Chromium 白名单时返回 true。
+ * @author zhenghq
+ */
+function isChromiumBundleId(bundleId?: string): boolean {
+  return Boolean(bundleId && CHROMIUM_BUNDLE_ID_PATTERN.test(bundleId))
+}
 /** 单次命令（helper 或脚本）允许的最长耗时。 */
 export const SELECTION_INSPECTION_TIMEOUT_MS = 1500
 /** 原生直读在选区刚建立时的最大尝试次数（含首次）。 */
 export const NATIVE_SELECTION_RETRY_COUNT = 2
 const NATIVE_SELECTION_RETRY_DELAY_MS = 40
+/**
+ * Chromium 增强 AX 后在同一轮内允许的重读次数（含首次）。
+ * Chromium/Electron 的完整 AX 模式有约 2 秒防抖，本轮不做长等待；
+ * 首次增强主要依赖后续取词命中，短探测命中则直接返回。
+ */
+export const CHROMIUM_AX_ENHANCE_RETRY_COUNT = 1
+/** Chromium 增强 AX 后单次短探测前的等待时间（毫秒）。 */
+export const CHROMIUM_AX_ENHANCE_RETRY_DELAY_MS = 80
 /** macOS 模拟复制脚本的最长执行时间，防止偶发阻塞让取词一直等不到复制键。 */
 const MACOS_COPY_SCRIPT_TIMEOUT_MS = 2000
 /** macOS 快捷键触发后保留 Command 已按下状态的短窗口，超时后按已释放处理。 */
@@ -150,6 +173,128 @@ async function activateWindowBeforeCopy(
   }
 }
 
+/** 按 PID 复用正在进行的 Chromium AX 增强请求，避免并发重复设置属性。 */
+const chromiumAxEnhancementRequests = new Map<number, Promise<boolean>>()
+/** 已成功增强的 Chromium PID；进程退出前不再重复请求，避免重置 2 秒防抖。 */
+const chromiumAxEnhancementsAccepted = new Set<number>()
+
+/**
+ * 等待指定时长，并在取消信号触发时立即结束等待。
+ * @param delayMs 等待时长（毫秒）。
+ * @param signal 可选的取消信号。
+ * @returns 等待结束后的 Promise。
+ * @author zhenghq
+ */
+function waitForAbortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0 || signal?.aborted) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    let settled = false
+    const timer = setTimeout(finish, delayMs)
+
+    /**
+     * 清理定时器与取消监听并结束等待。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    function finish(): void {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+
+    signal?.addEventListener('abort', finish, { once: true })
+    if (signal?.aborted) finish()
+  })
+}
+
+/**
+ * 通过 AX helper 为 Chromium 请求完整辅助功能树。
+ * 同一 PID 的并发请求复用同一个 Promise，成功后不再重复设置属性；
+ * 属性生效可能有约 2 秒延迟，因此调用方不得同步等待增强完成。
+ * @param pid 目标应用进程号。
+ * @param signal 用于在取词失效后中止 helper 的取消信号。
+ * @returns 系统接受属性时返回 true。
+ * @author zhenghq
+ */
+async function performChromiumEnhancedAx(
+  pid: number,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (chromiumAxEnhancementsAccepted.has(pid)) return true
+  const inFlight = chromiumAxEnhancementRequests.get(pid)
+  if (inFlight) return inFlight
+
+  const request = requestChromiumEnhancedAx(pid, signal)
+  chromiumAxEnhancementRequests.set(pid, request)
+  try {
+    return await request
+  } finally {
+    chromiumAxEnhancementRequests.delete(pid)
+  }
+}
+
+/**
+ * 实际调用 helper 设置 Chromium AX 增强属性。
+ * @param pid 目标应用进程号。
+ * @param signal 用于在取词失效后中止 helper 的取消信号。
+ * @returns 系统接受属性时返回 true。
+ * @author zhenghq
+ */
+async function requestChromiumEnhancedAx(
+  pid: number,
+  signal?: AbortSignal
+): Promise<boolean> {
+  const helperPath = resolveMacosAxReaderPath({
+    resourcesPath: typeof process.resourcesPath === 'string' && process.resourcesPath
+      ? process.resourcesPath
+      : undefined
+  })
+  if (!helperPath) return false
+  try {
+    const { stdout } = await execFileP(
+      helperPath,
+      ['--enhance', String(pid)],
+      { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
+    )
+    const result = parseMacosAxEnhancementOutput(stdout)
+    console.log(
+      `[capture] chromium-enhanced-ax enhancedAx=${result.accepted ? 'enhanced-ui' : 'rejected'} ` +
+      `mode=${result.mode} pid=${pid}` +
+      (result.reason ? ` reason=${result.reason}` : '')
+    )
+    if (result.accepted) chromiumAxEnhancementsAccepted.add(pid)
+    return result.accepted
+  } catch {
+    console.log(
+      `[capture] chromium-enhanced-ax enhancedAx=rejected mode=none pid=${pid} reason=helper-error`
+    )
+    return false
+  }
+}
+
+/**
+ * 为已记录为源窗口的 Chromium/Electron 应用后台预热 AX 树。
+ * 通过 bundle id 快速路径或进程可执行文件探测识别 Chromium 内核；调用后立即
+ * 返回，不阻塞划词入口或窗口快照。探测失败时静默跳过，不影响普通 AX 与复制兜底。
+ * @param bundleId 源应用 bundle id。
+ * @param pid 源应用进程号。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function warmChromiumAccessibility(bundleId?: string, pid?: number): void {
+  if (process.platform !== 'darwin' || pid === undefined) return
+  void chromiumProcessDetector
+    .isChromiumLikeProcess(bundleId, pid)
+    .then((chromiumLike) => {
+      if (chromiumLike) void performChromiumEnhancedAx(pid)
+    })
+    .catch(() => {
+      // 进程探测属于优化路径，失败时保持普通 AX + 受控复制兜底。
+    })
+}
+
 /**
  * Windows 常驻 UIA helper 宿主单例；非 Windows 平台或 helper 不存在时为 null。
  * 惰性初始化，首次调用 readSelectionByNative 时才创建。
@@ -209,6 +354,27 @@ function withWindowDiagnostics(
 }
 
 /**
+ * 判断原生直读结果是否可作为本次取词的可靠文本。
+ *
+ * 无窗口上下文的旧调用仍接受 PRESENT；一旦调用方提供窗口编号或边界，
+ * 就必须由 helper 精确匹配目标窗口，禁止把系统级焦点或应用级回退读到的
+ * 同进程其它窗口文本误当成当前选区。
+ * @param native 原生直读结果。
+ * @param context 本次取词的源窗口上下文。
+ * @returns 结果非空且窗口约束满足时返回 true。
+ * @author zhenghq
+ */
+function isTrustedNativeSelection(
+  native: NativeSelectionReadResult | null | undefined,
+  context?: SelectionCaptureContext
+): boolean {
+  if (!native || native.status !== 'present' || !native.text.trim()) return false
+  const hasWindowContext = context?.windowNumber !== undefined || context?.bounds !== undefined
+  if (!hasWindowContext) return true
+  return native.windowLocate === 'exact' && native.windowMatched === true
+}
+
+/**
  * macOS 常驻 AX helper 直读：调用预编译的 macos-ax-reader 二进制读取选区文本。
  * 传入窗口编号或边界时优先读取该窗口内焦点元素的选区；无效窗口由 helper 回退旧路径。
  * @param signal 用于在请求失效后中止子进程的取消信号。
@@ -251,16 +417,19 @@ async function readSelectionViaMacosHelper(
       { timeout: SELECTION_INSPECTION_TIMEOUT_MS, signal }
     )
     const windowDiagnostics = parseMacosAxReaderWindowDiagnostic(stderr)
+    const focusStatus = parseMacosAxReaderFocusDiagnostic(stderr)
     console.log(
       `[capture] macos-ax-helper status=${classifyMacosAxHelperStatus(stdout)} ` +
       `elapsedMs=${Date.now() - startedAt} fallback=false ` +
       `windowLocate=${windowDiagnostics.windowLocate ?? 'unknown'} ` +
       `windowCount=${windowDiagnostics.windowCount ?? 'unknown'} ` +
-      `windowMatched=${windowDiagnostics.windowMatched ?? 'unknown'}`
+      `windowMatched=${windowDiagnostics.windowMatched ?? 'unknown'} ` +
+      `focus=${focusStatus ?? 'unknown'}`
     )
     return {
       ...parseNativeSelectionReadOutput(stdout),
-      ...windowDiagnostics
+      ...windowDiagnostics,
+      focusStatus
     }
   } catch (error) {
     console.log(
@@ -754,6 +923,16 @@ async function captureByCopy(
   context?: SelectionCaptureContext
 ): Promise<SelectionCaptureOutcome> {
   const captureStartedAt = Date.now()
+  // Chrome/Chromium 最近一次 AX 直读是否无法确认目标窗口或焦点可读。
+  let chromeAxUnavailable = false
+  // 本轮是否明确观察到源应用 AX 接口被系统禁用（AXError -25211）。
+  let apiDisabledDetected = false
+  // 最近一次 AX 菜单复制状态，用于区分应用未提供菜单与系统无法读取菜单。
+  let menuItem: MacosAxCopyStatus = 'unknown'
+  // 当前失败阶段；只用于脱敏诊断，不参与非 Chrome 平台决策。
+  let failurePhase: 'ax-read' | 'menu-copy' | 'shortcut-copy' | 'clipboard' = 'clipboard'
+  // Chromium 增强 AX 设置结果；none 表示本轮未尝试。
+  let enhancedAx: 'none' | 'enhanced-ui' | 'rejected' = 'none'
   const windowActivation = await activateWindowBeforeCopy(context)
   if (signal?.aborted) return { text: '' }
   // 无法再次确认源窗口时不得继续写哨兵或注入 Cmd+C：同进程的微信/Chrome
@@ -784,19 +963,62 @@ async function captureByCopy(
   // 触碰剪贴板，避免为了兜底取词再次拉长取词链路或覆盖用户剪贴板。
   if (process.platform === 'darwin' && !signal?.aborted) {
     const nativeStartedAt = Date.now()
-    const native = await readSelectionViaMacosHelper(
+    let native = await readSelectionViaMacosHelper(
       signal,
       context?.windowNumber,
       context?.pid,
       context?.bounds,
       context?.titleFingerprint
     )
-    const nativeStatus = native?.status ?? 'unknown'
+    let nativeStatus = native?.status ?? 'unknown'
+    if (native?.reason === 'api-disabled') apiDisabledDetected = true
+    if (nativeStatus === 'unknown' || native?.windowMatched === false) {
+      chromeAxUnavailable = true
+      failurePhase = 'ax-read'
+      // Chromium 首次 AX UNKNOWN 常见原因是辅助功能树未启用；这里只做一次
+      // 可取消短探测。完整 AX 模式有约 2 秒防抖，本轮不等待它，未命中立即
+      // 进入受控 Cmd+C 兜底；后续取词会复用已预热的 AX 树。
+      if (context?.pid !== undefined && !signal?.aborted) {
+        const chromiumLike = await chromiumProcessDetector.isChromiumLikeProcess(
+          context.bundleId,
+          context.pid
+        )
+        if (chromiumLike && !signal?.aborted) {
+          const accepted = await performChromiumEnhancedAx(context.pid, signal)
+          enhancedAx = accepted ? 'enhanced-ui' : 'rejected'
+          for (let attempt = 0;
+               attempt < CHROMIUM_AX_ENHANCE_RETRY_COUNT && !signal?.aborted;
+               attempt += 1) {
+            await waitForAbortableDelay(CHROMIUM_AX_ENHANCE_RETRY_DELAY_MS, signal)
+            if (signal?.aborted) break
+            const retried = await readSelectionViaMacosHelper(
+              signal,
+              context?.windowNumber,
+              context.pid,
+              context?.bounds,
+              context?.titleFingerprint
+            )
+            const retriedStatus = retried?.status ?? 'unknown'
+            if (retried?.reason === 'api-disabled') apiDisabledDetected = true
+            console.log(
+              `[capture] post-enhance-native-read status=${retriedStatus} ` +
+              `attempt=${attempt + 1} elapsedMs=${Date.now() - nativeStartedAt}`
+            )
+            if (isTrustedNativeSelection(retried, context)) {
+              native = retried
+              nativeStatus = retriedStatus
+              break
+            }
+            nativeStatus = retriedStatus
+          }
+        }
+      }
+    }
     console.log(
       `[capture] post-activate-native-read status=${nativeStatus} ` +
       `elapsedMs=${Date.now() - nativeStartedAt}`
     )
-    if (native?.status === 'present' && native.text.trim()) {
+    if (native && isTrustedNativeSelection(native, context)) {
       console.log(
         `[capture] copy-finish status=native-read textLength=${native.text.length} ` +
         `elapsedMs=${Date.now() - captureStartedAt}`
@@ -898,7 +1120,6 @@ async function captureByCopy(
   // 本轮模拟复制事件是否被全局事件钩子观测到。
   // undefined 表示未启用事件观测，不能等同于“已观测但未收到事件”。
   let syntheticCopyObserved: boolean | undefined
-
   /**
    * 发送一次复制快捷键，并在观测窗口内区分内部模拟复制与用户主动复制。
    * @param retryTargetPid 重试时用于定向注入的源进程号；首轮省略以保持全局注入。
@@ -917,7 +1138,7 @@ async function captureByCopy(
         await simulateCopy(retryTargetPid)
         copyAttempts += 1
         console.log(
-          `[capture] copy-shortcut-sent attempt=${copyAttempts} observed=${observed} ` +
+          `[capture] copy-shortcut-sent attempt=${copyAttempts} expectationRegistered=${observed} ` +
           `elapsedMs=${Date.now() - captureStartedAt}`
         )
       } catch (error) {
@@ -937,14 +1158,21 @@ async function captureByCopy(
       return
     }
 
-    // 只有登记观测窗口后才能把状态视为已知；先置 false 可避免首次未收到事件时
-    // 仍保留 undefined，从而丢失真实的 event tap 故障信号。
-    syntheticCopyObserved = false
+    // 只有登记观测窗口后才能把状态视为已知；仅首次置 false 可避免首次未收到
+    // 事件时仍保留 undefined，同时防止后续观测窗口漏事件覆写已成功观测的结果。
+    if (syntheticCopyObserved === undefined) {
+      syntheticCopyObserved = false
+    }
     const expectation = copyShortcutGuard.expectSyntheticCopyShortcut()
     try {
       await sendCopyShortcut(true)
     } finally {
-      syntheticCopyObserved = (await expectation.finish()) || syntheticCopyObserved
+      // 同一轮可能注入多次，任一次观测到事件都足以证明 event tap 正常。
+      syntheticCopyObserved = (await expectation.finish()) || syntheticCopyObserved === true
+      console.log(
+        `[capture] copy-event eventObserved=${syntheticCopyObserved} ` +
+        `elapsedMs=${Date.now() - captureStartedAt}`
+      )
     }
   }
 
@@ -993,7 +1221,37 @@ async function captureByCopy(
           !copyShortcutGuard.hasExternalCopySince(externalCopyVersion) &&
           context?.pid !== undefined
         ) {
-          axCopyPerformed = (await performMacosAxCopy(context.pid, signal)) === 'performed'
+          menuItem = await performMacosAxCopy(context.pid, signal)
+          axCopyPerformed = menuItem === 'performed'
+          if (menuItem === 'unavailable') failurePhase = 'menu-copy'
+        }
+      }
+
+      // Chrome/Chromium 在 AX 树不可读且菜单无法读取时，快捷键大概率不会被
+      // 目标窗口消费。这里在菜单尝试后安全停止本轮盲发，避免继续放大等待。
+      const shouldBlockChromiumShortcut = process.platform === 'darwin' &&
+        isChromiumBundleId(context?.bundleId) &&
+        chromeAxUnavailable &&
+        menuItem === 'unavailable' &&
+        syntheticCopyObserved === false
+      if (shouldBlockChromiumShortcut) {
+        const failureReason: SelectionFailureReason =
+          apiDisabledDetected ? 'api-disabled' : 'timeout'
+        console.log(
+          `[capture] copy-finish status=chromium-ax-unavailable phase=ax-read|menu-copy ` +
+          `menu=${menuItem} elapsedMs=${Date.now() - captureStartedAt}`
+        )
+        return {
+          text: '',
+          reason: failureReason,
+          diagnostics: {
+            level: 'failed',
+            reason: failureReason,
+            ...(syntheticCopyObserved === undefined ? {} : { copyObserved: syntheticCopyObserved }),
+            windowLocate: windowActivation?.outcome,
+            windowCount: windowActivation?.windowCount,
+            windowMatched: windowActivation?.windowMatched
+          }
         }
       }
 
@@ -1094,18 +1352,23 @@ async function captureByCopy(
     }
   }
   if (!text) {
+    const failureReason: SelectionFailureReason = apiDisabledDetected ? 'api-disabled' : 'timeout'
     console.log(
       `[capture] copy-finish status=timeout attempts=${copyAttempts} retries=${copyRetries} ` +
       `${syntheticCopyObserved === undefined ? '' : `copyObserved=${syntheticCopyObserved} `}` +
+      `eventObserved=${syntheticCopyObserved === undefined ? 'unknown' : syntheticCopyObserved} ` +
+      `menuItem=${menuItem} phase=${failurePhase} enhancedAx=${enhancedAx} ` +
       `elapsedMs=${Date.now() - captureStartedAt}`
     )
   return {
     text: '',
-    reason: 'timeout',
+    reason: failureReason,
     diagnostics: {
       level: 'failed',
-      reason: 'timeout',
+      reason: failureReason,
       ...(syntheticCopyObserved === undefined ? {} : { copyObserved: syntheticCopyObserved }),
+      eventObserved: syntheticCopyObserved,
+      phase: failurePhase,
       windowLocate: windowActivation?.outcome,
       windowCount: windowActivation?.windowCount,
       windowMatched: windowActivation?.windowMatched
@@ -1147,7 +1410,7 @@ export async function captureSelectionByNativeOnly(
   // “译”按钮显示期间的后台预取：只做原生直读，不注入复制键、不写剪贴板，
   // 避免在用户尚未点击按钮时干扰前台应用或占用剪贴板。
   const native = await readSelectionByNativeWithRetry(signal, context)
-  if (native.status === 'present' && native.text.trim()) {
+  if (isTrustedNativeSelection(native, context)) {
     return {
       text: native.text,
       diagnostics: {
@@ -1230,7 +1493,7 @@ export async function captureSelection(
   // 第一级：平台原生直读，不触碰剪贴板。
   if (plan.supportsNativeRead) {
     const native = await readSelectionByNative(signal, resolvedContext)
-    if (native.status === 'present' && native.text.trim()) {
+    if (isTrustedNativeSelection(native, resolvedContext)) {
       return {
         text: native.text,
         diagnostics: {

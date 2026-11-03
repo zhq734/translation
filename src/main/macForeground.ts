@@ -27,6 +27,7 @@ import {
   isExactWindowActivationConfirmed,
   type MacosWindowActivationResult
 } from './macosWindowActivation'
+import { warmChromiumAccessibility } from './capture'
 import {
   buildFrontmostWindowSnapshot,
   resolveWindowCaptureTarget,
@@ -537,6 +538,9 @@ export async function rememberFrontmostWindowAtPoint(
     `windowLocate=${target.outcome} windowCount=${target.windowCount ?? 'unknown'} ` +
     `windowMatched=${target.windowMatched}`
   )
+  // Chromium 的完整 AX 树有约 2 秒延迟。记录源窗口时即后台预热，
+  // 让用户完成划词并点击“译”时树通常已经可用，同时不阻塞快照返回。
+  void warmChromiumAccessibility(snapshot.bundleId, snapshot.pid)
   return {
     snapshot,
     windowLocate: target.outcome,
@@ -578,6 +582,8 @@ export function forgetFrontmostApp(): void {
  * @param keyWindowIsPopup 即将隐藏的是否为翻译弹窗；弹窗以 showInactive 显示时
  *   不会持有 key window，但本应用仍可能因点击“译”处于最前，必须走交还/让出路径，
  *   不能与原生对话框持有 key window 的场景混为一谈。
+ * @param onFrontRecheckComplete 弹窗隐藏后的前台复核完成回调；参数表示复核触发的
+ *   再次交还是否成功。无需再次交还时以 true 调用，异常或超时以 false 调用。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -585,12 +591,33 @@ export function handBackFrontmostThen(
   keyWindow: BrowserWindow | null,
   run: () => void,
   onHandBackFailed?: () => void,
-  keyWindowIsPopup = false
+  keyWindowIsPopup = false,
+  onFrontRecheckComplete?: (restored: boolean) => void
 ): void {
   const fallback = onHandBackFailed ?? run
   if (process.platform !== 'darwin') {
     run()
     return
+  }
+  /**
+   * 执行无需应用级交还的弹窗收尾，并释放关闭入口取得的焦点保护。
+   * @param afterRun 收尾后需要执行的诊断动作。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const finishPopupWithoutAppYield = (
+    reason: string,
+    afterRun?: () => void
+  ): void => {
+    logFrontDiagnostic(`popup-fallback-without-app-yield reason=${reason}`)
+    // 焦点保护在弹窗关闭开始时就已挂起；无需交还的提前返回路径同样必须在
+    // hide() 后释放，否则设置页会永久无法成为 key window。
+    try {
+      fallback()
+      afterRun?.()
+    } finally {
+      if (keyWindowIsPopup) onFrontRecheckComplete?.(false)
+    }
   }
   const focused = BrowserWindow.getFocusedWindow()
   // 本应用已不在最前：隐藏窗口不会提升应用内其它窗口，记录也已失效。
@@ -607,8 +634,14 @@ export function handBackFrontmostThen(
       // 此时隐藏弹窗不会提升其它窗口，必须保留记录，供对话框关闭后 handBackFrontmostApp 消费；
       // 若在这里丢弃记录，对话框关闭时网页翻译窗口就会被系统提升到最前。
       if (isMacAppActiveByEvents()) {
-        run()
-        logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
+        if (keyWindowIsPopup) {
+          finishPopupWithoutAppYield('native-dialog-holds-key-window', () => {
+            logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
+          })
+        } else {
+          run()
+          logFrontDiagnostic('跳过交还：原生对话框持有 key window，保留记录')
+        }
         return
       }
       // 该分支每次隐藏窗口都会走到，但 pendingReturnApp 多数时候本就是 null
@@ -616,6 +649,16 @@ export function handBackFrontmostThen(
       // 否则「丢弃过期记录」会变成误导性的空操作噪声，掩盖真实诊断信息。
       const discarded = pendingReturnApp
       forgetFrontmostApp()
+      if (keyWindowIsPopup) {
+        finishPopupWithoutAppYield('app-inactive', () => {
+          if (discarded) {
+            logFrontDiagnostic(
+              `跳过交还：应用已不在最前，丢弃过期记录 bundleId=${discarded.bundleId}`
+            )
+          }
+        })
+        return
+      }
       run()
       if (discarded) {
         logFrontDiagnostic(
@@ -635,21 +678,15 @@ export function handBackFrontmostThen(
   if (!popupNeedsHandBack &&
       (!keyWindow || keyWindow.isDestroyed() || focused !== keyWindow)) {
     logFrontDiagnostic('跳过交还：即将隐藏的窗口不是当前 key window')
-    run()
+    if (keyWindowIsPopup) {
+      finishPopupWithoutAppYield('popup-not-key-window')
+    } else {
+      run()
+    }
     return
   }
   const target = pendingReturnApp
   pendingReturnApp = null
-  /**
-   * 弹窗交还失败时只隐藏弹窗自身，绝不触发整应用显隐。
-   * @param reason 失败原因，用于诊断日志。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  const finishPopupWithoutAppYield = (reason: string): void => {
-    logFrontDiagnostic(`popup-fallback-without-app-yield reason=${reason}`)
-    fallback()
-  }
   // 拿不到源应用（读取失败或截图前本应用已是最前）时没有可交还的目标，直接走退化动作。
   if (!target || !isProcessAlive(target.pid)) {
     const reason = target ? `target-exited pid=${target.pid}` : 'missing-source-snapshot'
@@ -670,7 +707,13 @@ export function handBackFrontmostThen(
       logFrontDiagnostic(
         `${successKind}：bundleId=${target.bundleId} 耗时 ${Date.now() - startedAt}ms`
       )
-      run()
+      try {
+        run()
+      } catch (error) {
+        // 隐藏动作异常时也必须结束关闭生命周期，不能让弹窗和焦点保护永久卡住。
+        if (keyWindowIsPopup) onFrontRecheckComplete?.(false)
+        throw error
+      }
       // 隐藏窗口本身会触发 macOS 重新选择 key window。即使隐藏前已确认源应用
       // 在前台，系统也可能把同应用的设置页重新提升为 key window，并让本应用
       // 再次成为最前应用。这里保留本次 target 做一次短延迟复核，避免把恢复
@@ -679,15 +722,26 @@ export function handBackFrontmostThen(
       // 切换应用之后，延迟恢复会错误抢回新焦点。
       if (keyWindowIsPopup) {
         setTimeout(() => {
-          if (!isMacAppActiveByEvents()) return
+          if (!isMacAppActiveByEvents()) {
+            onFrontRecheckComplete?.(true)
+            return
+          }
           logFrontDiagnostic(`隐藏后复核到本应用重新置前，再次精确恢复：bundleId=${target.bundleId}`)
-          void restoreFrontmostForPopup(target).then((restored) => {
-            if (!restored) {
-              logFrontDiagnostic(`隐藏后再次恢复失败：bundleId=${target.bundleId}`)
-            }
-          }).catch(() => {
-            logFrontDiagnostic(`隐藏后再次恢复异常：bundleId=${target.bundleId}`)
-          })
+          void restoreFrontmostForPopup(target)
+            .then((restored) => {
+              if (!restored) {
+                logFrontDiagnostic(`隐藏后再次恢复失败：bundleId=${target.bundleId}`)
+              }
+              return restored
+            })
+            .catch(() => {
+              logFrontDiagnostic(`隐藏后再次恢复异常：bundleId=${target.bundleId}`)
+              return false
+            })
+            // 焦点保护必须覆盖第二次异步交还；失败或异常时同样释放，避免设置页
+            // 永久不可聚焦。回调在 then/catch 之后执行，确保系统重新选 key window
+            // 的竞态已经结束。
+            .finally(() => onFrontRecheckComplete?.(!isMacAppActiveByEvents()))
         }, POST_HIDE_FRONT_RECHECK_DELAY_MS)
       }
       return

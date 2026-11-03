@@ -275,6 +275,17 @@ const api: Api = {
     ipcRenderer.send('settings:open')
   },
   /**
+   * 通知主进程设置窗口已收到真实指针按下。
+   *
+   * 后台设置页可能被临时撤销可聚焦性，全局钩子无法可靠区分窗口矩形重叠与
+   * 真实点击；由设置页 renderer 回执才能安全恢复输入能力。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  notifySettingsWindowPointerDown() {
+    ipcRenderer.send('settings:pointerdown')
+  },
+  /**
    * 打开或聚焦独立文档翻译工作台。
    * @returns 无返回值。
    * @author zhenghq

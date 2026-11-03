@@ -177,15 +177,15 @@ test('已可见的设置页仅在需要置顶时才重新置顶，且不得激�
   // 不得调用 app.focus({ steal: true }) 把同应用其它窗口一起带到最前。
   assert.match(
     createSource,
-    /if \(!bringToFront\) return settingsWin[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*raiseLevel:\s*true\s*\}\)/u,
-    '需要置顶的设置页必须走统一窗口级置前入口'
+    /if \(!bringToFront\) return settingsWin[\s\S]*?bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*explicitPopupSource/u,
+    '需要置顶的设置页必须走安全窗口级置前入口'
   )
   assert.doesNotMatch(createSource, /app\.focus\(/u, '设置窗口置前不得激活整个应用')
   // 不可见或最小化时仍必须显示并聚焦，保证真实 Dock 启动可用。
   assert.match(
     createSource,
-    /showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*bringToFront,\s*moveTop:\s*bringToFront,\s*raiseLevel:\s*bringToFront\s*\}\)/u,
-    '不可见设置页仍必须显示并聚焦'
+    /if \(bringToFront\) \{[\s\S]*?bringSettingsWindowToFrontSafely\(settingsWin,\s*\{[\s\S]*?raiseLevel:\s*true[\s\S]*?\} else \{[\s\S]*?showOwnWindowForInteraction\(settingsWin,\s*\{\s*focus:\s*false,\s*moveTop:\s*false,\s*raiseLevel:\s*false\s*\}\)/u,
+    '不可见设置页仍必须按显式置前意图显示并聚焦'
   )
 })
 

@@ -113,6 +113,39 @@ test('模型列表加载失败后应保留用户手动输入的模型名称', ()
   assert.match(ts, /saveAiConfig[\s\S]*await listAiModels/u)
 })
 
+test('AI 表单存在未保存草稿时，设置广播与语言刷新不得覆盖输入内容', () => {
+  // 设置页会收到语言、主题、快捷键等无关设置广播。AI 输入一旦被标记为草稿，
+  // renderSettings 必须只刷新状态提示，不得把 Base URL/Model 回滚到旧值或清空 Key。
+  assert.match(ts, /let aiFormDirty\s*=\s*false/u)
+  assert.match(ts, /if \(!aiFormDirty\)\s*\{[\s\S]*?aiBaseUrl\.value\s*=\s*settings\.aiBaseUrl[\s\S]*?aiModel\.value\s*=\s*settings\.aiModel[\s\S]*?aiApiKey\.value\s*=\s*''/u)
+  assert.match(ts, /aiBaseUrl\.addEventListener\('input',\s*markAiFormDirty\)/u)
+  assert.match(ts, /aiApiKey\.addEventListener\('input',\s*markAiFormDirty\)/u)
+  assert.match(ts, /aiModel\.addEventListener\('input',[\s\S]*?markAiFormDirty/u)
+})
+
+test('AI 配置只有保存成功后才清除草稿并回显脱敏设置', () => {
+  assert.match(
+    ts,
+    /saveAiConfig[\s\S]*?const settings = await window\.api\.setAiConfig\(\{[\s\S]*?aiFormDirty = false\s*renderSettings\(settings\)/u
+  )
+  assert.match(
+    ts,
+    /saveAiConfig[\s\S]*?catch \(error\)[\s\S]*?flash\(t\('settings\.ai\.saveFailed'/u
+  )
+})
+
+test('AI 检测保存配置时不得清除尚未确认保存成功的草稿', () => {
+  assert.match(
+    ts,
+    /checkAi[\s\S]*?const settings = await window\.api\.setAiConfig\(\{[\s\S]*?renderSettings\(settings\)/u
+  )
+  assert.doesNotMatch(
+    ts,
+    /checkAi[\s\S]*?aiFormDirty = false/u,
+    '检测配置失败时仍必须保留用户输入'
+  )
+})
+
 test('AI 设置样式应使用 CSS 变量并支持自适应', () => {
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
   assert.match(css, /\.ai-actions/u)

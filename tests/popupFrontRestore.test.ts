@@ -251,13 +251,13 @@ test('弹窗交还不得仅凭焦点窗口为空就提前完成', () => {
   )
 })
 
-test('macOS 连续取词超时自动修复必须完全静默，不得弹框或置前窗口', () => {
+test('macOS 取词超时自动修复必须完全静默，不得弹框或置前窗口', () => {
   const repairSource = extractFunction(mainSource, 'async function autoRepairMacHiServices(): Promise<void> {')
 
   assert.match(
     repairSource,
     /resetCopyTimeoutTracker\(\)[\s\S]*?restartMacHiServices\(\)/u,
-    '达到阈值后必须直接重启 hiservices，不再等待用户确认'
+    '检测到超时后必须直接重启 hiservices，不再等待用户确认'
   )
   assert.doesNotMatch(
     repairSource,

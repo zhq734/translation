@@ -28,38 +28,31 @@ function unobservedTimeout() {
   }
 }
 
-test('macOS 在一分钟内连续两次真实超时时触发自动修复', () => {
+test('macOS 单次真实超时即触发自动修复', () => {
   resetCopyTimeoutTracker()
 
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 2_000), true)
+  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), true)
 })
 
-test('取词成功后应重置连续超时计数', () => {
+test('取词成功后下一次真实超时仍应立即触发自动修复', () => {
   resetCopyTimeoutTracker()
 
-  recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000)
-  recordCaptureOutcome(unobservedTimeout(), 'darwin', 2_000)
+  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), true)
   assert.equal(recordCaptureOutcome({ text: '已取到文字' }, 'darwin', 2_500), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 3_000), false)
-})
-
-test('相邻超时超过一分钟时应重新计数', () => {
-  resetCopyTimeoutTracker()
-
-  recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000)
-  recordCaptureOutcome(unobservedTimeout(), 'darwin', 2_000)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 62_001), false)
-})
-
-test('空选区和不支持不计入 hiservices 连续超时', () => {
-  resetCopyTimeoutTracker()
-
-  recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000)
-  recordCaptureOutcome(failedCapture('empty'), 'darwin', 1_500)
-  recordCaptureOutcome(failedCapture('unsupported'), 'darwin', 2_000)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 2_500), true)
   assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 3_000), true)
+})
+
+test('单次真实超时不受距上次超时的时间影响', () => {
+  resetCopyTimeoutTracker()
+
+  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 62_001), true)
+})
+
+test('空选区和不支持不得触发 hiservices 自动修复', () => {
+  resetCopyTimeoutTracker()
+
+  assert.equal(recordCaptureOutcome(failedCapture('empty'), 'darwin', 1_500), false)
+  assert.equal(recordCaptureOutcome(failedCapture('unsupported'), 'darwin', 2_000), false)
 })
 
 test('非 macOS 平台永远不触发 hiservices 自动修复', () => {
@@ -83,14 +76,13 @@ test('已观测到合成复制但应用未写剪贴板时不得触发 hiservices
   assert.equal(recordCaptureOutcome(observedTimeout, 'darwin', 2_000), false)
 })
 
-test('合成复制事件未进入 event tap 时仍应累计系统故障', () => {
+test('合成复制事件未进入 event tap 时应立即触发系统故障修复', () => {
   resetCopyTimeoutTracker()
 
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 2_000), true)
+  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), true)
 })
 
-test('应用级复制超时应重置此前未观测到的系统故障计数', () => {
+test('应用级复制超时不得触发 hiservices 自动修复', () => {
   resetCopyTimeoutTracker()
 
   const observedTimeout = {
@@ -99,10 +91,8 @@ test('应用级复制超时应重置此前未观测到的系统故障计数', ()
     diagnostics: { copyObserved: true }
   }
 
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), false)
   assert.equal(recordCaptureOutcome(observedTimeout, 'darwin', 2_000), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 3_000), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 4_000), true)
+  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 3_000), true)
 })
 
 test('未启用复制事件观测的未知超时不得累计为 hiservices 故障', () => {
@@ -118,7 +108,7 @@ test('未启用复制事件观测的未知超时不得累计为 hiservices 故�
   assert.equal(recordCaptureOutcome(unknownTimeout, 'darwin', 3_000), false)
 })
 
-test('未知观测状态不得清除此前明确的系统故障计数', () => {
+test('未知观测状态的超时不得触发 hiservices 自动修复', () => {
   resetCopyTimeoutTracker()
 
   const unknownTimeout = {
@@ -126,7 +116,5 @@ test('未知观测状态不得清除此前明确的系统故障计数', () => {
     reason: 'timeout' as const
   }
 
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 1_000), false)
   assert.equal(recordCaptureOutcome(unknownTimeout, 'darwin', 2_000), false)
-  assert.equal(recordCaptureOutcome(unobservedTimeout(), 'darwin', 3_000), true)
 })

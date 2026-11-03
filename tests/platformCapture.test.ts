@@ -3,10 +3,38 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   getSelectionCapturePlan,
+  isChromiumLikeExecutablePath,
+  parseMacosAxEnhancementOutput,
+  parseMacosAxReaderFocusDiagnostic,
   parseMacosAxReaderWindowDiagnostic,
   resolveSelectionCaptureStrategy,
   shouldPrefetchSelectionForButton
 } from '../src/shared/platformCapture.ts'
+
+/**
+ * 校验 Chromium/Electron 可执行路径分类覆盖常见浏览器和 Electron 主进程。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Chromium/Electron 可执行路径分类应准确', () => {
+  for (const executablePath of [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/WorkBuddy.app/Contents/MacOS/Electron',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
+  ]) {
+    assert.equal(isChromiumLikeExecutablePath(executablePath), true, executablePath)
+  }
+
+  for (const executablePath of [
+    '/Applications/IntelliJ IDEA.app/Contents/MacOS/idea',
+    '/Applications/Safari.app/Contents/MacOS/Safari',
+    '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal'
+  ]) {
+    assert.equal(isChromiumLikeExecutablePath(executablePath), false, executablePath)
+  }
+})
 
 test('不同桌面平台应选择可用的系统级取词策略', () => {
   assert.equal(resolveSelectionCaptureStrategy('darwin'), 'macos-command-copy')
@@ -56,6 +84,66 @@ test('窗口诊断解析应只返回脱敏白名单字段', () => {
 })
 
 /**
+ * 校验焦点诊断在 helper 输出多个阶段时采用最后一个有效阶段。
+ * 窗口级读取先输出 ready、随后因未取到文字进入 target-mismatch 时，
+ * 若仍取首条会把最终失败误报为焦点就绪。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('焦点诊断解析应反映最终失败阶段', () => {
+  assert.equal(
+    parseMacosAxReaderFocusDiagnostic('FOCUS ready\nFOCUS target-mismatch\nFOCUS unknown'),
+    'unknown'
+  )
+  assert.equal(
+    parseMacosAxReaderFocusDiagnostic('FOCUS ready\nFOCUS target-mismatch'),
+    'target-mismatch'
+  )
+  assert.equal(parseMacosAxReaderFocusDiagnostic('FOCUS ready'), 'ready')
+  assert.equal(parseMacosAxReaderFocusDiagnostic('普通日志\nFOCUS invalid'), undefined)
+})
+
+/**
+ * 校验增强 AX 输出只接受固定白名单与数字 AXError，且权限失败不会被误判为
+ * Chromium 拒绝属性。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('增强 AX 输出解析应区分接受模式与失败原因', () => {
+  assert.deepEqual(parseMacosAxEnhancementOutput('ACCEPTED mode=manual'), {
+    accepted: true,
+    mode: 'manual'
+  })
+  assert.deepEqual(parseMacosAxEnhancementOutput('ACCEPTED mode=enhanced'), {
+    accepted: true,
+    mode: 'enhanced'
+  })
+  assert.deepEqual(parseMacosAxEnhancementOutput('REJECTED reason=permission'), {
+    accepted: false,
+    mode: 'none',
+    reason: 'permission'
+  })
+  assert.deepEqual(parseMacosAxEnhancementOutput('PERMISSION'), {
+    accepted: false,
+    mode: 'none',
+    reason: 'permission'
+  })
+  assert.deepEqual(
+    parseMacosAxEnhancementOutput('REJECTED reason=manual--25204,enhanced--25204'),
+    {
+      accepted: false,
+      mode: 'none',
+      reason: 'manual--25204,enhanced--25204'
+    }
+  )
+  assert.deepEqual(parseMacosAxEnhancementOutput('REJECTED reason=聊天窗口'), {
+    accepted: false,
+    mode: 'none',
+    reason: 'invalid-output'
+  })
+})
+
+/**
  * 校验原生直读与通用取词入口都消费 helper 返回的窗口字段，
  * 不再根据是否传入窗口编号推断定位结果。
  * @returns 无返回值。
@@ -81,6 +169,41 @@ test('原生取词结果应透传 helper 窗口诊断字段', () => {
     pipelineSource,
     /context\?\.windowNumber\s*===\s*undefined\s*\?\s*'app-fallback'\s*:\s*'exact'/u,
     '不得仅凭窗口编号存在就推断 exact'
+  )
+})
+
+/**
+ * 校验带窗口上下文的原生直读必须精确命中目标窗口。
+ *
+ * helper 在窗口无法匹配时仍会回退读取系统焦点，可能读到同进程其它窗口；
+ * 主进程只有在 windowLocate=exact 且 windowMatched=true 时才可接受该文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('带窗口上下文的原生直读必须精确命中目标窗口', () => {
+  const source = readFileSync('src/main/capture.ts', 'utf8')
+  const guardStart = source.indexOf('function isTrustedNativeSelection(')
+  const guardEnd = source.indexOf('\n}\n', guardStart)
+  const guardSource = source.slice(guardStart, guardEnd)
+
+  assert.ok(guardStart >= 0 && guardEnd > guardStart, '应存在原生直读可信结果判断')
+  assert.match(guardSource, /native\.status !== 'present'/u, '只接受 PRESENT 状态')
+  assert.match(guardSource, /native\.windowLocate === 'exact'/u, '窗口化取词必须精确匹配')
+  assert.match(guardSource, /native\.windowMatched === true/u, '窗口化取词必须显式确认匹配')
+  assert.match(
+    source,
+    /if \(isTrustedNativeSelection\(native, context\)\)/u,
+    '复制兜底后的 AX 直读必须复用统一安全判断'
+  )
+  assert.match(
+    source,
+    /if \(isTrustedNativeSelection\(native, resolvedContext\)\)/u,
+    '通用取词入口必须复用统一安全判断'
+  )
+  assert.match(
+    source,
+    /if \(isTrustedNativeSelection\(retried, context\)\)/u,
+    '增强后的短探测命中也必须精确匹配目标窗口'
   )
 })
 
@@ -233,7 +356,7 @@ test('只读预取应仅使用原生直读且不注入复制键或写剪贴板',
 
   assert.ok(prefetchStart >= 0, '应导出 captureSelectionByNativeOnly 只读预取函数')
   assert.match(prefetchSource, /readSelectionByNativeWithRetry\(signal(?:,\s*context)?\)/u)
-  assert.match(prefetchSource, /native\.status === 'present'/u)
+  assert.match(prefetchSource, /isTrustedNativeSelection\(native, context\)/u)
   assert.doesNotMatch(prefetchSource, /captureByCopy|simulateCopy|keybd_event|CGEvent/u)
   assert.doesNotMatch(prefetchSource, /clipboard\.write/u)
   assert.match(prefetchSource, /native\.status === 'empty' \? 'empty' : 'unsupported'/u)
@@ -314,8 +437,8 @@ test('macOS 复制兜底应在窗口激活后先尝试一次只读 AX 直读', (
   assert.ok(postActivateRead < sentinelWrite, 'AX 直读必须发生在写入哨兵之前')
   assert.ok(postActivateRead < copyInjection, 'AX 直读必须发生在注入 Cmd+C 之前')
   assert.match(copySource, /process\.platform === 'darwin'/u, '仅 macOS 执行激活后的 AX 直读')
-  assert.match(copySource, /native\?\.status === 'present' && native\.text\.trim\(\)/u,
-    '只有 AX 直读得到非空文本时才可提前返回')
+  assert.match(copySource, /isTrustedNativeSelection\(native, context\)/u,
+    '只有 AX 直读得到可信非空文本时才可提前返回')
   assert.match(copySource, /level:\s*'native-read'/u, 'AX 直读命中必须标记为 native-read')
   assert.match(copySource, /windowLocate:\s*native\.windowLocate/u, 'AX 直读命中应透传窗口定位诊断')
   assert.match(copySource, /post-activate-native-read status=/u, 'AX 直读应输出脱敏诊断日志')
