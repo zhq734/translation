@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="划词翻译是一款支持 macOS、Windows 与 Linux 的桌面翻译工具。选中文字即可翻译，支持截图 OCR、网页全文翻译与文档翻译工作台。">
+  <link rel="canonical" href="https://zhq734.github.io/translation/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="划词翻译">
+  <meta property="og:title" content="划词翻译 — 选中，即懂。">
+  <meta property="og:description" content="不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。">
+  <meta property="og:url" content="https://zhq734.github.io/translation/">
+  <meta property="og:image" content="https://zhq734.github.io/translation/assets/images/result.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="划词翻译 — 选中，即懂。">
+  <meta name="twitter:description" content="不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。">
+  <meta name="twitter:image" content="https://zhq734.github.io/translation/assets/images/result.png">
+  <link rel="icon" type="image/png" href="./assets/icon.png">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+  <title>划词翻译 — 选中，即懂。</title>
+</head>
+<body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4 1-4-2-6-2m12 5v-4c0-1-.1-1.6-.6-2 3-.3 6-1.5 6-6a5 5 0 0 0-1.4-3.5 4.6 4.6 0 0 0-.1-3.5s-1.2-.4-3.8 1.4a13 13 0 0 0-7 0C5.5 2.6 4.3 3 4.3 3a4.6 4.6 0 0 0-.1 3.5A5 5 0 0 0 2.8 10c0 4.5 3 5.7 6 6-.4.4-.8 1-.8 2v4"/></symbol>
+    <symbol id="i-selection" viewBox="0 0 24 24"><path d="M4 4h5M4 4v5m16-5h-5m5 0v5M4 20h5m-5 0v-5m16 5h-5m5 0v-5M8 9h8m-4 0v7m-2 0h4"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m13-5v4a1 1 0 0 1-1 1h-4M2 12h20"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18m0-18c-3 3-3 15 0 18"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Zm8 0v5h4M9 12h6m-6 4h6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M8 3h8m-7 0v6l-3 4v2h12v-2l-3-4V3m-3 12v6"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5V4Zm4 4c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path d="m3 5 8-1v7H3V5Zm10-1 8-1v8h-8V4ZM3 13h8v7l-8-1v-6Zm10 0h8v8l-8-1v-7Z"/></symbol>
+    <symbol id="i-apple" viewBox="0 0 24 24"><path d="M16.7 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3-2-3.7-2.1-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.5 1.3-.1 1.8-.8 3.4-.8s2 .8 3.4.8c1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.9-1.1-2.9-3.8ZM14.1 4.7c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.6-.7.8-1.3 2-1.1 3.2 1.1.1 2.3-.6 3-1.5Z"/></symbol>
+    <symbol id="i-linux" viewBox="0 0 24 24"><path d="M8 9c0-3 1.8-5 4-5s4 2 4 5c0 2.4 2 3.9 2 7 0 3.4-2.7 5-6 5s-6-1.6-6-5c0-3.1 2-4.6 2-7Z"/><circle cx="10" cy="8" r=".7"/><circle cx="14" cy="8" r=".7"/><path d="M10 11c1.2 1 2.8 1 4 0"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+  </defs></svg>
+  <a class="skip-link" href="#main">跳转到正文</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="./" aria-label="划词翻译首页">
+        <img src="./assets/icon.png" width="38" height="38" alt="">
+        <span class="brand-lockup"><span class="brand-name">划词翻译</span><span class="brand-en">Selection Translator</span></span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="#features">功能</a>
+        <a href="#screenshots">截图</a>
+        <a href="./docs/">使用文档</a>
+        <a href="#faq">常见问题</a>
+      </nav>
+      <div class="header-tools">
+        <a class="icon-link" href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer" aria-label="GitHub 仓库"><svg class="i"><use href="#i-github"/></svg></a>
+        <a class="button button-primary button-small header-download" href="#download"><svg class="i"><use href="#i-download"/></svg><span>下载</span></a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero container" id="top" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot"></span> 桌面翻译工具 · V1.2.8</p>
+        <h1 id="hero-title"><span class="product-mark">划词翻译</span><span class="product-en">Selection Translator</span></h1>
+        <p class="tagline">选中，<span class="mark">即懂。</span></p>
+        <p class="hero-lead">不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#download"><svg class="i"><use href="#i-download"/></svg>下载桌面版</a>
+          <a class="button" href="./docs/">查看使用文档<svg class="i"><use href="#i-arrow"/></svg></a>
+        </div>
+        <ul class="hero-points" aria-label="核心特点">
+          <li>全局划词</li><li>截图 OCR</li><li>网页全文</li><li>文档翻译</li>
+        </ul>
+        <div class="hero-platforms" aria-label="支持平台">
+          <span><svg class="i"><use href="#i-apple"/></svg>macOS</span>
+          <span><svg class="i"><use href="#i-windows"/></svg>Windows</span>
+          <span><svg class="i"><use href="#i-linux"/></svg>Linux</span>
+          <span>简体中文 / English</span>
+        </div>
+      </div>
+
+      <div class="hero-stage" aria-label="划词翻译产品界面示意">
+        <div class="stage-browser">
+          <div class="stage-bar"><span class="window-dots"><i></i><i></i><i></i></span><span class="stage-url">一篇正在阅读的文章</span><span class="stage-badge">划词翻译</span></div>
+          <div class="stage-article">
+            <div class="article-kicker">DESIGNING FOR FOCUS</div>
+            <h2>Good tools let you<br><em>stay in the flow.</em></h2>
+            <p>When understanding gets in the way, the best interface is the one that gets out of it.</p>
+            <div class="selected-line" data-select-line>Stay in the flow. Keep your attention where it belongs.</div>
+            <div class="selection-button" aria-hidden="true">译</div>
+            <div class="article-lines"><i></i><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <div class="floating-card">
+          <div class="floating-toolbar">
+            <span class="mini-brand"><img src="./assets/icon.png" alt="">划词翻译</span>
+            <span class="floating-actions"><svg class="i"><use href="#i-pin"/></svg><span>×</span></span>
+          </div>
+          <div class="floating-language"><span>自动检测</span><b>→</b><span>自动中英互译</span></div>
+          <div class="floating-result">停留在心流里。<br>让注意力留在它该在的地方。</div>
+          <div class="floating-footer"><span><i></i> 中文 → 英语 · 微软翻译</span><span class="mini-copy"><svg class="i"><use href="#i-copy"/></svg>复制</span></div>
+        </div>
+        <div class="stage-caption"><span class="pulse"></span> 选中文字，点击「译」</div>
+      </div>
+    </section>
+
+    <section class="section container" id="features" aria-labelledby="features-title">
+      <div class="section-heading">
+        <p class="section-kicker">01 / WHAT IT DOES</p>
+        <h2 id="features-title">翻译，不必离开<br>你正在做的事。</h2>
+        <p class="section-intro">从选中的一句话，到整页网页和整份文档。按你的阅读方式工作，不要求你先改变工作方式。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card feature-card-wide">
+          <div class="feature-top"><span class="feature-icon"><svg class="i"><use href="#i-selection"/></svg></span><kbd>Alt + T</kbd></div>
+          <h3>全局划词翻译</h3>
+          <p>在浏览器、Office、PDF、聊天软件或 IDE 中选中文字，点击选区旁的「译」按钮，译文就在手边出现。也可以改为自动翻译或快捷键触发。</p>
+          <p class="feature-note">支持原生直读取词；直读不可用时才回退受控复制，尽量不打扰你的剪贴板。</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-top"><span class="feature-icon"><svg class="i"><use href="#i-scan"/></svg></span><kbd>Alt + O</kbd></div>
+          <h3>截图 OCR</h3>
+          <p>图片、扫描 PDF、视频字幕、游戏界面，框选后在本机识字，再交给翻译通道。还能标注、打码、高亮与导出。</p>
+          <p class="feature-note">系统 OCR → PaddleOCR → Tesseract 自动回退。</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-top"><span class="feature-icon"><svg class="i"><use href="#i-globe"/></svg></span><span class="feature-pill">原位翻译</span></div>
+          <h3>网页全文翻译</h3>
+          <p>内置阅读器把译文写回原文字位置，支持原文、译文与对照模式，也能识别并翻译页面图片中的文字。</p>
+          <p class="feature-note">只有点击「翻译此页」后才提取内容，不读取系统浏览器标签页。</p>
+        </article>
+        <article class="feature-card feature-card-wide">
+          <div class="feature-top"><span class="feature-icon"><svg class="i"><use href="#i-doc"/></svg></span><span class="feature-pill">PDF · DOCX · EPUB</span></div>
+          <h3>文档翻译工作台</h3>
+          <p>导入一份文件，完成解析、OCR、翻译、左右对照与 PDF 导出。表格、图片和公式尽量保留原版式，支持「保留版式」和「左右双语」两种输出。</p>
+          <p class="feature-note">单文件工作台；批量翻译与 PPTX / XLSX 暂不在当前版本范围内。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section screenshot-section" id="screenshots" aria-labelledby="screenshots-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="section-kicker">02 / IN CONTEXT</p>
+          <h2 id="screenshots-title">它出现得刚刚好。</h2>
+          <p class="section-intro">不打开新网站，不切换应用。选中文字之后，翻译就停在你视线附近。</p>
+        </div>
+        <div class="screenshot-feature">
+          <div class="screenshot-copy">
+            <span class="feature-label">SELECTION</span>
+            <h3>读到哪里，<br>译到哪里。</h3>
+            <p>选区按钮、自动翻译、全局快捷键三种方式。弹窗可以固定、朗读、复制，也可以直接切换语言与翻译服务。</p>
+            <ul class="check-list">
+              <li><svg class="i"><use href="#i-check"/></svg>中英及 30 种语言</li>
+              <li><svg class="i"><use href="#i-check"/></svg>翻译通道自动降级</li>
+              <li><svg class="i"><use href="#i-check"/></svg>明暗主题与五种配色</li>
+            </ul>
+            <a class="text-link" href="./docs/#quick-start">了解怎么用<svg class="i"><use href="#i-arrow"/></svg></a>
+          </div>
+          <figure class="screenshot-main">
+            <img src="./assets/images/result.png" alt="划词翻译结果弹窗，展示中文标题翻译为英文" loading="lazy">
+            <figcaption>划词翻译结果 · 自动检测语言</figcaption>
+          </figure>
+        </div>
+        <div class="screenshot-grid">
+          <figure><img src="./assets/images/selection.png" alt="在网页中选中文字后出现的译按钮" loading="lazy"><figcaption>选区按钮</figcaption></figure>
+          <figure><img src="./assets/images/settings.png" alt="划词翻译常规设置界面" loading="lazy"><figcaption>设置与外观</figcaption></figure>
+          <figure><img src="./assets/images/microsoft.png" alt="微软翻译通道设置" loading="lazy"><figcaption>翻译通道</figcaption></figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section services-section container" id="services" aria-labelledby="services-title">
+      <div class="services-copy">
+        <p class="section-kicker">03 / BRING YOUR OWN</p>
+        <h2 id="services-title">你的翻译服务，<br>由你选择。</h2>
+        <p class="lead">默认开箱可用。需要更快、更稳定或更私密时，再接上自己的服务。</p>
+        <div class="service-tabs" role="group" aria-label="翻译服务类型">
+          <button type="button" data-service="ai" aria-pressed="true">AI 翻译</button>
+          <button type="button" data-service="deeplx" aria-pressed="false">DeepLX</button>
+          <button type="button" data-service="dingtalk" aria-pressed="false">钉钉</button>
+          <button type="button" data-service="microsoft" aria-pressed="false">微软</button>
+        </div>
+      </div>
+      <div class="service-panel" aria-live="polite">
+        <span class="service-symbol" id="service-symbol">◇ LOCAL OR CLOUD</span>
+        <h3 id="service-title">接上你的模型。</h3>
+        <p id="service-description">支持 Ollama、OpenAI 兼容与 Claude Code（Anthropic）兼容协议。API Key 通过系统安全存储加密，不写入公开设置或日志。</p>
+        <div class="service-tags" id="service-tags"><span>Ollama</span><span>OpenAI 兼容</span><span>Claude Code</span></div>
+        <p class="service-footnote" id="service-footnote">可在线检测端点与模型，并自动拉取模型列表。服务费用与数据处理方式由你选择的服务商决定。</p>
+      </div>
+    </section>
+
+    <section class="quiet-band">
+      <div class="container quiet-inner">
+        <div>
+          <p class="section-kicker">04 / PRIVACY BY DESIGN</p>
+          <h2>本机能做的，<br>不交给云端。</h2>
+          <p class="quiet-lead">截图和图片 OCR 默认在本机完成。只有识别出的文字，才会按你选择的翻译通道发送。</p>
+          <div class="light-tags"><span>本地 OCR</span><span>safeStorage 加密</span><span>无账号体系</span><span>显式授权</span></div>
+        </div>
+        <ul class="quiet-list">
+          <li><svg class="i"><use href="#i-check"/></svg><span>优先通过系统原生接口直读取词，减少剪贴板打扰。</span></li>
+          <li><svg class="i"><use href="#i-check"/></svg><span>网页只在点击「翻译此页」后提取可见内容。</span></li>
+          <li><svg class="i"><use href="#i-check"/></svg><span>文档只读取你主动选择或拖入的文件，不后台扫描磁盘。</span></li>
+          <li><svg class="i"><use href="#i-check"/></svg><span>密钥保存在系统凭据库，不写入公开设置或日志。</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section container workflow-section" aria-labelledby="workflow-title">
+      <div class="section-heading">
+        <p class="section-kicker">05 / ONE SMALL MOTION</p>
+        <h2 id="workflow-title">三步，回到阅读。</h2>
+      </div>
+      <ol class="steps">
+        <li><span>01</span><h3>选中文字</h3><p>在任何支持复制的应用里，选择你想理解的词或句子。</p></li>
+        <li><span>02</span><h3>点「译」或按快捷键</h3><p>默认出现选区按钮；也可以设置为自动翻译或仅用快捷键。</p></li>
+        <li><span>03</span><h3>继续往下读</h3><p>译文显示在原文旁边。固定、朗读、复制，都只需要一次点击。</p></li>
+      </ol>
+      <div class="video-card">
+        <video controls preload="metadata" poster="./assets/images/result.png">
+          <source src="./assets/video/demo.mp4" type="video/mp4">
+          你的浏览器不支持视频播放。
+        </video>
+        <div class="video-copy"><span class="feature-label">PRODUCT DEMO</span><h3>看看它如何工作</h3><p>从选中文字到看见译文，完整演示划词翻译的主要流程。</p></div>
+      </div>
+    </section>
+
+    <section class="section download-section" id="download" aria-labelledby="download-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="section-kicker">06 / DOWNLOAD</p>
+          <h2 id="download-title">把它放在手边。</h2>
+          <p class="section-intro">下载最新版 V1.2.8。安装脚本会自动识别系统与 CPU 架构，并校验 SHA-256。</p>
+        </div>
+        <div class="platform-grid">
+          <article class="platform-card" data-platform="mac">
+            <div class="platform-top"><svg class="platform-icon i"><use href="#i-apple"/></svg><span class="platform-badge">推荐</span></div>
+            <h3>macOS</h3>
+            <p class="platform-meta">Apple Silicon / Intel</p>
+            <p>下载 DMG 或 ZIP，安装到「应用程序」。首次使用需授予辅助功能权限。</p>
+            <a class="button" href="https://github.com/zhq734/translation/releases/latest" target="_blank" rel="noreferrer">前往下载<svg class="i"><use href="#i-external"/></svg></a>
+          </article>
+          <article class="platform-card" data-platform="win">
+            <div class="platform-top"><svg class="platform-icon i"><use href="#i-windows"/></svg><span class="platform-badge">x64 / arm64</span></div>
+            <h3>Windows</h3>
+            <p class="platform-meta">Windows 10 / 11</p>
+            <p>下载 NSIS 安装程序，运行向导即可。另提供 Windows 7 SP1 x64 专用兼容包。</p>
+            <a class="button" href="https://github.com/zhq734/translation/releases/latest" target="_blank" rel="noreferrer">前往下载<svg class="i"><use href="#i-external"/></svg></a>
+          </article>
+          <article class="platform-card" data-platform="linux">
+            <div class="platform-top"><svg class="platform-icon i"><use href="#i-linux"/></svg><span class="platform-badge badge-muted">AppImage</span></div>
+            <h3>Linux</h3>
+            <p class="platform-meta">x64 / arm64</p>
+            <p>下载 AppImage，赋予执行权限后运行。Wayland 下建议安装 wl-clipboard。</p>
+            <a class="button" href="https://github.com/zhq734/translation/releases/latest" target="_blank" rel="noreferrer">前往下载<svg class="i"><use href="#i-external"/></svg></a>
+          </article>
+        </div>
+        <div class="install-command">
+          <div><span class="feature-label">ONE-LINE INSTALL</span><h3>或者，用一行命令安装</h3></div>
+          <div class="command-tabs" role="group" aria-label="安装命令">
+            <button type="button" data-command="unix" aria-pressed="true">macOS / Linux</button>
+            <button type="button" data-command="windows" aria-pressed="false">Windows PowerShell</button>
+          </div>
+          <div class="command-box"><code id="install-command">curl -fsSL https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.sh | sh</code><button type="button" id="copy-command" aria-label="复制安装命令"><svg class="i"><use href="#i-copy"/></svg><span>复制</span></button></div>
+          <p class="install-note">脚本只写入当前用户目录，并校验下载文件的 SHA-256。完整说明见 <a href="./docs/#install">安装文档</a>。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section container faq-section" id="faq" aria-labelledby="faq-title">
+      <div class="faq-heading">
+        <p class="section-kicker">07 / FAQ</p>
+        <h2 id="faq-title">开始之前，<br>你可能想知道。</h2>
+        <p>更多问题与配置说明，请查看 <a href="./docs/">完整文档</a>。</p>
+      </div>
+      <div class="faq">
+        <details open>
+          <summary>划词后没有出现「译」按钮？<span class="plus">+</span></summary>
+          <p>先确认已授予 macOS「辅助功能」权限，并检查设置中的触发方式不是「仅使用快捷键」。某些使用自绘控件或不支持系统复制的应用无法取词。修改权限或设置后，建议完全退出并重新启动应用。</p>
+        </details>
+        <details>
+          <summary>截图和文档里的图片会上传吗？<span class="plus">+</span></summary>
+          <p>不会。截图、页面截图、文档内嵌图片和公式裁剪图都在本机处理。只有识别出的文字会按当前翻译通道发送给对应服务。使用第三方翻译服务前，请评估其隐私政策。</p>
+        </details>
+        <details>
+          <summary>需要 API Key 吗？<span class="plus">+</span></summary>
+          <p>不强制。应用默认提供公共翻译通道，也可以选择免配置的微软网页翻译。若需要更稳定的体验，可配置自建 DeepLX、钉钉企业翻译，或 Ollama / OpenAI 兼容 / Claude Code 兼容的 AI 翻译。</p>
+        </details>
+        <details>
+          <summary>支持哪些平台？<span class="plus">+</span></summary>
+          <p>支持现代 macOS（Apple Silicon / Intel）、Windows 10 / 11（x64 / arm64）与 Linux（x64 / arm64 AppImage）。另提供 Windows 7 SP1 x64 兼容包，但该运行时已停止安全更新，建议仅用于无法升级系统的环境。</p>
+        </details>
+        <details>
+          <summary>翻译失败或遇到 429 怎么办？<span class="plus">+</span></summary>
+          <p>公共 DeepLX 可能限流，Google 也可能受网络环境影响。应用会自动尝试后续通道。若仍不稳定，建议配置自建 DeepLX，并确认服务地址、端口与代理绕过规则正确。</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="closing container">
+      <div><p class="section-kicker">READY WHEN YOU ARE</p><h2>下一次遇到陌生的语言，<br>让翻译自己出现。</h2><p class="support-note">支持 macOS、Windows 与 Linux。免费使用，代码开源。</p></div>
+      <a class="button button-primary" href="#download"><svg class="i"><use href="#i-download"/></svg>下载划词翻译</a>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand" href="./"><img src="./assets/icon.png" width="34" height="34" alt=""><span class="brand-lockup"><span class="brand-name">划词翻译</span><span class="brand-en">Selection Translator</span></span></a>
+      <p><span>选中，即懂。</span><span>© 2026 zhq734 · MIT License</span></p>
+      <nav class="footer-links" aria-label="页脚导航">
+        <a href="./docs/">使用文档</a>
+        <a href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/zhq734/translation/releases" target="_blank" rel="noreferrer">Releases</a>
+        <a href="./docs/#privacy">隐私说明</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

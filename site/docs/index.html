@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="划词翻译使用文档：安装、首次授权、划词翻译、截图 OCR、网页全文翻译、文档翻译工作台、翻译通道配置与隐私说明。">
+  <link rel="canonical" href="https://zhq734.github.io/translation/docs/">
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="划词翻译">
+  <meta property="og:title" content="使用文档 — 划词翻译">
+  <meta property="og:description" content="从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。">
+  <meta property="og:url" content="https://zhq734.github.io/translation/docs/">
+  <meta property="og:image" content="https://zhq734.github.io/translation/assets/images/result.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="使用文档 — 划词翻译">
+  <meta name="twitter:description" content="从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。">
+  <meta name="twitter:image" content="https://zhq734.github.io/translation/assets/images/result.png">
+  <link rel="icon" type="image/png" href="../assets/icon.png">
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="./docs.css">
+  <script src="./app.js" defer></script>
+  <title>使用文档 — 划词翻译</title>
+</head>
+<body class="docs-page">
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4 1-4-2-6-2m12 5v-4c0-1-.1-1.6-.6-2 3-.3 6-1.5 6-6a5 5 0 0 0-1.4-3.5 4.6 4.6 0 0 0-.1-3.5s-1.2-.4-3.8 1.4a13 13 0 0 0-7 0C5.5 2.6 4.3 3 4.3 3a4.6 4.6 0 0 0-.1 3.5A5 5 0 0 0 2.8 10c0 4.5 3 5.7 6 6-.4.4-.8 1-.8 2v4"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+  </defs></svg>
+  <a class="skip-link" href="#doc-content">跳转到正文</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="../" aria-label="划词翻译首页">
+        <img src="../assets/icon.png" width="38" height="38" alt="">
+        <span class="brand-lockup"><span class="brand-name">划词翻译</span><span class="brand-en">Selection Translator</span></span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../#features">功能</a>
+        <a href="../#screenshots">截图</a>
+        <a href="./" aria-current="page">使用文档</a>
+        <a href="../#faq">常见问题</a>
+      </nav>
+      <div class="header-tools">
+        <a class="icon-link" href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer" aria-label="GitHub 仓库"><svg class="i"><use href="#i-github"/></svg></a>
+        <a class="button button-primary button-small header-download" href="../#download"><svg class="i"><use href="#i-download"/></svg><span>下载</span></a>
+      </div>
+    </div>
+  </header>
+
+  <main class="docs-layout container" id="doc-content">
+    <aside class="docs-sidebar" aria-label="文档目录">
+      <div class="docs-sidebar-inner">
+        <p class="docs-label">使用文档</p>
+        <nav class="toc" aria-label="文档章节">
+          <a href="#install">安装与升级</a>
+          <a href="#permissions">首次授权</a>
+          <a href="#quick-start">快速开始</a>
+          <a href="#selection">划词翻译</a>
+          <a href="#ocr">截图 OCR</a>
+          <a href="#web">网页全文翻译</a>
+          <a href="#document">文档翻译工作台</a>
+          <a href="#channels">翻译通道</a>
+          <a href="#settings">设置与外观</a>
+          <a href="#privacy">隐私与安全</a>
+          <a href="#faq">常见问题</a>
+          <a href="#limitations">已知限制</a>
+        </nav>
+        <div class="docs-sidebar-cta">
+          <p>遇到问题？</p>
+          <a href="https://github.com/zhq734/translation/issues" target="_blank" rel="noreferrer">提交 Issue<svg class="i"><use href="#i-arrow"/></svg></a>
+        </div>
+      </div>
+    </aside>
+
+    <article class="docs-content">
+      <header class="docs-hero">
+        <p class="section-kicker">DOCUMENTATION · V1.2.8</p>
+        <h1>使用文档</h1>
+        <p>从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。</p>
+        <div class="docs-hero-meta"><span>适用于 macOS / Windows / Linux</span><span>更新于 2026.11</span></div>
+      </header>
+
+      <section id="install" class="doc-section">
+        <h2>安装与升级</h2>
+        <p class="doc-lead">安装脚本会自动识别操作系统与 CPU 架构，从 GitHub Releases 下载对应安装包、校验 SHA-256，并安装到当前用户目录。也可以在 Releases 页面手动下载。</p>
+
+        <div class="callout callout-info">
+          <strong>推荐使用一键安装</strong>
+          <p>脚本不要求管理员权限。macOS 默认安装到 <code>~/Applications</code>；Linux 安装 AppImage 到 <code>~/.local/bin</code>；Windows 会运行 NSIS 安装向导。</p>
+        </div>
+
+        <div class="doc-tabs" role="group" aria-label="安装命令">
+          <button type="button" data-command="unix" aria-pressed="true">macOS / Linux</button>
+          <button type="button" data-command="windows" aria-pressed="false">Windows PowerShell</button>
+        </div>
+        <div class="doc-command"><code id="install-command">curl -fsSL https://raw.githubusercontent.com/zhq734/translation/master/scripts/install.sh | sh</code><button type="button" id="copy-command" aria-label="复制安装命令"><svg class="i"><use href="#i-copy"/></svg><span>复制</span></button></div>
+
+        <h3>手动下载</h3>
+        <p>打开 <a href="https://github.com/zhq734/translation/releases/latest" target="_blank" rel="noreferrer">GitHub Releases</a>，按系统下载对应文件：</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>平台</th><th>推荐文件</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>macOS</td><td><code>SelectionTranslator-&lt;版本&gt;-mac-&lt;架构&gt;.dmg</code></td><td>安装到「应用程序」；Apple Silicon 与 Intel 分开下载</td></tr>
+              <tr><td>Windows 10/11</td><td><code>SelectionTranslator-&lt;版本&gt;-Setup-&lt;架构&gt;.exe</code></td><td>x64 与 arm64；运行安装向导</td></tr>
+              <tr><td>Windows 7 SP1 x64</td><td><code>SelectionTranslator-&lt;版本&gt;-Setup-win7-x64.exe</code></td><td>兼容包，仅支持 64 位，需手动更新</td></tr>
+              <tr><td>Linux</td><td><code>SelectionTranslator-&lt;版本&gt;-&lt;架构&gt;.AppImage</code></td><td>赋予执行权限后运行；x64 / arm64</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>所有安装包应与同一 Release 中的 <code>SHA256SUMS</code> 一起使用。应用内检查更新会读取 Release 元数据，但不会未经确认自动下载和安装。</p>
+
+        <h3>macOS 自动升级</h3>
+        <p>应用内自动升级仅适用于固定路径 <code>/Applications/划词翻译.app</code>。从 DMG、下载目录或其他位置运行时，更新会降级为手动安装。通过一键脚本安装到 <code>~/Applications</code> 时，如需自动升级，请先将应用移动到 <code>/Applications</code>。</p>
+
+        <h3>Windows 7 说明</h3>
+        <div class="callout callout-warn">
+          <strong>仅建议用于无法升级系统的环境</strong>
+          <p>Win7 包使用 Electron 22 兼容运行时，该运行时已停止安全更新。文档翻译不可用；OCR 固定使用 Tesseract.js WebAssembly，内置简体中文、繁体中文与英文模型。应用内更新只打开 Release 页面，不会自动下载安装。</p>
+        </div>
+      </section>
+
+      <section id="permissions" class="doc-section">
+        <h2>首次授权</h2>
+        <p class="doc-lead">macOS 需要「辅助功能」权限，才能读取其他应用中的选中文字。Windows 与 Linux 通常无需额外授权。</p>
+        <ol class="doc-steps">
+          <li><strong>打开系统设置</strong><span>进入「隐私与安全性 → 辅助功能」。</span></li>
+          <li><strong>添加并勾选「划词翻译」</strong><span>开发模式下需要添加并勾选 <code>Electron</code>。</span></li>
+          <li><strong>完全退出后重新启动</strong><span>仅关闭窗口通常不够；请从菜单栏退出应用后重新打开。</span></li>
+          <li><strong>重新选中文字测试</strong><span>如果仍未出现按钮，请检查触发方式与目标应用是否支持复制。</span></li>
+        </ol>
+        <div class="callout callout-info">
+          <strong>取词原理</strong>
+          <p>macOS 优先通过 <code>AXSelectedText</code> 读取选区；Windows 优先通过 UI Automation <code>TextPattern</code>；Linux 读取主选区。只有原生直读不可用或为空时，才回退到受控的复制流程。</p>
+        </div>
+      </section>
+
+      <section id="quick-start" class="doc-section">
+        <h2>快速开始</h2>
+        <p class="doc-lead">默认模式是「选区按钮」：选中文字后，选区附近会出现「译」按钮，点击后显示译文。</p>
+        <div class="quick-grid">
+          <div><span>01</span><h3>选中文字</h3><p>在浏览器、Office、PDF、聊天软件或 IDE 中选择文字。</p></div>
+          <div><span>02</span><h3>点击「译」</h3><p>也可以改用自动翻译，或按全局快捷键 <kbd>Alt + T</kbd>。</p></div>
+          <div><span>03</span><h3>查看译文</h3><p>在弹窗中朗读、复制、固定，或临时切换语言与翻译通道。</p></div>
+        </div>
+        <p>macOS 上 <kbd>Alt</kbd> 对应 <kbd>Option（⌥）</kbd>，默认快捷键是 <kbd>⌥T</kbd>。快捷键可在设置中修改，但应用会拒绝注册 <kbd>Command+C</kbd> / <kbd>Ctrl+C</kbd> 等系统复制组合，避免干扰正常复制。</p>
+      </section>
+
+      <section id="selection" class="doc-section">
+        <h2>划词翻译</h2>
+        <h3>三种触发方式</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方式</th><th>行为</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td>选区按钮（默认）</td><td>选中文字后显示「译」按钮，点击才翻译</td><td>希望翻译完全由自己控制</td></tr>
+              <tr><td>自动翻译</td><td>完成选词后直接打开弹窗并翻译</td><td>高频阅读外文资料</td></tr>
+              <tr><td>仅快捷键</td><td>划词不自动响应，只通过全局快捷键触发</td><td>不希望选区旁出现按钮</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>弹窗操作</h3>
+        <ul class="doc-list">
+          <li><strong>手动翻译：</strong>点击文档图标，在划词翻译与手动输入之间切换。</li>
+          <li><strong>朗读：</strong>点击扬声器朗读当前译文，再次点击停止。默认使用系统内置语音，不会自动播放。</li>
+          <li><strong>图钉：</strong>固定弹窗，避免点击外部或自动隐藏计时导致关闭。</li>
+          <li><strong>复制：</strong>将当前译文写入系统剪贴板。</li>
+          <li><strong>语言选择器：</strong>临时修改源语言和目标语言并重新翻译。</li>
+          <li><strong>关闭：</strong>点击「×」或按 <kbd>Esc</kbd>。</li>
+        </ul>
+        <h3>手动翻译</h3>
+        <p>点击弹窗左上角的文档图标，或从菜单栏/托盘选择「手动翻译…」。在输入框中粘贴或输入文本，按 <kbd>Enter</kbd> 提交；<kbd>Shift + Enter</kbd> 换行。</p>
+      </section>
+
+      <section id="ocr" class="doc-section">
+        <h2>截图 OCR</h2>
+        <p class="doc-lead">图片、扫描 PDF、视频字幕或游戏界面无法直接复制时，用框选 OCR 识别文字，再送入翻译通道。</p>
+        <h3>截图识别流程</h3>
+        <ol class="doc-steps">
+          <li><strong>按下 <kbd>Alt + O</kbd></strong><span>默认截图快捷键，也可从菜单栏/托盘的「截图 OCR 翻译…」进入。</span></li>
+          <li><strong>拖拽绘制选区</strong><span>可拖动整体，或用八个控制点调整大小。</span></li>
+          <li><strong>识别文字</strong><span>点击「识别文字」，结果显示在选区侧栏，可调整侧栏尺寸。</span></li>
+          <li><strong>翻译结果</strong><span>点击「翻译」，把识别文字送入当前翻译通道。</span></li>
+        </ol>
+        <p>按 <kbd>Esc</kbd> 或点击取消退出框选。剪贴板中有图片时，也可以从托盘选择「剪贴板图片 OCR 翻译…」，直接识别并翻译。</p>
+        <h3>OCR 引擎</h3>
+        <p>自动模式按「系统 OCR → PaddleOCR → Tesseract」回退。macOS 使用 Vision，Windows 使用系统 OCR；PaddleOCR 使用随包分发的 PP-OCRv6 ONNX 模型；Tesseract 作为最后的本地兜底。</p>
+        <div class="callout callout-ok">
+          <strong>图片不会上传</strong>
+          <p>截图与剪贴板图片在本机完成 OCR。只有识别出的文字会按当前翻译通道发送给对应服务。</p>
+        </div>
+        <h3>标注与导出</h3>
+        <p>截图工具栏支持矩形、椭圆、箭头、画笔、文字、马赛克、高亮、高斯模糊、聚光灯、撤销/重做和清空标注。完成后可复制图片到剪贴板，或保存为 PNG。</p>
+      </section>
+
+      <section id="web" class="doc-section">
+        <h2>网页全文翻译</h2>
+        <p class="doc-lead">内置网页阅读器把译文写回原文位置，不创建侧栏，也不重建页面结构。</p>
+        <ol class="doc-steps">
+          <li><strong>打开网页翻译</strong><span>从菜单栏/托盘的「打开网页翻译…」或翻译弹窗入口进入。</span></li>
+          <li><strong>输入地址并选择语言</strong><span>源语言默认自动检测，目标语言可选择固定语言或自动中英互译。</span></li>
+          <li><strong>点击「翻译此页」</strong><span>只有显式点击后才读取当前主文档的可见内容。</span></li>
+          <li><strong>切换显示模式</strong><span>支持原文、译文与对照模式；也可以对页面图片执行 OCR 后翻译。</span></li>
+        </ol>
+        <h3>提取与隐私边界</h3>
+        <ul class="doc-list">
+          <li>不读取 Chrome、Edge、Safari、Firefox 等系统浏览器已打开的标签页。</li>
+          <li>只读取当前主文档中已经渲染且可见的 DOM，不跨 iframe，不穿透 Shadow DOM。</li>
+          <li>提取脚本只读；受控写回脚本只修改锚点匹配的文本节点，不改变 DOM 结构。</li>
+          <li>动态页面变化只提示重新翻译，不会自动提取或上传新增内容。</li>
+        </ul>
+      </section>
+
+      <section id="document" class="doc-section">
+        <h2>文档翻译工作台</h2>
+        <p class="doc-lead">一次导入一个本地文件，完成解析、OCR、翻译、左右对照和 PDF 导出。</p>
+        <div class="format-grid">
+          <div><strong>文档格式</strong><span>PDF · DOCX · EPUB · HTML · Markdown · TXT · JSON · CSV · SRT · VTT</span></div>
+          <div><strong>图片格式</strong><span>PNG · JPG / JPEG · WebP · GIF · BMP</span></div>
+        </div>
+        <h3>翻译与版式</h3>
+        <p>文档存在原生文本层时优先使用；扫描版 PDF 会先栅格化再 OCR。公式作为不可翻译区块保留，表格、图片、分栏与样式会在源格式提供信息时尽量重建。复杂矢量、艺术字、跨页表格和竖排文本可能产生版式告警。</p>
+        <h3>导出模式</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>模式</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>保留版式译文 PDF</td><td>尽量保留页面尺寸、区块位置、字体、表格、图片和公式</td></tr>
+              <tr><td>左右双语 PDF</td><td>左侧原文、右侧译文；固定版式 PDF 使用原页或缩略图作为原文侧</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>若仍有翻译失败区块，可重试未完成块，或在显式确认后导出部分结果。部分导出会保留全部页面，失败区块保留原文并添加标记。</p>
+        <div class="callout callout-warn">
+          <strong>Windows 7 不支持文档翻译</strong>
+          <p>Win7 兼容包会显示不支持提示。划词、截图 OCR 与网页翻译仍按各自平台能力可用。</p>
+        </div>
+      </section>
+
+      <section id="channels" class="doc-section">
+        <h2>翻译通道</h2>
+        <p class="doc-lead">默认按优先级尝试可用通道。当前通道失败或熔断时，会自动切换到后续通道。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>优先级</th><th>通道</th><th>启用条件</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>AI 翻译</td><td>已启用，协议 / Base URL / 模型配置完整</td></tr>
+              <tr><td>2</td><td>钉钉翻译</td><td>已启用，企业应用配置完整</td></tr>
+              <tr><td>3</td><td>微软翻译</td><td>已启用，语言对受支持</td></tr>
+              <tr><td>4</td><td>自建 DeepLX</td><td>已填写 <code>/translate</code> 服务地址</td></tr>
+              <tr><td>5</td><td>公共 DeepLX</td><td>默认兜底，可能限流</td></tr>
+              <tr><td>6</td><td>Google</td><td>当前网络可访问 Google 翻译接口</td></tr>
+              <tr><td>7</td><td>MyMemory</td><td>前面通道均失败</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>AI 翻译</h3>
+        <p>支持 Ollama、OpenAI 兼容与 Claude Code（Anthropic）兼容三种 HTTP 协议。可在线检测端点、自动拉取模型列表。API Key 使用 <code>safeStorage</code> 加密后写入独立的 <code>ai-credentials.json</code>，不会写入公开设置或日志。</p>
+
+        <h3>自建 DeepLX</h3>
+        <p>在设置中填写完整的 <code>/translate</code> 服务地址，并可在线检测。使用 Docker 部署时，确保端口未被占用；代理模式为系统或自定义代理时，绕过规则应保留 <code>localhost</code>、<code>127.0.0.1</code> 和 <code>&lt;local&gt;</code>。</p>
+
+        <h3>钉钉企业翻译</h3>
+        <p>在钉钉开放平台创建企业内部应用并开通「AI 文本翻译」权限，准备 <code>CorpId</code>、<code>ClientId</code> 与 <code>ClientSecret</code>。Secret 只通过设置页提交给主进程，使用 <code>safeStorage</code> 加密保存。</p>
+
+        <h3>微软翻译</h3>
+        <p>无需 Azure 账号、订阅密钥或 Region。应用会先加载 Bing 翻译页面并提取短期参数，再请求网页翻译接口。临时参数只缓存在内存中，不写入凭证文件。该能力使用非官方接口，可能随 Bing 页面结构或反滥用策略调整而失效。</p>
+      </section>
+
+      <section id="settings" class="doc-section">
+        <h2>设置与外观</h2>
+        <h3>常用设置</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>设置项</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>界面语言</td><td>跟随系统</td><td>简体中文、English 或跟随系统</td></tr>
+              <tr><td>主题模式</td><td>跟随系统</td><td>跟随系统、始终浅色、始终深色</td></tr>
+              <tr><td>主题配色</td><td>天空蓝</td><td>樱花粉、祖母绿、天空蓝、藏青、铂金黑</td></tr>
+              <tr><td>目标语言</td><td>自动中英互译</td><td>也可选择固定目标语言</td></tr>
+              <tr><td>源语言</td><td>自动检测</td><td>也可选择固定源语言</td></tr>
+              <tr><td>触发方式</td><td>选区按钮</td><td>自动翻译、选区按钮、仅快捷键</td></tr>
+              <tr><td>全局快捷键</td><td><kbd>Alt + T</kbd></td><td>Electron accelerator 格式</td></tr>
+              <tr><td>结果自动隐藏</td><td>不自动隐藏</td><td>0 / 3 / 5 / 8 / 15 秒</td></tr>
+              <tr><td>语音引擎</td><td>系统内置语音</td><td>可切换 Edge 在线神经网络语音</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>配置文件位置</h3>
+        <p>公开设置保存在 Electron 的 <code>userData</code> 目录。macOS 打包应用通常位于 <code>~/Library/Application Support/划词翻译/settings.json</code>。AI Key、钉钉 Secret 与日志分别使用独立文件或目录，不会写入公开设置。</p>
+        <p>修改设置文件前请先退出应用，并建议备份原文件。不同版本会通过 <code>schemaVersion</code> 自动迁移。</p>
+        <h3>语音</h3>
+        <p>默认系统内置语音不会产生新的应用侧网络请求。主动启用 Edge 在线语音后，朗读会联网，并把当前译文发送给微软在线朗读服务；失败时自动回退系统语音。</p>
+      </section>
+
+      <section id="privacy" class="doc-section">
+        <h2>隐私与安全</h2>
+        <p class="doc-lead">划词翻译不提供云端账户系统。应用只在明确触发后读取内容，并把必要的文字发送给你选择的翻译服务。</p>
+        <div class="privacy-cards">
+          <div><strong>本机 OCR</strong><p>截图、页面截图、文档内嵌图片和公式裁剪图在本机处理，图片字节不上传。</p></div>
+          <div><strong>加密凭证</strong><p>AI API Key 与钉钉 Secret 使用系统安全存储加密，不写入公开设置或日志。</p></div>
+          <div><strong>显式授权</strong><p>网页只在点击「翻译此页」后提取；文档只读取你主动选择或拖入的文件。</p></div>
+          <div><strong>最小数据流</strong><p>只有进入翻译范围的文字会发送到当前翻译通道，翻译结果在本地弹窗显示。</p></div>
+        </div>
+        <h3>数据流</h3>
+        <ol class="doc-steps">
+          <li><strong>读取选区或识别文字</strong><span>优先本机直读或本地 OCR。</span></li>
+          <li><strong>发送必要文字</strong><span>根据当前通道发送给对应翻译服务；若配置本地模型或自建服务，可留在本机或内网。</span></li>
+          <li><strong>返回译文</strong><span>在本地弹窗、网页或文档工作台显示，由你决定是否复制或导出。</span></li>
+        </ol>
+        <p>不建议直接翻译密码、API Key、客户隐私、未公开源代码或其他敏感内容。使用第三方翻译服务时，请自行评估其隐私政策、数据保留、配额与服务条款。</p>
+        <div class="callout callout-warn">
+          <strong>第三方服务边界</strong>
+          <p>微软网页翻译、公共 DeepLX、Google、MyMemory 与 Edge 在线语音均依赖第三方接口。它们可能限流、变更或停止工作，也可能按各自政策处理请求内容。</p>
+        </div>
+      </section>
+
+      <section id="faq" class="doc-section">
+        <h2>常见问题</h2>
+        <div class="doc-faq">
+          <details open><summary>划词后没有按钮或译文<span>+</span></summary><p>确认已授予 macOS 辅助功能权限；确认触发方式不是「仅使用快捷键」；如果是快捷键模式，请按已配置的组合；完全退出旧进程后重新启动。某些应用使用自绘控件或不支持系统复制，无法通过当前机制取词。</p></details>
+          <details><summary>翻译失败或出现 429<span>+</span></summary><p>公共 DeepLX 可能被限流，Google 可能受网络环境影响。应用会自动尝试后续通道；如果仍不稳定，建议配置自建 DeepLX，并确认服务地址、端口与代理绕过规则。</p></details>
+          <details><summary>macOS 提示「应用已损坏，无法打开」<span>+</span></summary><p>先确认安装包来源可信，并确认它是否为未签名构建。未签名包首次打开时，可在确认来源后执行：<code>xattr -dr com.apple.quarantine "/Applications/划词翻译.app"</code>，然后重新打开应用。若需减少 Gatekeeper 提示并启用自动升级，应使用签名公证包。</p></details>
+          <details><summary>钉钉 Secret 保存失败<span>+</span></summary><p>Electron <code>safeStorage</code> 不可用时，应用会拒绝写入明文凭证。请确认系统钥匙串/安全存储可用，重新启动应用后再试；不要手动把 Secret 写入 <code>settings.json</code>。</p></details>
+          <details><summary>微软翻译检测失败<span>+</span></summary><p>该通道不需要 Azure 密钥或 Region。确认当前网络和代理可以访问 <code>www.bing.com</code>；如果 Bing 拒绝临时网页会话或触发限流，请稍后重试，并保留后续兜底通道。</p></details>
+          <details><summary>npm install 失败<span>+</span></summary><p>确认 Node.js 版本不低于 18；删除不完整依赖后重新安装。原生模块编译错误请安装 Xcode Command Line Tools，并确认 Node/Electron 架构匹配。npm 缓存权限异常时可临时使用项目内缓存：<code>npm install --cache ./.npm-cache</code>。</p></details>
+        </div>
+      </section>
+
+      <section id="limitations" class="doc-section">
+        <h2>已知限制</h2>
+        <ul class="doc-list">
+          <li>macOS 是当前主要验证平台；Windows 与 Linux 的全局划词、权限和快捷键仍建议在真实目标设备上验证。</li>
+          <li>取词依赖系统选区能力，不保证兼容所有自绘文本控件、远程桌面或受限应用。</li>
+          <li>单次输入最长处理 5000 个字符；部分兜底通道有更短限制。</li>
+          <li>文档工作台一次处理一个文件；批量翻译与 PPTX / XLSX 不在当前版本范围。</li>
+          <li>Windows 7 兼容包使用已停止安全更新的 Electron 22，且不支持文档翻译。</li>
+          <li>自动更新依赖 GitHub Release 元数据；非固定路径安装、未签名或签名不匹配构建会降级为手动安装。</li>
+          <li>项目暂不提供账号体系和云端同步。</li>
+        </ul>
+      </section>
+
+      <footer class="docs-footer">
+        <div><strong>还有问题？</strong><p>欢迎在 GitHub 提交 Issue，或查看项目 README 获取开发与打包说明。</p></div>
+        <div class="docs-footer-links"><a href="https://github.com/zhq734/translation/issues" target="_blank" rel="noreferrer">提交 Issue</a><a href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer">GitHub 仓库</a><a href="../">返回首页</a></div>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand" href="../"><img src="../assets/icon.png" width="34" height="34" alt=""><span class="brand-lockup"><span class="brand-name">划词翻译</span><span class="brand-en">Selection Translator</span></span></a>
+      <p><span>选中，即懂。</span><span>© 2026 zhq734 · MIT License</span></p>
+      <nav class="footer-links" aria-label="页脚导航"><a href="../">首页</a><a href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/zhq734/translation/releases" target="_blank" rel="noreferrer">Releases</a><a href="./#privacy">隐私说明</a></nav>
+    </div>
+  </footer>
+</body>
+</html>
