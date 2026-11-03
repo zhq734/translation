@@ -155,6 +155,9 @@ const windowCloseButton = document.getElementById('window-close') as HTMLButtonE
 const shortcutGuideEl = document.getElementById('shortcut-guide') as HTMLElement
 const shortcutGuideCloseButton = document.getElementById('shortcut-guide-close') as HTMLButtonElement
 const shortcutGuideConfirmButton = document.getElementById('shortcut-guide-confirm') as HTMLButtonElement
+const shortcutGuideSelectionKey = document.getElementById('shortcut-guide-selection-key') as HTMLElement
+const shortcutGuideQuickOcrKey = document.getElementById('shortcut-guide-quick-ocr-key') as HTMLElement
+const shortcutGuideOcrEditorKey = document.getElementById('shortcut-guide-ocr-editor-key') as HTMLElement
 const reopenShortcutGuideButton = document.getElementById('reopen-shortcut-guide') as HTMLButtonElement
 
 type SettingsTabId = 'general' | 'ai' | 'ocr' | 'translation-services' | 'advanced' | 'logs' | 'about'
@@ -509,6 +512,42 @@ function markAiFormDirty(): void {
 }
 
 /**
+ * 将快捷键配置转换为快捷动作指南中显示的文本。
+ * @param accelerator 用户配置的 Electron 快捷键。
+ * @returns 去除首尾空白的快捷键；未配置时返回当前语言的“未设置”文案。
+ * @author zhenghq
+ */
+function formatShortcutGuideHotkey(accelerator: string): string {
+  return accelerator.trim() || t('settings.shortcutGuide.notSet')
+}
+
+/**
+ * 按当前设置和界面语言同步快捷动作指南的快捷键及说明文案。
+ * @param settings 当前完整设置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderShortcutGuideHotkeys(settings: Settings): void {
+  const selectionHotkey = formatShortcutGuideHotkey(settings.hotkey)
+  const quickOcrHotkey = formatShortcutGuideHotkey(settings.ocrQuickHotkey)
+  const ocrEditorHotkey = formatShortcutGuideHotkey(settings.ocrHotkey)
+
+  shortcutGuideSelectionKey.textContent = selectionHotkey
+  shortcutGuideQuickOcrKey.textContent = quickOcrHotkey
+  shortcutGuideOcrEditorKey.textContent = ocrEditorHotkey
+
+  const guideCopy: Array<[string, string, string]> = [
+    ['settings.shortcutGuide.selection', 'shortcutGuideSelection', selectionHotkey],
+    ['settings.shortcutGuide.quickOcr', 'shortcutGuideQuickOcr', quickOcrHotkey],
+    ['settings.shortcutGuide.ocrEditor', 'shortcutGuideOcrEditor', ocrEditorHotkey]
+  ]
+  for (const [key, id, hotkey] of guideCopy) {
+    const element = document.getElementById(id)
+    if (element) element.textContent = t(key, { hotkey })
+  }
+}
+
+/**
  * 将完整设置同步到页面控件。
  * @param settings 当前完整设置。
  * @returns 无返回值。
@@ -601,6 +640,7 @@ function renderSettings(settings: Settings): void {
   updateTriggerHint(settings.triggerMode)
   updateSpeechProviderHint(settings.speechProvider)
   updateProxyFields(settings.proxyMode)
+  renderShortcutGuideHotkeys(settings)
 }
 
 /** 保存用户选择的主题模式。

@@ -6,6 +6,7 @@ import { tForTest } from './helpers/i18n.ts'
 
 const settingsHtml = readFileSync('src/renderer/settings.html', 'utf8')
 const settingsSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
+const settingsCss = readFileSync('src/renderer/src/settings.css', 'utf8')
 const main = readFileSync('src/main/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
 
@@ -41,12 +42,64 @@ test('设置页和托盘都必须提供重新查看快捷动作引导的入口',
 })
 
 test('快捷动作引导必须清楚区分划词、快捷 OCR 与截图编辑', () => {
-  assert.ok(tForTest('zh-CN', 'settings.shortcutGuide.selection').includes('Alt+T'))
-  assert.ok(tForTest('zh-CN', 'settings.shortcutGuide.quickOcr').includes('Alt+S'))
-  assert.ok(tForTest('zh-CN', 'settings.shortcutGuide.ocrEditor').includes('Alt+O'))
-  assert.ok(tForTest('en-US', 'settings.shortcutGuide.quickOcr').includes('Alt+S'))
-  assert.notEqual(
-    tForTest('zh-CN', 'settings.shortcutGuide.quickOcr'),
-    tForTest('zh-CN', 'settings.shortcutGuide.ocrEditor')
+  const selection = tForTest('zh-CN', 'settings.shortcutGuide.selection', {
+    hotkey: 'Control+Alt+T'
+  })
+  const quickOcr = tForTest('zh-CN', 'settings.shortcutGuide.quickOcr', {
+    hotkey: 'Control+Alt+S'
+  })
+  const ocrEditor = tForTest('zh-CN', 'settings.shortcutGuide.ocrEditor', {
+    hotkey: 'Control+Alt+O'
+  })
+
+  assert.match(selection, /Control\+Alt\+T/u)
+  assert.match(quickOcr, /Control\+Alt\+S/u)
+  assert.match(ocrEditor, /Control\+Alt\+O/u)
+  assert.match(
+    tForTest('en-US', 'settings.shortcutGuide.quickOcr', { hotkey: 'Control+Alt+S' }),
+    /Control\+Alt\+S/u
   )
+  assert.doesNotMatch(tForTest('zh-CN', 'settings.shortcutGuide.selection'), /Alt\+T/u)
+  assert.notEqual(
+    tForTest('zh-CN', 'settings.shortcutGuide.quickOcr', { hotkey: 'Alt+S' }),
+    tForTest('zh-CN', 'settings.shortcutGuide.ocrEditor', { hotkey: 'Alt+O' })
+  )
+})
+
+test('快捷动作指南必须按用户配置动态渲染三个入口的快捷键', () => {
+  for (const id of [
+    'shortcut-guide-selection-key',
+    'shortcut-guide-quick-ocr-key',
+    'shortcut-guide-ocr-editor-key'
+  ]) {
+    assert.match(settingsHtml, new RegExp(`id="${id}"`, 'u'))
+  }
+
+  assert.match(settingsSource, /function renderShortcutGuideHotkeys\(settings: Settings\): void/u)
+  assert.match(
+    settingsSource,
+    /shortcutGuideSelectionKey\.textContent\s*=\s*selectionHotkey/u
+  )
+  assert.match(
+    settingsSource,
+    /shortcutGuideQuickOcrKey\.textContent\s*=\s*quickOcrHotkey/u
+  )
+  assert.match(
+    settingsSource,
+    /shortcutGuideOcrEditorKey\.textContent\s*=\s*ocrEditorHotkey/u
+  )
+  assert.match(settingsSource, /formatShortcutGuideHotkey\(settings\.hotkey\)/u)
+  assert.match(settingsSource, /formatShortcutGuideHotkey\(settings\.ocrQuickHotkey\)/u)
+  assert.match(settingsSource, /formatShortcutGuideHotkey\(settings\.ocrHotkey\)/u)
+  assert.match(settingsSource, /renderShortcutGuideHotkeys\(settings\)/u)
+  assert.match(settingsSource, /accelerator\.trim\(\)\s*\|\|\s*t\('settings\.shortcutGuide\.notSet'\)/u)
+  assert.equal(tForTest('zh-CN', 'settings.shortcutGuide.notSet'), '未设置')
+  assert.equal(tForTest('en-US', 'settings.shortcutGuide.notSet'), 'Not set')
+})
+
+test('快捷动作指南与下方触发方式必须保留清晰间距', () => {
+  const guideEntryCss =
+    settingsCss.match(/\.shortcut-guide-entry\s*\{([\s\S]*?)\}/u)?.[1] ?? ''
+
+  assert.match(guideEntryCss, /(?:^|\n)\s*margin-bottom:\s*var\(--space-4\);/u)
 })
