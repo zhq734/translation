@@ -72,8 +72,9 @@ test('翻译历史面板必须复用主题变量且不硬编码颜色', () => {
 
 test('历史搜索框必须关闭原生 searchfield 外观，避免聚焦时出现双层边框', () => {
   const searchInputCss =
-    popupCss.match(/\.history-search-wrap input\s*\{([\s\S]*?)\}/u)?.[1] ?? ''
+    popupCss.match(/#history-search\s*\{([\s\S]*?)\}/u)?.[1] ?? ''
 
+  assert.match(searchInputCss, /(?:^|\n)\s*border:\s*0;/u)
   assert.match(searchInputCss, /(?:^|\n)\s*-webkit-appearance:\s*none;/u)
   assert.match(searchInputCss, /(?:^|\n)\s*appearance:\s*none;/u)
   assert.match(searchInputCss, /(?:^|\n)\s*box-shadow:\s*none;/u)

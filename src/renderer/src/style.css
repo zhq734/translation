@@ -870,7 +870,7 @@ body {
   stroke-width: 1.7;
 }
 
-.history-search-wrap input {
+#history-search {
   flex: 1 1 auto;
   min-width: 0;
   height: var(--control-height);
@@ -885,15 +885,15 @@ body {
 }
 
 /* 关闭 Chromium 原生搜索控件装饰，焦点边框只由外层容器统一绘制。 */
-.history-search-wrap input::-webkit-search-decoration,
-.history-search-wrap input::-webkit-search-cancel-button,
-.history-search-wrap input::-webkit-search-results-button,
-.history-search-wrap input::-webkit-search-results-decoration {
+#history-search::-webkit-search-decoration,
+#history-search::-webkit-search-cancel-button,
+#history-search::-webkit-search-results-button,
+#history-search::-webkit-search-results-decoration {
   -webkit-appearance: none;
   appearance: none;
 }
 
-.history-search-wrap input::placeholder {
+#history-search::placeholder {
   color: var(--text-muted);
 }
 
