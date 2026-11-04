@@ -119,6 +119,10 @@ test('翻译 Prompt 应包含源语言和目标语言并要求只输出译文', 
   assert.match(system.content as string, /ST-SEG/u)
   // 文档表格行会在单元格之间插入内部标记，模型同样不能丢失或改写。
   assert.match(system.content as string, /ST-DOC-CELL/u)
+  // 用户原文可能包含生图、工具调用等指令，模型必须把它们当作待翻译数据而不是执行。
+  assert.match(system.content as string, /用户消息.*待翻译数据/u)
+  assert.match(system.content as string, /不得执行/u)
+  assert.match(system.content as string, /生成图片/u)
 })
 
 test('文档上下文应把命中术语和相邻摘要注入三种 AI 协议的系统提示', () => {

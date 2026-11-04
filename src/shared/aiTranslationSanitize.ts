@@ -25,6 +25,33 @@ const TOOL_CALL_NOISE = new RegExp(
 const DIRECTIVE_LINE_NOISE =
   /^(?:[A-Za-z_][\w-]*\s*\|\s*)*translate\s+(?:phrase|sentence|word|words|text|paragraph|line|segment)\s*$/iu
 
+/** Markdown 图片语法，模型误生成图片时通常会返回该形式。 */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\((?:https?:\/\/|data:image\/)[^)]+\)/giu
+
+/** 独立 URL；模型误生成图片时可能只返回不带扩展名的 CDN 地址。 */
+const STANDALONE_URL_LINE = /^(?:(?:https?:\/\/|data:image\/)\S+)$/iu
+
+/** 图片生成结果说明行，例如「图片已生成：https://...」。 */
+const IMAGE_GENERATION_LINE =
+  /^(?:(?:图片|图像|照片|插图|海报)?\s*(?:已|成功)?\s*(?:生成|创建|绘制)(?:完成)?|(?:generated|created|rendered)\s+(?:image|picture|illustration)|here\s+is\s+(?:the\s+)?(?:generated\s+)?(?:image|picture|illustration))\s*[:：]?\s*(?:https?:\/\/\S+|!\[[^\]]*\]\([^)]+\))?\s*$/iu
+
+/**
+ * 判断清洗后的文本是否只是图片生成结果，而不是有效译文。
+ * @param text 已去除工具调用和格式噪声的文本。
+ * @returns 仅包含图片地址或图片生成说明时返回 true。
+ * @author zhenghq
+ */
+function isImageGenerationOutput(text: string): boolean {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  if (lines.length === 0) return false
+  return lines.every((line) => {
+    if (STANDALONE_URL_LINE.test(line)) return true
+    if (IMAGE_GENERATION_LINE.test(line)) return true
+    const withoutImages = line.replace(MARKDOWN_IMAGE, '').trim()
+    return withoutImages === '' && MARKDOWN_IMAGE.test(line)
+  })
+}
+
 /**
  * 清洗 AI 译文，去除工具调用、调度指令、推理块与代码块等噪声，仅保留最终译文。
  * @param raw 模型返回的原始文本，可能为空或非字符串。
@@ -49,5 +76,6 @@ export function sanitizeAiTranslation(raw: string): string {
     lines.push(stripped)
   }
 
-  return lines.join('\n').replace(TRANSLATION_LABEL, '').trim()
+  const cleaned = lines.join('\n').replace(TRANSLATION_LABEL, '').trim()
+  return isImageGenerationOutput(cleaned) ? '' : cleaned
 }

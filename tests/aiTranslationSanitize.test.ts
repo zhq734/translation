@@ -46,6 +46,23 @@ test('全部内容均为噪声时应返回空字符串', () => {
   assert.equal(sanitizeAiTranslation('search("Auto-reviewer approved codex to run")fast|translate phrase'), '')
 })
 
+test('模型误生成图片时应返回空字符串以触发翻译通道降级', () => {
+  const imageUrl = 'https://example.com/generated-image.png'
+  assert.equal(sanitizeAiTranslation(`![generated image](${imageUrl})`), '')
+  assert.equal(sanitizeAiTranslation(`图片已生成：${imageUrl}`), '')
+  assert.equal(sanitizeAiTranslation(`Here is the generated image: ${imageUrl}`), '')
+  assert.equal(sanitizeAiTranslation(imageUrl), '')
+  assert.equal(sanitizeAiTranslation('https://cdn.example.com/files/opaque-id'), '')
+})
+
+test('不应误删正常译文中的普通链接和图片描述', () => {
+  assert.equal(
+    sanitizeAiTranslation('访问 https://example.com/docs 查看文档'),
+    '访问 https://example.com/docs 查看文档'
+  )
+  assert.equal(sanitizeAiTranslation('这张图片描绘了古典人体素描习作'), '这张图片描绘了古典人体素描习作')
+})
+
 test('空输入应安全返回空字符串', () => {
   assert.equal(sanitizeAiTranslation(''), '')
   assert.equal(sanitizeAiTranslation(null as unknown as string), '')
@@ -59,4 +76,10 @@ test('协议响应解析应输出已清洗的译文', () => {
     parseAiTranslationResponse('claude-code', { content: [{ type: 'text', text: '<think>x</think>你' }, { type: 'text', text: '好' }] }),
     '你好'
   )
+})
+
+test('协议响应解析遇到误生成图片时应返回空字符串', () => {
+  const imageUrl = 'https://example.com/generated-image.png'
+  assert.equal(parseAiTranslationResponse('ollama', { message: { content: imageUrl } }), '')
+  assert.equal(parseAiTranslationResponse('openai', { choices: [{ message: { content: `图片已生成：${imageUrl}` } }] }), '')
 })

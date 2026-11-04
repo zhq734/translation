@@ -53,8 +53,36 @@ function findUnstableStart(raw: string): number {
   const tool = findPartialToolCallStart(raw)
   if (tool !== null) candidates.push(tool)
 
+  const image = findImageGenerationStart(raw)
+  if (image !== null) candidates.push(image)
+
   if (candidates.length === 0) return raw.length
   return Math.min(...candidates)
+}
+
+/**
+ * 查找可能构成图片生成结果的尾部片段，避免在完整结果到达前展示图片地址。
+ * @param raw 到目前为止累积的原始文本。
+ * @returns 需要暂存的起点；不存在图片生成结果时返回 null。
+ * @author zhenghq
+ */
+function findImageGenerationStart(raw: string): number | null {
+  const lineStart = raw.lastIndexOf('\n') + 1
+  const line = raw.slice(lineStart)
+  const trimmed = line.trimStart()
+  if (!trimmed) return null
+  const offset = lineStart + (line.length - trimmed.length)
+
+  // Markdown 图片尚未闭合时，先暂存整行，防止图片地址短暂显示。
+  if (trimmed.startsWith('![') && !/!\[[^\]]*\]\([^)]*\)/u.test(trimmed)) return offset
+
+  // 图片生成说明与 URL 都可能跨网络片段，完整结束前不输出。
+  if (/^(?:图片|图像|照片|插图|海报)?\s*(?:已|成功)?\s*(?:生成|创建|绘制)/u.test(trimmed)) return offset
+  if (/^(?:generated|created|rendered|here\s+is)\b/iu.test(trimmed)) return offset
+
+  // 独立的图片 URL 需要等待整行完成，才能判断是否只是图片地址。
+  if (/^https?:\/\/\S+$/iu.test(trimmed)) return offset
+  return null
 }
 
 /**

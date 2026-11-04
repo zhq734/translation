@@ -154,6 +154,13 @@ test('流式净化应暂存未闭合的 Markdown 包裹并去掉译文标签前�
   assert.equal(labeled.finish(), '你好')
 })
 
+test('流式净化应暂存图片生成结果，避免把图片地址当作译文展示', () => {
+  const sanitizer = new AiTranslationStreamSanitizer()
+  assert.equal(sanitizer.push('图片已生成：'), '')
+  assert.equal(sanitizer.push('https://example.com/generated-image.png'), '')
+  assert.equal(sanitizer.finish(), '')
+})
+
 test('流式净化 finish 应以完整清洗结果校正已展示片段', () => {
   const sanitizer = new AiTranslationStreamSanitizer()
   sanitizer.push('你好，世')
@@ -261,6 +268,38 @@ test('AI 首个片段前失败时允许降级到后续通道', async () => {
   assert.equal(result.translation, '降级结果')
   assert.deepEqual(deltas, [])
   assert.ok(calls.some((url) => url.includes('chat/completions')))
+})
+
+test('AI 误返回图片生成结果时不得展示图片地址，并应降级到后续通道', async () => {
+  const calls: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      const value = String(url)
+      calls.push(value)
+      if (value.includes('chat/completions')) {
+        return streamingResponse([
+          openAiDelta('图片已生成：https://example.com/generated-image.png'),
+          'data: [DONE]\n\n'
+        ])
+      }
+      if (value.includes('api.deeplx.org')) {
+        return new Response(JSON.stringify({ code: 200, data: '降级译文' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+      throw new Error(`不应请求：${value}`)
+    }
+  })
+  const deltas: string[] = []
+  const result = await runtime.translateStream('hello', aiSettings(), null, 'sk-ai', {
+    onDelta: (delta) => deltas.push(delta)
+  })
+  assert.equal(result.provider, 'deeplx-public')
+  assert.equal(result.translation, '降级译文')
+  assert.deepEqual(deltas, [])
+  assert.ok(calls.some((url) => url.includes('chat/completions')))
+  assert.ok(calls.some((url) => url.includes('api.deeplx.org')))
 })
 
 test('AI 首个片段后失败时不得静默降级替换，且保留已展示内容', async () => {
