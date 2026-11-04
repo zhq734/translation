@@ -33,6 +33,7 @@ function aiSettings(overrides: Partial<Settings> = {}): Settings {
     aiBaseUrl: 'https://api.example.com',
     aiModel: 'gpt-4o',
     aiApiKeyConfigured: true,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     ...overrides

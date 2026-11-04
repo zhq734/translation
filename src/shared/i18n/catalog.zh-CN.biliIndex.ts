@@ -1,0 +1,35 @@
+import { defineCatalog } from './catalog.ts'
+
+/** 中文界面词条目录：Bilibili Index-Translate。 */
+export const biliIndexZhCN = defineCatalog({
+  'translate.channel.biliIndex': 'Bilibili Index-Translate',
+  'translate.check.biliIndexAvailable': 'Bilibili Index-Translate 在线且可用',
+  'translate.biliIndex.blocked': 'Bilibili WAF 拦截了请求，请禁用 Origin 请求头后重试',
+  'translate.biliIndex.blockedHttp': 'Bilibili WAF 拦截了请求（HTTP {{status}}）',
+  'translate.biliIndex.timeout': 'Bilibili Index-Translate 请求超时',
+  'translate.biliIndex.network': 'Bilibili Index-Translate 网络连接失败',
+  'translate.biliIndex.unavailable': 'Bilibili Index-Translate 暂时不可用',
+  'translate.biliIndex.httpError': 'Bilibili Index-Translate 请求失败（HTTP {{status}}）',
+  'translate.biliIndex.nonJsonResponse': 'Bilibili Index-Translate 返回了非 JSON 响应',
+  'translate.biliIndex.responseParse': 'Bilibili Index-Translate 响应无法解析',
+  'translate.biliIndex.emptyTranslation': 'Bilibili Index-Translate 返回了空译文',
+  'settings.biliIndex.title': 'Bilibili Index-Translate',
+  'settings.biliIndex.hint': 'B 站开源的 Index-Translate 在线翻译模型，默认启用并排在 AI 翻译之后。无需 API Key；应用会显式使用浏览器 UA 且不发送 Origin，以避免触发 WAF。',
+  'settings.biliIndex.enabled': '启用通道',
+  'settings.biliIndex.enabledLabel': '在钉钉、微软和免费通道前使用 Bilibili 翻译',
+  'settings.biliIndex.model': '模型',
+  'settings.biliIndex.model2b': 'Index-MT 2B（超快轻量）',
+  'settings.biliIndex.model9b': 'Index-MT 9B（均衡推荐）',
+  'settings.biliIndex.model35b': 'Index-MT 35B（高质量旗舰）',
+  'settings.biliIndex.warning': '这是 B 站在线体验接口，并非带稳定性承诺的公开开发者 API；服务调整时可能失效，失败后会自动切换到后续通道。',
+  'settings.biliIndex.check': '检测可用性',
+  'settings.biliIndex.notChecked': '未检测',
+  'settings.biliIndex.checking': '检测中…',
+  'settings.biliIndex.checkFailed': '检测失败，请稍后重试',
+  'settings.biliIndex.saved': 'Bilibili Index-Translate 设置已保存并生效',
+  'settings.biliIndex.saveFailed': 'Bilibili Index-Translate 设置保存失败：{{message}}',
+  'settings.biliIndex.enabledHint': '已启用，建议检测当前可用性',
+  'settings.biliIndex.disabled': '通道已关闭',
+  'settings.channels.biliIndexName': 'Bilibili Index-Translate',
+  'settings.channels.biliIndexDesc': '默认启用，免费；排在 AI 之后、钉钉之前'
+})

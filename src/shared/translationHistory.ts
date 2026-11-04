@@ -42,6 +42,7 @@ const TRANSLATION_PROVIDERS: ReadonlySet<TranslationProviderId> = new Set([
   'dingtalk',
   'microsoft',
   'ai',
+  'bili-index',
   'deeplx-self',
   'deeplx-public',
   'google',

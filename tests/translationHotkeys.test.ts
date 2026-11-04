@@ -8,7 +8,7 @@ import {
 } from '../src/main/globalShortcutRegistry.ts'
 
 test('设置默认值应包含快捷 OCR、手动翻译、网页阅读器与文档翻译快捷键', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 23)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 24)
   assert.equal(DEFAULT_SETTINGS.ocrQuickHotkey, 'Alt+S')
   assert.equal(DEFAULT_SETTINGS.manualTranslationHotkey, 'Alt+M')
   assert.equal(DEFAULT_SETTINGS.webReaderHotkey, 'Alt+P')

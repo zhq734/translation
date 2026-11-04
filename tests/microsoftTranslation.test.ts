@@ -374,6 +374,7 @@ test('只启用微软通道且无需凭证即可在免费通道前翻译', async
   })
   const settings = normalizeSettings({
     schemaVersion: 7,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     microsoftEnabled: true
@@ -403,6 +404,7 @@ test('微软失败后应自动降级到自建 DeepLX', async () => {
   })
   const settings = normalizeSettings({
     schemaVersion: 7,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     microsoftEnabled: true,
@@ -442,6 +444,7 @@ test('微软运行时重置后应清理旧降级缓存、熔断和网页鉴权',
   })
   const settings = normalizeSettings({
     schemaVersion: 7,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     microsoftEnabled: true
@@ -480,6 +483,7 @@ test('微软可用性检测应无需凭证且不使用普通翻译结果缓存',
 
   const settings = normalizeSettings({
     schemaVersion: 7,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'ZH',
     targetLang: 'EN',
     microsoftEnabled: true

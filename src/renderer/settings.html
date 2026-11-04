@@ -599,6 +599,34 @@
           tabindex="0"
           hidden
         >
+          <section id="translation-service-bili-index" data-service-anchor="bili-index">
+            <h2 data-i18n="settings.biliIndex.title">Bilibili Index-Translate</h2>
+            <p class="hint" data-i18n="settings.biliIndex.hint">
+              Bilibili's open-source Index-Translate online models are enabled by default after AI Translation. No API key is required; the app explicitly uses a browser User-Agent and omits Origin to avoid the WAF.
+            </p>
+            <div class="row">
+              <label for="bili-index-enabled" data-i18n="settings.biliIndex.enabled">Enable channel</label>
+              <label class="checkbox-control" for="bili-index-enabled">
+                <input id="bili-index-enabled" type="checkbox" checked />
+                <span data-i18n="settings.biliIndex.enabledLabel">Use Bilibili translation before DingTalk, Microsoft, and free channels</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="bili-index-model" data-i18n="settings.biliIndex.model">Model</label>
+              <select id="bili-index-model">
+                <option value="index-mt-2b" data-i18n="settings.biliIndex.model2b">Index-MT 2B (ultra-fast lightweight)</option>
+                <option value="index-mt-9b" selected data-i18n="settings.biliIndex.model9b">Index-MT 9B (balanced, recommended)</option>
+                <option value="index-mt-35b" data-i18n="settings.biliIndex.model35b">Index-MT 35B (high-quality flagship)</option>
+              </select>
+            </div>
+            <p class="field-hint" data-i18n="settings.biliIndex.warning">
+              This is a Bilibili online demo endpoint, not a public developer API with a stability guarantee. It may break when the service changes; failures automatically fall through to the next channel.
+            </p>
+            <div class="provider-actions">
+              <button id="bili-index-check" class="btn" data-i18n="settings.biliIndex.check">Check availability</button>
+            </div>
+            <p id="bili-index-status" class="status bili-index-status" role="status" aria-live="polite" data-i18n="settings.biliIndex.notChecked">Not tested</p>
+          </section>
           <section id="translation-service-dingtalk" data-service-anchor="dingtalk">
             <h2 data-i18n="settings.dingTalk.title">DingTalk Translation</h2>
             <p class="hint" data-i18n="settings.dingTalk.hint">
@@ -661,6 +689,7 @@
             <h2 data-i18n="settings.channels.title">Translation Channels</h2>
             <p class="hint" data-i18n="settings.channels.hint">Channels are tried in the following order by default; you can also choose a preferred API at the bottom of the popup. If the preferred API fails or its circuit breaker opens, the app automatically switches to the next one and keeps your preference for future translations.</p>
             <ol class="channels">
+              <li><b data-i18n="settings.channels.biliIndexName">Bilibili Index-Translate</b> — <span data-i18n="settings.channels.biliIndexDesc">enabled by default and free; after AI and before DingTalk</span></li>
               <li><b data-i18n="settings.channels.dingTalkName">DingTalk</b> — <span data-i18n="settings.channels.dingTalkDesc">used first when enabled and fully configured</span></li>
               <li><b data-i18n="settings.channels.microsoftName">Microsoft Translator</b> — <span data-i18n="settings.channels.microsoftDesc">no subscription required; used before free channels such as DeepLX when enabled</span></li>
               <li><b data-i18n="settings.channels.selfHostedName">Self-hosted DeepLX</b> — <span data-i18n="settings.channels.selfHostedDesc">configurable and the most stable (recommended)</span></li>

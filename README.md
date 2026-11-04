@@ -54,7 +54,7 @@ Typical use cases include:
 - Reading English websites, technical documentation, papers, and PDFs;
 - Looking up words or short phrases in an IDE, terminal, Office app, or chat client;
 - Reviewing translations repeatedly without leaving the current workflow;
-- Using Microsoft Translator, a self-hosted DeepLX service, or an enterprise DingTalk translation application.
+- Using Bilibili Index-Translate out of the box, or connecting Microsoft Translator, a self-hosted DeepLX service, or an enterprise DingTalk translation application.
 
 ## Features
 
@@ -69,7 +69,8 @@ Typical use cases include:
 - **Configurable auto-hide**: disabled, 3, 5, 8, or 15 seconds.
 - **Automatic Chinese/English direction**: Chinese text defaults to English; other text defaults to Chinese when the target language is set to automatic mode.
 - **Manual source and target language selection** with a built-in list of 29 languages.
-- **Provider fallback** across DingTalk, Microsoft Translator, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
+- **Provider fallback** across AI Translation, Bilibili Index-Translate, DingTalk, Microsoft Translator, self-hosted DeepLX, public DeepLX, Google, and MyMemory.
+- **Bilibili Index-Translate** is built in and enabled by default with no API key required. Choose between the 2B, 9B, and 35B models and check online availability from Settings.
 - **Translation cache and circuit breaker** to reuse successful results and temporarily skip failing providers.
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
 - **Quick OCR translation**: press `Alt+S`, drag a region with the left mouse button, and release to start OCR and translation automatically. It is intended for fast lookups in images, video subtitles, and interfaces whose text cannot be selected.
@@ -495,16 +496,17 @@ Translation requests are attempted in this order:
 | Priority | Provider | Enabled when | Notes |
 | ---: | --- | --- | --- |
 | 1 | AI Translation | Enabled, protocol/base URL/model configured, and API Key is set when required | Supports Ollama, OpenAI-compatible, and Claude Code (Anthropic)-compatible HTTP protocols; falls back automatically on failure |
-| 2 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
-| 3 | Microsoft Translator | Enabled and the language pair is supported | Uses temporary parameters obtained from the Bing translator page; no Azure key or region is required |
-| 4 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
-| 5 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
-| 6 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
-| 7 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
+| 2 | Bilibili Index-Translate | Enabled by default | Uses the balanced `index-mt-9b` model by default; 2B and 35B are also available. No API key is required, and requests use a browser User-Agent without an Origin header |
+| 3 | DingTalk | Enabled, fully configured, and the language pair is supported | Enterprise provider; falls back automatically on failure |
+| 4 | Microsoft Translator | Enabled and the language pair is supported | Uses temporary parameters obtained from the Bing translator page; no Azure key or region is required |
+| 5 | Self-hosted DeepLX | An endpoint is configured | Recommended for stable personal or internal use |
+| 6 | Public DeepLX | Always available as a default fallback | Free public service; may be rate-limited |
+| 7 | Google | The Google translation endpoint is reachable | Unofficial endpoint; a proxy may be required |
+| 8 | MyMemory | Earlier providers fail | Free fallback with provider-side limits |
 
 The runtime also caches results by text and language pair, displays the active provider in the popup, and temporarily trips failing providers before retrying them after a cooldown. A single request processes at most 5,000 characters; Microsoft splits it into chunks of up to 1,000 characters, while Google and MyMemory are truncated further according to their own limits.
 
-Availability, rate limits, quotas, and terms of public translation services can change. The Microsoft channel depends on an unofficial Bing web interface and automatically falls back when that interface is unavailable. For more predictable personal use, configure a self-hosted DeepLX instance.
+Bilibili Index-Translate uses an online demo endpoint and offers no long-term stability guarantee for developer use; it may stop working when Bilibili changes the service. Availability, rate limits, quotas, and terms of public translation services can also change. The Microsoft channel depends on an unofficial Bing web interface and automatically falls back when that interface is unavailable. For more predictable personal use, configure a self-hosted DeepLX instance.
 
 ## Configure Self-hosted DeepLX
 
@@ -862,6 +864,13 @@ If the in-app updater reports `Code signature ... did not pass validation` or sa
 
 When Electron `safeStorage` is unavailable, the app refuses to write a plaintext credential. Check that the system keychain/security storage is available, relaunch the app, and configure the Secret again. Never put the Secret into `settings.json` manually.
 
+### Bilibili Index-Translate availability check fails
+
+- No API key is required. First verify that the current network and proxy can reach `index-translate.bilibili.com`;
+- The app explicitly uses a browser User-Agent and omits `Origin` and `Authorization` to avoid Bilibili WAF blocking extension-origin requests;
+- An HTTP 412 usually means a proxy, network middlebox, or browser extension has reintroduced the `Origin` header;
+- This is an online demo endpoint and may be rate-limited, changed, or discontinued. The runtime automatically falls back to later providers when it fails.
+
 ### Microsoft availability check fails
 
 - No Azure subscription key or region is required; do not create or paste one for this channel;
@@ -876,7 +885,7 @@ When Electron `safeStorage` is unavailable, the app refuses to write a plaintext
 - The in-app UI is currently Simplified Chinese; English `README.md` and Simplified Chinese `README.zh-CN.md` are maintained separately;
 - Selection capture depends on normal system copy behavior and may not work in custom-rendered, remote-desktop, or restricted applications;
 - Screenshot OCR requires a usable local OCR engine. On Windows 7 it uses Tesseract.js WebAssembly with bundled Simplified Chinese, Traditional Chinese, and English language models; only other languages may need network access to download language data on first use. Accuracy depends on screenshot resolution, fonts, and background complexity;
-- Translation depends on network access and third-party providers, including DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; the Microsoft channel specifically uses an unofficial Bing web interface that may change or stop working without notice;
+- Translation depends on network access and third-party providers, including AI Translation, Bilibili Index-Translate, DingTalk, Microsoft Translator, DeepLX, Google, and MyMemory; Bilibili Index-Translate uses an online demo endpoint, and the Microsoft channel uses an unofficial Bing web interface. Both may change or stop working without notice;
 - A single input is limited to 5,000 processed characters, with shorter limits for some fallback providers;
 - GitHub Actions creates unsigned macOS test packages when all Apple release credentials are absent. Those packages and the currently unsigned Windows installers may still show system security warnings; production macOS releases still require signing and notarization;
 - No account system or cloud sync is included. Automatic updates depend on GitHub Release metadata; macOS builds outside the fixed `/Applications/划词翻译.app` path, unsigned or signature-mismatched macOS builds, and non-AppImage Linux builds fall back to manual installation;

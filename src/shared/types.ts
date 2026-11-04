@@ -133,8 +133,7 @@ export type TranslationProviderId =
   | 'dingtalk'
   | 'microsoft'
   | 'ai'
-  | 'dingtalk'
-  | 'microsoft'
+  | 'bili-index'
   | 'deeplx-self'
   | 'deeplx-public'
   | 'google'
@@ -1001,6 +1000,10 @@ export interface Settings {
   dingTalkSecretConfigured: boolean
   /** 是否启用免订阅的微软 Bing 在线翻译通道。 */
   microsoftEnabled: boolean
+  /** 是否启用默认内置的 Bilibili Index-Translate 通道。 */
+  biliIndexTranslateEnabled: boolean
+  /** Bilibili Index-Translate 使用的公开模型。 */
+  biliIndexTranslateModel: 'index-mt-2b' | 'index-mt-9b' | 'index-mt-35b'
   /** 是否启用 AI 翻译通道。 */
   aiEnabled: boolean
   /** AI 翻译协议类型。 */
@@ -1322,6 +1325,9 @@ export interface MicrosoftCheckStatus {
   /** 面向用户的提示。 */
   message: string
 }
+
+/** Bilibili Index-Translate 可用性检测状态，复用脱敏分类。 */
+export type BilibiliIndexCheckStatus = DingTalkCheckStatus
 
 export interface DeepLxStatus {
   url: string
@@ -1679,6 +1685,12 @@ export interface Api {
   clearDingTalkSecret(): Promise<Settings>
   /** 检测钉钉 Token 和文本翻译链路。 */
   checkDingTalk(): Promise<DingTalkCheckStatus>
+  /**
+   * 检测 Bilibili Index-Translate 在线翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkBiliIndexTranslate(): Promise<BilibiliIndexCheckStatus>
   /**
    * 检测免订阅微软 Bing 在线翻译链路。
    * @returns 结构化脱敏检测状态。

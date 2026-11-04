@@ -4,7 +4,21 @@ import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
 
-export const SETTINGS_SCHEMA_VERSION = 23
+/** 判断设置中的模型值是否为 Bilibili Index-Translate 公开模型。 */
+const BILIBILI_INDEX_MODELS = ['index-mt-2b', 'index-mt-9b', 'index-mt-35b'] as const
+
+/**
+ * 判断未知值是否为 Bilibili Index-Translate 公开模型。
+ * @param value 待校验的设置值。
+ * @returns 是否为受支持的模型标识。
+ * @author zhenghq
+ */
+function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTranslateModel'] {
+  return typeof value === 'string' &&
+    (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
+}
+
+export const SETTINGS_SCHEMA_VERSION = 24
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -48,6 +62,8 @@ export const DEFAULT_SETTINGS: Settings = {
   dingTalkClientId: '',
   dingTalkSecretConfigured: false,
   microsoftEnabled: false,
+  biliIndexTranslateEnabled: true,
+  biliIndexTranslateModel: 'index-mt-9b',
   aiEnabled: false,
   aiProtocol: 'ollama',
   aiBaseUrl: DEFAULT_AI_BASE_URL,
@@ -304,6 +320,11 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     dingTalkClientId: String(merged.dingTalkClientId || '').trim(),
     dingTalkSecretConfigured: rawSettings.dingTalkSecretConfigured === true,
     microsoftEnabled: rawSettings.microsoftEnabled === true,
+    // 第二十四版默认内置 Bilibili Index-Translate；仅显式关闭才停用，未知模型回退到 9B。
+    biliIndexTranslateEnabled: rawSettings.biliIndexTranslateEnabled !== false,
+    biliIndexTranslateModel: isBilibiliIndexModel(rawSettings.biliIndexTranslateModel)
+      ? rawSettings.biliIndexTranslateModel
+      : DEFAULT_SETTINGS.biliIndexTranslateModel,
     preferredTranslationProvider: isTranslationProviderPreference(
       rawSettings.preferredTranslationProvider
     )

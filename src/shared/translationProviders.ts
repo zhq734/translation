@@ -15,6 +15,7 @@ export interface TranslationProviderDefinition {
 /** 弹窗中可供选择的翻译 API，顺序与默认降级顺序一致。 */
 export const TRANSLATION_PROVIDERS: readonly TranslationProviderDefinition[] = [
   { id: 'ai', label: 'AI Translation' },
+  { id: 'bili-index', label: 'Bilibili Index-Translate' },
   { id: 'dingtalk', label: 'DingTalk' },
   { id: 'microsoft', label: 'Microsoft Translator' },
   { id: 'deeplx-self', label: 'Self-hosted DeepLX' },
@@ -85,6 +86,7 @@ export function isTranslationProviderAvailable(
       Boolean(settings.aiBaseUrl.trim()) &&
       Boolean(settings.aiModel.trim())
   }
+  if (providerId === 'bili-index') return settings.biliIndexTranslateEnabled
   if (providerId === 'microsoft') return settings.microsoftEnabled
   if (providerId === 'deeplx-self') return Boolean(settings.deepLxUrl.trim())
   return true

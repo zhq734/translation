@@ -1,4 +1,5 @@
 import type {
+  BilibiliIndexCheckStatus,
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
   Settings,
@@ -13,6 +14,10 @@ import { toMicrosoftCheckStatus } from './microsoftErrors'
 import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
+import {
+  BilibiliIndexTranslationClient,
+  toBilibiliIndexCheckStatus
+} from './bilibiliIndexTranslation'
 import { BoundedLruCache } from './boundedLruCache'
 import { translateMain } from './messages'
 import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
@@ -23,6 +28,7 @@ const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get'
 const DINGTALK_CHANNEL = 'dingtalk'
 const MICROSOFT_CHANNEL = 'microsoft'
 const AI_CHANNEL = 'ai'
+const BILIBILI_INDEX_CHANNEL = 'bili-index'
 const AI_CHECK_TEXT = 'hello'
 
 const MAX_CHARS = 5000
@@ -122,6 +128,7 @@ export class TranslationRuntime {
   private readonly dingTalkClient: DingTalkTranslationClient
   private readonly microsoftClient: MicrosoftTranslationClient
   private readonly aiClient: AiTranslationClient
+  private readonly bilibiliIndexClient: BilibiliIndexTranslationClient
   private deepLxRoundRobinIndex = 0
 
   constructor(private readonly options: TranslationRuntimeOptions) {
@@ -133,6 +140,7 @@ export class TranslationRuntime {
     })
     this.microsoftClient = new MicrosoftTranslationClient({ fetch: options.fetch, now: this.now })
     this.aiClient = new AiTranslationClient({ fetch: options.fetch })
+    this.bilibiliIndexClient = new BilibiliIndexTranslationClient({ fetch: options.fetch })
   }
 
   /**
@@ -162,7 +170,9 @@ export class TranslationRuntime {
       settings.aiEnabled,
       settings.aiProtocol,
       settings.aiBaseUrl,
-      settings.aiModel
+      settings.aiModel,
+      settings.biliIndexTranslateEnabled,
+      settings.biliIndexTranslateModel
     )
     const hit = this.cache.get(key)
     if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
@@ -233,6 +243,8 @@ export class TranslationRuntime {
       settings.aiProtocol,
       settings.aiBaseUrl,
       settings.aiModel,
+      settings.biliIndexTranslateEnabled,
+      settings.biliIndexTranslateModel,
       options.context
     )
     const hit = options.bypassCache ? undefined : this.cache.get(key)
@@ -313,6 +325,25 @@ export class TranslationRuntime {
   }
 
   /**
+   * 不经过普通翻译缓存检测 Bilibili Index-Translate 文本翻译链路。
+   * @returns 设置页可展示的结构化脱敏状态。
+   * @author zhenghq
+   */
+  async checkBilibiliIndex(): Promise<BilibiliIndexCheckStatus> {
+    try {
+      await this.bilibiliIndexClient.translate({
+        text: translateMain('translate.check.sampleText'),
+        sourceLang: 'ZH',
+        targetLang: 'EN',
+        model: 'index-mt-9b'
+      })
+      return { ok: true, code: 'available', message: translateMain('translate.check.biliIndexAvailable') }
+    } catch (error) {
+      return toBilibiliIndexCheckStatus(error)
+    }
+  }
+
+  /**
    * 在微软启用状态变化后清理结果缓存、网页鉴权和微软熔断状态。
    * @returns 无返回值。
    * @author zhenghq
@@ -321,6 +352,18 @@ export class TranslationRuntime {
     this.cache.clear()
     this.microsoftClient.reset()
     this.resetBreaker(MICROSOFT_CHANNEL)
+  }
+
+  /**
+   * 在 Bilibili Index-Translate 启用状态或模型变化后清理结果缓存和熔断状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resetBilibiliIndexRuntime(): void {
+    this.cache.clear()
+    for (const key of this.breaker.keys()) {
+      if (key.startsWith(`${BILIBILI_INDEX_CHANNEL}:`)) this.breaker.delete(key)
+    }
   }
 
   /**
@@ -373,6 +416,17 @@ export class TranslationRuntime {
         cooldownMs: 60_000,
         maxChars: MAX_CHARS,
         run: () => this.aiChannel(text, settings, aiApiKey)
+      })
+    }
+    if (settings.biliIndexTranslateEnabled) {
+      const model = settings.biliIndexTranslateModel
+      channels.push({
+        id: 'bili-index',
+        name: translateMain('translate.channel.biliIndex'),
+        breakerKey: `${BILIBILI_INDEX_CHANNEL}:${model}`,
+        cooldownMs: 60_000,
+        maxChars: MAX_CHARS,
+        run: () => this.bilibiliIndexChannel(text, settings, model)
       })
     }
     if (settings.dingTalkEnabled &&
@@ -475,6 +529,28 @@ export class TranslationRuntime {
       targetLang: settings.targetLang
     })
     return { translation, provider: 'ai' }
+  }
+
+  /**
+   * 执行 Bilibili Index-Translate 翻译请求。
+   * @param text 待翻译文本。
+   * @param settings 当前公开设置。
+   * @param model 已校验的 Index-Translate 模型。
+   * @returns Index-Translate 翻译结果。
+   * @author zhenghq
+   */
+  private async bilibiliIndexChannel(
+    text: string,
+    settings: Settings,
+    model: Settings['biliIndexTranslateModel']
+  ): Promise<TranslateOutput> {
+    const translation = await this.bilibiliIndexClient.translate({
+      text,
+      sourceLang: settings.sourceLang,
+      targetLang: settings.targetLang,
+      model
+    })
+    return { translation, provider: 'bili-index' }
   }
 
   /**
@@ -628,6 +704,8 @@ export class TranslationRuntime {
    * @param aiProtocol AI 协议。
    * @param aiBaseUrl AI Base URL。
    * @param aiModel AI 模型名称。
+   * @param biliIndexEnabled 是否启用 Bilibili Index-Translate。
+   * @param biliIndexModel Bilibili Index-Translate 模型。
    * @param context 可选的文档上下文。
    * @returns 缓存键。
    * @author zhenghq
@@ -641,12 +719,15 @@ export class TranslationRuntime {
     aiProtocol: Settings['aiProtocol'],
     aiBaseUrl: string,
     aiModel: string,
+    biliIndexEnabled: boolean,
+    biliIndexModel: Settings['biliIndexTranslateModel'],
     context?: DocumentTranslationRequestContext
   ): string {
     const documentContextKey = context
       ? `doc:${context.glossaryVersion}:${context.glossaryContext}:${context.contextSummary ?? ''}`
       : ''
-    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${documentContextKey}|${text}`
+    const biliIndexKey = biliIndexEnabled ? `bili-index:${biliIndexModel}` : 'bili-index:off'
+    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${biliIndexKey}|${documentContextKey}|${text}`
   }
 
   /**
@@ -801,6 +882,24 @@ export function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
  */
 export function resetMicrosoftTranslationRuntime(): void {
   defaultRuntime.resetMicrosoftRuntime()
+}
+
+/**
+ * 使用默认运行时执行不污染普通翻译结果缓存的 Bilibili Index-Translate 可用性检测。
+ * @returns 结构化脱敏检测状态。
+ * @author zhenghq
+ */
+export function checkBilibiliIndex(): Promise<BilibiliIndexCheckStatus> {
+  return defaultRuntime.checkBilibiliIndex()
+}
+
+/**
+ * 清理默认翻译运行时中的 Bilibili Index-Translate 缓存和熔断状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function resetBilibiliIndexTranslationRuntime(): void {
+  defaultRuntime.resetBilibiliIndexRuntime()
 }
 
 /**

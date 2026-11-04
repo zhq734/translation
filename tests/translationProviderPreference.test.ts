@@ -7,7 +7,7 @@ import {
   tForTest
 } from './helpers/i18n.ts'
 import { TranslationRuntime } from '../src/main/translate.ts'
-import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 
 /**
  * 创建 JSON 响应，供翻译通道优先级测试使用。
@@ -34,7 +34,7 @@ test('旧设置升级后应默认自动选择翻译 API，并仅保留合法首�
     preferredTranslationProvider: 'unknown-api' as 'google'
   })
 
-  assert.equal(legacy.schemaVersion, 23)
+  assert.equal(legacy.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(legacy.preferredTranslationProvider, 'auto')
   assert.equal(preferred.preferredTranslationProvider, 'google')
   assert.equal(invalid.preferredTranslationProvider, 'auto')
@@ -57,6 +57,7 @@ test('切换首选 API 后相同文本应优先请求新 API，而不是复用�
   })
   const automatic = normalizeSettings({
     schemaVersion: 9,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH'
   })
@@ -96,6 +97,7 @@ test('首选 API 失败熔断后应自动切换后备 API，冷却期内继续�
   })
   const settings = normalizeSettings({
     schemaVersion: 9,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     preferredTranslationProvider: 'deeplx-public'
@@ -134,6 +136,7 @@ test('首选 API 熔断恢复后相同文本应重新尝试首选项，而不是
   })
   const settings = normalizeSettings({
     schemaVersion: 9,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     preferredTranslationProvider: 'deeplx-public'

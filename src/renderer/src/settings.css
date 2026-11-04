@@ -577,6 +577,7 @@ input[type='number']:disabled {
 }
 
 .dingtalk-status,
+.bili-index-status,
 .microsoft-status,
 .ai-status,
 .ai-model-status {
@@ -951,6 +952,7 @@ input[type='number']:disabled {
   }
 
   .dingtalk-status,
+  .bili-index-status,
   .microsoft-status,
   .ai-status,
   .ai-model-status {

@@ -7,6 +7,7 @@ import type {
   AiCheckStatus,
   AiModelListResult,
   AiProtocol,
+  BilibiliIndexCheckStatus,
   DingTalkCheckStatus,
   MicrosoftCheckStatus,
   OcrEnginePreference,
@@ -90,6 +91,10 @@ const dingTalkSave = document.getElementById('dingtalk-save') as HTMLButtonEleme
 const dingTalkClearSecret = document.getElementById('dingtalk-clear-secret') as HTMLButtonElement
 const dingTalkCheck = document.getElementById('dingtalk-check') as HTMLButtonElement
 const dingTalkStatus = document.getElementById('dingtalk-status') as HTMLElement
+const biliIndexEnabled = document.getElementById('bili-index-enabled') as HTMLInputElement
+const biliIndexModel = document.getElementById('bili-index-model') as HTMLSelectElement
+const biliIndexCheck = document.getElementById('bili-index-check') as HTMLButtonElement
+const biliIndexStatus = document.getElementById('bili-index-status') as HTMLElement
 // AI 翻译配置控件
 const aiEnabled = document.getElementById('ai-enabled') as HTMLInputElement
 const aiProtocol = document.getElementById('ai-protocol') as HTMLSelectElement
@@ -173,6 +178,7 @@ const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'about'
 ]
 const LEGACY_SETTINGS_TAB_MAP: Record<string, SettingsTabId> = {
+  'bili-index': 'translation-services',
   dingtalk: 'translation-services',
   microsoft: 'translation-services',
   deeplx: 'translation-services'
@@ -604,6 +610,8 @@ function renderSettings(settings: Settings): void {
     ? 'field-hint dingtalk-secret-status configured'
     : 'field-hint dingtalk-secret-status'
   dingTalkClearSecret.disabled = !settings.dingTalkSecretConfigured
+  biliIndexEnabled.checked = settings.biliIndexTranslateEnabled
+  biliIndexModel.value = settings.biliIndexTranslateModel
   // AI 表单存在未保存输入时只刷新密钥状态，不回填主进程旧配置。设置页会持续
   // 收到语言、主题、快捷键等无关广播；无条件回填会让用户刚输入的 Base URL 和
   // Model 被覆盖，并清空刚填写的 API Key。
@@ -1762,6 +1770,84 @@ function setDingTalkBusy(busy: boolean): void {
 }
 
 /**
+ * 设置 Bilibili Index-Translate 控件的忙碌状态，避免重复保存或检测。
+ * @param busy 是否正在执行异步操作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function setBiliIndexBusy(busy: boolean): void {
+  biliIndexEnabled.disabled = busy
+  biliIndexModel.disabled = busy
+  biliIndexCheck.disabled = busy
+}
+
+/**
+ * 将 Bilibili Index-Translate 检测结果展示为结构化状态提示。
+ * @param status 主进程返回的脱敏检测状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderBiliIndexStatus(status: BilibiliIndexCheckStatus): void {
+  biliIndexStatus.textContent = status.ok ? `✓ ${status.message}` : `✗ ${status.message}`
+  biliIndexStatus.className = status.ok
+    ? 'status bili-index-status online'
+    : 'status bili-index-status offline'
+  biliIndexStatus.dataset.code = status.code
+}
+
+/**
+ * 保存 Bilibili Index-Translate 启用状态和模型选择。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveBiliIndexConfig(): Promise<void> {
+  setBiliIndexBusy(true)
+  try {
+    const settings = await window.api.setSettings({
+      biliIndexTranslateEnabled: biliIndexEnabled.checked,
+      biliIndexTranslateModel: biliIndexModel.value as Settings['biliIndexTranslateModel']
+    })
+    renderSettings(settings)
+    biliIndexStatus.textContent = settings.biliIndexTranslateEnabled
+      ? t('settings.biliIndex.enabledHint')
+      : t('settings.biliIndex.disabled')
+    biliIndexStatus.className = 'status bili-index-status'
+    delete biliIndexStatus.dataset.code
+    flash(t('settings.biliIndex.saved'))
+  } catch (error) {
+    renderSettings(await window.api.getSettings())
+    flash(t('settings.biliIndex.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  } finally {
+    setBiliIndexBusy(false)
+  }
+}
+
+/**
+ * 检测 Bilibili Index-Translate 在线翻译链路。
+ * @returns 检测完成后的 Promise。
+ * @author zhenghq
+ */
+async function checkBiliIndexConfig(): Promise<void> {
+  setBiliIndexBusy(true)
+  biliIndexStatus.textContent = t('settings.biliIndex.checking')
+  biliIndexStatus.className = 'status bili-index-status'
+  delete biliIndexStatus.dataset.code
+  try {
+    renderBiliIndexStatus(await window.api.checkBiliIndexTranslate())
+  } catch (error) {
+    renderBiliIndexStatus({
+      ok: false,
+      code: 'service',
+      message: (error as Error).message || t('settings.biliIndex.checkFailed')
+    })
+  } finally {
+    setBiliIndexBusy(false)
+  }
+}
+
+/**
  * 将钉钉检测结果展示为结构化状态提示。
  * @param status 主进程返回的脱敏检测状态。
  * @returns 无返回值。
@@ -2118,6 +2204,9 @@ proxyBypassRules.addEventListener('change', saveProxyBypassRules)
 dingTalkSave.addEventListener('click', () => void saveDingTalkConfig())
 dingTalkClearSecret.addEventListener('click', () => void clearDingTalkClientSecret())
 dingTalkCheck.addEventListener('click', () => void checkDingTalkConfig())
+biliIndexEnabled.addEventListener('change', () => void saveBiliIndexConfig())
+biliIndexModel.addEventListener('change', () => void saveBiliIndexConfig())
+biliIndexCheck.addEventListener('click', () => void checkBiliIndexConfig())
 aiSave.addEventListener('click', () => void saveAiConfig())
 aiRefreshModels.addEventListener('click', () => void refreshAiModels())
 aiCheck.addEventListener('click', () => void checkAi())

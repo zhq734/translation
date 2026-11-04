@@ -1147,6 +1147,12 @@ const api: Api = {
    */
   checkDingTalk: () => ipcRenderer.invoke('dingtalk:check'),
   /**
+   * 检测 Bilibili Index-Translate 在线翻译链路。
+   * @returns 结构化脱敏检测状态。
+   * @author zhenghq
+   */
+  checkBiliIndexTranslate: () => ipcRenderer.invoke('bili-index:check'),
+  /**
    * 检测免订阅微软 Bing 在线翻译链路。
    * @returns 结构化脱敏检测状态。
    * @author zhenghq

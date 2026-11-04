@@ -1,0 +1,35 @@
+import { defineCatalog } from './catalog.ts'
+
+/** 英文界面词条目录：Bilibili Index-Translate。 */
+export const biliIndexEnUS = defineCatalog({
+  'translate.channel.biliIndex': 'Bilibili Index-Translate',
+  'translate.check.biliIndexAvailable': 'Bilibili Index-Translate is online and available',
+  'translate.biliIndex.blocked': 'Bilibili WAF blocked the request; disable the Origin header and try again',
+  'translate.biliIndex.blockedHttp': 'Bilibili WAF blocked the request (HTTP {{status}})',
+  'translate.biliIndex.timeout': 'Bilibili Index-Translate request timed out',
+  'translate.biliIndex.network': 'Bilibili Index-Translate network connection failed',
+  'translate.biliIndex.unavailable': 'Bilibili Index-Translate is temporarily unavailable',
+  'translate.biliIndex.httpError': 'Bilibili Index-Translate request failed (HTTP {{status}})',
+  'translate.biliIndex.nonJsonResponse': 'Bilibili Index-Translate returned a non-JSON response',
+  'translate.biliIndex.responseParse': 'Bilibili Index-Translate response could not be parsed',
+  'translate.biliIndex.emptyTranslation': 'Bilibili Index-Translate returned an empty translation',
+  'settings.biliIndex.title': 'Bilibili Index-Translate',
+  'settings.biliIndex.hint': "Bilibili's open-source Index-Translate online models are enabled by default after AI Translation. No API key is required; the app explicitly uses a browser User-Agent and omits Origin to avoid the WAF.",
+  'settings.biliIndex.enabled': 'Enable channel',
+  'settings.biliIndex.enabledLabel': 'Use Bilibili translation before DingTalk, Microsoft, and free channels',
+  'settings.biliIndex.model': 'Model',
+  'settings.biliIndex.model2b': 'Index-MT 2B (ultra-fast lightweight)',
+  'settings.biliIndex.model9b': 'Index-MT 9B (balanced, recommended)',
+  'settings.biliIndex.model35b': 'Index-MT 35B (high-quality flagship)',
+  'settings.biliIndex.warning': 'This is a Bilibili online demo endpoint, not a public developer API with a stability guarantee. It may break when the service changes; failures automatically fall through to the next channel.',
+  'settings.biliIndex.check': 'Check availability',
+  'settings.biliIndex.notChecked': 'Not tested',
+  'settings.biliIndex.checking': 'Testing…',
+  'settings.biliIndex.checkFailed': 'Test failed; try again later',
+  'settings.biliIndex.saved': 'Bilibili Index-Translate settings saved and applied',
+  'settings.biliIndex.saveFailed': 'Failed to save Bilibili Index-Translate settings: {{message}}',
+  'settings.biliIndex.enabledHint': 'Enabled; consider checking current availability',
+  'settings.biliIndex.disabled': 'Channel disabled',
+  'settings.channels.biliIndexName': 'Bilibili Index-Translate',
+  'settings.channels.biliIndexDesc': 'enabled by default and free; after AI and before DingTalk'
+})

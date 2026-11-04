@@ -126,6 +126,7 @@ test('配置完整且语言对受支持时应优先使用钉钉且不调用后�
   })
   const settings = normalizeSettings({
     schemaVersion: 5,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'auto',
     targetLang: 'EN',
     dingTalkEnabled: true,
@@ -160,6 +161,7 @@ test('关闭、配置不完整或语言对不支持时不应产生钉钉网络�
     })
     const settings = normalizeSettings({
       schemaVersion: 5,
+      biliIndexTranslateEnabled: false,
       sourceLang: scenario.sourceLang ?? 'auto',
       targetLang: scenario.targetLang ?? 'EN',
       dingTalkEnabled: scenario.enabled,
@@ -193,6 +195,7 @@ test('钉钉失败后应保持自建 DeepLX、公共 DeepLX、Google、MyMemory 
   })
   const settings = normalizeSettings({
     schemaVersion: 5,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     deepLxUrl: 'http://127.0.0.1:1189/translate',
@@ -236,6 +239,7 @@ test('钉钉配置变化重置应清理旧翻译缓存、Token 和熔断状态',
   })
   const settings = normalizeSettings({
     schemaVersion: 5,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     dingTalkEnabled: true,
@@ -280,6 +284,7 @@ test('钉钉配置检测应在配置不完整时零请求，成功时不污染�
 
   const settings = normalizeSettings({
     schemaVersion: 5,
+    biliIndexTranslateEnabled: false,
     sourceLang: 'ZH',
     targetLang: 'EN',
     dingTalkEnabled: true,

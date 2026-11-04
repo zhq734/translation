@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 
 test('schema v6 设置升级后应默认关闭免订阅微软翻译并保留既有设置', () => {
   const settings = normalizeSettings({
@@ -18,7 +18,7 @@ test('schema v6 设置升级后应默认关闭免订阅微软翻译并保留既�
     microsoftSubscriptionKeyConfigured: boolean
   })
 
-  assert.equal(settings.schemaVersion, 23)
+  assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(settings.microsoftEnabled, false)
   assert.equal('microsoftRegion' in settings, false)
   assert.equal('microsoftSubscriptionKeyConfigured' in settings, false)

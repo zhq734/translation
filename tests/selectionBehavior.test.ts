@@ -14,7 +14,7 @@ import {
   isPointInsideBounds,
   isSelectionGestureInsideOwnWindows
 } from '../src/shared/selectionBehavior.ts'
-import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { buildProxyConfig } from '../src/shared/proxySettings.ts'
 import { SelectionCaptureCoordinator } from '../src/shared/selectionCaptureCoordinator.ts'
 import { shouldDismissPopupOnBlur } from '../src/shared/popupBehavior.ts'
@@ -952,7 +952,7 @@ test('旧版设置升级后应默认启用选词按钮、自动中英互译、�
     autoTrigger: true
   })
 
-  assert.equal(settings.schemaVersion, 23)
+  assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(settings.targetLang, 'auto')
   assert.equal(settings.autoHideMs, 0)
   assert.equal(settings.triggerMode, 'button')
@@ -986,7 +986,7 @@ test('第三版自动模式配置升级后应回到按钮模式', () => {
     triggerMode: 'auto'
   })
 
-  assert.equal(settings.schemaVersion, 23)
+  assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(settings.triggerMode, 'button')
 })
 

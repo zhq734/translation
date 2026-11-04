@@ -32,6 +32,7 @@ test('并发翻译应轮询分散到多个 DeepLX 地址', async () => {
     }
   })
   const settings = normalizeSettings({
+    biliIndexTranslateEnabled: false,
     deepLxUrl: 'https://a.example/translate,https://b.example/translate',
     sourceLang: 'EN',
     targetLang: 'ZH'
@@ -62,6 +63,7 @@ test('自建地址失败应继续尝试下一个并最终回退公共 DeepLX', a
     }
   })
   const settings = normalizeSettings({
+    biliIndexTranslateEnabled: false,
     deepLxUrl: 'https://a.example/translate,https://b.example/translate',
     sourceLang: 'EN',
     targetLang: 'ZH'
@@ -88,6 +90,7 @@ test('DeepLX 运行时重置应清除缓存、轮询位置和每地址熔断', a
     }
   })
   const settings = normalizeSettings({
+    biliIndexTranslateEnabled: false,
     deepLxUrl: 'https://a.example/translate,https://b.example/translate',
     sourceLang: 'EN',
     targetLang: 'ZH'

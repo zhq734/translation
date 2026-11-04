@@ -69,6 +69,7 @@ const CHANNEL_KEYS: Record<string, string> = {
 /** 服务提供方标识到词条 key 的映射。 */
 const PROVIDER_KEYS: Record<string, string> = {
   ai: 'usage.provider.ai',
+  'bili-index': 'usage.provider.bili-index',
   dingtalk: 'usage.provider.dingtalk',
   microsoft: 'usage.provider.microsoft',
   google: 'usage.provider.google',

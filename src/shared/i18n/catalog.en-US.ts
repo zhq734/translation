@@ -11,6 +11,7 @@ import { speechEnUS } from './catalog.en-US.speech.ts'
 import { rendererSpeechEnUS } from './catalog.en-US.rendererSpeech.ts'
 import { webReaderEnUS } from './catalog.en-US.webReader.ts'
 import { documentEnUS } from './catalog.en-US.document.ts'
+import { biliIndexEnUS } from './catalog.en-US.biliIndex.ts'
 
 /**
  * 英文界面词条目录。
@@ -28,5 +29,6 @@ export const enUSCatalog = defineCatalog({
   ...speechEnUS,
   ...rendererSpeechEnUS,
   ...webReaderEnUS,
-  ...documentEnUS
+  ...documentEnUS,
+  ...biliIndexEnUS
 })

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import {
   DingTalkCredentialStore,
   type SafeStorageAdapter
@@ -48,7 +48,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
     proxyBypassRules: '<local>;localhost'
   })
 
-  assert.equal(settings.schemaVersion, 23)
+  assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')
@@ -65,7 +65,7 @@ test('schema v4 设置升级后应保留原值并默认关闭钉钉翻译', () =
 test('更早版本升级后也应初始化脱敏的钉钉公开字段', () => {
   const settings = normalizeSettings({ schemaVersion: 2, autoTrigger: true })
 
-  assert.equal(settings.schemaVersion, 23)
+  assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(settings.dingTalkEnabled, false)
   assert.equal(settings.dingTalkCorpId, '')
   assert.equal(settings.dingTalkClientId, '')
