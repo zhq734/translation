@@ -21,6 +21,8 @@ export interface PronunciationSpeechFallbackOptions {
   variant?: { accent: PronunciationAccent; ipa: string }
   /** 当前单词播放会话的取消信号。 */
   signal?: AbortSignal
+  /** 判断单词播放会话是否仍有效；切换单词后旧流程必须立即停止。 */
+  isCurrent?(): boolean
   /** Edge 在线语音控制器。 */
   edge: PronunciationFallbackController
   /** 系统语音控制器。 */
@@ -45,20 +47,20 @@ export async function startPronunciationSpeechFallback(
 ): Promise<PronunciationSpeechFallbackResult> {
   const normalizedText = text.trim()
   if (!normalizedText) return { status: 'failed' }
-  if (options.signal?.aborted) return { status: 'failed' }
+  if (options.signal?.aborted || options.isCurrent?.() === false) return { status: 'failed' }
   const language = options.variant?.accent === 'UK' ? 'en-GB' : 'en-US'
   const ipa = options.variant?.ipa.trim() || undefined
   if (options.speechProvider === 'edge') {
     try {
       const edgeResult = await options.edge.start(normalizedText, language, ipa)
-      if (options.signal?.aborted) return { status: 'failed' }
+      if (options.signal?.aborted || options.isCurrent?.() === false) return { status: 'failed' }
       // Edge 在整段播放完成后才返回成功，此时 isSpeaking() 已恢复 false，不能据此重复回退。
       if (edgeResult.ok) return { status: 'started', provider: 'edge' }
     } catch {
       // Edge 合成异常与显式失败一样回退系统语音，不把底层异常泄露到界面。
     }
   }
-  if (options.signal?.aborted) return { status: 'failed' }
+  if (options.signal?.aborted || options.isCurrent?.() === false) return { status: 'failed' }
   const systemResult = await options.system.start(normalizedText, language)
   // 系统语音调用 speak 后可能瞬时回传未播放，启动结果应以 start() 的返回值判定。
   return systemResult.ok

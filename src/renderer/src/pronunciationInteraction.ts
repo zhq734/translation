@@ -23,6 +23,51 @@ export function shouldLookupPronunciationWord(interaction: {
     && interaction.clickCount === 1
 }
 
+/** 同词点击去重配置。 */
+export interface PronunciationInteractionDeduperOptions {
+  /** 去重时间窗口，单位为毫秒。 */
+  windowMs: number
+  /** 当前时间来源，便于测试注入。 */
+  now?(): number
+}
+
+/** 用于抑制同一次交互被重复激活的短时去重器。 */
+export interface PronunciationInteractionDeduper {
+  /**
+   * 尝试占用指定单词在当前区域的激活资格。
+   * @param word 待激活的英文单词。
+   * @param context 当前原文或译文区域。
+   * @returns 当前窗口内首次激活时返回 true，重复激活时返回 false。
+   */
+  claim(word: string, context: string): boolean
+}
+
+/**
+ * 创建同词短时去重器，避免 click、指针或事件冒泡导致同一次交互重复发音。
+ * @param options 去重窗口与时间来源。
+ * @returns 同词点击去重器。
+ * @author zhenghq
+ */
+export function createPronunciationInteractionDeduper(
+  options: PronunciationInteractionDeduperOptions
+): PronunciationInteractionDeduper {
+  const windowMs = Math.max(0, options.windowMs)
+  const now = options.now ?? (() => Date.now())
+  let lastKey = ''
+  let lastClaimedAt = Number.NEGATIVE_INFINITY
+
+  return {
+    claim(word: string, context: string): boolean {
+      const key = `${context}:${word.trim().toLowerCase()}`
+      const claimedAt = now()
+      if (key === lastKey && claimedAt - lastClaimedAt < windowMs) return false
+      lastKey = key
+      lastClaimedAt = claimedAt
+      return true
+    }
+  }
+}
+
 /** 双击门控依赖的定时器能力，便于测试注入。 */
 export interface PronunciationClickGateOptions {
   /** 等待第二次点击的毫秒数。 */

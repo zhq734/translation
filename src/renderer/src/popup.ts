@@ -62,12 +62,14 @@ import {
   beginPronunciationLookup,
   closePronunciationCard,
   createPronunciationCardState,
+  selectPronunciationVariant,
   settlePronunciationLookup,
   type PronunciationCardContext,
   type PronunciationCardState
 } from './pronunciationCard'
 import {
   createPronunciationClickGate,
+  createPronunciationInteractionDeduper,
   shouldLookupPronunciationWord
 } from './pronunciationInteraction'
 import {
@@ -209,6 +211,10 @@ const translationClickGate = createPronunciationClickGate({
   delayMs: 250,
   schedule: (callback) => window.setTimeout(callback, 250),
   cancel: (timer) => window.clearTimeout(timer as number)
+})
+/** 原文与译文共用的同词短时去重器，避免一次交互被重复激活。 */
+const pronunciationInteractionDeduper = createPronunciationInteractionDeduper({
+  windowMs: 350
 })
 /** 译文区指针按下位置，用于区分单击与拖拽。 */
 let translationPointerStart: { x: number; y: number } | null = null
@@ -808,6 +814,42 @@ async function lookupPronunciation(
 }
 
 /**
+ * 立即使用当前语音偏好播放单词，不等待音标或释义查询结果。
+ * @param word 待朗读的英文单词。
+ * @returns 播放启动完成后的 Promise。
+ * @author zhenghq
+ */
+async function playPronunciationWordImmediately(word: string): Promise<void> {
+  const parsed = parsePronunciationWord(word)
+  if (!parsed) return
+  const toggle = pronunciationPlayback.toggle('word')
+  if (toggle.action === 'stop') {
+    activeVariantId = null
+    renderPronunciationCard()
+    return
+  }
+  const lease = toggle.lease
+  if (!lease) return
+  wordPlaybackLease = lease
+  activeVariantId = null
+  renderPronunciationCard()
+  await fallbackWordSpeech(parsed.word, lease)
+}
+
+/**
+ * 并行启动单词释义查询与发音，任一流程失败都不阻塞另一流程。
+ * @param word 被点击的英文单词。
+ * @param context 音标卡所在的原文或译文区域。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function activatePronunciationWord(word: string, context: PronunciationCardContext): void {
+  if (!pronunciationInteractionDeduper.claim(word, context)) return
+  void lookupPronunciation(word, context)
+  void playPronunciationWordImmediately(word)
+}
+
+/**
  * 将原文中的英文单词渲染为可点击片段，查询由用户点击后按需触发。
  * @param text 当前原文。
  * @returns 无返回值。
@@ -924,7 +966,7 @@ function handleOriginalClick(event: MouseEvent): void {
     pointerTravel,
     clickCount: event.detail
   })) return
-  originalClickGate.click(() => void lookupPronunciation(word, 'source'))
+  originalClickGate.click(() => activatePronunciationWord(word, 'source'))
 }
 
 /**
@@ -975,7 +1017,7 @@ function handleTranslationClick(event: MouseEvent): void {
     pointerTravel,
     clickCount: event.detail
   })) return
-  translationClickGate.click(() => void lookupPronunciation(word, 'translation'))
+  translationClickGate.click(() => activatePronunciationWord(word, 'translation'))
 }
 
 /**
@@ -1100,8 +1142,8 @@ async function toggleWordPlayback(variantId?: string): Promise<void> {
   if (!lease) return
   wordPlaybackLease = lease
   const variant = variantId
-    ? pronunciationCard.variants.find((candidate) => candidate.id === variantId)
-    : pronunciationCard.variants.find((candidate) => candidate.hasAudio)
+    ? selectPronunciationVariant(pronunciationCard.variants, variantId)
+    : selectPronunciationVariant(pronunciationCard.variants)
   activeVariantId = variant?.id ?? null
   renderPronunciationCard()
   if (variant) {
@@ -1127,6 +1169,7 @@ async function toggleWordPlayback(variantId?: string): Promise<void> {
   const started = await startPronunciationSpeechFallback(word, {
     speechProvider: currentSettings?.speechProvider,
     variant,
+    isCurrent: () => lease.isCurrent(),
     edge: edgeSpeechController,
     system: systemSpeechController
   })
@@ -1178,28 +1221,31 @@ function playWordAudio(
     wordAudio = audio
     audio.src = url
     audio.preload = 'auto'
-    const finish = (): void => {
-      if (wordAudio === audio) releaseWordAudio()
-      finishPronunciationPlayback('word', lease)
-      resolve()
-    }
-    audio.onended = finish
-    audio.onerror = () => {
+    let fallbackStarted = false
+    /**
+     * 确保词典音频的 error 与 play 拒绝只触发一次 TTS 兜底。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    const fallbackOnce = (): void => {
+      if (fallbackStarted) return
+      fallbackStarted = true
       if (!lease.isCurrent()) {
-        finish()
+        resolve()
         return
       }
       releaseWordAudio()
       void fallbackWordSpeech(pronunciationCard.word, lease, variant)
       resolve()
     }
-    audio.play().catch(() => {
-      if (lease.isCurrent()) {
-        releaseWordAudio()
-        void fallbackWordSpeech(pronunciationCard.word, lease, variant)
-      }
+    const finish = (): void => {
+      if (wordAudio === audio) releaseWordAudio()
+      finishPronunciationPlayback('word', lease)
       resolve()
-    })
+    }
+    audio.onended = finish
+    audio.onerror = fallbackOnce
+    audio.play().catch(fallbackOnce)
   })
 }
 
@@ -1219,6 +1265,7 @@ async function fallbackWordSpeech(
   const started = await startPronunciationSpeechFallback(word, {
     speechProvider: currentSettings?.speechProvider,
     variant,
+    isCurrent: () => lease.isCurrent(),
     edge: edgeSpeechController,
     system: systemSpeechController
   })

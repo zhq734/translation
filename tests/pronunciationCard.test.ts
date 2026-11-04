@@ -5,10 +5,12 @@ import {
   beginPronunciationLookup,
   closePronunciationCard,
   createPronunciationCardState,
+  selectPronunciationVariant,
   settlePronunciationLookup
 } from '../src/renderer/src/pronunciationCard.ts'
 import {
   createPronunciationClickGate,
+  createPronunciationInteractionDeduper,
   shouldLookupPronunciationWord
 } from '../src/renderer/src/pronunciationInteraction.ts'
 
@@ -145,6 +147,61 @@ test('单击在双击窗口结束后只触发一次查词', () => {
   gate.click(() => { lookups += 1 })
   scheduled[0]?.()
   assert.equal(lookups, 1)
+})
+
+test('同一交互窗口内重复的同词点击只应激活一次', () => {
+  let now = 1_000
+  const deduper = createPronunciationInteractionDeduper({
+    windowMs: 350,
+    now: () => now
+  })
+
+  assert.equal(deduper.claim('hello', 'source'), true)
+  assert.equal(deduper.claim('hello', 'source'), false)
+  now += 349
+  assert.equal(deduper.claim('hello', 'source'), false)
+  now += 1
+  assert.equal(deduper.claim('hello', 'source'), true)
+})
+
+test('去重不应阻止切换不同单词或不同区域', () => {
+  let now = 1_000
+  const deduper = createPronunciationInteractionDeduper({
+    windowMs: 350,
+    now: () => now
+  })
+
+  assert.equal(deduper.claim('hello', 'source'), true)
+  assert.equal(deduper.claim('world', 'source'), true)
+  assert.equal(deduper.claim('world', 'translation'), true)
+})
+
+test('双音标默认播放应固定选择第一个音标，而不是跳过后一个无音频项', () => {
+  const variants = [
+    { id: 'us-0', accent: 'US' as const, ipa: '/həˈloʊ/', hasAudio: false },
+    { id: 'uk-1', accent: 'UK' as const, ipa: '/həˈləʊ/', hasAudio: true }
+  ]
+
+  assert.equal(selectPronunciationVariant(variants)?.id, 'us-0')
+  assert.equal(selectPronunciationVariant(variants, 'uk-1')?.id, 'uk-1')
+  assert.equal(selectPronunciationVariant([]), undefined)
+})
+
+test('Renderer 应在释义查询和自动发音前统一执行同词去重', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const activatePronunciationWord =
+    renderer.match(/function activatePronunciationWord\([\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(renderer, /createPronunciationInteractionDeduper/u)
+  assert.match(activatePronunciationWord, /claim\(word, context\)/u)
+  assert.ok(
+    activatePronunciationWord.indexOf('claim(word, context)') < activatePronunciationWord.indexOf('lookupPronunciation('),
+    '去重必须发生在释义查询之前'
+  )
+  assert.ok(
+    activatePronunciationWord.indexOf('claim(word, context)') < activatePronunciationWord.indexOf('playPronunciationWordImmediately('),
+    '去重必须发生在自动发音之前'
+  )
 })
 
 test('音标卡状态应保留释义和当前展示区域', () => {

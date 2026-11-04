@@ -84,6 +84,21 @@ export function settlePronunciationLookup(
 }
 
 /**
+ * 选择要播放的音标变体；未显式指定时始终使用第一个音标，避免一次播放多个读音。
+ * @param variants 当前可播放的音标变体列表。
+ * @param variantId 用户显式点击的音标标识；缺省表示默认播放。
+ * @returns 选中的音标变体；没有可用音标时返回 undefined。
+ * @author zhenghq
+ */
+export function selectPronunciationVariant(
+  variants: readonly PronunciationVariant[],
+  variantId?: string
+): PronunciationVariant | undefined {
+  if (variantId) return variants.find((variant) => variant.id === variantId)
+  return variants[0]
+}
+
+/**
  * 关闭音标卡并清理当前查询状态。
  * @param _state 当前卡片状态。
  * @returns 初始隐藏状态。

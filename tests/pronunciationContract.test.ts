@@ -44,10 +44,30 @@ test('Renderer 应在单个单词与段落中统一渲染可点击词，并在�
   assert.match(renderer, /originalEl\.addEventListener\(['"]pointerdown['"]/u)
   assert.match(renderer, /originalEl\.addEventListener\(['"]pointerup['"]/u)
   assert.match(renderer, /originalEl\.addEventListener\(['"]click['"]/u)
-  assert.match(renderer, /originalClickGate\.click\(\(\) => void lookupPronunciation\(word, ['"]source['"]\)\)/u)
+  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"]\)\)/u)
   assert.match(renderer, /pointerTravel/u)
   assert.match(renderer, /event\.detail/u)
   assert.match(renderer, /data-pronunciation-word/u)
+})
+
+test('点击原文或译文单词应并行查询释义并自动播放发音', () => {
+  const activatePronunciationWord =
+    renderer.match(/function activatePronunciationWord\([\s\S]*?\n\}/u)?.[0] ?? ''
+  const playPronunciationWordImmediately =
+    renderer.match(/async function playPronunciationWordImmediately\([\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.ok(activatePronunciationWord, '应存在单词激活入口')
+  assert.match(activatePronunciationWord, /void lookupPronunciation\(word, context\)/u)
+  assert.match(activatePronunciationWord, /void playPronunciationWordImmediately\(word\)/u)
+  assert.doesNotMatch(activatePronunciationWord, /await\s+lookupPronunciation/u)
+  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"]\)\)/u)
+  assert.match(renderer, /translationClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]translation['"]\)\)/u)
+
+  assert.ok(playPronunciationWordImmediately, '应存在独立于释义查询的自动发音入口')
+  assert.match(playPronunciationWordImmediately, /pronunciationPlayback\.toggle\(['"]word['"]\)/u)
+  assert.match(playPronunciationWordImmediately, /toggle\.action === ['"]stop['"]/u)
+  assert.match(playPronunciationWordImmediately, /fallbackWordSpeech\(/u)
+  assert.doesNotMatch(playPronunciationWordImmediately, /lookupPronunciation|pronunciationCard\.variants/u)
 })
 
 test('Preload 与主进程应暴露受限音标查询和音频接口', () => {

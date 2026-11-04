@@ -253,6 +253,33 @@ test('单词 TTS 会话取消后不得继续回退系统语音', async () => {
   assert.deepEqual(calls, ['edge'])
 })
 
+test('切换单词使旧 Edge 会话失效后不得继续播放旧词系统语音', async () => {
+  const calls: string[] = []
+  let currentWordSession = true
+  const result = await startPronunciationSpeechFallback('first-word', {
+    speechProvider: 'edge',
+    isCurrent: () => currentWordSession,
+    edge: {
+      start: async () => {
+        calls.push('edge:first-word')
+        currentWordSession = false
+        return { ok: false, error: 'cancelled by next word' }
+      },
+      isSpeaking: () => false
+    },
+    system: {
+      start: () => {
+        calls.push('system:first-word')
+        return { ok: true }
+      },
+      isSpeaking: () => true
+    }
+  })
+
+  assert.deepEqual(result, { status: 'failed' })
+  assert.deepEqual(calls, ['edge:first-word'])
+})
+
 test('Edge 合成失败时单词 TTS 应回退系统语音', async () => {
   const calls: string[] = []
   const result = await startPronunciationSpeechFallback('hello', {
@@ -361,4 +388,16 @@ test('Renderer 单词词典音频失败后应保留当前音标变体供 TTS 兜
   assert.match(toggleWordPlayback, /startPronunciationSpeechFallback\([\s\S]{0,180}variant/u)
   assert.match(playWordAudio, /fallbackWordSpeech\([^)]*variant\s*\)/u)
   assert.match(fallbackWordSpeech, /startPronunciationSpeechFallback\([\s\S]{0,180}variant/u)
+})
+
+test('Renderer 单词播放应绑定会话有效性，且词典音频失败只兜底一次', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const playWordAudio = renderer.match(/function playWordAudio[\s\S]*?\n\}/u)?.[0] ?? ''
+
+  assert.match(renderer, /isCurrent:\s*\(\)\s*=>\s*lease\.isCurrent\(\)/u)
+  assert.match(playWordAudio, /let fallbackStarted\s*=\s*false/u)
+  assert.match(playWordAudio, /if \(fallbackStarted\) return/u)
+  assert.match(playWordAudio, /fallbackStarted\s*=\s*true/u)
+  assert.match(playWordAudio, /audio\.onerror\s*=\s*[^;]*fallbackOnce/su)
+  assert.match(playWordAudio, /audio\.play\(\)\.catch\(fallbackOnce\)/u)
 })
