@@ -59,6 +59,7 @@ import { createEdgeSpeechClient } from './edgeSpeech'
 import { PronunciationService } from './pronunciationService'
 import { iscorevocDictionary } from './iscorevocDictionary'
 import { PronunciationRequestRegistry } from './pronunciationRequests'
+import { AiPronunciationLookup } from './aiPronunciation'
 import {
   createPopup,
   showPopup,
@@ -666,9 +667,15 @@ function t(key: string, params?: Record<string, string | number>): string {
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
 const edgeSpeechRequests = new Map<string, AbortController>()
 /** 主进程音标查询与受信任音频代理；网络请求复用现有翻译代理配置。 */
+const aiPronunciationLookup = new AiPronunciationLookup({
+  fetch: translationFetch,
+  getSettings,
+  getApiKey: () => aiConfiguration?.getApiKey() ?? null
+})
 const pronunciationService = new PronunciationService({
   fetch: translationFetch,
-  ieltsDictionary: iscorevocDictionary
+  ieltsDictionary: iscorevocDictionary,
+  aiLookup: (word, signal) => aiPronunciationLookup.lookup(word, signal)
 })
 /** 当前 Renderer 发起且尚未完成的音标查询与音频请求。 */
 const pronunciationRequests = new PronunciationRequestRegistry()

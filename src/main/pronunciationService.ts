@@ -36,6 +36,8 @@ export interface PronunciationServiceOptions {
      */
     lookup(word: string): IscorevocEntry | null | undefined
   }
+  /** 本地词典数据缺失时用于动态生成 IPA 和中文释义的 AI 查询器。 */
+  aiLookup?: (word: string, signal?: AbortSignal) => Promise<PronunciationResult | null>
   /** 查询与下载超时毫秒数。 */
   timeoutMs?: number
   /** 词典 JSON 响应大小上限。 */
@@ -177,6 +179,7 @@ function estimateCacheBytes(key: string, value: CachedPronunciation): number {
 export class PronunciationService {
   private readonly fetchImpl: PronunciationServiceOptions['fetch']
   private readonly ieltsDictionary: PronunciationServiceOptions['ieltsDictionary']
+  private readonly aiLookup: PronunciationServiceOptions['aiLookup']
   private readonly timeoutMs: number
   private readonly maxResponseBytes: number
   private readonly maxAudioBytes: number
@@ -195,6 +198,7 @@ export class PronunciationService {
   constructor(options: PronunciationServiceOptions) {
     this.fetchImpl = options.fetch
     this.ieltsDictionary = options.ieltsDictionary
+    this.aiLookup = options.aiLookup
     this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_TIMEOUT_MS))
     this.maxResponseBytes = Math.max(1, Math.floor(options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES))
     this.maxAudioBytes = Math.max(1, Math.floor(options.maxAudioBytes ?? DEFAULT_MAX_AUDIO_BYTES))
@@ -301,7 +305,85 @@ export class PronunciationService {
       ? exact
       : await this.requestDictionary(parsed.lookupWord, parsed.word, signal)
     const ielts = this.lookupIelts(parsed)
-    return this.storeResult(parsed.word, this.mergeResults(parsed.word, dictionary, ielts))
+    const merged = this.mergeResults(parsed.word, dictionary, ielts)
+    return this.storeResult(parsed.word, await this.completeWithAi(parsed.word, merged, signal))
+  }
+
+  /**
+   * 在词典结果缺少音标或释义时调用 AI 补全，并保留已有词典数据。
+   * @param word 用户当前查询词。
+   * @param base 通用词典与本地词表合并后的结果。
+   * @param signal 共享上游请求的取消信号。
+   * @returns 补全后的结果；AI 不可用或失败时返回原结果。
+   * @author zhenghq
+   */
+  private async completeWithAi(
+    word: string,
+    base: CachedPronunciation,
+    signal: AbortSignal
+  ): Promise<CachedPronunciation> {
+    if (!this.aiLookup || signal.aborted) return base
+    const baseAvailable = base.result.status === 'available'
+    const hasIpa = baseAvailable && base.result.variants.length > 0
+    const hasDefinitions = baseAvailable && (base.result.definitions?.length ?? 0) > 0
+    // 完整词典结果直接返回，避免普通查词额外消耗模型调用。
+    if (baseAvailable && hasIpa && hasDefinitions) return base
+
+    let aiResult: PronunciationResult | null
+    try {
+      aiResult = await this.aiLookup(word, signal)
+    } catch {
+      return base
+    }
+    if (!aiResult || aiResult.status !== 'available') return base
+    return this.mergeAiResult(word, base, aiResult)
+  }
+
+  /**
+   * 将 AI 补全结果与已有词典数据去重合并，AI 只填充缺失部分。
+   * @param word 用户当前查询词。
+   * @param base 通用词典与本地词表合并后的结果。
+   * @param aiResult AI 返回的可用结果。
+   * @returns 合并后的内部音标结果。
+   * @author zhenghq
+   */
+  private mergeAiResult(
+    word: string,
+    base: CachedPronunciation,
+    aiResult: PronunciationResult
+  ): CachedPronunciation {
+    const baseAvailable = base.result.status === 'available'
+    const baseDefinitions = baseAvailable ? base.result.definitions ?? [] : []
+    const variants = baseAvailable ? [...base.result.variants] : []
+    const seenIpa = new Set(variants.map((variant) => variant.ipa))
+    for (const variant of aiResult.variants) {
+      if (seenIpa.has(variant.ipa) || variants.length >= 3) continue
+      seenIpa.add(variant.ipa)
+      variants.push({ ...variant, hasAudio: false })
+    }
+
+    const localDefinitions = baseDefinitions.filter((definition) => definition.source === 'iscorevoc')
+    const dictionaryDefinitions = baseDefinitions.filter((definition) => definition.source === 'dictionaryapi')
+    const aiDefinitions = aiResult.definitions ?? []
+    const definitions = [...localDefinitions, ...aiDefinitions, ...dictionaryDefinitions]
+      .filter((definition, index, all) =>
+        all.findIndex((candidate) => candidate.text.toLowerCase() === definition.text.toLowerCase()) === index
+      )
+      .slice(0, 5)
+    const hasBaseData = baseAvailable && (base.result.variants.length > 0 || baseDefinitions.length > 0)
+
+    return {
+      result: {
+        status: 'available',
+        word,
+        language: 'en',
+        variants,
+        source: hasBaseData ? 'mixed' : 'ai',
+        ...(definitions.length > 0 ? { definitions } : {}),
+        ...(baseAvailable && base.result.attribution ? { attribution: base.result.attribution } : {})
+      },
+      audioUrls: baseAvailable ? base.audioUrls : {}
+    }
   }
 
   /**

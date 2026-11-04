@@ -351,8 +351,8 @@ export interface PronunciationDefinition {
   partOfSpeech?: string
   /** 释义语言；通用词典为英文，本地雅思词表为中文。 */
   language: 'zh' | 'en'
-  /** 释义来源。 */
-  source: 'dictionaryapi' | 'iscorevoc'
+  /** 释义来源；ai 表示本地词典缺失时由用户已配置的 AI 动态生成。 */
+  source: 'dictionaryapi' | 'iscorevoc' | 'ai'
 }
 
 /** 单个英文单词的音标查询结果。 */
@@ -365,8 +365,8 @@ export interface PronunciationResult {
   language: 'en'
   /** 去重并排序后的音标变体。 */
   variants: PronunciationVariant[]
-  /** 音标与释义数据的合并来源。 */
-  source: 'dictionaryapi' | 'iscorevoc' | 'mixed'
+  /** 音标与释义数据的合并来源；ai 表示全部由 AI 补全。 */
+  source: 'dictionaryapi' | 'iscorevoc' | 'mixed' | 'ai'
   /** 按通用词典优先、雅思词表补充的顺序去重后的释义。 */
   definitions?: PronunciationDefinition[]
   /** 可选的词典许可归属信息。 */

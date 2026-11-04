@@ -273,3 +273,109 @@ test('词典服务不应为不可查询输入发起网络请求', async () => {
   assert.equal(result.status, 'unsupported')
   assert.equal(requests, 0)
 })
+
+test('词典和本地词表都缺失时应调用 AI 动态生成音标与中文释义', async () => {
+  const aiWords: string[] = []
+  const service = new PronunciationService({
+    fetch: async () => new Response('not found', { status: 404 }),
+    aiLookup: async (word) => {
+      aiWords.push(word)
+      return {
+        status: 'available',
+        word,
+        language: 'en',
+        variants: [{ id: 'ai-us-0', accent: 'US', ipa: '/ˈklaʊd nətɪv/', hasAudio: false }],
+        source: 'ai',
+        definitions: [{
+          text: 'adj. 云原生的；为云计算环境设计和构建的',
+          language: 'zh',
+          source: 'ai'
+        }]
+      }
+    }
+  })
+
+  const result = await service.lookup('cloud-native')
+
+  assert.deepEqual(aiWords, ['cloud-native'])
+  assert.equal(result.status, 'available')
+  assert.equal(result.source, 'ai')
+  assert.deepEqual(result.variants.map((variant) => variant.ipa), ['/ˈklaʊd nətɪv/'])
+  assert.deepEqual(result.definitions, [{
+    text: 'adj. 云原生的；为云计算环境设计和构建的',
+    language: 'zh',
+    source: 'ai'
+  }])
+})
+
+test('词典已提供音标和释义时不应调用 AI', async () => {
+  let aiRequests = 0
+  const service = new PronunciationService({
+    fetch: async () => jsonResponse(helloPayloadWithFiveDefinitions),
+    aiLookup: async (word) => {
+      aiRequests += 1
+      return {
+        status: 'available',
+        word,
+        language: 'en',
+        variants: [{ id: 'ai-other-0', accent: 'other', ipa: '/generated/', hasAudio: false }],
+        source: 'ai',
+        definitions: [{ text: '生成的释义', language: 'zh', source: 'ai' }]
+      }
+    }
+  })
+
+  const result = await service.lookup('hello')
+
+  assert.equal(aiRequests, 0)
+  assert.equal(result.source, 'dictionaryapi')
+  assert.equal(result.definitions?.[0]?.language, 'en')
+})
+
+test('词典只有释义但缺音标时应调用 AI 补全并优先展示中文释义', async () => {
+  const service = new PronunciationService({
+    fetch: async () => jsonResponse([{
+      meanings: [{ partOfSpeech: 'adjective', definitions: [{ definition: 'Designed for cloud environments.' }] }]
+    }]),
+    aiLookup: async (word) => ({
+      status: 'available',
+      word,
+      language: 'en',
+      variants: [{ id: 'ai-us-0', accent: 'US', ipa: '/ˈklaʊd/', hasAudio: false }],
+      source: 'ai',
+      definitions: [{ text: 'adj. 云的；云端的', language: 'zh', source: 'ai' }]
+    })
+  })
+
+  const result = await service.lookup('cloud')
+
+  assert.equal(result.status, 'available')
+  assert.equal(result.source, 'mixed')
+  assert.deepEqual(result.variants.map((variant) => variant.ipa), ['/ˈklaʊd/'])
+  assert.deepEqual(result.definitions?.[0], {
+    text: 'adj. 云的；云端的',
+    language: 'zh',
+    source: 'ai'
+  })
+  assert.equal(result.definitions?.some((definition) => definition.language === 'en'), true)
+})
+
+test('AI 配置不可用时应保留词典缺失结果且不暴露内部异常', async () => {
+  const service = new PronunciationService({
+    fetch: async () => new Response('not found', { status: 404 }),
+    aiLookup: async () => {
+      throw new Error('missing api key sk-secret')
+    }
+  })
+
+  const result = await service.lookup('cloud-native')
+
+  assert.deepEqual(result, {
+    status: 'unavailable',
+    word: 'cloud-native',
+    language: 'en',
+    variants: [],
+    source: 'dictionaryapi'
+  })
+  assert.equal(JSON.stringify(result).includes('sk-secret'), false)
+})
