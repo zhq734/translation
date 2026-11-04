@@ -763,8 +763,10 @@
               <label for="realtime-subtitle-asr-provider" data-i18n="settings.realtimeSubtitle.asrProvider">Speech recognition</label>
               <select id="realtime-subtitle-asr-provider">
                 <option value="deepgram" data-i18n="settings.realtimeSubtitle.asrProvider.deepgram">Deepgram (cloud ASR)</option>
+                <option value="whisper" data-i18n="settings.realtimeSubtitle.asrProvider.whisper">Whisper / OpenAI compatible</option>
               </select>
             </div>
+            <div id="realtime-subtitle-deepgram-settings">
             <div class="row">
               <label for="realtime-subtitle-deepgram-api-key" data-i18n="settings.realtimeSubtitle.deepgramApiKey">Deepgram API Key</label>
               <div class="inline-control">
@@ -781,6 +783,43 @@
             </div>
             <p id="realtime-subtitle-deepgram-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
             <p class="field-hint" data-i18n="settings.realtimeSubtitle.deepgramHint">Audio is captured locally and sent to Deepgram cloud ASR. The API Key is stored in the system keychain.</p>
+            </div>
+            <div id="realtime-subtitle-whisper-settings">
+              <div class="row">
+                <label for="realtime-subtitle-whisper-base-url" data-i18n="settings.realtimeSubtitle.whisperBaseUrl">Whisper Base URL</label>
+                <input
+                  id="realtime-subtitle-whisper-base-url"
+                  type="url"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.whisperBaseUrlPlaceholder"
+                  placeholder="http://127.0.0.1:8000/v1"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-whisper-model" data-i18n="settings.realtimeSubtitle.whisperModel">Whisper model</label>
+                <input
+                  id="realtime-subtitle-whisper-model"
+                  type="text"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.whisperModelPlaceholder"
+                  placeholder="whisper-1"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-whisper-api-key" data-i18n="settings.realtimeSubtitle.whisperApiKey">Whisper API Key (optional)</label>
+                <div class="inline-control">
+                  <input
+                    id="realtime-subtitle-whisper-api-key"
+                    type="password"
+                    autocomplete="new-password"
+                    data-i18n-attr="placeholder:settings.realtimeSubtitle.whisperApiKeyPlaceholder"
+                    placeholder="Leave blank for a local service without authentication"
+                  />
+                  <button id="realtime-subtitle-whisper-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.whisperSave">Save</button>
+                  <button id="realtime-subtitle-whisper-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.whisperClear">Clear</button>
+                </div>
+              </div>
+              <p id="realtime-subtitle-whisper-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+              <p class="field-hint" data-i18n="settings.realtimeSubtitle.whisperHint">Supports self-hosted faster-whisper, whisper.cpp, and other OpenAI-compatible services. A Base URL automatically gets /audio/transcriptions appended; whisper.cpp can also use a complete /inference endpoint. Leave the API key blank for a local service without authentication.</p>
+            </div>
             <div class="row">
               <label for="realtime-subtitle-audio-source" data-i18n="settings.realtimeSubtitle.audioSource">Audio source</label>
               <select id="realtime-subtitle-audio-source">

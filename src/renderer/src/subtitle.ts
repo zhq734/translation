@@ -24,6 +24,57 @@ let dragPointerId: number | null = null
 let dragPointerOffset = { x: 0, y: 0 }
 let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null
 let lastDragHitAreaKey = ''
+let pendingViewModel: RealtimeSubtitleViewModel | null = null
+let viewModelFrame: number | null = null
+let dragHitAreaFrame: number | null = null
+
+/**
+ * 判断两个字幕视图模型是否需要触发 DOM 更新。
+ * @param left 前一个视图模型。
+ * @param right 后一个视图模型。
+ * @returns 所有展示字段一致时返回 true。
+ * @author zhenghq
+ */
+function isSameViewModel(
+  left: RealtimeSubtitleViewModel | null,
+  right: RealtimeSubtitleViewModel
+): boolean {
+  return Boolean(
+    left &&
+    left.state === right.state &&
+    left.displayMode === right.displayMode &&
+    left.sourceText === right.sourceText &&
+    left.translatedText === right.translatedText &&
+    left.status === right.status &&
+    left.audioActivity === right.audioActivity &&
+    left.empty === right.empty &&
+    left.error === right.error
+  )
+}
+
+/**
+ * 仅在文本内容变化时写入 DOM，避免高频更新替换相同文本节点。
+ * @param element 目标元素。
+ * @param value 最新文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function updateText(element: HTMLElement, value: string): void {
+  if (element.textContent !== value) element.textContent = value
+}
+
+/**
+ * 以动画帧为边界合并拖拽命中区测量，避免每次翻译增量都触发布局计算。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleDragHitAreaSync(): void {
+  if (dragHitAreaFrame !== null) return
+  dragHitAreaFrame = window.requestAnimationFrame(() => {
+    dragHitAreaFrame = null
+    syncDragHitArea()
+  })
+}
 
 /**
  * 设置字幕窗局部鼠标交互状态，避免重复发送 IPC。
@@ -71,6 +122,23 @@ function syncDragHitArea(): void {
   if (key === lastDragHitAreaKey) return
   lastDragHitAreaKey = key
   window.api.setRealtimeSubtitleDragHitArea(area)
+}
+
+/**
+ * 合并同一动画帧内的视图更新，只渲染最新一帧字幕。
+ * @param viewModel 主进程推送的最新视图模型。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleViewModelRender(viewModel: RealtimeSubtitleViewModel): void {
+  pendingViewModel = viewModel
+  if (viewModelFrame !== null) return
+  viewModelFrame = window.requestAnimationFrame(() => {
+    viewModelFrame = null
+    const latest = pendingViewModel
+    pendingViewModel = null
+    if (latest) render(latest)
+  })
 }
 
 /**
@@ -144,28 +212,29 @@ function syncTargetLanguage(settings: { targetLang: string }): void {
 /**
  * 将视图模型渲染为双行字幕。
  * @param viewModel 主进程推送的视图模型。
+ * @param force 是否强制重渲染，用于界面语言切换等需要刷新文案的场景。
  * @returns 无返回值。
  * @author zhenghq
  */
-function render(viewModel: RealtimeSubtitleViewModel): void {
+function render(viewModel: RealtimeSubtitleViewModel, force = false): void {
+  if (!force && isSameViewModel(current, viewModel)) return
   current = viewModel
   root.dataset.empty = String(viewModel.empty)
   root.dataset.state = viewModel.state
   root.dataset.status = viewModel.status
-  source.textContent = viewModel.sourceText
-  target.textContent = viewModel.translatedText
-  error.textContent = viewModel.error
+  updateText(source, viewModel.sourceText)
+  updateText(target, viewModel.translatedText)
+  updateText(error, viewModel.error)
   error.hidden = !viewModel.error
-  status.textContent = viewModel.state === 'paused'
+  updateText(status, viewModel.state === 'paused'
     ? localeRuntime.translator.t('settings.realtimeSubtitle.paused')
     : viewModel.state === 'starting'
       ? localeRuntime.translator.t('settings.realtimeSubtitle.starting')
       : viewModel.audioActivity === 'speech-pending'
         ? localeRuntime.translator.t('settings.realtimeSubtitle.waitingForSpeech')
-        : ''
+        : '')
   root.dataset.clickThrough = String(clickThrough)
-  syncDragHitArea()
-  window.requestAnimationFrame(syncDragHitArea)
+  scheduleDragHitAreaSync()
 }
 
 /**
@@ -185,7 +254,7 @@ function applyAppearance(appearance: {
   root.style.setProperty('--subtitle-text-color', appearance.textColor)
   root.dataset.displayMode = appearance.displayMode
   root.dataset.clickThrough = String(clickThrough)
-  if (current) render(current)
+  if (current) render(current, true)
 }
 
 close.addEventListener('click', () => window.api.stopRealtimeSubtitle())
@@ -254,7 +323,7 @@ window.addEventListener('pointerup', scheduleToolbarHide)
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') window.api.stopRealtimeSubtitle()
 })
-window.api.onRealtimeSubtitleViewModel(render)
+window.api.onRealtimeSubtitleViewModel(scheduleViewModelRender)
 window.api.onRealtimeSubtitleAppearance(applyAppearance)
 window.api.onRealtimeSubtitlePointerPoint((point) => {
   if (point.insideDragArea) {
@@ -267,12 +336,12 @@ window.api.onSettingsChanged(syncTargetLanguage)
 void window.api.getSettings().then(syncTargetLanguage).catch(() => undefined)
 localeRuntime.onLocaleChanged(() => {
   populateTargetLanguages()
-  if (current) render(current)
-  syncDragHitArea()
+  if (current) render(current, true)
+  else scheduleDragHitAreaSync()
 })
 populateTargetLanguages()
-const dragHitAreaObserver = new ResizeObserver(syncDragHitArea)
+const dragHitAreaObserver = new ResizeObserver(scheduleDragHitAreaSync)
 dragHitAreaObserver.observe(dragHandle)
 dragHitAreaObserver.observe(subtitleCard)
-window.addEventListener('resize', syncDragHitArea)
-window.requestAnimationFrame(syncDragHitArea)
+window.addEventListener('resize', scheduleDragHitAreaSync)
+scheduleDragHitAreaSync()

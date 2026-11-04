@@ -41,6 +41,13 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
     'realtime-subtitle-deepgram-api-key',
     'realtime-subtitle-deepgram-save',
     'realtime-subtitle-deepgram-clear',
+    'realtime-subtitle-whisper-settings',
+    'realtime-subtitle-whisper-base-url',
+    'realtime-subtitle-whisper-model',
+    'realtime-subtitle-whisper-api-key',
+    'realtime-subtitle-whisper-save',
+    'realtime-subtitle-whisper-clear',
+    'realtime-subtitle-whisper-status',
     'realtime-subtitle-itranslate-enabled',
     'realtime-subtitle-itranslate-api-key',
     'realtime-subtitle-itranslate-save',
@@ -63,9 +70,15 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
   assert.match(source, /realtime-subtitle-hide-after/u)
   assert.match(source, /setDeepgramConfig/u)
   assert.match(source, /clearDeepgramApiKey/u)
+  assert.match(source, /setWhisperConfig/u)
+  assert.match(source, /clearWhisperApiKey/u)
+  assert.match(source, /realtimeSubtitleWhisperBaseUrl/u)
+  assert.match(source, /realtimeSubtitleWhisperModel/u)
+  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]whisper['"]/u)
   assert.match(source, /setITranslateConfig/u)
   assert.match(source, /clearITranslateApiKey/u)
   assert.doesNotMatch(source, /realtimeSubtitleDeepgramApiKeyConfigured\s*=/u)
+  assert.match(html, /id=["']realtime-subtitle-whisper-api-key["'][^>]*type=["']password["']/u)
   assert.doesNotMatch(html, /NSSpeechRecognition|端侧 Speech|on device/iu)
 })
 
@@ -102,6 +115,14 @@ test('实时字幕设置与状态应具备中英文词条', () => {
     'settings.realtimeSubtitle.openScreenRecordingSettings',
     'settings.realtimeSubtitle.privacy',
     'settings.realtimeSubtitle.asrProvider',
+    'settings.realtimeSubtitle.asrProvider.whisper',
+    'settings.realtimeSubtitle.whisperBaseUrl',
+    'settings.realtimeSubtitle.whisperModel',
+    'settings.realtimeSubtitle.whisperApiKey',
+    'settings.realtimeSubtitle.whisperApiKeyPlaceholder',
+    'settings.realtimeSubtitle.whisperSave',
+    'settings.realtimeSubtitle.whisperClear',
+    'settings.realtimeSubtitle.whisperHint',
     'settings.realtimeSubtitle.deepgramApiKey',
     'settings.realtimeSubtitle.deepgramSave',
     'settings.realtimeSubtitle.deepgramClear',
@@ -115,6 +136,26 @@ test('实时字幕设置与状态应具备中英文词条', () => {
     assert.match(zh, new RegExp(`['"]${key.replaceAll('.', '\\.')}['"]\\s*:`, 'u'), `中文词条缺少 ${key}`)
     assert.match(en, new RegExp(`['"]${key.replaceAll('.', '\\.')}['"]\\s*:`, 'u'), `英文词条缺少 ${key}`)
   }
+})
+
+/**
+ * 校验 Whisper 设置明确支持本地部署与无鉴权 OpenAI 兼容服务。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Whisper 设置应说明本地部署和无鉴权用法', () => {
+  const html = read('src/renderer/settings.html')
+  const zh = read('src/shared/i18n/catalog.zh-CN.subtitle.ts')
+  const en = read('src/shared/i18n/catalog.en-US.subtitle.ts')
+
+  assert.match(html, /value=["']whisper["']/u)
+  assert.match(zh, /本地部署/iu)
+  assert.match(zh, /faster-whisper|whisper\.cpp/iu)
+  assert.match(zh, /\/inference/iu)
+  assert.match(zh, /API Key 留空/iu)
+  assert.match(en, /self-hosted|local/iu)
+  assert.match(en, /\/inference/iu)
+  assert.match(en, /leave the API key (?:blank|empty)/iu)
 })
 
 /**
@@ -184,6 +225,35 @@ test('有声音但无语音时应展示可区分的状态提示', () => {
   assert.match(subtitle, /settings\.realtimeSubtitle\.waitingForSpeech/u)
   assert.match(zh, /检测到声音[^']*未识别到语音/iu)
   assert.match(en, /audio[^']*but[^']*speech/iu)
+})
+
+/**
+ * 校验实时字幕高频更新只触发必要的界面刷新，并避免广播到无关窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('实时字幕高频更新应合并渲染并定向发送', () => {
+  const settings = read('src/renderer/src/settings.ts')
+  const subtitle = read('src/renderer/src/subtitle.ts')
+  const main = read('src/main/index.ts')
+  const settingsRenderStart = settings.indexOf('function renderRealtimeSubtitleStatus(')
+  const settingsRenderEnd = settings.indexOf('/**', settingsRenderStart + 1)
+  const settingsRenderSource = settings.slice(settingsRenderStart, settingsRenderEnd)
+  const mainSnapshotStart = main.indexOf('onSnapshot: (snapshot) => {')
+  const mainSnapshotEnd = main.indexOf('setWindowVisible:', mainSnapshotStart)
+  const mainSnapshotSource = main.slice(mainSnapshotStart, mainSnapshotEnd)
+  const subtitleRenderStart = subtitle.indexOf('function render(viewModel:')
+  const subtitleRenderEnd = subtitle.indexOf('/**', subtitleRenderStart + 1)
+  const subtitleRenderSource = subtitle.slice(subtitleRenderStart, subtitleRenderEnd)
+
+  assert.match(settingsRenderSource, /latestRealtimeSubtitleStatus[\s\S]*?state[\s\S]*?audioActivity[\s\S]*?return/u)
+  assert.match(settings, /renderRealtimeSubtitleStatus\(latestRealtimeSubtitleStatus,\s*true\)/u)
+  assert.match(mainSnapshotSource, /settingsWin[\s\S]*?webContents\.send\(['"]subtitle:update['"]/u)
+  assert.doesNotMatch(mainSnapshotSource, /broadcast\(['"]subtitle:update['"]/u)
+  assert.match(subtitle, /function scheduleViewModelRender/u)
+  assert.match(subtitle, /onRealtimeSubtitleViewModel\(scheduleViewModelRender\)/u)
+  assert.match(subtitle, /function scheduleDragHitAreaSync/u)
+  assert.doesNotMatch(subtitleRenderSource, /requestAnimationFrame\(syncDragHitArea\)/u)
 })
 
 /**
@@ -261,6 +331,26 @@ test('字幕空状态工具栏应在卡片内垂直居中', () => {
     css,
     /\.subtitle-root\[data-empty='true'\] \.subtitle-toolbar\s*\{[^}]*inset-block-start:\s*50%;[^}]*transform:\s*translateY\(-50%\)/u,
     '空状态工具栏应相对字幕卡片垂直居中'
+  )
+})
+
+/**
+ * 校验 Whisper 返回文本中的换行符不会让短字幕提前折行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕原文应折叠服务返回的换行符', () => {
+  const css = read('src/renderer/src/subtitle.css')
+
+  assert.match(
+    css,
+    /\.subtitle-line\s*\{[^}]*white-space:\s*normal/u,
+    '字幕行应折叠文本内容中的换行，仅在超过可用宽度时自动换行'
+  )
+  assert.doesNotMatch(
+    css,
+    /\.subtitle-line\s*\{[^}]*white-space:\s*pre-wrap/u,
+    '字幕行不应原样保留 Whisper 服务返回的换行符'
   )
 })
 

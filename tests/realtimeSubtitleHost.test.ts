@@ -195,6 +195,34 @@ test('持续音频输入且无识别文本时应标记有声音但未识别到�
 })
 
 /**
+ * 校验音频电平只在活动状态发生迁移时通知上层，避免高频 PCM 块反复驱动界面刷新。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('重复音频电平事件不应重复通知上层', () => {
+  const child = createFakeChild()
+  const eventTypes: SubtitleSidecarEvent['type'][] = []
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: (event) => eventTypes.push(event.type)
+  })
+
+  host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from([
+    '{"type":"ready"}',
+    '{"type":"level","rms":0.18}',
+    '{"type":"level","rms":0.25}',
+    '{"type":"level","rms":0.001}',
+    '{"type":"partial","text":"Hello"}',
+    '{"type":"level","rms":0.3}',
+    ''
+  ].join('\n')))
+
+  assert.deepEqual(eventTypes, ['ready', 'level', 'partial'])
+  host.dispose()
+})
+
+/**
  * 校验自动隐藏只清空当前显示内容，不停止仍在运行的识别会话。
  * @returns 无返回值。
  * @author zhenghq
@@ -463,6 +491,85 @@ test('未显式传入 Deepgram 密钥时应清理继承的环境变量', () => {
   } finally {
     if (previousKey === undefined) delete process.env.DEEPGRAM_API_KEY
     else process.env.DEEPGRAM_API_KEY = previousKey
+  }
+})
+
+/**
+ * 校验 Whisper 配置只通过子进程环境变量传递，且无鉴权本地服务允许不配置密钥。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Whisper 启动应通过环境变量传递配置且不要求 API Key', () => {
+  const child = createFakeChild()
+  const invocations: SpawnInvocation[] = []
+  const host = new SubtitleSessionHost({
+    spawn: (environment) => {
+      invocations.push({ environment })
+      return child
+    },
+    onEvent: () => undefined
+  })
+
+  host.start({
+    source: 'system',
+    asr: 'whisper',
+    language: 'zh-CN',
+    whisperBaseUrl: 'http://127.0.0.1:8000/v1',
+    whisperModel: 'large-v3',
+    whisperApiKey: null
+  })
+
+  assert.equal(invocations[0]?.environment.WHISPER_BASE_URL, 'http://127.0.0.1:8000/v1')
+  assert.equal(invocations[0]?.environment.WHISPER_MODEL, 'large-v3')
+  assert.equal(invocations[0]?.environment.WHISPER_API_KEY, undefined)
+  assert.equal(JSON.stringify(child.commands).includes('127.0.0.1'), false)
+  host.dispose()
+})
+
+/**
+ * 校验 Whisper 密钥与配置不会从父进程环境意外继承。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Whisper 启动前应清理继承的敏感环境变量', () => {
+  const previousKey = process.env.WHISPER_API_KEY
+  const previousBaseUrl = process.env.WHISPER_BASE_URL
+  const previousModel = process.env.WHISPER_MODEL
+  process.env.WHISPER_API_KEY = 'inherited-whisper-secret'
+  process.env.WHISPER_BASE_URL = 'http://inherited.invalid/v1'
+  process.env.WHISPER_MODEL = 'inherited-model'
+  try {
+    const child = createFakeChild()
+    const invocations: SpawnInvocation[] = []
+    const host = new SubtitleSessionHost({
+      spawn: (environment) => {
+        invocations.push({ environment })
+        return child
+      },
+      onEvent: () => undefined
+    })
+
+    host.start({
+      source: 'microphone',
+      asr: 'whisper',
+      language: 'auto',
+      whisperBaseUrl: 'http://127.0.0.1:8000/v1',
+      whisperModel: 'whisper-1',
+      whisperApiKey: null
+    })
+
+    assert.equal(invocations[0]?.environment.WHISPER_API_KEY, undefined)
+    assert.equal(invocations[0]?.environment.WHISPER_BASE_URL, 'http://127.0.0.1:8000/v1')
+    assert.equal(invocations[0]?.environment.WHISPER_MODEL, 'whisper-1')
+    assert.equal(JSON.stringify(child.commands).includes('inherited'), false)
+    host.dispose()
+  } finally {
+    if (previousKey === undefined) delete process.env.WHISPER_API_KEY
+    else process.env.WHISPER_API_KEY = previousKey
+    if (previousBaseUrl === undefined) delete process.env.WHISPER_BASE_URL
+    else process.env.WHISPER_BASE_URL = previousBaseUrl
+    if (previousModel === undefined) delete process.env.WHISPER_MODEL
+    else process.env.WHISPER_MODEL = previousModel
   }
 })
 

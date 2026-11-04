@@ -36,6 +36,9 @@ class FakeHost {
     asr: RealtimeSubtitleAsrProvider
     language: string
     deepgramApiKey?: string | null
+    whisperBaseUrl?: string
+    whisperModel?: string
+    whisperApiKey?: string | null
   }> = []
   /** 记录 pause/resume/stop 调用。 */
   calls: string[] = []
@@ -57,6 +60,9 @@ class FakeHost {
     asr: RealtimeSubtitleAsrProvider
     language: string
     deepgramApiKey?: string | null
+    whisperBaseUrl?: string
+    whisperModel?: string
+    whisperApiKey?: string | null
   }): number {
     this.starts.push(options)
     this.generation += 1
@@ -193,7 +199,7 @@ class FakeHost {
  */
 function createHarness(
   overrides: Partial<Settings> = {},
-  options: { previewDebounceMs?: number } = {}
+  options: { previewDebounceMs?: number; whisperApiKey?: string | null } = {}
 ) {
   const host = new FakeHost()
   const broadcasts: RealtimeSubtitleSnapshot[] = []
@@ -216,6 +222,7 @@ function createHarness(
     getSettings: () => settings,
     getDingTalkCredentials: () => null,
     getAiApiKey: () => null,
+    getWhisperApiKey: () => options.whisperApiKey ?? null,
     getITranslateApiKey: () => 'it-secret',
     previewDebounceMs: options.previewDebounceMs,
     translateStream: async (text, _settings, _dingTalk, _apiKey, options, iTranslateApiKey) => {
@@ -504,6 +511,88 @@ test('设置变化应同步字幕窗口显示参数', () => {
 })
 
 /**
+ * 校验运行中切换 ASR 提供商应停止旧会话，并用新配置重新启动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('运行中切换 Whisper 应重启实时字幕会话', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleAsrProvider: 'whisper',
+    realtimeSubtitleWhisperBaseUrl: 'http://127.0.0.1:9000/v1',
+    realtimeSubtitleWhisperModel: 'small'
+  })
+
+  assert.deepEqual(harness.host.calls, ['stop'])
+  assert.equal(harness.host.starts.length, 2)
+  assert.deepEqual(harness.host.starts[1], {
+    source: 'system',
+    asr: 'whisper',
+    language: 'auto',
+    deepgramApiKey: null,
+    whisperBaseUrl: 'http://127.0.0.1:9000/v1',
+    whisperModel: 'small',
+    whisperApiKey: null
+  })
+  assert.equal(harness.windowStates.at(-1), true)
+  assert.equal(harness.controller.snapshot().state, 'starting')
+})
+
+/**
+ * 校验运行中修改 Whisper 地址或模型会立即重启，而不是继续使用旧 sidecar。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('运行中修改 Whisper 地址和模型应重启实时字幕会话', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'whisper',
+    realtimeSubtitleWhisperBaseUrl: 'http://127.0.0.1:8000/v1',
+    realtimeSubtitleWhisperModel: 'small'
+  })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleWhisperBaseUrl: 'http://127.0.0.1:9000/v1',
+    realtimeSubtitleWhisperModel: 'large-v3'
+  })
+
+  assert.deepEqual(harness.host.calls, ['stop'])
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.whisperBaseUrl, 'http://127.0.0.1:9000/v1')
+  assert.equal(harness.host.starts[1]?.whisperModel, 'large-v3')
+})
+
+/**
+ * 校验仅修改字幕显示参数时不应无谓重启正在运行的 ASR 会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('运行中修改字幕外观不应重启实时字幕会话', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleDisplayMode: 'target',
+    realtimeSubtitleFontSize: 28,
+    realtimeSubtitleTextColor: '#abcdef',
+    realtimeSubtitleClickThrough: false,
+    realtimeSubtitleHideAfterMs: 3000
+  })
+
+  assert.deepEqual(harness.host.calls, [])
+  assert.equal(harness.host.starts.length, 1)
+  assert.equal(harness.controller.snapshot().state, 'running')
+})
+
+/**
  * 校验启动参数来自当前设置，并在重启时使旧代次翻译失效。
  * @returns 无返回值。
  * @author zhenghq
@@ -520,6 +609,56 @@ test('启动应使用当前音频来源与识别语言', () => {
     language: 'ja-JP',
     deepgramApiKey: null
   })
+})
+
+/**
+ * 校验 Whisper provider 会把独立配置传给宿主，而不依赖 Deepgram 凭据。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Whisper 启动应传入本地服务配置和可选密钥', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'whisper',
+    realtimeSubtitleWhisperBaseUrl: 'http://127.0.0.1:9000/v1',
+    realtimeSubtitleWhisperModel: 'large-v3'
+  }, {
+    whisperApiKey: 'whisper-secret'
+  })
+  harness.controller.start()
+  assert.deepEqual(harness.host.starts[0], {
+    source: 'system',
+    asr: 'whisper',
+    language: 'auto',
+    deepgramApiKey: null,
+    whisperBaseUrl: 'http://127.0.0.1:9000/v1',
+    whisperModel: 'large-v3',
+    whisperApiKey: 'whisper-secret'
+  })
+})
+
+/**
+ * 校验网络自动重连仍沿用用户选择的 Whisper provider。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Whisper 自动重连不应回退到 Deepgram', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'whisper',
+    realtimeSubtitleWhisperBaseUrl: 'http://localhost:8000/v1',
+    realtimeSubtitleWhisperModel: 'small'
+  }, {
+    whisperApiKey: null
+  })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'error', code: 'network', message: 'offline' })
+  harness.runNextReconnect()
+
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.asr, 'whisper')
+  assert.equal(harness.host.starts[1]?.whisperBaseUrl, 'http://localhost:8000/v1')
+  assert.equal(harness.host.starts[1]?.whisperModel, 'small')
+  assert.equal(harness.host.starts[1]?.whisperApiKey, null)
 })
 
 /**

@@ -1015,10 +1015,16 @@ export interface Settings {
   realtimeSubtitleAudioSource: RealtimeSubtitleAudioSource
   /** 实时字幕语音识别语言；auto 表示跟随系统。 */
   realtimeSubtitleRecognitionLang: string
-  /** 实时字幕 ASR 提供商；首版固定使用 Deepgram。 */
+  /** 实时字幕 ASR 提供商。 */
   realtimeSubtitleAsrProvider: RealtimeSubtitleAsrProvider
   /** 是否已安全保存 Deepgram API Key。 */
   realtimeSubtitleDeepgramApiKeyConfigured: boolean
+  /** Whisper 兼容 OpenAI 转写接口的 Base URL。 */
+  realtimeSubtitleWhisperBaseUrl: string
+  /** Whisper 转写模型名称。 */
+  realtimeSubtitleWhisperModel: string
+  /** 是否已安全保存 Whisper API Key；本地无鉴权服务可保持未配置。 */
+  realtimeSubtitleWhisperApiKeyConfigured: boolean
   /** 实时字幕悬浮窗显示模式。 */
   realtimeSubtitleDisplayMode: RealtimeSubtitleDisplayMode
   /** 实时字幕字号（像素）。 */
@@ -1366,6 +1372,16 @@ export interface ITranslateConfigPatch {
 /** Deepgram ASR 配置补丁，用于通过专用 IPC 保存可选新 API Key。 */
 export interface DeepgramConfigPatch {
   /** 新 Deepgram API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
+/** Whisper ASR 配置补丁，用于保存本地或云端 OpenAI 兼容转写服务配置。 */
+export interface WhisperConfigPatch {
+  /** OpenAI 兼容服务 Base URL。 */
+  baseUrl?: string
+  /** 转写模型名称。 */
+  model?: string
+  /** 新 API Key；空字符串表示保留旧值。 */
   apiKey?: string
 }
 
@@ -1808,6 +1824,10 @@ export interface Api {
   setDeepgramConfig(patch: DeepgramConfigPatch): Promise<Settings>
   /** 显式清除已保存的 Deepgram API Key。 */
   clearDeepgramApiKey(): Promise<Settings>
+  /** 保存 Whisper ASR 配置和可选新 API Key。 */
+  setWhisperConfig(patch: WhisperConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 Whisper API Key。 */
+  clearWhisperApiKey(): Promise<Settings>
   /** 保存 iTranslate 可选翻译通道配置和可选新 API Key。 */
   setITranslateConfig(patch: ITranslateConfigPatch): Promise<Settings>
   /** 显式清除已保存的 iTranslate API Key。 */

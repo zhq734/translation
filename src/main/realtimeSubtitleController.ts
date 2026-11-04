@@ -30,6 +30,9 @@ export interface RealtimeSubtitleHost {
     asr: RealtimeSubtitleAsrProvider
     language: string
     deepgramApiKey?: string | null
+    whisperBaseUrl?: string
+    whisperModel?: string
+    whisperApiKey?: string | null
   }): number
   /** 暂停识别。 */
   pause(): void
@@ -63,6 +66,8 @@ export interface RealtimeSubtitleControllerOptions {
   getAiApiKey: () => string | null
   /** 读取 Deepgram API Key；仅在实时字幕需要启动 Deepgram ASR 时使用。 */
   getDeepgramApiKey?: () => string | null
+  /** 读取 Whisper API Key；本地无鉴权服务可返回 null。 */
+  getWhisperApiKey?: () => string | null
   /** 读取 iTranslate API Key；仅启用且已配置时返回。 */
   getITranslateApiKey?: () => string | null
   /** 复用现有流式翻译运行时。 */
@@ -149,28 +154,8 @@ export class RealtimeSubtitleController {
    */
   start(): RealtimeSubtitleSnapshot {
     this.assertActive()
-    this.clearReconnectTimer()
-    this.clearHideTimer()
-    this.reconnectAttempts = 0
-    this.generation += 1
     this.latestSettings = this.options.getSettings()
-    this.translation.invalidate()
-    this.startupError = null
-    const hostGeneration = this.host.start({
-      source: this.latestSettings.realtimeSubtitleAudioSource,
-      asr: 'deepgram',
-      language: this.latestSettings.realtimeSubtitleRecognitionLang,
-      deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
-    })
-    this.generation = hostGeneration
-    const snapshot = this.host.snapshot()
-    if (snapshot.state === 'idle') {
-      this.options.setWindowVisible(false)
-      return this.publishWithStartupError(snapshot)
-    }
-    this.options.setWindowVisible(true)
-    this.syncAppearance()
-    return this.publish()
+    return this.startCurrentSession()
   }
 
   /**
@@ -243,10 +228,18 @@ export class RealtimeSubtitleController {
    * @author zhenghq
    */
   applySettings(settings: Settings): void {
+    const runtimeChanged = this.hasRuntimeSettingChanged(settings)
+    const shouldRestart = runtimeChanged && this.host.snapshot().state !== 'idle'
     const hideAfterChanged =
       settings.realtimeSubtitleHideAfterMs !== this.latestSettings.realtimeSubtitleHideAfterMs
     this.latestSettings = settings
     this.syncAppearance()
+    if (shouldRestart) {
+      // 音频来源、识别语言或 ASR 配置变化后必须重建 sidecar，确保新参数立即生效。
+      this.host.stop()
+      this.startCurrentSession()
+      return
+    }
     if (hideAfterChanged) {
       const snapshot = this.host.snapshot()
       const hasDisplayContent =
@@ -260,6 +253,49 @@ export class RealtimeSubtitleController {
       }
     }
     this.publish()
+  }
+
+  /**
+   * 使用最新设置启动当前实时字幕会话。
+   * @returns 启动后的快照。
+   * @author zhenghq
+   */
+  private startCurrentSession(): RealtimeSubtitleSnapshot {
+    this.clearReconnectTimer()
+    this.clearHideTimer()
+    this.reconnectAttempts = 0
+    this.generation += 1
+    this.translation.invalidate()
+    this.startupError = null
+    const hostGeneration = this.host.start(this.createStartOptions())
+    this.generation = hostGeneration
+    const snapshot = this.host.snapshot()
+    if (snapshot.state === 'idle') {
+      this.options.setWindowVisible(false)
+      return this.publishWithStartupError(snapshot)
+    }
+    this.options.setWindowVisible(true)
+    this.syncAppearance()
+    return this.publish()
+  }
+
+  /**
+   * 判断设置变化是否要求重建 sidecar 会话。
+   * @param settings 最新完整设置。
+   * @returns 音频采集或 ASR 配置发生变化时返回 true。
+   * @author zhenghq
+   */
+  private hasRuntimeSettingChanged(settings: Settings): boolean {
+    return settings.realtimeSubtitleAudioSource !==
+        this.latestSettings.realtimeSubtitleAudioSource ||
+      settings.realtimeSubtitleRecognitionLang !==
+        this.latestSettings.realtimeSubtitleRecognitionLang ||
+      settings.realtimeSubtitleAsrProvider !==
+        this.latestSettings.realtimeSubtitleAsrProvider ||
+      settings.realtimeSubtitleWhisperBaseUrl !==
+        this.latestSettings.realtimeSubtitleWhisperBaseUrl ||
+      settings.realtimeSubtitleWhisperModel !==
+        this.latestSettings.realtimeSubtitleWhisperModel
   }
 
   /**
@@ -364,12 +400,7 @@ export class RealtimeSubtitleController {
       // 宿主的同步启动错误会在 start() 返回前派发事件；先推进控制器代次，
       // 让这类事件不会被误判为旧会话而丢弃。
       this.generation += 1
-      const hostGeneration = this.host.start({
-        source: this.latestSettings.realtimeSubtitleAudioSource,
-        asr: 'deepgram',
-        language: this.latestSettings.realtimeSubtitleRecognitionLang,
-        deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
-      })
+      const hostGeneration = this.host.start(this.createStartOptions())
       this.generation = hostGeneration
       const snapshot = this.host.snapshot()
       if (snapshot.state === 'idle') {
@@ -393,6 +424,32 @@ export class RealtimeSubtitleController {
     if (this.reconnectTimer === null) return
     this.clearTimeoutFn(this.reconnectTimer)
     this.reconnectTimer = null
+  }
+
+  /**
+   * 根据当前设置构造 sidecar 启动参数，确保自动重连沿用同一 ASR 提供商。
+   * @returns 当前 provider 对应的宿主启动参数。
+   * @author zhenghq
+   */
+  private createStartOptions(): Parameters<RealtimeSubtitleHost['start']>[0] {
+    const base = {
+      source: this.latestSettings.realtimeSubtitleAudioSource,
+      asr: this.latestSettings.realtimeSubtitleAsrProvider,
+      language: this.latestSettings.realtimeSubtitleRecognitionLang
+    }
+    if (base.asr === 'whisper') {
+      return {
+        ...base,
+        deepgramApiKey: null,
+        whisperBaseUrl: this.latestSettings.realtimeSubtitleWhisperBaseUrl,
+        whisperModel: this.latestSettings.realtimeSubtitleWhisperModel,
+        whisperApiKey: this.options.getWhisperApiKey?.() ?? null
+      }
+    }
+    return {
+      ...base,
+      deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
+    }
   }
 
   /**

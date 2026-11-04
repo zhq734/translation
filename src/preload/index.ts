@@ -13,6 +13,7 @@ import type {
   DeepLxConfigPatch,
   DingTalkConfigPatch,
   DeepgramConfigPatch,
+  WhisperConfigPatch,
   ITranslateConfigPatch,
   AiConfigPatch,
   AiCheckStatus,
@@ -1299,6 +1300,20 @@ const api: Api = {
    * @author zhenghq
    */
   clearDeepgramApiKey: (): Promise<Settings> => ipcRenderer.invoke('deepgram:clear-key'),
+  /**
+   * 保存 Whisper OpenAI 兼容服务配置及可选新 API Key。
+   * @param patch Whisper 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setWhisperConfig: (patch: WhisperConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('whisper:configure', patch),
+  /**
+   * 显式清除已保存的 Whisper API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearWhisperApiKey: (): Promise<Settings> => ipcRenderer.invoke('whisper:clear-key'),
   /**
    * 保存 iTranslate 可选翻译通道配置及可选新 API Key。
    * @param patch iTranslate 配置补丁。

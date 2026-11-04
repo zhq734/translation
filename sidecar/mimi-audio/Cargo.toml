@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rubato = "5"
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "rustls-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.18"

@@ -3,7 +3,7 @@ import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrS
 import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
-import { isAudioSource, isDisplayMode } from './subtitleSession'
+import { isAudioSource, isDisplayMode, isRealtimeSubtitleAsrProvider } from './subtitleSession'
 
 /** 判断设置中的模型值是否为 Bilibili Index-Translate 公开模型。 */
 const BILIBILI_INDEX_MODELS = ['index-mt-2b', 'index-mt-9b', 'index-mt-35b'] as const
@@ -19,7 +19,13 @@ function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTrans
     (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
 }
 
-export const SETTINGS_SCHEMA_VERSION = 26
+export const SETTINGS_SCHEMA_VERSION = 27
+
+/** Whisper 本地 OpenAI 兼容服务的默认 Base URL。 */
+const DEFAULT_WHISPER_BASE_URL = 'http://127.0.0.1:8000/v1'
+
+/** Whisper OpenAI 兼容接口的默认模型名。 */
+const DEFAULT_WHISPER_MODEL = 'whisper-1'
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -47,6 +53,9 @@ export const DEFAULT_SETTINGS: Settings = {
   realtimeSubtitleRecognitionLang: 'auto',
   realtimeSubtitleAsrProvider: 'deepgram',
   realtimeSubtitleDeepgramApiKeyConfigured: false,
+  realtimeSubtitleWhisperBaseUrl: DEFAULT_WHISPER_BASE_URL,
+  realtimeSubtitleWhisperModel: DEFAULT_WHISPER_MODEL,
+  realtimeSubtitleWhisperApiKeyConfigured: false,
   realtimeSubtitleDisplayMode: 'bilingual',
   realtimeSubtitleFontSize: 20,
   realtimeSubtitleHideAfterMs: 8000,
@@ -279,6 +288,35 @@ function normalizeSubtitleTextColor(value: unknown): string {
 }
 
 /**
+ * 规范化 Whisper 兼容服务地址，只允许 HTTP 或 HTTPS。
+ * @param value 原始地址。
+ * @returns 去除尾部斜杠的合法地址或默认本地地址。
+ * @author zhenghq
+ */
+function normalizeWhisperBaseUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return DEFAULT_WHISPER_BASE_URL
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return DEFAULT_WHISPER_BASE_URL
+    return value.trim().replace(/\/+$/u, '')
+  } catch {
+    return DEFAULT_WHISPER_BASE_URL
+  }
+}
+
+/**
+ * 规范化 Whisper 模型名称。
+ * @param value 原始模型名称。
+ * @returns 去除首尾空白的模型名或默认值。
+ * @author zhenghq
+ */
+function normalizeWhisperModel(value: unknown): string {
+  return typeof value === 'string' && value.trim()
+    ? value.trim()
+    : DEFAULT_WHISPER_MODEL
+}
+
+/**
  * 将磁盘中的设置规范化为当前版本，并兼容旧版 autoTrigger 配置。
  * @param rawSettings 磁盘读取到的未知版本设置。
  * @returns 当前版本的完整设置。
@@ -339,10 +377,16 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       rawSettings.realtimeSubtitleRecognitionLang,
       DEFAULT_SETTINGS.realtimeSubtitleRecognitionLang
     ) || DEFAULT_SETTINGS.realtimeSubtitleRecognitionLang,
-    // 实时字幕首版固定使用 Deepgram；未知 provider 回退到默认值，避免把内部扩展值泄露给界面。
-    realtimeSubtitleAsrProvider: DEFAULT_SETTINGS.realtimeSubtitleAsrProvider,
+    // 未知 provider 回退到 Deepgram，避免把内部扩展值泄露给界面。
+    realtimeSubtitleAsrProvider: isRealtimeSubtitleAsrProvider(rawSettings.realtimeSubtitleAsrProvider)
+      ? rawSettings.realtimeSubtitleAsrProvider
+      : DEFAULT_SETTINGS.realtimeSubtitleAsrProvider,
     realtimeSubtitleDeepgramApiKeyConfigured:
       rawSettings.realtimeSubtitleDeepgramApiKeyConfigured === true,
+    realtimeSubtitleWhisperBaseUrl: normalizeWhisperBaseUrl(rawSettings.realtimeSubtitleWhisperBaseUrl),
+    realtimeSubtitleWhisperModel: normalizeWhisperModel(rawSettings.realtimeSubtitleWhisperModel),
+    realtimeSubtitleWhisperApiKeyConfigured:
+      rawSettings.realtimeSubtitleWhisperApiKeyConfigured === true,
     realtimeSubtitleDisplayMode: isDisplayMode(rawSettings.realtimeSubtitleDisplayMode)
       ? rawSettings.realtimeSubtitleDisplayMode
       : DEFAULT_SETTINGS.realtimeSubtitleDisplayMode,

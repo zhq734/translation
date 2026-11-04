@@ -581,6 +581,11 @@ input[type='number']:disabled {
   margin-top: var(--space-2);
 }
 
+#realtime-subtitle-deepgram-settings[hidden],
+#realtime-subtitle-whisper-settings[hidden] {
+  display: none;
+}
+
 .realtime-subtitle-status {
   min-height: 20px;
   margin-top: var(--space-3);

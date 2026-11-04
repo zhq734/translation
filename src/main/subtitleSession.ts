@@ -67,6 +67,12 @@ export interface SubtitleSessionStartOptions {
   language: string
   /** Deepgram API Key；只允许注入 sidecar 环境，不进入 stdio 协议。 */
   deepgramApiKey?: string | null
+  /** Whisper 兼容服务 Base URL；只通过环境变量注入 sidecar。 */
+  whisperBaseUrl?: string
+  /** Whisper 模型名称；只通过环境变量注入 sidecar。 */
+  whisperModel?: string
+  /** Whisper API Key；本地无鉴权服务可为空。 */
+  whisperApiKey?: string | null
 }
 
 /**
@@ -190,8 +196,16 @@ export class SubtitleSessionHost {
     try {
       const environment = { ...process.env }
       delete environment.DEEPGRAM_API_KEY
+      delete environment.WHISPER_API_KEY
+      delete environment.WHISPER_BASE_URL
+      delete environment.WHISPER_MODEL
       if (options.asr === 'deepgram' && options.deepgramApiKey) {
         environment.DEEPGRAM_API_KEY = options.deepgramApiKey
+      }
+      if (options.asr === 'whisper') {
+        if (options.whisperBaseUrl) environment.WHISPER_BASE_URL = options.whisperBaseUrl
+        if (options.whisperModel) environment.WHISPER_MODEL = options.whisperModel
+        if (options.whisperApiKey) environment.WHISPER_API_KEY = options.whisperApiKey
       }
       child = this.spawnFn(environment)
     } catch (error) {
@@ -401,6 +415,9 @@ export class SubtitleSessionHost {
       // 一旦识别到语音，就保持 speech-detected，避免句间停顿反复切换提示。
       if (event.rms >= SubtitleSessionHost.AUDIO_ACTIVITY_RMS_THRESHOLD && this.audioActivity === 'idle') {
         this.audioActivity = 'speech-pending'
+      } else {
+        // 电平值本身不参与界面渲染，只有活动状态迁移才需要通知控制器。
+        return
       }
     } else if (event.type === 'status') {
       if (event.state === 'idle') {

@@ -70,7 +70,7 @@ body {
   overflow-wrap: anywhere;
   text-align: center;
   text-shadow: 0 1px 3px var(--popup-shadow);
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
 .subtitle-target {

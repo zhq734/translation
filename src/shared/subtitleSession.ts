@@ -8,8 +8,20 @@
 /** 实时字幕音频来源。 */
 export type RealtimeSubtitleAudioSource = 'system' | 'microphone' | 'both'
 
-/** 实时字幕 ASR 提供商；首版使用 Deepgram，保留协议扩展点。 */
-export type RealtimeSubtitleAsrProvider = 'deepgram'
+/** 实时字幕 ASR 提供商。 */
+export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper'
+
+/**
+ * 判断未知值是否为受支持的实时字幕 ASR 提供商。
+ * @param value 待校验值。
+ * @returns 是否为受支持的提供商。
+ * @author zhenghq
+ */
+export function isRealtimeSubtitleAsrProvider(
+  value: unknown
+): value is RealtimeSubtitleAsrProvider {
+  return value === 'deepgram' || value === 'whisper'
+}
 
 /** 实时字幕显示模式。 */
 export type RealtimeSubtitleDisplayMode = 'source' | 'target' | 'bilingual'

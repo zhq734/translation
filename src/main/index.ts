@@ -192,7 +192,8 @@ import type {
   TranslateDeltaPayload,
   DocumentFileSelectionResult,
   DeepgramConfigPatch,
-  ITranslateConfigPatch
+  ITranslateConfigPatch,
+  WhisperConfigPatch
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
 import { MAX_SCREENSHOT_PINS } from '../shared/screenshotPin'
@@ -205,6 +206,8 @@ import { AiCredentialStore } from './aiCredentials'
 import { AiConfigurationService } from './aiConfig'
 import { DeepgramCredentialStore } from './deepgramCredentials'
 import { DeepgramConfigurationService } from './deepgramConfig'
+import { WhisperCredentialStore } from './whisperCredentials'
+import { WhisperConfigurationService } from './whisperConfig'
 import { ITranslateCredentialStore } from './itranslateCredentials'
 import { ITranslateConfigurationService } from './itranslateConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
@@ -464,6 +467,7 @@ let documentWorkspaceOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
 let deepgramConfiguration: DeepgramConfigurationService | null = null
+let whisperConfiguration: WhisperConfigurationService | null = null
 let itranslateConfiguration: ITranslateConfigurationService | null = null
 let deepLxConfiguration: DeepLxConfigurationService | null = null
 let deepLxCheckService: DeepLxCheckService | null = null
@@ -729,6 +733,13 @@ let selectionActivationSuppressUntil = 0
  * 每次划词内部动作开始时递增本代际，使尚未收尾的置前动作自动失效。
  */
 let settingsBringToFrontEpoch = 0
+/**
+ * Dock activate 请求代际。
+ *
+ * 同一次点击 Dock 可能派发多次 activate，每次请求又包含多个异步边界。只保留
+ * 最新请求的补置前任务，避免旧任务在用户切换应用后又重新把设置页拉回最前。
+ */
+let settingsDockActivationEpoch = 0
 /** 保护期内被延后的 macOS Dock 显示定时器；重复请求时重置。 */
 let pendingMacOSDockShowTimer: ReturnType<typeof setTimeout> | null = null
 /** 保护期内被延后的 macOS Dock 呈现重放定时器；与仅显示 Dock 的定时器分开，避免互相取消。 */
@@ -862,6 +873,16 @@ function getDeepgramConfiguration(): DeepgramConfigurationService {
 }
 
 /**
+ * 获取已初始化的 Whisper ASR 配置服务。
+ * @returns Whisper 配置服务实例。
+ * @author zhenghq
+ */
+function getWhisperConfiguration(): WhisperConfigurationService {
+  if (!whisperConfiguration) throw new Error('Whisper configuration service is not initialized')
+  return whisperConfiguration
+}
+
+/**
  * 获取已初始化的 iTranslate 可选翻译配置服务。
  * @returns iTranslate 配置服务实例。
  * @author zhenghq
@@ -962,12 +983,18 @@ function initializeRealtimeSubtitle(): void {
     getDeepgramApiKey: () => getSettings().realtimeSubtitleDeepgramApiKeyConfigured
       ? getDeepgramConfiguration().getApiKey()
       : null,
+    getWhisperApiKey: () => getSettings().realtimeSubtitleWhisperApiKeyConfigured
+      ? getWhisperConfiguration().getApiKey()
+      : null,
     getITranslateApiKey: () => getSettings().itranslateEnabled
       ? getITranslateConfiguration().getApiKey()
       : null,
     translateStream,
     onSnapshot: (snapshot) => {
-      broadcast('subtitle:update', snapshot)
+      const settingsTarget = settingsWin
+      if (settingsTarget && !settingsTarget.isDestroyed()) {
+        settingsTarget.webContents.send('subtitle:update', snapshot)
+      }
       subtitleWindow?.render(createRealtimeSubtitleViewModel(snapshot))
     },
     setWindowVisible: (visible) => subtitleWindow?.setVisible(visible),
@@ -1807,6 +1834,10 @@ function canCompleteSettingsBringToFront(
   // resumeSettingsWindowAfterExternalSelection() 清除该状态，不能在这里绕过。
   if (settingsWindowHiddenForSelection) return false
   if (explicitPopupSource) return true
+  // 应用激活事件是异步置前意图的最终门禁。用户切到其它应用后，即使没有开始
+  // 新划词、代际也未变化，旧 Dock 任务也不得通过 moveTop()/focus() 重新拉起
+  // 设置页；否则窗口会盖在刚切换到的应用上方，且在 macOS 上表现为长期置顶。
+  if (isMac && !isMacAppActiveByEvents()) return false
   return bringToFrontEpoch === settingsBringToFrontEpoch &&
     !isSelectionWindowRaiseGuardActive() &&
     selectionInteraction.snapshot().state === 'idle'
@@ -1903,19 +1934,9 @@ function activateExistingPageOrOpenSettings(): void {
   // 误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会正常恢复，
   // 保证真实 Dock 启动可用。被其它应用遮挡时的强制置前改由显式快捷键入口负责。
   if (webReader?.focusExistingWindow()) return
-  // 设置页分支必须与阅读器分支对称：已可见且未最小化的设置页不得再执行
-  // show()+moveTop()+focus()。真机日志显示 6 次迟到 activate 误放行后都走到
-  // settings-reuse-raise，把已可见设置页重新顶到划词应用之上。activate 判定
-  // 存在状态空档，无法与真实 Dock 点击区分，因此这里对已可见窗口只保留其现有
-  // 层级，不再主动置前；被其它应用遮挡时的强制置前改由托盘/弹窗内显式入口负责。
-  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible() && !settingsWin.isMinimized()) {
-    // activate 可能由切换应用、划词按钮或弹窗收尾迟到触发，无法可靠证明用户
-    // 刚点击了 Dock。这里只结束焦点租约引用，不恢复 setFocusable(true)：后台
-    // 设置页一旦重新成为 key window 候选，macOS 会立即把它提到划词应用之前。
-    // 真实点击设置页由 settings:pointerdown 回执恢复输入能力。
-    releaseSelectionFocusLease()
-    return
-  }
+  // 连续 activate 只让最后一次请求执行最终补置前。openSettings() 本身仍可
+  // 复用/显示窗口，但旧请求不得在最新交互结束后再次改变 z-order。
+  const dockActivationEpoch = ++settingsDockActivationEpoch
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
   // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
   // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
@@ -1927,6 +1948,8 @@ function activateExistingPageOrOpenSettings(): void {
       // 缺少新建分支的最终置前；让出一轮事件循环再补一次，避免设置页随即失焦。
       await yieldToEventLoop()
       if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
+      // 更新的 Dock activate 或应用失活已经让本次请求过期，不得继续补置前。
+      if (dockActivationEpoch !== settingsDockActivationEpoch) return
       // 等待期间用户可能已经开始下一次划词；此时补置前同样会抢走划词前台。
       if (isSelectionWindowRaiseGuardActive()) return
       // activate 路径复用已可见设置页时不得提升到 screen-saver：普通窗口的
@@ -1976,6 +1999,13 @@ if (!gotLock) {
     })
   })
   if (isMac) {
+    // 应用失活代表用户已明确切换到其它应用。此时必须同步失效在途置前请求，
+    // 并强制撤销 screen-saver 层级；只清空登记会让窗口永久置顶。
+    app.on('did-resign-active', () => {
+      settingsDockActivationEpoch += 1
+      settingsBringToFrontEpoch += 1
+      forceLowerRaisedInteractionWindows()
+    })
     // macOS 通过 Finder 重新打开运行中的应用时通常只激活已有进程，不会创建第二实例。
     app.on('activate', (_event, hasVisibleWindows) => {
       // 调用栈必须在进入任何异步边界之前采集：延迟到 then/await 之后再取栈，
@@ -2367,6 +2397,26 @@ async function onReady(): Promise<boolean> {
     }
   })
   deepgramConfiguration.initialize()
+  whisperConfiguration = new WhisperConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new WhisperCredentialStore(
+      join(app.getPath('userData'), 'whisper-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetRealtimeSubtitleRuntime: () => {
+      realtimeSubtitleController?.dispose()
+      realtimeSubtitleController = null
+      subtitleWindow?.dispose()
+      subtitleWindow = null
+      initializeRealtimeSubtitle()
+    }
+  })
+  whisperConfiguration.initialize()
   itranslateConfiguration = new ITranslateConfigurationService({
     getSettings,
     saveSettings,
@@ -6363,7 +6413,33 @@ function lowerSettingsPanelRaiseLevel(): void {
     raisedInteractionWindows.clear()
     return
   }
-  for (const win of raisedInteractionWindows) {
+  forceLowerRaisedInteractionWindows()
+}
+
+/**
+ * 强制撤销统一入口登记的全部临时最高层级。
+ *
+ * 与普通回收不同，本函数不受应用激活状态或划词保护期限制，只用于应用已经
+ * 失活的收尾：此时必须真正把窗口降回普通层级，否则 screen-saver 层级会残留
+ * 在后台设置页上，用户切到其它应用后仍会被它遮挡。函数只修改窗口层级，不显示、
+ * 不聚焦窗口，也不会主动激活应用。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function forceLowerRaisedInteractionWindows(): void {
+  if (!isMac) return
+  if (settingsPanelRaiseLevelTimer) {
+    clearTimeout(settingsPanelRaiseLevelTimer)
+    settingsPanelRaiseLevelTimer = null
+  }
+  // 设置页 blur 可能先于 did-resign-active 清理登记集合。仅遍历集合会漏掉仍
+  // 保持 screen-saver 层级的窗口，因此同时纳入当前设置页和网页阅读器实例兜底。
+  // 用 Set 去重，避免已登记窗口被重复写入层级。
+  const targetWindows = new Set<BrowserWindow>(raisedInteractionWindows)
+  if (settingsWin && !settingsWin.isDestroyed()) targetWindows.add(settingsWin)
+  const readerWindow = webReader?.getWindow()
+  if (readerWindow && !readerWindow.isDestroyed()) targetWindows.add(readerWindow)
+  for (const win of targetWindows) {
     if (win.isDestroyed()) {
       raisedInteractionWindows.delete(win)
       continue
@@ -7157,9 +7233,11 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   // 普通 settings:set 不接受 AI 敏感字段，API Key 与 aiApiKeyConfigured 由专用 IPC 管理。
   delete (safePatch as Record<string, unknown>).aiApiKey
   delete (safePatch as Record<string, unknown>).aiApiKeyConfigured
-  // Deepgram 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
+  // Deepgram、Whisper 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKeyConfigured
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleWhisperApiKey
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleWhisperApiKeyConfigured
   delete (safePatch as Record<string, unknown>).itranslateApiKey
   delete (safePatch as Record<string, unknown>).itranslateApiKeyConfigured
   const aiFieldChanged =
@@ -7181,6 +7259,9 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   }
   if (patch.realtimeSubtitleAudioSource !== undefined ||
       patch.realtimeSubtitleRecognitionLang !== undefined ||
+      patch.realtimeSubtitleAsrProvider !== undefined ||
+      patch.realtimeSubtitleWhisperBaseUrl !== undefined ||
+      patch.realtimeSubtitleWhisperModel !== undefined ||
       patch.realtimeSubtitleDisplayMode !== undefined ||
       patch.realtimeSubtitleFontSize !== undefined ||
       patch.realtimeSubtitleHideAfterMs !== undefined ||
@@ -8113,6 +8194,10 @@ function registerIpc(): void {
     getDeepgramConfiguration().configure(patch)
   )
   ipcMain.handle('deepgram:clear-key', () => getDeepgramConfiguration().clearApiKey())
+  ipcMain.handle('whisper:configure', (_event, patch: WhisperConfigPatch) =>
+    getWhisperConfiguration().configure(patch)
+  )
+  ipcMain.handle('whisper:clear-key', () => getWhisperConfiguration().clearApiKey())
   ipcMain.handle('itranslate:configure', (_event, patch: ITranslateConfigPatch) =>
     getITranslateConfiguration().configure(patch)
   )

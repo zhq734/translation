@@ -167,6 +167,51 @@ test('应用失活或处于划词保护期时不得对后台设置页调用 setA
   )
 })
 
+test('应用失活时必须强制撤销临时最高层级，避免设置页永久悬浮', () => {
+  const forceLowerSource = stripComments(
+    extractFunction(mainSource, 'function forceLowerRaisedInteractionWindows(')
+  )
+  const resignHandlerSource = mainSource.slice(
+    mainSource.indexOf("app.on('did-resign-active'"),
+    mainSource.indexOf("app.on('activate'", mainSource.indexOf("app.on('did-resign-active'"))
+  )
+
+  // 应用失活后就进入新的前后台语义：普通回收器为避免重排可能跳过窗口层级
+  // 写入，但此时若不强制撤销 screen-saver 层级，设置页会一直盖在其它应用上。
+  // 必须由 did-resign-active 做一次无焦点、仅降级的强制回收，并让所有在途
+  // Dock 置前请求失效，用户再次激活后也只能由最新显式入口重新置前。
+  assert.match(forceLowerSource, /setAlwaysOnTop\(false\)/u,
+    '应用失活专用回收器必须真正把窗口降回普通层级')
+  assert.ok(resignHandlerSource.length > 0, '必须监听 macOS 应用失活事件')
+  assert.match(resignHandlerSource, /settingsDockActivationEpoch\s*\+=\s*1/u,
+    '应用失活必须使所有旧 Dock 置前请求失效')
+  assert.match(resignHandlerSource, /settingsBringToFrontEpoch\s*\+=\s*1/u,
+    '应用失活必须使所有旧设置页置前意图失效')
+  assert.match(resignHandlerSource, /forceLowerRaisedInteractionWindows\(\)/u,
+    '应用失活必须强制撤销临时最高层级')
+})
+
+test('提升登记被失焦清理后，应用失活仍须覆盖设置页与阅读器本身', () => {
+  const forceLowerSource = stripComments(
+    extractFunction(mainSource, 'function forceLowerRaisedInteractionWindows(')
+  )
+
+  // 设置页 blur 可能早于 did-resign-active；普通回收器此时会因为应用已失活
+  // 只清理登记，不再写窗口层级。强制回收器不能只遍历登记集合，否则随后执行
+  // 时集合已空，设置页仍永久停留在 screen-saver 层级。必须同时把已知的
+  // 设置页和网页阅读器窗口纳入兜底候选。
+  assert.match(
+    forceLowerSource,
+    /settingsWin/u,
+    '强制回收必须兜底覆盖设置页实例'
+  )
+  assert.match(
+    forceLowerSource,
+    /webReader\?\.getWindow\(\)/u,
+    '强制回收必须兜底覆盖网页阅读器实例'
+  )
+})
+
 test('已可见的后台设置页不得被静默显示重复顶到前台', () => {
   const helperSource = stripComments(
     extractFunction(mainSource, 'function showOwnWindowForInteraction(')

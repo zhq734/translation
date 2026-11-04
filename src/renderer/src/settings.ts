@@ -68,10 +68,18 @@ const documentTranslationCacheMaxMb = document.getElementById('document-translat
 const documentTranslationCacheMaxAgeDays = document.getElementById('document-translation-cache-max-age-days') as HTMLInputElement
 const realtimeSubtitleAudioSource = document.getElementById('realtime-subtitle-audio-source') as HTMLSelectElement
 const realtimeSubtitleAsrProvider = document.getElementById('realtime-subtitle-asr-provider') as HTMLSelectElement
+const realtimeSubtitleDeepgramSettings = document.getElementById('realtime-subtitle-deepgram-settings') as HTMLElement
 const realtimeSubtitleDeepgramApiKey = document.getElementById('realtime-subtitle-deepgram-api-key') as HTMLInputElement
 const realtimeSubtitleDeepgramSave = document.getElementById('realtime-subtitle-deepgram-save') as HTMLButtonElement
 const realtimeSubtitleDeepgramClear = document.getElementById('realtime-subtitle-deepgram-clear') as HTMLButtonElement
 const realtimeSubtitleDeepgramStatus = document.getElementById('realtime-subtitle-deepgram-status') as HTMLElement
+const realtimeSubtitleWhisperSettings = document.getElementById('realtime-subtitle-whisper-settings') as HTMLElement
+const realtimeSubtitleWhisperBaseUrl = document.getElementById('realtime-subtitle-whisper-base-url') as HTMLInputElement
+const realtimeSubtitleWhisperModel = document.getElementById('realtime-subtitle-whisper-model') as HTMLInputElement
+const realtimeSubtitleWhisperApiKey = document.getElementById('realtime-subtitle-whisper-api-key') as HTMLInputElement
+const realtimeSubtitleWhisperSave = document.getElementById('realtime-subtitle-whisper-save') as HTMLButtonElement
+const realtimeSubtitleWhisperClear = document.getElementById('realtime-subtitle-whisper-clear') as HTMLButtonElement
+const realtimeSubtitleWhisperStatus = document.getElementById('realtime-subtitle-whisper-status') as HTMLElement
 const realtimeSubtitleITranslateEnabled = document.getElementById('realtime-subtitle-itranslate-enabled') as HTMLInputElement
 const realtimeSubtitleITranslateApiKey = document.getElementById('realtime-subtitle-itranslate-api-key') as HTMLInputElement
 const realtimeSubtitleITranslateSave = document.getElementById('realtime-subtitle-itranslate-save') as HTMLButtonElement
@@ -543,6 +551,59 @@ async function clearRealtimeSubtitleDeepgramConfig(): Promise<void> {
 }
 
 /**
+ * 根据当前 provider 切换 Deepgram 与 Whisper 配置区的显示状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderRealtimeSubtitleProviderSettings(): void {
+  const whisperSelected = realtimeSubtitleAsrProvider.value === 'whisper'
+  realtimeSubtitleDeepgramSettings.hidden = whisperSelected
+  realtimeSubtitleWhisperSettings.hidden = !whisperSelected
+}
+
+/**
+ * 保存 Whisper Base URL、模型和可选的新 API Key。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleWhisperConfig(): Promise<void> {
+  try {
+    const settings = await window.api.setWhisperConfig({
+      baseUrl: realtimeSubtitleWhisperBaseUrl.value.trim(),
+      model: realtimeSubtitleWhisperModel.value.trim(),
+      ...(realtimeSubtitleWhisperApiKey.value.trim()
+        ? { apiKey: realtimeSubtitleWhisperApiKey.value.trim() }
+        : {})
+    })
+    realtimeSubtitleWhisperApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 Whisper API Key，并保留本地服务地址与模型。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleWhisperConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearWhisperApiKey()
+    realtimeSubtitleWhisperApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
  * 保存 iTranslate 可选翻译通道的启用状态与新 API Key。
  * @returns 保存完成后的 Promise。
  * @author zhenghq
@@ -610,11 +671,23 @@ function clearRealtimeSubtitleHotkey(): void {
 /**
  * 将实时字幕快照渲染为状态文字与按钮可用性。
  * @param snapshot 主进程返回的实时字幕快照。
+ * @param force 是否强制重渲染，用于界面语言切换等需要刷新文案的场景。
  * @returns 无返回值。
  * @author zhenghq
  */
-function renderRealtimeSubtitleStatus(snapshot: RealtimeSubtitleSnapshot): void {
+function renderRealtimeSubtitleStatus(snapshot: RealtimeSubtitleSnapshot, force = false): void {
+  const previous = latestRealtimeSubtitleStatus
   latestRealtimeSubtitleStatus = snapshot
+  if (
+    !force &&
+    previous &&
+    previous.state === snapshot.state &&
+    previous.error === snapshot.error &&
+    previous.errorCode === snapshot.errorCode &&
+    previous.audioActivity === snapshot.audioActivity
+  ) {
+    return
+  }
   const statusKeys: Record<RealtimeSubtitleSnapshot['state'], string> = {
     idle: 'settings.realtimeSubtitle.status.idle',
     starting: 'settings.realtimeSubtitle.status.starting',
@@ -842,12 +915,20 @@ function renderSettings(settings: Settings): void {
   documentTranslationCacheMaxAgeDays.value = String(settings.documentTranslationCacheMaxAgeDays)
   realtimeSubtitleAudioSource.value = settings.realtimeSubtitleAudioSource
   realtimeSubtitleAsrProvider.value = settings.realtimeSubtitleAsrProvider
+  renderRealtimeSubtitleProviderSettings()
   // API Key 永远不回填；页面只展示主进程提供的“已配置/未配置”脱敏状态。
   realtimeSubtitleDeepgramApiKey.value = ''
   realtimeSubtitleDeepgramStatus.textContent = settings.realtimeSubtitleDeepgramApiKeyConfigured
     ? t('settings.realtimeSubtitle.credentials.configured')
     : t('settings.realtimeSubtitle.credentials.notConfigured')
   realtimeSubtitleDeepgramClear.disabled = !settings.realtimeSubtitleDeepgramApiKeyConfigured
+  realtimeSubtitleWhisperBaseUrl.value = settings.realtimeSubtitleWhisperBaseUrl
+  realtimeSubtitleWhisperModel.value = settings.realtimeSubtitleWhisperModel
+  realtimeSubtitleWhisperApiKey.value = ''
+  realtimeSubtitleWhisperStatus.textContent = settings.realtimeSubtitleWhisperApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleWhisperClear.disabled = !settings.realtimeSubtitleWhisperApiKeyConfigured
   realtimeSubtitleITranslateEnabled.checked = settings.itranslateEnabled
   realtimeSubtitleITranslateApiKey.value = ''
   realtimeSubtitleITranslateStatus.textContent = settings.itranslateApiKeyConfigured
@@ -2457,8 +2538,11 @@ documentTranslationCacheMaxMb.addEventListener('change', saveDocumentTranslation
 documentTranslationCacheMaxAgeDays.addEventListener('change', saveDocumentTranslationSettings)
 realtimeSubtitleAudioSource.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleAsrProvider.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleAsrProvider.addEventListener('change', renderRealtimeSubtitleProviderSettings)
 realtimeSubtitleDeepgramSave.addEventListener('click', () => void saveRealtimeSubtitleDeepgramConfig())
 realtimeSubtitleDeepgramClear.addEventListener('click', () => void clearRealtimeSubtitleDeepgramConfig())
+realtimeSubtitleWhisperSave.addEventListener('click', () => void saveRealtimeSubtitleWhisperConfig())
+realtimeSubtitleWhisperClear.addEventListener('click', () => void clearRealtimeSubtitleWhisperConfig())
 realtimeSubtitleITranslateEnabled.addEventListener('change', () => void saveRealtimeSubtitleITranslateConfig())
 realtimeSubtitleITranslateSave.addEventListener('click', () => void saveRealtimeSubtitleITranslateConfig())
 realtimeSubtitleITranslateClear.addEventListener('click', () => void clearRealtimeSubtitleITranslateConfig())
@@ -3007,7 +3091,7 @@ function handleLocaleChanged(locale: Locale): void {
   if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
   if (latestOcrStatus) renderOcrStatus(latestOcrStatus)
   renderShortcutRegistrationStates(latestShortcutRegistrationStates)
-  if (latestRealtimeSubtitleStatus) renderRealtimeSubtitleStatus(latestRealtimeSubtitleStatus)
+  if (latestRealtimeSubtitleStatus) renderRealtimeSubtitleStatus(latestRealtimeSubtitleStatus, true)
 
   if (logsInitialized) {
     logsTogglePauseButton.textContent = logsPaused ? t('settings.logs.resume') : t('settings.logs.pause')

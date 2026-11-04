@@ -29,7 +29,7 @@ function sliceFunction(source: string, signature: string): string {
 }
 
 test('快捷 OCR 翻译应使用默认 Alt+S 并升级设置版本', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 27)
   assert.equal(DEFAULT_SETTINGS.ocrQuickHotkey, 'Alt+S')
   assert.equal(DEFAULT_SETTINGS.ocrHotkey, 'Alt+O')
 })

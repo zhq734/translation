@@ -342,35 +342,57 @@ test('Dock 激活路径不得为迟到 activate 恢复后台设置页可聚焦�
     '没有阅读器时 Dock 激活必须置前设置页')
 })
 
-test('activate 复用已可见且未最小化的设置页时只释放租约而不恢复焦点', () => {
+test('activate 复用已可见且未最小化的设置页时仍须安全置前', () => {
   const activateSource = stripComments(
     extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
   )
 
-  // 真机日志：6 次 activate 放行全部触发 settings-reuse-raise，且 6 次设置页都已
-  // 可见。设置页分支此前与阅读器分支不对称——阅读器用 focusExistingWindow() 对
-  // 已可见窗口只返回 true、不重新 show()+focus()，而设置页却对已可见窗口执行
-  // show()+moveTop()+focus()，把后台设置页重新顶到划词应用之上。
-  // 修复后：已可见且未最小化时，activate 路径必须先短路返回，不得走到强制置前。
-  const visibleGuardIndex = activateSource.indexOf('isVisible()')
-  const openSettingsIndex = activateSource.indexOf('openSettings(')
-  assert.ok(visibleGuardIndex >= 0, 'activate 路径必须显式判断设置页是否已可见')
-  assert.ok(
-    visibleGuardIndex < openSettingsIndex,
-    '已可见设置页短路必须发生在 openSettings() 置前之前'
-  )
-  const visibleBranchStart = activateSource.indexOf('if (settingsWin && !settingsWin.isDestroyed()')
-  const visibleBranchEnd = activateSource.indexOf('void openSettings(', visibleBranchStart)
-  const visibleBranchSource = activateSource.slice(visibleBranchStart, visibleBranchEnd)
+  // 设置页已可见但被其它应用遮挡时，真实 Dock 点击仍必须复用并安全置前。
+  // 不能因为 isVisible() 为 true 就提前返回，否则用户会感觉 Dock 图标完全无响应。
   assert.doesNotMatch(
-    visibleBranchSource,
-    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)/u,
-    '已可见设置页复用分支不得把后台窗口重新变成 key window 候选'
+    activateSource,
+    /settingsWin\.isVisible\(\)\s*&&\s*!settingsWin\.isMinimized\(\)[\s\S]*?releaseSelectionFocusLease\(\)[\s\S]*?return/u,
+    '已可见设置页不得在 Dock 激活路径中提前返回'
   )
   assert.match(
-    visibleBranchSource,
-    /releaseSelectionFocusLease\(\)/u,
-    '显式 Dock 入口恢复设置页后必须释放后台划词租约'
+    activateSource,
+    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(target,\s*\{[\s\S]*?raiseLevel:\s*false/u,
+    '已可见设置页收到有效 Dock 激活后必须复用窗口并再次安全置前'
+  )
+  assert.doesNotMatch(
+    activateSource,
+    /settingsWin\.(?:focus|moveTop|show)\(/u,
+    'Dock 激活路径不得绕过统一安全置前入口直接操作窗口'
+  )
+})
+
+test('应用失活后迟到的 Dock 补置前必须失效', () => {
+  const completeSource = stripComments(
+    extractFunction(mainSource, 'function canCompleteSettingsBringToFront(')
+  )
+  const activateSource = stripComments(
+    extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
+  )
+
+  // Dock activate 与最终补置前之间存在多个异步边界。用户切到其它应用后，
+  // 旧任务若继续 moveTop()/focus() 会把设置页重新拉到最前，表现为设置页
+  // “永远盖在其它应用上面”。统一入口必须把应用激活事件作为最终门禁。
+  assert.match(
+    completeSource,
+    /isMacAppActiveByEvents\(\)/u,
+    '统一置前入口必须拒绝应用失活后的迟到置前'
+  )
+  // 连续 Dock activate 可能各自排队；只保留最新一次请求，避免旧请求在用户
+  // 重新激活应用后突然执行，与最新一次请求竞争并重复拉起设置页。
+  assert.match(
+    activateSource,
+    /const dockActivationEpoch\s*=\s*\+\+settingsDockActivationEpoch/u,
+    '每次 Dock activate 必须登记独立请求代际'
+  )
+  assert.match(
+    activateSource,
+    /dockActivationEpoch\s*!==\s*settingsDockActivationEpoch/u,
+    'Dock 补置前必须丢弃已被更新请求取代的旧任务'
   )
 })
 

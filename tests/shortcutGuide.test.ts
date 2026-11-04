@@ -11,7 +11,7 @@ const main = readFileSync('src/main/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
 
 test('设置 schema 升级后应补齐快捷动作引导状态', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 27)
   assert.equal(DEFAULT_SETTINGS.shortcutGuideSeen, false)
   assert.equal(normalizeSettings({ schemaVersion: 22 } as never).shortcutGuideSeen, false)
   assert.equal(normalizeSettings({ schemaVersion: 23, shortcutGuideSeen: true }).shortcutGuideSeen, true)

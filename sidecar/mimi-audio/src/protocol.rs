@@ -23,6 +23,8 @@ pub enum AudioSource {
 pub enum AsrProvider {
     /// Deepgram 实时语音识别。
     Deepgram,
+    /// OpenAI 兼容的 Whisper 批量转写服务。
+    Whisper,
 }
 
 /// 主进程下发的控制命令。
@@ -145,6 +147,22 @@ mod tests {
             Command::Start { source, asr, lang } => {
                 assert_eq!(source, AudioSource::System);
                 assert_eq!(asr, AsrProvider::Deepgram);
+                assert_eq!(lang, "auto");
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_whisper_start_command() {
+        let command: Command = serde_json::from_str(
+            "{\"cmd\":\"start\",\"source\":\"system\",\"asr\":\"whisper\",\"lang\":\"auto\"}",
+        )
+        .expect("whisper start command should parse");
+        match command {
+            Command::Start { source, asr, lang } => {
+                assert_eq!(source, AudioSource::System);
+                assert_eq!(asr, AsrProvider::Whisper);
                 assert_eq!(lang, "auto");
             }
             _ => panic!("expected start command"),

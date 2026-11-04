@@ -8,7 +8,7 @@ import {
 import { TRANSLATION_PROVIDERS, isTranslationProviderAvailable } from '../src/shared/translationProviders.ts'
 
 test('Bilibili Index-Translate 设置应默认启用并使用 9B 均衡模型', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 27)
   assert.equal(DEFAULT_SETTINGS.biliIndexTranslateEnabled, true)
   assert.equal(DEFAULT_SETTINGS.biliIndexTranslateModel, 'index-mt-9b')
   assert.equal(normalizeSettings({ schemaVersion: 23 }).biliIndexTranslateEnabled, true)

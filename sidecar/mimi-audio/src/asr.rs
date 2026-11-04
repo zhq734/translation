@@ -1,10 +1,12 @@
-//! Deepgram 实时 ASR 客户端。
+//! Deepgram 与 Whisper 实时 ASR 客户端。
 //!
 //! 音频采集与文本归并沿用 Mimi（MIT，Copyright (c) 2026 yuxino）的移植实现；
-//! 本模块只负责把 24 kHz PCM16 音频送入 Deepgram WebSocket，并把识别事件转换为
-//! sidecar 内部事件。翻译始终由宿主应用的多通道翻译管道完成。
+//! 本模块把 24 kHz PCM16 音频送入 Deepgram WebSocket 或本地 OpenAI 兼容 Whisper
+//! 转写接口，并把识别事件转换为 sidecar 内部事件。翻译始终由宿主应用的多通道
+//! 翻译管道完成。
 
 use futures_util::{SinkExt, StreamExt};
+use reqwest::multipart::{Form, Part};
 use tokio::sync::{broadcast, Mutex};
 use tokio::time::{interval, Duration, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -73,6 +75,12 @@ const DEEPGRAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(8);
 /// 上行任务会一直占用音频消费端，采集队列随后持续塞满。
 const DEEPGRAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Whisper 单次转写窗口对应的采样数（24 kHz、4 秒）。
+const WHISPER_WINDOW_SAMPLES: usize = 96_000;
+
+/// Whisper 批量转写请求超时。
+const WHISPER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// 下行事件通道容量。
 const EVENT_CAPACITY: usize = 128;
 
@@ -87,19 +95,29 @@ pub struct AsrClient {
 }
 
 impl AsrClient {
-    /// 连接 Deepgram 实时识别服务。
+    /// 连接所选实时识别服务。
     ///
     /// # 参数
-    /// - `provider`：实时 ASR 提供商；首版仅支持 Deepgram。
+    /// - `provider`：实时 ASR 提供商。
     /// - `lang`：识别语言，`auto` 表示自动检测。
     ///
     /// # 返回值
     /// 已就绪的客户端；失败时返回分类错误。
     pub async fn connect(provider: AsrProvider, lang: &str) -> Result<Self, AsrError> {
         match provider {
-            AsrProvider::Deepgram => {}
+            AsrProvider::Deepgram => Self::connect_deepgram(lang).await,
+            AsrProvider::Whisper => Self::connect_whisper(lang).await,
         }
+    }
 
+    /// 连接 Deepgram 实时识别服务。
+    ///
+    /// # 参数
+    /// - `lang`：识别语言，`auto` 表示自动检测。
+    ///
+    /// # 返回值
+    /// 已就绪的客户端；失败时返回分类错误。
+    async fn connect_deepgram(lang: &str) -> Result<Self, AsrError> {
         let api_key = std::env::var("DEEPGRAM_API_KEY")
             .map_err(|_| AsrError::Auth)?
             .trim()
@@ -117,6 +135,40 @@ impl AsrClient {
         let events = downstream.clone();
         let task = tokio::spawn(async move {
             run_deepgram(stream, audio_rx, events).await;
+        });
+
+        Ok(Self {
+            upstream: Mutex::new(Some(audio_tx)),
+            downstream,
+            task: std::sync::Mutex::new(Some(task)),
+        })
+    }
+
+    /// 连接 OpenAI 兼容的 Whisper 转写服务。
+    ///
+    /// # 参数
+    /// - `lang`：识别语言，`auto` 表示不传 language 参数。
+    ///
+    /// # 返回值
+    /// 已就绪的客户端；失败时返回分类错误。
+    async fn connect_whisper(lang: &str) -> Result<Self, AsrError> {
+        let base_url = std::env::var("WHISPER_BASE_URL").map_err(|_| AsrError::InvalidRequest)?;
+        let model = std::env::var("WHISPER_MODEL").map_err(|_| AsrError::InvalidRequest)?;
+        if base_url.trim().is_empty() || model.trim().is_empty() {
+            return Err(AsrError::InvalidRequest);
+        }
+        let endpoint = whisper_transcription_url(&base_url)?;
+        let api_key = std::env::var("WHISPER_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let language = whisper_language(lang);
+
+        let (downstream, _) = broadcast::channel(EVENT_CAPACITY);
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+        let events = downstream.clone();
+        let task = tokio::spawn(async move {
+            run_whisper(endpoint, model, api_key, language, audio_rx, events).await;
         });
 
         Ok(Self {
@@ -155,6 +207,282 @@ impl AsrClient {
             .await
             .map_err(|_| AsrError::DeviceUnavailable)
     }
+}
+
+/// 规范化 Whisper OpenAI 兼容转写端点。
+///
+/// # 参数
+/// - `base_url`：服务 Base URL 或完整转写端点。
+///
+/// # 返回值
+/// 以 `/audio/transcriptions` 结尾的 HTTP(S) URL；非法协议返回错误。
+fn whisper_transcription_url(base_url: &str) -> Result<String, AsrError> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let parsed = reqwest::Url::parse(trimmed).map_err(|_| AsrError::InvalidRequest)?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(AsrError::InvalidRequest);
+    }
+    let path = parsed.path().trim_end_matches('/');
+    // whisper.cpp 使用 /inference，其他 OpenAI 兼容服务通常使用
+    // /audio/transcriptions；用户填写完整端点时不能再追加路径。
+    if path.ends_with("/audio/transcriptions")
+        || path.ends_with("/transcriptions")
+        || path == "/inference"
+    {
+        return Ok(trimmed.to_string());
+    }
+    Ok(format!("{trimmed}/audio/transcriptions"))
+}
+
+/// 将界面语言标签映射为 Whisper 接受的短语言代码。
+///
+/// # 参数
+/// - `lang`：界面识别语言，`auto` 表示自动检测。
+///
+/// # 返回值
+/// Whisper 的 language 参数；自动检测时返回 `None`。
+fn whisper_language(lang: &str) -> Option<String> {
+    let normalized = lang.trim();
+    if normalized.is_empty() || normalized.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    let primary = normalized.split(['-', '_']).next().unwrap_or(normalized);
+    Some(primary.to_ascii_lowercase())
+}
+
+/// 将 PCM16 单声道采样封装为 24 kHz WAV。
+///
+/// # 参数
+/// - `pcm`：24 kHz 单声道 i16 采样。
+///
+/// # 返回值
+/// 标准 44 字节 WAV 头加小端 PCM16 数据。
+fn pcm16_to_wav(pcm: &[i16]) -> Vec<u8> {
+    let data_len = (pcm.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&24_000u32.to_le_bytes());
+    wav.extend_from_slice(&48_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in pcm {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
+}
+
+/// 将 Whisper HTTP 状态码映射为稳定错误分类。
+///
+/// # 参数
+/// - `status`：HTTP 状态码。
+///
+/// # 返回值
+/// 对应的 ASR 错误分类。
+fn classify_whisper_status(status: u16) -> AsrError {
+    match status {
+        401 | 403 => AsrError::Auth,
+        400 | 404 | 405 | 413 | 415 | 422 | 429 => AsrError::InvalidRequest,
+        _ => AsrError::Network,
+    }
+}
+
+/// 从 Whisper 兼容服务的响应体中提取识别文本。
+///
+/// # 参数
+/// - `body`：服务返回的 JSON 或纯文本响应。
+///
+/// # 返回值
+/// 去除首尾空白后的识别文本；空响应返回空字符串。
+///
+/// @author zhenghq
+fn whisper_response_text(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(payload) => payload["text"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        Err(_) => body.trim().to_string(),
+    }
+}
+
+/// 把新到 PCM 累积成 Whisper 窗口，并只保留最新一个待转写窗口。
+///
+/// # 参数
+/// - `window`：尚未满 4 秒的 PCM 缓冲。
+/// - `pending`：等待发送的最新完整窗口。
+/// - `pcm`：新到达的 PCM 采样。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+fn queue_whisper_window(window: &mut Vec<i16>, pending: &mut Option<Vec<i16>>, pcm: &[i16]) {
+    window.extend_from_slice(pcm);
+    while window.len() >= WHISPER_WINDOW_SAMPLES {
+        *pending = Some(window.drain(..WHISPER_WINDOW_SAMPLES).collect());
+    }
+}
+
+/// 累积 PCM 并按约 4 秒窗口调用 Whisper 转写。
+///
+/// # 参数
+/// - `endpoint`：完整转写端点。
+/// - `model`：模型名称。
+/// - `api_key`：可选 Bearer API Key。
+/// - `language`：可选语言代码。
+/// - `audio_rx`：PCM 上行通道。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+async fn run_whisper(
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+    language: Option<String>,
+    mut audio_rx: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    events: broadcast::Sender<AsrEvent>,
+) {
+    let client = match reqwest::Client::builder()
+        .timeout(WHISPER_REQUEST_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            let _ = events.send(AsrEvent::Error {
+                error: AsrError::Network,
+            });
+            return;
+        }
+    };
+    let mut window = Vec::<i16>::with_capacity(WHISPER_WINDOW_SAMPLES);
+    let mut pending: Option<Vec<i16>> = None;
+    let mut in_flight: Option<tokio::task::JoinHandle<Result<(), AsrError>>> = None;
+    let mut audio_closed = false;
+    loop {
+        if in_flight.is_none() {
+            if let Some(chunk) = pending.take() {
+                // 同一时间只保留一个 HTTP 转写请求；慢服务期间丢弃更旧的待处理
+                // 窗口而不是阻塞采集，避免实时字幕延迟无限增长。
+                let request_client = client.clone();
+                let request_endpoint = endpoint.clone();
+                let request_model = model.clone();
+                let request_api_key = api_key.clone();
+                let request_language = language.clone();
+                let request_events = events.clone();
+                in_flight = Some(tokio::spawn(async move {
+                    transcribe_whisper_window(
+                        &request_client,
+                        &request_endpoint,
+                        &request_model,
+                        request_api_key.as_deref(),
+                        request_language.as_deref(),
+                        &chunk,
+                        &request_events,
+                    )
+                    .await
+                }));
+                continue;
+            }
+            if audio_closed {
+                break;
+            }
+            match audio_rx.recv().await {
+                Some(pcm) => queue_whisper_window(&mut window, &mut pending, &pcm),
+                None => audio_closed = true,
+            }
+            continue;
+        }
+
+        tokio::select! {
+            result = in_flight.as_mut().expect("in-flight request must exist") => {
+                in_flight = None;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        let _ = events.send(AsrEvent::Error { error });
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = events.send(AsrEvent::Error { error: AsrError::Network });
+                        return;
+                    }
+                }
+            }
+            pcm = audio_rx.recv(), if !audio_closed => {
+                match pcm {
+                    Some(pcm) => queue_whisper_window(&mut window, &mut pending, &pcm),
+                    None => audio_closed = true,
+                }
+            }
+        }
+    }
+}
+
+/// 转写一个 PCM 窗口并派发最终文本。
+///
+/// # 参数
+/// - `client`：复用的 HTTP 客户端。
+/// - `endpoint`：完整转写端点。
+/// - `model`：模型名称。
+/// - `api_key`：可选 Bearer API Key。
+/// - `language`：可选语言代码。
+/// - `pcm`：窗口 PCM 采样。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 成功或结构化 ASR 错误。
+///
+/// @author zhenghq
+async fn transcribe_whisper_window(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+    api_key: Option<&str>,
+    language: Option<&str>,
+    pcm: &[i16],
+    events: &broadcast::Sender<AsrEvent>,
+) -> Result<(), AsrError> {
+    let wav = pcm16_to_wav(pcm);
+    let file = Part::bytes(wav)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|_| AsrError::InvalidRequest)?;
+    let mut form = Form::new()
+        .part("file", file)
+        .text("model", model.to_string())
+        .text("response_format", "json");
+    if let Some(language) = language {
+        form = form.text("language", language.to_string());
+    }
+    let mut request = client.post(endpoint).multipart(form);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().await.map_err(|_| AsrError::Network)?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        return Err(classify_whisper_status(status));
+    }
+    let body = response.text().await.map_err(|_| AsrError::Network)?;
+    let text = whisper_response_text(&body);
+    if !text.is_empty() {
+        let _ = events.send(AsrEvent::Final {
+            text,
+            lang: language.map(str::to_string),
+        });
+    }
+    Ok(())
 }
 
 impl Drop for AsrClient {
@@ -508,9 +836,111 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::time::timeout;
     use tokio_tungstenite::{accept_async, connect_async};
+
+    /// 启动只处理一次请求的本地 HTTP 服务并返回请求内容。
+    ///
+    /// # 参数
+    /// - `status`：响应状态码。
+    /// - `body`：响应正文。
+    ///
+    /// # 返回值
+    /// 服务地址和读取请求的任务。
+    ///
+    /// @author zhenghq
+    async fn spawn_http_once(
+        status: u16,
+        body: &'static str,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some(header_end) = text.find("\r\n\r\n") {
+                    let content_length = text[..header_end]
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length: ")
+                                .or_else(|| line.strip_prefix("Content-Length: "))
+                        })
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+        (address, server)
+    }
+
+    /// 启动延迟响应的本地 HTTP 服务，用于验证请求在途时音频消费不被阻塞。
+    ///
+    /// # 参数
+    /// - `delay`：读取请求后等待多久再返回。
+    ///
+    /// # 返回值
+    /// 服务地址和响应任务。
+    ///
+    /// @author zhenghq
+    async fn spawn_delayed_http(
+        delay: Duration,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some(header_end) = text.find("\r\n\r\n") {
+                    let content_length = text[..header_end]
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length: ")
+                                .or_else(|| line.strip_prefix("Content-Length: "))
+                        })
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(delay).await;
+            let body = r#"{"text":"slow"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        (address, server)
+    }
 
     /// 永不就绪的 Sink，用于验证 WebSocket 写入超时边界。
     struct PendingSink;
@@ -609,6 +1039,233 @@ mod tests {
         let url = deepgram_url("auto");
         assert!(url.contains("language=multi"));
         assert!(!url.contains("detect_language"));
+    }
+
+    #[test]
+    fn whisper_transcription_url_appends_endpoint_once() {
+        assert_eq!(
+            whisper_transcription_url("http://127.0.0.1:8000/v1").unwrap(),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            whisper_transcription_url("http://127.0.0.1:8000/v1/audio/transcriptions").unwrap(),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            whisper_transcription_url("https://api.openai.com/v1/").unwrap(),
+            "https://api.openai.com/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            whisper_transcription_url("http://127.0.0.1:8080/inference").unwrap(),
+            "http://127.0.0.1:8080/inference"
+        );
+        assert!(whisper_transcription_url("file:///tmp/whisper").is_err());
+    }
+
+    #[test]
+    fn whisper_language_maps_ui_locale_to_short_code() {
+        assert_eq!(whisper_language("auto"), None);
+        assert_eq!(whisper_language("zh-CN"), Some("zh".into()));
+        assert_eq!(whisper_language("zh-TW"), Some("zh".into()));
+        assert_eq!(whisper_language("ja-JP"), Some("ja".into()));
+    }
+
+    #[test]
+    fn whisper_wav_contains_pcm16_mono_header() {
+        let wav = pcm16_to_wav(&[0, 1, -1]);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[12..16], b"fmt ");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24_000);
+        assert_eq!(u16::from_le_bytes(wav[22..24].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()), 16);
+        assert_eq!(wav.len(), 44 + 6);
+    }
+
+    #[test]
+    fn whisper_http_status_maps_to_stable_errors() {
+        assert_eq!(classify_whisper_status(401), AsrError::Auth);
+        assert_eq!(classify_whisper_status(403), AsrError::Auth);
+        assert_eq!(classify_whisper_status(400), AsrError::InvalidRequest);
+        assert_eq!(classify_whisper_status(404), AsrError::InvalidRequest);
+        assert_eq!(classify_whisper_status(429), AsrError::InvalidRequest);
+        assert_eq!(classify_whisper_status(500), AsrError::Network);
+    }
+
+    /// 校验 Whisper 请求使用 multipart、Bearer 鉴权并派发最终文本。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_request_sends_multipart_and_emits_final_text() {
+        let (address, server) = spawn_http_once(200, r#"{"text":"你好"}"#).await;
+        let client = reqwest::Client::new();
+        let (events, mut received) = broadcast::channel(4);
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+
+        transcribe_whisper_window(
+            &client,
+            &endpoint,
+            "large-v3",
+            Some("local-secret"),
+            Some("zh"),
+            &[1, -1],
+            &events,
+        )
+        .await
+        .unwrap();
+
+        let request = String::from_utf8_lossy(&server.await.unwrap()).into_owned();
+        assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer local-secret"));
+        assert!(request.contains("name=\"file\"; filename=\"audio.wav\""));
+        assert!(request.contains("name=\"model\"\r\n\r\nlarge-v3"));
+        assert!(request.contains("name=\"response_format\"\r\n\r\njson"));
+        assert!(request.contains("name=\"language\"\r\n\r\nzh"));
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "你好".into(),
+                lang: Some("zh".into())
+            }
+        );
+    }
+
+    /// 校验本地无鉴权 Whisper 服务不会收到 Authorization 请求头。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_request_omits_authorization_without_api_key() {
+        let (address, server) = spawn_http_once(200, r#"{"text":"local"}"#).await;
+        let client = reqwest::Client::new();
+        let (events, mut received) = broadcast::channel(4);
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+
+        transcribe_whisper_window(
+            &client,
+            &endpoint,
+            "whisper-1",
+            None,
+            None,
+            &[0, 0],
+            &events,
+        )
+        .await
+        .unwrap();
+
+        let request = String::from_utf8_lossy(&server.await.unwrap()).into_owned();
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert!(!request.contains("name=\"language\""));
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "local".into(),
+                lang: None
+            }
+        );
+    }
+
+    /// 校验非 2xx Whisper 响应返回稳定的鉴权或请求错误。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_request_maps_http_errors() {
+        let (address, server) = spawn_http_once(401, r#"{"error":"unauthorized"}"#).await;
+        let client = reqwest::Client::new();
+        let (events, _received) = broadcast::channel(4);
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+
+        let error =
+            transcribe_whisper_window(&client, &endpoint, "whisper-1", None, None, &[0], &events)
+                .await
+                .unwrap_err();
+
+        server.await.unwrap();
+        assert_eq!(error, AsrError::Auth);
+    }
+
+    /// 校验 whisper.cpp 等兼容服务的纯文本响应也能转换为最终字幕。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_request_accepts_plain_text_response() {
+        let (address, server) = spawn_http_once(200, " 本地识别结果 \n").await;
+        let client = reqwest::Client::new();
+        let (events, mut received) = broadcast::channel(4);
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+
+        transcribe_whisper_window(
+            &client,
+            &endpoint,
+            "ggml-base",
+            None,
+            Some("zh"),
+            &[0, 0],
+            &events,
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "本地识别结果".into(),
+                lang: Some("zh".into())
+            }
+        );
+    }
+
+    /// 校验慢速 Whisper 请求期间仍持续消费音频，避免采集队列被 HTTP 阻塞塞满。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_keeps_consuming_audio_while_request_is_in_flight() {
+        let (address, server) = spawn_delayed_http(Duration::from_millis(250)).await;
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(1);
+        let (events, _received) = broadcast::channel(4);
+        let task = tokio::spawn(run_whisper(
+            endpoint,
+            "whisper-1".into(),
+            None,
+            None,
+            audio_rx,
+            events,
+        ));
+
+        for _ in 0..3 {
+            timeout(
+                Duration::from_millis(100),
+                audio_tx.send(vec![0; WHISPER_WINDOW_SAMPLES]),
+            )
+            .await
+            .expect("audio intake should not block on the in-flight request")
+            .unwrap();
+        }
+        drop(audio_tx);
+
+        timeout(Duration::from_secs(2), task)
+            .await
+            .expect("whisper loop should stop after audio channel closes")
+            .unwrap();
+        server.await.unwrap();
     }
 
     #[test]

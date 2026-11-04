@@ -137,6 +137,57 @@ test('字幕窗页面加载前应缓存视图和外观并在完成后补发', ()
 })
 
 /**
+ * 校验字幕窗不会把完全相同的视图模型重复发送到渲染进程。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('相同字幕视图模型不应重复发送到渲染进程', () => {
+  const created: FakeWindow[] = []
+  const viewModel = {
+    state: 'running' as const,
+    displayMode: 'bilingual' as const,
+    sourceText: 'Hello',
+    translatedText: '你好',
+    status: 'translated' as const,
+    audioActivity: 'speech-detected' as const,
+    empty: false,
+    error: ''
+  }
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => viewModel,
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  win.ready()
+  const initialCount = win.messages.filter((message) => message.channel === 'subtitle:view-model').length
+
+  controller.render({ ...viewModel })
+  controller.render({ ...viewModel })
+  assert.equal(
+    win.messages.filter((message) => message.channel === 'subtitle:view-model').length,
+    initialCount,
+    '相同视图模型不应产生额外 IPC'
+  )
+
+  controller.render({ ...viewModel, translatedText: '你好！' })
+  assert.equal(
+    win.messages.filter((message) => message.channel === 'subtitle:view-model').length,
+    initialCount + 1
+  )
+  controller.dispose()
+})
+
+/**
  * 校验页面就绪前取消显示时，ready-to-show 不应重新弹出窗口。
  * @returns 无返回值。
  * @author zhenghq

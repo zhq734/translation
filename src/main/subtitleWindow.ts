@@ -25,6 +25,30 @@ const SUBTITLE_TOOLBAR_POINTER_POLL_MS = 80
 /** 拖拽按钮命中区的容差，避免亚像素边界导致悬停闪烁。 */
 const SUBTITLE_DRAG_HIT_PADDING = 4
 
+/**
+ * 判断两个字幕视图模型的全部渲染字段是否一致。
+ * @param left 前一个视图模型。
+ * @param right 后一个视图模型。
+ * @returns 所有展示字段均相同时返回 true。
+ * @author zhenghq
+ */
+function isSameSubtitleViewModel(
+  left: RealtimeSubtitleViewModel | null,
+  right: RealtimeSubtitleViewModel
+): boolean {
+  return Boolean(
+    left &&
+    left.state === right.state &&
+    left.displayMode === right.displayMode &&
+    left.sourceText === right.sourceText &&
+    left.translatedText === right.translatedText &&
+    left.status === right.status &&
+    left.audioActivity === right.audioActivity &&
+    left.empty === right.empty &&
+    left.error === right.error
+  )
+}
+
 /** 字幕窗口创建依赖。 */
 export interface SubtitleWindowOptions {
   /** 预加载脚本路径。 */
@@ -88,6 +112,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   let pointerInsideDragArea = false
   let dragHitArea: RealtimeSubtitleDragHitArea | null = null
   let latestViewModel = options.getViewModel()
+  let lastSentViewModel: RealtimeSubtitleViewModel | null = null
   let appearance: RealtimeSubtitleWindowAppearance = {
     displayMode: 'bilingual',
     fontSize: 20,
@@ -160,10 +185,14 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       if (created.isDestroyed()) return
       created.webContents.send('subtitle:appearance', appearance)
       created.webContents.send('subtitle:view-model', latestViewModel)
+      lastSentViewModel = { ...latestViewModel }
     })
     created.on('closed', () => {
       clearBoundsSaveTimer()
-      if (win === created) win = null
+      if (win === created) {
+        win = null
+        lastSentViewModel = null
+      }
     })
     options.loadPage(created)
     win = created
@@ -402,7 +431,10 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       latestViewModel = viewModel
       const target = win
       if (!target || target.isDestroyed()) return
+      if (target.webContents.isLoading()) return
+      if (isSameSubtitleViewModel(lastSentViewModel, viewModel)) return
       target.webContents.send('subtitle:view-model', viewModel)
+      lastSentViewModel = { ...viewModel }
     },
 
     /** 返回字幕窗口当前是否可见。 */
