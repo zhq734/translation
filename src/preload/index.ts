@@ -12,6 +12,8 @@ import type {
   DeepLxStatus,
   DeepLxConfigPatch,
   DingTalkConfigPatch,
+  DeepgramConfigPatch,
+  ITranslateConfigPatch,
   AiConfigPatch,
   AiCheckStatus,
   AiModelListResult,
@@ -48,23 +50,30 @@ import type {
   WebTranslationRunRequest,
   WebViewBounds,
   CaptureDiagnosticsSummary,
-  GlobalShortcutRegistrationState
-  , DocumentFileSelectionResult
-  , DocumentPlatformCapability
-  , DocumentAssetResult
-  , DocumentApprovedAssetRequest
-  , DocumentApprovedSourceRequest
-  , DocumentApprovedExportRequest
-  , DocumentExportProgress
-  , DocumentExportRequest
-  , DocumentExportResult
-  , DocumentHistoryEntry
-  , TranslationHistoryEntry
-  , DocumentRunRequest
-  , DocumentRunResult
-  , DocumentSourceResult
-  , DocumentWorkspaceSnapshot
-  , DocumentWorkspaceTranslationUpdate
+  GlobalShortcutRegistrationState,
+  RealtimeSubtitleSnapshot,
+  RealtimeSubtitleViewModel,
+  RealtimeSubtitleWindowAppearance,
+  RealtimeSubtitleMouseInteractionScope,
+  RealtimeSubtitlePointerPoint,
+  RealtimeSubtitleWindowMoveRequest,
+  RealtimeSubtitleDragHitArea,
+  DocumentFileSelectionResult,
+  DocumentPlatformCapability,
+  DocumentAssetResult,
+  DocumentApprovedAssetRequest,
+  DocumentApprovedSourceRequest,
+  DocumentApprovedExportRequest,
+  DocumentExportProgress,
+  DocumentExportRequest,
+  DocumentExportResult,
+  DocumentHistoryEntry,
+  TranslationHistoryEntry,
+  DocumentRunRequest,
+  DocumentRunResult,
+  DocumentSourceResult,
+  DocumentWorkspaceSnapshot,
+  DocumentWorkspaceTranslationUpdate
 } from '../shared/types'
 
 /** 同步读取主进程当前已解析的界面语言，供首屏脚本在 DOM 渲染前使用。 */
@@ -303,6 +312,132 @@ const api: Api = {
    */
   openDocumentWorkspace() {
     ipcRenderer.send('document:open')
+  },
+  /**
+   * 启动实时字幕采集与翻译。
+   * @returns 启动后的字幕快照。
+   * @author zhenghq
+   */
+  startRealtimeSubtitle: (): Promise<RealtimeSubtitleSnapshot> =>
+    ipcRenderer.invoke('subtitle:start'),
+  /**
+   * 停止实时字幕采集并释放音频资源。
+   * @returns 停止后的字幕快照。
+   * @author zhenghq
+   */
+  stopRealtimeSubtitle: (): Promise<RealtimeSubtitleSnapshot> =>
+    ipcRenderer.invoke('subtitle:stop'),
+  /**
+   * 暂停实时字幕识别。
+   * @returns 暂停后的字幕快照。
+   * @author zhenghq
+   */
+  pauseRealtimeSubtitle: (): Promise<RealtimeSubtitleSnapshot> =>
+    ipcRenderer.invoke('subtitle:pause'),
+  /**
+   * 恢复实时字幕识别。
+   * @returns 恢复后的字幕快照。
+   * @author zhenghq
+   */
+  resumeRealtimeSubtitle: (): Promise<RealtimeSubtitleSnapshot> =>
+    ipcRenderer.invoke('subtitle:resume'),
+  /**
+   * 读取实时字幕当前状态。
+   * @returns 当前字幕快照。
+   * @author zhenghq
+   */
+  getRealtimeSubtitleStatus: (): Promise<RealtimeSubtitleSnapshot> =>
+    ipcRenderer.invoke('subtitle:get-status'),
+  /**
+   * 打开 macOS 屏幕录制权限设置页。
+   * @returns 打开完成后的 Promise。
+   * @author zhenghq
+   */
+  openRealtimeSubtitleScreenRecordingSettings: (): Promise<void> =>
+    ipcRenderer.invoke('subtitle:open-screen-recording-settings'),
+  /**
+   * 订阅实时字幕快照。
+   * @param callback 字幕快照回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onRealtimeSubtitleUpdate(callback: (snapshot: RealtimeSubtitleSnapshot) => void) {
+    const listener = (_event: unknown, snapshot: RealtimeSubtitleSnapshot): void => callback(snapshot)
+    ipcRenderer.on('subtitle:update', listener)
+    return () => ipcRenderer.removeListener('subtitle:update', listener)
+  },
+  /**
+   * 订阅字幕窗专用视图模型。
+   * @param callback 视图模型回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onRealtimeSubtitleViewModel(callback: (viewModel: RealtimeSubtitleViewModel) => void) {
+    const listener = (_event: unknown, viewModel: RealtimeSubtitleViewModel): void => callback(viewModel)
+    ipcRenderer.on('subtitle:view-model', listener)
+    return () => ipcRenderer.removeListener('subtitle:view-model', listener)
+  },
+  /**
+   * 订阅字幕窗外观设置。
+   * @param callback 外观设置回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onRealtimeSubtitleAppearance(
+    callback: (appearance: RealtimeSubtitleWindowAppearance) => void
+  ) {
+    const listener = (_event: unknown, appearance: RealtimeSubtitleWindowAppearance): void =>
+      callback(appearance)
+    ipcRenderer.on('subtitle:appearance', listener)
+    return () => ipcRenderer.removeListener('subtitle:appearance', listener)
+  },
+  /**
+   * 订阅主进程轮询到的全局指针位置。
+   * @param callback 指针位置回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onRealtimeSubtitlePointerPoint(callback: (point: RealtimeSubtitlePointerPoint) => void) {
+    const listener = (_event: unknown, point: RealtimeSubtitlePointerPoint): void => {
+      if (
+        Number.isFinite(point?.x) &&
+        Number.isFinite(point.y) &&
+        typeof point.insideDragArea === 'boolean'
+      ) callback(point)
+    }
+    ipcRenderer.on('subtitle:pointer-point', listener)
+    return () => ipcRenderer.removeListener('subtitle:pointer-point', listener)
+  },
+  /**
+   * 切换字幕窗局部鼠标交互，使点击穿透模式下仍可操作右上角工具栏。
+   * @param active 是否进入交互状态。
+   * @param scope 交互范围。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setRealtimeSubtitleMouseInteraction(
+    active: boolean,
+    scope: RealtimeSubtitleMouseInteractionScope = 'toolbar'
+  ): void {
+    ipcRenderer.send('subtitle:mouse-interaction', active, scope)
+  },
+  /**
+   * 将字幕窗移动到新的全局位置。
+   * @param request 窗口拖动请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  moveRealtimeSubtitleWindow(request: RealtimeSubtitleWindowMoveRequest): void {
+    ipcRenderer.send('subtitle:move-window', request)
+  },
+  /**
+   * 同步拖拽按钮真实矩形，让主进程在点击穿透模式下准确放行鼠标。
+   * @param area 相对字幕窗口内容区的拖拽按钮矩形。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setRealtimeSubtitleDragHitArea(area: RealtimeSubtitleDragHitArea): void {
+    ipcRenderer.send('subtitle:drag-hit-area', area)
   },
   /**
    * 通过主进程文件选择器一次导入并校验多个本地文档。
@@ -1150,6 +1285,34 @@ const api: Api = {
    * @author zhenghq
    */
   clearDingTalkSecret: (): Promise<Settings> => ipcRenderer.invoke('dingtalk:clear-secret'),
+  /**
+   * 保存 Deepgram ASR 配置及可选新 API Key。
+   * @param patch Deepgram 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setDeepgramConfig: (patch: DeepgramConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('deepgram:configure', patch),
+  /**
+   * 显式清除已保存的 Deepgram API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearDeepgramApiKey: (): Promise<Settings> => ipcRenderer.invoke('deepgram:clear-key'),
+  /**
+   * 保存 iTranslate 可选翻译通道配置及可选新 API Key。
+   * @param patch iTranslate 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setITranslateConfig: (patch: ITranslateConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('itranslate:configure', patch),
+  /**
+   * 显式清除已保存的 iTranslate API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearITranslateApiKey: (): Promise<Settings> => ipcRenderer.invoke('itranslate:clear-key'),
   /**
    * 检测钉钉 Token 和文本翻译链路。
    * @returns 结构化脱敏检测状态。

@@ -12,6 +12,17 @@ import type { UiLocale } from './i18n/locale'
 import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
 import type { DocumentPlatformCapability } from './documentPlatformCapability'
 import type {
+  RealtimeSubtitleAudioSource,
+  RealtimeSubtitleAsrProvider,
+  RealtimeSubtitleDisplayMode,
+  RealtimeSubtitleSessionState,
+  RealtimeSubtitleSnapshot,
+  RealtimeSubtitleViewModel,
+  RealtimeSubtitleWindowAppearance,
+  RealtimeSubtitleMouseInteractionScope,
+  RealtimeSubtitlePointerPoint
+} from './subtitleSession'
+import type {
   DocumentAssetResult,
   DocumentApprovedExportRequest,
   DocumentApprovedAssetRequest,
@@ -33,6 +44,17 @@ export type {
   DocumentFormat
 } from './documentTypes'
 export type { DocumentPlatformCapability } from './documentPlatformCapability'
+export type {
+  RealtimeSubtitleAudioSource,
+  RealtimeSubtitleAsrProvider,
+  RealtimeSubtitleDisplayMode,
+  RealtimeSubtitleSessionState,
+  RealtimeSubtitleSnapshot,
+  RealtimeSubtitleViewModel,
+  RealtimeSubtitleWindowAppearance,
+  RealtimeSubtitleMouseInteractionScope,
+  RealtimeSubtitlePointerPoint
+} from './subtitleSession'
 export type {
   DocumentAssetResult,
   DocumentApprovedExportRequest,
@@ -132,6 +154,7 @@ export type SpeechProvider = 'system' | 'edge'
 export type TranslationProviderId =
   | 'dingtalk'
   | 'microsoft'
+  | 'itranslate'
   | 'ai'
   | 'bili-index'
   | 'deeplx-self'
@@ -883,6 +906,30 @@ export interface ScreenshotPinDragRequest {
   pointerOffsetY?: number
 }
 
+/** 实时字幕窗口拖动请求：Renderer 使用全局屏幕坐标驱动窗口移动。 */
+export interface RealtimeSubtitleWindowMoveRequest {
+  /** 指针当前全局 x 坐标。 */
+  screenX: number
+  /** 指针当前全局 y 坐标。 */
+  screenY: number
+  /** 指针相对字幕窗口左上角的 x 偏移。 */
+  pointerOffsetX: number
+  /** 指针相对字幕窗口左上角的 y 偏移。 */
+  pointerOffsetY: number
+}
+
+/** 实时字幕拖拽按钮相对字幕窗口内容区的矩形。 */
+export interface RealtimeSubtitleDragHitArea {
+  /** 相对窗口内容区左侧的 x 坐标。 */
+  x: number
+  /** 相对窗口内容区顶部的 y 坐标。 */
+  y: number
+  /** 可命中区域宽度。 */
+  width: number
+  /** 可命中区域高度。 */
+  height: number
+}
+
 /** 贴图滚轮请求。 */
 export interface ScreenshotPinWheelRequest {
   /** 贴图实例标识。 */
@@ -964,6 +1011,26 @@ export interface Settings {
   webReaderHotkey: string
   /** 全局文档翻译快捷键，空字符串表示不注册。 */
   documentTranslationHotkey: string
+  /** 实时字幕采集的音频来源。 */
+  realtimeSubtitleAudioSource: RealtimeSubtitleAudioSource
+  /** 实时字幕语音识别语言；auto 表示跟随系统。 */
+  realtimeSubtitleRecognitionLang: string
+  /** 实时字幕 ASR 提供商；首版固定使用 Deepgram。 */
+  realtimeSubtitleAsrProvider: RealtimeSubtitleAsrProvider
+  /** 是否已安全保存 Deepgram API Key。 */
+  realtimeSubtitleDeepgramApiKeyConfigured: boolean
+  /** 实时字幕悬浮窗显示模式。 */
+  realtimeSubtitleDisplayMode: RealtimeSubtitleDisplayMode
+  /** 实时字幕字号（像素）。 */
+  realtimeSubtitleFontSize: number
+  /** 无新识别文本时自动隐藏字幕的时长；0 表示不自动隐藏。 */
+  realtimeSubtitleHideAfterMs: number
+  /** 实时字幕文字颜色。 */
+  realtimeSubtitleTextColor: string
+  /** 实时字幕窗口是否默认点击穿透。 */
+  realtimeSubtitleClickThrough: boolean
+  /** 开始或停止实时字幕的全局快捷键，空字符串表示不注册。 */
+  realtimeSubtitleHotkey: string
   /** 是否启用文档翻译入口与任务执行。 */
   documentTranslationEnabled: boolean
   /** 单个文档允许的最大字节数。 */
@@ -1017,6 +1084,10 @@ export interface Settings {
   aiModel: string
   /** 是否已安全保存 AI API Key。 */
   aiApiKeyConfigured: boolean
+  /** 是否启用 iTranslate 可选翻译通道。 */
+  itranslateEnabled: boolean
+  /** 是否已安全保存 iTranslate API Key。 */
+  itranslateApiKeyConfigured: boolean
   /** 用户在弹窗底部选择的首选翻译 API。 */
   preferredTranslationProvider: TranslationProviderPreference
   /** 译文朗读使用的语音引擎，默认使用系统内置语音。 */
@@ -1058,7 +1129,7 @@ export interface Settings {
 }
 
 /** 可注册的全局快捷键字段标识。 */
-export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'ocrQuickHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey'
+export type GlobalShortcutId = 'hotkey' | 'ocrHotkey' | 'ocrQuickHotkey' | 'manualTranslationHotkey' | 'webReaderHotkey' | 'documentTranslationHotkey' | 'realtimeSubtitleHotkey'
 
 /** 单个全局快捷键的注册状态。 */
 export type GlobalShortcutRegistrationStatus = 'registered' | 'occupied' | 'invalid' | 'skipped' | 'failed'
@@ -1284,6 +1355,20 @@ export interface DingTalkConfigPatch {
   clientSecret?: string
 }
 
+/** iTranslate 配置补丁，用于通过专用 IPC 保存启用状态及可选新 API Key。 */
+export interface ITranslateConfigPatch {
+  /** 是否启用 iTranslate 翻译通道。 */
+  enabled?: boolean
+  /** 新 API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
+/** Deepgram ASR 配置补丁，用于通过专用 IPC 保存可选新 API Key。 */
+export interface DeepgramConfigPatch {
+  /** 新 Deepgram API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
 /** AI 配置补丁，用于通过专用 IPC 保存公共字段及可选新 API Key。 */
 export interface AiConfigPatch {
   /** 是否启用 AI 翻译通道。 */
@@ -1411,6 +1496,37 @@ export interface Api {
   notifySettingsWindowPointerDown(): void
   /** 打开或聚焦独立文档翻译工作台。 */
   openDocumentWorkspace(): void
+  /** 启动实时字幕采集与翻译。 */
+  startRealtimeSubtitle(): Promise<RealtimeSubtitleSnapshot>
+  /** 停止实时字幕采集并释放音频资源。 */
+  stopRealtimeSubtitle(): Promise<RealtimeSubtitleSnapshot>
+  /** 暂停实时字幕识别，保留当前窗口与段落。 */
+  pauseRealtimeSubtitle(): Promise<RealtimeSubtitleSnapshot>
+  /** 恢复已暂停的实时字幕识别。 */
+  resumeRealtimeSubtitle(): Promise<RealtimeSubtitleSnapshot>
+  /** 读取实时字幕当前快照。 */
+  getRealtimeSubtitleStatus(): Promise<RealtimeSubtitleSnapshot>
+  /** 打开 macOS 屏幕录制权限设置页。 */
+  openRealtimeSubtitleScreenRecordingSettings(): Promise<void>
+  /** 订阅实时字幕快照。 */
+  onRealtimeSubtitleUpdate(cb: (snapshot: RealtimeSubtitleSnapshot) => void): () => void
+  /** 订阅字幕窗专用视图模型。 */
+  onRealtimeSubtitleViewModel(cb: (viewModel: RealtimeSubtitleViewModel) => void): () => void
+  /** 订阅字幕窗外观设置。 */
+  onRealtimeSubtitleAppearance(
+    cb: (appearance: RealtimeSubtitleWindowAppearance) => void
+  ): () => void
+  /** 订阅主进程轮询到的全局指针位置。 */
+  onRealtimeSubtitlePointerPoint(cb: (point: RealtimeSubtitlePointerPoint) => void): () => void
+  /** 切换字幕窗局部鼠标交互，用于点击穿透时操作右上角工具栏。 */
+  setRealtimeSubtitleMouseInteraction(
+    active: boolean,
+    scope?: RealtimeSubtitleMouseInteractionScope
+  ): void
+  /** 按屏幕坐标移动字幕窗，供 Renderer 捕获拖拽手柄后拖动窗口。 */
+  moveRealtimeSubtitleWindow(request: RealtimeSubtitleWindowMoveRequest): void
+  /** 同步拖拽按钮的真实窗口内矩形，供点击穿透时判断鼠标命中。 */
+  setRealtimeSubtitleDragHitArea(area: RealtimeSubtitleDragHitArea): void
   /** 通过主进程文件选择器一次导入并校验多个本地文档。 */
   selectDocumentFiles(): Promise<DocumentFileSelectionResult[]>
   /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
@@ -1688,6 +1804,14 @@ export interface Api {
   setDingTalkConfig(patch: DingTalkConfigPatch): Promise<Settings>
   /** 显式清除已保存的钉钉 ClientSecret。 */
   clearDingTalkSecret(): Promise<Settings>
+  /** 保存 Deepgram ASR 配置和可选新 API Key。 */
+  setDeepgramConfig(patch: DeepgramConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 Deepgram API Key。 */
+  clearDeepgramApiKey(): Promise<Settings>
+  /** 保存 iTranslate 可选翻译通道配置和可选新 API Key。 */
+  setITranslateConfig(patch: ITranslateConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 iTranslate API Key。 */
+  clearITranslateApiKey(): Promise<Settings>
   /** 检测钉钉 Token 和文本翻译链路。 */
   checkDingTalk(): Promise<DingTalkCheckStatus>
   /**

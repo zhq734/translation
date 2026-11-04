@@ -7,7 +7,7 @@ import {
 } from '../src/shared/settingsDefaults.ts'
 
 test('新安装默认跟随系统，schema 升级到 21', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 24)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
   assert.equal(DEFAULT_SETTINGS.schemaVersion, SETTINGS_SCHEMA_VERSION)
   assert.equal(DEFAULT_SETTINGS.uiLocale, 'auto')
 })

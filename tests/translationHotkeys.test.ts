@@ -8,7 +8,7 @@ import {
 } from '../src/main/globalShortcutRegistry.ts'
 
 test('设置默认值应包含快捷 OCR、手动翻译、网页阅读器与文档翻译快捷键', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 24)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
   assert.equal(DEFAULT_SETTINGS.ocrQuickHotkey, 'Alt+S')
   assert.equal(DEFAULT_SETTINGS.manualTranslationHotkey, 'Alt+M')
   assert.equal(DEFAULT_SETTINGS.webReaderHotkey, 'Alt+P')
@@ -109,6 +109,7 @@ test('快捷键注册应汇总成功、占用、非法、空值和部分失败�
     manualTranslationHotkey: 'Alt+M',
     webReaderHotkey: '',
     documentTranslationHotkey: 'Alt+D',
+    realtimeSubtitleHotkey: '',
     // 非法组合用于验证结构化的 invalid 状态，而不是抛出异常。
     preferredTranslationProvider: 'auto'
   } as never, {
@@ -126,7 +127,8 @@ test('快捷键注册应汇总成功、占用、非法、空值和部分失败�
     ['ocrQuickHotkey', 'registered'],
     ['manualTranslationHotkey', 'occupied'],
     ['webReaderHotkey', 'skipped'],
-    ['documentTranslationHotkey', 'registered']
+    ['documentTranslationHotkey', 'registered'],
+    ['realtimeSubtitleHotkey', 'skipped']
   ])
   assert.deepEqual(registered, ['Alt+T', 'Alt+O', 'Alt+S', 'Alt+D'])
 })
@@ -139,7 +141,8 @@ test('快捷键修改时应先注销旧注册再注册全部非空快捷键', ()
     ocrQuickHotkey: 'Alt+S',
     manualTranslationHotkey: 'Alt+M',
     webReaderHotkey: 'Alt+P',
-    documentTranslationHotkey: 'Alt+D'
+    documentTranslationHotkey: 'Alt+D',
+    realtimeSubtitleHotkey: ''
   } as never, {
     unregisterAll: () => calls.push('unregisterAll'),
     register: (accelerator) => {

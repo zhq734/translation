@@ -8,7 +8,7 @@ import {
   tForTest
 } from './helpers/i18n.ts'
 
-const GROUP_IDS = ['general', 'ai', 'ocr', 'translation-services', 'advanced', 'logs', 'about'] as const
+const GROUP_IDS = ['general', 'ai', 'ocr', 'translation-services', 'subtitle', 'advanced', 'logs', 'about'] as const
 
 /**
  * 获取指定元素的开始标签，便于校验设置页可访问性属性。
@@ -23,7 +23,7 @@ function getOpeningTag(html: string, id: string): string {
   return match[0]
 }
 
-test('设置页应展示七个可访问的左侧一级分组与稳定内容面板', () => {
+test('设置页应展示八个可访问的左侧一级分组与稳定内容面板', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, /class="settings-sidebar"/u)
   const tablist = html.match(/<nav class="settings-sidebar"[^>]*>/u)?.[0]
@@ -130,6 +130,7 @@ test('设置页一级菜单应靠左对齐并在文字前展示对应图标', ()
     'settings.tab.ai',
     'settings.tab.ocr',
     'settings.tab.translationServices',
+    'settings.tab.subtitle',
     'settings.tab.advanced',
     'settings.tab.logs',
     'settings.tab.about'

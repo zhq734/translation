@@ -104,6 +104,22 @@
           <span class="settings-tab-label" data-i18n="settings.tab.translationServices">Translation Services</span>
         </button>
         <button
+          id="settings-tab-subtitle"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-panel-subtitle"
+          data-tab="subtitle"
+          tabindex="-1"
+        >
+          <svg class="settings-tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="M7 11h10M7 15h6" />
+          </svg>
+          <span class="settings-tab-label" data-i18n="settings.tab.subtitle">Live Subtitles</span>
+        </button>
+        <button
           id="settings-tab-advanced"
           class="settings-tab"
           type="button"
@@ -726,6 +742,155 @@
                 <button id="open-doc" class="btn" data-i18n="settings.deepLx.openDoc">Open deployment docs</button>
               </div>
             </div>
+          </section>
+        </div>
+
+        <div
+          id="settings-panel-subtitle"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="settings-tab-subtitle"
+          data-tab-panel="subtitle"
+          tabindex="0"
+          hidden
+        >
+          <section>
+            <h2 data-i18n="settings.realtimeSubtitle.title">Live subtitles for any video</h2>
+            <p class="hint" data-i18n="settings.realtimeSubtitle.hint">
+              Capture system audio or microphone input, send it to Deepgram for cloud speech recognition, and translate final segments through the existing multi-channel translator.
+            </p>
+            <div class="row">
+              <label for="realtime-subtitle-asr-provider" data-i18n="settings.realtimeSubtitle.asrProvider">Speech recognition</label>
+              <select id="realtime-subtitle-asr-provider">
+                <option value="deepgram" data-i18n="settings.realtimeSubtitle.asrProvider.deepgram">Deepgram (cloud ASR)</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-deepgram-api-key" data-i18n="settings.realtimeSubtitle.deepgramApiKey">Deepgram API Key</label>
+              <div class="inline-control">
+                <input
+                  id="realtime-subtitle-deepgram-api-key"
+                  type="password"
+                  autocomplete="new-password"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.deepgramApiKeyPlaceholder"
+                  placeholder="Enter a new API Key"
+                />
+                <button id="realtime-subtitle-deepgram-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.deepgramSave">Save</button>
+                <button id="realtime-subtitle-deepgram-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.deepgramClear">Clear</button>
+              </div>
+            </div>
+            <p id="realtime-subtitle-deepgram-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+            <p class="field-hint" data-i18n="settings.realtimeSubtitle.deepgramHint">Audio is captured locally and sent to Deepgram cloud ASR. The API Key is stored in the system keychain.</p>
+            <div class="row">
+              <label for="realtime-subtitle-audio-source" data-i18n="settings.realtimeSubtitle.audioSource">Audio source</label>
+              <select id="realtime-subtitle-audio-source">
+                <option value="system" data-i18n="settings.realtimeSubtitle.audioSource.system">System audio</option>
+                <option value="microphone" data-i18n="settings.realtimeSubtitle.audioSource.microphone">Microphone</option>
+                <option value="both" data-i18n="settings.realtimeSubtitle.audioSource.both">System audio + microphone</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-recognition-lang" data-i18n="settings.realtimeSubtitle.recognitionLang">Recognition language</label>
+              <select id="realtime-subtitle-recognition-lang">
+                <option value="auto" data-i18n="settings.realtimeSubtitle.recognitionLang.auto">Auto (system language)</option>
+                <option value="zh-CN" data-i18n="settings.realtimeSubtitle.recognitionLang.zhCN">Chinese (Simplified)</option>
+                <option value="zh-TW" data-i18n="settings.realtimeSubtitle.recognitionLang.zhTW">Chinese (Traditional)</option>
+                <option value="en-US" data-i18n="settings.realtimeSubtitle.recognitionLang.enUS">English (US)</option>
+                <option value="en-GB" data-i18n="settings.realtimeSubtitle.recognitionLang.enGB">English (UK)</option>
+                <option value="ja-JP" data-i18n="settings.realtimeSubtitle.recognitionLang.jaJP">Japanese</option>
+                <option value="ko-KR" data-i18n="settings.realtimeSubtitle.recognitionLang.koKR">한국어</option>
+                <option value="fr-FR" data-i18n="settings.realtimeSubtitle.recognitionLang.frFR">Français</option>
+                <option value="de-DE" data-i18n="settings.realtimeSubtitle.recognitionLang.deDE">Deutsch</option>
+                <option value="es-ES" data-i18n="settings.realtimeSubtitle.recognitionLang.esES">Español</option>
+                <option value="it-IT" data-i18n="settings.realtimeSubtitle.recognitionLang.itIT">Italiano</option>
+                <option value="pt-BR" data-i18n="settings.realtimeSubtitle.recognitionLang.ptBR">Português (Brasil)</option>
+                <option value="ru-RU" data-i18n="settings.realtimeSubtitle.recognitionLang.ruRU">Русский</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-display-mode" data-i18n="settings.realtimeSubtitle.displayMode">Subtitle display</label>
+              <select id="realtime-subtitle-display-mode">
+                <option value="source" data-i18n="settings.realtimeSubtitle.displayMode.source">Source only</option>
+                <option value="target" data-i18n="settings.realtimeSubtitle.displayMode.target">Translation only</option>
+                <option value="bilingual" data-i18n="settings.realtimeSubtitle.displayMode.bilingual">Source + translation</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-font-size" data-i18n="settings.realtimeSubtitle.fontSize">Font size</label>
+              <input id="realtime-subtitle-font-size" type="number" min="12" max="48" step="1" />
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-hide-after" data-i18n="settings.realtimeSubtitle.hideAfter">Auto-hide after silence</label>
+              <input id="realtime-subtitle-hide-after" type="number" min="0" max="120" step="1" />
+            </div>
+            <p class="field-hint" data-i18n="settings.realtimeSubtitle.hideAfterHint">Seconds without new recognized text before clearing the current subtitles. Set 0 to keep them visible.</p>
+            <div class="row">
+              <label for="realtime-subtitle-text-color" data-i18n="settings.realtimeSubtitle.textColor">Text color</label>
+              <input id="realtime-subtitle-text-color" type="color" />
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-click-through" data-i18n="settings.realtimeSubtitle.clickThrough">Click-through</label>
+              <label class="checkbox-control">
+                <input id="realtime-subtitle-click-through" type="checkbox" />
+                <span data-i18n="settings.realtimeSubtitle.clickThroughHint">When enabled, the subtitle window will not block video controls.</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-hotkey" data-i18n="settings.realtimeSubtitle.hotkey">Live subtitle shortcut</label>
+              <div class="inline-control">
+                <input id="realtime-subtitle-hotkey" type="text" readonly data-hotkey-recorder />
+                <button id="realtime-subtitle-hotkey-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.clearHotkey">Clear</button>
+              </div>
+            </div>
+            <p class="field-hint" data-i18n="settings.realtimeSubtitle.hotkeyHint">Click and press a shortcut. Clear it to disable the global shortcut.</p>
+          </section>
+
+          <section>
+            <h2 data-i18n="settings.realtimeSubtitle.itranslateTitle">Optional iTranslate channel</h2>
+            <p class="hint" data-i18n="settings.realtimeSubtitle.itranslateHint">Final source text reuses the current multi-channel translation order. iTranslate is only an optional translation provider and is not required for Deepgram ASR.</p>
+            <p class="field-hint" data-i18n="settings.realtimeSubtitle.itranslateAvailabilityHint">iTranslate does not currently offer a public API Key registration entry. This field only supports a legacy key.</p>
+            <div class="row">
+              <label for="realtime-subtitle-itranslate-enabled" data-i18n="settings.realtimeSubtitle.itranslateEnabled">Enable iTranslate</label>
+              <label class="checkbox-control">
+                <input id="realtime-subtitle-itranslate-enabled" type="checkbox" />
+                <span data-i18n="settings.realtimeSubtitle.itranslateEnabledHint">Add iTranslate to the translation channel fallback order.</span>
+              </label>
+            </div>
+            <div class="row">
+              <label for="realtime-subtitle-itranslate-api-key" data-i18n="settings.realtimeSubtitle.itranslateApiKey">iTranslate API Key</label>
+              <div class="inline-control">
+                <input
+                  id="realtime-subtitle-itranslate-api-key"
+                  type="password"
+                  autocomplete="new-password"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.itranslateApiKeyPlaceholder"
+                  placeholder="Enter an existing legacy API Key"
+                />
+                <button id="realtime-subtitle-itranslate-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.itranslateSave">Save</button>
+                <button id="realtime-subtitle-itranslate-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.itranslateClear">Clear</button>
+              </div>
+            </div>
+            <p id="realtime-subtitle-itranslate-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+          </section>
+
+          <section>
+            <h2 data-i18n="settings.realtimeSubtitle.statusTitle">Status</h2>
+            <div class="realtime-subtitle-actions">
+              <button id="realtime-subtitle-start" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.start">Start subtitles</button>
+              <button id="realtime-subtitle-pause" class="btn" type="button" data-i18n="settings.realtimeSubtitle.pause">Pause</button>
+              <button id="realtime-subtitle-resume" class="btn" type="button" data-i18n="settings.realtimeSubtitle.resume">Resume</button>
+              <button id="realtime-subtitle-stop" class="btn" type="button" data-i18n="settings.realtimeSubtitle.stop">Stop subtitles</button>
+            </div>
+            <p id="realtime-subtitle-status" class="status realtime-subtitle-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.status.idle">Not running</p>
+          </section>
+
+          <section>
+            <h2 data-i18n="settings.realtimeSubtitle.permissionsTitle">macOS permissions</h2>
+            <p class="hint" data-i18n="settings.realtimeSubtitle.permissionsHint">System audio requires Screen Recording permission. Microphone or mixed audio also requires Microphone permission. Live subtitles require macOS 14.2 or later.</p>
+            <div class="realtime-subtitle-actions">
+              <button id="realtime-subtitle-open-screen-recording" class="btn" type="button" data-i18n="settings.realtimeSubtitle.openScreenRecordingSettings">Open Screen Recording settings</button>
+            </div>
+            <p class="hint realtime-subtitle-privacy" data-i18n="settings.realtimeSubtitle.privacy">Audio samples are captured locally and sent to Deepgram cloud ASR; they are not written to disk. Final source text reuses the active multi-channel translator and may incur charges.</p>
           </section>
         </div>
 

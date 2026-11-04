@@ -1,0 +1,33 @@
+mimi-audio-sidecar
+==================
+
+本目录下的 Rust 源码移植并改编自 Mimi 项目：
+
+  Mimi — https://github.com/yuxino/Mimi
+  Copyright (c) 2026 yuxino
+  MIT License（见同目录 LICENSE）
+
+主要移植来源与改造范围：
+
+  - src-tauri/src/audio/macos_tap.rs、macos_tap_target.rs、macos.rs
+      → src/audio/macos_tap.rs
+      去除 Tauri 运行时、应用定向与主线程调度依赖，改为独立工作线程；
+      系统声音采集只保留 Core Audio Process Tap（macOS 14.2+）单一路径。
+  - src-tauri/src/audio/microphone.rs
+      → src/audio/microphone.rs
+      去除 Tauri 运行时依赖，保留 cpal 采集与 AVFoundation 麦克风授权。
+  - src-tauri/src/audio/streaming_resampler.rs
+      → src/audio/streaming_resampler.rs
+  - shared/mimi-core/src/pcm16.rs
+      → src/audio/pcm.rs
+  - shared/mimi-runtime/src/clients/openai_realtime_client.rs（仅保留音频流与文本事件结构）
+      → src/asr.rs
+      已改写为 Deepgram WebSocket 客户端，只保留识别所需的上行音频与下行转写事件；
+      未移植翻译客户端。
+  - shared/mimi-core/src/subtitle_reducer.rs
+      → src/reducer.rs
+
+本目录源码以 MIT License 分发，保留原始版权声明。
+
+本 sidecar 对外只输出识别原文文本事件，翻译由宿主应用的 JS 翻译管道完成，
+不包含 Mimi 的翻译客户端代码。

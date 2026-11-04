@@ -35,7 +35,8 @@ export default defineConfig({
           'web-reader': resolve('src/renderer/web-reader.html'),
           document: resolve('src/renderer/document.html'),
           toast: resolve('src/renderer/toast.html'),
-          pin: resolve('src/renderer/pin.html')
+          pin: resolve('src/renderer/pin.html'),
+          subtitle: resolve('src/renderer/subtitle.html')
         }
       }
     }

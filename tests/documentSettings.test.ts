@@ -8,7 +8,7 @@ import {
 } from '../src/shared/settingsDefaults.ts'
 
 test('文档翻译设置必须提供安全默认值并升级旧配置', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 24)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 26)
   assert.equal(DEFAULT_SETTINGS.documentTranslationEnabled, true)
   assert.equal(DEFAULT_SETTINGS.documentTranslationMaxFileBytes, 100 * 1024 * 1024)
   assert.equal(DEFAULT_SETTINGS.documentTranslationMaxPages, 500)

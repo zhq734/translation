@@ -3,6 +3,7 @@ import { DEFAULT_AI_BASE_URL, isAiProtocol, isOcrEnginePreference, normalizeOcrS
 import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
+import { isAudioSource, isDisplayMode } from './subtitleSession'
 
 /** 判断设置中的模型值是否为 Bilibili Index-Translate 公开模型。 */
 const BILIBILI_INDEX_MODELS = ['index-mt-2b', 'index-mt-9b', 'index-mt-35b'] as const
@@ -18,7 +19,7 @@ function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTrans
     (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
 }
 
-export const SETTINGS_SCHEMA_VERSION = 24
+export const SETTINGS_SCHEMA_VERSION = 26
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -42,6 +43,16 @@ export const DEFAULT_SETTINGS: Settings = {
   manualTranslationHotkey: 'Alt+M',
   webReaderHotkey: 'Alt+P',
   documentTranslationHotkey: 'Alt+D',
+  realtimeSubtitleAudioSource: 'system',
+  realtimeSubtitleRecognitionLang: 'auto',
+  realtimeSubtitleAsrProvider: 'deepgram',
+  realtimeSubtitleDeepgramApiKeyConfigured: false,
+  realtimeSubtitleDisplayMode: 'bilingual',
+  realtimeSubtitleFontSize: 20,
+  realtimeSubtitleHideAfterMs: 8000,
+  realtimeSubtitleTextColor: '#ffffff',
+  realtimeSubtitleClickThrough: true,
+  realtimeSubtitleHotkey: 'Alt+L',
   documentTranslationEnabled: true,
   documentTranslationMaxFileBytes: 100 * 1024 * 1024,
   documentTranslationMaxPages: 500,
@@ -69,6 +80,8 @@ export const DEFAULT_SETTINGS: Settings = {
   aiBaseUrl: DEFAULT_AI_BASE_URL,
   aiModel: '',
   aiApiKeyConfigured: false,
+  itranslateEnabled: false,
+  itranslateApiKeyConfigured: false,
   preferredTranslationProvider: 'auto',
   speechProvider: 'system',
   ocrEnginePreference: 'auto',
@@ -222,6 +235,50 @@ function normalizeShortcutSetting(value: unknown, fallback: string): string {
 }
 
 /**
+ * 规范化实时字幕字号，限制在 12 到 40 像素之间。
+ * @param value 原始字号。
+ * @returns 规范化后的整数像素字号。
+ * @author zhenghq
+ */
+function normalizeSubtitleFontSize(value: unknown): number {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_SETTINGS.realtimeSubtitleFontSize
+  }
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.realtimeSubtitleFontSize
+  return Math.min(40, Math.max(12, Math.round(numeric)))
+}
+
+/**
+ * 规范化实时字幕自动隐藏时长。
+ * @param value 原始毫秒数。
+ * @returns 0 到 120000 之间的整数毫秒数；缺失或非法值回退默认值。
+ * @author zhenghq
+ */
+function normalizeSubtitleHideAfterMs(value: unknown): number {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_SETTINGS.realtimeSubtitleHideAfterMs
+  }
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return DEFAULT_SETTINGS.realtimeSubtitleHideAfterMs
+  }
+  return Math.min(120_000, Math.floor(numeric))
+}
+
+/**
+ * 规范化字幕文字颜色，只接受六位十六进制颜色。
+ * @param value 原始颜色值。
+ * @returns 合法的小写颜色值或默认白色。
+ * @author zhenghq
+ */
+function normalizeSubtitleTextColor(value: unknown): string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value)
+    ? value.toLowerCase()
+    : DEFAULT_SETTINGS.realtimeSubtitleTextColor
+}
+
+/**
  * 将磁盘中的设置规范化为当前版本，并兼容旧版 autoTrigger 配置。
  * @param rawSettings 磁盘读取到的未知版本设置。
  * @returns 当前版本的完整设置。
@@ -273,6 +330,31 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     documentTranslationHotkey: normalizeShortcutSetting(
       rawSettings.documentTranslationHotkey,
       DEFAULT_SETTINGS.documentTranslationHotkey
+    ),
+    // 第二十五版新增实时字幕设置；非法值回退默认，显式关闭与清空快捷键必须保留。
+    realtimeSubtitleAudioSource: isAudioSource(rawSettings.realtimeSubtitleAudioSource)
+      ? rawSettings.realtimeSubtitleAudioSource
+      : DEFAULT_SETTINGS.realtimeSubtitleAudioSource,
+    realtimeSubtitleRecognitionLang: normalizeShortcutSetting(
+      rawSettings.realtimeSubtitleRecognitionLang,
+      DEFAULT_SETTINGS.realtimeSubtitleRecognitionLang
+    ) || DEFAULT_SETTINGS.realtimeSubtitleRecognitionLang,
+    // 实时字幕首版固定使用 Deepgram；未知 provider 回退到默认值，避免把内部扩展值泄露给界面。
+    realtimeSubtitleAsrProvider: DEFAULT_SETTINGS.realtimeSubtitleAsrProvider,
+    realtimeSubtitleDeepgramApiKeyConfigured:
+      rawSettings.realtimeSubtitleDeepgramApiKeyConfigured === true,
+    realtimeSubtitleDisplayMode: isDisplayMode(rawSettings.realtimeSubtitleDisplayMode)
+      ? rawSettings.realtimeSubtitleDisplayMode
+      : DEFAULT_SETTINGS.realtimeSubtitleDisplayMode,
+    realtimeSubtitleFontSize: normalizeSubtitleFontSize(rawSettings.realtimeSubtitleFontSize),
+    realtimeSubtitleHideAfterMs: normalizeSubtitleHideAfterMs(
+      rawSettings.realtimeSubtitleHideAfterMs
+    ),
+    realtimeSubtitleTextColor: normalizeSubtitleTextColor(rawSettings.realtimeSubtitleTextColor),
+    realtimeSubtitleClickThrough: rawSettings.realtimeSubtitleClickThrough !== false,
+    realtimeSubtitleHotkey: normalizeShortcutSetting(
+      rawSettings.realtimeSubtitleHotkey,
+      DEFAULT_SETTINGS.realtimeSubtitleHotkey
     ),
     // 第二十一版新增文档翻译设置；缺失时启用，显式关闭必须保留。
     documentTranslationEnabled: rawSettings.documentTranslationEnabled !== false,
@@ -335,6 +417,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     aiBaseUrl: normalizeAiBaseUrl(rawSettings.aiBaseUrl === undefined ? DEFAULT_AI_BASE_URL : String(merged.aiBaseUrl || "").trim()),
     aiModel: String(merged.aiModel || '').trim(),
     aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true,
+    itranslateEnabled: rawSettings.itranslateEnabled === true,
+    itranslateApiKeyConfigured: rawSettings.itranslateApiKeyConfigured === true,
     speechProvider: isSpeechProvider(rawSettings.speechProvider)
       ? rawSettings.speechProvider
       : 'system',

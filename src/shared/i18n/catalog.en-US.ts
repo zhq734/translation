@@ -12,6 +12,7 @@ import { rendererSpeechEnUS } from './catalog.en-US.rendererSpeech.ts'
 import { webReaderEnUS } from './catalog.en-US.webReader.ts'
 import { documentEnUS } from './catalog.en-US.document.ts'
 import { biliIndexEnUS } from './catalog.en-US.biliIndex.ts'
+import { subtitleEnUS } from './catalog.en-US.subtitle.ts'
 
 /**
  * 英文界面词条目录。
@@ -30,5 +31,6 @@ export const enUSCatalog = defineCatalog({
   ...rendererSpeechEnUS,
   ...webReaderEnUS,
   ...documentEnUS,
-  ...biliIndexEnUS
+  ...biliIndexEnUS,
+  ...subtitleEnUS
 })

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="settings.realtimeSubtitle.windowTitle">Realtime subtitles</title>
+    <script src="./localeBootstrap.js"></script>
+    <script src="./themeBootstrap.js"></script>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
+    <link rel="stylesheet" href="./src/subtitle.css" />
+  </head>
+  <body>
+    <main
+      id="subtitle-root"
+      class="subtitle-root"
+      data-empty="true"
+      data-state="idle"
+      data-toolbar-visible="false"
+    >
+      <section class="subtitle-card" aria-live="polite" aria-atomic="false">
+        <div id="subtitle-toolbar" class="subtitle-toolbar">
+          <button id="subtitle-drag-handle" class="subtitle-drag-handle" type="button" data-i18n-attr="aria-label:settings.realtimeSubtitle.dragHandle;title:settings.realtimeSubtitle.dragHandle" aria-label="Drag subtitles" title="Drag subtitles">⠿</button>
+          <label class="subtitle-language-control">
+            <span class="visually-hidden" data-i18n="settings.realtimeSubtitle.targetLanguage">Target language</span>
+            <select id="subtitle-target-lang" class="subtitle-target-lang" data-i18n-attr="aria-label:settings.realtimeSubtitle.targetLanguage;title:settings.realtimeSubtitle.targetLanguage"></select>
+          </label>
+          <button id="subtitle-close" class="subtitle-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">×</button>
+        </div>
+        <div id="subtitle-status" class="subtitle-status" aria-live="polite"></div>
+        <p id="subtitle-source" class="subtitle-line subtitle-source"></p>
+        <p id="subtitle-target" class="subtitle-line subtitle-target"></p>
+        <p id="subtitle-error" class="subtitle-error" hidden></p>
+      </section>
+    </main>
+    <script type="module" src="./src/subtitle.ts"></script>
+  </body>
+</html>

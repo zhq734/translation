@@ -12,6 +12,7 @@ import { rendererSpeechZhCN } from './catalog.zh-CN.rendererSpeech.ts'
 import { webReaderZhCN } from './catalog.zh-CN.webReader.ts'
 import { documentZhCN } from './catalog.zh-CN.document.ts'
 import { biliIndexZhCN } from './catalog.zh-CN.biliIndex.ts'
+import { subtitleZhCN } from './catalog.zh-CN.subtitle.ts'
 
 /**
  * 中文界面词条目录。
@@ -30,5 +31,6 @@ export const zhCNCatalog = defineCatalog({
   ...rendererSpeechZhCN,
   ...webReaderZhCN,
   ...documentZhCN,
-  ...biliIndexZhCN
+  ...biliIndexZhCN,
+  ...subtitleZhCN
 })

@@ -19,7 +19,10 @@ import type {
   GlobalShortcutId,
   GlobalShortcutRegistrationState,
   DocumentPlatformCapability,
-  UpdateStatus
+  UpdateStatus,
+  RealtimeSubtitleAudioSource,
+  RealtimeSubtitleDisplayMode,
+  RealtimeSubtitleSnapshot
 } from '../../shared/types'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
@@ -63,6 +66,31 @@ const documentTranslationMaxPages = document.getElementById('document-translatio
 const documentTranslationMaxOcrImages = document.getElementById('document-translation-max-ocr-images') as HTMLInputElement
 const documentTranslationCacheMaxMb = document.getElementById('document-translation-cache-max-mb') as HTMLInputElement
 const documentTranslationCacheMaxAgeDays = document.getElementById('document-translation-cache-max-age-days') as HTMLInputElement
+const realtimeSubtitleAudioSource = document.getElementById('realtime-subtitle-audio-source') as HTMLSelectElement
+const realtimeSubtitleAsrProvider = document.getElementById('realtime-subtitle-asr-provider') as HTMLSelectElement
+const realtimeSubtitleDeepgramApiKey = document.getElementById('realtime-subtitle-deepgram-api-key') as HTMLInputElement
+const realtimeSubtitleDeepgramSave = document.getElementById('realtime-subtitle-deepgram-save') as HTMLButtonElement
+const realtimeSubtitleDeepgramClear = document.getElementById('realtime-subtitle-deepgram-clear') as HTMLButtonElement
+const realtimeSubtitleDeepgramStatus = document.getElementById('realtime-subtitle-deepgram-status') as HTMLElement
+const realtimeSubtitleITranslateEnabled = document.getElementById('realtime-subtitle-itranslate-enabled') as HTMLInputElement
+const realtimeSubtitleITranslateApiKey = document.getElementById('realtime-subtitle-itranslate-api-key') as HTMLInputElement
+const realtimeSubtitleITranslateSave = document.getElementById('realtime-subtitle-itranslate-save') as HTMLButtonElement
+const realtimeSubtitleITranslateClear = document.getElementById('realtime-subtitle-itranslate-clear') as HTMLButtonElement
+const realtimeSubtitleITranslateStatus = document.getElementById('realtime-subtitle-itranslate-status') as HTMLElement
+const realtimeSubtitleRecognitionLang = document.getElementById('realtime-subtitle-recognition-lang') as HTMLSelectElement
+const realtimeSubtitleDisplayMode = document.getElementById('realtime-subtitle-display-mode') as HTMLSelectElement
+const realtimeSubtitleFontSize = document.getElementById('realtime-subtitle-font-size') as HTMLInputElement
+const realtimeSubtitleHideAfter = document.getElementById('realtime-subtitle-hide-after') as HTMLInputElement
+const realtimeSubtitleTextColor = document.getElementById('realtime-subtitle-text-color') as HTMLInputElement
+const realtimeSubtitleClickThrough = document.getElementById('realtime-subtitle-click-through') as HTMLInputElement
+const realtimeSubtitleHotkey = document.getElementById('realtime-subtitle-hotkey') as HTMLInputElement
+const realtimeSubtitleHotkeyClear = document.getElementById('realtime-subtitle-hotkey-clear') as HTMLButtonElement
+const realtimeSubtitleStart = document.getElementById('realtime-subtitle-start') as HTMLButtonElement
+const realtimeSubtitlePause = document.getElementById('realtime-subtitle-pause') as HTMLButtonElement
+const realtimeSubtitleResume = document.getElementById('realtime-subtitle-resume') as HTMLButtonElement
+const realtimeSubtitleStop = document.getElementById('realtime-subtitle-stop') as HTMLButtonElement
+const realtimeSubtitleStatus = document.getElementById('realtime-subtitle-status') as HTMLElement
+const realtimeSubtitleOpenScreenRecording = document.getElementById('realtime-subtitle-open-screen-recording') as HTMLButtonElement
 const shortcutRegistrationStatus = document.getElementById('shortcut-registration-status') as HTMLElement
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
@@ -165,7 +193,7 @@ const shortcutGuideQuickOcrKey = document.getElementById('shortcut-guide-quick-o
 const shortcutGuideOcrEditorKey = document.getElementById('shortcut-guide-ocr-editor-key') as HTMLElement
 const reopenShortcutGuideButton = document.getElementById('reopen-shortcut-guide') as HTMLButtonElement
 
-type SettingsTabId = 'general' | 'ai' | 'ocr' | 'translation-services' | 'advanced' | 'logs' | 'about'
+type SettingsTabId = 'general' | 'ai' | 'ocr' | 'translation-services' | 'subtitle' | 'advanced' | 'logs' | 'about'
 type SettingsTabHistoryMode = 'none' | 'replace' | 'push'
 
 const SETTINGS_TAB_IDS: SettingsTabId[] = [
@@ -173,6 +201,7 @@ const SETTINGS_TAB_IDS: SettingsTabId[] = [
   'ai',
   'ocr',
   'translation-services',
+  'subtitle',
   'advanced',
   'logs',
   'about'
@@ -197,6 +226,7 @@ let latestUpdateStatus: UpdateStatus | null = null
 let latestOcrStatus: OcrStatus | null = null
 let latestSettings: Settings | null = null
 let documentTranslationCapability: DocumentPlatformCapability | null = null
+let latestRealtimeSubtitleStatus: RealtimeSubtitleSnapshot | null = null
 /** 最近一次快捷键注册结果，用于语言切换后重新渲染提示。 */
 let latestShortcutRegistrationStates: GlobalShortcutRegistrationState[] = []
 
@@ -447,6 +477,234 @@ async function save(patch: Partial<Settings>): Promise<boolean> {
   }
 }
 
+/**
+ * 保存实时字幕的音频来源、识别语言、显示模式与外观设置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveRealtimeSubtitleSettings(): void {
+  void save({
+    realtimeSubtitleAudioSource: realtimeSubtitleAudioSource.value as RealtimeSubtitleAudioSource,
+    realtimeSubtitleAsrProvider: realtimeSubtitleAsrProvider.value as Settings['realtimeSubtitleAsrProvider'],
+    realtimeSubtitleRecognitionLang: realtimeSubtitleRecognitionLang.value,
+    realtimeSubtitleDisplayMode: realtimeSubtitleDisplayMode.value as RealtimeSubtitleDisplayMode,
+    realtimeSubtitleFontSize: Number(realtimeSubtitleFontSize.value),
+    realtimeSubtitleHideAfterMs: Number(realtimeSubtitleHideAfter.value) * 1000,
+    realtimeSubtitleTextColor: realtimeSubtitleTextColor.value,
+    realtimeSubtitleClickThrough: realtimeSubtitleClickThrough.checked
+  })
+}
+
+/**
+ * 保存实时字幕全局快捷键。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function saveRealtimeSubtitleHotkey(): void {
+  void save({ realtimeSubtitleHotkey: realtimeSubtitleHotkey.value.trim() })
+}
+
+/**
+ * 保存 Deepgram ASR 的新 API Key，成功后清空密码输入框。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleDeepgramConfig(): Promise<void> {
+  const apiKey = realtimeSubtitleDeepgramApiKey.value.trim()
+  if (!apiKey) return
+  try {
+    const settings = await window.api.setDeepgramConfig({ apiKey })
+    realtimeSubtitleDeepgramApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 Deepgram ASR API Key，并刷新脱敏状态。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleDeepgramConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearDeepgramApiKey()
+    realtimeSubtitleDeepgramApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 保存 iTranslate 可选翻译通道的启用状态与新 API Key。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleITranslateConfig(): Promise<void> {
+  const apiKey = realtimeSubtitleITranslateApiKey.value.trim()
+  try {
+    const settings = await window.api.setITranslateConfig({
+      enabled: realtimeSubtitleITranslateEnabled.checked,
+      ...(apiKey ? { apiKey } : {})
+    })
+    realtimeSubtitleITranslateApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 iTranslate API Key，并保留当前启用开关。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleITranslateConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearITranslateApiKey()
+    realtimeSubtitleITranslateApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 将键盘事件录入为实时字幕快捷键并立即保存。
+ * @param event 用户按下的键盘事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleRealtimeSubtitleHotkeyKeydown(event: KeyboardEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const accelerator = formatKeyboardAccelerator(event, navigator.platform)
+  if (!accelerator) return
+  realtimeSubtitleHotkey.value = accelerator
+  saveRealtimeSubtitleHotkey()
+}
+
+/**
+ * 清空实时字幕全局快捷键并立即保存。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearRealtimeSubtitleHotkey(): void {
+  realtimeSubtitleHotkey.value = ''
+  saveRealtimeSubtitleHotkey()
+}
+
+/**
+ * 将实时字幕快照渲染为状态文字与按钮可用性。
+ * @param snapshot 主进程返回的实时字幕快照。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderRealtimeSubtitleStatus(snapshot: RealtimeSubtitleSnapshot): void {
+  latestRealtimeSubtitleStatus = snapshot
+  const statusKeys: Record<RealtimeSubtitleSnapshot['state'], string> = {
+    idle: 'settings.realtimeSubtitle.status.idle',
+    starting: 'settings.realtimeSubtitle.status.starting',
+    running: 'settings.realtimeSubtitle.status.running',
+    paused: 'settings.realtimeSubtitle.status.paused',
+    stopping: 'settings.realtimeSubtitle.status.stopping'
+  }
+  const errorKeys: Record<string, string> = {
+    'permission-denied': 'settings.realtimeSubtitle.error.permissionDenied',
+    'device-unavailable': 'settings.realtimeSubtitle.error.deviceUnavailable',
+    'unsupported-platform': 'settings.realtimeSubtitle.error.unsupportedPlatform',
+    network: 'settings.realtimeSubtitle.error.network',
+    auth: 'settings.realtimeSubtitle.error.auth',
+    'invalid-request': 'settings.realtimeSubtitle.error.invalidRequest',
+    'sidecar-unavailable': 'settings.realtimeSubtitle.error.sidecarUnavailable',
+    unknown: 'settings.realtimeSubtitle.error.unknown'
+  }
+  const errorText = snapshot.error
+    ? t(errorKeys[snapshot.errorCode ?? 'unknown'] ?? 'settings.realtimeSubtitle.error.unknown')
+    : ''
+  realtimeSubtitleStatus.textContent = snapshot.error
+    ? snapshot.errorCode === 'sidecar-unavailable' && snapshot.error !== errorText
+      ? `${errorText}（${snapshot.error}）`
+      : errorText
+    : snapshot.state === 'running' && snapshot.audioActivity === 'speech-pending'
+      ? t('settings.realtimeSubtitle.waitingForSpeech')
+      : t(statusKeys[snapshot.state])
+  realtimeSubtitleStatus.className = snapshot.error
+    ? 'status realtime-subtitle-status error'
+    : 'status realtime-subtitle-status'
+  realtimeSubtitleStatus.dataset.state = snapshot.state
+  realtimeSubtitleStart.disabled = snapshot.state !== 'idle'
+  realtimeSubtitlePause.disabled = snapshot.state !== 'running'
+  realtimeSubtitleResume.disabled = snapshot.state !== 'paused'
+  realtimeSubtitleStop.disabled = snapshot.state === 'idle'
+}
+
+/**
+ * 调用主进程启动实时字幕并刷新界面状态。
+ * @returns 启动完成后的 Promise。
+ * @author zhenghq
+ */
+async function startRealtimeSubtitle(): Promise<void> {
+  try {
+    renderRealtimeSubtitleStatus(await window.api.startRealtimeSubtitle())
+  } catch (error) {
+    flash((error as Error).message || t('common.unknownError'), 'error')
+  }
+}
+
+/**
+ * 调用主进程暂停实时字幕并刷新界面状态。
+ * @returns 暂停完成后的 Promise。
+ * @author zhenghq
+ */
+async function pauseRealtimeSubtitle(): Promise<void> {
+  renderRealtimeSubtitleStatus(await window.api.pauseRealtimeSubtitle())
+}
+
+/**
+ * 调用主进程恢复实时字幕并刷新界面状态。
+ * @returns 恢复完成后的 Promise。
+ * @author zhenghq
+ */
+async function resumeRealtimeSubtitle(): Promise<void> {
+  renderRealtimeSubtitleStatus(await window.api.resumeRealtimeSubtitle())
+}
+
+/**
+ * 调用主进程停止实时字幕并刷新界面状态。
+ * @returns 停止完成后的 Promise。
+ * @author zhenghq
+ */
+async function stopRealtimeSubtitle(): Promise<void> {
+  renderRealtimeSubtitleStatus(await window.api.stopRealtimeSubtitle())
+}
+
+/**
+ * 打开 macOS 屏幕录制权限设置页，授权后需重启应用才会生效。
+ * @returns 打开完成后的 Promise。
+ * @author zhenghq
+ */
+async function openRealtimeSubtitleScreenRecordingSettings(): Promise<void> {
+  try {
+    await window.api.openRealtimeSubtitleScreenRecordingSettings()
+  } catch (error) {
+    flash((error as Error).message || t('common.unknownError'), 'error')
+  }
+}
+
 /** 保存界面语言，失败时回滚到保存前选项。
  * @returns 保存完成后的 Promise。
  * @author zhenghq
@@ -582,6 +840,27 @@ function renderSettings(settings: Settings): void {
   documentTranslationMaxOcrImages.value = String(settings.documentTranslationMaxOcrImages)
   documentTranslationCacheMaxMb.value = String(Math.round(settings.documentTranslationCacheMaxBytes / (1024 * 1024)))
   documentTranslationCacheMaxAgeDays.value = String(settings.documentTranslationCacheMaxAgeDays)
+  realtimeSubtitleAudioSource.value = settings.realtimeSubtitleAudioSource
+  realtimeSubtitleAsrProvider.value = settings.realtimeSubtitleAsrProvider
+  // API Key 永远不回填；页面只展示主进程提供的“已配置/未配置”脱敏状态。
+  realtimeSubtitleDeepgramApiKey.value = ''
+  realtimeSubtitleDeepgramStatus.textContent = settings.realtimeSubtitleDeepgramApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleDeepgramClear.disabled = !settings.realtimeSubtitleDeepgramApiKeyConfigured
+  realtimeSubtitleITranslateEnabled.checked = settings.itranslateEnabled
+  realtimeSubtitleITranslateApiKey.value = ''
+  realtimeSubtitleITranslateStatus.textContent = settings.itranslateApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleITranslateClear.disabled = !settings.itranslateApiKeyConfigured
+  realtimeSubtitleRecognitionLang.value = settings.realtimeSubtitleRecognitionLang
+  realtimeSubtitleDisplayMode.value = settings.realtimeSubtitleDisplayMode
+  realtimeSubtitleFontSize.value = String(settings.realtimeSubtitleFontSize)
+  realtimeSubtitleHideAfter.value = String(settings.realtimeSubtitleHideAfterMs / 1000)
+  realtimeSubtitleTextColor.value = settings.realtimeSubtitleTextColor
+  realtimeSubtitleClickThrough.checked = settings.realtimeSubtitleClickThrough
+  realtimeSubtitleHotkey.value = settings.realtimeSubtitleHotkey
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
   speechProvider.value = settings.speechProvider
@@ -792,7 +1071,8 @@ function renderShortcutRegistrationStates(states: GlobalShortcutRegistrationStat
     ocrQuickHotkey: t('settings.ocr.quickHotkey'),
     manualTranslationHotkey: t('settings.trigger.manualHotkey'),
     webReaderHotkey: t('settings.trigger.webReaderHotkey'),
-    documentTranslationHotkey: t('settings.trigger.documentHotkey')
+    documentTranslationHotkey: t('settings.trigger.documentHotkey'),
+    realtimeSubtitleHotkey: t('settings.realtimeSubtitle.hotkey')
   }
   const reason = failed.status === 'occupied'
     ? t('error.shortcutOccupied')
@@ -2175,6 +2455,27 @@ documentTranslationMaxPages.addEventListener('change', saveDocumentTranslationSe
 documentTranslationMaxOcrImages.addEventListener('change', saveDocumentTranslationSettings)
 documentTranslationCacheMaxMb.addEventListener('change', saveDocumentTranslationSettings)
 documentTranslationCacheMaxAgeDays.addEventListener('change', saveDocumentTranslationSettings)
+realtimeSubtitleAudioSource.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleAsrProvider.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleDeepgramSave.addEventListener('click', () => void saveRealtimeSubtitleDeepgramConfig())
+realtimeSubtitleDeepgramClear.addEventListener('click', () => void clearRealtimeSubtitleDeepgramConfig())
+realtimeSubtitleITranslateEnabled.addEventListener('change', () => void saveRealtimeSubtitleITranslateConfig())
+realtimeSubtitleITranslateSave.addEventListener('click', () => void saveRealtimeSubtitleITranslateConfig())
+realtimeSubtitleITranslateClear.addEventListener('click', () => void clearRealtimeSubtitleITranslateConfig())
+realtimeSubtitleRecognitionLang.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleDisplayMode.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleFontSize.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleHideAfter.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleTextColor.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleClickThrough.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleHotkey.addEventListener('change', saveRealtimeSubtitleHotkey)
+realtimeSubtitleHotkey.addEventListener('keydown', handleRealtimeSubtitleHotkeyKeydown)
+realtimeSubtitleHotkeyClear.addEventListener('click', clearRealtimeSubtitleHotkey)
+realtimeSubtitleStart.addEventListener('click', () => void startRealtimeSubtitle())
+realtimeSubtitlePause.addEventListener('click', () => void pauseRealtimeSubtitle())
+realtimeSubtitleResume.addEventListener('click', () => void resumeRealtimeSubtitle())
+realtimeSubtitleStop.addEventListener('click', () => void stopRealtimeSubtitle())
+realtimeSubtitleOpenScreenRecording.addEventListener('click', () => void openRealtimeSubtitleScreenRecordingSettings())
 autohide.addEventListener('change', saveAutoHide)
 showDockIcon.addEventListener('change', saveDockIconVisibility)
 autoLaunch.addEventListener('change', saveAutoLaunch)
@@ -2267,6 +2568,7 @@ window.api.onSettingsChanged((settings) => {
   renderSettings(settings)
   if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
 })
+window.api.onRealtimeSubtitleUpdate(renderRealtimeSubtitleStatus)
 window.api.onUpdateStatusChanged(renderUpdateStatus)
 window.api.onShortcutGuideOpen(showShortcutGuide)
 reopenShortcutGuideButton.addEventListener('click', showShortcutGuide)
@@ -2278,6 +2580,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-setting
 document.addEventListener('keydown', handleShortcutGuideKeydown)
 
 void initialize()
+void window.api.getRealtimeSubtitleStatus().then(renderRealtimeSubtitleStatus)
 
 // ---- 日志查看面板 ----
 
@@ -2704,6 +3007,7 @@ function handleLocaleChanged(locale: Locale): void {
   if (latestUpdateStatus) renderUpdateStatus(latestUpdateStatus)
   if (latestOcrStatus) renderOcrStatus(latestOcrStatus)
   renderShortcutRegistrationStates(latestShortcutRegistrationStates)
+  if (latestRealtimeSubtitleStatus) renderRealtimeSubtitleStatus(latestRealtimeSubtitleStatus)
 
   if (logsInitialized) {
     logsTogglePauseButton.textContent = logsPaused ? t('settings.logs.resume') : t('settings.logs.pause')

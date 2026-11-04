@@ -16,7 +16,8 @@ const ENTRY_FILES = [
   'toast.html',
   'web-reader.html',
   'document.html',
-  'pin.html'
+  'pin.html',
+  'subtitle.html'
 ] as const
 
 /** 必须由 data-i18n-attr 或显式白名单覆盖的静态属性。 */

@@ -52,8 +52,8 @@ test('macOS 跨工作区窗口必须跳过会隐藏窗口与 Dock 图标的进�
  */
 test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
   // 设置页与网页阅读器改回普通窗口后都不再调用 setVisibleOnAllWorkspaces，
-  // 仅剩需要跨桌面浮层语义的五个窗口调用点。
-  const expectedCallSites = 5
+  // 仅剩需要跨桌面浮层语义的六个窗口调用点（含实时字幕窗）。
+  const expectedCallSites = 6
   let callSites = 0
 
   for (const file of listMainSourceFiles()) {
@@ -90,13 +90,14 @@ test('所有 setVisibleOnAllWorkspaces 调用都应复用统一选项', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('「译」按钮、翻译弹窗、OCR 覆盖窗口、截图提示与贴图窗口都应跳过进程类型转换', () => {
+test('「译」按钮、翻译弹窗、OCR 覆盖窗口、截图提示、贴图与实时字幕窗口都应跳过进程类型转换', () => {
   const expectations: Array<{ file: string; anchor: string }> = [
     { file: 'src/main/selectionButton.ts', anchor: "'pop-up-menu'" },
     { file: 'src/main/popup.ts', anchor: "'floating'" },
     { file: 'src/main/index.ts', anchor: 'ocrSelectionWin.setAlwaysOnTop' },
     { file: 'src/main/index.ts', anchor: 'screenshotToastWin.setAlwaysOnTop' },
-    { file: 'src/main/screenshotPinWindow.ts', anchor: "win.setAlwaysOnTop(true, 'floating')" }
+    { file: 'src/main/screenshotPinWindow.ts', anchor: "win.setAlwaysOnTop(true, 'floating')" },
+    { file: 'src/main/subtitleWindow.ts', anchor: "created.setAlwaysOnTop(true, 'floating')" }
   ]
 
   for (const { file, anchor } of expectations) {

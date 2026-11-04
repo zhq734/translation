@@ -52,6 +52,7 @@ import {
   resetBilibiliIndexTranslationRuntime,
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
+  resetITranslateTranslationRuntime,
   resetDeepLxTranslationRuntime,
   translate,
   translateStream
@@ -189,7 +190,9 @@ import type {
   TranslationProviderId,
   TranslatePayload,
   TranslateDeltaPayload,
-  DocumentFileSelectionResult
+  DocumentFileSelectionResult,
+  DeepgramConfigPatch,
+  ITranslateConfigPatch
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
 import { MAX_SCREENSHOT_PINS } from '../shared/screenshotPin'
@@ -200,6 +203,10 @@ import { DingTalkCredentialStore } from './dingtalkCredentials'
 import { DingTalkConfigurationService } from './dingtalkConfig'
 import { AiCredentialStore } from './aiCredentials'
 import { AiConfigurationService } from './aiConfig'
+import { DeepgramCredentialStore } from './deepgramCredentials'
+import { DeepgramConfigurationService } from './deepgramConfig'
+import { ITranslateCredentialStore } from './itranslateCredentials'
+import { ITranslateConfigurationService } from './itranslateConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
 import { AiCheckService } from './aiCheck'
 import { DeepLxConfigurationService } from './deepLxConfig'
@@ -258,6 +265,8 @@ import type {
   ScreenshotPinCreateRequest,
   ScreenshotPinCreateResult,
   ScreenshotPinDragRequest,
+  RealtimeSubtitleWindowMoveRequest,
+  RealtimeSubtitleDragHitArea,
   ScreenshotPinWheelRequest,
   ScreenshotExportImageRequest,
   ScreenshotOcrActionRequest,
@@ -316,6 +325,18 @@ import {
   resolveAutoLaunchStrategy,
   resolveLinuxAutostartEntryPath
 } from './autoLaunch'
+import { RealtimeSubtitleController } from './realtimeSubtitleController'
+import { createSubtitleWindow, type SubtitleWindowController } from './subtitleWindow'
+import {
+  SUBTITLE_WINDOW_STATE_FILE,
+  loadSubtitleWindowState,
+  saveSubtitleWindowState
+} from './subtitleWindowState'
+import {
+  createRealtimeSubtitleViewModel,
+  type RealtimeSubtitleSnapshot
+} from '../shared/subtitleSession'
+import { getRealtimeSubtitlePlatformCapability } from '../shared/realtimeSubtitlePlatform'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
@@ -442,6 +463,8 @@ let webReaderWindowOpen = false
 let documentWorkspaceOpen = false
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
+let deepgramConfiguration: DeepgramConfigurationService | null = null
+let itranslateConfiguration: ITranslateConfigurationService | null = null
 let deepLxConfiguration: DeepLxConfigurationService | null = null
 let deepLxCheckService: DeepLxCheckService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
@@ -449,6 +472,12 @@ let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let webReader: WebReaderManager | null = null
 let documentWorkspace: DocumentWorkspaceManager | null = null
+/** 实时字幕控制器；仅 macOS 13+ 初始化。 */
+let realtimeSubtitleController: RealtimeSubtitleController | null = null
+/** 透明置顶字幕窗口控制器；仅 macOS 13+ 初始化。 */
+let subtitleWindow: SubtitleWindowController | null = null
+/** 不支持平台时最后一次实时字幕错误，供设置页读取。 */
+let unsupportedRealtimeSubtitleSnapshot: RealtimeSubtitleSnapshot | null = null
 /** 贴图窗口管理器；负责置顶窗口、缩放、透明度与数量上限。 */
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
@@ -823,6 +852,130 @@ function getAiConfiguration(): AiConfigurationService {
 }
 
 /**
+ * 获取已初始化的 Deepgram ASR 配置服务。
+ * @returns Deepgram 配置服务实例。
+ * @author zhenghq
+ */
+function getDeepgramConfiguration(): DeepgramConfigurationService {
+  if (!deepgramConfiguration) throw new Error('Deepgram configuration service is not initialized')
+  return deepgramConfiguration
+}
+
+/**
+ * 获取已初始化的 iTranslate 可选翻译配置服务。
+ * @returns iTranslate 配置服务实例。
+ * @author zhenghq
+ */
+function getITranslateConfiguration(): ITranslateConfigurationService {
+  if (!itranslateConfiguration) throw new Error('iTranslate configuration service is not initialized')
+  return itranslateConfiguration
+}
+
+/**
+ * 判断当前系统是否支持实时字幕。
+ * @returns 当前平台能力。
+ * @author zhenghq
+ */
+function getRealtimeSubtitleCapability() {
+  return getRealtimeSubtitlePlatformCapability()
+}
+
+/**
+ * 构造不支持平台时的稳定快照，确保设置页仍能展示原因和恢复建议。
+ * @param reason 平台不支持原因。
+ * @returns 空闲状态的实时字幕快照。
+ * @author zhenghq
+ */
+function createUnsupportedRealtimeSubtitleSnapshot(
+  reason: 'unsupported-platform' | 'macos-version-unsupported'
+): RealtimeSubtitleSnapshot {
+  const settings = getSettings()
+  const error = reason === 'macos-version-unsupported'
+    ? t('settings.realtimeSubtitle.error.macosVersion')
+    : t('settings.realtimeSubtitle.error.unsupportedPlatform')
+  return {
+    state: 'idle',
+    audioSource: settings.realtimeSubtitleAudioSource,
+    displayMode: settings.realtimeSubtitleDisplayMode,
+    windowVisible: false,
+    sourceText: '',
+    translatedText: '',
+    audioActivity: 'idle',
+    segments: [],
+    error,
+    errorCode: 'unsupported-platform'
+  }
+}
+
+/**
+ * 获取实时字幕控制器；不支持平台时返回 null，避免触发 sidecar。
+ * @returns 已初始化的控制器或 null。
+ * @author zhenghq
+ */
+function getRealtimeSubtitleController(): RealtimeSubtitleController | null {
+  return realtimeSubtitleController
+}
+
+/**
+ * 初始化实时字幕窗口与控制器。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function initializeRealtimeSubtitle(): void {
+  const capability = getRealtimeSubtitleCapability()
+  if (!capability.supported) {
+    unsupportedRealtimeSubtitleSnapshot = createUnsupportedRealtimeSubtitleSnapshot(
+      capability.reason ?? 'unsupported-platform'
+    )
+    return
+  }
+
+  subtitleWindow = createSubtitleWindow({
+    preloadPath: PRELOAD_PATH,
+    loadPage: (win) => loadRendererHtml(win, 'subtitle.html'),
+    createWindow: (options) => new BrowserWindow(options),
+    getDisplay: () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()),
+    getDisplays: () => screen.getAllDisplays().map((display) => ({
+      workArea: display.workArea
+    })),
+    loadBounds: () => loadSubtitleWindowState(
+      join(app.getPath('userData'), SUBTITLE_WINDOW_STATE_FILE)
+    ),
+    saveBounds: (bounds) => saveSubtitleWindowState(
+      join(app.getPath('userData'), SUBTITLE_WINDOW_STATE_FILE),
+      bounds
+    ),
+    getCursorPoint: () => screen.getCursorScreenPoint(),
+    getViewModel: () => createRealtimeSubtitleViewModel(
+      realtimeSubtitleController?.snapshot() ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    )
+  })
+
+  realtimeSubtitleController = new RealtimeSubtitleController({
+    getSettings,
+    getDingTalkCredentials: () => getSettings().dingTalkEnabled
+      ? getDingTalkConfiguration().getCredentialsSnapshot()
+      : null,
+    getAiApiKey: () => getSettings().aiEnabled
+      ? getAiConfiguration().getApiKey()
+      : null,
+    getDeepgramApiKey: () => getSettings().realtimeSubtitleDeepgramApiKeyConfigured
+      ? getDeepgramConfiguration().getApiKey()
+      : null,
+    getITranslateApiKey: () => getSettings().itranslateEnabled
+      ? getITranslateConfiguration().getApiKey()
+      : null,
+    translateStream,
+    onSnapshot: (snapshot) => {
+      broadcast('subtitle:update', snapshot)
+      subtitleWindow?.render(createRealtimeSubtitleViewModel(snapshot))
+    },
+    setWindowVisible: (visible) => subtitleWindow?.setVisible(visible),
+    setWindowAppearance: (appearance) => subtitleWindow?.setAppearance(appearance)
+  })
+}
+
+/**
  * 获取已初始化的 DeepLX 配置服务。
  * @returns DeepLX 配置服务实例。
  * @author zhenghq
@@ -985,6 +1138,9 @@ async function createDocumentWorkspaceTaskService(): Promise<
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+      const iTranslateApiKey = settings.itranslateEnabled
+        ? getITranslateConfiguration().getApiKey()
+        : null
       const output = await translateStream(
         text,
         settings,
@@ -995,7 +1151,8 @@ async function createDocumentWorkspaceTaskService(): Promise<
           signal,
           context,
           bypassCache: request.bypassCache === true
-        }
+        },
+        iTranslateApiKey
       )
       return output.translation
     },
@@ -2190,6 +2347,40 @@ async function onReady(): Promise<boolean> {
     resetTranslationRuntime: resetAiTranslationRuntime
   })
   aiConfiguration.initialize()
+  deepgramConfiguration = new DeepgramConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new DeepgramCredentialStore(
+      join(app.getPath('userData'), 'deepgram-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetRealtimeSubtitleRuntime: () => {
+      realtimeSubtitleController?.dispose()
+      realtimeSubtitleController = null
+      subtitleWindow?.dispose()
+      subtitleWindow = null
+      initializeRealtimeSubtitle()
+    }
+  })
+  deepgramConfiguration.initialize()
+  itranslateConfiguration = new ITranslateConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new ITranslateCredentialStore(
+      join(app.getPath('userData'), 'itranslate-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetTranslationRuntime: resetITranslateTranslationRuntime
+  })
+  itranslateConfiguration.initialize()
   deepLxConfiguration = new DeepLxConfigurationService({
     getSettings,
     saveSettings,
@@ -2202,6 +2393,7 @@ async function onReady(): Promise<boolean> {
   aiModelDiscovery = new AiModelDiscoveryService({ fetch: translationFetch })
   aiCheckService = new AiCheckService({ fetch: translationFetch })
   deepLxCheckService = new DeepLxCheckService({ fetch: translationFetch })
+  initializeRealtimeSubtitle()
   await applyTranslationProxy(getSettings())
   configureTranslationFetch(translationFetch)
   webReader = new WebReaderManager({
@@ -2460,6 +2652,20 @@ function onGlobalShortcut(accelerator: string): void {
     openWebReaderFromShortcut()
   } else if (accelerator === settings.documentTranslationHotkey) {
     openDocumentWorkspaceFromShortcut()
+  } else if (accelerator === settings.realtimeSubtitleHotkey) {
+    const controller = getRealtimeSubtitleController()
+    if (controller) {
+      try {
+        controller.toggle()
+      } catch (error) {
+        console.error('[subtitle] 快捷键切换失败:', error instanceof Error ? error.message : error)
+      }
+    } else {
+      dialog.showErrorBox(
+        t('settings.realtimeSubtitle.title'),
+        t('settings.realtimeSubtitle.error.unsupportedPlatform')
+      )
+    }
   }
 }
 
@@ -3276,6 +3482,9 @@ async function translateText(
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+    const iTranslateApiKey = settings.itranslateEnabled
+      ? getITranslateConfiguration().getApiKey()
+      : null
     let deltaSequence = 0
     const output = await translateStream(
       text,
@@ -3295,7 +3504,8 @@ async function translateText(
           deltaSequence += 1
           sendPopupDelta(payload)
         }
-      }
+      },
+      iTranslateApiKey
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(historyOrigin, output.provider)
@@ -4627,12 +4837,16 @@ async function translateRecognizedOcrResult(
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+      const iTranslateApiKey = settings.itranslateEnabled
+        ? getITranslateConfiguration().getApiKey()
+        : null
       return translateStream(
         text,
         requestSettings ?? settings,
         dingTalkCredentials,
         aiApiKey,
-        { onDelta: streamDelta ?? (() => undefined) }
+        { onDelta: streamDelta ?? (() => undefined) },
+        iTranslateApiKey
       )
     }
   })
@@ -6921,7 +7135,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
 
   const previous = getSettings()
   const shortcutPatch: Partial<Pick<Settings, GlobalShortcutId>> = {}
-  for (const id of ['hotkey', 'ocrHotkey', 'ocrQuickHotkey', 'manualTranslationHotkey', 'webReaderHotkey', 'documentTranslationHotkey'] as GlobalShortcutId[]) {
+  for (const id of ['hotkey', 'ocrHotkey', 'ocrQuickHotkey', 'manualTranslationHotkey', 'webReaderHotkey', 'documentTranslationHotkey', 'realtimeSubtitleHotkey'] as GlobalShortcutId[]) {
     if (patch[id] !== undefined) shortcutPatch[id] = String(patch[id]).trim()
   }
   const shortcutCandidate = { ...previous, ...shortcutPatch }
@@ -6943,6 +7157,11 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   // 普通 settings:set 不接受 AI 敏感字段，API Key 与 aiApiKeyConfigured 由专用 IPC 管理。
   delete (safePatch as Record<string, unknown>).aiApiKey
   delete (safePatch as Record<string, unknown>).aiApiKeyConfigured
+  // Deepgram 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKey
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKeyConfigured
+  delete (safePatch as Record<string, unknown>).itranslateApiKey
+  delete (safePatch as Record<string, unknown>).itranslateApiKeyConfigured
   const aiFieldChanged =
     (patch.aiEnabled !== undefined && patch.aiEnabled !== previous.aiEnabled) ||
     (patch.aiProtocol !== undefined && patch.aiProtocol !== previous.aiProtocol) ||
@@ -6955,9 +7174,20 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     (patch.ocrQuickHotkey !== undefined && settings.ocrQuickHotkey !== previous.ocrQuickHotkey) ||
     (patch.manualTranslationHotkey !== undefined && settings.manualTranslationHotkey !== previous.manualTranslationHotkey) ||
     (patch.webReaderHotkey !== undefined && settings.webReaderHotkey !== previous.webReaderHotkey) ||
-    (patch.documentTranslationHotkey !== undefined && settings.documentTranslationHotkey !== previous.documentTranslationHotkey)
+    (patch.documentTranslationHotkey !== undefined && settings.documentTranslationHotkey !== previous.documentTranslationHotkey) ||
+    (patch.realtimeSubtitleHotkey !== undefined && settings.realtimeSubtitleHotkey !== previous.realtimeSubtitleHotkey)
   ) {
     registerGlobalShortcuts(settings)
+  }
+  if (patch.realtimeSubtitleAudioSource !== undefined ||
+      patch.realtimeSubtitleRecognitionLang !== undefined ||
+      patch.realtimeSubtitleDisplayMode !== undefined ||
+      patch.realtimeSubtitleFontSize !== undefined ||
+      patch.realtimeSubtitleHideAfterMs !== undefined ||
+      patch.realtimeSubtitleTextColor !== undefined ||
+      patch.realtimeSubtitleClickThrough !== undefined ||
+      patch.targetLang !== undefined) {
+    realtimeSubtitleController?.applySettings(settings)
   }
   if (patch.triggerMode !== undefined && settings.triggerMode !== previous.triggerMode) {
     applySelectionListener()
@@ -7004,6 +7234,97 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
  * @author zhenghq
  */
 function registerIpc(): void {
+  /**
+   * 启动实时字幕；非支持平台直接返回稳定错误，不触发 sidecar。
+   * @returns 启动后的快照。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:start', () => {
+    const controller = getRealtimeSubtitleController()
+    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    return controller.start()
+  })
+  /**
+   * 停止实时字幕并释放音频资源。
+   * @returns 停止后的快照。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:stop', () => {
+    const controller = getRealtimeSubtitleController()
+    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    return controller.stop()
+  })
+  /**
+   * 暂停实时字幕识别。
+   * @returns 暂停后的快照。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:pause', () => {
+    const controller = getRealtimeSubtitleController()
+    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    return controller.pause()
+  })
+  /**
+   * 恢复实时字幕识别。
+   * @returns 恢复后的快照。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:resume', () => {
+    const controller = getRealtimeSubtitleController()
+    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    return controller.resume()
+  })
+  /**
+   * 查询实时字幕当前快照。
+   * @returns 当前快照。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:get-status', () => {
+    return getRealtimeSubtitleController()?.snapshot() ?? unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+  })
+  /**
+   * 打开 macOS 屏幕录制权限设置页，便于开发态 Electron 完成 TCC 授权。
+   * @returns 打开完成后的 Promise。
+   * @author zhenghq
+   */
+  ipcMain.handle('subtitle:open-screen-recording-settings', async () => {
+    if (!isMac) return
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+  })
+  /**
+   * 切换字幕窗鼠标交互；仅允许字幕窗自身在点击穿透模式下临时接收事件。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('subtitle:mouse-interaction', (event, active: unknown, scope: unknown) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
+    const normalizedScope = scope === 'window' ? 'window' : 'toolbar'
+    if (normalizedScope !== 'toolbar' && normalizedScope !== 'window') return
+    subtitleWindow.setMouseInteraction(active === true)
+  })
+  /**
+   * 移动字幕窗；只接受字幕窗自身发送的拖拽请求。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('subtitle:move-window', (event, request: unknown) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
+    if (!request || typeof request !== 'object') return
+    subtitleWindow.moveWindow(request as RealtimeSubtitleWindowMoveRequest)
+  })
+  /**
+   * 接收字幕窗拖拽按钮的真实矩形，用于点击穿透模式下的精确鼠标命中。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('subtitle:drag-hit-area', (event, area: unknown) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
+    if (!area || typeof area !== 'object') return
+    subtitleWindow.setDragHitArea(area as RealtimeSubtitleDragHitArea)
+  })
   registerWindowControls({
     isAllowedWindow: (window) =>
       window === settingsWin ||
@@ -7788,6 +8109,14 @@ function registerIpc(): void {
   )
   ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
   ipcMain.handle('dingtalk:check', () => checkDingTalk())
+  ipcMain.handle('deepgram:configure', (_event, patch: DeepgramConfigPatch) =>
+    getDeepgramConfiguration().configure(patch)
+  )
+  ipcMain.handle('deepgram:clear-key', () => getDeepgramConfiguration().clearApiKey())
+  ipcMain.handle('itranslate:configure', (_event, patch: ITranslateConfigPatch) =>
+    getITranslateConfiguration().configure(patch)
+  )
+  ipcMain.handle('itranslate:clear-key', () => getITranslateConfiguration().clearApiKey())
   ipcMain.handle('microsoft:check', () => checkMicrosoft())
   ipcMain.handle('bili-index:check', () => checkBilibiliIndex())
   ipcMain.handle('ai:configure', (_event, patch: AiConfigPatch) => applyAiConfig(patch))
@@ -7909,6 +8238,30 @@ function buildTrayMenu(): Menu {
       click: () => requestOcrSelection(true)
     },
     {
+      label: t.t('settings.realtimeSubtitle.title'),
+      enabled: getRealtimeSubtitleCapability().supported,
+      click: () => {
+        const controller = getRealtimeSubtitleController()
+        if (controller) controller.toggle()
+      }
+    },
+    {
+      label: t.t('settings.realtimeSubtitle.pause'),
+      enabled: getRealtimeSubtitleCapability().supported &&
+        (realtimeSubtitleController?.snapshot().state === 'running' || realtimeSubtitleController?.snapshot().state === 'starting'),
+      click: () => realtimeSubtitleController?.pause()
+    },
+    {
+      label: t.t('settings.realtimeSubtitle.resume'),
+      enabled: getRealtimeSubtitleCapability().supported && realtimeSubtitleController?.snapshot().state === 'paused',
+      click: () => realtimeSubtitleController?.resume()
+    },
+    {
+      label: t.t('settings.realtimeSubtitle.stop'),
+      enabled: getRealtimeSubtitleCapability().supported && realtimeSubtitleController?.snapshot().state !== 'idle',
+      click: () => realtimeSubtitleController?.stop()
+    },
+    {
       label: t.t('menu.clipboardImageOcr'),
       enabled: true,
       click: () => void translateClipboardImage()
@@ -7978,6 +8331,10 @@ function refreshTrayMenu(): void {
  */
 function cleanupBeforeQuit(): void {
   cancelAccessibilityAuthorizationRecovery()
+  realtimeSubtitleController?.dispose()
+  realtimeSubtitleController = null
+  subtitleWindow?.dispose()
+  subtitleWindow = null
   resetDocumentWorkspaceSession()
   documentWorkspace?.dispose()
   documentWorkspace = null

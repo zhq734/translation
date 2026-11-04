@@ -9,10 +9,11 @@ const ENTRY_FILES = [
   'toast.html',
   'web-reader.html',
   'document.html',
-  'pin.html'
+  'pin.html',
+  'subtitle.html'
 ]
 
-test('七个 Renderer 入口应具备英文兜底语言属性和同步 locale bootstrap', () => {
+test('八个 Renderer 入口应具备英文兜底语言属性和同步 locale bootstrap', () => {
   for (const file of ENTRY_FILES) {
     const html = readFileSync(`src/renderer/${file}`, 'utf8')
     assert.match(html, /<html lang="en">/u, `${file} 应使用英文兜底 lang`)
@@ -47,7 +48,7 @@ test('静态文案和关键属性应使用 data-i18n 标记约定', () => {
   assert.match(settings, /value="en-US"/u)
 })
 
-test('七个 Renderer 入口不得残留未标记的用户可见中文', () => {
+test('八个 Renderer 入口不得残留未标记的用户可见中文', () => {
   for (const file of ENTRY_FILES) {
     const html = readFileSync(`src/renderer/${file}`, 'utf8')
     const body = html.slice(html.indexOf('<body'), html.indexOf('</body>'))
