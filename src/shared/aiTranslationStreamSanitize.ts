@@ -1,4 +1,9 @@
 import { sanitizeAiTranslation } from './aiTranslationSanitize'
+import {
+  isWrongTargetLanguage,
+  shouldHoldForLanguageGuard,
+  type AiTranslationLanguageGuard
+} from './aiTranslationLanguageGuard'
 
 /** 可能作为工具调用起始的已知关键字。 */
 const TOOL_KEYWORDS = [
@@ -231,6 +236,13 @@ export class AiTranslationStreamSanitizer {
   private emitted = ''
 
   /**
+   * 创建流式译文净化器。
+   * @param guard 可选的源文与语言方向，用于结束前校验模型是否返回了错误目标语言。
+   * @author zhenghq
+   */
+  constructor(private readonly guard?: AiTranslationLanguageGuard) {}
+
+  /**
    * 追加一段原始流式文本并返回新增的安全译文片段。
    * @param chunk 原始流式文本片段。
    * @returns 本次可以安全展示的新增译文；尚未稳定时返回空字符串。
@@ -248,8 +260,9 @@ export class AiTranslationStreamSanitizer {
    */
   finish(): string {
     const cleaned = sanitizeAiTranslation(this.raw)
-    this.emitted = cleaned
-    return cleaned
+    const guarded = this.guard && isWrongTargetLanguage(cleaned, this.guard) ? '' : cleaned
+    this.emitted = guarded
+    return guarded
   }
 
   /**
@@ -259,7 +272,12 @@ export class AiTranslationStreamSanitizer {
    */
   private flushStable(): string {
     const stableRaw = this.raw.slice(0, findUnstableStart(this.raw))
-    const cleaned = sanitizeAiTranslation(stableRaw)
+    const rawCleaned = sanitizeAiTranslation(stableRaw)
+    // 目标语言校验依赖完整输出；未结束前保持原有增量展示，结束时再校正或清空。
+    const cleaned = this.guard && (
+      isWrongTargetLanguage(rawCleaned, this.guard) ||
+      shouldHoldForLanguageGuard(rawCleaned, this.guard)
+    ) ? '' : rawCleaned
     if (!cleaned.startsWith(this.emitted)) {
       // 净化结果发生回退时以最新稳定结果为准，避免输出过期片段。
       this.emitted = cleaned

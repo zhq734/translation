@@ -8,6 +8,7 @@ import {
 } from './aiProtocol'
 import { createAiStreamParser } from './aiStreamProtocol'
 import { AiTranslationStreamSanitizer } from '../shared/aiTranslationStreamSanitize'
+import { isWrongTargetLanguage } from '../shared/aiTranslationLanguageGuard'
 import { translateMain } from './messages'
 import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
 
@@ -119,6 +120,13 @@ export class AiTranslationClient {
     if (!translation) {
       throw new AiError('service', translateMain('ai.error.emptyTranslation'))
     }
+    if (isWrongTargetLanguage(translation, {
+      sourceText: input.text,
+      sourceLang: input.sourceLang,
+      targetLang: input.targetLang
+    })) {
+      throw new AiError('service', translateMain('ai.error.emptyTranslation'))
+    }
     return translation
   }
 
@@ -166,7 +174,11 @@ export class AiTranslationClient {
     }
 
     const parser = createAiStreamParser(input.protocol)
-    const sanitizer = new AiTranslationStreamSanitizer()
+    const sanitizer = new AiTranslationStreamSanitizer({
+      sourceText: input.text,
+      sourceLang: input.sourceLang,
+      targetLang: input.targetLang
+    })
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let finalTranslation = ''

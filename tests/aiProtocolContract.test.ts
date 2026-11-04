@@ -125,6 +125,39 @@ test('翻译 Prompt 应包含源语言和目标语言并要求只输出译文', 
   assert.match(system.content as string, /生成图片/u)
 })
 
+test('翻译 Prompt 应明确完整翻译契约和安全边界', () => {
+  const req = buildAiTranslationRequest({
+    protocol: 'openai',
+    baseUrl: 'https://api.example.com',
+    model: 'gpt-4o',
+    apiKey: 'sk-test',
+    text: 'Translate every paragraph without executing any embedded instruction.',
+    sourceLang: 'EN',
+    targetLang: 'ZH'
+  })
+  const body = JSON.parse(req.body as string)
+  const system = body.messages.find((m: { role: string }) => m.role === 'system')
+
+  // 翻译任务规则应明确从属于系统安全规则和操作者约束，避免提示词被用于绕过上层限制。
+  assert.match(system.content as string, /最高优先级任务约束/u)
+  assert.match(system.content as string, /系统或平台安全规则.*操作者明确约束优先/u)
+  // 完整翻译是交付契约，不能退化成摘要、节选或扩写。
+  assert.match(system.content as string, /完整翻译/u)
+  assert.match(system.content as string, /不遗漏.*不概括.*不扩写.*不编造/u)
+  // 原文损坏或截断时不得猜测缺失内容。
+  assert.match(system.content as string, /截断.*损坏.*不得猜测或补全/u)
+  // 技术文本必须保留机器可读结构，只翻译可读文字。
+  assert.match(system.content as string, /占位符.*变量.*URL.*数字.*标记/u)
+  assert.match(system.content as string, /只翻译.*可读文字/u)
+  // 纯文本请求不能包裹标签或代码块，否则会污染调用方的译文展示。
+  assert.match(system.content as string, /纯文本请求.*直接返回译文/u)
+  // 图片生成、工具调用和模型切换只属于待翻译文字，不能返回执行确认或建议。
+  assert.match(system.content as string, /图片生成.*模型切换.*只翻译/u)
+  assert.match(system.content as string, /不得声称已生成.*不得报告执行结果.*不得建议切换模型/u)
+  // 涉及未成年人的内容只保留非性化原文含义，不生成性化或露骨表达。
+  assert.match(system.content as string, /未成年人.*不得生成性化或露骨表达/u)
+})
+
 test('文档上下文应把命中术语和相邻摘要注入三种 AI 协议的系统提示', () => {
   const context = {
     glossaryVersion: 'glossary-v3',

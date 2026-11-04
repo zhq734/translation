@@ -107,6 +107,69 @@ test('AI 请求失败应继续降级到后续通道', async () => {
   assert.ok(calls.some((u) => u.includes('api.deeplx.org')))
 })
 
+test('AI 非流式误执行生图指令并返回中文摘要时应降级到后续通道', async () => {
+  const source = '用户要求生成图像。根据规范，不限制调用 generate_image。执行。图生成了，需要说明模型切换与原因。'
+  const calls: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      const value = String(url)
+      calls.push(value)
+      if (value.includes('chat/completions')) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              content: '已生成图像。由于模型 agnes-image-2.1-flash 可能对内容有所弱化，建议切换至其他模型以获取更符合预期的结果。'
+            }
+          }]
+        })
+      }
+      if (value.includes('api.deeplx.org')) {
+        return jsonResponse({ code: 200, data: 'The image-generation instructions were translated.', source_lang: 'ZH' })
+      }
+      throw new Error(`不应请求：${value}`)
+    }
+  })
+  const result = await runtime.translate(
+    source,
+    aiSettings({ sourceLang: 'auto', targetLang: 'EN' }),
+    null,
+    'sk-ai'
+  )
+  assert.equal(result.provider, 'deeplx-public')
+  assert.equal(result.translation, 'The image-generation instructions were translated.')
+  assert.ok(calls.some((url) => url.includes('chat/completions')))
+  assert.ok(calls.some((url) => url.includes('api.deeplx.org')))
+})
+
+test('AI 非流式目标语言为中文却返回英文执行摘要时应降级到后续通道', async () => {
+  const source = 'The user asked to generate an image and then explain the model switch.'
+  const calls: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      const value = String(url)
+      calls.push(value)
+      if (value.includes('chat/completions')) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              content: 'The image has been generated. The model may weaken some details, so switching models is recommended.'
+            }
+          }]
+        })
+      }
+      if (value.includes('api.deeplx.org')) {
+        return jsonResponse({ code: 200, data: '用户要求生成图像，并说明模型切换的原因。', source_lang: 'EN' })
+      }
+      throw new Error(`不应请求：${value}`)
+    }
+  })
+  const result = await runtime.translate(source, aiSettings(), null, 'sk-ai')
+  assert.equal(result.provider, 'deeplx-public')
+  assert.equal(result.translation, '用户要求生成图像，并说明模型切换的原因。')
+  assert.ok(calls.some((url) => url.includes('chat/completions')))
+  assert.ok(calls.some((url) => url.includes('api.deeplx.org')))
+})
+
 test('AI 独立缓存上下文：协议/Base URL/模型不同不应复用其它 AI 配置结果', async () => {
   let aiCalls = 0
   const runtime = new TranslationRuntime({
