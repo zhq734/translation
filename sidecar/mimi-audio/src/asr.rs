@@ -75,8 +75,29 @@ const DEEPGRAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(8);
 /// 上行任务会一直占用音频消费端，采集队列随后持续塞满。
 const DEEPGRAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whisper 单次转写窗口对应的采样数（24 kHz、4 秒）。
-const WHISPER_WINDOW_SAMPLES: usize = 96_000;
+/// Whisper 单次转写窗口的最短采样数（24 kHz、2 秒）。
+///
+/// 短于该时长时即使检测到停顿也继续累积，避免把词句切得过碎。
+const WHISPER_MIN_WINDOW_SAMPLES: usize = 48_000;
+
+/// Whisper 滚动预览间隔对应的采样数（24 kHz、1.5 秒）。
+///
+/// 预览只用于尽快显示临时原文；连续语音仍会继续累积到完整窗口后再定稿。
+const WHISPER_PREVIEW_INTERVAL_SAMPLES: usize = 36_000;
+
+/// Whisper 单次转写窗口的最长采样数（24 kHz、4 秒）。
+///
+/// 新闻等连续语音可能长时间没有明显停顿，必须用最长窗口限制字幕延迟。
+const WHISPER_MAX_WINDOW_SAMPLES: usize = 96_000;
+
+/// Whisper 句尾静音判定使用的采样数（24 kHz、350 毫秒）。
+const WHISPER_SILENCE_TAIL_SAMPLES: usize = 8_400;
+
+/// Whisper 句尾静音判定阈值；低于该 RMS 视为当前句已经结束。
+const WHISPER_SILENCE_RMS_THRESHOLD: f64 = 0.008;
+
+/// 判定窗口内确实存在人声的峰值阈值，避免将纯静音送给模型产生幻觉。
+const WHISPER_SPEECH_PEAK_THRESHOLD: i16 = 800;
 
 /// Whisper 批量转写请求超时。
 const WHISPER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -313,25 +334,95 @@ fn whisper_response_text(body: &str) -> String {
     }
 }
 
-/// 把新到 PCM 累积成 Whisper 窗口，并只保留最新一个待转写窗口。
+/// 判断 Whisper 窗口是否已经可以提交转写。
 ///
 /// # 参数
-/// - `window`：尚未满 4 秒的 PCM 缓冲。
+/// - `window`：当前累积的 PCM 窗口。
+///
+/// # 返回值
+/// 达到最长时长，或达到最短时长且句尾存在足够静音时返回 `true`。
+///
+/// @author zhenghq
+fn whisper_window_ready(window: &[i16]) -> bool {
+    if window.len() >= WHISPER_MAX_WINDOW_SAMPLES {
+        return true;
+    }
+    if window.len() < WHISPER_MIN_WINDOW_SAMPLES + WHISPER_SILENCE_TAIL_SAMPLES {
+        return false;
+    }
+    let tail = &window[window.len() - WHISPER_SILENCE_TAIL_SAMPLES..];
+    let mean_square = tail
+        .iter()
+        .map(|sample| {
+            let normalized = f64::from(*sample) / f64::from(i16::MAX);
+            normalized * normalized
+        })
+        .sum::<f64>()
+        / tail.len() as f64;
+    mean_square.sqrt() <= WHISPER_SILENCE_RMS_THRESHOLD
+}
+
+/// 判断 Whisper 窗口内是否包含可识别的语音峰值。
+///
+/// # 参数
+/// - `window`：待提交的 PCM 窗口。
+///
+/// # 返回值
+/// 至少有一个采样超过人声峰值阈值时返回 `true`。
+///
+/// @author zhenghq
+fn whisper_window_has_speech(window: &[i16]) -> bool {
+    window
+        .iter()
+        .any(|sample| sample.unsigned_abs() >= WHISPER_SPEECH_PEAK_THRESHOLD as u16)
+}
+
+/// 判断当前累积窗口是否应发起一次临时预览转写。
+///
+/// # 参数
+/// - `window`：当前尚未定稿的 PCM 窗口。
+/// - `last_preview_samples`：上一次预览时的窗口采样数。
+///
+/// # 返回值
+/// 距上次预览新增至少 1.5 秒语音时返回 `true`。
+///
+/// @author zhenghq
+fn whisper_preview_due(window: &[i16], last_preview_samples: usize) -> bool {
+    window.len().saturating_sub(last_preview_samples) >= WHISPER_PREVIEW_INTERVAL_SAMPLES
+        && whisper_window_has_speech(window)
+}
+
+/// 把新到 PCM 累积成 Whisper 窗口，并在最短时长后根据句尾静音提前提交。
+///
+/// # 参数
+/// - `window`：尚未提交的 PCM 缓冲。
 /// - `pending`：等待发送的最新完整窗口。
 /// - `pcm`：新到达的 PCM 采样。
 ///
 /// # 返回值
-/// 无返回值。
+/// 本次调用是否产生了一个待定稿窗口。
 ///
 /// @author zhenghq
-fn queue_whisper_window(window: &mut Vec<i16>, pending: &mut Option<Vec<i16>>, pcm: &[i16]) {
+fn queue_whisper_window(
+    window: &mut Vec<i16>,
+    pending: &mut Option<Vec<i16>>,
+    pcm: &[i16],
+) -> bool {
+    let mut queued = false;
     window.extend_from_slice(pcm);
-    while window.len() >= WHISPER_WINDOW_SAMPLES {
-        *pending = Some(window.drain(..WHISPER_WINDOW_SAMPLES).collect());
+    while whisper_window_ready(window) {
+        let chunk_len = window.len().min(WHISPER_MAX_WINDOW_SAMPLES);
+        let chunk = window.drain(..chunk_len).collect::<Vec<_>>();
+        // 纯静音窗口不发送，否则 Whisper 可能在无声片段输出固定幻觉文本。
+        if whisper_window_has_speech(&chunk) {
+            *pending = Some(chunk);
+            queued = true;
+        }
     }
+    queued
 }
 
-/// 累积 PCM 并按约 4 秒窗口调用 Whisper 转写。
+/// 累积 PCM，并在句尾停顿或最长窗口处调用 Whisper 转写。
 ///
 /// # 参数
 /// - `endpoint`：完整转写端点。
@@ -365,8 +456,9 @@ async fn run_whisper(
             return;
         }
     };
-    let mut window = Vec::<i16>::with_capacity(WHISPER_WINDOW_SAMPLES);
+    let mut window = Vec::<i16>::with_capacity(WHISPER_MAX_WINDOW_SAMPLES);
     let mut pending: Option<Vec<i16>> = None;
+    let mut last_preview_samples = 0usize;
     let mut in_flight: Option<tokio::task::JoinHandle<Result<(), AsrError>>> = None;
     let mut audio_closed = false;
     loop {
@@ -389,6 +481,31 @@ async fn run_whisper(
                         request_language.as_deref(),
                         &chunk,
                         &request_events,
+                        true,
+                    )
+                    .await
+                }));
+                continue;
+            }
+            if whisper_preview_due(&window, last_preview_samples) {
+                let preview = window.clone();
+                last_preview_samples = window.len();
+                let request_client = client.clone();
+                let request_endpoint = endpoint.clone();
+                let request_model = model.clone();
+                let request_api_key = api_key.clone();
+                let request_language = language.clone();
+                let request_events = events.clone();
+                in_flight = Some(tokio::spawn(async move {
+                    transcribe_whisper_window(
+                        &request_client,
+                        &request_endpoint,
+                        &request_model,
+                        request_api_key.as_deref(),
+                        request_language.as_deref(),
+                        &preview,
+                        &request_events,
+                        false,
                     )
                     .await
                 }));
@@ -398,7 +515,11 @@ async fn run_whisper(
                 break;
             }
             match audio_rx.recv().await {
-                Some(pcm) => queue_whisper_window(&mut window, &mut pending, &pcm),
+                Some(pcm) => {
+                    if queue_whisper_window(&mut window, &mut pending, &pcm) {
+                        last_preview_samples = 0;
+                    }
+                }
                 None => audio_closed = true,
             }
             continue;
@@ -421,7 +542,11 @@ async fn run_whisper(
             }
             pcm = audio_rx.recv(), if !audio_closed => {
                 match pcm {
-                    Some(pcm) => queue_whisper_window(&mut window, &mut pending, &pcm),
+                    Some(pcm) => {
+                        if queue_whisper_window(&mut window, &mut pending, &pcm) {
+                            last_preview_samples = 0;
+                        }
+                    }
                     None => audio_closed = true,
                 }
             }
@@ -429,7 +554,7 @@ async fn run_whisper(
     }
 }
 
-/// 转写一个 PCM 窗口并派发最终文本。
+/// 转写一个 PCM 窗口并派发临时预览或稳定定稿文本。
 ///
 /// # 参数
 /// - `client`：复用的 HTTP 客户端。
@@ -439,6 +564,7 @@ async fn run_whisper(
 /// - `language`：可选语言代码。
 /// - `pcm`：窗口 PCM 采样。
 /// - `events`：下行事件广播端。
+/// - `finalize`：是否为稳定定稿事件；`false` 时作为可覆盖的临时预览。
 ///
 /// # 返回值
 /// 成功或结构化 ASR 错误。
@@ -452,6 +578,7 @@ async fn transcribe_whisper_window(
     language: Option<&str>,
     pcm: &[i16],
     events: &broadcast::Sender<AsrEvent>,
+    finalize: bool,
 ) -> Result<(), AsrError> {
     let wav = pcm16_to_wav(pcm);
     let file = Part::bytes(wav)
@@ -477,10 +604,13 @@ async fn transcribe_whisper_window(
     let body = response.text().await.map_err(|_| AsrError::Network)?;
     let text = whisper_response_text(&body);
     if !text.is_empty() {
-        let _ = events.send(AsrEvent::Final {
-            text,
-            lang: language.map(str::to_string),
-        });
+        let lang = language.map(str::to_string);
+        let event = if finalize {
+            AsrEvent::Final { text, lang }
+        } else {
+            AsrEvent::Partial { text, lang }
+        };
+        let _ = events.send(event);
     }
     Ok(())
 }
@@ -1082,6 +1212,153 @@ mod tests {
         assert_eq!(wav.len(), 44 + 6);
     }
 
+    /// 校验 Whisper 窗口不足最短时长时不会提前提交。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_window_waits_for_minimum_duration() {
+        let mut window = Vec::new();
+        let mut pending = None;
+
+        queue_whisper_window(
+            &mut window,
+            &mut pending,
+            &vec![2_000; WHISPER_MIN_WINDOW_SAMPLES - 1],
+        );
+
+        assert!(pending.is_none());
+        assert_eq!(window.len(), WHISPER_MIN_WINDOW_SAMPLES - 1);
+    }
+
+    /// 校验检测到句尾停顿后应提前提交 Whisper 窗口。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_window_flushes_after_trailing_silence() {
+        let mut window = vec![2_000; WHISPER_MIN_WINDOW_SAMPLES];
+        let mut pending = None;
+
+        queue_whisper_window(
+            &mut window,
+            &mut pending,
+            &vec![0; WHISPER_SILENCE_TAIL_SAMPLES],
+        );
+
+        assert_eq!(window.len(), 0);
+        assert_eq!(
+            pending.as_ref().map(Vec::len),
+            Some(WHISPER_MIN_WINDOW_SAMPLES + WHISPER_SILENCE_TAIL_SAMPLES)
+        );
+    }
+
+    /// 校验持续说话时仍在最长窗口处强制提交，避免字幕无限延后。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_window_flushes_at_maximum_duration() {
+        let mut window = vec![2_000; WHISPER_MAX_WINDOW_SAMPLES / 2];
+        let mut pending = None;
+
+        queue_whisper_window(
+            &mut window,
+            &mut pending,
+            &vec![2_000; WHISPER_MAX_WINDOW_SAMPLES / 2],
+        );
+
+        assert_eq!(window.len(), 0);
+        assert_eq!(
+            pending.as_ref().map(Vec::len),
+            Some(WHISPER_MAX_WINDOW_SAMPLES)
+        );
+    }
+
+    /// 校验纯静音不会触发 Whisper，避免模型对无声片段产生幻觉字幕。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_window_discards_silence_without_speech() {
+        let mut window = Vec::new();
+        let mut pending = None;
+
+        queue_whisper_window(
+            &mut window,
+            &mut pending,
+            &vec![0; WHISPER_MAX_WINDOW_SAMPLES],
+        );
+
+        assert!(window.is_empty());
+        assert!(pending.is_none());
+    }
+
+    /// 校验滚动预览在累积最短预览时长后才触发。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_preview_waits_for_interval_and_speech() {
+        assert!(!whisper_preview_due(
+            &vec![2_000; WHISPER_PREVIEW_INTERVAL_SAMPLES - 1],
+            0
+        ));
+        assert!(whisper_preview_due(
+            &vec![2_000; WHISPER_PREVIEW_INTERVAL_SAMPLES],
+            0
+        ));
+        assert!(!whisper_preview_due(
+            &vec![0; WHISPER_PREVIEW_INTERVAL_SAMPLES],
+            0
+        ));
+    }
+
+    /// 校验同一窗口在预览后必须继续累积足够新音频才会再次预览。
+    ///
+    /// # 参数
+    /// 无。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn whisper_preview_requires_new_audio_after_previous_snapshot() {
+        let window = vec![2_000; WHISPER_PREVIEW_INTERVAL_SAMPLES * 2];
+
+        assert!(!whisper_preview_due(&window, window.len()));
+        assert!(whisper_preview_due(
+            &window,
+            window.len() - WHISPER_PREVIEW_INTERVAL_SAMPLES
+        ));
+    }
+
     #[test]
     fn whisper_http_status_maps_to_stable_errors() {
         assert_eq!(classify_whisper_status(401), AsrError::Auth);
@@ -1113,6 +1390,7 @@ mod tests {
             Some("zh"),
             &[1, -1],
             &events,
+            true,
         )
         .await
         .unwrap();
@@ -1130,6 +1408,42 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "你好".into(),
+                lang: Some("zh".into())
+            }
+        );
+    }
+
+    /// 校验滚动预览请求会派发可被后续结果覆盖的临时文本。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn whisper_request_can_emit_partial_text() {
+        let (address, server) = spawn_http_once(200, r#"{"text":"临时字幕"}"#).await;
+        let client = reqwest::Client::new();
+        let (events, mut received) = broadcast::channel(4);
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+
+        transcribe_whisper_window(
+            &client,
+            &endpoint,
+            "ggml-medium",
+            None,
+            Some("zh"),
+            &[1, -1],
+            &events,
+            false,
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Partial {
+                text: "临时字幕".into(),
                 lang: Some("zh".into())
             }
         );
@@ -1156,6 +1470,7 @@ mod tests {
             None,
             &[0, 0],
             &events,
+            true,
         )
         .await
         .unwrap();
@@ -1185,10 +1500,18 @@ mod tests {
         let (events, _received) = broadcast::channel(4);
         let endpoint = format!("http://{address}/v1/audio/transcriptions");
 
-        let error =
-            transcribe_whisper_window(&client, &endpoint, "whisper-1", None, None, &[0], &events)
-                .await
-                .unwrap_err();
+        let error = transcribe_whisper_window(
+            &client,
+            &endpoint,
+            "whisper-1",
+            None,
+            None,
+            &[0],
+            &events,
+            true,
+        )
+        .await
+        .unwrap_err();
 
         server.await.unwrap();
         assert_eq!(error, AsrError::Auth);
@@ -1215,6 +1538,7 @@ mod tests {
             Some("zh"),
             &[0, 0],
             &events,
+            true,
         )
         .await
         .unwrap();
@@ -1253,7 +1577,7 @@ mod tests {
         for _ in 0..3 {
             timeout(
                 Duration::from_millis(100),
-                audio_tx.send(vec![0; WHISPER_WINDOW_SAMPLES]),
+                audio_tx.send(vec![2_000; WHISPER_MAX_WINDOW_SAMPLES]),
             )
             .await
             .expect("audio intake should not block on the in-flight request")
