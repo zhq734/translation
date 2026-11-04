@@ -77,6 +77,8 @@ import {
   beginPopupSettingsOpenGuard,
   endPopupSettingsOpenGuard,
   isPopupSettingsOpenGuardActive,
+  setPopupLanguageInteraction,
+  isPopupWebContents,
   suppressExternalPointerDismissForButtonClick,
   isPointInsidePopup,
   getPopupCloseVersion,
@@ -7032,6 +7034,11 @@ function registerIpc(): void {
   })
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     setPopupPinned(Boolean(pinned))
+  })
+  ipcMain.on('popup:language-interaction', (event, active: unknown, scope: unknown) => {
+    if (!isPopupWebContents(event.sender)) return
+    const normalizedScope = scope === 'retranslation' ? 'retranslation' : 'selector'
+    setPopupLanguageInteraction(active === true, normalizedScope)
   })
   /**
    * 查询单个英文单词的音标；主进程再次校验输入，避免 Renderer 绕过词形边界。

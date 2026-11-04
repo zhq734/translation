@@ -2149,42 +2149,97 @@ async function submitManualTranslation(): Promise<void> {
 }
 
 /**
+ * 开启语言选择器交互保护，避免原生下拉展开时的窗口失焦误关弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginLanguageInteraction(): void {
+  window.api.setPopupLanguageInteraction(true, 'selector')
+}
+
+/**
+ * 结束语言选择器交互保护，恢复正常的外部点击关闭语义。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function endLanguageInteraction(): void {
+  window.api.setPopupLanguageInteraction(false, 'selector')
+}
+
+/**
+ * 在语言重译开始前延长保护，覆盖下拉收起与翻译请求之间的异步间隙。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function beginLanguageRetranslation(): void {
+  window.api.setPopupLanguageInteraction(true, 'retranslation')
+}
+
+/**
+ * 在语言重译结束或失败后解除保护。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function endLanguageRetranslation(): void {
+  window.api.setPopupLanguageInteraction(false, 'retranslation')
+}
+
+/**
+ * 处理语言下拉变化：先结束原生控件保护，再进入独立的重译保护。
+ *
+ * 原生 select 可能在 change 后立即派发 focusout；若不先结束 selector 域，
+ * 该 focusout 会迟到并错误解除重译保护。两个域独立后，任何事件顺序都不会
+ * 提前关闭正在重译的弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleLanguageChange(): void {
+  endLanguageInteraction()
+  void retranslateWithCurrentLanguages()
+}
+
+/**
  * 保存语言变化；手动模式仅标记结果过期，划词模式继续自动重译。
  * @returns 语言设置保存或重译完成后的 Promise。
  * @author zhenghq
  */
 async function retranslateWithCurrentLanguages(): Promise<void> {
-  stopSpeech()
-  if (mode === 'manual') {
+  beginLanguageRetranslation()
+  try {
+    stopSpeech()
+    if (mode === 'manual') {
+      sourceLangEl.disabled = true
+      targetLangEl.disabled = true
+      try {
+        currentSettings = await window.api.setSettings({
+          sourceLang: sourceLangEl.value,
+          targetLang: targetLangEl.value
+        })
+        if (manualState.translation) manualState = { ...manualState, stale: true }
+        manualSpeechLanguage = ''
+        renderManualState()
+      } catch {
+        flashStatus(t('popup.languageSaveFailed'))
+      } finally {
+        sourceLangEl.disabled = false
+        targetLangEl.disabled = false
+      }
+      return
+    }
+    const currentText = currentSelectionOrigin === 'ocr' ? lastOcrText : lastOriginal
+    if (!currentText) return
     sourceLangEl.disabled = true
     targetLangEl.disabled = true
     try {
-      currentSettings = await window.api.setSettings({
-        sourceLang: sourceLangEl.value,
-        targetLang: targetLangEl.value
-      })
-      if (manualState.translation) manualState = { ...manualState, stale: true }
-      manualSpeechLanguage = ''
-      renderManualState()
+      await window.api.retranslate(sourceLangEl.value, targetLangEl.value, currentSelectionOrigin)
     } catch {
-      flashStatus(t('popup.languageSaveFailed'))
+      flashStatus(t('popup.retranslationFailed'))
     } finally {
       sourceLangEl.disabled = false
       targetLangEl.disabled = false
     }
-    return
-  }
-  const currentText = currentSelectionOrigin === 'ocr' ? lastOcrText : lastOriginal
-  if (!currentText) return
-  sourceLangEl.disabled = true
-  targetLangEl.disabled = true
-  try {
-    await window.api.retranslate(sourceLangEl.value, targetLangEl.value, currentSelectionOrigin)
-  } catch {
-    flashStatus(t('popup.retranslationFailed'))
   } finally {
-    sourceLangEl.disabled = false
-    targetLangEl.disabled = false
+    endLanguageRetranslation()
   }
 }
 
@@ -2616,8 +2671,14 @@ function scheduleStreamingReveal(target: 'selection' | 'manual'): void {
 /** 最近一次划词翻译请求序号，用于丢弃迟到增量。 */
 let latestSelectionRequestId = 0
 
-sourceLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
-targetLangEl.addEventListener('change', () => void retranslateWithCurrentLanguages())
+sourceLangEl.addEventListener('pointerdown', beginLanguageInteraction)
+sourceLangEl.addEventListener('focusin', beginLanguageInteraction)
+sourceLangEl.addEventListener('focusout', endLanguageInteraction)
+sourceLangEl.addEventListener('change', handleLanguageChange)
+targetLangEl.addEventListener('pointerdown', beginLanguageInteraction)
+targetLangEl.addEventListener('focusin', beginLanguageInteraction)
+targetLangEl.addEventListener('focusout', endLanguageInteraction)
+targetLangEl.addEventListener('change', handleLanguageChange)
 translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
 manualModeBtn.addEventListener('click', () => mode === 'manual' ? leaveManualMode() : enterManualMode())
 historyBtn.addEventListener('click', () => historyOpen ? closeHistory() : openHistory())

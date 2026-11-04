@@ -1,6 +1,11 @@
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, screen, type WebContents } from 'electron'
 import { join } from 'node:path'
-import type { PopupAutoSizeRequest, TranslateDeltaPayload, TranslatePayload } from '../shared/types'
+import type {
+  PopupAutoSizeRequest,
+  PopupLanguageInteractionScope,
+  TranslateDeltaPayload,
+  TranslatePayload
+} from '../shared/types'
 import {
   resolvePopupAutoSize,
   resolvePopupResizeBounds
@@ -16,6 +21,7 @@ import { createWindowsForegroundTracker } from './windowsForeground'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import { logCandidateProbe } from '../shared/activateDiagnostics'
 import { isWindows7CompatibilityRuntime } from './platformCompatibility'
+import { PopupLanguageInteractionGuard } from './popupLanguageInteractionGuard'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -98,6 +104,14 @@ let shownInactive = false
  */
 let settingsOpenGuardActive = false
 /**
+ * 语言选择器交互期间是否保护弹窗不被失焦关闭。
+ *
+ * 原生 select 在展开与选项确认时可能让 BrowserWindow 短暂失焦；这段失焦属于
+ * 弹窗内部控件交互，不是点击弹窗外部。Renderer 在下拉按下、聚焦与重译期间
+ * 上报保护状态，避免语言切换把整个翻译页面误关闭。
+ */
+const languageInteractionGuard = new PopupLanguageInteractionGuard()
+/**
  * 选区取词是否处于加载态。
  *
  * 点击“译”后读取弹窗会切换为翻译加载态，此时结果尚未返回；macOS 的前台
@@ -162,6 +176,7 @@ export function createPopup(options: CreatePopupOptions): BrowserWindow {
   popupCloseInFlight = false
   shownInactive = false
   settingsOpenGuardActive = false
+  resetPopupLanguageInteraction()
   selectionCaptureLoading = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
@@ -253,6 +268,9 @@ function handlePopupBlur(): void {
   if (!win?.isVisible()) return
   // 设置窗口抢焦点属于应用内部窗口切换，不能按“点击弹窗外部”关闭翻译弹窗。
   if (settingsOpenGuardActive) return
+  // 原生语言下拉展开时可能让窗口短暂失焦；这是控件交互而非外部点击，
+  // 必须保留弹窗让用户完成语言切换。真实外部点击由全局按下兜底关闭。
+  if (languageInteractionGuard.isActive()) return
   const cursorInsideDragRegion = isPointInPopupDragRegion(
     screen.getCursorScreenPoint(),
     win.getBounds()
@@ -306,6 +324,44 @@ export function endPopupSettingsOpenGuard(): void {
  */
 export function isPopupSettingsOpenGuardActive(): boolean {
   return settingsOpenGuardActive
+}
+
+/**
+ * 设置语言选择器交互保护状态。
+ *
+ * 只由翻译弹窗自己的 Renderer 通过受信任 IPC 调用。保护期间弹窗内的失焦
+ * 与按下不会触发自动关闭；弹窗外的真实点击仍由全局按下路径正常关闭。
+ * @param active 语言选择器是否正在交互。
+ * @param scope 语言交互保护域，默认由下拉控件发起。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+export function setPopupLanguageInteraction(
+  active: boolean,
+  scope: PopupLanguageInteractionScope = 'selector'
+): void {
+  languageInteractionGuard.set(active, scope)
+}
+
+/**
+ * 返回语言选择器交互保护是否处于激活状态。
+ * @returns 处于语言选择器交互保护期时返回 true。
+ * @author zhenghq
+ */
+export function isPopupLanguageInteractionActive(): boolean {
+  return languageInteractionGuard.isActive()
+}
+
+/**
+ * 重置语言选择器交互保护。
+ *
+ * 创建弹窗和真实关闭弹窗时都必须清理，避免上一轮下拉交互的保护状态粘滞到
+ * 下一轮弹窗，导致正常的失焦关闭被持续抑制。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetPopupLanguageInteraction(): void {
+  languageInteractionGuard.reset()
 }
 
 /**
@@ -514,6 +570,11 @@ export function dismissPopupOnExternalPointerDown(point?: { x: number; y: number
   // 读取状态弹窗与失败提示以 showInactive 显示，不持有 key window，也不会再产生
   // blur；只看 isPopupActivated() 会漏掉这类弹窗，点击外部后它会一直留在屏上。
   if (!isPopupVisible()) return false
+  // 原生语言下拉的选项弹层可能超出窗口矩形，且 Renderer 会在选择完成后立即
+  // 解除保护；这里不能再用矩形判断，否则选项区域按下仍会被当成外部点击。
+  // 保护状态只由翻译弹窗自己的语言控件在有限交互期间开启，正常的外部点击
+  // 会在控件结束交互后继续走原有关闭路径。
+  if (isPopupLanguageInteractionActive()) return false
   // 按钮点击的迟到按下属于同一次交互，会被误分类为外部点击关闭读取弹窗；
   // 必须同时匹配抑制窗口与按钮原位置附近坐标，只吞掉同一次点击的迟到事件。
   // 仅按时间窗口短路会吞掉用户在这段时间内其它位置的真实点击，重新引入
@@ -576,6 +637,7 @@ export function hidePopup(
   closeVersion += 1
   pinned = false
   pronunciationInteractionActive = false
+  resetPopupLanguageInteraction()
   selectionCaptureLoading = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
@@ -797,6 +859,19 @@ export function isPointInsidePopup(point: { x: number; y: number }): boolean {
     point.x <= bounds.x + bounds.width &&
     point.y >= bounds.y &&
     point.y <= bounds.y + bounds.height
+}
+
+/**
+ * 判断 WebContents 是否属于翻译弹窗自身。
+ *
+ * 弹窗交互保护类 IPC 只能接受该窗口的消息，防止设置页、网页阅读器等其它
+ * Renderer 通过同一通道改变翻译弹窗的关闭行为。
+ * @param webContents 待判断的 WebContents。
+ * @returns 属于翻译弹窗时返回 true。
+ * @author zhenghq
+ */
+export function isPopupWebContents(webContents: WebContents): boolean {
+  return Boolean(win && !win.isDestroyed() && win.webContents === webContents)
 }
 
 /**

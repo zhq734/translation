@@ -6,6 +6,7 @@ import type {
   TranslatePayload,
   TranslateDeltaPayload,
   PopupAutoSizeRequest,
+  PopupLanguageInteractionScope,
   ManualTranslateRequest,
   Settings,
   DeepLxStatus,
@@ -257,6 +258,15 @@ const api: Api = {
    */
   hide() {
     ipcRenderer.send('popup:hide')
+  },
+  /**
+   * 通知主进程语言选择器进入或退出交互保护期。
+   * @param active 语言选择器是否正在交互或重译。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setPopupLanguageInteraction(active: boolean, scope: PopupLanguageInteractionScope = 'selector'): void {
+    ipcRenderer.send('popup:language-interaction', active, scope)
   },
   /**
    * 请求主进程按内容自然尺寸调整弹窗大小。

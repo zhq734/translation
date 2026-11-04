@@ -281,6 +281,9 @@ export interface PopupAutoSizeRequest {
   height: number
 }
 
+/** 翻译弹窗语言交互保护域；下拉控件与异步重译必须彼此独立。 */
+export type PopupLanguageInteractionScope = 'selector' | 'retranslation'
+
 export interface TranslatePayload {
   ok: boolean
   /** 本次结果属于划词还是手动翻译。 */
@@ -1398,6 +1401,8 @@ export interface Api {
   /** 读取系统剪贴板中的纯文本，供手动翻译右键快速粘贴。 */
   readClipboardText(): Promise<string>
   hide(): void
+  /** 通知主进程语言选择器进入或退出交互保护期。 */
+  setPopupLanguageInteraction(active: boolean, scope?: PopupLanguageInteractionScope): void
   /** 请求主进程按内容自然尺寸调整弹窗大小。 */
   resizePopup(size: PopupAutoSizeRequest): void
   /** 从翻译弹窗打开设置页面。 */
