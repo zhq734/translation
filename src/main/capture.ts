@@ -847,14 +847,15 @@ async function readSelectionByNativeWithRetry(
 }
 
 /**
- * 检测当前应用是否已获得「辅助功能」权限，并在 macOS 未授权时触发系统授权提示。
+ * 检测当前应用是否已获得「辅助功能」权限，并按需触发 macOS 系统授权提示。
+ * @param prompt 未授权时是否触发系统授权提示；轮询恢复流程必须传 false 避免重复弹窗。
  * @returns 是否已获得辅助功能权限。
  * @author zhenghq
  */
-export async function checkAccessibilityPermission(): Promise<boolean> {
+export async function checkAccessibilityPermission(prompt = true): Promise<boolean> {
   const strategy = resolveSelectionCaptureStrategy(process.platform)
   if (strategy === 'macos-command-copy') {
-    return systemPreferences.isTrustedAccessibilityClient(true)
+    return systemPreferences.isTrustedAccessibilityClient(prompt)
   }
   return strategy !== 'unsupported'
 }

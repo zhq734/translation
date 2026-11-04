@@ -45,9 +45,11 @@ import {
 import { recordCaptureDiagnostic, queryFrontmostApp, getCaptureDiagnosticsStore } from './captureDiagnostics'
 import {
   checkDingTalk as checkDingTalkTranslation,
+  checkBilibiliIndex as checkBilibiliIndexTranslation,
   checkMicrosoft as checkMicrosoftTranslation,
   configureTranslationFetch,
   resetDingTalkTranslationRuntime,
+  resetBilibiliIndexTranslationRuntime,
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
   resetDeepLxTranslationRuntime,
@@ -166,6 +168,7 @@ import {
   resetCopyTimeoutTracker
 } from './copyTimeoutTracker'
 import type {
+  BilibiliIndexCheckStatus,
   DingTalkCheckStatus,
   DingTalkConfigPatch,
   MicrosoftCheckStatus,
@@ -767,6 +770,21 @@ const selectionListenerController = new SelectionListenerController({
   stop: () => stopAutoTrigger(),
   log: (message) => console.warn(message)
 })
+/** 辅助功能授权完成恢复的超时时间（毫秒）；超时后停止轮询，避免永久占用定时器。 */
+const ACCESSIBILITY_AUTHORIZATION_RECOVERY_TIMEOUT_MS = 5 * 60_000
+/** 辅助功能授权状态的轮询间隔（毫秒）。 */
+const ACCESSIBILITY_AUTHORIZATION_RECOVERY_POLL_INTERVAL_MS = 500
+/** 一次辅助功能授权完成恢复流程的运行状态。 */
+interface AccessibilityAuthorizationRecovery {
+  /** 本轮恢复开始时间，用于判断是否超时。 */
+  startedAt: number
+  /** 下一次权限检查定时器；尚未安排时为 null。 */
+  timer: ReturnType<typeof setTimeout> | null
+  /** 当前是否已有权限检查在途，防止慢检查叠加轮询。 */
+  checking: boolean
+}
+/** 当前正在等待辅助功能授权完成的恢复流程；同一时间只允许一个。 */
+let accessibilityAuthorizationRecovery: AccessibilityAuthorizationRecovery | null = null
 let lastSelectedText = ''
 let lastSelectionAnchor: { x: number; y: number } | undefined
 /** 最近一次划词或快捷键记录的源窗口上下文，供按钮与自动路径复用。 */
@@ -5768,6 +5786,7 @@ async function translateManualRequest(request: unknown): Promise<void> {
  * @author zhenghq
  */
 function applySelectionListener(): void {
+  const triggerMode = getSettings().triggerMode
   latestSelectionGesture += 1
   lowerSettingsPanelRaiseLevel()
   invalidateSelectionFlowWithFocusCleanup()
@@ -5775,9 +5794,126 @@ function applySelectionListener(): void {
   hideSelectionButton()
   releaseSelectionFocusLeaseIfIdle()
   selectionListenerController.setMode(getSettings().triggerMode)
-  if (getSettings().triggerMode !== 'hotkey' && !selectionListenerController.isRunning()) {
+  if (triggerMode === 'hotkey') {
+    cancelAccessibilityAuthorizationRecovery()
+  } else {
+    void beginAccessibilityAuthorizationRecovery()
+  }
+  if (triggerMode !== 'hotkey' && !selectionListenerController.isRunning()) {
     console.warn('[autoTrigger] 划词监听未能启动，划词与双击将不可用，快捷键仍可使用')
   }
+}
+
+/**
+ * 停止并清理辅助功能授权完成恢复流程。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function cancelAccessibilityAuthorizationRecovery(): void {
+  const recovery = accessibilityAuthorizationRecovery
+  if (!recovery) return
+  accessibilityAuthorizationRecovery = null
+  if (recovery.timer) clearTimeout(recovery.timer)
+}
+
+/**
+ * 在 macOS 全局划词监听需要辅助功能权限时登记授权完成恢复流程。
+ *
+ * uIOhook 启动时会触发系统授权框，但授权完成后应用可能只收到一次 activate；
+ * 该 activate 会被通用的已可见窗口防闪现逻辑拦截。这里独立观察权限变化，
+ * 授权完成后主动重建监听并把设置页恢复到前台。
+ * @returns 完成首次权限检查并安排轮询后的 Promise。
+ * @author zhenghq
+ */
+async function beginAccessibilityAuthorizationRecovery(): Promise<void> {
+  if (!isMac) return
+  if (getSettings().triggerMode === 'hotkey') {
+    cancelAccessibilityAuthorizationRecovery()
+    return
+  }
+  if (accessibilityAuthorizationRecovery) return
+
+  const recovery: AccessibilityAuthorizationRecovery = {
+    startedAt: Date.now(),
+    timer: null,
+    checking: false
+  }
+  // 在权限检查前先登记，避免连续 applySelectionListener() 调用创建多个恢复轮询。
+  accessibilityAuthorizationRecovery = recovery
+  let trusted = false
+  try {
+    trusted = await checkAccessibilityPermission(false)
+  } catch (error) {
+    console.warn(
+      '[accessibility] 检查辅助功能授权状态失败:',
+      error instanceof Error ? error.message : error
+    )
+    cancelAccessibilityAuthorizationRecovery()
+    return
+  }
+  if (accessibilityAuthorizationRecovery !== recovery) return
+  if (trusted || getSettings().triggerMode === 'hotkey') {
+    cancelAccessibilityAuthorizationRecovery()
+    return
+  }
+  console.log('[accessibility] 等待用户完成辅助功能授权，完成后将自动恢复设置页')
+  void pollAccessibilityAuthorizationRecovery(recovery)
+}
+
+/**
+ * 轮询辅助功能授权状态，并在授权完成后恢复监听与设置页。
+ * @param recovery 本轮恢复状态；只处理仍为当前单例的轮询。
+ * @returns 本轮权限检查及后续定时安排完成后的 Promise。
+ * @author zhenghq
+ */
+async function pollAccessibilityAuthorizationRecovery(
+  recovery: AccessibilityAuthorizationRecovery
+): Promise<void> {
+  if (accessibilityAuthorizationRecovery !== recovery || recovery.checking) return
+  if (Date.now() - recovery.startedAt >= ACCESSIBILITY_AUTHORIZATION_RECOVERY_TIMEOUT_MS) {
+    console.warn('[accessibility] 等待辅助功能授权超时，停止自动恢复')
+    cancelAccessibilityAuthorizationRecovery()
+    return
+  }
+
+  recovery.checking = true
+  let trusted = false
+  try {
+    trusted = await checkAccessibilityPermission(false)
+  } catch (error) {
+    console.warn(
+      '[accessibility] 检查辅助功能授权状态失败:',
+      error instanceof Error ? error.message : error
+    )
+  } finally {
+    recovery.checking = false
+  }
+  if (accessibilityAuthorizationRecovery !== recovery) return
+  if (trusted) {
+    completeAccessibilityAuthorizationRecovery()
+    return
+  }
+  if (Date.now() - recovery.startedAt >= ACCESSIBILITY_AUTHORIZATION_RECOVERY_TIMEOUT_MS) {
+    console.warn('[accessibility] 等待辅助功能授权超时，停止自动恢复')
+    cancelAccessibilityAuthorizationRecovery()
+    return
+  }
+  recovery.timer = setTimeout(() => {
+    recovery.timer = null
+    void pollAccessibilityAuthorizationRecovery(recovery)
+  }, ACCESSIBILITY_AUTHORIZATION_RECOVERY_POLL_INTERVAL_MS)
+}
+
+/**
+ * 在辅助功能授权完成后重建全局监听，并通过显式入口恢复设置页焦点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function completeAccessibilityAuthorizationRecovery(): void {
+  cancelAccessibilityAuthorizationRecovery()
+  console.log('[accessibility] 检测到辅助功能授权完成，恢复划词监听与设置页')
+  selectionListenerController.restart()
+  openSettingsFromPopup()
 }
 
 /**
@@ -5789,6 +5925,7 @@ async function warnIfNoAccessibility(): Promise<void> {
   if (getSettings().triggerMode !== 'auto') return
   const ok = await checkAccessibilityPermission()
   if (!ok) {
+    void beginAccessibilityAuthorizationRecovery()
     const settings = getSettings()
     showPopup(
       {
@@ -6598,6 +6735,15 @@ function checkMicrosoft(): Promise<MicrosoftCheckStatus> {
 }
 
 /**
+ * 检测默认内置的 Bilibili Index-Translate 在线翻译链路。
+ * @returns 结构化脱敏检测状态。
+ * @author zhenghq
+ */
+function checkBilibiliIndex(): Promise<BilibiliIndexCheckStatus> {
+  return checkBilibiliIndexTranslation()
+}
+
+/**
  * 保存 AI 公共配置及可选新 API Key，并在成功后广播脱敏设置。
  * @param patch AI 配置补丁。
  * @returns 保存后的脱敏设置。
@@ -6830,6 +6976,12 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   if (patch.microsoftEnabled !== undefined &&
       settings.microsoftEnabled !== previous.microsoftEnabled) {
     resetMicrosoftTranslationRuntime()
+  }
+  if ((patch.biliIndexTranslateEnabled !== undefined &&
+       settings.biliIndexTranslateEnabled !== previous.biliIndexTranslateEnabled) ||
+      (patch.biliIndexTranslateModel !== undefined &&
+       settings.biliIndexTranslateModel !== previous.biliIndexTranslateModel)) {
+    resetBilibiliIndexTranslationRuntime()
   }
   if (patch.ocrEnginePreference !== undefined && settings.ocrEnginePreference !== previous.ocrEnginePreference) {
     delete ocrEnginePreferenceState.preferredEngine
@@ -7630,6 +7782,7 @@ function registerIpc(): void {
   ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
   ipcMain.handle('dingtalk:check', () => checkDingTalk())
   ipcMain.handle('microsoft:check', () => checkMicrosoft())
+  ipcMain.handle('bili-index:check', () => checkBilibiliIndex())
   ipcMain.handle('ai:configure', (_event, patch: AiConfigPatch) => applyAiConfig(patch))
   ipcMain.handle('ai:clear-key', () => clearAiApiKey())
   ipcMain.handle('ai:list-models', () => listAiModels())
@@ -7817,6 +7970,7 @@ function refreshTrayMenu(): void {
  * @author zhenghq
  */
 function cleanupBeforeQuit(): void {
+  cancelAccessibilityAuthorizationRecovery()
   resetDocumentWorkspaceSession()
   documentWorkspace?.dispose()
   documentWorkspace = null
