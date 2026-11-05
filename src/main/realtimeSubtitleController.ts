@@ -22,6 +22,9 @@ import {
   SUBTITLE_MAX_NETWORK_RECONNECTS
 } from '../shared/subtitleReconnect'
 
+/** final 译文出现后的最短展示时长，避免下一句 partial 立刻覆盖导致一闪而过。 */
+const DEFAULT_TRANSLATION_DISPLAY_HOLD_MS = 1500
+
 /** 控制器使用的 sidecar 宿主最小接口。 */
 export interface RealtimeSubtitleHost {
   /** 启动新会话。 */
@@ -33,6 +36,7 @@ export interface RealtimeSubtitleHost {
     whisperBaseUrl?: string
     whisperModel?: string
     whisperApiKey?: string | null
+    webSocketUrl?: string
   }): number
   /** 暂停识别。 */
   pause(): void
@@ -70,6 +74,10 @@ export interface RealtimeSubtitleControllerOptions {
   getWhisperApiKey?: () => string | null
   /** 读取 iTranslate API Key；仅启用且已配置时返回。 */
   getITranslateApiKey?: () => string | null
+  /** 读取实时识别网络中断的本地化提示。 */
+  getNetworkErrorMessage?: () => string
+  /** 主进程诊断日志接收器；默认写入 console，断链与重连使用 warn 级别。 */
+  log?: (message: string, level?: 'info' | 'warn') => void
   /** 复用现有流式翻译运行时。 */
   translateStream: (
     text: string,
@@ -79,8 +87,10 @@ export interface RealtimeSubtitleControllerOptions {
     options: { onDelta: (delta: string) => void; signal?: AbortSignal },
     iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
-  /** partial 稳定多久后发起预翻译，默认 300ms。 */
+  /** 保留给翻译协调器的 partial 防抖配置；实时字幕入口只对 final 发起翻译。 */
   previewDebounceMs?: number
+  /** final 译文出现后的最短展示时长，默认 1500ms；设为 0 可关闭。 */
+  translationDisplayHoldMs?: number
   /** 广播快照。 */
   onSnapshot: (snapshot: RealtimeSubtitleSnapshot) => void
   /** 控制字幕窗口显隐。 */
@@ -111,9 +121,23 @@ export class RealtimeSubtitleController {
   private readonly maxNetworkReconnects: number
   private readonly setTimeoutFn: (callback: () => void, delayMs: number) => unknown
   private readonly clearTimeoutFn: (handle: unknown) => void
+  private readonly getNetworkErrorMessage: () => string
+  private readonly logSink: (message: string, level?: 'info' | 'warn') => void
+  private readonly translationDisplayHoldMs: number
   private reconnectAttempts = 0
   private reconnectTimer: unknown = null
   private hideTimer: unknown = null
+  private translationDisplayHoldTimer: unknown = null
+  private translationDisplayUpdatePending = false
+  private translationDisplayHoldSegmentId: string | null = null
+  /** 已到达译文、但尚未轮到的段落，按到达顺序依次展示。 */
+  private readonly pendingTranslationDisplaySegmentIds: string[] = []
+  /** 待展示段落去重集合，避免流式增量反复入队。 */
+  private readonly pendingTranslationDisplaySegmentIdSet = new Set<string>()
+  /** 已完成过展示锁的段落，避免旧段落的后续增量再次抢占屏幕。 */
+  private readonly displayedTranslationSegmentIds = new Set<string>()
+  /** 最近一次真正推送给字幕窗的快照，用于展示锁期间保持界面内容不变。 */
+  private lastPublishedSnapshot: RealtimeSubtitleSnapshot | null = null
 
   /**
    * 创建实时字幕控制器。
@@ -127,6 +151,17 @@ export class RealtimeSubtitleController {
     this.maxNetworkReconnects = options.maxNetworkReconnects ?? SUBTITLE_MAX_NETWORK_RECONNECTS
     this.setTimeoutFn = options.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle as NodeJS.Timeout))
+    this.getNetworkErrorMessage = options.getNetworkErrorMessage ?? (() => 'network')
+    const translationDisplayHoldMs =
+      options.translationDisplayHoldMs ?? DEFAULT_TRANSLATION_DISPLAY_HOLD_MS
+    this.translationDisplayHoldMs = Number.isFinite(translationDisplayHoldMs)
+      ? Math.max(0, translationDisplayHoldMs)
+      : DEFAULT_TRANSLATION_DISPLAY_HOLD_MS
+    this.logSink = options.log ?? ((message, level = 'info') => {
+      const line = `[subtitle] ${message}`
+      if (level === 'warn') console.warn(line)
+      else console.log(line)
+    })
     this.translation = new SubtitleTranslationCoordinator({
       getSettings: options.getSettings,
       getDingTalkCredentials: options.getDingTalkCredentials,
@@ -165,6 +200,7 @@ export class RealtimeSubtitleController {
    */
   pause(): RealtimeSubtitleSnapshot {
     this.clearHideTimer()
+    this.clearTranslationDisplayHold()
     this.host.pause()
     return this.publish()
   }
@@ -187,6 +223,7 @@ export class RealtimeSubtitleController {
   stop(): RealtimeSubtitleSnapshot {
     this.clearReconnectTimer()
     this.clearHideTimer()
+    this.clearTranslationDisplayHold()
     this.reconnectAttempts = 0
     this.translation.invalidate()
     this.host.stop()
@@ -214,11 +251,13 @@ export class RealtimeSubtitleController {
 
   /**
    * 将快照转换为字幕窗视图模型。
+   * 展示锁生效时宿主已产生下一句内容，但字幕窗仍应停留在上一句，
+   * 因此这里读取最近一次实际推送的快照，而不是宿主实时快照。
    * @returns 可直接渲染的视图。
    * @author zhenghq
    */
   viewModel(): RealtimeSubtitleViewModel {
-    return createRealtimeSubtitleViewModel(this.snapshot())
+    return createRealtimeSubtitleViewModel(this.lastPublishedSnapshot ?? this.snapshot())
   }
 
   /**
@@ -234,6 +273,7 @@ export class RealtimeSubtitleController {
       settings.realtimeSubtitleHideAfterMs !== this.latestSettings.realtimeSubtitleHideAfterMs
     this.latestSettings = settings
     this.syncAppearance()
+    this.clearTranslationDisplayHold()
     if (shouldRestart) {
       // 音频来源、识别语言或 ASR 配置变化后必须重建 sidecar，确保新参数立即生效。
       this.host.stop()
@@ -263,6 +303,7 @@ export class RealtimeSubtitleController {
   private startCurrentSession(): RealtimeSubtitleSnapshot {
     this.clearReconnectTimer()
     this.clearHideTimer()
+    this.clearTranslationDisplayHold()
     this.reconnectAttempts = 0
     this.generation += 1
     this.translation.invalidate()
@@ -295,7 +336,9 @@ export class RealtimeSubtitleController {
       settings.realtimeSubtitleWhisperBaseUrl !==
         this.latestSettings.realtimeSubtitleWhisperBaseUrl ||
       settings.realtimeSubtitleWhisperModel !==
-        this.latestSettings.realtimeSubtitleWhisperModel
+        this.latestSettings.realtimeSubtitleWhisperModel ||
+      settings.realtimeSubtitleWebSocketUrl !==
+        this.latestSettings.realtimeSubtitleWebSocketUrl
   }
 
   /**
@@ -328,6 +371,7 @@ export class RealtimeSubtitleController {
     this.disposed = true
     this.clearReconnectTimer()
     this.clearHideTimer()
+    this.clearTranslationDisplayHold()
     this.translation.invalidate()
     this.host.dispose()
     this.options.setWindowVisible(false)
@@ -343,6 +387,12 @@ export class RealtimeSubtitleController {
   private handleSidecarEvent(event: SubtitleSidecarEvent, generation: number): void {
     if (this.disposed || generation !== this.generation) return
     if (event.type === 'ready') {
+      if (this.reconnectAttempts > 0) {
+        this.logSink(
+          `ASR 重连成功 provider=${this.latestSettings.realtimeSubtitleAsrProvider} attempts=${this.reconnectAttempts}`,
+          'info'
+        )
+      }
       // 只有真正收到 ready 才视为恢复成功，避免启动即失败时重置重试预算。
       this.reconnectAttempts = 0
       this.startupError = null
@@ -350,30 +400,58 @@ export class RealtimeSubtitleController {
       return
     }
     if (event.type === 'partial') {
-      const segment = this.host.snapshot().segments.at(-1)
-      if (segment?.status === 'partial' && segment.sourceText === event.text) {
-        this.translation.preview(event.text, event.lang, generation, segment.id)
-      }
       this.scheduleHideTimer(generation)
-      this.publish()
+      // partial 只负责实时原文；翻译统一由 final 触发，避免同一句反复重置译文。
+      this.publishDisplayUpdate()
       return
     }
     if (event.type === 'final') {
       this.scheduleHideTimer(generation)
       const snapshot = this.host.snapshot()
       const segment = snapshot.segments.at(-1)
-      this.publish()
+      this.publishDisplayUpdate()
       if (!segment || segment.sourceText !== event.text) return
       this.translation.submit(event.text, event.lang, generation, segment.id)
       return
     }
     if (event.type === 'error') {
       this.clearHideTimer()
+      this.clearTranslationDisplayHold()
+      this.logSink(
+        `${event.code === 'network' ? 'ASR 连接中断' : 'ASR 会话错误'} provider=${this.latestSettings.realtimeSubtitleAsrProvider} code=${event.code} message=${event.message ?? event.code} attempts=${this.reconnectAttempts}/${this.maxNetworkReconnects}`,
+        'warn'
+      )
       this.startupError = {
         code: event.code,
         message: event.message ?? event.code
       }
       if (shouldReconnectSubtitle(event.code, this.reconnectAttempts, this.maxNetworkReconnects)) {
+        this.scheduleReconnect()
+        return
+      }
+      this.options.setWindowVisible(false)
+    } else if (event.type === 'status' && event.state === 'idle') {
+      this.clearHideTimer()
+      this.clearTranslationDisplayHold()
+      // 结构化错误通常紧跟着 stopped 状态；已有错误或待执行重连时不得重复调度。
+      if (this.startupError || this.reconnectTimer !== null) {
+        this.publish()
+        return
+      }
+      this.logSink(
+        `ASR 会话意外停止 provider=${this.latestSettings.realtimeSubtitleAsrProvider}；若为 websocket，请检查 WS 是否断链`,
+        'warn'
+      )
+      const reconnectable = shouldReconnectSubtitle(
+        'network',
+        this.reconnectAttempts,
+        this.maxNetworkReconnects
+      )
+      this.startupError = {
+        code: 'network',
+        message: this.getNetworkErrorMessage()
+      }
+      if (reconnectable) {
         this.scheduleReconnect()
         return
       }
@@ -388,15 +466,26 @@ export class RealtimeSubtitleController {
    * @author zhenghq
    */
   private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) return
     const delay = resolveSubtitleReconnectDelay(this.reconnectAttempts)
+    const attempt = this.reconnectAttempts + 1
     this.reconnectAttempts += 1
-    this.clearReconnectTimer()
+    this.logSink(
+      `ASR 断链，安排第 ${attempt}/${this.maxNetworkReconnects} 次重连 provider=${this.latestSettings.realtimeSubtitleAsrProvider} retryInMs=${delay}`,
+      'warn'
+    )
     this.reconnectTimer = this.setTimeoutFn(() => {
       this.reconnectTimer = null
       if (this.disposed) return
+      this.logSink(
+        `ASR 开始第 ${attempt}/${this.maxNetworkReconnects} 次重连 provider=${this.latestSettings.realtimeSubtitleAsrProvider}`
+      )
       this.host.stop()
       this.translation.invalidate()
+      this.clearTranslationDisplayHold()
       this.latestSettings = this.options.getSettings()
+      // 新一轮启动可能再次立即停止；先清除上一轮错误，才能继续安排下一档退避。
+      this.startupError = null
       // 宿主的同步启动错误会在 start() 返回前派发事件；先推进控制器代次，
       // 让这类事件不会被误判为旧会话而丢弃。
       this.generation += 1
@@ -404,6 +493,10 @@ export class RealtimeSubtitleController {
       this.generation = hostGeneration
       const snapshot = this.host.snapshot()
       if (snapshot.state === 'idle') {
+        this.logSink(
+          `ASR 第 ${attempt}/${this.maxNetworkReconnects} 次重连后仍处于 idle，provider=${this.latestSettings.realtimeSubtitleAsrProvider}`,
+          'warn'
+        )
         // 已安排下一轮重试时保留字幕窗；不可恢复的同步错误则关闭窗口。
         this.options.setWindowVisible(this.reconnectTimer !== null)
         this.publish()
@@ -446,6 +539,13 @@ export class RealtimeSubtitleController {
         whisperApiKey: this.options.getWhisperApiKey?.() ?? null
       }
     }
+    if (base.asr === 'websocket') {
+      return {
+        ...base,
+        deepgramApiKey: null,
+        webSocketUrl: this.latestSettings.realtimeSubtitleWebSocketUrl
+      }
+    }
     return {
       ...base,
       deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
@@ -472,6 +572,7 @@ export class RealtimeSubtitleController {
         return
       }
       this.host.clearDisplay()
+      this.clearTranslationDisplayHold()
       this.publish()
     }, delayMs)
   }
@@ -499,14 +600,20 @@ export class RealtimeSubtitleController {
     delta: string,
     phase: SubtitleTranslationPhase
   ): void {
-    const segment = this.host.snapshot().segments.find((candidate) => candidate.id === segmentId)
+    const segments = this.host.snapshot().segments
+    const segment = segments.find((candidate) => candidate.id === segmentId)
     if (!segment) return
+    if (phase === 'preview') {
+      // 过期预览只能作用于仍处于编辑中的最新段落；历史段落已定稿时
+      // 继续写 partial 会让下一句复用它并粘在上一句后面。
+      if (segments.at(-1)?.id !== segmentId || segment.status !== 'partial') return
+    }
     this.host.updateTranslation(
       segmentId,
       segment.translatedText + delta,
       phase === 'preview' ? 'partial' : 'translating'
     )
-    this.publish()
+    this.publishTranslationUpdate(segmentId)
   }
 
   /**
@@ -517,11 +624,15 @@ export class RealtimeSubtitleController {
    * @author zhenghq
    */
   private applyReset(segmentId: string, phase: SubtitleTranslationPhase): void {
-    const segment = this.host.snapshot().segments.find((candidate) => candidate.id === segmentId)
+    const segments = this.host.snapshot().segments
+    const segment = segments.find((candidate) => candidate.id === segmentId)
     if (!segment) return
+    if (phase === 'preview') {
+      if (segments.at(-1)?.id !== segmentId || segment.status !== 'partial') return
+    }
     const status = phase === 'preview' && segment.status === 'partial' ? 'partial' : 'translating'
     this.host.updateTranslation(segmentId, '', status)
-    this.publish()
+    this.publishTranslationUpdate(segmentId)
   }
 
   /**
@@ -534,7 +645,7 @@ export class RealtimeSubtitleController {
     const segment = this.host.snapshot().segments.find((candidate) => candidate.id === segmentId)
     if (!segment) return
     this.host.updateTranslation(segmentId, segment.translatedText, 'translated')
-    this.publish()
+    this.publishTranslationUpdate(segmentId)
   }
 
   /**
@@ -549,7 +660,192 @@ export class RealtimeSubtitleController {
     if (!segment) return
     this.host.updateTranslation(segmentId, segment.translatedText, 'error')
     console.error('[subtitle] 段落翻译失败:', error.message)
+    this.publishTranslationUpdate(segmentId)
+  }
+
+  /**
+   * 发布识别文本更新；若刚出现 final 译文，则暂缓替换以便用户读完。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private publishDisplayUpdate(): void {
+    if (this.translationDisplayHoldTimer !== null) {
+      this.translationDisplayUpdatePending = true
+      return
+    }
     this.publish()
+  }
+
+  /**
+   * 发布译文更新：当前段刷新展示计时，尚未上屏的历史段进入队列依次展示。
+   * @param segmentId 译文对应的段落标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private publishTranslationUpdate(segmentId: string): void {
+    const snapshot = this.host.snapshot()
+    const segment = snapshot.segments.find((candidate) => candidate.id === segmentId)
+    if (!segment) return
+
+    // 当前展示锁属于本段时，继续把流式译文刷新到这一段；即使宿主中已经
+    // 创建了下一句段落，也不能让下一句把还在增长的译文挤出屏幕。
+    if (this.translationDisplayHoldSegmentId === segmentId &&
+        this.translationDisplayHoldTimer !== null) {
+      this.scheduleTranslationDisplayHold(segmentId)
+      this.publishPinnedSegment(snapshot, segmentId)
+      return
+    }
+
+    // 关闭展示锁时保持原有实时行为，只展示最新段落。
+    if (this.translationDisplayHoldMs <= 0) {
+      if (snapshot.segments.at(-1)?.id !== segmentId) return
+      this.translationDisplayUpdatePending = false
+      this.publish()
+      return
+    }
+
+    // final 开始时的空译文重置不进入历史队列；最新段落仍按实时原文展示。
+    if (!segment.translatedText.trim()) {
+      if (
+        this.translationDisplayHoldTimer === null &&
+        snapshot.segments.at(-1)?.id === segmentId
+      ) {
+        this.publish()
+      }
+      return
+    }
+
+    const isLatest = snapshot.segments.at(-1)?.id === segmentId
+    if (this.translationDisplayHoldTimer !== null) {
+      // 其他段落正在展示时，只为尚未上屏的历史译文排队。
+      if (!this.displayedTranslationSegmentIds.has(segmentId)) {
+        this.enqueueTranslationDisplay(segmentId)
+      }
+      return
+    }
+
+    // 最新段落可以随流式增量持续刷新；历史段落只展示一次，避免旧译文回跳。
+    if (isLatest) {
+      this.scheduleTranslationDisplayHold(segmentId)
+      this.publish()
+      return
+    }
+    if (this.displayedTranslationSegmentIds.has(segmentId)) return
+    this.enqueueTranslationDisplay(segmentId)
+    this.drainTranslationDisplayQueue()
+  }
+
+  /**
+   * 安排指定段落的最短展示计时；计时结束后继续展示排队译文或最新字幕。
+   * @param segmentId 正在展示的段落标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private scheduleTranslationDisplayHold(segmentId: string): void {
+    this.clearTranslationDisplayHoldTimer()
+    if (this.translationDisplayHoldMs <= 0) {
+      this.translationDisplayHoldSegmentId = null
+      return
+    }
+    this.displayedTranslationSegmentIds.add(segmentId)
+    this.translationDisplayHoldSegmentId = segmentId
+    this.translationDisplayHoldTimer = this.setTimeoutFn(() => {
+      this.translationDisplayHoldTimer = null
+      this.translationDisplayHoldSegmentId = null
+      if (this.disposed) return
+      this.drainTranslationDisplayQueue()
+    }, this.translationDisplayHoldMs)
+  }
+
+  /**
+   * 将已到达译文的段落加入待展示队列，使用集合去重。
+   * @param segmentId 段落标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private enqueueTranslationDisplay(segmentId: string): void {
+    if (segmentId === this.translationDisplayHoldSegmentId) return
+    if (this.pendingTranslationDisplaySegmentIdSet.has(segmentId)) return
+    this.pendingTranslationDisplaySegmentIdSet.add(segmentId)
+    this.pendingTranslationDisplaySegmentIds.push(segmentId)
+  }
+
+  /**
+   * 在没有展示锁时依次展示排队译文，队列清空后补发最新实时字幕。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private drainTranslationDisplayQueue(): void {
+    if (this.disposed || this.translationDisplayHoldTimer !== null) return
+    while (this.pendingTranslationDisplaySegmentIds.length > 0) {
+      const segmentId = this.pendingTranslationDisplaySegmentIds.shift()
+      if (!segmentId) continue
+      this.pendingTranslationDisplaySegmentIdSet.delete(segmentId)
+      const snapshot = this.host.snapshot()
+      const segment = snapshot.segments.find((candidate) => candidate.id === segmentId)
+      // 自动清屏或段落上限可能已移除旧段落，跳过失效标识继续处理后续译文。
+      if (!segment || !segment.translatedText.trim()) continue
+      this.scheduleTranslationDisplayHold(segmentId)
+      if (snapshot.segments.at(-1)?.id === segmentId) {
+        this.publish()
+      } else {
+        this.publishPinnedSegment(snapshot, segmentId)
+      }
+      return
+    }
+    if (!this.translationDisplayUpdatePending) return
+    this.translationDisplayUpdatePending = false
+    this.publish()
+  }
+
+  /**
+   * 发布指定段落作为临时展示末尾，避免被宿主中更新的预览段落立即顶掉。
+   * @param snapshot 宿主当前快照。
+   * @param segmentId 需要固定在末尾展示的段落标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private publishPinnedSegment(snapshot: RealtimeSubtitleSnapshot, segmentId: string): void {
+    const segment = snapshot.segments.find((candidate) => candidate.id === segmentId)
+    if (!segment) {
+      this.publish()
+      return
+    }
+    const pinned: RealtimeSubtitleSnapshot = {
+      ...snapshot,
+      sourceText: segment.sourceText,
+      translatedText: segment.translatedText,
+      segments: [
+        ...snapshot.segments.filter((candidate) => candidate.id !== segmentId),
+        { ...segment }
+      ]
+    }
+    this.publishSnapshot(this.mergeStartupError(pinned))
+  }
+
+  /**
+   * 只清除译文最短展示计时，保留待补发状态与当前展示段标识。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private clearTranslationDisplayHoldTimer(): void {
+    if (this.translationDisplayHoldTimer === null) return
+    this.clearTimeoutFn(this.translationDisplayHoldTimer)
+    this.translationDisplayHoldTimer = null
+  }
+
+  /**
+   * 清除译文展示计时、待补发状态、待展示队列与已展示段落记录。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private clearTranslationDisplayHold(): void {
+    this.clearTranslationDisplayHoldTimer()
+    this.translationDisplayHoldSegmentId = null
+    this.translationDisplayUpdatePending = false
+    this.pendingTranslationDisplaySegmentIds.length = 0
+    this.pendingTranslationDisplaySegmentIdSet.clear()
+    this.displayedTranslationSegmentIds.clear()
   }
 
   /**
@@ -559,6 +855,17 @@ export class RealtimeSubtitleController {
    */
   private publish(): RealtimeSubtitleSnapshot {
     const snapshot = this.mergeStartupError(this.host.snapshot())
+    return this.publishSnapshot(snapshot)
+  }
+
+  /**
+   * 记录并推送字幕快照，确保视图模型与字幕窗渲染使用同一份内容。
+   * @param snapshot 待推送快照。
+   * @returns 已推送的快照。
+   * @author zhenghq
+   */
+  private publishSnapshot(snapshot: RealtimeSubtitleSnapshot): RealtimeSubtitleSnapshot {
+    this.lastPublishedSnapshot = snapshot
     this.options.onSnapshot(snapshot)
     return snapshot
   }
@@ -586,8 +893,7 @@ export class RealtimeSubtitleController {
    */
   private publishWithStartupError(snapshot: RealtimeSubtitleSnapshot): RealtimeSubtitleSnapshot {
     const merged = this.mergeStartupError(snapshot)
-    this.options.onSnapshot(merged)
-    return merged
+    return this.publishSnapshot(merged)
   }
 
   /**

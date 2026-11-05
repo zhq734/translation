@@ -30,6 +30,21 @@ async function flush(): Promise<void> {
 }
 
 /**
+ * 等待条件成立，用于跨越协调器延迟启动的多个事件循环。
+ * @param predicate 条件判断函数。
+ * @param attempts 最大轮询次数。
+ * @returns 条件成立时 resolve；超过次数后使测试失败。
+ * @author zhenghq
+ */
+async function waitFor(predicate: () => boolean, attempts = 20): Promise<void> {
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return
+    await flush()
+  }
+  assert.fail('等待条件超时')
+}
+
+/**
  * 创建延迟可控的翻译 Promise。
  * @param resolve 完成函数。
  * @returns 延迟句柄与 Promise。
@@ -79,6 +94,75 @@ test('字幕 final 应复用流式翻译并保留段落标识', async () => {
   assert.deepEqual(calls, [{ text: 'Hello', sourceLang: 'en-US' }])
   assert.deepEqual(deltas, ['你', '好'])
   assert.deepEqual(completed, [id])
+})
+
+/**
+ * 校验服务端拆句后的多条 final 译文按段落标识隔离，不会互相追加。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 final 的译文应按各自段落隔离', async () => {
+  const sentences = [
+    '蔡永嘉,你听明白了吗?',
+    '听明白了,一会儿行政大队就去忍。',
+    '你们把李小交接,是。'
+  ]
+  const deltas: Array<{ id: string; delta: string }> = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    translateStream: async (text, _settings, _dingTalk, _aiKey, options) => {
+      const translated = `译文:${text}`
+      options.onDelta(translated)
+      return { translation: translated } as never
+    },
+    onDelta: (id, delta) => deltas.push({ id, delta }),
+    onComplete: () => undefined,
+    onError: () => assert.fail('不应失败')
+  })
+
+  sentences.forEach((sentence, index) => {
+    coordinator.submit(sentence, 'zh', 1, `segment-${index + 1}`)
+  })
+  await coordinator.idle()
+
+  assert.deepEqual(
+    deltas.map((item) => item.id),
+    ['segment-1', 'segment-2', 'segment-3']
+  )
+  assert.deepEqual(
+    deltas.map((item) => item.delta),
+    sentences.map((sentence) => `译文:${sentence}`)
+  )
+})
+
+/**
+ * 校验 final 之后迟到的 partial 不会重新开启预览翻译，避免旧段落继续追加译文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 后迟到的 partial 不得重新开启预览翻译', async () => {
+  const calls: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    translateStream: async (text) => {
+      calls.push(text)
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('不应失败')
+  })
+
+  coordinator.submit('Hello', 'en-US', 1, 'segment-1')
+  await coordinator.idle()
+  coordinator.preview('Hello again', 'en-US', 1, 'segment-1')
+  await coordinator.idle()
+
+  assert.deepEqual(calls, ['Hello'])
 })
 
 /**
@@ -186,12 +270,16 @@ test('字幕 partial 稳定后应提前流式翻译并在 final 到达后复用'
 })
 
 /**
- * 校验 partial 内容变化会取消旧请求并清空旧译文，避免短暂展示过期翻译。
+ * 校验连续 partial 更新不会反复中止在途预翻译，并在完成后自动追上最新文本。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('字幕 partial 变化应取消旧预翻译并清空旧译文', async () => {
+test('字幕 partial 连续变化应合并预翻译并在完成后追最新文本', async () => {
   const manualTimers = createManualTimers()
+  const first = deferred<{ translation: string }>()
+  const second = deferred<{ translation: string }>()
+  const calls: string[] = []
+  const deltas: Array<{ delta: string; phase: string }> = []
   const reset: Array<{ id: string; phase: string }> = []
   let aborted = false
   const coordinator = new SubtitleTranslationCoordinator({
@@ -201,16 +289,16 @@ test('字幕 partial 变化应取消旧预翻译并清空旧译文', async () =>
     previewDebounceMs: 200,
     setTimeoutFn: manualTimers.setTimeoutFn,
     clearTimeoutFn: manualTimers.clearTimeoutFn,
-    translateStream: async (_text, _settings, _dingTalk, _aiKey, options) => {
-      options.onDelta('旧译文')
-      return new Promise((_resolve, reject) => {
-        options.signal?.addEventListener('abort', () => {
-          aborted = true
-          reject(new Error('aborted'))
-        }, { once: true })
-      }) as never
+    translateStream: async (text, _settings, _dingTalk, _aiKey, options) => {
+      const index = calls.length
+      calls.push(text)
+      options.signal?.addEventListener('abort', () => {
+        aborted = true
+      }, { once: true })
+      options.onDelta(index === 0 ? '旧' : '新')
+      return (index === 0 ? first.promise : second.promise) as never
     },
-    onDelta: () => undefined,
+    onDelta: (_id, delta, phase) => deltas.push({ delta, phase }),
     onComplete: () => undefined,
     onError: () => assert.fail('取消请求不应上报错误'),
     onReset: (id, phase) => reset.push({ id, phase })
@@ -219,11 +307,114 @@ test('字幕 partial 变化应取消旧预翻译并清空旧译文', async () =>
   coordinator.preview('Hello', 'en', 1, 'segment-1')
   manualTimers.timers[0]?.callback()
   await flush()
+  assert.deepEqual(calls, ['Hello'])
+
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+  assert.deepEqual(calls, ['Hello'])
+  assert.equal(aborted, false)
+  assert.deepEqual(reset, [])
+
+  first.resolve({ translation: '旧译' })
+  await waitFor(() => calls.length === 2)
+  assert.deepEqual(calls, ['Hello', 'Hello world'])
+  assert.equal(aborted, false)
+  assert.deepEqual(reset, [{ id: 'segment-1', phase: 'preview' }])
+
+  second.resolve({ translation: '新译' })
+  await coordinator.idle()
+  assert.deepEqual(deltas, [
+    { delta: '旧', phase: 'preview' },
+    { delta: '译', phase: 'preview' },
+    { delta: '新', phase: 'preview' },
+    { delta: '译', phase: 'preview' }
+  ])
+})
+
+/**
+ * 校验识别文本回退到当前请求原文时，不应继续翻译已过时的排队文本。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕 partial 回到当前原文时应丢弃旧排队文本', async () => {
+  const manualTimers = createManualTimers()
+  const pending = deferred<{ translation: string }>()
+  const calls: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 200,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      return pending.promise as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  manualTimers.timers[0]?.callback()
+  await flush()
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+
+  pending.resolve({ translation: '你好' })
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello'])
+})
+
+/**
+ * 校验 final 到达时应立即抢占运行中的预翻译，避免继续等待旧 partial。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕 final 应抢占运行中的预翻译并跳过排队文本', async () => {
+  const manualTimers = createManualTimers()
+  const pending = deferred<{ translation: string }>()
+  const calls: string[] = []
+  const completed: string[] = []
+  let aborted = false
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 200,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text, _settings, _dingTalk, _aiKey, options) => {
+      calls.push(text)
+      if (text === 'Hello') {
+        options.signal?.addEventListener('abort', () => {
+          aborted = true
+          pending.reject(new Error('aborted'))
+        }, { once: true })
+        return pending.promise as never
+      }
+      options.onDelta('最终')
+      return { translation: '最终' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: (id) => completed.push(id),
+    onError: () => assert.fail('final 翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  manualTimers.timers[0]?.callback()
+  await flush()
   coordinator.preview('Hello world', 'en', 1, 'segment-1')
 
+  coordinator.submit('Hello world!', 'en', 1, 'segment-1')
+  await coordinator.idle()
+
   assert.equal(aborted, true)
-  assert.deepEqual(reset, [{ id: 'segment-1', phase: 'preview' }])
-  coordinator.invalidate()
+  assert.deepEqual(calls, ['Hello', 'Hello world!'])
+  assert.deepEqual(completed, ['segment-1'])
+  assert.equal(manualTimers.timers.length, 1)
 })
 
 /**

@@ -104,13 +104,13 @@ function isPointInside(event: PointerEvent, element: HTMLElement): boolean {
 }
 
 /**
- * 将拖拽按钮的真实窗口内矩形同步给主进程。
+ * 将工具栏的真实窗口内矩形同步给主进程。
  * 仅在矩形变化时发送，避免布局观察器高频触发 IPC。
  * @returns 无返回值。
  * @author zhenghq
  */
 function syncDragHitArea(): void {
-  const rect = dragHandle.getBoundingClientRect()
+  const rect = toolbar.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return
   const area: RealtimeSubtitleDragHitArea = {
     x: rect.left,
@@ -156,14 +156,27 @@ function showToolbar(): void {
 }
 
 /**
+ * 立即隐藏工具栏并恢复字幕窗点击穿透。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resetToolbarInteraction(): void {
+  if (toolbarHideTimer) {
+    clearTimeout(toolbarHideTimer)
+    toolbarHideTimer = null
+  }
+  root.dataset.toolbarVisible = 'false'
+  setMouseInteraction(false)
+}
+
+/**
  * 在指针离开工具栏且内部没有焦点时隐藏工具栏并恢复点击穿透。
  * @returns 无返回值。
  * @author zhenghq
  */
 function releaseToolbarInteractionIfInactive(): void {
   if (toolbar.matches(':hover') || toolbar.contains(document.activeElement)) return
-  root.dataset.toolbarVisible = 'false'
-  setMouseInteraction(false)
+  resetToolbarInteraction()
 }
 
 /**
@@ -320,6 +333,11 @@ dragHandle.addEventListener('pointercancel', () => {
   scheduleToolbarHide()
 })
 window.addEventListener('pointerup', scheduleToolbarHide)
+window.addEventListener('blur', resetToolbarInteraction)
+document.addEventListener('mouseleave', resetToolbarInteraction)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) resetToolbarInteraction()
+})
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') window.api.stopRealtimeSubtitle()
 })
@@ -341,7 +359,7 @@ localeRuntime.onLocaleChanged(() => {
 })
 populateTargetLanguages()
 const dragHitAreaObserver = new ResizeObserver(scheduleDragHitAreaSync)
-dragHitAreaObserver.observe(dragHandle)
+dragHitAreaObserver.observe(toolbar)
 dragHitAreaObserver.observe(subtitleCard)
 window.addEventListener('resize', scheduleDragHitAreaSync)
 scheduleDragHitAreaSync()

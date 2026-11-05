@@ -2,6 +2,11 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import {
+  hasNativeBuildForceFlag,
+  isNativeBuildUpToDate,
+  logNativeBuildUpToDate
+} from './lib/native-build-cache.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const helperSourcePath = join(root, 'helpers', 'macos-ax-reader', 'main.m')
@@ -21,6 +26,8 @@ const nodeApiIncludePath = join(
   'node-api-headers',
   'include'
 )
+const nodeApiHeaderPath = join(nodeApiIncludePath, 'node_api.h')
+const forceBuild = hasNativeBuildForceFlag()
 
 /** 打包的 macOS 目标架构；universal 可同时覆盖 Intel 与 Apple Silicon。 */
 const MACOS_ARCHITECTURES = ['arm64', 'x86_64']
@@ -85,8 +92,15 @@ function buildMacosAxArtifacts() {
   if (!existsSync(addonSourcePath)) {
     throw new Error(`缺少 macOS AX N-API addon 源码: ${addonSourcePath}`)
   }
-  if (!existsSync(join(nodeApiIncludePath, 'node_api.h'))) {
+  if (!existsSync(nodeApiHeaderPath)) {
     throw new Error(`缺少 Node-API 头文件: ${nodeApiIncludePath}`)
+  }
+  if (!forceBuild && isNativeBuildUpToDate(
+    [helperOutputPath, addonOutputPath],
+    [helperSourcePath, addonSourcePath, nodeApiHeaderPath]
+  )) {
+    logNativeBuildUpToDate('macOS AX reader helper')
+    return
   }
 
   mkdirSync(dirname(helperOutputPath), { recursive: true })

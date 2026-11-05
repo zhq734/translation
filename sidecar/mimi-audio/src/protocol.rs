@@ -25,6 +25,9 @@ pub enum AsrProvider {
     Deepgram,
     /// OpenAI 兼容的 Whisper 批量转写服务。
     Whisper,
+    /// 本机或兼容服务提供的 WebSocket 流式语音识别。
+    #[serde(rename = "websocket")]
+    WebSocket,
 }
 
 /// 主进程下发的控制命令。
@@ -164,6 +167,22 @@ mod tests {
                 assert_eq!(source, AudioSource::System);
                 assert_eq!(asr, AsrProvider::Whisper);
                 assert_eq!(lang, "auto");
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_websocket_start_command() {
+        let command: Command = serde_json::from_str(
+            "{\"cmd\":\"start\",\"source\":\"system\",\"asr\":\"websocket\",\"lang\":\"zh-CN\"}",
+        )
+        .expect("websocket start command should parse");
+        match command {
+            Command::Start { source, asr, lang } => {
+                assert_eq!(source, AudioSource::System);
+                assert_eq!(asr, AsrProvider::WebSocket);
+                assert_eq!(lang, "zh-CN");
             }
             _ => panic!("expected start command"),
         }

@@ -39,6 +39,7 @@ class FakeHost {
     whisperBaseUrl?: string
     whisperModel?: string
     whisperApiKey?: string | null
+    webSocketUrl?: string
   }> = []
   /** 记录 pause/resume/stop 调用。 */
   calls: string[] = []
@@ -63,6 +64,7 @@ class FakeHost {
     whisperBaseUrl?: string
     whisperModel?: string
     whisperApiKey?: string | null
+    webSocketUrl?: string
   }): number {
     this.starts.push(options)
     this.generation += 1
@@ -179,9 +181,8 @@ class FakeHost {
       this.sourceText = event.text
       this.translatedText = ''
     } else if (event.type === 'level') {
-      if (event.rms >= 0.01 && this.audioActivity === 'idle') {
-        this.audioActivity = 'speech-pending'
-      }
+      // 人声判定由上游 ASR/VAD 负责，客户端电平事件不驱动本地状态。
+      return
     } else if (event.type === 'error') {
       this.error = event.message ?? event.code
       this.state = 'idle'
@@ -199,7 +200,12 @@ class FakeHost {
  */
 function createHarness(
   overrides: Partial<Settings> = {},
-  options: { previewDebounceMs?: number; whisperApiKey?: string | null } = {}
+  options: {
+    previewDebounceMs?: number
+    translationDisplayHoldMs?: number
+    whisperApiKey?: string | null
+    logs?: string[]
+  } = {}
 ) {
   const host = new FakeHost()
   const broadcasts: RealtimeSubtitleSnapshot[] = []
@@ -210,6 +216,12 @@ function createHarness(
     sourceLang: string | undefined
     id: string
     iTranslateApiKey: string | null | undefined
+  }> = []
+  const pendingTranslations: Array<{
+    text: string
+    onDelta: (delta: string) => void
+    resolve: () => void
+    reject: (error: Error) => void
   }> = []
   let resolveTranslation: (() => void) | null = null
   let rejectTranslation: ((error: Error) => void) | null = null
@@ -225,6 +237,8 @@ function createHarness(
     getWhisperApiKey: () => options.whisperApiKey ?? null,
     getITranslateApiKey: () => 'it-secret',
     previewDebounceMs: options.previewDebounceMs,
+    translationDisplayHoldMs: options.translationDisplayHoldMs ?? 0,
+    log: (message) => options.logs?.push(message),
     translateStream: async (text, _settings, _dingTalk, _apiKey, options, iTranslateApiKey) => {
       translateCalls.push({
         text,
@@ -236,9 +250,16 @@ function createHarness(
         options.signal?.addEventListener('abort', () => {
           reject(new Error('aborted'))
         }, { once: true })
+        const pending = {
+          text,
+          onDelta: options.onDelta,
+          resolve: () => resolve({ translation: '' } as never),
+          reject
+        }
+        pendingTranslations.push(pending)
         resolveTranslation = () => {
-          options.onDelta('你好')
-          resolve({ translation: '你好' } as never)
+          pending.onDelta('你好')
+          pending.resolve()
         }
         rejectTranslation = reject
       })
@@ -262,6 +283,13 @@ function createHarness(
     windowStates,
     translateCalls,
     timers,
+    /** 按原文结束指定的在途翻译，并推送自定义译文。 */
+    finishTranslationFor: (text: string, translation: string) => {
+      const pending = pendingTranslations.find((candidate) => candidate.text === text)
+      if (!pending) throw new Error(`no pending translation for ${text}`)
+      pending.onDelta(translation)
+      pending.resolve()
+    },
     runNextReconnect: () => {
       const timer = timers.find((candidate) => !candidate.cleared)
       if (!timer) throw new Error('no pending reconnect timer')
@@ -280,18 +308,18 @@ async function flush(): Promise<void> {
 }
 
 /**
- * 校验稳定 partial 会提前预翻译，final 同文时复用请求并完成段落。
+ * 校验 partial 只更新原文，只有 final 才发起一次翻译。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('实时字幕应提前翻译稳定 partial 并在 final 同文时复用', async () => {
+test('实时字幕应只在 final 到达后发起翻译', async () => {
   const harness = createHarness({}, { previewDebounceMs: 0 })
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
   assert.equal(harness.controller.snapshot().sourceText, 'Hello')
   await flush()
-  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
+  assert.deepEqual(harness.translateCalls, [])
 
   harness.host.emit({ type: 'final', text: 'Hello', lang: 'en-US' })
   await flush()
@@ -308,19 +336,234 @@ test('实时字幕应提前翻译稳定 partial 并在 final 同文时复用', a
 })
 
 /**
- * 校验有声音但尚无识别文本时，控制器广播的提示可被设置页和字幕窗读取。
+ * 校验 final 译文会保持最短展示时间，避免下一句 partial 立刻覆盖。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('有声音但无识别文本时应广播 speech-pending 提示', () => {
+test('final 译文应保持最短展示时间后再显示下一句', async () => {
+  const harness = createHarness({}, { translationDisplayHoldMs: 1500 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
+  harness.host.emit({ type: 'final', text: 'Hello', lang: 'en-US' })
+  await flush()
+  harness.finishTranslation()
+  await harness.controller.idle()
+
+  assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.translatedText, '你好')
+  const broadcastCount = harness.broadcasts.length
+
+  harness.host.emit({ type: 'partial', text: 'Next sentence', lang: 'en-US' })
+  assert.equal(harness.broadcasts.length, broadcastCount)
+  assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.translatedText, '你好')
+
+  const holdTimer = harness.timers.find((timer) => !timer.cleared && timer.delayMs === 1500)
+  assert.ok(holdTimer, '应安排译文最短展示计时器')
+  holdTimer.callback()
+  assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.sourceText, 'Next sentence')
+})
+
+/**
+ * 校验上一句迟到译文不会打断当前展示，但会在当前展示结束后补上。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('上一句迟到译文应排队展示而不是被丢弃', async () => {
+  const harness = createHarness({}, { translationDisplayHoldMs: 1500 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'final', text: 'First', lang: 'en-US' })
+  harness.host.emit({ type: 'final', text: 'Second', lang: 'en-US' })
+  await flush()
+
+  harness.finishTranslationFor('First', '第一句译文')
+  await flush()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+  const firstHoldTimer = harness.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1500
+  )
+  assert.ok(firstHoldTimer, '迟到译文上屏后也应进入最短展示计时')
+
+  harness.finishTranslationFor('Second', '第二句译文')
+  await harness.controller.idle()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+  assert.equal(firstHoldTimer.cleared, false, '后到译文不得提前打断当前句展示')
+
+  firstHoldTimer.callback()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'Second')
+  assert.equal(harness.controller.viewModel().translatedText, '第二句译文')
+})
+
+/**
+ * 校验连续 final 的译文按顺序逐条展示，前面段落的译文不得静默丢失。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 final 的译文应逐条展示且不丢失', async () => {
+  const harness = createHarness({}, { translationDisplayHoldMs: 1500 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'final', text: 'First', lang: 'en-US' })
+  harness.host.emit({ type: 'final', text: 'Second', lang: 'en-US' })
+  harness.host.emit({ type: 'final', text: 'Third', lang: 'en-US' })
+  await flush()
+
+  harness.finishTranslationFor('First', '第一句译文')
+  harness.finishTranslationFor('Second', '第二句译文')
+  harness.finishTranslationFor('Third', '第三句译文')
+  await harness.controller.idle()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+
+  const firstHoldTimer = harness.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1500
+  )
+  assert.ok(firstHoldTimer, '第一句译文应进入最短展示计时')
+  firstHoldTimer.callback()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'Second')
+  assert.equal(harness.controller.viewModel().translatedText, '第二句译文')
+
+  const secondHoldTimer = harness.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1500
+  )
+  assert.ok(secondHoldTimer, '第二句译文应进入最短展示计时')
+  secondHoldTimer.callback()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'Third')
+  assert.equal(harness.controller.viewModel().translatedText, '第三句译文')
+})
+
+/**
+ * 校验当前句译文展示期间，下一句 final 译文应排队到计时结束后再替换。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('下一句 final 译文应等待当前译文展示结束再替换', async () => {
+  const harness = createHarness({}, { translationDisplayHoldMs: 1500 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'final', text: 'First', lang: 'en-US' })
+  await flush()
+  harness.finishTranslationFor('First', '第一句译文')
+  await harness.controller.idle()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+  const firstHoldTimer = harness.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1500
+  )
+  assert.ok(firstHoldTimer, '第一句译文应进入最短展示计时')
+
+  harness.host.emit({ type: 'final', text: 'Second', lang: 'en-US' })
+  await flush()
+  harness.finishTranslationFor('Second', '第二句译文')
+  await harness.controller.idle()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+  assert.equal(firstHoldTimer.cleared, false, '下一句译文不得提前取消当前句展示计时')
+
+  firstHoldTimer.callback()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'Second')
+  assert.equal(harness.controller.viewModel().translatedText, '第二句译文')
+  const secondHoldTimer = harness.timers
+    .filter((timer) => !timer.cleared && timer.delayMs === 1500)
+    .at(-1)
+  assert.ok(secondHoldTimer, '第二句译文上屏后也应进入最短展示计时')
+  assert.notEqual(secondHoldTimer, firstHoldTimer)
+})
+
+/**
+ * 校验服务端拆句后的多条 final 会逐条翻译，界面只保留最后一句及其译文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 final 应逐条翻译且不把前一句译文带入最后一句', async () => {
+  const harness = createHarness()
+  const sentences = [
+    '蔡永嘉,你听明白了吗?',
+    '听明白了,一会儿行政大队就去忍。',
+    '你们把李小交接,是。'
+  ]
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'partial', text: sentences.join(''), lang: 'zh' })
+  for (const sentence of sentences) {
+    harness.host.emit({ type: 'final', text: sentence, lang: 'zh' })
+  }
+
+  const snapshot = harness.controller.snapshot()
+  assert.equal(snapshot.segments.length, 3)
+  assert.deepEqual(
+    snapshot.segments.map((segment) => segment.sourceText),
+    sentences
+  )
+  assert.equal(snapshot.translatedText, '')
+  assert.equal(harness.controller.viewModel().sourceText, sentences[2])
+  assert.equal(harness.controller.viewModel().translatedText, '')
+
+  await flush()
+  assert.deepEqual(
+    harness.translateCalls.map((call) => call.text),
+    sentences
+  )
+
+  const translations = ['译文一', '译文二', '译文三']
+  for (const [index, sentence] of sentences.entries()) {
+    harness.finishTranslationFor(sentence, translations[index] ?? '')
+  }
+  await harness.controller.idle()
+
+  assert.deepEqual(
+    harness.controller.snapshot().segments.map((segment) => segment.translatedText),
+    translations,
+    '每条 final 应各自持有译文，不得把前一句译文拼进下一句'
+  )
+  assert.equal(harness.controller.viewModel().sourceText, sentences[2])
+  assert.equal(harness.controller.viewModel().translatedText, translations[2])
+})
+
+/**
+ * 校验客户端不会把单条 final 按标点二次拆分，保持一个 final 对应一条字幕。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('单条 final 即使包含多个句子也应作为一条字幕翻译', async () => {
+  const harness = createHarness()
+  const text = '第一句。第二句！'
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'final', text, lang: 'zh' })
+  await flush()
+
+  assert.equal(harness.controller.snapshot().segments.length, 1)
+  assert.equal(harness.controller.snapshot().segments[0]?.sourceText, text)
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), [text])
+})
+
+/**
+ * 校验音频电平不会触发客户端本地的人声判定或状态广播。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('音频电平不应触发本地 speech-pending 状态', () => {
   const harness = createHarness()
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
-  harness.host.emit({ type: 'level', rms: 0.2 })
+  const broadcastCount = harness.broadcasts.length
+  harness.host.emit({ type: 'level', rms: 0.95 })
 
-  assert.equal(harness.controller.snapshot().audioActivity, 'speech-pending')
-  assert.equal(harness.broadcasts.at(-1)?.audioActivity, 'speech-pending')
-  assert.equal(harness.controller.viewModel().audioActivity, 'speech-pending')
+  assert.equal(harness.controller.snapshot().audioActivity, 'idle')
+  assert.equal(harness.broadcasts.length, broadcastCount)
+  assert.equal(harness.controller.viewModel().audioActivity, 'idle')
 })
 
 /**
@@ -662,6 +905,85 @@ test('Whisper 自动重连不应回退到 Deepgram', () => {
 })
 
 /**
+ * 校验 WebSocket provider 会把服务地址传给宿主，且自动重连保持同一 provider。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('WebSocket 启动与自动重连应传入并保持服务地址', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'websocket',
+    realtimeSubtitleWebSocketUrl: 'ws://127.0.0.1:9092/ws/asr?language=zh'
+  })
+  harness.controller.start()
+  assert.deepEqual(harness.host.starts[0], {
+    source: 'system',
+    asr: 'websocket',
+    language: 'auto',
+    deepgramApiKey: null,
+    webSocketUrl: 'ws://127.0.0.1:9092/ws/asr?language=zh'
+  })
+
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'error', code: 'network', message: 'offline' })
+  harness.runNextReconnect()
+
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.asr, 'websocket')
+  assert.equal(
+    harness.host.starts[1]?.webSocketUrl,
+    'ws://127.0.0.1:9092/ws/asr?language=zh'
+  )
+})
+
+/**
+ * 校验 WebSocket 断链和自动恢复过程会写入可追踪日志。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('WebSocket 断链重连应输出可追踪日志', () => {
+  const logs: string[] = []
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'websocket',
+    realtimeSubtitleWebSocketUrl: 'ws://127.0.0.1:9092/ws/asr?language=zh'
+  }, { logs })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+
+  harness.host.emit({ type: 'error', code: 'network', message: 'websocket closed' })
+  assert.ok(logs.some((line) => line.includes('ASR 连接中断') && line.includes('provider=websocket')))
+  assert.ok(logs.some((line) => line.includes('安排第 1/') && line.includes('retryInMs=')))
+
+  harness.runNextReconnect()
+  assert.ok(logs.some((line) => line.includes('开始第 1/') && line.includes('provider=websocket')))
+
+  harness.host.emit({ type: 'ready' })
+  assert.ok(logs.some((line) => line.includes('ASR 重连成功') && line.includes('attempts=1')))
+})
+
+/**
+ * 校验运行中修改 WebSocket 地址会重启识别会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('运行中修改 WebSocket 地址应重启实时字幕会话', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'websocket',
+    realtimeSubtitleWebSocketUrl: 'ws://127.0.0.1:9092/ws/asr'
+  })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleWebSocketUrl: 'ws://127.0.0.1:9093/ws/asr'
+  })
+
+  assert.deepEqual(harness.host.calls, ['stop'])
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.webSocketUrl, 'ws://127.0.0.1:9093/ws/asr')
+})
+
+/**
  * 校验 sidecar 在 start 调用内同步报错时不显示空字幕窗。
  * @returns 无返回值。
  * @author zhenghq
@@ -719,6 +1041,94 @@ test('网络断线后应自动重连并保留字幕窗口', () => {
   harness.runNextReconnect()
   assert.equal(harness.host.starts.length, 2)
   assert.equal(harness.controller.snapshot().state, 'starting')
+})
+
+/**
+ * 校验 sidecar 进程异常退出后会自动重建会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('sidecar 不可用后应自动重连', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({
+    type: 'error',
+    code: 'sidecar-unavailable',
+    message: 'subtitle sidecar exited unexpectedly'
+  })
+
+  assert.equal(harness.timers.length, 1)
+  assert.equal(harness.timers[0]?.delayMs, resolveSubtitleReconnectDelay(0))
+  assert.equal(harness.windowStates.at(-1), true)
+
+  harness.runNextReconnect()
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.controller.snapshot().state, 'starting')
+})
+
+/**
+ * 校验 ASR 连接无错误地停止时仍会触发自动恢复，避免界面永久假运行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('运行中收到停止状态后应自动重连', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'status', state: 'idle' })
+
+  assert.equal(harness.controller.snapshot().state, 'idle')
+  assert.equal(harness.timers.length, 1)
+  assert.equal(harness.timers[0]?.delayMs, resolveSubtitleReconnectDelay(0))
+  assert.equal(harness.windowStates.at(-1), true)
+
+  harness.runNextReconnect()
+  assert.equal(harness.host.starts.length, 2)
+})
+
+/**
+ * 校验错误后紧跟停止状态时只安排一次重连，避免重复事件消耗重试预算。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('错误后收到停止状态不应重复安排重连', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'error', code: 'network', message: 'asr network failure' })
+  harness.host.emit({ type: 'status', state: 'idle' })
+
+  const activeTimers = harness.timers.filter((timer) => !timer.cleared)
+  assert.equal(activeTimers.length, 1)
+  assert.equal(activeTimers[0]?.delayMs, resolveSubtitleReconnectDelay(0))
+})
+
+/**
+ * 校验重连后再次收到停止状态时继续按下一档退避重试。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('重连后再次停止应继续退避重试', () => {
+  const harness = createHarness()
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'status', state: 'idle' })
+
+  const originalStart = harness.host.start.bind(harness.host)
+  harness.host.start = function (options) {
+    const generation = originalStart(options)
+    harness.host.emit({ type: 'status', state: 'idle' })
+    return generation
+  }
+
+  harness.runNextReconnect()
+
+  const activeTimers = harness.timers.filter((timer) => !timer.cleared)
+  assert.equal(activeTimers.length, 1)
+  assert.equal(activeTimers[0]?.delayMs, resolveSubtitleReconnectDelay(1))
+  assert.equal(harness.controller.snapshot().state, 'idle')
+  assert.equal(harness.windowStates.at(-1), true)
 })
 
 /**

@@ -1,18 +1,40 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import {
+  hasNativeBuildForceFlag,
+  isNativeBuildUpToDate,
+  logNativeBuildUpToDate
+} from './lib/native-build-cache.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const cargoManifestPath = join(root, 'sidecar/mimi-audio/Cargo.toml')
+const cargoLockPath = join(root, 'sidecar/mimi-audio/Cargo.lock')
+const cargoSourceDirectory = join(root, 'sidecar/mimi-audio/src')
 const targetDirectory = join(root, 'sidecar/mimi-audio/target')
 const outputPath = join(root, 'build/macos-subtitle-audio')
+const forceBuild = hasNativeBuildForceFlag()
 
 /** 实时字幕 sidecar 需要同时支持的 macOS Rust target。 */
 const MACOS_TARGETS = [
   { rustTarget: 'aarch64-apple-darwin', artifact: join(targetDirectory, 'aarch64-apple-darwin/release/mimi-audio-sidecar') },
   { rustTarget: 'x86_64-apple-darwin', artifact: join(targetDirectory, 'x86_64-apple-darwin/release/mimi-audio-sidecar') }
 ]
+
+/**
+ * 递归收集 Rust sidecar 源码文件，用于判断 universal 产物是否过期。
+ * @param directory 要遍历的源码目录。
+ * @returns 源码文件绝对路径列表。
+ * @author zhenghq
+ */
+function collectRustSourceFiles(directory) {
+  if (!existsSync(directory)) return []
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name)
+    return entry.isDirectory() ? collectRustSourceFiles(path) : [path]
+  })
+}
 
 /**
  * 判断当前平台是否需要构建 macOS 实时字幕 sidecar。
@@ -79,6 +101,15 @@ function compile(target) {
 function buildHelper() {
   if (!existsSync(cargoManifestPath)) {
     throw new Error(`缺少实时字幕 Rust sidecar 清单: ${cargoManifestPath}`)
+  }
+  const rustInputs = [
+    cargoManifestPath,
+    cargoLockPath,
+    ...collectRustSourceFiles(cargoSourceDirectory)
+  ].filter(existsSync)
+  if (!forceBuild && isNativeBuildUpToDate([outputPath], rustInputs)) {
+    logNativeBuildUpToDate('macOS realtime subtitle sidecar')
+    return
   }
 
   const installedTargets = readInstalledRustTargets()

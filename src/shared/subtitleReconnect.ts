@@ -28,7 +28,7 @@ export function resolveSubtitleReconnectDelay(attempt: number): number {
  * @param code 结构化错误分类。
  * @param attempt 已执行的重连次数，从 0 开始。
  * @param maxAttempts 允许的最大重连次数。
- * @returns 网络或音频设备错误且未达到上限时返回 true。
+ * @returns 网络、音频设备或 sidecar 错误且未达到上限时返回 true。
  * @author zhenghq
  */
 export function shouldReconnectSubtitle(
@@ -37,7 +37,7 @@ export function shouldReconnectSubtitle(
   maxAttempts: number
 ): boolean {
   return (
-    (code === 'network' || code === 'device-unavailable') &&
+    (code === 'network' || code === 'device-unavailable' || code === 'sidecar-unavailable') &&
     attempt < Math.max(0, Math.floor(maxAttempts))
   )
 }

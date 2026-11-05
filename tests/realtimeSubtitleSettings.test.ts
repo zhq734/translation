@@ -9,13 +9,14 @@ import { normalizeSettings, SETTINGS_SCHEMA_VERSION } from '../src/shared/settin
  */
 test('实时字幕设置应完成默认值与非法值迁移', () => {
   const defaults = normalizeSettings({ schemaVersion: 24 })
-  assert.equal(SETTINGS_SCHEMA_VERSION, 27)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 28)
   assert.equal(defaults.realtimeSubtitleAudioSource, 'system')
   assert.equal(defaults.realtimeSubtitleRecognitionLang, 'auto')
   assert.equal(defaults.realtimeSubtitleAsrProvider, 'deepgram')
   assert.equal(defaults.realtimeSubtitleWhisperBaseUrl, 'http://127.0.0.1:8000/v1')
   assert.equal(defaults.realtimeSubtitleWhisperModel, 'whisper-1')
   assert.equal(defaults.realtimeSubtitleWhisperApiKeyConfigured, false)
+  assert.equal(defaults.realtimeSubtitleWebSocketUrl, 'ws://127.0.0.1:9092/ws/asr')
   assert.equal(defaults.realtimeSubtitleDisplayMode, 'bilingual')
   assert.equal(defaults.realtimeSubtitleFontSize, 20)
   assert.equal(defaults.realtimeSubtitleHideAfterMs, 8000)
@@ -23,13 +24,14 @@ test('实时字幕设置应完成默认值与非法值迁移', () => {
   assert.equal(defaults.realtimeSubtitleHotkey, 'Alt+L')
 
   const customized = normalizeSettings({
-    schemaVersion: 27,
+    schemaVersion: 28,
     realtimeSubtitleAudioSource: 'both',
     realtimeSubtitleRecognitionLang: 'ja-JP',
     realtimeSubtitleAsrProvider: 'whisper',
     realtimeSubtitleWhisperBaseUrl: 'http://localhost:9000/v1',
     realtimeSubtitleWhisperModel: 'large-v3',
     realtimeSubtitleWhisperApiKeyConfigured: true,
+    realtimeSubtitleWebSocketUrl: 'wss://asr.example.com/ws/asr?language=zh',
     realtimeSubtitleDisplayMode: 'target',
     realtimeSubtitleFontSize: 32,
     realtimeSubtitleHideAfterMs: 12000,
@@ -44,8 +46,12 @@ test('实时字幕设置应完成默认值与非法值迁移', () => {
   assert.equal(customized.realtimeSubtitleWhisperModel, 'large-v3')
   assert.equal(customized.realtimeSubtitleWhisperApiKeyConfigured, true)
   assert.equal(
+    customized.realtimeSubtitleWebSocketUrl,
+    'wss://asr.example.com/ws/asr?language=zh'
+  )
+  assert.equal(
     normalizeSettings({
-      schemaVersion: 27,
+      schemaVersion: 28,
       realtimeSubtitleWhisperBaseUrl: 'http://127.0.0.1:8080/inference/'
     }).realtimeSubtitleWhisperBaseUrl,
     'http://127.0.0.1:8080/inference',
@@ -59,11 +65,12 @@ test('实时字幕设置应完成默认值与非法值迁移', () => {
   assert.equal(customized.realtimeSubtitleHotkey, '')
 
   const invalid = normalizeSettings({
-    schemaVersion: 27,
+    schemaVersion: 28,
     realtimeSubtitleAudioSource: 'line-in',
     realtimeSubtitleAsrProvider: 'unknown',
     realtimeSubtitleWhisperBaseUrl: 'file:///tmp/whisper',
     realtimeSubtitleWhisperModel: '   ',
+    realtimeSubtitleWebSocketUrl: 'http://127.0.0.1:9092/ws/asr',
     realtimeSubtitleDisplayMode: 'hidden',
     realtimeSubtitleFontSize: 999,
     realtimeSubtitleHideAfterMs: -1,
@@ -73,6 +80,7 @@ test('实时字幕设置应完成默认值与非法值迁移', () => {
   assert.equal(invalid.realtimeSubtitleAsrProvider, 'deepgram')
   assert.equal(invalid.realtimeSubtitleWhisperBaseUrl, 'http://127.0.0.1:8000/v1')
   assert.equal(invalid.realtimeSubtitleWhisperModel, 'whisper-1')
+  assert.equal(invalid.realtimeSubtitleWebSocketUrl, 'ws://127.0.0.1:9092/ws/asr')
   assert.equal(invalid.realtimeSubtitleDisplayMode, 'bilingual')
   assert.equal(invalid.realtimeSubtitleFontSize, 40)
   assert.equal(invalid.realtimeSubtitleHideAfterMs, 8000)
@@ -87,5 +95,18 @@ test('实时字幕设置应完成默认值与非法值迁移', () => {
     normalizeSettings({ realtimeSubtitleHideAfterMs: 600_000 }).realtimeSubtitleHideAfterMs,
     120_000,
     '自动隐藏时长应限制在安全上限内'
+  )
+
+  assert.equal(
+    normalizeSettings({ realtimeSubtitleAsrProvider: 'websocket' }).realtimeSubtitleAsrProvider,
+    'websocket',
+    'WebSocket ASR 应作为合法 provider 保留'
+  )
+  assert.equal(
+    normalizeSettings({
+      realtimeSubtitleWebSocketUrl: ' ws://127.0.0.1:9092/ws/asr '
+    }).realtimeSubtitleWebSocketUrl,
+    'ws://127.0.0.1:9092/ws/asr',
+    'WebSocket 地址应去除首尾空白'
   )
 })

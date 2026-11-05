@@ -80,11 +80,8 @@ const realtimeSubtitleWhisperApiKey = document.getElementById('realtime-subtitle
 const realtimeSubtitleWhisperSave = document.getElementById('realtime-subtitle-whisper-save') as HTMLButtonElement
 const realtimeSubtitleWhisperClear = document.getElementById('realtime-subtitle-whisper-clear') as HTMLButtonElement
 const realtimeSubtitleWhisperStatus = document.getElementById('realtime-subtitle-whisper-status') as HTMLElement
-const realtimeSubtitleITranslateEnabled = document.getElementById('realtime-subtitle-itranslate-enabled') as HTMLInputElement
-const realtimeSubtitleITranslateApiKey = document.getElementById('realtime-subtitle-itranslate-api-key') as HTMLInputElement
-const realtimeSubtitleITranslateSave = document.getElementById('realtime-subtitle-itranslate-save') as HTMLButtonElement
-const realtimeSubtitleITranslateClear = document.getElementById('realtime-subtitle-itranslate-clear') as HTMLButtonElement
-const realtimeSubtitleITranslateStatus = document.getElementById('realtime-subtitle-itranslate-status') as HTMLElement
+const realtimeSubtitleWebSocketSettings = document.getElementById('realtime-subtitle-websocket-settings') as HTMLElement
+const realtimeSubtitleWebSocketUrl = document.getElementById('realtime-subtitle-websocket-url') as HTMLInputElement
 const realtimeSubtitleRecognitionLang = document.getElementById('realtime-subtitle-recognition-lang') as HTMLSelectElement
 const realtimeSubtitleDisplayMode = document.getElementById('realtime-subtitle-display-mode') as HTMLSelectElement
 const realtimeSubtitleFontSize = document.getElementById('realtime-subtitle-font-size') as HTMLInputElement
@@ -494,6 +491,7 @@ function saveRealtimeSubtitleSettings(): void {
   void save({
     realtimeSubtitleAudioSource: realtimeSubtitleAudioSource.value as RealtimeSubtitleAudioSource,
     realtimeSubtitleAsrProvider: realtimeSubtitleAsrProvider.value as Settings['realtimeSubtitleAsrProvider'],
+    realtimeSubtitleWebSocketUrl: realtimeSubtitleWebSocketUrl.value.trim(),
     realtimeSubtitleRecognitionLang: realtimeSubtitleRecognitionLang.value,
     realtimeSubtitleDisplayMode: realtimeSubtitleDisplayMode.value as RealtimeSubtitleDisplayMode,
     realtimeSubtitleFontSize: Number(realtimeSubtitleFontSize.value),
@@ -551,14 +549,17 @@ async function clearRealtimeSubtitleDeepgramConfig(): Promise<void> {
 }
 
 /**
- * 根据当前 provider 切换 Deepgram 与 Whisper 配置区的显示状态。
+ * 根据当前 provider 切换 Deepgram、Whisper 与 WebSocket 配置区的显示状态。
  * @returns 无返回值。
  * @author zhenghq
  */
 function renderRealtimeSubtitleProviderSettings(): void {
+  const deepgramSelected = realtimeSubtitleAsrProvider.value === 'deepgram'
   const whisperSelected = realtimeSubtitleAsrProvider.value === 'whisper'
-  realtimeSubtitleDeepgramSettings.hidden = whisperSelected
+  const websocketSelected = realtimeSubtitleAsrProvider.value === 'websocket'
+  realtimeSubtitleDeepgramSettings.hidden = !deepgramSelected
   realtimeSubtitleWhisperSettings.hidden = !whisperSelected
+  realtimeSubtitleWebSocketSettings.hidden = !websocketSelected
 }
 
 /**
@@ -594,46 +595,6 @@ async function clearRealtimeSubtitleWhisperConfig(): Promise<void> {
   try {
     const settings = await window.api.clearWhisperApiKey()
     realtimeSubtitleWhisperApiKey.value = ''
-    renderSettings(settings)
-    flash(t('settings.saved'))
-  } catch (error) {
-    flash(t('settings.realtimeSubtitle.saveFailed', {
-      message: (error as Error).message || t('common.unknownError')
-    }), 'error')
-  }
-}
-
-/**
- * 保存 iTranslate 可选翻译通道的启用状态与新 API Key。
- * @returns 保存完成后的 Promise。
- * @author zhenghq
- */
-async function saveRealtimeSubtitleITranslateConfig(): Promise<void> {
-  const apiKey = realtimeSubtitleITranslateApiKey.value.trim()
-  try {
-    const settings = await window.api.setITranslateConfig({
-      enabled: realtimeSubtitleITranslateEnabled.checked,
-      ...(apiKey ? { apiKey } : {})
-    })
-    realtimeSubtitleITranslateApiKey.value = ''
-    renderSettings(settings)
-    flash(t('settings.saved'))
-  } catch (error) {
-    flash(t('settings.realtimeSubtitle.saveFailed', {
-      message: (error as Error).message || t('common.unknownError')
-    }), 'error')
-  }
-}
-
-/**
- * 清除已保存的 iTranslate API Key，并保留当前启用开关。
- * @returns 清除完成后的 Promise。
- * @author zhenghq
- */
-async function clearRealtimeSubtitleITranslateConfig(): Promise<void> {
-  try {
-    const settings = await window.api.clearITranslateApiKey()
-    realtimeSubtitleITranslateApiKey.value = ''
     renderSettings(settings)
     flash(t('settings.saved'))
   } catch (error) {
@@ -929,12 +890,7 @@ function renderSettings(settings: Settings): void {
     ? t('settings.realtimeSubtitle.credentials.configured')
     : t('settings.realtimeSubtitle.credentials.notConfigured')
   realtimeSubtitleWhisperClear.disabled = !settings.realtimeSubtitleWhisperApiKeyConfigured
-  realtimeSubtitleITranslateEnabled.checked = settings.itranslateEnabled
-  realtimeSubtitleITranslateApiKey.value = ''
-  realtimeSubtitleITranslateStatus.textContent = settings.itranslateApiKeyConfigured
-    ? t('settings.realtimeSubtitle.credentials.configured')
-    : t('settings.realtimeSubtitle.credentials.notConfigured')
-  realtimeSubtitleITranslateClear.disabled = !settings.itranslateApiKeyConfigured
+  realtimeSubtitleWebSocketUrl.value = settings.realtimeSubtitleWebSocketUrl
   realtimeSubtitleRecognitionLang.value = settings.realtimeSubtitleRecognitionLang
   realtimeSubtitleDisplayMode.value = settings.realtimeSubtitleDisplayMode
   realtimeSubtitleFontSize.value = String(settings.realtimeSubtitleFontSize)
@@ -2543,9 +2499,7 @@ realtimeSubtitleDeepgramSave.addEventListener('click', () => void saveRealtimeSu
 realtimeSubtitleDeepgramClear.addEventListener('click', () => void clearRealtimeSubtitleDeepgramConfig())
 realtimeSubtitleWhisperSave.addEventListener('click', () => void saveRealtimeSubtitleWhisperConfig())
 realtimeSubtitleWhisperClear.addEventListener('click', () => void clearRealtimeSubtitleWhisperConfig())
-realtimeSubtitleITranslateEnabled.addEventListener('change', () => void saveRealtimeSubtitleITranslateConfig())
-realtimeSubtitleITranslateSave.addEventListener('click', () => void saveRealtimeSubtitleITranslateConfig())
-realtimeSubtitleITranslateClear.addEventListener('click', () => void clearRealtimeSubtitleITranslateConfig())
+realtimeSubtitleWebSocketUrl.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleRecognitionLang.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleDisplayMode.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleFontSize.addEventListener('change', saveRealtimeSubtitleSettings)

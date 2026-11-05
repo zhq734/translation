@@ -25,8 +25,7 @@ const MAX_CONSECUTIVE_SINK_FULLS: u32 = 8;
 mod macos_tap;
 #[cfg(target_os = "macos")]
 mod microphone;
-#[cfg(target_os = "macos")]
-mod streaming_resampler;
+pub(crate) mod streaming_resampler;
 
 /// 采集错误分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

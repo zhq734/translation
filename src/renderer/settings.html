@@ -764,6 +764,7 @@
               <select id="realtime-subtitle-asr-provider">
                 <option value="deepgram" data-i18n="settings.realtimeSubtitle.asrProvider.deepgram">Deepgram (cloud ASR)</option>
                 <option value="whisper" data-i18n="settings.realtimeSubtitle.asrProvider.whisper">Whisper / OpenAI compatible</option>
+                <option value="websocket" data-i18n="settings.realtimeSubtitle.asrProvider.websocket">WebSocket streaming ASR</option>
               </select>
             </div>
             <div id="realtime-subtitle-deepgram-settings">
@@ -784,7 +785,7 @@
             <p id="realtime-subtitle-deepgram-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
             <p class="field-hint" data-i18n="settings.realtimeSubtitle.deepgramHint">Audio is captured locally and sent to Deepgram cloud ASR. The API Key is stored in the system keychain.</p>
             </div>
-            <div id="realtime-subtitle-whisper-settings">
+            <div id="realtime-subtitle-whisper-settings" hidden>
               <div class="row">
                 <label for="realtime-subtitle-whisper-base-url" data-i18n="settings.realtimeSubtitle.whisperBaseUrl">Whisper Base URL</label>
                 <input
@@ -819,6 +820,18 @@
               </div>
               <p id="realtime-subtitle-whisper-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
               <p class="field-hint" data-i18n="settings.realtimeSubtitle.whisperHint">Supports self-hosted faster-whisper, whisper.cpp, and other OpenAI-compatible services. A Base URL automatically gets /audio/transcriptions appended; whisper.cpp can also use a complete /inference endpoint. Leave the API key blank for a local service without authentication.</p>
+            </div>
+            <div id="realtime-subtitle-websocket-settings" hidden>
+              <div class="row">
+                <label for="realtime-subtitle-websocket-url" data-i18n="settings.realtimeSubtitle.websocketUrl">WebSocket ASR URL</label>
+                <input
+                  id="realtime-subtitle-websocket-url"
+                  type="url"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.websocketUrlPlaceholder"
+                  placeholder="ws://127.0.0.1:9092/ws/asr"
+                />
+              </div>
+              <p class="field-hint" data-i18n="settings.realtimeSubtitle.websocketHint">Connects to a local faster-whisper-stream or compatible WebSocket ASR service. Audio is resampled to 16 kHz, mono, 16-bit little-endian PCM before streaming. Restart live subtitles after changing the URL.</p>
             </div>
             <div class="row">
               <label for="realtime-subtitle-audio-source" data-i18n="settings.realtimeSubtitle.audioSource">Audio source</label>
@@ -882,34 +895,6 @@
               </div>
             </div>
             <p class="field-hint" data-i18n="settings.realtimeSubtitle.hotkeyHint">Click and press a shortcut. Clear it to disable the global shortcut.</p>
-          </section>
-
-          <section>
-            <h2 data-i18n="settings.realtimeSubtitle.itranslateTitle">Optional iTranslate channel</h2>
-            <p class="hint" data-i18n="settings.realtimeSubtitle.itranslateHint">Final source text reuses the current multi-channel translation order. iTranslate is only an optional translation provider and is not required for Deepgram ASR.</p>
-            <p class="field-hint" data-i18n="settings.realtimeSubtitle.itranslateAvailabilityHint">iTranslate does not currently offer a public API Key registration entry. This field only supports a legacy key.</p>
-            <div class="row">
-              <label for="realtime-subtitle-itranslate-enabled" data-i18n="settings.realtimeSubtitle.itranslateEnabled">Enable iTranslate</label>
-              <label class="checkbox-control">
-                <input id="realtime-subtitle-itranslate-enabled" type="checkbox" />
-                <span data-i18n="settings.realtimeSubtitle.itranslateEnabledHint">Add iTranslate to the translation channel fallback order.</span>
-              </label>
-            </div>
-            <div class="row">
-              <label for="realtime-subtitle-itranslate-api-key" data-i18n="settings.realtimeSubtitle.itranslateApiKey">iTranslate API Key</label>
-              <div class="inline-control">
-                <input
-                  id="realtime-subtitle-itranslate-api-key"
-                  type="password"
-                  autocomplete="new-password"
-                  data-i18n-attr="placeholder:settings.realtimeSubtitle.itranslateApiKeyPlaceholder"
-                  placeholder="Enter an existing legacy API Key"
-                />
-                <button id="realtime-subtitle-itranslate-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.itranslateSave">Save</button>
-                <button id="realtime-subtitle-itranslate-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.itranslateClear">Clear</button>
-              </div>
-            </div>
-            <p id="realtime-subtitle-itranslate-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
           </section>
 
           <section>

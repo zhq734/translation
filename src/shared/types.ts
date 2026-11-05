@@ -1025,6 +1025,8 @@ export interface Settings {
   realtimeSubtitleWhisperModel: string
   /** 是否已安全保存 Whisper API Key；本地无鉴权服务可保持未配置。 */
   realtimeSubtitleWhisperApiKeyConfigured: boolean
+  /** WebSocket ASR 服务地址，用于本机 faster-whisper-stream 等流式服务。 */
+  realtimeSubtitleWebSocketUrl: string
   /** 实时字幕悬浮窗显示模式。 */
   realtimeSubtitleDisplayMode: RealtimeSubtitleDisplayMode
   /** 实时字幕字号（像素）。 */

@@ -967,8 +967,8 @@ function initializeRealtimeSubtitle(): void {
       bounds
     ),
     getCursorPoint: () => screen.getCursorScreenPoint(),
-    getViewModel: () => createRealtimeSubtitleViewModel(
-      realtimeSubtitleController?.snapshot() ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    getViewModel: () => realtimeSubtitleController?.viewModel() ?? createRealtimeSubtitleViewModel(
+      createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
     )
   })
 
@@ -989,6 +989,7 @@ function initializeRealtimeSubtitle(): void {
     getITranslateApiKey: () => getSettings().itranslateEnabled
       ? getITranslateConfiguration().getApiKey()
       : null,
+    getNetworkErrorMessage: () => t('settings.realtimeSubtitle.error.network'),
     translateStream,
     onSnapshot: (snapshot) => {
       const settingsTarget = settingsWin
@@ -1822,18 +1823,27 @@ function isSelectionWindowRaiseGuardActive(): boolean {
  * 可聚焦性或调用 show()/moveTop()/focus()，否则 macOS 会把后台设置页提到最前。
  * @param bringToFrontEpoch 本次显式置前开始时的代际。
  * @param explicitPopupSource 是否来自翻译弹窗内真实点击。
+ * @param initialLaunchSource 是否来自应用启动后的首次设置页打开。
  * @returns 仍可安全执行显式置前时返回 true。
  * @author zhenghq
  */
 function canCompleteSettingsBringToFront(
   bringToFrontEpoch: number,
-  explicitPopupSource: boolean
+  explicitPopupSource: boolean,
+  initialLaunchSource = false
 ): boolean {
   // 划词隐藏是比保护期更强的状态：窗口已经被移出窗口服务器候选集合，任何
   // 迟到的 show()/moveTop()/focus() 都会重新制造前台闪现。显式入口必须先通过
   // resumeSettingsWindowAfterExternalSelection() 清除该状态，不能在这里绕过。
   if (settingsWindowHiddenForSelection) return false
   if (explicitPopupSource) return true
+  // 启动首开发生在应用尚未完全稳定的阶段，macOS 可能先派发 did-resign-active，
+  // 或因内部窗口显隐递增置前代际。这些启动噪声不能永久吞掉首开窗口，但仍须
+  // 保留划词保护期和进行中交互门禁，避免在用户已开始划词时抢占前台。
+  if (initialLaunchSource) {
+    return !isSelectionWindowRaiseGuardActive() &&
+      selectionInteraction.snapshot().state === 'idle'
+  }
   // 应用激活事件是异步置前意图的最终门禁。用户切到其它应用后，即使没有开始
   // 新划词、代际也未变化，旧 Dock 任务也不得通过 moveTop()/focus() 重新拉起
   // 设置页；否则窗口会盖在刚切换到的应用上方，且在 macOS 上表现为长期置顶。
@@ -1856,6 +1866,7 @@ function canCompleteSettingsBringToFront(
  * @param options.raiseLevel 是否临时提升窗口层级。
  * @param options.bringToFrontEpoch 本次置前开始时的代际。
  * @param options.explicitPopupSource 是否为弹窗内真实点击。
+ * @param options.initialLaunchSource 是否为应用启动后的首次设置页打开。
  * @returns 实际执行置前时返回 true；意图已失效时返回 false。
  * @author zhenghq
  */
@@ -1868,11 +1879,16 @@ function bringSettingsWindowToFrontSafely(
     raiseLevel?: boolean
     bringToFrontEpoch: number
     explicitPopupSource: boolean
+    initialLaunchSource?: boolean
   }
 ): boolean {
   if (
     win.isDestroyed() ||
-    !canCompleteSettingsBringToFront(options.bringToFrontEpoch, options.explicitPopupSource)
+    !canCompleteSettingsBringToFront(
+      options.bringToFrontEpoch,
+      options.explicitPopupSource,
+      options.initialLaunchSource
+    )
   ) {
     return false
   }
@@ -2638,7 +2654,7 @@ async function onReady(): Promise<boolean> {
   registerIpc()
   // 应用启动是明确的用户入口：设置页必须主动放到最前，不能被其它应用遮挡。
   // 该置前只通过统一窗口级入口影响设置窗口自身，不会拉起翻译弹窗等其它窗口。
-  if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true })
+  if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true, source: 'initial-launch' })
 
   // 避免自动更新网络请求与应用首次启动初始化争用资源。
   setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
@@ -6471,18 +6487,21 @@ function scheduleSettingsPanelRaiseLevelReset(): void {
 /**
  * 创建或复用设置窗口。
  * @param bringToFront 是否把设置窗口置前并聚焦；仅后台建窗等非用户入口传 false。
- * @param source 打开来源；弹窗内显式点击时传 `popup`，允许越过划词自动置前保护。
+ * @param source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`。
  * @returns 设置窗口实例。
  * @author zhenghq
  */
 async function createSettingsWindow(
   bringToFront: boolean,
-  source?: 'popup'
+  source?: 'popup' | 'initial-launch'
 ): Promise<BrowserWindow> {
   // 弹窗内点击设置入口是显式用户操作。hidePopupForInternalWindowSwitch() 会续期
   // 划词 activate 抑制，但该抑制只用于拦截划词流程的自动 activate；用户此刻主动
   // 点击设置页必须豁免，否则设置窗口会保持后台层级，看起来“没有拉到最前”。
   const explicitPopupSource = source === 'popup'
+  // 启动首开是用户启动应用的直接结果，需要豁免启动阶段的生命周期噪声；它不能
+  // 复用弹窗来源，否则会绕过划词保护期等安全门禁。
+  const initialLaunchSource = source === 'initial-launch'
   // 记录本次显式置前的代际：划词动作会在 suppressSelectionActivationWindowGap()
   // 中递增代际，使已经进入 await 等待的旧置前动作在收尾时自动失效。
   const bringToFrontEpochAtStart = settingsBringToFrontEpoch
@@ -6506,7 +6525,7 @@ async function createSettingsWindow(
       if (
         bringToFront &&
         !explicitPopupSource &&
-        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        ((bringToFrontEpochAtStart !== settingsBringToFrontEpoch && !initialLaunchSource) ||
           isSelectionWindowRaiseGuardActive())
       ) {
         return settingsWin
@@ -6515,7 +6534,8 @@ async function createSettingsWindow(
         bringSettingsWindowToFrontSafely(settingsWin, {
           raiseLevel: true,
           bringToFrontEpoch: bringToFrontEpochAtStart,
-          explicitPopupSource
+          explicitPopupSource,
+          initialLaunchSource
         })
       }
       return settingsWin
@@ -6526,7 +6546,7 @@ async function createSettingsWindow(
       // 用户已经开始划词时，本次置前已经过期：只保持可见，不 moveTop/focus。
       if (
         !explicitPopupSource &&
-        (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+        ((bringToFrontEpochAtStart !== settingsBringToFrontEpoch && !initialLaunchSource) ||
           isSelectionWindowRaiseGuardActive())
       ) {
         return settingsWin
@@ -6541,7 +6561,8 @@ async function createSettingsWindow(
       bringSettingsWindowToFrontSafely(settingsWin, {
         raiseLevel: explicitPopupSource,
         bringToFrontEpoch: bringToFrontEpochAtStart,
-        explicitPopupSource
+        explicitPopupSource,
+        initialLaunchSource
       })
       return settingsWin
     }
@@ -6549,7 +6570,7 @@ async function createSettingsWindow(
     if (
       bringToFront &&
       !explicitPopupSource &&
-      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+      ((bringToFrontEpochAtStart !== settingsBringToFrontEpoch && !initialLaunchSource) ||
         isSelectionWindowRaiseGuardActive())
     ) {
       return settingsWin
@@ -6558,7 +6579,8 @@ async function createSettingsWindow(
       bringSettingsWindowToFrontSafely(settingsWin, {
         raiseLevel: true,
         bringToFrontEpoch: bringToFrontEpochAtStart,
-        explicitPopupSource
+        explicitPopupSource,
+        initialLaunchSource
       })
     }
     return settingsWin
@@ -6662,7 +6684,7 @@ async function createSettingsWindow(
   // 设置页内点击等显式入口再展示。
   if (
     !explicitPopupSource &&
-    (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+    ((bringToFrontEpochAtStart !== settingsBringToFrontEpoch && !initialLaunchSource) ||
       isSelectionWindowRaiseGuardActive() ||
       selectionInteraction.snapshot().state !== 'idle')
   ) {
@@ -6676,7 +6698,8 @@ async function createSettingsWindow(
     bringSettingsWindowToFrontSafely(settingsWin, {
       raiseLevel: true,
       bringToFrontEpoch: bringToFrontEpochAtStart,
-      explicitPopupSource
+      explicitPopupSource,
+      initialLaunchSource
     })
   } else {
     showOwnWindowForInteraction(settingsWin, { focus: false, moveTop: false, raiseLevel: false })
@@ -6697,7 +6720,7 @@ async function createSettingsWindow(
     // 设置页顶到用户正在划词的其它应用之上，正是本变更要消除的偶现根因。
     if (
       !explicitPopupSource &&
-      (bringToFrontEpochAtStart !== settingsBringToFrontEpoch ||
+      ((bringToFrontEpochAtStart !== settingsBringToFrontEpoch && !initialLaunchSource) ||
         isSelectionWindowRaiseGuardActive())
     ) {
       return createdWindow
@@ -6706,7 +6729,8 @@ async function createSettingsWindow(
       bringSettingsWindowToFrontSafely(settingsWin, {
         raiseLevel: true,
         bringToFrontEpoch: bringToFrontEpochAtStart,
-        explicitPopupSource
+        explicitPopupSource,
+        initialLaunchSource
       })
     ) {
       logSettingsPanelBringToFront('initial-launch-final')
@@ -6718,14 +6742,18 @@ async function createSettingsWindow(
 /**
  * 打开设置窗口。
  * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
- * @param options.source 打开来源；弹窗内显式点击时传 `popup`。
+ * @param options.source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`。
  * @param options.explicitEntry 是否来自托盘、菜单、Dock、第二实例或弹窗按钮等
  * 用户可见入口；只有显式入口可以解除外部划词对设置页的临时隐藏。
  * @returns 无返回值。
  * @author zhenghq
  */
 async function openSettings(
-  options: { bringToFront?: boolean; source?: 'popup'; explicitEntry?: boolean } = {}
+  options: {
+    bringToFront?: boolean
+    source?: 'popup' | 'initial-launch'
+    explicitEntry?: boolean
+  } = {}
 ): Promise<void> {
   // openSettings() 是所有设置页显式入口的统一汇聚点：托盘、菜单、Dock、
   // 第二实例和弹窗内按钮都会经过这里。外部划词可能暂时隐藏后台设置页，
@@ -7262,6 +7290,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.realtimeSubtitleAsrProvider !== undefined ||
       patch.realtimeSubtitleWhisperBaseUrl !== undefined ||
       patch.realtimeSubtitleWhisperModel !== undefined ||
+      patch.realtimeSubtitleWebSocketUrl !== undefined ||
       patch.realtimeSubtitleDisplayMode !== undefined ||
       patch.realtimeSubtitleFontSize !== undefined ||
       patch.realtimeSubtitleHideAfterMs !== undefined ||

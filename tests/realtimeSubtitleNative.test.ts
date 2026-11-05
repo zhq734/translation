@@ -188,3 +188,24 @@ test('Deepgram 握手应先于 ready 与音频采集', () => {
   assert.match(session, /AsrClient::connect\(asr, &lang\)\.await[\s\S]*?AudioCapture::start/u)
   assert.match(session, /AudioCapture::start[\s\S]*?Event::Ready/u)
 })
+
+/**
+ * 校验 Rust sidecar 支持 WebSocket ASR 协议、16 kHz 重采样与结束帧。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Rust sidecar 应支持 WebSocket ASR 流式协议', () => {
+  const protocol = read('sidecar/mimi-audio/src/protocol.rs')
+  const asr = read('sidecar/mimi-audio/src/asr.rs')
+  const audio = read('sidecar/mimi-audio/src/audio.rs')
+
+  assert.match(protocol, /WebSocket/u)
+  assert.match(protocol, /rename\s*=\s*"websocket"/u)
+  assert.match(asr, /WEBSOCKET_ASR_URL/u)
+  assert.match(asr, /ws:\/\/127\.0\.0\.1:9092\/ws\/asr/u)
+  assert.match(asr, /StreamingPcm16Resampler::new\(24_000,\s*16_000,\s*1\)/u)
+  assert.match(asr, /"type":"end"/u)
+  assert.match(asr, /value\["text"\]/u)
+  assert.doesNotMatch(asr, /value\["full"\]/u)
+  assert.match(audio, /mod streaming_resampler;/u)
+})

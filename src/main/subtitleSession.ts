@@ -16,6 +16,7 @@ import {
   type SubtitleSidecarEvent
 } from '../shared/subtitleSession'
 import { translateMain } from './messages'
+import { normalizeChineseScript } from './chineseScript'
 
 /** 宿主可注入的 sidecar 子进程最小接口。 */
 export interface SubtitleSessionChildProcess {
@@ -73,6 +74,8 @@ export interface SubtitleSessionStartOptions {
   whisperModel?: string
   /** Whisper API Key；本地无鉴权服务可为空。 */
   whisperApiKey?: string | null
+  /** WebSocket ASR 服务地址；只通过环境变量注入 sidecar。 */
+  webSocketUrl?: string
 }
 
 /**
@@ -124,13 +127,13 @@ function defaultSpawnSubtitleAudio(environment: NodeJS.ProcessEnv): SubtitleSess
 export class SubtitleSessionHost {
   /** 默认启动超时，覆盖 macOS 首次授权对话框与原生采集初始化耗时。 */
   private static readonly DEFAULT_STARTUP_TIMEOUT_MS = 15_000
-  /** 高于该 RMS 的输入视为有可听音频，过滤常见的低电平底噪。 */
-  private static readonly AUDIO_ACTIVITY_RMS_THRESHOLD = 0.01
 
   private child: SubtitleSessionChildProcess | null = null
   private state: RealtimeSubtitleSessionState = 'idle'
   private generation = 0
   private audioSource: RealtimeSubtitleAudioSource = 'system'
+  /** 当前会话选择的识别语言，用于规范中文字形。 */
+  private recognitionLanguage = 'auto'
   private sourceText = ''
   private translatedText = ''
   private audioActivity: RealtimeSubtitleAudioActivity = 'idle'
@@ -179,6 +182,7 @@ export class SubtitleSessionHost {
     this.generation += 1
     const generation = this.generation
     this.audioSource = options.source
+    this.recognitionLanguage = options.language
     this.sourceText = ''
     this.translatedText = ''
     this.audioActivity = 'idle'
@@ -199,6 +203,7 @@ export class SubtitleSessionHost {
       delete environment.WHISPER_API_KEY
       delete environment.WHISPER_BASE_URL
       delete environment.WHISPER_MODEL
+      delete environment.WEBSOCKET_ASR_URL
       if (options.asr === 'deepgram' && options.deepgramApiKey) {
         environment.DEEPGRAM_API_KEY = options.deepgramApiKey
       }
@@ -206,6 +211,9 @@ export class SubtitleSessionHost {
         if (options.whisperBaseUrl) environment.WHISPER_BASE_URL = options.whisperBaseUrl
         if (options.whisperModel) environment.WHISPER_MODEL = options.whisperModel
         if (options.whisperApiKey) environment.WHISPER_API_KEY = options.whisperApiKey
+      }
+      if (options.asr === 'websocket' && options.webSocketUrl) {
+        environment.WEBSOCKET_ASR_URL = options.webSocketUrl
       }
       child = this.spawnFn(environment)
     } catch (error) {
@@ -322,10 +330,19 @@ export class SubtitleSessionHost {
   ): void {
     const segment = this.segments.find((candidate) => candidate.id === segmentId)
     if (!segment) return
+    if (status === 'partial') {
+      // 预览译文可能晚于 final 到达。已定稿段落一旦回到 partial，下一句
+      // partial 就会把它当作当前句继续覆盖；历史段落同样不得被预览改写。
+      if (segment.status !== 'partial') return
+      if (this.segments.at(-1)?.id !== segmentId) return
+    }
     segment.translatedText = translatedText
     segment.status = status
     segment.updatedAt = Date.now()
-    this.translatedText = translatedText
+    // 只有最新段落可以驱动全局译文，避免上一句迟到的翻译结果覆盖新句。
+    if (this.segments.at(-1)?.id === segmentId) {
+      this.translatedText = translatedText
+    }
   }
 
   /**
@@ -397,11 +414,18 @@ export class SubtitleSessionHost {
    */
   private handleEvent(event: SubtitleSidecarEvent, generation: number): void {
     if (generation !== this.generation || this.disposed) return
+    if (event.type === 'partial' || event.type === 'final') {
+      event = {
+        ...event,
+        text: normalizeChineseScript(event.text, this.recognitionLanguage)
+      }
+    }
     if (event.type === 'ready') {
       this.log(`ready generation=${generation}`)
       this.clearStartupTimer()
       this.setState('running')
     } else if (event.type === 'partial' || event.type === 'final') {
+      const previousSegmentId = this.segments.at(-1)?.id
       const merged = mergeSubtitleSegments(
         this.segments,
         event,
@@ -410,15 +434,14 @@ export class SubtitleSessionHost {
       this.segments = merged.segments
       this.sourceText = event.text
       this.audioActivity = 'speech-detected'
-      if (event.type === 'final') this.translatedText = ''
-    } else if (event.type === 'level') {
-      // 一旦识别到语音，就保持 speech-detected，避免句间停顿反复切换提示。
-      if (event.rms >= SubtitleSessionHost.AUDIO_ACTIVITY_RMS_THRESHOLD && this.audioActivity === 'idle') {
-        this.audioActivity = 'speech-pending'
-      } else {
-        // 电平值本身不参与界面渲染，只有活动状态迁移才需要通知控制器。
-        return
+      // 新一句开始时上一句译文已经失效；若继续保留，双语字幕会把上一句
+      // 译文粘在新句原文下方。final 可能改变当前句原文，同样需要清空旧译文。
+      if (event.type === 'final' || merged.activeId !== previousSegmentId) {
+        this.translatedText = ''
       }
+    } else if (event.type === 'level') {
+      // 人声是否出现由上游 ASR/VAD 判定；客户端电平仅用于内部遥测，不改变界面状态。
+      return
     } else if (event.type === 'status') {
       if (event.state === 'idle') {
         this.clearStartupTimer()

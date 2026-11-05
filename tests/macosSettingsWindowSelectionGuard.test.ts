@@ -396,6 +396,50 @@ test('应用失活后迟到的 Dock 补置前必须失效', () => {
   )
 })
 
+test('启动首开必须使用独立来源，不能因启动期失活事件被永久吞掉', () => {
+  const openSource = stripComments(extractFunction(mainSource, 'async function openSettings('))
+  const createSource = stripComments(
+    extractFunction(mainSource, 'async function createSettingsWindow(')
+  )
+  const completeSource = stripComments(
+    extractFunction(mainSource, 'function canCompleteSettingsBringToFront(')
+  )
+
+  // macOS 在应用启动期间可能先派发 did-resign-active，新提交又会让该事件递增
+  // 设置页置前代际。启动首开若仍走普通 Dock/activate 来源，就会在 ready-to-show
+  // 时被判定过期，窗口只创建不显示。启动首开必须携带独立来源，并只在没有真实
+  // 划词风险时豁免启动期噪声。
+  assert.match(
+    mainSource,
+    /if \(openSettingsOnInitialLaunch\) await openSettings\(\{\s*bringToFront:\s*true,\s*source:\s*'initial-launch'\s*\}\)/u,
+    '启动首开必须向统一打开入口传递 initial-launch 来源'
+  )
+  assert.match(
+    createSource,
+    /source\?:\s*'popup'\s*\|\s*'initial-launch'/u,
+    '设置窗口打开来源必须同时区分弹窗入口与启动首开'
+  )
+  assert.match(
+    createSource,
+    /const initialLaunchSource = source === 'initial-launch'/u,
+    '设置窗口创建路径必须显式识别启动首开来源'
+  )
+  assert.match(
+    completeSource,
+    /if \(initialLaunchSource\)[\s\S]*?isSelectionWindowRaiseGuardActive\(\)[\s\S]*?selectionInteraction\.snapshot\(\)\.state === 'idle'[\s\S]*?if \(isMac && !isMacAppActiveByEvents\(\)\)/u,
+    '启动首开只能豁免应用失活门禁，仍必须阻止划词保护期或进行中交互抢前台'
+  )
+
+  const initialLaunchEpochBypassCount =
+    (createSource.match(
+      /bringToFrontEpochAtStart\s*!==\s*settingsBringToFrontEpoch\s*&&\s*!initialLaunchSource/gu
+    ) ?? []).length
+  assert.ok(
+    initialLaunchEpochBypassCount >= 5,
+    `启动首开的所有显式置前出口都必须忽略启动期代际噪声，当前仅 ${initialLaunchEpochBypassCount} 处`
+  )
+})
+
 test('弹窗真实隐藏前后必须短暂撤销设置页的 key window 候选资格', () => {
   const createSource = stripComments(
     extractFunction(popupSource, 'export function createPopup(')

@@ -314,6 +314,92 @@ test('字幕窗工具栏应能在点击穿透模式下临时接管鼠标事件',
 })
 
 /**
+ * 校验 Renderer 未发送释放消息时，指针离开工具栏后主进程会自动恢复点击穿透。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗指针离开工具栏后应自动恢复点击穿透', async () => {
+  const created: FakeWindow[] = []
+  let cursor = { x: 740, y: 20 }
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }),
+    getCursorPoint: () => cursor,
+    pointerPollIntervalMs: 10,
+    interactionReleaseDelayMs: 30
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  controller.setDragHitArea({ x: 700, y: 5, width: 100, height: 30 })
+  controller.setMouseInteraction(true)
+  assert.equal(win.ignoreMouse, false)
+
+  cursor = { x: 100, y: 100 }
+  await new Promise((resolve) => setTimeout(resolve, 90))
+  assert.equal(win.ignoreMouse, true, '指针离开工具栏后不应继续拦截全局点击')
+  controller.dispose()
+})
+
+/**
+ * 校验隐藏字幕窗时会清理临时鼠标接管状态，避免再次显示后继续拦截点击。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗隐藏时应恢复点击穿透', () => {
+  const created: FakeWindow[] = []
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  controller.setMouseInteraction(true)
+  assert.equal(win.ignoreMouse, false)
+
+  controller.setVisible(false)
+  assert.equal(win.ignoreMouse, true)
+  controller.setVisible(true)
+  assert.equal(win.ignoreMouse, true)
+  controller.dispose()
+})
+
+/**
  * 校验拖拽手柄上报指针相对窗口的偏移时，窗口按偏移保持指针位置不变。
  * @returns 无返回值。
  * @author zhenghq

@@ -1,19 +1,20 @@
-//! Deepgram 与 Whisper 实时 ASR 客户端。
+//! Deepgram、Whisper 与 WebSocket 实时 ASR 客户端。
 //!
 //! 音频采集与文本归并沿用 Mimi（MIT，Copyright (c) 2026 yuxino）的移植实现；
-//! 本模块把 24 kHz PCM16 音频送入 Deepgram WebSocket 或本地 OpenAI 兼容 Whisper
-//! 转写接口，并把识别事件转换为 sidecar 内部事件。翻译始终由宿主应用的多通道
-//! 翻译管道完成。
+//! 本模块把 24 kHz PCM16 音频送入 Deepgram WebSocket、本地 OpenAI 兼容 Whisper
+//! 转写接口或 WebSocket 流式 ASR 服务，并把识别事件转换为 sidecar 内部事件。
+//! 翻译始终由宿主应用的多通道翻译管道完成。
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::multipart::{Form, Part};
 use tokio::sync::{broadcast, Mutex};
-use tokio::time::{interval, Duration, MissedTickBehavior};
+use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+use crate::audio::streaming_resampler::StreamingPcm16Resampler;
 use crate::protocol::AsrProvider;
 
 /// ASR 错误分类。
@@ -60,6 +61,9 @@ pub enum AsrEvent {
 /// Deepgram WebSocket 端点。
 const DEEPGRAM_LISTEN_URL: &str = "wss://api.deepgram.com/v1/listen";
 
+/// faster-whisper-stream 的默认 WebSocket ASR 地址。
+const DEFAULT_WEBSOCKET_ASR_URL: &str = "ws://127.0.0.1:9092/ws/asr";
+
 /// Deepgram 默认识别模型。
 const DEEPGRAM_MODEL: &str = "nova-3";
 
@@ -74,6 +78,19 @@ const DEEPGRAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(8);
 /// 底层连接处于半开状态时，`SinkExt::send` 可能永久等待可写；若不加超时，
 /// 上行任务会一直占用音频消费端，采集队列随后持续塞满。
 const DEEPGRAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// WebSocket ASR 心跳发送间隔。
+///
+/// 部分反向代理或服务端会在长时间无数据后静默丢弃半开连接；应用层音频
+/// 写入仍可能短暂成功，无法及时暴露断链。定期发送 WebSocket Ping 可以用
+/// Pong 确认连接仍然可用。
+const WEBSOCKET_ASR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// WebSocket ASR 最长无下行帧时间。
+///
+/// 超过该时间没有收到任何文本、Pong 或关闭帧时视为连接已失效，主动上报
+/// 网络错误，让主进程重建 sidecar 与 ASR 连接。
+const WEBSOCKET_ASR_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Whisper 单次转写窗口的最短采样数（24 kHz、2 秒）。
 ///
@@ -128,6 +145,7 @@ impl AsrClient {
         match provider {
             AsrProvider::Deepgram => Self::connect_deepgram(lang).await,
             AsrProvider::Whisper => Self::connect_whisper(lang).await,
+            AsrProvider::WebSocket => Self::connect_websocket(lang).await,
         }
     }
 
@@ -190,6 +208,36 @@ impl AsrClient {
         let events = downstream.clone();
         let task = tokio::spawn(async move {
             run_whisper(endpoint, model, api_key, language, audio_rx, events).await;
+        });
+
+        Ok(Self {
+            upstream: Mutex::new(Some(audio_tx)),
+            downstream,
+            task: std::sync::Mutex::new(Some(task)),
+        })
+    }
+
+    /// 连接 WebSocket 流式语音识别服务。
+    ///
+    /// # 参数
+    /// - `lang`：识别语言，会映射为服务接受的短语言代码并覆盖 URL 中的
+    ///   `language` 参数。
+    ///
+    /// # 返回值
+    /// 已就绪的客户端；配置非法或握手失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    async fn connect_websocket(lang: &str) -> Result<Self, AsrError> {
+        let configured_url = std::env::var("WEBSOCKET_ASR_URL")
+            .unwrap_or_else(|_| DEFAULT_WEBSOCKET_ASR_URL.to_string());
+        let endpoint = websocket_asr_url(&configured_url, lang)?;
+        let stream = connect_websocket(&endpoint).await?;
+
+        let (downstream, _) = broadcast::channel(EVENT_CAPACITY);
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+        let events = downstream.clone();
+        let task = tokio::spawn(async move {
+            run_websocket(stream, audio_rx, events).await;
         });
 
         Ok(Self {
@@ -269,6 +317,57 @@ fn whisper_language(lang: &str) -> Option<String> {
     }
     let primary = normalized.split(['-', '_']).next().unwrap_or(normalized);
     Some(primary.to_ascii_lowercase())
+}
+
+/// 将界面语言标签映射为 WebSocket ASR 服务接受的短语言代码。
+///
+/// # 参数
+/// - `lang`：界面识别语言，`auto` 表示自动检测。
+///
+/// # 返回值
+/// 形如 `zh`、`en` 或 `auto` 的语言代码。
+///
+/// @author zhenghq
+fn websocket_language(lang: &str) -> String {
+    let normalized = lang.trim();
+    if normalized.is_empty() || normalized.eq_ignore_ascii_case("auto") {
+        return "auto".to_string();
+    }
+    let primary = normalized.split(['-', '_']).next().unwrap_or(normalized);
+    primary.to_ascii_lowercase()
+}
+
+/// 构造 WebSocket ASR 端点，并只覆盖 URL 中已有的 `language` 参数。
+///
+/// # 参数
+/// - `configured_url`：设置页或环境变量提供的 WebSocket 地址。
+/// - `lang`：界面识别语言。
+///
+/// # 返回值
+/// 保留其他查询参数并写入规范化语言代码的 `ws`/`wss` 地址；协议或主机非法时返回错误。
+///
+/// @author zhenghq
+fn websocket_asr_url(configured_url: &str, lang: &str) -> Result<String, AsrError> {
+    let trimmed = configured_url.trim();
+    let mut parsed = reqwest::Url::parse(trimmed).map_err(|_| AsrError::InvalidRequest)?;
+    if !matches!(parsed.scheme(), "ws" | "wss") || parsed.host_str().is_none() {
+        return Err(AsrError::InvalidRequest);
+    }
+
+    let retained_query = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "language")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    {
+        let mut query = parsed.query_pairs_mut();
+        query.clear();
+        for (key, value) in retained_query {
+            query.append_pair(&key, &value);
+        }
+        query.append_pair("language", &websocket_language(lang));
+    }
+    Ok(parsed.to_string())
 }
 
 /// 将 PCM16 单声道采样封装为 24 kHz WAV。
@@ -716,6 +815,30 @@ async fn connect_deepgram(
     }
 }
 
+/// 建立 WebSocket 流式 ASR 连接。
+///
+/// # 参数
+/// - `endpoint`：已完成协议与查询参数校验的 WebSocket 地址。
+///
+/// # 返回值
+/// 已完成握手的 WebSocket；失败时返回分类错误。
+///
+/// @author zhenghq
+async fn connect_websocket(
+    endpoint: &str,
+) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, AsrError> {
+    let request = endpoint
+        .into_client_request()
+        .map_err(|_| AsrError::InvalidRequest)?;
+    match connect_async(request).await {
+        Ok((stream, _)) => Ok(stream),
+        Err(error) => {
+            tracing::warn!(%error, "websocket asr connect failed");
+            Err(classify_connect_error(&error))
+        }
+    }
+}
+
 /// 把 WebSocket 握手错误转换为会话层可展示的错误分类。
 ///
 /// # 参数
@@ -829,6 +952,182 @@ async fn run_deepgram_with_keepalive(
         let _ = events.send(AsrEvent::Error { error });
     }
     // 关闭帧也必须有超时，否则半开连接会让任务在错误已上报后仍永久悬挂。
+    let _ = send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
+}
+
+/// 在 WebSocket ASR 连接上转发 16 kHz PCM16 音频并解析识别事件。
+///
+/// 音频通道关闭时发送结束帧，但继续等待服务端返回剩余临时文本、最终文本和
+/// `done`，避免丢失最后一句字幕。
+///
+/// # 参数
+/// - `stream`：已完成握手的 WebSocket。
+/// - `audio_rx`：24 kHz 单声道 PCM 上行通道。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+async fn run_websocket(
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    audio_rx: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    events: broadcast::Sender<AsrEvent>,
+) {
+    run_websocket_with_heartbeat(
+        stream,
+        audio_rx,
+        events,
+        WEBSOCKET_ASR_HEARTBEAT_INTERVAL,
+        WEBSOCKET_ASR_IDLE_TIMEOUT,
+    )
+    .await;
+}
+
+/// 在 WebSocket ASR 连接上运行时，允许测试覆盖心跳与空闲超时。
+///
+/// # 参数
+/// - `stream`：已完成握手的 WebSocket。
+/// - `audio_rx`：24 kHz 单声道 PCM 上行通道。
+/// - `events`：下行事件广播端。
+/// - `heartbeat_interval`：WebSocket Ping 发送间隔。
+/// - `idle_timeout`：允许的最长无下行帧时间。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+async fn run_websocket_with_heartbeat(
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    mut audio_rx: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    events: broadcast::Sender<AsrEvent>,
+    heartbeat_interval: Duration,
+    idle_timeout: Duration,
+) {
+    let (mut write, mut read) = stream.split();
+    let mut resampler = match StreamingPcm16Resampler::new(24_000, 16_000, 1) {
+        Ok(resampler) => resampler,
+        Err(_) => {
+            let _ = events.send(AsrEvent::Error {
+                error: AsrError::InvalidRequest,
+            });
+            let _ =
+                send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
+            return;
+        }
+    };
+    let mut audio_closed = false;
+    let mut failure = Some(AsrError::Network);
+    let mut heartbeat = interval(heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // 第一次 tick 立即完成；先消费掉，避免连接建立后立刻发送 Ping。
+    heartbeat.tick().await;
+    let mut last_inbound = Instant::now();
+
+    loop {
+        tokio::select! {
+            maybe_pcm = audio_rx.recv(), if !audio_closed => {
+                let Some(pcm) = maybe_pcm else {
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Text(r#"{"type":"end"}"#.into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        tracing::warn!("websocket asr end frame send failed");
+                        failure = Some(AsrError::Network);
+                        break;
+                    }
+                    audio_closed = true;
+                    continue;
+                };
+                let samples = pcm
+                    .iter()
+                    .map(|sample| f32::from(*sample) / 32_768.0)
+                    .collect::<Vec<_>>();
+                let blocks = match resampler.push_interleaved(&samples) {
+                    Ok(blocks) => blocks,
+                    Err(_) => {
+                        failure = Some(AsrError::InvalidRequest);
+                        break;
+                    }
+                };
+                let mut send_failed = false;
+                for block in blocks {
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Binary(block.into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        send_failed = true;
+                        break;
+                    }
+                }
+                if send_failed {
+                    tracing::warn!("websocket asr audio send failed or timed out");
+                    failure = Some(AsrError::Network);
+                    break;
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_inbound.elapsed() >= idle_timeout {
+                    tracing::warn!(
+                        idle_ms = last_inbound.elapsed().as_millis(),
+                        "websocket asr heartbeat timeout"
+                    );
+                    failure = Some(AsrError::Network);
+                    break;
+                }
+                if !send_with_timeout(
+                    &mut write,
+                    Message::Ping(Vec::new().into()),
+                    DEEPGRAM_SEND_TIMEOUT,
+                )
+                .await
+                {
+                    tracing::warn!("websocket asr ping send failed or timed out");
+                    failure = Some(AsrError::Network);
+                    break;
+                }
+            }
+            message = read.next() => {
+                last_inbound = Instant::now();
+                let text = match message {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(frame))) => {
+                        tracing::warn!(?frame, "websocket asr closed by peer");
+                        break;
+                    }
+                    None => {
+                        tracing::warn!("websocket asr stream ended");
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "websocket asr read failed");
+                        break;
+                    }
+                    _ => continue,
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                if handle_websocket_event(&value, &events) {
+                    // `done` 或服务端 error 事件已明确结束本次识别；
+                    // error 事件在解析函数内完成结构化上报，避免重复报错。
+                    if value["type"].as_str() == Some("done") {
+                        tracing::warn!("websocket asr server ended the stream");
+                    }
+                    failure = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(error) = failure {
+        let _ = events.send(AsrEvent::Error { error });
+    }
     let _ = send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
 }
 
@@ -956,6 +1255,79 @@ fn classify_deepgram_error(value: &serde_json::Value) -> AsrError {
     match (code, kind) {
         ("401", _) | ("403", _) | (_, "invalid_request_error") => AsrError::Auth,
         _ => AsrError::Network,
+    }
+}
+
+/// 解析一条 WebSocket ASR 服务端事件并派发内部事件。
+///
+/// 协议只使用当前句的 `text` 字段；`full` 是由服务端维护的累计全文，sidecar
+/// 不读取也不拼接，避免与字幕归一化状态重复。
+///
+/// # 参数
+/// - `value`：服务端 JSON 事件。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 服务端明确结束连接时返回 `true`。
+///
+/// @author zhenghq
+fn handle_websocket_event(value: &serde_json::Value, events: &broadcast::Sender<AsrEvent>) -> bool {
+    match value["type"].as_str() {
+        Some("partial") => {
+            let text = value["text"].as_str().unwrap_or_default().trim();
+            if !text.is_empty() {
+                let _ = events.send(AsrEvent::Partial {
+                    text: text.to_string(),
+                    lang: None,
+                });
+            }
+            false
+        }
+        Some("final") => {
+            let text = value["text"].as_str().unwrap_or_default().trim();
+            if !text.is_empty() {
+                let _ = events.send(AsrEvent::Final {
+                    text: text.to_string(),
+                    lang: None,
+                });
+            }
+            false
+        }
+        Some("done") => true,
+        Some("error") => {
+            tracing::warn!(event = %value, "websocket asr error");
+            let _ = events.send(AsrEvent::Error {
+                error: classify_websocket_error(value),
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 根据 WebSocket ASR 错误事件分类，避免把鉴权问题误报为网络断线。
+///
+/// # 参数
+/// - `value`：服务端错误事件。
+///
+/// # 返回值
+/// 结构化 ASR 错误分类。
+///
+/// @author zhenghq
+fn classify_websocket_error(value: &serde_json::Value) -> AsrError {
+    let code = value["code"].as_str().unwrap_or_default();
+    let message = value["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(code, "401" | "403")
+        || message.contains("auth")
+        || message.contains("unauthorized")
+        || message.contains("forbidden")
+    {
+        AsrError::Auth
+    } else {
+        AsrError::InvalidRequest
     }
 }
 
@@ -1198,6 +1570,101 @@ mod tests {
         assert_eq!(whisper_language("zh-CN"), Some("zh".into()));
         assert_eq!(whisper_language("zh-TW"), Some("zh".into()));
         assert_eq!(whisper_language("ja-JP"), Some("ja".into()));
+    }
+
+    /// 校验 WebSocket ASR 语言标签会映射为服务接受的短代码。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn websocket_language_maps_ui_locale_to_short_code() {
+        assert_eq!(websocket_language("auto"), "auto");
+        assert_eq!(websocket_language("zh-CN"), "zh");
+        assert_eq!(websocket_language("en-US"), "en");
+        assert_eq!(websocket_language("ja_JP"), "ja");
+    }
+
+    /// 校验 WebSocket ASR URL 会覆盖 language 并保留其他查询参数。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn websocket_asr_url_overrides_language_and_preserves_query() {
+        assert_eq!(
+            websocket_asr_url(DEFAULT_WEBSOCKET_ASR_URL, "zh-CN").unwrap(),
+            "ws://127.0.0.1:9092/ws/asr?language=zh"
+        );
+        assert_eq!(
+            websocket_asr_url(
+                "wss://asr.example.com/ws/asr?token=abc&language=en",
+                "en-US"
+            )
+            .unwrap(),
+            "wss://asr.example.com/ws/asr?token=abc&language=en"
+        );
+        assert!(websocket_asr_url("http://127.0.0.1:9092/ws/asr", "zh").is_err());
+        assert!(websocket_asr_url("ws://", "zh").is_err());
+    }
+
+    /// 校验 WebSocket ASR 事件只读取当前句 text，并正确处理 done/error。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn websocket_events_use_text_and_terminate_on_done_or_error() {
+        let (tx, mut rx) = broadcast::channel(8);
+
+        let partial = serde_json::json!({
+            "type": "partial",
+            "text": " 你好 ",
+            "full": "不应读取的累计全文"
+        });
+        assert!(!handle_websocket_event(&partial, &tx));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AsrEvent::Partial {
+                text: "你好".into(),
+                lang: None
+            }
+        );
+
+        let final_event = serde_json::json!({
+            "type": "final",
+            "text": "你好世界",
+            "full": "不应读取的累计全文"
+        });
+        assert!(!handle_websocket_event(&final_event, &tx));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AsrEvent::Final {
+                text: "你好世界".into(),
+                lang: None
+            }
+        );
+
+        assert!(handle_websocket_event(
+            &serde_json::json!({ "type": "done" }),
+            &tx
+        ));
+        assert!(rx.try_recv().is_err());
+
+        let error_event = serde_json::json!({
+            "type": "error",
+            "message": "authentication failed"
+        });
+        assert!(handle_websocket_event(&error_event, &tx));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AsrEvent::Error {
+                error: AsrError::Auth
+            }
+        );
     }
 
     #[test]
@@ -1813,5 +2280,123 @@ mod tests {
                 error: AsrError::Network
             }
         );
+    }
+
+    /// 校验 WebSocket ASR 上行会重采样为 PCM16，并在音频结束后发送 end 帧。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn websocket_streams_resampled_pcm16_and_sends_end_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let mut received_binary = false;
+            let end_text = loop {
+                let message = timeout(Duration::from_secs(2), socket.next())
+                    .await
+                    .expect("client should send audio and end frame")
+                    .expect("client should keep the socket open")
+                    .expect("client frame should be valid");
+                match message {
+                    Message::Binary(bytes) => received_binary |= !bytes.is_empty(),
+                    Message::Text(text) => break text,
+                    _ => continue,
+                }
+            };
+            assert!(received_binary, "client should send PCM16 binary audio");
+            assert_eq!(end_text.as_str(), r#"{"type":"end"}"#);
+            socket
+                .send(Message::Text(r#"{"type":"partial","text":"你好"}"#.into()))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    r#"{"type":"final","text":"你好世界"}"#.into(),
+                ))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(r#"{"type":"done"}"#.into()))
+                .await
+                .unwrap();
+        });
+
+        let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(2);
+        let (events, mut received) = broadcast::channel(8);
+        audio_tx.send(vec![1_000; 4_800]).await.unwrap();
+        drop(audio_tx);
+
+        timeout(
+            Duration::from_secs(2),
+            run_websocket(stream, audio_rx, events),
+        )
+        .await
+        .expect("websocket loop should finish after done");
+        server.await.unwrap();
+
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Partial {
+                text: "你好".into(),
+                lang: None
+            }
+        );
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "你好世界".into(),
+                lang: None
+            }
+        );
+    }
+
+    /// 校验长时间收不到任何下行帧时会判定连接失效并上报网络错误。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn websocket_heartbeat_timeout_reports_network_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _socket = accept_async(stream).await.unwrap();
+            // 保持连接打开但不读取任何帧，模拟半开连接或服务端失去响应。
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(2);
+        let (events, mut received) = broadcast::channel(8);
+
+        timeout(
+            Duration::from_secs(2),
+            run_websocket_with_heartbeat(
+                stream,
+                audio_rx,
+                events,
+                Duration::from_millis(10),
+                Duration::from_millis(30),
+            ),
+        )
+        .await
+        .expect("heartbeat timeout should end websocket loop");
+
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Error {
+                error: AsrError::Network
+            }
+        );
+        drop(audio_tx);
+        server.abort();
     }
 }

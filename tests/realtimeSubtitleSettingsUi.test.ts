@@ -48,10 +48,8 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
     'realtime-subtitle-whisper-save',
     'realtime-subtitle-whisper-clear',
     'realtime-subtitle-whisper-status',
-    'realtime-subtitle-itranslate-enabled',
-    'realtime-subtitle-itranslate-api-key',
-    'realtime-subtitle-itranslate-save',
-    'realtime-subtitle-itranslate-clear'
+    'realtime-subtitle-websocket-settings',
+    'realtime-subtitle-websocket-url'
   ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`, 'u'), `设置页缺少 ${id}`)
   }
@@ -74,9 +72,9 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
   assert.match(source, /clearWhisperApiKey/u)
   assert.match(source, /realtimeSubtitleWhisperBaseUrl/u)
   assert.match(source, /realtimeSubtitleWhisperModel/u)
-  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]whisper['"]/u)
-  assert.match(source, /setITranslateConfig/u)
-  assert.match(source, /clearITranslateApiKey/u)
+  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]websocket['"]/u)
+  assert.match(source, /realtimeSubtitleWebSocketUrl/u)
+  assert.doesNotMatch(source, /realtimeSubtitleITranslate|saveRealtimeSubtitleITranslate|clearRealtimeSubtitleITranslate/u)
   assert.doesNotMatch(source, /realtimeSubtitleDeepgramApiKeyConfigured\s*=/u)
   assert.match(html, /id=["']realtime-subtitle-whisper-api-key["'][^>]*type=["']password["']/u)
   assert.doesNotMatch(html, /NSSpeechRecognition|端侧 Speech|on device/iu)
@@ -116,6 +114,10 @@ test('实时字幕设置与状态应具备中英文词条', () => {
     'settings.realtimeSubtitle.privacy',
     'settings.realtimeSubtitle.asrProvider',
     'settings.realtimeSubtitle.asrProvider.whisper',
+    'settings.realtimeSubtitle.asrProvider.websocket',
+    'settings.realtimeSubtitle.websocketUrl',
+    'settings.realtimeSubtitle.websocketUrlPlaceholder',
+    'settings.realtimeSubtitle.websocketHint',
     'settings.realtimeSubtitle.whisperBaseUrl',
     'settings.realtimeSubtitle.whisperModel',
     'settings.realtimeSubtitle.whisperApiKey',
@@ -126,10 +128,6 @@ test('实时字幕设置与状态应具备中英文词条', () => {
     'settings.realtimeSubtitle.deepgramApiKey',
     'settings.realtimeSubtitle.deepgramSave',
     'settings.realtimeSubtitle.deepgramClear',
-    'settings.realtimeSubtitle.itranslateEnabled',
-    'settings.realtimeSubtitle.itranslateApiKey',
-    'settings.realtimeSubtitle.itranslateSave',
-    'settings.realtimeSubtitle.itranslateClear',
     'settings.realtimeSubtitle.credentials.configured',
     'settings.realtimeSubtitle.credentials.notConfigured'
   ]) {
@@ -159,39 +157,59 @@ test('Whisper 设置应说明本地部署和无鉴权用法', () => {
 })
 
 /**
- * 校验设置页明确区分 Deepgram ASR 与现有多通道翻译，并将 iTranslate 标为可选 provider。
+ * 校验 WebSocket 设置暴露默认本地地址并说明音频格式。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('实时字幕设置应明确 Deepgram ASR、复用翻译与 iTranslate 可选边界', () => {
+test('WebSocket 设置应说明本地 faster-whisper-stream 用法', () => {
+  const html = read('src/renderer/settings.html')
+  const zh = read('src/shared/i18n/catalog.zh-CN.subtitle.ts')
+  const en = read('src/shared/i18n/catalog.en-US.subtitle.ts')
+
+  assert.match(html, /value=["']websocket["']/u)
+  assert.match(html, /id=["']realtime-subtitle-websocket-url["'][^>]*type=["']url["']/u)
+  assert.match(html, /ws:\/\/127\.0\.0\.1:9092\/ws\/asr/u)
+  assert.match(zh, /WebSocket/iu)
+  assert.match(zh, /16\s*kHz/iu)
+  assert.match(zh, /faster-whisper-stream/iu)
+  assert.match(en, /16\s*kHz/iu)
+  assert.match(en, /faster-whisper-stream/iu)
+})
+
+/**
+ * 校验设置页明确区分 Deepgram ASR 与现有多通道翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('实时字幕设置应明确 Deepgram ASR 与复用翻译边界', () => {
   const html = read('src/renderer/settings.html')
   const zh = read('src/shared/i18n/catalog.zh-CN.subtitle.ts')
   const en = read('src/shared/i18n/catalog.en-US.subtitle.ts')
   for (const source of [html, zh, en]) {
     assert.match(source, /Deepgram/iu)
-    assert.match(source, /iTranslate/iu)
     assert.match(source, /(翻译|translation)/iu)
   }
   assert.match(zh, /复用|多通道/iu)
   assert.match(en, /reuse|multi-channel/iu)
   assert.match(html, /realtime-subtitle-deepgram-api-key[^>]*type=["']password["']/u)
-  assert.match(html, /realtime-subtitle-itranslate-api-key[^>]*type=["']password["']/u)
   assert.match(html, /macOS 14\.2/u)
 })
 
 /**
- * 校验 iTranslate 设置明确说明当前无公开 Key 申请入口，避免用户继续寻找不存在的入口。
+ * 校验设置页不再展示 iTranslate 可选翻译通道。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('iTranslate 设置应说明仅兼容已有历史 Key', () => {
+test('实时字幕设置页不应展示 iTranslate 可选翻译通道', () => {
+  const html = read('src/renderer/settings.html')
+  const source = read('src/renderer/src/settings.ts')
   const zh = read('src/shared/i18n/catalog.zh-CN.subtitle.ts')
   const en = read('src/shared/i18n/catalog.en-US.subtitle.ts')
 
-  assert.match(zh, /未提供公开[^']*API Key[^']*申请入口/iu)
-  assert.match(zh, /历史 Key/iu)
-  assert.match(en, /does not currently offer[^']*public[^']*API Key[^']*registration/iu)
-  assert.match(en, /legacy key/iu)
+  assert.doesNotMatch(html, /iTranslate|realtime-subtitle-itranslate/iu)
+  assert.doesNotMatch(source, /ITranslate|itranslate/iu)
+  assert.doesNotMatch(zh, /iTranslate|itranslate/iu)
+  assert.doesNotMatch(en, /iTranslate|itranslate/iu)
 })
 
 /**
@@ -279,12 +297,20 @@ test('字幕右上角应支持拖动定位并切换目标译文语言', () => {
   assert.match(css, /\.subtitle-toolbar[\s\S]*-webkit-app-region:\s*no-drag/u)
   assert.match(css, /\.subtitle-drag-handle[\s\S]*-webkit-app-region:\s*no-drag/u)
   assert.match(css, /\.subtitle-drag-handle[\s\S]*pointer-events:\s*auto/u)
+  assert.doesNotMatch(
+    css,
+    /\.subtitle-card\s*\{[^}]*-webkit-app-region:\s*drag/u,
+    '字幕卡片不应成为原生拖动区，否则会吞掉卡片区域内的普通点击'
+  )
   assert.match(source, /moveRealtimeSubtitleWindow/u)
   assert.match(source, /dragHandle\.addEventListener\('pointerenter',\s*showToolbar\)/u)
   assert.match(source, /onRealtimeSubtitlePointerPoint/u)
   assert.match(source, /point\.insideDragArea/u)
   assert.match(source, /function syncDragHitArea/u)
+  assert.match(source, /const rect\s*=\s*toolbar\.getBoundingClientRect\(\)/u)
+  assert.doesNotMatch(source, /const rect\s*=\s*dragHandle\.getBoundingClientRect\(\)/u)
   assert.match(source, /ResizeObserver/u)
+  assert.match(source, /dragHitAreaObserver\.observe\(toolbar\)/u)
   assert.match(source, /setRealtimeSubtitleDragHitArea/u)
   assert.match(preload, /setRealtimeSubtitleDragHitArea/u)
   assert.match(preload, /ipcRenderer\.send\(['"]subtitle:drag-hit-area['"]/u)
@@ -417,5 +443,12 @@ test('字幕工具栏应在交互结束后释放焦点并恢复点击穿透', ()
     source,
     /window\.addEventListener\('mousemove',[\s\S]*?setMouseInteraction\(isToolbarEvent\(event\)\)/u,
     '鼠标移动应根据工具栏命中区域启用交互，而不是直接按事件目标重置状态'
+  )
+  assert.match(source, /function resetToolbarInteraction[\s\S]*?setMouseInteraction\(false\)/u)
+  assert.match(source, /window\.addEventListener\('blur',\s*resetToolbarInteraction\)/u)
+  assert.match(source, /document\.addEventListener\('mouseleave',\s*resetToolbarInteraction\)/u)
+  assert.match(
+    source,
+    /document\.addEventListener\('visibilitychange',[\s\S]*?document\.hidden[\s\S]*?resetToolbarInteraction\(\)/u
   )
 })

@@ -2,12 +2,18 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import {
+  hasNativeBuildForceFlag,
+  isNativeBuildUpToDate,
+  logNativeBuildUpToDate
+} from './lib/native-build-cache.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 // 源码路径保留字面量，便于构建配置审计与打包测试直接校验。
 const sourcePath = join(root, 'helpers/macos-window-helper/main.m')
 const outputPath = join(root, 'build', 'macos-window-helper')
 const moduleCachePath = join(root, 'build', 'clang-module-cache')
+const forceBuild = hasNativeBuildForceFlag()
 
 /**
  * 判断当前平台是否需要构建 macOS 窗口 helper。
@@ -26,6 +32,10 @@ function shouldBuildForCurrentPlatform() {
 function buildHelper() {
   if (!existsSync(sourcePath)) {
     throw new Error(`缺少 macOS 窗口 helper 源码: ${sourcePath}`)
+  }
+  if (!forceBuild && isNativeBuildUpToDate([outputPath], [sourcePath])) {
+    logNativeBuildUpToDate('macOS window helper')
+    return
   }
 
   mkdirSync(dirname(outputPath), { recursive: true })

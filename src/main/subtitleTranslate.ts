@@ -68,6 +68,10 @@ interface SubtitleTranslationTask {
   controller: AbortController
   /** 尚未执行的预翻译防抖计时器。 */
   timer: unknown | null
+  /** 当前预翻译运行期间收到的最新原文；完成后用于追赶最新 partial。 */
+  queuedText?: string
+  /** 追赶原文对应的识别语言。 */
+  queuedSourceLang?: string
 }
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300
@@ -80,6 +84,8 @@ export class SubtitleTranslationCoordinator {
   private epoch = 0
   private readonly pending = new Set<Promise<void>>()
   private readonly tasks = new Map<string, SubtitleTranslationTask>()
+  /** 已进入 final 阶段的段落，禁止迟到的 partial 重新开启预览翻译。 */
+  private readonly finalizedSegmentIds = new Set<string>()
   private readonly options: SubtitleTranslationCoordinatorOptions
   private readonly previewDebounceMs: number
   private readonly setTimeoutFn: (callback: () => void, delayMs: number) => unknown
@@ -115,23 +121,40 @@ export class SubtitleTranslationCoordinator {
     _generation: number,
     segmentId: string
   ): string {
+    if (this.finalizedSegmentIds.has(segmentId)) return segmentId
     const existing = this.tasks.get(segmentId)
     if (existing && existing.epoch === this.epoch) {
-      if (existing.phase === 'preview' && existing.text === text) return segmentId
+      if (existing.phase === 'final') return segmentId
+      if (existing.text === text) {
+        existing.queuedText = undefined
+        existing.queuedSourceLang = undefined
+        return segmentId
+      }
+      if (existing.status === 'running') {
+        // 上游 partial 每几百毫秒就会更新整句文本。立即中止在途请求会让
+        // 翻译首字永远赶不上下一次 partial；这里只记录最新文本，等当前
+        // 请求完成后再自动追赶，保证字幕能持续出现译文。
+        existing.queuedText = text
+        existing.queuedSourceLang = sourceLang
+        return segmentId
+      }
+      if (existing.status === 'scheduled') {
+        if (existing.timer !== null) this.clearTimeoutFn(existing.timer)
+        existing.timer = null
+        existing.text = text
+        existing.sourceLang = sourceLang
+        existing.queuedText = undefined
+        existing.queuedSourceLang = undefined
+        this.schedulePreview(existing)
+        return segmentId
+      }
       this.cancelTask(existing)
     }
     if (!text.trim()) return segmentId
 
     const task = this.createTask(text, sourceLang, 'preview', segmentId)
     this.tasks.set(segmentId, task)
-    if (this.previewDebounceMs === 0) {
-      this.start(task)
-    } else {
-      task.timer = this.setTimeoutFn(() => {
-        task.timer = null
-        this.start(task)
-      }, this.previewDebounceMs)
-    }
+    this.schedulePreview(task)
     return segmentId
   }
 
@@ -150,6 +173,7 @@ export class SubtitleTranslationCoordinator {
     _generation: number,
     segmentId: string
   ): string {
+    this.finalizedSegmentIds.add(segmentId)
     const existing = this.tasks.get(segmentId)
     if (existing && existing.epoch === this.epoch && existing.text === text) {
       if (existing.phase === 'final') return segmentId
@@ -196,6 +220,7 @@ export class SubtitleTranslationCoordinator {
       task.controller.abort()
     }
     this.tasks.clear()
+    this.finalizedSegmentIds.clear()
   }
 
   /**
@@ -235,6 +260,8 @@ export class SubtitleTranslationCoordinator {
    */
   private finishCompletedPreview(task: SubtitleTranslationTask): void {
     task.phase = 'final'
+    task.queuedText = undefined
+    task.queuedSourceLang = undefined
     this.reconcileResult(task, task.resultText)
     task.status = 'completed'
     if (this.tasks.get(task.id) === task) this.tasks.delete(task.id)
@@ -253,7 +280,44 @@ export class SubtitleTranslationCoordinator {
       task.timer = null
     }
     task.phase = 'final'
+    task.queuedText = undefined
+    task.queuedSourceLang = undefined
     if (task.status === 'scheduled') this.start(task)
+  }
+
+  /**
+   * 按防抖配置安排一次预翻译。
+   * @param task 待启动的预翻译任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private schedulePreview(task: SubtitleTranslationTask): void {
+    if (!this.isActive(task)) return
+    if (this.previewDebounceMs === 0) {
+      this.start(task)
+      return
+    }
+    task.timer = this.setTimeoutFn(() => {
+      task.timer = null
+      this.start(task)
+    }, this.previewDebounceMs)
+  }
+
+  /**
+   * 当前预翻译结束后，按运行期间收到的最新 partial 再启动一次预翻译。
+   * @param task 已结束的预翻译任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private startQueuedPreview(task: SubtitleTranslationTask): void {
+    const text = task.queuedText
+    const sourceLang = task.queuedSourceLang
+    if (!this.isActive(task) || !text || text === task.text) return
+    const next = this.createTask(text, sourceLang, 'preview', task.id)
+    if (task.translatedText) this.options.onReset?.(task.id, 'preview')
+    this.tasks.set(task.id, next)
+    // 该文本已在上一请求运行期间等待过，不再重复防抖，立即追赶以降低字幕延迟。
+    this.start(next)
   }
 
   /**
@@ -313,6 +377,7 @@ export class SubtitleTranslationCoordinator {
       if (task.phase === 'preview') {
         this.reconcileResult(task, task.resultText)
         task.status = 'completed'
+        this.startQueuedPreview(task)
         return
       }
 
@@ -327,6 +392,7 @@ export class SubtitleTranslationCoordinator {
           this.options.onReset?.(task.id, 'preview')
           task.translatedText = ''
         }
+        this.startQueuedPreview(task)
         return
       }
       this.options.onError(task.id, error instanceof Error ? error : new Error(String(error)))

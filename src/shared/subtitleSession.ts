@@ -9,7 +9,7 @@
 export type RealtimeSubtitleAudioSource = 'system' | 'microphone' | 'both'
 
 /** 实时字幕 ASR 提供商。 */
-export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper'
+export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper' | 'websocket'
 
 /**
  * 判断未知值是否为受支持的实时字幕 ASR 提供商。
@@ -20,7 +20,7 @@ export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper'
 export function isRealtimeSubtitleAsrProvider(
   value: unknown
 ): value is RealtimeSubtitleAsrProvider {
-  return value === 'deepgram' || value === 'whisper'
+  return value === 'deepgram' || value === 'whisper' || value === 'websocket'
 }
 
 /** 实时字幕显示模式。 */
@@ -161,8 +161,10 @@ export function createRealtimeSubtitleViewModel(
   snapshot: RealtimeSubtitleSnapshot
 ): RealtimeSubtitleViewModel {
   const latest = snapshot.segments.at(-1)
-  const sourceText = snapshot.sourceText || latest?.sourceText || ''
-  const translatedText = snapshot.translatedText || latest?.translatedText || ''
+  // 段落是字幕的权威来源；快照中的全局译文可能落后于新段落的创建，
+  // 若继续回退到全局值，会把上一句译文带进当前句。
+  const sourceText = latest ? latest.sourceText : snapshot.sourceText
+  const translatedText = latest ? latest.translatedText : snapshot.translatedText
   const status = latest?.status ?? (sourceText ? 'partial' : 'empty')
   return {
     state: snapshot.state,
@@ -218,6 +220,8 @@ export function parseSubtitleSidecarLine(line: string): SubtitleSidecarEvent | n
       return { type: 'level', rms: Math.min(1, Math.max(0, rawLevel)) }
     }
     case 'status':
+      // sidecar 使用 stopped 表示会话结束，主进程统一归一化为可重连的 idle 状态。
+      if (record.state === 'stopped') return { type: 'status', state: 'idle' }
       return isSessionState(record.state)
         ? { type: 'status', state: record.state }
         : null
@@ -253,13 +257,10 @@ export function mergeSubtitleSegments(
   now = Date.now()
 ): { segments: RealtimeSubtitleSegment[]; activeId: string | null } {
   const next = segments.map((segment) => ({ ...segment }))
-  let active: RealtimeSubtitleSegment | undefined
-  for (let index = next.length - 1; index >= 0; index -= 1) {
-    if (next[index]?.status === 'partial') {
-      active = next[index]
-      break
-    }
-  }
+  // 只有最后一个段落仍处于 partial 时才是当前句。向后扫描历史段落会让
+  // 迟到的预览回调把旧句重新标成 partial 后，新句继续覆盖旧句原文。
+  const last = next.at(-1)
+  const active = last?.status === 'partial' ? last : undefined
   if (event.type === 'partial') {
     if (active) {
       active.sourceText = event.text

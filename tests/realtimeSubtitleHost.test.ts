@@ -171,11 +171,11 @@ test('sidecar 就绪后应取消启动超时', async () => {
 })
 
 /**
- * 校验持续音频输入但没有识别文本时，快照明确标记“有声音但无语音”。
+ * 校验音频电平不再参与客户端的人声判定，只有识别结果才能标记语音活动。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('持续音频输入且无识别文本时应标记有声音但未识别到语音', () => {
+test('音频电平不应由客户端判定语音活动', () => {
   const child = createFakeChild()
   const host = new SubtitleSessionHost({
     spawn: () => child,
@@ -185,21 +185,21 @@ test('持续音频输入且无识别文本时应标记有声音但未识别到�
   host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
   child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
   child.stdout.emit('data', Buffer.from('{"type":"level","rms":0.18}\n'))
+  assert.equal(host.snapshot().audioActivity, 'idle')
 
-  assert.equal(host.snapshot().audioActivity, 'speech-pending')
   child.stdout.emit('data', Buffer.from('{"type":"partial","text":"Hello"}\n'))
   assert.equal(host.snapshot().audioActivity, 'speech-detected')
-  child.stdout.emit('data', Buffer.from('{"type":"level","rms":0.001}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"level","rms":0.9}\n'))
   assert.equal(host.snapshot().audioActivity, 'speech-detected')
   host.dispose()
 })
 
 /**
- * 校验音频电平只在活动状态发生迁移时通知上层，避免高频 PCM 块反复驱动界面刷新。
+ * 校验音频电平不通知上层，避免高频 PCM 块反复驱动界面刷新。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('重复音频电平事件不应重复通知上层', () => {
+test('音频电平事件不应通知上层', () => {
   const child = createFakeChild()
   const eventTypes: SubtitleSidecarEvent['type'][] = []
   const host = new SubtitleSessionHost({
@@ -218,7 +218,39 @@ test('重复音频电平事件不应重复通知上层', () => {
     ''
   ].join('\n')))
 
-  assert.deepEqual(eventTypes, ['ready', 'level', 'partial'])
+  assert.deepEqual(eventTypes, ['ready', 'partial'])
+  host.dispose()
+})
+
+/**
+ * 校验简体中文识别结果在进入字幕快照和上层翻译前已转换为简体。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('简体中文识别原文应规范为简体后再通知上层', () => {
+  const child = createFakeChild()
+  const events: SubtitleSidecarEvent[] = []
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: (event) => events.push(event)
+  })
+
+  host.start({
+    source: 'system',
+    asr: 'whisper',
+    language: 'zh-CN',
+    whisperBaseUrl: 'http://127.0.0.1:9091/inference',
+    whisperModel: 'ggml-medium-q5_0'
+  })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"final","text":"國會參眾兩院均控制超過半數席位"}\n'))
+
+  assert.equal(host.snapshot().sourceText, '国会参众两院均控制超过半数席位')
+  assert.equal(host.snapshot().segments[0]?.sourceText, '国会参众两院均控制超过半数席位')
+  assert.deepEqual(events.at(-1), {
+    type: 'final',
+    text: '国会参众两院均控制超过半数席位'
+  })
   host.dispose()
 })
 
@@ -252,11 +284,103 @@ test('清空显示应移除原文、译文和段落但保持会话运行', () =>
 })
 
 /**
- * 校验低电平背景噪声不会触发“有声音但无语音”提示。
+ * 校验新一句 partial 到达时立即丢弃上一句译文，避免跨句内容粘连。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('低电平噪声不应标记音频活动', () => {
+test('新一句 partial 到达时应清空上一句译文', () => {
+  const child = createFakeChild()
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: () => undefined
+  })
+
+  host.start({ source: 'system', asr: 'websocket', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"final","text":"第一句"}\n'))
+  const first = host.snapshot().segments[0]
+  assert.ok(first)
+  host.updateTranslation(first.id, '上一句译文', 'translated')
+  assert.equal(host.snapshot().translatedText, '上一句译文')
+
+  child.stdout.emit('data', Buffer.from('{"type":"partial","text":"第二句"}\n'))
+
+  assert.equal(host.snapshot().sourceText, '第二句')
+  assert.equal(host.snapshot().translatedText, '')
+  assert.equal(host.snapshot().segments.at(-1)?.translatedText, '')
+  assert.equal(host.snapshot().segments[0]?.translatedText, '上一句译文')
+  host.dispose()
+})
+
+/**
+ * 校验旧段落迟到的译文只保留在该段落内，不得覆盖当前句的全局译文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('旧段落迟到译文不得覆盖当前句译文', () => {
+  const child = createFakeChild()
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: () => undefined
+  })
+
+  host.start({ source: 'system', asr: 'websocket', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"final","text":"第一句"}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"partial","text":"第二句"}\n'))
+  const [first, second] = host.snapshot().segments
+  assert.ok(first)
+  assert.ok(second)
+  host.updateTranslation(second.id, '当前句译文', 'translated')
+
+  host.updateTranslation(first.id, '迟到的上一句译文', 'translated')
+
+  assert.equal(host.snapshot().translatedText, '当前句译文')
+  assert.equal(host.snapshot().segments[0]?.translatedText, '迟到的上一句译文')
+  host.dispose()
+})
+
+/**
+ * 校验迟到的预览译文不得把已定稿段落降级，避免下一句 partial 粘回旧段落。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('迟到预览结果不得把已定稿段落降级为 partial', () => {
+  const child = createFakeChild()
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: () => undefined
+  })
+
+  host.start({ source: 'system', asr: 'websocket', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"final","text":"第一句"}\n'))
+  const first = host.snapshot().segments[0]
+  assert.ok(first)
+  assert.equal(first.status, 'translating')
+
+  host.updateTranslation(first.id, '迟到的预览译文', 'partial')
+
+  assert.equal(host.snapshot().segments[0]?.status, 'translating')
+  assert.equal(host.snapshot().segments[0]?.translatedText, '')
+
+  child.stdout.emit('data', Buffer.from('{"type":"partial","text":"第二句"}\n'))
+
+  const segments = host.snapshot().segments
+  assert.equal(segments.length, 2)
+  assert.equal(segments[0]?.sourceText, '第一句')
+  assert.equal(segments[0]?.status, 'translating')
+  assert.equal(segments[1]?.sourceText, '第二句')
+  assert.equal(segments[1]?.status, 'partial')
+  host.dispose()
+})
+
+/**
+ * 校验即使是高电平输入，也不会触发客户端本地的语音判定。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('高电平输入不应标记音频活动', () => {
   const child = createFakeChild()
   const host = new SubtitleSessionHost({
     spawn: () => child,
@@ -265,7 +389,7 @@ test('低电平噪声不应标记音频活动', () => {
 
   host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
   child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
-  child.stdout.emit('data', Buffer.from('{"type":"level","rms":0.001}\n'))
+  child.stdout.emit('data', Buffer.from('{"type":"level","rms":0.95}\n'))
 
   assert.equal(host.snapshot().audioActivity, 'idle')
   host.dispose()
@@ -570,6 +694,59 @@ test('Whisper 启动前应清理继承的敏感环境变量', () => {
     else process.env.WHISPER_BASE_URL = previousBaseUrl
     if (previousModel === undefined) delete process.env.WHISPER_MODEL
     else process.env.WHISPER_MODEL = previousModel
+  }
+})
+
+/**
+ * 校验 WebSocket ASR 地址只通过环境变量传递，且非该 provider 时清理继承值。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('WebSocket ASR 启动应隔离并传递 WEBSOCKET_ASR_URL', () => {
+  const previousUrl = process.env.WEBSOCKET_ASR_URL
+  process.env.WEBSOCKET_ASR_URL = 'ws://inherited.invalid/ws/asr'
+  try {
+    const child = createFakeChild()
+    const invocations: SpawnInvocation[] = []
+    const host = new SubtitleSessionHost({
+      spawn: (environment) => {
+        invocations.push({ environment })
+        return child
+      },
+      onEvent: () => undefined
+    })
+
+    host.start({
+      source: 'system',
+      asr: 'websocket',
+      language: 'zh-CN',
+      webSocketUrl: 'ws://127.0.0.1:9092/ws/asr'
+    })
+
+    assert.equal(invocations[0]?.environment.WEBSOCKET_ASR_URL, 'ws://127.0.0.1:9092/ws/asr')
+    assert.equal(JSON.stringify(child.commands).includes('127.0.0.1'), false)
+    host.dispose()
+
+    const secondChild = createFakeChild()
+    const secondInvocations: SpawnInvocation[] = []
+    const secondHost = new SubtitleSessionHost({
+      spawn: (environment) => {
+        secondInvocations.push({ environment })
+        return secondChild
+      },
+      onEvent: () => undefined
+    })
+    secondHost.start({
+      source: 'system',
+      asr: 'deepgram',
+      language: 'zh-CN',
+      deepgramApiKey: null
+    })
+    assert.equal(secondInvocations[0]?.environment.WEBSOCKET_ASR_URL, undefined)
+    secondHost.dispose()
+  } finally {
+    if (previousUrl === undefined) delete process.env.WEBSOCKET_ASR_URL
+    else process.env.WEBSOCKET_ASR_URL = previousUrl
   }
 })
 

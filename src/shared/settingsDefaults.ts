@@ -19,13 +19,16 @@ function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTrans
     (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
 }
 
-export const SETTINGS_SCHEMA_VERSION = 27
+export const SETTINGS_SCHEMA_VERSION = 28
 
 /** Whisper 本地 OpenAI 兼容服务的默认 Base URL。 */
 const DEFAULT_WHISPER_BASE_URL = 'http://127.0.0.1:8000/v1'
 
 /** Whisper OpenAI 兼容接口的默认模型名。 */
 const DEFAULT_WHISPER_MODEL = 'whisper-1'
+
+/** faster-whisper-stream 的默认 WebSocket ASR 地址。 */
+const DEFAULT_WEBSOCKET_ASR_URL = 'ws://127.0.0.1:9092/ws/asr'
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -56,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   realtimeSubtitleWhisperBaseUrl: DEFAULT_WHISPER_BASE_URL,
   realtimeSubtitleWhisperModel: DEFAULT_WHISPER_MODEL,
   realtimeSubtitleWhisperApiKeyConfigured: false,
+  realtimeSubtitleWebSocketUrl: DEFAULT_WEBSOCKET_ASR_URL,
   realtimeSubtitleDisplayMode: 'bilingual',
   realtimeSubtitleFontSize: 20,
   realtimeSubtitleHideAfterMs: 8000,
@@ -317,6 +321,24 @@ function normalizeWhisperModel(value: unknown): string {
 }
 
 /**
+ * 规范化 WebSocket ASR 地址，只允许 ws 或 wss。
+ * @param value 原始地址。
+ * @returns 去除首尾空白且协议合法的地址，非法值回退默认本地地址。
+ * @author zhenghq
+ */
+function normalizeWebSocketUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return DEFAULT_WEBSOCKET_ASR_URL
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return DEFAULT_WEBSOCKET_ASR_URL
+    if (!url.hostname) return DEFAULT_WEBSOCKET_ASR_URL
+    return value.trim()
+  } catch {
+    return DEFAULT_WEBSOCKET_ASR_URL
+  }
+}
+
+/**
  * 将磁盘中的设置规范化为当前版本，并兼容旧版 autoTrigger 配置。
  * @param rawSettings 磁盘读取到的未知版本设置。
  * @returns 当前版本的完整设置。
@@ -387,6 +409,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     realtimeSubtitleWhisperModel: normalizeWhisperModel(rawSettings.realtimeSubtitleWhisperModel),
     realtimeSubtitleWhisperApiKeyConfigured:
       rawSettings.realtimeSubtitleWhisperApiKeyConfigured === true,
+    // 第二十八版新增 WebSocket ASR 地址；只接受 ws/wss，非法值回退本地默认地址。
+    realtimeSubtitleWebSocketUrl: normalizeWebSocketUrl(rawSettings.realtimeSubtitleWebSocketUrl),
     realtimeSubtitleDisplayMode: isDisplayMode(rawSettings.realtimeSubtitleDisplayMode)
       ? rawSettings.realtimeSubtitleDisplayMode
       : DEFAULT_SETTINGS.realtimeSubtitleDisplayMode,

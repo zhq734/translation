@@ -22,6 +22,8 @@ const SUBTITLE_WINDOW_MIN_HEIGHT = 120
 const SUBTITLE_WINDOW_BOUNDS_SAVE_DELAY_MS = 300
 /** 点击穿透时转发指针位置的轮询间隔。 */
 const SUBTITLE_TOOLBAR_POINTER_POLL_MS = 80
+/** 临时接管鼠标后，指针离开工具栏多久自动恢复点击穿透。 */
+const SUBTITLE_INTERACTION_RELEASE_DELAY_MS = 300
 /** 拖拽按钮命中区的容差，避免亚像素边界导致悬停闪烁。 */
 const SUBTITLE_DRAG_HIT_PADDING = 4
 
@@ -69,6 +71,10 @@ export interface SubtitleWindowOptions {
   saveBounds?: (bounds: Rectangle) => void
   /** 读取全局指针位置，用于点击穿透时检测拖拽命中区。 */
   getCursorPoint?: () => { x: number; y: number }
+  /** 覆盖指针轮询间隔，主要用于自动化测试。 */
+  pointerPollIntervalMs?: number
+  /** 覆盖临时鼠标交互的自动释放延迟，主要用于自动化测试。 */
+  interactionReleaseDelayMs?: number
 }
 
 /** 字幕窗口控制器。 */
@@ -108,9 +114,11 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   let desiredVisible = false
   let boundsSaveTimer: ReturnType<typeof setTimeout> | null = null
   let pointerPollTimer: ReturnType<typeof setInterval> | null = null
+  let interactionReleaseTimer: ReturnType<typeof setTimeout> | null = null
   let lastPointerPoint: RealtimeSubtitlePointerPoint | null = null
   let pointerInsideDragArea = false
   let dragHitArea: RealtimeSubtitleDragHitArea | null = null
+  let mousePassthrough: boolean | null = null
   let latestViewModel = options.getViewModel()
   let lastSentViewModel: RealtimeSubtitleViewModel | null = null
   let appearance: RealtimeSubtitleWindowAppearance = {
@@ -118,6 +126,40 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     fontSize: 20,
     textColor: '#ffffff',
     clickThrough: true
+  }
+  const pointerPollIntervalMs = options.pointerPollIntervalMs &&
+    Number.isFinite(options.pointerPollIntervalMs) &&
+    options.pointerPollIntervalMs > 0
+    ? options.pointerPollIntervalMs
+    : SUBTITLE_TOOLBAR_POINTER_POLL_MS
+  const interactionReleaseDelayMs = options.interactionReleaseDelayMs &&
+    Number.isFinite(options.interactionReleaseDelayMs) &&
+    options.interactionReleaseDelayMs > 0
+    ? options.interactionReleaseDelayMs
+    : SUBTITLE_INTERACTION_RELEASE_DELAY_MS
+
+  /**
+   * 仅在窗口穿透状态实际变化时调用 Electron 原生接口。
+   * @param target 字幕窗。
+   * @param ignore 是否忽略鼠标事件。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const setWindowIgnoreMouseEvents = (target: BrowserWindow, ignore: boolean): void => {
+    if (mousePassthrough === ignore) return
+    mousePassthrough = ignore
+    target.setIgnoreMouseEvents(ignore, { forward: true })
+  }
+
+  /**
+   * 清理尚未触发的鼠标交互自动释放定时器。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const clearInteractionReleaseTimer = (): void => {
+    if (!interactionReleaseTimer) return
+    clearTimeout(interactionReleaseTimer)
+    interactionReleaseTimer = null
   }
 
   /**
@@ -174,7 +216,8 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     })
     created.setAlwaysOnTop(true, 'floating')
     created.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
-    created.setIgnoreMouseEvents(clickThrough && !mouseInteraction, { forward: true })
+    mousePassthrough = null
+    setWindowIgnoreMouseEvents(created, clickThrough && !mouseInteraction)
     created.on('move', () => scheduleBoundsSave(created))
     created.on('resize', () => scheduleBoundsSave(created))
     created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -189,7 +232,10 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     })
     created.on('closed', () => {
       clearBoundsSaveTimer()
+      clearInteractionReleaseTimer()
       if (win === created) {
+        stopPointerPolling()
+        mousePassthrough = null
         win = null
         lastSentViewModel = null
       }
@@ -240,21 +286,74 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   }
 
   /**
-   * 在点击穿透时按 Renderer 上报的真实拖拽按钮矩形放行鼠标。
+   * 按指针是否位于工具栏命中区更新点击穿透状态。
    * @param target 字幕窗。
-   * @param point 全局指针坐标。
-   * @param inside 指针是否位于拖拽按钮命中区。
+   * @param inside 指针是否位于工具栏命中区。
    * @returns 无返回值。
    * @author zhenghq
    */
-  const updatePointerPassthrough = (
-    target: BrowserWindow,
-    point: { x: number; y: number },
-    inside: boolean
-  ): void => {
-    if (inside === pointerInsideDragArea) return
+  const applyPointerPassthrough = (target: BrowserWindow, inside: boolean): void => {
     pointerInsideDragArea = inside
-    target.setIgnoreMouseEvents(!inside && clickThrough && !mouseInteraction, { forward: true })
+    if (mouseInteraction) return
+    setWindowIgnoreMouseEvents(target, clickThrough && !inside)
+  }
+
+  /**
+   * 清除临时鼠标交互并恢复窗口配置对应的穿透状态。
+   * @param target 字幕窗。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const resetMouseInteraction = (target: BrowserWindow | null): void => {
+    mouseInteraction = false
+    pointerInsideDragArea = false
+    clearInteractionReleaseTimer()
+    if (target && !target.isDestroyed()) setWindowIgnoreMouseEvents(target, clickThrough)
+  }
+
+  /**
+   * 在自定义释放延迟后复核指针位置；仍离开工具栏时自动恢复点击穿透。
+   * @param target 字幕窗。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const scheduleInteractionRelease = (target: BrowserWindow): void => {
+    if (interactionReleaseTimer || !mouseInteraction || !clickThrough) return
+    interactionReleaseTimer = setTimeout(() => {
+      interactionReleaseTimer = null
+      if (!mouseInteraction || !clickThrough || target.isDestroyed()) return
+      const point = options.getCursorPoint?.()
+      if (!point) return
+      const inside = isPointerInsideDragArea(target, point)
+      forwardPointerPoint(target, { ...point, insideDragArea: inside })
+      if (inside) {
+        applyPointerPassthrough(target, true)
+        return
+      }
+      resetMouseInteraction(target)
+    }, interactionReleaseDelayMs)
+  }
+
+  /**
+   * 处理一次全局指针位置，并按当前交互状态决定放行或安排自动释放。
+   * @param target 字幕窗。
+   * @param point 全局指针坐标。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const handlePointerPoint = (
+    target: BrowserWindow,
+    point: { x: number; y: number }
+  ): void => {
+    const inside = isPointerInsideDragArea(target, point)
+    forwardPointerPoint(target, { ...point, insideDragArea: inside })
+    if (mouseInteraction) {
+      if (!clickThrough) return
+      if (inside) clearInteractionReleaseTimer()
+      else scheduleInteractionRelease(target)
+      return
+    }
+    applyPointerPassthrough(target, inside)
   }
 
   /**
@@ -263,16 +362,14 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
    * @author zhenghq
    */
   const startPointerPolling = (): void => {
-    if (pointerPollTimer || !options.getCursorPoint) return
+    if (pointerPollTimer || !options.getCursorPoint || !clickThrough) return
     pointerPollTimer = setInterval(() => {
       const target = win
       if (!target || target.isDestroyed()) return
       const point = options.getCursorPoint?.()
       if (!point) return
-      const inside = isPointerInsideDragArea(target, point)
-      forwardPointerPoint(target, { ...point, insideDragArea: inside })
-      updatePointerPassthrough(target, point, inside)
-    }, SUBTITLE_TOOLBAR_POINTER_POLL_MS)
+      handlePointerPoint(target, point)
+    }, pointerPollIntervalMs)
   }
 
   /**
@@ -283,6 +380,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   const stopPointerPolling = (): void => {
     if (pointerPollTimer) clearInterval(pointerPollTimer)
     pointerPollTimer = null
+    clearInteractionReleaseTimer()
     lastPointerPoint = null
     pointerInsideDragArea = false
   }
@@ -335,11 +433,13 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       desiredVisible = visible
       if (!visible) {
         stopPointerPolling()
-        if (win && !win.isDestroyed()) win.hide()
+        const target = win && !win.isDestroyed() ? win : null
+        resetMouseInteraction(target)
+        target?.hide()
         return
       }
       const target = ensureWindow()
-      if (clickThrough && !mouseInteraction) startPointerPolling()
+      if (clickThrough) startPointerPolling()
       if (!target.webContents.isLoading()) {
         target.showInactive()
       }
@@ -355,10 +455,14 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       appearance = { ...next }
       clickThrough = next.clickThrough
       if (!win || win.isDestroyed()) return
-      win.setIgnoreMouseEvents(clickThrough && !mouseInteraction, { forward: true })
       pointerInsideDragArea = false
-      if (clickThrough && !mouseInteraction) startPointerPolling()
-      else stopPointerPolling()
+      if (!clickThrough) {
+        resetMouseInteraction(win)
+        stopPointerPolling()
+      } else {
+        setWindowIgnoreMouseEvents(win, !mouseInteraction)
+        startPointerPolling()
+      }
       win.webContents.send('subtitle:appearance', appearance)
     },
 
@@ -369,12 +473,27 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
      * @author zhenghq
      */
     setMouseInteraction(active: boolean): void {
-      mouseInteraction = active
-      if (!win || win.isDestroyed()) return
-      win.setIgnoreMouseEvents(clickThrough && !mouseInteraction, { forward: true })
+      if (!win || win.isDestroyed()) {
+        mouseInteraction = active
+        return
+      }
+      if (!active) {
+        resetMouseInteraction(win)
+        if (clickThrough) startPointerPolling()
+        else stopPointerPolling()
+        return
+      }
+      mouseInteraction = true
       pointerInsideDragArea = false
-      if (clickThrough && !mouseInteraction) startPointerPolling()
-      else stopPointerPolling()
+      clearInteractionReleaseTimer()
+      setWindowIgnoreMouseEvents(win, false)
+      if (!clickThrough) {
+        stopPointerPolling()
+        return
+      }
+      startPointerPolling()
+      const point = options.getCursorPoint?.()
+      if (point) handlePointerPoint(win, point)
     },
 
     /**
@@ -402,13 +521,14 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       if (![area.x, area.y, area.width, area.height].every(Number.isFinite)) return
       if (area.width <= 0 || area.height <= 0) return
       dragHitArea = { x: area.x, y: area.y, width: area.width, height: area.height }
-      pointerInsideDragArea = false
-      if (!win || win.isDestroyed() || !clickThrough || mouseInteraction) return
+      if (!win || win.isDestroyed()) return
       const point = options.getCursorPoint?.()
-      if (!point) return
-      const inside = isPointerInsideDragArea(win, point)
-      forwardPointerPoint(win, { ...point, insideDragArea: inside })
-      updatePointerPassthrough(win, point, inside)
+      if (!point) {
+        pointerInsideDragArea = false
+        if (!mouseInteraction) setWindowIgnoreMouseEvents(win, clickThrough)
+        return
+      }
+      handlePointerPoint(win, point)
     },
 
     /** 立即转发一次全局指针位置，便于测试和窗口刚显示时快速命中。 */
@@ -416,9 +536,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       const target = win
       if (!target || target.isDestroyed() || !options.getCursorPoint) return
       const point = options.getCursorPoint()
-      const inside = isPointerInsideDragArea(target, point)
-      forwardPointerPoint(target, { ...point, insideDragArea: inside })
-      updatePointerPassthrough(target, point, inside)
+      handlePointerPoint(target, point)
     },
 
     /**

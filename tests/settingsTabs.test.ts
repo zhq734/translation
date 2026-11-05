@@ -163,6 +163,17 @@ test('设置页数字输入框应与下拉框使用统一控件高度和主题�
   assert.match(css, /select,[\s\S]*input\[type=['"]number['"]\][\s\S]*padding:\s*7px\s+10px/u)
 })
 
+/**
+ * 校验设置页 URL 输入框与文本输入框共享主题边框、高度和内边距。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('设置页 URL 输入框应与文本输入框使用统一主题样式与内边距', () => {
+  const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  assert.match(css, /select,[\s\S]*input\[type=['"]url['"]\][\s\S]*border:\s*1px solid var\(--border-control\)/u)
+  assert.match(css, /select,[\s\S]*input\[type=['"]url['"]\][\s\S]*padding:\s*7px\s+10px/u)
+})
+
 test('关于页项目卡片应在右下角对齐展示作者与邮箱', () => {
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const aboutIndex = html.indexOf('id="settings-panel-about"')

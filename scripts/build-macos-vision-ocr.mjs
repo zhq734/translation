@@ -2,11 +2,17 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import {
+  hasNativeBuildForceFlag,
+  isNativeBuildUpToDate,
+  logNativeBuildUpToDate
+} from './lib/native-build-cache.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePath = join(root, 'helpers', 'macos-vision-ocr', 'main.m')
 const outputPath = join(root, 'build', 'macos-vision-ocr')
 const moduleCachePath = join(root, 'build', 'clang-module-cache')
+const forceBuild = hasNativeBuildForceFlag()
 
 /**
  * 判断当前平台是否需要构建 macOS Vision OCR helper。
@@ -25,6 +31,10 @@ function shouldBuildForCurrentPlatform() {
 function buildHelper() {
   if (!existsSync(sourcePath)) {
     throw new Error(`缺少 macOS Vision OCR helper 源码: ${sourcePath}`)
+  }
+  if (!forceBuild && isNativeBuildUpToDate([outputPath], [sourcePath])) {
+    logNativeBuildUpToDate('macOS Vision OCR helper')
+    return
   }
 
   mkdirSync(dirname(outputPath), { recursive: true })
