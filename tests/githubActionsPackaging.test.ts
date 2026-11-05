@@ -98,6 +98,17 @@ test('GitHub Actions 应覆盖 macOS、Windows 与 Linux 打包任务', () => {
 })
 
 /**
+ * 校验 macOS 打包任务显式安装 universal 实时字幕 sidecar 所需的两个 Rust target。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('GitHub Actions 应为 macOS 构建安装双架构 Rust target', () => {
+  const workflow = readPackagingWorkflow()
+
+  assert.match(workflow, /if: matrix\.platform == 'macos'\s+[\s\S]*?rustup target add --toolchain stable aarch64-apple-darwin x86_64-apple-darwin/u)
+})
+
+/**
  * 校验 macOS 流水线在凭据完整时签名公证，在没有凭据时仍生成可发布的未签名安装包。
  * @returns 无返回值。
  * @author zhenghq
