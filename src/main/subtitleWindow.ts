@@ -240,6 +240,9 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
         sandbox: true
       }
     })
+    // 字幕窗是常驻浮层,不作为独立文档窗口参与系统窗口切换;
+    // macOS 默认会把所有窗口列入 Dock 图标右键的“窗口”菜单,这里显式排除。
+    if (process.platform === 'darwin') created.excludedFromShownWindowsMenu = true
     created.setAlwaysOnTop(true, 'floating')
     created.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
     mousePassthrough = null

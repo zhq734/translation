@@ -9,6 +9,8 @@ class FakeWindow extends EventEmitter {
   loading = true
   /** 当前是否可见。 */
   visible = false
+  /** 是否从 macOS 窗口菜单中排除。 */
+  excludedFromShownWindowsMenu = false
   /** 窗口是否已销毁。 */
   destroyed = false
   /** 收到的 Renderer 消息。 */
@@ -134,6 +136,39 @@ test('字幕窗页面加载前应缓存视图和外观并在完成后补发', ()
     'subtitle:view-model'
   ])
   assert.equal(win.visible, true)
+})
+
+/**
+ * 校验实时字幕浮窗不会作为独立窗口出现在 macOS Dock 的应用菜单中。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('实时字幕浮窗不应出现在 macOS Dock 的应用菜单中', { skip: process.platform !== 'darwin' }, () => {
+  const created: FakeWindow[] = []
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  assert.equal(created[0]?.excludedFromShownWindowsMenu, true)
+  controller.dispose()
 })
 
 /**
