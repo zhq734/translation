@@ -49,7 +49,21 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
     'realtime-subtitle-whisper-clear',
     'realtime-subtitle-whisper-status',
     'realtime-subtitle-websocket-settings',
-    'realtime-subtitle-websocket-url'
+    'realtime-subtitle-websocket-url',
+    'realtime-subtitle-dashscope-settings',
+    'realtime-subtitle-dashscope-url',
+    'realtime-subtitle-dashscope-model',
+    'realtime-subtitle-dashscope-api-key',
+    'realtime-subtitle-dashscope-save',
+    'realtime-subtitle-dashscope-clear',
+    'realtime-subtitle-dashscope-status',
+    'realtime-subtitle-openai-realtime-settings',
+    'realtime-subtitle-openai-realtime-url',
+    'realtime-subtitle-openai-realtime-model',
+    'realtime-subtitle-openai-realtime-api-key',
+    'realtime-subtitle-openai-realtime-save',
+    'realtime-subtitle-openai-realtime-clear',
+    'realtime-subtitle-openai-realtime-status'
   ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`, 'u'), `设置页缺少 ${id}`)
   }
@@ -70,13 +84,26 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
   assert.match(source, /clearDeepgramApiKey/u)
   assert.match(source, /setWhisperConfig/u)
   assert.match(source, /clearWhisperApiKey/u)
+  assert.match(source, /setDashScopeConfig/u)
+  assert.match(source, /clearDashScopeApiKey/u)
+  assert.match(source, /setOpenAIRealtimeConfig/u)
+  assert.match(source, /clearOpenAIRealtimeApiKey/u)
   assert.match(source, /realtimeSubtitleWhisperBaseUrl/u)
   assert.match(source, /realtimeSubtitleWhisperModel/u)
+  assert.match(source, /realtimeSubtitleDashScopeUrl/u)
+  assert.match(source, /realtimeSubtitleDashScopeModel/u)
+  assert.match(source, /realtimeSubtitleOpenAIRealtimeUrl/u)
+  assert.match(source, /realtimeSubtitleOpenAIRealtimeModel/u)
   assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]websocket['"]/u)
+  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]alibaba['"]/u)
+  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]custom-dashscope['"]/u)
+  assert.match(source, /realtimeSubtitleAsrProvider\.value\s*===\s*['"]custom-openai['"]/u)
   assert.match(source, /realtimeSubtitleWebSocketUrl/u)
   assert.doesNotMatch(source, /realtimeSubtitleITranslate|saveRealtimeSubtitleITranslate|clearRealtimeSubtitleITranslate/u)
   assert.doesNotMatch(source, /realtimeSubtitleDeepgramApiKeyConfigured\s*=/u)
   assert.match(html, /id=["']realtime-subtitle-whisper-api-key["'][^>]*type=["']password["']/u)
+  assert.match(html, /id=["']realtime-subtitle-dashscope-api-key["'][^>]*type=["']password["']/u)
+  assert.match(html, /id=["']realtime-subtitle-openai-realtime-api-key["'][^>]*type=["']password["']/u)
   assert.doesNotMatch(html, /NSSpeechRecognition|端侧 Speech|on device/iu)
 })
 
@@ -115,6 +142,21 @@ test('实时字幕设置与状态应具备中英文词条', () => {
     'settings.realtimeSubtitle.asrProvider',
     'settings.realtimeSubtitle.asrProvider.whisper',
     'settings.realtimeSubtitle.asrProvider.websocket',
+    'settings.realtimeSubtitle.asrProvider.alibaba',
+    'settings.realtimeSubtitle.asrProvider.customDashscope',
+    'settings.realtimeSubtitle.asrProvider.customOpenai',
+    'settings.realtimeSubtitle.dashscopeUrl',
+    'settings.realtimeSubtitle.dashscopeModel',
+    'settings.realtimeSubtitle.dashscopeApiKey',
+    'settings.realtimeSubtitle.dashscopeSave',
+    'settings.realtimeSubtitle.dashscopeClear',
+    'settings.realtimeSubtitle.dashscopeHint',
+    'settings.realtimeSubtitle.openAIRealtimeUrl',
+    'settings.realtimeSubtitle.openAIRealtimeModel',
+    'settings.realtimeSubtitle.openAIRealtimeApiKey',
+    'settings.realtimeSubtitle.openAIRealtimeSave',
+    'settings.realtimeSubtitle.openAIRealtimeClear',
+    'settings.realtimeSubtitle.openAIRealtimeHint',
     'settings.realtimeSubtitle.websocketUrl',
     'settings.realtimeSubtitle.websocketUrlPlaceholder',
     'settings.realtimeSubtitle.websocketHint',
@@ -275,6 +317,62 @@ test('实时字幕高频更新应合并渲染并定向发送', () => {
 })
 
 /**
+ * 校验原文与译文分别使用稳定节流，避免流式增量造成字幕抖动。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('实时字幕应为原文和译文配置独立稳定窗口', () => {
+  const source = read('src/renderer/src/subtitle.ts')
+  assert.match(source, /SOURCE_SETTLE_MS = 180/u)
+  assert.match(source, /SOURCE_MAX_WAIT_MS = 750/u)
+  assert.match(source, /TARGET_SETTLE_MS = 400/u)
+  assert.match(source, /TARGET_MAX_WAIT_MS = 1500/u)
+  assert.match(source, /sourceTextStabilizer\.push/u)
+  assert.match(source, /targetTextStabilizer\.push/u)
+})
+
+/**
+ * 校验字幕窗同时渲染上一句确认文本和当前实时草稿。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗应提供历史轨并独立稳定当前实时轨', () => {
+  const html = read('src/renderer/subtitle.html')
+  const source = read('src/renderer/src/subtitle.ts')
+  const css = read('src/renderer/src/subtitle.css')
+
+  assert.match(html, /id=["']subtitle-history-source["']/u)
+  assert.match(html, /id=["']subtitle-history-target["']/u)
+  assert.match(source, /const historySource\s*=/u)
+  assert.match(source, /const historyTarget\s*=/u)
+  assert.match(source, /historySourceTextStabilizer\.push/u)
+  assert.match(source, /historyTargetTextStabilizer\.push/u)
+  assert.match(source, /viewModel\.committed/u)
+  assert.match(css, /\.subtitle-history\s*\{/u)
+  assert.match(css, /\.subtitle-history \.subtitle-line\s*\{/u)
+})
+
+/**
+ * 校验历史轨是只读展示层,不会遮挡右上角工具栏的指针命中。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('历史字幕不应遮挡右上角工具栏点击', () => {
+  const css = read('src/renderer/src/subtitle.css')
+
+  assert.match(
+    css,
+    /\.subtitle-toolbar\s*\{[^}]*z-index:\s*[1-9]\d*/u,
+    '工具栏应建立高于历史字幕的层叠上下文,否则历史字幕会吞掉工具栏点击'
+  )
+  assert.match(
+    css,
+    /\.subtitle-history\s*\{[^}]*pointer-events:\s*none/u,
+    '历史字幕仅用于展示,不应拦截工具栏的指针事件'
+  )
+})
+
+/**
  * 校验字幕右上角提供拖动入口、目标语言下拉与即时设置同步。
  * @returns 无返回值。
  * @author zhenghq
@@ -311,10 +409,18 @@ test('字幕右上角应支持拖动定位并切换目标译文语言', () => {
   assert.doesNotMatch(source, /const rect\s*=\s*dragHandle\.getBoundingClientRect\(\)/u)
   assert.match(source, /ResizeObserver/u)
   assert.match(source, /dragHitAreaObserver\.observe\(toolbar\)/u)
+  assert.match(source, /dragHitAreaObserver\.observe\(subtitleCard\)/u)
   assert.match(source, /setRealtimeSubtitleDragHitArea/u)
   assert.match(preload, /setRealtimeSubtitleDragHitArea/u)
   assert.match(preload, /ipcRenderer\.send\(['"]subtitle:drag-hit-area['"]/u)
   assert.match(main, /ipcMain\.on\(['"]subtitle:drag-hit-area['"][\s\S]*?subtitleWindow\.setDragHitArea/u)
+  assert.match(source, /function syncCardHitArea/u)
+  assert.match(source, /const rect\s*=\s*subtitleCard\.getBoundingClientRect\(\)/u)
+  assert.match(source, /dragHitAreaFrame = null[\s\S]*?syncCardHitArea\(\)[\s\S]*?syncDragHitArea\(\)/u)
+  assert.match(source, /setRealtimeSubtitleCardHitArea/u)
+  assert.match(preload, /setRealtimeSubtitleCardHitArea/u)
+  assert.match(preload, /ipcRenderer\.send\(['"]subtitle:card-hit-area['"]/u)
+  assert.match(main, /ipcMain\.on\(['"]subtitle:card-hit-area['"][\s\S]*?subtitleWindow\.setCardHitArea/u)
   assert.match(source, /pointerOffsetX:\s*dragPointerOffset\.x/u)
   assert.match(source, /pointerOffsetY:\s*dragPointerOffset\.y/u)
   assert.match(source, /dragPointerOffset\s*=\s*\{\s*x:\s*event\.clientX,\s*y:\s*event\.clientY\s*\}/u)

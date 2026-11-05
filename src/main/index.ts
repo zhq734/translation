@@ -192,6 +192,8 @@ import type {
   TranslateDeltaPayload,
   DocumentFileSelectionResult,
   DeepgramConfigPatch,
+  DashScopeConfigPatch,
+  OpenAIRealtimeConfigPatch,
   ITranslateConfigPatch,
   WhisperConfigPatch
 } from '../shared/types'
@@ -208,6 +210,10 @@ import { DeepgramCredentialStore } from './deepgramCredentials'
 import { DeepgramConfigurationService } from './deepgramConfig'
 import { WhisperCredentialStore } from './whisperCredentials'
 import { WhisperConfigurationService } from './whisperConfig'
+import { DashScopeCredentialStore } from './dashScopeCredentials'
+import { DashScopeConfigurationService } from './dashScopeConfig'
+import { OpenAIRealtimeCredentialStore } from './openAIRealtimeCredentials'
+import { OpenAIRealtimeConfigurationService } from './openAIRealtimeConfig'
 import { ITranslateCredentialStore } from './itranslateCredentials'
 import { ITranslateConfigurationService } from './itranslateConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
@@ -468,6 +474,8 @@ let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
 let deepgramConfiguration: DeepgramConfigurationService | null = null
 let whisperConfiguration: WhisperConfigurationService | null = null
+let dashScopeConfiguration: DashScopeConfigurationService | null = null
+let openAIRealtimeConfiguration: OpenAIRealtimeConfigurationService | null = null
 let itranslateConfiguration: ITranslateConfigurationService | null = null
 let deepLxConfiguration: DeepLxConfigurationService | null = null
 let deepLxCheckService: DeepLxCheckService | null = null
@@ -883,6 +891,30 @@ function getWhisperConfiguration(): WhisperConfigurationService {
 }
 
 /**
+ * 获取已初始化的 DashScope ASR 配置服务。
+ * @returns DashScope 配置服务实例。
+ * @author zhenghq
+ */
+function getDashScopeConfiguration(): DashScopeConfigurationService {
+  if (!dashScopeConfiguration) {
+    throw new Error('DashScope configuration service is not initialized')
+  }
+  return dashScopeConfiguration
+}
+
+/**
+ * 获取已初始化的 OpenAI Realtime 转写配置服务。
+ * @returns OpenAI Realtime 配置服务实例。
+ * @author zhenghq
+ */
+function getOpenAIRealtimeConfiguration(): OpenAIRealtimeConfigurationService {
+  if (!openAIRealtimeConfiguration) {
+    throw new Error('OpenAI Realtime configuration service is not initialized')
+  }
+  return openAIRealtimeConfiguration
+}
+
+/**
  * 获取已初始化的 iTranslate 可选翻译配置服务。
  * @returns iTranslate 配置服务实例。
  * @author zhenghq
@@ -985,6 +1017,12 @@ function initializeRealtimeSubtitle(): void {
       : null,
     getWhisperApiKey: () => getSettings().realtimeSubtitleWhisperApiKeyConfigured
       ? getWhisperConfiguration().getApiKey()
+      : null,
+    getDashScopeApiKey: () => getSettings().realtimeSubtitleDashScopeApiKeyConfigured
+      ? getDashScopeConfiguration().getApiKey()
+      : null,
+    getOpenAIRealtimeApiKey: () => getSettings().realtimeSubtitleOpenAIRealtimeApiKeyConfigured
+      ? getOpenAIRealtimeConfiguration().getApiKey()
       : null,
     getITranslateApiKey: () => getSettings().itranslateEnabled
       ? getITranslateConfiguration().getApiKey()
@@ -2433,6 +2471,46 @@ async function onReady(): Promise<boolean> {
     }
   })
   whisperConfiguration.initialize()
+  dashScopeConfiguration = new DashScopeConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new DashScopeCredentialStore(
+      join(app.getPath('userData'), 'dashscope-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetRealtimeSubtitleRuntime: () => {
+      realtimeSubtitleController?.dispose()
+      realtimeSubtitleController = null
+      subtitleWindow?.dispose()
+      subtitleWindow = null
+      initializeRealtimeSubtitle()
+    }
+  })
+  dashScopeConfiguration.initialize()
+  openAIRealtimeConfiguration = new OpenAIRealtimeConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new OpenAIRealtimeCredentialStore(
+      join(app.getPath('userData'), 'openai-realtime-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetRealtimeSubtitleRuntime: () => {
+      realtimeSubtitleController?.dispose()
+      realtimeSubtitleController = null
+      subtitleWindow?.dispose()
+      subtitleWindow = null
+      initializeRealtimeSubtitle()
+    }
+  })
+  openAIRealtimeConfiguration.initialize()
   itranslateConfiguration = new ITranslateConfigurationService({
     getSettings,
     saveSettings,
@@ -7261,11 +7339,15 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   // 普通 settings:set 不接受 AI 敏感字段，API Key 与 aiApiKeyConfigured 由专用 IPC 管理。
   delete (safePatch as Record<string, unknown>).aiApiKey
   delete (safePatch as Record<string, unknown>).aiApiKeyConfigured
-  // Deepgram、Whisper 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
+  // 实时字幕 ASR 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKeyConfigured
   delete (safePatch as Record<string, unknown>).realtimeSubtitleWhisperApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleWhisperApiKeyConfigured
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleDashScopeApiKey
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleDashScopeApiKeyConfigured
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleOpenAIRealtimeApiKey
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleOpenAIRealtimeApiKeyConfigured
   delete (safePatch as Record<string, unknown>).itranslateApiKey
   delete (safePatch as Record<string, unknown>).itranslateApiKeyConfigured
   const aiFieldChanged =
@@ -7291,6 +7373,10 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.realtimeSubtitleWhisperBaseUrl !== undefined ||
       patch.realtimeSubtitleWhisperModel !== undefined ||
       patch.realtimeSubtitleWebSocketUrl !== undefined ||
+      patch.realtimeSubtitleDashScopeUrl !== undefined ||
+      patch.realtimeSubtitleDashScopeModel !== undefined ||
+      patch.realtimeSubtitleOpenAIRealtimeUrl !== undefined ||
+      patch.realtimeSubtitleOpenAIRealtimeModel !== undefined ||
       patch.realtimeSubtitleDisplayMode !== undefined ||
       patch.realtimeSubtitleFontSize !== undefined ||
       patch.realtimeSubtitleHideAfterMs !== undefined ||
@@ -7434,6 +7520,17 @@ function registerIpc(): void {
     if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
     if (!area || typeof area !== 'object') return
     subtitleWindow.setDragHitArea(area as RealtimeSubtitleDragHitArea)
+  })
+  /**
+   * 接收字幕卡片真实矩形，使透明外围在普通模式下也能点击穿透。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  ipcMain.on('subtitle:card-hit-area', (event, area: unknown) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
+    if (!area || typeof area !== 'object') return
+    subtitleWindow.setCardHitArea(area as RealtimeSubtitleDragHitArea)
   })
   registerWindowControls({
     isAllowedWindow: (window) =>
@@ -8227,6 +8324,18 @@ function registerIpc(): void {
     getWhisperConfiguration().configure(patch)
   )
   ipcMain.handle('whisper:clear-key', () => getWhisperConfiguration().clearApiKey())
+  ipcMain.handle('dashscope:configure', (_event, patch: DashScopeConfigPatch) =>
+    getDashScopeConfiguration().configure(patch)
+  )
+  ipcMain.handle('dashscope:clear-key', () =>
+    getDashScopeConfiguration().clearApiKey()
+  )
+  ipcMain.handle('openai-realtime:configure', (_event, patch: OpenAIRealtimeConfigPatch) =>
+    getOpenAIRealtimeConfiguration().configure(patch)
+  )
+  ipcMain.handle('openai-realtime:clear-key', () =>
+    getOpenAIRealtimeConfiguration().clearApiKey()
+  )
   ipcMain.handle('itranslate:configure', (_event, patch: ITranslateConfigPatch) =>
     getITranslateConfiguration().configure(patch)
   )

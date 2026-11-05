@@ -37,6 +37,12 @@ export interface RealtimeSubtitleHost {
     whisperModel?: string
     whisperApiKey?: string | null
     webSocketUrl?: string
+    dashScopeUrl?: string
+    dashScopeModel?: string
+    dashScopeApiKey?: string | null
+    openAIRealtimeUrl?: string
+    openAIRealtimeModel?: string
+    openAIRealtimeApiKey?: string | null
   }): number
   /** 暂停识别。 */
   pause(): void
@@ -72,6 +78,10 @@ export interface RealtimeSubtitleControllerOptions {
   getDeepgramApiKey?: () => string | null
   /** 读取 Whisper API Key；本地无鉴权服务可返回 null。 */
   getWhisperApiKey?: () => string | null
+  /** 读取 DashScope API Key；仅在实时字幕使用 DashScope ASR 时注入。 */
+  getDashScopeApiKey?: () => string | null
+  /** 读取 OpenAI Realtime API Key；仅在实时字幕使用 OpenAI ASR 时注入。 */
+  getOpenAIRealtimeApiKey?: () => string | null
   /** 读取 iTranslate API Key；仅启用且已配置时返回。 */
   getITranslateApiKey?: () => string | null
   /** 读取实时识别网络中断的本地化提示。 */
@@ -87,8 +97,20 @@ export interface RealtimeSubtitleControllerOptions {
     options: { onDelta: (delta: string) => void; signal?: AbortSignal },
     iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
-  /** 保留给翻译协调器的 partial 防抖配置；实时字幕入口只对 final 发起翻译。 */
+  /** 稳定 partial 的预览翻译防抖配置，final 到达后复用或校正该结果。 */
   previewDebounceMs?: number
+  /** 两次预览翻译请求之间的最短间隔，默认 1500ms；设为 0 可关闭。 */
+  previewMinIntervalMs?: number
+  /** 预览翻译遇到限流后的冷却时长，默认 30000ms；设为 0 可关闭。 */
+  previewRateLimitCooldownMs?: number
+  /** final 翻译最大尝试次数（含首次），默认 3 次。 */
+  finalMaxAttempts?: number
+  /** final 翻译首次重试等待时间，默认 600ms，后续按指数退避。 */
+  finalRetryBaseDelayMs?: number
+  /** final 翻译从入队到结束的总时限，默认 15000ms。 */
+  finalRequestDeadlineMs?: number
+  /** 当前时间读取函数，便于测试控制预览请求节流。 */
+  nowFn?: () => number
   /** final 译文出现后的最短展示时长，默认 1500ms；设为 0 可关闭。 */
   translationDisplayHoldMs?: number
   /** 广播快照。 */
@@ -169,6 +191,12 @@ export class RealtimeSubtitleController {
       getITranslateApiKey: options.getITranslateApiKey,
       translateStream: options.translateStream,
       previewDebounceMs: options.previewDebounceMs,
+      previewMinIntervalMs: options.previewMinIntervalMs,
+      previewRateLimitCooldownMs: options.previewRateLimitCooldownMs,
+      finalMaxAttempts: options.finalMaxAttempts,
+      finalRetryBaseDelayMs: options.finalRetryBaseDelayMs,
+      finalRequestDeadlineMs: options.finalRequestDeadlineMs,
+      nowFn: options.nowFn,
       setTimeoutFn: this.setTimeoutFn,
       clearTimeoutFn: this.clearTimeoutFn,
       onDelta: (segmentId, delta, phase) => this.applyDelta(segmentId, delta, phase),
@@ -338,7 +366,15 @@ export class RealtimeSubtitleController {
       settings.realtimeSubtitleWhisperModel !==
         this.latestSettings.realtimeSubtitleWhisperModel ||
       settings.realtimeSubtitleWebSocketUrl !==
-        this.latestSettings.realtimeSubtitleWebSocketUrl
+        this.latestSettings.realtimeSubtitleWebSocketUrl ||
+      settings.realtimeSubtitleDashScopeUrl !==
+        this.latestSettings.realtimeSubtitleDashScopeUrl ||
+      settings.realtimeSubtitleDashScopeModel !==
+        this.latestSettings.realtimeSubtitleDashScopeModel ||
+      settings.realtimeSubtitleOpenAIRealtimeUrl !==
+        this.latestSettings.realtimeSubtitleOpenAIRealtimeUrl ||
+      settings.realtimeSubtitleOpenAIRealtimeModel !==
+        this.latestSettings.realtimeSubtitleOpenAIRealtimeModel
   }
 
   /**
@@ -401,8 +437,13 @@ export class RealtimeSubtitleController {
     }
     if (event.type === 'partial') {
       this.scheduleHideTimer(generation)
-      // partial 只负责实时原文；翻译统一由 final 触发，避免同一句反复重置译文。
+      const snapshot = this.host.snapshot()
+      const segment = snapshot.segments.at(-1)
       this.publishDisplayUpdate()
+      // partial 已由宿主覆盖到当前段落，只有仍是最新编辑中的同文段落才启动
+      // 预览翻译，避免迟到事件给历史段落重新发起请求。
+      if (!segment || segment.status !== 'partial' || segment.sourceText !== event.text) return
+      this.translation.preview(event.text, event.lang, generation, segment.id)
       return
     }
     if (event.type === 'final') {
@@ -546,6 +587,22 @@ export class RealtimeSubtitleController {
         webSocketUrl: this.latestSettings.realtimeSubtitleWebSocketUrl
       }
     }
+    if (base.asr === 'alibaba' || base.asr === 'custom-dashscope') {
+      return {
+        ...base,
+        dashScopeUrl: this.latestSettings.realtimeSubtitleDashScopeUrl,
+        dashScopeModel: this.latestSettings.realtimeSubtitleDashScopeModel,
+        dashScopeApiKey: this.options.getDashScopeApiKey?.() ?? null
+      }
+    }
+    if (base.asr === 'custom-openai') {
+      return {
+        ...base,
+        openAIRealtimeUrl: this.latestSettings.realtimeSubtitleOpenAIRealtimeUrl,
+        openAIRealtimeModel: this.latestSettings.realtimeSubtitleOpenAIRealtimeModel,
+        openAIRealtimeApiKey: this.options.getOpenAIRealtimeApiKey?.() ?? null
+      }
+    }
     return {
       ...base,
       deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
@@ -628,7 +685,12 @@ export class RealtimeSubtitleController {
     const segment = segments.find((candidate) => candidate.id === segmentId)
     if (!segment) return
     if (phase === 'preview') {
-      if (segments.at(-1)?.id !== segmentId || segment.status !== 'partial') return
+      // final 修正原文时，宿主会先把段落切到 translating，再同步取消旧预览。
+      // 此时仍必须允许清空旧译文；已定稿段落则拒绝迟到预览改写结果。
+      if (
+        segments.at(-1)?.id !== segmentId ||
+        (segment.status !== 'partial' && segment.status !== 'translating')
+      ) return
     }
     const status = phase === 'preview' && segment.status === 'partial' ? 'partial' : 'translating'
     this.host.updateTranslation(segmentId, '', status)
@@ -671,6 +733,11 @@ export class RealtimeSubtitleController {
   private publishDisplayUpdate(): void {
     if (this.translationDisplayHoldTimer !== null) {
       this.translationDisplayUpdatePending = true
+      const heldSegmentId = this.translationDisplayHoldSegmentId
+      if (heldSegmentId) {
+        // 展示锁只固定主字幕，不阻断下一句草稿进入独立的实时轨。
+        this.publishPinnedSegment(this.host.snapshot(), heldSegmentId)
+      }
       return
     }
     this.publish()
@@ -717,7 +784,11 @@ export class RealtimeSubtitleController {
 
     const isLatest = snapshot.segments.at(-1)?.id === segmentId
     if (this.translationDisplayHoldTimer !== null) {
-      // 其他段落正在展示时，只为尚未上屏的历史译文排队。
+      // 最新段落的流式译文先进入实时轨，同时仍按到达顺序排队，
+      // 待固定展示结束后再成为主轨并进入下一次最短展示计时。
+      if (isLatest && this.translationDisplayHoldSegmentId) {
+        this.publishPinnedSegment(snapshot, this.translationDisplayHoldSegmentId)
+      }
       if (!this.displayedTranslationSegmentIds.has(segmentId)) {
         this.enqueueTranslationDisplay(segmentId)
       }
@@ -793,13 +864,14 @@ export class RealtimeSubtitleController {
       }
       return
     }
-    if (!this.translationDisplayUpdatePending) return
     this.translationDisplayUpdatePending = false
+    // 展示锁到期后必须回到宿主最新段落;即使期间没有新的识别事件,
+    // 也要解除 pinned 快照,否则字幕会永久停在上一句。
     this.publish()
   }
 
   /**
-   * 发布指定段落作为临时展示末尾，避免被宿主中更新的预览段落立即顶掉。
+   * 发布指定段落作为展示锁主轨，同时保留最新段落供实时轨并行展示。
    * @param snapshot 宿主当前快照。
    * @param segmentId 需要固定在末尾展示的段落标识。
    * @returns 无返回值。
@@ -815,10 +887,7 @@ export class RealtimeSubtitleController {
       ...snapshot,
       sourceText: segment.sourceText,
       translatedText: segment.translatedText,
-      segments: [
-        ...snapshot.segments.filter((candidate) => candidate.id !== segmentId),
-        { ...segment }
-      ]
+      displaySegmentId: segmentId
     }
     this.publishSnapshot(this.mergeStartupError(pinned))
   }

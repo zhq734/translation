@@ -9,7 +9,13 @@
 export type RealtimeSubtitleAudioSource = 'system' | 'microphone' | 'both'
 
 /** 实时字幕 ASR 提供商。 */
-export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper' | 'websocket'
+export type RealtimeSubtitleAsrProvider =
+  | 'deepgram'
+  | 'whisper'
+  | 'websocket'
+  | 'alibaba'
+  | 'custom-dashscope'
+  | 'custom-openai'
 
 /**
  * 判断未知值是否为受支持的实时字幕 ASR 提供商。
@@ -20,7 +26,12 @@ export type RealtimeSubtitleAsrProvider = 'deepgram' | 'whisper' | 'websocket'
 export function isRealtimeSubtitleAsrProvider(
   value: unknown
 ): value is RealtimeSubtitleAsrProvider {
-  return value === 'deepgram' || value === 'whisper' || value === 'websocket'
+  return value === 'deepgram' ||
+    value === 'whisper' ||
+    value === 'websocket' ||
+    value === 'alibaba' ||
+    value === 'custom-dashscope' ||
+    value === 'custom-openai'
 }
 
 /** 实时字幕显示模式。 */
@@ -125,16 +136,32 @@ export interface RealtimeSubtitleSnapshot {
   audioActivity: RealtimeSubtitleAudioActivity
   /** 已提交段落，按时间从旧到新。 */
   segments: RealtimeSubtitleSegment[]
+  /** 展示锁固定的段落标识；未设置时按最新段落展示。 */
+  displaySegmentId?: string | null
   /** 面向用户的错误信息。 */
   error?: string
   /** 结构化的错误分类，供界面选择修复入口。 */
   errorCode?: RealtimeSubtitleErrorCode
 }
 
+/** 字幕窗口中的一条可渲染段落轨。 */
+export interface RealtimeSubtitleViewModelSegment {
+  /** 段落标识。 */
+  segmentId: string
+  /** 当前轨道原文；target 模式下为空。 */
+  sourceText: string
+  /** 当前轨道译文；source 模式下为空。 */
+  translatedText: string
+  /** 段落状态。 */
+  status: RealtimeSubtitleSegment['status']
+}
+
 /** 实时字幕窗口视图模型，仅包含可直接渲染的文本与状态。 */
 export interface RealtimeSubtitleViewModel {
   /** 当前会话状态。 */
   state: RealtimeSubtitleSessionState
+  /** 当前展示段落标识；没有段落时为空。 */
+  segmentId: string | null
   /** 当前显示模式。 */
   displayMode: RealtimeSubtitleDisplayMode
   /** 当前需要展示的原文；target 模式下为空。 */
@@ -149,6 +176,33 @@ export interface RealtimeSubtitleViewModel {
   empty: boolean
   /** 面向用户的错误文案。 */
   error: string
+  /** 上一句已确认字幕；没有可展示历史时为空。 */
+  committed?: RealtimeSubtitleViewModelSegment | null
+  /** 展示锁期间同时暴露的最新实时草稿；通常为空。 */
+  live?: RealtimeSubtitleViewModelSegment | null
+}
+
+/**
+ * 按显示模式裁剪一条字幕段落轨。
+ * @param segment 待裁剪段落。
+ * @param displayMode 当前显示模式。
+ * @returns 可直接渲染的轨道；没有可见文本时返回 null。
+ * @author zhenghq
+ */
+function createViewModelSegment(
+  segment: RealtimeSubtitleSegment | undefined,
+  displayMode: RealtimeSubtitleDisplayMode
+): RealtimeSubtitleViewModelSegment | null {
+  if (!segment) return null
+  const sourceText = displayMode === 'target' ? '' : segment.sourceText
+  const translatedText = displayMode === 'source' ? '' : segment.translatedText
+  if (!sourceText && !translatedText) return null
+  return {
+    segmentId: segment.id,
+    sourceText,
+    translatedText,
+    status: segment.status
+  }
 }
 
 /**
@@ -161,20 +215,42 @@ export function createRealtimeSubtitleViewModel(
   snapshot: RealtimeSubtitleSnapshot
 ): RealtimeSubtitleViewModel {
   const latest = snapshot.segments.at(-1)
+  const display = snapshot.displaySegmentId
+    ? snapshot.segments.find((segment) => segment.id === snapshot.displaySegmentId)
+    : undefined
+  const primary = display ?? latest
   // 段落是字幕的权威来源；快照中的全局译文可能落后于新段落的创建，
   // 若继续回退到全局值，会把上一句译文带进当前句。
-  const sourceText = latest ? latest.sourceText : snapshot.sourceText
-  const translatedText = latest ? latest.translatedText : snapshot.translatedText
-  const status = latest?.status ?? (sourceText ? 'partial' : 'empty')
+  const sourceText = primary ? primary.sourceText : snapshot.sourceText
+  const translatedText = primary ? primary.translatedText : snapshot.translatedText
+  const status = primary?.status ?? (sourceText ? 'partial' : 'empty')
+  const primaryIndex = primary
+    ? snapshot.segments.findIndex((segment) => segment.id === primary.id)
+    : -1
+  const liveSegment = latest && latest.id !== primary?.id ? latest : undefined
+  const previous = primaryIndex > 0 ? snapshot.segments[primaryIndex - 1] : undefined
+  const latestIsDraft = primary?.status === 'partial' || primary?.status === 'translating'
+  const committedSource = liveSegment
+    ? primary
+    : latestIsDraft && previous?.status !== 'partial'
+      ? previous
+      : undefined
+  const committed = createViewModelSegment(committedSource, snapshot.displayMode)
+  const live = createViewModelSegment(liveSegment, snapshot.displayMode)
+  const visibleSourceText = snapshot.displayMode === 'target' ? '' : sourceText
+  const visibleTranslatedText = snapshot.displayMode === 'source' ? '' : translatedText
   return {
     state: snapshot.state,
+    segmentId: primary?.id ?? null,
     displayMode: snapshot.displayMode,
-    sourceText: snapshot.displayMode === 'target' ? '' : sourceText,
-    translatedText: snapshot.displayMode === 'source' ? '' : translatedText,
+    sourceText: visibleSourceText,
+    translatedText: visibleTranslatedText,
     status,
     audioActivity: snapshot.audioActivity,
-    empty: !sourceText && !translatedText,
-    error: snapshot.error ?? ''
+    empty: !visibleSourceText && !visibleTranslatedText && !committed && !live,
+    error: snapshot.error ?? '',
+    committed,
+    live
   }
 }
 

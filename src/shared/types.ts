@@ -1027,6 +1027,18 @@ export interface Settings {
   realtimeSubtitleWhisperApiKeyConfigured: boolean
   /** WebSocket ASR 服务地址，用于本机 faster-whisper-stream 等流式服务。 */
   realtimeSubtitleWebSocketUrl: string
+  /** DashScope 实时语音识别 WebSocket 地址。 */
+  realtimeSubtitleDashScopeUrl: string
+  /** DashScope 实时语音识别模型。 */
+  realtimeSubtitleDashScopeModel: string
+  /** 是否已安全保存 DashScope API Key。 */
+  realtimeSubtitleDashScopeApiKeyConfigured: boolean
+  /** OpenAI Realtime 转写 WebSocket 地址。 */
+  realtimeSubtitleOpenAIRealtimeUrl: string
+  /** OpenAI Realtime 转写模型。 */
+  realtimeSubtitleOpenAIRealtimeModel: string
+  /** 是否已安全保存 OpenAI Realtime API Key。 */
+  realtimeSubtitleOpenAIRealtimeApiKeyConfigured: boolean
   /** 实时字幕悬浮窗显示模式。 */
   realtimeSubtitleDisplayMode: RealtimeSubtitleDisplayMode
   /** 实时字幕字号（像素）。 */
@@ -1387,6 +1399,26 @@ export interface WhisperConfigPatch {
   apiKey?: string
 }
 
+/** DashScope 实时 ASR 配置补丁；空 API Key 表示保留旧值。 */
+export interface DashScopeConfigPatch {
+  /** DashScope WebSocket 地址。 */
+  url?: string
+  /** 实时识别模型名称。 */
+  model?: string
+  /** 新 DashScope API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
+/** OpenAI Realtime 转写配置补丁；空 API Key 表示保留旧值。 */
+export interface OpenAIRealtimeConfigPatch {
+  /** OpenAI Realtime WebSocket 地址。 */
+  url?: string
+  /** 实时转写模型名称。 */
+  model?: string
+  /** 新 OpenAI API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
 /** AI 配置补丁，用于通过专用 IPC 保存公共字段及可选新 API Key。 */
 export interface AiConfigPatch {
   /** 是否启用 AI 翻译通道。 */
@@ -1545,6 +1577,8 @@ export interface Api {
   moveRealtimeSubtitleWindow(request: RealtimeSubtitleWindowMoveRequest): void
   /** 同步拖拽按钮的真实窗口内矩形，供点击穿透时判断鼠标命中。 */
   setRealtimeSubtitleDragHitArea(area: RealtimeSubtitleDragHitArea): void
+  /** 同步字幕卡片的真实窗口内矩形，让透明外围始终放行鼠标。 */
+  setRealtimeSubtitleCardHitArea(area: RealtimeSubtitleDragHitArea): void
   /** 通过主进程文件选择器一次导入并校验多个本地文档。 */
   selectDocumentFiles(): Promise<DocumentFileSelectionResult[]>
   /** 重新校验拖放得到的本地文档路径并登记为当前窗口可运行文件。 */
@@ -1830,6 +1864,14 @@ export interface Api {
   setWhisperConfig(patch: WhisperConfigPatch): Promise<Settings>
   /** 显式清除已保存的 Whisper API Key。 */
   clearWhisperApiKey(): Promise<Settings>
+  /** 保存 DashScope 实时 ASR 配置和可选新 API Key。 */
+  setDashScopeConfig(patch: DashScopeConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 DashScope API Key。 */
+  clearDashScopeApiKey(): Promise<Settings>
+  /** 保存 OpenAI Realtime 转写配置和可选新 API Key。 */
+  setOpenAIRealtimeConfig(patch: OpenAIRealtimeConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 OpenAI Realtime API Key。 */
+  clearOpenAIRealtimeApiKey(): Promise<Settings>
   /** 保存 iTranslate 可选翻译通道配置和可选新 API Key。 */
   setITranslateConfig(patch: ITranslateConfigPatch): Promise<Settings>
   /** 显式清除已保存的 iTranslate API Key。 */

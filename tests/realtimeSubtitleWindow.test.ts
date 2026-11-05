@@ -310,7 +310,7 @@ test('字幕窗工具栏应能在点击穿透模式下临时接管鼠标事件',
     textColor: '#ffffff',
     clickThrough: false
   })
-  assert.equal(win.ignoreMouse, false)
+  assert.equal(win.ignoreMouse, true, '无法读取指针且卡片命中区未知时应保持透明外围可点击')
 })
 
 /**
@@ -498,6 +498,63 @@ test('点击穿透时应按拖拽按钮真实矩形临时接收鼠标事件', ()
     insideDragArea: false
   })
   assert.equal(win.ignoreMouse, true, '右上角固定区域不应误判为拖拽按钮')
+  controller.dispose()
+})
+
+/**
+ * 校验关闭点击穿透后只有字幕卡片矩形拦截鼠标，窗口透明外围仍可穿透。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('非点击穿透模式下透明外围不应拦截鼠标事件', () => {
+  const created: FakeWindow[] = []
+  let cursor = { x: 0, y: 0 }
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }),
+    getCursorPoint: () => cursor
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  win.bounds = { x: 100, y: 200, width: 800, height: 180 }
+  controller.setAppearance({
+    displayMode: 'bilingual',
+    fontSize: 20,
+    textColor: '#ffffff',
+    clickThrough: false
+  })
+  assert.equal(win.ignoreMouse, true, '字幕卡片命中区尚未上报时应保持外围穿透')
+  controller.setCardHitArea({ x: 40, y: 30, width: 720, height: 120 })
+
+  cursor = { x: 120, y: 220 }
+  controller.pollPointerInteraction()
+  assert.equal(win.ignoreMouse, true, '字幕卡片以外的透明外围应放行鼠标')
+
+  cursor = { x: 137, y: 250 }
+  controller.pollPointerInteraction()
+  assert.equal(win.ignoreMouse, true, '字幕卡片边界外 1 像素也不应拦截鼠标')
+
+  cursor = { x: 141, y: 250 }
+  controller.pollPointerInteraction()
+  assert.equal(win.ignoreMouse, false, '字幕卡片内部应继续接收鼠标事件')
   controller.dispose()
 })
 

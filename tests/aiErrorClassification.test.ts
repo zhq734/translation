@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AiTranslationClient, type AiFetch } from '../src/main/aiTranslationClient.ts'
+import {
+  MAX_RETRY_AFTER_MS,
+  createAiResponseError,
+  parseRetryAfterMs
+} from '../src/main/aiErrors.ts'
 import type { AiProtocol } from '../src/shared/types.ts'
 import { tForTest } from './helpers/i18n.ts'
 
@@ -61,6 +66,35 @@ test('HTTP 429 应分类为限流错误', async () => {
     client.translate({ ...baseInput, protocol: 'openai', apiKey: 'sk-x' }),
     (error: Error) => { assert.equal(error.message, tForTest('en-US', 'ai.error.rateLimit')); return true }
   )
+})
+
+test('HTTP 429 应保留 Retry-After 建议的等待时间', async () => {
+  const client = makeClient(async () => new Response(JSON.stringify({ error: 'rate limited' }), {
+    status: 429,
+    headers: {
+      'Content-Type': 'application/json',
+      'Retry-After': '2'
+    }
+  }))
+  await assert.rejects(
+    client.translate({ ...baseInput, protocol: 'openai', apiKey: 'sk-x' }),
+    (error: Error & { retryAfterMs?: number }) => {
+      assert.equal(error.message, tForTest('en-US', 'ai.error.rateLimit'))
+      assert.equal(error.retryAfterMs, 2_000)
+      return true
+    }
+  )
+})
+
+/**
+ * 校验异常超长的 Retry-After 不会让字幕预览长期停更。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Retry-After 应限制在安全等待上限内', () => {
+  assert.equal(parseRetryAfterMs('86400'), MAX_RETRY_AFTER_MS)
+  const error = createAiResponseError(429, '86400')
+  assert.equal(error.retryAfterMs, MAX_RETRY_AFTER_MS)
 })
 
 test('HTTP 404 应分类为模型不存在错误', async () => {

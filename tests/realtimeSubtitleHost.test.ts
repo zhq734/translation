@@ -751,6 +751,91 @@ test('WebSocket ASR 启动应隔离并传递 WEBSOCKET_ASR_URL', () => {
 })
 
 /**
+ * 校验 DashScope 与 OpenAI Realtime 配置只注入到对应子进程，且不会继承父进程敏感变量。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('云 ASR 启动应隔离并传递对应环境变量', () => {
+  const inheritedNames = [
+    'DASHSCOPE_API_KEY',
+    'DASHSCOPE_ASR_URL',
+    'DASHSCOPE_ASR_MODEL',
+    'OPENAI_REALTIME_API_KEY',
+    'OPENAI_REALTIME_ASR_URL',
+    'OPENAI_REALTIME_ASR_MODEL'
+  ] as const
+  const previous = new Map(inheritedNames.map((name) => [name, process.env[name]]))
+  for (const name of inheritedNames) process.env[name] = `inherited-${name}`
+  try {
+    const dashScopeChild = createFakeChild()
+    const dashScopeInvocations: SpawnInvocation[] = []
+    const dashScopeHost = new SubtitleSessionHost({
+      spawn: (environment) => {
+        dashScopeInvocations.push({ environment })
+        return dashScopeChild
+      },
+      onEvent: () => undefined
+    })
+    dashScopeHost.start({
+      source: 'system',
+      asr: 'alibaba',
+      language: 'zh-CN',
+      dashScopeUrl: 'wss://dashscope.example.com/api-ws/v1/inference',
+      dashScopeModel: 'qwen-audio-custom',
+      dashScopeApiKey: 'dashscope-secret'
+    })
+    const dashScopeEnvironment = dashScopeInvocations[0]?.environment
+    assert.equal(dashScopeEnvironment?.DASHSCOPE_API_KEY, 'dashscope-secret')
+    assert.equal(
+      dashScopeEnvironment?.DASHSCOPE_ASR_URL,
+      'wss://dashscope.example.com/api-ws/v1/inference'
+    )
+    assert.equal(dashScopeEnvironment?.DASHSCOPE_ASR_MODEL, 'qwen-audio-custom')
+    assert.equal(dashScopeEnvironment?.OPENAI_REALTIME_API_KEY, undefined)
+    assert.equal(dashScopeEnvironment?.OPENAI_REALTIME_ASR_URL, undefined)
+    assert.equal(dashScopeEnvironment?.OPENAI_REALTIME_ASR_MODEL, undefined)
+    assert.equal(JSON.stringify(dashScopeChild.commands).includes('dashscope-secret'), false)
+    dashScopeHost.dispose()
+
+    const openAIChild = createFakeChild()
+    const openAIInvocations: SpawnInvocation[] = []
+    const openAIHost = new SubtitleSessionHost({
+      spawn: (environment) => {
+        openAIInvocations.push({ environment })
+        return openAIChild
+      },
+      onEvent: () => undefined
+    })
+    openAIHost.start({
+      source: 'microphone',
+      asr: 'custom-openai',
+      language: 'en-US',
+      openAIRealtimeUrl: 'wss://realtime.example.com/v1/realtime',
+      openAIRealtimeModel: 'gpt-4o-transcribe',
+      openAIRealtimeApiKey: 'openai-secret'
+    })
+    const openAIEnvironment = openAIInvocations[0]?.environment
+    assert.equal(openAIEnvironment?.OPENAI_REALTIME_API_KEY, 'openai-secret')
+    assert.equal(
+      openAIEnvironment?.OPENAI_REALTIME_ASR_URL,
+      'wss://realtime.example.com/v1/realtime'
+    )
+    assert.equal(openAIEnvironment?.OPENAI_REALTIME_ASR_MODEL, 'gpt-4o-transcribe')
+    assert.equal(openAIEnvironment?.DASHSCOPE_API_KEY, undefined)
+    assert.equal(openAIEnvironment?.DASHSCOPE_ASR_URL, undefined)
+    assert.equal(openAIEnvironment?.DASHSCOPE_ASR_MODEL, undefined)
+    assert.equal(JSON.stringify(openAIChild.commands).includes('openai-secret'), false)
+    openAIHost.dispose()
+  } finally {
+    for (const name of inheritedNames) {
+      const value = previous.get(name)
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+})
+
+/**
  * 校验开发环境与打包环境的 sidecar 路径回退顺序。
  * @returns 无返回值。
  * @author zhenghq

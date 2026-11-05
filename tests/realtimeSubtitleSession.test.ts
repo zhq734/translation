@@ -18,6 +18,9 @@ test('WebSocket ASR 应是合法的实时字幕提供商', () => {
   assert.equal(isRealtimeSubtitleAsrProvider('websocket'), true)
   assert.equal(isRealtimeSubtitleAsrProvider('deepgram'), true)
   assert.equal(isRealtimeSubtitleAsrProvider('whisper'), true)
+  assert.equal(isRealtimeSubtitleAsrProvider('alibaba'), true)
+  assert.equal(isRealtimeSubtitleAsrProvider('custom-dashscope'), true)
+  assert.equal(isRealtimeSubtitleAsrProvider('custom-openai'), true)
   assert.equal(isRealtimeSubtitleAsrProvider('web-socket'), false)
 })
 

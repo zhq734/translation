@@ -1,14 +1,27 @@
 import type { RealtimeSubtitleViewModel } from '../../shared/subtitleSession'
 import type { RealtimeSubtitleDragHitArea } from '../../shared/types'
 import { localizedLanguages } from '../../shared/langs'
+import { StabilizedTextController } from '../../shared/subtitleTextStabilizer'
 import { startLocaleRuntime } from './locale'
 import { startThemeRuntime } from './theme'
+
+/** 原文停止增长后的稳定等待时间。 */
+const SOURCE_SETTLE_MS = 180
+/** 原文持续增长时的最长等待时间。 */
+const SOURCE_MAX_WAIT_MS = 750
+/** 译文停止增长后的稳定等待时间。 */
+const TARGET_SETTLE_MS = 400
+/** 译文持续增长时的最长等待时间。 */
+const TARGET_MAX_WAIT_MS = 1500
 
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 const root = document.getElementById('subtitle-root') as HTMLElement
 const subtitleCard = document.querySelector('.subtitle-card') as HTMLElement
 const status = document.getElementById('subtitle-status') as HTMLElement
+const history = document.getElementById('subtitle-history') as HTMLElement
+const historySource = document.getElementById('subtitle-history-source') as HTMLElement
+const historyTarget = document.getElementById('subtitle-history-target') as HTMLElement
 const source = document.getElementById('subtitle-source') as HTMLElement
 const target = document.getElementById('subtitle-target') as HTMLElement
 const error = document.getElementById('subtitle-error') as HTMLElement
@@ -23,10 +36,31 @@ let mouseInteractionActive = false
 let dragPointerId: number | null = null
 let dragPointerOffset = { x: 0, y: 0 }
 let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null
+let lastCardHitAreaKey = ''
 let lastDragHitAreaKey = ''
 let pendingViewModel: RealtimeSubtitleViewModel | null = null
 let viewModelFrame: number | null = null
 let dragHitAreaFrame: number | null = null
+const sourceTextStabilizer = new StabilizedTextController({
+  settleMs: SOURCE_SETTLE_MS,
+  maxWaitMs: SOURCE_MAX_WAIT_MS,
+  onCommit: (text) => updateText(source, text)
+})
+const targetTextStabilizer = new StabilizedTextController({
+  settleMs: TARGET_SETTLE_MS,
+  maxWaitMs: TARGET_MAX_WAIT_MS,
+  onCommit: (text) => updateText(target, text)
+})
+const historySourceTextStabilizer = new StabilizedTextController({
+  settleMs: SOURCE_SETTLE_MS,
+  maxWaitMs: SOURCE_MAX_WAIT_MS,
+  onCommit: (text) => updateText(historySource, text)
+})
+const historyTargetTextStabilizer = new StabilizedTextController({
+  settleMs: TARGET_SETTLE_MS,
+  maxWaitMs: TARGET_MAX_WAIT_MS,
+  onCommit: (text) => updateText(historyTarget, text)
+})
 
 /**
  * 判断两个字幕视图模型是否需要触发 DOM 更新。
@@ -42,14 +76,35 @@ function isSameViewModel(
   return Boolean(
     left &&
     left.state === right.state &&
+    left.segmentId === right.segmentId &&
     left.displayMode === right.displayMode &&
     left.sourceText === right.sourceText &&
     left.translatedText === right.translatedText &&
     left.status === right.status &&
     left.audioActivity === right.audioActivity &&
     left.empty === right.empty &&
-    left.error === right.error
+    left.error === right.error &&
+    isSameSegment(left.committed, right.committed) &&
+    isSameSegment(left.live, right.live)
   )
+}
+
+/**
+ * 判断两条字幕轨是否需要触发 DOM 更新。
+ * @param left 前一条字幕轨。
+ * @param right 后一条字幕轨。
+ * @returns 两条轨道完全一致时返回 true。
+ * @author zhenghq
+ */
+function isSameSegment(
+  left: RealtimeSubtitleViewModel['committed'] | undefined,
+  right: RealtimeSubtitleViewModel['committed'] | undefined
+): boolean {
+  if (!left || !right) return (left ?? null) === (right ?? null)
+  return left.segmentId === right.segmentId &&
+    left.sourceText === right.sourceText &&
+    left.translatedText === right.translatedText &&
+    left.status === right.status
 }
 
 /**
@@ -64,6 +119,21 @@ function updateText(element: HTMLElement, value: string): void {
 }
 
 /**
+ * 为指定字幕轨道生成不会跨段落串写的稳定键。
+ * @param viewModel 当前字幕视图模型。
+ * @param lane 原文或译文轨道。
+ * @returns 段落、显示模式与轨道组成的稳定键。
+ * @author zhenghq
+ */
+function textStreamKey(
+  viewModel: RealtimeSubtitleViewModel,
+  segmentId: string | null,
+  lane: 'source' | 'target'
+): string {
+  return `${segmentId ?? `session:${viewModel.state}`}:${viewModel.displayMode}:${lane}`
+}
+
+/**
  * 以动画帧为边界合并拖拽命中区测量，避免每次翻译增量都触发布局计算。
  * @returns 无返回值。
  * @author zhenghq
@@ -72,6 +142,7 @@ function scheduleDragHitAreaSync(): void {
   if (dragHitAreaFrame !== null) return
   dragHitAreaFrame = window.requestAnimationFrame(() => {
     dragHitAreaFrame = null
+    syncCardHitArea()
     syncDragHitArea()
   })
 }
@@ -101,6 +172,27 @@ function isPointInside(event: PointerEvent, element: HTMLElement): boolean {
     event.clientX <= rect.right &&
     event.clientY >= rect.top &&
     event.clientY <= rect.bottom
+}
+
+/**
+ * 将字幕卡片的真实窗口内矩形同步给主进程。
+ * 仅在矩形变化时发送，避免布局观察器高频触发 IPC。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncCardHitArea(): void {
+  const rect = subtitleCard.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return
+  const area: RealtimeSubtitleDragHitArea = {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height
+  }
+  const key = `${area.x}:${area.y}:${area.width}:${area.height}`
+  if (key === lastCardHitAreaKey) return
+  lastCardHitAreaKey = key
+  window.api.setRealtimeSubtitleCardHitArea(area)
 }
 
 /**
@@ -232,11 +324,45 @@ function syncTargetLanguage(settings: { targetLang: string }): void {
 function render(viewModel: RealtimeSubtitleViewModel, force = false): void {
   if (!force && isSameViewModel(current, viewModel)) return
   current = viewModel
+  const committed = viewModel.committed ?? null
+  const live = viewModel.live ?? null
+  const mainSegmentId = live?.segmentId ?? viewModel.segmentId
+  const mainSourceText = live?.sourceText ?? viewModel.sourceText
+  const mainTranslatedText = live?.translatedText ?? viewModel.translatedText
+  const mainStatus = live?.status ?? viewModel.status
   root.dataset.empty = String(viewModel.empty)
   root.dataset.state = viewModel.state
-  root.dataset.status = viewModel.status
-  updateText(source, viewModel.sourceText)
-  updateText(target, viewModel.translatedText)
+  root.dataset.status = mainStatus
+  history.hidden = committed === null
+  historySourceTextStabilizer.push(
+    committed?.sourceText ?? '',
+    textStreamKey(viewModel, committed?.segmentId ?? null, 'source'),
+    !committed || committed.status !== 'partial' || committed.sourceText.length === 0
+  )
+  historyTargetTextStabilizer.push(
+    committed?.translatedText ?? '',
+    textStreamKey(viewModel, committed?.segmentId ?? null, 'target'),
+    !committed || committed.status === 'translated' || committed.status === 'error' ||
+      committed.translatedText.length === 0
+  )
+  const sourceImmediate = viewModel.state !== 'running' ||
+    mainStatus !== 'partial' ||
+    mainSourceText.length === 0
+  sourceTextStabilizer.push(
+    mainSourceText,
+    textStreamKey(viewModel, mainSegmentId, 'source'),
+    sourceImmediate
+  )
+  const targetImmediate = viewModel.state !== 'running' ||
+    mainStatus === 'translated' ||
+    mainStatus === 'error' ||
+    mainStatus === 'empty' ||
+    mainTranslatedText.length === 0
+  targetTextStabilizer.push(
+    mainTranslatedText,
+    textStreamKey(viewModel, mainSegmentId, 'target'),
+    targetImmediate
+  )
   updateText(error, viewModel.error)
   error.hidden = !viewModel.error
   updateText(status, viewModel.state === 'paused'
@@ -362,4 +488,8 @@ const dragHitAreaObserver = new ResizeObserver(scheduleDragHitAreaSync)
 dragHitAreaObserver.observe(toolbar)
 dragHitAreaObserver.observe(subtitleCard)
 window.addEventListener('resize', scheduleDragHitAreaSync)
+window.addEventListener('beforeunload', () => {
+  sourceTextStabilizer.dispose()
+  targetTextStabilizer.dispose()
+})
 scheduleDragHitAreaSync()

@@ -82,6 +82,20 @@ const realtimeSubtitleWhisperClear = document.getElementById('realtime-subtitle-
 const realtimeSubtitleWhisperStatus = document.getElementById('realtime-subtitle-whisper-status') as HTMLElement
 const realtimeSubtitleWebSocketSettings = document.getElementById('realtime-subtitle-websocket-settings') as HTMLElement
 const realtimeSubtitleWebSocketUrl = document.getElementById('realtime-subtitle-websocket-url') as HTMLInputElement
+const realtimeSubtitleDashScopeSettings = document.getElementById('realtime-subtitle-dashscope-settings') as HTMLElement
+const realtimeSubtitleDashScopeUrl = document.getElementById('realtime-subtitle-dashscope-url') as HTMLInputElement
+const realtimeSubtitleDashScopeModel = document.getElementById('realtime-subtitle-dashscope-model') as HTMLInputElement
+const realtimeSubtitleDashScopeApiKey = document.getElementById('realtime-subtitle-dashscope-api-key') as HTMLInputElement
+const realtimeSubtitleDashScopeSave = document.getElementById('realtime-subtitle-dashscope-save') as HTMLButtonElement
+const realtimeSubtitleDashScopeClear = document.getElementById('realtime-subtitle-dashscope-clear') as HTMLButtonElement
+const realtimeSubtitleDashScopeStatus = document.getElementById('realtime-subtitle-dashscope-status') as HTMLElement
+const realtimeSubtitleOpenAIRealtimeSettings = document.getElementById('realtime-subtitle-openai-realtime-settings') as HTMLElement
+const realtimeSubtitleOpenAIRealtimeUrl = document.getElementById('realtime-subtitle-openai-realtime-url') as HTMLInputElement
+const realtimeSubtitleOpenAIRealtimeModel = document.getElementById('realtime-subtitle-openai-realtime-model') as HTMLInputElement
+const realtimeSubtitleOpenAIRealtimeApiKey = document.getElementById('realtime-subtitle-openai-realtime-api-key') as HTMLInputElement
+const realtimeSubtitleOpenAIRealtimeSave = document.getElementById('realtime-subtitle-openai-realtime-save') as HTMLButtonElement
+const realtimeSubtitleOpenAIRealtimeClear = document.getElementById('realtime-subtitle-openai-realtime-clear') as HTMLButtonElement
+const realtimeSubtitleOpenAIRealtimeStatus = document.getElementById('realtime-subtitle-openai-realtime-status') as HTMLElement
 const realtimeSubtitleRecognitionLang = document.getElementById('realtime-subtitle-recognition-lang') as HTMLSelectElement
 const realtimeSubtitleDisplayMode = document.getElementById('realtime-subtitle-display-mode') as HTMLSelectElement
 const realtimeSubtitleFontSize = document.getElementById('realtime-subtitle-font-size') as HTMLInputElement
@@ -549,7 +563,7 @@ async function clearRealtimeSubtitleDeepgramConfig(): Promise<void> {
 }
 
 /**
- * 根据当前 provider 切换 Deepgram、Whisper 与 WebSocket 配置区的显示状态。
+ * 根据当前 provider 切换实时字幕各识别服务的配置区显示状态。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -557,9 +571,14 @@ function renderRealtimeSubtitleProviderSettings(): void {
   const deepgramSelected = realtimeSubtitleAsrProvider.value === 'deepgram'
   const whisperSelected = realtimeSubtitleAsrProvider.value === 'whisper'
   const websocketSelected = realtimeSubtitleAsrProvider.value === 'websocket'
+  const dashScopeSelected = realtimeSubtitleAsrProvider.value === 'alibaba'
+    || realtimeSubtitleAsrProvider.value === 'custom-dashscope'
+  const openAIRealtimeSelected = realtimeSubtitleAsrProvider.value === 'custom-openai'
   realtimeSubtitleDeepgramSettings.hidden = !deepgramSelected
   realtimeSubtitleWhisperSettings.hidden = !whisperSelected
   realtimeSubtitleWebSocketSettings.hidden = !websocketSelected
+  realtimeSubtitleDashScopeSettings.hidden = !dashScopeSelected
+  realtimeSubtitleOpenAIRealtimeSettings.hidden = !openAIRealtimeSelected
 }
 
 /**
@@ -595,6 +614,90 @@ async function clearRealtimeSubtitleWhisperConfig(): Promise<void> {
   try {
     const settings = await window.api.clearWhisperApiKey()
     realtimeSubtitleWhisperApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 保存 DashScope 实时 ASR 地址、模型和可选的新 API Key。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleDashScopeConfig(): Promise<void> {
+  try {
+    const settings = await window.api.setDashScopeConfig({
+      url: realtimeSubtitleDashScopeUrl.value.trim(),
+      model: realtimeSubtitleDashScopeModel.value.trim(),
+      ...(realtimeSubtitleDashScopeApiKey.value.trim()
+        ? { apiKey: realtimeSubtitleDashScopeApiKey.value.trim() }
+        : {})
+    })
+    realtimeSubtitleDashScopeApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 DashScope API Key，并保留服务地址与模型。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleDashScopeConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearDashScopeApiKey()
+    realtimeSubtitleDashScopeApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 保存 OpenAI Realtime 转写地址、模型和可选的新 API Key。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleOpenAIRealtimeConfig(): Promise<void> {
+  try {
+    const settings = await window.api.setOpenAIRealtimeConfig({
+      url: realtimeSubtitleOpenAIRealtimeUrl.value.trim(),
+      model: realtimeSubtitleOpenAIRealtimeModel.value.trim(),
+      ...(realtimeSubtitleOpenAIRealtimeApiKey.value.trim()
+        ? { apiKey: realtimeSubtitleOpenAIRealtimeApiKey.value.trim() }
+        : {})
+    })
+    realtimeSubtitleOpenAIRealtimeApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 OpenAI Realtime API Key，并保留服务地址与模型。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleOpenAIRealtimeConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearOpenAIRealtimeApiKey()
+    realtimeSubtitleOpenAIRealtimeApiKey.value = ''
     renderSettings(settings)
     flash(t('settings.saved'))
   } catch (error) {
@@ -891,6 +994,20 @@ function renderSettings(settings: Settings): void {
     : t('settings.realtimeSubtitle.credentials.notConfigured')
   realtimeSubtitleWhisperClear.disabled = !settings.realtimeSubtitleWhisperApiKeyConfigured
   realtimeSubtitleWebSocketUrl.value = settings.realtimeSubtitleWebSocketUrl
+  realtimeSubtitleDashScopeUrl.value = settings.realtimeSubtitleDashScopeUrl
+  realtimeSubtitleDashScopeModel.value = settings.realtimeSubtitleDashScopeModel
+  realtimeSubtitleDashScopeApiKey.value = ''
+  realtimeSubtitleDashScopeStatus.textContent = settings.realtimeSubtitleDashScopeApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleDashScopeClear.disabled = !settings.realtimeSubtitleDashScopeApiKeyConfigured
+  realtimeSubtitleOpenAIRealtimeUrl.value = settings.realtimeSubtitleOpenAIRealtimeUrl
+  realtimeSubtitleOpenAIRealtimeModel.value = settings.realtimeSubtitleOpenAIRealtimeModel
+  realtimeSubtitleOpenAIRealtimeApiKey.value = ''
+  realtimeSubtitleOpenAIRealtimeStatus.textContent = settings.realtimeSubtitleOpenAIRealtimeApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleOpenAIRealtimeClear.disabled = !settings.realtimeSubtitleOpenAIRealtimeApiKeyConfigured
   realtimeSubtitleRecognitionLang.value = settings.realtimeSubtitleRecognitionLang
   realtimeSubtitleDisplayMode.value = settings.realtimeSubtitleDisplayMode
   realtimeSubtitleFontSize.value = String(settings.realtimeSubtitleFontSize)
@@ -2500,6 +2617,10 @@ realtimeSubtitleDeepgramClear.addEventListener('click', () => void clearRealtime
 realtimeSubtitleWhisperSave.addEventListener('click', () => void saveRealtimeSubtitleWhisperConfig())
 realtimeSubtitleWhisperClear.addEventListener('click', () => void clearRealtimeSubtitleWhisperConfig())
 realtimeSubtitleWebSocketUrl.addEventListener('change', saveRealtimeSubtitleSettings)
+realtimeSubtitleDashScopeSave.addEventListener('click', () => void saveRealtimeSubtitleDashScopeConfig())
+realtimeSubtitleDashScopeClear.addEventListener('click', () => void clearRealtimeSubtitleDashScopeConfig())
+realtimeSubtitleOpenAIRealtimeSave.addEventListener('click', () => void saveRealtimeSubtitleOpenAIRealtimeConfig())
+realtimeSubtitleOpenAIRealtimeClear.addEventListener('click', () => void clearRealtimeSubtitleOpenAIRealtimeConfig())
 realtimeSubtitleRecognitionLang.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleDisplayMode.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleFontSize.addEventListener('change', saveRealtimeSubtitleSettings)

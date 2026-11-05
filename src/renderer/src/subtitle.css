@@ -35,10 +35,39 @@ body {
   color: var(--subtitle-text-color, var(--text-primary));
 }
 
+.subtitle-history,
+.subtitle-live {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.subtitle-history[hidden] {
+  display: none;
+}
+
+.subtitle-history {
+  padding-block-end: var(--space-2);
+  border-block-end: var(--border-width) solid var(--border-subtle, var(--border-default));
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.subtitle-history .subtitle-line {
+  font-size: calc(var(--subtitle-font-size, 20px) * 0.86);
+  font-weight: 560;
+}
+
+.subtitle-live {
+  gap: var(--space-2);
+}
+
 .subtitle-toolbar {
   position: absolute;
   inset-block-start: var(--space-2);
   inset-inline-end: var(--space-2);
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: var(--space-1);

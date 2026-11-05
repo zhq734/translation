@@ -40,6 +40,12 @@ class FakeHost {
     whisperModel?: string
     whisperApiKey?: string | null
     webSocketUrl?: string
+    dashScopeUrl?: string
+    dashScopeModel?: string
+    dashScopeApiKey?: string | null
+    openAIRealtimeUrl?: string
+    openAIRealtimeModel?: string
+    openAIRealtimeApiKey?: string | null
   }> = []
   /** 记录 pause/resume/stop 调用。 */
   calls: string[] = []
@@ -65,6 +71,12 @@ class FakeHost {
     whisperModel?: string
     whisperApiKey?: string | null
     webSocketUrl?: string
+    dashScopeUrl?: string
+    dashScopeModel?: string
+    dashScopeApiKey?: string | null
+    openAIRealtimeUrl?: string
+    openAIRealtimeModel?: string
+    openAIRealtimeApiKey?: string | null
   }): number {
     this.starts.push(options)
     this.generation += 1
@@ -202,8 +214,14 @@ function createHarness(
   overrides: Partial<Settings> = {},
   options: {
     previewDebounceMs?: number
+    previewMinIntervalMs?: number
+    finalMaxAttempts?: number
+    finalRetryBaseDelayMs?: number
+    finalRequestDeadlineMs?: number
     translationDisplayHoldMs?: number
     whisperApiKey?: string | null
+    dashScopeApiKey?: string | null
+    openAIRealtimeApiKey?: string | null
     logs?: string[]
   } = {}
 ) {
@@ -235,8 +253,14 @@ function createHarness(
     getDingTalkCredentials: () => null,
     getAiApiKey: () => null,
     getWhisperApiKey: () => options.whisperApiKey ?? null,
+    getDashScopeApiKey: () => options.dashScopeApiKey ?? null,
+    getOpenAIRealtimeApiKey: () => options.openAIRealtimeApiKey ?? null,
     getITranslateApiKey: () => 'it-secret',
     previewDebounceMs: options.previewDebounceMs,
+    previewMinIntervalMs: options.previewMinIntervalMs,
+    finalMaxAttempts: options.finalMaxAttempts ?? 1,
+    finalRetryBaseDelayMs: options.finalRetryBaseDelayMs,
+    finalRequestDeadlineMs: options.finalRequestDeadlineMs,
     translationDisplayHoldMs: options.translationDisplayHoldMs ?? 0,
     log: (message) => options.logs?.push(message),
     translateStream: async (text, _settings, _dingTalk, _apiKey, options, iTranslateApiKey) => {
@@ -308,31 +332,87 @@ async function flush(): Promise<void> {
 }
 
 /**
- * 校验 partial 只更新原文，只有 final 才发起一次翻译。
+ * 校验稳定 partial 会提前发起翻译，并在同文 final 到达后直接复用预览结果。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('实时字幕应只在 final 到达后发起翻译', async () => {
+test('稳定 partial 应提前翻译并在同文 final 到达后复用', async () => {
   const harness = createHarness({}, { previewDebounceMs: 0 })
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
   assert.equal(harness.controller.snapshot().sourceText, 'Hello')
   await flush()
-  assert.deepEqual(harness.translateCalls, [])
-
-  harness.host.emit({ type: 'final', text: 'Hello', lang: 'en-US' })
-  await flush()
   assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
   assert.equal(harness.translateCalls[0]?.sourceLang, 'en-US')
   assert.equal(harness.translateCalls[0]?.iTranslateApiKey, 'it-secret')
 
-  harness.finishTranslation()
+  harness.finishTranslationFor('Hello', '你好')
   await harness.controller.idle()
+  assert.equal(harness.controller.snapshot().translatedText, '你好')
+  assert.equal(harness.controller.snapshot().segments[0]?.status, 'partial')
+
+  harness.host.emit({ type: 'final', text: 'Hello', lang: 'en-US' })
+  await flush()
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
   const segment = harness.controller.snapshot().segments[0]
   assert.equal(segment?.translatedText, '你好')
   assert.equal(segment?.status, 'translated')
   assert.equal(harness.controller.snapshot().translatedText, '你好')
+})
+
+/**
+ * 校验连续变化的 partial 只保留最新文本发起翻译，避免每次识别更新都启动请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 partial 应防抖合并为最新文本再翻译', async () => {
+  const harness = createHarness({}, { previewDebounceMs: 300 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
+  harness.host.emit({ type: 'partial', text: 'Hello world', lang: 'en-US' })
+
+  const previewTimers = harness.timers.filter(
+    (timer) => timer.delayMs === 300 && !timer.cleared
+  )
+  assert.equal(previewTimers.length, 1, '应只保留一个有效的预览翻译计时器')
+  previewTimers[0]?.callback()
+  await flush()
+
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello world'])
+  harness.finishTranslationFor('Hello world', '你好，世界')
+  await harness.controller.idle()
+})
+
+/**
+ * 校验 final 修正原文时会清空旧预览，最终译文不得与旧句译文拼接。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 原文变化应清空旧预览并翻译修正后的整句', async () => {
+  const harness = createHarness({}, { previewDebounceMs: 0 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
+  await flush()
+  harness.finishTranslationFor('Hello', '你好')
+  await harness.controller.idle()
+  assert.equal(harness.controller.snapshot().translatedText, '你好')
+
+  harness.host.emit({ type: 'final', text: 'Hello world', lang: 'en-US' })
+  await flush()
+
+  assert.deepEqual(
+    harness.translateCalls.map((call) => call.text),
+    ['Hello', 'Hello world']
+  )
+  assert.equal(harness.controller.snapshot().segments.at(-1)?.translatedText, '')
+
+  harness.finishTranslationFor('Hello world', '你好，世界')
+  await harness.controller.idle()
+  assert.equal(harness.controller.snapshot().translatedText, '你好，世界')
+  assert.equal(harness.controller.snapshot().segments.at(-1)?.status, 'translated')
 })
 
 /**
@@ -351,16 +431,22 @@ test('final 译文应保持最短展示时间后再显示下一句', async () =>
   await harness.controller.idle()
 
   assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.translatedText, '你好')
-  const broadcastCount = harness.broadcasts.length
-
   harness.host.emit({ type: 'partial', text: 'Next sentence', lang: 'en-US' })
-  assert.equal(harness.broadcasts.length, broadcastCount)
-  assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.translatedText, '你好')
+  assert.equal(harness.controller.viewModel().sourceText, 'Hello')
+  assert.equal(harness.controller.viewModel().translatedText, '你好')
+  assert.equal(harness.controller.viewModel().live?.sourceText, 'Next sentence')
+  assert.deepEqual(
+    harness.broadcasts.at(-1)?.segments.map((segment) => segment.sourceText),
+    ['Hello', 'Next sentence'],
+    '展示锁不应打乱段落的时间顺序'
+  )
 
   const holdTimer = harness.timers.find((timer) => !timer.cleared && timer.delayMs === 1500)
   assert.ok(holdTimer, '应安排译文最短展示计时器')
   holdTimer.callback()
-  assert.equal(harness.broadcasts.at(-1)?.segments.at(-1)?.sourceText, 'Next sentence')
+  assert.equal(harness.controller.viewModel().sourceText, 'Next sentence')
+  assert.equal(harness.controller.viewModel().committed?.sourceText, 'Hello')
+  assert.equal(harness.controller.viewModel().live, null)
 })
 
 /**
@@ -414,7 +500,9 @@ test('连续 final 的译文应逐条展示且不丢失', async () => {
   await flush()
 
   harness.finishTranslationFor('First', '第一句译文')
+  await flush()
   harness.finishTranslationFor('Second', '第二句译文')
+  await flush()
   harness.finishTranslationFor('Third', '第三句译文')
   await harness.controller.idle()
 
@@ -513,12 +601,19 @@ test('连续 final 应逐条翻译且不把前一句译文带入最后一句', a
   await flush()
   assert.deepEqual(
     harness.translateCalls.map((call) => call.text),
-    sentences
+    [sentences[0]],
+    '串行保护下应只先启动第一段 final 翻译'
   )
 
   const translations = ['译文一', '译文二', '译文三']
   for (const [index, sentence] of sentences.entries()) {
+    assert.deepEqual(
+      harness.translateCalls.map((call) => call.text),
+      sentences.slice(0, index + 1),
+      '前一段完成后应按顺序启动下一段翻译'
+    )
     harness.finishTranslationFor(sentence, translations[index] ?? '')
+    await flush()
   }
   await harness.controller.idle()
 
@@ -604,13 +699,18 @@ test('新识别文本应重置字幕自动隐藏计时', () => {
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en' })
-  const firstTimer = harness.timers.at(-1)
+  const firstTimer = harness.timers.find(
+    (timer) => timer.delayMs === 8000 && !timer.cleared
+  )
   assert.equal(firstTimer?.delayMs, 8000)
 
   harness.host.emit({ type: 'partial', text: 'Hello world', lang: 'en' })
   assert.equal(firstTimer?.cleared, true, '更新识别文本时应取消上一轮计时')
-  assert.equal(harness.timers.at(-1)?.delayMs, 8000)
-  assert.notEqual(harness.timers.at(-1), firstTimer)
+  const nextTimer = harness.timers.find(
+    (timer) => timer.delayMs === 8000 && !timer.cleared
+  )
+  assert.equal(nextTimer?.delayMs, 8000)
+  assert.notEqual(nextTimer, firstTimer)
 })
 
 /**
@@ -638,7 +738,9 @@ test('运行中修改自动隐藏时长应重新安排当前字幕计时', () =>
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en' })
-  const previousTimer = harness.timers.at(-1)
+  const previousTimer = harness.timers.find(
+    (timer) => timer.delayMs === 8000 && !timer.cleared
+  )
 
   harness.controller.applySettings({
     ...harness.settings,
@@ -933,6 +1035,73 @@ test('WebSocket 启动与自动重连应传入并保持服务地址', () => {
     harness.host.starts[1]?.webSocketUrl,
     'ws://127.0.0.1:9092/ws/asr?language=zh'
   )
+})
+
+/**
+ * 校验 DashScope provider 会传入地址、模型和主进程密钥，并在配置变化时重建会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('DashScope 启动应传入隔离配置且运行中修改应重启会话', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'alibaba',
+    realtimeSubtitleDashScopeUrl: 'wss://dashscope.example.com/api-ws/v1/inference',
+    realtimeSubtitleDashScopeModel: 'qwen-audio-custom'
+  }, { dashScopeApiKey: 'dashscope-secret' })
+
+  harness.controller.start()
+  assert.equal(harness.host.starts[0]?.asr, 'alibaba')
+  assert.equal(
+    harness.host.starts[0]?.dashScopeUrl,
+    'wss://dashscope.example.com/api-ws/v1/inference'
+  )
+  assert.equal(harness.host.starts[0]?.dashScopeModel, 'qwen-audio-custom')
+  assert.equal(harness.host.starts[0]?.dashScopeApiKey, 'dashscope-secret')
+
+  harness.host.emit({ type: 'ready' })
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleDashScopeModel: 'qwen-audio-next'
+  })
+
+  assert.deepEqual(harness.host.calls, ['stop'])
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.dashScopeModel, 'qwen-audio-next')
+})
+
+/**
+ * 校验 OpenAI Realtime provider 会传入地址、模型和主进程密钥，并在配置变化时重建会话。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OpenAI Realtime 启动应传入隔离配置且运行中修改应重启会话', () => {
+  const harness = createHarness({
+    realtimeSubtitleAsrProvider: 'custom-openai',
+    realtimeSubtitleOpenAIRealtimeUrl: 'wss://realtime.example.com/v1/realtime',
+    realtimeSubtitleOpenAIRealtimeModel: 'gpt-4o-mini-transcribe'
+  }, { openAIRealtimeApiKey: 'openai-secret' })
+
+  harness.controller.start()
+  assert.equal(harness.host.starts[0]?.asr, 'custom-openai')
+  assert.equal(
+    harness.host.starts[0]?.openAIRealtimeUrl,
+    'wss://realtime.example.com/v1/realtime'
+  )
+  assert.equal(
+    harness.host.starts[0]?.openAIRealtimeModel,
+    'gpt-4o-mini-transcribe'
+  )
+  assert.equal(harness.host.starts[0]?.openAIRealtimeApiKey, 'openai-secret')
+
+  harness.host.emit({ type: 'ready' })
+  harness.controller.applySettings({
+    ...harness.settings,
+    realtimeSubtitleOpenAIRealtimeModel: 'gpt-4o-transcribe'
+  })
+
+  assert.deepEqual(harness.host.calls, ['stop'])
+  assert.equal(harness.host.starts.length, 2)
+  assert.equal(harness.host.starts[1]?.openAIRealtimeModel, 'gpt-4o-transcribe')
 })
 
 /**

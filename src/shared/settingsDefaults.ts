@@ -19,7 +19,7 @@ function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTrans
     (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
 }
 
-export const SETTINGS_SCHEMA_VERSION = 28
+export const SETTINGS_SCHEMA_VERSION = 29
 
 /** Whisper 本地 OpenAI 兼容服务的默认 Base URL。 */
 const DEFAULT_WHISPER_BASE_URL = 'http://127.0.0.1:8000/v1'
@@ -29,6 +29,24 @@ const DEFAULT_WHISPER_MODEL = 'whisper-1'
 
 /** faster-whisper-stream 的默认 WebSocket ASR 地址。 */
 const DEFAULT_WEBSOCKET_ASR_URL = 'ws://127.0.0.1:9092/ws/asr'
+
+/** 阿里云百炼实时语音识别的默认 WebSocket 地址。 */
+const DEFAULT_DASHSCOPE_ASR_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
+
+/** 阿里云百炼实时语音识别的默认模型。 */
+const DEFAULT_DASHSCOPE_ASR_MODEL = 'qwen-audio-3.0-asr-flash-streaming'
+
+/** OpenAI Realtime 转写的默认 WebSocket 地址。 */
+const DEFAULT_OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime'
+
+/** OpenAI Realtime 转写的默认模型。 */
+const DEFAULT_OPENAI_REALTIME_MODEL = 'gpt-4o-mini-transcribe'
+
+/** 实时字幕 WebSocket 地址允许的最大字符数。 */
+const REALTIME_WEBSOCKET_URL_MAX_LENGTH = 4_096
+
+/** 实时字幕模型名允许的最大字符数。 */
+const REALTIME_MODEL_MAX_LENGTH = 256
 
 /** 文档翻译设置的最小与最大安全边界。 */
 const DOCUMENT_SETTINGS_LIMITS = {
@@ -60,6 +78,12 @@ export const DEFAULT_SETTINGS: Settings = {
   realtimeSubtitleWhisperModel: DEFAULT_WHISPER_MODEL,
   realtimeSubtitleWhisperApiKeyConfigured: false,
   realtimeSubtitleWebSocketUrl: DEFAULT_WEBSOCKET_ASR_URL,
+  realtimeSubtitleDashScopeUrl: DEFAULT_DASHSCOPE_ASR_URL,
+  realtimeSubtitleDashScopeModel: DEFAULT_DASHSCOPE_ASR_MODEL,
+  realtimeSubtitleDashScopeApiKeyConfigured: false,
+  realtimeSubtitleOpenAIRealtimeUrl: DEFAULT_OPENAI_REALTIME_URL,
+  realtimeSubtitleOpenAIRealtimeModel: DEFAULT_OPENAI_REALTIME_MODEL,
+  realtimeSubtitleOpenAIRealtimeApiKeyConfigured: false,
   realtimeSubtitleDisplayMode: 'bilingual',
   realtimeSubtitleFontSize: 20,
   realtimeSubtitleHideAfterMs: 8000,
@@ -321,21 +345,45 @@ function normalizeWhisperModel(value: unknown): string {
 }
 
 /**
- * 规范化 WebSocket ASR 地址，只允许 ws 或 wss。
+ * 规范化实时字幕 WebSocket 地址，限制协议、主机、长度与敏感 URL 部件。
  * @param value 原始地址。
- * @returns 去除首尾空白且协议合法的地址，非法值回退默认本地地址。
+ * @param fallback 地址非法时使用的安全默认值。
+ * @returns 去除首尾空白的合法地址或默认值。
  * @author zhenghq
  */
-function normalizeWebSocketUrl(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) return DEFAULT_WEBSOCKET_ASR_URL
+function normalizeRealtimeWebSocketUrl(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > REALTIME_WEBSOCKET_URL_MAX_LENGTH) return fallback
+  if (/[\u0000-\u001f\u007f]/u.test(trimmed)) return fallback
   try {
-    const url = new URL(value.trim())
-    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return DEFAULT_WEBSOCKET_ASR_URL
-    if (!url.hostname) return DEFAULT_WEBSOCKET_ASR_URL
-    return value.trim()
+    const url = new URL(trimmed)
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return fallback
+    if (!url.hostname || !url.host) return fallback
+    if (url.username || url.password || url.hash) return fallback
+    if (url.protocol === 'ws:') {
+      const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+      if (!loopbackHosts.has(url.hostname.toLowerCase())) return fallback
+    }
+    return trimmed
   } catch {
-    return DEFAULT_WEBSOCKET_ASR_URL
+    return fallback
   }
+}
+
+/**
+ * 规范化实时字幕模型名称，限制空值、控制字符与长度。
+ * @param value 原始模型名称。
+ * @param fallback 模型名非法时使用的默认值。
+ * @returns 去除首尾空白的合法模型名或默认值。
+ * @author zhenghq
+ */
+function normalizeRealtimeModel(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > REALTIME_MODEL_MAX_LENGTH) return fallback
+  if (/[\u0000-\u001f\u007f]/u.test(trimmed)) return fallback
+  return trimmed
 }
 
 /**
@@ -409,8 +457,32 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     realtimeSubtitleWhisperModel: normalizeWhisperModel(rawSettings.realtimeSubtitleWhisperModel),
     realtimeSubtitleWhisperApiKeyConfigured:
       rawSettings.realtimeSubtitleWhisperApiKeyConfigured === true,
-    // 第二十八版新增 WebSocket ASR 地址；只接受 ws/wss，非法值回退本地默认地址。
-    realtimeSubtitleWebSocketUrl: normalizeWebSocketUrl(rawSettings.realtimeSubtitleWebSocketUrl),
+    // 第二十八版新增 WebSocket ASR 地址；只接受安全 ws/wss，非法值回退本地默认地址。
+    realtimeSubtitleWebSocketUrl: normalizeRealtimeWebSocketUrl(
+      rawSettings.realtimeSubtitleWebSocketUrl,
+      DEFAULT_WEBSOCKET_ASR_URL
+    ),
+    // 第二十九版新增 DashScope 与 OpenAI Realtime 的独立 ASR 配置。
+    realtimeSubtitleDashScopeUrl: normalizeRealtimeWebSocketUrl(
+      rawSettings.realtimeSubtitleDashScopeUrl,
+      DEFAULT_DASHSCOPE_ASR_URL
+    ),
+    realtimeSubtitleDashScopeModel: normalizeRealtimeModel(
+      rawSettings.realtimeSubtitleDashScopeModel,
+      DEFAULT_DASHSCOPE_ASR_MODEL
+    ),
+    realtimeSubtitleDashScopeApiKeyConfigured:
+      rawSettings.realtimeSubtitleDashScopeApiKeyConfigured === true,
+    realtimeSubtitleOpenAIRealtimeUrl: normalizeRealtimeWebSocketUrl(
+      rawSettings.realtimeSubtitleOpenAIRealtimeUrl,
+      DEFAULT_OPENAI_REALTIME_URL
+    ),
+    realtimeSubtitleOpenAIRealtimeModel: normalizeRealtimeModel(
+      rawSettings.realtimeSubtitleOpenAIRealtimeModel,
+      DEFAULT_OPENAI_REALTIME_MODEL
+    ),
+    realtimeSubtitleOpenAIRealtimeApiKeyConfigured:
+      rawSettings.realtimeSubtitleOpenAIRealtimeApiKeyConfigured === true,
     realtimeSubtitleDisplayMode: isDisplayMode(rawSettings.realtimeSubtitleDisplayMode)
       ? rawSettings.realtimeSubtitleDisplayMode
       : DEFAULT_SETTINGS.realtimeSubtitleDisplayMode,

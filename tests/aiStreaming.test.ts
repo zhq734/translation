@@ -537,3 +537,30 @@ test('非 AI 通道应忽略文档上下文并保持普通翻译结果', async (
   )
   assert.equal(result.translation, '工作区')
 })
+
+test('全部降级通道失败时应保留首个限流错误的 Retry-After', async () => {
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      if (String(url).includes('chat/completions')) {
+        return new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '2' }
+        })
+      }
+      return new Response('unavailable', { status: 503 })
+    }
+  })
+
+  await assert.rejects(
+    runtime.translateStream('hello', aiSettings(), null, 'sk-ai', {
+      onDelta: () => undefined
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error)
+      const structured = error as Error & { kind?: string; retryAfterMs?: number }
+      assert.equal(structured.kind, 'rate-limit')
+      assert.equal(structured.retryAfterMs, 2_000)
+      return true
+    }
+  )
+})

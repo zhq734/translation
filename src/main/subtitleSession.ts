@@ -76,6 +76,18 @@ export interface SubtitleSessionStartOptions {
   whisperApiKey?: string | null
   /** WebSocket ASR 服务地址；只通过环境变量注入 sidecar。 */
   webSocketUrl?: string
+  /** DashScope 实时 ASR WebSocket 地址；只通过环境变量注入 sidecar。 */
+  dashScopeUrl?: string
+  /** DashScope 实时 ASR 模型；只通过环境变量注入 sidecar。 */
+  dashScopeModel?: string
+  /** DashScope API Key；只允许注入 sidecar 环境，不进入 stdio 协议。 */
+  dashScopeApiKey?: string | null
+  /** OpenAI Realtime 转写 WebSocket 地址；只通过环境变量注入 sidecar。 */
+  openAIRealtimeUrl?: string
+  /** OpenAI Realtime 转写模型；只通过环境变量注入 sidecar。 */
+  openAIRealtimeModel?: string
+  /** OpenAI Realtime API Key；只允许注入 sidecar 环境，不进入 stdio 协议。 */
+  openAIRealtimeApiKey?: string | null
 }
 
 /**
@@ -204,6 +216,12 @@ export class SubtitleSessionHost {
       delete environment.WHISPER_BASE_URL
       delete environment.WHISPER_MODEL
       delete environment.WEBSOCKET_ASR_URL
+      delete environment.DASHSCOPE_API_KEY
+      delete environment.DASHSCOPE_ASR_URL
+      delete environment.DASHSCOPE_ASR_MODEL
+      delete environment.OPENAI_REALTIME_API_KEY
+      delete environment.OPENAI_REALTIME_ASR_URL
+      delete environment.OPENAI_REALTIME_ASR_MODEL
       if (options.asr === 'deepgram' && options.deepgramApiKey) {
         environment.DEEPGRAM_API_KEY = options.deepgramApiKey
       }
@@ -214,6 +232,22 @@ export class SubtitleSessionHost {
       }
       if (options.asr === 'websocket' && options.webSocketUrl) {
         environment.WEBSOCKET_ASR_URL = options.webSocketUrl
+      }
+      if (options.asr === 'alibaba' || options.asr === 'custom-dashscope') {
+        if (options.dashScopeUrl) environment.DASHSCOPE_ASR_URL = options.dashScopeUrl
+        if (options.dashScopeModel) environment.DASHSCOPE_ASR_MODEL = options.dashScopeModel
+        if (options.dashScopeApiKey) environment.DASHSCOPE_API_KEY = options.dashScopeApiKey
+      }
+      if (options.asr === 'custom-openai') {
+        if (options.openAIRealtimeUrl) {
+          environment.OPENAI_REALTIME_ASR_URL = options.openAIRealtimeUrl
+        }
+        if (options.openAIRealtimeModel) {
+          environment.OPENAI_REALTIME_ASR_MODEL = options.openAIRealtimeModel
+        }
+        if (options.openAIRealtimeApiKey) {
+          environment.OPENAI_REALTIME_API_KEY = options.openAIRealtimeApiKey
+        }
       }
       child = this.spawnFn(environment)
     } catch (error) {

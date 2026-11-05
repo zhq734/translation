@@ -13,6 +13,8 @@ import type {
   DeepLxConfigPatch,
   DingTalkConfigPatch,
   DeepgramConfigPatch,
+  DashScopeConfigPatch,
+  OpenAIRealtimeConfigPatch,
   WhisperConfigPatch,
   ITranslateConfigPatch,
   AiConfigPatch,
@@ -439,6 +441,15 @@ const api: Api = {
    */
   setRealtimeSubtitleDragHitArea(area: RealtimeSubtitleDragHitArea): void {
     ipcRenderer.send('subtitle:drag-hit-area', area)
+  },
+  /**
+   * 同步字幕卡片真实矩形，让主进程只拦截字幕框内部的鼠标事件。
+   * @param area 相对字幕窗口内容区的字幕卡片矩形。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  setRealtimeSubtitleCardHitArea(area: RealtimeSubtitleDragHitArea): void {
+    ipcRenderer.send('subtitle:card-hit-area', area)
   },
   /**
    * 通过主进程文件选择器一次导入并校验多个本地文档。
@@ -1314,6 +1325,36 @@ const api: Api = {
    * @author zhenghq
    */
   clearWhisperApiKey: (): Promise<Settings> => ipcRenderer.invoke('whisper:clear-key'),
+  /**
+   * 保存 DashScope 实时 ASR 配置及可选新 API Key。
+   * @param patch DashScope 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setDashScopeConfig: (patch: DashScopeConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('dashscope:configure', patch),
+  /**
+   * 显式清除已保存的 DashScope API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearDashScopeApiKey: (): Promise<Settings> =>
+    ipcRenderer.invoke('dashscope:clear-key'),
+  /**
+   * 保存 OpenAI Realtime 转写配置及可选新 API Key。
+   * @param patch OpenAI Realtime 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setOpenAIRealtimeConfig: (patch: OpenAIRealtimeConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('openai-realtime:configure', patch),
+  /**
+   * 显式清除已保存的 OpenAI Realtime API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearOpenAIRealtimeApiKey: (): Promise<Settings> =>
+    ipcRenderer.invoke('openai-realtime:clear-key'),
   /**
    * 保存 iTranslate 可选翻译通道配置及可选新 API Key。
    * @param patch iTranslate 配置补丁。

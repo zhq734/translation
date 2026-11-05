@@ -95,7 +95,10 @@ mod tests {
     #[test]
     fn consecutive_partials_do_not_duplicate() {
         let mut reducer = SubtitleReducer::new();
-        assert_eq!(reducer.push_partial("hello"), ReducedEvent::Partial("hello".into()));
+        assert_eq!(
+            reducer.push_partial("hello"),
+            ReducedEvent::Partial("hello".into())
+        );
         assert_eq!(reducer.push_partial("hello"), ReducedEvent::Unchanged);
         assert_eq!(
             reducer.push_partial("hello wor"),
@@ -127,6 +130,9 @@ mod tests {
         reducer.push_final("hello");
         assert_eq!(reducer.push_final("hello"), ReducedEvent::Unchanged);
         reducer.reset();
-        assert_eq!(reducer.push_final("hello"), ReducedEvent::Final("hello".into()));
+        assert_eq!(
+            reducer.push_final("hello"),
+            ReducedEvent::Final("hello".into())
+        );
     }
 }

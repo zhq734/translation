@@ -28,6 +28,12 @@ pub enum AsrProvider {
     /// 本机或兼容服务提供的 WebSocket 流式语音识别。
     #[serde(rename = "websocket")]
     WebSocket,
+    /// 阿里云百炼 DashScope 实时语音识别。
+    Alibaba,
+    /// 用户自定义 DashScope 兼容实时语音识别。
+    CustomDashscope,
+    /// 用户自定义 OpenAI Realtime 转写。
+    CustomOpenai,
 }
 
 /// 主进程下发的控制命令。
@@ -186,6 +192,40 @@ mod tests {
             }
             _ => panic!("expected start command"),
         }
+    }
+
+    #[test]
+    fn parses_dashscope_and_openai_start_commands() {
+        for (provider, expected) in [
+            ("alibaba", AsrProvider::Alibaba),
+            ("custom-dashscope", AsrProvider::CustomDashscope),
+            ("custom-openai", AsrProvider::CustomOpenai),
+        ] {
+            let command: Command = serde_json::from_str(&format!(
+                "{{\"cmd\":\"start\",\"source\":\"system\",\"asr\":\"{provider}\",\"lang\":\"zh-CN\"}}"
+            ))
+            .expect("provider start command should parse");
+            match command {
+                Command::Start { asr, .. } => assert_eq!(asr, expected),
+                _ => panic!("expected start command"),
+            }
+        }
+    }
+
+    #[test]
+    fn serializes_new_asr_provider_names() {
+        assert_eq!(
+            serde_json::to_string(&AsrProvider::Alibaba).unwrap(),
+            "\"alibaba\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AsrProvider::CustomDashscope).unwrap(),
+            "\"custom-dashscope\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AsrProvider::CustomOpenai).unwrap(),
+            "\"custom-openai\""
+        );
     }
 
     #[test]

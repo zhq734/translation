@@ -95,6 +95,51 @@ interface CachedTranslation extends TranslateOutput {
   channel: string
 }
 
+interface StructuredTranslationError {
+  kind?: string
+  retryAfterMs?: number
+}
+
+/**
+ * 读取翻译通道错误中可供上层重试决策使用的结构化字段。
+ * @param error 翻译通道抛出的原始错误。
+ * @returns 已校验的错误分类和重试等待时间。
+ * @author zhenghq
+ */
+function structuredTranslationError(error: unknown): StructuredTranslationError | null {
+  if (typeof error !== 'object' || error === null) return null
+  const source = error as { kind?: unknown; retryAfterMs?: unknown }
+  const details: StructuredTranslationError = {}
+  if (typeof source.kind === 'string' && source.kind) details.kind = source.kind
+  if (
+    typeof source.retryAfterMs === 'number' &&
+    Number.isFinite(source.retryAfterMs) &&
+    source.retryAfterMs >= 0
+  ) {
+    details.retryAfterMs = Math.floor(source.retryAfterMs)
+  }
+  return details.kind || details.retryAfterMs !== undefined ? details : null
+}
+
+/**
+ * 创建保留限流分类和服务端建议等待时间的通道聚合错误。
+ * @param message 包含已尝试通道的脱敏错误摘要。
+ * @param details 从通道错误中保留的结构化字段。
+ * @returns 可供实时字幕重试策略读取的聚合错误。
+ * @author zhenghq
+ */
+function createChannelAggregateError(
+  message: string,
+  details: StructuredTranslationError | null
+): Error {
+  const error = new Error(message)
+  if (details?.kind) Object.assign(error, { kind: details.kind })
+  if (details?.retryAfterMs !== undefined) {
+    Object.assign(error, { retryAfterMs: details.retryAfterMs })
+  }
+  return error
+}
+
 /**
  * 将 DeepLX 地址配置拆分为去重后的服务地址列表。
  * @param value 使用中英文逗号分隔的地址配置。
@@ -277,6 +322,7 @@ export class TranslationRuntime {
       iTranslateApiKey
     )
     let lastError = translateMain('translate.error.allChannelsFailed')
+    let structuredError: StructuredTranslationError | null = null
     for (const channel of channels) {
       if (input.length > channel.maxChars) continue
       if (this.isTripped(channel.breakerKey)) continue
@@ -302,11 +348,22 @@ export class TranslationRuntime {
       } catch (error) {
         const message = error instanceof Error ? error.message : translateMain('translate.error.unknown')
         lastError = `${channel.name}: ${message}`
+        const details = structuredTranslationError(error)
+        if (
+          details &&
+          (!structuredError ||
+            (details.kind === 'rate-limit' && structuredError.kind !== 'rate-limit') ||
+            (details.kind === 'rate-limit' &&
+              details.retryAfterMs !== undefined &&
+              details.retryAfterMs > (structuredError.retryAfterMs ?? -1)))
+        ) {
+          structuredError = details
+        }
         this.trip(channel.breakerKey, channel.cooldownMs)
         if (visibleDeltaCount > 0) throw error
       }
     }
-    throw new Error(lastError)
+    throw createChannelAggregateError(lastError, structuredError)
   }
 
   /**

@@ -36,12 +36,15 @@ test('字幕显示模式应裁剪原文与译文', () => {
     {
       state: 'running',
       displayMode: 'source',
+      segmentId: null,
       sourceText: 'Hello',
       translatedText: '',
       status: 'partial',
       audioActivity: 'speech-detected',
       empty: false,
-      error: ''
+      error: '',
+      committed: null,
+      live: null
     }
   )
   assert.equal(createRealtimeSubtitleViewModel(snapshot({ displayMode: 'target' })).sourceText, '')
@@ -80,4 +83,137 @@ test('字幕视图应处理空态和最新段落回退', () => {
   assert.equal(fallback.sourceText, 'Latest')
   assert.equal(fallback.translatedText, '最新')
   assert.equal(fallback.status, 'translated')
+  assert.equal(fallback.segmentId, '1')
+})
+
+/**
+ * 校验新草稿出现时仍保留上一句已确认字幕作为上下文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('新草稿出现时应同时暴露上一句历史和当前实时轨', () => {
+  const viewModel = createRealtimeSubtitleViewModel(snapshot({
+    sourceText: '第二句',
+    translatedText: '',
+    segments: [
+      {
+        id: 'segment-1',
+        sourceText: '第一句',
+        translatedText: '第一句译文',
+        status: 'translated',
+        updatedAt: 1
+      },
+      {
+        id: 'segment-2',
+        sourceText: '第二句',
+        translatedText: '',
+        status: 'partial',
+        updatedAt: 2
+      }
+    ]
+  }))
+
+  assert.equal(viewModel.segmentId, 'segment-2')
+  assert.equal(viewModel.sourceText, '第二句')
+  assert.deepEqual(viewModel.committed, {
+    segmentId: 'segment-1',
+    sourceText: '第一句',
+    translatedText: '第一句译文',
+    status: 'translated'
+  })
+  assert.equal(viewModel.live, null)
+})
+
+/**
+ * 校验展示锁固定上一句时，新到达的实时草稿仍通过独立轨道暴露。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('展示锁固定历史句时应同时暴露最新实时轨', () => {
+  const viewModel = createRealtimeSubtitleViewModel(snapshot({
+    sourceText: 'Next sentence',
+    translatedText: '',
+    displaySegmentId: 'segment-1',
+    segments: [
+      {
+        id: 'segment-1',
+        sourceText: 'First',
+        translatedText: '第一句译文',
+        status: 'translated',
+        updatedAt: 1
+      },
+      {
+        id: 'segment-2',
+        sourceText: 'Next sentence',
+        translatedText: '',
+        status: 'partial',
+        updatedAt: 2
+      }
+    ]
+  }))
+
+  assert.equal(viewModel.segmentId, 'segment-1')
+  assert.equal(viewModel.sourceText, 'First')
+  assert.equal(viewModel.translatedText, '第一句译文')
+  assert.deepEqual(viewModel.committed, {
+    segmentId: 'segment-1',
+    sourceText: 'First',
+    translatedText: '第一句译文',
+    status: 'translated'
+  })
+  assert.deepEqual(viewModel.live, {
+    segmentId: 'segment-2',
+    sourceText: 'Next sentence',
+    translatedText: '',
+    status: 'partial'
+  })
+})
+
+/**
+ * 校验历史轨同样遵守原文、译文和双语显示模式。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('历史轨文本应遵守当前显示模式', () => {
+  const segments: RealtimeSubtitleSnapshot['segments'] = [
+    {
+      id: 'segment-1',
+      sourceText: 'First',
+      translatedText: '第一句译文',
+      status: 'translated',
+      updatedAt: 1
+    },
+    {
+      id: 'segment-2',
+      sourceText: 'Second',
+      translatedText: '',
+      status: 'partial',
+      updatedAt: 2
+    }
+  ]
+
+  assert.deepEqual(
+    createRealtimeSubtitleViewModel(snapshot({
+      displayMode: 'source',
+      segments
+    })).committed,
+    {
+      segmentId: 'segment-1',
+      sourceText: 'First',
+      translatedText: '',
+      status: 'translated'
+    }
+  )
+  assert.deepEqual(
+    createRealtimeSubtitleViewModel(snapshot({
+      displayMode: 'target',
+      segments
+    })).committed,
+    {
+      segmentId: 'segment-1',
+      sourceText: '',
+      translatedText: '第一句译文',
+      status: 'translated'
+    }
+  )
 })

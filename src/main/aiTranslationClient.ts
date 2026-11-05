@@ -101,7 +101,7 @@ export class AiTranslationClient {
     clearTimeout(timer)
 
     if (!response.ok) {
-      throw createAiResponseError(response.status)
+      throw createAiResponseError(response.status, response.headers.get('retry-after'))
     }
 
     const contentType = response.headers.get('content-type') || ''
@@ -165,7 +165,7 @@ export class AiTranslationClient {
     if (!response.ok) {
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', onExternalAbort)
-      throw createAiResponseError(response.status)
+      throw createAiResponseError(response.status, response.headers.get('retry-after'))
     }
     if (!response.body) {
       clearTimeout(timer)

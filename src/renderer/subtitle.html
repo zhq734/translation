@@ -32,8 +32,14 @@
           <button id="subtitle-close" class="subtitle-close" type="button" data-i18n-attr="aria-label:common.close;title:common.close" aria-label="Close" title="Close">×</button>
         </div>
         <div id="subtitle-status" class="subtitle-status" aria-live="polite"></div>
-        <p id="subtitle-source" class="subtitle-line subtitle-source"></p>
-        <p id="subtitle-target" class="subtitle-line subtitle-target"></p>
+        <div id="subtitle-history" class="subtitle-history" hidden aria-hidden="false">
+          <p id="subtitle-history-source" class="subtitle-line subtitle-history-source"></p>
+          <p id="subtitle-history-target" class="subtitle-line subtitle-history-target"></p>
+        </div>
+        <div class="subtitle-live">
+          <p id="subtitle-source" class="subtitle-line subtitle-source"></p>
+          <p id="subtitle-target" class="subtitle-line subtitle-target"></p>
+        </div>
         <p id="subtitle-error" class="subtitle-error" hidden></p>
       </section>
     </main>

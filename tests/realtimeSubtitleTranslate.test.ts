@@ -138,6 +138,85 @@ test('连续 final 的译文应按各自段落隔离', async () => {
 })
 
 /**
+ * 校验连续 final 只允许有限请求并发，其余段落按顺序等待，避免快速识别时拖垮翻译通道。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 final 应限制并发并按顺序翻译', async () => {
+  const calls: string[] = []
+  const pending: Array<ReturnType<typeof deferred<{ translation: string }>>> = []
+  const completed: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    maxConcurrentFinalRequests: 1,
+    maxQueuedFinalRequests: 3,
+    translateStream: async (text) => {
+      calls.push(text)
+      const request = deferred<{ translation: string }>()
+      pending.push(request)
+      return request.promise as never
+    },
+    onDelta: () => undefined,
+    onComplete: (id) => completed.push(id),
+    onError: () => assert.fail('队列容量内不应失败')
+  })
+
+  for (let index = 1; index <= 4; index += 1) {
+    coordinator.submit(`sentence-${index}`, 'en', 1, `segment-${index}`)
+  }
+  await flush()
+  assert.deepEqual(calls, ['sentence-1'], '同一时刻只应发起一个 final 请求')
+
+  for (let index = 0; index < 4; index += 1) {
+    pending[index]?.resolve({ translation: `译文-${index + 1}` })
+    await waitFor(() => pending.length === Math.min(index + 2, 4))
+  }
+  await coordinator.idle()
+
+  assert.deepEqual(calls, ['sentence-1', 'sentence-2', 'sentence-3', 'sentence-4'])
+  assert.deepEqual(completed, ['segment-1', 'segment-2', 'segment-3', 'segment-4'])
+})
+
+/**
+ * 校验 final 等待队列达到上限时只报告当前段落失败，不无限积压请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 等待队列满时应拒绝新增任务并报告错误', async () => {
+  const pending = deferred<{ translation: string }>()
+  const calls: string[] = []
+  const errors: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    maxConcurrentFinalRequests: 1,
+    maxQueuedFinalRequests: 2,
+    translateStream: async (text) => {
+      calls.push(text)
+      return pending.promise as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => assert.fail('队列中任务不应提前完成'),
+    onError: (id, error) => errors.push(`${id}:${error.message}`)
+  })
+
+  for (let index = 1; index <= 4; index += 1) {
+    coordinator.submit(`sentence-${index}`, 'en', 1, `segment-${index}`)
+  }
+  await flush()
+
+  assert.deepEqual(calls, ['sentence-1'])
+  assert.deepEqual(errors, ['segment-4:subtitle translation queue is full'])
+
+  coordinator.invalidate()
+  pending.resolve({ translation: '完成' })
+  await coordinator.idle()
+})
+
+/**
  * 校验 final 之后迟到的 partial 不会重新开启预览翻译，避免旧段落继续追加译文。
  * @returns 无返回值。
  * @author zhenghq
@@ -207,6 +286,7 @@ test('字幕翻译失败应保留识别会话并通知错误', async () => {
     getSettings: () => normalizeSettings({}),
     getDingTalkCredentials: () => null,
     getAiApiKey: () => null,
+    finalMaxAttempts: 1,
     translateStream: async () => {
       throw new Error('network down')
     },
@@ -287,6 +367,7 @@ test('字幕 partial 连续变化应合并预翻译并在完成后追最新文�
     getDingTalkCredentials: () => null,
     getAiApiKey: () => null,
     previewDebounceMs: 200,
+    previewMinIntervalMs: 0,
     setTimeoutFn: manualTimers.setTimeoutFn,
     clearTimeoutFn: manualTimers.clearTimeoutFn,
     translateStream: async (text, _settings, _dingTalk, _aiKey, options) => {
@@ -452,4 +533,413 @@ test('已完成 partial 预翻译应直接复用于同文 final', async () => {
   coordinator.submit('Hello', 'en', 1, 'segment-1')
   assert.equal(calls, 1)
   assert.deepEqual(completed, ['segment-1'])
+})
+
+/**
+ * 校验不同原文的预览翻译遵守最小请求间隔，避免连续 partial 触发请求风暴。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 partial 的预览翻译应遵守最小请求间隔', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  let now = 10_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 0,
+    previewMinIntervalMs: 1_500,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      return { translation: `译文:${text}` } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello'])
+
+  now += 500
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+  assert.deepEqual(calls, ['Hello'], '最小间隔内的新预览不得立即发请求')
+  const paceTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1_000
+  )
+  assert.ok(paceTimer, '应按剩余最小间隔安排预览请求')
+
+  now += 1_000
+  paceTimer.callback()
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello', 'Hello world'])
+})
+
+/**
+ * 校验 final 翻译不受预览翻译最小间隔限制。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 翻译应立即抢占预览请求间隔', async () => {
+  const manualTimers = createManualTimers()
+  const first = deferred<{ translation: string }>()
+  const calls: string[] = []
+  let now = 20_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 0,
+    previewMinIntervalMs: 1_500,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text, _settings, _dingTalk, _aiKey, options) => {
+      calls.push(text)
+      if (text === 'Hello') {
+        options.signal?.addEventListener('abort', () => first.reject(new Error('aborted')), { once: true })
+        return first.promise as never
+      }
+      return { translation: '最终译文' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('final 翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  await flush()
+  assert.deepEqual(calls, ['Hello'])
+
+  now += 100
+  coordinator.submit('Hello world!', 'en', 1, 'segment-1')
+  await coordinator.idle()
+
+  assert.deepEqual(calls, ['Hello', 'Hello world!'])
+})
+
+/**
+ * 校验会话失效会取消等待最小间隔的预览任务。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('会话失效应取消预览请求节流计时器', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  let now = 30_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 0,
+    previewMinIntervalMs: 1_500,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('取消请求不应上报错误'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  await coordinator.idle()
+  now += 200
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+  const paceTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 1_300
+  )
+  assert.ok(paceTimer)
+
+  coordinator.invalidate()
+  assert.equal(paceTimer.cleared, true)
+  paceTimer.callback()
+  await flush()
+  assert.deepEqual(calls, ['Hello'])
+})
+
+/**
+ * 校验预览翻译遇到限流后会暂停后续预览请求，避免持续放大 429 错误。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('预览翻译遇到限流后应进入冷却期', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  let now = 40_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 0,
+    previewMinIntervalMs: 1_500,
+    previewRateLimitCooldownMs: 30_000,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      if (calls.length === 1) {
+        throw Object.assign(new Error('rate limited'), { kind: 'rate-limit' })
+      }
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预览限流不应作为 final 错误上报'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  await coordinator.idle()
+  now += 100
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+
+  assert.deepEqual(calls, ['Hello'])
+  const cooldownTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 29_900
+  )
+  assert.ok(cooldownTimer, '限流后应按冷却剩余时间安排下一次预览')
+
+  now += 29_900
+  cooldownTimer.callback()
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello', 'Hello world'])
+})
+
+/**
+ * 校验预览限流错误携带 Retry-After 时应优先采用服务端建议的冷却时间。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('预览限流应优先遵守 Retry-After 建议的冷却时间', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  let now = 45_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 0,
+    previewMinIntervalMs: 0,
+    previewRateLimitCooldownMs: 30_000,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      if (calls.length === 1) {
+        throw Object.assign(new Error('rate limited'), {
+          kind: 'rate-limit',
+          retryAfterMs: 4_000
+        })
+      }
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预览限流不应作为 final 错误上报'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  await coordinator.idle()
+  now += 100
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+
+  const cooldownTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 3_900
+  )
+  assert.ok(cooldownTimer, '应按 Retry-After 的剩余 3.9 秒安排下一次预览')
+})
+
+/**
+ * 校验 final 翻译遇到可恢复错误时会退避重试并最终完成。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 翻译失败后应退避重试并最终完成', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  const completed: string[] = []
+  let now = 50_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    finalMaxAttempts: 3,
+    finalRetryBaseDelayMs: 600,
+    finalRequestDeadlineMs: 15_000,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      if (calls.length === 1) {
+        throw Object.assign(new Error('network down'), { kind: 'network' })
+      }
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: (id) => completed.push(id),
+    onError: () => assert.fail('可恢复错误重试成功后不应上报失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.submit('Hello', 'en', 1, 'segment-1')
+  await flush()
+  assert.deepEqual(calls, ['Hello'])
+  const retryTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 600
+  )
+  assert.ok(retryTimer, 'final 失败后应按退避间隔安排重试')
+
+  now += 600
+  retryTimer.callback()
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello', 'Hello'])
+  assert.deepEqual(completed, ['segment-1'])
+})
+
+/**
+ * 校验 final 限流重试应等待服务端建议时间，而不是立即按较短退避重试。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 限流重试应遵守 Retry-After 建议', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  const completed: string[] = []
+  let now = 55_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    finalMaxAttempts: 3,
+    finalRetryBaseDelayMs: 600,
+    finalRequestDeadlineMs: 15_000,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      if (calls.length === 1) {
+        throw Object.assign(new Error('rate limited'), {
+          kind: 'rate-limit',
+          retryAfterMs: 3_000
+        })
+      }
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: (id) => completed.push(id),
+    onError: () => assert.fail('限流重试成功后不应上报失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.submit('Hello', 'en', 1, 'segment-1')
+  await flush()
+  const retryTimer = manualTimers.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 3_000
+  )
+  assert.ok(retryTimer, 'final 应等待 Retry-After 后再重试')
+
+  now += 3_000
+  retryTimer.callback()
+  await coordinator.idle()
+  assert.deepEqual(calls, ['Hello', 'Hello'])
+  assert.deepEqual(completed, ['segment-1'])
+})
+
+/**
+ * 校验 final 翻译达到最大尝试次数后只上报一次失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 翻译重试耗尽后应只上报一次错误', async () => {
+  const manualTimers = createManualTimers()
+  const errors: string[] = []
+  let now = 60_000
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    finalMaxAttempts: 3,
+    finalRetryBaseDelayMs: 500,
+    finalRequestDeadlineMs: 15_000,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async () => {
+      throw Object.assign(new Error('service unavailable'), { kind: 'service' })
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: (_id, error) => errors.push(error.message),
+    onReset: () => undefined
+  })
+
+  coordinator.submit('Hello', 'en', 1, 'segment-1')
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await flush()
+    const timer = manualTimers.timers.find((candidate) => !candidate.cleared)
+    assert.ok(timer, '失败后应安排下一次退避重试')
+    now += timer.delayMs
+    timer.cleared = true
+    timer.callback()
+  }
+  await coordinator.idle()
+
+  assert.equal(manualTimers.timers.length, 2)
+  assert.deepEqual(errors, ['service unavailable'])
+})
+
+/**
+ * 校验会话失效会取消等待中的 final 重试,避免旧会话继续请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('会话失效应取消等待中的 final 重试', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    finalMaxAttempts: 3,
+    finalRetryBaseDelayMs: 600,
+    nowFn: () => 70_000,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      throw Object.assign(new Error('timeout'), { kind: 'timeout' })
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('取消的重试不应上报失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.submit('Hello', 'en', 1, 'segment-1')
+  await flush()
+  const retryTimer = manualTimers.timers.find((timer) => !timer.cleared)
+  assert.ok(retryTimer)
+
+  coordinator.invalidate()
+  assert.equal(retryTimer.cleared, true)
+  retryTimer.callback()
+  await flush()
+  assert.deepEqual(calls, ['Hello'])
 })

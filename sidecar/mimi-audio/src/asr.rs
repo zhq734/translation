@@ -5,6 +5,7 @@
 //! 转写接口或 WebSocket 流式 ASR 服务，并把识别事件转换为 sidecar 内部事件。
 //! 翻译始终由宿主应用的多通道翻译管道完成。
 
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::multipart::{Form, Part};
 use tokio::sync::{broadcast, Mutex};
@@ -122,6 +123,18 @@ const WHISPER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// 下行事件通道容量。
 const EVENT_CAPACITY: usize = 128;
 
+/// DashScope 建立任务并收到 `task-started` 的最长等待时间。
+const DASHSCOPE_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// OpenAI Realtime 完成会话配置的最长等待时间。
+const OPENAI_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// OpenAI 音频停顿多久后提交当前输入缓冲区。
+const OPENAI_COMMIT_IDLE: Duration = Duration::from_millis(600);
+
+/// OpenAI 检查音频停顿是否达到提交阈值的轮询间隔。
+const OPENAI_COMMIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 /// 实时 ASR 客户端句柄。
 pub struct AsrClient {
     /// 上行音频发送端。
@@ -146,6 +159,10 @@ impl AsrClient {
             AsrProvider::Deepgram => Self::connect_deepgram(lang).await,
             AsrProvider::Whisper => Self::connect_whisper(lang).await,
             AsrProvider::WebSocket => Self::connect_websocket(lang).await,
+            AsrProvider::Alibaba | AsrProvider::CustomDashscope => {
+                Self::connect_dashscope(lang).await
+            }
+            AsrProvider::CustomOpenai => Self::connect_openai_realtime(lang).await,
         }
     }
 
@@ -238,6 +255,100 @@ impl AsrClient {
         let events = downstream.clone();
         let task = tokio::spawn(async move {
             run_websocket(stream, audio_rx, events).await;
+        });
+
+        Ok(Self {
+            upstream: Mutex::new(Some(audio_tx)),
+            downstream,
+            task: std::sync::Mutex::new(Some(task)),
+        })
+    }
+
+    /// 连接 DashScope 实时语音识别任务。
+    ///
+    /// # 参数
+    /// - `lang`：识别语言，`auto` 表示不发送语言提示。
+    ///
+    /// # 返回值
+    /// 已收到 `task-started` 的客户端；配置、握手或任务启动失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    async fn connect_dashscope(lang: &str) -> Result<Self, AsrError> {
+        let api_key = required_credential("DASHSCOPE_API_KEY")?;
+        let endpoint = required_config("DASHSCOPE_ASR_URL")?;
+        let model = required_config("DASHSCOPE_ASR_MODEL")?;
+        validate_websocket_url(&endpoint)?;
+
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let run_task = dashscope_run_task_payload(&model, lang, &task_id);
+        let mut stream = connect_authenticated_websocket(&endpoint, &api_key).await?;
+        if !send_with_timeout(
+            &mut stream,
+            Message::Text(run_task.to_string().into()),
+            DEEPGRAM_SEND_TIMEOUT,
+        )
+        .await
+        {
+            return Err(AsrError::Network);
+        }
+        tokio::time::timeout(
+            DASHSCOPE_START_TIMEOUT,
+            wait_for_dashscope_start(&mut stream),
+        )
+        .await
+        .map_err(|_| AsrError::Network)??;
+
+        let (downstream, _) = broadcast::channel(EVENT_CAPACITY);
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+        let events = downstream.clone();
+        let language = normalized_source_language(lang);
+        let task = tokio::spawn(async move {
+            run_dashscope(stream, audio_rx, task_id, language, events).await;
+        });
+
+        Ok(Self {
+            upstream: Mutex::new(Some(audio_tx)),
+            downstream,
+            task: std::sync::Mutex::new(Some(task)),
+        })
+    }
+
+    /// 连接 OpenAI Realtime 转写会话。
+    ///
+    /// # 参数
+    /// - `lang`：识别语言，用于标注识别结果。
+    ///
+    /// # 返回值
+    /// 已应用 `session.update` 的客户端；配置、握手或会话初始化失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    async fn connect_openai_realtime(lang: &str) -> Result<Self, AsrError> {
+        let api_key = required_credential("OPENAI_REALTIME_API_KEY")?;
+        let endpoint = required_config("OPENAI_REALTIME_ASR_URL")?;
+        let model = required_config("OPENAI_REALTIME_ASR_MODEL")?;
+        validate_websocket_url(&endpoint)?;
+
+        let session_update = openai_session_update_payload(&model);
+        let mut stream = connect_authenticated_websocket(&endpoint, &api_key).await?;
+        if !send_with_timeout(
+            &mut stream,
+            Message::Text(session_update.to_string().into()),
+            DEEPGRAM_SEND_TIMEOUT,
+        )
+        .await
+        {
+            return Err(AsrError::Network);
+        }
+        tokio::time::timeout(OPENAI_SESSION_TIMEOUT, wait_for_openai_session(&mut stream))
+            .await
+            .map_err(|_| AsrError::Network)??;
+
+        let (downstream, _) = broadcast::channel(EVENT_CAPACITY);
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+        let events = downstream.clone();
+        let language = normalized_source_language(lang);
+        let task = tokio::spawn(async move {
+            run_openai_realtime(stream, audio_rx, language, events).await;
         });
 
         Ok(Self {
@@ -368,6 +479,277 @@ fn websocket_asr_url(configured_url: &str, lang: &str) -> Result<String, AsrErro
         query.append_pair("language", &websocket_language(lang));
     }
     Ok(parsed.to_string())
+}
+
+/// 读取必填凭证环境变量。
+///
+/// # 参数
+/// - `name`：环境变量名称。
+///
+/// # 返回值
+/// 去除首尾空白后的非空值；缺失或为空时返回鉴权错误。
+///
+/// @author zhenghq
+fn required_credential(name: &str) -> Result<String, AsrError> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(AsrError::Auth)
+}
+
+/// 读取必填的实时 ASR 配置环境变量。
+///
+/// # 参数
+/// - `name`：环境变量名称。
+///
+/// # 返回值
+/// 去除首尾空白后的非空值；缺失或为空时返回请求参数错误。
+///
+/// @author zhenghq
+fn required_config(name: &str) -> Result<String, AsrError> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(AsrError::InvalidRequest)
+}
+
+/// 校验实时 ASR 的 WebSocket 地址。
+///
+/// # 参数
+/// - `endpoint`：设置页或环境变量提供的完整 WebSocket 地址。
+///
+/// # 返回值
+/// 地址合法时返回 `Ok(())`；协议或主机非法时返回请求参数错误。
+///
+/// @author zhenghq
+fn validate_websocket_url(endpoint: &str) -> Result<(), AsrError> {
+    let parsed = reqwest::Url::parse(endpoint).map_err(|_| AsrError::InvalidRequest)?;
+    if matches!(parsed.scheme(), "ws" | "wss") && parsed.host_str().is_some() {
+        Ok(())
+    } else {
+        Err(AsrError::InvalidRequest)
+    }
+}
+
+/// 建立带 Bearer 鉴权的 WebSocket 连接。
+///
+/// # 参数
+/// - `endpoint`：已校验的 WebSocket 地址。
+/// - `api_key`：服务端 API Key。
+///
+/// # 返回值
+/// 已完成握手的 WebSocket；鉴权头非法或连接失败时返回分类错误。
+///
+/// @author zhenghq
+async fn connect_authenticated_websocket(
+    endpoint: &str,
+    api_key: &str,
+) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, AsrError> {
+    let mut request = endpoint
+        .into_client_request()
+        .map_err(|_| AsrError::InvalidRequest)?;
+    let authorization =
+        HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| AsrError::Auth)?;
+    request.headers_mut().insert("Authorization", authorization);
+    match connect_async(request).await {
+        Ok((stream, _)) => Ok(stream),
+        Err(error) => {
+            tracing::warn!(%error, "authenticated realtime asr connect failed");
+            Err(classify_connect_error(&error))
+        }
+    }
+}
+
+/// 将界面语言标签规范化为识别结果标注使用的语言。
+///
+/// # 参数
+/// - `lang`：界面识别语言。
+///
+/// # 返回值
+/// 明确语言返回原标签；`auto` 或空值返回 `None`。
+///
+/// @author zhenghq
+fn normalized_source_language(lang: &str) -> Option<String> {
+    let normalized = lang.trim();
+    if normalized.is_empty() || normalized.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+/// 从界面语言标签中提取 DashScope 接受的语言提示。
+///
+/// # 参数
+/// - `lang`：界面识别语言。
+///
+/// # 返回值
+/// 主语言代码；自动检测时返回 `None`。
+///
+/// @author zhenghq
+fn dashscope_language_hint(lang: &str) -> Option<String> {
+    let normalized = lang.trim();
+    if normalized.is_empty() || normalized.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(
+        normalized
+            .split(['-', '_'])
+            .next()
+            .unwrap_or(normalized)
+            .to_ascii_lowercase(),
+    )
+}
+
+/// 构造 DashScope 实时识别 `run-task` 控制帧。
+///
+/// # 参数
+/// - `model`：实时识别模型。
+/// - `lang`：界面识别语言。
+/// - `task_id`：本次识别任务 ID。
+///
+/// # 返回值
+/// 使用 16 kHz 单声道 PCM 输入的 JSON 控制帧。
+///
+/// @author zhenghq
+fn dashscope_run_task_payload(model: &str, lang: &str, task_id: &str) -> serde_json::Value {
+    let mut parameters = serde_json::json!({
+        "format": "pcm",
+        "sample_rate": 16_000,
+    });
+    if let Some(language) = dashscope_language_hint(lang) {
+        parameters["language_hints"] = serde_json::json!([language]);
+    }
+    serde_json::json!({
+        "header": {
+            "action": "run-task",
+            "task_id": task_id,
+            "streaming": "duplex"
+        },
+        "payload": {
+            "task_group": "audio",
+            "task": "asr",
+            "function": "recognition",
+            "model": model,
+            "parameters": parameters
+        }
+    })
+}
+
+/// 等待 DashScope 确认实时识别任务已启动。
+///
+/// # 参数
+/// - `stream`：刚发送 `run-task` 的 WebSocket。
+///
+/// # 返回值
+/// 收到 `task-started` 时成功；服务端拒绝、关闭或发送非法帧时返回分类错误。
+///
+/// @author zhenghq
+async fn wait_for_dashscope_start(
+    stream: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+) -> Result<(), AsrError> {
+    loop {
+        let Some(message) = stream.next().await else {
+            return Err(AsrError::Network);
+        };
+        let text = match message.map_err(|_| AsrError::Network)? {
+            Message::Text(text) => text,
+            Message::Close(_) => return Err(AsrError::Network),
+            _ => continue,
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        match value["header"]["event"].as_str() {
+            Some("task-started") => return Ok(()),
+            Some("task-failed") => return Err(classify_dashscope_error(&value)),
+            Some("error") => return Err(classify_dashscope_error(&value)),
+            _ => {}
+        }
+    }
+}
+
+/// 构造 OpenAI Realtime 转写会话配置帧。
+///
+/// # 参数
+/// - `model`：实时转写模型。
+///
+/// # 返回值
+/// 声明 24 kHz PCM 输入与转写模型的 `session.update` JSON。
+///
+/// @author zhenghq
+fn openai_session_update_payload(model: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "session.update",
+        "session": {
+            "type": "transcription",
+            "audio": {
+                "input": {
+                    "format": {
+                        "type": "audio/pcm",
+                        "rate": 24_000
+                    },
+                    "transcription": {
+                        "model": model
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// 构造 OpenAI Realtime 音频追加帧。
+///
+/// # 参数
+/// - `pcm`：24 kHz 单声道 PCM16 采样。
+///
+/// # 返回值
+/// 音频字段为小端 PCM16 Base64 的 `input_audio_buffer.append` JSON。
+///
+/// @author zhenghq
+fn openai_audio_append_payload(pcm: &[i16]) -> serde_json::Value {
+    let bytes = pcm
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64::engine::general_purpose::STANDARD.encode(bytes)
+    })
+}
+
+/// 等待 OpenAI Realtime 确认会话配置生效。
+///
+/// # 参数
+/// - `stream`：刚发送 `session.update` 的 WebSocket。
+///
+/// # 返回值
+/// 收到会话更新事件时成功；服务端拒绝、关闭或发送非法帧时返回分类错误。
+///
+/// @author zhenghq
+async fn wait_for_openai_session(
+    stream: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+) -> Result<(), AsrError> {
+    loop {
+        let Some(message) = stream.next().await else {
+            return Err(AsrError::Network);
+        };
+        let text = match message.map_err(|_| AsrError::Network)? {
+            Message::Text(text) => text,
+            Message::Close(_) => return Err(AsrError::Network),
+            _ => continue,
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        match value["type"].as_str() {
+            Some("session.updated" | "transcription_session.updated") => return Ok(()),
+            Some("error") => return Err(classify_openai_error(&value)),
+            _ => {}
+        }
+    }
 }
 
 /// 将 PCM16 单声道采样封装为 24 kHz WAV。
@@ -1131,6 +1513,244 @@ async fn run_websocket_with_heartbeat(
     let _ = send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
 }
 
+/// 驱动 DashScope 实时识别会话：重采样音频、发送结束任务并解析识别结果。
+///
+/// # 参数
+/// - `stream`：已完成 `task-started` 握手的 WebSocket。
+/// - `audio_rx`：24 kHz 单声道 PCM 上行通道。
+/// - `task_id`：DashScope 任务 ID。
+/// - `lang`：识别结果语言标注。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+async fn run_dashscope(
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    mut audio_rx: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    task_id: String,
+    lang: Option<String>,
+    events: broadcast::Sender<AsrEvent>,
+) {
+    let (mut write, mut read) = stream.split();
+    let mut resampler = match StreamingPcm16Resampler::new(24_000, 16_000, 1) {
+        Ok(resampler) => resampler,
+        Err(_) => {
+            let _ = events.send(AsrEvent::Error {
+                error: AsrError::InvalidRequest,
+            });
+            return;
+        }
+    };
+    let mut audio_closed = false;
+    let mut failure = Some(AsrError::Network);
+
+    loop {
+        tokio::select! {
+            maybe_pcm = audio_rx.recv(), if !audio_closed => {
+                let Some(pcm) = maybe_pcm else {
+                    let finish_task = serde_json::json!({
+                        "header": {
+                            "action": "finish-task",
+                            "task_id": task_id,
+                            "streaming": "duplex"
+                        },
+                        "payload": {
+                            "input": {}
+                        }
+                    });
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Text(finish_task.to_string().into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        failure = Some(AsrError::Network);
+                        break;
+                    }
+                    audio_closed = true;
+                    continue;
+                };
+                let samples = pcm
+                    .iter()
+                    .map(|sample| f32::from(*sample) / 32_768.0)
+                    .collect::<Vec<_>>();
+                let blocks = match resampler.push_interleaved(&samples) {
+                    Ok(blocks) => blocks,
+                    Err(_) => {
+                        failure = Some(AsrError::InvalidRequest);
+                        break;
+                    }
+                };
+                let mut send_failed = false;
+                for block in blocks {
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Binary(block.into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        send_failed = true;
+                        break;
+                    }
+                }
+                if send_failed {
+                    tracing::warn!("dashscope asr audio send failed or timed out");
+                    failure = Some(AsrError::Network);
+                    break;
+                }
+            }
+            message = read.next() => {
+                let text = match message {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "dashscope asr read failed");
+                        break;
+                    }
+                    _ => continue,
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                if handle_dashscope_event(&value, lang.as_deref(), &events) {
+                    failure = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(error) = failure {
+        let _ = events.send(AsrEvent::Error { error });
+    }
+    let _ = send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
+}
+
+/// 驱动 OpenAI Realtime 转写会话：追加 PCM、停顿后提交并解析转写事件。
+///
+/// # 参数
+/// - `stream`：已完成 `session.update` 的 WebSocket。
+/// - `audio_rx`：24 kHz 单声道 PCM 上行通道。
+/// - `lang`：识别结果语言标注。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 无返回值。
+///
+/// @author zhenghq
+async fn run_openai_realtime(
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    mut audio_rx: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    lang: Option<String>,
+    events: broadcast::Sender<AsrEvent>,
+) {
+    let (mut write, mut read) = stream.split();
+    let mut transcripts = std::collections::HashMap::<String, String>::new();
+    let mut audio_closed = false;
+    let mut last_audio_at = None;
+    let mut failure = Some(AsrError::Network);
+    let mut commit_poll = interval(OPENAI_COMMIT_POLL_INTERVAL);
+    commit_poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    commit_poll.tick().await;
+
+    loop {
+        tokio::select! {
+            maybe_pcm = audio_rx.recv(), if !audio_closed => {
+                let Some(pcm) = maybe_pcm else {
+                    audio_closed = true;
+                    if last_audio_at.is_some() {
+                        if !send_with_timeout(
+                            &mut write,
+                            Message::Text(r#"{"type":"input_audio_buffer.commit"}"#.into()),
+                            DEEPGRAM_SEND_TIMEOUT,
+                        )
+                        .await
+                        {
+                            failure = Some(AsrError::Network);
+                            break;
+                        }
+                        last_audio_at = None;
+                    }
+                    continue;
+                };
+                if !pcm.is_empty() {
+                    let payload = openai_audio_append_payload(&pcm);
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Text(payload.to_string().into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        tracing::warn!("openai realtime audio send failed or timed out");
+                        failure = Some(AsrError::Network);
+                        break;
+                    }
+                    last_audio_at = Some(Instant::now());
+                }
+            }
+            _ = commit_poll.tick() => {
+                if last_audio_at
+                    .map(|last| last.elapsed() >= OPENAI_COMMIT_IDLE)
+                    .unwrap_or(false)
+                {
+                    if !send_with_timeout(
+                        &mut write,
+                        Message::Text(r#"{"type":"input_audio_buffer.commit"}"#.into()),
+                        DEEPGRAM_SEND_TIMEOUT,
+                    )
+                    .await
+                    {
+                        tracing::warn!("openai realtime commit send failed or timed out");
+                        failure = Some(AsrError::Network);
+                        break;
+                    }
+                    last_audio_at = None;
+                }
+            }
+            message = read.next() => {
+                let text = match message {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "openai realtime read failed");
+                        break;
+                    }
+                    _ => continue,
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                let action = handle_openai_event(
+                    &value,
+                    &mut transcripts,
+                    lang.as_deref(),
+                    &events,
+                );
+                match action {
+                    OpenAiEventAction::Terminate => {
+                        failure = None;
+                        break;
+                    }
+                    OpenAiEventAction::Continue => {
+                        let completed = value["type"].as_str()
+                            == Some("conversation.item.input_audio_transcription.completed");
+                        if audio_closed && completed {
+                            failure = None;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(error) = failure {
+        let _ = events.send(AsrEvent::Error { error });
+    }
+    let _ = send_with_timeout(&mut write, Message::Close(None), DEEPGRAM_SEND_TIMEOUT).await;
+}
+
 /// 在限定时间内发送一条 WebSocket 消息。
 ///
 /// # 参数
@@ -1328,6 +1948,217 @@ fn classify_websocket_error(value: &serde_json::Value) -> AsrError {
         AsrError::Auth
     } else {
         AsrError::InvalidRequest
+    }
+}
+
+/// 解析一条 DashScope 实时识别事件并派发内部事件。
+///
+/// # 参数
+/// - `value`：DashScope 服务端 JSON 事件。
+/// - `lang`：识别结果语言标注。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 任务结束或失败时返回 `true`。
+///
+/// @author zhenghq
+fn handle_dashscope_event(
+    value: &serde_json::Value,
+    lang: Option<&str>,
+    events: &broadcast::Sender<AsrEvent>,
+) -> bool {
+    match value["header"]["event"].as_str() {
+        Some("result-generated") => {
+            let sentence = &value["payload"]["output"]["sentence"];
+            let text = sentence["text"].as_str().unwrap_or_default().trim();
+            if !text.is_empty() {
+                let event = if sentence["sentence_end"].as_bool().unwrap_or(false) {
+                    AsrEvent::Final {
+                        text: text.to_string(),
+                        lang: lang.map(str::to_string),
+                    }
+                } else {
+                    AsrEvent::Partial {
+                        text: text.to_string(),
+                        lang: lang.map(str::to_string),
+                    }
+                };
+                let _ = events.send(event);
+            }
+            false
+        }
+        Some("task-finished") => true,
+        Some("task-failed") | Some("error") => {
+            let error = classify_dashscope_error(value);
+            let code = value["header"]["error_code"]
+                .as_str()
+                .or_else(|| value["header"]["code"].as_str())
+                .unwrap_or("unknown");
+            tracing::warn!(error_code = %code, "dashscope realtime asr failed");
+            let _ = events.send(AsrEvent::Error { error });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 将 DashScope 错误码映射为稳定的内部错误分类。
+///
+/// # 参数
+/// - `value`：DashScope 错误事件。
+///
+/// # 返回值
+/// 鉴权、请求参数或网络错误分类。
+///
+/// @author zhenghq
+fn classify_dashscope_error(value: &serde_json::Value) -> AsrError {
+    let code = value["header"]["error_code"]
+        .as_str()
+        .or_else(|| value["header"]["code"].as_str())
+        .or_else(|| value["payload"]["code"].as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(code.as_str(), "401" | "403")
+        || code.contains("auth")
+        || code.contains("unauthorized")
+        || code.contains("forbidden")
+        || code.contains("accessdenied")
+        || code.contains("invalidapikey")
+    {
+        AsrError::Auth
+    } else if matches!(
+        code.as_str(),
+        "400" | "404" | "405" | "409" | "413" | "415" | "422" | "429"
+    ) || code.contains("invalid")
+        || code.contains("parameter")
+        || code.contains("badrequest")
+        || code.contains("quota")
+        || code.contains("ratelimit")
+    {
+        AsrError::InvalidRequest
+    } else {
+        AsrError::Network
+    }
+}
+
+/// OpenAI Realtime 单条事件处理后的连接动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenAiEventAction {
+    /// 连接可以继续接收音频和转写事件。
+    Continue,
+    /// 服务端错误已上报，连接应该终止。
+    Terminate,
+}
+
+/// 解析一条 OpenAI Realtime 转写事件并派发内部事件。
+///
+/// # 参数
+/// - `value`：OpenAI Realtime 服务端 JSON 事件。
+/// - `transcripts`：按 item ID 累积的转写片段。
+/// - `lang`：识别结果语言标注。
+/// - `events`：下行事件广播端。
+///
+/// # 返回值
+/// 后续应继续连接还是终止连接。
+///
+/// @author zhenghq
+fn handle_openai_event(
+    value: &serde_json::Value,
+    transcripts: &mut std::collections::HashMap<String, String>,
+    lang: Option<&str>,
+    events: &broadcast::Sender<AsrEvent>,
+) -> OpenAiEventAction {
+    match value["type"].as_str() {
+        Some("conversation.item.input_audio_transcription.delta") => {
+            let Some(item_id) = value["item_id"].as_str() else {
+                return OpenAiEventAction::Continue;
+            };
+            let delta = value["delta"].as_str().unwrap_or_default();
+            if delta.is_empty() {
+                return OpenAiEventAction::Continue;
+            }
+            let text = transcripts.entry(item_id.to_string()).or_default();
+            text.push_str(delta);
+            let _ = events.send(AsrEvent::Partial {
+                text: text.clone(),
+                lang: lang.map(str::to_string),
+            });
+            OpenAiEventAction::Continue
+        }
+        Some("conversation.item.input_audio_transcription.completed") => {
+            let Some(item_id) = value["item_id"].as_str() else {
+                return OpenAiEventAction::Continue;
+            };
+            let accumulated = transcripts.remove(item_id).unwrap_or_default();
+            let transcript = value["transcript"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let text = if transcript.is_empty() {
+                accumulated.trim().to_string()
+            } else {
+                transcript
+            };
+            if !text.is_empty() {
+                let _ = events.send(AsrEvent::Final {
+                    text,
+                    lang: lang.map(str::to_string),
+                });
+            }
+            OpenAiEventAction::Continue
+        }
+        Some("conversation.item.input_audio_transcription.failed") | Some("error") => {
+            let error = classify_openai_error(value);
+            let code = value["error"]["code"]
+                .as_str()
+                .or_else(|| value["error"]["type"].as_str())
+                .unwrap_or("unknown");
+            tracing::warn!(error_code = %code, "openai realtime asr failed");
+            let _ = events.send(AsrEvent::Error { error });
+            OpenAiEventAction::Terminate
+        }
+        _ => OpenAiEventAction::Continue,
+    }
+}
+
+/// 将 OpenAI Realtime 错误码映射为稳定的内部错误分类。
+///
+/// # 参数
+/// - `value`：OpenAI Realtime 错误事件。
+///
+/// # 返回值
+/// 鉴权、请求参数或网络错误分类。
+///
+/// @author zhenghq
+fn classify_openai_error(value: &serde_json::Value) -> AsrError {
+    let code = value["error"]["code"]
+        .as_str()
+        .or_else(|| value["code"].as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let kind = value["error"]["type"]
+        .as_str()
+        .or_else(|| value["type"].as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(code.as_str(), "401" | "403")
+        || code.contains("invalid_api_key")
+        || kind.contains("authentication")
+        || kind.contains("permission")
+    {
+        AsrError::Auth
+    } else if matches!(
+        code.as_str(),
+        "400" | "404" | "405" | "409" | "413" | "415" | "422" | "429"
+    ) || kind.contains("invalid_request")
+        || kind.contains("invalid_value")
+        || kind.contains("model_not_found")
+        || kind.contains("rate_limit")
+    {
+        AsrError::InvalidRequest
+    } else {
+        AsrError::Network
     }
 }
 
@@ -2398,5 +3229,223 @@ mod tests {
         );
         drop(audio_tx);
         server.abort();
+    }
+
+    /// 校验 DashScope 任务帧包含模型、16 kHz PCM 与语言提示。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn dashscope_run_task_payload_matches_realtime_protocol() {
+        let payload =
+            dashscope_run_task_payload("qwen-audio-3.0-asr-flash-streaming", "zh-CN", "task-1");
+        assert_eq!(payload["header"]["action"], "run-task");
+        assert_eq!(payload["header"]["task_id"], "task-1");
+        assert_eq!(payload["header"]["streaming"], "duplex");
+        assert_eq!(payload["payload"]["task_group"], "audio");
+        assert_eq!(payload["payload"]["task"], "asr");
+        assert_eq!(payload["payload"]["function"], "recognition");
+        assert_eq!(
+            payload["payload"]["model"],
+            "qwen-audio-3.0-asr-flash-streaming"
+        );
+        assert_eq!(payload["payload"]["parameters"]["format"], "pcm");
+        assert_eq!(payload["payload"]["parameters"]["sample_rate"], 16_000);
+        assert_eq!(payload["payload"]["parameters"]["language_hints"][0], "zh");
+
+        let auto = dashscope_run_task_payload("model", "auto", "task-2");
+        assert!(auto["payload"]["parameters"]
+            .get("language_hints")
+            .is_none());
+    }
+
+    /// 校验 DashScope 临时句、句末与失败事件的事件映射。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn dashscope_events_emit_partial_final_and_classified_errors() {
+        let (events, mut received) = broadcast::channel(8);
+        let partial = serde_json::json!({
+            "header": {"event": "result-generated"},
+            "payload": {"output": {"sentence": {"text": "你好", "sentence_end": false}}}
+        });
+        assert!(!handle_dashscope_event(&partial, Some("zh-CN"), &events));
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Partial {
+                text: "你好".into(),
+                lang: Some("zh-CN".into())
+            }
+        );
+
+        let final_event = serde_json::json!({
+            "header": {"event": "result-generated"},
+            "payload": {"output": {"sentence": {"text": "你好世界", "sentence_end": true}}}
+        });
+        assert!(!handle_dashscope_event(
+            &final_event,
+            Some("zh-CN"),
+            &events
+        ));
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "你好世界".into(),
+                lang: Some("zh-CN".into())
+            }
+        );
+
+        let failed = serde_json::json!({
+            "header": {
+                "event": "task-failed",
+                "error_code": "InvalidParameter",
+                "error_message": "sensitive upstream detail"
+            },
+            "payload": {}
+        });
+        assert!(handle_dashscope_event(&failed, None, &events));
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Error {
+                error: AsrError::InvalidRequest
+            }
+        );
+    }
+
+    /// 校验 OpenAI Realtime 会话开启转写并声明 PCM24 输入格式。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn openai_session_update_enables_transcription() {
+        let payload = openai_session_update_payload("gpt-4o-mini-transcribe");
+        assert_eq!(payload["type"], "session.update");
+        assert_eq!(payload["session"]["type"], "transcription");
+        assert_eq!(
+            payload["session"]["audio"]["input"]["format"]["type"],
+            "audio/pcm"
+        );
+        assert_eq!(
+            payload["session"]["audio"]["input"]["format"]["rate"],
+            24_000
+        );
+        assert_eq!(
+            payload["session"]["audio"]["input"]["transcription"]["model"],
+            "gpt-4o-mini-transcribe"
+        );
+    }
+
+    /// 校验 OpenAI Realtime 音频追加帧使用 base64 PCM16。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[test]
+    fn openai_audio_append_encodes_pcm16() {
+        use base64::Engine as _;
+
+        let payload = openai_audio_append_payload(&[1, 2, -1]);
+        assert_eq!(payload["type"], "input_audio_buffer.append");
+        let audio = payload["audio"].as_str().unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(audio)
+                .unwrap(),
+            vec![1, 0, 2, 0, 255, 255]
+        );
+    }
+
+    /// 校验 OpenAI 转写增量累计为临时文本，完成事件派发最终文本。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn openai_transcription_events_emit_partial_and_final() {
+        let (events, mut received) = broadcast::channel(8);
+        let mut transcripts = std::collections::HashMap::new();
+        let first_delta = serde_json::json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-1",
+            "delta": "你"
+        });
+        assert_eq!(
+            handle_openai_event(&first_delta, &mut transcripts, Some("zh-CN"), &events),
+            OpenAiEventAction::Continue
+        );
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Partial {
+                text: "你".into(),
+                lang: Some("zh-CN".into())
+            }
+        );
+
+        let second_delta = serde_json::json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-1",
+            "delta": "好"
+        });
+        handle_openai_event(&second_delta, &mut transcripts, Some("zh-CN"), &events);
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Partial {
+                text: "你好".into(),
+                lang: Some("zh-CN".into())
+            }
+        );
+
+        let completed = serde_json::json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-1",
+            "transcript": "你好世界"
+        });
+        assert_eq!(
+            handle_openai_event(&completed, &mut transcripts, Some("zh-CN"), &events),
+            OpenAiEventAction::Continue
+        );
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Final {
+                text: "你好世界".into(),
+                lang: Some("zh-CN".into())
+            }
+        );
+        assert!(!transcripts.contains_key("item-1"));
+    }
+
+    /// 校验 OpenAI 错误事件按状态码映射为稳定错误分类。
+    ///
+    /// # 返回值
+    /// 无返回值。
+    ///
+    /// @author zhenghq
+    #[tokio::test]
+    async fn openai_errors_are_classified_without_exposing_messages() {
+        let (events, mut received) = broadcast::channel(8);
+        let mut transcripts = std::collections::HashMap::new();
+        let error = serde_json::json!({
+            "type": "error",
+            "error": {"code": "invalid_api_key", "message": "sensitive upstream detail"}
+        });
+        assert_eq!(
+            handle_openai_event(&error, &mut transcripts, None, &events),
+            OpenAiEventAction::Terminate
+        );
+        assert_eq!(
+            received.recv().await.unwrap(),
+            AsrEvent::Error {
+                error: AsrError::Auth
+            }
+        );
     }
 }

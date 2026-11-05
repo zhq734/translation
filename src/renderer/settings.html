@@ -757,7 +757,7 @@
           <section>
             <h2 data-i18n="settings.realtimeSubtitle.title">Live subtitles for any video</h2>
             <p class="hint" data-i18n="settings.realtimeSubtitle.hint">
-              Capture system audio or microphone input, send it to Deepgram for cloud speech recognition, and translate final segments through the existing multi-channel translator.
+              Capture system audio or microphone input, send it to the selected speech recognition service, and translate final segments through the existing multi-channel translator.
             </p>
             <div class="row">
               <label for="realtime-subtitle-asr-provider" data-i18n="settings.realtimeSubtitle.asrProvider">Speech recognition</label>
@@ -765,6 +765,9 @@
                 <option value="deepgram" data-i18n="settings.realtimeSubtitle.asrProvider.deepgram">Deepgram (cloud ASR)</option>
                 <option value="whisper" data-i18n="settings.realtimeSubtitle.asrProvider.whisper">Whisper / OpenAI compatible</option>
                 <option value="websocket" data-i18n="settings.realtimeSubtitle.asrProvider.websocket">WebSocket streaming ASR</option>
+                <option value="alibaba" data-i18n="settings.realtimeSubtitle.asrProvider.alibaba">Alibaba Cloud Model Studio (DashScope)</option>
+                <option value="custom-dashscope" data-i18n="settings.realtimeSubtitle.asrProvider.customDashscope">Custom DashScope ASR</option>
+                <option value="custom-openai" data-i18n="settings.realtimeSubtitle.asrProvider.customOpenai">Custom OpenAI Realtime ASR</option>
               </select>
             </div>
             <div id="realtime-subtitle-deepgram-settings">
@@ -832,6 +835,78 @@
                 />
               </div>
               <p class="field-hint" data-i18n="settings.realtimeSubtitle.websocketHint">Connects to a local faster-whisper-stream or compatible WebSocket ASR service. Audio is resampled to 16 kHz, mono, 16-bit little-endian PCM before streaming. Restart live subtitles after changing the URL.</p>
+            </div>
+            <div id="realtime-subtitle-dashscope-settings" hidden>
+              <div class="row">
+                <label for="realtime-subtitle-dashscope-url" data-i18n="settings.realtimeSubtitle.dashscopeUrl">DashScope WebSocket URL</label>
+                <input
+                  id="realtime-subtitle-dashscope-url"
+                  type="url"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.dashscopeUrlPlaceholder"
+                  placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-dashscope-model" data-i18n="settings.realtimeSubtitle.dashscopeModel">DashScope ASR model</label>
+                <input
+                  id="realtime-subtitle-dashscope-model"
+                  type="text"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.dashscopeModelPlaceholder"
+                  placeholder="qwen-audio-3.0-asr-flash-streaming"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-dashscope-api-key" data-i18n="settings.realtimeSubtitle.dashscopeApiKey">DashScope API Key</label>
+                <div class="inline-control">
+                  <input
+                    id="realtime-subtitle-dashscope-api-key"
+                    type="password"
+                    autocomplete="new-password"
+                    data-i18n-attr="placeholder:settings.realtimeSubtitle.dashscopeApiKeyPlaceholder"
+                    placeholder="Enter a new API Key"
+                  />
+                  <button id="realtime-subtitle-dashscope-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.dashscopeSave">Save</button>
+                  <button id="realtime-subtitle-dashscope-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.dashscopeClear">Clear</button>
+                </div>
+              </div>
+              <p id="realtime-subtitle-dashscope-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+              <p class="field-hint" data-i18n="settings.realtimeSubtitle.dashscopeHint">Streams 16 kHz mono PCM16 audio to DashScope realtime ASR. The built-in channel uses Alibaba Cloud defaults; the custom channel lets you enter another compatible endpoint and model. The API Key is stored in secure system storage.</p>
+            </div>
+            <div id="realtime-subtitle-openai-realtime-settings" hidden>
+              <div class="row">
+                <label for="realtime-subtitle-openai-realtime-url" data-i18n="settings.realtimeSubtitle.openAIRealtimeUrl">OpenAI Realtime WebSocket URL</label>
+                <input
+                  id="realtime-subtitle-openai-realtime-url"
+                  type="url"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.openAIRealtimeUrlPlaceholder"
+                  placeholder="wss://api.openai.com/v1/realtime"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-openai-realtime-model" data-i18n="settings.realtimeSubtitle.openAIRealtimeModel">OpenAI Realtime transcription model</label>
+                <input
+                  id="realtime-subtitle-openai-realtime-model"
+                  type="text"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.openAIRealtimeModelPlaceholder"
+                  placeholder="gpt-4o-mini-transcribe"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-openai-realtime-api-key" data-i18n="settings.realtimeSubtitle.openAIRealtimeApiKey">OpenAI API Key</label>
+                <div class="inline-control">
+                  <input
+                    id="realtime-subtitle-openai-realtime-api-key"
+                    type="password"
+                    autocomplete="new-password"
+                    data-i18n-attr="placeholder:settings.realtimeSubtitle.openAIRealtimeApiKeyPlaceholder"
+                    placeholder="Enter a new API Key"
+                  />
+                  <button id="realtime-subtitle-openai-realtime-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.openAIRealtimeSave">Save</button>
+                  <button id="realtime-subtitle-openai-realtime-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.openAIRealtimeClear">Clear</button>
+                </div>
+              </div>
+              <p id="realtime-subtitle-openai-realtime-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+              <p class="field-hint" data-i18n="settings.realtimeSubtitle.openAIRealtimeHint">Uses the OpenAI Realtime transcription session with mono PCM16 audio. The API Key is stored in secure system storage and is never shown again.</p>
             </div>
             <div class="row">
               <label for="realtime-subtitle-audio-source" data-i18n="settings.realtimeSubtitle.audioSource">Audio source</label>
@@ -914,7 +989,7 @@
             <div class="realtime-subtitle-actions">
               <button id="realtime-subtitle-open-screen-recording" class="btn" type="button" data-i18n="settings.realtimeSubtitle.openScreenRecordingSettings">Open Screen Recording settings</button>
             </div>
-            <p class="hint realtime-subtitle-privacy" data-i18n="settings.realtimeSubtitle.privacy">Audio samples are captured locally and sent to Deepgram cloud ASR; they are not written to disk. Final source text reuses the active multi-channel translator and may incur charges.</p>
+            <p class="hint realtime-subtitle-privacy" data-i18n="settings.realtimeSubtitle.privacy">Audio samples are captured locally and sent to the selected speech recognition service; they are not written to disk. Final source text reuses the active multi-channel translator and may incur charges.</p>
           </section>
         </div>
 

@@ -26,6 +26,8 @@ const SUBTITLE_TOOLBAR_POINTER_POLL_MS = 80
 const SUBTITLE_INTERACTION_RELEASE_DELAY_MS = 300
 /** 拖拽按钮命中区的容差，避免亚像素边界导致悬停闪烁。 */
 const SUBTITLE_DRAG_HIT_PADDING = 4
+/** 字幕卡片命中区的容差，覆盖边框像素避免边缘悬停抖动。 */
+const SUBTITLE_CARD_HIT_PADDING = 2
 
 /**
  * 判断两个字幕视图模型的全部渲染字段是否一致。
@@ -41,14 +43,35 @@ function isSameSubtitleViewModel(
   return Boolean(
     left &&
     left.state === right.state &&
+    left.segmentId === right.segmentId &&
     left.displayMode === right.displayMode &&
     left.sourceText === right.sourceText &&
     left.translatedText === right.translatedText &&
     left.status === right.status &&
     left.audioActivity === right.audioActivity &&
     left.empty === right.empty &&
-    left.error === right.error
+    left.error === right.error &&
+    isSameSubtitleTrack(left.committed, right.committed) &&
+    isSameSubtitleTrack(left.live, right.live)
   )
+}
+
+/**
+ * 判断两条字幕轨的渲染字段是否一致。
+ * @param left 前一条字幕轨。
+ * @param right 后一条字幕轨。
+ * @returns 两条轨道一致时返回 true。
+ * @author zhenghq
+ */
+function isSameSubtitleTrack(
+  left: RealtimeSubtitleViewModel['committed'],
+  right: RealtimeSubtitleViewModel['committed']
+): boolean {
+  if (!left || !right) return (left ?? null) === (right ?? null)
+  return left.segmentId === right.segmentId &&
+    left.sourceText === right.sourceText &&
+    left.translatedText === right.translatedText &&
+    left.status === right.status
 }
 
 /** 字幕窗口创建依赖。 */
@@ -89,6 +112,8 @@ export interface SubtitleWindowController {
   moveWindow(request: RealtimeSubtitleWindowMoveRequest): void
   /** 更新 Renderer 上报的拖拽按钮命中区。 */
   setDragHitArea(area: RealtimeSubtitleDragHitArea): void
+  /** 更新 Renderer 上报的字幕卡片命中区。 */
+  setCardHitArea(area: RealtimeSubtitleDragHitArea): void
   /** 检测点击穿透状态下的工具栏命中区。 */
   pollPointerInteraction(): void
   /** 广播最新视图模型。 */
@@ -118,6 +143,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   let lastPointerPoint: RealtimeSubtitlePointerPoint | null = null
   let pointerInsideDragArea = false
   let dragHitArea: RealtimeSubtitleDragHitArea | null = null
+  let cardHitArea: RealtimeSubtitleDragHitArea | null = null
   let mousePassthrough: boolean | null = null
   let latestViewModel = options.getViewModel()
   let lastSentViewModel: RealtimeSubtitleViewModel | null = null
@@ -217,7 +243,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     created.setAlwaysOnTop(true, 'floating')
     created.setVisibleOnAllWorkspaces(true, ALL_WORKSPACES_VISIBILITY_OPTIONS)
     mousePassthrough = null
-    setWindowIgnoreMouseEvents(created, clickThrough && !mouseInteraction)
+    setWindowIgnoreMouseEvents(created, true)
     created.on('move', () => scheduleBoundsSave(created))
     created.on('resize', () => scheduleBoundsSave(created))
     created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -286,16 +312,50 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
   }
 
   /**
-   * 按指针是否位于工具栏命中区更新点击穿透状态。
+   * 判断全局指针是否位于 Renderer 上报的字幕卡片命中区。
    * @param target 字幕窗。
-   * @param inside 指针是否位于工具栏命中区。
+   * @param point 全局指针坐标。
+   * @returns 位于字幕卡片内时返回 true。
+   * @author zhenghq
+   */
+  const isPointerInsideCardArea = (
+    target: BrowserWindow,
+    point: { x: number; y: number }
+  ): boolean => {
+    const bounds = target.getBounds()
+    const area = cardHitArea
+    return area !== null &&
+      point.x >= bounds.x + area.x - SUBTITLE_CARD_HIT_PADDING &&
+      point.x <= bounds.x + area.x + area.width + SUBTITLE_CARD_HIT_PADDING &&
+      point.y >= bounds.y + area.y - SUBTITLE_CARD_HIT_PADDING &&
+      point.y <= bounds.y + area.y + area.height + SUBTITLE_CARD_HIT_PADDING
+  }
+
+  /**
+   * 按当前点击穿透配置判断指针是否位于可交互区域。
+   * @param target 字幕窗。
+   * @param point 全局指针坐标。
+   * @returns 点击穿透模式命中工具栏，普通模式命中字幕卡片时返回 true。
+   * @author zhenghq
+   */
+  const isPointerInsideInteractionArea = (
+    target: BrowserWindow,
+    point: { x: number; y: number }
+  ): boolean => clickThrough
+    ? isPointerInsideDragArea(target, point)
+    : isPointerInsideCardArea(target, point)
+
+  /**
+   * 按指针是否位于当前可交互区域更新点击穿透状态。
+   * @param target 字幕窗。
+   * @param inside 指针是否位于当前可交互区域。
    * @returns 无返回值。
    * @author zhenghq
    */
   const applyPointerPassthrough = (target: BrowserWindow, inside: boolean): void => {
     pointerInsideDragArea = inside
     if (mouseInteraction) return
-    setWindowIgnoreMouseEvents(target, clickThrough && !inside)
+    setWindowIgnoreMouseEvents(target, !inside)
   }
 
   /**
@@ -308,7 +368,13 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     mouseInteraction = false
     pointerInsideDragArea = false
     clearInteractionReleaseTimer()
-    if (target && !target.isDestroyed()) setWindowIgnoreMouseEvents(target, clickThrough)
+    if (!target || target.isDestroyed()) return
+    const point = options.getCursorPoint?.()
+    if (point) {
+      applyPointerPassthrough(target, isPointerInsideInteractionArea(target, point))
+      return
+    }
+    setWindowIgnoreMouseEvents(target, true)
   }
 
   /**
@@ -318,15 +384,15 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
    * @author zhenghq
    */
   const scheduleInteractionRelease = (target: BrowserWindow): void => {
-    if (interactionReleaseTimer || !mouseInteraction || !clickThrough) return
+    if (interactionReleaseTimer || !mouseInteraction) return
     interactionReleaseTimer = setTimeout(() => {
       interactionReleaseTimer = null
-      if (!mouseInteraction || !clickThrough || target.isDestroyed()) return
+      if (!mouseInteraction || target.isDestroyed()) return
       const point = options.getCursorPoint?.()
       if (!point) return
-      const inside = isPointerInsideDragArea(target, point)
-      forwardPointerPoint(target, { ...point, insideDragArea: inside })
-      if (inside) {
+      const insideDragArea = isPointerInsideDragArea(target, point)
+      forwardPointerPoint(target, { ...point, insideDragArea })
+      if (insideDragArea) {
         applyPointerPassthrough(target, true)
         return
       }
@@ -348,12 +414,11 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     const inside = isPointerInsideDragArea(target, point)
     forwardPointerPoint(target, { ...point, insideDragArea: inside })
     if (mouseInteraction) {
-      if (!clickThrough) return
       if (inside) clearInteractionReleaseTimer()
       else scheduleInteractionRelease(target)
       return
     }
-    applyPointerPassthrough(target, inside)
+    applyPointerPassthrough(target, isPointerInsideInteractionArea(target, point))
   }
 
   /**
@@ -362,7 +427,7 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
    * @author zhenghq
    */
   const startPointerPolling = (): void => {
-    if (pointerPollTimer || !options.getCursorPoint || !clickThrough) return
+    if (pointerPollTimer || !options.getCursorPoint) return
     pointerPollTimer = setInterval(() => {
       const target = win
       if (!target || target.isDestroyed()) return
@@ -439,7 +504,9 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
         return
       }
       const target = ensureWindow()
-      if (clickThrough) startPointerPolling()
+      startPointerPolling()
+      const point = options.getCursorPoint?.()
+      if (point) handlePointerPoint(target, point)
       if (!target.webContents.isLoading()) {
         target.showInactive()
       }
@@ -458,11 +525,13 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       pointerInsideDragArea = false
       if (!clickThrough) {
         resetMouseInteraction(win)
-        stopPointerPolling()
+        startPointerPolling()
       } else {
         setWindowIgnoreMouseEvents(win, !mouseInteraction)
         startPointerPolling()
       }
+      const point = options.getCursorPoint?.()
+      if (point) handlePointerPoint(win, point)
       win.webContents.send('subtitle:appearance', appearance)
     },
 
@@ -479,18 +548,13 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       }
       if (!active) {
         resetMouseInteraction(win)
-        if (clickThrough) startPointerPolling()
-        else stopPointerPolling()
+        startPointerPolling()
         return
       }
       mouseInteraction = true
       pointerInsideDragArea = false
       clearInteractionReleaseTimer()
       setWindowIgnoreMouseEvents(win, false)
-      if (!clickThrough) {
-        stopPointerPolling()
-        return
-      }
       startPointerPolling()
       const point = options.getCursorPoint?.()
       if (point) handlePointerPoint(win, point)
@@ -525,7 +589,28 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
       const point = options.getCursorPoint?.()
       if (!point) {
         pointerInsideDragArea = false
-        if (!mouseInteraction) setWindowIgnoreMouseEvents(win, clickThrough)
+        if (!mouseInteraction) {
+          setWindowIgnoreMouseEvents(win, clickThrough || cardHitArea === null)
+        }
+        return
+      }
+      handlePointerPoint(win, point)
+    },
+
+    /**
+     * 保存 Renderer 上报的字幕卡片矩形，并立即按当前指针重新计算穿透状态。
+     * @param area 相对字幕窗口内容区的矩形。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    setCardHitArea(area: RealtimeSubtitleDragHitArea): void {
+      if (![area.x, area.y, area.width, area.height].every(Number.isFinite)) return
+      if (area.width <= 0 || area.height <= 0) return
+      cardHitArea = { x: area.x, y: area.y, width: area.width, height: area.height }
+      if (!win || win.isDestroyed()) return
+      const point = options.getCursorPoint?.()
+      if (!point) {
+        if (!mouseInteraction) setWindowIgnoreMouseEvents(win, true)
         return
       }
       handlePointerPoint(win, point)
