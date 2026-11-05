@@ -108,6 +108,9 @@ pub enum Event {
         /// 识别语言（可选）。
         #[serde(skip_serializing_if = "Option::is_none")]
         lang: Option<String>,
+        /// 词级时间戳计算出的停顿边界，使用 Unicode 字符偏移。
+        #[serde(rename = "pauseBoundaries", skip_serializing_if = "Option::is_none")]
+        pause_boundaries: Option<Vec<usize>>,
     },
     /// 音频电平，用于界面反馈。
     Level {
@@ -267,5 +270,18 @@ mod tests {
     fn omits_absent_optional_fields() {
         let line = Event::Ready.to_line();
         assert_eq!(line.trim(), "{\"type\":\"ready\"}");
+    }
+
+    #[test]
+    fn encodes_final_pause_boundaries_with_camel_case() {
+        let line = Event::Final {
+            text: "你好世界".into(),
+            lang: Some("zh-CN".into()),
+            pause_boundaries: Some(vec![2]),
+        }
+        .to_line();
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["type"], "final");
+        assert_eq!(value["pauseBoundaries"], serde_json::json!([2]));
     }
 }

@@ -27,16 +27,23 @@ export interface SubtitleTranslationCoordinatorOptions {
     },
     iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
-  /** 转发一段译文增量。 */
-  onDelta: (segmentId: string, delta: string, phase: SubtitleTranslationPhase) => void
+  /** 转发一段译文增量，并携带该任务对应的原文用于校验分段是否仍然有效。 */
+  onDelta: (
+    segmentId: string,
+    delta: string,
+    phase: SubtitleTranslationPhase,
+    sourceText: string
+  ) => void
   /** 标记段落翻译完成。 */
   onComplete: (segmentId: string) => void
   /** 报告单段 final 翻译失败，不得向识别链路抛出。 */
   onError: (segmentId: string, error: Error) => void
   /** 清空指定阶段的旧译文，避免内容变化后短暂展示过期结果。 */
   onReset?: (segmentId: string, phase: SubtitleTranslationPhase) => void
-  /** partial 稳定多久后发起预翻译，默认 300ms。 */
+  /** partial 稳定多久后发起预翻译，默认 250ms。 */
   previewDebounceMs?: number
+  /** partial 连续变化时最多等待多久就翻译最新草稿，默认 1000ms。 */
+  previewMaxWaitMs?: number
   /** 两次预览翻译请求之间的最短间隔，默认 1500ms；设为 0 可关闭。 */
   previewMinIntervalMs?: number
   /** 预览翻译遇到限流后的冷却时长，默认 30000ms；设为 0 可关闭。 */
@@ -45,11 +52,11 @@ export interface SubtitleTranslationCoordinatorOptions {
   finalMaxAttempts?: number
   /** final 翻译首次重试等待时间，默认 600ms，后续按指数退避。 */
   finalRetryBaseDelayMs?: number
-  /** final 翻译从入队到结束的总时限，默认 15000ms。 */
+  /** final 翻译从入队到结束的总时限，默认 45000ms。 */
   finalRequestDeadlineMs?: number
-  /** 同时执行的 final 翻译请求上限，默认 1；预览翻译不受此限制。 */
+  /** 同时执行的 final 翻译请求上限，默认 2；兼容的预览翻译路径不受此限制。 */
   maxConcurrentFinalRequests?: number
-  /** final 翻译等待队列上限，默认 3；达到上限时丢弃新段落并上报错误。 */
+  /** final 翻译等待队列上限，默认 12；需容纳一条长 final 拆出的多条 cue。 */
   maxQueuedFinalRequests?: number
   /** 当前时间读取函数，便于测试控制请求节流。 */
   nowFn?: () => number
@@ -82,8 +89,10 @@ interface SubtitleTranslationTask {
   status: SubtitleTranslationTaskStatus
   /** 取消信号。 */
   controller: AbortController
-  /** 尚未执行的预翻译防抖计时器。 */
+  /** 尚未执行的预翻译稳定计时器。 */
   timer: unknown | null
+  /** 当前草稿窗口首次出现时启动的最大等待计时器。 */
+  maxWaitTimer: unknown | null
   /** 当前预翻译运行期间收到的最新原文；完成后用于追赶最新 partial。 */
   queuedText?: string
   /** 追赶原文对应的识别语言。 */
@@ -100,17 +109,18 @@ interface SubtitleTranslationTask {
   usingFinalSlot: boolean
 }
 
-const DEFAULT_PREVIEW_DEBOUNCE_MS = 300
+const DEFAULT_PREVIEW_DEBOUNCE_MS = 250
+const DEFAULT_PREVIEW_MAX_WAIT_MS = 1_000
 const DEFAULT_PREVIEW_MIN_INTERVAL_MS = 1500
 const DEFAULT_PREVIEW_RATE_LIMIT_COOLDOWN_MS = 30_000
 const DEFAULT_FINAL_MAX_ATTEMPTS = 3
 const DEFAULT_FINAL_RETRY_BASE_DELAY_MS = 600
-const DEFAULT_FINAL_REQUEST_DEADLINE_MS = 15_000
-const DEFAULT_MAX_CONCURRENT_FINAL_REQUESTS = 1
-const DEFAULT_MAX_QUEUED_FINAL_REQUESTS = 3
+const DEFAULT_FINAL_REQUEST_DEADLINE_MS = 45_000
+const DEFAULT_MAX_CONCURRENT_FINAL_REQUESTS = 2
+const DEFAULT_MAX_QUEUED_FINAL_REQUESTS = 12
 
 /**
- * 将稳定 partial 提前接入流式翻译，并在 final 到达时复用或校正结果。
+ * 调度 final 字幕翻译请求，支持有限并发、重试、排队和取消。
  * @author zhenghq
  */
 export class SubtitleTranslationCoordinator {
@@ -121,6 +131,7 @@ export class SubtitleTranslationCoordinator {
   private readonly finalizedSegmentIds = new Set<string>()
   private readonly options: SubtitleTranslationCoordinatorOptions
   private readonly previewDebounceMs: number
+  private readonly previewMaxWaitMs: number
   private readonly previewMinIntervalMs: number
   private readonly previewRateLimitCooldownMs: number
   private readonly finalMaxAttempts: number
@@ -155,6 +166,10 @@ export class SubtitleTranslationCoordinator {
     this.previewDebounceMs = Number.isFinite(previewDebounceMs)
       ? Math.max(0, previewDebounceMs)
       : DEFAULT_PREVIEW_DEBOUNCE_MS
+    const previewMaxWaitMs = options.previewMaxWaitMs ?? DEFAULT_PREVIEW_MAX_WAIT_MS
+    this.previewMaxWaitMs = Number.isFinite(previewMaxWaitMs)
+      ? Math.max(0, previewMaxWaitMs)
+      : DEFAULT_PREVIEW_MAX_WAIT_MS
     const previewMinIntervalMs =
       options.previewMinIntervalMs ?? DEFAULT_PREVIEW_MIN_INTERVAL_MS
     this.previewMinIntervalMs = Number.isFinite(previewMinIntervalMs)
@@ -227,14 +242,14 @@ export class SubtitleTranslationCoordinator {
         return segmentId
       }
       if (existing.status === 'scheduled') {
-        if (existing.timer !== null) this.clearTimeoutFn(existing.timer)
-        existing.timer = null
-        this.clearPacedPreview(existing)
+        // 连续 partial 只重置稳定计时，草稿窗口首次创建的最大等待计时
+        // 保持不变，避免持续口播让预翻译无限延后。
         existing.text = text
         existing.sourceLang = sourceLang
         existing.queuedText = undefined
         existing.queuedSourceLang = undefined
-        this.schedulePreview(existing)
+        this.clearStablePreviewTimer(existing)
+        this.scheduleStablePreview(existing)
         return segmentId
       }
       this.cancelTask(existing)
@@ -315,8 +330,7 @@ export class SubtitleTranslationCoordinator {
     this.finalQueue.length = 0
     this.runningFinalRequests = 0
     for (const task of this.tasks.values()) {
-      if (task.timer !== null) this.clearTimeoutFn(task.timer)
-      task.timer = null
+      this.clearPreviewTimers(task)
       this.clearFinalRetry(task)
       task.controller.abort()
     }
@@ -350,6 +364,7 @@ export class SubtitleTranslationCoordinator {
       status: 'scheduled',
       controller: new AbortController(),
       timer: null,
+      maxWaitTimer: null,
       attempt: 0,
       deadlineAt: this.nowFn() + this.finalRequestDeadlineMs,
       retryTimer: null,
@@ -381,10 +396,7 @@ export class SubtitleTranslationCoordinator {
    * @author zhenghq
    */
   private promotePreview(task: SubtitleTranslationTask): void {
-    if (task.timer !== null) {
-      this.clearTimeoutFn(task.timer)
-      task.timer = null
-    }
+    this.clearPreviewTimers(task)
     task.phase = 'final'
     task.queuedText = undefined
     task.queuedSourceLang = undefined
@@ -409,10 +421,61 @@ export class SubtitleTranslationCoordinator {
       this.start(task)
       return
     }
+    this.scheduleStablePreview(task)
+    if (task.maxWaitTimer === null) {
+      task.maxWaitTimer = this.setTimeoutFn(() => {
+        task.maxWaitTimer = null
+        this.clearStablePreviewTimer(task)
+        this.start(task)
+      }, this.previewMaxWaitMs)
+    }
+  }
+
+  /**
+   * 重置当前草稿窗口的稳定等待计时。
+   * @param task 等待预翻译的任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private scheduleStablePreview(task: SubtitleTranslationTask): void {
     task.timer = this.setTimeoutFn(() => {
       task.timer = null
+      this.clearMaxWaitPreviewTimer(task)
       this.start(task)
     }, this.previewDebounceMs)
+  }
+
+  /**
+   * 清除当前草稿窗口的稳定等待计时。
+   * @param task 等待预翻译的任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private clearStablePreviewTimer(task: SubtitleTranslationTask): void {
+    if (task.timer !== null) this.clearTimeoutFn(task.timer)
+    task.timer = null
+  }
+
+  /**
+   * 清除当前草稿窗口的最大等待计时。
+   * @param task 等待预翻译的任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private clearMaxWaitPreviewTimer(task: SubtitleTranslationTask): void {
+    if (task.maxWaitTimer !== null) this.clearTimeoutFn(task.maxWaitTimer)
+    task.maxWaitTimer = null
+  }
+
+  /**
+   * 同时清除当前草稿窗口的稳定与最大等待计时。
+   * @param task 等待预翻译的任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private clearPreviewTimers(task: SubtitleTranslationTask): void {
+    this.clearStablePreviewTimer(task)
+    this.clearMaxWaitPreviewTimer(task)
   }
 
   /**
@@ -621,7 +684,7 @@ export class SubtitleTranslationCoordinator {
   private emitDelta(task: SubtitleTranslationTask, delta: string): void {
     if (!delta) return
     task.translatedText += delta
-    this.options.onDelta(task.id, delta, task.phase)
+    this.options.onDelta(task.id, delta, task.phase, task.text)
   }
 
   /**
@@ -651,8 +714,7 @@ export class SubtitleTranslationCoordinator {
    * @author zhenghq
    */
   private cancelTask(task: SubtitleTranslationTask): void {
-    if (task.timer !== null) this.clearTimeoutFn(task.timer)
-    task.timer = null
+    this.clearPreviewTimers(task)
     this.clearFinalRetry(task)
     this.clearPacedPreview(task)
     task.controller.abort()

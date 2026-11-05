@@ -58,6 +58,7 @@ test('切换首选 API 后相同文本应优先请求新 API，而不是复用�
   const automatic = normalizeSettings({
     schemaVersion: 9,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH'
   })
@@ -98,6 +99,7 @@ test('首选 API 失败熔断后应自动切换后备 API，冷却期内继续�
   const settings = normalizeSettings({
     schemaVersion: 9,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     preferredTranslationProvider: 'deeplx-public'
@@ -137,6 +139,7 @@ test('首选 API 熔断恢复后相同文本应重新尝试首选项，而不是
   const settings = normalizeSettings({
     schemaVersion: 9,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     sourceLang: 'EN',
     targetLang: 'ZH',
     preferredTranslationProvider: 'deeplx-public'

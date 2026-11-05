@@ -194,6 +194,7 @@ import type {
   DeepgramConfigPatch,
   DashScopeConfigPatch,
   OpenAIRealtimeConfigPatch,
+  GeminiLiveConfigPatch,
   ITranslateConfigPatch,
   WhisperConfigPatch
 } from '../shared/types'
@@ -214,6 +215,8 @@ import { DashScopeCredentialStore } from './dashScopeCredentials'
 import { DashScopeConfigurationService } from './dashScopeConfig'
 import { OpenAIRealtimeCredentialStore } from './openAIRealtimeCredentials'
 import { OpenAIRealtimeConfigurationService } from './openAIRealtimeConfig'
+import { GeminiLiveCredentialStore } from './geminiLiveCredentials'
+import { GeminiLiveConfigurationService } from './geminiLiveConfig'
 import { ITranslateCredentialStore } from './itranslateCredentials'
 import { ITranslateConfigurationService } from './itranslateConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
@@ -476,6 +479,7 @@ let deepgramConfiguration: DeepgramConfigurationService | null = null
 let whisperConfiguration: WhisperConfigurationService | null = null
 let dashScopeConfiguration: DashScopeConfigurationService | null = null
 let openAIRealtimeConfiguration: OpenAIRealtimeConfigurationService | null = null
+let geminiLiveConfiguration: GeminiLiveConfigurationService | null = null
 let itranslateConfiguration: ITranslateConfigurationService | null = null
 let deepLxConfiguration: DeepLxConfigurationService | null = null
 let deepLxCheckService: DeepLxCheckService | null = null
@@ -915,6 +919,18 @@ function getOpenAIRealtimeConfiguration(): OpenAIRealtimeConfigurationService {
 }
 
 /**
+ * 获取已初始化的 Gemini Live 配置服务。
+ * @returns Gemini Live 配置服务实例。
+ * @author zhenghq
+ */
+function getGeminiLiveConfiguration(): GeminiLiveConfigurationService {
+  if (!geminiLiveConfiguration) {
+    throw new Error('Gemini Live configuration service is not initialized')
+  }
+  return geminiLiveConfiguration
+}
+
+/**
  * 获取已初始化的 iTranslate 可选翻译配置服务。
  * @returns iTranslate 配置服务实例。
  * @author zhenghq
@@ -1023,6 +1039,9 @@ function initializeRealtimeSubtitle(): void {
       : null,
     getOpenAIRealtimeApiKey: () => getSettings().realtimeSubtitleOpenAIRealtimeApiKeyConfigured
       ? getOpenAIRealtimeConfiguration().getApiKey()
+      : null,
+    getGeminiApiKey: () => getSettings().realtimeSubtitleGeminiApiKeyConfigured
+      ? getGeminiLiveConfiguration().getApiKey()
       : null,
     getITranslateApiKey: () => getSettings().itranslateEnabled
       ? getITranslateConfiguration().getApiKey()
@@ -2511,6 +2530,26 @@ async function onReady(): Promise<boolean> {
     }
   })
   openAIRealtimeConfiguration.initialize()
+  geminiLiveConfiguration = new GeminiLiveConfigurationService({
+    getSettings,
+    saveSettings,
+    credentialStore: new GeminiLiveCredentialStore(
+      join(app.getPath('userData'), 'gemini-live-credentials.json'),
+      safeStorage
+    ),
+    onSettingsChanged: (settings) => {
+      refreshTrayMenu()
+      broadcast('settings:changed', settings)
+    },
+    resetRealtimeSubtitleRuntime: () => {
+      realtimeSubtitleController?.dispose()
+      realtimeSubtitleController = null
+      subtitleWindow?.dispose()
+      subtitleWindow = null
+      initializeRealtimeSubtitle()
+    }
+  })
+  geminiLiveConfiguration.initialize()
   itranslateConfiguration = new ITranslateConfigurationService({
     getSettings,
     saveSettings,
@@ -7348,6 +7387,8 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDashScopeApiKeyConfigured
   delete (safePatch as Record<string, unknown>).realtimeSubtitleOpenAIRealtimeApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleOpenAIRealtimeApiKeyConfigured
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleGeminiApiKey
+  delete (safePatch as Record<string, unknown>).realtimeSubtitleGeminiApiKeyConfigured
   delete (safePatch as Record<string, unknown>).itranslateApiKey
   delete (safePatch as Record<string, unknown>).itranslateApiKeyConfigured
   const aiFieldChanged =
@@ -7377,6 +7418,8 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
       patch.realtimeSubtitleDashScopeModel !== undefined ||
       patch.realtimeSubtitleOpenAIRealtimeUrl !== undefined ||
       patch.realtimeSubtitleOpenAIRealtimeModel !== undefined ||
+      patch.realtimeSubtitleGeminiUrl !== undefined ||
+      patch.realtimeSubtitleGeminiModel !== undefined ||
       patch.realtimeSubtitleDisplayMode !== undefined ||
       patch.realtimeSubtitleFontSize !== undefined ||
       patch.realtimeSubtitleHideAfterMs !== undefined ||
@@ -8335,6 +8378,12 @@ function registerIpc(): void {
   )
   ipcMain.handle('openai-realtime:clear-key', () =>
     getOpenAIRealtimeConfiguration().clearApiKey()
+  )
+  ipcMain.handle('gemini-live:configure', (_event, patch: GeminiLiveConfigPatch) =>
+    getGeminiLiveConfiguration().configure(patch)
+  )
+  ipcMain.handle('gemini-live:clear-key', () =>
+    getGeminiLiveConfiguration().clearApiKey()
   )
   ipcMain.handle('itranslate:configure', (_event, patch: ITranslateConfigPatch) =>
     getITranslateConfiguration().configure(patch)

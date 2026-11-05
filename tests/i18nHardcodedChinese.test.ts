@@ -114,6 +114,28 @@ const ALLOWED_HARDCODED_CHINESE: Readonly<Record<string, readonly string[]>> = {
     // 水印固定展示产品中文名，与英文名上下两行同时出现。
     '划词翻译'
   ],
+  'src/shared/subtitleSession.ts': [
+    // 实时字幕拆分使用的语义连接词只作为匹配规则，不直接展示给用户。
+    '与此同时',
+    '也可以',
+    '还可以',
+    '可以在',
+    '包括',
+    '截至',
+    '例如',
+    '比如',
+    '此外',
+    '另外',
+    '同时',
+    '以及',
+    '但是',
+    '不过',
+    '因此',
+    '所以',
+    '其中',
+    '而且',
+    '然后'
+  ],
   // 部分导出注入脚本使用固定英文标记，供中文审计规则以字符串字面量精确放行。
   'src/main/documentPdfPrint.ts': ['Partial result']
 }

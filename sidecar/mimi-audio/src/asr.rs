@@ -51,6 +51,8 @@ pub enum AsrEvent {
         text: String,
         /// 识别语言（可选）。
         lang: Option<String>,
+        /// 词级时间戳计算出的停顿边界，使用 Unicode 字符偏移。
+        pause_boundaries: Vec<usize>,
     },
     /// 连接或服务端错误，需要由会话层上报给主进程。
     Error {
@@ -67,6 +69,9 @@ const DEFAULT_WEBSOCKET_ASR_URL: &str = "ws://127.0.0.1:9092/ws/asr";
 
 /// Deepgram 默认识别模型。
 const DEEPGRAM_MODEL: &str = "nova-3";
+
+/// Deepgram 相邻词之间达到该静音时长时视为自然停顿。
+const DEEPGRAM_PAUSE_THRESHOLD_SECONDS: f64 = 0.45;
 
 /// Deepgram 空闲连接保活间隔。
 ///
@@ -1087,7 +1092,11 @@ async fn transcribe_whisper_window(
     if !text.is_empty() {
         let lang = language.map(str::to_string);
         let event = if finalize {
-            AsrEvent::Final { text, lang }
+            AsrEvent::Final {
+                text,
+                lang,
+                pause_boundaries: Vec::new(),
+            }
         } else {
             AsrEvent::Partial { text, lang }
         };
@@ -1122,7 +1131,7 @@ impl Drop for AsrClient {
 /// 包含音频格式、模型与端点检测参数的 URL。
 fn deepgram_url(lang: &str) -> String {
     let mut url = format!(
-        "{DEEPGRAM_LISTEN_URL}?model={DEEPGRAM_MODEL}&encoding=linear16&sample_rate=24000&channels=1&interim_results=true&punctuate=true&smart_format=true&utterance_end_ms=1000&vad_events=true"
+        "{DEEPGRAM_LISTEN_URL}?model={DEEPGRAM_MODEL}&encoding=linear16&sample_rate=24000&channels=1&interim_results=true&punctuate=true&smart_format=true&utterance_end_ms=1000&vad_events=true&words=true"
     );
     if lang.eq_ignore_ascii_case("auto") {
         // Nova 流式接口不支持预录音频式的语言检测参数；自动识别应使用多语言模型。
@@ -1772,19 +1781,20 @@ where
     )
 }
 
-/// Deepgram 单次连接内的累计转写状态。
+/// Deepgram 单次连接内的转写状态。
 #[derive(Debug, Default)]
 struct DeepgramTranscriptState {
     /// 最近一条临时转写，用于过滤服务端重复推送。
     partial: String,
-    /// 尚未由 speech_final/UtteranceEnd 提交的候选文本。
-    candidate: String,
+    /// 最近一次已提交 final 的时间片与文本，用于过滤重复事件。
+    last_final: Option<(i64, i64, String)>,
 }
 
 /// 解析一条 Deepgram 服务端事件并派发内部事件。
 ///
-/// Deepgram 的 transcript 通常在当前 utterance 内累计，因此 `is_final` 只更新
-/// 候选，只有 `speech_final` 或 `UtteranceEnd` 才提交稳定 final。
+/// Deepgram 的一个长 utterance 会包含多个 `is_final` 片段。每个片段都是
+/// 该时间片内已经确认的稳定文本，应立即提交；`speech_final` 只表示整句结束，
+/// `UtteranceEnd` 仅用于清理当前草稿，二者都不重复提交已经发出的片段。
 ///
 /// # 参数
 /// - `value`：服务端 JSON 事件。
@@ -1808,7 +1818,6 @@ fn handle_deepgram_event(
                 return false;
             }
             let is_final = value["is_final"].as_bool().unwrap_or(false);
-            let speech_final = value["speech_final"].as_bool().unwrap_or(false);
             // language=multi 时语言位于 alternatives[0].languages；旧字段
             // detected_language 仅作为兼容回退。
             let lang = value["channel"]["alternatives"][0]["languages"][0]
@@ -1816,21 +1825,26 @@ fn handle_deepgram_event(
                 .or_else(|| value["channel"]["detected_language"].as_str())
                 .map(str::to_string);
 
-            if is_final || speech_final {
-                state.candidate = text.to_string();
-            }
-            if speech_final {
-                let final_text = std::mem::take(&mut state.candidate);
+            if is_final {
+                // Deepgram 的 start/duration 标识该 final 覆盖的音频时间片。
+                // 同一时间片与文本重复到达时跳过，避免网络重放造成重复字幕；
+                // 缺少时间信息时不按文本去重，否则连续说出的相同短句会被误删。
+                let signature = deepgram_final_signature(value, text);
+                let duplicated = signature
+                    .as_ref()
+                    .is_some_and(|current| state.last_final.as_ref() == Some(current));
+                if let Some(signature) = signature {
+                    state.last_final = Some(signature);
+                }
                 state.partial.clear();
-                if !final_text.is_empty() {
+                if !duplicated {
+                    let pause_boundaries = deepgram_pause_boundaries(value, text);
                     let _ = events.send(AsrEvent::Final {
-                        text: final_text,
+                        text: text.to_string(),
                         lang,
+                        pause_boundaries,
                     });
                 }
-            } else if is_final {
-                // 最终片段先作为候选保留，避免把同一 utterance 的累计文本
-                // 在多个 is_final 消息中重复提交给翻译管道。
             } else if text != state.partial {
                 state.partial = text.to_string();
                 let _ = events.send(AsrEvent::Partial {
@@ -1841,14 +1855,7 @@ fn handle_deepgram_event(
             false
         }
         Some("UtteranceEnd") => {
-            let final_text = std::mem::take(&mut state.candidate);
             state.partial.clear();
-            if !final_text.is_empty() {
-                let _ = events.send(AsrEvent::Final {
-                    text: final_text,
-                    lang: None,
-                });
-            }
             false
         }
         Some("Error") | Some("error") => {
@@ -1860,6 +1867,126 @@ fn handle_deepgram_event(
         }
         _ => false,
     }
+}
+
+/// 构造 Deepgram final 片段的去重标识。
+///
+/// # 参数
+/// - `value`：Deepgram Results 事件。
+/// - `text`：该事件携带的最终文本。
+///
+/// # 返回值
+/// 服务端提供完整时间片时返回毫秒级起点、终点和文本；否则返回 `None`。
+fn deepgram_final_signature(value: &serde_json::Value, text: &str) -> Option<(i64, i64, String)> {
+    let start = value["start"].as_f64()?;
+    let duration = value["duration"].as_f64()?;
+    Some((
+        (start * 1_000.0).round() as i64,
+        ((start + duration) * 1_000.0).round() as i64,
+        text.to_string(),
+    ))
+}
+
+/// 从 Deepgram 词级时间戳计算自然停顿边界。
+///
+/// Deepgram 的 `words` 按识别顺序给出词文本与起止时间。这里只在词文本能够
+/// 从当前游标开始可靠映射到 transcript 时计算边界；任一字段不匹配都返回空
+/// 数组，让上层继续使用标点和长度规则切分，避免产生错位的字幕断点。
+///
+/// # 参数
+/// - `value`：Deepgram Results 事件。
+/// - `text`：当前 final 的识别文本，已去除首尾空白。
+///
+/// # 返回值
+/// 按 Unicode 字符偏移表示、升序且去重的停顿边界。
+///
+/// @author zhenghq
+fn deepgram_pause_boundaries(value: &serde_json::Value, text: &str) -> Vec<usize> {
+    let Some(words) = value["channel"]["alternatives"][0]["words"].as_array() else {
+        return Vec::new();
+    };
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut cursor = 0;
+    let mut mapped = Vec::with_capacity(words.len());
+    for word in words {
+        let Some(word_text) = word["punctuated_word"]
+            .as_str()
+            .filter(|candidate| !candidate.trim().is_empty())
+            .or_else(|| {
+                word["word"]
+                    .as_str()
+                    .filter(|candidate| !candidate.trim().is_empty())
+            })
+        else {
+            return Vec::new();
+        };
+        let word_characters = word_text.trim().chars().collect::<Vec<_>>();
+        let Some(start) = find_deepgram_word(&characters, cursor, &word_characters) else {
+            return Vec::new();
+        };
+        let end = start + word_characters.len();
+        mapped.push((start, word["start"].as_f64(), word["end"].as_f64()));
+        cursor = end;
+    }
+
+    let mut boundaries = Vec::new();
+    for pair in mapped.windows(2) {
+        let (next_start, next_start_seconds, _) = pair[1];
+        let (_, _, previous_end_seconds) = pair[0];
+        if let (Some(previous_end), Some(next_start_time)) =
+            (previous_end_seconds, next_start_seconds)
+        {
+            if next_start_time - previous_end >= DEEPGRAM_PAUSE_THRESHOLD_SECONDS {
+                boundaries.push(next_start);
+            }
+        }
+    }
+    boundaries.retain(|boundary| *boundary > 0 && *boundary < characters.len());
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries
+}
+
+/// 从指定字符游标开始查找 Deepgram 词文本。
+///
+/// 查找前只允许跳过词间空白，不跨过其他未映射字符；这样词表与 transcript
+/// 出现任何结构差异时会保守放弃停顿切分，而不是把边界落到错误位置。
+///
+/// # 参数
+/// - `characters`：完整 transcript 的 Unicode 字符数组。
+/// - `from`：本次查找的起始字符偏移。
+/// - `word`：待匹配的词字符数组。
+///
+/// # 返回值
+/// 匹配起点；无法可靠匹配时返回 `None`。
+///
+/// @author zhenghq
+fn find_deepgram_word(characters: &[char], from: usize, word: &[char]) -> Option<usize> {
+    if word.is_empty() || from >= characters.len() {
+        return None;
+    }
+    let mut start = from;
+    while start < characters.len() && characters[start].is_whitespace() {
+        start += 1;
+    }
+    let end = start.checked_add(word.len())?;
+    if end > characters.len() {
+        return None;
+    }
+    characters[start..end]
+        .iter()
+        .zip(word)
+        .all(|(actual, expected)| {
+            actual == expected
+                || (actual.is_ascii()
+                    && expected.is_ascii()
+                    && actual.eq_ignore_ascii_case(expected))
+        })
+        .then_some(start)
 }
 
 /// 根据 Deepgram 错误事件中的 code/type 字段做保守分类。
@@ -1909,6 +2036,7 @@ fn handle_websocket_event(value: &serde_json::Value, events: &broadcast::Sender<
                 let _ = events.send(AsrEvent::Final {
                     text: text.to_string(),
                     lang: None,
+                    pause_boundaries: Vec::new(),
                 });
             }
             false
@@ -1976,6 +2104,7 @@ fn handle_dashscope_event(
                     AsrEvent::Final {
                         text: text.to_string(),
                         lang: lang.map(str::to_string),
+                        pause_boundaries: Vec::new(),
                     }
                 } else {
                     AsrEvent::Partial {
@@ -2104,6 +2233,7 @@ fn handle_openai_event(
                 let _ = events.send(AsrEvent::Final {
                     text,
                     lang: lang.map(str::to_string),
+                    pause_boundaries: Vec::new(),
                 });
             }
             OpenAiEventAction::Continue
@@ -2363,6 +2493,7 @@ mod tests {
         assert!(url.contains("smart_format=true"));
         assert!(url.contains("utterance_end_ms=1000"));
         assert!(url.contains("vad_events=true"));
+        assert!(url.contains("words=true"));
         assert!(url.contains("language=zh-CN"));
         assert!(!url.contains("language=auto"));
     }
@@ -2475,7 +2606,8 @@ mod tests {
             rx.try_recv().unwrap(),
             AsrEvent::Final {
                 text: "你好世界".into(),
-                lang: None
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
 
@@ -2706,7 +2838,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "你好".into(),
-                lang: Some("zh".into())
+                lang: Some("zh".into()),
+                pause_boundaries: Vec::new()
             }
         );
     }
@@ -2780,7 +2913,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "local".into(),
-                lang: None
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
     }
@@ -2846,7 +2980,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "本地识别结果".into(),
-                lang: Some("zh".into())
+                lang: Some("zh".into()),
+                pause_boundaries: Vec::new()
             }
         );
     }
@@ -2911,67 +3046,66 @@ mod tests {
     }
 
     #[test]
-    fn is_final_is_not_committed_until_speech_final() {
+    fn is_final_commits_immediately_without_waiting_for_speech_final() {
         let (tx, mut rx) = broadcast::channel(4);
         let mut state = DeepgramTranscriptState::default();
         let is_final = serde_json::json!({
             "type": "Results",
             "is_final": true,
             "speech_final": false,
+            "start": 0.0,
+            "duration": 1.2,
             "channel": { "alternatives": [{ "transcript": "hello world" }] }
         });
         assert!(!handle_deepgram_event(&is_final, &mut state, &tx));
-        assert!(rx.try_recv().is_err());
-
-        let speech_final = serde_json::json!({
-            "type": "Results",
-            "is_final": true,
-            "speech_final": true,
-            "channel": { "alternatives": [{ "transcript": "hello world" }] }
-        });
-        assert!(!handle_deepgram_event(&speech_final, &mut state, &tx));
         assert_eq!(
             rx.try_recv().unwrap(),
             AsrEvent::Final {
                 text: "hello world".into(),
-                lang: None
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
     }
 
     #[test]
-    fn utterance_end_commits_candidate_once() {
+    fn utterance_end_does_not_duplicate_an_already_committed_final() {
         let (tx, mut rx) = broadcast::channel(4);
         let mut state = DeepgramTranscriptState::default();
         let is_final = serde_json::json!({
             "type": "Results",
             "is_final": true,
             "speech_final": false,
+            "start": 0.0,
+            "duration": 1.2,
             "channel": { "alternatives": [{ "transcript": "hello world" }] }
         });
         handle_deepgram_event(&is_final, &mut state, &tx);
-        let end = serde_json::json!({ "type": "UtteranceEnd" });
-        handle_deepgram_event(&end, &mut state, &tx);
         assert_eq!(
             rx.try_recv().unwrap(),
             AsrEvent::Final {
                 text: "hello world".into(),
-                lang: None
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
+        let end = serde_json::json!({ "type": "UtteranceEnd" });
+        handle_deepgram_event(&end, &mut state, &tx);
         handle_deepgram_event(&end, &mut state, &tx);
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn cumulative_transcripts_are_not_duplicated_as_finals() {
+    fn successive_final_segments_are_both_committed() {
         let (tx, mut rx) = broadcast::channel(4);
         let mut state = DeepgramTranscriptState::default();
-        for (text, speech_final) in [("hello", false), ("hello world", true)] {
+        for (text, start, speech_final) in [("hello", 0.0, false), ("world", 1.0, true)] {
             let value = serde_json::json!({
                 "type": "Results",
                 "is_final": true,
                 "speech_final": speech_final,
+                "start": start,
+                "duration": 1.0,
                 "channel": { "alternatives": [{ "transcript": text }] }
             });
             handle_deepgram_event(&value, &mut state, &tx);
@@ -2979,8 +3113,42 @@ mod tests {
         assert_eq!(
             rx.try_recv().unwrap(),
             AsrEvent::Final {
-                text: "hello world".into(),
-                lang: None
+                text: "hello".into(),
+                lang: None,
+                pause_boundaries: Vec::new()
+            }
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AsrEvent::Final {
+                text: "world".into(),
+                lang: None,
+                pause_boundaries: Vec::new()
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn duplicate_final_event_for_same_segment_is_ignored() {
+        let (tx, mut rx) = broadcast::channel(4);
+        let mut state = DeepgramTranscriptState::default();
+        let value = serde_json::json!({
+            "type": "Results",
+            "is_final": true,
+            "speech_final": true,
+            "start": 2.0,
+            "duration": 1.0,
+            "channel": { "alternatives": [{ "transcript": "same segment" }] }
+        });
+        handle_deepgram_event(&value, &mut state, &tx);
+        handle_deepgram_event(&value, &mut state, &tx);
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AsrEvent::Final {
+                text: "same segment".into(),
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
         assert!(rx.try_recv().is_err());
@@ -3033,6 +3201,50 @@ mod tests {
                 lang: Some("zh-CN".into())
             }
         );
+    }
+
+    #[test]
+    fn deepgram_words_map_pause_boundaries_to_unicode_offsets() {
+        let value = serde_json::json!({
+            "type": "Results",
+            "is_final": true,
+            "start": 0.0,
+            "duration": 3.0,
+            "channel": {
+                "alternatives": [{
+                    "transcript": "你好，世界。今天天气很好",
+                    "words": [
+                        { "punctuated_word": "你好，", "start": 0.0, "end": 0.5 },
+                        { "punctuated_word": "世界。", "start": 0.5, "end": 1.0 },
+                        { "punctuated_word": "今天", "start": 1.5, "end": 1.8 },
+                        { "punctuated_word": "天气", "start": 1.8, "end": 2.1 },
+                        { "punctuated_word": "很好", "start": 2.1, "end": 2.5 }
+                    ]
+                }]
+            }
+        });
+
+        assert_eq!(
+            deepgram_pause_boundaries(&value, "你好，世界。今天天气很好"),
+            vec![6]
+        );
+    }
+
+    #[test]
+    fn deepgram_pause_boundaries_are_empty_when_word_text_cannot_be_mapped() {
+        let value = serde_json::json!({
+            "channel": {
+                "alternatives": [{
+                    "transcript": "实际转写文本",
+                    "words": [
+                        { "punctuated_word": "不匹配", "start": 0.0, "end": 0.5 },
+                        { "punctuated_word": "文本", "start": 1.0, "end": 1.5 }
+                    ]
+                }]
+            }
+        });
+
+        assert!(deepgram_pause_boundaries(&value, "实际转写文本").is_empty());
     }
 
     #[tokio::test]
@@ -3182,7 +3394,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "你好世界".into(),
-                lang: None
+                lang: None,
+                pause_boundaries: Vec::new()
             }
         );
     }
@@ -3296,7 +3509,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "你好世界".into(),
-                lang: Some("zh-CN".into())
+                lang: Some("zh-CN".into()),
+                pause_boundaries: Vec::new()
             }
         );
 
@@ -3417,7 +3631,8 @@ mod tests {
             received.recv().await.unwrap(),
             AsrEvent::Final {
                 text: "你好世界".into(),
-                lang: Some("zh-CN".into())
+                lang: Some("zh-CN".into()),
+                pause_boundaries: Vec::new()
             }
         );
         assert!(!transcripts.contains_key("item-1"));

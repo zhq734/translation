@@ -1039,6 +1039,12 @@ export interface Settings {
   realtimeSubtitleOpenAIRealtimeModel: string
   /** 是否已安全保存 OpenAI Realtime API Key。 */
   realtimeSubtitleOpenAIRealtimeApiKeyConfigured: boolean
+  /** Gemini Live WebSocket 地址；原生翻译渠道使用。 */
+  realtimeSubtitleGeminiUrl: string
+  /** Gemini Live 模型名称；原生翻译渠道使用。 */
+  realtimeSubtitleGeminiModel: string
+  /** 是否已安全保存 Gemini API Key。 */
+  realtimeSubtitleGeminiApiKeyConfigured: boolean
   /** 实时字幕悬浮窗显示模式。 */
   realtimeSubtitleDisplayMode: RealtimeSubtitleDisplayMode
   /** 实时字幕字号（像素）。 */
@@ -1416,6 +1422,16 @@ export interface OpenAIRealtimeConfigPatch {
   /** 实时转写模型名称。 */
   model?: string
   /** 新 OpenAI API Key；空字符串表示保留旧值。 */
+  apiKey?: string
+}
+
+/** Gemini Live 原生翻译配置补丁；空 API Key 表示保留旧值。 */
+export interface GeminiLiveConfigPatch {
+  /** Gemini Live WebSocket 地址。 */
+  url?: string
+  /** Gemini Live 模型名称。 */
+  model?: string
+  /** 新 Gemini API Key；空字符串表示保留旧值。 */
   apiKey?: string
 }
 
@@ -1872,6 +1888,10 @@ export interface Api {
   setOpenAIRealtimeConfig(patch: OpenAIRealtimeConfigPatch): Promise<Settings>
   /** 显式清除已保存的 OpenAI Realtime API Key。 */
   clearOpenAIRealtimeApiKey(): Promise<Settings>
+  /** 保存 Gemini Live 原生翻译配置和可选新 API Key。 */
+  setGeminiLiveConfig(patch: GeminiLiveConfigPatch): Promise<Settings>
+  /** 显式清除已保存的 Gemini API Key。 */
+  clearGeminiLiveApiKey(): Promise<Settings>
   /** 保存 iTranslate 可选翻译通道配置和可选新 API Key。 */
   setITranslateConfig(patch: ITranslateConfigPatch): Promise<Settings>
   /** 显式清除已保存的 iTranslate API Key。 */

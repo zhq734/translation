@@ -689,7 +689,7 @@
             <div class="row">
               <label for="microsoft-enabled" data-i18n="settings.microsoft.enabled">Enable channel</label>
               <label class="checkbox-control" for="microsoft-enabled">
-                <input id="microsoft-enabled" type="checkbox" />
+                <input id="microsoft-enabled" type="checkbox" checked />
                 <span data-i18n="settings.microsoft.enabledLabel">Use Microsoft Translator before free channels such as DeepLX</span>
               </label>
             </div>
@@ -768,6 +768,7 @@
                 <option value="alibaba" data-i18n="settings.realtimeSubtitle.asrProvider.alibaba">Alibaba Cloud Model Studio (DashScope)</option>
                 <option value="custom-dashscope" data-i18n="settings.realtimeSubtitle.asrProvider.customDashscope">Custom DashScope ASR</option>
                 <option value="custom-openai" data-i18n="settings.realtimeSubtitle.asrProvider.customOpenai">Custom OpenAI Realtime ASR</option>
+                <option value="gemini" data-i18n="settings.realtimeSubtitle.asrProvider.gemini">Google Gemini Live</option>
               </select>
             </div>
             <div id="realtime-subtitle-deepgram-settings">
@@ -907,6 +908,42 @@
               </div>
               <p id="realtime-subtitle-openai-realtime-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
               <p class="field-hint" data-i18n="settings.realtimeSubtitle.openAIRealtimeHint">Uses the OpenAI Realtime transcription session with mono PCM16 audio. The API Key is stored in secure system storage and is never shown again.</p>
+            </div>
+            <div id="realtime-subtitle-gemini-settings" hidden>
+              <div class="row">
+                <label for="realtime-subtitle-gemini-url" data-i18n="settings.realtimeSubtitle.geminiUrl">Gemini Live WebSocket URL</label>
+                <input
+                  id="realtime-subtitle-gemini-url"
+                  type="url"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.geminiUrlPlaceholder"
+                  placeholder="wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-gemini-model" data-i18n="settings.realtimeSubtitle.geminiModel">Gemini Live model</label>
+                <input
+                  id="realtime-subtitle-gemini-model"
+                  type="text"
+                  data-i18n-attr="placeholder:settings.realtimeSubtitle.geminiModelPlaceholder"
+                  placeholder="gemini-3.5-live-translate-preview"
+                />
+              </div>
+              <div class="row">
+                <label for="realtime-subtitle-gemini-api-key" data-i18n="settings.realtimeSubtitle.geminiApiKey">Gemini API Key</label>
+                <div class="inline-control">
+                  <input
+                    id="realtime-subtitle-gemini-api-key"
+                    type="password"
+                    autocomplete="new-password"
+                    data-i18n-attr="placeholder:settings.realtimeSubtitle.geminiApiKeyPlaceholder"
+                    placeholder="Enter a new API Key"
+                  />
+                  <button id="realtime-subtitle-gemini-save" class="btn primary" type="button" data-i18n="settings.realtimeSubtitle.geminiSave">Save</button>
+                  <button id="realtime-subtitle-gemini-clear" class="btn" type="button" data-i18n="settings.realtimeSubtitle.geminiClear">Clear</button>
+                </div>
+              </div>
+              <p id="realtime-subtitle-gemini-status" class="field-hint realtime-subtitle-credential-status" role="status" aria-live="polite" data-i18n="settings.realtimeSubtitle.credentials.notConfigured">Not configured</p>
+              <p class="field-hint" data-i18n="settings.realtimeSubtitle.geminiHint">Uses one Gemini Live session to receive source transcription and native translation. The API Key is stored in secure system storage and is never shown again.</p>
             </div>
             <div class="row">
               <label for="realtime-subtitle-audio-source" data-i18n="settings.realtimeSubtitle.audioSource">Audio source</label>

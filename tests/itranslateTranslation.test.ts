@@ -36,6 +36,7 @@ test('iTranslate 应按官方协议发送源/目标语言与文本', async () =>
   const settings = normalizeSettings({
     schemaVersion: 26,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     itranslateEnabled: true,
     itranslateApiKeyConfigured: true,
     sourceLang: 'EN',
@@ -76,6 +77,7 @@ test('iTranslate 未启用或无 Key 时不应加入翻译通道', async () => {
   })
   const disabled = normalizeSettings({
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     itranslateEnabled: false,
     itranslateApiKeyConfigured: true,
     sourceLang: 'EN',
@@ -117,6 +119,7 @@ test('iTranslate 失败后应自动降级到现有通道', async () => {
   const settings = normalizeSettings({
     schemaVersion: 26,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     itranslateEnabled: true,
     itranslateApiKeyConfigured: true,
     sourceLang: 'EN',
@@ -159,6 +162,7 @@ test('iTranslate 不支持的语言对应直接跳过', async () => {
   const settings = normalizeSettings({
     schemaVersion: 26,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     itranslateEnabled: true,
     itranslateApiKeyConfigured: true,
     sourceLang: 'auto',
@@ -199,6 +203,7 @@ test('iTranslate 运行时重置应清除缓存和熔断状态', async () => {
   const settings = normalizeSettings({
     schemaVersion: 26,
     biliIndexTranslateEnabled: false,
+    microsoftEnabled: false,
     itranslateEnabled: true,
     itranslateApiKeyConfigured: true,
     sourceLang: 'EN',

@@ -3,6 +3,7 @@ import type { DingTalkCredentials } from './dingtalkConfig'
 import type { TranslateOutput } from './translate'
 import {
   createRealtimeSubtitleViewModel,
+  getVisiblePartialSourceText,
   type RealtimeSubtitleAudioSource,
   type RealtimeSubtitleAsrProvider,
   type RealtimeSubtitleSegment,
@@ -23,7 +24,7 @@ import {
 } from '../shared/subtitleReconnect'
 
 /** final 译文出现后的最短展示时长，避免下一句 partial 立刻覆盖导致一闪而过。 */
-const DEFAULT_TRANSLATION_DISPLAY_HOLD_MS = 1500
+const DEFAULT_TRANSLATION_DISPLAY_HOLD_MS = 700
 
 /** 控制器使用的 sidecar 宿主最小接口。 */
 export interface RealtimeSubtitleHost {
@@ -43,6 +44,10 @@ export interface RealtimeSubtitleHost {
     openAIRealtimeUrl?: string
     openAIRealtimeModel?: string
     openAIRealtimeApiKey?: string | null
+    geminiUrl?: string
+    geminiModel?: string
+    geminiApiKey?: string | null
+    targetLang?: string
   }): number
   /** 暂停识别。 */
   pause(): void
@@ -82,6 +87,8 @@ export interface RealtimeSubtitleControllerOptions {
   getDashScopeApiKey?: () => string | null
   /** 读取 OpenAI Realtime API Key；仅在实时字幕使用 OpenAI ASR 时注入。 */
   getOpenAIRealtimeApiKey?: () => string | null
+  /** 读取 Gemini API Key；仅在实时字幕使用 Gemini Live 时注入。 */
+  getGeminiApiKey?: () => string | null
   /** 读取 iTranslate API Key；仅启用且已配置时返回。 */
   getITranslateApiKey?: () => string | null
   /** 读取实时识别网络中断的本地化提示。 */
@@ -97,21 +104,27 @@ export interface RealtimeSubtitleControllerOptions {
     options: { onDelta: (delta: string) => void; signal?: AbortSignal },
     iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
-  /** 稳定 partial 的预览翻译防抖配置，final 到达后复用或校正该结果。 */
+  /** partial 可见 cue 稳定多久后发起预翻译，默认 250ms。 */
   previewDebounceMs?: number
-  /** 两次预览翻译请求之间的最短间隔，默认 1500ms；设为 0 可关闭。 */
+  /** partial 连续变化时最多等待多久就翻译最新可见 cue，默认 1000ms。 */
+  previewMaxWaitMs?: number
+  /** 两次 partial 预览翻译请求之间的最短间隔，默认 1500ms。 */
   previewMinIntervalMs?: number
-  /** 预览翻译遇到限流后的冷却时长，默认 30000ms；设为 0 可关闭。 */
+  /** partial 预览翻译遇到限流后的冷却时长，默认 30000ms。 */
   previewRateLimitCooldownMs?: number
   /** final 翻译最大尝试次数（含首次），默认 3 次。 */
   finalMaxAttempts?: number
   /** final 翻译首次重试等待时间，默认 600ms，后续按指数退避。 */
   finalRetryBaseDelayMs?: number
-  /** final 翻译从入队到结束的总时限，默认 15000ms。 */
+  /** final 翻译从入队到结束的总时限，默认 45000ms。 */
   finalRequestDeadlineMs?: number
-  /** 当前时间读取函数，便于测试控制预览请求节流。 */
+  /** 同时执行的 final 翻译请求上限，默认 2。 */
+  maxConcurrentFinalRequests?: number
+  /** final 翻译等待队列上限，默认 12；需容纳一条长 final 拆出的多条 cue。 */
+  maxQueuedFinalRequests?: number
+  /** 当前时间读取函数，便于测试控制翻译请求时序。 */
   nowFn?: () => number
-  /** final 译文出现后的最短展示时长，默认 1500ms；设为 0 可关闭。 */
+  /** final 译文出现后的最短展示时长，默认 700ms；设为 0 可关闭。 */
   translationDisplayHoldMs?: number
   /** 广播快照。 */
   onSnapshot: (snapshot: RealtimeSubtitleSnapshot) => void
@@ -160,6 +173,8 @@ export class RealtimeSubtitleController {
   private readonly displayedTranslationSegmentIds = new Set<string>()
   /** 最近一次真正推送给字幕窗的快照，用于展示锁期间保持界面内容不变。 */
   private lastPublishedSnapshot: RealtimeSubtitleSnapshot | null = null
+  /** 各 partial 段落最近一次提交翻译的可见 cue，用于清理跨 cue 的过期预览译文。 */
+  private readonly previewSourceBySegmentId = new Map<string, string>()
 
   /**
    * 创建实时字幕控制器。
@@ -191,15 +206,19 @@ export class RealtimeSubtitleController {
       getITranslateApiKey: options.getITranslateApiKey,
       translateStream: options.translateStream,
       previewDebounceMs: options.previewDebounceMs,
+      previewMaxWaitMs: options.previewMaxWaitMs,
       previewMinIntervalMs: options.previewMinIntervalMs,
       previewRateLimitCooldownMs: options.previewRateLimitCooldownMs,
       finalMaxAttempts: options.finalMaxAttempts,
       finalRetryBaseDelayMs: options.finalRetryBaseDelayMs,
       finalRequestDeadlineMs: options.finalRequestDeadlineMs,
+      maxConcurrentFinalRequests: options.maxConcurrentFinalRequests,
+      maxQueuedFinalRequests: options.maxQueuedFinalRequests,
       nowFn: options.nowFn,
       setTimeoutFn: this.setTimeoutFn,
       clearTimeoutFn: this.clearTimeoutFn,
-      onDelta: (segmentId, delta, phase) => this.applyDelta(segmentId, delta, phase),
+      onDelta: (segmentId, delta, phase, sourceText) =>
+        this.applyDelta(segmentId, delta, phase, sourceText),
       onReset: (segmentId, phase) => this.applyReset(segmentId, phase),
       onComplete: (segmentId) => this.applyComplete(segmentId),
       onError: (segmentId, error) => this.applyTranslationError(segmentId, error)
@@ -374,7 +393,11 @@ export class RealtimeSubtitleController {
       settings.realtimeSubtitleOpenAIRealtimeUrl !==
         this.latestSettings.realtimeSubtitleOpenAIRealtimeUrl ||
       settings.realtimeSubtitleOpenAIRealtimeModel !==
-        this.latestSettings.realtimeSubtitleOpenAIRealtimeModel
+        this.latestSettings.realtimeSubtitleOpenAIRealtimeModel ||
+      settings.realtimeSubtitleGeminiUrl !==
+        this.latestSettings.realtimeSubtitleGeminiUrl ||
+      settings.realtimeSubtitleGeminiModel !==
+        this.latestSettings.realtimeSubtitleGeminiModel
   }
 
   /**
@@ -437,21 +460,33 @@ export class RealtimeSubtitleController {
     }
     if (event.type === 'partial') {
       this.scheduleHideTimer(generation)
+      this.publishDisplayUpdate()
+      // 只翻译显示层当前可见的 cue，而不是宿主内部持续累计的整段草稿；
+      // 稳定防抖与追赶逻辑由翻译协调器负责，final 到达后会复用或校正结果。
       const snapshot = this.host.snapshot()
       const segment = snapshot.segments.at(-1)
-      this.publishDisplayUpdate()
-      // partial 已由宿主覆盖到当前段落，只有仍是最新编辑中的同文段落才启动
-      // 预览翻译，避免迟到事件给历史段落重新发起请求。
-      if (!segment || segment.status !== 'partial' || segment.sourceText !== event.text) return
-      this.translation.preview(event.text, event.lang, generation, segment.id)
+      if (!segment || segment.status !== 'partial' || event.translatedText?.trim()) return
+      const visibleText = getVisiblePartialSourceText(segment.sourceText)
+      if (!visibleText) return
+      const previousText = this.previewSourceBySegmentId.get(segment.id)
+      if (previousText !== undefined && previousText !== visibleText) {
+        // 进入下一条 cue 时旧译文已经不属于当前原文，必须先清空再提交新请求。
+        this.host.updateTranslation(segment.id, '', 'partial')
+      }
+      this.previewSourceBySegmentId.set(segment.id, visibleText)
+      this.translation.preview(visibleText, event.lang, generation, segment.id)
       return
     }
     if (event.type === 'final') {
       this.scheduleHideTimer(generation)
       const snapshot = this.host.snapshot()
       const segment = snapshot.segments.at(-1)
-      this.publishDisplayUpdate()
+      const hasNativeTranslation = Boolean(event.translatedText?.trim())
+      if (hasNativeTranslation) this.publishTranslationUpdate(segment?.id ?? '')
+      else this.publishDisplayUpdate()
       if (!segment || segment.sourceText !== event.text) return
+      // Gemini 等原生翻译渠道的 final 已带有最终译文，直接进入展示锁队列。
+      if (hasNativeTranslation) return
       this.translation.submit(event.text, event.lang, generation, segment.id)
       return
     }
@@ -603,6 +638,16 @@ export class RealtimeSubtitleController {
         openAIRealtimeApiKey: this.options.getOpenAIRealtimeApiKey?.() ?? null
       }
     }
+    if (base.asr === 'gemini') {
+      const targetLang = this.latestSettings.targetLang.trim()
+      return {
+        ...base,
+        geminiUrl: this.latestSettings.realtimeSubtitleGeminiUrl,
+        geminiModel: this.latestSettings.realtimeSubtitleGeminiModel,
+        geminiApiKey: this.options.getGeminiApiKey?.() ?? null,
+        ...(targetLang && targetLang !== 'auto' ? { targetLang } : {})
+      }
+    }
     return {
       ...base,
       deepgramApiKey: this.options.getDeepgramApiKey?.() ?? null
@@ -649,13 +694,16 @@ export class RealtimeSubtitleController {
    * 把译文增量写入宿主段落并广播。
    * @param segmentId 段落标识。
    * @param delta 新增译文。
+   * @param phase 译文所属阶段。
+   * @param sourceText 产生该译文的原文，用于丢弃跨 cue 的迟到预览。
    * @returns 无返回值。
    * @author zhenghq
    */
   private applyDelta(
     segmentId: string,
     delta: string,
-    phase: SubtitleTranslationPhase
+    phase: SubtitleTranslationPhase,
+    sourceText: string
   ): void {
     const segments = this.host.snapshot().segments
     const segment = segments.find((candidate) => candidate.id === segmentId)
@@ -664,13 +712,21 @@ export class RealtimeSubtitleController {
       // 过期预览只能作用于仍处于编辑中的最新段落；历史段落已定稿时
       // 继续写 partial 会让下一句复用它并粘在上一句后面。
       if (segments.at(-1)?.id !== segmentId || segment.status !== 'partial') return
+      // 可见 cue 已经推进时，旧 cue 的流式结果不得追加到新 cue 的译文。
+      if (this.previewSourceBySegmentId.get(segmentId) !== sourceText) return
     }
     this.host.updateTranslation(
       segmentId,
       segment.translatedText + delta,
       phase === 'preview' ? 'partial' : 'translating'
     )
-    this.publishTranslationUpdate(segmentId)
+    if (phase === 'preview') {
+      // partial 译文是临时轨，不参与 final 的 700ms 展示锁，否则连续口播
+      // 时会被旧预览反复固定，反而增加字幕延迟。
+      this.publishDisplayUpdate()
+    } else {
+      this.publishTranslationUpdate(segmentId)
+    }
   }
 
   /**
@@ -694,7 +750,11 @@ export class RealtimeSubtitleController {
     }
     const status = phase === 'preview' && segment.status === 'partial' ? 'partial' : 'translating'
     this.host.updateTranslation(segmentId, '', status)
-    this.publishTranslationUpdate(segmentId)
+    if (phase === 'preview') {
+      this.publishDisplayUpdate()
+    } else {
+      this.publishTranslationUpdate(segmentId)
+    }
   }
 
   /**
@@ -763,9 +823,16 @@ export class RealtimeSubtitleController {
       return
     }
 
-    // 关闭展示锁时保持原有实时行为，只展示最新段落。
+    // 关闭展示锁时不滚动历史译文，但必须等前面 final 完成后再展示最新译文。
     if (this.translationDisplayHoldMs <= 0) {
-      if (snapshot.segments.at(-1)?.id !== segmentId) return
+      if (this.hasEarlierFinalAwaitingTranslation(snapshot, segmentId)) {
+        this.enqueueTranslationDisplay(segmentId)
+        return
+      }
+      const latest = snapshot.segments.at(-1)
+      if (!latest?.translatedText.trim()) return
+      this.pendingTranslationDisplaySegmentIds.length = 0
+      this.pendingTranslationDisplaySegmentIdSet.clear()
       this.translationDisplayUpdatePending = false
       this.publish()
       return
@@ -779,6 +846,13 @@ export class RealtimeSubtitleController {
       ) {
         this.publish()
       }
+      return
+    }
+
+    // 并发请求可能乱序完成；只要前面的 final 还在翻译，就只记录当前译文，
+    // 不提前替换屏幕内容，待前序段落完成后按原文顺序继续滚动。
+    if (this.hasEarlierFinalAwaitingTranslation(snapshot, segmentId)) {
+      this.enqueueTranslationDisplay(segmentId)
       return
     }
 
@@ -842,20 +916,52 @@ export class RealtimeSubtitleController {
   }
 
   /**
+   * 判断指定段落之前是否仍有 final 正在等待译文。
+   * @param snapshot 当前宿主快照。
+   * @param segmentId 待检查的段落标识。
+   * @returns 存在更早的待翻译 final 时返回 true。
+   * @author zhenghq
+   */
+  private hasEarlierFinalAwaitingTranslation(
+    snapshot: RealtimeSubtitleSnapshot,
+    segmentId: string
+  ): boolean {
+    const index = snapshot.segments.findIndex((segment) => segment.id === segmentId)
+    if (index <= 0) return false
+    return snapshot.segments
+      .slice(0, index)
+      .some((segment) => segment.status === 'translating')
+  }
+
+  /**
    * 在没有展示锁时依次展示排队译文，队列清空后补发最新实时字幕。
    * @returns 无返回值。
    * @author zhenghq
    */
   private drainTranslationDisplayQueue(): void {
     if (this.disposed || this.translationDisplayHoldTimer !== null) return
+    const snapshot = this.host.snapshot()
+    const segmentOrder = new Map(
+      snapshot.segments.map((segment, index) => [segment.id, index] as const)
+    )
+    // 翻译请求可以并发完成，但上屏必须遵循原文段落顺序。
+    this.pendingTranslationDisplaySegmentIds.sort(
+      (left, right) =>
+        (segmentOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (segmentOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+    )
     while (this.pendingTranslationDisplaySegmentIds.length > 0) {
       const segmentId = this.pendingTranslationDisplaySegmentIds.shift()
       if (!segmentId) continue
       this.pendingTranslationDisplaySegmentIdSet.delete(segmentId)
-      const snapshot = this.host.snapshot()
       const segment = snapshot.segments.find((candidate) => candidate.id === segmentId)
       // 自动清屏或段落上限可能已移除旧段落，跳过失效标识继续处理后续译文。
       if (!segment || !segment.translatedText.trim()) continue
+      // 队列中更晚的译文即使先完成，也不能越过仍在翻译的前序段落。
+      if (this.hasEarlierFinalAwaitingTranslation(snapshot, segmentId)) {
+        this.enqueueTranslationDisplay(segmentId)
+        return
+      }
       this.scheduleTranslationDisplayHold(segmentId)
       if (snapshot.segments.at(-1)?.id === segmentId) {
         this.publish()
@@ -915,6 +1021,7 @@ export class RealtimeSubtitleController {
     this.pendingTranslationDisplaySegmentIds.length = 0
     this.pendingTranslationDisplaySegmentIdSet.clear()
     this.displayedTranslationSegmentIds.clear()
+    this.previewSourceBySegmentId.clear()
   }
 
   /**

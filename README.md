@@ -452,7 +452,7 @@ Settings are saved automatically and take effect immediately.
 | Proxy mode | System proxy, direct connection, or custom proxy | System proxy |
 | Self-hosted DeepLX | DeepLX `/translate` endpoint; empty means disabled | Not configured |
 | DingTalk translation | Enterprise translation provider | Disabled |
-| Microsoft Translator | Key-free Bing web translator channel | Disabled |
+| Microsoft Translator | Key-free Bing web translator channel | Enabled |
 | Quick OCR hotkey | Release-to-translate OCR selection | `Alt+S` |
 | Screenshot hotkey | Editable screenshot OCR workspace | `Alt+O` |
 | Web translation | Built-in reader and full-page translation entry | Enabled |

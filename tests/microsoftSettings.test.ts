@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import {
+  DEFAULT_SETTINGS,
+  SETTINGS_SCHEMA_VERSION,
+  normalizeSettings
+} from '../src/shared/settingsDefaults.ts'
 
-test('schema v6 设置升级后应默认关闭免订阅微软翻译并保留既有设置', () => {
+test('schema v6 设置升级后应默认启用免订阅微软翻译并保留既有设置', () => {
   const settings = normalizeSettings({
     schemaVersion: 6,
     targetLang: 'DE',
@@ -19,7 +23,7 @@ test('schema v6 设置升级后应默认关闭免订阅微软翻译并保留既�
   })
 
   assert.equal(settings.schemaVersion, SETTINGS_SCHEMA_VERSION)
-  assert.equal(settings.microsoftEnabled, false)
+  assert.equal(settings.microsoftEnabled, true)
   assert.equal('microsoftRegion' in settings, false)
   assert.equal('microsoftSubscriptionKeyConfigured' in settings, false)
   assert.equal(settings.dingTalkEnabled, true)
@@ -39,7 +43,7 @@ test('微软启用状态应严格按布尔值规范化且公开设置不再包�
     microsoftSubscriptionKey: string
   })
 
-  assert.equal(settings.microsoftEnabled, false)
+  assert.equal(settings.microsoftEnabled, true)
   assert.equal('microsoftRegion' in settings, false)
   assert.equal('microsoftSubscriptionKeyConfigured' in settings, false)
   assert.equal('microsoftSubscriptionKey' in settings, false)
@@ -53,4 +57,10 @@ test('微软启用状态为明确布尔值时应保留', () => {
   })
 
   assert.equal(settings.microsoftEnabled, true)
+})
+
+test('微软翻译默认启用但用户显式关闭必须保留', () => {
+  assert.equal(DEFAULT_SETTINGS.microsoftEnabled, true)
+  assert.equal(normalizeSettings({}).microsoftEnabled, true)
+  assert.equal(normalizeSettings({ microsoftEnabled: false }).microsoftEnabled, false)
 })

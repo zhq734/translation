@@ -29,6 +29,8 @@ class FakeWindow extends EventEmitter {
   bounds = { x: 0, y: 0, width: 800, height: 180 }
   /** 当前窗口屏幕坐标。 */
   position = { x: 0, y: 0 }
+  /** 模拟 Electron 原生移动接口抛出的错误。 */
+  positionError: Error | null = null
 
   /** 模拟窗口已就绪并触发事件。 */
   ready(): void {
@@ -81,6 +83,7 @@ class FakeWindow extends EventEmitter {
 
   /** 记录窗口移动后的屏幕坐标。 */
   setPosition(x: number, y: number): void {
+    if (this.positionError) throw this.positionError
     this.position = { x, y }
   }
 
@@ -472,6 +475,129 @@ test('字幕窗拖动应按指针相对偏移移动窗口', () => {
     pointerOffsetY: 10
   })
   assert.deepEqual(win.position, { x: 480, y: 290 })
+})
+
+/**
+ * 校验拖拽坐标溢出为非有限值时不会调用 Electron 原生移动接口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗应忽略最终落点非有限值的拖拽请求', () => {
+  const created: FakeWindow[] = []
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  controller.moveWindow({
+    screenX: Number.MAX_VALUE,
+    screenY: Number.MAX_VALUE,
+    pointerOffsetX: -Number.MAX_VALUE,
+    pointerOffsetY: -Number.MAX_VALUE
+  })
+
+  assert.deepEqual(win.position, { x: 0, y: 0 })
+})
+
+/**
+ * 校验超出 Electron 32 位整数坐标范围的拖拽请求会被忽略。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗应忽略超出原生整数范围的拖拽坐标', () => {
+  const created: FakeWindow[] = []
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  controller.moveWindow({
+    screenX: 1e100,
+    screenY: 300,
+    pointerOffsetX: 20,
+    pointerOffsetY: 10
+  })
+
+  assert.deepEqual(win.position, { x: 0, y: 0 })
+})
+
+/**
+ * 校验 Electron 原生移动接口抛错时不会中断主进程 IPC 处理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('字幕窗应吞掉 Electron 原生移动接口抛出的参数转换错误', () => {
+  const created: FakeWindow[] = []
+  const controller = createSubtitleWindow({
+    preloadPath: '/preload.js',
+    loadPage: () => undefined,
+    getViewModel: () => ({
+      state: 'idle',
+      displayMode: 'bilingual',
+      sourceText: '',
+      translatedText: '',
+      status: 'empty',
+      audioActivity: 'idle',
+      empty: true,
+      error: ''
+    }),
+    createWindow: () => {
+      const win = new FakeWindow()
+      created.push(win)
+      return win as never
+    },
+    getDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })
+  })
+
+  controller.setVisible(true)
+  const win = created[0]
+  assert.ok(win)
+  win.positionError = new TypeError('Error processing argument at index 1, conversion failure from NaN')
+
+  assert.doesNotThrow(() => controller.moveWindow({
+    screenX: 500,
+    screenY: 300,
+    pointerOffsetX: 20,
+    pointerOffsetY: 10
+  }))
 })
 
 /**

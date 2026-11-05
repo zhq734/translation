@@ -96,6 +96,13 @@ const realtimeSubtitleOpenAIRealtimeApiKey = document.getElementById('realtime-s
 const realtimeSubtitleOpenAIRealtimeSave = document.getElementById('realtime-subtitle-openai-realtime-save') as HTMLButtonElement
 const realtimeSubtitleOpenAIRealtimeClear = document.getElementById('realtime-subtitle-openai-realtime-clear') as HTMLButtonElement
 const realtimeSubtitleOpenAIRealtimeStatus = document.getElementById('realtime-subtitle-openai-realtime-status') as HTMLElement
+const realtimeSubtitleGeminiSettings = document.getElementById('realtime-subtitle-gemini-settings') as HTMLElement
+const realtimeSubtitleGeminiUrl = document.getElementById('realtime-subtitle-gemini-url') as HTMLInputElement
+const realtimeSubtitleGeminiModel = document.getElementById('realtime-subtitle-gemini-model') as HTMLInputElement
+const realtimeSubtitleGeminiApiKey = document.getElementById('realtime-subtitle-gemini-api-key') as HTMLInputElement
+const realtimeSubtitleGeminiSave = document.getElementById('realtime-subtitle-gemini-save') as HTMLButtonElement
+const realtimeSubtitleGeminiClear = document.getElementById('realtime-subtitle-gemini-clear') as HTMLButtonElement
+const realtimeSubtitleGeminiStatus = document.getElementById('realtime-subtitle-gemini-status') as HTMLElement
 const realtimeSubtitleRecognitionLang = document.getElementById('realtime-subtitle-recognition-lang') as HTMLSelectElement
 const realtimeSubtitleDisplayMode = document.getElementById('realtime-subtitle-display-mode') as HTMLSelectElement
 const realtimeSubtitleFontSize = document.getElementById('realtime-subtitle-font-size') as HTMLInputElement
@@ -574,11 +581,13 @@ function renderRealtimeSubtitleProviderSettings(): void {
   const dashScopeSelected = realtimeSubtitleAsrProvider.value === 'alibaba'
     || realtimeSubtitleAsrProvider.value === 'custom-dashscope'
   const openAIRealtimeSelected = realtimeSubtitleAsrProvider.value === 'custom-openai'
+  const geminiSelected = realtimeSubtitleAsrProvider.value === 'gemini'
   realtimeSubtitleDeepgramSettings.hidden = !deepgramSelected
   realtimeSubtitleWhisperSettings.hidden = !whisperSelected
   realtimeSubtitleWebSocketSettings.hidden = !websocketSelected
   realtimeSubtitleDashScopeSettings.hidden = !dashScopeSelected
   realtimeSubtitleOpenAIRealtimeSettings.hidden = !openAIRealtimeSelected
+  realtimeSubtitleGeminiSettings.hidden = !geminiSelected
 }
 
 /**
@@ -698,6 +707,48 @@ async function clearRealtimeSubtitleOpenAIRealtimeConfig(): Promise<void> {
   try {
     const settings = await window.api.clearOpenAIRealtimeApiKey()
     realtimeSubtitleOpenAIRealtimeApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 保存 Gemini Live 地址、模型和可选的新 API Key。
+ * @returns 保存完成后的 Promise。
+ * @author zhenghq
+ */
+async function saveRealtimeSubtitleGeminiConfig(): Promise<void> {
+  try {
+    const settings = await window.api.setGeminiLiveConfig({
+      url: realtimeSubtitleGeminiUrl.value.trim(),
+      model: realtimeSubtitleGeminiModel.value.trim(),
+      ...(realtimeSubtitleGeminiApiKey.value.trim()
+        ? { apiKey: realtimeSubtitleGeminiApiKey.value.trim() }
+        : {})
+    })
+    realtimeSubtitleGeminiApiKey.value = ''
+    renderSettings(settings)
+    flash(t('settings.saved'))
+  } catch (error) {
+    flash(t('settings.realtimeSubtitle.saveFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
+}
+
+/**
+ * 清除已保存的 Gemini API Key，并保留服务地址与模型。
+ * @returns 清除完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearRealtimeSubtitleGeminiConfig(): Promise<void> {
+  try {
+    const settings = await window.api.clearGeminiLiveApiKey()
+    realtimeSubtitleGeminiApiKey.value = ''
     renderSettings(settings)
     flash(t('settings.saved'))
   } catch (error) {
@@ -1008,6 +1059,13 @@ function renderSettings(settings: Settings): void {
     ? t('settings.realtimeSubtitle.credentials.configured')
     : t('settings.realtimeSubtitle.credentials.notConfigured')
   realtimeSubtitleOpenAIRealtimeClear.disabled = !settings.realtimeSubtitleOpenAIRealtimeApiKeyConfigured
+  realtimeSubtitleGeminiUrl.value = settings.realtimeSubtitleGeminiUrl
+  realtimeSubtitleGeminiModel.value = settings.realtimeSubtitleGeminiModel
+  realtimeSubtitleGeminiApiKey.value = ''
+  realtimeSubtitleGeminiStatus.textContent = settings.realtimeSubtitleGeminiApiKeyConfigured
+    ? t('settings.realtimeSubtitle.credentials.configured')
+    : t('settings.realtimeSubtitle.credentials.notConfigured')
+  realtimeSubtitleGeminiClear.disabled = !settings.realtimeSubtitleGeminiApiKeyConfigured
   realtimeSubtitleRecognitionLang.value = settings.realtimeSubtitleRecognitionLang
   realtimeSubtitleDisplayMode.value = settings.realtimeSubtitleDisplayMode
   realtimeSubtitleFontSize.value = String(settings.realtimeSubtitleFontSize)
@@ -2621,6 +2679,8 @@ realtimeSubtitleDashScopeSave.addEventListener('click', () => void saveRealtimeS
 realtimeSubtitleDashScopeClear.addEventListener('click', () => void clearRealtimeSubtitleDashScopeConfig())
 realtimeSubtitleOpenAIRealtimeSave.addEventListener('click', () => void saveRealtimeSubtitleOpenAIRealtimeConfig())
 realtimeSubtitleOpenAIRealtimeClear.addEventListener('click', () => void clearRealtimeSubtitleOpenAIRealtimeConfig())
+realtimeSubtitleGeminiSave.addEventListener('click', () => void saveRealtimeSubtitleGeminiConfig())
+realtimeSubtitleGeminiClear.addEventListener('click', () => void clearRealtimeSubtitleGeminiConfig())
 realtimeSubtitleRecognitionLang.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleDisplayMode.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleFontSize.addEventListener('change', saveRealtimeSubtitleSettings)

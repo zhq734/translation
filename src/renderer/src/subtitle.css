@@ -61,6 +61,10 @@ body {
 
 .subtitle-live {
   gap: var(--space-2);
+  max-height: min(50vh, calc(var(--subtitle-font-size, 20px) * 7));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .subtitle-toolbar {

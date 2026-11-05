@@ -255,6 +255,107 @@ test('简体中文识别原文应规范为简体后再通知上层', () => {
 })
 
 /**
+ * 校验单个超长 final 会拆成多条可读字幕，并逐条通知翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('单个超长 final 应拆成多条字幕并逐条通知翻译', () => {
+  const child = createFakeChild()
+  const events: SubtitleSidecarEvent[] = []
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: (event) => events.push(event)
+  })
+  const text =
+    '淋巴结宫的成长通道还可以报考养老服务师也可以走向管理岗位取得养老服务师职业资格证书的' +
+    '可以在养老服务机构内就业也可以在相关企业单位包括老年人能力评估机构是老化改造企业' +
+    '老年教育培培训机构老年产品用品生产流通企业就业截至二零二五年底全国，例如这个，' +
+    '有时拆分的是合理的'
+
+  host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'final', text })}\n`))
+
+  const segments = host.snapshot().segments
+  const finalEvents = events.filter(
+    (event): event is Extract<SubtitleSidecarEvent, { type: 'final' }> => event.type === 'final'
+  )
+
+  assert.ok(segments.length > 1, `超长 final 应拆成多段，实际 ${segments.length} 段`)
+  assert.ok(segments.every((segment) => segment.sourceText.length <= 32))
+  assert.equal(segments.map((segment) => segment.sourceText).join(''), text)
+  assert.deepEqual(finalEvents.map((event) => event.text), segments.map((segment) => segment.sourceText))
+  assert.equal(host.snapshot().sourceText, segments.at(-1)?.sourceText)
+  host.dispose()
+})
+
+/**
+ * 校验 ASR 停顿边界优先于长度兜底，并转换为独立 final。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 应按 ASR 停顿边界优先拆分', () => {
+  const child = createFakeChild()
+  const events: SubtitleSidecarEvent[] = []
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: (event) => events.push(event)
+  })
+  const text = '甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥金木水火土风雨雷电山川湖海'
+
+  host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from(`${JSON.stringify({
+    type: 'final',
+    text,
+    pauseBoundaries: [18]
+  })}\n`))
+
+  const finalEvents = events.filter(
+    (event): event is Extract<SubtitleSidecarEvent, { type: 'final' }> => event.type === 'final'
+  )
+  assert.equal(finalEvents[0]?.text, Array.from(text).slice(0, 18).join(''))
+  assert.equal(finalEvents.map((event) => event.text).join(''), text)
+  assert.equal(host.snapshot().segments[0]?.sourceText.length, 18)
+  host.dispose()
+})
+
+/**
+ * 校验持续增长的 partial 保留完整累计草稿，由翻译层控制请求时机。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('超长 partial 应保留完整累计原文且不截断', () => {
+  const child = createFakeChild()
+  const events: SubtitleSidecarEvent[] = []
+  const host = new SubtitleSessionHost({
+    spawn: () => child,
+    onEvent: (event) => events.push(event)
+  })
+  const text =
+    '淋巴结宫的成长通道还可以报考养老服务师也可以走向管理岗位取得养老服务师职业资格证书的' +
+    '可以在养老服务机构内就业也可以在相关企业单位包括老年人能力评估机构是老化改造企业' +
+    '老年教育培培训机构老年产品用品生产流通企业就业截至二零二五年底全国，例如这个，' +
+    '有时拆分的是合理的'
+
+  host.start({ source: 'system', asr: 'deepgram', language: 'zh-CN' })
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  child.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'partial', text })}\n`))
+
+  const partial = events.find(
+    (event): event is Extract<SubtitleSidecarEvent, { type: 'partial' }> => event.type === 'partial'
+  )
+  const segment = host.snapshot().segments.at(-1)
+
+  assert.ok(partial)
+  assert.ok(segment)
+  assert.equal(partial.text, text)
+  assert.equal(segment.sourceText, text)
+  assert.equal(host.snapshot().sourceText, text)
+  host.dispose()
+})
+
+/**
  * 校验自动隐藏只清空当前显示内容，不停止仍在运行的识别会话。
  * @returns 无返回值。
  * @author zhenghq

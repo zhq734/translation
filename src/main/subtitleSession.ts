@@ -6,6 +6,7 @@ import {
   isAudioSource,
   mergeSubtitleSegments,
   parseSubtitleSidecarLine,
+  splitSubtitleCue,
   type RealtimeSubtitleAudioSource,
   type RealtimeSubtitleAudioActivity,
   type RealtimeSubtitleAsrProvider,
@@ -88,6 +89,14 @@ export interface SubtitleSessionStartOptions {
   openAIRealtimeModel?: string
   /** OpenAI Realtime API Key；只允许注入 sidecar 环境，不进入 stdio 协议。 */
   openAIRealtimeApiKey?: string | null
+  /** Gemini Live WebSocket 地址；只通过环境变量注入 sidecar。 */
+  geminiUrl?: string
+  /** Gemini Live 模型名称；只通过环境变量注入 sidecar。 */
+  geminiModel?: string
+  /** Gemini API Key；只允许注入 sidecar 环境，不进入 stdio 协议。 */
+  geminiApiKey?: string | null
+  /** 原生翻译目标语言；用于支持同会话翻译的提供商。 */
+  targetLang?: string
 }
 
 /**
@@ -222,6 +231,9 @@ export class SubtitleSessionHost {
       delete environment.OPENAI_REALTIME_API_KEY
       delete environment.OPENAI_REALTIME_ASR_URL
       delete environment.OPENAI_REALTIME_ASR_MODEL
+      delete environment.GEMINI_API_KEY
+      delete environment.GEMINI_LIVE_URL
+      delete environment.GEMINI_LIVE_MODEL
       if (options.asr === 'deepgram' && options.deepgramApiKey) {
         environment.DEEPGRAM_API_KEY = options.deepgramApiKey
       }
@@ -249,6 +261,11 @@ export class SubtitleSessionHost {
           environment.OPENAI_REALTIME_API_KEY = options.openAIRealtimeApiKey
         }
       }
+      if (options.asr === 'gemini') {
+        if (options.geminiUrl) environment.GEMINI_LIVE_URL = options.geminiUrl
+        if (options.geminiModel) environment.GEMINI_LIVE_MODEL = options.geminiModel
+        if (options.geminiApiKey) environment.GEMINI_API_KEY = options.geminiApiKey
+      }
       child = this.spawnFn(environment)
     } catch (error) {
       this.fail(generation, 'sidecar-unavailable', error)
@@ -274,7 +291,8 @@ export class SubtitleSessionHost {
         cmd: 'start',
         source: options.source,
         asr: options.asr,
-        lang: options.language
+        lang: options.language,
+        ...(options.targetLang ? { targetLang: options.targetLang } : {})
       }))
     } catch (error) {
       this.fail(generation, 'sidecar-unavailable', error)
@@ -454,6 +472,27 @@ export class SubtitleSessionHost {
         text: normalizeChineseScript(event.text, this.recognitionLanguage)
       }
     }
+    // 原生译文已经由提供商按自身分段返回，无法可靠地按原文 cue 重新对齐；
+    // 这类 final 保持原样，纯 ASR final 才在本地拆成可读字幕。
+    if (event.type === 'final' && !event.translatedText?.trim()) {
+      const cues = splitSubtitleCue(event.text, { pauseBoundaries: event.pauseBoundaries })
+      for (const cue of cues) {
+        const { pauseBoundaries: _pauseBoundaries, ...cueEvent } = event
+        this.applyEvent({ ...cueEvent, text: cue }, generation)
+      }
+      return
+    }
+    this.applyEvent(event, generation)
+  }
+
+  /**
+   * 应用一条已经过字形规范的 sidecar 事件，并同步宿主快照。
+   * @param event sidecar 事件。
+   * @param generation 事件所属代次。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private applyEvent(event: SubtitleSidecarEvent, generation: number): void {
     if (event.type === 'ready') {
       this.log(`ready generation=${generation}`)
       this.clearStartupTimer()
@@ -468,10 +507,15 @@ export class SubtitleSessionHost {
       this.segments = merged.segments
       this.sourceText = event.text
       this.audioActivity = 'speech-detected'
-      // 新一句开始时上一句译文已经失效；若继续保留，双语字幕会把上一句
-      // 译文粘在新句原文下方。final 可能改变当前句原文，同样需要清空旧译文。
-      if (event.type === 'final' || merged.activeId !== previousSegmentId) {
-        this.translatedText = ''
+      const activeSegment = this.segments.find((segment) => segment.id === merged.activeId)
+      // 原生译文与原文成对到达时直接作为当前译文展示；否则新句开始时清空旧译文，
+      // 避免双语字幕把上一句译文粘在新句原文下方。
+      if (event.type === 'partial' || event.type === 'final') {
+        if (event.translatedText) {
+          this.translatedText = event.translatedText
+        } else if (event.type === 'final' || merged.activeId !== previousSegmentId) {
+          this.translatedText = activeSegment?.translatedText ?? ''
+        }
       }
     } else if (event.type === 'level') {
       // 人声是否出现由上游 ASR/VAD 判定；客户端电平仅用于内部遥测，不改变界面状态。

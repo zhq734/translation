@@ -28,6 +28,8 @@ const SUBTITLE_INTERACTION_RELEASE_DELAY_MS = 300
 const SUBTITLE_DRAG_HIT_PADDING = 4
 /** 字幕卡片命中区的容差，覆盖边框像素避免边缘悬停抖动。 */
 const SUBTITLE_CARD_HIT_PADDING = 2
+/** Electron 原生窗口坐标使用的 32 位有符号整数上限。 */
+const SUBTITLE_WINDOW_COORDINATE_LIMIT = 0x7fffffff
 
 /**
  * 判断两个字幕视图模型的全部渲染字段是否一致。
@@ -572,10 +574,20 @@ export function createSubtitleWindow(options: SubtitleWindowOptions): SubtitleWi
     moveWindow(request: RealtimeSubtitleWindowMoveRequest): void {
       if (!win || win.isDestroyed()) return
       if (![request.screenX, request.screenY, request.pointerOffsetX, request.pointerOffsetY].every(Number.isFinite)) return
-      win.setPosition(
-        Math.round(request.screenX - request.pointerOffsetX),
-        Math.round(request.screenY - request.pointerOffsetY)
-      )
+      const x = Math.round(request.screenX - request.pointerOffsetX)
+      const y = Math.round(request.screenY - request.pointerOffsetY)
+      // 入参分别有限不代表相减后仍合法；超出 32 位整数范围时 Electron 原生接口会抛错。
+      if (
+        !Number.isFinite(x) ||
+        !Number.isFinite(y) ||
+        Math.abs(x) > SUBTITLE_WINDOW_COORDINATE_LIMIT ||
+        Math.abs(y) > SUBTITLE_WINDOW_COORDINATE_LIMIT
+      ) return
+      try {
+        win.setPosition(x, y)
+      } catch {
+        // 窗口销毁或平台拒绝移动时忽略本次拖拽，避免异常冒泡中断主进程 IPC。
+      }
     },
 
     /**

@@ -22,6 +22,7 @@ test('设置页应包含免订阅微软翻译开关、检测按钮和稳定性�
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   assert.match(html, new RegExp(`<h2 data-i18n="settings\\.microsoft\\.title">${tForTest('en-US', 'settings.microsoft.title')}<\\/h2>`, 'u'))
   assert.match(html, /id="microsoft-enabled"/u)
+  assert.match(html, /id="microsoft-enabled"[^>]+type="checkbox"[^>]+checked/u)
   assert.match(html, new RegExp(tForTest('en-US', 'settings.microsoft.hint'), 'u'))
   assert.match(html, new RegExp(tForTest('en-US', 'settings.microsoft.warning'), 'u'))
   assert.match(html, /id="microsoft-check"/u)

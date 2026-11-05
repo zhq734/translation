@@ -57,8 +57,9 @@ impl SubtitleReducer {
 
     /// 处理一条已提交的识别文本。
     ///
-    /// final 会覆盖草稿、清空当前段落，并把同一文本的重复提交判为
-    /// [`ReducedEvent::Unchanged`]。
+    /// final 会覆盖草稿并清空当前段落。片段是否重复应由 ASR 适配层依据
+    /// 服务端时间片、item ID 等片段身份判断，不能仅比较文本；否则用户
+    /// 连续说出的相同短句会被错误吞掉。
     ///
     /// # 参数
     /// - `text`：提供商提交的稳定识别文本。
@@ -69,11 +70,7 @@ impl SubtitleReducer {
         if text.is_empty() {
             return ReducedEvent::Unchanged;
         }
-        let changed = text != self.last_emitted || !self.draft.is_empty();
         self.draft.clear();
-        if !changed {
-            return ReducedEvent::Unchanged;
-        }
         self.last_emitted = text.to_string();
         ReducedEvent::Final(text.to_string())
     }
@@ -114,7 +111,19 @@ mod tests {
             reducer.push_final("hello world"),
             ReducedEvent::Final("hello world".into())
         );
-        assert_eq!(reducer.push_final("hello world"), ReducedEvent::Unchanged);
+    }
+
+    #[test]
+    fn consecutive_identical_finals_are_distinct_recognitions() {
+        let mut reducer = SubtitleReducer::new();
+        assert_eq!(
+            reducer.push_final("thank you"),
+            ReducedEvent::Final("thank you".into())
+        );
+        assert_eq!(
+            reducer.push_final("thank you"),
+            ReducedEvent::Final("thank you".into())
+        );
     }
 
     #[test]
@@ -128,7 +137,10 @@ mod tests {
     fn reset_allows_repeated_text_in_new_session() {
         let mut reducer = SubtitleReducer::new();
         reducer.push_final("hello");
-        assert_eq!(reducer.push_final("hello"), ReducedEvent::Unchanged);
+        assert_eq!(
+            reducer.push_final("hello"),
+            ReducedEvent::Final("hello".into())
+        );
         reducer.reset();
         assert_eq!(
             reducer.push_final("hello"),

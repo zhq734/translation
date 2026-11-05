@@ -565,7 +565,7 @@ OCR 引擎按“系统 OCR → PaddleOCR → Tesseract”的顺序在自动模�
 | 自建 DeepLX | DeepLX `/translate` 服务地址，留空表示关闭 | 未配置 |
 | AI 翻译 | 本地或云端大模型翻译通道 | 关闭 |
 | 钉钉翻译 | 企业内部应用翻译通道 | 关闭 |
-| 微软翻译 | 免密钥的 Bing 网页翻译通道 | 关闭 |
+| 微软翻译 | 免密钥的 Bing 网页翻译通道 | 开启 |
 | OCR 引擎偏好 | 自动、仅系统 OCR、仅 PaddleOCR、仅 Tesseract | 自动 |
 | 快捷 OCR 翻译快捷键 | 框选松开后自动识别并翻译 | `Alt+S` |
 | 截图快捷键 | 打开可编辑的截图 OCR 工作台 | `Alt+O` |

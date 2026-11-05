@@ -10,9 +10,9 @@ const SOURCE_SETTLE_MS = 180
 /** 原文持续增长时的最长等待时间。 */
 const SOURCE_MAX_WAIT_MS = 750
 /** 译文停止增长后的稳定等待时间。 */
-const TARGET_SETTLE_MS = 400
+const TARGET_SETTLE_MS = 200
 /** 译文持续增长时的最长等待时间。 */
-const TARGET_MAX_WAIT_MS = 1500
+const TARGET_MAX_WAIT_MS = 700
 
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
@@ -24,6 +24,7 @@ const historySource = document.getElementById('subtitle-history-source') as HTML
 const historyTarget = document.getElementById('subtitle-history-target') as HTMLElement
 const source = document.getElementById('subtitle-source') as HTMLElement
 const target = document.getElementById('subtitle-target') as HTMLElement
+const live = document.querySelector('.subtitle-live') as HTMLElement
 const error = document.getElementById('subtitle-error') as HTMLElement
 const close = document.getElementById('subtitle-close') as HTMLButtonElement
 const dragHandle = document.getElementById('subtitle-drag-handle') as HTMLButtonElement
@@ -115,7 +116,12 @@ function isSameSegment(
  * @author zhenghq
  */
 function updateText(element: HTMLElement, value: string): void {
-  if (element.textContent !== value) element.textContent = value
+  if (element.textContent === value) return
+  element.textContent = value
+  if (live.contains(element)) {
+    // 长字幕只限制可视高度，最新识别内容始终滚动到可见区域，避免被裁掉。
+    live.scrollTop = live.scrollHeight
+  }
 }
 
 /**
@@ -439,6 +445,7 @@ dragHandle.addEventListener('pointerdown', (event) => {
 })
 dragHandle.addEventListener('pointermove', (event) => {
   if (event.pointerId !== dragPointerId) return
+  if (![event.screenX, event.screenY, dragPointerOffset.x, dragPointerOffset.y].every(Number.isFinite)) return
   window.api.moveRealtimeSubtitleWindow({
     screenX: event.screenX,
     screenY: event.screenY,

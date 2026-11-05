@@ -108,6 +108,24 @@ test('设置页应提供完整的实时字幕配置与运行入口', () => {
 })
 
 /**
+ * 校验实时字幕长文本使用受控高度与内部滚动，不截断识别或翻译内容。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('实时字幕长文本应限制高度并支持滚动', () => {
+  const css = read('src/renderer/src/subtitle.css')
+  const renderer = read('src/renderer/src/subtitle.ts')
+  const liveRules = [...css.matchAll(/\.subtitle-live\s*\{[^}]*\}/gu)].map((match) => match[0])
+  const liveRule = liveRules.find((rule) => rule.includes('max-height')) ?? ''
+
+  assert.match(liveRule, /max-height:\s*min\(50vh,\s*calc\(var\(--subtitle-font-size,\s*20px\)\s*\*\s*7\)\)/u)
+  assert.match(liveRule, /overflow-y:\s*auto/u)
+  assert.match(liveRule, /overscroll-behavior:\s*contain/u)
+  assert.doesNotMatch(liveRule, /#[0-9a-f]{3,8}\b|rgba?\(/iu)
+  assert.match(renderer, /live\.scrollTop\s*=\s*live\.scrollHeight/u)
+})
+
+/**
  * 校验实时字幕界面词条在中英文目录中完整且可插值。
  * @returns 无返回值。
  * @author zhenghq
@@ -325,8 +343,8 @@ test('实时字幕应为原文和译文配置独立稳定窗口', () => {
   const source = read('src/renderer/src/subtitle.ts')
   assert.match(source, /SOURCE_SETTLE_MS = 180/u)
   assert.match(source, /SOURCE_MAX_WAIT_MS = 750/u)
-  assert.match(source, /TARGET_SETTLE_MS = 400/u)
-  assert.match(source, /TARGET_MAX_WAIT_MS = 1500/u)
+  assert.match(source, /TARGET_SETTLE_MS = 200/u)
+  assert.match(source, /TARGET_MAX_WAIT_MS = 700/u)
   assert.match(source, /sourceTextStabilizer\.push/u)
   assert.match(source, /targetTextStabilizer\.push/u)
 })
@@ -424,6 +442,11 @@ test('字幕右上角应支持拖动定位并切换目标译文语言', () => {
   assert.match(source, /pointerOffsetX:\s*dragPointerOffset\.x/u)
   assert.match(source, /pointerOffsetY:\s*dragPointerOffset\.y/u)
   assert.match(source, /dragPointerOffset\s*=\s*\{\s*x:\s*event\.clientX,\s*y:\s*event\.clientY\s*\}/u)
+  assert.match(
+    source,
+    /\[event\.screenX,\s*event\.screenY,\s*dragPointerOffset\.x,\s*dragPointerOffset\.y\]\.every\(Number\.isFinite\)/u,
+    '拖拽事件可能在窗口边缘产生 NaN，Renderer 发送 IPC 前必须过滤非法坐标'
+  )
   assert.match(preload, /setRealtimeSubtitleMouseInteraction/u)
   assert.match(preload, /ipcRenderer\.send\(['"]subtitle:move-window['"]/u)
   assert.match(preload, /subtitle:pointer-point/u)

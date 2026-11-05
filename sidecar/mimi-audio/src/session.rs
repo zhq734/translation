@@ -153,9 +153,14 @@ impl SessionManager {
                                     let _ = events.send(Event::Partial { text, lang }).await;
                                 }
                             }
-                            AsrEvent::Final { text, lang } => {
+                            AsrEvent::Final { text, lang, pause_boundaries } => {
                                 if let ReducedEvent::Final(text) = reducer.push_final(&text) {
-                                    let _ = events.send(Event::Final { text, lang }).await;
+                                    let _ = events.send(Event::Final {
+                                        text,
+                                        lang,
+                                        pause_boundaries: (!pause_boundaries.is_empty())
+                                            .then_some(pause_boundaries),
+                                    }).await;
                                 }
                             }
                             AsrEvent::Error { error } => {

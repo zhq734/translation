@@ -65,7 +65,7 @@ function deferred<T>(): {
 }
 
 /**
- * 校验只有 final 段进入翻译，且增量与完成回调携带同一段标识。
+ * 校验 final 段进入翻译，且增量与完成回调携带同一段标识。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -214,6 +214,83 @@ test('final 等待队列满时应拒绝新增任务并报告错误', async () =>
   coordinator.invalidate()
   pending.resolve({ translation: '完成' })
   await coordinator.idle()
+})
+
+/**
+ * 校验默认 final 并发 2 且等待队列能容纳 12 条 cue。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('默认 final 应并发 2 且等待队列容纳 12 条 cue', async () => {
+  const pending = deferred<{ translation: string }>()
+  const calls: string[] = []
+  const errors: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    translateStream: async (text) => {
+      calls.push(text)
+      return pending.promise as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: (id, error) => errors.push(`${id}:${error.message}`)
+  })
+
+  for (let index = 1; index <= 15; index += 1) {
+    coordinator.submit(`sentence-${index}`, 'zh', 1, `segment-${index}`)
+  }
+  await flush()
+
+  assert.deepEqual(calls, ['sentence-1', 'sentence-2'])
+  assert.deepEqual(errors, ['segment-15:subtitle translation queue is full'])
+  coordinator.invalidate()
+  pending.resolve({ translation: '完成' })
+  await coordinator.idle()
+})
+
+/**
+ * 校验默认 final 截止时间为 45 秒，允许 20 秒的 Retry-After 等待。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('默认 final 截止时间应允许 20 秒重试等待', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    finalMaxAttempts: 3,
+    finalRetryBaseDelayMs: 600,
+    nowFn: () => 0,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      if (calls.length === 1) {
+        throw Object.assign(new Error('rate limited'), {
+          kind: 'rate-limit',
+          retryAfterMs: 20_000
+        })
+      }
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('45 秒截止时间内应继续重试'),
+    onReset: () => undefined
+  })
+
+  coordinator.submit('Hello', 'en', 1, 'segment-1')
+  await flush()
+
+  assert.ok(
+    manualTimers.timers.some((timer) => !timer.cleared && timer.delayMs === 20_000),
+    '默认截止时间 45 秒应允许 20 秒重试等待'
+  )
+  coordinator.invalidate()
 })
 
 /**
@@ -495,7 +572,6 @@ test('字幕 final 应抢占运行中的预翻译并跳过排队文本', async (
   assert.equal(aborted, true)
   assert.deepEqual(calls, ['Hello', 'Hello world!'])
   assert.deepEqual(completed, ['segment-1'])
-  assert.equal(manualTimers.timers.length, 1)
 })
 
 /**
@@ -533,6 +609,105 @@ test('已完成 partial 预翻译应直接复用于同文 final', async () => {
   coordinator.submit('Hello', 'en', 1, 'segment-1')
   assert.equal(calls, 1)
   assert.deepEqual(completed, ['segment-1'])
+})
+
+/**
+ * 校验新 partial 重置稳定计时，但首次草稿的最大等待计时不会被重置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('连续 partial 应重置稳定计时但不重置最大等待', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  let now = 0
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 300,
+    previewMaxWaitMs: 1_000,
+    previewMinIntervalMs: 0,
+    nowFn: () => now,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      return { translation: `译文:${text}` } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  const firstStableTimer = manualTimers.timers.find(
+    (timer) => timer.delayMs === 300 && !timer.cleared
+  )
+  const maximumWaitTimer = manualTimers.timers.find(
+    (timer) => timer.delayMs === 1_000 && !timer.cleared
+  )
+  assert.ok(firstStableTimer)
+  assert.ok(maximumWaitTimer)
+
+  now = 200
+  coordinator.preview('Hello world', 'en', 1, 'segment-1')
+  assert.equal(firstStableTimer.cleared, true, '新 partial 应重置稳定计时')
+  assert.equal(
+    manualTimers.timers.filter((timer) => timer.delayMs === 300 && !timer.cleared).length,
+    1,
+    '应只保留一个有效的稳定计时器'
+  )
+  assert.equal(maximumWaitTimer.cleared, false, '后续 partial 不应重置最大等待计时器')
+
+  maximumWaitTimer.callback()
+  await flush()
+  assert.deepEqual(calls, ['Hello world'], '最大等待到点后应翻译最新的完整草稿')
+  assert.equal(
+    manualTimers.timers.filter((timer) => timer.delayMs === 300 && !timer.cleared).length,
+    0,
+    '最大等待触发时应取消尚未执行的稳定计时'
+  )
+})
+
+/**
+ * 校验稳定计时到点后清除最大等待计时，避免同一草稿重复发起预览。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('稳定计时触发后应清除最大等待计时', async () => {
+  const manualTimers = createManualTimers()
+  const calls: string[] = []
+  const coordinator = new SubtitleTranslationCoordinator({
+    getSettings: () => normalizeSettings({ targetLang: 'zh-CN' }),
+    getDingTalkCredentials: () => null,
+    getAiApiKey: () => null,
+    previewDebounceMs: 250,
+    previewMaxWaitMs: 1_000,
+    previewMinIntervalMs: 0,
+    setTimeoutFn: manualTimers.setTimeoutFn,
+    clearTimeoutFn: manualTimers.clearTimeoutFn,
+    translateStream: async (text) => {
+      calls.push(text)
+      return { translation: '你好' } as never
+    },
+    onDelta: () => undefined,
+    onComplete: () => undefined,
+    onError: () => assert.fail('预翻译不应失败'),
+    onReset: () => undefined
+  })
+
+  coordinator.preview('Hello', 'en', 1, 'segment-1')
+  const stableTimer = manualTimers.timers.find((timer) => timer.delayMs === 250)
+  const maximumWaitTimer = manualTimers.timers.find((timer) => timer.delayMs === 1_000)
+  assert.ok(stableTimer)
+  assert.ok(maximumWaitTimer)
+
+  stableTimer.callback()
+  await coordinator.idle()
+
+  assert.deepEqual(calls, ['Hello'])
+  assert.equal(maximumWaitTimer.cleared, true)
 })
 
 /**

@@ -10,7 +10,8 @@ import type {
   RealtimeSubtitleSnapshot,
   SubtitleSidecarEvent
 } from '../src/shared/subtitleSession.ts'
-import { normalizeSettings } from '../src/shared/settingsDefaults.ts'
+import { normalizeSettings, SETTINGS_SCHEMA_VERSION } from '../src/shared/settingsDefaults.ts'
+import { splitSubtitleCue } from '../src/shared/subtitleSession.ts'
 import type { Settings } from '../src/shared/types.ts'
 import {
   resolveSubtitleReconnectDelay,
@@ -46,6 +47,10 @@ class FakeHost {
     openAIRealtimeUrl?: string
     openAIRealtimeModel?: string
     openAIRealtimeApiKey?: string | null
+    geminiUrl?: string
+    geminiModel?: string
+    geminiApiKey?: string | null
+    targetLang?: string
   }> = []
   /** 记录 pause/resume/stop 调用。 */
   calls: string[] = []
@@ -77,6 +82,10 @@ class FakeHost {
     openAIRealtimeUrl?: string
     openAIRealtimeModel?: string
     openAIRealtimeApiKey?: string | null
+    geminiUrl?: string
+    geminiModel?: string
+    geminiApiKey?: string | null
+    targetLang?: string
   }): number {
     this.starts.push(options)
     this.generation += 1
@@ -163,35 +172,38 @@ class FakeHost {
       const active = this.segments.find((segment) => segment.status === 'partial')
       if (active) {
         active.sourceText = event.text
+        if (event.translatedText) active.translatedText = event.translatedText
         active.updatedAt = Date.now()
       } else {
         this.segments.push({
           id: `segment-${++this.sequence}`,
           sourceText: event.text,
-          translatedText: '',
+          translatedText: event.translatedText ?? '',
           status: 'partial',
           updatedAt: Date.now()
         })
       }
       this.sourceText = event.text
+      if (event.translatedText) this.translatedText = event.translatedText
     } else if (event.type === 'final') {
       this.audioActivity = 'speech-detected'
       const active = this.segments.find((segment) => segment.status === 'partial')
       if (active) {
         active.sourceText = event.text
-        active.status = 'translating'
+        active.translatedText = event.translatedText ?? active.translatedText
+        active.status = event.translatedText ? 'translated' : 'translating'
         active.updatedAt = Date.now()
       } else {
         this.segments.push({
           id: `segment-${++this.sequence}`,
           sourceText: event.text,
-          translatedText: '',
-          status: 'translating',
+          translatedText: event.translatedText ?? '',
+          status: event.translatedText ? 'translated' : 'translating',
           updatedAt: Date.now()
         })
       }
       this.sourceText = event.text
-      this.translatedText = ''
+      this.translatedText = event.translatedText ?? ''
     } else if (event.type === 'level') {
       // 人声判定由上游 ASR/VAD 负责，客户端电平事件不驱动本地状态。
       return
@@ -218,17 +230,24 @@ function createHarness(
     finalMaxAttempts?: number
     finalRetryBaseDelayMs?: number
     finalRequestDeadlineMs?: number
+    maxConcurrentFinalRequests?: number
+    maxQueuedFinalRequests?: number
     translationDisplayHoldMs?: number
     whisperApiKey?: string | null
     dashScopeApiKey?: string | null
     openAIRealtimeApiKey?: string | null
+    geminiApiKey?: string | null
     logs?: string[]
   } = {}
 ) {
   const host = new FakeHost()
   const broadcasts: RealtimeSubtitleSnapshot[] = []
   const windowStates: boolean[] = []
-  const settings = normalizeSettings({ targetLang: 'zh-CN', ...overrides })
+  const settings = normalizeSettings({
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
+    targetLang: 'zh-CN',
+    ...overrides
+  })
   const translateCalls: Array<{
     text: string
     sourceLang: string | undefined
@@ -255,12 +274,15 @@ function createHarness(
     getWhisperApiKey: () => options.whisperApiKey ?? null,
     getDashScopeApiKey: () => options.dashScopeApiKey ?? null,
     getOpenAIRealtimeApiKey: () => options.openAIRealtimeApiKey ?? null,
+    getGeminiApiKey: () => options.geminiApiKey ?? null,
     getITranslateApiKey: () => 'it-secret',
     previewDebounceMs: options.previewDebounceMs,
     previewMinIntervalMs: options.previewMinIntervalMs,
     finalMaxAttempts: options.finalMaxAttempts ?? 1,
     finalRetryBaseDelayMs: options.finalRetryBaseDelayMs,
     finalRequestDeadlineMs: options.finalRequestDeadlineMs,
+    maxConcurrentFinalRequests: options.maxConcurrentFinalRequests,
+    maxQueuedFinalRequests: options.maxQueuedFinalRequests,
     translationDisplayHoldMs: options.translationDisplayHoldMs ?? 0,
     log: (message) => options.logs?.push(message),
     translateStream: async (text, _settings, _dingTalk, _apiKey, options, iTranslateApiKey) => {
@@ -332,28 +354,40 @@ async function flush(): Promise<void> {
 }
 
 /**
- * 校验稳定 partial 会提前发起翻译，并在同文 final 到达后直接复用预览结果。
+ * 等待条件成立，避免全量测试并发负载下把调度延迟误判为业务失败。
+ * @param predicate 条件判断函数。
+ * @param attempts 最大轮询次数。
+ * @returns 条件成立时 resolve；超过次数后使测试失败。
+ * @author zhenghq
+ */
+async function waitFor(predicate: () => boolean, attempts = 40): Promise<void> {
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return
+    await flush()
+  }
+  assert.fail('等待条件超时')
+}
+
+/**
+ * 校验 partial 稳定后即翻译当前可见 cue，final 到达后复用同文结果。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('稳定 partial 应提前翻译并在同文 final 到达后复用', async () => {
+test('partial 应翻译当前可见 cue 且 final 复用结果', async () => {
   const harness = createHarness({}, { previewDebounceMs: 0 })
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
   assert.equal(harness.controller.snapshot().sourceText, 'Hello')
-  await flush()
+  await waitFor(() => harness.translateCalls.length === 1)
   assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
   assert.equal(harness.translateCalls[0]?.sourceLang, 'en-US')
   assert.equal(harness.translateCalls[0]?.iTranslateApiKey, 'it-secret')
-
   harness.finishTranslationFor('Hello', '你好')
-  await harness.controller.idle()
-  assert.equal(harness.controller.snapshot().translatedText, '你好')
-  assert.equal(harness.controller.snapshot().segments[0]?.status, 'partial')
+  await waitFor(() => harness.controller.viewModel().translatedText === '你好')
 
   harness.host.emit({ type: 'final', text: 'Hello', lang: 'en-US' })
-  await flush()
+  await harness.controller.idle()
   assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
   const segment = harness.controller.snapshot().segments[0]
   assert.equal(segment?.translatedText, '你好')
@@ -362,51 +396,101 @@ test('稳定 partial 应提前翻译并在同文 final 到达后复用', async (
 })
 
 /**
- * 校验连续变化的 partial 只保留最新文本发起翻译，避免每次识别更新都启动请求。
+ * 校验连续 partial 的预览请求合并到最新可见 cue，final 修正后翻译最终文本。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('连续 partial 应防抖合并为最新文本再翻译', async () => {
+test('连续 partial 应合并预览请求且 final 翻译最终文本', async () => {
   const harness = createHarness({}, { previewDebounceMs: 300 })
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
   harness.host.emit({ type: 'partial', text: 'Hello world', lang: 'en-US' })
-
-  const previewTimers = harness.timers.filter(
-    (timer) => timer.delayMs === 300 && !timer.cleared
-  )
-  assert.equal(previewTimers.length, 1, '应只保留一个有效的预览翻译计时器')
-  previewTimers[0]?.callback()
   await flush()
-
+  assert.deepEqual(harness.translateCalls, [])
+  const previewTimer = harness.timers.find((timer) => timer.delayMs === 300 && !timer.cleared)
+  assert.ok(previewTimer)
+  previewTimer.callback()
+  await waitFor(() => harness.translateCalls.length === 1)
   assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello world'])
+
+  harness.host.emit({ type: 'final', text: 'Hello world!', lang: 'en-US' })
+  await flush()
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello world', 'Hello world!'])
   harness.finishTranslationFor('Hello world', '你好，世界')
+  await flush()
+  harness.finishTranslationFor('Hello world!', '你好，世界！')
   await harness.controller.idle()
 })
 
 /**
- * 校验 final 修正原文时会清空旧预览，最终译文不得与旧句译文拼接。
+ * 校验累计 partial 变长时只翻译显示层最近 cue，而不是整段草稿。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('final 原文变化应清空旧预览并翻译修正后的整句', async () => {
+test('长 partial 应只翻译最近可见 cue', async () => {
+  const harness = createHarness({}, { previewDebounceMs: 0 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  const text = '第一句已经确认。第二句仍在识别中而且内容已经很长需要只显示最近一段实时草稿文本'
+  harness.host.emit({ type: 'partial', text, lang: 'zh-CN' })
+  await waitFor(() => harness.translateCalls.length === 1)
+
+  const visibleText = splitSubtitleCue(text, { maxLength: 32 }).at(-1)
+  assert.ok(visibleText)
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), [visibleText])
+  assert.equal(harness.controller.viewModel().sourceText, visibleText)
+
+  harness.finishTranslationFor(visibleText, '当前草稿译文')
+  await waitFor(() => harness.controller.viewModel().translatedText === '当前草稿译文')
+})
+
+/**
+ * 校验 partial 进入下一条可见 cue 时会清空上一条 cue 的预览译文。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('partial 切换可见 cue 时应清空旧预览译文', async () => {
+  const harness = createHarness({}, { previewDebounceMs: 0 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({
+    type: 'partial',
+    text: '第一句已经确认。',
+    lang: 'zh-CN'
+  })
+  await waitFor(() => harness.translateCalls.length === 1)
+  harness.finishTranslationFor('第一句已经确认。', '第一句译文。')
+  await waitFor(() => harness.controller.viewModel().translatedText === '第一句译文。')
+
+  harness.host.emit({
+    type: 'partial',
+    text: '第一句已经确认。第二句仍在识别中',
+    lang: 'zh-CN'
+  })
+  await flush()
+  assert.equal(harness.controller.viewModel().sourceText, '第二句仍在识别中')
+  assert.equal(harness.controller.viewModel().translatedText, '')
+})
+
+/**
+ * 校验 final 修正 partial 原文后只翻译确认后的整句。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('final 原文变化应翻译修正后的整句', async () => {
   const harness = createHarness({}, { previewDebounceMs: 0 })
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
   harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en-US' })
-  await flush()
+  await waitFor(() => harness.translateCalls.length === 1)
   harness.finishTranslationFor('Hello', '你好')
-  await harness.controller.idle()
-  assert.equal(harness.controller.snapshot().translatedText, '你好')
+  await waitFor(() => harness.controller.viewModel().translatedText === '你好')
 
   harness.host.emit({ type: 'final', text: 'Hello world', lang: 'en-US' })
   await flush()
 
-  assert.deepEqual(
-    harness.translateCalls.map((call) => call.text),
-    ['Hello', 'Hello world']
-  )
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello', 'Hello world'])
   assert.equal(harness.controller.snapshot().segments.at(-1)?.translatedText, '')
 
   harness.finishTranslationFor('Hello world', '你好，世界')
@@ -501,7 +585,10 @@ test('连续 final 的译文应逐条展示且不丢失', async () => {
 
   harness.finishTranslationFor('First', '第一句译文')
   await flush()
+  // final 请求串行执行；前一段结束后队列才会启动下一段。
+  await flush()
   harness.finishTranslationFor('Second', '第二句译文')
+  await flush()
   await flush()
   harness.finishTranslationFor('Third', '第三句译文')
   await harness.controller.idle()
@@ -570,6 +657,48 @@ test('下一句 final 译文应等待当前译文展示结束再替换', async (
 })
 
 /**
+ * 校验并发翻译乱序完成时，后一句译文必须等待前一句先上屏。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('并发 final 译文乱序完成时仍应按原文顺序展示', async () => {
+  const harness = createHarness({}, { translationDisplayHoldMs: 700 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'final', text: 'First', lang: 'en-US' })
+  harness.host.emit({ type: 'final', text: 'Second', lang: 'en-US' })
+  await waitFor(() => harness.translateCalls.length === 2)
+  assert.deepEqual(
+    harness.translateCalls.map((call) => call.text),
+    ['First', 'Second'],
+    '默认并发 2 应同时启动前两句翻译'
+  )
+
+  harness.finishTranslationFor('Second', '第二句译文')
+  await flush()
+  assert.equal(harness.controller.viewModel().sourceText, 'Second')
+  assert.equal(
+    harness.controller.viewModel().translatedText,
+    '',
+    '前一句仍在翻译时不得先展示后一句译文'
+  )
+
+  harness.finishTranslationFor('First', '第一句译文')
+  await harness.controller.idle()
+  assert.equal(harness.controller.viewModel().sourceText, 'First')
+  assert.equal(harness.controller.viewModel().translatedText, '第一句译文')
+
+  const firstHoldTimer = harness.timers.find(
+    (timer) => !timer.cleared && timer.delayMs === 700
+  )
+  assert.ok(firstHoldTimer, '第一句译文上屏后应进入展示锁')
+  firstHoldTimer.callback()
+
+  assert.equal(harness.controller.viewModel().sourceText, 'Second')
+  assert.equal(harness.controller.viewModel().translatedText, '第二句译文')
+})
+
+/**
  * 校验服务端拆句后的多条 final 会逐条翻译，界面只保留最后一句及其译文。
  * @returns 无返回值。
  * @author zhenghq
@@ -601,16 +730,19 @@ test('连续 final 应逐条翻译且不把前一句译文带入最后一句', a
   await flush()
   assert.deepEqual(
     harness.translateCalls.map((call) => call.text),
-    [sentences[0]],
-    '串行保护下应只先启动第一段 final 翻译'
+    sentences.slice(0, 2),
+    '默认并发 2 时应先启动前两段 final 翻译'
   )
 
   const translations = ['译文一', '译文二', '译文三']
   for (const [index, sentence] of sentences.entries()) {
+    await waitFor(
+      () => harness.translateCalls.length === Math.min(index + 2, sentences.length)
+    )
     assert.deepEqual(
       harness.translateCalls.map((call) => call.text),
-      sentences.slice(0, index + 1),
-      '前一段完成后应按顺序启动下一段翻译'
+      sentences.slice(0, Math.min(index + 2, sentences.length)),
+      '前一段完成后应继续补满 final 并发槽位'
     )
     harness.finishTranslationFor(sentence, translations[index] ?? '')
     await flush()
@@ -627,21 +759,78 @@ test('连续 final 应逐条翻译且不把前一句译文带入最后一句', a
 })
 
 /**
- * 校验客户端不会把单条 final 按标点二次拆分，保持一个 final 对应一条字幕。
+ * 校验宿主拆分后的多个 final 会各自成为字幕并逐条翻译。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('单条 final 即使包含多个句子也应作为一条字幕翻译', async () => {
+test('拆分后的多个 final 应逐条翻译并保留独立译文', async () => {
   const harness = createHarness()
-  const text = '第一句。第二句！'
+  const cues = ['第一句。', '第二句！']
   harness.controller.start()
   harness.host.emit({ type: 'ready' })
-  harness.host.emit({ type: 'final', text, lang: 'zh' })
+  for (const cue of cues) harness.host.emit({ type: 'final', text: cue, lang: 'zh' })
   await flush()
 
-  assert.equal(harness.controller.snapshot().segments.length, 1)
-  assert.equal(harness.controller.snapshot().segments[0]?.sourceText, text)
-  assert.deepEqual(harness.translateCalls.map((call) => call.text), [text])
+  assert.equal(harness.controller.snapshot().segments.length, 2)
+  assert.deepEqual(
+    harness.controller.snapshot().segments.map((segment) => segment.sourceText),
+    cues
+  )
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), cues)
+
+  harness.finishTranslationFor(cues[0]!, '第一句译文。')
+  await flush()
+  harness.finishTranslationFor(cues[1]!, '第二句译文！')
+  await harness.controller.idle()
+  assert.deepEqual(
+    harness.controller.snapshot().segments.map((segment) => segment.translatedText),
+    ['第一句译文。', '第二句译文！']
+  )
+})
+
+/**
+ * 校验超长 final 拆出的每条字幕各自翻译，结果写回对应段落。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('超长 final 应逐 cue 翻译且每条字幕保留自己的译文', async () => {
+  const harness = createHarness({}, { finalMaxAttempts: 1 })
+  const text = [
+    '淋巴结宫的成长通道还可以报考养老服务师也可以走向管理岗位取得养老服务师职业资格证书的',
+    '可以在养老服务机构内就业也可以在相关企业单位',
+    '包括老年人能力评估机构是老化改造企业老年教育培培训机构老年产品用品生产流通企业就业',
+    '截至二零二五年底全国，例如这个，有时拆分的是合理的'
+  ].join('')
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  const cues = splitSubtitleCue(text)
+  for (const cue of cues) harness.host.emit({ type: 'final', text: cue, lang: 'zh' })
+  await flush()
+
+  const segments = harness.controller.snapshot().segments
+  assert.ok(segments.length > 1, `超长 final 应拆成多条字幕，实际 ${segments.length} 条`)
+  assert.equal(segments.map((segment) => segment.sourceText).join(''), text)
+  assert.deepEqual(segments.map((segment) => segment.sourceText), cues)
+  assert.deepEqual(
+    harness.translateCalls.map((call) => call.text),
+    segments.slice(0, 2).map((segment) => segment.sourceText)
+  )
+
+  for (const [index, segment] of segments.entries()) {
+    harness.finishTranslationFor(segment.sourceText, `译文-${index + 1}`)
+    await flush()
+  }
+  await harness.controller.idle()
+
+  assert.deepEqual(
+    harness.translateCalls.map((call) => call.text),
+    segments.map((segment) => segment.sourceText),
+    '并发槽位释放后应按原文顺序启动后续 cue 翻译'
+  )
+  assert.deepEqual(
+    harness.controller.snapshot().segments.map((segment) => segment.translatedText),
+    segments.map((_, index) => `译文-${index + 1}`)
+  )
 })
 
 /**
@@ -1445,4 +1634,100 @@ test('旧会话事件不应影响新会话', () => {
   assert.equal(harness.controller.snapshot().state, 'starting')
   assert.equal(harness.timers.length, 0)
   assert.equal(harness.host.starts.length, 2)
+})
+
+/**
+ * 校验 Gemini 启动会传入 Live 配置、API Key 和当前目标语言。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Gemini 启动应传入 Live 配置与目标语言', () => {
+  const harness = createHarness({
+    targetLang: 'zh-CN',
+    realtimeSubtitleAsrProvider: 'gemini',
+    realtimeSubtitleGeminiUrl: 'wss://gemini.example.com/live',
+    realtimeSubtitleGeminiModel: 'gemini-custom-live'
+  }, { geminiApiKey: 'gemini-secret' })
+
+  harness.controller.start()
+  assert.deepEqual(harness.host.starts[0], {
+    source: 'system',
+    asr: 'gemini',
+    language: 'auto',
+    targetLang: 'zh-CN',
+    geminiUrl: 'wss://gemini.example.com/live',
+    geminiModel: 'gemini-custom-live',
+    geminiApiKey: 'gemini-secret'
+  })
+})
+
+/**
+ * 校验目标语言为 auto 时不请求原生翻译，交由现有文字翻译链路处理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Gemini 目标语言为 auto 时不应传入原生翻译目标', () => {
+  const harness = createHarness({
+    targetLang: 'auto',
+    realtimeSubtitleAsrProvider: 'gemini'
+  }, { geminiApiKey: 'gemini-secret' })
+
+  harness.controller.start()
+  assert.equal(harness.host.starts[0]?.asr, 'gemini')
+  assert.equal(harness.host.starts[0]?.targetLang, undefined)
+})
+
+/**
+ * 校验 Gemini partial 原生译文实时上屏，且不重复调用文字翻译。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Gemini 原生译文不应再调用文字翻译', async () => {
+  const harness = createHarness({ realtimeSubtitleAsrProvider: 'gemini' }, { previewDebounceMs: 0 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({
+    type: 'partial',
+    text: 'Hello',
+    lang: 'en',
+    translatedText: '你好',
+    translatedLang: 'zh-Hans'
+  })
+  await flush()
+  assert.deepEqual(harness.translateCalls, [])
+  assert.equal(harness.controller.viewModel().translatedText, '你好')
+
+  harness.host.emit({
+    type: 'final',
+    text: 'Hello world.',
+    lang: 'en',
+    translatedText: '你好，世界。',
+    translatedLang: 'zh-Hans'
+  })
+  await flush()
+  assert.deepEqual(harness.translateCalls, [])
+  const segment = harness.controller.snapshot().segments.at(-1)
+  assert.equal(segment?.translatedText, '你好，世界。')
+  assert.equal(segment?.status, 'translated')
+  assert.equal(harness.controller.viewModel().translatedText, '你好，世界。')
+})
+
+/**
+ * 校验 Gemini 缺少原生译文时，partial 与 final 都沿用文字翻译链路。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Gemini 缺少原生译文时应继续调用文字翻译', async () => {
+  const harness = createHarness({ realtimeSubtitleAsrProvider: 'gemini' }, { previewDebounceMs: 0 })
+  harness.controller.start()
+  harness.host.emit({ type: 'ready' })
+  harness.host.emit({ type: 'partial', text: 'Hello', lang: 'en' })
+  await waitFor(() => harness.translateCalls.length === 1)
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
+  harness.finishTranslationFor('Hello', '你好')
+  await waitFor(() => harness.controller.viewModel().translatedText === '你好')
+
+  harness.host.emit({ type: 'final', text: 'Hello', lang: 'en' })
+  await flush()
+  assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
 })

@@ -15,6 +15,7 @@ import type {
   DeepgramConfigPatch,
   DashScopeConfigPatch,
   OpenAIRealtimeConfigPatch,
+  GeminiLiveConfigPatch,
   WhisperConfigPatch,
   ITranslateConfigPatch,
   AiConfigPatch,
@@ -1355,6 +1356,21 @@ const api: Api = {
    */
   clearOpenAIRealtimeApiKey: (): Promise<Settings> =>
     ipcRenderer.invoke('openai-realtime:clear-key'),
+  /**
+   * 保存 Gemini Live 原生翻译配置及可选新 API Key。
+   * @param patch Gemini Live 配置补丁。
+   * @returns 保存成功后的脱敏公开设置。
+   * @author zhenghq
+   */
+  setGeminiLiveConfig: (patch: GeminiLiveConfigPatch): Promise<Settings> =>
+    ipcRenderer.invoke('gemini-live:configure', patch),
+  /**
+   * 显式清除已保存的 Gemini API Key。
+   * @returns 清除后的脱敏公开设置。
+   * @author zhenghq
+   */
+  clearGeminiLiveApiKey: (): Promise<Settings> =>
+    ipcRenderer.invoke('gemini-live:clear-key'),
   /**
    * 保存 iTranslate 可选翻译通道配置及可选新 API Key。
    * @param patch iTranslate 配置补丁。

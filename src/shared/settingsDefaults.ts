@@ -42,6 +42,13 @@ const DEFAULT_OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime'
 /** OpenAI Realtime 转写的默认模型。 */
 const DEFAULT_OPENAI_REALTIME_MODEL = 'gpt-4o-mini-transcribe'
 
+/** Gemini Live 原生语音翻译的默认 WebSocket 地址。 */
+const DEFAULT_GEMINI_LIVE_URL =
+  'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+
+/** Gemini Live 原生语音翻译的默认模型。 */
+const DEFAULT_GEMINI_LIVE_MODEL = 'gemini-3.5-live-translate-preview'
+
 /** 实时字幕 WebSocket 地址允许的最大字符数。 */
 const REALTIME_WEBSOCKET_URL_MAX_LENGTH = 4_096
 
@@ -84,6 +91,9 @@ export const DEFAULT_SETTINGS: Settings = {
   realtimeSubtitleOpenAIRealtimeUrl: DEFAULT_OPENAI_REALTIME_URL,
   realtimeSubtitleOpenAIRealtimeModel: DEFAULT_OPENAI_REALTIME_MODEL,
   realtimeSubtitleOpenAIRealtimeApiKeyConfigured: false,
+  realtimeSubtitleGeminiUrl: DEFAULT_GEMINI_LIVE_URL,
+  realtimeSubtitleGeminiModel: DEFAULT_GEMINI_LIVE_MODEL,
+  realtimeSubtitleGeminiApiKeyConfigured: false,
   realtimeSubtitleDisplayMode: 'bilingual',
   realtimeSubtitleFontSize: 20,
   realtimeSubtitleHideAfterMs: 8000,
@@ -109,7 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   dingTalkCorpId: '',
   dingTalkClientId: '',
   dingTalkSecretConfigured: false,
-  microsoftEnabled: false,
+  microsoftEnabled: true,
   biliIndexTranslateEnabled: true,
   biliIndexTranslateModel: 'index-mt-9b',
   aiEnabled: false,
@@ -483,6 +493,17 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     ),
     realtimeSubtitleOpenAIRealtimeApiKeyConfigured:
       rawSettings.realtimeSubtitleOpenAIRealtimeApiKeyConfigured === true,
+    // Gemini 同会话翻译与 OpenAI Realtime 使用相同的安全地址、模型校验规则。
+    realtimeSubtitleGeminiUrl: normalizeRealtimeWebSocketUrl(
+      rawSettings.realtimeSubtitleGeminiUrl,
+      DEFAULT_GEMINI_LIVE_URL
+    ),
+    realtimeSubtitleGeminiModel: normalizeRealtimeModel(
+      rawSettings.realtimeSubtitleGeminiModel,
+      DEFAULT_GEMINI_LIVE_MODEL
+    ),
+    realtimeSubtitleGeminiApiKeyConfigured:
+      rawSettings.realtimeSubtitleGeminiApiKeyConfigured === true,
     realtimeSubtitleDisplayMode: isDisplayMode(rawSettings.realtimeSubtitleDisplayMode)
       ? rawSettings.realtimeSubtitleDisplayMode
       : DEFAULT_SETTINGS.realtimeSubtitleDisplayMode,
@@ -541,7 +562,10 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     dingTalkCorpId: String(merged.dingTalkCorpId || '').trim(),
     dingTalkClientId: String(merged.dingTalkClientId || '').trim(),
     dingTalkSecretConfigured: rawSettings.dingTalkSecretConfigured === true,
-    microsoftEnabled: rawSettings.microsoftEnabled === true,
+    // 微软通道默认启用；明确布尔值保留用户选择，缺失或非法值回退默认启用。
+    microsoftEnabled: typeof rawSettings.microsoftEnabled === 'boolean'
+      ? rawSettings.microsoftEnabled
+      : DEFAULT_SETTINGS.microsoftEnabled,
     // 第二十四版默认内置 Bilibili Index-Translate；仅显式关闭才停用，未知模型回退到 9B。
     biliIndexTranslateEnabled: rawSettings.biliIndexTranslateEnabled !== false,
     biliIndexTranslateModel: isBilibiliIndexModel(rawSettings.biliIndexTranslateModel)
