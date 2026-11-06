@@ -7,6 +7,7 @@ export const appEnUS = defineCatalog({
   'app.serviceNotInitialized.deepLx': 'The DeepLX configuration service is not initialized yet',
   'app.serviceNotInitialized.update': 'The update service is not initialized yet',
   'app.serviceNotInitialized.webReader': 'The web reader is not initialized yet',
+  'app.serviceNotInitialized.screenshotPin': 'The screenshot pin manager is not initialized yet',
   'app.serviceNotInitialized.deepLxCheck': 'The DeepLX check service is not initialized yet',
   'app.serviceNotInitialized.aiModelDiscovery': 'The AI model discovery service is not initialized yet',
   'app.serviceNotInitialized.aiCheck': 'The AI check service is not initialized yet',

@@ -349,6 +349,10 @@ import {
   type RealtimeSubtitleSnapshot
 } from '../shared/subtitleSession'
 import { getRealtimeSubtitlePlatformCapability } from '../shared/realtimeSubtitlePlatform'
+import {
+  createMacosScreenCaptureClient,
+  type MacosScreenCaptureClient
+} from './macosScreenCapture'
 
 const isMac = process.platform === 'darwin'
 const execFileP = promisify(execFile)
@@ -496,6 +500,12 @@ let subtitleWindow: SubtitleWindowController | null = null
 let unsupportedRealtimeSubtitleSnapshot: RealtimeSubtitleSnapshot | null = null
 /** 贴图窗口管理器；负责置顶窗口、缩放、透明度与数量上限。 */
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
+/** 重后台服务初始化完成前，依赖这些服务的 IPC 统一等待该 Promise。 */
+let deferredStartupServices: Promise<void> | null = null
+/** 更新管理器初始化完成前，更新操作统一等待该 Promise。 */
+let updateManagerInitialization: Promise<void> | null = null
+let resolveUpdateManagerInitialization: (() => void) | null = null
+let rejectUpdateManagerInitialization: ((error: unknown) => void) | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
 const approvedDocumentPaths = new Set<string>()
 /** 文档任务服务类型；仅在类型层引用，不进入 Win7 启动时的运行时依赖图。 */
@@ -759,6 +769,8 @@ let pendingMacOSDockVisibilityTimer: ReturnType<typeof setTimeout> | null = null
 let latestOcrSnapshot: OcrSnapshot | null = null
 // OCR 框选会话自增序号：begin 与 snapshot 共用，Renderer 据此丢弃跨会话残留事件。
 let ocrSelectionSessionSeq = 0
+/** macOS ScreenCaptureKit 常驻客户端；复用 helper 进程并避免 screencapture 退出卡住。 */
+let macosScreenCapture: MacosScreenCaptureClient | null = null
 /** 下一次 OCR 框选是否在首次有效框选松开后自动识别并翻译。 */
 let nextOcrSelectionAutoTranslate = false
 // 记录截图窗口进行中的识别/复制/保存请求，用于取消、关闭和新会话时丢弃旧回调。
@@ -862,6 +874,85 @@ const ocrEnginePreferenceState: OcrEnginePreferenceState = {}
 function getDingTalkConfiguration(): DingTalkConfigurationService {
   if (!dingTalkConfiguration) throw new Error(t('app.serviceNotInitialized.dingtalk'))
   return dingTalkConfiguration
+}
+
+/**
+ * 获取已就绪的贴图窗口管理器。
+ * @returns 贴图窗口管理器实例。
+ * @author zhenghq
+ */
+function getScreenshotPinManager(): ScreenshotPinWindowManager {
+  if (!screenshotPinManager) throw new Error(t('app.serviceNotInitialized.screenshotPin'))
+  return screenshotPinManager
+}
+
+/**
+ * 启动重后台服务并缓存唯一初始化 Promise，供首屏提前注册的 IPC 等待。
+ * @returns 重后台服务初始化 Promise。
+ * @author zhenghq
+ */
+function startDeferredStartupServices(): Promise<void> {
+  if (!deferredStartupServices) {
+    deferredStartupServices = initializeDeferredStartupServices()
+  }
+  void deferredStartupServices.catch((error: unknown) => {
+    appLogger.append('warn', [
+      `[startup] deferred services failed: ${error instanceof Error ? error.message : String(error)}`
+    ], 'main')
+  })
+  return deferredStartupServices
+}
+
+/**
+ * 等待重后台服务初始化完成，保证提前到达的 IPC 不会读到未初始化的服务。
+ * 设置页首开后会立即启动后台服务，后续调用复用同一份结果。
+ * @returns 后台服务就绪后完成的 Promise。
+ * @author zhenghq
+ */
+function ensureDeferredStartupServicesInitialized(): Promise<void> {
+  return startDeferredStartupServices()
+}
+
+/**
+ * 创建更新管理器就绪 gate，供更新 IPC 在 manager 延后构造期间等待。
+ * @returns 更新管理器就绪后完成的 Promise。
+ * @author zhenghq
+ */
+function createUpdateManagerGate(): Promise<void> {
+  const gate = new Promise<void>((resolve, reject) => {
+    resolveUpdateManagerInitialization = resolve
+    rejectUpdateManagerInitialization = reject
+  })
+  void gate.catch(() => undefined)
+  updateManagerInitialization = gate
+  return gate
+}
+
+/**
+ * 等待更新管理器初始化完成，避免早期更新操作因 manager 尚未构造而失败。
+ * @returns 更新管理器就绪后完成的 Promise。
+ * @author zhenghq
+ */
+function ensureUpdateManagerInitialized(): Promise<void> {
+  if (!updateManagerInitialization) createUpdateManagerGate()
+  return updateManagerInitialization as Promise<void>
+}
+
+/**
+ * 读取当前更新状态；管理器尚未构造时返回不影响首屏的空闲快照。
+ * @returns 当前可展示的自动更新状态。
+ * @author zhenghq
+ */
+function getUpdateStatusSnapshot(): UpdateStatus {
+  const status = updateManager?.getStatus()
+  return {
+    ...(status ?? {}),
+    phase: updateManager ? updateManager.getStatus().phase : 'idle',
+    currentVersion: status?.currentVersion ?? app.getVersion(),
+    installMode: status?.installMode ?? 'disabled',
+    message: status?.message ?? t('update.idle'),
+    releaseUrl: status?.releaseUrl ?? 'https://github.com/zhq734/translation/releases/latest'
+  }
 }
 
 /**
@@ -2402,6 +2493,12 @@ async function onReady(): Promise<boolean> {
   }
 
   loadSettings()
+  macosScreenCapture = process.platform === 'darwin'
+    ? createMacosScreenCaptureClient({
+        resourcesPath: process.resourcesPath,
+        cwd: process.cwd()
+      })
+    : null
   mainI18n = createMainI18nRuntime({
     getUiLocale: () => getSettings().uiLocale,
     localeSources: {
@@ -2422,339 +2519,6 @@ async function onReady(): Promise<boolean> {
   )
   applyAutoLaunch(getSettings().autoLaunch)
   createTray()
-  dingTalkConfiguration = new DingTalkConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new DingTalkCredentialStore(
-      join(app.getPath('userData'), 'credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetTranslationRuntime: resetDingTalkTranslationRuntime
-  })
-  dingTalkConfiguration.initialize()
-  aiConfiguration = new AiConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new AiCredentialStore(
-      join(app.getPath('userData'), 'ai-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetTranslationRuntime: resetAiTranslationRuntime
-  })
-  aiConfiguration.initialize()
-  deepgramConfiguration = new DeepgramConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new DeepgramCredentialStore(
-      join(app.getPath('userData'), 'deepgram-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetRealtimeSubtitleRuntime: () => {
-      realtimeSubtitleController?.dispose()
-      realtimeSubtitleController = null
-      subtitleWindow?.dispose()
-      subtitleWindow = null
-      initializeRealtimeSubtitle()
-    }
-  })
-  deepgramConfiguration.initialize()
-  whisperConfiguration = new WhisperConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new WhisperCredentialStore(
-      join(app.getPath('userData'), 'whisper-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetRealtimeSubtitleRuntime: () => {
-      realtimeSubtitleController?.dispose()
-      realtimeSubtitleController = null
-      subtitleWindow?.dispose()
-      subtitleWindow = null
-      initializeRealtimeSubtitle()
-    }
-  })
-  whisperConfiguration.initialize()
-  dashScopeConfiguration = new DashScopeConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new DashScopeCredentialStore(
-      join(app.getPath('userData'), 'dashscope-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetRealtimeSubtitleRuntime: () => {
-      realtimeSubtitleController?.dispose()
-      realtimeSubtitleController = null
-      subtitleWindow?.dispose()
-      subtitleWindow = null
-      initializeRealtimeSubtitle()
-    }
-  })
-  dashScopeConfiguration.initialize()
-  openAIRealtimeConfiguration = new OpenAIRealtimeConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new OpenAIRealtimeCredentialStore(
-      join(app.getPath('userData'), 'openai-realtime-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetRealtimeSubtitleRuntime: () => {
-      realtimeSubtitleController?.dispose()
-      realtimeSubtitleController = null
-      subtitleWindow?.dispose()
-      subtitleWindow = null
-      initializeRealtimeSubtitle()
-    }
-  })
-  openAIRealtimeConfiguration.initialize()
-  geminiLiveConfiguration = new GeminiLiveConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new GeminiLiveCredentialStore(
-      join(app.getPath('userData'), 'gemini-live-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetRealtimeSubtitleRuntime: () => {
-      realtimeSubtitleController?.dispose()
-      realtimeSubtitleController = null
-      subtitleWindow?.dispose()
-      subtitleWindow = null
-      initializeRealtimeSubtitle()
-    }
-  })
-  geminiLiveConfiguration.initialize()
-  itranslateConfiguration = new ITranslateConfigurationService({
-    getSettings,
-    saveSettings,
-    credentialStore: new ITranslateCredentialStore(
-      join(app.getPath('userData'), 'itranslate-credentials.json'),
-      safeStorage
-    ),
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetTranslationRuntime: resetITranslateTranslationRuntime
-  })
-  itranslateConfiguration.initialize()
-  deepLxConfiguration = new DeepLxConfigurationService({
-    getSettings,
-    saveSettings,
-    onSettingsChanged: (settings) => {
-      refreshTrayMenu()
-      broadcast('settings:changed', settings)
-    },
-    resetTranslationRuntime: resetDeepLxTranslationRuntime
-  })
-  aiModelDiscovery = new AiModelDiscoveryService({ fetch: translationFetch })
-  aiCheckService = new AiCheckService({ fetch: translationFetch })
-  deepLxCheckService = new DeepLxCheckService({ fetch: translationFetch })
-  initializeRealtimeSubtitle()
-  await applyTranslationProxy(getSettings())
-  configureTranslationFetch(translationFetch)
-  webReader = new WebReaderManager({
-    preloadPath: PRELOAD_PATH,
-    loadRenderer: loadRendererHtml,
-    getSettings,
-    createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
-    recognizeImage: async (bytes, candidate) => {
-      const settings = getSettings()
-      const dispatcher = await createOcrDispatcher(settings)
-      const ocr = await recognizeAdaptiveOcr(
-        {
-          imageBytes: bytes,
-          maxScale: settings.ocrScale,
-          language: settings.ocrLang
-        },
-        {
-          recognize: (preparedImageBytes) =>
-            dispatcher.recognize({
-              imageBytes: preparedImageBytes,
-              language: settings.ocrLang,
-              timeoutMs: OCR_TIMEOUT_MS
-              // 现代平台继续使用 settings.ocrEnginePreference；Win7 由 resolveOcrEnginePreference 强制 Tesseract。
-            }, resolveOcrEnginePreference(settings))
-        }
-      )
-      const text = cleanOcrText(ocr.text ?? '')
-      // 复用统一质量评价：噪声或明显语言不匹配的识别结果按空文本处理，
-      // 交由图片管道计入跳过，不进入翻译通道。
-      const quality = evaluateOcrQuality(ocr, settings.ocrLang)
-      if (!quality.valid || quality.languageMismatch) return { text: '', score: 0 }
-      return { text, score: quality.averageConfidence ?? Math.min(1, quality.textScore / 10) }
-    },
-    showSaveDialog: async (suggestedName) => {
-      const window = webReader?.getWindow() ?? undefined
-      const result = window
-        ? await dialog.showSaveDialog(window, {
-          title: t('webReader.exportPdf'),
-          defaultPath: suggestedName,
-          filters: [{ name: 'PDF', extensions: ['pdf'] }]
-        })
-        : await dialog.showSaveDialog({
-          title: t('webReader.exportPdf'),
-          defaultPath: suggestedName,
-          filters: [{ name: 'PDF', extensions: ['pdf'] }]
-        })
-      return {
-        canceled: result.canceled,
-        ...(result.filePath ? { filePath: result.filePath } : {})
-      }
-    },
-    writeFile: async (path, bytes) => {
-      await writeFile(path, bytes)
-    },
-    onWindowStateChanged: (open) => {
-      webReaderWindowOpen = open
-      void refreshMacOSDockVisibility()
-    },
-    onInternalWindowFocusLost: () => {
-      const focusedWindow = BrowserWindow.getFocusedWindow()
-      // 阅读器显式置前会临时提升到 screen-saver；一旦失焦就立即归还普通层级，
-      // 不能只依赖 400ms 定时器。统一回收器会忽略未被提升过的设置页。
-      lowerSettingsPanelRaiseLevel()
-      // 阅读器 blur 可能只是把焦点交给设置页或另一个自有窗口，这仍属于应用内部
-      // 切换，不能解除保护。只有焦点为空或已离开全部自有窗口时才恢复弹窗失焦语义。
-      if (focusedWindow && (focusedWindow === settingsWin || webReader?.ownsWindow(focusedWindow))) return
-      endPopupSettingsOpenGuard()
-    },
-    hasVisibleSettingsWindow: () => Boolean(
-      settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
-    ),
-    bringToFrontToOwnWindow: (window) => {
-      // 阅读器显式置前与设置页共用窗口级入口：普通窗口下必须 show()/focus()
-      // 激活目标窗口自身，禁止调用 app.focus() 把同应用其它窗口一起带到最前。
-      showOwnWindowForInteraction(window, { raiseLevel: true })
-    },
-    translate: async (text, sourceLang, targetLang) => {
-      const settings = { ...getSettings(), sourceLang, targetLang }
-      const dingTalkCredentials = settings.dingTalkEnabled
-        ? getDingTalkConfiguration().getCredentialsSnapshot()
-        : null
-      const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      const output = await translate(
-        text,
-        settings,
-        dingTalkCredentials,
-        aiApiKey
-      )
-      recordWebPageUsage(output.provider)
-      return { translation: output.translation, provider: output.provider, channel: output.channel }
-    }
-  })
-  documentWorkspace = new DocumentWorkspaceManager({
-    preloadPath: PRELOAD_PATH,
-    loadRenderer: loadRendererHtml,
-    getDocumentPlatformCapability,
-    onWindowStateChanged: (open) => {
-      documentWorkspaceOpen = open
-      if (!open) resetDocumentWorkspaceSession()
-      void refreshMacOSDockVisibility()
-    },
-    onInternalWindowFocusLost: () => {
-      const focusedWindow = BrowserWindow.getFocusedWindow()
-      // 文档窗口失焦可能只是把焦点交给设置页、阅读器或另一个自有窗口；
-      // 只有焦点为空或已离开全部自有窗口时才解除弹窗内部切换保护。
-      if (focusedWindow && (
-        focusedWindow === settingsWin ||
-        webReader?.ownsWindow(focusedWindow) ||
-        documentWorkspace?.ownsWindow(focusedWindow)
-      )) return
-      endPopupSettingsOpenGuard()
-    },
-    hasVisibleSettingsWindow: () => Boolean(
-      settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
-    ),
-    bringToFrontToOwnWindow: (window) => {
-      showOwnWindowForInteraction(window, { raiseLevel: true })
-    },
-    loadBounds: () => loadDocumentWindowState(
-      join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE)
-    ),
-    saveBounds: (bounds) => saveDocumentWindowState(
-      join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE),
-      bounds
-    )
-  })
-  screenshotPinManager = createScreenshotPinWindowManager({
-    preloadPath: PRELOAD_PATH,
-    loadPage: (win) => loadRendererHtml(win, 'pin.html'),
-    buildFileName: buildScreenshotSaveFileName,
-    translate: t,
-    showToast: (message, displayTimeMs, kind) => showScreenshotToast(message, displayTimeMs, kind)
-  })
-  if (isWindows7CompatibilityRuntime()) {
-    // Win7 包不加载 electron-updater，只用 GitHub Release API 检查是否有新版 Win7 安装包。
-    const { UpdateManager } = await import('./updateManager')
-    const { Win7UpdateDriver } = await import('./win7UpdateDriver')
-    updateManager = new UpdateManager({
-      driver: new Win7UpdateDriver({
-        currentVersion: app.getVersion(),
-        fetch: translationFetch
-      }),
-      currentVersion: app.getVersion(),
-      enabled: app.isPackaged,
-      // manual 模式发现新版后由 UpdateManager 设置 updateAction: 'open-release'。
-      installMode: 'manual',
-      releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
-      isOnline: () => net.isOnline(),
-      getTranslator: () => mainI18n?.translator ?? createTranslator('zh-CN'),
-      openExternal: async (url) => {
-        await shell.openExternal(url)
-      },
-      onStatusChanged: (status) => {
-        broadcast('updater:status', status)
-      }
-    })
-  } else {
-    const { createApplicationUpdateManager } = await import('./updater')
-    updateManager = await createApplicationUpdateManager(
-      (status) => {
-        broadcast('updater:status', status)
-      },
-      // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
-      // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
-      // @author zhenghq
-      { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
-    )
-  }
-  console.log(
-    '[main] 启动完成 autoTrigger =',
-    getSettings().triggerMode === 'auto',
-    'triggerMode =',
-    getSettings().triggerMode,
-    'hotkey =',
-    getSettings().hotkey,
-    'proxyMode =',
-    getSettings().proxyMode
-  )
   createPopup({
     preloadPath: PRELOAD_PATH,
     onWindowShown: suppressSelectionActivationWindowGap,
@@ -2772,18 +2536,380 @@ async function onReady(): Promise<boolean> {
   // 应用启动是明确的用户入口：设置页必须主动放到最前，不能被其它应用遮挡。
   // 该置前只通过统一窗口级入口影响设置窗口自身，不会拉起翻译弹窗等其它窗口。
   if (openSettingsOnInitialLaunch) await openSettings({ bringToFront: true, source: 'initial-launch' })
-
-  // 避免自动更新网络请求与应用首次启动初始化争用资源。
-  setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
-
-  // 提前创建 Toast 窗口，避免首次复制/保存时临时创建窗口和加载页面造成提示延迟。
-  getScreenshotToastWindow()
-  // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
-  setTimeout(() => void warnIfNoAccessibility(), 1500)
-  // 避免安装/升级通知网络请求与启动初始化争用资源；失败静默且不阻塞。
-  setTimeout(() => void maybeSendInstallUpgradeNotification(), 1_500)
-  prewarmScreenshotRuntime()
+  startDeferredStartupServices()
   return true
+}
+
+/**
+ * 初始化配置、代理、更新管理器与截图预热等重后台服务。
+ * 该函数幂等：首屏期间提前到达的 IPC 只会触发并等待同一份初始化结果。
+ * @returns 重后台服务全部就绪后完成的 Promise。
+ * @author zhenghq
+ */
+async function initializeDeferredStartupServices(): Promise<void> {
+  if (deferredStartupServices) return deferredStartupServices
+  const initialization: Promise<void> = (async (): Promise<void> => {
+    try {
+      dingTalkConfiguration = new DingTalkConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new DingTalkCredentialStore(
+          join(app.getPath('userData'), 'credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetTranslationRuntime: resetDingTalkTranslationRuntime
+      })
+      dingTalkConfiguration.initialize()
+      aiConfiguration = new AiConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new AiCredentialStore(
+          join(app.getPath('userData'), 'ai-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetTranslationRuntime: resetAiTranslationRuntime
+      })
+      aiConfiguration.initialize()
+      deepgramConfiguration = new DeepgramConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new DeepgramCredentialStore(
+          join(app.getPath('userData'), 'deepgram-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetRealtimeSubtitleRuntime: () => {
+          realtimeSubtitleController?.dispose()
+          realtimeSubtitleController = null
+          subtitleWindow?.dispose()
+          subtitleWindow = null
+          initializeRealtimeSubtitle()
+        }
+      })
+      deepgramConfiguration.initialize()
+      whisperConfiguration = new WhisperConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new WhisperCredentialStore(
+          join(app.getPath('userData'), 'whisper-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetRealtimeSubtitleRuntime: () => {
+          realtimeSubtitleController?.dispose()
+          realtimeSubtitleController = null
+          subtitleWindow?.dispose()
+          subtitleWindow = null
+          initializeRealtimeSubtitle()
+        }
+      })
+      whisperConfiguration.initialize()
+      dashScopeConfiguration = new DashScopeConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new DashScopeCredentialStore(
+          join(app.getPath('userData'), 'dashscope-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetRealtimeSubtitleRuntime: () => {
+          realtimeSubtitleController?.dispose()
+          realtimeSubtitleController = null
+          subtitleWindow?.dispose()
+          subtitleWindow = null
+          initializeRealtimeSubtitle()
+        }
+      })
+      dashScopeConfiguration.initialize()
+      openAIRealtimeConfiguration = new OpenAIRealtimeConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new OpenAIRealtimeCredentialStore(
+          join(app.getPath('userData'), 'openai-realtime-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetRealtimeSubtitleRuntime: () => {
+          realtimeSubtitleController?.dispose()
+          realtimeSubtitleController = null
+          subtitleWindow?.dispose()
+          subtitleWindow = null
+          initializeRealtimeSubtitle()
+        }
+      })
+      openAIRealtimeConfiguration.initialize()
+      geminiLiveConfiguration = new GeminiLiveConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new GeminiLiveCredentialStore(
+          join(app.getPath('userData'), 'gemini-live-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetRealtimeSubtitleRuntime: () => {
+          realtimeSubtitleController?.dispose()
+          realtimeSubtitleController = null
+          subtitleWindow?.dispose()
+          subtitleWindow = null
+          initializeRealtimeSubtitle()
+        }
+      })
+      geminiLiveConfiguration.initialize()
+      itranslateConfiguration = new ITranslateConfigurationService({
+        getSettings,
+        saveSettings,
+        credentialStore: new ITranslateCredentialStore(
+          join(app.getPath('userData'), 'itranslate-credentials.json'),
+          safeStorage
+        ),
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetTranslationRuntime: resetITranslateTranslationRuntime
+      })
+      itranslateConfiguration.initialize()
+      deepLxConfiguration = new DeepLxConfigurationService({
+        getSettings,
+        saveSettings,
+        onSettingsChanged: (settings) => {
+          refreshTrayMenu()
+          broadcast('settings:changed', settings)
+        },
+        resetTranslationRuntime: resetDeepLxTranslationRuntime
+      })
+      aiModelDiscovery = new AiModelDiscoveryService({ fetch: translationFetch })
+      aiCheckService = new AiCheckService({ fetch: translationFetch })
+      deepLxCheckService = new DeepLxCheckService({ fetch: translationFetch })
+      initializeRealtimeSubtitle()
+      await applyTranslationProxy(getSettings())
+      configureTranslationFetch(translationFetch)
+      webReader = new WebReaderManager({
+        preloadPath: PRELOAD_PATH,
+        loadRenderer: loadRendererHtml,
+        getSettings,
+        createImageSource: (view, signal) => createWebReaderImageSource(view, signal),
+        recognizeImage: async (bytes, candidate) => {
+          const settings = getSettings()
+          const dispatcher = await createOcrDispatcher(settings)
+          const ocr = await recognizeAdaptiveOcr(
+            {
+              imageBytes: bytes,
+              maxScale: settings.ocrScale,
+              language: settings.ocrLang
+            },
+            {
+              recognize: (preparedImageBytes) =>
+                dispatcher.recognize({
+                  imageBytes: preparedImageBytes,
+                  language: settings.ocrLang,
+                  timeoutMs: OCR_TIMEOUT_MS
+                  // 现代平台继续使用 settings.ocrEnginePreference；Win7 由 resolveOcrEnginePreference 强制 Tesseract。
+                }, resolveOcrEnginePreference(settings))
+            }
+          )
+          const text = cleanOcrText(ocr.text ?? '')
+          // 复用统一质量评价：噪声或明显语言不匹配的识别结果按空文本处理，
+          // 交由图片管道计入跳过，不进入翻译通道。
+          const quality = evaluateOcrQuality(ocr, settings.ocrLang)
+          if (!quality.valid || quality.languageMismatch) return { text: '', score: 0 }
+          return { text, score: quality.averageConfidence ?? Math.min(1, quality.textScore / 10) }
+        },
+        showSaveDialog: async (suggestedName) => {
+          const window = webReader?.getWindow() ?? undefined
+          const result = window
+            ? await dialog.showSaveDialog(window, {
+              title: t('webReader.exportPdf'),
+              defaultPath: suggestedName,
+              filters: [{ name: 'PDF', extensions: ['pdf'] }]
+            })
+            : await dialog.showSaveDialog({
+              title: t('webReader.exportPdf'),
+              defaultPath: suggestedName,
+              filters: [{ name: 'PDF', extensions: ['pdf'] }]
+            })
+          return {
+            canceled: result.canceled,
+            ...(result.filePath ? { filePath: result.filePath } : {})
+          }
+        },
+        writeFile: async (path, bytes) => {
+          await writeFile(path, bytes)
+        },
+        onWindowStateChanged: (open) => {
+          webReaderWindowOpen = open
+          void refreshMacOSDockVisibility()
+        },
+        onInternalWindowFocusLost: () => {
+          const focusedWindow = BrowserWindow.getFocusedWindow()
+          // 阅读器显式置前会临时提升到 screen-saver；一旦失焦就立即归还普通层级，
+          // 不能只依赖 400ms 定时器。统一回收器会忽略未被提升过的设置页。
+          lowerSettingsPanelRaiseLevel()
+          // 阅读器 blur 可能只是把焦点交给设置页或另一个自有窗口，这仍属于应用内部
+          // 切换，不能解除保护。只有焦点为空或已离开全部自有窗口时才恢复弹窗失焦语义。
+          if (focusedWindow && (focusedWindow === settingsWin || webReader?.ownsWindow(focusedWindow))) return
+          endPopupSettingsOpenGuard()
+        },
+        hasVisibleSettingsWindow: () => Boolean(
+          settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
+        ),
+        bringToFrontToOwnWindow: (window) => {
+          // 阅读器显式置前与设置页共用窗口级入口：普通窗口下必须 show()/focus()
+          // 激活目标窗口自身，禁止调用 app.focus() 把同应用其它窗口一起带到最前。
+          showOwnWindowForInteraction(window, { raiseLevel: true })
+        },
+        translate: async (text, sourceLang, targetLang) => {
+          const settings = { ...getSettings(), sourceLang, targetLang }
+          const dingTalkCredentials = settings.dingTalkEnabled
+            ? getDingTalkConfiguration().getCredentialsSnapshot()
+            : null
+          const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+          const output = await translate(
+            text,
+            settings,
+            dingTalkCredentials,
+            aiApiKey
+          )
+          recordWebPageUsage(output.provider)
+          return { translation: output.translation, provider: output.provider, channel: output.channel }
+        }
+      })
+      documentWorkspace = new DocumentWorkspaceManager({
+        preloadPath: PRELOAD_PATH,
+        loadRenderer: loadRendererHtml,
+        getDocumentPlatformCapability,
+        onWindowStateChanged: (open) => {
+          documentWorkspaceOpen = open
+          if (!open) resetDocumentWorkspaceSession()
+          void refreshMacOSDockVisibility()
+        },
+        onInternalWindowFocusLost: () => {
+          const focusedWindow = BrowserWindow.getFocusedWindow()
+          // 文档窗口失焦可能只是把焦点交给设置页、阅读器或另一个自有窗口；
+          // 只有焦点为空或已离开全部自有窗口时才解除弹窗内部切换保护。
+          if (focusedWindow && (
+            focusedWindow === settingsWin ||
+            webReader?.ownsWindow(focusedWindow) ||
+            documentWorkspace?.ownsWindow(focusedWindow)
+          )) return
+          endPopupSettingsOpenGuard()
+        },
+        hasVisibleSettingsWindow: () => Boolean(
+          settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
+        ),
+        bringToFrontToOwnWindow: (window) => {
+          showOwnWindowForInteraction(window, { raiseLevel: true })
+        },
+        loadBounds: () => loadDocumentWindowState(
+          join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE)
+        ),
+        saveBounds: (bounds) => saveDocumentWindowState(
+          join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE),
+          bounds
+        )
+      })
+      screenshotPinManager = createScreenshotPinWindowManager({
+        preloadPath: PRELOAD_PATH,
+        loadPage: (win) => loadRendererHtml(win, 'pin.html'),
+        buildFileName: buildScreenshotSaveFileName,
+        translate: t,
+        showToast: (message, displayTimeMs, kind) => showScreenshotToast(message, displayTimeMs, kind)
+      })
+      if (isWindows7CompatibilityRuntime()) {
+        // Win7 包不加载 electron-updater，只用 GitHub Release API 检查是否有新版 Win7 安装包。
+        const { UpdateManager } = await import('./updateManager')
+        const { Win7UpdateDriver } = await import('./win7UpdateDriver')
+        updateManager = new UpdateManager({
+          driver: new Win7UpdateDriver({
+            currentVersion: app.getVersion(),
+            fetch: translationFetch
+          }),
+          currentVersion: app.getVersion(),
+          enabled: app.isPackaged,
+          // manual 模式发现新版后由 UpdateManager 设置 updateAction: 'open-release'。
+          installMode: 'manual',
+          releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
+          isOnline: () => net.isOnline(),
+          getTranslator: () => mainI18n?.translator ?? createTranslator('zh-CN'),
+          openExternal: async (url) => {
+            await shell.openExternal(url)
+          },
+          onStatusChanged: (status) => {
+            broadcast('updater:status', status)
+          }
+        })
+        if (!updateManagerInitialization) createUpdateManagerGate()
+        resolveUpdateManagerInitialization?.()
+      } else {
+        const { createApplicationUpdateManager } = await import('./updater')
+        updateManager = await createApplicationUpdateManager(
+          (status) => {
+            broadcast('updater:status', status)
+          },
+          // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
+          // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
+          // @author zhenghq
+          { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
+        )
+        if (!updateManagerInitialization) createUpdateManagerGate()
+        resolveUpdateManagerInitialization?.()
+      }
+      console.log(
+        '[main] 启动完成 autoTrigger =',
+        getSettings().triggerMode === 'auto',
+        'triggerMode =',
+        getSettings().triggerMode,
+        'hotkey =',
+        getSettings().hotkey,
+        'proxyMode =',
+        getSettings().proxyMode
+      )
+      if (updateManager) broadcast('updater:status', updateManager.getStatus())
+      broadcast('settings:changed', getSettings())
+      const snapshot = getRealtimeSubtitleController()?.snapshot() ??
+        unsupportedRealtimeSubtitleSnapshot ??
+        createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+      broadcast('subtitle:update', snapshot)
+      // 避免自动更新网络请求与应用首次启动初始化争用资源。
+      setTimeout(() => void checkForApplicationUpdates(), UPDATE_CHECK_DELAY_MS)
+      // 提前创建 Toast 窗口，避免首次复制/保存时临时创建窗口和加载页面造成提示延迟。
+      getScreenshotToastWindow()
+      // 启动后检测权限：若已开启始终自动翻译但未授权，主动引导。
+      setTimeout(() => void warnIfNoAccessibility(), 1500)
+      // 避免安装/升级通知网络请求与启动初始化争用资源；失败静默且不阻塞。
+      setTimeout(() => void maybeSendInstallUpgradeNotification(), 1_500)
+      prewarmScreenshotRuntime()
+    } catch (error) {
+      if (!updateManagerInitialization) createUpdateManagerGate()
+      rejectUpdateManagerInitialization?.(error)
+      throw error
+    }
+  })()
+  deferredStartupServices = initialization
+  return initialization
 }
 
 /**
@@ -5088,12 +5214,27 @@ async function logOcrCaptureDiagnostic(imageBytes: Buffer, bounds: CaptureBounds
 }
 
 /**
- * 使用 macOS 原生 screencapture 采集框选区域，避免 Electron desktopCapturer 截到自身遮罩缓存。
+ * 使用 macOS ScreenCaptureKit 采集框选区域，避免 Electron desktopCapturer 截到自身遮罩缓存；
+ * helper 不可用时保留 screencapture 作为兼容降级。
  * @param bounds 全局屏幕坐标下的框选区域。
- * @returns PNG 图片字节。
+ * @returns PNG 图片字节与实际采集来源标识。
  * @author zhenghq
  */
-async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
+async function captureMacRegionAsPng(
+  bounds: CaptureBounds
+): Promise<{ png: Buffer; source: string }> {
+  if (macosScreenCapture) {
+    try {
+      return {
+        png: await macosScreenCapture.capture(bounds),
+        source: 'macos-screen-capture-kit'
+      }
+    } catch (error) {
+      console.log('[ocr] ScreenCaptureKit 截图失败，回退 screencapture', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
   const path = join(
     tmpdir(),
     `selection-translator-ocr-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.png`
@@ -5106,7 +5247,7 @@ async function captureMacRegionAsPng(bounds: CaptureBounds): Promise<Buffer> {
   ].join(',')
   try {
     await execFileP('screencapture', ['-x', '-R', rect, path], { timeout: 5000 })
-    return await readFile(path)
+    return { png: await readFile(path), source: 'macos-screencapture' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/permission|privacy|denied|not authorized/i.test(message)) {
@@ -5240,7 +5381,7 @@ interface OcrPreviewCapture {
  * 打开 OCR 选择器后采集一张屏幕快照，后续用户只在这张快照上调整区域。
  * Windows 优先把 GDI 的 BGRA 直接交给 nativeImage，由 Chromium 原生编码器生成预览，
  * 不再对整屏调用 JS 版 encodePng；koffi 绑定失败时回退 helper exe / PowerShell 的 PNG 产物。
- * macOS / Linux 复用各自既有 PNG 采集来源。
+ * macOS 使用 ScreenCaptureKit 采集 PNG，Linux 使用 Electron desktopCapturer。
  * @param bounds 需要快照的显示器区域。
  * @returns 内存快照、延迟编码回调与采集耗时。
  * @author zhenghq
@@ -5302,16 +5443,20 @@ async function captureOcrPreviewSnapshot(bounds: CaptureBounds): Promise<OcrPrev
     }
   }
   if (process.platform === 'darwin') {
-    const png = await captureMacRegionAsPng(bounds)
+    const captured = await captureMacRegionAsPng(bounds)
     const captureMs = Date.now() - captureStartedAt
     return {
-      snapshot: { image: nativeImage.createFromBuffer(png), bounds, source: 'macos-screencapture-preview' },
+      snapshot: {
+        image: nativeImage.createFromBuffer(captured.png),
+        bounds,
+        source: `${captured.source}-preview`
+      },
       captureMs,
       // macOS 采集产物本身就是 PNG，base64 只是字符串转换；仍然延后到显示之后，
       // 避免整屏 base64（约 10-30MB 字符串）拖慢覆盖窗口出现。
       buildPreviewPayload: () => {
         const encodeStartedAt = Date.now()
-        const previewDataUrl = `data:image/png;base64,${png.toString('base64')}`
+        const previewDataUrl = `data:image/png;base64,${captured.png.toString('base64')}`
         return {
           preview: { imageDataUrl: previewDataUrl },
           previewEncodeMs: Date.now() - encodeStartedAt
@@ -5375,7 +5520,8 @@ function cropSnapshotSelectionPng(
 }
 
 /**
- * 采集 OCR 框选区域 PNG。macOS 优先使用系统 screencapture，其余平台使用 Electron desktopCapturer。
+ * 采集 OCR 框选区域 PNG。macOS 优先使用 ScreenCaptureKit，Windows 优先使用 GDI，
+ * 其余平台使用 Electron desktopCapturer。
  * @param bounds 全局屏幕坐标下的框选区域。
  * @param settings 当前设置。
  * @returns PNG 图片字节。
@@ -5383,9 +5529,9 @@ function cropSnapshotSelectionPng(
  */
 async function captureOcrSelectionPng(bounds: CaptureBounds, settings: Settings): Promise<Buffer> {
   if (process.platform === 'darwin') {
-    const png = await captureMacRegionAsPng(bounds)
-    await logOcrCaptureDiagnostic(png, bounds, 'macos-screencapture')
-    return png
+    const captured = await captureMacRegionAsPng(bounds)
+    await logOcrCaptureDiagnostic(captured.png, bounds, captured.source)
+    return captured.png
   }
   if (process.platform === 'win32') {
     // Windows 优先 GDI 原生采集；失败回退 helper exe / PowerShell，避免 DXGI 行错位彩条。
@@ -7063,6 +7209,7 @@ function openDeployDoc(): void {
  * @author zhenghq
  */
 async function checkForApplicationUpdates(): Promise<UpdateStatus> {
+  await ensureUpdateManagerInitialized()
   return getUpdateManager().checkForUpdates()
 }
 
@@ -7072,6 +7219,7 @@ async function checkForApplicationUpdates(): Promise<UpdateStatus> {
  * @author zhenghq
  */
 async function downloadApplicationUpdate(): Promise<UpdateStatus> {
+  await ensureUpdateManagerInitialized()
   return getUpdateManager().downloadUpdate()
 }
 
@@ -7081,6 +7229,7 @@ async function downloadApplicationUpdate(): Promise<UpdateStatus> {
  * @author zhenghq
  */
 async function cancelApplicationUpdateDownload(): Promise<UpdateStatus> {
+  await ensureUpdateManagerInitialized()
   return getUpdateManager().cancelDownload()
 }
 
@@ -7090,7 +7239,13 @@ async function cancelApplicationUpdateDownload(): Promise<UpdateStatus> {
  * @author zhenghq
  */
 function installApplicationUpdate(): void {
-  getUpdateManager().installUpdate()
+  void ensureUpdateManagerInitialized()
+    .then(() => getUpdateManager().installUpdate())
+    .catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[updater] install failed: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
 }
 
 /**
@@ -7099,6 +7254,7 @@ function installApplicationUpdate(): void {
  * @author zhenghq
  */
 async function openApplicationReleasePage(): Promise<void> {
+  await ensureUpdateManagerInitialized()
   await getUpdateManager().openReleasePage()
 }
 
@@ -7478,8 +7634,8 @@ function registerIpc(): void {
    * @returns 启动后的快照。
    * @author zhenghq
    */
-  ipcMain.handle('subtitle:start', () => {
-    const controller = getRealtimeSubtitleController()
+  ipcMain.handle('subtitle:start', async () => {
+    const controller = await getReadyRealtimeSubtitleController()
     if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
     return controller.start()
   })
@@ -7488,8 +7644,8 @@ function registerIpc(): void {
    * @returns 停止后的快照。
    * @author zhenghq
    */
-  ipcMain.handle('subtitle:stop', () => {
-    const controller = getRealtimeSubtitleController()
+  ipcMain.handle('subtitle:stop', async () => {
+    const controller = await getReadyRealtimeSubtitleController()
     if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
     return controller.stop()
   })
@@ -7498,8 +7654,8 @@ function registerIpc(): void {
    * @returns 暂停后的快照。
    * @author zhenghq
    */
-  ipcMain.handle('subtitle:pause', () => {
-    const controller = getRealtimeSubtitleController()
+  ipcMain.handle('subtitle:pause', async () => {
+    const controller = await getReadyRealtimeSubtitleController()
     if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
     return controller.pause()
   })
@@ -7508,8 +7664,8 @@ function registerIpc(): void {
    * @returns 恢复后的快照。
    * @author zhenghq
    */
-  ipcMain.handle('subtitle:resume', () => {
-    const controller = getRealtimeSubtitleController()
+  ipcMain.handle('subtitle:resume', async () => {
+    const controller = await getReadyRealtimeSubtitleController()
     if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
     return controller.resume()
   })
@@ -7518,8 +7674,8 @@ function registerIpc(): void {
    * @returns 当前快照。
    * @author zhenghq
    */
-  ipcMain.handle('subtitle:get-status', () => {
-    return getRealtimeSubtitleController()?.snapshot() ?? unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+  ipcMain.handle('subtitle:get-status', async () => {
+    return (await getReadyRealtimeSubtitleController())?.snapshot() ?? unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
   })
   /**
    * 打开 macOS 屏幕录制权限设置页，便于开发态 Electron 完成 TCC 授权。
@@ -7575,6 +7731,123 @@ function registerIpc(): void {
     if (!area || typeof area !== 'object') return
     subtitleWindow.setCardHitArea(area as RealtimeSubtitleDragHitArea)
   })
+  /**
+   * 等待后台服务后返回钉钉配置服务。
+   * @returns 已初始化的钉钉配置服务。
+   * @author zhenghq
+   */
+  const getReadyDingTalkConfiguration = async (): Promise<DingTalkConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getDingTalkConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 AI 配置服务。
+   * @returns 已初始化的 AI 配置服务。
+   * @author zhenghq
+   */
+  const getReadyAiConfiguration = async (): Promise<AiConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getAiConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 Deepgram 配置服务。
+   * @returns 已初始化的 Deepgram 配置服务。
+   * @author zhenghq
+   */
+  const getReadyDeepgramConfiguration = async (): Promise<DeepgramConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getDeepgramConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 Whisper 配置服务。
+   * @returns 已初始化的 Whisper 配置服务。
+   * @author zhenghq
+   */
+  const getReadyWhisperConfiguration = async (): Promise<WhisperConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getWhisperConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 DashScope 配置服务。
+   * @returns 已初始化的 DashScope 配置服务。
+   * @author zhenghq
+   */
+  const getReadyDashScopeConfiguration = async (): Promise<DashScopeConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getDashScopeConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 OpenAI Realtime 配置服务。
+   * @returns 已初始化的 OpenAI Realtime 配置服务。
+   * @author zhenghq
+   */
+  const getReadyOpenAIRealtimeConfiguration = async (): Promise<OpenAIRealtimeConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getOpenAIRealtimeConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 Gemini Live 配置服务。
+   * @returns 已初始化的 Gemini Live 配置服务。
+   * @author zhenghq
+   */
+  const getReadyGeminiLiveConfiguration = async (): Promise<GeminiLiveConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getGeminiLiveConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 iTranslate 配置服务。
+   * @returns 已初始化的 iTranslate 配置服务。
+   * @author zhenghq
+   */
+  const getReadyITranslateConfiguration = async (): Promise<ITranslateConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getITranslateConfiguration()
+  }
+  /**
+   * 等待后台服务后返回 DeepLX 配置服务。
+   * @returns 已初始化的 DeepLX 配置服务。
+   * @author zhenghq
+   */
+  const getReadyDeepLxConfiguration = async (): Promise<DeepLxConfigurationService> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getDeepLxConfiguration()
+  }
+  /**
+   * 等待后台服务后返回网页阅读器管理器。
+   * @returns 已初始化的网页阅读器管理器。
+   * @author zhenghq
+   */
+  const getReadyWebReader = async (): Promise<WebReaderManager> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getWebReader()
+  }
+  /**
+   * 等待后台服务后返回文档翻译工作台管理器。
+   * @returns 已初始化的文档翻译工作台管理器。
+   * @author zhenghq
+   */
+  const getReadyDocumentWorkspace = async (): Promise<DocumentWorkspaceManager> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getDocumentWorkspace()
+  }
+  /**
+   * 等待后台服务后返回实时字幕控制器。
+   * @returns 已初始化的实时字幕控制器或 null。
+   * @author zhenghq
+   */
+  const getReadyRealtimeSubtitleController = async (): Promise<RealtimeSubtitleController | null> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getRealtimeSubtitleController()
+  }
+  /**
+   * 等待后台服务后返回贴图窗口管理器。
+   * @returns 已初始化的贴图窗口管理器。
+   * @author zhenghq
+   */
+  const getReadyScreenshotPinManager = async (): Promise<ScreenshotPinWindowManager> => {
+    await ensureDeferredStartupServicesInitialized()
+    return getScreenshotPinManager()
+  }
   registerWindowControls({
     isAllowedWindow: (window) =>
       window === settingsWin ||
@@ -7691,7 +7964,9 @@ function registerIpc(): void {
     releaseSelectionFocusLease()
   })
   ipcMain.on('settings:open', () => openSettingsFromPopup())
-  ipcMain.on('document:open', () => openDocumentWorkspaceFromPopup())
+  ipcMain.on('document:open', () => {
+    void ensureDeferredStartupServicesInitialized().then(() => openDocumentWorkspaceFromPopup())
+  })
   ipcMain.handle('document:get-platform-capability', () => getDocumentPlatformCapability())
   /**
    * 从文档窗口一次选择并校验多个本地文件。
@@ -8101,27 +8376,42 @@ function registerIpc(): void {
     return runtime.approvedResourceService.getSource(request as DocumentApprovedSourceRequest)
   })
   ipcMain.on('webview:open', (_event, url: unknown) => {
-    openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)
+    void ensureDeferredStartupServicesInitialized().then(() => {
+      openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)
+    })
   })
-  ipcMain.on('webview:close', () => getWebReader().close())
-  ipcMain.handle('webview:navigate', (_event, url: unknown) => {
+  ipcMain.on('webview:close', () => {
+    void getReadyWebReader().then((reader) => reader.close())
+  })
+  ipcMain.handle('webview:navigate', async (_event, url: unknown) => {
     if (typeof url !== 'string' || !url.trim()) throw new Error(t('error.invalidWebUrl'))
-    return getWebReader().navigate(url)
+    return (await getReadyWebReader()).navigate(url)
   })
-  ipcMain.on('webview:back', () => getWebReader().back())
-  ipcMain.on('webview:forward', () => getWebReader().forward())
-  ipcMain.on('webview:reload', () => getWebReader().reload())
+  ipcMain.on('webview:back', () => {
+    void getReadyWebReader().then((reader) => reader.back())
+  })
+  ipcMain.on('webview:forward', () => {
+    void getReadyWebReader().then((reader) => reader.forward())
+  })
+  ipcMain.on('webview:reload', () => {
+    void getReadyWebReader().then((reader) => reader.reload())
+  })
   ipcMain.on('webview:set-bounds', (_event, bounds: unknown) => {
-    if (isWebViewBounds(bounds)) getWebReader().setBounds(bounds)
+    if (!isWebViewBounds(bounds)) return
+    void getReadyWebReader().then((reader) => reader.setBounds(bounds))
   })
-  ipcMain.handle('web-translate:extract', () => getWebReader().extract())
-  ipcMain.handle('web-translate:run', (_event, request: unknown) =>
-    getWebReader().run(isWebTranslationRunRequest(request) ? request : {})
+  ipcMain.handle('web-translate:extract', async () =>
+    (await getReadyWebReader()).extract()
   )
-  ipcMain.on('web-translate:cancel', () => getWebReader().cancel())
-  ipcMain.handle('web-translate:set-mode', (_event, mode: unknown) => {
+  ipcMain.handle('web-translate:run', async (_event, request: unknown) =>
+    (await getReadyWebReader()).run(isWebTranslationRunRequest(request) ? request : {})
+  )
+  ipcMain.on('web-translate:cancel', () => {
+    void getReadyWebReader().then((reader) => reader.cancel())
+  })
+  ipcMain.handle('web-translate:set-mode', async (_event, mode: unknown) => {
     if (!isWebTranslationMode(mode)) throw new Error(t('error.invalidWebMode'))
-    return getWebReader().setMode(mode)
+    return (await getReadyWebReader()).setMode(mode)
   })
   /**
    * 将当前网页译文导出为带水印 PDF。
@@ -8133,7 +8423,7 @@ function registerIpc(): void {
     if (!isWebReaderSender(event.sender)) {
       return { status: 'rejected', code: 'unreadable' }
     }
-    return getWebReader().exportPdf()
+    return (await getReadyWebReader()).exportPdf()
   })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   ipcMain.on('selection:translate', () => {
@@ -8354,56 +8644,86 @@ function registerIpc(): void {
     return filePath
   })
   ipcMain.handle('settings:set', (_event, patch: Partial<Settings>) => applySettingsPatch(patch))
-  ipcMain.handle('dingtalk:configure', (_event, patch: DingTalkConfigPatch) =>
-    applyDingTalkConfig(patch)
+  ipcMain.handle('dingtalk:configure', async (_event, patch: DingTalkConfigPatch) => {
+    return (await getReadyDingTalkConfiguration()).applyPatch(patch)
+  })
+  ipcMain.handle('dingtalk:clear-secret', async () => {
+    return (await getReadyDingTalkConfiguration()).clearSecret()
+  })
+  ipcMain.handle('dingtalk:check', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return checkDingTalk()
+  })
+  ipcMain.handle('deepgram:configure', async (_event, patch: DeepgramConfigPatch) =>
+    (await getReadyDeepgramConfiguration()).configure(patch)
   )
-  ipcMain.handle('dingtalk:clear-secret', () => clearDingTalkSecret())
-  ipcMain.handle('dingtalk:check', () => checkDingTalk())
-  ipcMain.handle('deepgram:configure', (_event, patch: DeepgramConfigPatch) =>
-    getDeepgramConfiguration().configure(patch)
+  ipcMain.handle('deepgram:clear-key', async () =>
+    (await getReadyDeepgramConfiguration()).clearApiKey()
   )
-  ipcMain.handle('deepgram:clear-key', () => getDeepgramConfiguration().clearApiKey())
-  ipcMain.handle('whisper:configure', (_event, patch: WhisperConfigPatch) =>
-    getWhisperConfiguration().configure(patch)
+  ipcMain.handle('whisper:configure', async (_event, patch: WhisperConfigPatch) =>
+    (await getReadyWhisperConfiguration()).configure(patch)
   )
-  ipcMain.handle('whisper:clear-key', () => getWhisperConfiguration().clearApiKey())
-  ipcMain.handle('dashscope:configure', (_event, patch: DashScopeConfigPatch) =>
-    getDashScopeConfiguration().configure(patch)
+  ipcMain.handle('whisper:clear-key', async () =>
+    (await getReadyWhisperConfiguration()).clearApiKey()
   )
-  ipcMain.handle('dashscope:clear-key', () =>
-    getDashScopeConfiguration().clearApiKey()
+  ipcMain.handle('dashscope:configure', async (_event, patch: DashScopeConfigPatch) =>
+    (await getReadyDashScopeConfiguration()).configure(patch)
   )
-  ipcMain.handle('openai-realtime:configure', (_event, patch: OpenAIRealtimeConfigPatch) =>
-    getOpenAIRealtimeConfiguration().configure(patch)
+  ipcMain.handle('dashscope:clear-key', async () =>
+    (await getReadyDashScopeConfiguration()).clearApiKey()
   )
-  ipcMain.handle('openai-realtime:clear-key', () =>
-    getOpenAIRealtimeConfiguration().clearApiKey()
+  ipcMain.handle('openai-realtime:configure', async (_event, patch: OpenAIRealtimeConfigPatch) =>
+    (await getReadyOpenAIRealtimeConfiguration()).configure(patch)
   )
-  ipcMain.handle('gemini-live:configure', (_event, patch: GeminiLiveConfigPatch) =>
-    getGeminiLiveConfiguration().configure(patch)
+  ipcMain.handle('openai-realtime:clear-key', async () =>
+    (await getReadyOpenAIRealtimeConfiguration()).clearApiKey()
   )
-  ipcMain.handle('gemini-live:clear-key', () =>
-    getGeminiLiveConfiguration().clearApiKey()
+  ipcMain.handle('gemini-live:configure', async (_event, patch: GeminiLiveConfigPatch) =>
+    (await getReadyGeminiLiveConfiguration()).configure(patch)
   )
-  ipcMain.handle('itranslate:configure', (_event, patch: ITranslateConfigPatch) =>
-    getITranslateConfiguration().configure(patch)
+  ipcMain.handle('gemini-live:clear-key', async () =>
+    (await getReadyGeminiLiveConfiguration()).clearApiKey()
   )
-  ipcMain.handle('itranslate:clear-key', () => getITranslateConfiguration().clearApiKey())
-  ipcMain.handle('microsoft:check', () => checkMicrosoft())
-  ipcMain.handle('bili-index:check', () => checkBilibiliIndex())
-  ipcMain.handle('ai:configure', (_event, patch: AiConfigPatch) => applyAiConfig(patch))
-  ipcMain.handle('ai:clear-key', () => clearAiApiKey())
-  ipcMain.handle('ai:list-models', () => listAiModels())
-  ipcMain.handle('ai:check', () => checkAi())
+  ipcMain.handle('itranslate:configure', async (_event, patch: ITranslateConfigPatch) =>
+    (await getReadyITranslateConfiguration()).configure(patch)
+  )
+  ipcMain.handle('itranslate:clear-key', async () =>
+    (await getReadyITranslateConfiguration()).clearApiKey()
+  )
+  ipcMain.handle('microsoft:check', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return checkMicrosoft()
+  })
+  ipcMain.handle('bili-index:check', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return checkBilibiliIndex()
+  })
+  ipcMain.handle('ai:configure', async (_event, patch: AiConfigPatch) =>
+    (await getReadyAiConfiguration()).applyPatch(patch)
+  )
+  ipcMain.handle('ai:clear-key', async () =>
+    (await getReadyAiConfiguration()).clearApiKey()
+  )
+  ipcMain.handle('ai:list-models', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return listAiModels()
+  })
+  ipcMain.handle('ai:check', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return checkAi()
+  })
   ipcMain.handle('ocr:get-status', () => getOcrStatus())
 
-  ipcMain.handle('deeplx:configure', (_event, patch: DeepLxConfigPatch) =>
-    applyDeepLxConfig(patch)
+  ipcMain.handle('deeplx:configure', async (_event, patch: DeepLxConfigPatch) =>
+    (await getReadyDeepLxConfiguration()).applyPatch(patch)
   )
-  ipcMain.handle('deeplx:check', () => checkDeepLx())
+  ipcMain.handle('deeplx:check', async () => {
+    await ensureDeferredStartupServicesInitialized()
+    return checkDeepLx()
+  })
   ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
   ipcMain.on('deeplx:open-doc', () => openDeployDoc())
-  ipcMain.handle('updater:get-status', () => getUpdateManager().getStatus())
+  ipcMain.handle('updater:get-status', () => getUpdateStatusSnapshot())
   ipcMain.handle('updater:check', () => checkForApplicationUpdates())
   ipcMain.handle('updater:download', () => downloadApplicationUpdate())
   ipcMain.handle('updater:cancel-download', () => cancelApplicationUpdateDownload())
@@ -8616,6 +8936,8 @@ function cleanupBeforeQuit(): void {
   webReader = null
   selectionInteraction.invalidate()
   selectionListenerController.stop()
+  macosScreenCapture?.dispose()
+  macosScreenCapture = null
   globalShortcut.unregisterAll()
   tray?.destroy()
   tray = null

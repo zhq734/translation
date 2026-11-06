@@ -7,6 +7,7 @@ export const appZhCN = defineCatalog({
   'app.serviceNotInitialized.deepLx': 'DeepLX 配置服务尚未初始化',
   'app.serviceNotInitialized.update': '自动更新服务尚未初始化',
   'app.serviceNotInitialized.webReader': '网页阅读器尚未初始化',
+  'app.serviceNotInitialized.screenshotPin': '贴图窗口管理器尚未初始化',
   'app.serviceNotInitialized.deepLxCheck': 'DeepLX 检测服务尚未初始化',
   'app.serviceNotInitialized.aiModelDiscovery': 'AI 模型发现服务尚未初始化',
   'app.serviceNotInitialized.aiCheck': 'AI 检测服务尚未初始化',

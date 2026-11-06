@@ -477,14 +477,57 @@ test('OCR 识别只裁内存快照，不重新截屏', () => {
 })
 
 /**
- * 校验 macOS OCR 截图使用系统 screencapture，但不再持久化截图图片。
+ * 校验 macOS OCR 截图优先使用 ScreenCaptureKit helper，避免 screencapture 子进程
+ * 已生成截图却迟迟不退出时，被预览采集超时误判为采集失败。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('macOS OCR 截图应使用原生 screencapture 且不保存诊断图片', () => {
-  assert.match(main, /execFileP\('screencapture',\s*\['-x',\s*'-R'/u)
-  assert.match(main, /logOcrCaptureDiagnostic\(png,\s*bounds,\s*'macos-screencapture'\)/u)
+test('macOS OCR 截图应优先使用 ScreenCaptureKit 且不保存诊断图片', () => {
+  const captureStart = main.indexOf('async function captureMacRegionAsPng')
+  assert.notStrictEqual(captureStart, -1, '未找到 macOS 区域采集函数')
+  const captureSource = main.slice(captureStart, main.indexOf('/**', captureStart + 1))
+
+  assert.match(captureSource, /macosScreenCapture\.capture\(bounds\)/u)
+  assert.match(captureSource, /execFileP\('screencapture',\s*\['-x',\s*'-R'/u)
+  assert.ok(
+    captureSource.indexOf('macosScreenCapture.capture(bounds)') <
+      captureSource.indexOf("execFileP('screencapture'"),
+    'ScreenCaptureKit 必须优先于 screencapture'
+  )
+  assert.match(main, /logOcrCaptureDiagnostic\(captured\.png,\s*bounds,\s*captured\.source\)/u)
   assert.doesNotMatch(main, /saveOcrCaptureImage|ocr-captures|writeFile\(path,\s*imageBytes\)/u)
+})
+
+/**
+ * 校验 macOS OCR 框选使用 ScreenCaptureKit 预览快照作为最终裁剪来源，
+ * 确保实际交互路径的采集来源可被日志准确识别。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS OCR 框选预览应标记为 ScreenCaptureKit 来源', () => {
+  const previewStart = main.indexOf('async function captureOcrPreviewSnapshot')
+  assert.notStrictEqual(previewStart, -1, '未找到 OCR 预览采集函数')
+  const previewSource = main.slice(previewStart, main.indexOf('/**', previewStart + 1))
+  const macosBranch = previewSource.slice(previewSource.indexOf("if (process.platform === 'darwin')"))
+
+  assert.match(macosBranch, /captureMacRegionAsPng\(bounds\)/u)
+  assert.match(macosBranch, /source:\s*`\$\{captured\.source\}-preview`/u)
+  assert.doesNotMatch(
+    macosBranch,
+    /source:\s*'(?:macos-screen-capture-kit|macos-screencapture)-preview'/u,
+    '预览来源不得硬编码，否则降级到 screencapture 时会误报为 ScreenCaptureKit'
+  )
+})
+
+/**
+ * 校验 macOS OCR 预览与最终截图使用同一个 ScreenCaptureKit 客户端来源。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS OCR 采集应初始化并释放 ScreenCaptureKit 客户端', () => {
+  assert.match(main, /createMacosScreenCaptureClient/u)
+  assert.match(main, /macosScreenCapture = process\.platform === 'darwin'[\s\S]*?createMacosScreenCaptureClient/u)
+  assert.match(main, /macosScreenCapture\?\.dispose\(\)/u)
 })
 
 /**

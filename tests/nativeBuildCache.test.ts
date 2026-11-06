@@ -62,6 +62,7 @@ test('macOS 原生构建脚本应默认增量跳过并支持 --force', () => {
     'scripts/build-macos-vision-ocr.mjs',
     'scripts/build-macos-ax-reader.mjs',
     'scripts/build-macos-window-helper.mjs',
+    'scripts/build-macos-screen-capture.mjs',
     'scripts/build-macos-subtitle-audio.mjs'
   ]) {
     const source = readFileSync(path, 'utf8')

@@ -1196,12 +1196,24 @@ function populateLanguageSelects(): void {
 async function initialize(): Promise<void> {
   populateLanguageSelects()
 
-  const settings = await window.api.getSettings()
+  const [
+    settings,
+    shortcutStates,
+    ocrStatus,
+    dockerCommand,
+    updateStatus
+  ] = await Promise.all([
+    window.api.getSettings(),
+    window.api.getShortcutRegistrationStates(),
+    window.api.getOcrStatus(),
+    window.api.getDockerCommand(1189),
+    window.api.getUpdateStatus()
+  ])
   renderSettings(settings)
-  renderShortcutRegistrationStates(await window.api.getShortcutRegistrationStates())
-  renderOcrStatus(await window.api.getOcrStatus())
-  dockerCmd.value = await window.api.getDockerCommand(1189)
-  renderUpdateStatus(await window.api.getUpdateStatus())
+  renderShortcutRegistrationStates(shortcutStates)
+  renderOcrStatus(ocrStatus)
+  dockerCmd.value = dockerCommand
+  renderUpdateStatus(updateStatus)
   if (!settings.shortcutGuideSeen) showShortcutGuide()
 }
 

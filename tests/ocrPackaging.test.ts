@@ -9,6 +9,7 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
     files: string[]
     asarUnpack: string[]
     mac: {
+      minimumSystemVersion?: string
       extendInfo?: Record<string, unknown>
       extraResources?: Array<{ from: string; to: string }>
     }
@@ -18,6 +19,8 @@ const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
 }
 const packagingDoc = readFileSync('docs/ocr-packaging-verification.md', 'utf8')
 const packageWorkflow = readFileSync('.github/workflows/package.yml', 'utf8')
+const screenCaptureHelperSource = readFileSync('helpers/macos-screen-capture/main.m', 'utf8')
+const screenCaptureBuildScript = readFileSync('scripts/build-macos-screen-capture.mjs', 'utf8')
 
 /**
  * 校验 OCR 模型和 native runtime 已进入 Electron 三平台打包配置。
@@ -52,6 +55,39 @@ test('macOS Vision OCR helper 应纳入构建和 macOS 打包资源', () => {
     ),
     'macOS 打包应复制 macos-vision-ocr 到 Resources 根目录'
   )
+})
+
+/**
+ * 校验 OCR 截图所用的 ScreenCaptureKit helper 会在构建时生成并复制到
+ * Electron Resources 根目录，避免打包后回退到会挂起的 screencapture。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS ScreenCaptureKit 截图 helper 应纳入构建和打包资源', () => {
+  assert.match(packageJson.scripts.build, /build-macos-screen-capture\.mjs/u)
+  assert.match(packageJson.scripts.dev, /build-macos-screen-capture\.mjs/u)
+  assert.ok(
+    packageJson.build.mac.extraResources?.some((resource) =>
+      resource.from === 'build/macos-screen-capture' && resource.to === 'macos-screen-capture'
+    ),
+    'macOS 打包应复制 macos-screen-capture 到 Resources 根目录'
+  )
+})
+
+/**
+ * 校验 ScreenCaptureKit 截图 helper 与应用的 macOS 最低支持版本一致，
+ * 并在 macOS 14.2 至 15.1 上使用可用的区域截图回退 API。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('macOS ScreenCaptureKit 截图 helper 应兼容最低系统版本 14.2', () => {
+  assert.equal(packageJson.build.mac.minimumSystemVersion, '14.2')
+  assert.match(screenCaptureBuildScript, /-mmacosx-version-min=14\.2/u)
+  assert.doesNotMatch(screenCaptureBuildScript, /-mmacosx-version-min=15\.2/u)
+  assert.match(screenCaptureHelperSource, /@available\(macOS 15\.2,/u)
+  assert.match(screenCaptureHelperSource, /captureImageWithFilter:/u)
+  assert.match(screenCaptureHelperSource, /getShareableContentWithCompletionHandler:/u)
+  assert.match(screenCaptureHelperSource, /sourceRect/u)
 })
 
 /**
