@@ -6,18 +6,18 @@
   <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="划词翻译使用文档：安装、首次授权、划词翻译、截图 OCR、网页全文翻译、文档翻译工作台、翻译通道配置与隐私说明。">
+  <meta name="description" content="划词翻译使用文档：安装、首次授权、划词翻译、截图 OCR、网页全文翻译、文档翻译工作台、实时字幕、翻译通道配置与隐私说明。">
   <link rel="canonical" href="https://zhq734.github.io/translation/docs/">
   <meta property="og:type" content="article">
   <meta property="og:locale" content="zh_CN">
   <meta property="og:site_name" content="划词翻译">
   <meta property="og:title" content="使用文档 — 划词翻译">
-  <meta property="og:description" content="从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。">
+  <meta property="og:description" content="从安装、授权到划词、OCR、网页、文档翻译与实时字幕。这里是划词翻译的完整使用说明。">
   <meta property="og:url" content="https://zhq734.github.io/translation/docs/">
   <meta property="og:image" content="https://zhq734.github.io/translation/assets/images/result.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="使用文档 — 划词翻译">
-  <meta name="twitter:description" content="从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。">
+  <meta name="twitter:description" content="从安装、授权到划词、OCR、网页、文档翻译与实时字幕。这里是划词翻译的完整使用说明。">
   <meta name="twitter:image" content="https://zhq734.github.io/translation/assets/images/result.png">
   <link rel="icon" type="image/png" href="../assets/icon.png">
   <link rel="stylesheet" href="../styles.css">
@@ -66,6 +66,7 @@
           <a href="#ocr">截图 OCR</a>
           <a href="#web">网页全文翻译</a>
           <a href="#document">文档翻译工作台</a>
+          <a href="#subtitle">实时字幕</a>
           <a href="#channels">翻译通道</a>
           <a href="#settings">设置与外观</a>
           <a href="#privacy">隐私与安全</a>
@@ -81,9 +82,9 @@
 
     <article class="docs-content">
       <header class="docs-hero">
-        <p class="section-kicker">DOCUMENTATION · V1.2.8</p>
+        <p class="section-kicker">DOCUMENTATION · V1.3.0</p>
         <h1>使用文档</h1>
-        <p>从安装、授权到划词、OCR、网页与文档翻译。这里是划词翻译的完整使用说明。</p>
+        <p>从安装、授权到划词、OCR、网页、文档翻译与实时字幕。这里是划词翻译的完整使用说明。</p>
         <div class="docs-hero-meta"><span>适用于 macOS / Windows / Linux</span><span>更新于 2026.11</span></div>
       </header>
 
@@ -244,6 +245,36 @@
         </div>
       </section>
 
+      <section id="subtitle" class="doc-section">
+        <h2>实时字幕</h2>
+        <p class="doc-lead">按全局快捷键 <kbd>Alt + L</kbd> 开始或停止实时字幕。应用会采集系统声音或麦克风，把语音实时转成原文，并显示双语字幕。</p>
+
+        <h3>适用场景</h3>
+        <p>观看外语视频、参加在线会议、上网课时，字幕悬浮窗会跟随语音滚动显示原文与译文，不需要反复暂停、复制和粘贴。</p>
+
+        <h3>语音识别渠道</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>渠道</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>Deepgram</td><td>WebSocket 实时识别；API Key 保存在系统安全存储</td></tr>
+              <tr><td>Whisper / OpenAI 兼容服务</td><td>支持本地部署的 faster-whisper、whisper.cpp 等；填写 Base URL 即可，本地无鉴权服务 API Key 留空</td></tr>
+              <tr><td>WebSocket 流式 ASR</td><td>连接自定义 WebSocket 识别服务，默认适配 faster-whisper-stream</td></tr>
+              <tr><td>阿里云百炼（DashScope）</td><td>内置 DashScope 实时识别；也支持自定义地址与模型</td></tr>
+              <tr><td>自定义 OpenAI Realtime</td><td>填写完整 WebSocket URL、模型和 API Key</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>翻译与显示</h3>
+        <p>识别完成的原文会复用应用现有的多通道文字翻译，没有原生译文时自动回退兜底。字幕窗支持选择目标语言、中英双语/纯译文显示模式、字号与颜色调整，可拖动、固定，也可开启鼠标穿透。</p>
+
+        <div class="callout callout-info">
+          <strong>macOS 音频采集授权</strong>
+          <p>采集系统声音需要授予「屏幕录制」权限，采集麦克风需要「麦克风」权限。授权后如仍无声，请完全退出并重启应用。</p>
+        </div>
+      </section>
+
       <section id="channels" class="doc-section">
         <h2>翻译通道</h2>
         <p class="doc-lead">默认按优先级尝试可用通道。当前通道失败或熔断时，会自动切换到后续通道。</p>
@@ -289,6 +320,7 @@
               <tr><td>源语言</td><td>自动检测</td><td>也可选择固定源语言</td></tr>
               <tr><td>触发方式</td><td>选区按钮</td><td>自动翻译、选区按钮、仅快捷键</td></tr>
               <tr><td>全局快捷键</td><td><kbd>Alt + T</kbd></td><td>Electron accelerator 格式</td></tr>
+              <tr><td>实时字幕快捷键</td><td><kbd>Alt + L</kbd></td><td>开始 / 停止实时字幕</td></tr>
               <tr><td>结果自动隐藏</td><td>不自动隐藏</td><td>0 / 3 / 5 / 8 / 15 秒</td></tr>
               <tr><td>语音引擎</td><td>系统内置语音</td><td>可切换 Edge 在线神经网络语音</td></tr>
             </tbody>
@@ -330,6 +362,7 @@
           <details><summary>翻译失败或出现 429<span>+</span></summary><p>公共 DeepLX 可能被限流，Google 可能受网络环境影响。应用会自动尝试后续通道；如果仍不稳定，建议配置自建 DeepLX，并确认服务地址、端口与代理绕过规则。</p></details>
           <details><summary>macOS 提示「应用已损坏，无法打开」<span>+</span></summary><p>先确认安装包来源可信，并确认它是否为未签名构建。未签名包首次打开时，可在确认来源后执行：<code>xattr -dr com.apple.quarantine "/Applications/划词翻译.app"</code>，然后重新打开应用。若需减少 Gatekeeper 提示并启用自动升级，应使用签名公证包。</p></details>
           <details><summary>钉钉 Secret 保存失败<span>+</span></summary><p>Electron <code>safeStorage</code> 不可用时，应用会拒绝写入明文凭证。请确认系统钥匙串/安全存储可用，重新启动应用后再试；不要手动把 Secret 写入 <code>settings.json</code>。</p></details>
+          <details><summary>实时字幕没有内容或报错<span>+</span></summary><p>先确认已选择语音识别渠道并保存了对应的 API Key 或服务地址；macOS 采集系统声音需要「屏幕录制」权限，采集麦克风需要「麦克风」权限，授权后需完全退出并重启应用。识别原文会走现有翻译通道，翻译失败时可参考通用通道排障方法。</p></details>
           <details><summary>微软翻译检测失败<span>+</span></summary><p>该通道不需要 Azure 密钥或 Region。确认当前网络和代理可以访问 <code>www.bing.com</code>；如果 Bing 拒绝临时网页会话或触发限流，请稍后重试，并保留后续兜底通道。</p></details>
           <details><summary>npm install 失败<span>+</span></summary><p>确认 Node.js 版本不低于 18；删除不完整依赖后重新安装。原生模块编译错误请安装 Xcode Command Line Tools，并确认 Node/Electron 架构匹配。npm 缓存权限异常时可临时使用项目内缓存：<code>npm install --cache ./.npm-cache</code>。</p></details>
         </div>

@@ -6,18 +6,18 @@
   <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="划词翻译是一款支持 macOS、Windows 与 Linux 的桌面翻译工具。选中文字即可翻译，支持截图 OCR、网页全文翻译与文档翻译工作台。">
+  <meta name="description" content="划词翻译是一款支持 macOS、Windows 与 Linux 的桌面翻译工具。选中文字即可翻译，支持截图 OCR、网页全文翻译、文档翻译工作台与实时字幕。">
   <link rel="canonical" href="https://zhq734.github.io/translation/">
   <meta property="og:type" content="website">
   <meta property="og:locale" content="zh_CN">
   <meta property="og:site_name" content="划词翻译">
   <meta property="og:title" content="划词翻译 — 选中，即懂。">
-  <meta property="og:description" content="不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。">
+  <meta property="og:description" content="不用复制粘贴，不打断阅读。支持划词、OCR、网页、文档翻译与实时字幕，让翻译出现在你正在看的地方。">
   <meta property="og:url" content="https://zhq734.github.io/translation/">
   <meta property="og:image" content="https://zhq734.github.io/translation/assets/images/result.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="划词翻译 — 选中，即懂。">
-  <meta name="twitter:description" content="不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。">
+  <meta name="twitter:description" content="不用复制粘贴，不打断阅读。支持划词、OCR、网页、文档翻译与实时字幕，让翻译出现在你正在看的地方。">
   <meta name="twitter:image" content="https://zhq734.github.io/translation/assets/images/result.png">
   <link rel="icon" type="image/png" href="./assets/icon.png">
   <link rel="stylesheet" href="./styles.css">
@@ -42,6 +42,7 @@
     <symbol id="i-apple" viewBox="0 0 24 24"><path d="M16.7 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3-2-3.7-2.1-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.5 1.3-.1 1.8-.8 3.4-.8s2 .8 3.4.8c1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.9-1.1-2.9-3.8ZM14.1 4.7c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.6-.7.8-1.3 2-1.1 3.2 1.1.1 2.3-.6 3-1.5Z"/></symbol>
     <symbol id="i-linux" viewBox="0 0 24 24"><path d="M8 9c0-3 1.8-5 4-5s4 2 4 5c0 2.4 2 3.9 2 7 0 3.4-2.7 5-6 5s-6-1.6-6-5c0-3.1 2-4.6 2-7Z"/><circle cx="10" cy="8" r=".7"/><circle cx="14" cy="8" r=".7"/><path d="M10 11c1.2 1 2.8 1 4 0"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+    <symbol id="i-cc" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="3"/><path d="M11 10.2a2.3 2.3 0 1 0 0 3.6m7.5-3.6a2.3 2.3 0 1 0 0 3.6"/></symbol>
   </defs></svg>
   <a class="skip-link" href="#main">跳转到正文</a>
 
@@ -67,7 +68,7 @@
   <main id="main">
     <section class="hero container" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="status-dot"></span> 桌面翻译工具 · V1.2.8</p>
+        <p class="eyebrow"><span class="status-dot"></span> 桌面翻译工具 · V1.3.0</p>
         <h1 id="hero-title"><span class="product-mark">划词翻译</span><span class="product-en">Selection Translator</span></h1>
         <p class="tagline">选中，<span class="mark">即懂。</span></p>
         <p class="hero-lead">不用复制粘贴，不打断阅读。让翻译出现在你正在看的地方。</p>
@@ -76,7 +77,7 @@
           <a class="button" href="./docs/">查看使用文档<svg class="i"><use href="#i-arrow"/></svg></a>
         </div>
         <ul class="hero-points" aria-label="核心特点">
-          <li>全局划词</li><li>截图 OCR</li><li>网页全文</li><li>文档翻译</li>
+          <li>全局划词</li><li>截图 OCR</li><li>网页全文</li><li>文档翻译</li><li>实时字幕</li>
         </ul>
         <div class="hero-platforms" aria-label="支持平台">
           <span><svg class="i"><use href="#i-apple"/></svg>macOS</span>
@@ -142,6 +143,12 @@
           <p>导入一份文件，完成解析、OCR、翻译、左右对照与 PDF 导出。表格、图片和公式尽量保留原版式，支持「保留版式」和「左右双语」两种输出。</p>
           <p class="feature-note">单文件工作台；批量翻译与 PPTX / XLSX 暂不在当前版本范围内。</p>
         </article>
+        <article class="feature-card feature-card-wide feature-card-span">
+          <div class="feature-top"><span class="feature-icon"><svg class="i"><use href="#i-cc"/></svg></span><kbd>Alt + L</kbd></div>
+          <h3>实时字幕</h3>
+          <p>看视频、开在线会议或上网课时，采集系统声音或麦克风，把语音实时转成双语字幕，悬浮显示在屏幕上，不懂的内容即刻可读。</p>
+          <p class="feature-note">支持 Deepgram、阿里云百炼、OpenAI Realtime、自定义 WebSocket 与本地 Whisper；识别出的原文自动复用现有翻译通道。</p>
+        </article>
       </div>
     </section>
 
@@ -174,6 +181,12 @@
           <figure><img src="./assets/images/settings.png" alt="划词翻译常规设置界面" loading="lazy"><figcaption>设置与外观</figcaption></figure>
           <figure><img src="./assets/images/microsoft.png" alt="微软翻译通道设置" loading="lazy"><figcaption>翻译通道</figcaption></figure>
         </div>
+        <figure class="screenshot-subtitle">
+          <div class="subtitle-stage">
+            <img src="./assets/images/subtitle.png" width="2048" height="273" alt="实时字幕悬浮窗在视频画面上显示中英双语字幕" loading="lazy" decoding="async">
+          </div>
+          <figcaption>实时字幕 · 系统声音与麦克风实时识别，中英双语同步显示</figcaption>
+        </figure>
       </div>
     </section>
 
@@ -239,7 +252,7 @@
         <div class="section-heading">
           <p class="section-kicker">06 / DOWNLOAD</p>
           <h2 id="download-title">把它放在手边。</h2>
-          <p class="section-intro">下载最新版 V1.2.8。安装脚本会自动识别系统与 CPU 架构，并校验 SHA-256。</p>
+          <p class="section-intro">下载最新版 V1.3.0。安装脚本会自动识别系统与 CPU 架构，并校验 SHA-256。</p>
         </div>
         <div class="platform-grid">
           <article class="platform-card" data-platform="mac">
@@ -290,6 +303,10 @@
         <details>
           <summary>截图和文档里的图片会上传吗？<span class="plus">+</span></summary>
           <p>不会。截图、页面截图、文档内嵌图片和公式裁剪图都在本机处理。只有识别出的文字会按当前翻译通道发送给对应服务。使用第三方翻译服务前，请评估其隐私政策。</p>
+        </details>
+        <details>
+          <summary>实时字幕需要配置吗？<span class="plus">+</span></summary>
+          <p>需要选择一个语音识别渠道并填入对应的 API Key 或服务地址，例如 Deepgram、阿里云百炼，或本地部署的 Whisper 服务。识别出的原文会自动使用应用现有的翻译通道翻译，字幕以双语悬浮窗显示。</p>
         </details>
         <details>
           <summary>需要 API Key 吗？<span class="plus">+</span></summary>
