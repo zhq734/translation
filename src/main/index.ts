@@ -33,6 +33,11 @@ import { createAppLogger, type LogEntry } from './logging'
 import { createMainI18nRuntime, type MainI18nRuntime } from './i18n'
 import { createTranslator } from '../shared/i18n'
 import {
+  createDeferredServicesGate,
+  markDeferredServicesFailed,
+  markDeferredServicesReady
+} from './deferredServicesGate'
+import {
   captureSelection,
   captureSelectionByNativeOnly,
   captureSelectionAfterButtonClick,
@@ -502,6 +507,8 @@ let unsupportedRealtimeSubtitleSnapshot: RealtimeSubtitleSnapshot | null = null
 let screenshotPinManager: ScreenshotPinWindowManager | null = null
 /** 重后台服务初始化完成前，依赖这些服务的 IPC 统一等待该 Promise。 */
 let deferredStartupServices: Promise<void> | null = null
+/** 显式用户入口在重后台服务未就绪时统一排队，避免首屏阶段提前读取未初始化服务。 */
+const applicationServicesGate = createDeferredServicesGate()
 /** 更新管理器初始化完成前，更新操作统一等待该 Promise。 */
 let updateManagerInitialization: Promise<void> | null = null
 let resolveUpdateManagerInitialization: (() => void) | null = null
@@ -894,6 +901,11 @@ function getScreenshotPinManager(): ScreenshotPinWindowManager {
 function startDeferredStartupServices(): Promise<void> {
   if (!deferredStartupServices) {
     deferredStartupServices = initializeDeferredStartupServices()
+    void deferredStartupServices.then(() => {
+      markDeferredServicesReady(applicationServicesGate)
+    }).catch((error: unknown) => {
+      markDeferredServicesFailed(applicationServicesGate, error)
+    })
   }
   void deferredStartupServices.catch((error: unknown) => {
     appLogger.append('warn', [
@@ -901,6 +913,58 @@ function startDeferredStartupServices(): Promise<void> {
     ], 'main')
   })
   return deferredStartupServices
+}
+
+/**
+ * 等待重后台服务就绪，不主动触发初始化。
+ * @returns 重后台服务就绪后完成的 Promise。
+ * @author zhenghq
+ */
+function waitForDeferredStartupServices(): Promise<void> {
+  return applicationServicesGate.getInitializationPromise()
+}
+
+/**
+ * 登记仅在重后台服务就绪后执行的动作。
+ * @param action 待执行的无参数动作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function queueDeferredServiceWaiter(action: () => void): void {
+  applicationServicesGate.whenReady(action)
+}
+
+/**
+ * 在重后台服务就绪后执行显式用户动作。
+ * @param action 待执行的同步或异步动作。
+ * @returns 动作完成后的结果。
+ * @author zhenghq
+ */
+async function whenApplicationServicesReady<T>(action: () => T | Promise<T>): Promise<T> {
+  if (applicationServicesGate.isReady()) return action()
+  return waitForDeferredStartupServices().then(action).catch((error: unknown) => {
+    throw error
+  })
+}
+
+/**
+ * 以不阻塞调用方的方式执行依赖重后台服务的动作。
+ * @param action 待执行的无参数动作。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function runWhenDeferredServicesReady(action: () => void): void {
+  if (applicationServicesGate.isReady()) {
+    action()
+    return
+  }
+  queueDeferredServiceWaiter(() => {
+    void whenApplicationServicesReady(action).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] deferred user action dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+  })
 }
 
 /**
@@ -1064,6 +1128,25 @@ function createUnsupportedRealtimeSubtitleSnapshot(
     segments: [],
     error,
     errorCode: 'unsupported-platform'
+  }
+}
+
+/**
+ * 构造后台服务尚未初始化时的中性空闲快照，避免设置页首屏误报平台不支持。
+ * @returns 不含错误信息的空闲状态实时字幕快照。
+ * @author zhenghq
+ */
+function createIdleRealtimeSubtitleSnapshot(): RealtimeSubtitleSnapshot {
+  const settings = getSettings()
+  return {
+    state: 'idle',
+    audioSource: settings.realtimeSubtitleAudioSource,
+    displayMode: settings.realtimeSubtitleDisplayMode,
+    windowVisible: false,
+    sourceText: '',
+    translatedText: '',
+    audioActivity: 'idle',
+    segments: []
   }
 }
 
@@ -2948,6 +3031,14 @@ function registerGlobalShortcuts(settings: Settings): void {
  * @author zhenghq
  */
 function onGlobalShortcut(accelerator: string): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => onGlobalShortcut(accelerator)).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] shortcut action dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   const settings = getSettings()
   if (accelerator === settings.hotkey) {
     onHotkey()
@@ -2962,20 +3053,37 @@ function onGlobalShortcut(accelerator: string): void {
   } else if (accelerator === settings.documentTranslationHotkey) {
     openDocumentWorkspaceFromShortcut()
   } else if (accelerator === settings.realtimeSubtitleHotkey) {
-    const controller = getRealtimeSubtitleController()
-    if (controller) {
-      try {
-        controller.toggle()
-      } catch (error) {
-        console.error('[subtitle] 快捷键切换失败:', error instanceof Error ? error.message : error)
-      }
-    } else {
-      dialog.showErrorBox(
-        t('settings.realtimeSubtitle.title'),
-        t('settings.realtimeSubtitle.error.unsupportedPlatform')
-      )
-    }
+    toggleRealtimeSubtitleFromShortcut()
   }
+}
+
+/**
+ * 通过全局快捷键切换实时字幕，并在后台服务未就绪时等待后重放。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function toggleRealtimeSubtitleFromShortcut(): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => toggleRealtimeSubtitleFromShortcut()).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] subtitle shortcut dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
+  const controller = getRealtimeSubtitleController()
+  if (controller) {
+    try {
+      controller.toggle()
+    } catch (error) {
+      console.error('[subtitle] 快捷键切换失败:', error instanceof Error ? error.message : error)
+    }
+    return
+  }
+  dialog.showErrorBox(
+    t('settings.realtimeSubtitle.title'),
+    t('settings.realtimeSubtitle.error.unsupportedPlatform')
+  )
 }
 
 /**
@@ -3336,6 +3444,14 @@ function scheduleSelectionAction(anchor: { x: number; y: number }): void {
  * @author zhenghq
  */
 function handleSelectionGesture(gesture: SelectionGesture): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => handleSelectionGesture(gesture)).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] selection gesture dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   const ocrActive = selectionInteraction.snapshot().state === 'ocr-selecting' || isOcrSelectionVisible()
   const focusedOwnWindow = isSelectionGestureInsideOwnWindows(gesture, getFocusedOwnWindowBounds())
   const popupHit = isPointInsidePopup(gesture.start) || isPointInsidePopup(gesture.end)
@@ -3747,6 +3863,16 @@ async function translateText(
   interactionToken?: number,
   historyOrigin: TranslationOrigin = origin
 ): Promise<void> {
+  if (!applicationServicesGate.isReady()) {
+    return whenApplicationServicesReady(() => translateText(
+      text,
+      anchor,
+      preferences,
+      origin,
+      interactionToken,
+      historyOrigin
+    ))
+  }
   const settings = getSettings()
   const sourcePreference = preferences?.sourceLang ?? settings.sourceLang
   const targetPreference = preferences?.targetLang ?? settings.targetLang
@@ -3908,6 +4034,9 @@ function handleTranslateError(
  * @author zhenghq
  */
 async function openManualTranslation(): Promise<void> {
+  if (!applicationServicesGate.isReady()) {
+    return whenApplicationServicesReady(() => openManualTranslation())
+  }
   // 托盘入口触发时本应用未必已在前台：弹窗 show() 会激活应用，
   // 若没有源应用记录，关闭弹窗时系统会把设置页提升为 key window 顶到最前。
   await rememberFrontmostAppIfInactiveAsync()
@@ -5138,6 +5267,14 @@ async function translateRecognizedOcrResult(
   onRecognized?: (recognized: Awaited<ReturnType<typeof translateOcrResult>>) => void,
   onDelta?: (delta: string) => void
 ): Promise<Awaited<ReturnType<typeof translateOcrResult>>> {
+  if (!applicationServicesGate.isReady()) {
+    return whenApplicationServicesReady(() => translateRecognizedOcrResult(
+      ocr,
+      settings,
+      onRecognized,
+      onDelta
+    ))
+  }
   return translateOcrResult(ocr, settings, {
     onRecognized,
     onDelta,
@@ -6211,6 +6348,9 @@ async function submitOcrSelection(value: unknown): Promise<void> {
  * @author zhenghq
  */
 async function translateClipboardImage(): Promise<void> {
+  if (!applicationServicesGate.isReady()) {
+    return whenApplicationServicesReady(() => translateClipboardImage())
+  }
   // 与手动翻译一致：显示弹窗前先记录源应用，供弹窗隐藏时交还前台。
   await rememberFrontmostAppIfInactiveAsync()
   const settings = getSettings()
@@ -6322,7 +6462,26 @@ async function translateManualRequest(request: unknown): Promise<void> {
     return
   }
 
-  await translateText(text as string, undefined, { sourceLang, targetLang }, 'manual')
+  await requestManualTranslation(text as string, sourceLang, targetLang)
+}
+
+/**
+ * 在重后台服务就绪后提交手动翻译，确保语言与翻译通道已经可用。
+ * @param text 已通过校验的原文。
+ * @param sourceLang 源语言偏好。
+ * @param targetLang 目标语言偏好。
+ * @returns 翻译流程完成后的 Promise。
+ * @author zhenghq
+ */
+async function requestManualTranslation(
+  text: string,
+  sourceLang: string,
+  targetLang: string
+): Promise<void> {
+  if (!applicationServicesGate.isReady()) {
+    return whenApplicationServicesReady(() => requestManualTranslation(text, sourceLang, targetLang))
+  }
+  await translateText(text, undefined, { sourceLang, targetLang }, 'manual')
 }
 
 /**
@@ -7068,6 +7227,14 @@ function openSettingsFromPopup(): void {
  * @author zhenghq
  */
 function openWebReaderFromPopup(url?: string): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => openWebReaderFromPopup(url)).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] web reader action dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   // 与打开设置页一致：固定弹窗在打开阅读器时必须保持可见且保持 pinned，
   // 仅未固定时沿用内部窗口切换自动关闭弹窗的既有行为。
   if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
@@ -7090,6 +7257,14 @@ function openWebReaderFromPopup(url?: string): void {
  * @author zhenghq
  */
 function openDocumentWorkspaceFromPopup(): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => openDocumentWorkspaceFromPopup()).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] document workspace action dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   if (!ensureDocumentWorkspaceSupported()) return
   if (!isPopupPinned()) hidePopupForInternalWindowSwitch()
   beginPopupSettingsOpenGuard()
@@ -7106,6 +7281,14 @@ function openDocumentWorkspaceFromPopup(): void {
  * @author zhenghq
  */
 function openDocumentWorkspaceFromShortcut(): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => openDocumentWorkspaceFromShortcut()).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] document shortcut dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   if (!ensureDocumentWorkspaceSupported()) return
   const workspace = getDocumentWorkspace()
   if (workspace.focusOrOpenExistingWindow()) return
@@ -7139,6 +7322,14 @@ function ensureDocumentWorkspaceSupported(): boolean {
  * @author zhenghq
  */
 function openWebReaderFromShortcut(): void {
+  if (!applicationServicesGate.isReady()) {
+    void whenApplicationServicesReady(() => openWebReaderFromShortcut()).catch((error: unknown) => {
+      appLogger.append('warn', [
+        `[startup] web reader shortcut dropped: ${error instanceof Error ? error.message : String(error)}`
+      ], 'main')
+    })
+    return
+  }
   const reader = getWebReader()
   if (reader.focusOrOpenExistingWindow()) return
   void reader.open().catch((error: unknown) => {
@@ -7675,7 +7866,12 @@ function registerIpc(): void {
    * @author zhenghq
    */
   ipcMain.handle('subtitle:get-status', async () => {
-    return (await getReadyRealtimeSubtitleController())?.snapshot() ?? unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
+    const capability = getRealtimeSubtitleCapability()
+    return realtimeSubtitleController?.snapshot() ??
+      unsupportedRealtimeSubtitleSnapshot ??
+      (capability.supported
+        ? createIdleRealtimeSubtitleSnapshot()
+        : createUnsupportedRealtimeSubtitleSnapshot(capability.reason ?? 'unsupported-platform'))
   })
   /**
    * 打开 macOS 屏幕录制权限设置页，便于开发态 Electron 完成 TCC 授权。
@@ -7965,7 +8161,7 @@ function registerIpc(): void {
   })
   ipcMain.on('settings:open', () => openSettingsFromPopup())
   ipcMain.on('document:open', () => {
-    void ensureDeferredStartupServicesInitialized().then(() => openDocumentWorkspaceFromPopup())
+    openDocumentWorkspaceFromPopup()
   })
   ipcMain.handle('document:get-platform-capability', () => getDocumentPlatformCapability())
   /**
@@ -8376,29 +8572,31 @@ function registerIpc(): void {
     return runtime.approvedResourceService.getSource(request as DocumentApprovedSourceRequest)
   })
   ipcMain.on('webview:open', (_event, url: unknown) => {
-    void ensureDeferredStartupServicesInitialized().then(() => {
-      openWebReaderFromPopup(typeof url === 'string' && url.trim() ? url : undefined)
-    })
+    if (typeof url === 'string' && url.trim()) {
+      openWebReaderFromPopup(url)
+      return
+    }
+    openWebReaderFromPopup()
   })
   ipcMain.on('webview:close', () => {
-    void getReadyWebReader().then((reader) => reader.close())
+    runWhenDeferredServicesReady(() => getWebReader().close())
   })
   ipcMain.handle('webview:navigate', async (_event, url: unknown) => {
     if (typeof url !== 'string' || !url.trim()) throw new Error(t('error.invalidWebUrl'))
     return (await getReadyWebReader()).navigate(url)
   })
   ipcMain.on('webview:back', () => {
-    void getReadyWebReader().then((reader) => reader.back())
+    runWhenDeferredServicesReady(() => getWebReader().back())
   })
   ipcMain.on('webview:forward', () => {
-    void getReadyWebReader().then((reader) => reader.forward())
+    runWhenDeferredServicesReady(() => getWebReader().forward())
   })
   ipcMain.on('webview:reload', () => {
-    void getReadyWebReader().then((reader) => reader.reload())
+    runWhenDeferredServicesReady(() => getWebReader().reload())
   })
   ipcMain.on('webview:set-bounds', (_event, bounds: unknown) => {
     if (!isWebViewBounds(bounds)) return
-    void getReadyWebReader().then((reader) => reader.setBounds(bounds))
+    runWhenDeferredServicesReady(() => getWebReader().setBounds(bounds))
   })
   ipcMain.handle('web-translate:extract', async () =>
     (await getReadyWebReader()).extract()
@@ -8407,7 +8605,7 @@ function registerIpc(): void {
     (await getReadyWebReader()).run(isWebTranslationRunRequest(request) ? request : {})
   )
   ipcMain.on('web-translate:cancel', () => {
-    void getReadyWebReader().then((reader) => reader.cancel())
+    runWhenDeferredServicesReady(() => getWebReader().cancel())
   })
   ipcMain.handle('web-translate:set-mode', async (_event, mode: unknown) => {
     if (!isWebTranslationMode(mode)) throw new Error(t('error.invalidWebMode'))
@@ -8783,6 +8981,9 @@ function createTray(): void {
  * @author zhenghq
  */
 function buildTrayMenu(): Menu {
+  if (!applicationServicesGate.isReady()) {
+    runWhenDeferredServicesReady(refreshTrayMenu)
+  }
   const settings = getSettings()
   const t = mainI18n?.translator ?? {
     t: (key: string) => key
@@ -8832,10 +9033,7 @@ function buildTrayMenu(): Menu {
     {
       label: t.t('settings.realtimeSubtitle.title'),
       enabled: getRealtimeSubtitleCapability().supported,
-      click: () => {
-        const controller = getRealtimeSubtitleController()
-        if (controller) controller.toggle()
-      }
+      click: () => toggleRealtimeSubtitleFromShortcut()
     },
     {
       label: t.t('settings.realtimeSubtitle.pause'),

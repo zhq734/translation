@@ -22,6 +22,35 @@ function extractFunction(signature: string): string {
   return mainSource.slice(start, end + 2)
 }
 
+/**
+ * 截取单个 IPC 注册片段，直到回调结束边界。
+ * @param channel IPC 通道名。
+ * @param method IPC 注册方法名。
+ * @returns 单个处理器源码片段。
+ * @author zhenghq
+ */
+function extractIpcHandler(channel: string, method: 'handle' | 'on' = 'handle'): string {
+  const start = mainSource.indexOf(`ipcMain.${method}('${channel}'`)
+  assert.ok(start >= 0, `应存在 IPC ${channel}`)
+  const end = mainSource.indexOf('\n  })', start)
+  assert.ok(end > start, `IPC ${channel} 应有结束边界`)
+  return mainSource.slice(start, end + 5)
+}
+
+/**
+ * 截取网页阅读器控制类 ipcMain.on 注册片段，直到通道注册结束边界。
+ * @param channel IPC 通道名。
+ * @returns 单个处理器源码片段。
+ * @author zhenghq
+ */
+function extractIpcListener(channel: string): string {
+  const start = mainSource.indexOf(`ipcMain.on('${channel}'`)
+  assert.ok(start >= 0, `应存在 IPC ${channel}`)
+  const end = mainSource.indexOf('\n  })', start)
+  assert.ok(end > start, `IPC ${channel} 应有结束边界`)
+  return mainSource.slice(start, end + 5)
+}
+
 test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => {
   assert.match(mainSource, /function waitForDeferredStartupServices\(\): Promise<void>/u)
   assert.match(mainSource, /function runWhenDeferredServicesReady\(action: \(\) => void\): void/u)
@@ -42,7 +71,7 @@ test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => 
     '重后台服务仍必须在设置页首开之后启动')
   assert.match(onReadySource, /startDeferredStartupServices\(\)\n  return true/u)
 
-  const settingsStatusSource = extractFunction("ipcMain.handle('subtitle:get-status'")
+  const settingsStatusSource = extractIpcHandler('subtitle:get-status')
   assert.match(
     settingsStatusSource,
     /unsupportedRealtimeSubtitleSnapshot/u,
@@ -52,6 +81,30 @@ test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => 
     settingsStatusSource,
     /getReadyRealtimeSubtitleController\(|ensureDeferredStartupServicesInitialized\(/u,
     '设置页首屏状态查询不得等待尚未启动的重服务'
+  )
+  assert.match(
+    settingsStatusSource,
+    /createIdleRealtimeSubtitleSnapshot\(\)/u,
+    '普通平台控制器尚未初始化时应返回中性空闲快照'
+  )
+  assert.match(
+    mainSource,
+    /function createIdleRealtimeSubtitleSnapshot\(\): RealtimeSubtitleSnapshot/u,
+    '应提供不带平台错误的中性空闲快照'
+  )
+  const idleSnapshotSource = extractFunction(
+    'function createIdleRealtimeSubtitleSnapshot(): RealtimeSubtitleSnapshot'
+  )
+  assert.doesNotMatch(idleSnapshotSource, /error|errorCode/u, '中性空闲快照不得误报平台不支持')
+  assert.match(
+    settingsStatusSource,
+    /getRealtimeSubtitleCapability\(\)/u,
+    '首屏状态查询应同步区分平台能力，避免不支持平台先显示空闲再跳变'
+  )
+  assert.match(
+    settingsStatusSource,
+    /capability\.supported\s*\?\s*createIdleRealtimeSubtitleSnapshot\(\)/u,
+    '仅支持平台在控制器未初始化时返回中性空闲快照'
   )
 })
 
@@ -68,8 +121,7 @@ test('显式业务入口在后台服务未就绪时登记等待，就绪后立�
     'async function translateText(',
     'async function translateRecognizedOcrResult(',
     'async function requestManualTranslation(',
-    'function toggleRealtimeSubtitleFromShortcut(): void',
-    'function buildTrayMenu(): Menu'
+    'function toggleRealtimeSubtitleFromShortcut(): void'
   ]) {
     const source = extractFunction(signature)
     assert.match(source, /whenApplicationServicesReady/u, `${signature} 必须识别服务就绪窗口期`)
@@ -87,6 +139,48 @@ test('显式业务入口在后台服务未就绪时登记等待，就绪后立�
   }
   assert.match(mainSource, /function toggleRealtimeSubtitleFromShortcut\(\): void/u)
   assert.match(mainSource, /async function requestManualTranslation\(/u)
+
+  const traySource = extractFunction('function buildTrayMenu(): Menu')
+  assert.match(
+    traySource,
+    /applicationServicesGate\.isReady\(\)/u,
+    '托盘菜单必须识别服务就绪窗口期'
+  )
+  assert.match(
+    traySource,
+    /runWhenDeferredServicesReady\(refreshTrayMenu\)/u,
+    '托盘菜单应在重后台服务就绪后刷新，而不是登记空动作'
+  )
+  assert.doesNotMatch(
+    traySource,
+    /void whenApplicationServicesReady\(\(\) => undefined\)/u,
+    '不得留下可能拒绝的空等待动作'
+  )
+})
+
+test('网页阅读器控制 IPC 在后台服务启动失败时不得留下未处理 Promise 异常', () => {
+  const ipcBody = extractFunction('function registerIpc(): void')
+  for (const channel of [
+    'webview:close',
+    'webview:back',
+    'webview:forward',
+    'webview:reload',
+    'webview:set-bounds',
+    'web-translate:cancel'
+  ]) {
+    const source = extractIpcListener(channel)
+    assert.ok(ipcBody.includes(source), `${channel} 应属于 IPC 注册片段`)
+    assert.match(
+      source,
+      /runWhenDeferredServicesReady\(/u,
+      `${channel} 应在服务就绪后执行且统一处理启动失败`
+    )
+    assert.doesNotMatch(
+      source,
+      /void getReadyWebReader\(\)/u,
+      `${channel} 不得留下未处理的后台服务启动异常`
+    )
+  }
 })
 
 test('就绪门控只在服务启动完成后重放等待的用户动作，失败时放弃且不留未处理异常', async () => {
