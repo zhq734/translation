@@ -3400,6 +3400,141 @@ test('PDF 12pt 居中图注应识别居中，而正文左边界上的短行必�
   assert.equal(shortBlock?.kind === 'text' ? shortBlock.textAlign : undefined, undefined)
 })
 
+test('PDF 原生图表题注应识别 caption，正文中的图表引用不能被误判', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const englishFont = await document.embedFont(StandardFonts.Helvetica)
+  const chineseFont = await document.embedFont(readFileSync('assets/fonts/NotoSansSC-Regular.ttf'))
+  const page = document.addPage([600, 800])
+  const figureCaption = 'Figure 1. Device deployment overview'
+  const tableCaption = '表 1：实验结果'
+  const tableReference = 'Table 1 shows the results for all groups.'
+  const chineseReference = '图 1 展示了系统架构。'
+  page.drawText(figureCaption, { x: 72, y: 720, size: 12, font: englishFont })
+  page.drawText(tableCaption, { x: 72, y: 650, size: 12, font: chineseFont })
+  page.drawText(tableReference, { x: 72, y: 580, size: 12, font: englishFont })
+  page.drawText(chineseReference, { x: 72, y: 510, size: 12, font: chineseFont })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/caption-role.pdf',
+    fileName: 'caption-role.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const textBlocks = model.pages[0]!.blocks.filter((block) => block.kind === 'text')
+  const roleOf = (text: string) => {
+    const block = textBlocks.find((candidate) => candidate.kind === 'text' && candidate.runs[0]?.text === text)
+    return block?.kind === 'text' ? block.role : undefined
+  }
+  assert.equal(roleOf(figureCaption), 'caption')
+  assert.equal(roleOf(tableCaption), 'caption')
+  assert.equal(roleOf(tableReference), 'paragraph')
+  assert.equal(roleOf(chineseReference), 'paragraph')
+})
+
+test('PDF 图注存在但图片对象漏检时，应回退保留题注上方版面', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  page.drawText('Introduction body text before the figure.', { x: 72, y: 730, size: 12, font })
+  page.drawRectangle({ x: 72, y: 500, width: 456, height: 190, color: rgb(0.8, 0.9, 1) })
+  const caption = 'Figure 1. Device overview'
+  page.drawText(caption, { x: 72, y: 470, size: 12, font })
+  const renderedRegions: Array<{ x: number; y: number; width: number; height: number }> = []
+
+  const model = await parsePdfDocument({
+    path: '/tmp/figure-caption-fallback.pdf',
+    fileName: 'figure-caption-fallback.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderPageRegionToImage: async (_page, _pageIndex, bbox) => {
+      renderedRegions.push(bbox)
+      return pngHeader(600, 300)
+    }
+  })
+
+  const captionBlock = model.pages[0]!.blocks.find((block) =>
+    block.kind === 'text' && block.runs[0]?.text === caption)
+  const imageBlock = model.pages[0]!.blocks.find((block) => block.kind === 'image')
+  assert.equal(captionBlock?.kind === 'text' ? captionBlock.role : undefined, 'caption')
+  assert.equal(renderedRegions.length, 1)
+  assert.ok(imageBlock?.kind === 'image' && captionBlock?.bbox)
+  assert.ok(imageBlock.bbox!.y + imageBlock.bbox!.height <= captionBlock.bbox!.y)
+  assert.equal(imageBlock.renderPending, false)
+})
+
+test('PDF 表注存在但表格对象漏检时，应回退保留题注下方版面', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  const caption = 'Table 1. Results by group'
+  page.drawText(caption, { x: 72, y: 680, size: 12, font })
+  page.drawRectangle({ x: 72, y: 300, width: 456, height: 340, color: rgb(0.95, 0.95, 0.95) })
+  const following = 'Following body paragraph after the table.'
+  page.drawText(following, { x: 72, y: 250, size: 12, font })
+  const renderedRegions: Array<{ x: number; y: number; width: number; height: number }> = []
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-caption-fallback.pdf',
+    fileName: 'table-caption-fallback.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderPageRegionToImage: async (_page, _pageIndex, bbox) => {
+      renderedRegions.push(bbox)
+      return pngHeader(600, 300)
+    }
+  })
+
+  const captionBlock = model.pages[0]!.blocks.find((block) =>
+    block.kind === 'text' && block.runs[0]?.text === caption)
+  const followingBlock = model.pages[0]!.blocks.find((block) =>
+    block.kind === 'text' && block.runs[0]?.text === following)
+  const imageBlock = model.pages[0]!.blocks.find((block) => block.kind === 'image')
+  assert.equal(captionBlock?.kind === 'text' ? captionBlock.role : undefined, 'caption')
+  assert.equal(renderedRegions.length, 1)
+  assert.ok(imageBlock?.kind === 'image' && captionBlock?.bbox && followingBlock?.bbox)
+  assert.ok(imageBlock.bbox!.y >= captionBlock.bbox!.y + captionBlock.bbox!.height)
+  assert.ok(imageBlock.bbox!.y < followingBlock.bbox!.y)
+})
+
+test('PDF 题注附近已有图片时不得重复生成回退截图', async () => {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const page = document.addPage([600, 800])
+  page.drawText('Native body text before the figure.', { x: 72, y: 730, size: 12, font })
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    'base64'
+  )
+  const image = await document.embedPng(png)
+  page.drawImage(image, { x: 72, y: 500, width: 456, height: 180 })
+  page.drawText('Figure 1. Existing embedded figure', { x: 72, y: 470, size: 12, font })
+  const fallbackRegions: Array<{ x: number; y: number; width: number; height: number }> = []
+
+  const model = await parsePdfDocument({
+    path: '/tmp/caption-existing-image.pdf',
+    fileName: 'caption-existing-image.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => pngHeader(456, 180),
+    renderPageRegionToImage: async (_page, _pageIndex, bbox) => {
+      fallbackRegions.push(bbox)
+      return pngHeader(456, 180)
+    }
+  })
+
+  assert.equal(fallbackRegions.length, 0)
+  assert.equal(model.pages[0]!.blocks.filter((block) => block.kind === 'image').length, 1)
+})
+
 test('PDF 宽标题居中时仍应识别对齐，而正文左对齐不能误判为居中', async () => {
   const document = await PDFDocument.create()
   const font = await document.embedFont(StandardFonts.HelveticaBold)

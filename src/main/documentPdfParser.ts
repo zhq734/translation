@@ -303,6 +303,24 @@ interface PdfEmbeddedImageRegion {
   objectId?: string
 }
 
+/** PDF 图表题注的语义类型。 */
+type PdfCaptionKind = 'figure' | 'table'
+
+/** 可作为图表题注识别的最大文本长度，避免把包含题注字样的长正文误判为题注。 */
+const PDF_CAPTION_MAX_TEXT_LENGTH = 320
+
+/** 图表对象与题注之间允许的最大纵向距离，单位为页面点。 */
+const PDF_CAPTION_OBJECT_MAX_GAP = 260
+
+/** 题注漏检回退截图的最大高度，单位为页面点。 */
+const PDF_CAPTION_FALLBACK_MAX_HEIGHT = 420
+
+/** 题注漏检回退截图的最小高度，单位为页面点。 */
+const PDF_CAPTION_FALLBACK_MIN_HEIGHT = 24
+
+/** 题注与图表对象之间的视觉留白，单位为页面点。 */
+const PDF_CAPTION_FALLBACK_GAP = 8
+
 /** 已识别表格及其原始网格，用于把内嵌图片定位到对应单元格。 */
 interface PdfTableGridTarget {
   /** 表格区块。 */
@@ -4513,6 +4531,188 @@ function inferPdfTableCellTextAlignment(
 }
 
 /**
+ * 判断题注正文是否以“引用图表”的动词开头，避免把 “Table 1 shows...” 误判为表注。
+ * @param text 题注编号后的剩余文本。
+ * @returns 看起来是正文引用时返回 true。
+ * @author zhenghq
+ */
+function pdfCaptionTailStartsReference(text: string): boolean {
+  return /^(?:shows?|illustrates?|presents?|describes?|depicts?|summari[sz]es?|lists?|compares?|reports?|contains?|indicates?|is|are|was|were)\b/iu.test(text) ||
+    /^(?:展示|显示|说明|列出|描述|总结|汇总|给出|表明|证明|呈现|描绘|表示)/u.test(text)
+}
+
+/**
+ * 识别 PDF 中的图注或表注，并区分其应归属图表类型。
+ * 仅接受位于文本开头、带稳定编号的短题注；正文中的 “Table 1 shows...” 会保留为普通段落。
+ * @param text 待识别文本。
+ * @returns 图表题注类型；不是题注时返回 undefined。
+ * @author zhenghq
+ */
+function detectPdfFigureOrTableCaption(text: string): PdfCaptionKind | undefined {
+  const normalized = text.replace(/\s+/gu, ' ').trim()
+  if (!normalized || normalized.length > PDF_CAPTION_MAX_TEXT_LENGTH) return undefined
+  const englishMatch = /^(?:(?:extended\s+data|supplementary)\s+)?(fig(?:ure)?\.?|table)\s*([A-Z]?\d+[A-Z]?|[IVXLC]+)(?=$|[\s.:：|—–-])(.*)$/iu
+    .exec(normalized)
+  const chineseMatch = /^(图|表)\s*([0-9一二三四五六七八九十百]+(?:[-–—][0-9一二三四五六七八九十百]+)?)(?=$|[\s:：.．|—–-])(.*)$/u
+    .exec(normalized)
+  const match = englishMatch ?? chineseMatch
+  if (!match) return undefined
+  const label = match[1]!.toLowerCase()
+  const tail = match[3]!.trim()
+  // 无标点直接接正文动词时通常是“表 1 显示……”之类的引用，不是题注。
+  if (tail && !/^[.:：|—–-]/u.test(tail) && pdfCaptionTailStartsReference(tail)) {
+    return undefined
+  }
+  return label === 'table' || label.charCodeAt(0) === 0x8868 ? 'table' : 'figure'
+}
+
+/**
+ * 判断图表对象是否位于题注附近，避免已有图片或表格被重复回退截图。
+ * @param captionBox 题注边界。
+ * @param objectBox 图表对象边界。
+ * @returns 对象与题注纵向邻近且横向重叠时返回 true。
+ * @author zhenghq
+ */
+function pdfCaptionObjectIsNearby(
+  captionBox: DocumentBoundingBox,
+  objectBox: DocumentBoundingBox
+): boolean {
+  const captionBottom = captionBox.y + captionBox.height
+  const objectBottom = objectBox.y + objectBox.height
+  const verticalGap = objectBottom <= captionBox.y
+    ? captionBox.y - objectBottom
+    : objectBox.y >= captionBottom
+      ? objectBox.y - captionBottom
+      : 0
+  if (verticalGap > PDF_CAPTION_OBJECT_MAX_GAP) return false
+  const horizontalOverlap = Math.min(captionBox.x + captionBox.width, objectBox.x + objectBox.width) -
+    Math.max(captionBox.x, objectBox.x)
+  return horizontalOverlap >= -32
+}
+
+/**
+ * 计算两个边界框的重叠面积占较小区域的比例。
+ * @param left 第一个边界框。
+ * @param right 第二个边界框。
+ * @returns 0 到 1 的重叠比例。
+ * @author zhenghq
+ */
+function pdfBoundingBoxOverlapRatio(
+  left: DocumentBoundingBox,
+  right: DocumentBoundingBox
+): number {
+  const overlapWidth = Math.max(0, Math.min(left.x + left.width, right.x + right.width) -
+    Math.max(left.x, right.x))
+  const overlapHeight = Math.max(0, Math.min(left.y + left.height, right.y + right.height) -
+    Math.max(left.y, right.y))
+  const smallerArea = Math.min(left.width * left.height, right.width * right.height)
+  return smallerArea > 0 ? overlapWidth * overlapHeight / smallerArea : 0
+}
+
+/**
+ * 根据题注类型和相邻正文位置，推导题注附近漏检图表的安全裁切区域。
+ * @param captionBox 题注边界。
+ * @param kind 题注对应的图表类型。
+ * @param textBoxes 页面内其他文本边界，用于限制截图不侵入正文。
+ * @param pageWidth 页面宽度。
+ * @param pageHeight 页面高度。
+ * @param contentArea 页面正文内容区。
+ * @returns 可裁切的页面区域；无法安全推导时返回 undefined。
+ * @author zhenghq
+ */
+function createPdfCaptionFallbackBoundingBox(
+  captionBox: DocumentBoundingBox,
+  kind: PdfCaptionKind,
+  textBoxes: readonly DocumentBoundingBox[],
+  pageWidth: number,
+  pageHeight: number,
+  contentArea?: { left: number; right: number; center: number }
+): DocumentBoundingBox | undefined {
+  if (!Number.isFinite(pageWidth) || pageWidth <= 0 ||
+    !Number.isFinite(pageHeight) || pageHeight <= 0) return undefined
+  const captionBottom = captionBox.y + captionBox.height
+  let top: number
+  let bottom: number
+  if (kind === 'figure') {
+    bottom = captionBox.y - PDF_CAPTION_FALLBACK_GAP
+    const previous = textBoxes
+      .filter((box) => box.y + box.height <= captionBox.y - 2)
+      .sort((left, right) => right.y + right.height - (left.y + left.height))[0]
+    top = previous
+      ? previous.y + previous.height + PDF_CAPTION_FALLBACK_GAP
+      : bottom - PDF_CAPTION_FALLBACK_MAX_HEIGHT
+    top = Math.max(top, bottom - PDF_CAPTION_FALLBACK_MAX_HEIGHT, 0)
+  } else {
+    top = captionBottom + PDF_CAPTION_FALLBACK_GAP
+    const next = textBoxes
+      .filter((box) => box.y >= captionBottom + 2)
+      .sort((left, right) => left.y - right.y)[0]
+    bottom = next ? next.y - PDF_CAPTION_FALLBACK_GAP : top + PDF_CAPTION_FALLBACK_MAX_HEIGHT
+    bottom = Math.min(bottom, top + PDF_CAPTION_FALLBACK_MAX_HEIGHT, pageHeight)
+  }
+  if (bottom - top < PDF_CAPTION_FALLBACK_MIN_HEIGHT) return undefined
+  const contentLeft = contentArea?.left ?? pageWidth * 0.04
+  const contentRight = contentArea?.right ?? pageWidth * 0.96
+  const left = Math.max(4, contentLeft - 6)
+  const right = Math.min(pageWidth - 4, contentRight + 6)
+  if (right - left < PDF_CAPTION_FALLBACK_MIN_HEIGHT) return undefined
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
+/**
+ * 为题注存在但图片/表格对象漏检的区域生成回退裁切区域。
+ * @param blocks 当前页已解析出的区块。
+ * @param imageRegions 已从 PDF 操作符提取的图片区域。
+ * @param pageWidth 页面宽度。
+ * @param pageHeight 页面高度。
+ * @param contentArea 页面正文内容区。
+ * @returns 不重复且不覆盖已有图表对象的回退图片区域。
+ * @author zhenghq
+ */
+function createPdfCaptionFallbackRegions(
+  blocks: readonly DocumentBlock[],
+  imageRegions: readonly PdfEmbeddedImageRegion[],
+  pageWidth: number,
+  pageHeight: number,
+  contentArea?: { left: number; right: number; center: number }
+): PdfEmbeddedImageRegion[] {
+  const captionBlocks = blocks.filter((block): block is DocumentTextBlock =>
+    block.kind === 'text' && block.role === 'caption' && block.bbox !== undefined)
+  if (captionBlocks.length === 0) return []
+  const textBoxes = blocks
+    .filter((block): block is DocumentTextBlock =>
+      block.kind === 'text' && block.role !== 'caption' && block.bbox !== undefined)
+    .map((block) => block.bbox!)
+  const existingObjectBoxes = [
+    ...imageRegions.map((region) => region.bbox),
+    ...blocks
+      .filter((block) => block.kind === 'table' && block.bbox !== undefined)
+      .map((block) => block.bbox!)
+  ]
+  const accepted: DocumentBoundingBox[] = []
+  for (const caption of captionBlocks) {
+    const captionText = caption.runs.map((run) => run.text).join('')
+    const kind = detectPdfFigureOrTableCaption(captionText)
+    if (!kind) continue
+    const captionBox = caption.bbox!
+    if (existingObjectBoxes.some((box) => pdfCaptionObjectIsNearby(captionBox, box))) continue
+    const bbox = createPdfCaptionFallbackBoundingBox(
+      captionBox,
+      kind,
+      textBoxes,
+      pageWidth,
+      pageHeight,
+      contentArea
+    )
+    if (!bbox) continue
+    if ([...existingObjectBoxes, ...accepted].some((box) =>
+      pdfBoundingBoxOverlapRatio(bbox, box) >= 0.5)) continue
+    accepted.push(bbox)
+  }
+  return accepted.map((bbox) => ({ bbox }))
+}
+
+/**
  * 将 PDF 文本行转换为统一文本区块。
  * @param items 同一行文本项。
  * @param pageId 页面标识。
@@ -4556,7 +4756,11 @@ function createPdfTextBlock(
       style: lineHeight === undefined ? style : { ...style, lineHeight }
     }
   })
-  const tocEntry = role === 'code'
+  const resolvedRole = role === 'paragraph' &&
+    detectPdfFigureOrTableCaption(items.map((item) => item.str).join(''))
+    ? 'caption'
+    : role
+  const tocEntry = resolvedRole === 'code'
     ? undefined
     : parsePdfTableOfContentsLine(items.map((item) => item.str).join(''))
   const runs: DocumentTextRun[] = tocEntry
@@ -4587,7 +4791,7 @@ function createPdfTextBlock(
     blockId,
     readingOrder,
     translatable: true,
-    role,
+    role: resolvedRole,
     bbox,
     ...(textAlign ? { textAlign } : {}),
     runs,
@@ -5836,6 +6040,17 @@ export async function parsePdfDocument(
             'pdf-rotated-text',
             'Rotated text was detected and preserved in its original orientation.',
             { pageId }
+          ))
+        }
+        // 题注通常比普通正文更可靠地指示图表位置。仅当附近没有已提取的图片或表格时，
+        // 才按图注上方、表注下方回退裁切，避免模型式版面检测缺失时图表直接丢失。
+        if (options.renderPageRegionToImage) {
+          imageRegions.push(...createPdfCaptionFallbackRegions(
+            blocks,
+            imageRegions,
+            viewport.width,
+            viewport.height,
+            contentArea
           ))
         }
       }
