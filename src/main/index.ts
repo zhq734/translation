@@ -232,6 +232,7 @@ import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
 } from './appLifecycle'
+import { shouldCompleteSettingsBringToFront } from './settingsBringToFrontGate'
 import type { UpdateManager } from './updateManager'
 import { removeMacOSApplicationQuarantine } from './macQuarantine'
 import {
@@ -2055,33 +2056,32 @@ function isSelectionWindowRaiseGuardActive(): boolean {
  * @param bringToFrontEpoch 本次显式置前开始时的代际。
  * @param explicitPopupSource 是否来自翻译弹窗内真实点击。
  * @param initialLaunchSource 是否来自应用启动后的首次设置页打开。
+ * @param dockActivationEpoch 本次 Dock 请求的激活代际；非 Dock 来源时缺省。
  * @returns 仍可安全执行显式置前时返回 true。
  * @author zhenghq
  */
 function canCompleteSettingsBringToFront(
   bringToFrontEpoch: number,
   explicitPopupSource: boolean,
-  initialLaunchSource = false
+  initialLaunchSource = false,
+  dockActivationEpoch?: number
 ): boolean {
-  // 划词隐藏是比保护期更强的状态：窗口已经被移出窗口服务器候选集合，任何
-  // 迟到的 show()/moveTop()/focus() 都会重新制造前台闪现。显式入口必须先通过
-  // resumeSettingsWindowAfterExternalSelection() 清除该状态，不能在这里绕过。
-  if (settingsWindowHiddenForSelection) return false
-  if (explicitPopupSource) return true
-  // 启动首开发生在应用尚未完全稳定的阶段，macOS 可能先派发 did-resign-active，
-  // 或因内部窗口显隐递增置前代际。这些启动噪声不能永久吞掉首开窗口，但仍须
-  // 保留划词保护期和进行中交互门禁，避免在用户已开始划词时抢占前台。
-  if (initialLaunchSource) {
-    return !isSelectionWindowRaiseGuardActive() &&
-      selectionInteraction.snapshot().state === 'idle'
-  }
-  // 应用激活事件是异步置前意图的最终门禁。用户切到其它应用后，即使没有开始
-  // 新划词、代际也未变化，旧 Dock 任务也不得通过 moveTop()/focus() 重新拉起
-  // 设置页；否则窗口会盖在刚切换到的应用上方，且在 macOS 上表现为长期置顶。
-  if (isMac && !isMacAppActiveByEvents()) return false
-  return bringToFrontEpoch === settingsBringToFrontEpoch &&
-    !isSelectionWindowRaiseGuardActive() &&
-    selectionInteraction.snapshot().state === 'idle'
+  // 统一门禁集中处理划词隐藏、启动首开、Dock 激活事件延迟以及真正失活等条件，
+  // 避免不同异步出口各自维护一套略有差异的判断而产生首次点击被吞的问题。
+  return shouldCompleteSettingsBringToFront({
+    settingsWindowHiddenForSelection,
+    explicitPopupSource,
+    initialLaunchSource,
+    selectionGuardActive: isSelectionWindowRaiseGuardActive(),
+    selectionInteractionIdle: selectionInteraction.snapshot().state === 'idle',
+    // Windows/Linux 不派发 macOS 的应用激活事件，不能把初始 false 当成失活；
+    // 只有 macOS 才需要该信号作为异步置前的最终门禁。
+    appActive: isMac ? isMacAppActiveByEvents() : true,
+    bringToFrontEpoch,
+    currentBringToFrontEpoch: settingsBringToFrontEpoch,
+    dockActivationEpoch,
+    currentDockActivationEpoch: settingsDockActivationEpoch
+  })
 }
 
 /**
@@ -2098,6 +2098,7 @@ function canCompleteSettingsBringToFront(
  * @param options.bringToFrontEpoch 本次置前开始时的代际。
  * @param options.explicitPopupSource 是否为弹窗内真实点击。
  * @param options.initialLaunchSource 是否为应用启动后的首次设置页打开。
+ * @param options.dockActivationEpoch 本次 Dock 请求的激活代际。
  * @returns 实际执行置前时返回 true；意图已失效时返回 false。
  * @author zhenghq
  */
@@ -2111,6 +2112,7 @@ function bringSettingsWindowToFrontSafely(
     bringToFrontEpoch: number
     explicitPopupSource: boolean
     initialLaunchSource?: boolean
+    dockActivationEpoch?: number
   }
 ): boolean {
   if (
@@ -2118,7 +2120,8 @@ function bringSettingsWindowToFrontSafely(
     !canCompleteSettingsBringToFront(
       options.bringToFrontEpoch,
       options.explicitPopupSource,
-      options.initialLaunchSource
+      options.initialLaunchSource,
+      options.dockActivationEpoch
     )
   ) {
     return false
@@ -2187,7 +2190,12 @@ function activateExistingPageOrOpenSettings(): void {
   // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
   // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
   // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
-  void openSettings({ bringToFront: true, explicitEntry: true })
+  void openSettings({
+    bringToFront: true,
+    explicitEntry: true,
+    source: 'dock',
+    dockActivationEpoch
+  })
     .then(async () => {
       const target = settingsWin
       if (!target || target.isDestroyed() || !target.isVisible()) return
@@ -2204,7 +2212,8 @@ function activateExistingPageOrOpenSettings(): void {
       bringSettingsWindowToFrontSafely(target, {
         raiseLevel: false,
         bringToFrontEpoch: settingsBringToFrontEpoch,
-        explicitPopupSource: false
+        explicitPopupSource: false,
+        dockActivationEpoch
       })
     })
     .catch((error: unknown) => {
@@ -6909,13 +6918,15 @@ function scheduleSettingsPanelRaiseLevelReset(): void {
 /**
  * 创建或复用设置窗口。
  * @param bringToFront 是否把设置窗口置前并聚焦；仅后台建窗等非用户入口传 false。
- * @param source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`。
+ * @param source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`，Dock 激活传 `dock`。
+ * @param dockActivationEpoch Dock 激活请求代际；仅 Dock 来源需要传入。
  * @returns 设置窗口实例。
  * @author zhenghq
  */
 async function createSettingsWindow(
   bringToFront: boolean,
-  source?: 'popup' | 'initial-launch'
+  source?: 'popup' | 'initial-launch' | 'dock',
+  dockActivationEpoch?: number
 ): Promise<BrowserWindow> {
   // 弹窗内点击设置入口是显式用户操作。hidePopupForInternalWindowSwitch() 会续期
   // 划词 activate 抑制，但该抑制只用于拦截划词流程的自动 activate；用户此刻主动
@@ -6924,6 +6935,9 @@ async function createSettingsWindow(
   // 启动首开是用户启动应用的直接结果，需要豁免启动阶段的生命周期噪声；它不能
   // 复用弹窗来源，否则会绕过划词保护期等安全门禁。
   const initialLaunchSource = source === 'initial-launch'
+  // Dock 来源携带点击时登记的代际；只有仍是最新 Dock 请求时，才能豁免
+  // did-become-active 晚到造成的短暂失活误判。
+  const dockActivationEpochAtStart = source === 'dock' ? dockActivationEpoch : undefined
   // 记录本次显式置前的代际：划词动作会在 suppressSelectionActivationWindowGap()
   // 中递增代际，使已经进入 await 等待的旧置前动作在收尾时自动失效。
   const bringToFrontEpochAtStart = settingsBringToFrontEpoch
@@ -6934,7 +6948,12 @@ async function createSettingsWindow(
     if (
       bringToFront &&
       !explicitPopupSource &&
-      !canCompleteSettingsBringToFront(bringToFrontEpochAtStart, explicitPopupSource)
+      !canCompleteSettingsBringToFront(
+        bringToFrontEpochAtStart,
+        explicitPopupSource,
+        initialLaunchSource,
+        dockActivationEpochAtStart
+      )
     ) {
       return existingWindow
     }
@@ -6957,7 +6976,8 @@ async function createSettingsWindow(
           raiseLevel: true,
           bringToFrontEpoch: bringToFrontEpochAtStart,
           explicitPopupSource,
-          initialLaunchSource
+          initialLaunchSource,
+          dockActivationEpoch: dockActivationEpochAtStart
         })
       }
       return settingsWin
@@ -6984,7 +7004,8 @@ async function createSettingsWindow(
         raiseLevel: explicitPopupSource,
         bringToFrontEpoch: bringToFrontEpochAtStart,
         explicitPopupSource,
-        initialLaunchSource
+        initialLaunchSource,
+        dockActivationEpoch: dockActivationEpochAtStart
       })
       return settingsWin
     }
@@ -7002,7 +7023,8 @@ async function createSettingsWindow(
         raiseLevel: true,
         bringToFrontEpoch: bringToFrontEpochAtStart,
         explicitPopupSource,
-        initialLaunchSource
+        initialLaunchSource,
+        dockActivationEpoch: dockActivationEpochAtStart
       })
     }
     return settingsWin
@@ -7121,7 +7143,8 @@ async function createSettingsWindow(
       raiseLevel: true,
       bringToFrontEpoch: bringToFrontEpochAtStart,
       explicitPopupSource,
-      initialLaunchSource
+      initialLaunchSource,
+      dockActivationEpoch: dockActivationEpochAtStart
     })
   } else {
     showOwnWindowForInteraction(settingsWin, { focus: false, moveTop: false, raiseLevel: false })
@@ -7152,7 +7175,8 @@ async function createSettingsWindow(
         raiseLevel: true,
         bringToFrontEpoch: bringToFrontEpochAtStart,
         explicitPopupSource,
-        initialLaunchSource
+        initialLaunchSource,
+        dockActivationEpoch: dockActivationEpochAtStart
       })
     ) {
       logSettingsPanelBringToFront('initial-launch-final')
@@ -7164,7 +7188,8 @@ async function createSettingsWindow(
 /**
  * 打开设置窗口。
  * @param options 打开选项；`bringToFront` 为 false 时复用已可见窗口不会强制置顶。
- * @param options.source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`。
+ * @param options.source 打开来源；弹窗内显式点击传 `popup`，应用启动首开传 `initial-launch`，Dock 激活传 `dock`。
+ * @param options.dockActivationEpoch Dock 激活请求代际；仅 Dock 来源需要传入。
  * @param options.explicitEntry 是否来自托盘、菜单、Dock、第二实例或弹窗按钮等
  * 用户可见入口；只有显式入口可以解除外部划词对设置页的临时隐藏。
  * @returns 无返回值。
@@ -7173,7 +7198,8 @@ async function createSettingsWindow(
 async function openSettings(
   options: {
     bringToFront?: boolean
-    source?: 'popup' | 'initial-launch'
+    source?: 'popup' | 'initial-launch' | 'dock'
+    dockActivationEpoch?: number
     explicitEntry?: boolean
   } = {}
 ): Promise<void> {
@@ -7185,7 +7211,11 @@ async function openSettings(
   // 刷新 Dock 并让出事件循环；若用户在此期间切换应用并划词，提前恢复会让
   // macOS 立即把后台设置页选为 key window，造成首次划词设置页闪现。
   // 真正的恢复与置前由 createSettingsWindow() 在确认意图仍有效后统一执行。
-  await createSettingsWindow(options.bringToFront ?? true, options.source)
+  await createSettingsWindow(
+    options.bringToFront ?? true,
+    options.source,
+    options.dockActivationEpoch
+  )
 }
 
 /**

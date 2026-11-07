@@ -177,8 +177,11 @@ test('显式打开设置页不得在异步建窗前提前恢复焦点租约', ()
     restoreIndex < 0 || restoreIndex > createIndex,
     '恢复可聚焦性必须下沉到窗口确实准备置前的分支，不得在建窗前执行'
   )
-  assert.match(openSource, /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
-    'openSettings() 必须把显式置前意图透传给窗口创建入口')
+  assert.match(
+    openSource,
+    /createSettingsWindow\(\s*options\.bringToFront \?\? true,\s*options\.source,\s*options\.dockActivationEpoch\s*\)/u,
+    'openSettings() 必须把显式置前意图、来源与 Dock 代际透传给窗口创建入口'
+  )
 })
 
 test('快捷键延迟取词必须在启动旧流程前校验交互 token', () => {
@@ -338,8 +341,11 @@ test('Dock 激活路径不得为迟到 activate 恢复后台设置页可聚焦�
   // 误放行，也只返回 true、不重新 show()+focus()，不会把后台阅读器顶到最前。
   assert.match(activateSource, /webReader\?\.focusExistingWindow\(\)/u,
     'Dock 激活已有阅读器时必须走不会强制置前的恢复入口')
-  assert.match(activateSource, /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
-    '没有阅读器时 Dock 激活必须置前设置页')
+  assert.match(
+    activateSource,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
+    '没有阅读器时 Dock 激活必须携带独立来源与激活代际置前设置页'
+  )
 })
 
 test('activate 复用已可见且未最小化的设置页时仍须安全置前', () => {
@@ -356,7 +362,7 @@ test('activate 复用已可见且未最小化的设置页时仍须安全置前',
   )
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(target,\s*\{[\s\S]*?raiseLevel:\s*false/u,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(target,\s*\{[\s\S]*?raiseLevel:\s*false/u,
     '已可见设置页收到有效 Dock 激活后必须复用窗口并再次安全置前'
   )
   assert.doesNotMatch(
@@ -396,6 +402,53 @@ test('应用失活后迟到的 Dock 补置前必须失效', () => {
   )
 })
 
+test('Dock 首次激活不得因 did-become-active 尚未落定而静默丢弃置前请求', () => {
+  const activateSource = stripComments(
+    extractFunction(mainSource, 'function activateExistingPageOrOpenSettings(): void {')
+  )
+  const openSource = stripComments(extractFunction(mainSource, 'async function openSettings('))
+  const createSource = stripComments(
+    extractFunction(mainSource, 'async function createSettingsWindow(')
+  )
+  const completeSource = stripComments(
+    extractFunction(mainSource, 'function canCompleteSettingsBringToFront(')
+  )
+
+  // macOS 可能先派发 activate，再派发 did-become-active。此时仅凭
+  // isMacAppActiveByEvents() 会误判为失活并吞掉第一次 Dock 点击。activate
+  // 判定放行后必须把当前 Dock 请求代际传到统一置前门禁，由门禁在“激活事件
+  // 短暂延迟”与“用户真的切走”之间做区分。
+  assert.match(
+    activateSource,
+    /openSettings\(\{[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
+    'Dock 激活必须把请求来源与代际传给 openSettings'
+  )
+  assert.match(
+    openSource,
+    /source\?:\s*'popup'\s*\|\s*'initial-launch'\s*\|\s*'dock'/u,
+    'openSettings 必须显式支持 Dock 来源'
+  )
+  assert.match(openSource, /dockActivationEpoch\?:\s*number/u,
+    'openSettings 必须接收本次 Dock 激活代际')
+  assert.match(
+    openSource,
+    /createSettingsWindow\([\s\S]*?options\.source[\s\S]*?options\.dockActivationEpoch/u,
+    'openSettings 必须把 Dock 来源与代际传给窗口创建路径'
+  )
+  assert.match(createSource, /source\?:\s*'popup'\s*\|\s*'initial-launch'\s*\|\s*'dock'/u,
+    'createSettingsWindow 必须显式支持 Dock 来源')
+  assert.match(createSource, /dockActivationEpoch\?:\s*number/u,
+    'createSettingsWindow 必须接收本次 Dock 激活代际')
+  assert.match(createSource, /const dockActivationEpochAtStart\s*=\s*source\s*===\s*'dock'/u,
+    '只有 Dock 来源可以携带激活代际进入置前门禁')
+  assert.match(completeSource, /shouldCompleteSettingsBringToFront\(/u,
+    '统一置前门禁必须使用可单测的 Dock 激活判定')
+  assert.match(completeSource, /dockActivationEpoch,/u,
+    '统一置前门禁必须把 Dock 激活代际交给判定函数')
+  assert.match(completeSource, /currentDockActivationEpoch:\s*settingsDockActivationEpoch/u,
+    '统一置前门禁必须用最新 Dock 代际识别真正失活')
+})
+
 test('启动首开必须使用独立来源，不能因启动期失活事件被永久吞掉', () => {
   const openSource = stripComments(extractFunction(mainSource, 'async function openSettings('))
   const createSource = stripComments(
@@ -426,8 +479,8 @@ test('启动首开必须使用独立来源，不能因启动期失活事件被�
   )
   assert.match(
     completeSource,
-    /if \(initialLaunchSource\)[\s\S]*?isSelectionWindowRaiseGuardActive\(\)[\s\S]*?selectionInteraction\.snapshot\(\)\.state === 'idle'[\s\S]*?if \(isMac && !isMacAppActiveByEvents\(\)\)/u,
-    '启动首开只能豁免应用失活门禁，仍必须阻止划词保护期或进行中交互抢前台'
+    /initialLaunchSource,[\s\S]*?selectionGuardActive:\s*isSelectionWindowRaiseGuardActive\(\)[\s\S]*?selectionInteractionIdle:\s*selectionInteraction\.snapshot\(\)\.state === 'idle'[\s\S]*?appActive:\s*isMac\s*\?\s*isMacAppActiveByEvents\(\)\s*:\s*true/u,
+    '启动首开只能豁免应用失活门禁，仍必须阻止划词保护期或进行中交互抢前台；非 macOS 不得误判失活'
   )
 
   const initialLaunchEpochBypassCount =

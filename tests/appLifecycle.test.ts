@@ -122,7 +122,7 @@ test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补
   // 分支缺少新建分支的最终置前，需在打开完成后让出一轮事件循环再补一次。
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(target,\s*\{[\s\S]*?raiseLevel:\s*false/u,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)[\s\S]*?yieldToEventLoop\(\)[\s\S]*?bringSettingsWindowToFrontSafely\(target,\s*\{[\s\S]*?raiseLevel:\s*false/u,
     'Dock 打开设置页后必须等待激活事件落定并再次安全置前，但不得提升到 screen-saver'
   )
 })

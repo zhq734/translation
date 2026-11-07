@@ -620,8 +620,10 @@ test('所有设置页显式打开入口必须先恢复被划词隐藏的设置�
     'openSettings 必须显式区分用户入口与自动 activate 路径')
   assert.match(openSource, /if\s*\(options\.explicitEntry\)\s*resumeSettingsWindowAfterExternalSelection\(\)/u,
     '只有显式入口才能解除划词隐藏，自动 activate 不得恢复后台设置页')
-  assert.match(activateSource, /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
-    '真实 Dock 激活属于显式入口，必须显式传参')
+  assert.match(
+    activateSource,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
+    '真实 Dock 激活属于显式入口，必须显式传参并携带激活代际')
   assert.match(traySource, /openSettings\(\{ explicitEntry: true \}\)/u,
     '托盘点击属于显式入口，必须显式传参')
 })

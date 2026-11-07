@@ -74,7 +74,7 @@ test('复用设置窗口先刷新策略再置前，新建设置窗口先置前�
   // 用户显式入口默认请求把设置页带到最前，内部 activate 才显式传 false 复用。
   assert.match(
     source,
-    /async function openSettings\([\s\S]*?await createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u
+    /async function openSettings\([\s\S]*?await createSettingsWindow\(\s*options\.bringToFront \?\? true,\s*options\.source,\s*options\.dockActivationEpoch\s*\)/u
   )
   const openSettingsBlock = source.match(
     /async function openSettings\([\s\S]*?\): Promise<void> \{([\s\S]*?)\n\}/u

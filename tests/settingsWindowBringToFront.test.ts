@@ -64,7 +64,7 @@ test('托盘、第二实例与 Dock activate 等用户入口都应请求置顶',
   )
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
     'Dock activate 复用已可见设置页时必须置顶'
   )
 })
@@ -91,7 +91,7 @@ test('Dock 激活是显式用户入口，复用设置窗口时必须置前', () 
   // 必须把已打开的设置页提到最前。否则日志虽然显示“按 Dock 启动处理”，窗口却毫无反应。
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
     'Dock 激活复用设置窗口时必须显式置前'
   )
 })

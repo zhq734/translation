@@ -128,8 +128,8 @@ test('弹窗内显式打开设置页必须豁免划词抑制并强制置前', ()
   )
   assert.match(
     indexSource,
-    /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
-    'openSettings 必须把来源传给 createSettingsWindow'
+    /createSettingsWindow\(\s*options\.bringToFront \?\? true,\s*options\.source,\s*options\.dockActivationEpoch\s*\)/u,
+    'openSettings 必须把来源与 Dock 代际传给 createSettingsWindow'
   )
 })
 
@@ -643,7 +643,7 @@ test('启动自动打开与 Dock activate 都必须把设置页置前', () => {
   )
   assert.match(
     activateSource,
-    /openSettings\(\{ bringToFront: true, explicitEntry: true \}\)/u,
+    /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,
     'Dock activate 是显式入口，必须把已可见设置页置前'
   )
   assert.doesNotMatch(
@@ -658,8 +658,8 @@ test('openSettings 必须按来源决定是否置顶且不得再维护显式打�
 
   assert.match(
     openSource,
-    /createSettingsWindow\(options\.bringToFront \?\? true,\s*options\.source\)/u,
-    'openSettings 必须把是否置顶透传给 createSettingsWindow'
+    /createSettingsWindow\(\s*options\.bringToFront \?\? true,\s*options\.source,\s*options\.dockActivationEpoch\s*\)/u,
+    'openSettings 必须把是否置顶、来源与 Dock 代际透传给 createSettingsWindow'
   )
   assert.doesNotMatch(openSource, /settingsWindowExplicitlyOpened/u,
     'panel 落地后不得再维护显式打开补偿标记')
