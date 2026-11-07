@@ -26,3 +26,18 @@ test('翻译弹窗的透明宿主区域也必须裁成圆角，避免 Windows �
   assert.match(styles, /html\s*,\s*body\s*\{[^}]*border-radius:\s*12px;[^}]*clip-path:\s*inset\(0 round 12px\);/su)
   assert.match(styles, /body\s*\{[^}]*isolation:\s*isolate;/su)
 })
+
+/**
+ * 校验长原文只由原文区自身滚动，避免外层内容区再生成第二条并排滚动条。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('翻译弹窗长内容不得形成嵌套纵向滚动容器', () => {
+  const styles = readFileSync('src/renderer/src/style.css', 'utf8')
+  const selectionViewRule = styles.match(/\.selection-view\s*\{([^}]*)\}/u)?.[1] ?? ''
+
+  assert.match(selectionViewRule, /overflow:\s*hidden;/u)
+  assert.doesNotMatch(selectionViewRule, /overflow-y:\s*auto;/u)
+  assert.match(styles, /\.original\s*\{[^}]*max-height:[^;]+;[^}]*overflow-y:\s*auto;/su)
+  assert.match(styles, /\.result\s*\{[^}]*overflow-y:\s*auto;/su)
+})

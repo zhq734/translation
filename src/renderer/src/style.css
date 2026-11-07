@@ -386,7 +386,8 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  /* 原文与译文各自滚动；外层再滚动会在长内容时叠出第二条滚动条。 */
+  overflow: hidden;
 }
 
 .selection-view[hidden] {
