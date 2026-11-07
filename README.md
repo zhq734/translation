@@ -25,6 +25,7 @@
 - [Run Locally](#run-locally)
 - [Grant Accessibility Permission](#grant-accessibility-permission)
 - [Quick Start](#quick-start)
+- [Real-time Subtitles](#real-time-subtitles)
 - [Web Page Translation](#web-page-translation)
 - [Document Translation Workspace](#document-translation-workspace)
 - [Configuration](#configuration)
@@ -75,6 +76,7 @@ Typical use cases include:
 - **Clipboard protection** that preserves existing text or image content whenever possible and avoids overwriting a newer user copy action.
 - **Quick OCR translation**: press `Alt+S`, drag a region with the left mouse button, and release to start OCR and translation automatically. It is intended for fast lookups in images, video subtitles, and interfaces whose text cannot be selected.
 - **Screenshot OCR workspace**: press `Alt+O` to adjust the region, preview OCR, annotate, copy, or save the image before manually submitting translation. Clipboard-image OCR is also supported.
+- **Real-time subtitles**: press `Alt+L` (default) to open a floating subtitle window that recognizes system audio or microphone speech live and shows source, translated, or bilingual captions. ASR channels include Deepgram, Whisper-compatible services, generic WebSocket ASR, Alibaba DashScope, and custom OpenAI Realtime endpoints.
 - **Screenshot annotation** with rectangles, ellipses, arrows, freehand brush, text, mosaic, highlight, Gaussian blur, and spotlight tools, plus contextual color, stroke, font, and blur controls.
 - **Proxy configuration** for system proxy, direct connection, or custom HTTP/HTTPS/SOCKS4/SOCKS5 proxy rules.
 - **DingTalk enterprise translation integration** with configuration checks and encrypted ClientSecret storage.
@@ -86,7 +88,7 @@ Typical use cases include:
 
 ## Screenshots
 
-The following screenshots show the selection translation workflow, the translation result popup, the tabbed settings interface, Microsoft Translator configuration, and the menu-bar/tray controls.
+The following screenshots show the selection translation workflow, the translation result popup, the tabbed settings interface, Microsoft Translator configuration, the menu-bar/tray controls, and the real-time subtitle window.
 
 ### Selection translation
 
@@ -116,6 +118,12 @@ The following screenshots show the selection translation workflow, the translati
 
 <p align="center">
   <img src="./docs/images/截图5.png" alt="Menu-bar and tray controls" width="360">
+</p>
+
+### Real-time subtitles
+
+<p align="center">
+  <img src="./docs/images/截图6.png" alt="Real-time subtitle window showing bilingual captions" width="100%">
 </p>
 
 ## Promotional Video
@@ -353,6 +361,17 @@ Use `Alt+O` instead when you want the full screenshot workspace: adjust the sele
 - **Language selectors**: change the source/target preference and translate again;
 - **Settings**: open the settings window;
 - **Close**: close the popup with `×` or `Esc`.
+
+## Real-time Subtitles
+
+Real-time subtitles overlay bilingual captions on any video or meeting. The app captures system audio or microphone input, recognizes speech through a configurable ASR channel, translates the recognized text with the existing translation providers, and renders captions in a floating window on top of the video.
+
+- **Entry and hotkey**: press `Alt+L` (default) to start or stop the subtitle window, or click **Start subtitles** under **Settings → Real-time subtitles**; the hotkey can be changed or cleared in settings.
+- **Audio sources**: choose system audio, microphone, or both. System audio requires screen recording permission; microphone or mixed sources also require microphone permission.
+- **ASR channels**: Deepgram, Whisper/OpenAI-compatible transcription services, generic WebSocket ASR, Alibaba Cloud DashScope ASR, custom DashScope ASR, and custom OpenAI Realtime ASR. API keys are encrypted in system secure storage; see `docs/realtime-subtitle-providers.md` for channel capabilities and conventions.
+- **Display modes**: source-only, translation-only, or bilingual. Long sentences are split into multiple cues by pauses, punctuation, and semantics; translations appear in source order, and the original text is kept when translation fails.
+- **Window behavior**: the window can be dragged into position and is click-through by default so it never blocks video controls; font size, text color, and the auto-hide timeout are configurable.
+- **Platform support**: the first release requires macOS 14.2 or later.
 
 ## Web Page Translation
 
