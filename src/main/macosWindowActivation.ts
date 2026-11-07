@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  isTargetWindowFrontmost,
   resolveTargetWindow,
   resolveWindowLocateOutcome,
   type FrontmostWindowSnapshot,
@@ -502,9 +503,12 @@ export async function activateMacosApplicationAndConfirmWindow(
     ).length
     const target = resolveTargetWindow({ windows, pid: snapshot.pid, snapshot })
     lastWindowMatched = target !== null
-    if (target &&
-        windowList.frontmostPid === snapshot.pid &&
-        windowList.frontmostWindowNumber === target.windowNumber) {
+    if (target && isTargetWindowFrontmost({
+      windows,
+      target,
+      frontmostPid: windowList.frontmostPid,
+      frontmostWindowNumber: windowList.frontmostWindowNumber
+    })) {
       return {
         activated: true,
         confirmed: true,
@@ -641,11 +645,16 @@ export async function activateMacosWindowSnapshot(
   // 同一次取词中入口交还与复制兜底会先后调用激活；重复激活会让微信把另一个
   // 同进程窗口带到最前，反而使随后注入的 Cmd+C 落在错误窗口。
   const frontmostWindowNumber = windowList.frontmostPid === snapshot.pid
-    ? windowList.frontmostWindowNumber ?? await deps.readFrontmostWindowNumber()
-    : null
+    ? windowList.frontmostWindowNumber ?? await deps.readFrontmostWindowNumber() ?? undefined
+    : undefined
   // CGWindowList 顺序是微信场景最可靠的判断依据：AXFocusedWindow 会返回 -25201，
   // 且读取本身可能阻塞。先按全局最前普通窗口确认，命中后立即结束，不再读取 AX。
-  if (frontmostWindowNumber === target.windowNumber) {
+  if (isTargetWindowFrontmost({
+    windows,
+    target,
+    frontmostPid: windowList.frontmostPid,
+    frontmostWindowNumber
+  })) {
     return {
       activated: true,
       confirmed: true,

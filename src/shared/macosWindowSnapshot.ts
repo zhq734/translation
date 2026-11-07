@@ -111,6 +111,74 @@ function isTargetableWindow(window: MacosWindowInfo, pid: number): boolean {
   return window.pid === pid && window.layer === 0 && window.bounds.width > 0 && window.bounds.height > 0
 }
 
+/** 可忽略的同进程辅助浮层最大宽度（点）。 */
+const MAX_AUXILIARY_WINDOW_WIDTH = 640
+
+/** 可忽略的同进程辅助浮层最大高度（点）。 */
+const MAX_AUXILIARY_WINDOW_HEIGHT = 160
+
+/** 可忽略的同进程辅助浮层最大面积占目标窗口面积比例。 */
+const MAX_AUXILIARY_WINDOW_AREA_RATIO = 0.1
+
+/**
+ * 判断窗口是否为位于目标窗口内部的同进程紧凑辅助浮层。
+ *
+ * Chrome 的 Glic/Gemini 等辅助界面会以普通层级、空标题的小窗口出现在
+ * CGWindowList 最前位置。只有同时满足同进程、空标题、尺寸紧凑、面积占比低
+ * 且边界完全位于目标窗口内时才允许忽略，避免把独立的小窗口误判为浮层。
+ * @param window 待判断窗口。
+ * @param target 入口快照对应的目标窗口。
+ * @returns 可安全忽略时返回 true。
+ * @author zhenghq
+ */
+function isCompactAuxiliaryWindow(window: MacosWindowInfo, target: MacosWindowInfo): boolean {
+  if (window.pid !== target.pid || window.layer !== 0 || window.title.trim()) return false
+  if (window.bounds.width <= 0 || window.bounds.height <= 0) return false
+  if (window.bounds.width > MAX_AUXILIARY_WINDOW_WIDTH ||
+      window.bounds.height > MAX_AUXILIARY_WINDOW_HEIGHT) {
+    return false
+  }
+  const targetArea = target.bounds.width * target.bounds.height
+  const windowArea = window.bounds.width * window.bounds.height
+  if (targetArea <= 0 || windowArea > targetArea * MAX_AUXILIARY_WINDOW_AREA_RATIO) return false
+  return window.bounds.x >= target.bounds.x &&
+    window.bounds.y >= target.bounds.y &&
+    window.bounds.x + window.bounds.width <= target.bounds.x + target.bounds.width &&
+    window.bounds.y + window.bounds.height <= target.bounds.y + target.bounds.height
+}
+
+/**
+ * 判断目标窗口是否已处于可接收复制的同进程最前内容位置。
+ *
+ * 目标窗口编号直接命中全局最前窗口时立即返回 true。Chrome 等应用的紧凑辅助
+ * 浮层可能抢占全局最前位置，此时仅当目标窗口之前的所有同进程窗口都是可忽略
+ * 辅助浮层时才返回 true；其它进程窗口、同进程正常窗口或越界浮层仍必须失败。
+ * @param options 窗口顺序、目标窗口与全局最前窗口信息。
+ * @returns 目标窗口已处于可接收输入的最前内容位置时返回 true。
+ * @author zhenghq
+ */
+export function isTargetWindowFrontmost(options: {
+  windows: readonly MacosWindowInfo[]
+  target: MacosWindowInfo
+  frontmostPid?: number
+  frontmostWindowNumber?: number
+}): boolean {
+  const { windows, target, frontmostPid, frontmostWindowNumber } = options
+  if (frontmostPid !== target.pid || frontmostWindowNumber === undefined) return false
+  if (frontmostWindowNumber === target.windowNumber) return true
+
+  const targetIndex = windows.findIndex((window) =>
+    window.pid === target.pid && window.windowNumber === target.windowNumber
+  )
+  const frontmostIndex = windows.findIndex((window) =>
+    window.pid === target.pid && window.windowNumber === frontmostWindowNumber
+  )
+  if (targetIndex <= 0 || frontmostIndex < 0 || frontmostIndex >= targetIndex) return false
+  return windows
+    .slice(0, targetIndex)
+    .every((window) => isCompactAuxiliaryWindow(window, target))
+}
+
 /**
  * 按快照定位窗口：窗口编号优先，编号失效后回退到边界 + 标题指纹。
  * 快照明确指向窗口但两种方式都无法匹配时返回 null，由调用方退化为应用级。

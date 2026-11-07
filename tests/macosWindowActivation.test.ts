@@ -211,6 +211,57 @@ test('进程级激活后确认同一目标窗口位于最前时应报告精确�
 })
 
 /**
+ * 校验进程级激活后目标网页窗口被同进程紧凑辅助浮层遮挡时仍可精确确认。
+ *
+ * Chrome 的 Glic/Gemini 浮层会抢占 CGWindowList 最前位置，但目标网页窗口
+ * 仍是该进程首个正常内容窗口；若因此安全早退，所有取词都会被阻断。
+ * @returns 测试完成后的 Promise。
+ * @author zhenghq
+ */
+test('进程级激活后目标窗口被同进程紧凑辅助浮层遮挡时应报告精确成功', async () => {
+  let now = 1_000
+  const target = makeWindow({
+    windowNumber: 6704,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'CLI Proxy API Management Center'
+  })
+  const auxiliary = makeWindow({
+    windowNumber: 16136,
+    bounds: { x: 836, y: 105, width: 403, height: 84 },
+    title: ''
+  })
+  const background = makeWindow({
+    windowNumber: 6693,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'Dashboard | KataBump'
+  })
+  const result = await activateMacosApplicationAndConfirmWindow(makeSnapshot({
+    bundleId: 'com.google.chrome',
+    windowNumber: target.windowNumber,
+    bounds: target.bounds
+  }), {
+    activateApplication: async () => true,
+    enumerateWindows: async () => ({
+      windows: [auxiliary, target, background],
+      frontmostWindowNumber: auxiliary.windowNumber,
+      frontmostPid: 4242
+    }),
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    }
+  })
+
+  assert.deepEqual(result, {
+    activated: true,
+    confirmed: true,
+    outcome: 'exact',
+    windowCount: 3,
+    windowMatched: true
+  })
+})
+
+/**
  * 校验首次 AX 直读不可信时，会按应用级激活结果受控重读一次。
  * Safari 的窗口级 raise 不会保证应用成为前台，必须在 AX 失败后再激活应用。
  * @returns 测试完成后的 Promise。
@@ -528,6 +579,55 @@ test('AX focused 不可用时应使用 CGWindowList 最前窗口确认目标窗�
   })
   assert.equal(raiseCalls, 0, '目标窗口已是全局最前窗口时不得调用 AXRaise')
   assert.equal(openCalls, 0, '目标窗口已是全局最前窗口时不得调用 open -b')
+})
+
+/**
+ * 校验目标窗口被同进程紧凑辅助浮层遮挡时，无需再次 raise 或 open -b。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('目标窗口被同进程紧凑辅助浮层遮挡时不得重复 raise', async () => {
+  let raiseCalls = 0
+  const target = makeWindow({
+    windowNumber: 6704,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'CLI Proxy API Management Center'
+  })
+  const auxiliary = makeWindow({
+    windowNumber: 16136,
+    bounds: { x: 836, y: 105, width: 403, height: 84 },
+    title: ''
+  })
+  const background = makeWindow({
+    windowNumber: 6693,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'Dashboard | KataBump'
+  })
+  const result = await activateMacosWindowSnapshot(makeSnapshot({
+    bundleId: 'com.google.chrome',
+    windowNumber: target.windowNumber,
+    bounds: target.bounds
+  }), makeDeps({
+    enumerateWindows: async () => ({
+      windows: [auxiliary, target, background],
+      frontmostWindowNumber: auxiliary.windowNumber,
+      frontmostPid: 4242
+    }),
+    readFocusedWindowNumber: async () => null,
+    raiseWindow: async () => {
+      raiseCalls += 1
+      return false
+    }
+  }))
+
+  assert.deepEqual(result, {
+    activated: true,
+    confirmed: true,
+    outcome: 'exact',
+    windowCount: 3,
+    windowMatched: true
+  })
+  assert.equal(raiseCalls, 0, '目标窗口位于辅助浮层之后时不得重复 raise')
 })
 
 /**

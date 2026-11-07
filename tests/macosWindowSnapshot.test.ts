@@ -5,6 +5,7 @@ import {
   buildFrontmostWindowSnapshot,
   containsPoint,
   createWindowTitleFingerprint,
+  isTargetWindowFrontmost,
   resolveWindowCaptureTarget,
   resolveTargetWindow,
   resolveWindowLocateOutcome,
@@ -114,6 +115,102 @@ test('resolveTargetWindow 应在重叠时优先选择 CGWindowList 更靠前的�
   const selected = resolveTargetWindow({ windows, point: { x: 150, y: 150 }, pid: 4242 })
   assert.equal(selected?.windowNumber, 101,
     '坐标重叠时必须相信 CGWindowList 顺序，不能因 1px 面积差选中后台窗口')
+})
+
+/**
+ * 校验目标窗口被同进程紧凑辅助浮层遮挡时，仍视为该进程当前可接收输入的主窗口。
+ *
+ * Chrome 的 Glic/Gemini 等辅助界面会以普通层级、空标题的小窗口出现在
+ * CGWindowList 最前位置；它完整位于目标窗口内部时，不应把后面的网页主窗口
+ * 误判为未激活。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('isTargetWindowFrontmost 应忽略目标窗口内部的同进程紧凑辅助浮层', () => {
+  const target = makeWindow({
+    windowNumber: 6704,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'CLI Proxy API Management Center'
+  })
+  const auxiliary = makeWindow({
+    windowNumber: 16136,
+    bounds: { x: 836, y: 105, width: 403, height: 84 },
+    title: ''
+  })
+  const background = makeWindow({
+    windowNumber: 6693,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 },
+    title: 'Dashboard | KataBump'
+  })
+
+  assert.equal(isTargetWindowFrontmost({
+    windows: [auxiliary, target, background],
+    target,
+    frontmostPid: 4242,
+    frontmostWindowNumber: auxiliary.windowNumber
+  }), true)
+})
+
+/**
+ * 校验同进程正常窗口位于目标窗口之前时仍判定未激活，避免 Cmd+C 落到错误窗口。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('isTargetWindowFrontmost 不得忽略目标窗口之前的同进程正常窗口', () => {
+  const target = makeWindow({ windowNumber: 6704, title: '目标页面' })
+  const otherWindow = makeWindow({ windowNumber: 6693, title: '另一个页面' })
+
+  assert.equal(isTargetWindowFrontmost({
+    windows: [otherWindow, target],
+    target,
+    frontmostPid: 4242,
+    frontmostWindowNumber: otherWindow.windowNumber
+  }), false)
+})
+
+/**
+ * 校验辅助浮层不完全位于目标窗口内部时不得忽略，避免把独立小窗口误当成浮层。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('isTargetWindowFrontmost 不得忽略超出目标窗口边界的紧凑窗口', () => {
+  const target = makeWindow({
+    windowNumber: 6704,
+    bounds: { x: 0, y: 33, width: 1728, height: 1005 }
+  })
+  const detachedWindow = makeWindow({
+    windowNumber: 16136,
+    bounds: { x: 1600, y: 105, width: 403, height: 84 },
+    title: ''
+  })
+
+  assert.equal(isTargetWindowFrontmost({
+    windows: [detachedWindow, target],
+    target,
+    frontmostPid: 4242,
+    frontmostWindowNumber: detachedWindow.windowNumber
+  }), false)
+})
+
+/**
+ * 校验最前窗口属于其它进程时不得把目标窗口误报为已激活。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('isTargetWindowFrontmost 不得忽略其它进程的最前窗口', () => {
+  const target = makeWindow({ windowNumber: 6704 })
+  const auxiliary = makeWindow({
+    windowNumber: 16136,
+    bounds: { x: 836, y: 105, width: 403, height: 84 },
+    title: ''
+  })
+
+  assert.equal(isTargetWindowFrontmost({
+    windows: [auxiliary, target],
+    target,
+    frontmostPid: 9999,
+    frontmostWindowNumber: auxiliary.windowNumber
+  }), false)
 })
 
 /**
