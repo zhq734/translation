@@ -13,8 +13,6 @@ export interface SubtitleTranslationCoordinatorOptions {
   getDingTalkCredentials: () => DingTalkCredentials | null
   /** 读取 AI API Key。 */
   getAiApiKey: () => string | null
-  /** 读取 iTranslate API Key；为空时跳过该可选通道。 */
-  getITranslateApiKey?: () => string | null
   /** 复用现有流式翻译运行时。 */
   translateStream: (
     text: string,
@@ -25,7 +23,6 @@ export interface SubtitleTranslationCoordinatorOptions {
       onDelta: (delta: string) => void
       signal?: AbortSignal
     },
-    iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
   /** 转发一段译文增量，并携带该任务对应的原文用于校验分段是否仍然有效。 */
   onDelta: (
@@ -635,8 +632,7 @@ export class SubtitleTranslationCoordinator {
               if (!this.isActive(task) || !delta) return
               this.emitDelta(task, delta)
             }
-          },
-          this.options.getITranslateApiKey?.() ?? null
+          }
         )
         if (!this.isActive(task)) return
         task.resultText = output.translation || task.translatedText

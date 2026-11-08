@@ -252,7 +252,6 @@ function createHarness(
     text: string
     sourceLang: string | undefined
     id: string
-    iTranslateApiKey: string | null | undefined
   }> = []
   const pendingTranslations: Array<{
     text: string
@@ -275,7 +274,6 @@ function createHarness(
     getDashScopeApiKey: () => options.dashScopeApiKey ?? null,
     getOpenAIRealtimeApiKey: () => options.openAIRealtimeApiKey ?? null,
     getGeminiApiKey: () => options.geminiApiKey ?? null,
-    getITranslateApiKey: () => 'it-secret',
     previewDebounceMs: options.previewDebounceMs,
     previewMinIntervalMs: options.previewMinIntervalMs,
     finalMaxAttempts: options.finalMaxAttempts ?? 1,
@@ -285,12 +283,11 @@ function createHarness(
     maxQueuedFinalRequests: options.maxQueuedFinalRequests,
     translationDisplayHoldMs: options.translationDisplayHoldMs ?? 0,
     log: (message) => options.logs?.push(message),
-    translateStream: async (text, _settings, _dingTalk, _apiKey, options, iTranslateApiKey) => {
+    translateStream: async (text, _settings, _dingTalk, _apiKey, options) => {
       translateCalls.push({
         text,
         sourceLang: _settings.sourceLang,
-        id: text,
-        iTranslateApiKey
+        id: text
       })
       return new Promise((resolve, reject) => {
         options.signal?.addEventListener('abort', () => {
@@ -382,7 +379,6 @@ test('partial 应翻译当前可见 cue 且 final 复用结果', async () => {
   await waitFor(() => harness.translateCalls.length === 1)
   assert.deepEqual(harness.translateCalls.map((call) => call.text), ['Hello'])
   assert.equal(harness.translateCalls[0]?.sourceLang, 'en-US')
-  assert.equal(harness.translateCalls[0]?.iTranslateApiKey, 'it-secret')
   harness.finishTranslationFor('Hello', '你好')
   await waitFor(() => harness.controller.viewModel().translatedText === '你好')
 

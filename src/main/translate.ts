@@ -20,10 +20,6 @@ import {
 } from './bilibiliIndexTranslation'
 import { BoundedLruCache } from './boundedLruCache'
 import { translateMain } from './messages'
-import {
-  ITranslateTranslationClient,
-  resolveITranslateLanguagePair
-} from './itranslateTranslation'
 import type { DocumentTranslationRequestContext } from '../shared/documentTranslation'
 
 const PUBLIC_DEEPLX = 'https://api.deeplx.org/mRZmM06yhhNJw55Vx87G2CuVvw0FYNtaOAkzo5UQVYI/translate'
@@ -33,7 +29,6 @@ const DINGTALK_CHANNEL = 'dingtalk'
 const MICROSOFT_CHANNEL = 'microsoft'
 const AI_CHANNEL = 'ai'
 const BILIBILI_INDEX_CHANNEL = 'bili-index'
-const ITRANSLATE_CHANNEL = 'itranslate'
 const AI_CHECK_TEXT = 'hello'
 
 const MAX_CHARS = 5000
@@ -179,7 +174,6 @@ export class TranslationRuntime {
   private readonly microsoftClient: MicrosoftTranslationClient
   private readonly aiClient: AiTranslationClient
   private readonly bilibiliIndexClient: BilibiliIndexTranslationClient
-  private readonly iTranslateClient: ITranslateTranslationClient
   private deepLxRoundRobinIndex = 0
 
   constructor(private readonly options: TranslationRuntimeOptions) {
@@ -192,7 +186,6 @@ export class TranslationRuntime {
     this.microsoftClient = new MicrosoftTranslationClient({ fetch: options.fetch, now: this.now })
     this.aiClient = new AiTranslationClient({ fetch: options.fetch })
     this.bilibiliIndexClient = new BilibiliIndexTranslationClient({ fetch: options.fetch })
-    this.iTranslateClient = new ITranslateTranslationClient({ fetch: options.fetch })
   }
 
   /**
@@ -208,8 +201,7 @@ export class TranslationRuntime {
     text: string,
     settings: Settings,
     dingTalkCredentials: DingTalkCredentials | null = null,
-    aiApiKey: string | null = null,
-    iTranslateApiKey: string | null = null
+    aiApiKey: string | null = null
   ): Promise<TranslateOutput> {
     if (text.length > MAX_CHARS) {
       throw new Error(translateMain('translate.error.tooLong', { max: MAX_CHARS }))
@@ -225,9 +217,7 @@ export class TranslationRuntime {
       settings.aiBaseUrl,
       settings.aiModel,
       settings.biliIndexTranslateEnabled,
-      settings.biliIndexTranslateModel,
-      settings.itranslateEnabled,
-      settings.itranslateApiKeyConfigured
+      settings.biliIndexTranslateModel
     )
     const hit = this.cache.get(key)
     if (hit) return { ...hit, channel: translateMain('translate.channel.cached') }
@@ -236,8 +226,7 @@ export class TranslationRuntime {
       input,
       settings,
       dingTalkCredentials,
-      aiApiKey,
-      iTranslateApiKey
+      aiApiKey
     )
     let lastError = translateMain('translate.error.allChannelsFailed')
     for (const channel of channels) {
@@ -290,7 +279,6 @@ export class TranslationRuntime {
     dingTalkCredentials: DingTalkCredentials | null,
     aiApiKey: string | null,
     options: TranslateStreamOptions,
-    iTranslateApiKey: string | null = null
   ): Promise<TranslateOutput> {
     if (text.length > MAX_CHARS) {
       throw new Error(translateMain('translate.error.tooLong', { max: MAX_CHARS }))
@@ -307,8 +295,6 @@ export class TranslationRuntime {
       settings.aiModel,
       settings.biliIndexTranslateEnabled,
       settings.biliIndexTranslateModel,
-      settings.itranslateEnabled,
-      settings.itranslateApiKeyConfigured,
       options.context
     )
     const hit = options.bypassCache ? undefined : this.cache.get(key)
@@ -318,8 +304,7 @@ export class TranslationRuntime {
       input,
       settings,
       dingTalkCredentials,
-      aiApiKey,
-      iTranslateApiKey
+      aiApiKey
     )
     let lastError = translateMain('translate.error.allChannelsFailed')
     let structuredError: StructuredTranslationError | null = null
@@ -486,7 +471,6 @@ export class TranslationRuntime {
     settings: Settings,
     dingTalkCredentials: DingTalkCredentials | null,
     aiApiKey: string | null,
-    iTranslateApiKey: string | null
   ): TranslationChannel[] {
     const channels: TranslationChannel[] = []
     if (settings.aiEnabled &&
@@ -540,23 +524,6 @@ export class TranslationRuntime {
           cooldownMs: 60_000,
           maxChars: MAX_CHARS,
           run: () => this.microsoftClient.translate(text, pair)
-        })
-      }
-    }
-
-    if (settings.itranslateEnabled && settings.itranslateApiKeyConfigured && iTranslateApiKey) {
-      const pair = resolveITranslateLanguagePair(settings.sourceLang, settings.targetLang)
-      if (pair) {
-        channels.push({
-          id: 'itranslate',
-          name: translateMain('translate.channel.itranslate'),
-          breakerKey: ITRANSLATE_CHANNEL,
-          cooldownMs: 60_000,
-          maxChars: MAX_CHARS,
-          run: async () => {
-            const output = await this.iTranslateClient.translate(text, pair, iTranslateApiKey)
-            return { ...output, provider: 'itranslate' }
-          }
         })
       }
     }
@@ -704,16 +671,6 @@ export class TranslationRuntime {
   }
 
   /**
-   * 在 iTranslate 配置变化后清理结果缓存和 iTranslate 熔断状态。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  resetITranslateRuntime(): void {
-    this.cache.clear()
-    this.resetBreaker(ITRANSLATE_CHANNEL)
-  }
-
-  /**
    * 使用已配置代理的翻译网络会话发送带超时请求。
    * @param url 请求地址。
    * @param init 请求参数。
@@ -825,8 +782,6 @@ export class TranslationRuntime {
    * @param aiModel AI 模型名称。
    * @param biliIndexEnabled 是否启用 Bilibili Index-Translate。
    * @param biliIndexModel Bilibili Index-Translate 模型。
-   * @param iTranslateEnabled 是否启用 iTranslate 翻译通道。
-   * @param iTranslateConfigured 是否已安全配置 iTranslate API Key。
    * @param context 可选的文档上下文。
    * @returns 缓存键。
    * @author zhenghq
@@ -842,18 +797,13 @@ export class TranslationRuntime {
     aiModel: string,
     biliIndexEnabled: boolean,
     biliIndexModel: Settings['biliIndexTranslateModel'],
-    iTranslateEnabled: boolean,
-    iTranslateConfigured: boolean,
     context?: DocumentTranslationRequestContext
   ): string {
     const documentContextKey = context
       ? `doc:${context.glossaryVersion}:${context.glossaryContext}:${context.contextSummary ?? ''}`
       : ''
     const biliIndexKey = biliIndexEnabled ? `bili-index:${biliIndexModel}` : 'bili-index:off'
-    const iTranslateKey = iTranslateEnabled && iTranslateConfigured
-      ? 'itranslate:on'
-      : 'itranslate:off'
-    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${biliIndexKey}|${iTranslateKey}|${documentContextKey}|${text}`
+    return `${preferredProvider}|${source}|${target}|${aiEnabled ? `ai:${aiProtocol}:${aiBaseUrl}:${aiModel}` : 'ai:off'}|${biliIndexKey}|${documentContextKey}|${text}`
   }
 
   /**
@@ -939,10 +889,9 @@ export function translate(
   text: string,
   settings: Settings,
   dingTalkCredentials: DingTalkCredentials | null = null,
-  aiApiKey: string | null = null,
-  iTranslateApiKey: string | null = null
+  aiApiKey: string | null = null
 ): Promise<TranslateOutput> {
-  return defaultRuntime.translate(text, settings, dingTalkCredentials, aiApiKey, iTranslateApiKey)
+  return defaultRuntime.translate(text, settings, dingTalkCredentials, aiApiKey)
 }
 
 /**
@@ -961,9 +910,8 @@ export function translateStream(
   dingTalkCredentials: DingTalkCredentials | null,
   aiApiKey: string | null,
   options: TranslateStreamOptions,
-  iTranslateApiKey: string | null = null
 ): Promise<TranslateOutput> {
-  return defaultRuntime.translateStream(text, settings, dingTalkCredentials, aiApiKey, options, iTranslateApiKey)
+  return defaultRuntime.translateStream(text, settings, dingTalkCredentials, aiApiKey, options)
 }
 
 /**
@@ -1037,13 +985,4 @@ export function resetBilibiliIndexTranslationRuntime(): void {
  */
 export function resetAiTranslationRuntime(): void {
   defaultRuntime.resetAiRuntime()
-}
-
-/**
- * 清理默认翻译运行时中的结果缓存和 iTranslate 熔断状态。
- * @returns 无返回值。
- * @author zhenghq
- */
-export function resetITranslateTranslationRuntime(): void {
-  defaultRuntime.resetITranslateRuntime()
 }

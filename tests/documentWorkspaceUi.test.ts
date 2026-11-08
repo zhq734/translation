@@ -26,6 +26,19 @@ import type { DocumentBlock } from '../src/shared/documentTypes.ts'
  * @author zhenghq
  */
 function read(path: string): string {
+  if (path === 'src/main/index.ts') {
+    return [
+      readFileSync(path, 'utf8'),
+      readFileSync('src/main/documentRuntime.ts', 'utf8')
+    ].join('\n')
+  }
+  if (path === 'src/renderer/src/document.ts') {
+    return [
+      readFileSync(path, 'utf8'),
+      readFileSync('src/renderer/src/documentElements.ts', 'utf8'),
+      readFileSync('src/renderer/src/documentUiModel.ts', 'utf8')
+    ].join('\n')
+  }
   return readFileSync(path, 'utf8')
 }
 

@@ -57,7 +57,6 @@ import {
   resetBilibiliIndexTranslationRuntime,
   resetMicrosoftTranslationRuntime,
   resetAiTranslationRuntime,
-  resetITranslateTranslationRuntime,
   resetDeepLxTranslationRuntime,
   translate,
   translateStream
@@ -200,7 +199,6 @@ import type {
   DashScopeConfigPatch,
   OpenAIRealtimeConfigPatch,
   GeminiLiveConfigPatch,
-  ITranslateConfigPatch,
   WhisperConfigPatch
 } from '../shared/types'
 import type { EdgeSpeechResult } from '../shared/types'
@@ -222,8 +220,6 @@ import { OpenAIRealtimeCredentialStore } from './openAIRealtimeCredentials'
 import { OpenAIRealtimeConfigurationService } from './openAIRealtimeConfig'
 import { GeminiLiveCredentialStore } from './geminiLiveCredentials'
 import { GeminiLiveConfigurationService } from './geminiLiveConfig'
-import { ITranslateCredentialStore } from './itranslateCredentials'
-import { ITranslateConfigurationService } from './itranslateConfig'
 import { AiModelDiscoveryService } from './aiModelDiscovery'
 import { AiCheckService } from './aiCheck'
 import { DeepLxConfigurationService } from './deepLxConfig'
@@ -297,6 +293,7 @@ import type {
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
 import { DocumentWorkspaceManager } from './documentWorkspaceWindow'
+import { createDocumentRuntimeController, type DocumentMainRuntime } from './documentRuntime'
 import {
   createScreenshotPinWindowManager,
   type ScreenshotPinWindowManager
@@ -490,7 +487,6 @@ let whisperConfiguration: WhisperConfigurationService | null = null
 let dashScopeConfiguration: DashScopeConfigurationService | null = null
 let openAIRealtimeConfiguration: OpenAIRealtimeConfigurationService | null = null
 let geminiLiveConfiguration: GeminiLiveConfigurationService | null = null
-let itranslateConfiguration: ITranslateConfigurationService | null = null
 let deepLxConfiguration: DeepLxConfigurationService | null = null
 let deepLxCheckService: DeepLxCheckService | null = null
 let aiModelDiscovery: AiModelDiscoveryService | null = null
@@ -521,179 +517,6 @@ type DocumentWorkspaceTaskService =
   import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
 /** 当前文档窗口按 jobId 隔离的解析、OCR、翻译与导出任务服务。 */
 const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>()
-/** 文档运行时按需加载，避免 Win7 主进程启动时 require 被裁掉的 PDF 依赖。 */
-interface DocumentMainRuntime {
-  /** 文档解析入口。 */
-  parseDocument: typeof import('./documentParser').parseDocument
-  /** PDF 页面栅格化器工厂。 */
-  createProductionPdfRasterizer: typeof import('./documentPdfRuntime').createProductionPdfRasterizer
-  /** PDF 导出入口。 */
-  exportDocumentToPdf: typeof import('./documentPdfExport').exportDocumentToPdf
-  /** 内置 CJK 字体加载器。 */
-  loadDocumentPdfFontBytes: typeof import('./documentPdfFont').loadDocumentPdfFontBytes
-  /** 文档任务服务构造器。 */
-  DocumentWorkspaceTaskService: typeof import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
-  /** 历史文档资源服务构造器。 */
-  DocumentApprovedResourceService: typeof import('./documentApprovedResourceService').DocumentApprovedResourceService
-  /** 历史文档导出服务构造器。 */
-  DocumentApprovedExportService: typeof import('./documentApprovedExportService').DocumentApprovedExportService
-  /** 文档翻译缓存存储构造器。 */
-  DocumentTranslationCacheStore: typeof import('./documentTranslationCache').DocumentTranslationCacheStore
-  /** 文档任务历史存储构造器。 */
-  DocumentTaskHistoryStore: typeof import('./documentTaskHistory').DocumentTaskHistoryStore
-  /** 历史与恢复 Tab 的受控资源读取服务。 */
-  approvedResourceService: import('./documentApprovedResourceService').DocumentApprovedResourceService
-  /** 历史与恢复 Tab 的单语译文导出服务。 */
-  approvedExportService: import('./documentApprovedExportService').DocumentApprovedExportService
-}
-
-/** 文档运行时单例；仅在支持文档翻译的平台首次使用时加载。 */
-let documentMainRuntimePromise: Promise<DocumentMainRuntime> | null = null
-/** 当前窗口共享的文档翻译缓存；缓存按源文件哈希跨任务复用。 */
-let documentTranslationCache: import('./documentTranslationCache').DocumentTranslationCacheStore | null = null
-/** 当前窗口共享的文档任务历史，避免每个任务各自读取不同实例。 */
-let documentTaskHistory: import('./documentTaskHistory').DocumentTaskHistoryStore | null = null
-
-/**
- * 按需加载文档翻译运行时。
- *
- * Win7 安装包会排除 PDF.js、Canvas、pdf-lib 与字体资源，因此这些模块不能在
- * 主进程启动图中静态引用。只有平台能力校验通过后才加载；加载失败会清除缓存，
- * 让后续请求可以重试并避免把半初始化状态永久保留。
- * @returns 已初始化且可复用的文档运行时。
- * @author zhenghq
- */
-async function loadDocumentRuntime(): Promise<DocumentMainRuntime> {
-  const capability = getDocumentPlatformCapability()
-  if (!capability.supported) {
-    const messageKey = getDocumentPlatformUnsupportedMessageKey(capability)
-      ?? 'document.error.unsupportedPlatform'
-    throw new Error(t(messageKey))
-  }
-  documentMainRuntimePromise ??= (async () => {
-    const [
-      { parseDocument },
-      { createProductionPdfRasterizer },
-      { exportDocumentToPdf },
-      { loadDocumentPdfFontBytes },
-      { DocumentWorkspaceTaskService },
-      { DocumentApprovedResourceService },
-      { DocumentApprovedExportService },
-      { DocumentTranslationCacheStore },
-      { DocumentTaskHistoryStore }
-    ] = await Promise.all([
-      import('./documentParser'),
-      import('./documentPdfRuntime'),
-      import('./documentPdfExport'),
-      import('./documentPdfFont'),
-      import('./documentWorkspaceTaskService'),
-      import('./documentApprovedResourceService'),
-      import('./documentApprovedExportService'),
-      import('./documentTranslationCache'),
-      import('./documentTaskHistory')
-    ])
-    const approvedResourceService = new DocumentApprovedResourceService({
-      isApprovedPath: (path) => approvedDocumentPaths.has(path)
-    })
-    const approvedExportService = new DocumentApprovedExportService({
-      validateSource: (request) => approvedResourceService.validateSource(request),
-      getAsset: (request) => approvedResourceService.getAsset(request),
-      loadFontBytes: () => loadDocumentPdfFontBytes({
-        isPackaged: app.isPackaged,
-        appPath: app.getAppPath(),
-        resourcesPath: process.resourcesPath
-      }),
-      exportPdf: (model, dependencies, options) => exportDocumentToPdf(model, dependencies, {
-        includeOcrTextLayer: options?.includeOcrTextLayer !== false
-      }),
-      showSaveDialog: async (suggestedName) => {
-        const window = documentWorkspace?.getWindow()
-        const result = window
-          ? await dialog.showSaveDialog(window, {
-            title: t('document.export'),
-            defaultPath: suggestedName,
-            filters: [{ name: 'PDF', extensions: ['pdf'] }]
-          })
-          : await dialog.showSaveDialog({
-            title: t('document.export'),
-            defaultPath: suggestedName,
-            filters: [{ name: 'PDF', extensions: ['pdf'] }]
-          })
-        return {
-          canceled: result.canceled,
-          ...(result.filePath ? { filePath: result.filePath } : {})
-        }
-      },
-      writeFile: async (path, bytes) => {
-        await writeFile(path, bytes)
-      },
-      rename: async (source, target) => {
-        await rename(source, target)
-      },
-      unlink,
-      openExportFolder: async (filePath) => {
-        const opened = await openDocumentExportFolder(filePath, {
-          showItemInFolder: (targetPath) => shell.showItemInFolder(targetPath),
-          openPath: (path) => shell.openPath(path)
-        })
-        if (!opened) throw new Error('open-export-folder-failed')
-      }
-    })
-    return {
-      parseDocument,
-      createProductionPdfRasterizer,
-      exportDocumentToPdf,
-      loadDocumentPdfFontBytes,
-      DocumentWorkspaceTaskService,
-      DocumentApprovedResourceService,
-      DocumentApprovedExportService,
-      DocumentTranslationCacheStore,
-      DocumentTaskHistoryStore,
-      approvedResourceService,
-      approvedExportService
-    }
-  })().catch((error) => {
-    documentMainRuntimePromise = null
-    throw error
-  })
-  return documentMainRuntimePromise
-}
-
-/**
- * 返回主进程共享的文档翻译缓存，并在首次访问时按当前设置创建。
- * @param runtime 已加载的文档运行时。
- * @returns 文档翻译缓存存储。
- * @author zhenghq
- */
-function getDocumentTranslationCacheStore(
-  runtime: DocumentMainRuntime
-): import('./documentTranslationCache').DocumentTranslationCacheStore {
-  if (!documentTranslationCache) {
-    const settings = getSettings()
-    documentTranslationCache = new runtime.DocumentTranslationCacheStore({
-      directory: join(app.getPath('userData'), 'document-translation-cache'),
-      maxBytes: settings.documentTranslationCacheMaxBytes,
-      maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
-    })
-  }
-  return documentTranslationCache
-}
-
-/**
- * 返回主进程共享的文档任务历史存储。
- * @param runtime 已加载的文档运行时。
- * @returns 文档任务历史存储。
- * @author zhenghq
- */
-function getDocumentTaskHistoryStore(
-  runtime: DocumentMainRuntime
-): import('./documentTaskHistory').DocumentTaskHistoryStore {
-  documentTaskHistory ??= new runtime.DocumentTaskHistoryStore({
-    directory: join(app.getPath('userData'), 'document-task-history'),
-    maxEntries: 100
-  })
-  return documentTaskHistory
-}
 /** 主进程当前界面语言运行时；应用设置加载后初始化。 */
 let mainI18n: MainI18nRuntime | null = null
 
@@ -730,6 +553,47 @@ function registerWin7CompatibilityIpc(): void {
 function t(key: string, params?: Record<string, string | number>): string {
   if (mainI18n) return mainI18n.translator.t(key, params)
   return createTranslator('en-US').t(key, params)
+}
+
+/** 文档解析、导出、翻译缓存与任务历史的按需运行时控制器。 */
+const documentRuntime = createDocumentRuntimeController({
+  isApprovedPath: (path) => approvedDocumentPaths.has(path),
+  getWorkspaceWindow: () => documentWorkspace?.getWindow() ?? null,
+  translate: (messageKey) => t(messageKey),
+  getSettings
+})
+
+/**
+ * 按需加载文档运行时，保持原有调用点语义不变。
+ * @returns 已加载的文档运行时。
+ * @author zhenghq
+ */
+async function loadDocumentRuntime(): Promise<DocumentMainRuntime> {
+  return documentRuntime.load()
+}
+
+/**
+ * 获取主进程共享的文档翻译缓存存储。
+ * @param runtime 已加载的文档运行时。
+ * @returns 文档翻译缓存存储。
+ * @author zhenghq
+ */
+function getDocumentTranslationCacheStore(
+  runtime: DocumentMainRuntime
+): ReturnType<typeof documentRuntime.getTranslationCacheStore> {
+  return documentRuntime.getTranslationCacheStore(runtime)
+}
+
+/**
+ * 获取主进程共享的文档任务历史存储。
+ * @param runtime 已加载的文档运行时。
+ * @returns 文档任务历史存储。
+ * @author zhenghq
+ */
+function getDocumentTaskHistoryStore(
+  runtime: DocumentMainRuntime
+): ReturnType<typeof documentRuntime.getTaskHistoryStore> {
+  return documentRuntime.getTaskHistoryStore(runtime)
 }
 
 const edgeSpeechClient = createEdgeSpeechClient({ socketFactory: createTranslationWebSocket })
@@ -1087,16 +951,6 @@ function getGeminiLiveConfiguration(): GeminiLiveConfigurationService {
 }
 
 /**
- * 获取已初始化的 iTranslate 可选翻译配置服务。
- * @returns iTranslate 配置服务实例。
- * @author zhenghq
- */
-function getITranslateConfiguration(): ITranslateConfigurationService {
-  if (!itranslateConfiguration) throw new Error('iTranslate configuration service is not initialized')
-  return itranslateConfiguration
-}
-
-/**
  * 判断当前系统是否支持实时字幕。
  * @returns 当前平台能力。
  * @author zhenghq
@@ -1217,9 +1071,6 @@ function initializeRealtimeSubtitle(): void {
       : null,
     getGeminiApiKey: () => getSettings().realtimeSubtitleGeminiApiKeyConfigured
       ? getGeminiLiveConfiguration().getApiKey()
-      : null,
-    getITranslateApiKey: () => getSettings().itranslateEnabled
-      ? getITranslateConfiguration().getApiKey()
       : null,
     getNetworkErrorMessage: () => t('settings.realtimeSubtitle.error.network'),
     translateStream,
@@ -1398,9 +1249,6 @@ async function createDocumentWorkspaceTaskService(): Promise<
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      const iTranslateApiKey = settings.itranslateEnabled
-        ? getITranslateConfiguration().getApiKey()
-        : null
       const output = await translateStream(
         text,
         settings,
@@ -1411,8 +1259,7 @@ async function createDocumentWorkspaceTaskService(): Promise<
           signal,
           context,
           bypassCache: request.bypassCache === true
-        },
-        iTranslateApiKey
+        }
       )
       return output.translation
     },
@@ -2770,20 +2617,6 @@ async function initializeDeferredStartupServices(): Promise<void> {
         }
       })
       geminiLiveConfiguration.initialize()
-      itranslateConfiguration = new ITranslateConfigurationService({
-        getSettings,
-        saveSettings,
-        credentialStore: new ITranslateCredentialStore(
-          join(app.getPath('userData'), 'itranslate-credentials.json'),
-          safeStorage
-        ),
-        onSettingsChanged: (settings) => {
-          refreshTrayMenu()
-          broadcast('settings:changed', settings)
-        },
-        resetTranslationRuntime: resetITranslateTranslationRuntime
-      })
-      itranslateConfiguration.initialize()
       deepLxConfiguration = new DeepLxConfigurationService({
         getSettings,
         saveSettings,
@@ -3926,9 +3759,6 @@ async function translateText(
       ? getDingTalkConfiguration().getCredentialsSnapshot()
       : null
     const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-    const iTranslateApiKey = settings.itranslateEnabled
-      ? getITranslateConfiguration().getApiKey()
-      : null
     let deltaSequence = 0
     const output = await translateStream(
       text,
@@ -3948,8 +3778,7 @@ async function translateText(
           deltaSequence += 1
           sendPopupDelta(payload)
         }
-      },
-      iTranslateApiKey
+      }
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(historyOrigin, output.provider)
@@ -5292,16 +5121,12 @@ async function translateRecognizedOcrResult(
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
       const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
-      const iTranslateApiKey = settings.itranslateEnabled
-        ? getITranslateConfiguration().getApiKey()
-        : null
       return translateStream(
         text,
         requestSettings ?? settings,
         dingTalkCredentials,
         aiApiKey,
-        { onDelta: streamDelta ?? (() => undefined) },
-        iTranslateApiKey
+        { onDelta: streamDelta ?? (() => undefined) }
       )
     }
   })
@@ -7755,7 +7580,7 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   // 普通 settings:set 不接受 AI 敏感字段，API Key 与 aiApiKeyConfigured 由专用 IPC 管理。
   delete (safePatch as Record<string, unknown>).aiApiKey
   delete (safePatch as Record<string, unknown>).aiApiKeyConfigured
-  // 实时字幕 ASR 与 iTranslate 的 Key 和配置标记只能经专用 IPC 修改。
+  // 实时字幕 ASR 的 Key 和配置标记只能经专用 IPC 修改。
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleDeepgramApiKeyConfigured
   delete (safePatch as Record<string, unknown>).realtimeSubtitleWhisperApiKey
@@ -7766,8 +7591,6 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
   delete (safePatch as Record<string, unknown>).realtimeSubtitleOpenAIRealtimeApiKeyConfigured
   delete (safePatch as Record<string, unknown>).realtimeSubtitleGeminiApiKey
   delete (safePatch as Record<string, unknown>).realtimeSubtitleGeminiApiKeyConfigured
-  delete (safePatch as Record<string, unknown>).itranslateApiKey
-  delete (safePatch as Record<string, unknown>).itranslateApiKeyConfigured
   const aiFieldChanged =
     (patch.aiEnabled !== undefined && patch.aiEnabled !== previous.aiEnabled) ||
     (patch.aiProtocol !== undefined && patch.aiProtocol !== previous.aiProtocol) ||
@@ -8019,15 +7842,6 @@ function registerIpc(): void {
   const getReadyGeminiLiveConfiguration = async (): Promise<GeminiLiveConfigurationService> => {
     await ensureDeferredStartupServicesInitialized()
     return getGeminiLiveConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 iTranslate 配置服务。
-   * @returns 已初始化的 iTranslate 配置服务。
-   * @author zhenghq
-   */
-  const getReadyITranslateConfiguration = async (): Promise<ITranslateConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getITranslateConfiguration()
   }
   /**
    * 等待后台服务后返回 DeepLX 配置服务。
@@ -8911,12 +8725,6 @@ function registerIpc(): void {
   )
   ipcMain.handle('gemini-live:clear-key', async () =>
     (await getReadyGeminiLiveConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('itranslate:configure', async (_event, patch: ITranslateConfigPatch) =>
-    (await getReadyITranslateConfiguration()).configure(patch)
-  )
-  ipcMain.handle('itranslate:clear-key', async () =>
-    (await getReadyITranslateConfiguration()).clearApiKey()
   )
   ipcMain.handle('microsoft:check', async () => {
     await ensureDeferredStartupServicesInitialized()

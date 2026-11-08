@@ -17,7 +17,6 @@ import type {
   OpenAIRealtimeConfigPatch,
   GeminiLiveConfigPatch,
   WhisperConfigPatch,
-  ITranslateConfigPatch,
   AiConfigPatch,
   AiCheckStatus,
   AiModelListResult,
@@ -1371,20 +1370,6 @@ const api: Api = {
    */
   clearGeminiLiveApiKey: (): Promise<Settings> =>
     ipcRenderer.invoke('gemini-live:clear-key'),
-  /**
-   * 保存 iTranslate 可选翻译通道配置及可选新 API Key。
-   * @param patch iTranslate 配置补丁。
-   * @returns 保存成功后的脱敏公开设置。
-   * @author zhenghq
-   */
-  setITranslateConfig: (patch: ITranslateConfigPatch): Promise<Settings> =>
-    ipcRenderer.invoke('itranslate:configure', patch),
-  /**
-   * 显式清除已保存的 iTranslate API Key。
-   * @returns 清除后的脱敏公开设置。
-   * @author zhenghq
-   */
-  clearITranslateApiKey: (): Promise<Settings> => ipcRenderer.invoke('itranslate:clear-key'),
   /**
    * 检测钉钉 Token 和文本翻译链路。
    * @returns 结构化脱敏检测状态。

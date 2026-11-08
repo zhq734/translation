@@ -18,7 +18,6 @@ export const TRANSLATION_PROVIDERS: readonly TranslationProviderDefinition[] = [
   { id: 'bili-index', label: 'Bilibili Index-Translate' },
   { id: 'dingtalk', label: 'DingTalk' },
   { id: 'microsoft', label: 'Microsoft Translator' },
-  { id: 'itranslate', label: 'iTranslate' },
   { id: 'deeplx-self', label: 'Self-hosted DeepLX' },
   { id: 'deeplx-public', label: 'Public DeepLX' },
   { id: 'google', label: 'Google Translate' },
@@ -89,9 +88,6 @@ export function isTranslationProviderAvailable(
   }
   if (providerId === 'bili-index') return settings.biliIndexTranslateEnabled
   if (providerId === 'microsoft') return settings.microsoftEnabled
-  if (providerId === 'itranslate') {
-    return settings.itranslateEnabled && settings.itranslateApiKeyConfigured
-  }
   if (providerId === 'deeplx-self') return Boolean(settings.deepLxUrl.trim())
   return true
 }

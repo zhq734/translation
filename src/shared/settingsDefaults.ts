@@ -127,8 +127,6 @@ export const DEFAULT_SETTINGS: Settings = {
   aiBaseUrl: DEFAULT_AI_BASE_URL,
   aiModel: '',
   aiApiKeyConfigured: false,
-  itranslateEnabled: false,
-  itranslateApiKeyConfigured: false,
   preferredTranslationProvider: 'auto',
   speechProvider: 'system',
   ocrEnginePreference: 'auto',
@@ -581,8 +579,6 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     aiBaseUrl: normalizeAiBaseUrl(rawSettings.aiBaseUrl === undefined ? DEFAULT_AI_BASE_URL : String(merged.aiBaseUrl || "").trim()),
     aiModel: String(merged.aiModel || '').trim(),
     aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true,
-    itranslateEnabled: rawSettings.itranslateEnabled === true,
-    itranslateApiKeyConfigured: rawSettings.itranslateApiKeyConfigured === true,
     speechProvider: isSpeechProvider(rawSettings.speechProvider)
       ? rawSettings.speechProvider
       : 'system',

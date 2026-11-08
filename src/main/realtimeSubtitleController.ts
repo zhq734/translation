@@ -89,8 +89,6 @@ export interface RealtimeSubtitleControllerOptions {
   getOpenAIRealtimeApiKey?: () => string | null
   /** 读取 Gemini API Key；仅在实时字幕使用 Gemini Live 时注入。 */
   getGeminiApiKey?: () => string | null
-  /** 读取 iTranslate API Key；仅启用且已配置时返回。 */
-  getITranslateApiKey?: () => string | null
   /** 读取实时识别网络中断的本地化提示。 */
   getNetworkErrorMessage?: () => string
   /** 主进程诊断日志接收器；默认写入 console，断链与重连使用 warn 级别。 */
@@ -102,7 +100,6 @@ export interface RealtimeSubtitleControllerOptions {
     dingTalkCredentials: DingTalkCredentials | null,
     aiApiKey: string | null,
     options: { onDelta: (delta: string) => void; signal?: AbortSignal },
-    iTranslateApiKey?: string | null
   ) => Promise<TranslateOutput>
   /** partial 可见 cue 稳定多久后发起预翻译，默认 250ms。 */
   previewDebounceMs?: number
@@ -203,7 +200,6 @@ export class RealtimeSubtitleController {
       getSettings: options.getSettings,
       getDingTalkCredentials: options.getDingTalkCredentials,
       getAiApiKey: options.getAiApiKey,
-      getITranslateApiKey: options.getITranslateApiKey,
       translateStream: options.translateStream,
       previewDebounceMs: options.previewDebounceMs,
       previewMaxWaitMs: options.previewMaxWaitMs,

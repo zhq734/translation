@@ -69,7 +69,6 @@ test('后台服务初始化完成前 IPC 必须等待，所有依赖后台服务
     'getDashScopeConfiguration()',
     'getOpenAIRealtimeConfiguration()',
     'getGeminiLiveConfiguration()',
-    'getITranslateConfiguration()',
     'getDeepLxConfiguration()',
     'getWebReader()',
     'getDocumentWorkspace()',

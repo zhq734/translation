@@ -119,202 +119,109 @@ startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
 pdfjsModule.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
-/** 从本地缓存恢复的工作台固定任务身份。 */
-const RESTORED_DOCUMENT_JOB_ID = 'restored-viewer-state'
+import {
+  actualLanguage,
+  cancelButton,
+  documentColumns,
+  documentFileInput,
+  documentFileTabsNextButton,
+  documentFileTabsPreviousButton,
+  documentHistoryClearButton,
+  documentHistoryConfirmCancel,
+  documentHistoryConfirmDelete,
+  documentHistoryConfirmDescription,
+  documentHistoryConfirmDialog,
+  documentHistoryConfirmTitle,
+  documentHistoryEmpty,
+  documentHistoryList,
+  documentHistorySearch,
+  documentHistoryStatus,
+  documentPageInput,
+  documentPageNextButton,
+  documentPagePreviousButton,
+  documentSyncScrollButton,
+  documentTocButton,
+  documentTocList,
+  documentViewModeControl,
+  documentWorkbenchReplaceButton,
+  documentWorkspaceTabs,
+  documentZoomFitButton,
+  documentZoomFitHeightButton,
+  documentZoomInButton,
+  documentZoomOutButton,
+  documentZoomResetButton,
+  documentZoomValue,
+  dropZone,
+  exportButton,
+  exportCancelButton,
+  exportConfirmButton,
+  exportDialog,
+  exportIncomplete,
+  exportIncompleteNotice,
+  exportOpenFolderButton,
+  exportProgress,
+  exportProgressPage,
+  exportProgressPercent,
+  exportProgressStage,
+  exportProgressTrack,
+  exportProgressbar,
+  exportRetryButton,
+  exportWarningCount,
+  fileDetail,
+  fileName,
+  fileReplaceButton,
+  fileSummary,
+  historyButton,
+  historyPopover,
+  partialExportCancelButton,
+  partialExportConfirmButton,
+  partialExportDialog,
+  partialExportRetryButton,
+  partialExportSummary,
+  partialStatus,
+  progressBlocks,
+  progressCount,
+  progressPages,
+  progressRemaining,
+  progressStage,
+  progressWarnings,
+  progressbar,
+  rerunButton,
+  retryButton,
+  sourceContent,
+  sourceLanguageSelect,
+  sourceOcrMode,
+  sourcePageCount,
+  startButton,
+  targetLanguageSelect,
+  titlebar,
+  translationContent,
+  translationHeading,
+  translationPageCount,
+  uploadPanel,
+  uploadStatus,
+  windowCloseButton,
+  windowMaximizeButton,
+  windowMinimizeButton,
+  workbench,
+  workbenchMeta,
+  workbenchName
+} from './documentElements'
+import {
+  DOCUMENT_GENERATION_STORAGE_KEY,
+  DOCUMENT_VIEW_MODE_STORAGE_KEY,
+  EMPTY_SELECTION,
+  RESTORED_DOCUMENT_JOB_ID,
+  type DocumentPreviewKind,
+  type DocumentRenderSide,
+  type DocumentScrollPositions,
+  type DocumentSelectionState,
+  type DocumentTabStatus,
+  type DocumentTocEntry,
+  type DocumentViewMode,
+  type DocumentWorkspaceTab
+} from './documentUiModel'
 
-/** 任务代际在 Renderer 重载后继续递增，避免主进程拒绝复用旧值。 */
-const DOCUMENT_GENERATION_STORAGE_KEY = 'selection-translator.document-generation'
-/** 文档预览方式在窗口重载后保留；损坏或未知值回退为双面显示。 */
-const DOCUMENT_VIEW_MODE_STORAGE_KEY = 'selection-translator.document-view-mode'
-
-/** 文档双栏的渲染侧；译文栏与 OCR 原文展示层分别在各自侧渲染。 */
-type DocumentRenderSide = 'source' | 'translation'
-
-/** 文档双栏滚动位置快照，用于流式重排后恢复用户视口。 */
-interface DocumentScrollPositions {
-  /** 原文栏当前滚动位置。 */
-  source: number
-  /** 译文栏当前滚动位置。 */
-  translation: number
-}
-
-/** 文档预览按格式采用的渲染方式；HTML 原文使用独立 webview，译文仍采用流式布局。 */
-type DocumentPreviewKind = 'paged' | 'markdown' | 'table' | 'subtitle' | 'flow' | 'html-source'
-
-/** 文档工作台预览方式；双面保留原文与译文对照，单面只显示原文或译文。 */
-type DocumentViewMode = 'source' | 'translation' | 'spread'
-
-/** 目录中的一个可跳转章节项。 */
-interface DocumentTocEntry {
-  /** 面向用户的章节标题。 */
-  title: string
-  /** 跳转目标页面与可选区块。 */
-  target: DocumentNavigationTarget
-}
-
-/** 文档工作台当前上传状态。 */
-interface DocumentSelectionState {
-  /** 已通过校验的本地文件绝对路径；未选择时为 null。 */
-  path: string | null
-  /** 用于界面展示的文件名。 */
-  name: string
-  /** 文件字节数。 */
-  size: number
-  /** 已识别格式；未选择时为空。 */
-  format: string
-  /** 文件内容 SHA-256 指纹，用于恢复时确认译文仍对应当前文件。 */
-  sha256: string
-  /** 当前应展示的错误分类；无错误时为 null。 */
-  error: string | null
-}
-
-/** 单个文件 Tab 的任务状态；只用于顶栏状态点，不参与任务协议。 */
-type DocumentTabStatus = 'idle' | 'starting' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
-
-/** 文档工作台中的独立文件 Tab；每个 Tab 拥有自己的任务、快照与交互状态。 */
-interface DocumentWorkspaceTab {
-  /** 当前窗口内稳定的 Tab 标识。 */
-  id: string
-  /** Tab 的来源；历史任务为只读回放，不得取消或释放原任务。 */
-  sourceKind: 'task' | 'restored' | 'history'
-  /** 已通过主进程批准的文件元数据。 */
-  selection: DocumentSelectionState
-  /** 最近一次属于该 Tab 的任务快照。 */
-  snapshot: DocumentWorkspaceSnapshot | null
-  /** 已确认的主进程任务标识。 */
-  activeJobId: string | null
-  /** 启动请求返回前由首条进度事件推导出的任务标识。 */
-  expectedJobId: string | null
-  /** 最近一次为该 Tab 申请的任务代际。 */
-  generation: number
-  /** runDocument 请求是否尚未返回。 */
-  startInFlight: boolean
-  /** 当前任务的界面状态。 */
-  status: DocumentTabStatus
-  /** 原文栏和译文栏的滚动位置。 */
-  scrollPositions: DocumentScrollPositions
-  /** 该 Tab 自己的用户缩放比例。 */
-  zoom: number
-  /** 该 Tab 自己的原文、译文或双栏显示模式。 */
-  viewMode: DocumentViewerMode
-  /** 该 Tab 当前阅读页，从 1 开始。 */
-  pageNumber: number
-  /** 该 Tab 的双栏滚动同步开关。 */
-  scrollSyncEnabled: boolean
-  /** 该 Tab 提交给任务的源语言。 */
-  sourceLang: string
-  /** 该 Tab 提交给任务的目标语言。 */
-  targetLang: string
-  /** 图片 OCR 原文与译文的展示方式。 */
-  ocrDisplayMode: 'ocr-text' | 'translation'
-  /** 该 Tab 当前高亮的稳定区块标识。 */
-  activeBlockId: string | null
-  /** 启动完成后仍需按最新语言重译。 */
-  pendingLanguageRetranslation: boolean
-  /** 启动完成后仍需按最新 OCR 模式重启。 */
-  pendingOcrModeRestart: boolean
-  /** 当前 Tab 的语言切换序号，用于丢弃过期重译请求。 */
-  languageRevision: number
-  /** 只读历史/恢复 Tab 的源文件是否已重新授权且通过快照校验。 */
-  sourceAuthorized: boolean
-}
-
-/** 初始空选择状态。 */
-const EMPTY_SELECTION: DocumentSelectionState = {
-  path: null,
-  name: '',
-  size: 0,
-  format: '',
-  sha256: '',
-  error: null
-}
-
-const dropZone = document.getElementById('document-drop-zone') as HTMLElement
-const documentFileInput = document.getElementById('document-file-input') as HTMLInputElement
-const fileSummary = document.getElementById('document-file-summary') as HTMLElement
-const fileName = document.getElementById('document-file-name') as HTMLElement
-const fileDetail = document.getElementById('document-file-detail') as HTMLElement
-const fileReplaceButton = document.getElementById('document-file-replace') as HTMLButtonElement
-const uploadStatus = document.getElementById('document-upload-status') as HTMLElement
-const startButton = document.getElementById('document-start-button') as HTMLButtonElement
-const historyButton = document.getElementById('document-history-button') as HTMLButtonElement
-const historyPopover = document.getElementById('document-history-popover') as HTMLElement
-const documentHistorySearch = document.getElementById('document-history-search') as HTMLInputElement
-const documentHistoryList = document.getElementById('document-history-list') as HTMLUListElement
-const documentHistoryEmpty = document.getElementById('document-history-empty') as HTMLElement
-const documentHistoryStatus = document.getElementById('document-history-status') as HTMLElement
-const documentHistoryClearButton = document.getElementById('document-history-clear') as HTMLButtonElement
-const documentHistoryConfirmDialog = document.getElementById('document-history-confirm-dialog') as HTMLDialogElement
-const documentHistoryConfirmTitle = document.getElementById('document-history-confirm-title') as HTMLElement
-const documentHistoryConfirmDescription = document.getElementById('document-history-confirm-description') as HTMLElement
-const documentHistoryConfirmCancel = document.getElementById('document-history-confirm-cancel') as HTMLButtonElement
-const documentHistoryConfirmDelete = document.getElementById('document-history-confirm-delete') as HTMLButtonElement
-const sourceLanguageSelect = document.getElementById('document-source-lang') as HTMLSelectElement
-const targetLanguageSelect = document.getElementById('document-target-lang') as HTMLSelectElement
-const actualLanguage = document.getElementById('document-actual-language') as HTMLElement
-const uploadPanel = document.getElementById('document-upload-panel') as HTMLElement
-const workbench = document.getElementById('document-workbench') as HTMLElement
-const documentWorkspaceTabs = document.getElementById('document-file-tabs') as HTMLElement
-const documentFileTabsPreviousButton = document.getElementById('document-file-tabs-previous') as HTMLButtonElement
-const documentFileTabsNextButton = document.getElementById('document-file-tabs-next') as HTMLButtonElement
-const workbenchName = document.getElementById('document-workbench-name') as HTMLElement
-const workbenchMeta = document.getElementById('document-workbench-meta') as HTMLElement
-const progressStage = document.getElementById('document-progress-stage') as HTMLElement
-const progressCount = document.getElementById('document-progress-count') as HTMLElement
-const progressPages = document.getElementById('document-progress-pages') as HTMLElement
-const progressBlocks = document.getElementById('document-progress-blocks') as HTMLElement
-const progressWarnings = document.getElementById('document-progress-warnings') as HTMLElement
-const progressRemaining = document.getElementById('document-progress-remaining') as HTMLElement
-const progressbar = document.getElementById('document-progressbar') as HTMLElement
-const sourceContent = document.getElementById('document-source-content') as HTMLElement
-const sourceOcrMode = document.getElementById('document-source-ocr-mode') as HTMLElement
-const documentViewModeControl = document.getElementById('document-view-mode') as HTMLElement
-const documentSyncScrollButton = document.getElementById('document-sync-scroll') as HTMLButtonElement
-const documentPageInput = document.getElementById('document-page-input') as HTMLInputElement
-const documentPagePreviousButton = document.getElementById('document-page-previous') as HTMLButtonElement
-const documentPageNextButton = document.getElementById('document-page-next') as HTMLButtonElement
-const documentTocButton = document.getElementById('document-toc-button') as HTMLButtonElement
-const documentTocList = document.getElementById('document-toc-list') as HTMLElement
-const documentZoomOutButton = document.getElementById('document-zoom-out') as HTMLButtonElement
-const documentZoomValue = document.getElementById('document-zoom-value') as HTMLElement
-const documentZoomInButton = document.getElementById('document-zoom-in') as HTMLButtonElement
-const documentZoomResetButton = document.getElementById('document-zoom-reset') as HTMLButtonElement
-const documentZoomFitButton = document.getElementById('document-zoom-fit') as HTMLButtonElement
-const documentZoomFitHeightButton = document.getElementById('document-zoom-fit-height') as HTMLButtonElement
-const documentColumns = document.querySelector<HTMLElement>('.document-columns') as HTMLElement
-const translationContent = document.getElementById('document-translation-content') as HTMLElement
-const translationHeading = document.getElementById('document-translation-heading') as HTMLElement
-const sourcePageCount = document.getElementById('document-source-page-count') as HTMLElement
-const translationPageCount = document.getElementById('document-translation-page-count') as HTMLElement
-const cancelButton = document.getElementById('document-cancel-button') as HTMLButtonElement
-const exportButton = document.getElementById('document-export-button') as HTMLButtonElement
-const retryButton = document.getElementById('document-retry-button') as HTMLButtonElement
-const rerunButton = document.getElementById('document-rerun-button') as HTMLButtonElement
-const documentWorkbenchReplaceButton = document.getElementById('document-workbench-replace') as HTMLButtonElement
-const partialStatus = document.getElementById('document-partial-status') as HTMLElement
-const exportDialog = document.getElementById('document-export-dialog') as HTMLDialogElement
-const exportIncomplete = document.getElementById('document-export-incomplete') as HTMLElement
-const exportWarningCount = document.getElementById('document-export-warning-count') as HTMLElement
-const exportIncompleteNotice = document.getElementById('document-export-incomplete-notice') as HTMLElement
-const exportRetryButton = document.getElementById('document-export-retry') as HTMLButtonElement
-const exportConfirmButton = document.getElementById('document-export-confirm') as HTMLButtonElement
-const exportCancelButton = document.getElementById('document-export-cancel') as HTMLButtonElement
-const exportProgress = document.getElementById('document-export-progress') as HTMLElement
-const exportProgressStage = document.getElementById('document-export-progress-stage') as HTMLElement
-const exportProgressPage = document.getElementById('document-export-progress-page') as HTMLElement
-const exportProgressPercent = document.getElementById('document-export-progress-percent') as HTMLElement
-const exportProgressTrack = exportProgress.querySelector<HTMLElement>('[role="progressbar"]') as HTMLElement
-const exportProgressbar = document.getElementById('document-export-progressbar') as HTMLElement
-const exportOpenFolderButton = document.getElementById('document-export-open-folder') as HTMLButtonElement
-const partialExportDialog = document.getElementById('document-partial-export-dialog') as HTMLDialogElement
-const partialExportSummary = document.getElementById('document-partial-export-summary') as HTMLElement
-const partialExportRetryButton = document.getElementById('document-partial-export-retry') as HTMLButtonElement
-const partialExportConfirmButton = document.getElementById('document-partial-export-confirm') as HTMLButtonElement
-const partialExportCancelButton = document.getElementById('document-partial-export-cancel') as HTMLButtonElement
-const titlebar = document.getElementById('document-titlebar') as HTMLElement
-const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement
-const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement
-const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement
 
 let selectionState: DocumentSelectionState = { ...EMPTY_SELECTION }
 /** 当前本地文件翻译历史；按最近选择时间倒序排列。 */

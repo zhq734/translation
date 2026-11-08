@@ -79,7 +79,7 @@
 - **手动输入翻译**：可在弹窗中切换到手动模式，粘贴或输入长文本后直接翻译，不依赖选区取词。
 - **快捷 OCR 翻译**：按 `Alt+S` 后左键框选，松开鼠标即自动识别并翻译，适合快速读取图片、视频字幕或无法复制的界面文字。
 - **截图 OCR 与编辑**：按 `Alt+O` 打开完整截图工作台，可调整选区、预览 OCR 结果、标注、复制或保存截图，再手动提交翻译；也支持剪贴板图片 OCR 翻译。
-- **实时字幕**：按 `Alt+L`（默认）打开悬浮字幕窗，实时识别系统声音或麦克风语音，以原文/译文/双语模式同步显示；支持 Deepgram、Whisper 兼容服务、通用 WebSocket、阿里云百炼 DashScope 和自定义 OpenAI Realtime 等 ASR 渠道。
+- **实时字幕**：按 `Alt+L`（默认）打开悬浮字幕窗，实时识别系统声音或麦克风语音，以原文/译文/双语模式同步显示；支持 Deepgram、Whisper 兼容服务、通用 WebSocket、阿里云百炼 DashScope 和自定义 OpenAI Realtime 等 ASR 渠道。设置页已预留 Google Gemini Live 配置与安全存储，但当前音频 sidecar 尚未实现其连接，因此该渠道暂不可用。
 - **截图标注工具**：截图工具栏提供矩形、椭圆、箭头、画笔、文字、马赛克、高亮、高斯模糊和聚光灯标注，支持颜色、粗细、字号、模糊强度、撤销/重做和清空，并可复制到剪贴板或保存到磁盘。
 - **本地 OCR 引擎**：优先使用系统 OCR（macOS Vision / Windows OCR），并内置 PaddleOCR ONNX 模型与 Tesseract 兜底；可指定引擎偏好、识别语言、最大重试缩放和是否启用 Tesseract。
 - **网络代理**：支持跟随系统代理、直连、自定义 HTTP/HTTPS/SOCKS4/SOCKS5 代理和绕过规则。
@@ -454,7 +454,7 @@ OCR 引擎按“系统 OCR → PaddleOCR → Tesseract”的顺序在自动模�
 
 - **入口与快捷键**：默认按 `Alt+L` 开启/停止实时字幕，也可在 **设置 → 实时字幕** 中点击“开始字幕”；快捷键可在设置中修改或清空。
 - **音频来源**：可选择系统声音、麦克风或两者混合。系统声音需要屏幕录制权限；选择麦克风或混合来源时还需要麦克风权限。
-- **ASR 渠道**：支持 Deepgram、Whisper/OpenAI 兼容转写服务、通用 WebSocket ASR、阿里云百炼 DashScope ASR、自定义 DashScope ASR 和自定义 OpenAI Realtime ASR；API Key 通过系统安全存储加密，渠道能力与约定详见 `docs/realtime-subtitle-providers.md`。
+- **ASR 渠道**：支持 Deepgram、Whisper/OpenAI 兼容转写服务、通用 WebSocket ASR、阿里云百炼 DashScope ASR、自定义 DashScope ASR 和自定义 OpenAI Realtime ASR；API Key 通过系统安全存储加密，渠道能力与约定详见 `docs/realtime-subtitle-providers.md`。设置页中的 Google Gemini Live 配置目前只是预留，音频 sidecar 尚未实现该连接，暂不作为可用渠道。
 - **显示模式**：支持仅原文、仅译文和中英双语三种模式；长句会按停顿、标点和语义自动拆分为多条字幕，译文按原文顺序上屏，翻译失败时保留原文。
 - **窗口行为**：字幕窗可拖动定位，默认开启点击穿透，不遮挡视频操作；字号、文字颜色和“无新字幕自动隐藏”时长均可在设置中调整。
 - **平台要求**：实时字幕首版仅支持 macOS 14.2 及以上版本。

@@ -41,7 +41,6 @@ const TRANSLATION_ORIGINS: ReadonlySet<TranslationOrigin> = new Set([
 const TRANSLATION_PROVIDERS: ReadonlySet<TranslationProviderId> = new Set([
   'dingtalk',
   'microsoft',
-  'itranslate',
   'ai',
   'bili-index',
   'deeplx-self',

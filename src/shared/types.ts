@@ -154,7 +154,6 @@ export type SpeechProvider = 'system' | 'edge'
 export type TranslationProviderId =
   | 'dingtalk'
   | 'microsoft'
-  | 'itranslate'
   | 'ai'
   | 'bili-index'
   | 'deeplx-self'
@@ -1110,10 +1109,6 @@ export interface Settings {
   aiModel: string
   /** 是否已安全保存 AI API Key。 */
   aiApiKeyConfigured: boolean
-  /** 是否启用 iTranslate 可选翻译通道。 */
-  itranslateEnabled: boolean
-  /** 是否已安全保存 iTranslate API Key。 */
-  itranslateApiKeyConfigured: boolean
   /** 用户在弹窗底部选择的首选翻译 API。 */
   preferredTranslationProvider: TranslationProviderPreference
   /** 译文朗读使用的语音引擎，默认使用系统内置语音。 */
@@ -1379,14 +1374,6 @@ export interface DingTalkConfigPatch {
   clientId?: string
   /** 新 ClientSecret；空字符串表示保留原值。 */
   clientSecret?: string
-}
-
-/** iTranslate 配置补丁，用于通过专用 IPC 保存启用状态及可选新 API Key。 */
-export interface ITranslateConfigPatch {
-  /** 是否启用 iTranslate 翻译通道。 */
-  enabled?: boolean
-  /** 新 API Key；空字符串表示保留旧值。 */
-  apiKey?: string
 }
 
 /** Deepgram ASR 配置补丁，用于通过专用 IPC 保存可选新 API Key。 */
@@ -1892,10 +1879,6 @@ export interface Api {
   setGeminiLiveConfig(patch: GeminiLiveConfigPatch): Promise<Settings>
   /** 显式清除已保存的 Gemini API Key。 */
   clearGeminiLiveApiKey(): Promise<Settings>
-  /** 保存 iTranslate 可选翻译通道配置和可选新 API Key。 */
-  setITranslateConfig(patch: ITranslateConfigPatch): Promise<Settings>
-  /** 显式清除已保存的 iTranslate API Key。 */
-  clearITranslateApiKey(): Promise<Settings>
   /** 检测钉钉 Token 和文本翻译链路。 */
   checkDingTalk(): Promise<DingTalkCheckStatus>
   /**
