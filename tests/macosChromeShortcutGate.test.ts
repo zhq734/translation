@@ -243,3 +243,50 @@ test('增强后的同轮重读必须短路且等待可取消', () => {
   assert.match(copySource, /if \(isTrustedNativeSelection\(retried, context\)\)[\s\S]*?break/u,
     '首次重读命中后必须立即停止后续重读')
 })
+
+/**
+ * 校验 Chromium 门禁命中后必须先做一次有界迟读。
+ *
+ * 豆包等页面会拦截 Cmd+C（copy 事件 preventDefault）并自行异步写剪贴板，
+ * 首轮 800ms 轮询经常等不到写入。门禁禁止继续盲发快捷键，但在不注入
+ * 任何按键、不重写哨兵的前提下，追加一次有界迟读等待晚到写入是安全的；
+ * 只有迟读仍未命中时才允许返回 AX 不可用失败。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Chromium 门禁命中后必须先做有界迟读再判失败', () => {
+  const source = readCaptureSource()
+  const copyStart = source.indexOf('async function captureByCopy(')
+  const copyEnd = source.indexOf('/**\n * 捕获当前选中文字', copyStart)
+  const copySource = source.slice(copyStart, copyEnd)
+  const gateStart = copySource.indexOf('if (shouldBlockChromiumShortcut)')
+  const gateEnd = copySource.indexOf('// 首次轮询超时后追加一次独立、有界的重试轮次', gateStart)
+
+  assert.ok(gateStart >= 0 && gateEnd > gateStart, '应存在 Chromium 门禁分支')
+  const gateSource = copySource.slice(gateStart, gateEnd)
+  assert.match(
+    gateSource,
+    /CHROMIUM_LATE_SETTLE_TIMEOUT_MS/u,
+    '迟读必须使用有界超时常量'
+  )
+  assert.match(
+    gateSource,
+    /copy-late-settle/u,
+    '迟读结果必须输出可诊断日志'
+  )
+  assert.match(
+    gateSource,
+    /if \(!hasClipboardCaptureCompleted\(text, hasImage, sentinel\)\)/u,
+    '只有迟读未命中时才允许返回失败'
+  )
+  assert.doesNotMatch(
+    gateSource,
+    /injectCopyShortcut/u,
+    '门禁分支不得再次盲发复制快捷键'
+  )
+  assert.doesNotMatch(
+    gateSource,
+    /writeText\(sentinel\)/u,
+    '门禁分支不得重写哨兵覆盖晚到的复制结果'
+  )
+})

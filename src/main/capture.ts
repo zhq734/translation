@@ -99,6 +99,10 @@ const NATIVE_SELECTION_RETRY_DELAY_MS = 40
 export const CHROMIUM_AX_ENHANCE_RETRY_COUNT = 1
 /** Chromium 增强 AX 后单次短探测前的等待时间（毫秒）。 */
 export const CHROMIUM_AX_ENHANCE_RETRY_DELAY_MS = 80
+/** Chromium 门禁命中后等待页面异步写剪贴板的最长时间（毫秒）。 */
+export const CHROMIUM_LATE_SETTLE_TIMEOUT_MS = 600
+/** Chromium 门禁迟读的轮询间隔（毫秒）。 */
+export const CHROMIUM_LATE_SETTLE_POLL_INTERVAL_MS = 50
 /** macOS 模拟复制脚本的最长执行时间，防止偶发阻塞让取词一直等不到复制键。 */
 const MACOS_COPY_SCRIPT_TIMEOUT_MS = 2000
 /** macOS 快捷键触发后保留 Command 已按下状态的短窗口，超时后按已释放处理。 */
@@ -1490,22 +1494,44 @@ async function captureByCopy(
         chromeAxUnavailable &&
         menuItem === 'unavailable'
       if (shouldBlockChromiumShortcut) {
-        const failureReason: SelectionFailureReason =
-          apiDisabledDetected ? 'api-disabled' : 'timeout'
+        // 豆包等页面会拦截 Cmd+C（copy 事件 preventDefault）并自行异步写剪贴板，
+        // 首轮轮询经常等不到写入。门禁禁止继续盲发快捷键，这里只做一次有界
+        // 迟读等待晚到写入；不注入按键、不重写哨兵，避免放大剪贴板改写窗口。
+        const lateSettleStart = Date.now()
+        while (
+          !signal?.aborted &&
+          Date.now() - lateSettleStart < CHROMIUM_LATE_SETTLE_TIMEOUT_MS
+        ) {
+          await sleep(CHROMIUM_LATE_SETTLE_POLL_INTERVAL_MS)
+          text = clipboard.readText()
+          hasImage = !clipboard.readImage().isEmpty()
+          if (hasClipboardCaptureCompleted(text, hasImage, sentinel)) break
+        }
         console.log(
-          `[capture] copy-finish status=chromium-ax-unavailable phase=ax-read|menu-copy ` +
-          `menu=${menuItem} elapsedMs=${Date.now() - captureStartedAt}`
+          `[capture] copy-late-settle ` +
+          `hit=${hasClipboardCaptureCompleted(text, hasImage, sentinel)} ` +
+          `elapsedMs=${Date.now() - captureStartedAt}`
         )
-        return {
-          text: '',
-          reason: failureReason,
-          diagnostics: {
-            level: 'failed',
+        // 迟读仍未命中才返回 AX 不可用失败；命中时放行到稳定期与成功返回，
+        // 不再进入后续盲发重试轮次。
+        if (!hasClipboardCaptureCompleted(text, hasImage, sentinel)) {
+          const failureReason: SelectionFailureReason =
+            apiDisabledDetected ? 'api-disabled' : 'timeout'
+          console.log(
+            `[capture] copy-finish status=chromium-ax-unavailable phase=ax-read|menu-copy ` +
+            `menu=${menuItem} elapsedMs=${Date.now() - captureStartedAt}`
+          )
+          return {
+            text: '',
             reason: failureReason,
-            ...(syntheticCopyObserved === undefined ? {} : { copyObserved: syntheticCopyObserved }),
-            windowLocate: windowActivation?.outcome,
-            windowCount: windowActivation?.windowCount,
-            windowMatched: windowActivation?.windowMatched
+            diagnostics: {
+              level: 'failed',
+              reason: failureReason,
+              ...(syntheticCopyObserved === undefined ? {} : { copyObserved: syntheticCopyObserved }),
+              windowLocate: windowActivation?.outcome,
+              windowCount: windowActivation?.windowCount,
+              windowMatched: windowActivation?.windowMatched
+            }
           }
         }
       }
