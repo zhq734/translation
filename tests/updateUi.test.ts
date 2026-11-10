@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 test('共享类型和预加载层应只暴露受限的自动更新接口', () => {
@@ -31,7 +32,7 @@ test('共享类型和预加载层应只暴露受限的自动更新接口', () =>
 })
 
 test('主进程应初始化自动更新、静默检查并注册完整 IPC', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const updaterSource = readFileSync('src/main/updater.ts', 'utf8')
 
   assert.match(mainSource, /createApplicationUpdateManager/u)

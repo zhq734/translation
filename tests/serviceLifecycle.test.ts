@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { findOpeningTagById, readTextI18nKey, tForTest } from './helpers/i18n.ts'
 
 type PackageJson = {
@@ -16,7 +17,7 @@ type PackageJson = {
 
 test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形态与 Dock 图标', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as PackageJson
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const onReadyBlock = mainSource.match(
     /async function onReady\(\): Promise<boolean> \{([\s\S]*?)\n\}/u
   )
@@ -61,7 +62,7 @@ test('macOS 打包应以普通应用启动，并在运行时切换菜单栏形�
 })
 
 test('首次启动和第二实例都应打开设置窗口', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const onReadyBlock = mainSource.match(
     /async function onReady\(\): Promise<boolean> \{([\s\S]*?)\n\}/u
   )
@@ -94,7 +95,7 @@ test('首次启动和第二实例都应打开设置窗口', () => {
 })
 
 test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const settingsWindowBlock = mainSource.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
@@ -107,7 +108,7 @@ test('Windows 设置窗口应移除 Electron 默认菜单栏', () => {
 })
 
 test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快捷键触发模式', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const toggleLabel = "label: t.t('menu.showSelectionButton')"
   const toggleIndex = mainSource.indexOf(toggleLabel)
   const targetLanguageIndex = mainSource.indexOf("label: t.t('menu.targetLanguage')", toggleIndex)
@@ -120,7 +121,7 @@ test('托盘菜单顶部应提供划词按钮快速开关并切换按钮与快�
 })
 
 test('macOS 托盘菜单应提供划词服务修复入口', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
 
   assert.match(
     mainSource,
@@ -129,7 +130,7 @@ test('macOS 托盘菜单应提供划词服务修复入口', () => {
 })
 
 test('初始化失败和显式退出应关闭应用并清理全部全局资源', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
 
   assert.match(
     mainSource,
@@ -149,7 +150,7 @@ test('初始化失败和显式退出应关闭应用并清理全部全局资源',
 test('关闭设置窗口应只释放窗口引用，停止服务必须通过受限 IPC 显式请求', () => {
   const typesSource = readFileSync('src/shared/types.ts', 'utf8')
   const preloadSource = readFileSync('src/preload/index.ts', 'utf8')
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const html = readFileSync('src/renderer/settings.html', 'utf8')
   const rendererSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')

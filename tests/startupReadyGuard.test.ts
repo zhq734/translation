@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { extractIpcRegistration, readMainSource } from './helpers/mainSource.ts'
 import {
   createDeferredServicesGate,
   markDeferredServicesReady
 } from '../src/main/deferredServicesGate.ts'
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 
 /**
  * 截取顶层函数的完整源码片段，直到顶格右花括号为止。
@@ -30,11 +31,7 @@ function extractFunction(signature: string): string {
  * @author zhenghq
  */
 function extractIpcHandler(channel: string, method: 'handle' | 'on' = 'handle'): string {
-  const start = mainSource.indexOf(`ipcMain.${method}('${channel}'`)
-  assert.ok(start >= 0, `应存在 IPC ${channel}`)
-  const end = mainSource.indexOf('\n  })', start)
-  assert.ok(end > start, `IPC ${channel} 应有结束边界`)
-  return mainSource.slice(start, end + 5)
+  return extractIpcRegistration(mainSource, channel, method)
 }
 
 /**
@@ -44,11 +41,7 @@ function extractIpcHandler(channel: string, method: 'handle' | 'on' = 'handle'):
  * @author zhenghq
  */
 function extractIpcListener(channel: string): string {
-  const start = mainSource.indexOf(`ipcMain.on('${channel}'`)
-  assert.ok(start >= 0, `应存在 IPC ${channel}`)
-  const end = mainSource.indexOf('\n  })', start)
-  assert.ok(end > start, `IPC ${channel} 应有结束边界`)
-  return mainSource.slice(start, end + 5)
+  return extractIpcRegistration(mainSource, channel, 'on')
 }
 
 test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => {
@@ -74,17 +67,17 @@ test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => 
   const settingsStatusSource = extractIpcHandler('subtitle:get-status')
   assert.match(
     settingsStatusSource,
-    /unsupportedRealtimeSubtitleSnapshot/u,
+    /dependencies\.getUnsupportedRealtimeSubtitleSnapshot\(\)/u,
     '设置页首屏状态查询必须拥有不依赖重服务的轻量快照'
   )
   assert.doesNotMatch(
     settingsStatusSource,
-    /getReadyRealtimeSubtitleController\(|ensureDeferredStartupServicesInitialized\(/u,
+    /getReadyRealtimeSubtitleController\(|ensureDeferredStartupServicesInitialized\(|dependencies\.ensureReady\(/u,
     '设置页首屏状态查询不得等待尚未启动的重服务'
   )
   assert.match(
     settingsStatusSource,
-    /createIdleRealtimeSubtitleSnapshot\(\)/u,
+    /dependencies\.createIdleRealtimeSubtitleSnapshot\(\)/u,
     '普通平台控制器尚未初始化时应返回中性空闲快照'
   )
   assert.match(
@@ -98,12 +91,12 @@ test('启动期 IPC 等待后台服务时不得反向触发重初始化', () => 
   assert.doesNotMatch(idleSnapshotSource, /error|errorCode/u, '中性空闲快照不得误报平台不支持')
   assert.match(
     settingsStatusSource,
-    /getRealtimeSubtitleCapability\(\)/u,
+    /dependencies\.getRealtimeSubtitleCapability\(\)/u,
     '首屏状态查询应同步区分平台能力，避免不支持平台先显示空闲再跳变'
   )
   assert.match(
     settingsStatusSource,
-    /capability\.supported\s*\?\s*createIdleRealtimeSubtitleSnapshot\(\)/u,
+    /capability\.supported\s*\?\s*dependencies\.createIdleRealtimeSubtitleSnapshot\(\)/u,
     '仅支持平台在控制器未初始化时返回中性空闲快照'
   )
 })
@@ -160,6 +153,8 @@ test('显式业务入口在后台服务未就绪时登记等待，就绪后立�
 
 test('网页阅读器控制 IPC 在后台服务启动失败时不得留下未处理 Promise 异常', () => {
   const ipcBody = extractFunction('function registerIpc(): void')
+  assert.match(ipcBody, /registerWebReaderIpc\(\{/u, '主进程必须注册网页阅读器 IPC 模块')
+  assert.match(ipcBody, /runWhenReady: runWhenDeferredServicesReady/u, '阅读器动作必须接入统一就绪门控')
   for (const channel of [
     'webview:close',
     'webview:back',
@@ -169,10 +164,9 @@ test('网页阅读器控制 IPC 在后台服务启动失败时不得留下未处
     'web-translate:cancel'
   ]) {
     const source = extractIpcListener(channel)
-    assert.ok(ipcBody.includes(source), `${channel} 应属于 IPC 注册片段`)
     assert.match(
       source,
-      /runWhenDeferredServicesReady\(/u,
+      /dependencies\.runWhenReady\(/u,
       `${channel} 应在服务就绪后执行且统一处理启动失败`
     )
     assert.doesNotMatch(

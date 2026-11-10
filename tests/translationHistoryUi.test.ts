@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 const popupHtml = readFileSync('src/renderer/index.html', 'utf8')
 const popupSource = readFileSync('src/renderer/src/popup.ts', 'utf8')
 const popupCss = readFileSync('src/renderer/src/style.css', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 
 test('翻译弹窗应提供统一历史入口、搜索、收藏、重译、删除与清空非收藏', () => {
@@ -30,7 +31,7 @@ test('统一历史 API 必须只暴露文本元数据并支持重新翻译', () 
   assert.match(preload, /retranslateHistoryEntry/u)
   assert.match(main, /translation-history:list/u)
   assert.match(main, /translation-history:retranslate/u)
-  assert.match(main, /recordTranslationHistory/u)
+  assert.match(main, /translationHistory\.record\(/u)
 })
 
 test('历史重译必须把手动记录显示在划词视图且保留原历史来源', () => {
@@ -41,7 +42,7 @@ test('历史重译必须把手动记录显示在划词视图且保留原历史�
   )
   assert.match(
     main,
-    /recordTranslationHistory\(text,\s*output,\s*pair,\s*historyOrigin\)/u,
+    /translationHistory\.record\(text,\s*output,\s*pair,\s*historyOrigin\)/u,
     '历史写入必须使用原始来源，避免重译手动记录时产生重复条目'
   )
   assert.match(
@@ -54,7 +55,7 @@ test('历史重译必须把手动记录显示在划词视图且保留原历史�
 test('OCR 成功翻译必须写入统一历史并保留 ocr 来源', () => {
   assert.match(
     main,
-    /const pair = resolveLanguagePair\(result\.ocrText,[\s\S]*?recordTranslationHistory\(result\.ocrText,\s*result,\s*pair,\s*'ocr'\)[\s\S]*?showPopup\(/u,
+    /const pair = resolveLanguagePair\(result\.ocrText,[\s\S]*?translationHistory\.record\(result\.ocrText,\s*result,\s*pair,\s*'ocr'\)[\s\S]*?showPopup\(/u,
     'OCR 成功结果必须在展示前写入统一历史，并标记为 ocr 来源'
   )
 })

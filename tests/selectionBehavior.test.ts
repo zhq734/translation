@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   createObservedPointerSample,
   decideSelectionAction,
@@ -669,7 +670,7 @@ test('只读预取为空时点击“译”按钮应回退到完整取词管线',
  * @author zhenghq
  */
 test('按钮模式应在划词阶段只读预取文字，点击“译”按钮后优先消费缓存再兜底完整取词', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)
@@ -707,7 +708,7 @@ test('按钮模式应在划词阶段只读预取文字，点击“译”按钮�
  * @author zhenghq
  */
 test('显示“译”按钮期间只允许只读预取，不得启动完整选区捕获', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)
@@ -728,7 +729,7 @@ test('显示“译”按钮期间只允许只读预取，不得启动完整选�
  * @author zhenghq
  */
 test('按钮模式双击应与拖拽走同一条取词路径', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
   const handlerStart = mainSource.indexOf('function handleSelectionGesture')
   const handlerEnd = mainSource.indexOf('/**', handlerStart)
@@ -768,7 +769,7 @@ test('按钮模式双击应与拖拽走同一条取词路径', () => {
  * @author zhenghq
  */
 test('点击“译”按钮应在全局鼠标按下阶段直接激活并阻止鼠标事件继续进入划词判定', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
   const pointerDownStart = mainSource.indexOf('function handleSelectionPointerDown')
   const pointerDownEnd = mainSource.indexOf('/**', pointerDownStart)
@@ -822,7 +823,7 @@ test('全局监听应自维护左键双击判定，并监听用户复制和粘�
 
 test('全局监听不应监听 Ctrl+A 或 Command+A 全选快捷键', () => {
   const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
 
   assert.doesNotMatch(
     autoTriggerSource,
@@ -832,7 +833,7 @@ test('全局监听不应监听 Ctrl+A 或 Command+A 全选快捷键', () => {
 })
 
 test('主进程不得注册系统复制快捷键，选区按钮也不得抢占输入焦点', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const registrySource = readFileSync('src/main/globalShortcutRegistry.ts', 'utf8')
   const buttonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
 
@@ -861,7 +862,7 @@ test('内部取词应同时等待文字或图片写入，并避免恢复旧图�
 })
 
 test('用户复制或粘贴时主进程应立即取消待处理或正在进行的选区捕获', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.match(
     source,
@@ -1067,7 +1068,7 @@ test('落在应用自有窗口内的鼠标动作不应被当成划词手势', ()
 })
 
 test('划词手势处理只应排除持有焦点的应用自有窗口，后台设置窗口不得屏蔽其他应用划词', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   // 候选窗口只在可见且持有焦点时提供边界；仅按矩形位置判断会让后台设置窗口挡住其他应用的划词。
   // 应用失活后 macOS 仍可能让 key window 报告 isFocused()===true，
@@ -1117,7 +1118,7 @@ test('网页阅读器窗口应暴露焦点状态，供划词监听区分前台�
 
 test('设置窗口焦点切换应清理窗口内遗留状态但保留先到达的外部鼠标按下', () => {
   const autoTriggerSource = readFileSync('src/main/autoTrigger.ts', 'utf8')
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
 
   // macOS 可能先派发外部 mousedown，再派发设置窗口 blur；失焦清理必须限定窗口边界，
   // 否则会把用户切出设置页后的第一次正常划词起点一起清除。
@@ -1148,7 +1149,7 @@ test('焦点切换清理应同一同清空自维护双击序列', () => {
   assert.match(resetSource, /resetPointerTrackingForWindowBlur/u)
 })
 test('OCR 框选收尾必须无条件恢复划词监听，避免全局钩子被永久停用', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   // OCR 暂停与恢复统一交给监听控制器记账，移除分散布尔状态。
   assert.match(source, /new SelectionListenerController/u)
@@ -1368,7 +1369,7 @@ test('只有左键参与划词与双击判定', () => {
 })
 
 test('划词监听启动失败应记录可诊断日志，避免手势失效时无迹可查', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const controllerSource = readFileSync('src/main/selectionListenerController.ts', 'utf8')
   const applyStart = source.indexOf('function applySelectionListener')
   const applySource = source.slice(applyStart, source.indexOf('\n}', applyStart))

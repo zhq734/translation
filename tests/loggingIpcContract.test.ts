@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 test('主进程应注册 logs:get-history 和 logs:export IPC', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
-  assert.match(source, /ipcMain\.handle\('logs:get-history', \(\) => appLogger\.getHistory\(\)\)/u)
+  const source = readMainSource()
+  assert.match(source, /ipcMain\.handle\('logs:get-history', \(\) => dependencies\.getLogHistory\(\)\)/u)
   assert.match(source, /ipcMain\.handle\('logs:export'/u)
 })
 
 test('主进程应在启动早期初始化日志层并订阅推送', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /createAppLogger\(\{ logDir: app\.getPath\('logs'\) \}\)/u)
   assert.match(source, /appLogger\.subscribe\(pushLogEntries\)/u)
   // 日志层初始化必须先于单实例锁与 ready 流程
@@ -19,15 +20,15 @@ test('主进程应在启动早期初始化日志层并订阅推送', () => {
 })
 
 test('日志推送仅在设置窗口存活时发送 logs:entry', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /if \(!settingsWin \|\| settingsWin\.isDestroyed\(\)\) return/u)
   assert.match(source, /settingsWin\.webContents\.send\('logs:entry', entries\)/u)
 })
 
 test('日志导出应将当日日志文件复制到用户选定路径', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /dialog\.showSaveDialog/u)
-  assert.match(source, /await copyFile\(source, filePath\)/u)
+  assert.match(source, /await dependencies\.copyFile\(source, filePath\)/u)
   assert.match(source, /if \(canceled \|\| !filePath\) return null/u)
 })
 

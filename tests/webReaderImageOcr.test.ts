@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
@@ -158,7 +159,7 @@ test('阅读器运行时图片缓存命中应跳过取图且失败取消结果�
 })
 
 test('主进程图片 OCR 应复用 OCR 引擎偏好与语言配置并执行质量门禁', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const webReader = main.slice(main.indexOf('webReader = new WebReaderManager('), main.indexOf('onWindowStateChanged:'))
 
   assert.match(webReader, /createImageSource: \(view, signal\) => createWebReaderImageSource\(view, signal\)/u)

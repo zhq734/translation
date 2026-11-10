@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { extractIpcRegistration, readMainSource } from './helpers/mainSource.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
 const selectionRenderer = readFileSync('src/renderer/src/selection.ts', 'utf8')
@@ -214,10 +215,10 @@ test('OCR 覆盖窗口应在 show 前发送 begin 清理旧会话', () => {
  * @author zhenghq
  */
 test('OCR ready 回执应严格校验当前 sessionId', () => {
-  const readySource = sliceFunction(main, "ipcMain.on('ocr-selection:ready'")
+  const readySource = extractIpcRegistration(main, 'ocr-selection:ready', 'on')
   assert.match(readySource, /typeof sessionId !== 'number'/u)
-  assert.match(readySource, /sessionId !== ocrSelectionSessionSeq/u)
-  assert.match(readySource, /resolveOcrSelectionReady\(true\)/u)
+  assert.match(readySource, /sessionId !== dependencies\.getOcrSelectionSessionId\(\)/u)
+  assert.match(readySource, /dependencies\.resolveOcrSelectionReady\(true\)/u)
 })
 
 /**

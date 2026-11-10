@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { readTextI18nKey, tForTest } from './helpers/i18n.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const popupMain = readFileSync('src/main/popup.ts', 'utf8')
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
@@ -213,7 +214,10 @@ test('OCR 结果切换语言应使用 OCR 文本重新翻译', () => {
   assert.match(types, /retranslate\(sourceLang: string,\s*targetLang: string,\s*origin\?: TranslationOrigin\): Promise<void>/u)
   assert.match(main, /let lastOcrText = ''/u)
   assert.match(main, /lastOcrText = result\.ocrText/u)
-  assert.match(main, /const text = origin === 'ocr' \? lastOcrText : lastSelectedText/u)
+  assert.match(
+    main,
+    /const text = origin === 'ocr' \? dependencies\.getLastOcrText\(\) : dependencies\.getLastSelectedText\(\)/u
+  )
 })
 
 /**

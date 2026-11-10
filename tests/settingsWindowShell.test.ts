@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 /**
@@ -38,7 +39,7 @@ test('设置页应提供统一的可拖动自绘标题栏和固定顺序窗口�
 })
 
 test('设置窗口不应启用 alwaysOnTop(true)，以便其他应用可以正常覆盖', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const settingsWindowBlock = mainSource.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )

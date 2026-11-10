@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { formatKeyboardAccelerator } from '../src/shared/keyboardAccelerator'
 import { resolveHotkeyCaptureDelay } from '../src/shared/hotkeyCaptureTiming'
 
@@ -58,7 +59,7 @@ test('设置页应通过按键直接录入翻译与 OCR 快捷键', () => {
 })
 
 test('Windows 快捷键触发后应等待修饰键释放再取词，快捷键变更应整体重绑', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.equal(resolveHotkeyCaptureDelay('win32'), 300)
   assert.equal(resolveHotkeyCaptureDelay('darwin'), 0)
@@ -85,7 +86,7 @@ test('Windows 快捷键触发后应等待修饰键释放再取词，快捷键变
  * @author zhenghq
  */
 test('Windows 翻译快捷键应使用直接复制取词而不是原生直读优先取词', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const hotkeyStart = source.indexOf('function onHotkey')
   const hotkeyEnd = source.indexOf('/**\n * 响应全局 OCR 快捷键', hotkeyStart)
   const hotkeySource = source.slice(hotkeyStart, hotkeyEnd)
@@ -108,7 +109,7 @@ test('Windows 翻译快捷键应使用直接复制取词而不是原生直读优
  * @author zhenghq
  */
 test('翻译快捷键应先显示读取中的弹窗再异步取词', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const hotkeyStart = source.indexOf('function onHotkey')
   const hotkeyEnd = source.indexOf('/**\n * 响应全局 OCR 快捷键', hotkeyStart)
   const hotkeySource = source.slice(hotkeyStart, hotkeyEnd)

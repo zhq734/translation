@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   buildOcrSessionResultKey,
   OcrSessionResultCache,
@@ -8,7 +9,7 @@ import {
 } from '../src/main/ocrSessionResultCache.ts'
 import type { OcrRecognizeResult } from '../src/shared/ocrEngine.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 
 /** 基准 OCR 设置：后续用例只改动其中一个字段，验证该维度必须参与缓存键。 */
 const baseSettings: OcrSessionOcrSettings = {

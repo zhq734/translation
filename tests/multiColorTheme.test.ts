@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import vm from 'node:vm'
 import { tForTest } from './helpers/i18n.ts'
 
@@ -112,7 +113,7 @@ test('主题卡片中的英文名称与描述应各占整行，避免被窄列�
 })
 
 test('设置窗口必须等首帧就绪后再显示，避免启动时先闪默认主题', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const settingsWindowBlock = source.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )

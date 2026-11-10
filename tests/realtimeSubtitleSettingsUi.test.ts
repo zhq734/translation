@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 读取设置页相关文件。
@@ -9,6 +10,9 @@ import test from 'node:test'
  * @author zhenghq
  */
 function read(path: string): string {
+  if (path === 'src/main/index.ts') {
+    return readMainSource()
+  }
   return readFileSync(path, 'utf8')
 }
 

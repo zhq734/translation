@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
@@ -124,7 +125,7 @@ test('异步刷新待交还记录必须丢弃过期读取结果', () => {
  * @author zhenghq
  */
 test('公共取词入口不得再同步刷新或交还应用级前台', () => {
-  const indexSource = readFileSync('src/main/index.ts', 'utf8')
+  const indexSource = readMainSource()
   const readingSrc = stripComments(
     extractFunction(indexSource, 'function showSelectionReadingPopup(')
   )

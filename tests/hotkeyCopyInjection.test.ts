@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   COPY_FALLBACK_MAX_RETRIES,
   COPY_FALLBACK_RETRY_TIMEOUT_MS,
@@ -60,7 +61,7 @@ test('复制取词应在首次注入无响应时限次重投复制快捷键', ()
  * @author zhenghq
  */
 test('快捷键取词前应登记修饰键释放并在模拟复制时释放左右修饰键', () => {
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
   const hotkeyStart = mainSource.indexOf('function onHotkey')
   const hotkeyEnd = mainSource.indexOf('/**\n * 响应全局 OCR 快捷键', hotkeyStart)

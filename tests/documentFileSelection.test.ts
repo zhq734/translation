@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readDocumentSource } from './helpers/documentSource.ts'
+import { readMainSource } from './helpers/mainSource.ts'
 import JSZip from 'jszip'
 import {
   DOCUMENT_MAX_FILE_BYTES,
@@ -195,8 +197,8 @@ test('格式、空文件、超大与不可读必须在创建任务前分别拒�
 
 test('文件选择 API 与拖放预检必须复用同一校验函数', async () => {
   const { readFileSync } = await import('node:fs')
-  const main = readFileSync('src/main/index.ts', 'utf8')
-  const renderer = readFileSync('src/renderer/src/document.ts', 'utf8')
+  const main = readMainSource()
+  const renderer = readDocumentSource()
   const preload = readFileSync('src/preload/index.ts', 'utf8')
 
   assert.match(main, /validateDocumentFile\(/u)
@@ -212,7 +214,7 @@ test('文件选择 API 与拖放预检必须复用同一校验函数', async () 
 
 test('文件选择 IPC 必须校验发送者并只读取有限文件头', async () => {
   const { readFileSync } = await import('node:fs')
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   assert.match(main, /documentWorkspace\?\.ownsWindow/u)
   assert.match(main, /openFile\(/u)
   assert.match(main, /stat\(/u)

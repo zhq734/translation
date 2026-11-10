@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 校验 macOS 模拟复制脚本不再调用 CGEventSourceKeyState。
@@ -21,7 +22,7 @@ test('macOS 模拟复制脚本不应调用可能无限阻塞的 CGEventSourceKey
  */
 test('macOS 模拟复制应带脚本超时并从快捷键入口接收 Command 键状态', () => {
   const captureSource = readFileSync('src/main/capture.ts', 'utf8')
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
 
   assert.equal(captureSource.includes('MACOS_COPY_SCRIPT_TIMEOUT_MS'), true)
   assert.equal(captureSource.includes('getKeyState'), false)

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   buildInstallEventBody,
   createInstallEventService,
@@ -292,7 +293,7 @@ test('通知流程应静默执行且不输出安装通知日志', async () => {
 })
 
 test('应用就绪后应异步触发安装升级通知且保持日报入口不变', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.match(source, /import \{ maybeSendInstallUpgradeNotification \} from '\.\/installUpgradeNotification'/u)
   assert.match(source, /setTimeout\(\(\) => void maybeSendInstallUpgradeNotification\(\), 1_500\)/u)

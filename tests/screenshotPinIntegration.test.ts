@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /** 读取源码文件。 */
 function source(path: string): string {
+  if (path === 'src/main/index.ts') {
+    return readMainSource()
+  }
   return readFileSync(path, 'utf8')
 }
 

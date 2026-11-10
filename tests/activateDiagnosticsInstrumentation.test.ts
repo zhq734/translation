@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 截取源码中指定函数的完整片段。
@@ -17,7 +18,7 @@ function extractFunction(source: string, signature: string): string {
   return source.slice(start, end + 2)
 }
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 const selectionButtonSource = readFileSync('src/main/selectionButton.ts', 'utf8')
 

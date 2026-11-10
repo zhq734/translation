@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 interface PackageJson {
   scripts?: Record<string, string>
@@ -105,7 +106,7 @@ test('应用图标资源应完整且满足桌面打包尺寸要求', () => {
  * @author zhenghq
  */
 test('托盘应加载翻译图标而不是空白占位图', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.doesNotMatch(source, /nativeImage\.createEmpty\(\)/u)
   assert.match(source, /nativeImage\.createFromPath\(/u)
   assert.match(source, /setTemplateImage\(true\)/u)
@@ -118,7 +119,7 @@ test('托盘应加载翻译图标而不是空白占位图', () => {
  * @author zhenghq
  */
 test('macOS 动态显示 Dock 时应显式使用自定义应用图标', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.ok(
     packageJson.build?.mac?.extraResources?.some(
@@ -140,7 +141,7 @@ test('macOS 动态显示 Dock 时应显式使用自定义应用图标', () => {
  * @author zhenghq
  */
 test('macOS 开发启动时应立即覆盖 Electron 默认 Dock 图标', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const configureBlock = source.match(
     /async function configureMacOSMenuBarApplication\([\s\S]*?\): Promise<void> \{([\s\S]*?)\n\}/u
   )

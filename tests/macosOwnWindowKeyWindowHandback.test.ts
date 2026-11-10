@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
-const indexSource = readFileSync('src/main/index.ts', 'utf8')
+const indexSource = readMainSource()
 const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
 /**

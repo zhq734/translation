@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 从源码中截取指定函数的函数体。
@@ -18,7 +19,7 @@ function extractFunction(source: string, signature: string): string {
 }
 
 const webReaderSource = readFileSync('src/main/webReaderWindow.ts', 'utf8')
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const windowControlsSource = readFileSync('src/main/windowControls.ts', 'utf8')
 const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 

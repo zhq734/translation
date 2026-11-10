@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { DEFAULT_SETTINGS, SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { collectShortcutRegistrationStates } from '../src/main/globalShortcutRegistry.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const selection = readFileSync('src/renderer/src/selection.ts', 'utf8')
 const selectionCss = readFileSync('src/renderer/src/selection.css', 'utf8')
 const settingsHtml = readFileSync('src/renderer/settings.html', 'utf8')

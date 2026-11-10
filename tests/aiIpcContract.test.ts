@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 test('主进程应注册 ai:configure、ai:clear-key、ai:list-models 和 ai:check IPC', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /ipcMain\.handle\('ai:configure'/u)
   assert.match(source, /ipcMain\.handle\('ai:clear-key'/u)
   assert.match(source, /ipcMain\.handle\('ai:list-models'/u)
@@ -11,19 +12,19 @@ test('主进程应注册 ai:configure、ai:clear-key、ai:list-models 和 ai:che
 })
 
 test('普通 settings:set 应删除 aiApiKey 和 aiApiKeyConfigured 敏感字段', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /delete \(safePatch as Record<string, unknown>\)\.aiApiKey/u)
   assert.match(source, /delete \(safePatch as Record<string, unknown>\)\.aiApiKeyConfigured/u)
 })
 
 test('AI 配置保存成功后应通过专用服务广播脱敏 Settings', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /onSettingsChanged: \(settings\) => \{[\s\S]*broadcast\('settings:changed', settings\)/u)
   assert.match(source, /resetTranslationRuntime: resetAiTranslationRuntime/u)
 })
 
 test('翻译请求应从主进程安全存储读取 AI API Key 并传入运行时', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /const aiApiKey = settings\.aiEnabled \? getAiConfiguration\(\)\.getApiKey\(\) : null/u)
   assert.match(
     source,
@@ -32,7 +33,7 @@ test('翻译请求应从主进程安全存储读取 AI API Key 并传入运行�
 })
 
 test('AI 配置变化应清理模型缓存和 AI 运行时', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /if \(aiFieldChanged\) \{[\s\S]*resetAiTranslationRuntime\(\)[\s\S]*aiModelDiscovery\?\.clearCache\(\)/u)
 })
 
@@ -45,7 +46,7 @@ test('preload 应暴露 setAiConfig、clearAiApiKey、listAiModels 和 checkAi �
 })
 
 test('主进程与 preload 应暴露受限 Edge 语音合成 IPC', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   assert.match(main, /ipcMain\.handle\('speech:edge-synthesize'/u)
   assert.match(preload, /synthesizeEdgeSpeech:[\s\S]*?\.invoke\(\s*'speech:edge-synthesize'/u)

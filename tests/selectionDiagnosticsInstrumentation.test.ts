@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { SelectionListenerController } from '../src/main/selectionListenerController.ts'
 
 /**
@@ -18,7 +19,7 @@ function readFunctionSource(source: string, functionName: string): string {
 }
 
 test('划词起点分类收敛：非 track 分类不再逐条写盘', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const downSource = readFunctionSource(source, 'handleSelectionPointerDown')
 
   assert.notEqual(downSource, '')
@@ -40,7 +41,7 @@ test('鼠标松开不再记录未触发划词的静默原因', () => {
 })
 
 test('选区手势被忽略时应记录 OCR、自有窗口、弹窗与按钮命中条件', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const handlerSource = readFunctionSource(source, 'handleSelectionGesture')
 
   assert.notEqual(handlerSource, '')
@@ -52,7 +53,7 @@ test('选区手势被忽略时应记录 OCR、自有窗口、弹窗与按钮命�
 })
 
 test('自有窗口命中日志应写明命中窗口、矩形与应用激活状态', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const diagnosticsStart = source.indexOf('function describeFocusedOwnWindowHit')
   assert.notEqual(diagnosticsStart, -1, '应存在自有窗口命中诊断函数')
   const diagnosticsSource = source.slice(

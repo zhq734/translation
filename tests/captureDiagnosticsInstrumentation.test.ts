@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { SelectionCaptureCoordinator } from '../src/shared/selectionCaptureCoordinator.ts'
 import type {
   CaptureDiagnosticEntry,
@@ -170,7 +171,7 @@ test('capture.ts 应在取词结果中返回命中级别诊断元数据', () => 
  * @author zhenghq
  */
 test('index.ts 应在按钮、快捷键与自动入口标记诊断入口', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /markEntry\('button'\)/)
   assert.match(source, /markEntry\('hotkey'\)/)
   assert.match(source, /markEntry\('auto'\)/)

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
-const indexSource = readFileSync('src/main/index.ts', 'utf8')
+const indexSource = readMainSource()
 const preloadSource = readFileSync('src/preload/index.ts', 'utf8')
 const settingsRendererSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
 
@@ -366,7 +367,7 @@ test('设置页真实 pointerdown 必须由设置窗口回执后恢复可聚焦�
     '设置页 pointerdown 回执必须校验发送方窗口')
   assert.match(
     handlerSource,
-    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)[\s\S]*?releaseSelectionFocusLease\(\)/u,
+    /dependencies\.restoreSettingsWindowFocus\(\)[\s\S]*?dependencies\.releaseSelectionFocusLease\(\)/u,
     '设置页真实 pointerdown 必须恢复焦点并释放划词租约'
   )
 })
@@ -455,7 +456,7 @@ test('设置页失焦必须立即撤销后台 key window 候选资格，且仅�
     '必须保留设置页真实 pointerdown 回执入口')
   assert.match(
     indexSource.slice(pointerHandlerStart, pointerHandlerEnd),
-    /forceRestoreSettingsWindowFocus\(process\.platform,\s*settingsWin\)[\s\S]*?releaseSettingsWindowFocusAfterSettingsBlur\(\)/u,
+    /dependencies\.restoreSettingsWindowFocus\(\)[\s\S]*?dependencies\.releaseSettingsWindowFocus\(\)/u,
     '只有真实设置页 pointerdown 才能清除后台失焦租约并恢复输入能力'
   )
 })
@@ -493,8 +494,13 @@ test('webview:open IPC 必须复用只隐藏弹窗自身的入口', () => {
   const handlerSource = indexSource.slice(start, end)
   assert.match(
     handlerSource,
-    /openWebReaderFromPopup\(/u,
+    /dependencies\.openWebReader\(/u,
     'webview:open 必须通过只隐藏弹窗自身的入口打开阅读器'
+  )
+  assert.match(
+    indexSource,
+    /registerWebReaderIpc\(\{[\s\S]*?openWebReader: openWebReaderFromPopup/u,
+    '网页阅读器 IPC 必须注入只隐藏弹窗自身的入口'
   )
   assert.doesNotMatch(
     stripComments(handlerSource),

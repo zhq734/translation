@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 从源码中截取指定函数的函数体。
@@ -18,7 +19,7 @@ function extractFunction(source: string, signature: string): string {
 }
 
 const captureSource = readFileSync('src/main/capture.ts', 'utf8')
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 
 test('辅助功能权限检查必须支持无提示轮询', () => {
   const checkSource = extractFunction(

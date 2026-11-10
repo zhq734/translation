@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   DEFAULT_SETTINGS,
   SETTINGS_SCHEMA_VERSION,
@@ -45,7 +46,7 @@ test('设置页应提供双击选词显示“译”按钮开关并自动保存',
 })
 
 test('关闭双击选词开关后按钮模式应忽略双击手势', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const start = source.indexOf('function handleSelectionGesture')
   const end = source.indexOf('/**', start)
   const handlerSource = source.slice(start, end)

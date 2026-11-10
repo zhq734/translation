@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 从源码中截取指定函数的函数体。
@@ -17,7 +18,7 @@ function extractFunction(source: string, signature: string): string {
   return source.slice(start, end)
 }
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 
 test('点击菜单栏“译”图标必须把已打开的设置页带到最前', () => {
   const createSource = extractFunction(mainSource, 'async function createSettingsWindow(')

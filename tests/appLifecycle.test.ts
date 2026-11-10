@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   isMacOSDiskImageExecution,
   shouldOpenSettingsOnInitialLaunch
@@ -36,7 +37,7 @@ test('首次启动设置窗口策略应在 macOS、Windows 和 Linux 打开设�
 })
 
 test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第二实例打开设置窗口', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const warningIndex = source.indexOf('await confirmMacOSInstalledApplicationLaunch()')
   const applyListenerIndex = source.indexOf('\n  applySelectionListener()\n')
   const initializationIndex = source.indexOf('const initialization = app.whenReady()')
@@ -57,7 +58,7 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第
 })
 
 test('macOS 点击 Dock 图标时应优先恢复网页阅读器，没有可恢复页面才打开设置', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.match(
     source,
@@ -70,7 +71,7 @@ test('macOS 点击 Dock 图标时应优先恢复网页阅读器，没有可恢�
 })
 
 test('划词交互期间的 activate 事件不应打开设置窗口', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   // activate 会在“译”按钮等自有窗口被激活时触发，不只是 Dock 点击。
   // 必须先判断是否为真正的 Dock 激活，否则划词过程中会突然弹出设置页并抢走原生选区。
@@ -102,7 +103,7 @@ test('“译”按钮窗口不应因激活自身而抢走前台应用焦点', ()
 })
 
 test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补一次窗口级置前', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const activateStart = source.indexOf('function activateExistingPageOrOpenSettings(): void {')
   const activateSource = source.slice(
     activateStart,
@@ -142,7 +143,7 @@ function extractActivateCallback(source: string): string {
 }
 
 test('activate 回调必须在任何异步边界之前采集同步调用栈与毫秒时间戳', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const callbackSource = extractActivateCallback(source)
 
   // 调用栈一旦延迟到 await/then 之后采集，就只剩事件循环帧，无法指认派发者。
@@ -158,7 +159,7 @@ test('activate 回调必须在任何异步边界之前采集同步调用栈与�
 })
 
 test('activate 放行与拦截分支都必须输出含判定、原因与调用栈的取证日志', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const guardStart = source.indexOf('function shouldTreatActivateAsDockLaunch')
   assert.ok(guardStart >= 0, '应存在 activate 判定函数')
   const guardSource = source.slice(guardStart, source.indexOf('\n}', guardStart))

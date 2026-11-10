@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 import {
   DEFAULT_SETTINGS,
@@ -79,7 +80,7 @@ test('设置页应提供开机自启动开关并通过普通设置接口保存',
 })
 
 test('主进程应在启动和设置变更时同步开机自启动状态', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.match(source, /function applyAutoLaunch\(enabled: boolean\): void/u)
   assert.match(source, /resolveAutoLaunchStrategy\(\{[\s\S]*?platform: process\.platform[\s\S]*?packaged: app\.isPackaged/u)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   detectDocumentPlatformCapability,
   getDocumentPlatformUnsupportedMessageKey,
@@ -110,7 +111,7 @@ test('平台不支持原因必须映射为稳定且可翻译的提示词条', ()
 })
 
 test('弹窗与快捷键入口必须在隐藏窗口或创建窗口前统一拒绝不兼容平台', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
 
   for (const functionName of [
     'openDocumentWorkspaceFromPopup',

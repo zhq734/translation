@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 const html = readFileSync('src/renderer/index.html', 'utf8')
 const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
 const styles = readFileSync('src/renderer/src/style.css', 'utf8')
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 
 test('原文区应提供朗读原文入口和固定音标卡结构', () => {
   assert.match(html, /id="read-original"[^>]*type="button"/u)
@@ -76,7 +77,7 @@ test('Preload 与主进程应暴露受限音标查询和音频接口', () => {
   assert.match(preload, /lookupPronunciation:[\s\S]*?ipcRenderer\.invoke\(['"]pronunciation:lookup['"], word, requestId\)/u)
   assert.match(preload, /fetchPronunciationAudio:[\s\S]*?ipcRenderer\.invoke\(['"]pronunciation:audio['"], word, variantId, requestId\)/u)
   assert.match(main, /ipcMain\.handle\(['"]pronunciation:lookup['"]/u)
-  assert.match(main, /ipcMain\.handle\(['"]pronunciation:audio['"]/u)
+  assert.match(main, /ipcMain\.handle\(\s*['"]pronunciation:audio['"]/u)
   assert.match(main, /translationFetch/u)
 })
 

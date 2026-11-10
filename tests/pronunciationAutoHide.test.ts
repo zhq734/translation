@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   resolvePronunciationInteractionTransition,
   shouldSchedulePopupHide
@@ -31,7 +32,7 @@ test('音标交互期间应暂停自动隐藏且不改变固定语义', () => {
 
 test('主进程应提供独立发音交互状态并复用自动隐藏判定', () => {
   const popup = readFileSync('src/main/popup.ts', 'utf8')
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   const types = readFileSync('src/shared/types.ts', 'utf8')
 
@@ -60,7 +61,7 @@ test('弹窗被外部关闭时应清理音标交互状态，避免下次显示�
 
 test('弹窗被外部隐藏时应取消所有未完成的音标查询和音频下载', () => {
   const popup = readFileSync('src/main/popup.ts', 'utf8')
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const hidePopupBlock = popup.match(/export function hidePopup\([\s\S]*?\n\}/u)?.[0] ?? ''
 
   assert.match(

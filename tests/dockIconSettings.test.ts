@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { DEFAULT_SETTINGS, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { tForTest } from './helpers/i18n.ts'
 
@@ -26,7 +27,7 @@ test('设置页应提供 Dock 图标显示开关并通过普通设置接口保�
 })
 
 test('主进程应成对切换 macOS 激活策略与 Dock 图标并通过 Dock 激活进入设置', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
 
   assert.match(source, /async function applyMacOSDockVisibility\(showDockIcon: boolean\): Promise<void>/u)
   assert.match(source, /resolveMacOSDockPresentation\([\s\S]*?settingsOpen:[\s\S]*?webReaderOpen:/u)
@@ -44,7 +45,7 @@ test('主进程应成对切换 macOS 激活策略与 Dock 图标并通过 Dock �
 })
 
 test('复用设置窗口先刷新策略再置前，新建设置窗口先置前再刷新策略', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const settingsWindowBlock = source.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
@@ -84,7 +85,7 @@ test('复用设置窗口先刷新策略再置前，新建设置窗口先置前�
 })
 
 test('Dock 策略切换后不得尝试恢复或置前设置页', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const applyStart = source.indexOf('async function applyMacOSDockVisibility')
   const applyEnd = source.indexOf('\nfunction applyAutoLaunch', applyStart)
   const applyBlock = source.slice(applyStart, applyEnd)
@@ -108,7 +109,7 @@ test('Dock 策略切换后不得尝试恢复或置前设置页', () => {
 })
 
 test('启动首开设置页在 Dock 策略刷新后仅在未进入划词时再次置前', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const settingsWindowBlock = source.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )
@@ -143,7 +144,7 @@ test('启动首开设置页在 Dock 策略刷新后仅在未进入划词时再�
 })
 
 test('首次创建设置窗口时不得在窗口显示前用 Dock 切换吞掉首屏', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const settingsWindowBlock = source.match(
     /async function createSettingsWindow\([\s\S]*?\): Promise<BrowserWindow> \{([\s\S]*?)\n\}/u
   )

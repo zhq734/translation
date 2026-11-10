@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   activateMacosApplicationAndWaitForDeactivation,
   activateMacosApplicationAndConfirmWindow,
@@ -1145,7 +1146,7 @@ test('取词入口上下文必须保留窗口定位失败状态', () => {
   )
   assert.match(hotkeySource, /windowLocate:\s*target\.outcome/u)
 
-  const indexSource = readFileSync('src/main/index.ts', 'utf8')
+  const indexSource = readMainSource()
   const contextAssignments = [
     extractFunction(indexSource, 'function onHotkey(): void {'),
     extractFunction(indexSource, 'function scheduleSelectionAction(anchor: { x: number; y: number }): void {')
@@ -1995,7 +1996,7 @@ test('弹窗无需交还的提前返回路径也必须释放设置页焦点保�
  * @author zhenghq
  */
 test('弹窗关闭释放焦点后仍须尊重后续划词生命周期租约', () => {
-  const indexSource = readFileSync('src/main/index.ts', 'utf8')
+  const indexSource = readMainSource()
   const releaseSource = stripComments(
     extractFunction(indexSource, 'function releaseSelectionInteraction(')
   )

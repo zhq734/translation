@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   PREPARED_PREFETCH_WAIT_MS,
   SelectionCaptureCoordinator
@@ -341,7 +342,7 @@ test('复制兜底应以轮询结果优先，并接受稳定期内晚到的文�
  * @author zhenghq
  */
 test('按钮入口应有界等待预取并记录预取诊断日志', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const translateStart = source.indexOf('async function translateSelectionButton')
   const translateEnd = source.indexOf('/**\n * 处理取词结果', translateStart)
   const translateSource = source.slice(translateStart, translateEnd)
@@ -367,7 +368,7 @@ test('按钮入口应有界等待预取并记录预取诊断日志', () => {
  * @author zhenghq
  */
 test('划词预取应在窗口快照完成后启动', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const scheduleStart = source.indexOf('function scheduleSelectionAction(')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)
@@ -393,7 +394,7 @@ test('划词预取应在窗口快照完成后启动', () => {
  * @author zhenghq
  */
 test('按钮与自动取词入口应等待并同步窗口上下文', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const queueStart = source.indexOf('async function queueSelectionTranslation(')
   const queueEnd = source.indexOf('/**\n * 响应“译”按钮点击', queueStart)
   const translateStart = source.indexOf('async function translateSelectionButton')
@@ -426,7 +427,7 @@ test('按钮与自动取词入口应等待并同步窗口上下文', () => {
  * @author zhenghq
  */
 test('点击“译”后应先显示读取中的翻译弹窗，再等待 Windows 剪贴板取词完成', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const popupSource = readFileSync('src/main/popup.ts', 'utf8')
   const translateStart = source.indexOf('async function translateSelectionButton')
   const translateEnd = source.indexOf('/**\n * 处理取词结果', translateStart)

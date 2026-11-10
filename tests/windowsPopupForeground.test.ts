@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   POPUP_FOREGROUND_RESTORE_SETTLE_MS,
   shouldRestoreForegroundBeforeCapture
@@ -8,7 +9,7 @@ import {
 import { shouldDismissPopupOnBlur } from '../src/shared/popupBehavior.ts'
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
-const indexSource = readFileSync('src/main/index.ts', 'utf8')
+const indexSource = readMainSource()
 
 /**
  * 截取 index.ts 中 showSelectionReadingPopup 的函数体源码。

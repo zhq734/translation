@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { PopupLanguageInteractionGuard } from '../src/main/popupLanguageInteractionGuard'
 
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const preloadSource = readFileSync('src/preload/index.ts', 'utf8')
 const sharedTypesSource = readFileSync('src/shared/types.ts', 'utf8')
 const rendererSource = readFileSync('src/renderer/src/popup.ts', 'utf8')

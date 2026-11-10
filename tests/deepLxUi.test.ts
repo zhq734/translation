@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 const html = readFileSync('src/renderer/settings.html', 'utf8')
 const renderer = readFileSync('src/renderer/src/settings.ts', 'utf8')
 const preload = readFileSync('src/preload/index.ts', 'utf8')
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 
 test('DeepLX 设置页应提供多地址说明和保存操作，不提供 Token 配置', () => {
   assert.match(html, new RegExp(`data-i18n="settings\\.deepLx\\.urlHint">${tForTest('en-US', 'settings.deepLx.urlHint')}`, 'u'))

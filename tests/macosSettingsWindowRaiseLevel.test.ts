@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 截取源码中指定函数的完整片段。
@@ -27,7 +28,7 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '')
 }
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 
 test('设置页临时提升层级后必须有界回收，不能只依赖 blur 事件', () => {
   const helperSource = stripComments(

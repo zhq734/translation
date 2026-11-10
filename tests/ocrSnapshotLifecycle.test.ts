@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   handleOcrSelectionWindowClosed,
   handleOcrSelectionWindowHide
 } from '../src/main/ocrSelectionWindowEvents.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 
 /**
  * 截取源码中指定函数的函数体文本。

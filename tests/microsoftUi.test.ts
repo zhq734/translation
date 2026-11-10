@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 test('preload 应只暴露免配置微软可用性检测接口', () => {
@@ -11,7 +12,7 @@ test('preload 应只暴露免配置微软可用性检测接口', () => {
 })
 
 test('普通设置 IPC 应允许保存微软启用状态且不再处理 Azure 字段', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   assert.doesNotMatch(main, /delete safePatch\.microsoftEnabled/u)
   assert.doesNotMatch(main, /microsoftRegion|microsoftSubscriptionKeyConfigured/u)
   assert.doesNotMatch(main, /microsoft:configure|microsoft:clear-key/u)

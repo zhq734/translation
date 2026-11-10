@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { DEFAULT_SETTINGS, SETTINGS_SCHEMA_VERSION, normalizeSettings } from '../src/shared/settingsDefaults.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 const settingsHtml = readFileSync('src/renderer/settings.html', 'utf8')
 const settingsSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
 const settingsCss = readFileSync('src/renderer/src/settings.css', 'utf8')
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const types = readFileSync('src/shared/types.ts', 'utf8')
 
 test('设置 schema 升级后应补齐快捷动作引导状态', () => {

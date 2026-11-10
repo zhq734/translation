@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const webReaderSource = readFileSync('src/main/webReaderWindow.ts', 'utf8')
 const preloadSource = readFileSync('src/preload/index.ts', 'utf8')
 const apiSource = readFileSync('src/shared/types.ts', 'utf8')

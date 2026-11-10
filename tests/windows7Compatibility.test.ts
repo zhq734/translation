@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   isWindows7Version,
   isWindows7CompatibilityRuntime
@@ -15,6 +16,9 @@ import { normalizeAsarEntries } from '../scripts/win7-asar-paths.mjs'
  * @author zhenghq
  */
 function read(path: string): string {
+  if (path === 'src/main/index.ts') {
+    return readMainSource()
+  }
   return readFileSync(path, 'utf8')
 }
 

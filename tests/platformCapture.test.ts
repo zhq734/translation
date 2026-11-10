@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   getSelectionCapturePlan,
   isChromiumLikeExecutablePath,
@@ -270,7 +271,7 @@ test('Windows 复制取词应使用已加载的原生模块直接发送 Ctrl+C',
  * @author zhenghq
  */
 test('各平台均允许按钮预取，helper 不可用时由管线跳过', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const scheduleStart = source.indexOf('function scheduleSelectionAction')
   const scheduleEnd = source.indexOf('/**\n * 响应一次全局划词动作', scheduleStart)
   const scheduleSource = source.slice(scheduleStart, scheduleEnd)

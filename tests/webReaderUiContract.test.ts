@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
@@ -57,7 +58,7 @@ test('网页阅读器应提供原位翻译工具栏、原生 View 占位和自�
 })
 
 test('网页翻译 IPC、preload 与托盘入口应完整且受限', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const manager = readFileSync('src/main/webReaderWindow.ts', 'utf8')
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   const types = readFileSync('src/shared/types.ts', 'utf8')
@@ -432,7 +433,7 @@ test('阅读器初始化应把默认显示模式同步给主进程', () => {
 })
 
 test('图片取图滚动必须使用即时滚动并等待滚动位置稳定', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const scrollStart = main.indexOf('scrollIntoView: async (rect) =>')
   const scrollEnd = main.indexOf('restoreScroll: async (scrollX, scrollY) =>', scrollStart)
   const scrollScript = main.slice(scrollStart, scrollEnd)
@@ -449,7 +450,7 @@ test('图片取图滚动必须使用即时滚动并等待滚动位置稳定', ()
 })
 
 test('图片取图恢复滚动也必须使用即时滚动', () => {
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const restoreStart = main.indexOf('restoreScroll: async (scrollX, scrollY) =>')
   const restoreEnd = main.indexOf('maxBytes: WEB_IMAGE_MAX_BYTES', restoreStart)
   const restoreScript = main.slice(restoreStart, restoreEnd)

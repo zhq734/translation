@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   POPUP_AUTO_SIZE_LIMITS,
   isPopupAutoSizeRequest,
@@ -106,7 +107,7 @@ test('弹窗自适应尺寸应贯通渲染进程、preload 与主进程', () => 
   const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   const types = readFileSync('src/shared/types.ts', 'utf8')
-  const main = readFileSync('src/main/index.ts', 'utf8')
+  const main = readMainSource()
   const popupMain = readFileSync('src/main/popup.ts', 'utf8')
 
   assert.match(renderer, /function measureAutoSize/u)

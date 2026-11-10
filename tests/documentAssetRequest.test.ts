@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readDocumentSource } from './helpers/documentSource.ts'
 import { resolveDocumentPdfImageAssetLocation } from '../src/renderer/src/documentAssetRequest.ts'
 import type {
   DocumentBlock,
@@ -128,7 +129,7 @@ test('非 PDF 独立图片不得携带 PDF 页面定位', () => {
 })
 
 test('资源请求缓存必须按页面区分，避免同资源跨页复用错误定位结果', () => {
-  const source = readFileSync('src/renderer/src/document.ts', 'utf8')
+  const source = readDocumentSource()
 
   assert.match(source, /const cacheKey = `\$\{tab\.id\}:\$\{sourceSha256\}:\$\{assetId\}:\$\{pageIndex\}`/u)
 })

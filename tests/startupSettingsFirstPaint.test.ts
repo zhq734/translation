@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const settingsSource = readFileSync('src/renderer/src/settings.ts', 'utf8')
 
 /**
@@ -61,6 +62,12 @@ test('后台服务初始化完成前 IPC 必须等待，所有依赖后台服务
   assert.match(mainSource, /function ensureDeferredStartupServicesInitialized\(\): Promise<void>/u)
   assert.match(mainSource, /let deferredStartupServices: Promise<void> \| null = null/u)
   const ipcBody = extractFunction(mainSource, 'function registerIpc(): void')
+  const deferredAccessSource = readFileSync('src/main/ipc/deferredServiceAccess.ts', 'utf8')
+  assert.match(
+    ipcBody,
+    /createDeferredServiceAccess\(\{[\s\S]*?ensureReady:\s*ensureDeferredStartupServicesInitialized/u,
+    'IPC 注册必须通过统一访问器等待后台服务'
+  )
   const serviceGetters = [
     'getDingTalkConfiguration()',
     'getAiConfiguration()',
@@ -76,9 +83,15 @@ test('后台服务初始化完成前 IPC 必须等待，所有依赖后台服务
     'getScreenshotPinManager()'
   ]
   for (const getter of serviceGetters) {
-    assert.ok(ipcBody.includes(`await ensureDeferredStartupServicesInitialized()\n    return ${getter}`), `${getter} 必须等待后台服务就绪`)
+    const getterName = getter.slice(0, -2)
+    assert.ok(ipcBody.includes(getterName), `${getterName} 必须注入统一延迟服务访问器`)
+    assert.match(
+      deferredAccessSource,
+      new RegExp(`await dependencies\\.ensureReady\\(\\)\\s*return dependencies\\.${getterName}\\(\\)`, 'u'),
+      `${getter} 必须等待后台服务就绪`
+    )
   }
-  assert.match(ipcBody, /ipcMain\.handle\('settings:get', \(\) => getSettings\(\)\)/u)
+  assert.match(mainSource, /ipcMain\.handle\('settings:get', \(\) => dependencies\.getSettings\(\)\)/u)
   assert.match(mainSource, /deferredStartupServices = initializeDeferredStartupServices\(\)/u)
   assert.match(mainSource, /function startDeferredStartupServices\(\): Promise<void>/u)
 })
@@ -87,7 +100,8 @@ test('更新管理器延后初始化时状态查询安全，全部更新操作�
   assert.match(mainSource, /let updateManagerInitialization: Promise<void> \| null = null/u)
   assert.match(mainSource, /function getUpdateStatusSnapshot\(\): UpdateStatus/u)
   assert.match(mainSource, /phase: updateManager \? updateManager\.getStatus\(\)\.phase : 'idle'/u)
-  assert.match(mainSource, /ipcMain\.handle\('updater:get-status', \(\) => getUpdateStatusSnapshot\(\)\)/u)
+  assert.match(mainSource, /ipcMain\.handle\('updater:get-status', \(\) => dependencies\.getStatus\(\)\)/u)
+  assert.match(mainSource, /getStatus:\s*getUpdateStatusSnapshot/u)
   assert.doesNotMatch(mainSource, /ipcMain\.handle\('updater:get-status', \(\) => getUpdateManager\(\)\.getStatus\(\)\)/u)
   for (const operation of [
     'async function checkForApplicationUpdates(',

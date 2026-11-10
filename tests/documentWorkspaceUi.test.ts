@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readDocumentSource } from './helpers/documentSource.ts'
+import { readMainSource } from './helpers/mainSource.ts'
 import { parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import {
   occupiesDocumentTranslationFlow,
@@ -27,17 +29,10 @@ import type { DocumentBlock } from '../src/shared/documentTypes.ts'
  */
 function read(path: string): string {
   if (path === 'src/main/index.ts') {
-    return [
-      readFileSync(path, 'utf8'),
-      readFileSync('src/main/documentRuntime.ts', 'utf8')
-    ].join('\n')
+    return readMainSource()
   }
   if (path === 'src/renderer/src/document.ts') {
-    return [
-      readFileSync(path, 'utf8'),
-      readFileSync('src/renderer/src/documentElements.ts', 'utf8'),
-      readFileSync('src/renderer/src/documentUiModel.ts', 'utf8')
-    ].join('\n')
+    return readDocumentSource()
   }
   return readFileSync(path, 'utf8')
 }
@@ -96,20 +91,20 @@ test('多文件选择必须一次创建独立 Tab，并由主进程按任务隔�
   assert.match(preload, /ipcRenderer\.invoke\('document:select-files'\)/u)
   assert.match(selectSource, /properties: \['openFile', 'multiSelections'\]/u)
   assert.match(selectSource, /Promise\.allSettled/u)
-  assert.match(selectSource, /approvedDocumentPaths\.add/u)
-  assert.doesNotMatch(selectSource, /approvedDocumentPaths\.clear/u)
+  assert.match(selectSource, /dependencies\.approvedPaths\.add/u)
+  assert.doesNotMatch(selectSource, /dependencies\.approvedPaths\.clear/u)
   assert.match(main, /const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>\(\)/u)
   assert.match(
     main,
-    /service\.run\(normalizedRequest, \(jobId\) => \{\s*acceptedJobId = jobId\s*documentWorkspaceTaskServices\.set\(jobId, service\)/u,
+    /service\.run\(normalizedRequest, \(jobId\) => \{\s*acceptedJobId = jobId\s*dependencies\.taskServices\.set\(jobId, service\)/u,
     '任务服务必须在首条进度发出前通过接受回调同步登记'
   )
   assert.match(
     main,
-    /documentWorkspaceTaskServices\.get\(acceptedJobId\) === service[\s\S]*?documentWorkspaceTaskServices\.delete\(acceptedJobId\)/u,
+    /dependencies\.taskServices\.get\(acceptedJobId\) === service[\s\S]*?dependencies\.taskServices\.delete\(acceptedJobId\)/u,
     '任务启动异常时必须移除已经登记的服务，避免残留不可达资源'
   )
-  assert.match(main, /documentWorkspaceTaskServices\.get\(jobId\)/u)
+  assert.match(main, /dependencies\.taskServices\.get\(jobId\)/u)
   assert.match(main, /ipcMain\.handle\('document:release'/u)
   assert.match(types, /retryFailedDocument\(jobId: string, generation: number\)/u)
   assert.match(types, /getDocumentAsset\(jobId: string, assetId: string\)/u)
@@ -241,15 +236,15 @@ test('文件翻译历史必须提供可搜索下拉列表并支持快速切换',
   assert.match(source, /recordDocumentFileHistory/u)
   assert.match(source, /filterDocumentFileHistory/u)
   assert.match(source, /window\.api\.approveDocumentFile\(entry\.path\)/u)
-  assert.match(source, /let documentHistorySwitchInFlight = false/u)
+  assert.match(source, /let switchInFlight = false/u)
   assert.match(source, /historyButton\.addEventListener\('click'/u)
   assert.match(source, /documentHistorySearch\.addEventListener\('input'/u)
-  assert.match(source, /const existingTab = findDocumentTabByPath\(entry\.path\)/u)
-  assert.match(source, /await activateDocumentTab\(existingTab\.id\)/u)
-  assert.match(source, /await createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
-  assert.match(source, /await startDocumentTabTranslation\(tab\)/u)
-  assert.match(source, /event\.key === 'Enter'[\s\S]*visibleDocumentHistory\[0\]/u)
-  assert.match(source, /openButton\.addEventListener\('click',\s*\(\) => void openDocumentHistoryEntry\(entry\)\)/u)
+  assert.match(source, /const existingTab = dependencies\.findDocumentTabByPath\(entry\.path\)/u)
+  assert.match(source, /await dependencies\.activateDocumentTab\(existingTab\.id\)/u)
+  assert.match(source, /await dependencies\.createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
+  assert.match(source, /await dependencies\.startDocumentTabTranslation\(tab\)/u)
+  assert.match(source, /event\.key === 'Enter'[\s\S]*visibleHistory\[0\]/u)
+  assert.match(source, /openButton\.addEventListener\('click',\s*\(\) => void openEntry\(entry\)\)/u)
   assert.match(css, /\.document-history-popover\s*\{[^}]*position:\s*absolute/u)
   assert.match(css, /\.document-history-list\s*\{[^}]*overflow-y:\s*auto/u)
   assert.match(css, /\.document-history-list\s*\{[^}]*margin-top:\s*var\(--space-2\)/su)
@@ -266,7 +261,7 @@ test('文件翻译历史必须提供可搜索下拉列表并支持快速切换',
 
 test('文件翻译历史切换必须防止重复触发并按目标 Tab 隔离任务', () => {
   const source = read('src/renderer/src/document.ts')
-  const switchStart = source.indexOf('async function switchToDocumentHistoryEntry(')
+  const switchStart = source.indexOf('const switchToFileEntry = async (')
   const switchEnd = source.indexOf('/**', switchStart + 1)
   const switchSource = source.slice(switchStart, switchEnd)
   const startStart = source.indexOf('async function startDocumentTabTranslation(')
@@ -275,13 +270,13 @@ test('文件翻译历史切换必须防止重复触发并按目标 Tab 隔离任
 
   assert.ok(switchStart > -1)
   assert.ok(startStart > -1)
-  assert.match(switchSource, /if \([^\n]*documentHistorySwitchInFlight\) return/u)
-  assert.match(switchSource, /documentHistorySwitchInFlight = true/u)
-  assert.match(switchSource, /const existingTab = findDocumentTabByPath\(entry\.path\)/u)
-  assert.match(switchSource, /if \(existingTab\) \{\s*await activateDocumentTab\(existingTab\.id\)/u)
-  assert.match(switchSource, /await createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
-  assert.match(switchSource, /if \(tab\) await startDocumentTabTranslation\(tab\)/u)
-  assert.match(switchSource, /finally \{\s*documentHistorySwitchInFlight = false/u)
+  assert.match(switchSource, /if \(!dependencies\.isPlatformSupported\(\) \|\| switchInFlight\) return/u)
+  assert.match(switchSource, /switchInFlight = true/u)
+  assert.match(switchSource, /const existingTab = dependencies\.findDocumentTabByPath\(entry\.path\)/u)
+  assert.match(switchSource, /if \(existingTab\) \{\s*await dependencies\.activateDocumentTab\(existingTab\.id\)/u)
+  assert.match(switchSource, /await dependencies\.createDocumentTab\(result, \{ activate: true, start: false \}\)/u)
+  assert.match(switchSource, /if \(tab\) await dependencies\.startDocumentTabTranslation\(tab\)/u)
+  assert.match(switchSource, /finally \{\s*switchInFlight = false/u)
 
   // 迟到的启动结果必须按发起时的代际取消，不能把旧任务带入已关闭或已切换模式的 Tab。
   assert.match(source, /async function cancelLateDocumentRunResult\(/u)
@@ -349,7 +344,7 @@ test('切换和关闭 Tab 必须清理上一 Tab 的区块高亮、滚动意图�
   const closeSource = source.slice(closeStart, source.indexOf('/**', closeStart + 1))
 
   assert.ok(resetStart > -1, '必须集中封装 Tab 交互状态清理')
-  assert.match(resetSource, /clearDocumentBlockHighlight\(\)/u)
+  assert.match(resetSource, /documentNavigation\.clearBlockHighlight\(\)/u)
   assert.match(resetSource, /if \(userScrollIntentTimer !== null\)[\s\S]*?window\.clearTimeout\(userScrollIntentTimer\)[\s\S]*?userScrollIntentTimer = null/u)
   assert.match(resetSource, /userScrollSide = null/u)
   assert.match(resetSource, /documentScrollSyncedSide = null/u)
@@ -392,7 +387,7 @@ test('页面重新打开恢复活动 Tab 后必须重新应用持久化区块高
   const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
 
   assert.ok(restoreStart > -1)
-  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!\)[\s\S]*?requestAnimationFrame\(\(\) => highlightDocumentBlock\(activeBlockId\)\)/u,
+  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!\)[\s\S]*?requestAnimationFrame\(\(\) => documentNavigation\.highlightBlock\(activeBlockId\)\)/u,
     '恢复 DOM 后必须按持久化区块恢复高亮')
 })
 
@@ -402,17 +397,18 @@ test('切换 Tab 渲染时必须保留该 Tab 的区块锚点并按锚点恢复 
   const activateSource = source.slice(activateStart, source.indexOf('/**', activateStart + 1))
   const renderStart = source.indexOf('function renderSnapshot(')
   const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
-  const clearStart = source.indexOf('function clearDocumentBlockHighlight(')
-  const clearSource = source.slice(clearStart, source.indexOf('/**', clearStart + 1))
+  const clearStart = source.indexOf('const clearBlockHighlight = (): void => {')
+  const clearEnd = source.indexOf('\n  }\n', clearStart + 1) + 4
+  const clearSource = source.slice(clearStart, clearEnd)
 
   assert.ok(activateStart > -1)
-  assert.match(activateSource, /renderActiveDocumentTab\(tab\)[\s\S]*?if \(tab\.activeBlockId\)[\s\S]*?highlightDocumentBlock\(tab\.activeBlockId\)/u,
+  assert.match(activateSource, /renderActiveDocumentTab\(tab\)[\s\S]*?if \(tab\.activeBlockId\)[\s\S]*?documentNavigation\.highlightBlock\(tab\.activeBlockId\)/u,
     '切换 Tab 后必须使用目标 Tab 自己的区块锚点恢复高亮')
-  assert.doesNotMatch(renderSource, /clearDocumentBlockHighlight\(\)/u,
+  assert.doesNotMatch(renderSource, /documentNavigation\.clearBlockHighlight\(\)/u,
     '快照重绘不能清除 Tab 的持久化区块锚点')
-  assert.match(renderSource, /clearDocumentBlockDomHighlight\(\)[\s\S]*?if \(tab\.activeBlockId\)[\s\S]*?highlightDocumentBlock\(tab\.activeBlockId\)/u,
+  assert.match(renderSource, /documentNavigation\.clearBlockDomHighlight\(\)[\s\S]*?if \(tab\.activeBlockId\)[\s\S]*?documentNavigation\.highlightBlock\(tab\.activeBlockId\)/u,
     '快照重绘后必须按当前 Tab 锚点重新标记新 DOM')
-  assert.match(clearSource, /clearDocumentBlockDomHighlight\(\)/u,
+  assert.match(clearSource, /clearBlockDomHighlight\(\)/u,
     '显式清除高亮必须同时清理持久化锚点与 DOM')
 })
 
@@ -1452,8 +1448,8 @@ test('文档工作台必须提供完整导出对话框与导出进度闭环', ()
   assert.match(html, /id="document-export-progress-page"/u)
   assert.match(html, /id="document-export-open-folder"/u)
 
-  assert.match(source, /function openDocumentExportDialog\(/u)
-  assert.match(source, /function updateDocumentExportProgress\(/u)
+  assert.match(source, /const openDialog = async \(snapshot: DocumentWorkspaceSnapshot\)/u)
+  assert.match(source, /const updateProgress = \(progress: DocumentExportProgress\)/u)
   assert.doesNotMatch(source, /selectedDocumentExportLayout/u)
   assert.doesNotMatch(source, /layout:\s*selectedDocumentExportLayout/u)
   assert.match(source, /mode:\s*.*partial/su)
@@ -1507,12 +1503,12 @@ test('文档 IPC 必须在主进程规范化请求并只使用已批准路径', 
   assert.doesNotMatch(exportBlock, /exportPdf\(request as DocumentExportRequest\)/u)
 
   const cancelBlock = main.slice(cancelExportStart, openFolderStart)
-  assert.match(cancelBlock, /isDocumentWorkspaceSender\(event\.sender\)/u)
+  assert.match(cancelBlock, /dependencies\.isWorkspaceSender\(event\.sender\)/u)
   assert.match(cancelBlock, /normalizeDocumentExportCancelRequest/u)
   assert.match(cancelBlock, /cancelExport\(/u)
 
   const openFolderBlock = main.slice(openFolderStart, main.indexOf("ipcMain.handle('document:list-history'"))
-  assert.match(openFolderBlock, /isDocumentWorkspaceSender\(event\.sender\)/u)
+  assert.match(openFolderBlock, /dependencies\.isWorkspaceSender\(event\.sender\)/u)
   assert.match(openFolderBlock, /normalizeDocumentOpenExportFolderRequest/u)
   assert.match(openFolderBlock, /openExportFolder\(/u)
 })
@@ -1605,8 +1601,8 @@ test('文档终态与导出前必须同步刷新最新译文快照，不能停�
   const completedStart = source.indexOf("window.api.onDocumentCompleted(")
   const completedEnd = source.indexOf('sourceContent.addEventListener', completedStart)
   const completedSource = source.slice(completedStart, completedEnd)
-  const exportStart = source.indexOf('async function exportTranslatedPdf(')
-  const exportEnd = source.indexOf('/**', exportStart + 1)
+  const exportStart = source.indexOf('const exportTranslatedPdf = async (): Promise<void> => {')
+  const exportEnd = source.indexOf('\n  }\n', exportStart + 1) + 4
   const exportSource = source.slice(exportStart, exportEnd)
 
   assert.ok(flushStart > -1, '必须提供可绕过帧合并的同步快照刷新入口')
@@ -2733,7 +2729,7 @@ test('文档工作台顶栏必须支持双面与仅译文单面显示，并保�
   assert.match(source, /documentColumns\.dataset\.viewMode = documentViewMode/u)
   assert.match(source, /documentViewModeControl\.querySelectorAll<HTMLButtonElement>\('\[data-document-view-mode\]'\)/u)
   assert.match(source, /documentViewMode = nextMode/u)
-  assert.match(source, /documentViewMode === 'translation'/u)
+  assert.match(source, /dependencies\.getViewMode\(\) === 'translation'/u)
   assert.match(source, /localStorage\.setItem\(DOCUMENT_VIEW_MODE_STORAGE_KEY, mode\)/u)
   assert.match(source, /localStorage\.getItem\(DOCUMENT_VIEW_MODE_STORAGE_KEY\)/u)
   assert.match(css, /\.document-columns\[data-view-mode='translation'\]\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/su)
@@ -3733,8 +3729,8 @@ test('文档工作台必须提供三模式、同步、页码、目录与缩放�
   assert.match(source, /resolveDocumentBlockHighlight/u)
   assert.match(source, /resolveFitDocumentZoom/u)
   assert.match(source, /clampDocumentZoom/u)
-  assert.match(source, /function scrollToDocumentTarget\(/u)
-  assert.match(source, /function highlightDocumentBlock\(/u)
+  assert.match(source, /const scrollToTarget = \(/u)
+  assert.match(source, /const highlightBlock = \(/u)
   assert.match(source, /function setDocumentScrollSync\(/u)
   assert.match(source, /function setDocumentZoom\(/u)
   assert.match(source, /data-active-block["']\s*,\s*["']true["']/u)
@@ -3812,18 +3808,18 @@ test('适合宽度必须铺满宽度，适合高度必须铺满高度并保持�
   const source = read('src/renderer/src/document.ts')
   const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
-  const heightStart = source.indexOf('function fitDocumentToHeight(')
-  const heightEnd = source.indexOf('\n}\n', heightStart + 1) + 3
+  const heightStart = source.indexOf('const fitToHeight = (): void => {')
+  const heightEnd = source.indexOf('\n  }\n', heightStart + 1) + 4
   const heightSource = source.slice(heightStart, heightEnd)
 
   assert.match(html, /id="document-zoom-fit-height"[^>]*data-i18n="document\.zoom\.fitHeight"/u)
   assert.match(source, /const documentZoomFitHeightButton = document\.getElementById\('document-zoom-fit-height'\) as HTMLButtonElement/u)
-  assert.match(source, /documentZoomFitHeightButton\.addEventListener\('click', fitDocumentToHeight\)/u)
+  assert.match(source, /documentZoomFitHeightButton\.addEventListener\('click', fitToHeight\)/u)
   assert.ok(heightStart > -1)
-  assert.match(heightSource, /documentViewMode === 'source' \? sourceContent : translationContent/u)
-  assert.match(heightSource, /currentDocumentPageNumber/u)
-  assert.match(heightSource, /renderedHeight > 0[\s\S]*?renderedHeight \/ documentZoom/u)
-  assert.match(heightSource, /documentPageAvailableHeight\(container\)/u)
+  assert.match(heightSource, /dependencies\.getViewMode\(\) === 'source'\s*\?\s*dependencies\.getSourceContent\(\)\s*:\s*dependencies\.getTranslationContent\(\)/u)
+  assert.match(heightSource, /dependencies\.getCurrentPageNumber\(\)/u)
+  assert.match(heightSource, /renderedHeight > 0[\s\S]*?renderedHeight \/ dependencies\.getZoom\(\)/u)
+  assert.match(heightSource, /dependencies\.getPageAvailableHeight\(container\)/u)
   assert.match(heightSource, /resolveDocumentFitZoom\(baseHeight, availableHeight\)/u)
   assert.match(source, /function documentPageAvailableHeight\(container: HTMLElement\): number/u)
   assert.match(zh, /'document\.zoom\.fitHeight': '适合高度'/u)
@@ -3832,11 +3828,11 @@ test('适合宽度必须铺满宽度，适合高度必须铺满高度并保持�
 
 test('图片预览适合宽度与适合高度必须使用一致的原始尺寸和容器测量逻辑', () => {
   const source = read('src/renderer/src/document.ts')
-  const widthStart = source.indexOf('function fitDocumentToWidth(')
-  const widthEnd = source.indexOf('\n}\n', widthStart + 1) + 3
+  const widthStart = source.indexOf('const fitToWidth = (): void => {')
+  const widthEnd = source.indexOf('\n  }\n', widthStart + 1) + 4
   const widthSource = source.slice(widthStart, widthEnd)
-  const heightStart = source.indexOf('function fitDocumentToHeight(')
-  const heightEnd = source.indexOf('\n}\n', heightStart + 1) + 3
+  const heightStart = source.indexOf('const fitToHeight = (): void => {')
+  const heightEnd = source.indexOf('\n  }\n', heightStart + 1) + 4
   const heightSource = source.slice(heightStart, heightEnd)
 
   assert.ok(widthStart > -1)
@@ -3844,38 +3840,38 @@ test('图片预览适合宽度与适合高度必须使用一致的原始尺寸�
     '图片适合宽度必须使用稳定的原始页面宽度作为基准')
   assert.match(
     widthSource,
-    /const baseWidth = model\?\.source\.format === 'image'\s*\? currentPage\?\.width\s*: renderedWidth > 0 \? renderedWidth \/ documentZoom : currentPage\?\.width/u,
+    /const baseWidth = model\?\.source\.format === 'image'\s*\? currentPage\?\.width\s*: renderedWidth > 0 \? renderedWidth \/ dependencies\.getZoom\(\) : currentPage\?\.width/u,
     '图片适合宽度必须直接使用原始宽度，其他格式才从渲染尺寸还原基准'
   )
-  assert.match(widthSource, /documentPageContentWidth\(container\)/u)
+  assert.match(widthSource, /dependencies\.getPageContentWidth\(container\)/u)
   assert.match(widthSource, /resolveDocumentFitZoom\(baseWidth, availableWidth\)/u)
   assert.match(heightSource, /source\.format === 'image'[\s\S]*?currentPage\?\.height/u,
     '图片适合高度必须使用稳定的原始页面高度作为基准')
   assert.match(
     heightSource,
-    /const baseHeight = model\?\.source\.format === 'image'\s*\? currentPage\?\.height\s*: renderedHeight > 0 \? renderedHeight \/ documentZoom : currentPage\?\.height/u,
+    /const baseHeight = model\?\.source\.format === 'image'\s*\? currentPage\?\.height\s*: renderedHeight > 0 \? renderedHeight \/ dependencies\.getZoom\(\) : currentPage\?\.height/u,
     '图片适合高度必须直接使用原始高度，其他格式才从渲染尺寸还原基准'
   )
-  assert.match(heightSource, /documentPageAvailableHeight\(container\)/u)
+  assert.match(heightSource, /dependencies\.getPageAvailableHeight\(container\)/u)
   assert.match(heightSource, /resolveDocumentFitZoom\(baseHeight, availableHeight\)/u)
 })
 
 test('图片适配必须直接使用当前页原始尺寸，不能受缩放后的 DOM 尺寸影响', () => {
   const source = read('src/renderer/src/document.ts')
-  const widthStart = source.indexOf('function fitDocumentToWidth(')
-  const widthEnd = source.indexOf('/**', widthStart + 1)
+  const widthStart = source.indexOf('const fitToWidth = (): void => {')
+  const widthEnd = source.indexOf('\n  }\n', widthStart + 1) + 4
   const widthSource = source.slice(widthStart, widthEnd)
-  const heightStart = source.indexOf('function fitDocumentToHeight(')
-  const heightEnd = source.indexOf('/**', heightStart + 1)
+  const heightStart = source.indexOf('const fitToHeight = (): void => {')
+  const heightEnd = source.indexOf('\n  }\n', heightStart + 1) + 4
   const heightSource = source.slice(heightStart, heightEnd)
 
   assert.match(widthSource, /source\.format === 'image'[\s\S]*?currentPage\?\.width/u,
     '图片适合宽度必须直接使用当前页原始宽度，否则会继续在已有缩放比例上反复计算')
   assert.match(heightSource, /source\.format === 'image'[\s\S]*?currentPage\?\.height/u,
     '图片适合高度必须直接使用当前页原始高度，保持与适合宽度相同的稳定基准')
-  assert.match(widthSource, /currentDocumentPageNumber - 1/u,
+  assert.match(widthSource, /currentPageNumber - 1/u,
     '图片适配必须取当前可见页的尺寸，不能始终使用第一页')
-  assert.match(heightSource, /currentDocumentPageNumber - 1/u,
+  assert.match(heightSource, /currentPageNumber - 1/u,
     '图片高度适配必须取当前可见页的尺寸，不能始终使用第一页')
 })
 
@@ -3908,7 +3904,7 @@ test('文档历史必须通过受控 IPC 列出、打开、删除并清空缓存
   assert.ok(listStart > -1 && openStart > -1 && deleteStart > -1 && clearStart > -1)
   for (const start of [listStart, openStart, deleteStart, clearStart]) {
     const handler = main.slice(start, main.indexOf('/**', start + 1))
-    assert.match(handler, /isDocumentWorkspaceSender\(event\.sender\)/u)
+    assert.match(handler, /dependencies\.isWorkspaceSender\(event\.sender\)/u)
   }
   assert.match(deleteSource, /getSourceSha256\(jobId\)/u)
   assert.match(deleteSource, /deleteBySourceSha256\(sourceSha256\)/u)
@@ -3927,7 +3923,7 @@ test('文档历史列表必须展示完整摘要并使用对话框确认删除�
   assert.match(html, /id="document-history-confirm-dialog"/u)
   assert.match(html, /id="document-history-confirm-delete"/u)
   assert.match(html, /id="document-history-clear"/u)
-  assert.match(source, /async function loadDocumentTaskHistory\(/u)
+  assert.match(source, /loadTaskHistory: async \(\) =>/u)
   assert.match(source, /window\.api\.listDocumentHistory\(\)/u)
   assert.match(source, /window\.api\.openDocumentHistory\(entry\.jobId\)/u)
   assert.match(source, /window\.api\.deleteDocumentHistory\(jobId\)/u)
@@ -3969,7 +3965,7 @@ test('历史下拉必须整行打开并以 X 图标删除，不得显示文字�
   assert.doesNotMatch(source, /document-history-item-check/u)
   assert.doesNotMatch(source, /✓/u)
   assert.doesNotMatch(source, /document-history-item-actions/u)
-  assert.match(source, /function createDocumentHistoryDeleteButton\(/u)
+  assert.match(source, /const createDeleteButton = \(label: string, index: number\)/u)
   assert.match(source, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg',\s*'svg'\)/u)
   assert.match(source, /button\.setAttribute\('aria-label',\s*label\)/u)
   assert.match(source, /button\.setAttribute\('title',\s*label\)/u)
@@ -3982,19 +3978,20 @@ test('历史下拉必须整行打开并以 X 图标删除，不得显示文字�
 
 test('X 图标必须同时删除任务历史和本地文件历史', () => {
   const source = read('src/renderer/src/document.ts')
-  const confirmStart = source.indexOf('async function confirmDocumentHistoryAction()')
-  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const confirmStart = source.indexOf('const confirmAction = async (): Promise<void> => {')
+  const confirmEnd = source.indexOf('\n  }\n', confirmStart + 1) + 4
+  const confirmSource = source.slice(confirmStart, confirmEnd)
   const clickStart = source.indexOf("documentHistoryList.addEventListener('click'")
   const clickSource = source.slice(clickStart, source.indexOf("documentHistoryList.addEventListener('keydown'", clickStart))
 
   assert.ok(confirmStart > -1)
   assert.ok(clickStart > -1)
-  assert.match(clickSource, /const deleteButton = \(event\.target as HTMLElement\)\.closest<HTMLButtonElement>\('\[data-history-action="delete"\]'\)/u)
-  assert.match(clickSource, /const entry = visibleDocumentHistory\[Number\(deleteButton\.dataset\.historyIndex\)\]/u)
-  assert.match(clickSource, /setDocumentHistoryConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
+  assert.match(clickSource, /const deleteButton = \(event\.target as HTMLElement\)\s*\.closest<HTMLButtonElement>\('\[data-history-action="delete"\]'\)/u)
+  assert.match(clickSource, /const entry = visibleHistory\[Number\(deleteButton\.dataset\.historyIndex\)\]/u)
+  assert.match(clickSource, /setConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
   assert.match(confirmSource, /entry\?\.kind === 'file'/u)
-  assert.match(confirmSource, /documentFileHistory = documentFileHistory\.filter\(\(candidate\) => candidate\.path !== entry\.file\.path\)/u)
-  assert.match(confirmSource, /writeDocumentFileHistory\(documentFileHistory\)/u)
+  assert.match(confirmSource, /fileHistory = fileHistory\.filter\(\(candidate\) => candidate\.path !== entry\.file\.path\)/u)
+  assert.match(confirmSource, /writeFileHistory\(fileHistory\)/u)
   assert.match(confirmSource, /window\.api\.deleteDocumentHistory\(jobId\)/u)
 })
 
@@ -4005,15 +4002,15 @@ test('统一历史列表必须支持打开、删除确认、清空确认与完�
   const initSource = source.slice(initStart, source.indexOf('/**', initStart + 1))
 
   assert.ok(initStart > -1)
-  assert.match(initSource, /await restoreDocumentViewerState\(\)\s*await loadDocumentTaskHistory\(\)/u)
-  assert.match(source, /visibleDocumentHistory\[0\]/u)
-  assert.match(source, /openDocumentHistoryEntry\(entry\)/u)
+  assert.match(initSource, /await restoreDocumentViewerState\(\)\s*await documentHistory\.loadTaskHistory\(\)/u)
+  assert.match(source, /visibleHistory\[0\]/u)
+  assert.match(source, /openEntry\(entry\)/u)
   assert.match(source, /data-history-action/u)
-  assert.match(source, /setDocumentHistoryConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
-  assert.match(source, /setDocumentHistoryConfirmation\(\{ kind: 'clear' \}/u)
+  assert.match(source, /setConfirmation\(\{ kind: 'delete', entry \}, deleteButton\)/u)
+  assert.match(source, /setConfirmation\(\{ kind: 'clear' \}/u)
   assert.match(source, /documentHistoryConfirmDelete\.addEventListener\('click'/u)
   assert.match(source, /documentHistoryConfirmCancel\.addEventListener\('click'/u)
-  assert.match(source, /function closeDocumentHistoryConfirmation\(restoreFocus = true\)/u)
+  assert.match(source, /const closeConfirmation = \(restoreFocus = true\): void =>/u)
   assert.match(source, /documentHistoryConfirmDialog\.addEventListener\('cancel'/u)
   assert.match(source, /documentHistoryConfirmDialog\.addEventListener\('close'/u)
   assert.match(source, /event\.key === 'Home'/u)
@@ -4041,8 +4038,9 @@ test('历史操作必须支持窄屏、减少动画、可见焦点与文本复�
 
 test('历史任务必须以真实任务标识只读打开，关闭时不得取消或释放活动任务', () => {
   const source = read('src/renderer/src/document.ts')
-  const openStart = source.indexOf('async function openDocumentHistoryTask(')
-  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+  const openStart = source.indexOf('const openTaskEntry = async (entry: DocumentHistoryEntry): Promise<void> => {')
+  const openEnd = source.indexOf('\n  }\n', openStart + 1) + 4
+  const openSource = source.slice(openStart, openEnd)
   const closeStart = source.indexOf('async function closeDocumentTab(')
   const closeSource = source.slice(closeStart, source.indexOf('/**', closeStart + 1))
   const imageStart = source.indexOf('function renderImageBlock(')
@@ -4051,7 +4049,7 @@ test('历史任务必须以真实任务标识只读打开，关闭时不得取�
   assert.ok(openStart > -1)
   assert.match(openSource, /window\.api\.openDocumentHistory\(entry\.jobId\)/u)
   assert.doesNotMatch(openSource, /runDocument\(/u)
-  assert.match(openSource, /snapshot:\s*result\.snapshot/u)
+  assert.match(openSource, /const snapshot = result\.snapshot/u)
   assert.match(openSource, /activeJobId:\s*null/u)
   assert.match(openSource, /expectedJobId:\s*null/u)
   assert.match(openSource, /sourceKind:\s*'history'/u)
@@ -4108,7 +4106,7 @@ test('关闭页面后恢复首个历史 Tab 时，必须串行恢复并使用正
   assert.match(restoreSource, /activeDocumentTabId = restoredActiveTabId \?\? restoredTabs\[0\]!\.id/u,
     '恢复时必须优先激活持久化的活动 Tab')
   assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!\)/u)
-  assert.match(initSource, /await restoreDocumentViewerState\(\)\s*await loadDocumentTaskHistory\(\)/u,
+  assert.match(initSource, /await restoreDocumentViewerState\(\)\s*await documentHistory\.loadTaskHistory\(\)/u,
     '历史列表必须等待恢复流程完成后再加载，避免恢复前打开历史第一个 Tab')
   assert.match(renderSource, /renderDocumentModel\([\s\S]*?snapshot\.source[\s\S]*?tab\s*\)/u,
     '原文栏必须使用快照自带的源模型和所属 Tab 渲染')
@@ -4128,8 +4126,8 @@ test('恢复快照不得复用旧任务身份，且必须限制旧任务操作�
   const taskStart = source.indexOf('function renderTaskState(')
   const taskEnd = source.indexOf('/**', taskStart + 1)
   const taskSource = source.slice(taskStart, taskEnd)
-  const exportStart = source.indexOf('async function exportTranslatedPdf(')
-  const exportEnd = source.indexOf('/**', exportStart + 1)
+  const exportStart = source.indexOf('const exportTranslatedPdf = async (): Promise<void> => {')
+  const exportEnd = source.indexOf('\n  }\n', exportStart + 1) + 4
   const exportSource = source.slice(exportStart, exportEnd)
   const retryStart = source.indexOf('async function retryFailedDocumentTranslation(')
   const retryEnd = source.indexOf('/**', retryStart + 1)
@@ -4163,12 +4161,15 @@ test('历史 Tab 译文可用时必须允许导出，并走已批准文档导出
   const main = read('src/main/index.ts')
   const taskStart = source.indexOf('function renderTaskState(')
   const taskSource = source.slice(taskStart, source.indexOf('/**', taskStart + 1))
-  const exportStart = source.indexOf('async function exportTranslatedPdf(')
-  const exportSource = source.slice(exportStart, source.indexOf('/**', exportStart + 1))
-  const confirmStart = source.indexOf('async function confirmDocumentExport(')
-  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
-  const openStart = source.indexOf('async function openDocumentExportDialog(')
-  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+  const exportStart = source.indexOf('const exportTranslatedPdf = async (): Promise<void> => {')
+  const exportEnd = source.indexOf('\n  }\n', exportStart + 1) + 4
+  const exportSource = source.slice(exportStart, exportEnd)
+  const confirmStart = source.indexOf('const confirmExport = async (): Promise<void> => {')
+  const confirmEnd = source.indexOf('\n  }\n', confirmStart + 1) + 4
+  const confirmSource = source.slice(confirmStart, confirmEnd)
+  const openStart = source.indexOf('const openDialog = async (snapshot: DocumentWorkspaceSnapshot)')
+  const openEnd = source.indexOf('\n  }\n', openStart + 1) + 4
+  const openSource = source.slice(openStart, openEnd)
 
   assert.ok(taskStart > -1)
   assert.ok(exportStart > -1)
@@ -4178,14 +4179,14 @@ test('历史 Tab 译文可用时必须允许导出，并走已批准文档导出
     '历史或恢复 Tab 有可用译文时不得无条件禁用导出按钮')
   assert.match(openSource, /canCancel:\s*!readOnly/u,
     '历史导出必须标记为不可取消，避免误调用旧任务取消接口')
-  assert.match(exportSource, /openDocumentExportDialog\(snapshot\)/u)
+  assert.match(exportSource, /openDialog\(snapshot\)/u)
   assert.doesNotMatch(exportSource, /if \(isRestoredDocumentTab\(tab\) \|\| isReadOnlyDocumentTab\(tab\)\) return/u,
     '历史 Tab 的导出入口不能被只读保护直接拦截')
-  assert.match(confirmSource, /window\.api\.exportApprovedDocumentPdf\(/u)
+  assert.match(confirmSource, /api\.exportApprovedDocumentPdf\(/u)
   assert.match(types, /exportApprovedDocumentPdf\(/u)
   assert.match(preload, /document:export-approved-pdf/u)
   assert.match(main, /document:export-approved-pdf/u)
-  assert.match(source, /if \(!target\.canCancel\) return/u)
+  assert.match(source, /if \(!exportTarget\.canCancel\) return/u)
 })
 
 test('历史导出成功后必须显示打开文件位置入口', () => {
@@ -4193,15 +4194,16 @@ test('历史导出成功后必须显示打开文件位置入口', () => {
   const main = read('src/main/index.ts')
   const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
-  const confirmStart = source.indexOf('async function confirmDocumentExport(')
-  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const confirmStart = source.indexOf('const confirmExport = async (): Promise<void> => {')
+  const confirmEnd = source.indexOf('\n  }\n', confirmStart + 1) + 4
+  const confirmSource = source.slice(confirmStart, confirmEnd)
   const openFolderStart = main.indexOf("ipcMain.handle('document:open-export-folder'")
   const openFolderSource = main.slice(
     openFolderStart,
     main.indexOf("ipcMain.handle('document:list-history'", openFolderStart)
   )
 
-  assert.match(confirmSource, /if \(result\.status === 'saved'\) \{[\s\S]*?documentExportSaved = true[\s\S]*?exportOpenFolderButton\.hidden = false/u,
+  assert.match(confirmSource, /if \(result\.status === 'saved'\) \{[\s\S]*?saved = true[\s\S]*?exportOpenFolderButton\.hidden = false/u,
     '普通与历史导出成功后都必须显示打开文件位置按钮')
   assert.doesNotMatch(confirmSource, /exportOpenFolderButton\.hidden = readOnly/u,
     '历史只读 Tab 导出成功后不能隐藏打开文件位置按钮')
@@ -4224,7 +4226,7 @@ test('历史导出成功后必须显示打开文件位置入口', () => {
     '仅在定位异常时才允许回退到打开父目录')
   assert.doesNotMatch(main, /openDocumentExportFolder\(filePath, \{[\s\S]*?\bstat,/u,
     '打开导出目录不得用 stat 预检文件，否则会重现历史版本之后出现的定位失败')
-  assert.match(source, /const opened = await window\.api\.openDocumentExportFolder\(\s*target\.jobId,\s*target\.generation,\s*target\.filePath\s*\)/u,
+  assert.match(source, /const opened = await dependencies\.getApi\(\)\.openDocumentExportFolder\(\s*exportTarget\.jobId,\s*exportTarget\.generation,\s*exportTarget\.filePath\s*\)/u,
     '打开目录按钮必须等待主进程返回实际打开结果')
   assert.match(source, /document\.export\.openFolderFailed/u,
     '打开目录失败后必须在导出对话框内显示反馈')
@@ -4236,10 +4238,12 @@ test('完整导出与进度展示必须使用完成报告而不是滞后的任�
   const source = read('src/renderer/src/document.ts')
   const taskStart = source.indexOf('function renderTaskState(')
   const taskSource = source.slice(taskStart, source.indexOf('/**', taskStart + 1))
-  const confirmStart = source.indexOf('async function confirmDocumentExport(')
-  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
-  const openStart = source.indexOf('async function openDocumentExportDialog(')
-  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+  const confirmStart = source.indexOf('const confirmExport = async (): Promise<void> => {')
+  const confirmEnd = source.indexOf('\n  }\n', confirmStart + 1) + 4
+  const confirmSource = source.slice(confirmStart, confirmEnd)
+  const openStart = source.indexOf('const openDialog = async (snapshot: DocumentWorkspaceSnapshot)')
+  const openEnd = source.indexOf('\n  }\n', openStart + 1) + 4
+  const openSource = source.slice(openStart, openEnd)
 
   assert.match(source, /import \{\s*isDocumentSnapshotCompleteForExport,\s*resolveDocumentRetryActionState\s*\} from '\.\.\/\.\.\/shared\/documentCompletion'/u)
   assert.match(taskSource, /const progressCompleted = report\s*\? report\.translated \+ report\.unchanged/u)
@@ -4254,16 +4258,17 @@ test('完整导出与进度展示必须使用完成报告而不是滞后的任�
 test('PDF 导出失败必须在界面显示稳定错误码且主进程记录脱敏结果', () => {
   const source = read('src/renderer/src/document.ts')
   const main = read('src/main/index.ts')
-  const confirmStart = source.indexOf('async function confirmDocumentExport(')
-  const confirmSource = source.slice(confirmStart, source.indexOf('/**', confirmStart + 1))
+  const confirmStart = source.indexOf('const confirmExport = async (): Promise<void> => {')
+  const confirmEnd = source.indexOf('\n  }\n', confirmStart + 1) + 4
+  const confirmSource = source.slice(confirmStart, confirmEnd)
   const exportStart = main.indexOf("ipcMain.handle('document:export-pdf'")
   const approvedStart = main.indexOf("ipcMain.handle('document:export-approved-pdf'")
   const cancelExportStart = main.indexOf("ipcMain.handle('document:cancel-export'")
   const exportSource = main.slice(exportStart, cancelExportStart)
   const approvedSource = main.slice(approvedStart, cancelExportStart)
 
-  assert.match(confirmSource, /t\('document\.run\.failedCode',\s*\{\s*code:\s*result\.code \?\? 'export-failed'\s*\}\)/u)
-  assert.match(confirmSource, /t\('document\.run\.failedCode',\s*\{\s*code:\s*'export-failed'\s*\}\)/u)
+  assert.match(confirmSource, /dependencies\.t\('document\.run\.failedCode',\s*\{\s*code:\s*result\.code \?\? 'export-failed'\s*\}\)/u)
+  assert.match(confirmSource, /dependencies\.t\('document\.run\.failedCode',\s*\{\s*code:\s*'export-failed'\s*\}\)/u)
   assert.match(exportSource, /console\.warn\([\s\S]*?document-export[\s\S]*?jobId[\s\S]*?generation[\s\S]*?mode[\s\S]*?status[\s\S]*?code/u)
   assert.match(approvedSource, /console\.warn\([\s\S]*?document-export-approved[\s\S]*?status[\s\S]*?code/u)
   assert.doesNotMatch(exportSource, /console\.(?:warn|error)\([\s\S]*?filePath/u)
@@ -4271,8 +4276,9 @@ test('PDF 导出失败必须在界面显示稳定错误码且主进程记录脱�
 
 test('打开历史任务必须重新授权源文件并校验路径、格式、大小和 SHA-256', () => {
   const source = read('src/renderer/src/document.ts')
-  const openStart = source.indexOf('async function openDocumentHistoryTask(')
-  const openSource = source.slice(openStart, source.indexOf('/**', openStart + 1))
+  const openStart = source.indexOf('const openTaskEntry = async (entry: DocumentHistoryEntry): Promise<void> => {')
+  const openEnd = source.indexOf('\n  }\n', openStart + 1) + 4
+  const openSource = source.slice(openStart, openEnd)
 
   assert.ok(openStart > -1)
   assert.match(openSource, /snapshot\.source\?\.source/u)

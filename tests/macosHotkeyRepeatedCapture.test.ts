@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   shouldActivatePopupForCaptureFailure,
   shouldRestoreForegroundBeforeCapture
 } from '../src/shared/popupForeground.ts'
 
-const indexSource = readFileSync('src/main/index.ts', 'utf8')
+const indexSource = readMainSource()
 const popupSource = readFileSync('src/main/popup.ts', 'utf8')
 
 /**

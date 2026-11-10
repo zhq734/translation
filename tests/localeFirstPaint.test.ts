@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { runInNewContext } from 'node:vm'
 import { startLocaleRuntime, type LocaleRuntime } from '../src/renderer/src/locale.ts'
 import type { Api, Settings } from '../src/shared/types.ts'
@@ -113,7 +114,7 @@ test('preload 应通过同步 IPC 暴露主进程已解析语言', () => {
 })
 
 test('主进程应在创建任何窗口前注册同步语言 IPC，并在运行时未就绪时回退英文', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /ipcMain\.on\('i18n:get-current-locale'/u)
   assert.match(source, /event\.returnValue\s*=\s*mainI18n\?\.locale\s*\?\?\s*'en-US'/u)
   const runtimeIndex = source.indexOf('mainI18n = createMainI18nRuntime(')

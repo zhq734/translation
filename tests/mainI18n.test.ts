@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   collectLocaleCandidates,
   createMainI18nRuntime,
@@ -72,7 +73,7 @@ test('主进程运行时刷新设置后应切换翻译器并只通知一次', ()
 })
 
 test('主进程设置变化时应通过统一回调刷新菜单和窗口标题', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /createMainI18nRuntime/u)
   assert.match(source, /mainI18n\?\.refresh\(\)/u)
   assert.match(source, /refreshLocalizedApplicationChrome/u)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { tForTest } from './helpers/i18n.ts'
 
 /**
@@ -9,7 +10,7 @@ import { tForTest } from './helpers/i18n.ts'
  * @author zhenghq
  */
 test('主进程应注册 capture-diagnostics IPC', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /ipcMain\.handle\('capture-diagnostics:get-summary'/u)
   assert.match(source, /ipcMain\.handle\('capture-diagnostics:export'/u)
 })
@@ -33,10 +34,10 @@ test('preload 应暴露 getCaptureDiagnosticsSummary 与 exportCaptureDiagnostic
  * @author zhenghq
  */
 test('诊断导出应使用保存对话框并写入 JSON', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   assert.match(source, /dialog\.showSaveDialog/u)
   assert.match(source, /capture-diagnostics-.*\.json/u)
-  assert.match(source, /await writeFile\(filePath, JSON\.stringify/u)
+  assert.match(source, /await dependencies\.writeFile\(filePath, JSON\.stringify/u)
 })
 
 /**

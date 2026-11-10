@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 
 /**
  * 从源码中截取指定函数的函数体。
@@ -17,7 +18,7 @@ function extractFunction(source: string, signature: string): string {
   return source.slice(start, end)
 }
 
-const mainSource = readFileSync('src/main/index.ts', 'utf8')
+const mainSource = readMainSource()
 const macForegroundSource = readFileSync('src/main/macForeground.ts', 'utf8')
 
 test('截图前必须记录应用是否已在前台，供收尾决定是否归还', () => {

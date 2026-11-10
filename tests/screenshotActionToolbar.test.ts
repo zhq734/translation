@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   findOpeningTagById,
   readAttributeI18nKey,
   tForTest
 } from './helpers/i18n.ts'
 
-const main = readFileSync('src/main/index.ts', 'utf8')
+const main = readMainSource()
 const preload = readFileSync('src/preload/index.ts', 'utf8')
 const types = readFileSync('src/shared/types.ts', 'utf8')
 const selectionHtml = readFileSync('src/renderer/selection.html', 'utf8')

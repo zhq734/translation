@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from '../src/main/windowWorkspaceVisibility.ts'
 
 test('浮层窗口仍需跨全屏可见，普通窗口不得依赖跨工作区归一化', () => {
@@ -12,7 +13,7 @@ test('浮层窗口仍需跨全屏可见，普通窗口不得依赖跨工作区�
   assert.doesNotMatch(source, /type:\s*'panel'|setVisibleOnAllWorkspaces\(/u)
 
   // 设置窗口已改回普通窗口，不再创建 panel，也不应保留无效的跨工作区归一化调用。
-  const mainSource = readFileSync('src/main/index.ts', 'utf8')
+  const mainSource = readMainSource()
   const settingsWindowBlock = mainSource.slice(
     mainSource.indexOf('async function createSettingsWindow('),
     mainSource.indexOf('/**\n * 打开设置窗口。')

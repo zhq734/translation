@@ -34,9 +34,6 @@ import {
 } from '../../shared/documentOcrLayout'
 import type {
   DocumentAssetResult,
-  DocumentExportProgress,
-  DocumentExportRequest,
-  DocumentExportResult,
   DocumentFileSelectionResult,
   DocumentPlatformCapability,
   DocumentRunResult,
@@ -45,7 +42,7 @@ import type {
   DocumentWorkspaceTranslationUpdate
 } from '../../shared/types'
 import type { DocumentPartialExportSummary } from '../../shared/documentPartialExport'
-import type { DocumentHistoryEntry, Settings } from '../../shared/types'
+import type { Settings } from '../../shared/types'
 import { LANGUAGES, langLabel } from '../../shared/langs'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
 import { canApplyDocumentTaskEvent } from '../../shared/documentTask'
@@ -56,23 +53,15 @@ import {
   filterVisibleDocumentWarnings
 } from '../../shared/documentWarnings'
 import {
-  isDocumentSnapshotCompleteForExport,
   resolveDocumentRetryActionState
 } from '../../shared/documentCompletion'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url'
 import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
-import {
-  DOCUMENT_FILE_HISTORY_STORAGE_KEY,
-  filterDocumentFileHistory,
-  filterDocumentTaskHistory,
-  mergeDocumentHistoryEntries,
-  normalizeDocumentFileHistory,
-  recordDocumentFileHistory,
-  type DocumentFileHistoryEntry,
-  type DocumentHistoryListItem
-} from './documentHistory'
+import { createDocumentHistoryController } from './documentHistoryController'
+import { createDocumentNavigationController } from './documentNavigationController'
+import { createDocumentExportController } from './documentExportController'
 import {
   occupiesDocumentTranslationFlow,
   resolveTranslationFlowBlockGap,
@@ -100,19 +89,14 @@ import {
   DOCUMENT_VIEWER_STATE_STORAGE_KEY,
   DOCUMENT_VIEWER_STATE_VERSION,
   parseDocumentViewerState,
-  parseDocumentPageNumber,
   resolveDocumentBlockHighlight,
-  resolveDocumentFitZoom,
-  resolveDocumentPageJump,
-  resolveDocumentTocTarget,
   resolveFitDocumentZoom,
   serializeDocumentViewerState,
   validateRestoredDocumentViewerFile,
   type DocumentViewerFileState,
   type DocumentViewerMode,
   type DocumentViewerState,
-  type DocumentViewerTabState,
-  type DocumentNavigationTarget
+  type DocumentViewerTabState
 } from './documentViewer'
 
 startThemeRuntime(window.api)
@@ -126,53 +110,19 @@ import {
   documentFileInput,
   documentFileTabsNextButton,
   documentFileTabsPreviousButton,
-  documentHistoryClearButton,
-  documentHistoryConfirmCancel,
-  documentHistoryConfirmDelete,
-  documentHistoryConfirmDescription,
-  documentHistoryConfirmDialog,
-  documentHistoryConfirmTitle,
-  documentHistoryEmpty,
-  documentHistoryList,
-  documentHistorySearch,
-  documentHistoryStatus,
   documentPageInput,
-  documentPageNextButton,
-  documentPagePreviousButton,
   documentSyncScrollButton,
-  documentTocButton,
-  documentTocList,
   documentViewModeControl,
   documentWorkbenchReplaceButton,
   documentWorkspaceTabs,
-  documentZoomFitButton,
-  documentZoomFitHeightButton,
-  documentZoomInButton,
-  documentZoomOutButton,
-  documentZoomResetButton,
   documentZoomValue,
   dropZone,
   exportButton,
-  exportCancelButton,
-  exportConfirmButton,
-  exportDialog,
-  exportIncomplete,
-  exportIncompleteNotice,
-  exportOpenFolderButton,
-  exportProgress,
-  exportProgressPage,
-  exportProgressPercent,
-  exportProgressStage,
-  exportProgressTrack,
-  exportProgressbar,
-  exportRetryButton,
-  exportWarningCount,
   fileDetail,
   fileName,
   fileReplaceButton,
   fileSummary,
   historyButton,
-  historyPopover,
   partialExportCancelButton,
   partialExportConfirmButton,
   partialExportDialog,
@@ -217,40 +167,14 @@ import {
   type DocumentScrollPositions,
   type DocumentSelectionState,
   type DocumentTabStatus,
-  type DocumentTocEntry,
   type DocumentViewMode,
   type DocumentWorkspaceTab
 } from './documentUiModel'
 
 
 let selectionState: DocumentSelectionState = { ...EMPTY_SELECTION }
-/** 当前本地文件翻译历史；按最近选择时间倒序排列。 */
-let documentFileHistory: DocumentFileHistoryEntry[] = []
-/** 当前搜索条件下实际展示的历史记录，用于把列表项索引映射回完整记录。 */
-let visibleDocumentFileHistory: DocumentFileHistoryEntry[] = []
-/** 主进程持久化的文档任务历史摘要。 */
-let documentTaskHistory: DocumentHistoryEntry[] = []
-/** 当前搜索条件下实际展示的任务历史，用于把列表项索引映射回完整记录。 */
-let visibleDocumentTaskHistory: DocumentHistoryEntry[] = []
-/** 当前搜索条件下合并展示的任务与文件历史，用于统一键盘和指针导航。 */
-let visibleDocumentHistory: DocumentHistoryListItem[] = []
 let platformCapability: DocumentPlatformCapability | null = null
 let dragDepth = 0
-/** 导出对话框当前对应的任务身份；为空表示尚未打开或已结束。 */
-let documentExportTarget: {
-  jobId: string
-  generation: number
-  /** 历史导出没有旧任务身份，不能在导出过程中调用任务取消接口。 */
-  canCancel: boolean
-  /** 主进程本次成功导出后返回的最终文件路径，用于精确定位目录。 */
-  filePath?: string
-} | null = null
-/** 当前是否正在等待 PDF 导出结束。 */
-let documentExportInFlight = false
-/** 当前导出是否已成功保存，用于显示打开目录入口。 */
-let documentExportSaved = false
-/** 当前导出进度百分比，避免迟到事件造成回退。 */
-let documentExportPercent = 0
 /** 各任务首次观察到运行进度的本地时间，用于在不改变 IPC 快照协议的前提下估算剩余时间。 */
 const documentTaskStartedAt = new Map<string, number>()
 /** 当前 Renderer 任务代际；每次开始翻译递增。 */
@@ -355,16 +279,6 @@ let activeDocumentTabId: string | null = null
 let lastRevealedActiveDocumentTabId: string | null = null
 /** 下一个 Tab 序号，用于生成稳定且不重复的标识。 */
 let nextDocumentTabSequence = 1
-/** 是否正在执行历史文件切换，阻止快速重复点击创建并发切换。 */
-let documentHistorySwitchInFlight = false
-/** 当前等待用户确认的历史操作；null 表示没有待确认操作。 */
-let pendingDocumentHistoryAction:
-  | { kind: 'delete'; entry: DocumentHistoryListItem }
-  | { kind: 'clear' }
-  | null = null
-/** 历史确认对话框关闭后应恢复焦点的触发按钮。 */
-let documentHistoryFocusTarget: HTMLElement | null = null
-
 /**
  * 使用当前界面语言翻译词条。
  * @param key 语义化词条 key。
@@ -375,6 +289,69 @@ let documentHistoryFocusTarget: HTMLElement | null = null
 function t(key: string, params?: Record<string, string | number>): string {
   return localeRuntime.translator.t(key, params)
 }
+
+const documentHistory = createDocumentHistoryController({
+  t,
+  getLocale: () => localeRuntime.locale,
+  formatFileSize,
+  validationMessage,
+  isPlatformSupported: () => Boolean(platformCapability?.supported),
+  getDocumentTabs: () => documentTabs,
+  findDocumentTabByPath,
+  addDocumentTab: (tab) => documentTabs.push(tab),
+  allocateDocumentTabId: () => `document-tab-${nextDocumentTabSequence++}`,
+  activateDocumentTab,
+  createDocumentTab: (result, options) => createDocumentTab(result, options),
+  startDocumentTabTranslation: (tab) => startDocumentTabTranslation(tab),
+  getViewerDefaults: () => ({
+    zoom: documentZoom,
+    viewMode: documentViewMode,
+    scrollSyncEnabled: documentScrollSyncEnabled
+  }),
+  resolveDocumentTabStatus
+})
+
+const documentNavigation = createDocumentNavigationController({
+  t,
+  getSnapshot: () => latestSnapshot,
+  getActiveDocumentTab,
+  getCurrentPageNumber: () => currentDocumentPageNumber,
+  setCurrentPageNumber: (pageNumber) => {
+    currentDocumentPageNumber = pageNumber
+    const tab = getActiveDocumentTab()
+    if (tab) tab.pageNumber = pageNumber
+  },
+  setActiveBlockId: (blockId) => {
+    activeDocumentBlockId = blockId
+  },
+  getViewMode: () => documentViewMode,
+  getZoom: () => documentZoom,
+  setZoom: setDocumentZoom,
+  setFitZoom: setDocumentFitZoom,
+  stepZoom: stepDocumentZoom,
+  scheduleStatePersist: scheduleDocumentViewerStatePersist,
+  getSourceContent: () => sourceContent,
+  getTranslationContent: () => translationContent,
+  getPageContentWidth: documentPageContentWidth,
+  getPageAvailableHeight: documentPageAvailableHeight
+})
+
+const documentExport = createDocumentExportController({
+  t,
+  getActiveDocumentTab,
+  getActiveDocumentTabId: () => activeDocumentTabId,
+  isDocumentTabOpen: (tab) => documentTabs.includes(tab),
+  activateDocumentTab,
+  flushSnapshotRenderForTab,
+  isReadOnlyDocumentTab,
+  approvedDocumentSourceRequest,
+  revealFirstIncompleteTarget,
+  confirmPartialExport,
+  localizeDocumentWarning,
+  hasUsableExportResult,
+  retryFailedDocumentTranslation,
+  getApi: () => window.api
+})
 
 /**
  * 读取上次保存的文档预览方式。
@@ -574,7 +551,7 @@ async function restoreDocumentViewerState(): Promise<void> {
   renderActiveDocumentTab(getActiveDocumentTab()!)
   // 模型 DOM 挂载后才能恢复持久化高亮，不能在渲染前操作旧节点。
   const activeBlockId = getActiveDocumentTab()?.activeBlockId
-  if (activeBlockId) requestAnimationFrame(() => highlightDocumentBlock(activeBlockId))
+  if (activeBlockId) requestAnimationFrame(() => documentNavigation.highlightBlock(activeBlockId))
 }
 
 /**
@@ -719,449 +696,6 @@ function validationMessage(code: string): string {
   return t(keys[code] ?? 'document.error.invalidFile', {
     maxSize: formatFileSize(DOCUMENT_MAX_FILE_BYTES)
   })
-}
-
-/**
- * 从本地存储读取并规范化文件翻译历史。
- * @returns 可安全渲染的历史记录；存储不可用或内容损坏时返回空列表。
- * @author zhenghq
- */
-function readDocumentFileHistory(): DocumentFileHistoryEntry[] {
-  try {
-    const raw = window.localStorage.getItem(DOCUMENT_FILE_HISTORY_STORAGE_KEY)
-    return raw ? normalizeDocumentFileHistory(JSON.parse(raw)) : []
-  } catch {
-    return []
-  }
-}
-
-/**
- * 将文件翻译历史持久化到本地存储。
- * @param entries 待保存的历史记录。
- * @returns 无返回值。
- * @author zhenghq
- */
-function writeDocumentFileHistory(entries: readonly DocumentFileHistoryEntry[]): void {
-  try {
-    window.localStorage.setItem(DOCUMENT_FILE_HISTORY_STORAGE_KEY, JSON.stringify(entries))
-  } catch {
-    // 本地存储受限时仍保留当前窗口内可用的历史记录。
-  }
-}
-
-/**
- * 记录一次成功文件选择，并同步刷新下拉列表。
- * @param selection 已通过校验的文件元数据。
- * @returns 无返回值。
- * @author zhenghq
- */
-function rememberSelectedDocument(selection: Pick<DocumentFileHistoryEntry, 'path' | 'name' | 'size' | 'format'>): void {
-  documentFileHistory = recordDocumentFileHistory(documentFileHistory, selection, Date.now())
-  writeDocumentFileHistory(documentFileHistory)
-  renderDocumentHistory()
-}
-
-/**
- * 从主进程读取持久化的文档任务历史并刷新下拉列表。
- * @returns 读取完成后的 Promise；失败时保留当前列表并显示脱敏提示。
- * @author zhenghq
- */
-async function loadDocumentTaskHistory(): Promise<void> {
-  try {
-    documentTaskHistory = await window.api.listDocumentHistory()
-    renderDocumentHistory()
-  } catch {
-    documentHistoryStatus.textContent = t('document.historyLoadFailed')
-    documentHistoryStatus.hidden = false
-  }
-}
-
-/**
- * 将任务状态转换为当前语言下的简短标签。
- * @param status 历史任务的终态。
- * @returns 可展示的状态文本。
- * @author zhenghq
- */
-function historyStatusLabel(status: DocumentHistoryEntry['status']): string {
-  const keys: Partial<Record<DocumentHistoryEntry['status'], string>> = {
-    completed: 'document.progress.completed',
-    partial: 'document.partial',
-    failed: 'document.progress.failed',
-    cancelled: 'document.progress.cancelled'
-  }
-  return t(keys[status] ?? 'document.progress.preparing')
-}
-
-/**
- * 格式化历史条目的最近更新时间。
- * @param timestamp 毫秒时间戳。
- * @returns 当前界面语言下的日期和时间。
- * @author zhenghq
- */
-function formatDocumentHistoryTime(timestamp: number): string {
-  try {
-    return new Intl.DateTimeFormat(localeRuntime.locale, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(new Date(timestamp))
-  } catch {
-    return new Date(timestamp).toLocaleString()
-  }
-}
-
-/**
- * 创建历史列表中的删除图标按钮。
- * @param label 按钮的可访问文本。
- * @param index 条目在当前可见列表中的索引。
- * @returns 带 X 图标和事件数据的删除按钮。
- * @author zhenghq
- */
-function createDocumentHistoryDeleteButton(label: string, index: number): HTMLButtonElement {
-  const button = document.createElement('button')
-  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  const firstLine = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-  const secondLine = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-  button.type = 'button'
-  button.className = 'document-history-delete'
-  button.dataset.historyAction = 'delete'
-  button.dataset.historyIndex = String(index)
-  button.setAttribute('aria-label', label)
-  button.setAttribute('title', label)
-  icon.setAttribute('viewBox', '0 0 16 16')
-  icon.setAttribute('aria-hidden', 'true')
-  firstLine.setAttribute('d', 'm4 4 8 8')
-  secondLine.setAttribute('d', 'm12 4-8 8')
-  icon.append(firstLine, secondLine)
-  button.append(icon)
-  return button
-}
-
-/**
- * 根据当前搜索词渲染任务与文件历史下拉列表。
- * @returns 无返回值。
- * @author zhenghq
- */
-function renderDocumentHistory(): void {
-  const query = documentHistorySearch.value
-  visibleDocumentTaskHistory = filterDocumentTaskHistory(documentTaskHistory, query)
-  visibleDocumentFileHistory = filterDocumentFileHistory(documentFileHistory, query)
-  visibleDocumentHistory = mergeDocumentHistoryEntries(
-    visibleDocumentTaskHistory,
-    visibleDocumentFileHistory
-  )
-  documentHistoryList.replaceChildren()
-  documentHistoryEmpty.hidden = visibleDocumentHistory.length > 0
-  documentHistoryEmpty.textContent = documentTaskHistory.length === 0 && documentFileHistory.length === 0
-    ? t('document.historyEmpty')
-    : t('document.historyNoResults')
-  documentHistoryClearButton.disabled =
-    documentTaskHistory.length === 0 && documentFileHistory.length === 0
-
-  visibleDocumentHistory.forEach((entry, index) => {
-    const item = document.createElement('li')
-    const openButton = document.createElement('button')
-    const copy = document.createElement('span')
-    const name = document.createElement('strong')
-    const meta = document.createElement('span')
-    item.className = 'document-history-row'
-    const isCurrent = entry.kind === 'task'
-      ? documentTabs.some((tab) => tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId)
-      : findDocumentTabByPath(entry.path) !== null
-    item.dataset.selected = String(isCurrent)
-    openButton.type = 'button'
-    openButton.className = 'document-history-item'
-    openButton.dataset.historyIndex = String(index)
-    openButton.dataset.historyAction = 'open'
-    openButton.addEventListener('click', () => void openDocumentHistoryEntry(entry))
-    openButton.setAttribute('role', 'option')
-    openButton.setAttribute('aria-selected', String(isCurrent))
-    openButton.title = entry.kind === 'task' ? entry.task.fileName : entry.path
-    copy.className = 'document-history-item-copy'
-    name.textContent = entry.kind === 'task' ? entry.task.fileName : entry.file.name
-    if (entry.kind === 'task') {
-      const direction = `${langLabel(entry.task.languagePair.sourceLang, localeRuntime.locale)} → ${langLabel(entry.task.languagePair.targetLang, localeRuntime.locale)}`
-      const exportLabel = entry.task.exportStatus === 'saved'
-        ? t('document.historyExported')
-        : t('document.historyNotExported')
-      meta.textContent = `${entry.task.format.toUpperCase()} · ${direction} · ${historyStatusLabel(entry.task.status)} · ${Math.round(entry.task.percent)}% · ${formatDocumentHistoryTime(entry.task.updatedAt)} · ${exportLabel}`
-    } else {
-      meta.textContent = `${entry.file.format.toUpperCase()} · ${formatFileSize(entry.file.size)} · ${formatDocumentHistoryTime(entry.file.lastUsedAt)}`
-    }
-    copy.append(name, meta)
-    openButton.append(copy)
-    item.append(
-      openButton,
-      createDocumentHistoryDeleteButton(t('document.historyDelete'), index)
-    )
-    documentHistoryList.append(item)
-  })
-}
-
-/**
- * 打开或关闭历史文件下拉，并在打开时聚焦搜索框。
- * @param open 是否打开下拉。
- * @param restoreFocus 关闭时是否把焦点还给历史按钮。
- * @returns 无返回值。
- * @author zhenghq
- */
-function setDocumentHistoryOpen(open: boolean, restoreFocus = false): void {
-  if (historyPopover.hidden === !open) return
-  historyPopover.hidden = !open
-  historyButton.setAttribute('aria-expanded', String(open))
-  if (open) {
-    documentHistoryStatus.hidden = true
-    documentHistorySearch.value = ''
-    renderDocumentHistory()
-    requestAnimationFrame(() => documentHistorySearch.focus())
-  } else if (restoreFocus) {
-    historyButton.focus()
-  }
-}
-
-/**
- * 关闭历史操作确认框并恢复触发按钮焦点。
- * @param restoreFocus 是否把焦点恢复到打开确认框前的元素。
- * @returns 无返回值。
- * @author zhenghq
- */
-function closeDocumentHistoryConfirmation(restoreFocus = true): void {
-  pendingDocumentHistoryAction = null
-  const target = documentHistoryFocusTarget
-  documentHistoryFocusTarget = null
-  if (documentHistoryConfirmDialog.open) documentHistoryConfirmDialog.close()
-  else documentHistoryConfirmDialog.removeAttribute('open')
-  if (restoreFocus && target?.isConnected) target.focus()
-}
-
-/**
- * 使用历史记录快速切换到已选择过的文件。
- * @param entry 待切换的历史记录。
- * @returns 无返回值。
- * @author zhenghq
- */
-async function switchToDocumentHistoryEntry(entry: DocumentFileHistoryEntry): Promise<void> {
-  if (!platformCapability?.supported || documentHistorySwitchInFlight) return
-  const existingTab = findDocumentTabByPath(entry.path)
-  if (existingTab) {
-    await activateDocumentTab(existingTab.id)
-    setDocumentHistoryOpen(false, true)
-    return
-  }
-  documentHistorySwitchInFlight = true
-  historyButton.disabled = true
-  documentHistoryStatus.hidden = true
-  try {
-    // 历史路径只作为候选值，切换前仍由主进程重新读取文件并登记授权。
-    const result = await window.api.approveDocumentFile(entry.path)
-    if (result.status === 'cancelled') return
-    if (result.status === 'rejected') {
-      documentHistoryStatus.textContent = validationMessage(result.code)
-      documentHistoryStatus.hidden = false
-      return
-    }
-    // 历史文件与顶栏文件共用同一 Tab 入口；新文件创建后立即启动自己的任务。
-    const tab = await createDocumentTab(result, { activate: true, start: false })
-    if (tab) await startDocumentTabTranslation(tab)
-    setDocumentHistoryOpen(false, true)
-  } catch {
-    documentHistoryStatus.textContent = t('document.error.unreadable')
-    documentHistoryStatus.hidden = false
-  } finally {
-    documentHistorySwitchInFlight = false
-    historyButton.disabled = !platformCapability?.supported
-  }
-}
-
-/**
- * 以只读方式打开持久化的历史任务快照，不创建、取消或释放主进程活动任务。
- * @param entry 待打开的任务历史摘要。
- * @returns 打开完成后的 Promise。
- * @author zhenghq
- */
-async function openDocumentHistoryTask(entry: DocumentHistoryEntry): Promise<void> {
-  if (documentHistorySwitchInFlight) return
-  const existingTab = documentTabs.find((tab) =>
-    tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId
-  )
-  if (existingTab) {
-    await activateDocumentTab(existingTab.id)
-    setDocumentHistoryOpen(false, true)
-    return
-  }
-  documentHistorySwitchInFlight = true
-  documentHistoryStatus.hidden = true
-  try {
-    const result = await window.api.openDocumentHistory(entry.jobId)
-    if (!result) {
-      documentHistoryStatus.textContent = t('document.historyLoadFailed')
-      documentHistoryStatus.hidden = false
-      return
-    }
-    const snapshot = result.snapshot
-    const source = snapshot.source?.source
-    let sourceAuthorized = false
-    if (source?.path && source.sha256 && Number.isSafeInteger(source.size) && source.size > 0) {
-      try {
-        const authorized = await window.api.approveDocumentFile(source.path)
-        sourceAuthorized = authorized.status === 'selected' &&
-          authorized.path === source.path &&
-          authorized.format === source.format &&
-          authorized.size === source.size &&
-          authorized.sha256 === source.sha256
-      } catch {
-        // 源文件已移动、删除或不可读时仍允许回放已保存译文，但不能读取源资源。
-        sourceAuthorized = false
-      }
-    }
-    const tab: DocumentWorkspaceTab = {
-      id: `document-tab-${nextDocumentTabSequence++}`,
-      sourceKind: 'history',
-      selection: {
-        path: source?.path ?? '',
-        name: entry.fileName,
-        size: source?.size ?? 0,
-        format: entry.format,
-        sha256: source?.sha256 ?? '',
-        error: null
-      },
-      snapshot: result.snapshot,
-      activeJobId: null,
-      expectedJobId: null,
-      generation: snapshot.generation,
-      startInFlight: false,
-      status: resolveDocumentTabStatus(snapshot),
-      scrollPositions: { source: 0, translation: 0 },
-      zoom: documentZoom,
-      viewMode: documentViewMode,
-      pageNumber: 1,
-      scrollSyncEnabled: documentScrollSyncEnabled,
-      sourceLang: snapshot.sourcePreference ?? entry.sourcePreference,
-      targetLang: snapshot.targetPreference ?? entry.targetPreference,
-      ocrDisplayMode: snapshot.runMode === 'ocr' ? 'ocr-text' : 'translation',
-      activeBlockId: null,
-      pendingLanguageRetranslation: false,
-      pendingOcrModeRestart: false,
-      languageRevision: 0,
-      sourceAuthorized
-    }
-    documentTabs.push(tab)
-    await activateDocumentTab(tab.id)
-    setDocumentHistoryOpen(false, true)
-  } catch {
-    documentHistoryStatus.textContent = t('document.historyLoadFailed')
-    documentHistoryStatus.hidden = false
-  } finally {
-    documentHistorySwitchInFlight = false
-  }
-}
-
-/**
- * 从历史列表中打开任务摘要或重新授权本地文件。
- * @param entry 统一历史条目。
- * @returns 打开完成后的 Promise。
- * @author zhenghq
- */
-async function openDocumentHistoryEntry(entry: DocumentHistoryListItem): Promise<void> {
-  if (entry.kind === 'task') {
-    await openDocumentHistoryTask(entry.task)
-    return
-  }
-  await switchToDocumentHistoryEntry(entry.file)
-}
-
-/**
- * 打开历史删除或清空确认对话框。
- * @param action 待确认操作；null 表示关闭对话框。
- * @param focusTarget 对话框关闭后恢复焦点的元素。
- * @returns 无返回值。
- * @author zhenghq
- */
-function setDocumentHistoryConfirmation(
-  action: NonNullable<typeof pendingDocumentHistoryAction> | null,
-  focusTarget?: HTMLElement | null
-): void {
-  if (!action) {
-    if (focusTarget) documentHistoryFocusTarget = focusTarget
-    closeDocumentHistoryConfirmation()
-    return
-  }
-  pendingDocumentHistoryAction = action
-  documentHistoryFocusTarget = focusTarget ?? (document.activeElement instanceof HTMLElement
-    ? document.activeElement
-    : null)
-  const isClear = action.kind === 'clear'
-  const isFile = action.kind === 'delete' && action.entry.kind === 'file'
-  const fileName = action.kind === 'delete'
-    ? action.entry.kind === 'task' ? action.entry.task.fileName : action.entry.file.name
-    : ''
-  documentHistoryConfirmDialog.setAttribute('aria-modal', 'true')
-  documentHistoryConfirmTitle.textContent = t(isClear
-    ? 'document.historyClearTitle'
-    : 'document.historyDeleteTitle')
-  documentHistoryConfirmDescription.textContent = isClear
-    ? t('document.historyClearDescription')
-    : t(isFile ? 'document.historyDeleteFileDescription' : 'document.historyDeleteDescription', { name: fileName })
-  documentHistoryConfirmDelete.textContent = t(isClear
-    ? 'document.historyConfirmClear'
-    : 'document.historyConfirmDelete')
-  documentHistoryConfirmDelete.dataset.action = action.kind
-  documentHistoryConfirmDialog.dataset.action = action.kind
-  if (typeof documentHistoryConfirmDialog.showModal === 'function') {
-    documentHistoryConfirmDialog.showModal()
-  } else {
-    documentHistoryConfirmDialog.setAttribute('open', '')
-  }
-  requestAnimationFrame(() => documentHistoryConfirmCancel.focus())
-}
-
-/**
- * 执行已确认的历史删除或清空操作，并同步本地文件历史与缓存状态。
- * @returns 操作完成后的 Promise。
- * @author zhenghq
- */
-async function confirmDocumentHistoryAction(): Promise<void> {
-  const action = pendingDocumentHistoryAction
-  if (!action) return
-  const focusTarget = documentHistoryFocusTarget
-  documentHistoryConfirmDelete.disabled = true
-  try {
-    const entry = action.kind === 'delete' ? action.entry : null
-    if (entry?.kind === 'file') {
-      documentFileHistory = documentFileHistory.filter((candidate) => candidate.path !== entry.file.path)
-      writeDocumentFileHistory(documentFileHistory)
-      renderDocumentHistory()
-      documentHistoryStatus.textContent = t('document.historyDeleted')
-      documentHistoryStatus.hidden = false
-    } else if (entry?.kind === 'task') {
-      const jobId = entry.task.jobId
-      const removed = await window.api.deleteDocumentHistory(jobId)
-      documentTaskHistory = documentTaskHistory.filter((candidate) => candidate.jobId !== jobId)
-      // 同名本地文件入口可能只是该任务的重新授权记录，删除任务时一并移除避免残留重复项。
-      documentFileHistory = documentFileHistory.filter((candidate) => candidate.name !== entry.task.fileName)
-      writeDocumentFileHistory(documentFileHistory)
-      renderDocumentHistory()
-      documentHistoryStatus.textContent = removed
-        ? t('document.historyDeleted')
-        : t('document.historyLoadFailed')
-      documentHistoryStatus.hidden = false
-    } else {
-      await window.api.clearDocumentCache()
-      documentTaskHistory = []
-      documentFileHistory = []
-      writeDocumentFileHistory(documentFileHistory)
-      renderDocumentHistory()
-      documentHistoryStatus.textContent = t('document.historyCleared')
-      documentHistoryStatus.hidden = false
-    }
-    setDocumentHistoryConfirmation(null, focusTarget ?? undefined)
-  } catch {
-    documentHistoryStatus.textContent = t('document.historyLoadFailed')
-    documentHistoryStatus.hidden = false
-  } finally {
-    documentHistoryConfirmDelete.disabled = false
-  }
 }
 
 /**
@@ -1786,7 +1320,7 @@ function restoreDocumentTabScroll(tab: DocumentWorkspaceTab): void {
  * @author zhenghq
  */
 function resetDocumentTabInteractionState(): void {
-  clearDocumentBlockHighlight()
+  documentNavigation.clearBlockHighlight()
   const activeTab = getActiveDocumentTab()
   if (activeTab) activeTab.activeBlockId = null
   if (userScrollIntentTimer !== null) {
@@ -1940,8 +1474,8 @@ async function activateDocumentTab(tabId: string): Promise<void> {
   restoreDocumentTabViewerState(tab)
   renderDocumentTabs()
   renderActiveDocumentTab(tab)
-  if (tab.activeBlockId) highlightDocumentBlock(tab.activeBlockId)
-  else clearDocumentBlockHighlight()
+  if (tab.activeBlockId) documentNavigation.highlightBlock(tab.activeBlockId)
+  else documentNavigation.clearBlockHighlight()
 }
 
 /**
@@ -2037,7 +1571,7 @@ async function createDocumentTab(
   }
   documentTabs.push(tab)
   if (tab.selection.path) {
-    rememberSelectedDocument({
+    documentHistory.rememberSelectedDocument({
       path: tab.selection.path,
       name: tab.selection.name,
       size: tab.selection.size,
@@ -5234,7 +4768,7 @@ function handleDocumentScroll(side: DocumentScrollSide): void {
   const target = side === 'source' ? translationContent : sourceContent
   const programmatic = consumeProgrammaticScroll(source)
   // 页码必须跟随当前阅读栏更新，即使同步开关关闭也不能停留在旧页。
-  updateCurrentDocumentPage(side)
+  documentNavigation.updateCurrentPage(side)
   if (!shouldSyncDocumentScroll(side, {
     userScrollSide,
     programmatic,
@@ -5479,13 +5013,13 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorksp
   )
   renderOcrDisplayModeControls(snapshot, tab)
   // 模型重绘会替换页面 DOM，旧高亮节点已失效；统一清理后再恢复当前缩放和导航状态。
-  clearDocumentBlockDomHighlight()
+  documentNavigation.clearBlockDomHighlight()
   applyDocumentZoom(documentZoom)
-  renderDocumentToc()
+  documentNavigation.renderToc()
   markDocumentTargetStatuses(snapshot)
   // DOM 重绘不能抹掉 Tab 的持久化区块锚点，必须在挂载新节点后按锚点恢复高亮。
-  if (tab.activeBlockId) highlightDocumentBlock(tab.activeBlockId)
-  scheduleCurrentDocumentPageUpdate()
+  if (tab.activeBlockId) documentNavigation.highlightBlock(tab.activeBlockId)
+  documentNavigation.schedulePageUpdate()
 }
 
 /**
@@ -6372,216 +5906,6 @@ async function retryFailedDocumentTarget(targetId: string): Promise<void> {
 }
 
 /**
- * 将当前译文导出为 PDF，并把稳定结果映射为界面提示。
- * @returns 无返回值。
- * @author zhenghq
- */
-async function exportTranslatedPdf(): Promise<void> {
-  const tab = getActiveDocumentTab()
-  const snapshot = tab?.snapshot
-  if (!tab || !snapshot?.translation) return
-  if (isReadOnlyDocumentTab(tab) && !approvedDocumentSourceRequest(tab)) return
-  // 导出入口可能在最后一帧译文尚未提交时触发，必须先同步刷新快照，避免导出旧的流式内容。
-  flushSnapshotRenderForTab(tab, snapshot)
-  await openDocumentExportDialog(snapshot)
-}
-
-/**
- * 打开导出对话框，展示布局、未完成项与告警，并保留旧的部分导出二次确认。
- * @param snapshot 当前任务快照。
- * @returns 对话框关闭或导出流程结束后的 Promise。
- * @author zhenghq
- */
-async function openDocumentExportDialog(snapshot: DocumentWorkspaceSnapshot): Promise<void> {
-  const tab = getActiveDocumentTab()
-  if (!tab || tab.snapshot?.jobId !== snapshot.jobId || tab.snapshot.generation !== snapshot.generation) {
-    return
-  }
-  const readOnly = isReadOnlyDocumentTab(tab)
-  const retryAction = resolveDocumentRetryActionState(snapshot)
-  const incomplete = readOnly ? 0 : retryAction.reverted
-  const complete = readOnly || isDocumentSnapshotCompleteForExport(snapshot)
-  documentExportTarget = {
-    jobId: snapshot.jobId,
-    generation: snapshot.generation,
-    canCancel: !readOnly
-  }
-  documentExportSaved = false
-  documentExportPercent = 0
-  exportIncomplete.textContent = t('document.export.incompleteCount', {
-    count: incomplete
-  })
-  const warningCount = countVisibleDocumentWarnings(
-    snapshot.source?.warnings ?? [],
-    snapshot.translation?.warnings ?? []
-  )
-  exportWarningCount.textContent = t('document.export.warningCount', {
-    count: warningCount
-  })
-  exportIncompleteNotice.hidden = complete || incomplete === 0
-  exportIncompleteNotice.textContent = t('document.export.partialNotice', {
-    count: incomplete
-  })
-  exportRetryButton.hidden = readOnly || complete || retryAction.retryDisabled
-  exportConfirmButton.disabled = false
-  exportConfirmButton.textContent = complete
-    ? t('document.export.confirm')
-    : t('document.export.confirmPartial')
-  exportCancelButton.disabled = false
-  exportOpenFolderButton.hidden = true
-  exportProgress.hidden = true
-  exportProgressStage.textContent = ''
-  exportProgressPage.textContent = ''
-  exportProgressPercent.textContent = ''
-  exportProgressTrack.setAttribute('aria-valuenow', '0')
-  exportProgressbar.style.width = '0%'
-  if (typeof exportDialog.showModal === 'function') exportDialog.showModal()
-  else exportDialog.setAttribute('open', '')
-}
-
-/**
- * 更新导出对话框中的阶段、百分比和页级进度。
- * @param progress 主进程推送的受控导出进度。
- * @returns 无返回值。
- * @author zhenghq
- */
-function updateDocumentExportProgress(progress: DocumentExportProgress): void {
-  if (!documentExportTarget || progress.jobId !== documentExportTarget.jobId ||
-    progress.generation !== documentExportTarget.generation) return
-  documentExportPercent = Math.max(documentExportPercent, Math.round(progress.percent))
-  exportProgress.hidden = false
-  exportProgressStage.textContent = t(`document.export.phase.${progress.phase}`)
-  exportProgressPage.textContent = progress.completedPages !== undefined && progress.totalPages !== undefined
-    ? t('document.export.progressPages', {
-      completed: progress.completedPages,
-      total: progress.totalPages
-    })
-    : ''
-  exportProgressPercent.textContent = `${documentExportPercent}%`
-  exportProgressTrack.setAttribute('aria-valuenow', String(documentExportPercent))
-  exportProgressbar.style.width = `${documentExportPercent}%`
-  if (progress.warningCount !== undefined) {
-    exportWarningCount.textContent = t('document.export.warningCount', {
-      count: progress.warningCount
-    })
-  }
-}
-
-/**
- * 关闭导出对话框并清空当前导出身份。
- * @returns 无返回值。
- * @author zhenghq
- */
-function closeDocumentExportDialog(): void {
-  if (exportDialog.open) exportDialog.close()
-  else exportDialog.removeAttribute('open')
-  documentExportTarget = null
-  documentExportInFlight = false
-  documentExportSaved = false
-}
-
-/**
- * 提交当前导出对话框选择，完成部分导出确认并等待主进程导出结果。
- * @returns 导出结束后的 Promise。
- * @author zhenghq
- */
-async function confirmDocumentExport(): Promise<void> {
-  const target = documentExportTarget
-  const tab = getActiveDocumentTab()
-  const snapshot = tab?.snapshot
-  if (!target || !tab || !snapshot || snapshot.jobId !== target.jobId ||
-    snapshot.generation !== target.generation || documentExportInFlight) return
-  const readOnly = isReadOnlyDocumentTab(tab)
-  const approvedSource = readOnly ? approvedDocumentSourceRequest(tab) : null
-  if (readOnly && (!approvedSource || !snapshot.translation)) {
-    partialStatus.textContent = t('document.error.unreadable')
-    partialStatus.hidden = false
-    return
-  }
-  const isComplete = readOnly || isDocumentSnapshotCompleteForExport(snapshot)
-  if (!isComplete) {
-    revealFirstIncompleteTarget(snapshot)
-    const confirmed = await confirmPartialExport(snapshot)
-    if (!confirmed) {
-      if (exportDialog.open) exportConfirmButton.focus()
-      return
-    }
-  }
-  if (!documentTabs.includes(tab) || tab.generation !== snapshot.generation ||
-    documentExportTarget !== target) return
-  if (tab.id !== activeDocumentTabId) await activateDocumentTab(tab.id)
-  // 导出前先同步最新终态，确保文档模型与当前界面使用同一份翻译结果。
-  flushSnapshotRenderForTab(tab, snapshot)
-  documentExportInFlight = true
-  exportConfirmButton.disabled = true
-  exportCancelButton.disabled = !target.canCancel
-  exportRetryButton.hidden = true
-  exportOpenFolderButton.hidden = true
-  try {
-    // 使用显式对象分支固定导出语义，避免后续修改把部分结果误标为完整导出。
-    const exportMode: Pick<DocumentExportRequest, 'mode'> = isComplete
-      ? { mode: 'complete' }
-      : { mode: 'partial' }
-    const result: DocumentExportResult = readOnly && approvedSource && snapshot.translation
-      ? await window.api.exportApprovedDocumentPdf({
-        source: approvedSource,
-        fileName: tab.selection.name,
-        translation: snapshot.translation
-      })
-      : await window.api.exportDocumentPdf({
-        jobId: snapshot.jobId,
-        generation: snapshot.generation,
-        ...exportMode,
-        // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
-        textLayer: true
-      })
-    if (!documentTabs.includes(tab) || documentExportTarget !== target) return
-    if (result.status === 'saved') {
-      documentExportSaved = true
-      target.filePath = result.filePath
-      // 历史文档和当前任务导出都记录了成功路径，成功保存后统一提供目录入口。
-      exportOpenFolderButton.hidden = false
-      exportProgressStage.textContent = t('document.export.phase.completed')
-      exportProgressPercent.textContent = '100%'
-      exportProgressTrack.setAttribute('aria-valuenow', '100')
-      exportProgressbar.style.width = '100%'
-      partialStatus.textContent = result.warnings && result.warnings.length > 0
-        ? `${t('document.export.saved')} ${result.warnings.map(localizeDocumentWarning).join(' ')}`
-        : t('document.export.saved')
-    } else if (result.status === 'cancelled') {
-      partialStatus.textContent = t('document.export.cancelled')
-      exportProgressStage.textContent = t('document.export.cancelled')
-    } else {
-      partialStatus.textContent = result.code === 'font-missing'
-        ? t('document.fontMissing')
-        : `${t('document.export.failed')} ${t('document.run.failedCode', {
-            code: result.code ?? 'export-failed'
-          })}`
-      exportProgressStage.textContent = t('document.export.failed')
-    }
-    partialStatus.hidden = false
-  } catch {
-    partialStatus.textContent = `${t('document.export.failed')} ${t('document.run.failedCode', {
-      code: 'export-failed'
-    })}`
-    partialStatus.hidden = false
-    exportProgressStage.textContent = t('document.export.failed')
-  } finally {
-    documentExportInFlight = false
-    if (documentExportTarget === target) {
-      exportConfirmButton.disabled = documentExportSaved
-      exportConfirmButton.textContent = documentExportSaved
-        ? t('document.export.saved')
-        : t('document.export.confirm')
-      exportCancelButton.disabled = false
-      const currentSnapshot = tab.snapshot
-      exportButton.disabled = !currentSnapshot || !hasUsableExportResult(currentSnapshot) ||
-        (isReadOnlyDocumentTab(tab) && !approvedDocumentSourceRequest(tab))
-    }
-  }
-}
-
-/**
  * 判断模型是否包含至少一个带识别原文的图片区块。
  * @param model 文档模型。
  * @returns 是否存在可切换的 OCR 原文。
@@ -6690,309 +6014,6 @@ function stepDocumentZoom(delta: number): void {
 }
 
 /**
- * 在下一帧按当前可见栏刷新页码控件，等待 DOM 重绘完成后再测量页面位置。
- * @returns 无返回值。
- * @author zhenghq
- */
-function scheduleCurrentDocumentPageUpdate(): void {
-  const tabId = activeDocumentTabId
-  requestAnimationFrame(() => {
-    if (tabId === null || tabId !== activeDocumentTabId) return
-    const side: DocumentScrollSide = documentViewMode === 'translation' ? 'translation' : 'source'
-    updateCurrentDocumentPage(side)
-  })
-}
-
-/**
- * 计算当前可见文档页，并同步页码输入框与前后页按钮状态。
- * @param side 最近滚动的栏；省略时优先读取原文栏。
- * @returns 当前页面序号，从 1 开始；没有页面时返回 1。
- * @author zhenghq
- */
-function updateCurrentDocumentPage(side: DocumentScrollSide = 'source'): number {
-  const container = side === 'source' ? sourceContent : translationContent
-  const pages = Array.from(container.querySelectorAll<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]'))
-  const total = latestSnapshot?.source?.pages.length ?? pages.length
-  if (total < 1) {
-    currentDocumentPageNumber = 1
-    const tab = getActiveDocumentTab()
-    if (tab) tab.pageNumber = currentDocumentPageNumber
-    documentPageInput.value = ''
-    documentPageInput.max = '1'
-    documentPagePreviousButton.disabled = true
-    documentPageNextButton.disabled = true
-    return currentDocumentPageNumber
-  }
-  const containerRect = container.getBoundingClientRect()
-  let visiblePageIndex = 0
-  let visibleDistance = Number.POSITIVE_INFINITY
-  pages.forEach((page, index) => {
-    const rect = page.getBoundingClientRect()
-    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) return
-    const distance = Math.abs(rect.top - containerRect.top)
-    if (distance < visibleDistance) {
-      visibleDistance = distance
-      visiblePageIndex = index
-    }
-  })
-  currentDocumentPageNumber = Math.min(total, Math.max(1, visiblePageIndex + 1))
-  const tab = getActiveDocumentTab()
-  if (tab) tab.pageNumber = currentDocumentPageNumber
-  documentPageInput.value = String(currentDocumentPageNumber)
-  documentPageInput.max = String(total)
-  documentPagePreviousButton.disabled = currentDocumentPageNumber <= 1
-  documentPageNextButton.disabled = currentDocumentPageNumber >= total
-  return currentDocumentPageNumber
-}
-
-/**
- * 在双栏中定位到页面或区块，并同步双侧高亮。
- * @param target 页码、目录或块级导航目标。
- * @param behavior 滚动动画方式。
- * @returns 是否找到可定位元素。
- * @author zhenghq
- */
-function scrollToDocumentTarget(
-  target: DocumentNavigationTarget,
-  behavior: ScrollBehavior = 'smooth'
-): boolean {
-  const selectors = [`[data-page-id="${CSS.escape(target.pageId)}"]`, `.document-pdf-page[data-page-number="${target.pageNumber}"]`]
-  let found = false
-  for (const container of [sourceContent, translationContent]) {
-    const page = selectors.map((selector) => container.querySelector<HTMLElement>(selector))
-      .find((candidate): candidate is HTMLElement => Boolean(candidate))
-    if (!page) continue
-    const block = target.blockId
-      ? page.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(target.blockId)}"]`) ??
-        container.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(target.blockId)}"]`)
-      : null
-    const destination = block ?? page
-    destination.scrollIntoView({ block: 'start', behavior })
-    found = true
-  }
-  currentDocumentPageNumber = target.pageNumber
-  const tab = getActiveDocumentTab()
-  if (tab) tab.pageNumber = target.pageNumber
-  documentPageInput.value = String(target.pageNumber)
-  if (target.blockId) highlightDocumentBlock(target.blockId)
-  else clearDocumentBlockHighlight()
-  const total = latestSnapshot?.source?.pages.length ?? latestSnapshot?.translation?.pages.length ?? 1
-  documentPagePreviousButton.disabled = target.pageNumber <= 1
-  documentPageNextButton.disabled = target.pageNumber >= total
-  if (behavior === 'instant') scheduleCurrentDocumentPageUpdate()
-  scheduleDocumentViewerStatePersist()
-  return found
-}
-
-/**
- * 在双栏中高亮指定稳定区块。
- * @param blockId 待高亮区块标识。
- * @returns 无返回值。
- * @author zhenghq
- */
-function highlightDocumentBlock(blockId: string): void {
-  // 高亮新区块只替换 DOM 标记，不能先清除随后还要写入 Tab 的持久化锚点。
-  clearDocumentBlockDomHighlight()
-  activeDocumentBlockId = blockId
-  const tab = getActiveDocumentTab()
-  if (tab) tab.activeBlockId = blockId
-  for (const container of [sourceContent, translationContent]) {
-    const blocks = container.querySelectorAll<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
-    for (const block of blocks) {
-      block.classList.add('document-block-active')
-      // 双引号属性文本便于调试工具直接搜索活动区块标记。
-      block.setAttribute("data-active-block", "true")
-    }
-  }
-  scheduleDocumentViewerStatePersist()
-}
-
-/**
- * 清除双栏中的区块高亮及活动区块标记。
- * @returns 无返回值。
- * @author zhenghq
- */
-function clearDocumentBlockHighlight(): void {
-  const tab = getActiveDocumentTab()
-  if (tab) tab.activeBlockId = null
-  clearDocumentBlockDomHighlight()
-}
-
-/**
- * 仅清除双栏 DOM 中的区块高亮及活动区块标记，保留 Tab 的持久化锚点。
- * @returns 无返回值。
- * @author zhenghq
- */
-function clearDocumentBlockDomHighlight(): void {
-  for (const container of [sourceContent, translationContent]) {
-    for (const block of container.querySelectorAll<HTMLElement>('.document-block-active')) {
-      block.classList.remove('document-block-active')
-      block.removeAttribute('data-active-block')
-    }
-  }
-  activeDocumentBlockId = null
-}
-
-/**
- * 从当前文档模型生成目录项，优先使用显式目录区块，其次使用标题与页面标题。
- * @returns 去重后的目录项。
- * @author zhenghq
- */
-function buildDocumentTocEntries(): DocumentTocEntry[] {
-  const model = latestSnapshot?.source ?? latestSnapshot?.translation
-  if (!model) return []
-  const entries: DocumentTocEntry[] = []
-  const seen = new Set<string>()
-  for (const page of model.pages) {
-    for (const block of page.blocks) {
-      if (block.kind !== 'text') continue
-      const text = block.runs.map((run) => run.text).join('').trim()
-      if (!text) continue
-      const target = block.toc
-        ? resolveDocumentTocTarget(model, text, block.toc.pageNumber)
-        : block.role === 'heading' || block.role === 'subtitle'
-          ? { pageId: page.pageId, pageIndex: page.index, pageNumber: page.index + 1, blockId: block.blockId }
-          : null
-      if (!target || seen.has(text)) continue
-      seen.add(text)
-      entries.push({ title: text, target })
-    }
-  }
-  if (entries.length === 0) {
-    for (const page of model.pages) {
-      const title = page.title?.trim()
-      if (!title || seen.has(title)) continue
-      seen.add(title)
-      entries.push({
-        title,
-        target: { pageId: page.pageId, pageIndex: page.index, pageNumber: page.index + 1, blockId: null }
-      })
-    }
-  }
-  return entries
-}
-
-/**
- * 重新渲染目录列表并同步弹层状态。
- * @returns 无返回值。
- * @author zhenghq
- */
-function renderDocumentToc(): void {
-  const entries = buildDocumentTocEntries()
-  documentTocList.replaceChildren()
-  if (entries.length === 0) {
-    const empty = document.createElement('p')
-    empty.className = 'document-toc-empty'
-    empty.textContent = t('document.toc.empty')
-    documentTocList.append(empty)
-    return
-  }
-  for (const entry of entries) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'document-toc-item'
-    button.setAttribute('role', 'option')
-    button.dataset.tocPage = String(entry.target.pageNumber)
-    button.textContent = entry.title
-    button.addEventListener('click', () => {
-      scrollToDocumentTarget(entry.target)
-      setDocumentTocOpen(false)
-    })
-    documentTocList.append(button)
-  }
-}
-
-/**
- * 打开或关闭章节目录弹层。
- * @param open 是否展开目录。
- * @param focusButton 关闭时是否把焦点返回目录按钮。
- * @returns 无返回值。
- * @author zhenghq
- */
-function setDocumentTocOpen(open: boolean, focusButton = false): void {
-  if (open) renderDocumentToc()
-  documentTocList.hidden = !open
-  documentTocButton.setAttribute('aria-expanded', String(open))
-  if (open) documentTocList.querySelector<HTMLButtonElement>('button')?.focus()
-  else if (focusButton) documentTocButton.focus()
-}
-
-/**
- * 跳转到指定页码；非法或越界输入恢复当前页码。
- * @param value 页码输入文本。
- * @returns 是否成功跳转。
- * @author zhenghq
- */
-function jumpToDocumentPage(value: string): boolean {
-  const model = latestSnapshot?.source ?? latestSnapshot?.translation
-  if (!model) {
-    documentPageInput.value = ''
-    return false
-  }
-  const pageNumber = parseDocumentPageNumber(value, model.pages.length)
-  const target = resolveDocumentPageJump(model, value)
-  if (pageNumber === null || !target) {
-    documentPageInput.value = String(currentDocumentPageNumber)
-    return false
-  }
-  return scrollToDocumentTarget(target, 'instant')
-}
-
-/**
- * 按当前可见页切换上一页或下一页。
- * @param offset 相对当前页的偏移量。
- * @returns 无返回值。
- * @author zhenghq
- */
-function stepDocumentPage(offset: number): void {
-  const model = latestSnapshot?.source ?? latestSnapshot?.translation
-  if (!model) return
-  const nextPage = Math.min(model.pages.length, Math.max(1, currentDocumentPageNumber + offset))
-  jumpToDocumentPage(String(nextPage))
-}
-
-/**
- * 将当前文档缩放到适合可用宽度。
- * @returns 无返回值。
- * @author zhenghq
- */
-function fitDocumentToWidth(): void {
-  const model = latestSnapshot?.source ?? latestSnapshot?.translation
-  const container = documentViewMode === 'source' ? sourceContent : translationContent
-  const renderedPages = Array.from(container.querySelectorAll<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]'))
-  const renderedPage = renderedPages[currentDocumentPageNumber - 1] ?? renderedPages[0]
-  const availableWidth = documentPageContentWidth(container)
-  const currentPage = model?.pages[currentDocumentPageNumber - 1] ?? model?.pages[0]
-  // 图片页的 zoom 会直接作用于原始像素宽度，必须使用模型尺寸作为稳定基准；
-  // 若从缩放后的 DOM 尺寸反推，每次点击都会把上一次结果当成新基准，无法一次铺满。
-  const renderedWidth = renderedPage?.getBoundingClientRect().width ?? 0
-  const baseWidth = model?.source.format === 'image'
-    ? currentPage?.width
-    : renderedWidth > 0 ? renderedWidth / documentZoom : currentPage?.width
-  setDocumentFitZoom(baseWidth ? resolveDocumentFitZoom(baseWidth, availableWidth) : 1)
-}
-
-/**
- * 将当前阅读页缩放到适合可用高度，保持页面原始宽高比例。
- * @returns 无返回值。
- * @author zhenghq
- */
-function fitDocumentToHeight(): void {
-  const model = latestSnapshot?.source ?? latestSnapshot?.translation
-  const container = documentViewMode === 'source' ? sourceContent : translationContent
-  const renderedPages = Array.from(container.querySelectorAll<HTMLElement>('[data-page-id], .document-pdf-page[data-page-number]'))
-  const renderedPage = renderedPages[currentDocumentPageNumber - 1] ?? renderedPages[0]
-  const availableHeight = documentPageAvailableHeight(container)
-  const currentPage = model?.pages[currentDocumentPageNumber - 1] ?? model?.pages[0]
-  // 图片页与适合宽度使用同一个原始尺寸基准；其他格式仍从渲染高度还原，兼容流式内容。
-  const renderedHeight = renderedPage?.getBoundingClientRect().height ?? 0
-  const baseHeight = model?.source.format === 'image'
-    ? currentPage?.height
-    : renderedHeight > 0 ? renderedHeight / documentZoom : currentPage?.height
-  setDocumentFitZoom(baseHeight ? resolveDocumentFitZoom(baseHeight, availableHeight) : 1)
-}
-
-/**
  * 切换原文与译文双面显示或仅译文单面显示；不中断正在执行的翻译任务。
  * @param nextMode 用户选择的预览方式。
  * @returns 无返回值。
@@ -7098,7 +6119,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   await initializePlatformCapability()
   await initializeDocumentLanguages()
   await restoreDocumentViewerState()
-  await loadDocumentTaskHistory()
+  await documentHistory.loadTaskHistory()
   documentFileTabsPreviousButton.addEventListener('click', () => scrollDocumentTabs(-1))
   documentFileTabsNextButton.addEventListener('click', () => scrollDocumentTabs(1))
   documentWorkspaceTabs.addEventListener('scroll', updateDocumentTabScrollButtons)
@@ -7141,7 +6162,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   documentWorkbenchReplaceButton.addEventListener('click', () => void addDocumentFilesFromWorkbench())
   startButton.addEventListener('click', () => void startDocumentTranslation())
   cancelButton.addEventListener('click', () => void cancelDocumentTranslation())
-  exportButton.addEventListener('click', () => void exportTranslatedPdf())
+  documentExport.bindEvents()
   retryButton.addEventListener('click', () => void retryFailedDocumentTranslation())
   rerunButton.addEventListener('click', () => void rerunDocumentTranslation())
   partialExportRetryButton.addEventListener('click', () => {
@@ -7157,59 +6178,6 @@ async function initializeDocumentWorkspace(): Promise<void> {
   partialExportDialog.addEventListener('close', () => {
     // 点击遮罩等原生关闭路径不会经过按钮；统一按取消处理，避免导出 Promise 悬挂。
     if (resolvePartialExportConfirmation) closePartialExportDialog(false)
-  })
-  exportConfirmButton.addEventListener('click', () => void confirmDocumentExport())
-  exportRetryButton.addEventListener('click', () => {
-    closeDocumentExportDialog()
-    void retryFailedDocumentTranslation()
-  })
-  exportCancelButton.addEventListener('click', () => {
-    const target = documentExportTarget
-    if (documentExportInFlight && target) {
-      if (!target.canCancel) return
-      void window.api.cancelDocumentExport(target.jobId, target.generation)
-      exportCancelButton.disabled = true
-      return
-    }
-    closeDocumentExportDialog()
-  })
-  exportOpenFolderButton.addEventListener('click', async () => {
-    const target = documentExportTarget
-    if (!target) return
-    exportOpenFolderButton.disabled = true
-    try {
-      const opened = await window.api.openDocumentExportFolder(
-        target.jobId,
-        target.generation,
-        target.filePath
-      )
-      if (!opened) {
-        exportIncompleteNotice.textContent = t('document.export.openFolderFailed')
-        exportIncompleteNotice.hidden = false
-      }
-    } catch {
-      exportIncompleteNotice.textContent = t('document.export.openFolderFailed')
-      exportIncompleteNotice.hidden = false
-    } finally {
-      if (documentExportTarget === target) exportOpenFolderButton.disabled = false
-    }
-  })
-  exportDialog.addEventListener('cancel', (event) => {
-    event.preventDefault()
-    if (documentExportInFlight) {
-      const target = documentExportTarget
-      if (!target?.canCancel) return
-      if (target) void window.api.cancelDocumentExport(target.jobId, target.generation)
-      exportCancelButton.disabled = true
-      return
-    }
-    closeDocumentExportDialog()
-  })
-  exportDialog.addEventListener('close', () => {
-    if (!documentExportInFlight) {
-      documentExportTarget = null
-      documentExportSaved = false
-    }
   })
   sourceLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
   targetLanguageSelect.addEventListener('change', () => void retranslateDocumentAfterLanguageChange())
@@ -7266,47 +6234,16 @@ async function initializeDocumentWorkspace(): Promise<void> {
   syncDocumentViewModeControls()
   syncDocumentScrollSyncControl()
   applyDocumentZoom(documentZoom)
-  setDocumentTocOpen(false)
+  documentNavigation.bindEvents()
   documentSyncScrollButton.addEventListener('click', () => {
     setDocumentScrollSync(!documentScrollSyncEnabled)
   })
-  documentPageInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      jumpToDocumentPage(documentPageInput.value)
-      return
-    }
-    if (event.key !== 'Escape') return
-    event.preventDefault()
-    documentPageInput.value = String(currentDocumentPageNumber)
-    documentPageInput.blur()
-  })
-  documentPageInput.addEventListener('change', () => jumpToDocumentPage(documentPageInput.value))
-  documentPagePreviousButton.addEventListener('click', () => stepDocumentPage(-1))
-  documentPageNextButton.addEventListener('click', () => stepDocumentPage(1))
-  documentTocButton.addEventListener('click', () => setDocumentTocOpen(documentTocList.hidden))
-  documentTocButton.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || documentTocList.hidden) return
-    event.preventDefault()
-    setDocumentTocOpen(false, true)
-  })
-  documentTocList.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return
-    event.preventDefault()
-    setDocumentTocOpen(false, true)
-  })
-  documentZoomOutButton.addEventListener('click', () => stepDocumentZoom(-0.1))
-  documentZoomInButton.addEventListener('click', () => stepDocumentZoom(0.1))
-  documentZoomResetButton.addEventListener('click', () => setDocumentZoom(1))
-  documentZoomFitButton.addEventListener('click', fitDocumentToWidth)
-  documentZoomFitHeightButton.addEventListener('click', fitDocumentToHeight)
-  documentFileHistory = readDocumentFileHistory()
-  renderDocumentHistory()
+  documentHistory.initialize()
   // 订阅任务进度前先同步当前 OCR 展示模式，确保启动期间切换模式时旧事件不会污染新状态。
   syncOcrDisplayModeControls()
   window.api.onDocumentProgress((snapshot) => { routeDocumentSnapshot(snapshot, false) })
   window.api.onDocumentExportProgress((progress) => {
-    updateDocumentExportProgress(progress)
+    documentExport.updateProgress(progress)
   })
   window.api.onDocumentBlockTranslated((update: DocumentWorkspaceTranslationUpdate) => {
     const tab = findDocumentTabByTranslationUpdate(update)
@@ -7361,77 +6298,10 @@ async function initializeDocumentWorkspace(): Promise<void> {
     revokeAssetUrls()
     releaseHtmlPreviewUrl()
   })
-  historyButton.addEventListener('click', () => setDocumentHistoryOpen(historyPopover.hidden))
-  documentHistoryClearButton.addEventListener('click', () => {
-    setDocumentHistoryConfirmation({ kind: 'clear' }, documentHistoryClearButton)
-  })
-  documentHistoryConfirmDelete.addEventListener('click', () => void confirmDocumentHistoryAction())
-  documentHistoryConfirmCancel.addEventListener('click', () => closeDocumentHistoryConfirmation())
-  documentHistoryConfirmDialog.addEventListener('cancel', (event) => {
-    event.preventDefault()
-    closeDocumentHistoryConfirmation()
-  })
-  documentHistoryConfirmDialog.addEventListener('close', () => {
-    // 原生关闭路径只清理待确认状态；焦点由显式按钮或 cancel 路径恢复，避免重复 focus。
-    if (pendingDocumentHistoryAction) closeDocumentHistoryConfirmation(false)
-  })
-  documentHistorySearch.addEventListener('input', renderDocumentHistory)
-  documentHistorySearch.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      const firstEntry = visibleDocumentHistory[0]
-      if (firstEntry) {
-        event.preventDefault()
-        void openDocumentHistoryEntry(firstEntry)
-      }
-      return
-    }
-    if (event.key !== 'ArrowDown') return
-    event.preventDefault()
-    documentHistoryList.querySelector<HTMLButtonElement>('.document-history-item')?.focus()
-  })
-  documentHistoryList.addEventListener('click', (event) => {
-    const deleteButton = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action="delete"]')
-    if (!deleteButton) return
-    // 删除按钮与整行打开按钮分开渲染，按列表索引找回任务或文件历史条目。
-    const entry = visibleDocumentHistory[Number(deleteButton.dataset.historyIndex)]
-    if (entry) setDocumentHistoryConfirmation({ kind: 'delete', entry }, deleteButton)
-  })
-  documentHistoryList.addEventListener('keydown', (event) => {
-    const item = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-history-action]')
-    if (!item) return
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    // 上下键在整行打开按钮之间移动；X 删除按钮通过 Tab 单独访问，避免误触删除。
-    const items = Array.from(documentHistoryList.querySelectorAll<HTMLButtonElement>('.document-history-item'))
-    const currentIndex = items.indexOf(item as HTMLButtonElement)
-    if (currentIndex < 0) return
-    const nextIndex = event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? items.length - 1
-        : (currentIndex + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
-    items[nextIndex]?.focus()
-  })
-  document.addEventListener('click', (event) => {
-    if (historyPopover.hidden || historyPopover.contains(event.target as Node) || historyButton.contains(event.target as Node)) return
-    setDocumentHistoryOpen(false)
-  })
-  document.addEventListener('click', (event) => {
-    if (documentTocList.hidden ||
-      documentTocList.contains(event.target as Node) ||
-      documentTocButton.contains(event.target as Node)) return
-    setDocumentTocOpen(false)
-  })
-  document.addEventListener('keydown', (event) => {
-    // 确认框打开时由原生 cancel 处理 Escape，避免同时关闭其背后的历史面板。
-    if (event.key === 'Escape' && !historyPopover.hidden && !documentHistoryConfirmDialog.open) {
-      event.preventDefault()
-      setDocumentHistoryOpen(false, true)
-    }
-  })
+  documentHistory.bindEvents()
   localeRuntime.onLocaleChanged(() => {
     renderSelectionState()
-    renderDocumentHistory()
+    documentHistory.render()
     if (currentSettings) {
       populateDocumentLanguages(currentSettings, sourceLanguageSelect.value, targetLanguageSelect.value)
     }

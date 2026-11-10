@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { readMainSource } from './helpers/mainSource.ts'
 import {
   findOwnWindowHit,
   resolveAppFrontmostForExclusion,
@@ -86,7 +87,7 @@ test('仅 macOS 需要应用激活事件门禁，其它平台保持窗口焦点�
 })
 
 test('自有窗口排除必须由应用级激活状态门禁后再按矩形判定', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8')
+  const source = readMainSource()
   const start = source.indexOf('function resolveOwnWindowExclusionState')
   assert.notEqual(start, -1, '应存在自有窗口排除状态解析函数')
   const end = source.indexOf('/**', start + 1)

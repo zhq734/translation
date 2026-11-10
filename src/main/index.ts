@@ -26,7 +26,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { openDocumentExportFolder } from './documentExportFolder'
 import { loadSettings, saveSettings, getSettings } from './settings'
-import { TranslationHistoryStore } from './translationHistory'
+import { createTranslationHistoryController } from './translationHistoryController'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
 import { maybeSendInstallUpgradeNotification } from './installUpgradeNotification'
 import { createAppLogger, type LogEntry } from './logging'
@@ -118,6 +118,19 @@ import {
 } from './autoTrigger'
 import { SelectionListenerController } from './selectionListenerController'
 import { registerWindowControls } from './windowControls'
+import { createDeferredServiceAccess } from './ipc/deferredServiceAccess'
+import { registerSubtitleIpc } from './ipc/subtitleIpc'
+import { registerWebReaderIpc } from './ipc/webReaderIpc'
+import { registerSettingsIpc } from './ipc/settingsIpc'
+import { registerUpdaterIpc } from './ipc/updaterIpc'
+import { registerPopupIpc } from './ipc/popupIpc'
+import { registerDocumentIpc } from './ipc/documentIpc'
+import { registerOcrIpc } from './ipc/ocrIpc'
+import { registerTranslationIpc } from './ipc/translationIpc'
+import {
+  isCurrentScreenshotRequest,
+  normalizeScreenshotActionRequest
+} from './ipc/ocrIpc'
 import { LANGUAGES } from '../shared/langs'
 import { isCopyShortcut } from '../shared/copyShortcutBehavior'
 import {
@@ -190,7 +203,6 @@ import type {
   UpdateStatus,
   ManualTranslateRequest,
   TranslationOrigin,
-  TranslationHistoryEntry,
   TranslationProviderId,
   TranslatePayload,
   TranslateDeltaPayload,
@@ -275,13 +287,8 @@ import type {
   OcrSelectionBounds,
   OcrSelectionFailedPayload,
   OcrStatus,
-  ScreenshotPinContextMenuRequest,
-  ScreenshotPinCreateRequest,
-  ScreenshotPinCreateResult,
-  ScreenshotPinDragRequest,
   RealtimeSubtitleWindowMoveRequest,
   RealtimeSubtitleDragHitArea,
-  ScreenshotPinWheelRequest,
   ScreenshotExportImageRequest,
   ScreenshotOcrActionRequest,
   ScreenshotOcrErrorCode,
@@ -1482,12 +1489,6 @@ function cancelEdgeSpeech(requestId: string): void {
  * @returns 合法请求 ID；非法时返回空字符串。
  * @author zhenghq
  */
-function normalizePronunciationRequestId(value: unknown): string {
-  if (typeof value !== 'string') return ''
-  const normalized = value.trim()
-  return normalized.length > 0 && normalized.length <= 128 ? normalized : ''
-}
-
 /**
  * 采集设置窗口当前的可见性布尔值，供 activate 来源诊断打点使用。
  * @returns 设置窗口存在、未销毁且可见时返回 true，否则返回 false。
@@ -2073,6 +2074,11 @@ function activateExistingPageOrOpenSettings(): void {
 // 必须放在其余模块日志输出之前，确保启动期日志也被采集。
 // @author zhenghq
 const appLogger = createAppLogger({ logDir: app.getPath('logs') })
+const translationHistory = createTranslationHistoryController({
+  getDirectory: () => app.getPath('userData'),
+  getOcrEngine: () => lastOcrEngine,
+  reportWarning: (message) => appLogger.append('warn', [message], 'main')
+})
 
 /**
  * 向存活的设置窗口推送增量日志；窗口未打开时不做任何推送。
@@ -3782,7 +3788,7 @@ async function translateText(
     )
     if (requestId !== latestTranslationRequest || closeVersion !== getPopupCloseVersion()) return
     recordTranslationUsage(historyOrigin, output.provider)
-    void recordTranslationHistory(text, output, pair, historyOrigin)
+    void translationHistory.record(text, output, pair, historyOrigin)
     showPopup(
       {
         ok: true,
@@ -5028,7 +5034,7 @@ function showOcrTranslationResult(
     return
   }
   const pair = resolveLanguagePair(result.ocrText, sourcePreference, targetPreference)
-  void recordTranslationHistory(result.ocrText, result, pair, 'ocr')
+  void translationHistory.record(result.ocrText, result, pair, 'ocr')
   showPopup({
     ok: true,
     origin: 'ocr',
@@ -5543,49 +5549,6 @@ async function cropOcrSnapshotSelection(bounds: CaptureBounds): Promise<Buffer> 
 }
 
 /**
- * 校验截图动作请求负载：动作、请求 ID 与选区矩形必须齐全有效。
- * @param value Renderer 提交的未知请求负载。
- * @returns 校验后的截图动作请求；非法时返回 null。
- * @author zhenghq
- */
-function normalizeScreenshotActionRequest(value: unknown): ScreenshotOcrActionRequest | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Partial<ScreenshotOcrActionRequest>
-  const actions = ['recognize', 'translate', 'copy-image', 'save-image'] as const
-  if (!actions.includes(raw.action as (typeof actions)[number])) return null
-  if (typeof raw.requestId !== 'string' || !raw.requestId.trim()) return null
-  if (!Number.isInteger(raw.sessionId) || (raw.sessionId as number) <= 0) return null
-  if (!raw.bounds || typeof raw.bounds !== 'object') return null
-  return raw as ScreenshotOcrActionRequest
-}
-
-/**
- * 校验原始分辨率原图导出请求：会话序号与选区矩形必须齐全有效。
- * @param value Renderer 提交的未知请求负载。
- * @returns 校验后的原图导出请求；非法时返回 null。
- * @author zhenghq
- */
-function normalizeScreenshotExportImageRequest(
-  value: unknown
-): ScreenshotExportImageRequest | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Partial<ScreenshotExportImageRequest>
-  if (!Number.isInteger(raw.sessionId) || (raw.sessionId as number) <= 0) return null
-  if (!raw.bounds || typeof raw.bounds !== 'object') return null
-  return raw as ScreenshotExportImageRequest
-}
-
-/**
- * 判断请求是否属于当前截图会话，避免旧窗口消息重新激活截图动作。
- * @param request 已校验的截图请求。
- * @returns 是否属于当前会话。
- * @author zhenghq
- */
-function isCurrentScreenshotRequest(request: ScreenshotOcrActionRequest): boolean {
-  return request.sessionId === ocrSelectionSessionSeq
-}
-
-/**
  * 从当前 OCR 屏幕快照中裁剪用户当前调整后的选区，不消费快照、不重新截屏。
  * 识别、复制图片和保存图片统一走此入口，保证三个动作针对同一选区；
  * OCR 放大由后续识别入口统一执行。
@@ -5640,18 +5603,6 @@ function isScreenshotOcrRequestActive(requestId: string, sessionId: number): boo
 }
 
 /**
- * 校验贴图窗口 IPC 来源、贴图实例与请求结构。
- * @param event IPC 事件。
- * @param pinId 请求携带的贴图实例标识。
- * @returns 来源为指定贴图窗口时返回 true。
- * @author zhenghq
- */
-function isScreenshotPinSender(event: Electron.IpcMainEvent, pinId: number): boolean {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  return Boolean(win && screenshotPinManager?.ownsWindow(win, pinId))
-}
-
-/**
  * 校验截图覆盖窗口 IPC 来源。
  * @param event IPC 事件。
  * @returns 来源为当前 OCR 覆盖窗口时返回 true。
@@ -5663,32 +5614,6 @@ function isOcrSelectionSender(event: Electron.IpcMainEvent | Electron.IpcMainInv
     !ocrSelectionWin.isDestroyed() &&
     BrowserWindow.fromWebContents(event.sender) === ocrSelectionWin
   )
-}
-
-/**
- * 将当前带标注截图创建为置顶贴图窗口。
- * @param event IPC 事件。
- * @param value 贴图创建请求。
- * @returns 创建结果与当前贴图数量。
- * @author zhenghq
- */
-async function createScreenshotPin(
-  event: Electron.IpcMainInvokeEvent,
-  value: unknown
-): Promise<ScreenshotPinCreateResult> {
-  if (!isOcrSelectionSender(event) || !screenshotPinManager) {
-    return { ok: false, count: 0, error: t('screenshot.pin.invalidPayload') }
-  }
-  const sessionId = (value as { sessionId?: unknown } | null)?.sessionId
-  if (typeof sessionId !== 'number' || sessionId !== ocrSelectionSessionSeq) {
-    return { ok: false, count: screenshotPinManager.count(), error: t('screenshot.pin.invalidPayload') }
-  }
-  const result = await screenshotPinManager.create(value as ScreenshotPinCreateRequest)
-  if (result.ok) {
-    finishScreenshotSession()
-    cancelOcrSelection()
-  }
-  return result
 }
 
 /**
@@ -5756,7 +5681,7 @@ function sendScreenshotActionResult(result: {
  */
 async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request || !isCurrentScreenshotRequest(request)) return
+  if (!request || !isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   const settings = getSettings()
   try {
     // 先归一化到全局屏幕坐标，缓存键与翻译动作使用同一坐标系；
@@ -5818,7 +5743,7 @@ async function recognizeOcrSelectionAction(value: unknown): Promise<void> {
  */
 async function translateOcrSelectionAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request || !isCurrentScreenshotRequest(request)) return
+  if (!request || !isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   activeScreenshotOcrRequests.clear()
   await submitOcrSelection(request.bounds)
 }
@@ -5831,7 +5756,7 @@ async function translateOcrSelectionAction(value: unknown): Promise<void> {
  */
 async function copyOcrSelectionImageAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request || !isCurrentScreenshotRequest(request)) return
+  if (!request || !isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   try {
     // 复制图片使用原分辨率与 Chromium 原生裁剪，跳过 OCR 放大预处理以保持主线程响应。
     const png = cropCurrentOcrSelectionPngFast(request.bounds)
@@ -5882,7 +5807,7 @@ function buildScreenshotSaveFileName(): string {
  */
 async function saveOcrSelectionImageAction(value: unknown): Promise<void> {
   const request = normalizeScreenshotActionRequest(value)
-  if (!request || !isCurrentScreenshotRequest(request)) return
+  if (!request || !isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   try {
     const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
     const result = win
@@ -5958,7 +5883,7 @@ async function copyAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     return
   }
   const request = validated.request
-  if (!isCurrentScreenshotRequest(request)) return
+  if (!isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   try {
     clipboard.writeImage(nativeImage.createFromBuffer(request.png))
     sendScreenshotActionResult({
@@ -6004,7 +5929,7 @@ async function saveAnnotatedOcrSelectionImageAction(value: unknown): Promise<voi
     return
   }
   const request = validated.request
-  if (!isCurrentScreenshotRequest(request)) return
+  if (!isCurrentScreenshotRequest(request, ocrSelectionSessionSeq)) return
   try {
     const win = ocrSelectionWin && !ocrSelectionWin.isDestroyed() ? ocrSelectionWin : undefined
     const result = win
@@ -7444,104 +7369,12 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-/** 统一翻译历史存储的懒初始化实例。 */
-let translationHistoryStore: TranslationHistoryStore | null = null
-
-/**
- * 获取统一翻译历史存储，并在首次调用时绑定当前用户数据目录。
- * @returns 统一翻译历史存储实例。
- * @author zhenghq
- */
-function getTranslationHistoryStore(): TranslationHistoryStore {
-  if (!translationHistoryStore) {
-    translationHistoryStore = new TranslationHistoryStore({
-      directory: app.getPath('userData')
-    })
-  }
-  return translationHistoryStore
-}
-
-/**
- * 记录一次成功翻译，持久化失败时仅写日志而不影响翻译结果展示。
- * @param text 成功翻译的原文。
- * @param output 成功翻译结果。
- * @param pair 实际使用的语言对。
- * @param origin 翻译入口来源。
- * @returns 记录完成后的 Promise。
- * @author zhenghq
- */
-async function recordTranslationHistory(
-  text: string,
-  output: { translation?: string; provider?: TranslationProviderId },
-  pair: { sourceLang: string; targetLang: string },
-  origin: TranslationOrigin
-): Promise<void> {
-  try {
-    await getTranslationHistoryStore().record({
-      sourceText: text,
-      translatedText: output.translation ?? '',
-      sourceLang: pair.sourceLang,
-      targetLang: pair.targetLang,
-      provider: output.provider,
-      origin,
-      ocrEngine: origin === 'ocr' ? lastOcrEngine : undefined
-    })
-  } catch (error) {
-    appLogger.append('warn', [
-      `[translation-history] write failed: ${error instanceof Error ? error.message : String(error)}`
-    ], 'main')
-  }
-}
-
-/**
- * 按记录 ID 查找统一翻译历史条目。
- * @param id 历史记录标识。
- * @returns 找到的记录；不存在时返回 null。
- * @author zhenghq
- */
-async function findTranslationHistoryEntry(id: string): Promise<TranslationHistoryEntry | null> {
-  const entries = await getTranslationHistoryStore().list()
-  return entries.find((entry) => entry.id === id) ?? null
-}
-
 /**
  * 校验来自 Renderer 的原生 View 矩形。
  * @param value 未信任的 IPC 负载。
  * @returns 负载合法时返回 true。
  * @author zhenghq
  */
-function isWebViewBounds(value: unknown): value is WebViewBounds {
-  if (!value || typeof value !== 'object') return false
-  const bounds = value as Record<string, unknown>
-  return ['x', 'y', 'width', 'height'].every((key) => typeof bounds[key] === 'number' && Number.isFinite(bounds[key]))
-}
-
-/**
- * 校验来自 Renderer 的网页翻译范围参数。
- * @param value 未信任的 IPC 负载。
- * @returns 负载合法时返回 true。
- * @author zhenghq
- */
-function isWebTranslationRunRequest(value: unknown): value is WebTranslationRunRequest {
-  if (value === undefined || value === null) return true
-  if (typeof value !== 'object') return false
-  const request = value as Record<string, unknown>
-  const validScope = request.scope === undefined || request.scope === 'body' || request.scope === 'all'
-  const validSource = request.sourceLang === undefined || typeof request.sourceLang === 'string'
-  const validTarget = request.targetLang === undefined || typeof request.targetLang === 'string'
-  return validScope && validSource && validTarget
-}
-
-/**
- * 校验来自 Renderer 的网页显示模式。
- * @param value 未信任的 IPC 负载。
- * @returns 模式合法时返回 true。
- * @author zhenghq
- */
-function isWebTranslationMode(value: unknown): value is WebTranslationMode {
-  return value === 'source' || value === 'target' || value === 'bilingual'
-}
-
 /**
  * 保存设置补丁并同步快捷键、托盘及所有渲染窗口。
  * @param patch 设置补丁。
@@ -7673,221 +7506,31 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
  * @author zhenghq
  */
 function registerIpc(): void {
-  /**
-   * 启动实时字幕；非支持平台直接返回稳定错误，不触发 sidecar。
-   * @returns 启动后的快照。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:start', async () => {
-    const controller = await getReadyRealtimeSubtitleController()
-    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
-    return controller.start()
+  const deferredServices = createDeferredServiceAccess({
+    ensureReady: ensureDeferredStartupServicesInitialized,
+    getDingTalkConfiguration,
+    getAiConfiguration,
+    getDeepgramConfiguration,
+    getWhisperConfiguration,
+    getDashScopeConfiguration,
+    getOpenAIRealtimeConfiguration,
+    getGeminiLiveConfiguration,
+    getDeepLxConfiguration,
+    getWebReader,
+    getDocumentWorkspace,
+    getRealtimeSubtitleController,
+    getScreenshotPinManager
   })
-  /**
-   * 停止实时字幕并释放音频资源。
-   * @returns 停止后的快照。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:stop', async () => {
-    const controller = await getReadyRealtimeSubtitleController()
-    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
-    return controller.stop()
+  registerSubtitleIpc({
+    isMac,
+    getReadyRealtimeSubtitleController: deferredServices.getReadyRealtimeSubtitleController,
+    getRealtimeSubtitleController,
+    getUnsupportedRealtimeSubtitleSnapshot: () => unsupportedRealtimeSubtitleSnapshot,
+    getRealtimeSubtitleCapability,
+    createIdleRealtimeSubtitleSnapshot,
+    createUnsupportedRealtimeSubtitleSnapshot,
+    getSubtitleWindow: () => subtitleWindow
   })
-  /**
-   * 暂停实时字幕识别。
-   * @returns 暂停后的快照。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:pause', async () => {
-    const controller = await getReadyRealtimeSubtitleController()
-    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
-    return controller.pause()
-  })
-  /**
-   * 恢复实时字幕识别。
-   * @returns 恢复后的快照。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:resume', async () => {
-    const controller = await getReadyRealtimeSubtitleController()
-    if (!controller) return unsupportedRealtimeSubtitleSnapshot ?? createUnsupportedRealtimeSubtitleSnapshot('unsupported-platform')
-    return controller.resume()
-  })
-  /**
-   * 查询实时字幕当前快照。
-   * @returns 当前快照。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:get-status', async () => {
-    const capability = getRealtimeSubtitleCapability()
-    return realtimeSubtitleController?.snapshot() ??
-      unsupportedRealtimeSubtitleSnapshot ??
-      (capability.supported
-        ? createIdleRealtimeSubtitleSnapshot()
-        : createUnsupportedRealtimeSubtitleSnapshot(capability.reason ?? 'unsupported-platform'))
-  })
-  /**
-   * 打开 macOS 屏幕录制权限设置页，便于开发态 Electron 完成 TCC 授权。
-   * @returns 打开完成后的 Promise。
-   * @author zhenghq
-   */
-  ipcMain.handle('subtitle:open-screen-recording-settings', async () => {
-    if (!isMac) return
-    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
-  })
-  /**
-   * 切换字幕窗鼠标交互；仅允许字幕窗自身在点击穿透模式下临时接收事件。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('subtitle:mouse-interaction', (event, active: unknown, scope: unknown) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
-    const normalizedScope = scope === 'window' ? 'window' : 'toolbar'
-    if (normalizedScope !== 'toolbar' && normalizedScope !== 'window') return
-    subtitleWindow.setMouseInteraction(active === true)
-  })
-  /**
-   * 移动字幕窗；只接受字幕窗自身发送的拖拽请求。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('subtitle:move-window', (event, request: unknown) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
-    if (!request || typeof request !== 'object') return
-    subtitleWindow.moveWindow(request as RealtimeSubtitleWindowMoveRequest)
-  })
-  /**
-   * 接收字幕窗拖拽按钮的真实矩形，用于点击穿透模式下的精确鼠标命中。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('subtitle:drag-hit-area', (event, area: unknown) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
-    if (!area || typeof area !== 'object') return
-    subtitleWindow.setDragHitArea(area as RealtimeSubtitleDragHitArea)
-  })
-  /**
-   * 接收字幕卡片真实矩形，使透明外围在普通模式下也能点击穿透。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('subtitle:card-hit-area', (event, area: unknown) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow || !subtitleWindow?.ownsWindow(senderWindow)) return
-    if (!area || typeof area !== 'object') return
-    subtitleWindow.setCardHitArea(area as RealtimeSubtitleDragHitArea)
-  })
-  /**
-   * 等待后台服务后返回钉钉配置服务。
-   * @returns 已初始化的钉钉配置服务。
-   * @author zhenghq
-   */
-  const getReadyDingTalkConfiguration = async (): Promise<DingTalkConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getDingTalkConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 AI 配置服务。
-   * @returns 已初始化的 AI 配置服务。
-   * @author zhenghq
-   */
-  const getReadyAiConfiguration = async (): Promise<AiConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getAiConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 Deepgram 配置服务。
-   * @returns 已初始化的 Deepgram 配置服务。
-   * @author zhenghq
-   */
-  const getReadyDeepgramConfiguration = async (): Promise<DeepgramConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getDeepgramConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 Whisper 配置服务。
-   * @returns 已初始化的 Whisper 配置服务。
-   * @author zhenghq
-   */
-  const getReadyWhisperConfiguration = async (): Promise<WhisperConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getWhisperConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 DashScope 配置服务。
-   * @returns 已初始化的 DashScope 配置服务。
-   * @author zhenghq
-   */
-  const getReadyDashScopeConfiguration = async (): Promise<DashScopeConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getDashScopeConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 OpenAI Realtime 配置服务。
-   * @returns 已初始化的 OpenAI Realtime 配置服务。
-   * @author zhenghq
-   */
-  const getReadyOpenAIRealtimeConfiguration = async (): Promise<OpenAIRealtimeConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getOpenAIRealtimeConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 Gemini Live 配置服务。
-   * @returns 已初始化的 Gemini Live 配置服务。
-   * @author zhenghq
-   */
-  const getReadyGeminiLiveConfiguration = async (): Promise<GeminiLiveConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getGeminiLiveConfiguration()
-  }
-  /**
-   * 等待后台服务后返回 DeepLX 配置服务。
-   * @returns 已初始化的 DeepLX 配置服务。
-   * @author zhenghq
-   */
-  const getReadyDeepLxConfiguration = async (): Promise<DeepLxConfigurationService> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getDeepLxConfiguration()
-  }
-  /**
-   * 等待后台服务后返回网页阅读器管理器。
-   * @returns 已初始化的网页阅读器管理器。
-   * @author zhenghq
-   */
-  const getReadyWebReader = async (): Promise<WebReaderManager> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getWebReader()
-  }
-  /**
-   * 等待后台服务后返回文档翻译工作台管理器。
-   * @returns 已初始化的文档翻译工作台管理器。
-   * @author zhenghq
-   */
-  const getReadyDocumentWorkspace = async (): Promise<DocumentWorkspaceManager> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getDocumentWorkspace()
-  }
-  /**
-   * 等待后台服务后返回实时字幕控制器。
-   * @returns 已初始化的实时字幕控制器或 null。
-   * @author zhenghq
-   */
-  const getReadyRealtimeSubtitleController = async (): Promise<RealtimeSubtitleController | null> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getRealtimeSubtitleController()
-  }
-  /**
-   * 等待后台服务后返回贴图窗口管理器。
-   * @returns 已初始化的贴图窗口管理器。
-   * @author zhenghq
-   */
-  const getReadyScreenshotPinManager = async (): Promise<ScreenshotPinWindowManager> => {
-    await ensureDeferredStartupServicesInitialized()
-    return getScreenshotPinManager()
-  }
   registerWindowControls({
     isAllowedWindow: (window) =>
       window === settingsWin ||
@@ -7908,864 +7551,120 @@ function registerIpc(): void {
       window.close()
     }
   })
-  ipcMain.on('popup:copy', (_event, text: unknown) => {
-    clipboard.writeText(String(text ?? ''))
+  registerPopupIpc({
+    hidePopup: () => hidePopup(true, 'renderer-ipc'),
+    resizePopup,
+    setPopupPinned,
+    isPopupWebContents,
+    setPopupLanguageInteraction,
+    setPronunciationInteraction,
+    pronunciationService,
+    pronunciationRequests,
+    isSettingsWindowSender,
+    restoreSettingsWindowFocus: () =>
+      forceRestoreSettingsWindowFocus(process.platform, settingsWin),
+    releaseSettingsWindowFocus: releaseSettingsWindowFocusAfterSettingsBlur,
+    releaseSelectionFocusLease,
+    openSettings: openSettingsFromPopup
   })
-  ipcMain.handle('clipboard:read-text', () => clipboard.readText())
-  ipcMain.on('popup:hide', () => hidePopup(true, 'renderer-ipc'))
-  ipcMain.on('popup:resize', (_event, size: unknown) => {
-    if (isPopupAutoSizeRequest(size)) resizePopup(size)
+  registerDocumentIpc({
+    approvedPaths: approvedDocumentPaths,
+    taskServices: documentWorkspaceTaskServices,
+    openWorkspace: openDocumentWorkspaceFromPopup,
+    isWorkspaceSender: isDocumentWorkspaceSender,
+    getSettings,
+    validateApprovedPath: validateApprovedDocumentPath,
+    createTaskService: createDocumentWorkspaceTaskService,
+    releaseTask: releaseDocumentWorkspaceTask,
+    loadRuntime: loadDocumentRuntime,
+    getTaskHistoryStore: getDocumentTaskHistoryStore,
+    getTranslationCacheStore: getDocumentTranslationCacheStore,
+    translate: t
   })
-  ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
-    setPopupPinned(Boolean(pinned))
-  })
-  ipcMain.on('popup:language-interaction', (event, active: unknown, scope: unknown) => {
-    if (!isPopupWebContents(event.sender)) return
-    const normalizedScope = scope === 'retranslation' ? 'retranslation' : 'selector'
-    setPopupLanguageInteraction(active === true, normalizedScope)
-  })
-  /**
-   * 查询单个英文单词的音标；主进程再次校验输入，避免 Renderer 绕过词形边界。
-   * @param _event IPC 事件对象。
-   * @param word Renderer 传入的待查询单词。
-   * @returns 脱敏音标结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('pronunciation:lookup', (_event, word: unknown, requestId: unknown) => {
-    const normalized = typeof word === 'string' ? word.trim() : ''
-    if (!normalized || normalized.length > 64) {
-      return {
-        status: 'unsupported',
-        word: normalized.slice(0, 64),
-        language: 'en',
-        variants: [],
-        source: 'dictionaryapi'
-      }
-    }
-    const normalizedRequestId = normalizePronunciationRequestId(requestId)
-    if (!normalizedRequestId) return pronunciationService.lookup(normalized)
-    const controller = new AbortController()
-    return pronunciationRequests.run(
-      normalizedRequestId,
-      controller,
-      pronunciationService.lookup(normalized, controller.signal)
-    )
-  })
-  /**
-   * 下载当前已缓存音标变体的音频；变体 ID 必须由主进程查询结果生成。
-   * @param _event IPC 事件对象。
-   * @param word 当前查询词。
-   * @param variantId 已登记的变体标识。
-   * @returns 临时音频字节或脱敏错误。
-   * @author zhenghq
-   */
-  ipcMain.handle('pronunciation:audio', (_event, word: unknown, variantId: unknown, requestId: unknown) => {
-    const normalizedWord = typeof word === 'string' ? word.trim() : ''
-    const normalizedVariantId = typeof variantId === 'string' ? variantId.trim() : ''
-    if (!normalizedWord || normalizedWord.length > 64 || !normalizedVariantId) {
-      return { ok: false, error: 'Pronunciation audio is unavailable' }
-    }
-    const normalizedRequestId = normalizePronunciationRequestId(requestId)
-    if (!normalizedRequestId) return pronunciationService.getAudio(normalizedWord, normalizedVariantId)
-    const controller = new AbortController()
-    return pronunciationRequests.run(
-      normalizedRequestId,
-      controller,
-      pronunciationService.getAudio(normalizedWord, normalizedVariantId, controller.signal)
-    )
-  })
-  /**
-   * 取消 Renderer 尚未完成的音标查询或音频下载。
-   * @param _event IPC 事件对象。
-   * @param requestId Renderer 生成的请求 ID。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('pronunciation:cancel', (_event, requestId: unknown) => {
-    const normalized = normalizePronunciationRequestId(requestId)
-    if (normalized) pronunciationRequests.cancel(normalized)
-  })
-  /**
-   * 接收音标交互状态，仅暂停或恢复自动隐藏，不改变弹窗固定状态。
-   * @param _event IPC 事件对象。
-   * @param active Renderer 上报的交互状态。
-   * @returns 无返回值。
-   * @author zhenghq
-   */
-  ipcMain.on('pronunciation:interaction', (_event, active: unknown) => {
-    setPronunciationInteraction(active === true)
-  })
-  ipcMain.on('settings:pointerdown', (event) => {
-    // 只有设置页自己的 renderer 能证明事件确实送达设置窗口。全局钩子的矩形
-    // 判定无法区分后台窗口重叠与真实点击，不能在该通道中恢复可聚焦性。
-    if (!isSettingsWindowSender(event.sender)) return
-    forceRestoreSettingsWindowFocus(process.platform, settingsWin)
-    releaseSettingsWindowFocusAfterSettingsBlur()
-    releaseSelectionFocusLease()
-  })
-  ipcMain.on('settings:open', () => openSettingsFromPopup())
-  ipcMain.on('document:open', () => {
-    openDocumentWorkspaceFromPopup()
-  })
-  ipcMain.handle('document:get-platform-capability', () => getDocumentPlatformCapability())
-  /**
-   * 从文档窗口一次选择并校验多个本地文件。
-   *
-   * 只有当前文档工作台可以调用；每个候选路径都重新读取有限文件片段，
-   * 通过校验后才加入当前窗口批准集合，拒绝项不携带路径或正文。
-   * @param event IPC 事件对象。
-   * @returns 每个候选文件的选择、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:select-files', async (event): Promise<DocumentFileSelectionResult[]> => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return [{ status: 'rejected', code: 'unreadable' }]
-    }
-    if (!getDocumentPlatformCapability().supported) {
-      return [{ status: 'rejected', code: 'unreadable' }]
-    }
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow) return [{ status: 'rejected', code: 'unreadable' }]
-    const result = await dialog.showOpenDialog(senderWindow, {
-      title: t('document.upload.chooseFiles'),
-      properties: ['openFile', 'multiSelections'],
-      filters: [{
-        name: t('document.upload.formats'),
-        extensions: ['pdf', 'docx', 'epub', 'html', 'htm', 'md', 'markdown', 'txt', 'json', 'csv', 'srt', 'vtt', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
-      }]
-    })
-    if (result.canceled || result.filePaths.length === 0) return [{ status: 'cancelled' }]
-    const validated = await Promise.allSettled(
-      result.filePaths.map((path) => validateApprovedDocumentPath(path))
-    )
-    const selections = validated.map((entry) =>
-      entry.status === 'fulfilled'
-        ? entry.value
-        : { status: 'rejected' as const, code: 'unreadable' as const }
-    )
-    for (const selected of selections) {
-      if (selected.status === 'selected') approvedDocumentPaths.add(selected.path)
-    }
-    return selections
-  })
-  /**
-   * 重新校验拖放得到的本地路径，并在当前文档窗口登记为可运行文件。
-   * @param event IPC 事件对象。
-   * @param path Renderer 从受信任拖放 File 对象取得的绝对路径。
-   * @returns 选择、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:approve-file', async (event, path: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    if (!getDocumentPlatformCapability().supported) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    if (typeof path !== 'string') return { status: 'rejected', code: 'unreadable' }
-    const selected = await validateApprovedDocumentPath(path)
-    if (selected.status === 'selected') {
-      approvedDocumentPaths.add(selected.path)
-    }
-    return selected
-  })
-  /**
-   * 重新校验拖放得到的多个本地路径，并批量登记当前文档窗口的可运行文件。
-   * 成功项只追加到批准集合，不能清空队列中此前已批准的文件。
-   * @param event IPC 事件对象。
-   * @param paths Renderer 从受信任拖放 File 对象取得的绝对路径列表。
-   * @returns 每个候选文件的选择或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:approve-files', async (event, paths: unknown): Promise<DocumentFileSelectionResult[]> => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return [{ status: 'rejected', code: 'unreadable' }]
-    }
-    if (!getDocumentPlatformCapability().supported) {
-      return [{ status: 'rejected', code: 'unreadable' }]
-    }
-    if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== 'string')) {
-      return [{ status: 'rejected', code: 'unreadable' }]
-    }
-    const validated = await Promise.allSettled(
-      paths.map((path) => validateApprovedDocumentPath(path as string))
-    )
-    const selections = validated.map((entry) =>
-      entry.status === 'fulfilled'
-        ? entry.value
-        : { status: 'rejected' as const, code: 'unreadable' as const }
-    )
-    for (const selected of selections) {
-      if (selected.status === 'selected') approvedDocumentPaths.add(selected.path)
-    }
-    return selections
-  })
-  /**
-   * 启动当前文档窗口已批准文件的翻译任务。
-   * @param event IPC 事件对象。
-   * @param request 文件路径、任务代际与语言偏好。
-   * @returns 主进程是否接受任务。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:run', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { accepted: false, code: 'unreadable' }
-    }
-    if (!getSettings().documentTranslationEnabled) {
-      return { accepted: false, code: 'disabled' }
-    }
-    const normalizedRequest = normalizeDocumentRunRequest(request)
-    if (!normalizedRequest || !isAbsolute(normalizedRequest.path)) {
-      return { accepted: false, code: 'invalid-request' }
-    }
-    const service = await createDocumentWorkspaceTaskService()
-    let acceptedJobId: string | null = null
-    try {
-      // 首条进度会携带图片资源声明；必须先登记服务，Renderer 才能按 jobId 读取资源。
-      const result = await service.run(normalizedRequest, (jobId) => {
-        acceptedJobId = jobId
-        documentWorkspaceTaskServices.set(jobId, service)
-      })
-      if (!result.accepted || !result.jobId) {
-        service.dispose()
-      }
-      return result
-    } catch (error) {
-      // 接受回调可能已经登记服务；异常返回前必须同时移除映射，避免残留不可达任务。
-      if (acceptedJobId && documentWorkspaceTaskServices.get(acceptedJobId) === service) {
-        documentWorkspaceTaskServices.delete(acceptedJobId)
-      }
-      service.dispose()
-      throw error
-    }
-  })
-  /**
-   * 使用新代际重新翻译当前文档中失败的目标。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @param generation Renderer 生成的新任务代际。
-   * @returns 主进程是否接受重试。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:retry-failed', (event, jobId: unknown, generation: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
-      !Number.isInteger(generation)) {
-      return { accepted: false, code: 'invalid-request' }
-    }
-    return documentWorkspaceTaskServices.get(jobId)?.retryFailed(generation as number) ??
-      { accepted: false, code: 'not-ready' }
-  })
-  /**
-   * 使用新代际仅重试当前文档中的一个可重试目标。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @param generation Renderer 生成的新任务代际。
-   * @param targetId 稳定目标标识。
-   * @returns 主进程是否接受重试。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:retry-failed-target', (
-    event,
-    jobId: unknown,
-    generation: unknown,
-    targetId: unknown
-  ) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { accepted: false, code: 'invalid-request' }
-    }
-    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation })
-    const normalizedTargetId = normalizeDocumentTargetId(targetId)
-    if (!identity || !normalizedTargetId || parseDocumentTargetId(normalizedTargetId) === null) {
-      return { accepted: false, code: 'invalid-request' }
-    }
-    return documentWorkspaceTaskServices.get(identity.jobId)
-      ?.retryFailedTarget(identity.generation, normalizedTargetId) ??
-      { accepted: false, code: 'not-ready' }
-  })
-  /**
-   * 取消当前文档翻译任务；任务标识和代际必须同时匹配。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @param generation 任务代际。
-   * @returns 是否实际发出了取消请求。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:cancel', (event, jobId: unknown, generation: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return false
-    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation })
-    if (!identity) return false
-    return documentWorkspaceTaskServices.get(identity.jobId)
-      ?.cancel(identity.jobId, identity.generation) ?? false
-  })
-  /**
-   * 释放已关闭文档标签对应的任务和内存资源。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @returns 是否找到并释放了任务服务。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:release', (event, jobId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return false
-    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation: 1 })
-    if (!identity) return false
-    return releaseDocumentWorkspaceTask(identity.jobId)
-  })
-  /**
-   * 将当前译文导出为 PDF。
-   * @param event IPC 事件对象。
-   * @param request 当前任务标识、代际与显式导出模式。
-   * @returns 保存、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:export-pdf', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    const normalizedRequest = normalizeDocumentExportRequest(request)
-    if (!normalizedRequest) return { status: 'rejected', code: 'invalid-request' }
-    const result = await documentWorkspaceTaskServices.get(normalizedRequest.jobId)
-      ?.exportPdf(normalizedRequest) ??
-      { status: 'rejected', code: 'not-ready' }
-    if (result.status === 'rejected') {
-      console.warn('[document-export]', {
-        jobId: normalizedRequest.jobId,
-        generation: normalizedRequest.generation,
-        mode: normalizedRequest.mode,
-        status: result.status,
-        code: result.code ?? null
-      })
-    }
-    return result
-  })
-  /**
-   * 导出已重新授权历史文档中的已保存译文；不复用旧任务身份。
-   * @param event IPC 事件对象。
-   * @param request 已批准源信息、建议文件名与译文模型。
-   * @returns 保存、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:export-approved-pdf', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    const normalizedRequest = normalizeDocumentApprovedExportRequest(request)
-    if (!normalizedRequest) return { status: 'rejected', code: 'invalid-request' }
-    const runtime = await loadDocumentRuntime()
-    const result = await runtime.approvedExportService.exportPdf(normalizedRequest)
-    if (result.status === 'rejected') {
-      console.warn('[document-export-approved]', {
-        status: result.status,
-        code: result.code ?? null
-      })
-    }
-    return result
-  })
-  /**
-   * 取消当前正在执行的 PDF 导出；任务终态与已完成译文保持不变。
-   * @param event IPC 事件对象。
-   * @param request 当前任务标识与代际。
-   * @returns 是否实际中止了导出。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:cancel-export', (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return false
-    const normalized = normalizeDocumentExportCancelRequest(request)
-    if (!normalized) return false
-    return documentWorkspaceTaskServices.get(normalized.jobId)
-      ?.cancelExport(normalized.jobId, normalized.generation) ?? false
-  })
-  /**
-   * 打开当前任务最近一次成功导出文件所在目录。
-   * 文件路径只来自任务服务记录，Renderer 无法指定任意路径。
-   * @param event IPC 事件对象。
-   * @param request 当前任务标识与代际。
-   * @returns 是否成功调用系统文件管理器。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:open-export-folder', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return false
-    const normalized = normalizeDocumentOpenExportFolderRequest(request)
-    if (!normalized) return false
-    const taskService = documentWorkspaceTaskServices.get(normalized.jobId)
-    if (taskService) {
-      if (normalized.filePath) {
-        if (await taskService.openExportFolderPath(
-          normalized.jobId,
-          normalized.generation,
-          normalized.filePath
-        )) return true
-      } else if (await taskService.openExportFolder(
-        normalized.jobId,
-        normalized.generation
-      )) return true
-    }
-    // Renderer 指定路径时只回退到历史导出白名单，不能打开当前任务的另一份文件。
-    const runtime = await loadDocumentRuntime()
-    const documentApprovedExportService = runtime.approvedExportService
-    return normalized.filePath
-      ? documentApprovedExportService.openExportFolder(normalized.filePath)
-      : documentApprovedExportService.openLastExportFolder()
-  })
-  /**
-   * 读取文档任务历史的安全摘要列表。
-   * @param event IPC 事件对象。
-   * @returns 按更新时间倒序排列的历史摘要。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:list-history', async (event) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return []
-    const runtime = await loadDocumentRuntime()
-    return getDocumentTaskHistoryStore(runtime).list()
-  })
-  /**
-   * 打开指定文档任务的只读恢复快照。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @returns 可恢复快照；任务不存在或请求非法时返回 null。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:open-history', async (event, jobId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return null
-    const runtime = await loadDocumentRuntime()
-    return getDocumentTaskHistoryStore(runtime).open(jobId)
-  })
-  /**
-   * 删除指定文档任务历史及其源文件对应的翻译缓存。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @returns 是否实际删除了历史条目。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:delete-history', async (event, jobId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' || !jobId) return false
-    const runtime = await loadDocumentRuntime()
-    const historyStore = getDocumentTaskHistoryStore(runtime)
-    const sourceSha256 = await historyStore.getSourceSha256(jobId)
-    const removed = await historyStore.delete(jobId)
-    if (removed && sourceSha256) {
-      await getDocumentTranslationCacheStore(runtime).deleteBySourceSha256(sourceSha256)
-    }
-    return removed
-  })
-  /**
-   * 清空全部文档翻译缓存与任务历史，不修改用户设置。
-   * @param event IPC 事件对象。
-   * @returns 清空完成后的 Promise。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:clear-cache', async (event) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return
-    const runtime = await loadDocumentRuntime()
-    const documentTranslationCache = getDocumentTranslationCacheStore(runtime)
-    const documentTaskHistory = getDocumentTaskHistoryStore(runtime)
-    await documentTranslationCache.clear()
-    await documentTaskHistory.clear()
-  })
-  /**
-   * 读取当前任务中的受控图片资源。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @param assetId 解析阶段生成的资源标识。
-   * @returns 资源字节或稳定错误分类。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:get-asset', async (event, jobId: unknown, assetId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string' ||
-      typeof assetId !== 'string') {
-      return { ok: false, code: 'asset-not-found' }
-    }
-    return documentWorkspaceTaskServices.get(jobId)?.getAsset(assetId) ??
-      { ok: false, code: 'asset-not-found' }
-  })
-  /**
-   * 读取当前活动 PDF 任务的原始字节，供文档窗口使用 PDF.js 原生渲染。
-   * @param event IPC 事件对象。
-   * @param jobId 任务标识。
-   * @returns 受控源文件字节或稳定错误分类。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:get-source', (event, jobId: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender) || typeof jobId !== 'string') {
-      return { ok: false, code: 'source-not-found' }
-    }
-    return documentWorkspaceTaskServices.get(jobId)?.getSource() ??
-      { ok: false, code: 'source-not-found' }
-  })
-  /**
-   * 读取已重新授权历史文件的受控图片资源。
-   * @param event IPC 事件对象。
-   * @param request 源文件快照与资源元数据。
-   * @returns 资源字节或稳定错误分类。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:get-approved-asset', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'asset-not-found' }
-    const runtime = await loadDocumentRuntime()
-    return runtime.approvedResourceService.getAsset(request as DocumentApprovedAssetRequest)
-  })
-  /**
-   * 读取已重新授权历史文件的源预览字节。
-   * @param event IPC 事件对象。
-   * @param request 源文件路径、格式、大小与 SHA-256。
-   * @returns 源预览字节或稳定错误分类。
-   * @author zhenghq
-   */
-  ipcMain.handle('document:get-approved-source', async (event, request: unknown) => {
-    if (!isDocumentWorkspaceSender(event.sender)) return { ok: false, code: 'source-not-approved' }
-    const runtime = await loadDocumentRuntime()
-    return runtime.approvedResourceService.getSource(request as DocumentApprovedSourceRequest)
-  })
-  ipcMain.on('webview:open', (_event, url: unknown) => {
-    if (typeof url === 'string' && url.trim()) {
-      openWebReaderFromPopup(url)
-      return
-    }
-    openWebReaderFromPopup()
-  })
-  ipcMain.on('webview:close', () => {
-    runWhenDeferredServicesReady(() => getWebReader().close())
-  })
-  ipcMain.handle('webview:navigate', async (_event, url: unknown) => {
-    if (typeof url !== 'string' || !url.trim()) throw new Error(t('error.invalidWebUrl'))
-    return (await getReadyWebReader()).navigate(url)
-  })
-  ipcMain.on('webview:back', () => {
-    runWhenDeferredServicesReady(() => getWebReader().back())
-  })
-  ipcMain.on('webview:forward', () => {
-    runWhenDeferredServicesReady(() => getWebReader().forward())
-  })
-  ipcMain.on('webview:reload', () => {
-    runWhenDeferredServicesReady(() => getWebReader().reload())
-  })
-  ipcMain.on('webview:set-bounds', (_event, bounds: unknown) => {
-    if (!isWebViewBounds(bounds)) return
-    runWhenDeferredServicesReady(() => getWebReader().setBounds(bounds))
-  })
-  ipcMain.handle('web-translate:extract', async () =>
-    (await getReadyWebReader()).extract()
-  )
-  ipcMain.handle('web-translate:run', async (_event, request: unknown) =>
-    (await getReadyWebReader()).run(isWebTranslationRunRequest(request) ? request : {})
-  )
-  ipcMain.on('web-translate:cancel', () => {
-    runWhenDeferredServicesReady(() => getWebReader().cancel())
-  })
-  ipcMain.handle('web-translate:set-mode', async (_event, mode: unknown) => {
-    if (!isWebTranslationMode(mode)) throw new Error(t('error.invalidWebMode'))
-    return (await getReadyWebReader()).setMode(mode)
-  })
-  /**
-   * 将当前网页译文导出为带水印 PDF。
-   * @param event IPC 事件对象。
-   * @returns 保存、取消或拒绝结果。
-   * @author zhenghq
-   */
-  ipcMain.handle('web-translate:export-pdf', async (event): Promise<WebPagePdfExportResult> => {
-    if (!isWebReaderSender(event.sender)) {
-      return { status: 'rejected', code: 'unreadable' }
-    }
-    return (await getReadyWebReader()).exportPdf()
+  registerWebReaderIpc({
+    openWebReader: openWebReaderFromPopup,
+    runWhenReady: runWhenDeferredServicesReady,
+    getReadyWebReader: deferredServices.getReadyWebReader,
+    getWebReader,
+    isWebReaderSender,
+    getInvalidUrlMessage: () => t('error.invalidWebUrl'),
+    getInvalidModeMessage: () => t('error.invalidWebMode')
   })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
-  ipcMain.on('selection:translate', () => {
-    void translateSelectionButton()
+  registerOcrIpc({
+    requestOcrSelection,
+    getOcrSelectionSessionId: () => ocrSelectionSessionSeq,
+    resolveOcrSelectionReady,
+    isOcrSelectionSender,
+    finishScreenshotSession,
+    getScreenshotPinManager: () => screenshotPinManager,
+    getInvalidPinPayloadMessage: () => t('screenshot.pin.invalidPayload'),
+    cancelOcrSelection,
+    submitOcrSelection,
+    recognizeOcrSelectionAction,
+    translateOcrSelectionAction,
+    copyOcrSelectionImageAction,
+    saveOcrSelectionImageAction,
+    copyAnnotatedOcrSelectionImageAction,
+    saveAnnotatedOcrSelectionImageAction,
+    markActiveRequest: (requestId, sessionId) =>
+      activeScreenshotOcrRequests.set(requestId, sessionId),
+    cropCurrentOcrSelectionPng,
+    createScreenshotExpiredError: () =>
+      new ScreenshotSelectionError('snapshot-expired', t('error.screenshotExpired')),
+    showScreenshotToast,
+    handleScreenshotToastShowWindow,
+    translateClipboardImage
   })
-  ipcMain.on('ocr-selection:open', () => {
-    requestOcrSelection(false)
-  })
-  ipcMain.on('ocr-selection:ready', (_event, payload: unknown) => {
-    const sessionId = (payload as { sessionId?: unknown })?.sessionId
-    if (typeof sessionId !== 'number' || sessionId !== ocrSelectionSessionSeq) return
-    resolveOcrSelectionReady(true)
-  })
-  ipcMain.handle('ocr-selection:create-pin', createScreenshotPin)
-  ipcMain.on('screenshot-pin:drag', (event, request: unknown) => {
-    const raw = request as { pinId?: unknown } | null
-    if (typeof raw?.pinId !== 'number' || !isScreenshotPinSender(event, raw.pinId)) return
-    screenshotPinManager?.drag(request as ScreenshotPinDragRequest)
-  })
-  ipcMain.on('screenshot-pin:wheel', (event, request: unknown) => {
-    const raw = request as { pinId?: unknown } | null
-    if (typeof raw?.pinId !== 'number' || !isScreenshotPinSender(event, raw.pinId)) return
-    screenshotPinManager?.wheel(request as ScreenshotPinWheelRequest)
-  })
-  ipcMain.on('screenshot-pin:close', (event, pinId: unknown) => {
-    if (typeof pinId !== 'number' || !isScreenshotPinSender(event, pinId)) return
-    screenshotPinManager?.close(pinId)
-  })
-  ipcMain.on('screenshot-pin:context-menu', (event, request: unknown) => {
-    const raw = request as { pinId?: unknown } | null
-    if (typeof raw?.pinId !== 'number' || !isScreenshotPinSender(event, raw.pinId)) return
-    screenshotPinManager?.showContextMenu(request as ScreenshotPinContextMenuRequest)
-  })
-  ipcMain.on('ocr-selection:cancel', () => cancelOcrSelection())
-  ipcMain.on('ocr-selection:submit', (_event, bounds: unknown) => {
-    void submitOcrSelection(bounds)
-  })
-  ipcMain.on('ocr-selection:recognize', (_event, request: unknown) => {
-    const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
-    void recognizeOcrSelectionAction(request)
-  })
-  ipcMain.on('ocr-selection:translate', (_event, request: unknown) => {
-    void translateOcrSelectionAction(request)
-  })
-  ipcMain.on('ocr-selection:copy-image', (_event, request: unknown) => {
-    const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
-    void copyOcrSelectionImageAction(request)
-  })
-  ipcMain.on('ocr-selection:save-image', (_event, request: unknown) => {
-    const normalized = normalizeScreenshotActionRequest(request)
-    if (normalized && normalized.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(normalized.requestId, normalized.sessionId)
-    void saveOcrSelectionImageAction(request)
-  })
-  ipcMain.on('ocr-selection:copy-annotated-image', (_event, request: unknown) => {
-    const validated = validateAnnotatedExportPayload(request)
-    if (validated.ok && validated.request.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(validated.request.requestId, validated.request.sessionId)
-    void copyAnnotatedOcrSelectionImageAction(request)
-  })
-  ipcMain.on('ocr-selection:save-annotated-image', (_event, request: unknown) => {
-    const validated = validateAnnotatedExportPayload(request)
-    if (validated.ok && validated.request.sessionId === ocrSelectionSessionSeq) activeScreenshotOcrRequests.set(validated.request.requestId, validated.request.sessionId)
-    void saveAnnotatedOcrSelectionImageAction(request)
-  })
-  // 带标注导出的底图必须使用原始分辨率像素：预览图可能经过编码/缩放，直接复用会发糊。
-  // 这里只在用户点击复制/保存时按需裁剪并编码，成本不落在「快捷键 → 可拖拽」热路径上。
-  ipcMain.handle('ocr-selection:export-image', (_event, request: unknown) => {
-    const normalized = normalizeScreenshotExportImageRequest(request)
-    if (!normalized || normalized.sessionId !== ocrSelectionSessionSeq) {
-      throw new ScreenshotSelectionError('snapshot-expired', t('error.screenshotExpired'))
-    }
-    // 导出必须与 OCR 共用同一条原始像素通道：Windows 上 cropCurrentOcrSelectionPng 会
-    // 优先使用 GDI BGRA 原始字节，绕开 nativeImage 的平台相关通道契约，避免红蓝颠倒。
-    const png = cropCurrentOcrSelectionPng(normalized.bounds)
-    return { dataUrl: `data:image/png;base64,${png.toString('base64')}` }
-  })
-  ipcMain.on('screenshot-toast:show', (_event, payload: unknown) => {
-    const raw = payload as { message?: string; kind?: ScreenshotToastKind; displayTimeMs?: number }
-    if (typeof raw?.message === 'string' && raw.message.trim()) {
-      showScreenshotToast(raw.message, raw.displayTimeMs, raw.kind)
-    }
-  })
-  ipcMain.on('screenshot-toast:show-window', (_event, payload: unknown) => {
-    handleScreenshotToastShowWindow(payload)
-  })
-  ipcMain.on('ocr-clipboard:translate', () => {
-    void translateClipboardImage()
-  })
-  ipcMain.on('manual-translate:open-request', () => void openManualTranslation())
-  ipcMain.handle('manual-translate:submit', (_event, request: unknown) =>
-    translateManualRequest(request)
-  )
-  ipcMain.on('speech:edge-cancel', (_event, requestId: unknown) => {
-    cancelEdgeSpeech(String(requestId ?? ''))
-  })
-  ipcMain.handle('speech:edge-synthesize', (
-    _event,
-    requestId: unknown,
-    text: unknown,
-    language: unknown,
-    ipa: unknown
-  ) =>
-    synthesizeEdgeSpeech(
-      String(requestId ?? ''),
-      String(text ?? ''),
-      String(language ?? ''),
-      String(ipa ?? '')
-    )
-  )
-  ipcMain.handle('popup:retranslate', async (_event, sourceLang: string, targetLang: string, origin?: TranslationOrigin) => {
-    const sourcePreference = sourceLang || 'auto'
-    const targetPreference = targetLang || 'auto'
-    await applySettingsPatch({ sourceLang: sourcePreference, targetLang: targetPreference })
-    const text = origin === 'ocr' ? lastOcrText : lastSelectedText
-    const anchor = origin === 'ocr' ? lastOcrAnchor : lastSelectionAnchor
-    if (!text) return
-    await translateText(text, anchor, {
-      sourceLang: sourcePreference,
-      targetLang: targetPreference
-    }, origin === 'ocr' ? 'ocr' : 'selection')
+  registerTranslationIpc({
+    openManualTranslation,
+    translateManualRequest,
+    cancelEdgeSpeech,
+    synthesizeEdgeSpeech,
+    applySettingsPatch,
+    getLastOcrText: () => lastOcrText,
+    getLastSelectedText: () => lastSelectedText,
+    getLastOcrAnchor: () => lastOcrAnchor,
+    getLastSelectionAnchor: () => lastSelectionAnchor,
+    translateText,
+    translationHistory,
+    translateSelectionButton
   })
 
-  /** 返回统一翻译历史，收藏项优先。 */
-  ipcMain.handle('translation-history:list', () => getTranslationHistoryStore().list())
-  /** 设置指定历史记录的收藏状态并返回最新列表。 */
-  ipcMain.handle('translation-history:set-favorite', async (_event, id: unknown, favorite: unknown) => {
-    const store = getTranslationHistoryStore()
-    const normalizedId = typeof id === 'string' ? id.trim() : ''
-    if (normalizedId) await store.setFavorite(normalizedId, favorite === true)
-    return store.list()
+  registerSettingsIpc({
+    deferredServices,
+    ensureReady: ensureDeferredStartupServicesInitialized,
+    getSettings,
+    getShortcutRegistrationStates: () => shortcutRegistrationStates,
+    applySettingsPatch,
+    getLogHistory: () => appLogger.getHistory(),
+    getLogFilePath: () => appLogger.getLogFilePath(),
+    showSaveDialog: (options) => dialog.showSaveDialog(options),
+    copyFile,
+    writeFile,
+    getCaptureDiagnosticsSummary: () => getCaptureDiagnosticsStore().getSummary(),
+    getCaptureDiagnosticsExportData: () => getCaptureDiagnosticsStore().getExportData(),
+    checkDingTalk,
+    checkMicrosoft,
+    checkBilibiliIndex,
+    listAiModels,
+    checkAi,
+    getOcrStatus,
+    checkDeepLx,
+    buildDockerCommand,
+    openDeployDoc,
+    getLogExportTitle: () => t('dialog.exportLogs.title'),
+    getDiagnosticsExportTitle: () => t('dialog.exportDiagnostics.title')
   })
-  /** 删除指定历史记录并返回最新列表。 */
-  ipcMain.handle('translation-history:delete', async (_event, id: unknown) => {
-    const store = getTranslationHistoryStore()
-    const normalizedId = typeof id === 'string' ? id.trim() : ''
-    if (normalizedId) await store.delete(normalizedId)
-    return store.list()
+  registerUpdaterIpc({
+    getStatus: getUpdateStatusSnapshot,
+    check: checkForApplicationUpdates,
+    download: downloadApplicationUpdate,
+    cancelDownload: cancelApplicationUpdateDownload,
+    install: installApplicationUpdate,
+    openReleasePage: openApplicationReleasePage,
+    removeQuarantine: removeApplicationQuarantine
   })
-  /** 清空所有非收藏历史并返回保留的收藏项。 */
-  ipcMain.handle('translation-history:clear-unfavorited', async () => {
-    const store = getTranslationHistoryStore()
-    await store.clearNonFavorites()
-    return store.list()
-  })
-  /** 使用历史记录中的原文和语言重新翻译。 */
-  ipcMain.handle('translation-history:retranslate', async (_event, id: unknown) => {
-    const normalizedId = typeof id === 'string' ? id.trim() : ''
-    if (!normalizedId) return
-    const entry = await findTranslationHistoryEntry(normalizedId)
-    if (!entry) return
-    await translateText(
-      entry.sourceText,
-      undefined,
-      {
-        sourceLang: entry.sourceLang,
-        targetLang: entry.targetLang
-      },
-      entry.origin === 'manual' ? 'selection' : entry.origin,
-      undefined,
-      entry.origin
-    )
-  })
-
-  /** 标记快捷动作引导已查看。 */
-  ipcMain.handle('shortcut-guide:dismiss', () => applySettingsPatch({ shortcutGuideSeen: true }))
-
-  ipcMain.handle('settings:get', () => getSettings())
-  ipcMain.handle('shortcuts:get-registration', () => shortcutRegistrationStates)
-  /**
-   * 返回内存环形缓冲中的全部近期日志，供日志查看界面初始化展示。
-   * @returns 按时间升序排列的结构化日志条目。
-   * @author zhenghq
-   */
-  ipcMain.handle('logs:get-history', () => appLogger.getHistory())
-  /**
-   * 弹出保存对话框，将当日日志文件复制到用户选定路径。
-   * @returns 导出结果：成功返回保存路径，取消返回 null。
-   * @author zhenghq
-   */
-  ipcMain.handle('logs:export', async (): Promise<string | null> => {
-    const source = appLogger.getLogFilePath()
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: t('dialog.exportLogs.title'),
-      defaultPath: `main-${new Date().toISOString().slice(0, 10)}.log`
-    })
-    if (canceled || !filePath) return null
-    await copyFile(source, filePath)
-    return filePath
-  })
-  /**
-   * 返回近两天取词诊断聚合摘要，供设置页诊断卡片展示。
-   * @returns 两天聚合摘要。
-   * @author zhenghq
-   */
-  ipcMain.handle('capture-diagnostics:get-summary', () => {
-    const data = getCaptureDiagnosticsStore().getSummary()
-    const days: Record<string, unknown> = {}
-    for (const [date, bucket] of Object.entries(data.days)) {
-      days[date] = bucket.summary
-    }
-    return { days }
-  })
-  /**
-   * 弹出保存对话框，将近两天诊断聚合与原始样本导出为 JSON 文件。
-   * @returns 导出结果：成功返回保存路径，取消返回 null。
-   * @author zhenghq
-   */
-  ipcMain.handle('capture-diagnostics:export', async (): Promise<string | null> => {
-    const data = getCaptureDiagnosticsStore().getExportData()
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: t('dialog.exportDiagnostics.title'),
-      defaultPath: `capture-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: 'JSON', extensions: ['json'] }]
-    })
-    if (canceled || !filePath) return null
-    await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
-    return filePath
-  })
-  ipcMain.handle('settings:set', (_event, patch: Partial<Settings>) => applySettingsPatch(patch))
-  ipcMain.handle('dingtalk:configure', async (_event, patch: DingTalkConfigPatch) => {
-    return (await getReadyDingTalkConfiguration()).applyPatch(patch)
-  })
-  ipcMain.handle('dingtalk:clear-secret', async () => {
-    return (await getReadyDingTalkConfiguration()).clearSecret()
-  })
-  ipcMain.handle('dingtalk:check', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return checkDingTalk()
-  })
-  ipcMain.handle('deepgram:configure', async (_event, patch: DeepgramConfigPatch) =>
-    (await getReadyDeepgramConfiguration()).configure(patch)
-  )
-  ipcMain.handle('deepgram:clear-key', async () =>
-    (await getReadyDeepgramConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('whisper:configure', async (_event, patch: WhisperConfigPatch) =>
-    (await getReadyWhisperConfiguration()).configure(patch)
-  )
-  ipcMain.handle('whisper:clear-key', async () =>
-    (await getReadyWhisperConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('dashscope:configure', async (_event, patch: DashScopeConfigPatch) =>
-    (await getReadyDashScopeConfiguration()).configure(patch)
-  )
-  ipcMain.handle('dashscope:clear-key', async () =>
-    (await getReadyDashScopeConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('openai-realtime:configure', async (_event, patch: OpenAIRealtimeConfigPatch) =>
-    (await getReadyOpenAIRealtimeConfiguration()).configure(patch)
-  )
-  ipcMain.handle('openai-realtime:clear-key', async () =>
-    (await getReadyOpenAIRealtimeConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('gemini-live:configure', async (_event, patch: GeminiLiveConfigPatch) =>
-    (await getReadyGeminiLiveConfiguration()).configure(patch)
-  )
-  ipcMain.handle('gemini-live:clear-key', async () =>
-    (await getReadyGeminiLiveConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('microsoft:check', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return checkMicrosoft()
-  })
-  ipcMain.handle('bili-index:check', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return checkBilibiliIndex()
-  })
-  ipcMain.handle('ai:configure', async (_event, patch: AiConfigPatch) =>
-    (await getReadyAiConfiguration()).applyPatch(patch)
-  )
-  ipcMain.handle('ai:clear-key', async () =>
-    (await getReadyAiConfiguration()).clearApiKey()
-  )
-  ipcMain.handle('ai:list-models', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return listAiModels()
-  })
-  ipcMain.handle('ai:check', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return checkAi()
-  })
-  ipcMain.handle('ocr:get-status', () => getOcrStatus())
-
-  ipcMain.handle('deeplx:configure', async (_event, patch: DeepLxConfigPatch) =>
-    (await getReadyDeepLxConfiguration()).applyPatch(patch)
-  )
-  ipcMain.handle('deeplx:check', async () => {
-    await ensureDeferredStartupServicesInitialized()
-    return checkDeepLx()
-  })
-  ipcMain.handle('deeplx:docker-command', (_event, port: number) => buildDockerCommand(port))
-  ipcMain.on('deeplx:open-doc', () => openDeployDoc())
-  ipcMain.handle('updater:get-status', () => getUpdateStatusSnapshot())
-  ipcMain.handle('updater:check', () => checkForApplicationUpdates())
-  ipcMain.handle('updater:download', () => downloadApplicationUpdate())
-  ipcMain.handle('updater:cancel-download', () => cancelApplicationUpdateDownload())
-  ipcMain.on('updater:install', () => installApplicationUpdate())
-  ipcMain.handle('updater:open-release', () => openApplicationReleasePage())
-  ipcMain.handle('updater:remove-quarantine', () => removeApplicationQuarantine())
 }
 
 // ---- 托盘 ----
