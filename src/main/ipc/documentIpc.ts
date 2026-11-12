@@ -32,6 +32,8 @@ export interface DocumentIpcDependencies {
   openWorkspace(): void
   /** 判断 IPC 是否来自当前文档工作台窗口。 */
   isWorkspaceSender(sender: Electron.WebContents): boolean
+  /** 判断 IPC 是否来自当前设置窗口。 */
+  isSettingsWindowSender(sender: Electron.WebContents): boolean
   /** 返回当前设置。 */
   getSettings(): Settings
   /** 重新校验并批准一个候选路径。 */
@@ -415,6 +417,18 @@ export function registerDocumentIpc(dependencies: DocumentIpcDependencies): void
     const documentTaskHistory = dependencies.getTaskHistoryStore(runtime)
     await documentTranslationCache.clear()
     await documentTaskHistory.clear()
+  })
+  /**
+   * 仅清空全部文档翻译缓存；设置页与文档工作台可调用，不删除任务历史。
+   * @param event IPC 事件对象。
+   * @returns 清空完成后的 Promise。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:clear-translation-cache', async (event) => {
+    if (!dependencies.isWorkspaceSender(event.sender) &&
+      !dependencies.isSettingsWindowSender(event.sender)) return
+    const runtime = await dependencies.loadRuntime()
+    await dependencies.getTranslationCacheStore(runtime).clear()
   })
   /**
    * 读取当前任务中的受控图片资源。

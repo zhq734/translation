@@ -1294,7 +1294,10 @@ async function createDocumentWorkspaceTaskService(): Promise<
     maxFileBytes: () => getSettings().documentTranslationMaxFileBytes,
     maxPages: () => getSettings().documentTranslationMaxPages,
     maxOcrImages: () => getSettings().documentTranslationMaxOcrImages,
-    glossary: () => undefined,
+    glossary: () => {
+      const glossary = getSettings().documentGlossary
+      return glossary.entries.length > 0 ? glossary : undefined
+    },
     readTranslationCache: (key) => cacheStore.read(key),
     writeTranslationCache: (key, value) => cacheStore.write(key, value),
     saveHistory: (snapshot) => historyStore.save(snapshot),
@@ -2739,6 +2742,9 @@ async function initializeDeferredStartupServices(): Promise<void> {
         },
         onInternalWindowFocusLost: () => {
           const focusedWindow = BrowserWindow.getFocusedWindow()
+          // 文档工作台是普通窗口；一旦失焦必须立即撤销可能残留的临时最高层级，
+          // 否则用户切换到其它应用后仍会被工作台遮挡。
+          lowerSettingsPanelRaiseLevel()
           // 文档窗口失焦可能只是把焦点交给设置页、阅读器或另一个自有窗口；
           // 只有焦点为空或已离开全部自有窗口时才解除弹窗内部切换保护。
           if (focusedWindow && (
@@ -2752,7 +2758,9 @@ async function initializeDeferredStartupServices(): Promise<void> {
           settingsWin && !settingsWin.isDestroyed() && settingsWin.isVisible()
         ),
         bringToFrontToOwnWindow: (window) => {
-          showOwnWindowForInteraction(window, { raiseLevel: true })
+          // 文档工作台是普通可交互窗口，不需要越过当前前台应用的系统级层级。
+          // 显式入口只提升窗口自身 z-order 并聚焦，用户仍可正常切换到其它应用。
+          showOwnWindowForInteraction(window)
         },
         loadBounds: () => loadDocumentWindowState(
           join(app.getPath('userData'), DOCUMENT_WINDOW_STATE_FILE)
@@ -6630,12 +6638,14 @@ function forceLowerRaisedInteractionWindows(): void {
     settingsPanelRaiseLevelTimer = null
   }
   // 设置页 blur 可能先于 did-resign-active 清理登记集合。仅遍历集合会漏掉仍
-  // 保持 screen-saver 层级的窗口，因此同时纳入当前设置页和网页阅读器实例兜底。
+  // 保持 screen-saver 层级的窗口，因此同时纳入当前设置页、阅读器和文档工作台兜底。
   // 用 Set 去重，避免已登记窗口被重复写入层级。
   const targetWindows = new Set<BrowserWindow>(raisedInteractionWindows)
   if (settingsWin && !settingsWin.isDestroyed()) targetWindows.add(settingsWin)
   const readerWindow = webReader?.getWindow()
   if (readerWindow && !readerWindow.isDestroyed()) targetWindows.add(readerWindow)
+  const workspaceWindow = documentWorkspace?.getWindow()
+  if (workspaceWindow && !workspaceWindow.isDestroyed()) targetWindows.add(workspaceWindow)
   for (const win of targetWindows) {
     if (win.isDestroyed()) {
       raisedInteractionWindows.delete(win)
@@ -7465,6 +7475,11 @@ async function applySettingsPatch(patch: Partial<Settings>): Promise<Settings> {
     applySelectionListener()
     if (settings.triggerMode === 'auto') void warnIfNoAccessibility()
   }
+  if (patch.documentTranslationCacheMaxBytes !== undefined ||
+      patch.documentTranslationCacheMaxAgeDays !== undefined) {
+    // 设置保存必须等缓存完成热更新与淘汰，避免 IPC 已返回但新限制尚未生效。
+    await documentRuntime.applyTranslationCacheConfiguration(settings)
+  }
   if (patch.showDockIcon !== undefined && settings.showDockIcon !== previous.showDockIcon) {
     await applyMacOSDockVisibility(settings.showDockIcon)
   }
@@ -7572,6 +7587,7 @@ function registerIpc(): void {
     taskServices: documentWorkspaceTaskServices,
     openWorkspace: openDocumentWorkspaceFromPopup,
     isWorkspaceSender: isDocumentWorkspaceSender,
+    isSettingsWindowSender,
     getSettings,
     validateApprovedPath: validateApprovedDocumentPath,
     createTaskService: createDocumentWorkspaceTaskService,

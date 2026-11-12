@@ -391,6 +391,27 @@ h2 {
   margin: 8px 0 12px;
 }
 
+.document-settings-glossary-row {
+  grid-template-columns: minmax(90px, 112px) minmax(0, 1fr);
+}
+
+.document-settings-glossary-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.document-settings-glossary-editor label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.document-settings-glossary-editor textarea {
+  min-height: 132px;
+}
+
 .hotkey-control {
   display: flex;
   align-items: center;

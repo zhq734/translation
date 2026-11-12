@@ -4,6 +4,7 @@ import { isTranslationProviderPreference } from './translationProviders'
 import { isWebImageOverlayPlacement } from './webPageTranslation'
 import { normalizeUiLocale } from './i18n/locale'
 import { isAudioSource, isDisplayMode, isRealtimeSubtitleAsrProvider } from './subtitleSession'
+import type { DocumentGlossary, DocumentGlossaryEntry } from './documentTranslation'
 
 /** 判断设置中的模型值是否为 Bilibili Index-Translate 公开模型。 */
 const BILIBILI_INDEX_MODELS = ['index-mt-2b', 'index-mt-9b', 'index-mt-35b'] as const
@@ -19,7 +20,7 @@ function isBilibiliIndexModel(value: unknown): value is Settings['biliIndexTrans
     (BILIBILI_INDEX_MODELS as readonly string[]).includes(value)
 }
 
-export const SETTINGS_SCHEMA_VERSION = 29
+export const SETTINGS_SCHEMA_VERSION = 30
 
 /** Whisper 本地 OpenAI 兼容服务的默认 Base URL。 */
 const DEFAULT_WHISPER_BASE_URL = 'http://127.0.0.1:8000/v1'
@@ -66,6 +67,97 @@ const DOCUMENT_SETTINGS_LIMITS = {
   cacheAgeDaysMax: 365
 } as const
 
+/** 文档术语表允许保存的最大条目数。 */
+const DOCUMENT_GLOSSARY_MAX_ENTRIES = 500
+
+/** 单条文档术语源文与译法允许的最大字符数。 */
+const DOCUMENT_GLOSSARY_TERM_MAX_LENGTH = 256
+
+/** 文档术语语言标签允许的最大字符数。 */
+const DOCUMENT_GLOSSARY_LANGUAGE_MAX_LENGTH = 32
+
+/**
+ * 规范化术语表文本字段，移除控制字符并限制长度。
+ * @param value 原始术语字段。
+ * @param maxLength 最大字符数。
+ * @returns 去除首尾空白后的安全文本。
+ * @author zhenghq
+ */
+function normalizeGlossaryField(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return ''
+  return value
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
+
+/**
+ * 计算术语表内容的稳定短指纹，用于隔离不同术语版本的翻译缓存。
+ * @param entries 已规范化的术语条目。
+ * @returns 稳定的小写十六进制版本号。
+ * @author zhenghq
+ */
+function documentGlossaryVersion(entries: readonly DocumentGlossaryEntry[]): string {
+  // 空术语表使用稳定语义版本，避免默认设置因序列化细节产生无意义的变化。
+  if (entries.length === 0) return 'glossary-v1'
+  const serialized = JSON.stringify(entries)
+  let first = 2166136261
+  let second = 2246822519
+  for (let index = 0; index < serialized.length; index += 1) {
+    const code = serialized.charCodeAt(index)
+    first ^= code
+    first = Math.imul(first, 16777619)
+    second ^= code + index
+    second = Math.imul(second, 3266489917)
+  }
+  return `glossary-${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0).toString(16).padStart(8, '0')}`
+}
+
+/**
+ * 将未知术语表规范化为去重、限量且版本可信的安全结构。
+ * @param value 设置中保存的未知术语表。
+ * @returns 可直接注入文档翻译管线的术语表。
+ * @author zhenghq
+ */
+export function normalizeDocumentGlossary(value: unknown): DocumentGlossary {
+  const candidate = value && typeof value === 'object'
+    ? value as { entries?: unknown }
+    : undefined
+  const rawEntries = Array.isArray(candidate?.entries) ? candidate.entries : []
+  const seen = new Set<string>()
+  const entries: DocumentGlossaryEntry[] = []
+  for (const rawEntry of rawEntries) {
+    if (entries.length >= DOCUMENT_GLOSSARY_MAX_ENTRIES) break
+    if (!rawEntry || typeof rawEntry !== 'object') continue
+    const raw = rawEntry as Partial<DocumentGlossaryEntry>
+    const source = normalizeGlossaryField(raw.source, DOCUMENT_GLOSSARY_TERM_MAX_LENGTH)
+    const target = normalizeGlossaryField(raw.target, DOCUMENT_GLOSSARY_TERM_MAX_LENGTH)
+    if (!source || !target) continue
+    const sourceLang = normalizeGlossaryField(
+      raw.sourceLang,
+      DOCUMENT_GLOSSARY_LANGUAGE_MAX_LENGTH
+    ).toUpperCase()
+    const targetLang = normalizeGlossaryField(
+      raw.targetLang,
+      DOCUMENT_GLOSSARY_LANGUAGE_MAX_LENGTH
+    ).toUpperCase()
+    const entry: DocumentGlossaryEntry = {
+      source,
+      target,
+      ...(sourceLang ? { sourceLang } : {}),
+      ...(targetLang ? { targetLang } : {})
+    }
+    const identity = JSON.stringify(entry)
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    entries.push(entry)
+  }
+  return {
+    version: documentGlossaryVersion(entries),
+    entries
+  }
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
   uiLocale: 'auto',
@@ -106,6 +198,7 @@ export const DEFAULT_SETTINGS: Settings = {
   documentTranslationMaxOcrImages: 200,
   documentTranslationCacheMaxBytes: 1024 * 1024 * 1024,
   documentTranslationCacheMaxAgeDays: 30,
+  documentGlossary: normalizeDocumentGlossary(undefined),
   autoHideMs: 0,
   deepLxUrl: '',
   triggerMode: 'button',
@@ -547,6 +640,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
       1,
       DOCUMENT_SETTINGS_LIMITS.cacheAgeDaysMax
     ),
+    // 第三十版新增文档术语表；版本由规范化内容重新计算，禁止沿用可伪造的旧版本。
+    documentGlossary: normalizeDocumentGlossary(rawSettings.documentGlossary),
     autoHideMs: schemaVersion < 2 ? 0 : Math.max(0, Number(merged.autoHideMs) || 0),
     deepLxUrl: String(merged.deepLxUrl || '').trim(),
     triggerMode,

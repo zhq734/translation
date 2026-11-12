@@ -121,6 +121,7 @@ test('文档工作台协议必须暴露历史与缓存管理通道', () => {
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.openHistory, 'document:open-history')
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.deleteHistory, 'document:delete-history')
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.clearCache, 'document:clear-cache')
+  assert.equal(DOCUMENT_WORKSPACE_CHANNELS.clearTranslationCache, 'document:clear-translation-cache')
 })
 
 test('文档运行请求必须只保留白名单字段并校验模式与代际', () => {

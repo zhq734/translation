@@ -29,6 +29,8 @@ import { startLocaleRuntime } from './locale'
 import { localizedLanguages } from '../../shared/langs'
 import type { ThemeMode, ThemePreset } from '../../shared/types'
 import type { Locale, UiLocale } from '../../shared/i18n/locale'
+import type { DocumentGlossary, DocumentGlossaryEntry } from '../../shared/documentTranslation'
+import { normalizeDocumentGlossary } from '../../shared/settingsDefaults'
 
 startThemeRuntime(window.api)
 const localeRuntime = startLocaleRuntime(window.api)
@@ -66,6 +68,13 @@ const documentTranslationMaxPages = document.getElementById('document-translatio
 const documentTranslationMaxOcrImages = document.getElementById('document-translation-max-ocr-images') as HTMLInputElement
 const documentTranslationCacheMaxMb = document.getElementById('document-translation-cache-max-mb') as HTMLInputElement
 const documentTranslationCacheMaxAgeDays = document.getElementById('document-translation-cache-max-age-days') as HTMLInputElement
+const documentGlossarySourceLang = document.getElementById('document-glossary-source-lang') as HTMLInputElement
+const documentGlossaryTargetLang = document.getElementById('document-glossary-target-lang') as HTMLInputElement
+const documentGlossaryTextarea = document.getElementById('document-glossary-textarea') as HTMLTextAreaElement
+const documentGlossaryImport = document.getElementById('document-glossary-import') as HTMLButtonElement
+const documentGlossaryFile = document.getElementById('document-glossary-file') as HTMLInputElement
+const documentGlossaryStatus = document.getElementById('document-glossary-status') as HTMLElement
+const clearDocumentTranslationCacheButton = document.getElementById('clear-document-translation-cache') as HTMLButtonElement
 const realtimeSubtitleAudioSource = document.getElementById('realtime-subtitle-audio-source') as HTMLSelectElement
 const realtimeSubtitleAsrProvider = document.getElementById('realtime-subtitle-asr-provider') as HTMLSelectElement
 const realtimeSubtitleDeepgramSettings = document.getElementById('realtime-subtitle-deepgram-settings') as HTMLElement
@@ -1028,6 +1037,17 @@ function renderSettings(settings: Settings): void {
   documentTranslationMaxOcrImages.value = String(settings.documentTranslationMaxOcrImages)
   documentTranslationCacheMaxMb.value = String(Math.round(settings.documentTranslationCacheMaxBytes / (1024 * 1024)))
   documentTranslationCacheMaxAgeDays.value = String(settings.documentTranslationCacheMaxAgeDays)
+  // 设置广播可能由其它控件触发；术语输入框有焦点时不得覆盖用户正在编辑的草稿。
+  if (document.activeElement !== documentGlossaryTextarea) {
+    documentGlossaryTextarea.value = formatDocumentGlossaryEntries(settings.documentGlossary.entries)
+  }
+  if (document.activeElement !== documentGlossarySourceLang) {
+    documentGlossarySourceLang.value = settings.documentGlossary.entries[0]?.sourceLang ?? ''
+  }
+  if (document.activeElement !== documentGlossaryTargetLang) {
+    documentGlossaryTargetLang.value = settings.documentGlossary.entries[0]?.targetLang ?? ''
+  }
+  renderDocumentGlossaryStatus(settings.documentGlossary)
   realtimeSubtitleAudioSource.value = settings.realtimeSubtitleAudioSource
   realtimeSubtitleAsrProvider.value = settings.realtimeSubtitleAsrProvider
   renderRealtimeSubtitleProviderSettings()
@@ -1650,14 +1670,192 @@ function saveDocumentTranslationHotkey(): void {
  * @author zhenghq
  */
 function saveDocumentTranslationSettings(): void {
-  void save({
+  const glossary = parseDocumentGlossaryTextarea(
+    documentGlossaryTextarea.value,
+    documentGlossarySourceLang.value,
+    documentGlossaryTargetLang.value
+  )
+  const saved = save({
     documentTranslationEnabled: documentTranslationEnabled.checked,
     documentTranslationMaxFileBytes: Number(documentTranslationMaxFileMb.value) * 1024 * 1024,
     documentTranslationMaxPages: Number(documentTranslationMaxPages.value),
     documentTranslationMaxOcrImages: Number(documentTranslationMaxOcrImages.value),
     documentTranslationCacheMaxBytes: Number(documentTranslationCacheMaxMb.value) * 1024 * 1024,
-    documentTranslationCacheMaxAgeDays: Number(documentTranslationCacheMaxAgeDays.value)
+    documentTranslationCacheMaxAgeDays: Number(documentTranslationCacheMaxAgeDays.value),
+    documentGlossary: glossary
   })
+  void saved.then((ok) => {
+    if (ok) renderDocumentGlossaryStatus(glossary)
+  })
+}
+
+/**
+ * 将术语条目格式化为设置页可编辑的逐行文本。
+ * @param entries 当前术语条目。
+ * @returns 每行一条的术语文本。
+ * @author zhenghq
+ */
+function formatDocumentGlossaryEntries(entries: readonly DocumentGlossaryEntry[]): string {
+  return entries.map((entry) => {
+    const columns = [entry.source, entry.target, entry.sourceLang ?? '', entry.targetLang ?? '']
+    while (columns.length > 2 && !columns[columns.length - 1]) columns.pop()
+    return columns.join(' => ')
+  }).join('\n')
+}
+
+/**
+ * 解析设置页术语文本，支持 =>、制表符、逗号与 JSON 数组导入内容。
+ * @param text 逐行术语文本。
+ * @param defaultSourceLang 未在条目中声明时使用的源语言。
+ * @param defaultTargetLang 未在条目中声明时使用的目标语言。
+ * @returns 规范化后的术语表；条目为空时保留稳定空版本。
+ * @author zhenghq
+ */
+function parseDocumentGlossaryTextarea(
+  text: string,
+  defaultSourceLang: string,
+  defaultTargetLang: string
+): DocumentGlossary {
+  const entries: unknown[] = []
+  let parsedJson: unknown
+  const trimmed = text.trim()
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      parsedJson = JSON.parse(trimmed)
+    } catch {
+      parsedJson = undefined
+    }
+  }
+  const rawEntries = Array.isArray(parsedJson)
+    ? parsedJson
+    : parsedJson && typeof parsedJson === 'object' && Array.isArray((parsedJson as { entries?: unknown }).entries)
+      ? (parsedJson as { entries: unknown[] }).entries
+      : trimmed.split(/\r?\n/gu)
+  for (const rawEntry of rawEntries) {
+    if (entries.length >= 500) break
+    const candidate = typeof rawEntry === 'string'
+      ? parseDocumentGlossaryLine(rawEntry)
+      : parseDocumentGlossaryObject(rawEntry)
+    if (!candidate) continue
+    entries.push({
+      source: candidate.source,
+      target: candidate.target,
+      sourceLang: candidate.sourceLang || defaultSourceLang,
+      targetLang: candidate.targetLang || defaultTargetLang
+    })
+  }
+  return normalizeDocumentGlossary({ entries })
+}
+
+/**
+ * 将单行术语文本解析为条目；支持箭头、制表符和逗号分隔，支持可选语言列。
+ * @param line 术语文本行。
+ * @returns 原始术语条目或 null。
+ * @author zhenghq
+ */
+function parseDocumentGlossaryLine(line: string): DocumentGlossaryEntry | null {
+  const trimmed = line.trim()
+  if (!trimmed || trimmed.startsWith('#')) return null
+  const arrow = trimmed.split(/\s*=>\s*/u)
+  if (arrow.length >= 2 && arrow[0]?.trim() && arrow[1]?.trim()) {
+    return {
+      source: arrow[0].trim(),
+      target: arrow[1].trim(),
+      ...(arrow[2]?.trim() ? { sourceLang: arrow[2].trim() } : {}),
+      ...(arrow[3]?.trim() ? { targetLang: arrow[3].trim() } : {})
+    }
+  }
+  const columns = trimmed.split(/\t+|,\s*/u).map((part) => part.trim())
+  if (columns.length >= 2 && columns[0] && columns[1]) {
+    return {
+      source: columns[0],
+      target: columns[1],
+      ...(columns[2] ? { sourceLang: columns[2] } : {}),
+      ...(columns[3] ? { targetLang: columns[3] } : {})
+    }
+  }
+  return null
+}
+
+/**
+ * 将 JSON 术语对象解析为条目。
+ * @param value 未知 JSON 值。
+ * @returns 原始术语条目或 null。
+ * @author zhenghq
+ */
+function parseDocumentGlossaryObject(value: unknown): DocumentGlossaryEntry | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const source = typeof record.source === 'string' ? record.source.trim() : ''
+  const target = typeof record.target === 'string' ? record.target.trim() : ''
+  if (!source || !target) return null
+  return {
+    source,
+    target,
+    ...(typeof record.sourceLang === 'string' && record.sourceLang.trim()
+      ? { sourceLang: record.sourceLang.trim() }
+      : {}),
+    ...(typeof record.targetLang === 'string' && record.targetLang.trim()
+      ? { targetLang: record.targetLang.trim() }
+      : {})
+  }
+}
+
+/**
+ * 更新术语表状态提示，避免把状态写入用户输入。
+ * @param glossary 当前术语表。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderDocumentGlossaryStatus(glossary: DocumentGlossary): void {
+  documentGlossaryStatus.textContent = t('settings.document.glossaryStatus', {
+    count: glossary.entries.length,
+    version: glossary.version
+  })
+}
+
+/**
+ * 从本地文本、CSV、TSV 或 JSON 文件导入术语表并保存。
+ * @param file 用户选择的文件。
+ * @returns 导入完成后的 Promise。
+ * @author zhenghq
+ */
+async function importDocumentGlossary(file: File): Promise<void> {
+  try {
+    const text = await file.text()
+    documentGlossaryTextarea.value = text
+    const glossary = parseDocumentGlossaryTextarea(
+      text,
+      documentGlossarySourceLang.value,
+      documentGlossaryTargetLang.value
+    )
+    renderDocumentGlossaryStatus(glossary)
+    await save({ documentGlossary: glossary })
+    renderDocumentGlossaryStatus(glossary)
+  } catch (error) {
+    flash(t('settings.document.glossaryImportFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  } finally {
+    documentGlossaryFile.value = ''
+  }
+}
+
+/**
+ * 确认后仅清空文档翻译缓存。
+ * @returns 清空完成后的 Promise。
+ * @author zhenghq
+ */
+async function clearDocumentTranslationCache(): Promise<void> {
+  if (!window.confirm(t('settings.document.cacheClearConfirm'))) return
+  try {
+    await window.api.clearDocumentTranslationCache()
+    flash(t('settings.document.cacheCleared'))
+  } catch (error) {
+    flash(t('settings.document.cacheClearFailed', {
+      message: (error as Error).message || t('common.unknownError')
+    }), 'error')
+  }
 }
 
 /**
@@ -2679,6 +2877,17 @@ documentTranslationMaxPages.addEventListener('change', saveDocumentTranslationSe
 documentTranslationMaxOcrImages.addEventListener('change', saveDocumentTranslationSettings)
 documentTranslationCacheMaxMb.addEventListener('change', saveDocumentTranslationSettings)
 documentTranslationCacheMaxAgeDays.addEventListener('change', saveDocumentTranslationSettings)
+documentGlossaryTextarea.addEventListener('change', saveDocumentTranslationSettings)
+documentGlossarySourceLang.addEventListener('change', saveDocumentTranslationSettings)
+documentGlossaryTargetLang.addEventListener('change', saveDocumentTranslationSettings)
+documentGlossaryImport.addEventListener('click', () => documentGlossaryFile.click())
+documentGlossaryFile.addEventListener('change', () => {
+  const [file] = documentGlossaryFile.files ?? []
+  if (file) void importDocumentGlossary(file)
+})
+clearDocumentTranslationCacheButton.addEventListener('click', () => {
+  void clearDocumentTranslationCache()
+})
 realtimeSubtitleAudioSource.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleAsrProvider.addEventListener('change', saveRealtimeSubtitleSettings)
 realtimeSubtitleAsrProvider.addEventListener('change', renderRealtimeSubtitleProviderSettings)

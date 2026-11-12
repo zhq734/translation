@@ -9,7 +9,7 @@ import { normalizeSettings, SETTINGS_SCHEMA_VERSION } from '../src/shared/settin
  */
 test('实时字幕设置应完成默认值与非法值迁移', () => {
   const defaults = normalizeSettings({ schemaVersion: 24 })
-  assert.equal(SETTINGS_SCHEMA_VERSION, 29)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 30)
   assert.equal(defaults.realtimeSubtitleAudioSource, 'system')
   assert.equal(defaults.realtimeSubtitleRecognitionLang, 'auto')
   assert.equal(defaults.realtimeSubtitleAsrProvider, 'deepgram')

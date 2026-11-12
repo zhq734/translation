@@ -213,6 +213,57 @@ test('提升登记被失焦清理后，应用失活仍须覆盖设置页与阅�
   )
 })
 
+test('文档工作台不得被统一置前入口提升到系统最高层级', () => {
+  const managerSource = stripComments(
+    readFileSync('src/main/documentWorkspaceWindow.ts', 'utf8')
+  )
+  const focusSource = extractFunction(managerSource, 'focusOrOpenExistingWindow(): boolean {')
+  const managerConfigStart = mainSource.indexOf('documentWorkspace = new DocumentWorkspaceManager({')
+  const managerConfigEnd = mainSource.indexOf('loadBounds:', managerConfigStart)
+  const managerConfig = stripComments(mainSource.slice(managerConfigStart, managerConfigEnd))
+
+  assert.ok(managerConfigStart >= 0 && managerConfigEnd > managerConfigStart)
+
+  // 文档工作台是普通可交互窗口。screen-saver 层级会让用户切换到其它应用后
+  // 仍被工作台遮挡；显式快捷键只需恢复、置前并聚焦该窗口自身。
+  assert.doesNotMatch(
+    focusSource,
+    /setAlwaysOnTop\(true/u,
+    '文档工作台显式入口不得调用 setAlwaysOnTop(true)'
+  )
+  assert.match(
+    focusSource,
+    /this\.window\.show\(\)[\s\S]*?this\.window\.focus\(\)/u,
+    '文档工作台仍必须通过普通窗口显示与聚焦恢复交互'
+  )
+  assert.doesNotMatch(
+    managerConfig,
+    /raiseLevel:\s*true/u,
+    '文档工作台注入的显式置前回调不得提升系统层级'
+  )
+})
+
+test('文档工作台失焦或应用失活时必须撤销残留最高层级', () => {
+  const focusLostStart = mainSource.indexOf('onInternalWindowFocusLost: () => {', mainSource.indexOf('new DocumentWorkspaceManager'))
+  const focusLostEnd = mainSource.indexOf('hasVisibleSettingsWindow:', focusLostStart)
+  const focusLostSource = stripComments(mainSource.slice(focusLostStart, focusLostEnd))
+  const forceLowerSource = stripComments(
+    extractFunction(mainSource, 'function forceLowerRaisedInteractionWindows(')
+  )
+
+  assert.ok(focusLostStart >= 0 && focusLostEnd > focusLostStart)
+  assert.match(
+    focusLostSource,
+    /lowerSettingsPanelRaiseLevel\(\)/u,
+    '文档工作台失焦后必须立即回收统一入口提升的层级'
+  )
+  assert.match(
+    forceLowerSource,
+    /documentWorkspace\?\.getWindow\(\)/u,
+    '应用失活强制回收必须兜底覆盖文档工作台实例'
+  )
+})
+
 test('已可见的后台设置页不得被静默显示重复顶到前台', () => {
   const helperSource = stripComments(
     extractFunction(mainSource, 'function showOwnWindowForInteraction(')

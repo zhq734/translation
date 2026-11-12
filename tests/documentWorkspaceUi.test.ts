@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { readDocumentSource } from './helpers/documentSource.ts'
-import { readMainSource } from './helpers/mainSource.ts'
+import { extractIpcRegistration, readMainSource } from './helpers/mainSource.ts'
 import { parseMarkdownDocument } from '../src/main/documentTextParser.ts'
 import {
   occupiesDocumentTranslationFlow,
@@ -849,7 +849,7 @@ test('文档任务生产接线必须注入动态限制、缓存和受控翻译�
   assert.match(serviceSource, /maxPages: \(\) => getSettings\(\)\.documentTranslationMaxPages/u)
   assert.match(serviceSource, /maxOcrImages: \(\) => getSettings\(\)\.documentTranslationMaxOcrImages/u)
   assert.match(serviceSource, /getParserVersion: \(\) => 'document-parser-v1'/u)
-  assert.match(serviceSource, /glossary: \(\) => undefined/u)
+  assert.match(serviceSource, /glossary: \(\) => \{[\s\S]*?getSettings\(\)\.documentGlossary[\s\S]*?entries\.length/u)
   assert.match(main, /function getDocumentTranslationCacheStore\(/u)
   assert.match(main, /new runtime\.DocumentTranslationCacheStore\(/u)
   assert.match(main, /join\(app\.getPath\('userData'\), 'document-translation-cache'\)/u)
@@ -3911,6 +3911,36 @@ test('文档历史必须通过受控 IPC 列出、打开、删除并清空缓存
   assert.match(clearSource, /documentTranslationCache\.clear\(\)/u)
   assert.match(clearSource, /documentTaskHistory\.clear\(\)/u)
   assert.doesNotMatch(clearSource, /saveSettings\(/u)
+})
+
+test('设置页清空文档翻译缓存必须使用独立 IPC 且不删除任务历史', () => {
+  const types = read('src/shared/types.ts')
+  const preload = read('src/preload/index.ts')
+  const protocol = read('src/shared/documentWorkspace.ts')
+  const main = readMainSource()
+  const clearSource = extractIpcRegistration(main, 'document:clear-translation-cache')
+  const html = read('src/renderer/settings.html')
+  const source = read('src/renderer/src/settings.ts')
+
+  assert.match(protocol, /clearTranslationCache:\s*'document:clear-translation-cache'/u)
+  assert.match(types, /clearDocumentTranslationCache\(\): Promise<void>/u)
+  assert.match(preload, /ipcRenderer\.invoke\('document:clear-translation-cache'\)/u)
+  assert.match(clearSource, /isWorkspaceSender\(event\.sender\)/u)
+  assert.match(clearSource, /isSettingsWindowSender\(event\.sender\)/u)
+  assert.match(clearSource, /getTranslationCacheStore\(runtime\)\.clear\(\)/u)
+  assert.doesNotMatch(clearSource, /getTaskHistoryStore|documentTaskHistory|\.clearCache\(/u)
+  assert.match(html, /id="clear-document-translation-cache"/u)
+  assert.match(source, /window\.api\.clearDocumentTranslationCache\(\)/u)
+})
+
+test('文档缓存配置变化必须复用存储实例并立即应用最新设置', () => {
+  const runtime = read('src/main/documentRuntime.ts')
+  const main = readMainSource()
+
+  assert.match(runtime, /translationCache\.configure\(\{/u)
+  assert.match(runtime, /maxBytes:\s*settings\.documentTranslationCacheMaxBytes/u)
+  assert.match(runtime, /maxAgeMs:\s*settings\.documentTranslationCacheMaxAgeDays \* 24 \* 60 \* 60 \* 1000/u)
+  assert.match(main, /patch\.documentTranslationCacheMaxBytes !== undefined[\s\S]*?await documentRuntime\.applyTranslationCacheConfiguration\(settings\)/u)
 })
 
 test('文档历史列表必须展示完整摘要并使用对话框确认删除和清空', () => {

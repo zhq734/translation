@@ -176,15 +176,37 @@ export class DocumentRuntimeController {
   getTranslationCacheStore(
     runtime: DocumentMainRuntime
   ): import('./documentTranslationCache').DocumentTranslationCacheStore {
+    const settings = this.dependencies.getSettings()
+    const configuration = {
+      maxBytes: settings.documentTranslationCacheMaxBytes,
+      maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
+    }
     if (!this.translationCache) {
-      const settings = this.dependencies.getSettings()
       this.translationCache = new runtime.DocumentTranslationCacheStore({
         directory: join(app.getPath('userData'), 'document-translation-cache'),
-        maxBytes: settings.documentTranslationCacheMaxBytes,
-        maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
+        ...configuration
+      })
+    } else {
+      void this.applyTranslationCacheConfiguration(settings).catch((error) => {
+        console.error('[document-cache] 同步缓存配置失败:', (error as Error).message)
       })
     }
     return this.translationCache
+  }
+
+  /**
+   * 在缓存已经创建时立即应用最新容量与保留期；尚未加载文档运行时则无需处理。
+   * @param settings 当前完整设置。
+   * @returns 配置已应用时返回 true，缓存尚未创建时返回 false。
+   * @author zhenghq
+   */
+  async applyTranslationCacheConfiguration(settings: Settings): Promise<boolean> {
+    if (!this.translationCache) return false
+    await this.translationCache.configure({
+      maxBytes: settings.documentTranslationCacheMaxBytes,
+      maxAgeMs: settings.documentTranslationCacheMaxAgeDays * 24 * 60 * 60 * 1000
+    })
+    return true
   }
 
   /**

@@ -612,6 +612,13 @@ const api: Api = {
   clearDocumentCache: (): Promise<void> =>
     ipcRenderer.invoke('document:clear-cache'),
   /**
+   * 仅清空文档翻译缓存，不删除任务历史或修改用户设置。
+   * @returns 清空完成后的 Promise。
+   * @author zhenghq
+   */
+  clearDocumentTranslationCache: (): Promise<void> =>
+    ipcRenderer.invoke('document:clear-translation-cache'),
+  /**
    * 读取当前任务中的受控图片资源。
    * @param jobId 任务标识。
    * @param assetId 解析阶段生成的资源标识。

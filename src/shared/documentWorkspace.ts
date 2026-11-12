@@ -360,6 +360,7 @@ export const DOCUMENT_WORKSPACE_CHANNELS = {
   openHistory: 'document:open-history',
   deleteHistory: 'document:delete-history',
   clearCache: 'document:clear-cache',
+  clearTranslationCache: 'document:clear-translation-cache',
   getAsset: 'document:get-asset',
   getSource: 'document:get-source',
   getApprovedAsset: 'document:get-approved-asset',

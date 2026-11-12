@@ -8,13 +8,15 @@ import {
 } from '../src/shared/settingsDefaults.ts'
 
 test('文档翻译设置必须提供安全默认值并升级旧配置', () => {
-  assert.equal(SETTINGS_SCHEMA_VERSION, 29)
+  assert.equal(SETTINGS_SCHEMA_VERSION, 30)
   assert.equal(DEFAULT_SETTINGS.documentTranslationEnabled, true)
   assert.equal(DEFAULT_SETTINGS.documentTranslationMaxFileBytes, 100 * 1024 * 1024)
   assert.equal(DEFAULT_SETTINGS.documentTranslationMaxPages, 500)
   assert.equal(DEFAULT_SETTINGS.documentTranslationMaxOcrImages, 200)
   assert.equal(DEFAULT_SETTINGS.documentTranslationCacheMaxBytes, 1024 * 1024 * 1024)
   assert.equal(DEFAULT_SETTINGS.documentTranslationCacheMaxAgeDays, 30)
+  assert.deepEqual(DEFAULT_SETTINGS.documentGlossary.entries, [])
+  assert.equal(DEFAULT_SETTINGS.documentGlossary.version, 'glossary-v1')
 
   const migrated = normalizeSettings({ schemaVersion: 20 })
   assert.equal(migrated.schemaVersion, SETTINGS_SCHEMA_VERSION)
@@ -61,14 +63,52 @@ test('设置页必须提供文档开关、资源限制与缓存保留期控件',
   assert.match(html, /id="document-translation-max-ocr-images"[^>]*type="number"[^>]*min="1"[^>]*max="2000"/u)
   assert.match(html, /id="document-translation-cache-max-mb"[^>]*type="number"[^>]*min="64"[^>]*max="20480"/u)
   assert.match(html, /id="document-translation-cache-max-age-days"[^>]*type="number"[^>]*min="1"[^>]*max="365"/u)
+  assert.match(html, /id="document-glossary-textarea"/u)
+  assert.match(html, /id="document-glossary-import"/u)
+  assert.match(html, /id="document-glossary-file"[^>]*type="file"/u)
+  assert.match(html, /id="clear-document-translation-cache"/u)
   assert.match(source, /documentTranslationEnabled:\s*documentTranslationEnabled\.checked/u)
   assert.match(source, /documentTranslationMaxFileBytes:\s*Number\(documentTranslationMaxFileMb\.value\)\s*\*\s*1024\s*\*\s*1024/u)
   assert.match(source, /documentTranslationMaxPages:\s*Number\(documentTranslationMaxPages\.value\)/u)
   assert.match(source, /documentTranslationMaxOcrImages:\s*Number\(documentTranslationMaxOcrImages\.value\)/u)
   assert.match(source, /documentTranslationCacheMaxBytes:\s*Number\(documentTranslationCacheMaxMb\.value\)\s*\*\s*1024\s*\*\s*1024/u)
   assert.match(source, /documentTranslationCacheMaxAgeDays:\s*Number\(documentTranslationCacheMaxAgeDays\.value\)/u)
+  assert.match(source, /const glossary = parseDocumentGlossaryTextarea/u)
+  assert.match(source, /documentGlossary:\s*glossary/u)
+  assert.match(source, /window\.api\.clearDocumentTranslationCache\(\)/u)
   assert.match(zh, /'settings\.document\.enabled'/u)
   assert.match(zh, /'settings\.document\.limitsHint'/u)
   assert.match(en, /'settings\.document\.enabled'/u)
   assert.match(en, /'settings\.document\.limitsHint'/u)
+})
+
+test('文档术语表必须裁剪、去重、限制规模并确定性更新版本', () => {
+  const normalized = normalizeSettings({
+    schemaVersion: 29,
+    documentGlossary: {
+      version: 'user-controlled-version',
+      entries: [
+        { source: '  workspace  ', target: ' 工作区 ', sourceLang: ' en ', targetLang: ' zh ' },
+        { source: 'workspace', target: '工作区', sourceLang: 'EN', targetLang: 'ZH' },
+        { source: '', target: '空源' },
+        { source: 'cache', target: '   ' },
+        { source: 'cache', target: '缓存', sourceLang: 'EN', targetLang: 'ZH' }
+      ]
+    }
+  })
+
+  assert.deepEqual(normalized.documentGlossary.entries, [
+    { source: 'workspace', target: '工作区', sourceLang: 'EN', targetLang: 'ZH' },
+    { source: 'cache', target: '缓存', sourceLang: 'EN', targetLang: 'ZH' }
+  ])
+  assert.notEqual(normalized.documentGlossary.version, 'user-controlled-version')
+  assert.match(normalized.documentGlossary.version, /^glossary-[a-z0-9]+$/u)
+
+  const changed = normalizeSettings({
+    documentGlossary: {
+      version: normalized.documentGlossary.version,
+      entries: [{ source: 'workspace', target: '协作空间' }]
+    }
+  })
+  assert.notEqual(changed.documentGlossary.version, normalized.documentGlossary.version)
 })

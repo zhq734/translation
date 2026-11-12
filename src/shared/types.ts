@@ -11,6 +11,7 @@ import type {
 import type { UiLocale } from './i18n/locale'
 import type { DocumentCapabilities, DocumentFormat } from './documentTypes'
 import type { DocumentPlatformCapability } from './documentPlatformCapability'
+import type { DocumentGlossary } from './documentTranslation'
 import type {
   RealtimeSubtitleAudioSource,
   RealtimeSubtitleAsrProvider,
@@ -1068,6 +1069,8 @@ export interface Settings {
   documentTranslationCacheMaxBytes: number
   /** 文档翻译缓存保留天数。 */
   documentTranslationCacheMaxAgeDays: number
+  /** 用户维护的文档翻译术语表；版本随规范化内容确定性变化。 */
+  documentGlossary: DocumentGlossary
   autoHideMs: number
   /** 自建 DeepLX 端点列表，支持使用中英文逗号分隔。 */
   deepLxUrl: string
@@ -1626,6 +1629,8 @@ export interface Api {
   deleteDocumentHistory(jobId: string): Promise<boolean>
   /** 清空全部文档翻译缓存与任务历史，不修改用户设置。 */
   clearDocumentCache(): Promise<void>
+  /** 仅清空文档翻译缓存，不删除任务历史或修改用户设置。 */
+  clearDocumentTranslationCache(): Promise<void>
   /** 读取指定任务中的受控图片资源。 */
   getDocumentAsset(jobId: string, assetId: string): Promise<DocumentAssetResult>
   /** 读取指定 PDF 任务的原始字节，供 PDF.js 原生预览。 */
