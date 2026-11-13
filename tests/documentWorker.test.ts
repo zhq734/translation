@@ -112,6 +112,41 @@ test('worker 宿主应拒绝非法请求且不启动执行器', async () => {
   }
 })
 
+test('worker 宿主应忽略缓存 RPC 结果且不启动执行器或报错', async () => {
+  const responses: DocumentWorkerResponseMessage[] = []
+  const run = executor(responses)
+  const host = new DocumentWorkerHost(run, (message) => responses.push(message))
+
+  await host.handle({
+    type: 'cache-read-result',
+    requestId: 'read-1',
+    responseToken: 'read-token',
+    value: null
+  })
+  await host.handle({
+    type: 'cache-write-result',
+    requestId: 'write-1',
+    responseToken: 'write-token',
+    ok: true
+  })
+
+  assert.equal(run.calls, 0)
+  assert.deepEqual(responses, [])
+})
+
+test('worker 宿主应忽略翻译 RPC 响应且不启动执行器或报错', async () => {
+  const responses: DocumentWorkerResponseMessage[] = []
+  const run = executor(responses)
+  const host = new DocumentWorkerHost(run, (message) => responses.push(message))
+
+  await host.handle({ type: 'translation-delta', requestId: 'translate-1', delta: '你' })
+  await host.handle({ type: 'translation-result', requestId: 'translate-1', translation: '你好' })
+  await host.handle({ type: 'translation-failure', requestId: 'translate-2', code: 'translation-failed' })
+
+  assert.equal(run.calls, 0)
+  assert.deepEqual(responses, [])
+})
+
 test('worker 宿主应只接受匹配当前任务代际的取消请求', async () => {
   const responses: DocumentWorkerResponseMessage[] = []
   const run = executor(responses, true)
@@ -527,6 +562,94 @@ test('生产执行器应把真实任务标识和代际传给翻译依赖', async
   assert.ok(calls.every((call) => call.targetLang === 'ZH'))
 })
 
+test('生产执行器缓存读写必须携带真实任务标识与当前代际', async () => {
+  const source = workerModel('doc-cache-context', 'hello')
+  const reads: Array<{ jobId: string; generation: number; key: string }> = []
+  const writes: Array<{ jobId: string; generation: number; key: string; value: unknown }> = []
+  const base = productionDependencies(source, async (text) => `译:${text}`)
+  const executor = createDocumentWorkerExecutor({
+    ...base,
+    readTranslationCache: async (jobId, generation, key) => {
+      reads.push({ jobId, generation, key })
+      return null
+    },
+    writeTranslationCache: async (jobId, generation, key, value) => {
+      writes.push({ jobId, generation, key, value })
+    }
+  })
+  const emit = (): void => undefined
+
+  await executor.execute(
+    request('job-cache-context', 5, 'run', workerFixture('cache-context')),
+    new AbortController().signal,
+    emit
+  )
+
+  assert.ok(reads.length > 0)
+  assert.ok(writes.length > 0)
+  assert.ok(reads.every((call) => call.jobId === 'job-cache-context' && call.generation === 5))
+  assert.ok(writes.every((call) => call.jobId === 'job-cache-context' && call.generation === 5))
+  assert.ok(reads.every((call) => call.key.includes('|target:')))
+  assert.ok(writes.every((call) => call.key.includes('|target:')))
+})
+
+test('生产执行器重试缓存必须使用新代际且强制重译不得读取缓存', async () => {
+  const source = workerModel('doc-cache-retry', 'hello')
+  const reads: Array<{ jobId: string; generation: number; key: string }> = []
+  const writes: Array<{ jobId: string; generation: number; key: string }> = []
+  let translateCalls = 0
+  const base = productionDependencies(source, async (text) => {
+    translateCalls += 1
+    if (translateCalls === 1) throw new Error('provider failed')
+    return `译:${text}`
+  })
+  const executor = createDocumentWorkerExecutor({
+    ...base,
+    readTranslationCache: async (jobId, generation, key) => {
+      reads.push({ jobId, generation, key })
+      return null
+    },
+    writeTranslationCache: async (jobId, generation, key) => {
+      writes.push({ jobId, generation, key })
+    }
+  })
+  const responses: DocumentWorkerResponseMessage[] = []
+  const emit = (message: DocumentWorkerResponseMessage): void => {
+    responses.push(message)
+  }
+
+  await executor.execute(
+    request('job-cache-retry', 1, 'run', workerFixture('cache-retry')),
+    new AbortController().signal,
+    emit
+  )
+  reads.length = 0
+  writes.length = 0
+  await executor.execute(
+    request('job-cache-retry', 2, 'retry', workerFixture('cache-retry')),
+    new AbortController().signal,
+    emit
+  )
+  assert.ok(reads.length > 0)
+  assert.ok(reads.every((call) => call.jobId === 'job-cache-retry' && call.generation === 2))
+
+  const failedTargetId = responses
+    .filter((message) => message.type === 'result')
+    .flatMap((message) => message.type === 'result' ? message.payload.retryableTargetIds ?? [] : [])[0]
+  assert.ok(failedTargetId)
+  reads.length = 0
+  writes.length = 0
+  await executor.execute({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retranslate-target',
+    jobId: 'job-cache-retry',
+    generation: 2,
+    nextGeneration: 3,
+    targetId: failedTargetId!
+  }, new AbortController().signal, emit)
+  assert.deepEqual(reads, [])
+})
+
 test('生产执行器重试应把新代际传给翻译依赖且保留冻结语言对', async () => {
   const source = workerModel('doc-context-retry', 'hello')
   const calls: Array<{ generation: number; sourceLang: string; targetLang: string }> = []
@@ -914,7 +1037,13 @@ test('生产执行器部分导出应保留未完成目标原文并返回 PDF 字
     request: {
       mode: 'partial',
       completionReport: report,
-      confirmPartialExport: true
+      confirmPartialExport: true,
+      manualTranslationEdits: [{
+        pageId: 'doc-partial-page',
+        blockId: 'doc-partial-block',
+        runId: 'doc-partial-run',
+        text: '人工译文'
+      }]
     }
   }, new AbortController().signal, emit)
   const exported = responses.filter((message) => message.type === 'result').at(-1)
@@ -925,7 +1054,7 @@ test('生产执行器部分导出应保留未完成目标原文并返回 PDF 字
     blockId: 'doc-partial-block',
     kind: 'text',
     bbox: { x: 20, y: 20, width: 400, height: 40 },
-    runs: [{ runId: 'doc-partial-run', text: 'hello', style: {} }],
+    runs: [{ runId: 'doc-partial-run', text: '人工译文', style: {}, manuallyEdited: true }],
     translatable: true
   }))
   assert.equal(exported.payload.export?.partial?.reverted, 1)

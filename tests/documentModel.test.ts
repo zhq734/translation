@@ -280,3 +280,59 @@ test('文档模型应校验并保留目录页码', () => {
     /toc\.pageNumber/iu
   )
 })
+
+test('文档模型应校验并保留手动译文编辑标记', () => {
+  const model = createModel()
+  const block = model.pages[0]!.blocks[0]!
+  assert.equal(block.kind, 'text')
+  if (block.kind !== 'text') return
+  block.runs[0]!.manuallyEdited = true
+  model.pages[0]!.blocks.push({
+    kind: 'image',
+    blockId: 'image-1',
+    readingOrder: 1,
+    translatable: false,
+    assetId: 'asset-1',
+    ocrRegions: [{
+      regionId: 'region-1',
+      pageId: model.pages[0]!.pageId,
+      blockId: 'image-1',
+      assetId: 'asset-1',
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      text: 'Scanned',
+      status: 'recognized',
+      translatedText: '人工译文',
+      manuallyEdited: true
+    }]
+  })
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  const parsedText = parsed.pages[0]!.blocks[0]!
+  const parsedImage = parsed.pages[0]!.blocks[1]!
+  assert.equal(parsedText.kind, 'text')
+  assert.equal(parsedImage.kind, 'image')
+  if (parsedText.kind !== 'text' || parsedImage.kind !== 'image') return
+  assert.equal(parsedText.runs[0]?.manuallyEdited, true)
+  assert.equal(parsedImage.ocrRegions?.[0]?.manuallyEdited, true)
+
+  assert.throws(() => parseDocumentModel({
+    ...model,
+    pages: [{
+      ...model.pages[0],
+      blocks: [{
+        ...block,
+        runs: [{ ...block.runs[0], manuallyEdited: 'yes' }]
+      }]
+    }]
+  }), /manuallyEdited/iu)
+  assert.throws(() => parseDocumentModel({
+    ...model,
+    pages: [{
+      ...model.pages[0],
+      blocks: [{
+        ...model.pages[0]!.blocks[1],
+        ocrRegions: [{ ...(model.pages[0]!.blocks[1] as { ocrRegions: object[] }).ocrRegions[0], manuallyEdited: 1 }]
+      }]
+    }]
+  }), /manuallyEdited/iu)
+})

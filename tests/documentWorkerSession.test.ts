@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import type { DocumentWorkerProcess } from '../src/main/documentWorkerClient.ts'
 import {
@@ -22,6 +23,7 @@ import type {
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../src/shared/documentWorkspace.ts'
+import type { DocumentTranslationCacheEntry } from '../src/shared/documentTranslation.ts'
 
 /**
  * 创建 utility process 替身并记录生命周期。
@@ -188,6 +190,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
   exportProgress: Array<{ jobId: string; generation: number; phase: string; percent: number }>
   openedFolders: string[]
   translated: Array<{ text: string; languagePair: DocumentLanguagePair }>
+  cacheReads: string[]
+  cacheWrites: Array<{ key: string; value: DocumentTranslationCacheEntry }>
 } {
   const progress: DocumentWorkspaceSnapshot[] = []
   const completed: DocumentWorkspaceSnapshot[] = []
@@ -197,6 +201,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
   const exportProgress: Array<{ jobId: string; generation: number; phase: string; percent: number }> = []
   const openedFolders: string[] = []
   const translated: Array<{ text: string; languagePair: DocumentLanguagePair }> = []
+  const cacheReads: string[] = []
+  const cacheWrites: Array<{ key: string; value: DocumentTranslationCacheEntry }> = []
   return {
     progress,
     completed,
@@ -206,6 +212,8 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
     exportProgress,
     openedFolders,
     translated,
+    cacheReads,
+    cacheWrites,
     dependencies: {
       isApprovedPath: (path) => path === '/tmp/sample.txt',
       createProcess: () => process,
@@ -230,12 +238,102 @@ function dependencies(process: ReturnType<typeof workerProcess>): {
         ok: true,
         mimeType: 'text/plain',
         bytes: new Uint8Array([72, 101, 108, 108, 111])
-      })
+      }),
+      readTranslationCache: async (key) => {
+        cacheReads.push(key)
+        return key === 'cache-hit'
+          ? {
+            sourceSha256: 'source-hash',
+            translationProtocolVersion: 'document-translation-protocol-v3',
+            languagePair: { sourceLang: 'EN', targetLang: 'ZH' },
+            glossaryVersion: 'none',
+            protectionRulesVersion: 'protection-v1',
+            status: 'completed',
+            translation: '缓存译文'
+          }
+          : null
+      },
+      writeTranslationCache: async (key, value) => {
+        cacheWrites.push({ key, value })
+      }
     }
   }
 }
 
-test('session 必须 fork documentWorker.js 且只发送一次不含凭据的启动配置', () => {
+/** 创建合法缓存条目。 */
+const sessionCacheEntry: DocumentTranslationCacheEntry = {
+  sourceSha256: 'source-hash',
+  translationProtocolVersion: 'document-translation-protocol-v3',
+  languagePair: { sourceLang: 'EN', targetLang: 'ZH' },
+  glossaryVersion: 'none',
+  protectionRulesVersion: 'protection-v1',
+  status: 'completed',
+  translation: '你好'
+}
+
+test('session 必须转发当前代际缓存读写并忽略旧代际', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const session = new DocumentWorkerSession(fixture.dependencies)
+  const accepted = await session.run({ path: '/tmp/sample.txt', generation: 1 })
+  const jobId = accepted.jobId!
+
+  process.emitMessage({
+    type: 'cache-read-request',
+    requestId: 'read-1',
+    responseToken: 'read-token',
+    jobId,
+    generation: 1,
+    key: 'cache-hit'
+  })
+  process.emitMessage({
+    type: 'cache-write-request',
+    requestId: 'write-1',
+    responseToken: 'write-token',
+    jobId,
+    generation: 1,
+    key: 'cache-key',
+    value: sessionCacheEntry
+  })
+  process.emitMessage({
+    type: 'cache-read-request',
+    requestId: 'old-read',
+    responseToken: 'old-read-token',
+    jobId,
+    generation: 2,
+    key: 'old-cache'
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.deepEqual(fixture.cacheReads, ['cache-hit'])
+  assert.deepEqual(fixture.cacheWrites, [{ key: 'cache-key', value: sessionCacheEntry }])
+  const results = process.sent.filter((message) => (
+    message && typeof message === 'object' &&
+    ((message as { type?: unknown }).type === 'cache-read-result' ||
+      (message as { type?: unknown }).type === 'cache-write-result')
+  ))
+  assert.equal(results.length, 3)
+  assert.ok(results.some((message) => (
+    (message as { type?: string }).type === 'cache-read-result' &&
+    (message as { requestId?: string }).requestId === 'read-1' &&
+    (message as { responseToken?: string }).responseToken === 'read-token' &&
+    (message as { value?: { translation?: string } }).value?.translation === '缓存译文'
+  )))
+  assert.ok(results.some((message) => (
+    (message as { type?: string }).type === 'cache-write-result' &&
+    (message as { requestId?: string }).requestId === 'write-1' &&
+    (message as { ok?: boolean }).ok === true
+  )))
+  assert.ok(results.some((message) => (
+    (message as { type?: string }).type === 'cache-read-result' &&
+    (message as { requestId?: string }).requestId === 'old-read' &&
+    (message as { value?: unknown }).value === null
+  )))
+  session.dispose()
+  assert.equal(process.listenerCount(), 0)
+})
+
+test('session 必须 fork 显式 CommonJS documentWorker.cjs 且只发送一次不含凭据的启动配置', () => {
   const process = workerProcess()
   const fixture = dependencies(process)
   const forked: string[] = []
@@ -248,7 +346,7 @@ test('session 必须 fork documentWorker.js 且只发送一次不含凭据的启
   })
 
   assert.equal(forked.length, 1)
-  assert.match(forked[0]!, /documentWorker\.js$/u)
+  assert.match(forked[0]!, /documentWorker\.cjs$/u)
   const startMessages = process.sent.filter((message) => (
     message && typeof message === 'object' && (message as { type?: unknown }).type === 'worker-start'
   ))
@@ -257,6 +355,22 @@ test('session 必须 fork documentWorker.js 且只发送一次不含凭据的启
   assert.match(serialized, /model-fingerprint/u)
   assert.doesNotMatch(serialized, /apiKey|token|secret|password|credential/iu)
   session.dispose()
+})
+
+test('构建必须把 utility process 入口输出为显式 CommonJS .cjs', async () => {
+  const source = await readFile('electron.vite.config.ts', 'utf8')
+
+  assert.match(source, /entryFileNames/u)
+  assert.match(source, /documentWorker[^\n]*\.cjs/u)
+})
+
+test('session 构建为 chunks 子文件时必须从上一级解析 worker 入口', async () => {
+  const source = await readFile('src/main/documentWorkerSession.ts', 'utf8')
+
+  assert.match(
+    source,
+    /join\(moduleDirectory,\s*'\.\.',\s*'documentWorker\.cjs'\)/u
+  )
 })
 
 test('session 必须转发 run、用冻结语言对执行 RPC，并转换进度与终态快照', async () => {

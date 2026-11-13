@@ -13,6 +13,7 @@ import {
   safeStorage,
   screen,
   dialog,
+  utilityProcess,
   type NativeImage,
   type SourcesOptions,
   type BrowserView
@@ -25,6 +26,9 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { openDocumentExportFolder } from './documentExportFolder'
+import type { DocumentWorkerProcess } from './documentWorkerClient'
+import type { DocumentWorkspaceTaskServiceLike } from './documentWorkspaceTaskServiceLike'
+import { createDocumentWorkerSourceAccess } from './documentWorkerSourceAccess'
 import { loadSettings, saveSettings, getSettings } from './settings'
 import { createTranslationHistoryController } from './translationHistoryController'
 import { markHotkeyTrigger, recordTranslationUsage, recordWebPageUsage } from './usageReporter'
@@ -300,6 +304,7 @@ import type {
 } from '../shared/types'
 import { WebReaderManager } from './webReaderWindow'
 import { DocumentWorkspaceManager } from './documentWorkspaceWindow'
+import { collectOwnedWindowCandidates, OwnedWindowFocusRecency, resolveOwnedWindowKind } from './dockWindowActivation'
 import { createDocumentRuntimeController, type DocumentMainRuntime } from './documentRuntime'
 import {
   createScreenshotPinWindowManager,
@@ -330,6 +335,7 @@ import {
   type DocumentRunRequest
 } from '../shared/documentWorkspace'
 import { parseDocumentTargetId } from '../shared/documentTargetLocator'
+import { DOCUMENT_PARSER_VERSION } from '../shared/documentParserVersion'
 import {
   DOCUMENT_WINDOW_STATE_FILE,
   loadDocumentWindowState,
@@ -478,15 +484,13 @@ let screenshotToastWin: BrowserWindow | null = null
 let screenshotToastHideTimer: NodeJS.Timeout | null = null
 let dockIconEnabled = false
 /**
- * 最近一次成功应用的 macOS 激活策略与 Dock 可见性。
- * 用于跳过重复切换：关闭网页翻译等场景会重复刷新 Dock 状态，
- * 而重复调用 `setActivationPolicy` / `dock.hide()` 会再次隐藏窗口，
+ * 最近一次成功应用的 macOS 激活策略与 Dock 可见性。用于跳过重复切换：关闭网页翻译
+ * 等场景会重复刷新状态，而重复调用 `setActivationPolicy` / `dock.hide()` 会再次隐藏，
  * 迫使下面的保留逻辑重新 `show()+focus()` 设置页，表现为设置页无缘无故弹到最前。
  */
 let appliedMacOSDockPresentation: MacOSDockPresentation | null = null
 let webReaderWindowOpen = false
-/** 文档翻译工作台窗口当前是否打开，用于 macOS Dock 呈现与自有窗口判定。 */
-let documentWorkspaceOpen = false
+let documentWorkspaceOpen = false // 文档工作台是否打开。
 let dingTalkConfiguration: DingTalkConfigurationService | null = null
 let aiConfiguration: AiConfigurationService | null = null
 let deepgramConfiguration: DeepgramConfigurationService | null = null
@@ -501,6 +505,7 @@ let aiCheckService: AiCheckService | null = null
 let updateManager: UpdateManager | null = null
 let webReader: WebReaderManager | null = null
 let documentWorkspace: DocumentWorkspaceManager | null = null
+const ownedWindowFocusRecency = new OwnedWindowFocusRecency() // 最近焦点。
 /** 实时字幕控制器；仅 macOS 13+ 初始化。 */
 let realtimeSubtitleController: RealtimeSubtitleController | null = null
 /** 透明置顶字幕窗口控制器；仅 macOS 13+ 初始化。 */
@@ -519,11 +524,8 @@ let resolveUpdateManagerInitialization: (() => void) | null = null
 let rejectUpdateManagerInitialization: ((error: unknown) => void) | null = null
 /** 当前文档窗口已批准、可交给任务服务读取的本地文件路径。 */
 const approvedDocumentPaths = new Set<string>()
-/** 文档任务服务类型；仅在类型层引用，不进入 Win7 启动时的运行时依赖图。 */
-type DocumentWorkspaceTaskService =
-  import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
 /** 当前文档窗口按 jobId 隔离的解析、OCR、翻译与导出任务服务。 */
-const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskService>()
+const documentWorkspaceTaskServices = new Map<string, DocumentWorkspaceTaskServiceLike>()
 /** 主进程当前界面语言运行时；应用设置加载后初始化。 */
 let mainI18n: MainI18nRuntime | null = null
 
@@ -1196,26 +1198,88 @@ function releaseDocumentWorkspaceTask(jobId: string): boolean {
  * @returns 已创建的任务服务。
  * @author zhenghq
  */
-async function createDocumentWorkspaceTaskService(): Promise<
-  import('./documentWorkspaceTaskService').DocumentWorkspaceTaskService
-> {
+async function createDocumentWorkspaceTaskService(): Promise<DocumentWorkspaceTaskServiceLike> {
   const runtime = await loadDocumentRuntime()
   const settings = getSettings()
   const cacheStore = getDocumentTranslationCacheStore(runtime)
   const historyStore = getDocumentTaskHistoryStore(runtime)
-  return new runtime.DocumentWorkspaceTaskService({
+  const { DocumentWorkerSession } = await import('./documentWorkerSession')
+  const sourceAccess = createDocumentWorkerSourceAccess({
     isApprovedPath: (path) => approvedDocumentPaths.has(path),
+    readFile
+  })
+
+  return new DocumentWorkerSession({
+    isApprovedPath: (path) => approvedDocumentPaths.has(path),
+    createProcess: (path) => {
+      // utility process 在 spawn 前不能接收消息，先缓冲启动配置再按序发送。
+      const child = utilityProcess.fork(path, [], {
+        serviceName: 'document-worker'
+      })
+      let spawned = false
+      const pendingMessages: unknown[] = []
+      child.on('spawn', () => {
+        spawned = true
+        const queued = pendingMessages.splice(0)
+        for (const message of queued) child.postMessage(message)
+      })
+      return {
+        postMessage(message: unknown): void {
+          if (!spawned) {
+            pendingMessages.push(message)
+            return
+          }
+          child.postMessage(message)
+        },
+        on(event: 'message' | 'exit', listener: (payload: unknown) => void): void {
+          if (event === 'message') child.on('message', listener)
+          else child.on('exit', listener as (code: number) => void)
+        },
+        off(event: 'message' | 'exit', listener: (payload: unknown) => void): void {
+          if (event === 'message') child.off('message', listener)
+          else child.off('exit', listener as (code: number) => void)
+        },
+        kill: () => child.kill()
+      } as unknown as DocumentWorkerProcess
+    },
+    startOptions: () => ({
+      userDataPath: app.getPath('userData'),
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+      ocrLang: settings.ocrLang,
+      ocrEnginePreference: resolveOcrEnginePreference(settings),
+      ocrScale: settings.ocrScale,
+      ocrTesseractEnabled: settings.ocrTesseractEnabled,
+      modelFingerprint: createHash('sha256').update(JSON.stringify([
+        settings.preferredTranslationProvider,
+        settings.aiEnabled,
+        settings.aiProtocol,
+        settings.aiBaseUrl,
+        settings.aiModel
+      ])).digest('hex'),
+      translationConcurrency: settings.webTranslationConcurrency,
+      // 文档 OCR 默认单并发，避免大 PDF 在 ONNX Arena 扩展时触发原生崩溃。
+      ocrConcurrency: 1,
+      maxFileBytes: settings.documentTranslationMaxFileBytes,
+      maxPages: settings.documentTranslationMaxPages,
+      maxOcrImages: settings.documentTranslationMaxOcrImages,
+      glossary: settings.documentGlossary,
+      parserVersion: DOCUMENT_PARSER_VERSION
+    }),
     sendProgress: (snapshot) => {
+      sourceAccess.rememberSnapshot(snapshot)
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.progress, snapshot)
+    },
+    sendCompleted: (snapshot) => {
+      sourceAccess.rememberSnapshot(snapshot)
+      documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
     },
     sendTranslationUpdate: (update) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.blockTranslated, update)
     },
     sendExportProgress: (progress) => {
       documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.exportProgress, progress)
-    },
-    sendCompleted: (snapshot) => {
-      documentWorkspace?.send(DOCUMENT_WORKSPACE_CHANNELS.completed, snapshot)
     },
     openExportFolder: async (filePath) => {
       const opened = await openDocumentExportFolder(filePath, {
@@ -1224,110 +1288,37 @@ async function createDocumentWorkspaceTaskService(): Promise<
       })
       if (!opened) throw new Error('open-export-folder-failed')
     },
-    parse: async (input, registerAssetBytes, signal, options) => {
-      if (input.format !== 'pdf' && input.format !== 'image') {
-        return runtime.parseDocument(input, { registerAssetBytes, ...options })
-      }
-      if (input.format === 'image') {
-        return runtime.parseDocument(input, { registerAssetBytes, ...options })
-      }
-      const {
-        renderPageToImage,
-        renderPageRegionToImage,
-        renderEmbeddedImageToImage
-      } = await runtime.createProductionPdfRasterizer(signal)
-      return runtime.parseDocument(input, {
-        registerAssetBytes,
-        renderPageToImage,
-        renderPageRegionToImage,
-        renderEmbeddedImageToImage,
-        ...options,
-        ...(signal ? { signal } : {})
-      })
-    },
-    translate: async (text, signal, request, languagePair, onDelta, context) => {
+    translate: async (request, signal, onDelta) => {
       const settingsSnapshot = getSettings()
-      const settings = {
+      const translationSettings = {
         ...settingsSnapshot,
-        sourceLang: languagePair.sourceLang,
-        targetLang: languagePair.targetLang
+        sourceLang: request.languagePair.sourceLang,
+        targetLang: request.languagePair.targetLang
       }
-      const dingTalkCredentials = settings.dingTalkEnabled
+      const dingTalkCredentials = translationSettings.dingTalkEnabled
         ? getDingTalkConfiguration().getCredentialsSnapshot()
         : null
-      const aiApiKey = settings.aiEnabled ? getAiConfiguration().getApiKey() : null
+      const aiApiKey = translationSettings.aiEnabled ? getAiConfiguration().getApiKey() : null
       const output = await translateStream(
-        text,
-        settings,
+        request.text,
+        translationSettings,
         dingTalkCredentials,
         aiApiKey,
         {
-          onDelta: onDelta ?? (() => undefined),
+          onDelta,
           signal,
-          context,
+          context: {
+            jobId: request.jobId,
+            generation: request.generation,
+            glossaryVersion: request.glossaryVersion ?? 'none',
+            glossaryContext: request.glossaryContext ?? '',
+            ...(request.contextSummary ? { contextSummary: request.contextSummary } : {})
+          },
           bypassCache: request.bypassCache === true
         }
       )
       return output.translation
     },
-    recognizeImage: async (bytes, signal) => {
-      const settings = getSettings()
-      const dispatcher = await createOcrDispatcher(settings)
-      return recognizeAdaptiveOcr(
-        {
-          imageBytes: bytes,
-          maxScale: settings.ocrScale,
-          language: settings.ocrLang,
-          preprocessingProfile: 'document'
-        },
-        {
-          recognize: (preparedImageBytes) => dispatcher.recognize({
-            imageBytes: preparedImageBytes,
-            language: settings.ocrLang,
-            timeoutMs: OCR_TIMEOUT_MS,
-            signal
-          }, resolveOcrEnginePreference(settings))
-        }
-      )
-    },
-    loadAssetBytes: async () => null,
-    maxFileBytes: () => getSettings().documentTranslationMaxFileBytes,
-    maxPages: () => getSettings().documentTranslationMaxPages,
-    maxOcrImages: () => getSettings().documentTranslationMaxOcrImages,
-    glossary: () => {
-      const glossary = getSettings().documentGlossary
-      return glossary.entries.length > 0 ? glossary : undefined
-    },
-    readTranslationCache: (key) => cacheStore.read(key),
-    writeTranslationCache: (key, value) => cacheStore.write(key, value),
-    saveHistory: (snapshot) => historyStore.save(snapshot),
-    updateHistoryExportStatus: (jobId, generation, status) =>
-      historyStore.updateExportStatus(jobId, generation, status),
-    getParserVersion: () => 'document-parser-v1',
-    getTranslationConcurrency: () => getSettings().webTranslationConcurrency,
-    getOcrConcurrency: () => 2,
-    getModelFingerprint: () => {
-      const settings = getSettings()
-      return createHash('sha256').update(JSON.stringify([
-        settings.preferredTranslationProvider,
-        settings.aiEnabled,
-        settings.aiProtocol,
-        settings.aiBaseUrl,
-        settings.aiModel
-      ])).digest('hex')
-    },
-    loadFontBytes: () => runtime.loadDocumentPdfFontBytes({
-      isPackaged: app.isPackaged,
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath
-    }),
-    // 所有导出统一按文档模型合成，避免把文档窗口中的弹层等界面元素写入 PDF。
-    exportPdf: (model, dependencies, exportOptions) => runtime.exportDocumentToPdf(model, dependencies, {
-        // OCR 原文默认写入透明文字层；只有调用方明确传 false 时才关闭。
-        includeOcrTextLayer: exportOptions.textLayer !== false,
-        ...(exportOptions.signal ? { signal: exportOptions.signal } : {}),
-        ...(exportOptions.onProgress ? { onProgress: exportOptions.onProgress } : {})
-      }),
     showSaveDialog: async (suggestedName) => {
       const window = documentWorkspace?.getWindow()
       const result = window
@@ -1352,7 +1343,14 @@ async function createDocumentWorkspaceTaskService(): Promise<
     rename: async (source, target) => {
       await rename(source, target)
     },
-    unlink
+    unlink,
+    getAssetBytes: async () => null,
+    getSourceBytes: () => sourceAccess.getSourceBytes(),
+    readTranslationCache: (key) => cacheStore.read(key),
+    writeTranslationCache: (key, value) => cacheStore.write(key, value),
+    saveHistory: (snapshot) => historyStore.save(snapshot),
+    updateHistoryExportStatus: (jobId, generation, status) =>
+      historyStore.updateExportStatus(jobId, generation, status)
   })
 }
 
@@ -2018,29 +2016,31 @@ function invalidateSelectionFlowWithFocusCleanup(): number | null {
 }
 
 /**
- * 激活已有网页阅读器页面；没有尚未关闭的页面时打开设置窗口。
+ * 恢复 Dock 激活时应显示的已有窗口，并只聚焦最近使用的一个。
  * 调用方已经通过 shouldTreatActivateAsDockLaunch() 排除内部窗口激活；
  * 能走到这里的是用户点击 Dock 图标，属于显式入口。
  * @returns 无返回值。
  * @author zhenghq
  */
 function activateExistingPageOrOpenSettings(): void {
-  // 记录显式入口：该函数此前完全静默，无法判断设置页置前是否由 activate 走到这里。
   logCandidateProbe('settings-activate-entry', isSettingsWindowVisibleForProbe())
-  // activate 判定存在短暂状态空档：检查时可能刚好全空闲，但事件派发时用户
-  // 已经开始划词。此时若继续置前阅读器或设置页，就会把它们顶到划词应用之上。
   if (isSelectionWindowRaiseGuardActive()) return
-  // activate 判定存在短暂状态空档，可能把内部动作误放行。focusExistingWindow()
-  // 对已可见且未最小化的阅读器只返回 true、不重新 show()+focus()，因此即便
-  // 误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会正常恢复，
-  // 保证真实 Dock 启动可用。被其它应用遮挡时的强制置前改由显式快捷键入口负责。
-  if (webReader?.focusExistingWindow()) return
-  // 连续 activate 只让最后一次请求执行最终补置前。openSettings() 本身仍可
-  // 复用/显示窗口，但旧请求不得在最新交互结束后再次改变 z-order。
+  const ownedWindows = collectOwnedWindowCandidates(settingsWin, webReader?.getWindow() ?? null, documentWorkspace?.getWindow() ?? null)
+  // 先锁定目标：恢复窗口会派发焦点并覆盖选择结果。
+  const target = ownedWindowFocusRecency.resolveMostRecent(ownedWindows)?.window
+  resumeSettingsWindowAfterExternalSelection()
+  documentWorkspace?.restoreAfterExternalSelection(process.platform)
+  for (const { window: win } of ownedWindows) {
+    if (win && !win.isDestroyed() && (!win.isVisible() || win.isMinimized())) {
+      showOwnWindowForInteraction(win, { focus: false, moveTop: false, raiseLevel: false })
+    }
+  }
+  // 设置页目标须走 openSettings 的 Dock 安全置前链路，避免绕过焦点租约与代际门禁。
+  if (target && target !== settingsWin) {
+    showOwnWindowForInteraction(target)
+    return
+  }
   const dockActivationEpoch = ++settingsDockActivationEpoch
-  // activate 已经由 shouldTreatActivateAsDockLaunch() 过滤，能走到这里说明是
-  // 用户点击 Dock 图标，属于显式入口。必须复用并置前已有设置页；此前传 false
-  // 会让窗口保持后台层级，日志显示“按 Dock 启动处理”但界面毫无反应。
   void openSettings({
     bringToFront: true,
     explicitEntry: true,
@@ -2050,16 +2050,10 @@ function activateExistingPageOrOpenSettings(): void {
     .then(async () => {
       const target = settingsWin
       if (!target || target.isDestroyed() || !target.isVisible()) return
-      // Dock 激活事件可能在第一次 show/focus 之后才完成系统窗口重排，复用分支
-      // 缺少新建分支的最终置前；让出一轮事件循环再补一次，避免设置页随即失焦。
       await yieldToEventLoop()
       if (settingsWin !== target || target.isDestroyed() || !target.isVisible()) return
-      // 更新的 Dock activate 或应用失活已经让本次请求过期，不得继续补置前。
       if (dockActivationEpoch !== settingsDockActivationEpoch) return
-      // 等待期间用户可能已经开始下一次划词；此时补置前同样会抢走划词前台。
       if (isSelectionWindowRaiseGuardActive()) return
-      // activate 路径复用已可见设置页时不得提升到 screen-saver：普通窗口的
-      // moveTop() 已足以把设置页放到最前，最高层级提升只会放大误判后果。
       bringSettingsWindowToFrontSafely(target, {
         raiseLevel: false,
         bringToFrontEpoch: settingsBringToFrontEpoch,
@@ -2117,6 +2111,10 @@ if (!gotLock) {
       settingsDockActivationEpoch += 1
       settingsBringToFrontEpoch += 1
       forceLowerRaisedInteractionWindows()
+    })
+    app.on('browser-window-focus', (_event, window) => {
+      const kind = resolveOwnedWindowKind(window, settingsWin, webReader, documentWorkspace)
+      if (kind) ownedWindowFocusRecency.touch(kind)
     })
     // macOS 通过 Finder 重新打开运行中的应用时通常只激活已有进程，不会创建第二实例。
     app.on('activate', (_event, hasVisibleWindows) => {
@@ -2951,6 +2949,7 @@ function onHotkey(): void {
   // 快捷键取词和拖拽/双击一样可能发生在设置页已切到后台之后。若不先隐藏
   // 设置页，后续读取弹窗显隐和复制前交还 key window 仍可能让系统重选它。
   suspendSettingsWindowForExternalSelection()
+  documentWorkspace?.suspendForExternalSelection(process.platform)
   latestSelectionGesture += 1
   markHotkeyTrigger()
   selectionCapture.markEntry('hotkey')
@@ -3225,10 +3224,10 @@ function describeSuppressedOwnWindowHit(point: { x: number; y: number }): string
  * @author zhenghq
  */
 function scheduleSelectionAction(anchor: { x: number; y: number }): void {
-  // 外部划词开始前先把后台设置页移出窗口服务器候选集合。仅设置不可聚焦或回收
-  // 最高层级仍留有事件时序窗口：按钮/弹窗显隐、复制前交还 key window 和迟到
-  // activate 都可能让 macOS 重新选择仍可见的普通设置窗口。隐藏是最直接的隔离。
+  // 外部划词开始前把后台设置页移出窗口服务器候选集合；仅设置不可聚焦或回收
+  // 最高层级仍会让弹窗显隐、复制前交还和迟到 activate 重新选中普通窗口。
   suspendSettingsWindowForExternalSelection()
+  documentWorkspace?.suspendForExternalSelection(process.platform)
   // 划词属于内部交互：先在旧保护状态内实际回收设置页临时置顶层级，再续期
   // activate 抑制租约。反序会让回收器看到新保护期而只清空登记，窗口仍保持
   // screen-saver 层级，随后任何内部 activate 都可能把设置页顶到最前。

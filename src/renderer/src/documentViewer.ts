@@ -111,6 +111,14 @@ export interface DocumentNavigationTarget {
   blockId: string | null
 }
 
+/** 目录中的可跳转章节项。 */
+export interface DocumentTocItem {
+  /** 面向用户的章节标题。 */
+  title: string
+  /** 跳转目标页面与可选区块。 */
+  target: DocumentNavigationTarget
+}
+
 /** 区块高亮定位结果。 */
 export interface DocumentBlockHighlight {
   /** 区块所属页面标识。 */
@@ -272,20 +280,14 @@ export function resolveDocumentTocTarget(
     const pageTarget = resolveDocumentPageJump(model, pageNumber)
     if (pageTarget) {
       const heading = findHeadingOnPage(model.pages[pageTarget.pageIndex], normalizedTitle)
-      return heading ? { ...pageTarget, blockId: heading } : pageTarget
+      if (heading) return { ...pageTarget, blockId: heading }
+      // PDF 目录页码可能带封面偏移或罗马页码，不能因为记录页码不准确就停在页首继续找。
+      const resolvedHeading = findHeadingTargetByTitle(model, normalizedTitle)
+      return resolvedHeading ?? pageTarget
     }
   }
-  for (const page of model.pages) {
-    const heading = findHeadingOnPage(page, normalizedTitle)
-    if (heading) {
-      return {
-        pageId: page.pageId,
-        pageIndex: page.index,
-        pageNumber: page.index + 1,
-        blockId: heading
-      }
-    }
-  }
+  const headingTarget = findHeadingTargetByTitle(model, normalizedTitle)
+  if (headingTarget) return headingTarget
   for (const page of model.pages) {
     if (page.title?.trim().toLocaleLowerCase() === normalizedTitle) {
       return {
@@ -300,6 +302,259 @@ export function resolveDocumentTocTarget(
 }
 
 /**
+ * 在全部页面中查找标题区块对应的目录目标。
+ * @param model 当前文档模型。
+ * @param normalizedTitle 已转小写并去空白的标题。
+ * @returns 标题目标；不存在时返回 null。
+ * @author zhenghq
+ */
+function findHeadingTargetByTitle(
+  model: DocumentModel,
+  normalizedTitle: string
+): DocumentNavigationTarget | null {
+  for (const page of model.pages) {
+    const heading = findHeadingOnPage(page, normalizedTitle)
+    if (!heading) continue
+    return {
+      pageId: page.pageId,
+      pageIndex: page.index,
+      pageNumber: page.index + 1,
+      blockId: heading
+    }
+  }
+  return null
+}
+
+/**
+ * 提取文本区块面向目录的标题，显式目录项会排除点线和页码等保护片段。
+ * @param block 文本区块。
+ * @returns 清理后的标题文本。
+ * @author zhenghq
+ */
+function resolveDocumentTocTitle(block: DocumentTextBlock): string {
+  return block.runs
+    .filter((run) => !block.toc || run.protected !== true)
+    .map((run) => run.text)
+    .join('')
+    .trim()
+    .replace(/\s+/gu, ' ')
+}
+
+/**
+ * 递归收集页面中的文本区块，表格单元格内的标题也应进入目录。
+ * @param blocks 当前层级区块。
+ * @returns 按阅读顺序展开的文本区块。
+ * @author zhenghq
+ */
+function collectDocumentTextBlocks(blocks: readonly DocumentBlock[]): DocumentTextBlock[] {
+  const result: DocumentTextBlock[] = []
+  for (const block of blocks) {
+    if (block.kind === 'text') {
+      result.push(block)
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) result.push(...collectDocumentTextBlocks(cell.blocks))
+    }
+  }
+  return result
+}
+
+/**
+ * 读取文本区块的主样式，用于 PDF、DOCX 缺少语义角色时推断标题层级。
+ * @param block 文本区块。
+ * @returns 首个有内容片段的样式；不存在时回退到区块样式。
+ * @author zhenghq
+ */
+function resolveDocumentTextBlockStyle(block: DocumentTextBlock) {
+  return block.runs.find((run) => run.text.trim())?.style ?? block.runs[0]?.style ?? block.style
+}
+
+/**
+ * 按字符数估算单页正文主字号。
+ * @param page 文档页面。
+ * @returns 正文主字号；无法可靠估算时返回 undefined。
+ * @author zhenghq
+ */
+function inferDocumentBodyFontSize(page: DocumentPage): number | undefined {
+  const weights = new Map<number, number>()
+  for (const block of collectDocumentTextBlocks(page.blocks)) {
+    if (block.toc || block.role === 'heading' || block.role === 'subtitle' || block.role === 'code') continue
+    const fontSize = resolveDocumentTextBlockStyle(block)?.fontSize
+    if (!fontSize || !Number.isFinite(fontSize) || fontSize <= 0) continue
+    const key = Math.round(fontSize * 2) / 2
+    weights.set(key, (weights.get(key) ?? 0) + Math.max(1, block.runs.map((run) => run.text).join('').length))
+  }
+  let bodyFontSize: number | undefined
+  let bodyWeight = -1
+  for (const [fontSize, weight] of weights) {
+    if (weight > bodyWeight || (weight === bodyWeight && fontSize < (bodyFontSize ?? Number.POSITIVE_INFINITY))) {
+      bodyFontSize = fontSize
+      bodyWeight = weight
+    }
+  }
+  return bodyFontSize
+}
+
+/**
+ * 判断 PDF、DOCX 普通段落是否具有标题层级特征。
+ * @param block 文本区块。
+ * @param bodyFontSize 当前页正文主字号。
+ * @returns 可视为标题时返回 true。
+ * @author zhenghq
+ */
+function isInferredDocumentHeading(
+  block: DocumentTextBlock,
+  bodyFontSize: number | undefined
+): boolean {
+  if (block.toc || (block.role !== 'paragraph' && block.role !== 'other')) return false
+  const title = resolveDocumentTocTitle(block)
+  if (title.length < 2 || title.length > 120) return false
+  if (/(?:[.．…·]\s*){8,}\d{1,4}$/u.test(title)) return false
+  if (/^(?:图|表|Figure|Table)\s*\d+/iu.test(title)) return false
+  const style = resolveDocumentTextBlockStyle(block)
+  const fontSize = style?.fontSize ?? 0
+  const fontWeight = style?.fontWeight ?? 400
+  const largeHeading = bodyFontSize
+    ? fontSize >= bodyFontSize * 1.18
+    : fontSize >= 15
+  const boldHeading = fontWeight >= 600 &&
+    (!bodyFontSize || fontSize >= bodyFontSize * 1.04) &&
+    (title.length <= 48 || !/[。！？!?;；:：]$/u.test(title))
+  const centeredHeading = block.textAlign === 'center' &&
+    (!bodyFontSize || fontSize >= bodyFontSize * 1.12)
+  return largeHeading || boldHeading || centeredHeading
+}
+
+/**
+ * 从文档模型中生成目录项，兼容显式目录、语义标题及 PDF、DOCX 的标题层级回退。
+ * @param model 当前文档模型。
+ * @returns 去重后的目录项。
+ * @author zhenghq
+ */
+export function buildDocumentTocItems(model: DocumentModel): DocumentTocItem[] {
+  const items: DocumentTocItem[] = []
+  const seen = new Set<string>()
+
+  /**
+   * 添加目录项并避免显式目录和标题区块生成重复项。
+   * @param title 目录标题。
+   * @param target 跳转目标。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const add = (title: string, target: DocumentNavigationTarget | null): void => {
+    const normalizedTitle = title.trim().replace(/\s+/gu, ' ')
+    if (!normalizedTitle || !target) return
+    const key = `${normalizedTitle.toLocaleLowerCase()}\0${target.pageId}\0${target.blockId ?? ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    items.push({ title: normalizedTitle, target })
+  }
+
+  const textBlocks = model.pages.flatMap((page) => collectDocumentTextBlocks(page.blocks))
+  for (const block of textBlocks) {
+    if (!block.toc) continue
+    const title = resolveDocumentTocTitle(block)
+    add(title, resolveDocumentTocTarget(model, title, block.toc.pageNumber))
+  }
+
+  for (const page of model.pages) {
+    for (const block of collectDocumentTextBlocks(page.blocks)) {
+      if (block.toc || (block.role !== 'heading' && block.role !== 'subtitle')) continue
+      add(resolveDocumentTocTitle(block), {
+        pageId: page.pageId,
+        pageIndex: page.index,
+        pageNumber: page.index + 1,
+        blockId: block.blockId
+      })
+    }
+  }
+
+  const format = model.source.format.toLowerCase()
+  if (format === 'pdf' || format === 'docx') {
+    for (const page of model.pages) {
+      const bodyFontSize = inferDocumentBodyFontSize(page)
+      for (const block of collectDocumentTextBlocks(page.blocks)) {
+        if (!isInferredDocumentHeading(block, bodyFontSize)) continue
+        add(resolveDocumentTocTitle(block), {
+          pageId: page.pageId,
+          pageIndex: page.index,
+          pageNumber: page.index + 1,
+          blockId: block.blockId
+        })
+      }
+    }
+  }
+
+  if (items.length === 0) {
+    for (const page of model.pages) {
+      const title = page.title?.trim()
+      if (!title) continue
+      add(title, {
+        pageId: page.pageId,
+        pageIndex: page.index,
+        pageNumber: page.index + 1,
+        blockId: null
+      })
+    }
+  }
+  return items
+}
+
+/**
+ * 在页面区块中递归查找指定标识的文本区块。
+ * @param blocks 待遍历区块列表。
+ * @param blockId 目标区块标识。
+ * @returns 命中的文本区块；不存在时返回 null。
+ * @author zhenghq
+ */
+function findDocumentTextBlockById(
+  blocks: readonly DocumentBlock[],
+  blockId: string
+): DocumentTextBlock | null {
+  for (const block of blocks) {
+    if (block.kind === 'text') {
+      if (block.blockId === blockId) return block
+      continue
+    }
+    if (block.kind !== 'table') continue
+    for (const row of block.rows) {
+      for (const cell of row.cells) {
+        const nested = findDocumentTextBlockById(cell.blocks, blockId)
+        if (nested) return nested
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 解析 PDF 原文 Canvas 页面内部的区块锚点偏移，使目录点击可定位到章节而非仅到页首。
+ * @param model 当前文档模型，必须持有原始 PDF 几何信息。
+ * @param target 目录或区块导航目标。
+ * @param renderedPageHeight 页面在滚动容器中的实际渲染高度。
+ * @returns 区块顶部相对页面顶部的像素偏移；无法换算时返回 null。
+ * @author zhenghq
+ */
+export function resolveDocumentAnchorOffset(
+  model: DocumentModel,
+  target: DocumentNavigationTarget,
+  renderedPageHeight: number
+): number | null {
+  if (model.source.format.toLowerCase() !== 'pdf') return null
+  if (!target.blockId) return null
+  if (!Number.isFinite(renderedPageHeight) || renderedPageHeight <= 0) return null
+  const page = model.pages[target.pageIndex] ?? model.pages.find((candidate) => candidate.pageId === target.pageId)
+  if (!page || !Number.isFinite(page.height) || page.height <= 0) return null
+  const block = findDocumentTextBlockById(page.blocks, target.blockId)
+  const y = block?.bbox?.y
+  if (typeof y !== 'number' || !Number.isFinite(y) || y < 0) return null
+  return Math.max(0, y * (renderedPageHeight / page.height))
+}
+
+/**
  * 在单页中查找匹配标题的文本区块，优先使用标题角色。
  * @param page 待检查页面。
  * @param normalizedTitle 已转小写并去空白的标题。
@@ -308,8 +563,9 @@ export function resolveDocumentTocTarget(
  */
 function findHeadingOnPage(page: DocumentPage, normalizedTitle: string): string | null {
   let fallback: string | null = null
-  for (const block of page.blocks) {
-    if (block.kind !== 'text' || block.toc) continue
+  // 目录项可能与标题分属不同层级，表格单元格内的标题也必须参与匹配。
+  for (const block of collectDocumentTextBlocks(page.blocks)) {
+    if (block.toc) continue
     const text = block.runs.map((run) => run.text).join('').trim().toLocaleLowerCase()
     if (text !== normalizedTitle) continue
     if (block.role === 'heading' || block.role === 'subtitle') return block.blockId
@@ -415,12 +671,17 @@ function normalizeDocumentViewerTab(
   const source = parseDocumentViewerModel(candidate.source)
   const translation = parseDocumentViewerModel(candidate.translation)
   if (!file || !source || !translation) return null
-  const migrated = migrateRestoredPdfTableCellSnapshots(file.format, source, translation)
-  const models = migrated.models
+  const migratedModels = migrateRestoredPdfTableCellSnapshots(file.format, source, translation)
+  const alignedModels = migrateRestoredPdfTableCellAlignmentForFormat(
+    file.format,
+    migratedModels.models[0],
+    migratedModels.models[1]
+  )
+  const models = alignedModels
   const activePageId = resolveRestoredPageId(candidate.activePageId, models)
   const anchorModel = models.find((model) => model.pages.some((page) => page.pageId === activePageId))
   const migratedBlockId = typeof candidate.activeBlockId === 'string'
-    ? migrated.resolveBlockId(candidate.activeBlockId)
+    ? migratedModels.resolveBlockId(candidate.activeBlockId)
     : null
   const activeBlockId = migratedBlockId && activePageId && anchorModel &&
     resolveDocumentBlockHighlight(anchorModel, activePageId, migratedBlockId)
@@ -516,6 +777,166 @@ function migrateRestoredPdfTableCellSnapshots(
   }
 }
 
+/**
+ * 迁移已恢复或从历史任务读取的 PDF 工作台快照。
+ * 旧快照可能把铺满单元格的长正文误判为居中，并在后续视觉行合并时继承该对齐。
+ * 这里清除长正文以及普通内容中误判的居中对齐；紧凑短标题、表头和竖排短文本
+ * 保持原有居中样式，其他文档格式完全不受影响。
+ * @param snapshot 待恢复的工作台快照。
+ * @returns 迁移后的快照；没有可安全修改的内容时返回原对象。
+ * @author zhenghq
+ */
+export function migrateRestoredPdfDocumentWorkspaceSnapshot(
+  snapshot: DocumentWorkspaceSnapshot
+): DocumentWorkspaceSnapshot {
+  const { source, translation } = snapshot
+  if (!source || !translation || source.source.format.toLowerCase() !== 'pdf') return snapshot
+  const sourceCells = collectRestoredPdfTableCellGroups(source).flat()
+  const translationCells = collectRestoredPdfTableCellGroups(translation).flat()
+  if (sourceCells.length === 0 || sourceCells.length !== translationCells.length) return snapshot
+  const aligned = clearRestoredPdfCellAlignmentPairs(sourceCells, translationCells)
+  if (aligned[0] === sourceCells && aligned[1] === translationCells) return snapshot
+  const sourceBlocks = aligned[0].map((cell) => cell.blocks)
+  const translationBlocks = aligned[1].map((cell) => cell.blocks)
+  return {
+    ...snapshot,
+    source: replaceRestoredPdfCells(source, sourceBlocks),
+    translation: replaceRestoredPdfCells(translation, translationBlocks)
+  }
+}
+
+/**
+ * 对已经完成旧表格合并迁移的 PDF 模型执行单元格对齐清理。
+ * @param format 文档格式；仅 PDF 执行。
+ * @param source 源文模型。
+ * @param translation 译文模型。
+ * @returns 清理后的源文、译文模型；无需改动时保留原对象。
+ * @author zhenghq
+ */
+function migrateRestoredPdfTableCellAlignmentForFormat(
+  format: string,
+  source: DocumentModel,
+  translation: DocumentModel
+): [DocumentModel, DocumentModel] {
+  if (format.toLowerCase() !== 'pdf') return [source, translation]
+  const sourceCells = collectRestoredPdfTableCellGroups(source).flat()
+  const translationCells = collectRestoredPdfTableCellGroups(translation).flat()
+  if (sourceCells.length === 0 || sourceCells.length !== translationCells.length) {
+    return [source, translation]
+  }
+  const aligned = clearRestoredPdfCellAlignmentPairs(sourceCells, translationCells)
+  if (aligned[0] === sourceCells && aligned[1] === translationCells) return [source, translation]
+  return [
+    replaceRestoredPdfCells(source, aligned[0].map((cell) => cell.blocks)),
+    replaceRestoredPdfCells(translation, aligned[1].map((cell) => cell.blocks))
+  ]
+}
+
+/**
+ * 按源文证据成对清除单元格中的误判居中。
+ * @param sourceCells 源文单元格。
+ * @param translationCells 与源文结构对应的译文单元格。
+ * @returns 清理后的源文、译文单元格；没有改动时保留原数组。
+ * @author zhenghq
+ */
+function clearRestoredPdfCellAlignmentPairs(
+  sourceCells: readonly RestoredPdfTableCellGroup[],
+  translationCells: readonly RestoredPdfTableCellGroup[]
+): [RestoredPdfTableCellGroup[], RestoredPdfTableCellGroup[]] {
+  let sourceChanged = false
+  let translationChanged = false
+  const sources = sourceCells.map((cell) => {
+    if (!shouldClearRestoredPdfCellAlignment(cell.blocks, cell.cellWidth)) {
+      return cell
+    }
+    const cleared = clearRestoredPdfTextAlignment(cell.blocks)
+    sourceChanged ||= cleared !== cell.blocks
+    return cleared === cell.blocks ? cell : { ...cell, blocks: cleared }
+  })
+  const translations = translationCells.map((cell, index) => {
+    const sourceCell = sourceCells[index]!
+    if (!shouldClearRestoredPdfCellAlignment(sourceCell.blocks, sourceCell.cellWidth)) {
+      return cell
+    }
+    const cleared = clearRestoredPdfTextAlignment(cell.blocks)
+    translationChanged ||= cleared !== cell.blocks
+    return cleared === cell.blocks ? cell : { ...cell, blocks: cleared }
+  })
+  return [sourceChanged ? sources : sourceCells as RestoredPdfTableCellGroup[],
+    translationChanged ? translations : translationCells as RestoredPdfTableCellGroup[]]
+}
+
+/**
+ * 判断单元格是否具有内容被几何中心误判为居中的高置信证据。
+ * 长正文铺满单元格，或居中文区块不是紧凑短标题、竖排标签时进入清理。
+ * @param blocks 单元格内区块。
+ * @param cellWidth 单元格可估算宽度。
+ * @returns 需要清除该单元格全部文本居中对齐时返回 true。
+ * @author zhenghq
+ */
+function shouldClearRestoredPdfCellAlignment(
+  blocks: readonly DocumentBlock[],
+  cellWidth: number
+): boolean {
+  if (cellWidth <= 0) return false
+  return blocks.some((block) => {
+    if (block.kind !== 'text' || block.textAlign !== 'center' || !block.bbox) return false
+    const text = block.runs.map((run) => run.text).join('').replace(/\s+/gu, '')
+    const isLongFullWidthText = text.length >= 20 && block.bbox.width >= cellWidth * 0.7
+    const isCompactLabel = block.bbox.width <= 72 || block.bbox.height > block.bbox.width * 1.5
+    return isLongFullWidthText || !isCompactLabel
+  })
+}
+
+/**
+ * 清除单元格内文本区块的居中对齐，保留其他对齐方式与全部内容。
+ * @param blocks 单元格内区块。
+ * @returns 清除后的区块数组；没有居中对齐时返回原数组。
+ * @author zhenghq
+ */
+function clearRestoredPdfTextAlignment(blocks: readonly DocumentBlock[]): DocumentBlock[] {
+  let changed = false
+  const cleared = blocks.map((block) => {
+    if (block.kind !== 'text' || block.textAlign !== 'center') return block
+    changed = true
+    const { textAlign: _textAlign, ...rest } = block
+    return rest as DocumentTextBlock
+  })
+  return changed ? cleared : blocks as DocumentBlock[]
+}
+
+/**
+ * 将指定单元格的新区块写回工作台快照模型。
+ * @param model 待替换的模型。
+ * @param cells 与模型按顺序对应的新单元格区块。
+ * @returns 替换指定单元格后的模型；没有改动时返回原对象。
+ * @author zhenghq
+ */
+function replaceRestoredPdfCells(
+  model: DocumentModel,
+  cells: readonly DocumentBlock[][]
+): DocumentModel {
+  let cellIndex = 0
+  let changed = false
+  const pages = model.pages.map((page) => ({
+    ...page,
+    blocks: page.blocks.map((block) => {
+      if (block.kind !== 'table') return block
+      const rows = block.rows.map((row) => ({
+        ...row,
+        cells: row.cells.map((cell) => {
+          const blocks = cells[cellIndex++]!
+          if (blocks === cell.blocks) return cell
+          changed = true
+          return { ...cell, blocks }
+        })
+      }))
+      return changed ? { ...block, rows } : block
+    })
+  }))
+  return changed ? { ...model, pages } : model
+}
+
 /** PDF 表格单元格在模型中的稳定定位信息。 */
 interface RestoredPdfTableCellGroup {
   /** 所属页面标识。 */
@@ -526,6 +947,8 @@ interface RestoredPdfTableCellGroup {
   rowId: string
   /** 单元格标识。 */
   cellId: string
+  /** 单元格横向可用宽度；旧快照缺少列宽时为 0。 */
+  cellWidth: number
   /** 单元格当前内容。 */
   blocks: DocumentBlock[]
 }
@@ -542,14 +965,21 @@ function collectRestoredPdfTableCellGroups(model: DocumentModel): RestoredPdfTab
     for (const block of page.blocks) {
       if (block.kind !== 'table') continue
       for (const row of block.rows) {
+        let columnIndex = 0
         for (const cell of row.cells) {
+          const cellWidth = block.columnWidths
+            ? block.columnWidths.slice(columnIndex, columnIndex + cell.colSpan)
+              .reduce((width, value) => width + value, 0)
+            : 0
           groups.push({
             pageId: page.pageId,
             tableBlockId: block.blockId,
             rowId: row.rowId,
             cellId: cell.cellId,
+            cellWidth,
             blocks: cell.blocks
           })
+          columnIndex += cell.colSpan
         }
       }
     }
@@ -693,7 +1123,7 @@ function mergeRestoredPdfTextBlocks(texts: readonly DocumentTextBlock[]): Docume
   const top = Math.min(...validBoxes.map((box) => box.y))
   const right = Math.max(...validBoxes.map((box) => box.x + box.width))
   const bottom = Math.max(...validBoxes.map((box) => box.y + box.height))
-  const alignments = new Set(texts.map((block) => block.textAlign).filter(Boolean))
+  const alignment = texts[0]!.textAlign
   const roles = new Set(texts.map((block) => block.role))
   const merged: DocumentTextBlock = {
     ...first,
@@ -704,8 +1134,10 @@ function mergeRestoredPdfTextBlocks(texts: readonly DocumentTextBlock[]): Docume
     role: roles.size === 1 ? first.role : 'paragraph',
     runs: mergedRuns
   }
-  // 混合对齐的视觉行不能继承首行对齐，否则恢复后会错误影响整格排版。
-  if (alignments.size === 1) merged.textAlign = [...alignments][0]
+  // 合并后的整格文本只有在每个视觉片段都具有相同显式对齐时才能继承对齐。
+  // 无 textAlign 表示沿用默认左对齐；若同视觉行还有右对齐页码，不能把页码对齐
+  // 提升为整行对齐，否则首次从历史快照恢复时正文会被错误居中或靠右。
+  if (alignment && texts.every((block) => block.textAlign === alignment)) merged.textAlign = alignment
   else delete merged.textAlign
   return merged
 }

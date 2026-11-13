@@ -5,11 +5,13 @@ import {
   DOCUMENT_WORKSPACE_CHANNELS,
   applyDocumentWorkspaceTranslationUpdate,
   normalizeDocumentRunRequest,
+  normalizeDocumentSwitchModeRequest,
   normalizeDocumentTargetId,
   normalizeDocumentTaskIdentityRequest,
   type DocumentWorkspaceTranslationUpdate,
   type DocumentWorkspaceSnapshot
 } from '../src/shared/documentWorkspace.ts'
+import { collectRetryableDocumentTargetIds } from '../src/shared/documentCompletion.ts'
 
 /**
  * 创建包含两个文本区块的最小文档模型。
@@ -122,6 +124,54 @@ test('文档工作台协议必须暴露历史与缓存管理通道', () => {
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.deleteHistory, 'document:delete-history')
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.clearCache, 'document:clear-cache')
   assert.equal(DOCUMENT_WORKSPACE_CHANNELS.clearTranslationCache, 'document:clear-translation-cache')
+})
+
+test('单目标重试必须同时覆盖失败、未完成和疑似未翻译目标', () => {
+  assert.deepEqual(collectRetryableDocumentTargetIds({
+    status: 'partial',
+    translated: 1,
+    unchanged: 0,
+    failed: 1,
+    pending: 1,
+    suspectUntranslated: 1,
+    total: 4,
+    failedTargetIds: ['0:0:text:run-1'],
+    pendingTargetIds: ['0:1:text:run-2'],
+    suspectUntranslatedTargetIds: ['0:2:text:run-3']
+  }), [
+    '0:0:text:run-1',
+    '0:1:text:run-2',
+    '0:2:text:run-3'
+  ])
+})
+
+
+test('文档模式切换请求必须校验任务身份、代际与目标模式', () => {
+  assert.deepEqual(normalizeDocumentSwitchModeRequest({
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 3,
+    mode: 'ocr',
+    path: '/tmp/escape.pdf'
+  }), {
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 3,
+    mode: 'ocr'
+  })
+  assert.equal(normalizeDocumentSwitchModeRequest({
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 2,
+    mode: 'ocr'
+  }), null)
+  assert.equal(normalizeDocumentSwitchModeRequest({
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 3,
+    mode: 'invalid'
+  }), null)
+  assert.equal(normalizeDocumentSwitchModeRequest(null), null)
 })
 
 test('文档运行请求必须只保留白名单字段并校验模式与代际', () => {
@@ -313,4 +363,80 @@ test('块增量必须拒绝更新页面中的嵌套区块而不误改表格内�
   }
 
   assert.equal(applyDocumentWorkspaceTranslationUpdate(previous, nestedUpdate), previous)
+})
+
+test('块增量不得覆盖已经手动编辑的 run 与 OCR 译文', () => {
+  const previous = snapshot()
+  const translation = previous.translation!
+  const textBlock = translation.pages[0]!.blocks[0]!
+  assert.equal(textBlock.kind, 'text')
+  if (textBlock.kind !== 'text') return
+  textBlock.runs = [
+    { runId: 'run-1', text: '人工译文', manuallyEdited: true },
+    { runId: 'run-2', text: '自动译文' }
+  ]
+  translation.pages[0]!.blocks.push({
+    kind: 'image',
+    blockId: 'image-1',
+    readingOrder: 2,
+    translatable: false,
+    assetId: 'asset-1',
+    ocrRegions: [{
+      regionId: 'region-1',
+      pageId: 'page-1',
+      blockId: 'image-1',
+      assetId: 'asset-1',
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      text: 'Scanned',
+      status: 'recognized',
+      translatedText: '人工 OCR 译文',
+      manuallyEdited: true
+    }]
+  })
+
+  const textUpdate = {
+    ...update(),
+    block: {
+      ...update().block,
+      runs: [
+        { runId: 'run-1', text: '迟到的自动译文' },
+        { runId: 'run-2', text: '更新后的自动译文' }
+      ]
+    }
+  } satisfies DocumentWorkspaceTranslationUpdate
+  const afterText = applyDocumentWorkspaceTranslationUpdate(previous, textUpdate)
+  const updatedText = afterText.translation?.pages[0]?.blocks[0]
+  assert.equal(updatedText?.kind, 'text')
+  if (updatedText?.kind !== 'text') return
+  assert.deepEqual(updatedText.runs, [
+    { runId: 'run-1', text: '人工译文', manuallyEdited: true },
+    { runId: 'run-2', text: '更新后的自动译文' }
+  ])
+
+  const imageUpdate: DocumentWorkspaceTranslationUpdate = {
+    ...update(),
+    blockId: 'image-1',
+    block: {
+      kind: 'image',
+      blockId: 'image-1',
+      readingOrder: 2,
+      translatable: false,
+      assetId: 'asset-1',
+      ocrRegions: [{
+        regionId: 'region-1',
+        pageId: 'page-1',
+        blockId: 'image-1',
+        assetId: 'asset-1',
+        bbox: { x: 0, y: 0, width: 1, height: 1 },
+        text: 'Scanned',
+        status: 'recognized',
+        translatedText: '迟到的自动 OCR 译文'
+      }]
+    }
+  }
+  const afterImage = applyDocumentWorkspaceTranslationUpdate(afterText, imageUpdate)
+  const updatedImage = afterImage.translation?.pages[0]?.blocks.find((block) => block.blockId === 'image-1')
+  assert.equal(updatedImage?.kind, 'image')
+  assert.equal(updatedImage?.kind === 'image' ? updatedImage.ocrRegions?.[0]?.translatedText : undefined, '人工 OCR 译文')
+  assert.equal(updatedImage?.kind === 'image' ? updatedImage.ocrRegions?.[0]?.manuallyEdited : undefined, true)
 })

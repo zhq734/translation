@@ -9,6 +9,7 @@ import {
   resolveDocumentOcrOverlayBox,
   resolveDocumentOcrRegionFlowTop,
   resolveDocumentOcrTranslationHorizontalBounds,
+  shouldRenderDocumentOcrTranslationRegion,
   resolveOcrRegionFontSize,
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
@@ -116,6 +117,39 @@ test('OCR 遮罩与译文必须共用同一个安全覆盖框，左对齐短文�
     resolveDocumentOcrOverlayBox({ x: 0.9, y: 0.8, width: 0.5, height: 0.5 }),
     { x: 0.9, y: 0.8, width: 0.1, height: 0.2 }
   )
+})
+
+test('已识别 OCR 区域即使译文为空也必须保留可交互译文占位', () => {
+  const recognized = region({ x: 0.1, y: 0.2, width: 0.4, height: 0.1 })
+  assert.equal(shouldRenderDocumentOcrTranslationRegion(recognized), true)
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    translatedText: '   '
+  }), true)
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    translatedText: '已有译文'
+  }), true)
+})
+
+test('OCR 识别失败、跳过或无原文的区域不得生成译文交互占位', () => {
+  const recognized = region({ x: 0.1, y: 0.2, width: 0.4, height: 0.1 })
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    status: 'failed'
+  }), false)
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    status: 'skipped'
+  }), false)
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    status: 'pending'
+  }), false)
+  assert.equal(shouldRenderDocumentOcrTranslationRegion({
+    ...recognized,
+    text: '   '
+  }), false)
 })
 
 test('OCR 译文必须优先锚定原文顶部，仅横向重叠时才避让前序译文', () => {

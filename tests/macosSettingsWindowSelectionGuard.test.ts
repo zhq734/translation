@@ -338,10 +338,10 @@ test('Dock 激活路径不得为迟到 activate 恢复后台设置页可聚焦�
     '迟到 activate 不得恢复后台设置页可聚焦性')
   assert.doesNotMatch(activateSource, /resumeSettingsWindowFocusAfterSelection|\.setFocusable\(/u,
     'Dock 激活路径不得残留旧焦点恢复机制或直接切换窗口能力')
-  // 已可见且未最小化的阅读器只走 focusExistingWindow()：即便内部 activate 被
-  // 误放行，也只返回 true、不重新 show()+focus()，不会把后台阅读器顶到最前。
-  assert.match(activateSource, /webReader\?\.focusExistingWindow\(\)/u,
-    'Dock 激活已有阅读器时必须走不会强制置前的恢复入口')
+  // Dock 激活先恢复全部窗口，再通过最近焦点记录选择唯一目标；不能固定优先
+  // 某个工作区，否则文件翻译或设置页会被错误聚焦。
+  assert.match(activateSource, /ownedWindowFocusRecency\.resolveMostRecent\(/u,
+    'Dock 激活必须按最近使用顺序选择窗口')
   assert.match(
     activateSource,
     /openSettings\(\{[\s\S]*?bringToFront:\s*true[\s\S]*?explicitEntry:\s*true[\s\S]*?source:\s*'dock'[\s\S]*?dockActivationEpoch[\s\S]*?\}\)/u,

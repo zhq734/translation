@@ -73,6 +73,31 @@ test('worker 导出请求必须保留文字层字段并丢弃额外路径字段'
   })
 })
 
+test('worker 导出请求必须保留规范化的手动译文编辑', () => {
+  const manualTranslationEdits = [{
+    pageId: 'page-1',
+    blockId: 'block-1',
+    runId: 'run-1',
+    text: '人工译文'
+  }]
+  const parsed = parseDocumentWorkerRequest({
+    ...exportRequest(),
+    request: {
+      ...exportRequest().request,
+      manualTranslationEdits
+    }
+  })
+  assert.ok(parsed?.type === 'export')
+  assert.deepEqual(parsed.request.manualTranslationEdits, manualTranslationEdits)
+  assert.equal(parseDocumentWorkerRequest({
+    ...exportRequest(),
+    request: {
+      ...exportRequest().request,
+      manualTranslationEdits: [{ ...manualTranslationEdits[0], runId: undefined }]
+    }
+  }), null)
+})
+
 test('worker 导出进度必须严格校验阶段、百分比、页面计数和任务代际', () => {
   const progress = exportProgress()
   assert.deepEqual(parseDocumentWorkerResponse(progress), progress)
@@ -153,6 +178,127 @@ test('文档 worker 请求必须拒绝伪造协议版本与未知消息类型', 
     jobId: 'job-1',
     generation: 1
   }), null)
+})
+
+test('run 与 retry 必须严格保留 bypassCache 布尔值', () => {
+  const run = parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'run',
+    jobId: 'job-1',
+    generation: 1,
+    request: {
+      path: '/tmp/sample.pdf',
+      generation: 1,
+      bypassCache: true
+    }
+  })
+  assert.ok(run?.type === 'run')
+  assert.equal(run.request.bypassCache, true)
+
+  const retry = parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retry',
+    jobId: 'job-1',
+    generation: 2,
+    request: {
+      path: '/tmp/sample.pdf',
+      generation: 2,
+      bypassCache: false
+    }
+  })
+  assert.ok(retry?.type === 'retry')
+  assert.equal(retry.request.bypassCache, false)
+
+  assert.equal(parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'run',
+    jobId: 'job-1',
+    generation: 1,
+    request: {
+      path: '/tmp/sample.pdf',
+      generation: 1,
+      bypassCache: 'true'
+    }
+  }), null)
+})
+
+test('worker 新命令必须严格校验模式、代际与单目标标识', () => {
+  const switchMode = parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'ocr',
+    ignored: '/tmp/secret.pdf'
+  })
+  assert.deepEqual(switchMode, {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'ocr'
+  })
+  assert.equal(parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 2,
+    mode: 'ocr'
+  }), null)
+  assert.equal(parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'source'
+  }), null)
+
+  const targetId = '0:1:text:run-2'
+  const retryTarget = parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retry-failed-target',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    targetId,
+    bypassCache: false
+  })
+  assert.deepEqual(retryTarget, {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retry-failed-target',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    targetId
+  })
+  assert.equal(parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retry-failed-target',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    targetId: 'not-a-target'
+  }), null)
+
+  assert.deepEqual(parseDocumentWorkerRequest({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retranslate-target',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    targetId
+  }), {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'retranslate-target',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    targetId
+  })
 })
 
 test('worker 响应应保留任务代际并区分进度、成功与失败终态', () => {

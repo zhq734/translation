@@ -1,5 +1,6 @@
 import type {
   DocumentBoundingBox,
+  DocumentBlock,
   DocumentModel,
   DocumentWarning
 } from './documentTypes.ts'
@@ -7,6 +8,10 @@ import { parseDocumentModel } from './documentTypes.ts'
 import type { DocumentTaskState } from './documentTask.ts'
 import type { DocumentLanguagePair } from './documentLanguageDirection.ts'
 import type { DocumentCompletionReport } from './documentCompletion.ts'
+import {
+  normalizeDocumentManualTranslationEdits,
+  type DocumentManualTranslationEdit
+} from './documentManualTranslationEdits.ts'
 
 /** 文档工作台运行模式；OCR 原文模式只解析和识别，不进入翻译阶段。 */
 export type DocumentRunMode = 'translation' | 'ocr'
@@ -35,6 +40,14 @@ export interface DocumentTaskIdentityRequest {
   generation: number
 }
 
+/** 文档 OCR 原文与译文模式切换请求；切换沿用同一任务与已缓存源模型。 */
+export interface DocumentSwitchModeRequest extends DocumentTaskIdentityRequest {
+  /** 切换后的新任务代际，必须大于当前代际。 */
+  nextGeneration: number
+  /** 目标运行模式。 */
+  mode: DocumentRunMode
+}
+
 /**
  * 校验并规范化文档任务身份请求。
  *
@@ -57,6 +70,32 @@ export function normalizeDocumentTaskIdentityRequest(
     return null
   }
   return { jobId: candidate.jobId, generation: candidate.generation as number }
+}
+
+/**
+ * 校验并规范化文档模式切换请求。
+ * @param value 未信任的切换请求。
+ * @returns 仅含任务身份、目标代际和模式的请求；字段非法时返回 null。
+ * @author zhenghq
+ */
+export function normalizeDocumentSwitchModeRequest(
+  value: unknown
+): DocumentSwitchModeRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  const identity = normalizeDocumentTaskIdentityRequest(candidate)
+  if (!identity) return null
+  if (!Number.isSafeInteger(candidate.nextGeneration) ||
+    (candidate.nextGeneration as number) <= identity.generation) {
+    return null
+  }
+  if (candidate.mode !== 'translation' && candidate.mode !== 'ocr') return null
+  return {
+    jobId: identity.jobId,
+    generation: identity.generation,
+    nextGeneration: candidate.nextGeneration as number,
+    mode: candidate.mode
+  }
 }
 
 /**
@@ -174,7 +213,7 @@ export interface DocumentWorkspaceTranslationUpdate {
   /** 更新后的稳定区块标识。 */
   blockId: string
   /** 已完成翻译的顶层区块快照。 */
-  block: import('./documentTypes.ts').DocumentBlock
+  block: DocumentBlock
   /** 当前翻译阶段已完成的目标数。 */
   completed: number
   /** 当前翻译阶段目标总数。 */
@@ -266,6 +305,8 @@ export interface DocumentExportRequest {
   mode: 'complete' | 'partial'
   /** 是否在图片上追加透明 OCR 原文文字层，生成可检索的双层 PDF。 */
   textLayer?: boolean
+  /** Renderer 中尚未回写 worker 的手动译文编辑；导出前按目标覆盖缓存译文。 */
+  manualTranslationEdits?: DocumentManualTranslationEdit[]
 }
 
 /** PDF 导出结果。 */
@@ -347,10 +388,12 @@ export interface DocumentApprovedAssetRequest extends DocumentApprovedSourceRequ
 /** 文档工作台 IPC 通道名称。 */
 export const DOCUMENT_WORKSPACE_CHANNELS = {
   run: 'document:run',
+  switchMode: 'document:switch-mode',
   cancel: 'document:cancel',
   release: 'document:release',
   retryFailed: 'document:retry-failed',
   retryFailedTarget: 'document:retry-failed-target',
+  retranslateTarget: 'document:retranslate-target',
   exportPdf: 'document:export-pdf',
   exportApprovedPdf: 'document:export-approved-pdf',
   exportProgress: 'document:export-progress',
@@ -384,11 +427,16 @@ export function normalizeDocumentExportRequest(value: unknown): DocumentExportRe
   if (!identity) return null
   if (candidate.mode !== 'complete' && candidate.mode !== 'partial') return null
   if (candidate.textLayer !== undefined && typeof candidate.textLayer !== 'boolean') return null
+  const manualTranslationEdits = candidate.manualTranslationEdits === undefined
+    ? undefined
+    : normalizeDocumentManualTranslationEdits(candidate.manualTranslationEdits)
+  if (manualTranslationEdits === null) return null
   return {
     jobId: identity.jobId,
     generation: identity.generation,
     mode: candidate.mode,
-    ...(candidate.textLayer !== undefined ? { textLayer: candidate.textLayer } : {})
+    ...(candidate.textLayer !== undefined ? { textLayer: candidate.textLayer } : {}),
+    ...(manualTranslationEdits !== undefined ? { manualTranslationEdits } : {})
   }
 }
 
@@ -571,9 +619,12 @@ export function applyDocumentWorkspaceTranslationUpdate(
   const blockIndex = page.blocks.findIndex((block) => block.blockId === update.blockId)
   if (blockIndex < 0) return snapshot
   const pages = snapshot.translation.pages.slice()
+  const currentBlock = page.blocks[blockIndex]!
   pages[pageIndex] = {
     ...page,
-    blocks: page.blocks.map((block, index) => index === blockIndex ? update.block : block)
+    blocks: page.blocks.map((block, index) => index === blockIndex
+      ? mergeTranslationBlock(currentBlock, update.block)
+      : block)
   }
   return {
     ...snapshot,
@@ -589,4 +640,40 @@ export function applyDocumentWorkspaceTranslationUpdate(
       }
     }
   }
+}
+
+/**
+ * 合并自动生成的块级译文，保留已标记手改的 run 与 OCR 译文。
+ * @param current 当前工作台中的区块。
+ * @param incoming worker 返回的新区块。
+ * @returns 合并后的区块；区块种类不一致时保留当前区块。
+ * @author zhenghq
+ */
+function mergeTranslationBlock(current: DocumentBlock, incoming: DocumentBlock): DocumentBlock {
+  if (current.kind !== incoming.kind) return current
+  if (current.kind === 'text' && incoming.kind === 'text') {
+    const protectedRuns = new Map(
+      current.runs
+        .filter((run) => run.manuallyEdited === true)
+        .map((run) => [run.runId, run])
+    )
+    if (protectedRuns.size === 0) return incoming
+    return {
+      ...incoming,
+      runs: incoming.runs.map((run) => protectedRuns.get(run.runId) ?? run)
+    }
+  }
+  if (current.kind === 'image' && incoming.kind === 'image') {
+    const protectedRegions = new Map(
+      (current.ocrRegions ?? [])
+        .filter((region) => region.manuallyEdited === true)
+        .map((region) => [region.regionId, region])
+    )
+    if (protectedRegions.size === 0) return incoming
+    return {
+      ...incoming,
+      ocrRegions: incoming.ocrRegions?.map((region) => protectedRegions.get(region.regionId) ?? region)
+    }
+  }
+  return incoming
 }

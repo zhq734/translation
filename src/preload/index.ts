@@ -74,6 +74,7 @@ import type {
   TranslationHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
+  DocumentSwitchModeRequest,
   DocumentSourceResult,
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
@@ -490,6 +491,14 @@ const api: Api = {
   runDocument: (request: DocumentRunRequest): Promise<DocumentRunResult> =>
     ipcRenderer.invoke('document:run', request),
   /**
+   * 在不重新解析或 OCR 的前提下切换当前文档的运行模式。
+   * @param request 当前任务身份、新代际与目标模式。
+   * @returns 主进程是否接受切换。
+   * @author zhenghq
+   */
+  switchDocumentMode: (request: DocumentSwitchModeRequest): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:switch-mode', request),
+  /**
    * 使用新代际重新翻译当前文档中的失败项。
    * @param jobId 任务标识。
    * @param generation Renderer 生成的新任务代际。
@@ -508,6 +517,16 @@ const api: Api = {
    */
   retryFailedDocumentTarget: (jobId: string, generation: number, targetId: string): Promise<DocumentRunResult> =>
     ipcRenderer.invoke('document:retry-failed-target', jobId, generation, targetId),
+  /**
+   * 强制重新翻译当前文档中的指定译文目标。
+   * @param jobId 任务标识。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 稳定目标标识。
+   * @returns 主进程是否接受重译。
+   * @author zhenghq
+   */
+  retranslateDocumentTarget: (jobId: string, generation: number, targetId: string): Promise<DocumentRunResult> =>
+    ipcRenderer.invoke('document:retranslate-target', jobId, generation, targetId),
   /**
    * 取消当前文档翻译任务。
    * @param jobId 任务标识。

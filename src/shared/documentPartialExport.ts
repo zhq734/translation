@@ -332,6 +332,10 @@ function restoreTextTarget(
   let restored = false
   targetBlock.runs = targetBlock.runs.map((run) => {
     if (!runIds.has(run.runId)) return run
+    if (run.manuallyEdited === true) {
+      restored = true
+      return run
+    }
     const sourceRun = sourceRuns.get(run.runId)
     if (!sourceRun) throw new DocumentPartialExportError('text-run-missing')
     restored = true
@@ -352,6 +356,7 @@ function restoreOcrTarget(targetModel: DocumentModel, target: PartialExportTarge
   if (block?.kind !== 'image') throw new DocumentPartialExportError('ocr-target-missing')
   const region = block.ocrRegions?.find((candidate) => candidate.regionId === target.regionId)
   if (!region) throw new DocumentPartialExportError('ocr-region-missing')
+  if (region.manuallyEdited === true) return
   delete region.translatedText
 }
 
@@ -390,6 +395,7 @@ function restoreTableRowTarget(
       const runIds = new Set(range.runIds)
       targetText.runs = targetText.runs.map((run) => {
         if (!runIds.has(run.runId)) return run
+        if (run.manuallyEdited === true) return run
         const sourceRun = sourceRuns.get(run.runId)
         if (!sourceRun) throw new DocumentPartialExportError('table-run-missing')
         return { ...run, text: sourceRun.text }

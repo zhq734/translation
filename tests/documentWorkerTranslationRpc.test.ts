@@ -94,6 +94,28 @@ test('翻译 RPC 客户端应发送真实任务上下文并接收增量与结果
   assert.deepEqual(deltas, ['你'])
 })
 
+test('翻译 RPC 客户端应为内部请求补齐 translation-request 线协议类型', async () => {
+  const port = workerPort()
+  const client = new DocumentWorkerTranslationRpcClient(port as never)
+
+  const pending = client.translate({
+    requestId: 'request-type',
+    jobId: 'job-type',
+    generation: 1,
+    text: 'hello',
+    languagePair: { sourceLang: 'EN', targetLang: 'ZH' }
+  }, new AbortController().signal)
+
+  assert.equal(port.sent.length, 1)
+  assert.equal(port.sent[0]?.type, 'translation-request')
+  port.emit({
+    type: 'translation-result',
+    requestId: 'request-type',
+    translation: '你好'
+  })
+  assert.equal(await pending, '你好')
+})
+
 test('翻译 RPC 客户端取消后应拒绝迟到结果且不触发增量', async () => {
   const port = workerPort()
   const client = new DocumentWorkerTranslationRpcClient(port as never)

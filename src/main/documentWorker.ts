@@ -41,7 +41,14 @@ import {
   buildPartialExportDocument,
   type DocumentPartialExportSummary
 } from '../shared/documentPartialExport.ts'
+import { applyDocumentManualTranslationEdits } from '../shared/documentManualTranslationEdits.ts'
 import type { DocumentModel, DocumentWarning } from '../shared/documentTypes.ts'
+import type {
+  DocumentGlossary,
+  DocumentTranslationCacheEntry
+} from '../shared/documentTranslation.ts'
+import { isDocumentWorkerCacheRpcMessage } from './documentWorkerCacheRpc.ts'
+import { isDocumentWorkerTranslationRpcMessage } from './documentWorkerTranslationRpc.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
 import type { DocumentRunRequest } from '../shared/documentWorkspace.ts'
 import type { DocumentParseInput } from './documentParserShared.ts'
@@ -124,6 +131,10 @@ export class DocumentWorkerHost {
     if (this.disposed) return
     // 资源结果属于父进程对 worker 请求的答复，不得被当作新的执行任务。
     if (parseDocumentWorkerAssetResult(value)) return
+    // 缓存 RPC 由独立宿主处理，任务宿主不得将其误判为协议请求。
+    if (isDocumentWorkerCacheRpcMessage(value)) return
+    // 翻译 RPC 由独立客户端处理，任务宿主不得将其误判为协议请求。
+    if (isDocumentWorkerTranslationRpcMessage(value)) return
     const message = parseDocumentWorkerRequest(value)
     if (!message) {
       const fallback = this.resolveInvalidEnvelope(value)
@@ -247,15 +258,21 @@ export class DocumentWorkerHost {
    * @author zhenghq
    */
   private async run(message: Exclude<DocumentWorkerRequestMessage, { type: 'cancel' | 'asset-request' }>): Promise<void> {
-    if (this.active && !this.active.settled) {
-      this.active.controller.abort()
+    const previous = this.active
+    if (previous && !previous.settled) {
+      previous.controller.abort()
     }
+    // 模式切换与单目标重试沿用同一任务：响应代际取 nextGeneration，并复用已声明资源集合。
+    const generation = message.type === 'switch-mode' ||
+      message.type === 'retry-failed-target' || message.type === 'retranslate-target'
+      ? message.nextGeneration
+      : message.generation
     const active: ActiveWorkerRequest = {
       jobId: message.jobId,
-      generation: message.generation,
+      generation,
       controller: new AbortController(),
       settled: false,
-      assetIds: new Set()
+      assetIds: previous && previous.jobId === message.jobId ? previous.assetIds : new Set()
     }
     this.active = active
     const emit = (response: DocumentWorkerResponseMessage): void => {
@@ -371,6 +388,8 @@ export interface DocumentWorkerProductionDependencies {
       jobId: string
       /** 当前任务代际。 */
       generation: number
+      /** 是否跳过通用翻译缓存。 */
+      bypassCache?: boolean
     }
   ): Promise<string>
   /** 读取可嵌入 PDF 的字体字节。 */
@@ -417,6 +436,35 @@ export interface DocumentWorkerProductionDependencies {
    * @author zhenghq
    */
   getOcrConcurrency?(): number
+  /**
+   * 获取单次任务允许 OCR 的不同图片数；未提供时使用共享默认预算。
+   * @returns OCR 图片数上限。
+   * @author zhenghq
+   */
+  getMaxOcrImages?(): number
+  /**
+   * 获取允许读取的最大文件字节数；未提供时使用共享默认预算。
+   * @returns 文件字节数上限。
+   * @author zhenghq
+   */
+  getMaxFileBytes?(): number
+  /** 读取当前文档术语表；未配置时不做术语约束。 */
+  getGlossary?(): DocumentGlossary | undefined
+  /** 读取文档翻译缓存；缺省时关闭缓存读取。 */
+  readTranslationCache?(
+    jobId: string,
+    generation: number,
+    key: string
+  ): Promise<DocumentTranslationCacheEntry | null>
+  /** 写入完整成功目标的翻译缓存；缺省时关闭缓存写入。 */
+  writeTranslationCache?(
+    jobId: string,
+    generation: number,
+    key: string,
+    value: DocumentTranslationCacheEntry
+  ): Promise<void>
+  /** 读取解析器版本，用于文档缓存隔离。 */
+  getParserVersion?(): string
 }
 
 /** worker 内按任务缓存的结果，重试与导出不得重新解析或 OCR。 */
@@ -479,17 +527,20 @@ function resolveProductionErrorCode(error: unknown, fallback: string): string {
  * 读取并校验 worker 请求中的本地文件，生成与主进程一致的安全解析输入。
  * @param request 已通过消息校验的运行请求。
  * @param signal 取消信号。
+ * @param maxBytesInput 当前设置允许的最大文件字节数；未提供时使用共享默认上限。
  * @returns 文档解析输入。
  * @author zhenghq
  */
 async function loadWorkerInput(
   request: DocumentRunRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  maxBytesInput?: number
 ): Promise<DocumentParseInput> {
   if (signal.aborted) throw Object.assign(new Error('cancelled'), { name: 'AbortError' })
   const fileStat = await stat(request.path)
   if (!fileStat.isFile() || fileStat.size === 0) throw Object.assign(new Error('invalid-file'), { code: 'invalid-file' })
-  if (fileStat.size > DOCUMENT_MAX_FILE_BYTES) throw Object.assign(new Error('too-large'), { code: 'too-large' })
+  const maxBytes = maxBytesInput ?? DOCUMENT_MAX_FILE_BYTES
+  if (fileStat.size > maxBytes) throw Object.assign(new Error('too-large'), { code: 'too-large' })
   const bytes = new Uint8Array(await readFile(request.path))
   if (signal.aborted) throw Object.assign(new Error('cancelled'), { name: 'AbortError' })
   if (bytes.byteLength !== fileStat.size) throw Object.assign(new Error('file-changed'), { code: 'file-changed' })
@@ -502,6 +553,7 @@ async function loadWorkerInput(
     head: bytes.subarray(0, Math.min(bytes.byteLength, 8192)),
     tail,
     ...(zipDirectory ? { zipDirectory } : {}),
+    maxBytes,
     readable: true
   })
   if (!validation.ok) throw Object.assign(new Error(validation.code), { code: validation.code })
@@ -666,7 +718,7 @@ export function createDocumentWorkerExecutor(
     signal: AbortSignal,
     emit: (response: DocumentWorkerResponseMessage) => void
   ): Promise<void> => {
-    const input = await loadWorkerInput(message.request, signal)
+    const input = await loadWorkerInput(message.request, signal, dependencies.getMaxFileBytes?.())
     // 流水线开始前先建立资源缓存，解析与 OCR 期间读取到的资源才能立即登记；
     // 后续创建任务快照时直接复用同一 Map，避免重试或导出再次读取文件。
     const assetBytes = new Map<string, Uint8Array>()
@@ -697,7 +749,8 @@ export function createDocumentWorkerExecutor(
       translate: (text, translateSignal, languagePair, onDelta) =>
         dependencies.translate(text, translateSignal, languagePair, onDelta, {
           jobId: message.jobId,
-          generation: message.generation
+          generation: message.generation,
+          bypassCache: message.request.bypassCache === true
         }),
       onProgress: (state) => {
         if (state.phase === 'translate') {
@@ -743,6 +796,23 @@ export function createDocumentWorkerExecutor(
       },
       concurrency: dependencies.getTranslationConcurrency?.(),
       ocrConcurrency: dependencies.getOcrConcurrency?.(),
+      maxOcrImages: dependencies.getMaxOcrImages?.(),
+      glossary: dependencies.getGlossary?.(),
+      readTranslationCache: dependencies.readTranslationCache
+        ? (key) => dependencies.readTranslationCache!(message.jobId, message.generation, key)
+        : undefined,
+      writeTranslationCache: dependencies.writeTranslationCache
+        ? (key, value) => dependencies.writeTranslationCache!(
+          message.jobId,
+          message.generation,
+          key,
+          value
+        )
+        : undefined,
+      getParserVersion: dependencies.getParserVersion
+        ? () => dependencies.getParserVersion!()
+        : undefined,
+      bypassCache: message.request.bypassCache === true,
       getModelFingerprint: () => modelFingerprint
     }, {
       sourcePreference: message.request.sourceLang ?? 'auto',
@@ -780,18 +850,31 @@ export function createDocumentWorkerExecutor(
    * @author zhenghq
    */
   const retry = async (
-    message: Extract<DocumentWorkerRequestMessage, { type: 'retry' }>,
+    message:
+      | Extract<DocumentWorkerRequestMessage, { type: 'retry' }>
+      | Extract<DocumentWorkerRequestMessage, { type: 'retry-failed-target' }>
+      | Extract<DocumentWorkerRequestMessage, { type: 'retranslate-target' }>,
     signal: AbortSignal,
     emit: (response: DocumentWorkerResponseMessage) => void
   ): Promise<void> => {
     const job = jobs.get(message.jobId)
     if (!job) throw new DocumentWorkerExportError('job-not-found')
-    if (message.generation <= job.generation) throw new DocumentWorkerExportError('generation-conflict')
+    const isSingleTarget = message.type !== 'retry'
+    const generation = isSingleTarget ? message.nextGeneration : message.generation
+    if (isSingleTarget
+      ? message.generation !== job.generation || generation <= job.generation
+      : generation <= job.generation) {
+      throw new DocumentWorkerExportError('generation-conflict')
+    }
+    const targetIds = isSingleTarget ? [message.targetId] : job.retryableTargetIds
+    const bypassCache = message.type === 'retranslate-target'
+      ? true
+      : message.type === 'retry' && message.request.bypassCache === true
     const task = {
-      ...createDocumentTaskState(job.jobId, message.generation),
+      ...createDocumentTaskState(job.jobId, generation),
       phase: 'translate' as const,
       status: 'translating' as const,
-      progress: { completed: 0, total: job.retryableTargetIds.length }
+      progress: { completed: 0, total: targetIds.length }
     }
     let previousTranslation: DocumentModel | null = null
     let retryCompleted = 0
@@ -799,7 +882,7 @@ export function createDocumentWorkerExecutor(
     const result = await retryFailedDocumentTranslationPipeline(
       job.source,
       job.translation,
-      job.retryableTargetIds,
+      targetIds,
       task,
       signal,
       {
@@ -809,12 +892,13 @@ export function createDocumentWorkerExecutor(
         translate: (text, translateSignal, languagePair, onDelta) =>
           dependencies.translate(text, translateSignal, languagePair, onDelta, {
             jobId: message.jobId,
-            generation: message.generation
+            generation,
+            bypassCache
           }),
         onProgress: (state) => {
           retryCompleted = state.progress.completed
           retryTotal = state.progress.total
-          emit(createDocumentWorkerProgressMessage(message.jobId, message.generation, {
+          emit(createDocumentWorkerProgressMessage(message.jobId, generation, {
             percent: calculateDocumentTaskProgress(state),
             phase: state.phase,
             completed: state.progress.completed,
@@ -826,7 +910,7 @@ export function createDocumentWorkerExecutor(
           if (!previousTranslation) {
             publishTranslationSnapshot(
               message.jobId,
-              message.generation,
+              generation,
               job.source,
               translation,
               job.languageResolution,
@@ -837,7 +921,7 @@ export function createDocumentWorkerExecutor(
           } else {
             publishTranslationDelta(
               message.jobId,
-              message.generation,
+              generation,
               previousTranslation,
               translation,
               retryCompleted,
@@ -849,12 +933,157 @@ export function createDocumentWorkerExecutor(
         },
         concurrency: dependencies.getTranslationConcurrency?.(),
         ocrConcurrency: dependencies.getOcrConcurrency?.(),
+        maxOcrImages: dependencies.getMaxOcrImages?.(),
+        glossary: dependencies.getGlossary?.(),
+        readTranslationCache: dependencies.readTranslationCache
+          ? (key) => dependencies.readTranslationCache!(message.jobId, generation, key)
+          : undefined,
+        writeTranslationCache: dependencies.writeTranslationCache
+          ? (key, value) => dependencies.writeTranslationCache!(
+            message.jobId,
+            generation,
+            key,
+            value
+          )
+          : undefined,
+        getParserVersion: dependencies.getParserVersion
+          ? () => dependencies.getParserVersion!()
+          : undefined,
+        bypassCache,
         getModelFingerprint: () => modelFingerprint
       },
-      job.languageResolution
+      job.languageResolution,
+      { preserveTranslationOnFailure: message.type === 'retranslate-target' }
     )
+    job.request = {
+      ...job.request,
+      generation,
+      ...(bypassCache ? { bypassCache: true } : {})
+    }
     commitResult(job, result)
-    emit(createDocumentWorkerResultMessage(message.jobId, message.generation, resultPayload(job)))
+    emit(createDocumentWorkerResultMessage(message.jobId, generation, resultPayload(job)))
+  }
+
+  /**
+   * 复用已解析和已识别的源模型切换 OCR 原文/译文模式，不重新解析或 OCR。
+   * @param message 已校验模式切换请求。
+   * @param signal 取消信号。
+   * @param emit 响应发送函数。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const switchMode = async (
+    message: Extract<DocumentWorkerRequestMessage, { type: 'switch-mode' }>,
+    signal: AbortSignal,
+    emit: (response: DocumentWorkerResponseMessage) => void
+  ): Promise<void> => {
+    const job = jobs.get(message.jobId)
+    if (!job) throw new DocumentWorkerExportError('job-not-found')
+    if (message.generation !== job.generation) {
+      throw new DocumentWorkerExportError('generation-conflict')
+    }
+    if (message.nextGeneration <= job.generation) {
+      throw new DocumentWorkerExportError('generation-conflict')
+    }
+    const task = createDocumentTaskState(message.jobId, message.nextGeneration)
+    let previousTranslation: DocumentModel | null = null
+    let translationCompleted = 0
+    let translationTotal = 0
+    const pipeline = await runDocumentTranslationPipeline(
+      job.input,
+      task,
+      signal,
+      {
+        parse: async () => job.source,
+        loadAssetBytes: async (asset) => job.assetBytes.get(asset.assetId) ?? null,
+        recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+        translate: (text, translateSignal, languagePair, onDelta) =>
+          dependencies.translate(text, translateSignal, languagePair, onDelta, {
+            jobId: message.jobId,
+            generation: message.nextGeneration,
+            bypassCache: false
+          }),
+        onProgress: (state) => {
+          if (state.phase === 'translate') {
+            translationCompleted = state.progress.completed
+            translationTotal = state.progress.total
+          }
+          emit(createDocumentWorkerProgressMessage(message.jobId, message.nextGeneration, {
+            percent: calculateDocumentTaskProgress(state),
+            phase: state.phase,
+            completed: state.progress.completed,
+            total: state.progress.total,
+            warningCount: state.warningCount
+          }))
+        },
+        publishLanguageResolution: () => undefined,
+        publishTranslation: (translation) => {
+          if (!previousTranslation) {
+            publishTranslationSnapshot(
+              message.jobId,
+              message.nextGeneration,
+              job.source,
+              translation,
+              job.languageResolution,
+              translationCompleted,
+              translationTotal,
+              emit
+            )
+          } else {
+            publishTranslationDelta(
+              message.jobId,
+              message.nextGeneration,
+              previousTranslation,
+              translation,
+              translationCompleted,
+              translationTotal,
+              emit
+            )
+          }
+          previousTranslation = translation
+        },
+        concurrency: dependencies.getTranslationConcurrency?.(),
+        ocrConcurrency: dependencies.getOcrConcurrency?.(),
+        maxOcrImages: dependencies.getMaxOcrImages?.(),
+        glossary: dependencies.getGlossary?.(),
+        readTranslationCache: dependencies.readTranslationCache
+          ? (key) => dependencies.readTranslationCache!(message.jobId, message.nextGeneration, key)
+          : undefined,
+        writeTranslationCache: dependencies.writeTranslationCache
+          ? (key, value) => dependencies.writeTranslationCache!(
+            message.jobId,
+            message.nextGeneration,
+            key,
+            value
+          )
+          : undefined,
+        getParserVersion: dependencies.getParserVersion
+          ? () => dependencies.getParserVersion!()
+          : undefined,
+        bypassCache: false,
+        getModelFingerprint: () => modelFingerprint
+      },
+      {
+        sourcePreference: job.request.sourceLang ?? 'auto',
+        targetPreference: job.request.targetLang ?? 'auto'
+      },
+      message.mode,
+      {
+        reusedSource: job.source,
+        reusedLanguageResolution: job.languageResolution
+      }
+    )
+    job.request = {
+      ...job.request,
+      generation: message.nextGeneration,
+      mode: message.mode
+    }
+    commitResult(job, pipeline)
+    emit(createDocumentWorkerResultMessage(
+      message.jobId,
+      message.nextGeneration,
+      resultPayload(job)
+    ))
   }
 
   /**
@@ -898,17 +1127,24 @@ export function createDocumentWorkerExecutor(
         throw new DocumentWorkerExportError('completion-mismatch')
       }
     }
+    // Renderer 的手动编辑可能尚未通过流式回写进入 worker 缓存，导出前必须
+    // 先应用白名单编辑，再据此执行完整/部分导出复验。
+    const translatedModel = applyDocumentManualTranslationEdits(
+      job.translation,
+      message.request.manualTranslationEdits ?? []
+    )
+    if (!translatedModel) throw new DocumentWorkerExportError('invalid-request')
     const ocrOnly = (job.request.mode ?? 'translation') === 'ocr'
     const partial = !ocrOnly && message.request.mode === 'partial'
-      ? buildPartialExportDocument(job.source, job.translation, currentReport)
+      ? buildPartialExportDocument(job.source, translatedModel, currentReport)
       : undefined
     // OCR 原文直接导出已完成 OCR 的源模型，不能为满足翻译计数而伪造部分译文目录。
     if (!ocrOnly && !partial) {
-      buildPartialExportDocument(job.source, job.translation, currentReport)
+      buildPartialExportDocument(job.source, translatedModel, currentReport)
     }
     if (signal.aborted) throw Object.assign(new Error('cancelled'), { name: 'AbortError' })
     // OCR 原文导出明确使用已完成识别的源模型，确保底图与透明文字层来自同一任务快照。
-    const exportModel = ocrOnly ? job.source : partial?.model ?? job.translation
+    const exportModel = ocrOnly ? job.source : partial?.model ?? translatedModel
     const output = await dependencies.exportPdf(exportModel, {
       loadFontBytes: () => dependencies.loadFontBytes(),
       loadAssetBytes: async (assetId) => job.assetBytes.get(assetId) ?? null,
@@ -983,7 +1219,9 @@ export function createDocumentWorkerExecutor(
       try {
         if (message.type === 'asset-request') return
         if (message.type === 'run') return await run(message, signal, emit)
-        if (message.type === 'retry') return await retry(message, signal, emit)
+        if (message.type === 'retry' || message.type === 'retry-failed-target' ||
+          message.type === 'retranslate-target') return await retry(message, signal, emit)
+        if (message.type === 'switch-mode') return await switchMode(message, signal, emit)
         if (message.type === 'export') return await exportPdf(message, signal, emit)
       } catch (error) {
         if (signal.aborted || resolveDocumentWorkerErrorCode(error) === 'cancelled') {

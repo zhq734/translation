@@ -19,6 +19,11 @@ import {
   resolveTesseractWorkerPath
 } from './tesseractOcr.ts'
 import type { DocumentLanguagePair } from '../shared/documentLanguageDirection.ts'
+import type {
+  DocumentGlossary,
+  DocumentTranslationCacheEntry,
+  DocumentTranslationRequestContext
+} from '../shared/documentTranslation.ts'
 import { isWindows7CompatibilityRuntime } from './platformCompatibility.ts'
 
 /** OCR 单次识别的统一超时时间，与主进程截图翻译保持一致。 */
@@ -36,6 +41,14 @@ export interface DocumentWorkerTranslationRpcRequest {
   text: string
   /** 任务级冻结语言对。 */
   languagePair: DocumentLanguagePair
+  /** 是否跳过主进程通用翻译缓存。 */
+  bypassCache?: boolean
+  /** 本次请求命中的术语表版本；无术语表时为 none。 */
+  glossaryVersion?: string
+  /** 仅包含本次请求命中条目的受控术语约束。 */
+  glossaryContext?: string
+  /** 当前目标的相邻语义单元受限摘要。 */
+  contextSummary?: string
 }
 
 /** worker 内翻译 RPC 回调；增量只传递译文，不传原文或路径。 */
@@ -85,12 +98,37 @@ export interface DocumentWorkerProductionDependencyOptions {
   ocrScale: number
   /** 是否允许 Tesseract 兜底。 */
   ocrTesseractEnabled: boolean
-  /** 文档 OCR 并发数，未提供时使用默认值 2。 */
+  /** 文档 OCR 并发数，未提供时使用低内存默认值 1。 */
   ocrConcurrency?: number
+  /** 单次任务允许读取的最大文件字节数；未提供时由执行器使用共享默认值。 */
+  maxFileBytes?: number
+  /** 单次任务允许解析的最大页数；未提供时不额外限制。 */
+  maxPages?: number
+  /** 单次任务允许 OCR 的不同图片数；未提供时由执行器使用共享默认值。 */
+  maxOcrImages?: number
+  /** 当前文档术语表；未配置时不做术语约束。 */
+  glossary?: () => DocumentGlossary | undefined
+  /** 读取文档翻译缓存。 */
+  readTranslationCache?: (
+    jobId: string,
+    generation: number,
+    key: string
+  ) => Promise<DocumentTranslationCacheEntry | null>
+  /** 写入完整成功目标的翻译缓存。 */
+  writeTranslationCache?: (
+    jobId: string,
+    generation: number,
+    key: string,
+    value: DocumentTranslationCacheEntry
+  ) => Promise<void>
+  /** 读取解析器版本，用于文档缓存隔离。 */
+  getParserVersion?: () => string
   /** 主进程受控翻译 RPC。 */
   translationRpc: DocumentWorkerTranslationRpc
   /** 可注入的 PDF 导出实现，生产环境默认使用 pdf-lib 导出器。 */
   exportDocumentToPdf?: typeof exportDocumentToPdf
+  /** 可注入的解析实现，测试时避免真实读取或栅格化。 */
+  parseDocument?: typeof parseDocument
   /** 可注入平台，测试时用于固定 OCR 队列。 */
   platform?: NodeJS.Platform
   /** 可注入 Win7 判定，测试时避免读取宿主环境。 */
@@ -184,6 +222,7 @@ export function createDocumentWorkerProductionDependencies(
       options.ocrEnginePreference
     ])).digest('hex')
   const exportDocument = options.exportDocumentToPdf ?? exportDocumentToPdf
+  const parseDocumentImpl = options.parseDocument ?? parseDocument
 
   return {
     async parse(
@@ -192,16 +231,18 @@ export function createDocumentWorkerProductionDependencies(
       registerAssetBytes?: (assetId: string, bytes: Uint8Array) => void
     ): Promise<Awaited<ReturnType<typeof parseDocument>>> {
       if (input.format !== 'pdf') {
-        return parseDocument(input, {
-          ...(registerAssetBytes ? { registerAssetBytes } : {})
+        return parseDocumentImpl(input, {
+          ...(registerAssetBytes ? { registerAssetBytes } : {}),
+          ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {})
         })
       }
       const rasterizer = await createProductionPdfRasterizer(signal)
-      return parseDocument(input, {
+      return parseDocumentImpl(input, {
         renderPageToImage: rasterizer.renderPageToImage,
         renderPageRegionToImage: rasterizer.renderPageRegionToImage,
         renderEmbeddedImageToImage: rasterizer.renderEmbeddedImageToImage,
         ...(registerAssetBytes ? { registerAssetBytes } : {}),
+        ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}),
         signal
       })
     },
@@ -226,14 +267,26 @@ export function createDocumentWorkerProductionDependencies(
       signal: AbortSignal,
       languagePair: DocumentLanguagePair,
       onDelta: ((delta: string) => void) | undefined,
-      context: { jobId: string; generation: number }
+      context: DocumentTranslationRequestContext & {
+        jobId: string
+        generation: number
+        /** 是否跳过主进程通用翻译缓存。 */
+        bypassCache?: boolean
+      }
     ): Promise<string> {
+      const glossaryVersion = context.glossaryVersion?.trim() || 'none'
+      const glossaryContext = context.glossaryContext ?? ''
+      const contextSummary = context.contextSummary?.trim()
       return options.translationRpc.translate({
         requestId: randomUUID(),
         jobId: context.jobId,
         generation: context.generation,
         text,
-        languagePair
+        languagePair,
+        ...(context.bypassCache === true ? { bypassCache: true } : {}),
+        glossaryVersion,
+        glossaryContext,
+        ...(contextSummary ? { contextSummary } : {})
       }, signal, onDelta ?? (() => undefined))
     },
     loadFontBytes: () => loadDocumentPdfFontBytes({
@@ -257,6 +310,16 @@ export function createDocumentWorkerProductionDependencies(
     })),
     getModelFingerprint: () => options.getModelFingerprint?.() ?? modelFingerprint,
     getTranslationConcurrency: () => options.translationRpc.getTranslationConcurrency(),
-    getOcrConcurrency: () => options.ocrConcurrency ?? 2
+    getOcrConcurrency: () => options.ocrConcurrency ?? 1,
+    ...(options.maxFileBytes !== undefined
+      ? { getMaxFileBytes: () => options.maxFileBytes! }
+      : {}),
+    ...(options.maxOcrImages !== undefined
+      ? { getMaxOcrImages: () => options.maxOcrImages! }
+      : {}),
+    getGlossary: () => options.glossary?.(),
+    readTranslationCache: options.readTranslationCache,
+    writeTranslationCache: options.writeTranslationCache,
+    getParserVersion: options.getParserVersion
   }
 }

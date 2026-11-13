@@ -11,16 +11,32 @@ import type {
   DocumentRunMode,
   DocumentRunRequest
 } from './documentWorkspace.ts'
-import { parseDocumentExportProgress } from './documentWorkspace.ts'
+import {
+  normalizeDocumentRunRequest,
+  parseDocumentExportProgress
+} from './documentWorkspace.ts'
 import type { DocumentCompletionReport } from './documentCompletion.ts'
 import type { DocumentLanguageResolution } from './documentLanguageDirection.ts'
 import type { DocumentPartialExportSummary } from './documentPartialExport.ts'
+import { parseDocumentTargetId } from './documentTargetLocator.ts'
+import {
+  normalizeDocumentManualTranslationEdits,
+  type DocumentManualTranslationEdit
+} from './documentManualTranslationEdits.ts'
 
 /** 文档 worker 消息协议版本；不兼容变更必须递增。 */
 export const DOCUMENT_WORKER_PROTOCOL_VERSION = 1
 
 /** worker 可接收的请求类型。 */
-export type DocumentWorkerRequestType = 'run' | 'retry' | 'cancel' | 'export' | 'asset-request'
+export type DocumentWorkerRequestType =
+  | 'run'
+  | 'retry'
+  | 'switch-mode'
+  | 'retry-failed-target'
+  | 'retranslate-target'
+  | 'cancel'
+  | 'export'
+  | 'asset-request'
 
 /** worker 请求消息的公共代际字段。 */
 export interface DocumentWorkerRequestEnvelope {
@@ -48,6 +64,36 @@ export interface DocumentWorkerRetryRequestMessage extends DocumentWorkerRequest
   request: DocumentRunRequest
 }
 
+/** 复用 worker 缓存源模型并切换运行模式。 */
+export interface DocumentWorkerSwitchModeRequestMessage extends DocumentWorkerRequestEnvelope {
+  /** 请求类型。 */
+  type: 'switch-mode'
+  /** 切换后的新代际，必须大于当前代际。 */
+  nextGeneration: number
+  /** 切换后的运行模式。 */
+  mode: DocumentRunMode
+}
+
+/** 仅重试当前完成报告中的一个可重试目标。 */
+export interface DocumentWorkerRetryFailedTargetRequestMessage extends DocumentWorkerRequestEnvelope {
+  /** 请求类型。 */
+  type: 'retry-failed-target'
+  /** 重试后的新代际。 */
+  nextGeneration: number
+  /** 当前完成报告中的稳定目标标识。 */
+  targetId: string
+}
+
+/** 强制重译当前文档中的一个目标，并固定绕过翻译缓存。 */
+export interface DocumentWorkerRetranslateTargetRequestMessage extends DocumentWorkerRequestEnvelope {
+  /** 请求类型。 */
+  type: 'retranslate-target'
+  /** 重译后的新代际。 */
+  nextGeneration: number
+  /** 当前文档中的稳定目标标识。 */
+  targetId: string
+}
+
 /** 取消当前文档任务的 worker 请求。 */
 export interface DocumentWorkerCancelRequestMessage extends DocumentWorkerRequestEnvelope {
   /** 请求类型。 */
@@ -68,6 +114,8 @@ export interface DocumentWorkerExportRequestMessage extends DocumentWorkerReques
     completionReport?: DocumentCompletionReport
     /** 用户是否已明确确认保留原文的部分导出。 */
     confirmPartialExport?: boolean
+    /** 导出前需要覆盖到缓存译文模型的手动译文编辑。 */
+    manualTranslationEdits?: DocumentManualTranslationEdit[]
   }
 }
 
@@ -85,6 +133,9 @@ export interface DocumentWorkerAssetRequestMessage extends DocumentWorkerRequest
 export type DocumentWorkerRequestMessage =
   | DocumentWorkerRunRequestMessage
   | DocumentWorkerRetryRequestMessage
+  | DocumentWorkerSwitchModeRequestMessage
+  | DocumentWorkerRetryFailedTargetRequestMessage
+  | DocumentWorkerRetranslateTargetRequestMessage
   | DocumentWorkerCancelRequestMessage
   | DocumentWorkerExportRequestMessage
   | DocumentWorkerAssetRequestMessage
@@ -309,8 +360,9 @@ function hasRequestEnvelope(value: unknown): value is Record<string, unknown> & 
     value.jobId.trim().length > 0 &&
     Number.isInteger(value.generation) &&
     Number(value.generation) >= 1 &&
-    (value.type === 'run' || value.type === 'retry' || value.type === 'cancel' ||
-      value.type === 'export' || value.type === 'asset-request')
+    (value.type === 'run' || value.type === 'retry' || value.type === 'switch-mode' ||
+      value.type === 'retry-failed-target' || value.type === 'retranslate-target' ||
+      value.type === 'cancel' || value.type === 'export' || value.type === 'asset-request')
 }
 
 /**
@@ -715,10 +767,44 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
       generation: value.generation
     }
   }
+  if (value.type === 'switch-mode') {
+    if (value.mode !== 'translation' && value.mode !== 'ocr') return null
+    const nextGeneration = value.nextGeneration
+    if (typeof nextGeneration !== 'number' || !Number.isSafeInteger(nextGeneration) ||
+      nextGeneration <= value.generation) return null
+    return {
+      version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+      type: 'switch-mode',
+      jobId: value.jobId,
+      generation: value.generation,
+      nextGeneration,
+      mode: value.mode
+    }
+  }
+  if (value.type === 'retry-failed-target' || value.type === 'retranslate-target') {
+    const nextGeneration = value.nextGeneration
+    if (typeof nextGeneration !== 'number' || !Number.isSafeInteger(nextGeneration) ||
+      nextGeneration <= value.generation) return null
+    if (typeof value.targetId !== 'string' || !value.targetId.trim() ||
+      value.targetId.length > 512 || /[\u0000-\u001f\u007f]/u.test(value.targetId) ||
+      parseDocumentTargetId(value.targetId) === null) return null
+    return {
+      version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+      type: value.type,
+      jobId: value.jobId,
+      generation: value.generation,
+      nextGeneration,
+      targetId: value.targetId
+    }
+  }
   if (!isRecord(value.request)) return null
   if (value.type === 'export') {
     if (value.request.mode !== 'complete' && value.request.mode !== 'partial') return null
     if (value.request.completionReport !== undefined && !isRecord(value.request.completionReport)) return null
+    const manualTranslationEdits = value.request.manualTranslationEdits === undefined
+      ? undefined
+      : normalizeDocumentManualTranslationEdits(value.request.manualTranslationEdits)
+    if (manualTranslationEdits === null) return null
     return {
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
       type: 'export',
@@ -734,28 +820,20 @@ export function parseDocumentWorkerRequest(value: unknown): DocumentWorkerReques
           : {}),
         ...(typeof value.request.confirmPartialExport === 'boolean'
           ? { confirmPartialExport: value.request.confirmPartialExport }
-          : {})
+          : {}),
+        ...(manualTranslationEdits !== undefined ? { manualTranslationEdits } : {})
       }
     }
   }
-  const request = value.request
-  if (typeof request.path !== 'string' || !request.path.trim() ||
-    !Number.isInteger(request.generation) || Number(request.generation) < 1) return null
-  if (request.mode !== undefined && request.mode !== 'ocr' && request.mode !== 'translation') {
-    return null
-  }
+  if (value.type !== 'run' && value.type !== 'retry') return null
+  const request = normalizeDocumentRunRequest(value.request)
+  if (!request || request.generation !== value.generation) return null
   return {
     version: DOCUMENT_WORKER_PROTOCOL_VERSION,
     type: value.type,
     jobId: value.jobId,
     generation: value.generation,
-    request: {
-      path: request.path,
-      generation: Number(request.generation),
-      ...(typeof request.sourceLang === 'string' ? { sourceLang: request.sourceLang } : {}),
-      ...(typeof request.targetLang === 'string' ? { targetLang: request.targetLang } : {}),
-      ...(request.mode === 'ocr' || request.mode === 'translation' ? { mode: request.mode } : {})
-    }
+    request
   }
 }
 

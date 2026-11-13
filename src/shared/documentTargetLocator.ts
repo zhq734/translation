@@ -5,7 +5,8 @@ import type {
   DocumentPage,
   DocumentTableBlock,
   DocumentTableRow,
-  DocumentTextBlock
+  DocumentTextBlock,
+  DocumentTextStyle
 } from './documentTypes.ts'
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
@@ -46,6 +47,35 @@ export interface LocatedDocumentTarget {
   regionId?: string
   /** 目标是否位于表格单元格等嵌套区块中。 */
   isNested: boolean
+}
+
+/** 译文 DOM 元素携带的定位标识。 */
+export interface DocumentElementTargetLocator {
+  /** 元素所属页面标识。 */
+  pageId: string
+  /** 元素所属稳定区块标识。 */
+  blockId: string
+  /** 文本 run 标识。 */
+  runId?: string
+  /** 表格行标识。 */
+  rowId?: string
+  /** OCR 区域标识。 */
+  regionId?: string
+}
+
+/** 在页面区块树中递归定位区块时保留的路径与表格行上下文。 */
+interface ResolvedElementBlock {
+  /** 区块在页面中的稳定路径。 */
+  path: DocumentBlockPath
+  /** 命中的区块。 */
+  block: DocumentBlock
+  /** 表格单元格正文所属的行；顶层区块为空。 */
+  tableRow?: {
+    /** 表格区块稳定路径。 */
+    tablePath: DocumentBlockPath
+    /** 表格行标识。 */
+    rowId: string
+  }
 }
 
 /**
@@ -131,6 +161,148 @@ function resolvePath(
     isNested = true
   }
   return current ? { block: current, isNested } : null
+}
+
+/**
+ * 比较两个文本 run 的有效样式是否可直接归并翻译。
+ * @param left 前一个 run 样式。
+ * @param right 后一个 run 样式。
+ * @returns 样式字段完全一致时返回 true。
+ * @author zhenghq
+ */
+function sameDocumentElementTextStyle(
+  left: DocumentTextStyle | undefined,
+  right: DocumentTextStyle | undefined
+): boolean {
+  if (!left || !right) return left === right
+  const keys: Array<keyof DocumentTextStyle> = [
+    'fontFamily',
+    'fontSize',
+    'fontWeight',
+    'color',
+    'backgroundColor',
+    'italic',
+    'underline',
+    'strikethrough',
+    'letterSpacing',
+    'lineHeight'
+  ]
+  return keys.every((key) => left[key] === right[key])
+}
+
+/**
+ * 判断文本 run 是否参与流水线翻译；受保护或纯空白 run 会切断目标区间。
+ * @param run 待判断的文本 run。
+ * @returns 可参与翻译时返回 true。
+ * @author zhenghq
+ */
+function isTranslatableTextRun(run: DocumentTextBlock['runs'][number]): boolean {
+  return run.protected !== true && Boolean(run.text.trim())
+}
+
+/**
+ * 找到指定 run 在流水线中实际归属的翻译区间首 run。
+ * @param block 文本区块。
+ * @param runId DOM 中命中的 run 标识。
+ * @returns 区间首 run 标识；该 run 不参与翻译时返回 null。
+ * @author zhenghq
+ */
+function resolveTranslatedRunId(block: DocumentTextBlock, runId: string): string | null {
+  let currentRunId: string | null = null
+  let currentStyle: DocumentTextStyle | undefined
+  for (const run of block.runs) {
+    if (!isTranslatableTextRun(run)) {
+      currentRunId = null
+      currentStyle = undefined
+      continue
+    }
+    if (currentRunId && !sameDocumentElementTextStyle(currentStyle, run.style)) {
+      currentRunId = null
+      currentStyle = undefined
+    }
+    if (!currentRunId) {
+      currentRunId = run.runId
+      currentStyle = run.style
+    }
+    if (run.runId === runId) return currentRunId
+  }
+  return null
+}
+
+/**
+ * 递归定位页面内的稳定区块并保留表格行上下文。
+ * @param blocks 当前层级区块。
+ * @param blockId 目标区块标识。
+ * @param path 当前层级路径。
+ * @param tableRow 所属表格行上下文。
+ * @returns 命中结果；不存在时返回 null。
+ * @author zhenghq
+ */
+function findElementBlock(
+  blocks: readonly DocumentBlock[],
+  blockId: string,
+  path: DocumentBlockPath = [],
+  tableRow?: ResolvedElementBlock['tableRow']
+): ResolvedElementBlock | null {
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const block = blocks[blockIndex]!
+    const blockPath = [...path, blockIndex]
+    if (block.blockId === blockId) return { path: blockPath, block, ...(tableRow ? { tableRow } : {}) }
+    if (block.kind !== 'table') continue
+    for (let rowIndex = 0; rowIndex < block.rows.length; rowIndex += 1) {
+      const row = block.rows[rowIndex]!
+      for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+        const nested = findElementBlock(
+          row.cells[cellIndex]!.blocks,
+          blockId,
+          [...blockPath, { row: rowIndex, cell: cellIndex }],
+          { tablePath: blockPath, rowId: row.rowId }
+        )
+        if (nested) return nested
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 将译文 DOM 元素标识解析为翻译流水线使用的稳定目标标识。
+ * 表格单元格正文与顶层正文使用同一套 run 目标；只有显式请求整行时才返回表格行目标。
+ * @param model 当前文档模型。
+ * @param input 页面、区块以及可选的 run、表格行或 OCR 区域标识。
+ * @returns 可由单目标重试或重译接口消费的 targetId；结构不匹配时返回 null。
+ * @author zhenghq
+ */
+export function resolveDocumentElementTargetId(
+  model: DocumentModel,
+  input: DocumentElementTargetLocator
+): string | null {
+  const pageIndex = model.pages.findIndex((page) => page.pageId === input.pageId)
+  if (pageIndex < 0) return null
+  const page = model.pages[pageIndex]!
+  const resolved = findElementBlock(page.blocks, input.blockId)
+  if (!resolved) return null
+  const { block, path } = resolved
+
+  if (input.regionId !== undefined) {
+    if (block.kind !== 'image') return null
+    const region = block.ocrRegions?.find((candidate) => candidate.regionId === input.regionId)
+    return region ? `${pageIndex}:${serializeDocumentBlockPath(path)}:ocr:${region.regionId}` : null
+  }
+
+  if (input.runId !== undefined && block.kind === 'text') {
+    const translatedRunId = resolveTranslatedRunId(block, input.runId)
+    if (!translatedRunId) return null
+    return `${pageIndex}:${serializeDocumentBlockPath(path)}:text:${translatedRunId}`
+  }
+
+  if (input.rowId !== undefined) {
+    if (block.kind !== 'table') return null
+    const row = block.rows.find((candidate) => candidate.rowId === input.rowId)
+    return row ? `${pageIndex}:${serializeDocumentBlockPath(path)}:row:${row.rowId}` : null
+  }
+
+  return null
 }
 
 /**

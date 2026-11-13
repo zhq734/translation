@@ -60,48 +60,95 @@
           </div>
         </div>
         <div class="document-toolbar-meta">
-          <div class="document-language-controls" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
-            <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
-              <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
-            </label>
-            <span class="document-language-arrow" aria-hidden="true">→</span>
-            <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
-              <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
-            </label>
-          </div>
-          <div class="document-toolbar-display-controls">
-            <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
-              <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
-              <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
-            </div>
-            <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
-              <button type="button" data-document-view-mode="source" aria-pressed="false" data-i18n="document.viewMode.source">Source only</button>
-              <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
-              <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
-            </div>
-            <div class="document-reading-controls">
-              <button id="document-sync-scroll" class="document-reading-button" type="button" role="switch" aria-checked="true" data-i18n-attr="aria-label:document.syncScroll;title:document.syncScroll" aria-label="Synchronize scrolling" title="Synchronize scrolling">
-                <span aria-hidden="true">↕</span>
-                <span data-i18n="document.syncScroll">Synchronize scrolling</span>
-              </button>
-              <div class="document-page-navigation" role="group" data-i18n-attr="aria-label:document.page.input" aria-label="Page navigation">
-                <button id="document-page-previous" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.previous;title:document.page.previous" aria-label="Previous page" title="Previous page">‹</button>
-                <input id="document-page-input" class="document-page-input" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:document.page.input;placeholder:document.page.input" aria-label="Jump to page" placeholder="Page" />
-                <button id="document-page-next" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.next;title:document.page.next" aria-label="Next page" title="Next page">›</button>
+          <div class="document-toolbar-menu-bar" role="menubar" data-i18n-attr="aria-label:document.toolbar" aria-label="Document translation toolbar">
+            <button id="document-edit-undo-button" class="document-edit-history-button" type="button" data-i18n-attr="aria-label:document.edit.undo;title:document.edit.undo" aria-label="Undo edit" title="Undo edit" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3 2.5 6.5 6 10" /><path d="M2.5 6.5h6a4 4 0 0 1 4 4v1" /></svg>
+            </button>
+            <button id="document-edit-redo-button" class="document-edit-history-button" type="button" data-i18n-attr="aria-label:document.edit.redo;title:document.edit.redo" aria-label="Redo edit" title="Redo edit" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10 3 3.5 3.5L10 10" /><path d="M13.5 6.5h-6a4 4 0 0 0-4 4v1" /></svg>
+            </button>
+            <details class="document-toolbar-menu" name="document-toolbar-menu">
+              <summary class="document-toolbar-menu-trigger"><span data-i18n="document.menu.translation">Translation</span></summary>
+              <div class="document-toolbar-menu-panel" role="group" data-i18n-attr="aria-label:document.menu.translation" aria-label="Translation settings">
+                <div class="document-toolbar-menu-section">
+                  <span class="document-toolbar-menu-section-title" data-i18n="document.menu.language">Language</span>
+                  <div class="document-language-controls" data-i18n-attr="aria-label:document.menu.language" aria-label="Language">
+                    <label class="document-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
+                      <select id="document-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
+                    </label>
+                    <span class="document-language-arrow" aria-hidden="true">→</span>
+                    <label class="document-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
+                      <select id="document-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
+                    </label>
+                  </div>
+                </div>
               </div>
-              <div class="document-toc">
-                <button id="document-toc-button" class="document-reading-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-toc-list" data-i18n="document.toc">Contents</button>
-                <div id="document-toc-list" class="document-toc-list" role="listbox" data-i18n-attr="aria-label:document.toc" aria-label="Contents" hidden></div>
+            </details>
+            <details class="document-toolbar-menu" name="document-toolbar-menu">
+              <summary class="document-toolbar-menu-trigger"><span data-i18n="document.menu.display">Display</span></summary>
+              <div class="document-toolbar-menu-panel" role="group" data-i18n-attr="aria-label:document.menu.display" aria-label="Display settings">
+                <div id="document-source-ocr-mode" class="document-ocr-display-mode" role="group" data-i18n-attr="aria-label:document.ocr.displayMode" aria-label="Image text display mode" hidden>
+                  <button type="button" data-ocr-mode="ocr-text" data-i18n="document.ocr.source">OCR source</button>
+                  <button type="button" data-ocr-mode="translation" data-i18n="document.ocr.translation">Translation</button>
+                </div>
+                <div class="document-toolbar-menu-section">
+                  <span class="document-toolbar-menu-section-title" data-i18n="document.viewMode.label">Document view mode</span>
+                  <div id="document-view-mode" class="document-view-mode" role="group" data-i18n-attr="aria-label:document.viewMode.label" aria-label="Document view mode">
+                    <button type="button" data-document-view-mode="source" aria-pressed="false" data-i18n="document.viewMode.source">Source only</button>
+                    <button type="button" data-document-view-mode="spread" aria-pressed="true" data-i18n="document.viewMode.spread">Side by side</button>
+                    <button type="button" data-document-view-mode="translation" aria-pressed="false" data-i18n="document.viewMode.translation">Translation only</button>
+                  </div>
+                </div>
+                <div class="document-toolbar-menu-section">
+                  <span class="document-toolbar-menu-section-title" data-i18n="document.menu.scroll">Scrolling</span>
+                  <button id="document-sync-scroll" class="document-reading-button" type="button" role="switch" aria-checked="true" data-i18n-attr="aria-label:document.syncScroll;title:document.syncScroll" aria-label="Synchronize scrolling" title="Synchronize scrolling">
+                    <span aria-hidden="true">↕</span>
+                    <span data-i18n="document.syncScroll">Synchronize scrolling</span>
+                  </button>
+                </div>
               </div>
-              <div class="document-zoom-controls" role="group" data-i18n-attr="aria-label:document.zoom.in" aria-label="Zoom">
-                <button id="document-zoom-out" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.out;title:document.zoom.out" aria-label="Zoom out" title="Zoom out">−</button>
-                <span id="document-zoom-value" class="document-zoom-value" aria-live="polite">100%</span>
-                <button id="document-zoom-in" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.in;title:document.zoom.in" aria-label="Zoom in" title="Zoom in">+</button>
-                <button id="document-zoom-reset" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.reset;title:document.zoom.reset" aria-label="Reset to 100%" title="Reset to 100%">100%</button>
-                <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit" data-i18n-attr="aria-label:document.zoom.fit;title:document.zoom.fit" aria-label="Fit width" title="Fit width">Fit width</button>
-                <button id="document-zoom-fit-height" class="document-reading-button" type="button" data-i18n="document.zoom.fitHeight" data-i18n-attr="aria-label:document.zoom.fitHeight;title:document.zoom.fitHeight" aria-label="Fit height" title="Fit height">Fit height</button>
+            </details>
+            <details class="document-toolbar-menu" name="document-toolbar-menu">
+              <summary class="document-toolbar-menu-trigger"><span data-i18n="document.menu.reading">Reading</span></summary>
+              <div class="document-toolbar-menu-panel" role="group" data-i18n-attr="aria-label:document.menu.reading" aria-label="Reading and navigation">
+                <div class="document-toolbar-menu-section">
+                  <span class="document-toolbar-menu-section-title" data-i18n="document.search.label">Search document</span>
+                  <div class="document-reading-controls">
+                    <div class="document-search-controls" role="search" data-i18n-attr="aria-label:document.search.label" aria-label="Search document">
+                      <input id="document-search-input" class="document-search-input" type="search" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:document.search.placeholder;placeholder:document.search.placeholder" aria-label="Search text" placeholder="Search text" />
+                      <span id="document-search-status" class="document-search-status" aria-live="polite"></span>
+                      <button id="document-search-previous" class="document-reading-button document-search-step" type="button" disabled data-i18n-attr="aria-label:document.search.previous;title:document.search.previous" aria-label="Previous match" title="Previous match">‹</button>
+                      <button id="document-search-next" class="document-reading-button document-search-step" type="button" disabled data-i18n-attr="aria-label:document.search.next;title:document.search.next" aria-label="Next match" title="Next match">›</button>
+                    </div>
+                    <div class="document-page-navigation" role="group" data-i18n-attr="aria-label:document.page.input" aria-label="Page navigation">
+                      <button id="document-page-previous" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.previous;title:document.page.previous" aria-label="Previous page" title="Previous page">‹</button>
+                      <input id="document-page-input" class="document-page-input" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:document.page.input;placeholder:document.page.input" aria-label="Jump to page" placeholder="Page" />
+                      <button id="document-page-next" class="document-reading-button document-page-step" type="button" data-i18n-attr="aria-label:document.page.next;title:document.page.next" aria-label="Next page" title="Next page">›</button>
+                    </div>
+                    <div class="document-toc">
+                      <button id="document-toc-button" class="document-reading-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="document-toc-list" data-i18n="document.toc">Contents</button>
+                      <div id="document-toc-list" class="document-toc-list" role="listbox" data-i18n-attr="aria-label:document.toc" aria-label="Contents" hidden></div>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </details>
+            <details class="document-toolbar-menu" name="document-toolbar-menu">
+              <summary class="document-toolbar-menu-trigger"><span data-i18n="document.menu.zoom">Zoom</span></summary>
+              <div class="document-toolbar-menu-panel" role="group" data-i18n-attr="aria-label:document.menu.zoom" aria-label="Zoom settings">
+                <div class="document-toolbar-menu-section">
+                  <span class="document-toolbar-menu-section-title" data-i18n="document.menu.zoomLevel">Zoom level</span>
+                  <div class="document-zoom-controls" role="group" data-i18n-attr="aria-label:document.zoom.in" aria-label="Zoom">
+                    <button id="document-zoom-out" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.out;title:document.zoom.out" aria-label="Zoom out" title="Zoom out">−</button>
+                    <span id="document-zoom-value" class="document-zoom-value" aria-live="polite">100%</span>
+                    <button id="document-zoom-in" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.in;title:document.zoom.in" aria-label="Zoom in" title="Zoom in">+</button>
+                    <button id="document-zoom-reset" class="document-reading-button" type="button" data-i18n-attr="aria-label:document.zoom.reset;title:document.zoom.reset" aria-label="Reset to 100%" title="Reset to 100%">100%</button>
+                    <button id="document-zoom-fit" class="document-reading-button" type="button" data-i18n="document.zoom.fit" data-i18n-attr="aria-label:document.zoom.fit;title:document.zoom.fit" aria-label="Fit width" title="Fit width">Fit width</button>
+                    <button id="document-zoom-fit-height" class="document-reading-button" type="button" data-i18n="document.zoom.fitHeight" data-i18n-attr="aria-label:document.zoom.fitHeight;title:document.zoom.fitHeight" aria-label="Fit height" title="Fit height">Fit height</button>
+                  </div>
+                </div>
+              </div>
+            </details>
           </div>
           <span id="document-actual-language" class="document-actual-language" data-i18n="document.actualLanguage" aria-live="polite" hidden></span>
         </div>

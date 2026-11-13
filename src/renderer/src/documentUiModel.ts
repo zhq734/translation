@@ -96,8 +96,16 @@ export interface DocumentWorkspaceTab {
   activeBlockId: string | null
   /** 启动完成后仍需按最新语言重译。 */
   pendingLanguageRetranslation: boolean
-  /** 启动完成后仍需按最新 OCR 模式重启。 */
-  pendingOcrModeRestart: boolean
+  /** 等待主进程复用的 OCR 原文/译文目标模式；null 表示无待切换请求。 */
+  pendingOcrModeTarget: 'ocr-text' | 'translation' | null
+  /** 是否已发出模式切换请求且尚未收到主进程响应。 */
+  ocrModeSwitchInFlight: boolean
+  /** 已发出但尚未确认的模式切换新代际；用于缓存早到的任务事件。 */
+  pendingModeSwitchGeneration: number | null
+  /** 模式切换确认前早到的任务快照；确认后按代际消费。 */
+  pendingModeSwitchSnapshot: DocumentWorkspaceSnapshot | null
+  /** 上述缓冲快照是否为终态事件。 */
+  pendingModeSwitchSnapshotTerminal: boolean
   /** 当前 Tab 的语言切换序号，用于丢弃过期重译请求。 */
   languageRevision: number
   /** 只读历史/恢复 Tab 的源文件是否已重新授权且通过快照校验。 */

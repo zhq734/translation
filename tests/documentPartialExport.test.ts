@@ -372,3 +372,48 @@ test('表格单元格内多个 run 区间只写回首段时仍视为成功译文
   assert.equal(result.summary.translated, 4)
   assert.equal(result.summary.reverted, 0)
 })
+
+test('部分导出回退不得覆盖手动编辑的文本、表格 run 与 OCR 译文', () => {
+  const source = partialExportModel(false)
+  const translation = partialExportModel(true)
+  const textBlock = translation.pages[0]!.blocks[0]!
+  const imageBlock = translation.pages[0]!.blocks[1]!
+  const tableBlock = translation.pages[0]!.blocks[2]!
+  assert.equal(textBlock.kind, 'text')
+  assert.equal(imageBlock.kind, 'image')
+  assert.equal(tableBlock.kind, 'table')
+  if (textBlock.kind !== 'text' || imageBlock.kind !== 'image' || tableBlock.kind !== 'table') return
+  textBlock.runs[0] = { ...textBlock.runs[0]!, text: '人工文本译文', manuallyEdited: true }
+  imageBlock.ocrRegions![0] = {
+    ...imageBlock.ocrRegions![0]!,
+    translatedText: '人工 OCR 译文',
+    manuallyEdited: true
+  }
+  const cellText = tableBlock.rows[0]!.cells[0]!.blocks[0]!
+  assert.equal(cellText.kind, 'text')
+  if (cellText.kind !== 'text') return
+  cellText.runs[0] = { ...cellText.runs[0]!, text: '人工表格译文', manuallyEdited: true }
+
+  const report = completionReport([
+    { targetId: '0:0:text:run-1', sourceText: 'HelloWorld', state: 'failed' },
+    { targetId: '0:1:ocr:region-1', sourceText: 'Scanned text', state: 'pending' },
+    { targetId: '0:2:row:row-1', sourceText: 'Alpha\nBeta', state: 'suspect-untranslated' },
+    { targetId: '1:0:text:run-3', sourceText: 'Third page', state: 'translated' }
+  ])
+  const result = buildPartialExportDocument(source, translation, report)
+  const resultText = result.model.pages[0]!.blocks[0]!
+  const resultImage = result.model.pages[0]!.blocks[1]!
+  const resultTable = result.model.pages[0]!.blocks[2]!
+  assert.equal(resultText.kind, 'text')
+  assert.equal(resultImage.kind, 'image')
+  assert.equal(resultTable.kind, 'table')
+  if (resultText.kind !== 'text' || resultImage.kind !== 'image' || resultTable.kind !== 'table') return
+  assert.equal(resultText.runs[0]?.text, '人工文本译文')
+  assert.equal(resultText.runs[1]?.text, 'World')
+  assert.equal(resultImage.ocrRegions?.[0]?.translatedText, '人工 OCR 译文')
+  const resultCellText = resultTable.rows[0]!.cells[0]!.blocks[0]!
+  assert.equal(resultCellText.kind, 'text')
+  if (resultCellText.kind !== 'text') return
+  assert.equal(resultCellText.runs[0]?.text, '人工表格译文')
+  assert.equal(resultCellText.runs[0]?.manuallyEdited, true)
+})

@@ -34,6 +34,7 @@ import type {
   DocumentViewMode,
   DocumentWorkspaceTab
 } from './documentUiModel'
+import { migrateRestoredPdfDocumentWorkspaceSnapshot } from './documentViewer'
 
 /** 历史控制器创建历史任务 Tab 时需要的当前视图默认值。 */
 interface DocumentHistoryViewerDefaults {
@@ -422,7 +423,7 @@ export function createDocumentHistoryController(
         documentHistoryStatus.hidden = false
         return
       }
-      const snapshot = result.snapshot
+      const snapshot = migrateRestoredPdfDocumentWorkspaceSnapshot(result.snapshot)
       const source = snapshot.source?.source
       let sourceAuthorized = false
       if (source?.path && source.sha256 && Number.isSafeInteger(source.size) && source.size > 0) {
@@ -466,7 +467,11 @@ export function createDocumentHistoryController(
         ocrDisplayMode: snapshot.runMode === 'ocr' ? 'ocr-text' : 'translation',
         activeBlockId: null,
         pendingLanguageRetranslation: false,
-        pendingOcrModeRestart: false,
+        pendingOcrModeTarget: null,
+        ocrModeSwitchInFlight: false,
+        pendingModeSwitchGeneration: null,
+        pendingModeSwitchSnapshot: null,
+        pendingModeSwitchSnapshotTerminal: false,
         languageRevision: 0,
         sourceAuthorized
       }

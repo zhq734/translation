@@ -146,6 +146,60 @@ test('任务服务必须重新校验已批准路径并推送完成快照', async
   }
 })
 
+test('切换 OCR 与译文模式必须复用已解析和已识别的源模型', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let parseCalls = 0
+  let recognizeCalls = 0
+  let translateCalls = 0
+  deps.parse = async () => {
+    parseCalls += 1
+    return model(path)
+  }
+  deps.recognizeImage = async () => {
+    recognizeCalls += 1
+    return { text: 'OCR', lines: [], engine: 'system' }
+  }
+  deps.translate = async (text) => {
+    translateCalls += 1
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    const accepted = await service.run({ path, generation: 1, mode: 'translation' })
+    assert.equal(accepted.accepted, true)
+    const translation = await waitForTerminal(events, 1)
+    assert.equal(translation.runMode, 'translation')
+
+    assert.deepEqual(service.switchMode(translation.jobId, 1, 2, 'ocr'), {
+      accepted: true,
+      jobId: translation.jobId
+    })
+    const ocr = await waitForTerminal(events, 2)
+    assert.equal(ocr.runMode, 'ocr')
+    assert.equal(ocr.source?.pages[0]?.blocks[0]?.kind, 'text')
+    assert.equal(parseCalls, 1)
+    assert.equal(recognizeCalls, 0)
+
+    const translationsBeforeSwitchBack = translateCalls
+    assert.deepEqual(service.switchMode(translation.jobId, 2, 3, 'translation'), {
+      accepted: true,
+      jobId: translation.jobId
+    })
+    const switchedBack = await waitForTerminal(events, 3)
+    assert.equal(switchedBack.runMode, 'translation')
+    assert.equal(parseCalls, 1)
+    assert.equal(recognizeCalls, 0)
+    assert.ok(translateCalls > translationsBeforeSwitchBack)
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('任务服务必须在首条进度发出前通知 jobId 已可登记', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
   const path = join(directory, 'sample.txt')
@@ -534,6 +588,301 @@ test('单目标重试必须拒绝成功目标与伪造代际', async () => {
       await service.retryFailedTarget(2, 'invalid-target'),
       { accepted: false, code: 'invalid-target' }
     )
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('单目标重试必须接受疑似未翻译目标且不请求其他块', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const base = model(path)
+  const suspectText = 'This paragraph is intentionally long enough to require translation.'
+  const translatedTexts: string[] = []
+  let retrying = false
+  deps.parse = async () => ({
+    ...base,
+    pages: [{
+      ...base.pages[0]!,
+      blocks: [
+        ...base.pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-suspect',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-suspect', text: suspectText }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    translatedTexts.push(text)
+    // 第一轮原样返回英文触发 suspect；第二轮返回中文证明目标确实被重新翻译。
+    if (!retrying && text.includes('intentionally long enough')) return text
+    if (text.includes('intentionally long enough')) return '这是一段已经完整翻译成中文的说明文字。'
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
+    const partial = await waitForTerminal(events)
+    assert.equal(partial.task.status, 'partial')
+    assert.deepEqual(partial.completionReport?.suspectUntranslatedTargetIds, ['0:1:text:run-suspect'])
+    assert.equal(partial.retryableFailedBlocks, 1)
+
+    retrying = true
+    translatedTexts.length = 0
+    const accepted = await service.retryFailedTarget(2, '0:1:text:run-suspect')
+    assert.equal(accepted.accepted, true)
+    const completed = await waitForTerminal(events, 2)
+    assert.deepEqual(translatedTexts, [suspectText], '只应请求被点中的疑似未翻译块')
+    assert.equal(completed.task.status, 'completed')
+    assert.equal(completed.completionReport?.suspectUntranslated, 0)
+    assert.deepEqual(completed.completionReport?.suspectUntranslatedTargetIds, [])
+    const translatedBlock = completed.translation?.pages[0]?.blocks[1]
+    assert.equal(
+      translatedBlock?.kind === 'text' ? translatedBlock.runs[0]?.text : '',
+      '这是一段已经完整翻译成中文的说明文字。'
+    )
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('单目标重试必须接受未完成目标且只补译指定块', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const base = model(path)
+  deps.parse = async () => ({
+    ...base,
+    pages: [{
+      ...base.pages[0]!,
+      blocks: [
+        ...base.pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-pending',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-pending', text: 'Pending target' }]
+        }
+      ]
+    }]
+  })
+  const translatedTexts: string[] = []
+  deps.translate = async (text) => {
+    translatedTexts.push(text)
+    return `译:${text}`
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.task.status, 'completed')
+
+    // 模拟新版完成报告识别到译文模型中仍缺失的目标；源模型仍可定位它，
+    // 单目标入口必须以同代际报告为真相接受 pending，而不是要求 state=failed。
+    const active = (service as unknown as {
+      active?: {
+        translation?: DocumentModel
+        completionReport?: NonNullable<DocumentWorkspaceSnapshot['completionReport']>
+      }
+    }).active
+    assert.ok(active?.translation && active?.completionReport)
+    const pendingBlockIndex = active.translation.pages[0]!.blocks.findIndex(
+      (block) => block.kind === 'text' && block.blockId === 'block-pending'
+    )
+    assert.ok(pendingBlockIndex >= 0)
+    active.translation.pages[0]!.blocks.splice(pendingBlockIndex, 1)
+    active.completionReport = {
+      ...active.completionReport,
+      status: 'partial',
+      total: 2,
+      translated: 1,
+      unchanged: 0,
+      failed: 0,
+      pending: 1,
+      suspectUntranslated: 0,
+      failedTargetIds: [],
+      pendingTargetIds: ['0:1:text:run-pending'],
+      suspectUntranslatedTargetIds: [],
+      failureReasons: { '0:1:text:run-pending': 'translation-pending' }
+    }
+    const pendingSnapshot = (service as unknown as {
+      snapshot: (
+        job: NonNullable<typeof active>,
+        task: DocumentWorkspaceSnapshot['task']
+      ) => DocumentWorkspaceSnapshot
+    }).snapshot(active, completed.task)
+    assert.deepEqual(pendingSnapshot.completionReport?.pendingTargetIds, ['0:1:text:run-pending'])
+
+    translatedTexts.length = 0
+    const accepted = await service.retryFailedTarget(2, '0:1:text:run-pending')
+    assert.equal(accepted.accepted, true)
+    const retried = await waitForTerminal(events, 2)
+    assert.deepEqual(translatedTexts, ['Pending target'], '只应请求被点中的未完成块')
+    assert.equal(retried.task.status, 'completed')
+    assert.equal(retried.completionReport?.pending, 0)
+    assert.deepEqual(retried.completionReport?.pendingTargetIds, [])
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('已完成文档必须允许强制重译成功目标并绕过缓存', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const translatedTexts: string[] = []
+  const cacheReads: string[] = []
+  let initialCacheReadSettled: () => void = () => undefined
+  const initialCacheRead = new Promise<void>((resolve) => {
+    initialCacheReadSettled = resolve
+  })
+  deps.translate = async (text) => {
+    translatedTexts.push(text)
+    return translatedTexts.length === 1 ? '译:Hello' : '重译:Hello'
+  }
+  deps.readTranslationCache = async (key) => {
+    cacheReads.push(key)
+    initialCacheReadSettled()
+    return {
+      schemaVersion: 1,
+      translation: '缓存中的旧译文'
+    }
+  }
+  deps.writeTranslationCache = async () => undefined
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.task.status, 'completed')
+    await initialCacheRead
+    cacheReads.length = 0
+
+    const retranslated = await service.retranslateTarget(2, '0:0:text:run-1')
+    assert.equal(retranslated.accepted, true)
+    const next = await waitForTerminal(events, 2)
+    assert.equal(next.task.status, 'completed')
+    assert.deepEqual(translatedTexts, ['Hello', 'Hello'])
+    assert.deepEqual(cacheReads, [])
+    const block = next.translation?.pages[0]?.blocks[0]
+    assert.equal(block?.kind === 'text' ? block.runs[0]?.text : '', '重译:Hello')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('强制重译失败必须保留旧译文和完成态', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let calls = 0
+  deps.translate = async () => {
+    calls += 1
+    if (calls > 1) throw new Error('provider failed')
+    return '译:Hello'
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const completed = await waitForTerminal(events)
+    assert.equal(completed.task.status, 'completed')
+
+    assert.equal((await service.retranslateTarget(2, '0:0:text:run-1')).accepted, true)
+    const next = await waitForTerminal(events, 2)
+    assert.equal(next.task.status, 'completed')
+    assert.equal(next.completionReport?.status, 'completed')
+    assert.equal(next.retryableFailedBlocks ?? 0, 0)
+    const block = next.translation?.pages[0]?.blocks[0]
+    assert.equal(block?.kind === 'text' ? block.runs[0]?.text : '', '译:Hello')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('强制重译必须接受完成报告未覆盖的有效源目标并绕过缓存', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  const base = model(path)
+  deps.parse = async () => ({
+    ...base,
+    pages: [{
+      ...base.pages[0]!,
+      blocks: [
+        ...base.pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        },
+        {
+          kind: 'text',
+          blockId: 'block-3',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-3', text: 'Missing target' }]
+        }
+      ]
+    }]
+  })
+  const translatedTexts: string[] = []
+  const cacheReads: string[] = []
+  let retrying = false
+  deps.translate = async (text) => {
+    translatedTexts.push(text)
+    if (!retrying && text.includes('World')) throw new Error('provider failed')
+    return retrying ? `重译:${text}` : `译:${text}`
+  }
+  deps.readTranslationCache = async (key) => {
+    cacheReads.push(key)
+    return null
+  }
+  deps.writeTranslationCache = async () => undefined
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1, sourceLang: 'EN', targetLang: 'ZH' })
+    const partial = await waitForTerminal(events)
+    assert.equal(partial.task.status, 'partial')
+    cacheReads.length = 0
+    translatedTexts.length = 0
+    retrying = true
+
+    assert.deepEqual(await service.retranslateTarget(2, '0:2:text:run-3'), {
+      accepted: true,
+      jobId: partial.jobId
+    })
+    const completed = await waitForTerminal(events, 2)
+    assert.equal(completed.task.status, 'completed')
+    assert.deepEqual(cacheReads, [])
+    assert.deepEqual(translatedTexts, ['Missing target'])
+    const block = completed.translation?.pages[0]?.blocks[2]
+    assert.equal(block?.kind === 'text' ? block.runs[0]?.text : '', '重译:Missing target')
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -1067,6 +1416,66 @@ test('任务服务允许已确认的 partial 任务导出部分结果', async ()
     if (exportedBlocks?.[0]?.kind !== 'text' || exportedBlocks[1]?.kind !== 'text') return
     assert.equal(exportedBlocks[0].runs[0]?.text, '译:Hello')
     assert.equal(exportedBlocks[1].runs[0]?.text, 'World')
+  } finally {
+    service.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('任务服务导出前必须应用手动译文编辑且部分导出不得回退手改', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'document-task-'))
+  const path = join(directory, 'sample.txt')
+  await writeFile(path, 'Hello World')
+  const events: DocumentWorkspaceSnapshot[] = []
+  const deps = dependencies(path, events)
+  let exportedModel: DocumentModel | undefined
+  deps.parse = async () => ({
+    ...model(path),
+    pages: [{
+      ...model(path).pages[0]!,
+      blocks: [
+        ...model(path).pages[0]!.blocks,
+        {
+          kind: 'text',
+          blockId: 'block-2',
+          readingOrder: 1,
+          translatable: true,
+          role: 'paragraph',
+          runs: [{ runId: 'run-2', text: 'World' }]
+        }
+      ]
+    }]
+  })
+  deps.translate = async (text) => {
+    if (text.includes('World')) throw new Error('provider failed')
+    return `译:${text}`
+  }
+  deps.exportPdf = async (exported) => {
+    exportedModel = exported
+    return { bytes: new Uint8Array([37, 80, 68, 70]), warnings: [] }
+  }
+  const service = new DocumentWorkspaceTaskService(deps)
+  try {
+    await service.run({ path, generation: 1 })
+    const partial = await waitForTerminal(events)
+    assert.equal(partial.task.status, 'partial')
+
+    assert.deepEqual(await service.exportPdf({
+      ...exportRequest(partial, 'partial'),
+      manualTranslationEdits: [
+        { pageId: 'page-1', blockId: 'block-1', runId: 'run-1', text: '人工成功项' },
+        { pageId: 'page-1', blockId: 'block-2', runId: 'run-2', text: '人工失败项' }
+      ]
+    }), { status: 'saved', filePath: join(tmpdir(), 'translated.pdf') })
+
+    const exportedBlocks = exportedModel?.pages[0]?.blocks
+    assert.equal(exportedBlocks?.[0]?.kind, 'text')
+    assert.equal(exportedBlocks?.[1]?.kind, 'text')
+    if (exportedBlocks?.[0]?.kind !== 'text' || exportedBlocks[1]?.kind !== 'text') return
+    assert.equal(exportedBlocks[0].runs[0]?.text, '人工成功项')
+    assert.equal(exportedBlocks[1].runs[0]?.text, '人工失败项')
+    assert.equal(exportedBlocks[0].runs[0]?.manuallyEdited, true)
+    assert.equal(exportedBlocks[1].runs[0]?.manuallyEdited, true)
   } finally {
     service.dispose()
     await rm(directory, { recursive: true, force: true })

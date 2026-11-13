@@ -75,6 +75,8 @@ export interface DocumentTextRun {
   style?: DocumentTextStyle
   /** 是否必须原样保留，例如代码、公式或 URL。 */
   protected?: boolean
+  /** 是否为用户手动编辑的译文；自动更新与部分导出回退不得覆盖。 */
+  manuallyEdited?: boolean
 }
 
 /** 文本块承载的语义角色。 */
@@ -198,6 +200,8 @@ export interface DocumentOcrRegion {
   reason?: string
   /** OCR 原文对应的译文；翻译失败时省略并保留原文。 */
   translatedText?: string
+  /** 是否为用户手动编辑的 OCR 译文；自动更新与部分导出回退不得覆盖。 */
+  manuallyEdited?: boolean
 }
 
 /** 图片区块。 */
@@ -504,6 +508,30 @@ function assertTextRuns(value: unknown, field: string): void {
     if (!isRecord(run)) throw new Error(`document ${field}[${index}] must be an object`)
     assertNonEmptyString(run.runId, `${field}[${index}].runId`)
     if (typeof run.text !== 'string') throw new Error(`document ${field}[${index}].text must be a string`)
+    if (run.manuallyEdited !== undefined && typeof run.manuallyEdited !== 'boolean') {
+      throw new Error(`document ${field}[${index}].manuallyEdited must be a boolean`)
+    }
+  })
+}
+
+/**
+ * 校验图片区块的 OCR 区域数组与手动编辑标记。
+ * @param value 待校验的 OCR 区域数组。
+ * @param field 用于错误信息的字段路径。
+ * @returns 无返回值，失败时抛出异常。
+ * @author zhenghq
+ */
+function assertOcrRegions(value: unknown, field: string): void {
+  if (!Array.isArray(value)) throw new Error(`document ${field} must be an array`)
+  value.forEach((region, index) => {
+    if (!isRecord(region)) throw new Error(`document ${field}[${index}] must be an object`)
+    assertNonEmptyString(region.regionId, `${field}[${index}].regionId`)
+    if (region.translatedText !== undefined && typeof region.translatedText !== 'string') {
+      throw new Error(`document ${field}[${index}].translatedText must be a string`)
+    }
+    if (region.manuallyEdited !== undefined && typeof region.manuallyEdited !== 'boolean') {
+      throw new Error(`document ${field}[${index}].manuallyEdited must be a boolean`)
+    }
   })
 }
 
@@ -569,7 +597,10 @@ function assertDocumentBlock(value: unknown, field: string): void {
       })
     })
   }
-  if (value.kind === 'image') assertNonEmptyString(value.assetId, `${field}.assetId`)
+  if (value.kind === 'image') {
+    assertNonEmptyString(value.assetId, `${field}.assetId`)
+    if (value.ocrRegions !== undefined) assertOcrRegions(value.ocrRegions, `${field}.ocrRegions`)
+  }
   if (value.kind === 'shape' && value.line !== undefined) {
     if (!isRecord(value.line)) throw new Error(`document ${field}.line must be an object`)
     if (!['horizontal', 'vertical'].includes(String(value.line.orientation))) {

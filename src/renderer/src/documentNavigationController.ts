@@ -14,10 +14,11 @@ import {
 import type { DocumentTocEntry, DocumentViewMode, DocumentWorkspaceTab } from './documentUiModel'
 import type { DocumentScrollSide } from './documentScrollSync'
 import {
+  buildDocumentTocItems,
   parseDocumentPageNumber,
+  resolveDocumentAnchorOffset,
   resolveDocumentFitZoom,
   resolveDocumentPageJump,
-  resolveDocumentTocTarget,
   type DocumentNavigationTarget
 } from './documentViewer'
 
@@ -89,7 +90,7 @@ export function createDocumentNavigationController(
   dependencies: DocumentNavigationControllerDependencies
 ): DocumentNavigationController {
   /**
-   * 从当前文档模型生成目录项，优先使用显式目录区块，其次使用标题与页面标题。
+   * 从当前文档模型生成目录项，统一复用查看器的显式目录与 PDF、DOCX 标题推断逻辑。
    * @returns 去重后的目录项。
    * @author zhenghq
    */
@@ -97,40 +98,7 @@ export function createDocumentNavigationController(
     const snapshot = dependencies.getSnapshot()
     const model = snapshot?.source ?? snapshot?.translation
     if (!model) return []
-    const entries: DocumentTocEntry[] = []
-    const seen = new Set<string>()
-    for (const page of model.pages) {
-      for (const block of page.blocks) {
-        if (block.kind !== 'text') continue
-        const text = block.runs.map((run) => run.text).join('').trim()
-        if (!text) continue
-        const target = block.toc
-          ? resolveDocumentTocTarget(model, text, block.toc.pageNumber)
-          : block.role === 'heading' || block.role === 'subtitle'
-            ? {
-                pageId: page.pageId,
-                pageIndex: page.index,
-                pageNumber: page.index + 1,
-                blockId: block.blockId
-              }
-            : null
-        if (!target || seen.has(text)) continue
-        seen.add(text)
-        entries.push({ title: text, target })
-      }
-    }
-    if (entries.length === 0) {
-      for (const page of model.pages) {
-        const title = page.title?.trim()
-        if (!title || seen.has(title)) continue
-        seen.add(title)
-        entries.push({
-          title,
-          target: { pageId: page.pageId, pageIndex: page.index, pageNumber: page.index + 1, blockId: null }
-        })
-      }
-    }
-    return entries
+    return buildDocumentTocItems(model)
   }
 
   /**
@@ -213,17 +181,37 @@ export function createDocumentNavigationController(
       `[data-page-id="${CSS.escape(target.pageId)}"]`,
       `.document-pdf-page[data-page-number="${target.pageNumber}"]`
     ]
+    const model = dependencies.getSnapshot()?.source ?? null
     let found = false
     for (const container of [dependencies.getSourceContent(), dependencies.getTranslationContent()]) {
       const page = selectors.map((selector) => container.querySelector<HTMLElement>(selector))
-        .find((candidate): candidate is HTMLElement => Boolean(candidate))
-      if (!page) continue
+        .find((candidate): candidate is HTMLElement => Boolean(candidate)) ?? null
       const block = target.blockId
-        ? page.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(target.blockId)}"]`) ??
+        ? page?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(target.blockId)}"]`) ??
           container.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(target.blockId)}"]`)
         : null
-      const destination = block ?? page
-      destination.scrollIntoView({ block: 'start', behavior })
+      if (block) {
+        // Markdown、CSV 等无分页预览没有页面容器，只要找到区块即可直接滚动。
+        block.scrollIntoView({ block: 'start', behavior })
+        found = true
+        continue
+      }
+      if (!page) continue
+      // PDF 原文页是 Canvas，没有区块 DOM；用解析模型里的几何坐标换算页内偏移，
+      // 否则目录项只能滚到页首，无法定位到具体章节。
+      const anchorOffset = model
+        ? resolveDocumentAnchorOffset(model, target, page.getBoundingClientRect().height)
+        : null
+      if (anchorOffset !== null) {
+        const containerRect = container.getBoundingClientRect()
+        const pageOffset = page.getBoundingClientRect().top - containerRect.top
+        container.scrollTo({
+          top: container.scrollTop + pageOffset + anchorOffset,
+          behavior
+        })
+      } else {
+        page.scrollIntoView({ block: 'start', behavior })
+      }
       found = true
     }
     dependencies.setCurrentPageNumber(target.pageNumber)

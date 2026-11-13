@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   findDocumentTarget,
   parseDocumentTargetId,
+  resolveDocumentElementTargetId,
   serializeDocumentBlockPath
 } from '../src/shared/documentTargetLocator.ts'
 import type { DocumentModel } from '../src/shared/documentTypes.ts'
@@ -143,4 +144,78 @@ test('目标定位必须拒绝非法路径、越界路径与类型不匹配', ()
   assert.equal(findDocumentTarget(model, '0:0:ocr:region-1'), null)
   assert.equal(findDocumentTarget(model, '0:1.r9c0.0:text:run-cell'), null)
   assert.equal(findDocumentTarget(model, '0:0:text:missing-run'), null)
+})
+
+test('译文 DOM 目标必须解析为流水线使用的稳定块级目标', () => {
+  const model = createModel()
+
+  assert.equal(
+    resolveDocumentElementTargetId(model, {
+      pageId: 'page-1',
+      blockId: 'block-top',
+      runId: 'run-top'
+    }),
+    '0:0:text:run-top'
+  )
+  assert.equal(
+    resolveDocumentElementTargetId(model, {
+      pageId: 'page-1',
+      blockId: 'block-table',
+      rowId: 'row-1'
+    }),
+    '0:1:row:row-1'
+  )
+  assert.equal(
+    resolveDocumentElementTargetId(model, {
+      pageId: 'page-1',
+      blockId: 'block-cell',
+      runId: 'run-cell'
+    }),
+    // 单元格正文必须保留精确 run 目标，才能只重译或手改当前片段。
+    '0:1.r0c0.0:text:run-cell'
+  )
+  assert.equal(
+    resolveDocumentElementTargetId(model, {
+      pageId: 'page-1',
+      blockId: 'block-cell',
+      rowId: 'row-1',
+      runId: 'run-cell'
+    }),
+    // 行标识只用于容器定位；DOM 指向具体 run 时不能被容器扩大成整行目标。
+    '0:1.r0c0.0:text:run-cell'
+  )
+  assert.equal(
+    resolveDocumentElementTargetId(model, {
+      pageId: 'page-1',
+      blockId: 'block-image',
+      regionId: 'region-1'
+    }),
+    '0:2:ocr:region-1'
+  )
+  assert.equal(resolveDocumentElementTargetId(model, {
+    pageId: 'page-1',
+    blockId: 'block-image',
+    runId: 'run-top'
+  }), null)
+})
+
+test('同一文本块内同样式的连续 run 必须解析到同一个翻译目标', () => {
+  const base = createModel()
+  const textBlock = base.pages[0]!.blocks[0] as Extract<DocumentModel['pages'][number]['blocks'][number], { kind: 'text' }>
+  textBlock.runs = [
+    { runId: 'run-a', text: 'Hello ', style: { fontSize: 12 } },
+    { runId: 'run-b', text: 'world', style: { fontSize: 12 } },
+    { runId: 'run-c', text: 'Again', style: { fontSize: 18 } }
+  ]
+
+  assert.equal(resolveDocumentElementTargetId(base, {
+    pageId: 'page-1',
+    blockId: 'block-top',
+    runId: 'run-b'
+  }), '0:0:text:run-a')
+  assert.equal(resolveDocumentElementTargetId(base, {
+    pageId: 'page-1',
+    blockId: 'block-top',
+    runId: 'run-c'
+  }), '0:0:text:run-c')
 })

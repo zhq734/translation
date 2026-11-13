@@ -57,12 +57,12 @@ test('主进程应在初始化全局监听前提示 DMG 启动风险，并由第
   )
 })
 
-test('macOS 点击 Dock 图标时应优先恢复网页阅读器，没有可恢复页面才打开设置', () => {
+test('macOS 点击 Dock 图标时应恢复全部已有窗口并聚焦最近使用窗口', () => {
   const source = readMainSource()
 
   assert.match(
     source,
-    /function activateExistingPageOrOpenSettings\(\): void \{[\s\S]*?webReader\?\.focusExistingWindow\(\)[\s\S]*?openSettings\(\)/u
+    /function activateExistingPageOrOpenSettings\(\): void \{[\s\S]*?ownedWindowFocusRecency\.resolveMostRecent\([\s\S]*?showOwnWindowForInteraction\(target\)/u
   )
   assert.match(
     source,
@@ -102,7 +102,7 @@ test('“译”按钮窗口不应因激活自身而抢走前台应用焦点', ()
   assert.doesNotMatch(source, /win\.focus\(\)/u)
 })
 
-test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补一次窗口级置前', () => {
+test('Dock 激活必须恢复全部窗口、聚焦最近窗口，并在设置页打开后补一次置前', () => {
   const source = readMainSource()
   const activateStart = source.indexOf('function activateExistingPageOrOpenSettings(): void {')
   const activateSource = source.slice(
@@ -110,14 +110,12 @@ test('Dock 激活必须显式置前已有阅读器，并在设置页打开后补
     source.indexOf('// ---- 主进程日志层 ----', activateStart)
   )
 
-  // activate 判定存在短暂状态空档，可能把内部动作误放行。已可见且未最小化的
-  // 阅读器必须走 focusExistingWindow()：它只返回 true、不重新 show()+focus()，
-  // 因此即便误放行也不会把后台阅读器顶到划词应用之上；不可见或最小化时仍会
-  // 正常恢复，保证真实 Dock 启动可用。被遮挡时的强制置前由显式快捷键入口负责。
+  // Dock 激活先恢复全部窗口，再按最近获得焦点的顺序选择唯一目标。只有恢复
+  // 隐藏窗口时关闭聚焦，最终 showOwnWindowForInteraction(target) 才表达用户意图。
   assert.match(
     activateSource,
-    /webReader\?\.focusExistingWindow\(\)/u,
-    'Dock 激活已有阅读器时必须走不会强制置前的恢复入口'
+    /ownedWindowFocusRecency\.resolveMostRecent\(/u,
+    'Dock 激活必须按最近使用顺序选择窗口'
   )
   // Dock 点击的激活事件可能晚于第一次 show/focus 到达并覆盖焦点；设置页复用
   // 分支缺少新建分支的最终置前，需在打开完成后让出一轮事件循环再补一次。

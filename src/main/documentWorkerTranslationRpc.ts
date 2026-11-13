@@ -14,7 +14,24 @@ export interface DocumentWorkerTranslationRpcRequest {
   text: string
   /** 已冻结的语言对。 */
   languagePair: DocumentLanguagePair
+  /** 是否跳过主进程通用翻译缓存；省略时保持主进程默认缓存行为。 */
+  bypassCache?: boolean
+  /** 本次请求命中的术语表版本；无术语表时为 none。 */
+  glossaryVersion?: string
+  /** 仅包含本次请求命中条目的受控术语约束。 */
+  glossaryContext?: string
+  /** 当前目标的相邻语义单元受限摘要。 */
+  contextSummary?: string
 }
+
+/**
+ * worker 内部调用翻译 RPC 时提供的请求。
+ *
+ * 线协议字段 `type` 由 RPC 客户端统一补齐，内部调用方只负责携带任务上下文与正文。
+ * @author zhenghq
+ */
+export type DocumentWorkerTranslationRpcClientRequest =
+  Omit<DocumentWorkerTranslationRpcRequest, 'type'> & { type?: 'translation-request' }
 
 /** worker 向主进程发送的翻译取消消息。 */
 export interface DocumentWorkerTranslationRpcCancel {
@@ -219,7 +236,18 @@ function isIdentifier(value: unknown): value is string {
  */
 function parseTranslationRequest(value: unknown): DocumentWorkerTranslationRpcRequest | null {
   if (!isRecord(value) || value.type !== 'translation-request') return null
-  const allowedKeys = new Set(['type', 'requestId', 'jobId', 'generation', 'text', 'languagePair'])
+  const allowedKeys = new Set([
+    'type',
+    'requestId',
+    'jobId',
+    'generation',
+    'text',
+    'languagePair',
+    'bypassCache',
+    'glossaryVersion',
+    'glossaryContext',
+    'contextSummary'
+  ])
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null
   if (!isRecord(value.languagePair)) return null
   const languagePairKeys = new Set(['sourceLang', 'targetLang'])
@@ -227,6 +255,10 @@ function parseTranslationRequest(value: unknown): DocumentWorkerTranslationRpcRe
   if (!isIdentifier(value.requestId) || !isIdentifier(value.jobId) ||
     !Number.isInteger(value.generation) || Number(value.generation) < 1 ||
     typeof value.text !== 'string' || !value.text || value.text.length > 50_000 ||
+    (value.bypassCache !== undefined && typeof value.bypassCache !== 'boolean') ||
+    (value.glossaryVersion !== undefined && (typeof value.glossaryVersion !== 'string' || value.glossaryVersion.length > 256)) ||
+    (value.glossaryContext !== undefined && (typeof value.glossaryContext !== 'string' || value.glossaryContext.length > 50_000)) ||
+    (value.contextSummary !== undefined && (typeof value.contextSummary !== 'string' || value.contextSummary.length > 240)) ||
     typeof value.languagePair.sourceLang !== 'string' ||
     typeof value.languagePair.targetLang !== 'string') return null
   return {
@@ -235,6 +267,10 @@ function parseTranslationRequest(value: unknown): DocumentWorkerTranslationRpcRe
     jobId: value.jobId,
     generation: Number(value.generation),
     text: value.text,
+    ...(value.bypassCache === true ? { bypassCache: true } : {}),
+    ...(typeof value.glossaryVersion === 'string' ? { glossaryVersion: value.glossaryVersion } : {}),
+    ...(typeof value.glossaryContext === 'string' ? { glossaryContext: value.glossaryContext } : {}),
+    ...(typeof value.contextSummary === 'string' ? { contextSummary: value.contextSummary } : {}),
     languagePair: {
       sourceLang: value.languagePair.sourceLang,
       targetLang: value.languagePair.targetLang
@@ -357,7 +393,7 @@ export class DocumentWorkerTranslationRpcClient {
    * @author zhenghq
    */
   translate(
-    request: DocumentWorkerTranslationRpcRequest,
+    request: DocumentWorkerTranslationRpcClientRequest,
     signal: AbortSignal,
     onDelta: (delta: string) => void = () => undefined
   ): Promise<string> {
@@ -385,7 +421,7 @@ export class DocumentWorkerTranslationRpcClient {
       })
       signal.addEventListener('abort', onAbort, { once: true })
       try {
-        this.port.postMessage(request)
+        this.port.postMessage({ ...request, type: 'translation-request' })
       } catch {
         const pending = this.pending.get(request.requestId)
         this.pending.delete(request.requestId)

@@ -1625,6 +1625,49 @@ test('PDF 表格左右留白均衡的短文本必须优先识别为居中', asyn
   assert.equal(right?.textAlign, 'right', '仅贴右且左侧留白明显更大的文本仍必须识别为右对齐')
 })
 
+test('PDF 表格铺满单元格的长正文不得误判为居中', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  const body = '请确认所需要的计算机软件著作权登记证书副本数量。登记证书和副本数量之和不能超过软件著作权人的数量'
+  page.drawText(body, { x: 78, y: 660, size: 10, font })
+  page.drawText('证书份数', { x: 152, y: 695, size: 10, font })
+  page.drawText('LEFT_BODY', { x: 82, y: 625, size: 12, font })
+  for (const y of [720, 680, 640]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 272, 528]) {
+    page.drawLine({ start: { x, y: 640 }, end: { x, y: 720 }, thickness: 1 })
+  }
+  for (const x of [72, 528]) {
+    page.drawLine({ start: { x, y: 600 }, end: { x, y: 640 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-full-width-body.pdf',
+    fileName: 'table-cell-full-width-body.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const textBlocks = table.rows.flatMap((row) => row.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'text')))
+  const longBody = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === body)
+  const heading = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === '证书份数')
+  const ordinaryBody = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === 'LEFT_BODY')
+  assert.equal(longBody?.textAlign, undefined, '铺满单元格的长正文必须保持默认左对齐')
+  assert.equal(heading?.textAlign, 'center', '同表中的短标题仍必须保留居中')
+  assert.equal(ordinaryBody?.textAlign, undefined, '普通左对齐正文不能被长正文规则连带居中')
+})
+
 test('PDF 表格单元格正文后的页码必须拆成同一视觉行的独立右对齐块', async () => {
   const document = await PDFDocument.create()
   document.registerFontkit(fontkit)
@@ -1670,8 +1713,132 @@ test('PDF 表格单元格正文后的页码必须拆成同一视觉行的独立�
   assert.ok(pageNumber.bbox && body.bbox && Math.abs(pageNumber.bbox.y - body.bbox.y) <= 1,
     '正文和页码必须保持同一视觉行顶部')
   assert.equal(pageNumber.textAlign, 'right', '页码必须右对齐')
-  assert.equal(pageNumber.runs.every((run) => run.protected === true), true,
-    '页码不能送入翻译')
+  assert.equal(pageNumber.runs.every((run) => run.protected !== true), true,
+    '右侧页码必须可翻译，并支持手改与单块重译')
+})
+
+test('PDF 表格中独立成格的页数必须作为可翻译正文', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  page.drawText('描述', { x: 82, y: 695, size: 10, font })
+  page.drawText('4', { x: 505, y: 695, size: 10, font })
+  page.drawText('页', { x: 512, y: 695, size: 10, font })
+  for (const y of [720, 680]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 680 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-standalone-page-count.pdf',
+    fileName: 'table-cell-standalone-page-count.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const pageCountCell = table.rows[0]!.cells.find((cell) =>
+    cell.blocks.some((block) => block.kind === 'text' &&
+      block.runs.map((run) => run.text).join('').includes('页')))
+  assert.ok(pageCountCell, '独立页数单元格必须存在')
+  const textBlocks = pageCountCell!.blocks.filter((block) => block.kind === 'text')
+  assert.equal(textBlocks.length, 1, '独立页数单元格不能被拆成正文与受保护页码')
+  assert.equal(textBlocks[0]!.runs.map((run) => run.text).join(''), '4页')
+  assert.equal(textBlocks[0]!.runs.some((run) => run.protected === true), false,
+    '独立页数不属于右对齐页码，必须进入翻译并可手改')
+})
+
+test('PDF 表格中以破折号引导的页数必须作为可翻译正文', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  page.drawText('—', { x: 310, y: 695, size: 10, font })
+  page.drawText('4', { x: 505, y: 695, size: 10, font })
+  page.drawText('页', { x: 512, y: 695, size: 10, font })
+  for (const y of [720, 680]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 680 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-dash-page-count.pdf',
+    fileName: 'table-cell-dash-page-count.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const textBlocks = table.rows[0]!.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'text'))
+  assert.equal(textBlocks.length, 1, '破折号引导的页数不能被拆成正文与受保护页码')
+  assert.equal(textBlocks[0]!.runs.map((run) => run.text).join(''), '—4页')
+  assert.equal(textBlocks[0]!.runs.some((run) => run.protected === true), false,
+    '破折号不是实质正文，但页数仍属于可翻译内容')
+})
+
+test('PDF 表格中右侧独立页数不能被长正文带成受保护页码', async () => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(
+    readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    { subset: true }
+  )
+  page.drawText('打印签字或盖章的登记申请表', { x: 145.5, y: 695, size: 9, font })
+  // 真实申请表把页数和正文放在同一单元格，页数只是另一段靠右文本，不是页脚页码。
+  page.drawText('4', { x: 515.85, y: 695, size: 9, font })
+  page.drawText('页', { x: 521.25, y: 695, size: 9, font })
+  for (const y of [720, 680]) {
+    page.drawLine({ start: { x: 72, y }, end: { x: 528, y }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: 680 }, end: { x, y: 720 }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-cell-standalone-page-count-with-body.pdf',
+    fileName: 'table-cell-standalone-page-count-with-body.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const materialsCell = table.rows[0]!.cells.find((cell) =>
+    cell.blocks.some((block) => block.kind === 'text' &&
+      block.runs.map((run) => run.text).join('').includes('打印签字')))
+  assert.ok(materialsCell, '材料名称单元格必须存在')
+  const textBlocks = table.rows[0]!.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'text'))
+  assert.equal(textBlocks.length, 2, '正文与右侧页数必须拆成两个可独立操作的文本块')
+  const body = textBlocks.find((block) => block.runs.map((run) => run.text).join('').includes('打印签字'))
+  const pageCount = textBlocks.find((block) => block.runs.map((run) => run.text).join('') === '4页')
+  assert.ok(body && pageCount, '正文与页数文本块必须同时存在')
+  assert.ok(pageCount.bbox && body.bbox && pageCount.bbox.x > body.bbox.x + 100,
+    '页数必须保留原始靠右横坐标')
+  assert.equal(pageCount.textAlign, 'right', '右侧页数必须保持右对齐')
+  assert.equal(pageCount.runs.some((run) => run.protected === true), false,
+    '表格内容中的页数必须进入翻译并可手改、单块重译')
 })
 
 test('PDF 表格多行正文中的右侧页数必须保留为正文', async () => {

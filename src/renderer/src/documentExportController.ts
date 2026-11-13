@@ -4,6 +4,7 @@ import {
 } from '../../shared/documentCompletion'
 import type { DocumentWarning } from '../../shared/documentTypes'
 import { countVisibleDocumentWarnings } from '../../shared/documentWarnings'
+import { collectDocumentManualTranslationEdits } from '../../shared/documentManualTranslationEdits'
 import type {
   Api,
   DocumentApprovedSourceRequest,
@@ -74,6 +75,8 @@ export interface DocumentExportControllerDependencies {
   retryFailedDocumentTranslation(): Promise<void>
   /** 返回当前受信任窗口的 IPC API。 */
   getApi(): Api
+  /** 提交当前正在就地编辑的译文，确保导出模型包含用户最后一次输入。 */
+  commitActiveManualEdit(): void
 }
 
 /** 文档导出控制器对外暴露的职责接口。 */
@@ -162,6 +165,8 @@ export function createDocumentExportController(
    * @author zhenghq
    */
   const exportTranslatedPdf = async (): Promise<void> => {
+    // 打开导出对话框前先落地活动手改，避免对话框打开后 DOM 失焦又改写模型导致快照过期。
+    dependencies.commitActiveManualEdit()
     const tab = dependencies.getActiveDocumentTab()
     const snapshot = tab?.snapshot
     if (!tab || !snapshot?.translation) return
@@ -221,6 +226,8 @@ export function createDocumentExportController(
    * @author zhenghq
    */
   const confirmExport = async (): Promise<void> => {
+    // 确认导出时再次提交活动手改，保证导出使用的是用户刚输入且已写入模型的文本。
+    dependencies.commitActiveManualEdit()
     const exportTarget = target
     const tab = dependencies.getActiveDocumentTab()
     const snapshot = tab?.snapshot
@@ -244,11 +251,15 @@ export function createDocumentExportController(
     }
     if (!dependencies.isDocumentTabOpen(tab) || tab.generation !== snapshot.generation ||
       target !== exportTarget) return
+    // 等待用户确认期间可能发生手改或流式更新；导出前重新读取同一任务身份的最新快照。
+    const latestSnapshot = tab.snapshot
+    if (!latestSnapshot || latestSnapshot.jobId !== exportTarget.jobId ||
+      latestSnapshot.generation !== exportTarget.generation) return
     if (tab.id !== dependencies.getActiveDocumentTabId()) {
       await dependencies.activateDocumentTab(tab.id)
     }
     // 导出前先同步最新终态，确保文档模型与当前界面使用同一份翻译结果。
-    dependencies.flushSnapshotRenderForTab(tab, snapshot)
+    dependencies.flushSnapshotRenderForTab(tab, latestSnapshot)
     inFlight = true
     exportConfirmButton.disabled = true
     exportCancelButton.disabled = !exportTarget.canCancel
@@ -260,18 +271,22 @@ export function createDocumentExportController(
         ? { mode: 'complete' }
         : { mode: 'partial' }
       const api = dependencies.getApi()
-      const result: DocumentExportResult = readOnly && approvedSource && snapshot.translation
+      const manualTranslationEdits = latestSnapshot.translation
+        ? collectDocumentManualTranslationEdits(latestSnapshot.translation)
+        : []
+      const result: DocumentExportResult = readOnly && approvedSource && latestSnapshot.translation
         ? await api.exportApprovedDocumentPdf({
           source: approvedSource,
           fileName: tab.selection.name,
-          translation: snapshot.translation
+          translation: latestSnapshot.translation
         })
         : await api.exportDocumentPdf({
-          jobId: snapshot.jobId,
-          generation: snapshot.generation,
+          jobId: latestSnapshot.jobId,
+          generation: latestSnapshot.generation,
           ...exportMode,
           // OCR 原文导出必须保留原图并叠加透明文字层，形成可检索的双层 PDF。
-          textLayer: true
+          textLayer: true,
+          ...(manualTranslationEdits.length > 0 ? { manualTranslationEdits } : {})
         })
       if (!dependencies.isDocumentTabOpen(tab) || target !== exportTarget) return
       if (result.status === 'saved') {

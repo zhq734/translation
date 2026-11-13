@@ -6,6 +6,7 @@ import {
   normalizeDocumentExportRequest,
   normalizeDocumentOpenExportFolderRequest,
   normalizeDocumentRunRequest,
+  normalizeDocumentSwitchModeRequest,
   normalizeDocumentTargetId,
   normalizeDocumentTaskIdentityRequest,
   type DocumentApprovedAssetRequest,
@@ -20,14 +21,14 @@ import type {
 import type { DocumentMainRuntime } from '../documentRuntime'
 import type { DocumentTranslationCacheStore } from '../documentTranslationCache'
 import type { DocumentTaskHistoryStore } from '../documentTaskHistory'
-import type { DocumentWorkspaceTaskService } from '../documentWorkspaceTaskService'
+import type { DocumentWorkspaceTaskServiceLike } from '../documentWorkspaceTaskServiceLike'
 
 /** 文档工作台 IPC 注册依赖。 */
 export interface DocumentIpcDependencies {
   /** 当前窗口已批准文件的路径集合。 */
   approvedPaths: Set<string>
   /** 当前窗口按任务标识登记的任务服务。 */
-  taskServices: Map<string, DocumentWorkspaceTaskService>
+  taskServices: Map<string, DocumentWorkspaceTaskServiceLike>
   /** 从弹窗打开文档工作台。 */
   openWorkspace(): void
   /** 判断 IPC 是否来自当前文档工作台窗口。 */
@@ -39,7 +40,7 @@ export interface DocumentIpcDependencies {
   /** 重新校验并批准一个候选路径。 */
   validateApprovedPath(path: string): Promise<DocumentFileSelectionResult>
   /** 创建当前窗口的任务服务。 */
-  createTaskService(): Promise<DocumentWorkspaceTaskService>
+  createTaskService(): Promise<DocumentWorkspaceTaskServiceLike>
   /** 释放指定任务服务。 */
   releaseTask(jobId: string): boolean
   /** 按需加载文档运行时。 */
@@ -195,6 +196,27 @@ export function registerDocumentIpc(dependencies: DocumentIpcDependencies): void
     }
   })
   /**
+   * 在不重新解析或 OCR 的前提下切换当前任务的 OCR 原文/译文模式。
+   * @param event IPC 事件对象。
+   * @param request 当前任务身份、新代际与目标模式。
+   * @returns 主进程是否接受切换。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:switch-mode', (event, request: unknown) => {
+    if (!dependencies.isWorkspaceSender(event.sender) ||
+      !dependencies.getSettings().documentTranslationEnabled) {
+      return { accepted: false, code: 'disabled' }
+    }
+    const normalizedRequest = normalizeDocumentSwitchModeRequest(request)
+    if (!normalizedRequest) return { accepted: false, code: 'invalid-request' }
+    return dependencies.taskServices.get(normalizedRequest.jobId)?.switchMode(
+      normalizedRequest.jobId,
+      normalizedRequest.generation,
+      normalizedRequest.nextGeneration,
+      normalizedRequest.mode
+    ) ?? { accepted: false, code: 'not-ready' }
+  })
+  /**
    * 使用新代际重新翻译当前文档中失败的目标。
    * @param event IPC 事件对象。
    * @param jobId 任务标识。
@@ -235,6 +257,33 @@ export function registerDocumentIpc(dependencies: DocumentIpcDependencies): void
     }
     return dependencies.taskServices.get(identity.jobId)
       ?.retryFailedTarget(identity.generation, normalizedTargetId) ??
+      { accepted: false, code: 'not-ready' }
+  })
+  /**
+   * 强制重译当前文档中的指定译文目标，绕过缓存并在失败时保留旧译文。
+   * @param event IPC 事件对象。
+   * @param jobId 任务标识。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 稳定目标标识。
+   * @returns 主进程是否接受重译。
+   * @author zhenghq
+   */
+  ipcMain.handle('document:retranslate-target', (
+    event,
+    jobId: unknown,
+    generation: unknown,
+    targetId: unknown
+  ) => {
+    if (!dependencies.isWorkspaceSender(event.sender)) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    const identity = normalizeDocumentTaskIdentityRequest({ jobId, generation })
+    const normalizedTargetId = normalizeDocumentTargetId(targetId)
+    if (!identity || !normalizedTargetId || parseDocumentTargetId(normalizedTargetId) === null) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    return dependencies.taskServices.get(identity.jobId)
+      ?.retranslateTarget(identity.generation, normalizedTargetId) ??
       { accepted: false, code: 'not-ready' }
   })
   /**

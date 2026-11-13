@@ -72,6 +72,14 @@ export class DocumentWorkspaceManager {
   private closingWindow = false
   private allowWindowClose = false
   private boundsSaveTimer: NodeJS.Timeout | null = null
+  /**
+   * 文档窗口是否因外部划词被暂时隐藏。
+   *
+   * macOS 的普通 BrowserWindow 即使失焦，仍可能在翻译弹窗显隐或复制前交还
+   * key window 时被重新选为 key window。隐藏窗口可直接移除该候选，但迟到的
+   * show() 仍可能把它重新带回屏幕，因此必须保留状态直到显式入口恢复。
+   */
+  private hiddenForSelection = false
 
   /**
    * 创建文档工作台窗口管理器。
@@ -95,6 +103,9 @@ export class DocumentWorkspaceManager {
       throw new Error(messageKey ? translateMain(messageKey) : translateMain('document.error.unsupportedPlatform'))
     }
     if (this.closingWindow) return
+    // open() 是所有新建、复用与显式置前路径的共同入口。外部划词可能暂时隐藏
+    // 已有窗口，任何后续 open() 都代表用户意图重新打开，必须先解除 show 抑制。
+    this.resumeAfterExternalSelection()
     await rememberFrontmostAppIfInactiveAsync()
     await this.ensureWindow()
     const window = this.window
@@ -147,6 +158,7 @@ export class DocumentWorkspaceManager {
    */
   focusExistingWindow(): boolean {
     if (!this.window || this.window.isDestroyed()) return false
+    this.resumeAfterExternalSelection()
     if (this.window.isMinimized()) this.window.restore()
     if (this.window.isVisible() && !this.window.isMinimized()) return true
     this.window.show()
@@ -161,6 +173,7 @@ export class DocumentWorkspaceManager {
    */
   focusOrOpenExistingWindow(): boolean {
     if (!this.window || this.window.isDestroyed()) return false
+    this.resumeAfterExternalSelection()
     if (this.window.isMinimized()) this.window.restore()
     this.window.show()
     this.window.focus()
@@ -196,6 +209,55 @@ export class DocumentWorkspaceManager {
   isWindowFocused(): boolean {
     if (!this.window || this.window.isDestroyed()) return false
     return this.window.isFocused()
+  }
+
+  /**
+   * 外部划词开始时暂时隐藏后台文档工作台，移除 macOS 重选 key window 的竞态源。
+   *
+   * 仅在 macOS 执行，且只隐藏可见、未聚焦、未最小化的后台窗口。用户正在使用
+   * 的文档窗口不能被划词流程隐藏；同一窗口重复调用保持幂等。
+   * @param platform 当前运行平台。
+   * @returns 本次是否实际接管并隐藏了文档窗口。
+   * @author zhenghq
+   */
+  suspendForExternalSelection(platform: NodeJS.Platform): boolean {
+    if (platform !== 'darwin') return false
+    const window = this.window
+    if (!window || window.isDestroyed()) return false
+    if (!window.isVisible() || window.isFocused() || window.isMinimized()) return false
+    // 先登记再隐藏：窗口 show/closed 生命周期会读取该状态，顺序反转会留下
+    // “已经隐藏但仍未标记”的事件时序窗口。
+    this.hiddenForSelection = true
+    window.hide()
+    return true
+  }
+
+  /**
+   * 解除外部划词对文档工作台的临时隐藏状态。
+   *
+   * 只由用户显式打开文档工作台的入口调用。这里不主动 show()，具体显示仍由
+   * open()/focusOrOpenExistingWindow() 统一完成，避免异步入口重复显示。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resumeAfterExternalSelection(): void {
+    this.hiddenForSelection = false
+  }
+
+  /**
+   * 恢复因划词隐藏的窗口，仅显示不抢焦点。
+   * @param platform 当前运行平台。
+   * @returns 实际恢复时返回 true。
+   * @author zhenghq
+   */
+  restoreAfterExternalSelection(platform: NodeJS.Platform): boolean {
+    if (platform !== 'darwin') return false
+    const window = this.window
+    if (!window || window.isDestroyed() || !this.hiddenForSelection) return false
+    this.hiddenForSelection = false
+    if (window.isMinimized()) window.restore()
+    if (!window.isVisible()) window.show()
+    return true
   }
 
   /**
@@ -282,6 +344,12 @@ export class DocumentWorkspaceManager {
       this.close()
     })
     window.on('blur', () => this.options.onInternalWindowFocusLost?.())
+    window.on('show', () => {
+      // 外部划词期间 app.hide() → app.show() 或迟到 activate 可能让已隐藏的
+      // 普通窗口再次显示；入口处只 hide() 一次无法覆盖这些路径，必须持续拦截。
+      if (!this.hiddenForSelection || window.isDestroyed()) return
+      window.hide()
+    })
     window.on('move', () => this.scheduleBoundsSave())
     window.on('resize', () => this.scheduleBoundsSave())
     // HTML 原文只在固定分区的隔离 guest 中加载净化 Blob，并移除任何继承的 preload 与 Node 能力。
@@ -313,6 +381,7 @@ export class DocumentWorkspaceManager {
       })
     })
     window.on('closed', () => {
+      this.hiddenForSelection = false
       this.options.onInternalWindowFocusLost?.()
       this.clearBoundsSaveTimer()
       if (this.window !== window) return

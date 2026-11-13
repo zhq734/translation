@@ -5,6 +5,8 @@ const DOCUMENT_SOURCE_PATHS = [
   'src/renderer/src/documentHistoryController.ts',
   'src/renderer/src/documentNavigationController.ts',
   'src/renderer/src/documentExportController.ts',
+  'src/renderer/src/documentManualEditController.ts',
+  'src/renderer/src/documentSearchController.ts',
   'src/renderer/src/documentElements.ts',
   'src/renderer/src/documentUiModel.ts'
 ]

@@ -4504,6 +4504,7 @@ function inferPdfTextAlignment(
  * @param cellLeft 单元格左边界。
  * @param cellRight 单元格右边界。
  * @param fontSize 文本字号。
+ * @param text 单元格完整文本，用于排除铺满单元格的长正文误判。
  * @returns 推断出的单元格对齐方式；无法可靠判断时返回 undefined。
  * @author zhenghq
  */
@@ -4511,7 +4512,8 @@ function inferPdfTableCellTextAlignment(
   bbox: DocumentBoundingBox,
   cellLeft: number,
   cellRight: number,
-  fontSize: number
+  fontSize: number,
+  text = ''
 ): DocumentTextAlign | undefined {
   const cellWidth = cellRight - cellLeft
   if (!Number.isFinite(cellWidth) || cellWidth <= 0 || bbox.width <= 0) return undefined
@@ -4521,12 +4523,16 @@ function inferPdfTableCellTextAlignment(
   const textRight = bbox.x + bbox.width
   const leftGap = bbox.x - cellLeft
   const rightGap = cellRight - textRight
+  const normalizedText = text.replace(/\s+/gu, '')
+  // 长正文铺满单元格时，左右几何关系只说明内容占满宽度，不能作为居中或右对齐证据。
+  // 短右对齐文本不受影响，因为长正文判断同时要求文本长度和横向占比达到阈值。
+  const isLongFullWidthText = normalizedText.length >= 20 && bbox.width >= cellWidth * 0.7
   // 短文本同时接近单元格中心和右边界时，左右留白是否均衡比单侧距离更可靠。
   // 必须先判断居中，否则居中文本因字体侧边距贴近右边界时会被误判为右对齐。
-  if (Math.abs(textCenter - cellCenter) <= tolerance &&
+  if (!isLongFullWidthText && Math.abs(textCenter - cellCenter) <= tolerance &&
     Math.abs(leftGap - rightGap) <= tolerance * 2) return 'center'
-  if (Math.abs(textRight - cellRight) <= tolerance) return 'right'
-  if (Math.abs(textCenter - cellCenter) <= tolerance) return 'center'
+  if (!isLongFullWidthText && Math.abs(textRight - cellRight) <= tolerance) return 'right'
+  if (!isLongFullWidthText && Math.abs(textCenter - cellCenter) <= tolerance) return 'center'
   return undefined
 }
 
@@ -5020,7 +5026,8 @@ function createPdfTableBlock(
               cellRight,
               cellTop,
               cellBottom,
-              true
+              true,
+              false
             )
           )
         }
@@ -5196,6 +5203,8 @@ function createPdfTableCellBlockId(cellId: string, readingOrder: number): string
  * @param cellRight 单元格右边界。
  * @param cellTop 单元格上边界。
  * @param cellBottom 单元格下边界。
+ * @param forceRightAlign 是否强制右对齐。
+ * @param protectRuns 是否保护文本片段，受保护片段不参与翻译和手改。
  * @returns 单元格文本区块。
  * @author zhenghq
  */
@@ -5213,7 +5222,8 @@ function createPdfTableCellTextBlock(
   cellRight: number,
   cellTop: number,
   cellBottom: number,
-  protectedText = false
+  forceRightAlign = false,
+  protectRuns = false
 ): DocumentTextBlock {
   const blockId = createPdfTableCellBlockId(cellId, readingOrder)
   const runs: DocumentTextRun[] = []
@@ -5240,7 +5250,7 @@ function createPdfTableCellTextBlock(
       runId: createTextRunId(blockId, runs.length),
       text: sanitizeDocumentText(item.str),
       style: lineHeight === undefined ? style : { ...style, lineHeight },
-      ...(protectedText ? { protected: true } : {})
+      ...(protectRuns ? { protected: true } : {})
     })
   }
   const bbox = {
@@ -5252,9 +5262,10 @@ function createPdfTableCellTextBlock(
       Math.max(cellTop, Math.min(...entries.map((entry) => entry.bbox.y))))
   }
   const primaryFontSize = runs[0]?.style?.fontSize ?? 0
-  const textAlign = protectedText
+  const text = runs.map((run) => run.text).join('')
+  const textAlign = forceRightAlign
     ? 'right' as const
-    : inferPdfTableCellTextAlignment(bbox, cellLeft, cellRight, primaryFontSize)
+    : inferPdfTableCellTextAlignment(bbox, cellLeft, cellRight, primaryFontSize, text)
   return {
     kind: 'text',
     blockId,
@@ -5284,6 +5295,18 @@ function findPdfTableCellPageNumberSplit(
   for (let index = entries.length - 1; index > 0; index -= 1) {
     const pageNumberText = entries.slice(index).map((entry) => entry.item.str).join('').trim()
     if (!/^\d+\s*[页⻚]$/u.test(pageNumberText)) continue
+    // 表格中的页码拆分只适用于“实质正文 + 页码”。只有破折号、分隔线或空白时，
+    // 页数本身就是单元格内容，不能拆成正文与页码，否则会破坏翻译和手改。
+    const textBeforePageNumber = entries.slice(0, index)
+      .map((entry) => entry.item.str)
+      .join('')
+    if (!/[\p{L}\p{N}]/u.test(textBeforePageNumber)) continue
+    // 正文和页数只有存在明显视觉间距时才是同一单元格内的两个独立文本块；
+    // 紧邻文本属于正文句子的一部分，拆块会让用户无法按原语义整块编辑。
+    const previousBeforePageNumber = entries[index - 1]!
+    const textPageGap = entries[index]!.bbox.x -
+      (previousBeforePageNumber.bbox.x + previousBeforePageNumber.bbox.width)
+    if (textPageGap < 24) continue
     const pageNumber = entries[index]!
     const pageNumberLine = lineByItem.get(pageNumber.item)
     if (!pageNumberLine) continue

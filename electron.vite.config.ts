@@ -12,6 +12,17 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           documentWorker: resolve('src/main/documentWorkerRuntimeEntry.ts')
+        },
+        output: {
+          /**
+           * 为 utility process 入口使用显式 CommonJS 扩展名，避免被 ESM 加载器误判。
+           * @param chunkInfo Rollup 入口信息。
+           * @returns 主进程入口文件名。
+           * @author zhenghq
+           */
+          entryFileNames: (chunkInfo) => (
+            chunkInfo.name === 'documentWorker' ? 'documentWorker.cjs' : '[name].js'
+          )
         }
       }
     },

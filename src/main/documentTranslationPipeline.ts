@@ -59,6 +59,8 @@ import {
   type DocumentTranslationRequestContext,
   type TranslationUnit
 } from '../shared/documentTranslation.ts'
+import { findDocumentTarget, parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
+import { DOCUMENT_PARSER_VERSION } from '../shared/documentParserVersion.ts'
 
 /** 文档跨目标合并后单个请求的最大字符数，与页面翻译保持同一安全上限。 */
 const DOCUMENT_TRANSLATION_MERGED_BATCH_MAX_CHARS = 1800
@@ -99,9 +101,6 @@ const DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT = 'document-translation-mod
 
 /** 单个翻译请求允许携带的相邻上下文最大字符数。 */
 const DOCUMENT_TRANSLATION_REQUEST_CONTEXT_MAX_CHARS = 240
-
-/** 未注入解析器版本依赖时使用的稳定默认值，保证缓存键可复验。 */
-const DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION = 'document-parser-v1'
 
 /** 文档流水线结果。 */
 export interface DocumentPipelineResult {
@@ -182,6 +181,15 @@ export interface DocumentPipelineDeps {
   getParserVersion?(): string
   /** 是否跳过文档级缓存读取；为 true 时成功结果仍会写回缓存。 */
   bypassCache?: boolean
+}
+
+/** 强制重译单个已完成目标时的行为选项。 */
+export interface RetryDocumentTranslationPipelineOptions {
+  /**
+   * 失败时是否保留翻译模型中的旧译文。
+   * 启用后不发布流式残片、不回写原文，也不把强制重译失败计入可重试目标。
+   */
+  preserveTranslationOnFailure?: boolean
 }
 
 /** 文本目标在页面区块树中的定位路径；表格描述符定位到单元格后继续使用区块索引。 */
@@ -1063,6 +1071,45 @@ function collectTranslationTargets(model: DocumentModel): TranslationTarget[] {
     collectBlockTargets(model.pages[pageIndex]!.blocks, pageIndex, [], targets, visualLinesOnly)
   }
   return targets
+}
+
+/**
+ * 将完成报告中的精确文本目标转换为可单独请求和写回的翻译目标。
+ * 表格整行目标仍按行翻译；这里按正文相同的连续 run 规则补齐精确目标，
+ * 确保点击被拆分文本中的任意 run 时都能请求完整语义片段。
+ * @param source 已完成解析的源文档。
+ * @param targetId 完成报告中的稳定目标标识。
+ * @returns 精确文本目标；非文本目标或无法定位时返回 null。
+ * @author zhenghq
+ */
+function createPreciseTextTarget(source: DocumentModel, targetId: string): TranslationTarget | null {
+  const parsed = parseDocumentTargetId(targetId)
+  if (!parsed || parsed.kind !== 'text') return null
+  const located = findDocumentTarget(source, targetId)
+  if (!located || located.kind !== 'text' || located.block.kind !== 'text') return null
+  const block = located.block as DocumentTextBlock
+  const runIndex = block.runs.findIndex((run) => run.runId === located.runId)
+  if (runIndex < 0) return null
+  const selectedRun = block.runs[runIndex]!
+  if (selectedRun.protected === true || !selectedRun.text.trim()) return null
+  // 点击位置可能只覆盖 PDF 拆出的单个字符（例如“4”与“⻚”分属不同 run）。
+  // 必须复用正文聚合规则，向两侧扩展到目标所在的完整连续同样式区间。
+  const range = collectTextRunRanges(block).find((candidate) =>
+    candidate.runIds.includes(selectedRun.runId))
+  if (!range) return null
+  const whitespace = splitBoundaryWhitespace(range.text)
+  return {
+    targetId,
+    kind: 'text-block',
+    pageIndex: parsed.pageIndex,
+    path: parsed.blockPath,
+    runId: range.runId,
+    ...(range.runIds.length > 1 ? { runIds: range.runIds } : {}),
+    ...(range.style ? { runStyle: { ...range.style } } : {}),
+    text: range.text,
+    leadingWhitespace: whitespace.leading,
+    trailingWhitespace: whitespace.trailing
+  }
 }
 
 /**
@@ -2420,6 +2467,38 @@ function collectOcrWarnings(
 }
 
 /**
+ * 统计已缓存 OCR 源模型中的失败区域数量，供模式切换后的终态报告复用。
+ * @param model 已完成 OCR 的源模型。
+ * @returns 失败 OCR 区域数量。
+ * @author zhenghq
+ */
+function countFailedOcrRegions(model: DocumentModel): number {
+  let count = 0
+  /**
+   * 递归统计区块树中的失败 OCR 区域。
+   * @param block 当前区块。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const visit = (block: DocumentBlock): void => {
+    if (block.kind === 'image') {
+      count += (block.ocrRegions ?? []).filter((region) => region.status === 'failed').length
+      return
+    }
+    if (block.kind !== 'table') return
+    for (const row of block.rows) {
+      for (const cell of row.cells) {
+        for (const child of cell.blocks) visit(child)
+      }
+    }
+  }
+  for (const page of model.pages) {
+    for (const block of page.blocks) visit(block)
+  }
+  return count
+}
+
+/**
  * 执行完整的文档解析、OCR、翻译与版面合成流水线。
  * @param input 解析输入。
  * @param initialState 初始任务状态。
@@ -2427,6 +2506,7 @@ function collectOcrWarnings(
  * @param deps 可注入依赖。
  * @param languagePreference 用户语言偏好。
  * @param mode 运行模式；OCR 原文模式在识别完成后直接结束。
+ * @param options 可选的已解析源模型与冻结语言方向；提供时跳过解析和 OCR。
  * @returns 源文档、译文文档和最终状态。
  * @author zhenghq
  */
@@ -2439,124 +2519,167 @@ export async function runDocumentTranslationPipeline(
     sourcePreference: 'auto',
     targetPreference: 'auto'
   },
-  mode: DocumentRunMode = 'translation'
+  mode: DocumentRunMode = 'translation',
+  options: {
+    reusedSource?: DocumentModel
+    reusedLanguageResolution?: DocumentLanguageResolution
+  } = {}
 ): Promise<DocumentPipelineResult> {
   let state = initialState
   emitProgress(state, deps)
 
   let source: DocumentModel
-  try {
+  let ocrState: DocumentTaskState
+  let ocrSource: DocumentModel
+  let stats = { completed: 0, total: 0, failed: 0 }
+  if (options.reusedSource) {
+    source = options.reusedSource
+    // 复用路径仍推进阶段状态机，但不调用 parse 或 recognizeImage；任务事件保持
+    // 与完整流水线一致，Renderer 无需为模式切换维护另一套状态协议。
     state = moveDocumentTaskToPhase(state, 'parse')
-    emitProgress(state, deps)
-    source = await deps.parse(input)
-    if (signal.aborted) {
-      const emptySource = createDocumentModel(input)
-      return createCancelledResult(
-        emptySource,
-        emptySource,
-        state,
-        deps,
-        resolveDocumentLanguagePair(emptySource, languagePreference)
-      )
-    }
+    state = updateDocumentTaskProgress(state, {
+      completed: source.pages.length,
+      total: source.pages.length
+    })
     state = completeDocumentTaskPhase(state)
-    state = updateDocumentTaskProgress(state, { completed: source.pages.length, total: source.pages.length })
     emitProgress(state, deps)
-  } catch (error) {
-    if (isAbortError(error, signal)) {
-      const emptySource = createDocumentModel(input)
-      return createCancelledResult(
-        emptySource,
-        emptySource,
-        state,
-        deps,
-        resolveDocumentLanguagePair(emptySource, languagePreference)
-      )
-    }
-    const failed = { ...state, status: 'failed' as const, errorCode: 'parse-failed' }
-    emitProgress(failed, deps)
-    throw Object.assign(new Error('Document parse failed'), { task: failed })
-  }
-
-  const counts = countPipelineUnits(source)
-  let stats = { completed: 0, total: counts.textRuns, failed: 0 }
-  let ocrState = moveDocumentTaskToPhase(state, 'ocr')
-  emitProgress(ocrState, deps)
-  const ocrBlocksByPage: DocumentBlock[][] = []
-  const decorativeLayoutKeys = source.source.format === 'pdf'
-    ? collectDecorativeHeaderLayoutKeys(source.pages)
-    : new Set<string>()
-  const ocrResultCache = new Map<string, Promise<OcrRecognizeResult | null>>()
-  const ocrBudget = {
-    maxImages: Math.max(0, deps.maxOcrImages ?? DOCUMENT_MAX_OCR_IMAGES),
-    usedHashes: new Set<string>()
-  }
-  const ocrSemaphore = createOcrSemaphore(normalizeOcrConcurrency(deps.ocrConcurrency))
-  try {
-    for (let pageIndex = 0; pageIndex < source.pages.length; pageIndex += 1) {
-      const page = source.pages[pageIndex]!
-      const blocks = await Promise.all(page.blocks.map((block) => recognizeBlock(
-        block,
-        source.assets,
-        deps,
-        signal,
-        () => {
-          stats.failed += 1
-        },
-        page,
-        decorativeLayoutKeys,
-        ocrResultCache,
-        ocrBudget,
-        ocrSemaphore
-      )))
-      throwIfAborted(signal)
-      ocrBlocksByPage[pageIndex] = blocks
-      ocrState = updateDocumentTaskProgress(ocrState, {
-        completed: pageIndex + 1,
-        total: source.pages.length
-      })
-      emitProgress(ocrState, deps)
-    }
+    ocrState = moveDocumentTaskToPhase(state, 'ocr')
+    ocrState = updateDocumentTaskProgress(ocrState, {
+      completed: source.pages.length,
+      total: source.pages.length
+    })
     ocrState = completeDocumentTaskPhase(ocrState)
     emitProgress(ocrState, deps)
-  } catch (error) {
-    if (isAbortError(error, signal)) {
-      const partialSource: DocumentModel = {
-        ...source,
-        pages: source.pages.map((page, index) => ({
-          ...page,
-          blocks: ocrBlocksByPage[index] ?? page.blocks
-        }))
-      }
+    ocrSource = source
+    stats = {
+      completed: 0,
+      total: countPipelineUnits(source).textRuns,
+      failed: countFailedOcrRegions(source)
+    }
+    if (signal.aborted) {
       return createCancelledResult(
-        partialSource,
-        partialSource,
+        ocrSource,
+        ocrSource,
         ocrState,
         deps,
-        resolveDocumentLanguagePair(partialSource, languagePreference)
+        options.reusedLanguageResolution ?? resolveDocumentLanguagePair(ocrSource, languagePreference)
       )
     }
-    const failed = { ...ocrState, status: 'failed' as const, errorCode: 'ocr-failed' }
-    emitProgress(failed, deps)
-    throw Object.assign(new Error('Document OCR failed'), { task: failed })
-  }
+  } else {
+    try {
+      state = moveDocumentTaskToPhase(state, 'parse')
+      emitProgress(state, deps)
+      source = await deps.parse(input)
+      if (signal.aborted) {
+        const emptySource = createDocumentModel(input)
+        return createCancelledResult(
+          emptySource,
+          emptySource,
+          state,
+          deps,
+          resolveDocumentLanguagePair(emptySource, languagePreference)
+        )
+      }
+      state = completeDocumentTaskPhase(state)
+      state = updateDocumentTaskProgress(state, { completed: source.pages.length, total: source.pages.length })
+      emitProgress(state, deps)
+    } catch (error) {
+      if (isAbortError(error, signal)) {
+        const emptySource = createDocumentModel(input)
+        return createCancelledResult(
+          emptySource,
+          emptySource,
+          state,
+          deps,
+          resolveDocumentLanguagePair(emptySource, languagePreference)
+        )
+      }
+      const failed = { ...state, status: 'failed' as const, errorCode: 'parse-failed' }
+      emitProgress(failed, deps)
+      throw Object.assign(new Error('Document parse failed'), { task: failed })
+    }
 
-  const ocrWarnings: DocumentWarning[] = []
-  const ocrPages: DocumentModel['pages'] = source.pages.map((page, index) => {
-    const blocks = ocrBlocksByPage[index] ?? page.blocks
-    for (const block of blocks) collectOcrWarnings(block, page.pageId, ocrWarnings)
-    return { ...page, blocks }
-  })
-  const ocrSource: DocumentModel = {
-    ...source,
-    pages: ocrPages,
-    warnings: [
-      ...source.warnings.filter((warning) => warning.code !== 'ocr-required'),
-      ...ocrWarnings
-    ]
+    const counts = countPipelineUnits(source)
+    stats = { completed: 0, total: counts.textRuns, failed: 0 }
+    ocrState = moveDocumentTaskToPhase(state, 'ocr')
+    emitProgress(ocrState, deps)
+    const ocrBlocksByPage: DocumentBlock[][] = []
+    const decorativeLayoutKeys = source.source.format === 'pdf'
+      ? collectDecorativeHeaderLayoutKeys(source.pages)
+      : new Set<string>()
+    const ocrResultCache = new Map<string, Promise<OcrRecognizeResult | null>>()
+    const ocrBudget = {
+      maxImages: Math.max(0, deps.maxOcrImages ?? DOCUMENT_MAX_OCR_IMAGES),
+      usedHashes: new Set<string>()
+    }
+    const ocrSemaphore = createOcrSemaphore(normalizeOcrConcurrency(deps.ocrConcurrency))
+    try {
+      for (let pageIndex = 0; pageIndex < source.pages.length; pageIndex += 1) {
+        const page = source.pages[pageIndex]!
+        const blocks = await Promise.all(page.blocks.map((block) => recognizeBlock(
+          block,
+          source.assets,
+          deps,
+          signal,
+          () => {
+            stats.failed += 1
+          },
+          page,
+          decorativeLayoutKeys,
+          ocrResultCache,
+          ocrBudget,
+          ocrSemaphore
+        )))
+        throwIfAborted(signal)
+        ocrBlocksByPage[pageIndex] = blocks
+        ocrState = updateDocumentTaskProgress(ocrState, {
+          completed: pageIndex + 1,
+          total: source.pages.length
+        })
+        emitProgress(ocrState, deps)
+      }
+      ocrState = completeDocumentTaskPhase(ocrState)
+      emitProgress(ocrState, deps)
+    } catch (error) {
+      if (isAbortError(error, signal)) {
+        const partialSource: DocumentModel = {
+          ...source,
+          pages: source.pages.map((page, index) => ({
+            ...page,
+            blocks: ocrBlocksByPage[index] ?? page.blocks
+          }))
+        }
+        return createCancelledResult(
+          partialSource,
+          partialSource,
+          ocrState,
+          deps,
+          resolveDocumentLanguagePair(partialSource, languagePreference)
+        )
+      }
+      const failed = { ...ocrState, status: 'failed' as const, errorCode: 'ocr-failed' }
+      emitProgress(failed, deps)
+      throw Object.assign(new Error('Document OCR failed'), { task: failed })
+    }
+
+    const ocrWarnings: DocumentWarning[] = []
+    const ocrPages: DocumentModel['pages'] = source.pages.map((page, index) => {
+      const blocks = ocrBlocksByPage[index] ?? page.blocks
+      for (const block of blocks) collectOcrWarnings(block, page.pageId, ocrWarnings)
+      return { ...page, blocks }
+    })
+    ocrSource = {
+      ...source,
+      pages: ocrPages,
+      warnings: [
+        ...source.warnings.filter((warning) => warning.code !== 'ocr-required'),
+        ...ocrWarnings
+      ]
+    }
   }
   // 解析和 OCR 全部完成后只解析一次方向，后续所有请求共享同一个冻结语言对。
-  const languageResolution = resolveDocumentLanguagePair(ocrSource, languagePreference)
+  const languageResolution = options.reusedLanguageResolution ??
+    resolveDocumentLanguagePair(ocrSource, languagePreference)
   const languagePair = languageResolution.languagePair
   deps.publishLanguageResolution?.(languageResolution)
   const ocrFailedCount = stats.failed
@@ -2619,7 +2742,7 @@ export async function runDocumentTranslationPipeline(
   emitProgress(translateState, deps)
   const targetContextSummaries = buildTargetContextSummaries(targets)
   const glossaryVersion = deps.glossary?.version ?? 'none'
-  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION
+  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_PARSER_VERSION
   const modelFingerprint = deps.getModelFingerprint?.() ??
     DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT
   const cacheContext = {
@@ -3154,6 +3277,8 @@ export async function runDocumentTranslationPipeline(
  * @param initialState 重试任务的初始状态；调用方应使用新的代际。
  * @param signal 取消信号。
  * @param deps 可注入依赖。
+ * @param languageResolution 首次运行冻结的语言方向。
+ * @param options 强制重译成功目标时保留旧译文等行为选项。
  * @returns 合并重试结果后的译文与最终状态。
  * @author zhenghq
  */
@@ -3164,14 +3289,24 @@ export async function retryFailedDocumentTranslationPipeline(
   initialState: DocumentTaskState,
   signal: AbortSignal,
   deps: DocumentPipelineDeps,
-  languageResolution: DocumentLanguageResolution
+  languageResolution: DocumentLanguageResolution,
+  options: RetryDocumentTranslationPipelineOptions = {}
 ): Promise<DocumentPipelineResult> {
+  const preserveTranslationOnFailure = options.preserveTranslationOnFailure === true
   const languagePair = languageResolution.languagePair
   const requestedIds = new Set(failedTargetIds)
   // 上下文必须基于完整源文档生成；重试目标集合只用于限制实际请求范围。
   const allTargets = collectTranslationTargets(source)
   const targetContextSummaries = buildTargetContextSummaries(allTargets)
   const targets = allTargets.filter((target) => requestedIds.has(target.targetId))
+  const targetIds = new Set(targets.map((target) => target.targetId))
+  for (const targetId of requestedIds) {
+    if (targetIds.has(targetId)) continue
+    const preciseTarget = createPreciseTextTarget(source, targetId)
+    if (!preciseTarget) continue
+    targets.push(preciseTarget)
+    targetIds.add(preciseTarget.targetId)
+  }
   const translatedPages: DocumentModel['pages'] = translation.pages.map((page) => ({
     ...page,
     blocks: [...page.blocks]
@@ -3238,7 +3373,7 @@ export async function retryFailedDocumentTranslationPipeline(
   const retryFailedIds = new Set<string>()
   let completed = 0
   const glossaryVersion = deps.glossary?.version ?? 'none'
-  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_TRANSLATION_DEFAULT_PARSER_VERSION
+  const parserVersion = deps.getParserVersion?.() ?? DOCUMENT_PARSER_VERSION
   const modelFingerprint = deps.getModelFingerprint?.() ??
     DOCUMENT_TRANSLATION_DEFAULT_MODEL_FINGERPRINT
   const cacheContext = {
@@ -3381,7 +3516,7 @@ export async function retryFailedDocumentTranslationPipeline(
     item: DocumentTranslationBatch,
     translation: string
   ): void => {
-    if (signal.aborted) return
+    if (signal.aborted || preserveTranslationOnFailure) return
     for (const streamed of readStreamedMergedSegments(translation, item.segments.length)) {
       const segment = item.segments[streamed.index]
       if (!segment) continue
@@ -3512,8 +3647,11 @@ export async function retryFailedDocumentTranslationPipeline(
     state.failureReason = reason
     state.translation = undefined
     completed += 1
-    retryFailedIds.add(segment.target.targetId)
     publishProgress()
+    // 强制重译已完成目标时，失败只能视为本次请求未替换旧译文；旧译文仍属于
+    // 已完成的成功结果，不能把任务降级为 partial，也不能再次暴露重试入口。
+    if (preserveTranslationOnFailure) return
+    retryFailedIds.add(segment.target.targetId)
     // 重试流式预览可能已经写入错误语言，失败终态必须恢复原文。
     commitTarget(segment.target, segment.target.text)
   }
@@ -3601,7 +3739,7 @@ export async function retryFailedDocumentTranslationPipeline(
       try {
         const translated = await deps.translate(segment.text, signal, languagePair, segment.pieceTotal === 1
           ? (delta) => {
-              if (signal.aborted) return
+              if (signal.aborted || preserveTranslationOnFailure) return
               streamed += delta
               const state = targetStates.get(segment.target.targetId)
               if (!state || state.finished || !streamed.trim()) return
@@ -3689,6 +3827,13 @@ export async function retryFailedDocumentTranslationPipeline(
   }
   translationPublisher.flush()
 
+  // 强制重译失败的旧译文仍有效；移除本轮失败状态后让完成报告从旧模型读回。
+  if (preserveTranslationOnFailure) {
+    for (const state of targetStates.values()) {
+      if (!state.finished || !state.failed) continue
+      targetStates.delete(state.target.targetId)
+    }
+  }
   const completionReport = buildDocumentCompletionReport(
     source,
     {
@@ -3703,7 +3848,6 @@ export async function retryFailedDocumentTranslationPipeline(
   )
   const hasTranslationFailures = completionReport.failed + completionReport.pending +
     completionReport.suspectUntranslated > 0
-  const retryFailed = [...retryFailedIds]
   const remainingWarnings = translation.warnings.filter((warning) => warning.code !== 'translation-partial')
   const retriedTranslation: DocumentModel = {
     ...translation,

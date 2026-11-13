@@ -100,6 +100,58 @@ test('worker 客户端应校验响应并只转发当前代际消息', () => {
   assert.deepEqual(errors, ['invalid-response'])
 })
 
+test('worker 客户端必须忽略缓存 RPC 请求与结果，不得误报非法响应', () => {
+  const process = fakeProcess()
+  const errors: string[] = []
+  const received: DocumentWorkerResponseMessage[] = []
+  const client = new DocumentWorkerClient(process, {
+    onMessage: (message) => received.push(message),
+    onError: (code) => errors.push(code)
+  })
+
+  process.emitMessage({
+    type: 'cache-read-request',
+    requestId: 'read-1',
+    responseToken: 'read-token',
+    jobId: 'job-1',
+    generation: 1,
+    key: 'cache-key'
+  })
+  process.emitMessage({
+    type: 'cache-read-result',
+    requestId: 'read-1',
+    responseToken: 'read-token',
+    value: null
+  })
+  process.emitMessage({
+    type: 'cache-write-request',
+    requestId: 'write-1',
+    responseToken: 'write-token',
+    jobId: 'job-1',
+    generation: 1,
+    key: 'cache-key',
+    value: {
+      sourceSha256: 'source-hash',
+      translationProtocolVersion: 'document-translation-protocol-v3',
+      languagePair: { sourceLang: 'EN', targetLang: 'ZH' },
+      glossaryVersion: 'none',
+      protectionRulesVersion: 'protection-v1',
+      status: 'completed',
+      translation: '你好'
+    }
+  })
+  process.emitMessage({
+    type: 'cache-write-result',
+    requestId: 'write-1',
+    responseToken: 'write-token',
+    ok: true
+  })
+
+  assert.deepEqual(errors, [])
+  assert.deepEqual(received, [])
+  client.dispose()
+})
+
 test('worker 客户端应忽略终态后的迟到进度并转发一次终态', () => {
   const process = fakeProcess()
   const received: DocumentWorkerResponseMessage[] = []
@@ -430,4 +482,68 @@ test('worker 客户端释放必须幂等、注销监听器、终止进程并拒�
   process.emitExit(1)
   assert.deepEqual(received, [])
   assert.deepEqual(errors, [])
+})
+
+test('worker 客户端发送失败时不得覆盖原活动任务', () => {
+  const process = fakeProcess()
+  const client = new DocumentWorkerClient(process, {
+    onMessage: () => undefined,
+    onError: () => undefined
+  })
+  const first = {
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode' as const,
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'ocr' as const
+  }
+  assert.equal(client.send(first), true)
+
+  process.postMessage = () => {
+    throw new Error('worker unavailable')
+  }
+  assert.equal(client.send({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 2,
+    nextGeneration: 3,
+    mode: 'translation'
+  }), false)
+
+  // 发送失败不能把活动任务改成未接受的代际；旧任务仍可被取消。
+  const cancelable = client as unknown as { active: { generation: number } | null }
+  assert.equal(cancelable.active?.generation, 2)
+  client.dispose()
+})
+
+test('worker 客户端 switch-mode 成功后应以目标代际作为活动代际', () => {
+  const process = fakeProcess()
+  const received: DocumentWorkerResponseMessage[] = []
+  const client = new DocumentWorkerClient(process, {
+    onMessage: (message) => received.push(message)
+  })
+  assert.equal(client.send({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-1',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'ocr'
+  }), true)
+
+  process.emitMessage(createDocumentWorkerProgressMessage('job-1', 1, {
+    percent: 50,
+    phase: 'parse',
+    completed: 1,
+    total: 2
+  }))
+  process.emitMessage(createDocumentWorkerResultMessage('job-1', 2, {
+    status: 'completed',
+    percent: 100
+  }))
+
+  assert.deepEqual(received.map((message) => message.generation), [2])
+  client.dispose()
 })

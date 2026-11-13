@@ -124,6 +124,17 @@ export function normalizeDocumentOcrRegionBox(
 }
 
 /**
+ * 判断 OCR 区域是否应生成译文侧交互覆盖层。
+ * 已成功识别且有原文的区域即使译文为空或待重试，也必须保留节点供悬停、右键手改和单目标重译。
+ * @param region OCR 区域。
+ * @returns 需要生成可交互译文覆盖层时返回 true。
+ * @author zhenghq
+ */
+export function shouldRenderDocumentOcrTranslationRegion(region: DocumentOcrRegion): boolean {
+  return region.status === 'recognized' && Boolean(region.text?.trim())
+}
+
+/**
  * 计算 OCR 遮罩和可见译文共用的安全覆盖框。
  * 两者必须使用完全相同的边界，避免遮罩仍覆盖原文时译文已扩展到相邻插图。
  * @param bbox OCR 引擎返回的原始区域坐标。

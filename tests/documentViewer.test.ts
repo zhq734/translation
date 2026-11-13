@@ -7,6 +7,7 @@ import {
   clampDocumentZoom,
   createEmptyDocumentViewerState,
   createRestoredDocumentWorkspaceSnapshot,
+  migrateRestoredPdfDocumentWorkspaceSnapshot,
   normalizeDocumentViewerState,
   parseDocumentPageNumber,
   parseDocumentViewerState,
@@ -780,6 +781,61 @@ test('恢复旧版 PDF 表格快照时必须按视觉行合并单元格文本并
   assert.equal(mismatchCell?.blocks.length, 2, '源译文结构不一致时不得猜测合并关系')
 })
 
+test('恢复旧版 PDF 表格快照时不能把同视觉行的右对齐页码提升为整行对齐', () => {
+  const source = legacyPdfTableCellModel(false)
+  const translation = legacyPdfTableCellModel(true)
+  const makeFirstCellUseDefaultBodyAndRightPageNumber = (value: DocumentModel): void => {
+    const table = value.pages[0]!.blocks[0]
+    if (!table || table.kind !== 'table') return
+    const texts = table.rows[0]!.cells[0]!.blocks.filter((block) => block.kind === 'text')
+    for (const text of texts) delete text.textAlign
+    const pageNumber = texts[1]
+    if (pageNumber) pageNumber.textAlign = 'right'
+  }
+  makeFirstCellUseDefaultBodyAndRightPageNumber(source)
+  makeFirstCellUseDefaultBodyAndRightPageNumber(translation)
+
+  const state = normalizeDocumentViewerState({
+    version: 3,
+    activeTabId: 'legacy-pdf-tab',
+    tabs: [{
+      id: 'legacy-pdf-tab',
+      file: {
+        path: '/tmp/viewer.pdf',
+        name: 'viewer.pdf',
+        size: 2048,
+        format: 'pdf',
+        sha256: 'viewer-sha'
+      },
+      sourceLang: 'EN',
+      targetLang: 'ZH',
+      viewMode: 'spread',
+      zoom: 1,
+      scroll: { source: 0, translation: 0 },
+      scrollSyncEnabled: true,
+      pageNumber: 1,
+      ocrDisplayMode: 'translation',
+      activePageId: 'page-pdf',
+      activeBlockId: null,
+      source,
+      translation
+    }]
+  })
+
+  const sourceTable = state.tabs[0]!.source.pages[0]!.blocks[0]
+  const translationTable = state.tabs[0]!.translation.pages[0]!.blocks[0]
+  assert.equal(sourceTable?.kind, 'table')
+  assert.equal(translationTable?.kind, 'table')
+  if (sourceTable?.kind !== 'table' || translationTable?.kind !== 'table') return
+  const sourceText = sourceTable.rows[0]!.cells[0]!.blocks[0]
+  const translationText = translationTable.rows[0]!.cells[0]!.blocks[0]
+  assert.equal(sourceText?.kind, 'text')
+  assert.equal(translationText?.kind, 'text')
+  if (sourceText?.kind !== 'text' || translationText?.kind !== 'text') return
+  assert.equal(sourceText.textAlign, undefined, '正文默认对齐不能被同视觉行的右对齐页码覆盖')
+  assert.equal(translationText.textAlign, undefined, '译文正文同样不能被右对齐页码覆盖')
+})
+
 test('PDF 表格快照迁移必须幂等且不能影响非 PDF 文档', () => {
   const buildState = (format: DocumentModel['source']['format']) => normalizeDocumentViewerState({
     version: 3,
@@ -816,4 +872,146 @@ test('PDF 表格快照迁移必须幂等且不能影响非 PDF 文档', () => {
   const markdownTable = markdown.source.pages[0]!.blocks[0]
   assert.equal(markdownTable?.kind, 'table')
   assert.equal(markdownTable?.kind === 'table' ? markdownTable.rows[0]!.cells[0]!.blocks.length : 0, 5)
+})
+
+test('历史任务快照必须清除长正文单元格中误判的居中对齐并保留短标题居中', () => {
+  const buildModel = (translated: boolean): DocumentModel => {
+    const value = translated ? 'translated' : 'source'
+    const text = (
+      blockId: string,
+      readingOrder: number,
+      width: number,
+      height: number,
+      valueText: string
+    ) => ({
+      kind: 'text' as const,
+      blockId,
+      readingOrder,
+      translatable: true,
+      role: 'paragraph' as const,
+      bbox: { x: 145.5, y: 100 + readingOrder * 20, width, height },
+      textAlign: 'center' as const,
+      runs: [{ runId: `${blockId}-run`, text: valueText }]
+    })
+    return {
+      ...model(),
+      documentId: `history-pdf-${value}`,
+      pages: [{
+        pageId: 'page-history',
+        index: 0,
+        width: 600,
+        height: 800,
+      blocks: [{
+        kind: 'table',
+        blockId: 'history-table',
+        readingOrder: 0,
+        translatable: false,
+        columnWidths: [80, 394],
+        headerRows: 1,
+        rows: [{
+          rowId: 'history-row-short',
+          cells: [{
+            cellId: 'history-cell-short',
+            rowSpan: 1,
+            colSpan: 1,
+            blocks: [text('history-short', 0, 54, 9, translated ? 'Short heading' : '短标题')]
+          }, {
+            cellId: 'history-cell-short-value',
+            rowSpan: 1,
+            colSpan: 1,
+            blocks: [text('history-short-value', 0, 118, 9, translated ? 'Normal value' : '普通内容')]
+          }]
+        }, {
+          rowId: 'history-row-long',
+          cells: [{
+            cellId: 'history-cell-long',
+            rowSpan: 1,
+            colSpan: 2,
+            blocks: [text(
+              'history-long',
+              0,
+              432,
+              22.5,
+              translated
+                ? 'Please'
+                : '请确认所需要的计算机软件著作权登记证书副本数量。登记证书和副本数量之和不能超过软件著作权人的数量'
+            )]
+          }]
+        }, {
+          rowId: 'history-row-portrait',
+          cells: [{
+            cellId: 'history-cell-portrait',
+            rowSpan: 1,
+            colSpan: 1,
+            blocks: [text(
+              'history-portrait',
+              0,
+              9,
+              34.5,
+              translated ? 'Serial Number' : '流水号'
+            )]
+          }, {
+            cellId: 'history-cell-portrait-value',
+            rowSpan: 1,
+            colSpan: 1,
+            blocks: [text(
+              'history-portrait-value',
+              0,
+              78,
+              9,
+              translated ? '2026R11L3505485' : '2026R11L3505485'
+            )]
+          }]
+        }]
+      }]
+    }]
+  }
+  }
+  const snapshot = createRestoredDocumentWorkspaceSnapshot({
+    id: 'history-tab',
+    selection: {
+      path: '/tmp/history.pdf',
+      name: 'history.pdf',
+      size: 2048,
+      format: 'pdf',
+      sha256: 'history-sha'
+    },
+    sourceLang: 'EN',
+    targetLang: 'ZH',
+    viewMode: 'spread',
+    zoom: 1,
+    scroll: { source: 0, translation: 0 },
+    scrollSyncEnabled: true,
+    pageNumber: 1,
+    ocrDisplayMode: 'translation',
+    activePageId: 'page-history',
+    activeBlockId: null,
+    source: buildModel(false),
+    translation: buildModel(true)
+  })
+
+  const migrated = migrateRestoredPdfDocumentWorkspaceSnapshot(snapshot)
+  const tables = [migrated.source, migrated.translation].map((value) => value?.pages[0]?.blocks[0])
+  for (const table of tables) {
+    assert.equal(table?.kind, 'table')
+    if (table?.kind !== 'table') return
+    const short = table.rows[0]!.cells[0]!.blocks[0]
+    const shortValue = table.rows[0]!.cells[1]!.blocks[0]
+    const long = table.rows[1]!.cells[0]!.blocks[0]
+    const portrait = table.rows[2]!.cells[0]!.blocks[0]
+    const portraitValue = table.rows[2]!.cells[1]!.blocks[0]
+    assert.equal(short?.kind, 'text')
+    assert.equal(shortValue?.kind, 'text')
+    assert.equal(long?.kind, 'text')
+    assert.equal(portrait?.kind, 'text')
+    assert.equal(portraitValue?.kind, 'text')
+    if (short?.kind !== 'text' || shortValue?.kind !== 'text' || long?.kind !== 'text' ||
+      portrait?.kind !== 'text' || portraitValue?.kind !== 'text') return
+    assert.equal(short.textAlign, 'center', '短标题的居中对齐必须保留')
+    assert.equal(shortValue.textAlign, undefined, '普通单元格内容不能因中心接近而变成居中')
+    assert.equal(long.textAlign, undefined, '跨列长正文不能继承历史快照中误判的居中对齐')
+    assert.equal(portrait.textAlign, 'center', '竖排短标题的居中对齐必须保留')
+    assert.equal(portraitValue.textAlign, undefined, '竖排标题旁的普通内容不能继承居中')
+  }
+  assert.equal(migrateRestoredPdfDocumentWorkspaceSnapshot(migrated), migrated, '历史快照迁移必须幂等')
 })

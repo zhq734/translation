@@ -34,6 +34,7 @@ import {
   buildPartialExportDocument,
   type DocumentPartialExportSummary
 } from '../shared/documentPartialExport.ts'
+import { applyDocumentManualTranslationEdits } from '../shared/documentManualTranslationEdits.ts'
 import type {
   DocumentAssetResult,
   DocumentExportProgress,
@@ -46,7 +47,7 @@ import type {
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
 import { createDocumentExportProgress } from '../shared/documentWorkspace.ts'
-import { parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
+import { findDocumentTarget, parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
 import type { OcrRecognizeResult } from '../shared/ocrEngine.ts'
 import type {
   DocumentGlossary,
@@ -247,6 +248,8 @@ interface ActiveDocumentJob {
   retryableTargetIds: string[]
   /** 最近一次运行中直接从成功缓存恢复的目标标识。 */
   cacheHitTargetIds: string[]
+  /** 当前代际是否为强制重译已完成目标；失败时必须保留旧译文。 */
+  preserveTranslationOnFailure: boolean
   /** 最近一次终态对应的完整完成报告。 */
   completionReport?: DocumentCompletionReport
   /** 资源字节缓存。 */
@@ -422,6 +425,7 @@ export class DocumentWorkspaceTaskService {
         failedTargetIds: [],
         retryableTargetIds: [],
         cacheHitTargetIds: [],
+        preserveTranslationOnFailure: false,
         assetBytes: new Map(),
         cancelled: false,
         settled: false,
@@ -460,6 +464,65 @@ export class DocumentWorkspaceTaskService {
   }
 
   /**
+   * 切换已结算任务的 OCR 原文/译文模式，并复用已解析和已识别的源模型。
+   * @param jobId 当前任务标识。
+   * @param generation 当前任务代际。
+   * @param nextGeneration 切换后的新代际。
+   * @param mode 目标运行模式。
+   * @returns 是否接受切换以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  switchMode(
+    jobId: string,
+    generation: number,
+    nextGeneration: number,
+    mode: DocumentRunRequest['mode']
+  ): DocumentRunResult {
+    const job = this.active
+    if (this.disposed) return { accepted: false, code: 'service-disposed' }
+    if (!job || job.jobId !== jobId || job.generation !== generation) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if (mode !== 'translation' && mode !== 'ocr') {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    if (!Number.isSafeInteger(nextGeneration) || nextGeneration <= this.highestGeneration) {
+      return {
+        accepted: false,
+        code: 'generation-conflict',
+        suggestedGeneration: Math.max(job.generation, this.highestGeneration) + 1
+      }
+    }
+    if (!job.settled || this.starting || isTerminalDocumentTaskStatus(job.task.status) === false ||
+      !job.source || !job.languageResolution) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if ((job.request.mode ?? 'translation') === mode) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+
+    job.generation = nextGeneration
+    job.request = { ...job.request, generation: nextGeneration, mode }
+    job.controller = new AbortController()
+    job.task = createDocumentTaskState(job.jobId, nextGeneration)
+    job.failedTargetIds = []
+    job.retryableTargetIds = []
+    job.cacheHitTargetIds = []
+    job.completionReport = undefined
+    job.cancelled = false
+    job.settled = false
+    job.lastSnapshot = undefined
+    job.historySaved = false
+    job.lastExportPath = undefined
+    job.exportPercent = 0
+    job.exportCompletedPages = 0
+    this.highestGeneration = nextGeneration
+    const reusedSource = job.source
+    void this.process(job, reusedSource)
+    return { accepted: true, jobId: job.jobId }
+  }
+
+  /**
    * 使用新的代际重新翻译当前任务中失败的目标，不重新解析文档或执行 OCR。
    * @param generation Renderer 生成的新任务代际。
    * @returns 是否接受重试以及稳定拒绝分类。
@@ -495,13 +558,47 @@ export class DocumentWorkspaceTaskService {
   }
 
   /**
+   * 强制重译当前文档中的任意成功目标，绕过缓存且失败时保留旧译文。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 当前文档中的稳定目标标识。
+   * @returns 是否接受重译以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  retranslateTarget(generation: number, targetId: string): DocumentRunResult {
+    const job = this.active
+    if (typeof targetId !== 'string' || targetId.trim().length === 0 || targetId.length > 512 ||
+      parseDocumentTargetId(targetId) === null) {
+      return { accepted: false, code: 'invalid-target' }
+    }
+    if (!job?.source || !job.translation || !job.completionReport) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if (!findDocumentTarget(job.source, targetId)) {
+      return { accepted: false, code: 'invalid-target' }
+    }
+    return this.startRetry(generation, [targetId], {
+      allowCompleted: true,
+      bypassCache: true,
+      preserveTranslationOnFailure: true
+    })
+  }
+
+  /**
    * 校验任务终态与新代际后，启动指定目标集合的重试。
    * @param generation Renderer 生成的新任务代际。
    * @param targetIds 本轮允许请求的稳定目标标识。
    * @returns 是否接受重试以及稳定拒绝分类。
    * @author zhenghq
    */
-  private startRetry(generation: number, targetIds: readonly string[]): DocumentRunResult {
+  private startRetry(
+    generation: number,
+    targetIds: readonly string[],
+    options: {
+      allowCompleted?: boolean
+      bypassCache?: boolean
+      preserveTranslationOnFailure?: boolean
+    } = {}
+  ): DocumentRunResult {
     const job = this.active
     if (this.disposed) return { accepted: false, code: 'service-disposed' }
     if ((job?.request.mode ?? 'translation') === 'ocr') {
@@ -523,7 +620,9 @@ export class DocumentWorkspaceTaskService {
       ? completionStatus === 'partial' || completionStatus === 'failed'
       : job?.task.status === 'partial' ||
         (job?.task.status === 'failed' && retryableTargetIds.length > 0)
-    if (this.starting || !job || !job.settled || !retryableTerminal) {
+    const forceRetranslate = options.allowCompleted === true &&
+      completionStatus === 'completed' && retryableTargetIds.length > 0
+    if (this.starting || !job || !job.settled || (!retryableTerminal && !forceRetranslate)) {
       return { accepted: false, code: 'not-ready' }
     }
     if (!job.source || !job.translation || !job.languageResolution ||
@@ -542,6 +641,10 @@ export class DocumentWorkspaceTaskService {
     // 暴露旧的 retryableFailedBlocks，导致 completed 被界面误判为仍有失败块。
     job.retryableTargetIds = []
     job.completionReport = undefined
+    job.preserveTranslationOnFailure = options.preserveTranslationOnFailure === true
+    if (options.bypassCache === true) {
+      job.request = { ...job.request, bypassCache: true }
+    }
     // 新代际允许重新进入运行态；旧终态快照只用于拒绝旧事件，不能阻止本次重试。
     job.lastSnapshot = undefined
     job.historySaved = false
@@ -716,13 +819,20 @@ export class DocumentWorkspaceTaskService {
     }
     try {
       emitProgress('preparing', 0, 0)
+      // 手动译文必须先写入当前导出模型；否则部分导出回退会重新套用源文，
+      // 完整导出也会继续使用 worker 缓存中的旧译文。
+      const translatedModel = applyDocumentManualTranslationEdits(
+        job.translation,
+        request.manualTranslationEdits ?? []
+      )
+      if (!translatedModel) return { status: 'rejected', code: 'invalid-request' }
       // OCR 原文没有部分译文回退语义，直接导出已完成 OCR 的源模型。
       const exportDocument = !ocrOnly && request.mode === 'partial'
-        ? buildPartialExportDocument(job.source, job.translation, job.completionReport)
+        ? buildPartialExportDocument(job.source, translatedModel, job.completionReport)
         : undefined
       // 完整导出也必须先按源模型重建目标目录，避免伪造或过期的成功计数进入保存流程。
       if (!ocrOnly && !exportDocument) {
-        buildPartialExportDocument(job.source, job.translation, job.completionReport)
+        buildPartialExportDocument(job.source, translatedModel, job.completionReport)
       }
       const save = await this.dependencies.showSaveDialog(
         ocrOnly
@@ -733,7 +843,7 @@ export class DocumentWorkspaceTaskService {
       )
       if (save.canceled || !save.filePath) return { status: 'cancelled' }
       // OCR 原文导出明确使用任务源模型，避免流水线返回结构变化时误把翻译模型写入双层 PDF。
-      const exportModel = ocrOnly ? job.source : exportDocument?.model ?? job.translation
+      const exportModel = ocrOnly ? job.source : exportDocument?.model ?? translatedModel
       totalPages = exportModel.pages.length
       const result = await this.dependencies.exportPdf(exportModel, {
         loadFontBytes: () => this.dependencies.loadFontBytes(),
@@ -894,7 +1004,7 @@ export class DocumentWorkspaceTaskService {
    * @returns 无返回值。
    * @author zhenghq
    */
-  private async process(job: ActiveDocumentJob): Promise<void> {
+  private async process(job: ActiveDocumentJob, reusedSource?: DocumentModel): Promise<void> {
     let previousTranslation: DocumentModel | undefined
     let translationCompleted = 0
     let translationTotal = 0
@@ -965,13 +1075,22 @@ export class DocumentWorkspaceTaskService {
           readTranslationCache: this.dependencies.readTranslationCache,
           writeTranslationCache: this.dependencies.writeTranslationCache,
           getParserVersion: this.dependencies.getParserVersion,
-          bypassCache: job.request.bypassCache === true
+          // 强制重译必须绕过历史成功缓存；普通失败重试继续沿用原请求设置。
+          bypassCache: job.preserveTranslationOnFailure || job.request.bypassCache === true
         },
         {
           sourcePreference: job.request.sourceLang ?? 'auto',
           targetPreference: job.request.targetLang ?? 'auto'
         },
-        job.request.mode ?? 'translation'
+        job.request.mode ?? 'translation',
+        reusedSource
+          ? {
+              reusedSource,
+              ...(job.languageResolution
+                ? { reusedLanguageResolution: job.languageResolution }
+                : {})
+            }
+          : {}
       )
       if (job.cancelled) {
         this.emitCompleted(job, requestDocumentTaskCancellation(job.task))
@@ -1073,9 +1192,10 @@ export class DocumentWorkspaceTaskService {
           readTranslationCache: this.dependencies.readTranslationCache,
           writeTranslationCache: this.dependencies.writeTranslationCache,
           getParserVersion: this.dependencies.getParserVersion,
-          bypassCache: job.request.bypassCache === true
+          bypassCache: job.preserveTranslationOnFailure || job.request.bypassCache === true
         },
-        languageResolution
+        languageResolution,
+        { preserveTranslationOnFailure: job.preserveTranslationOnFailure }
       )
       if (job.cancelled) {
         this.emitCompleted(job, requestDocumentTaskCancellation(job.task))
@@ -1092,6 +1212,7 @@ export class DocumentWorkspaceTaskService {
         ...job.cacheHitTargetIds,
         ...(result.cacheHitTargetIds ?? [])
       ])]
+      job.preserveTranslationOnFailure = false
       this.emitCompleted(job, result.task)
     } catch (error) {
       if (job.cancelled || job.controller.signal.aborted) {

@@ -82,7 +82,7 @@ test('生产依赖应为相同文本在不同任务代际生成不同请求标�
   assert.equal(new Set(requestIds).size, 2)
 })
 
-test('生产依赖应默认以 2 个并发执行文档 OCR', () => {
+test('生产依赖应默认以 1 个并发执行文档 OCR', () => {
   const rpc: DocumentWorkerTranslationRpc = {
     async translate() {
       return '译文'
@@ -92,7 +92,38 @@ test('生产依赖应默认以 2 个并发执行文档 OCR', () => {
   }
   const dependencies = createDocumentWorkerProductionDependencies(options(rpc))
 
-  assert.equal(dependencies.getOcrConcurrency?.(), 2)
+  assert.equal(dependencies.getOcrConcurrency?.(), 1)
+})
+
+test('生产依赖应透传动态文件、页数与 OCR 图片预算', () => {
+  const rpc: DocumentWorkerTranslationRpc = {
+    async translate() {
+      return '译文'
+    },
+    getModelFingerprint: () => 'model:test',
+    getTranslationConcurrency: () => 1
+  }
+  const glossary = {
+    entries: [{ source: 'hello', target: '你好' }]
+  }
+  const cache = new Map<string, unknown>()
+  const dependencies = createDocumentWorkerProductionDependencies({
+    ...options(rpc),
+    maxFileBytes: 512 * 1024 * 1024,
+    maxPages: 1500,
+    maxOcrImages: 800,
+    glossary: () => glossary,
+    readTranslationCache: async (_jobId, _generation, key) => cache.get(key) ?? null,
+    writeTranslationCache: async (_jobId, _generation, key, value) => {
+      cache.set(key, value)
+    },
+    getParserVersion: () => 'parser-v9'
+  })
+
+  assert.equal(dependencies.getMaxFileBytes?.(), 512 * 1024 * 1024)
+  assert.equal(dependencies.getMaxOcrImages?.(), 800)
+  assert.deepEqual(dependencies.getGlossary?.(), glossary)
+  assert.equal(dependencies.getParserVersion?.(), 'parser-v9')
 })
 
 test('生产依赖应透传显式文档 OCR 并发配置', () => {
@@ -109,6 +140,50 @@ test('生产依赖应透传显式文档 OCR 并发配置', () => {
   })
 
   assert.equal(dependencies.getOcrConcurrency?.(), 3)
+})
+
+test('生产依赖应把最大页数预算透传给解析器', async () => {
+  const rpc: DocumentWorkerTranslationRpc = {
+    async translate() {
+      return '译文'
+    },
+    getModelFingerprint: () => 'model:test',
+    getTranslationConcurrency: () => 1
+  }
+  const calls: unknown[] = []
+  const dependencies = createDocumentWorkerProductionDependencies({
+    ...options(rpc),
+    maxPages: 1500,
+    parseDocument: (async (_input, parseOptions) => {
+      calls.push(parseOptions)
+      return {
+        schemaVersion: 1,
+        documentId: 'parse-budget',
+        source: {
+          path: '/tmp/parse-budget.txt',
+          fileName: 'parse-budget.txt',
+          format: 'txt',
+          sha256: 'hash',
+          size: 1
+        },
+        pages: [],
+        assets: [],
+        warnings: [],
+        metadata: { direction: 'ltr' }
+      } as DocumentModel
+    }) as never
+  })
+
+  await dependencies.parse({
+    path: '/tmp/parse-budget.txt',
+    fileName: 'parse-budget.txt',
+    format: 'txt',
+    sha256: 'hash',
+    bytes: new Uint8Array([1])
+  }, new AbortController().signal)
+
+  assert.equal(calls.length, 1)
+  assert.equal((calls[0] as { maxPages?: number }).maxPages, 1500)
 })
 
 test('生产依赖应把取消信号、文字层与进度传给译文 PDF 导出器', async () => {

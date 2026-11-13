@@ -8,6 +8,7 @@ import {
   type DocumentWorkerResponseMessage
 } from '../shared/documentWorkerProtocol.ts'
 import { isDocumentWorkerTranslationRpcMessage } from './documentWorkerTranslationRpc.ts'
+import { isDocumentWorkerCacheRpcMessage } from './documentWorkerCacheRpc.ts'
 
 /** utility process 的最小可注入接口，便于测试生命周期与消息校验。 */
 export interface DocumentWorkerProcess {
@@ -91,11 +92,24 @@ export class DocumentWorkerClient {
     } else if (request.type === 'asset-request') {
       if (!this.isCurrent(request.jobId, request.generation)) return false
     } else {
+      const previous = this.active
       this.active = {
         jobId: request.jobId,
-        generation: request.generation,
+        generation: request.type === 'switch-mode' ||
+          request.type === 'retry-failed-target' ||
+          request.type === 'retranslate-target'
+          ? request.nextGeneration
+          : request.generation,
         settled: false,
         cancelRequested: false
+      }
+      try {
+        this.process.postMessage(request)
+        return true
+      } catch {
+        this.active = previous
+        this.reportError('worker-unavailable')
+        return false
       }
     }
     try {
@@ -151,6 +165,7 @@ export class DocumentWorkerClient {
   private handleMessage(value: unknown): void {
     if (this.disposed) return
     if (isDocumentWorkerTranslationRpcMessage(value)) return
+    if (isDocumentWorkerCacheRpcMessage(value)) return
     const assetResult = parseDocumentWorkerAssetResult(value)
     if (assetResult) {
       if (this.isCurrent(assetResult.jobId, assetResult.generation)) {

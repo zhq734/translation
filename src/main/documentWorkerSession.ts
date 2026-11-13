@@ -21,6 +21,7 @@ import {
   collectRetryableDocumentTargetIds,
   selectDocumentWorkspaceSnapshot
 } from '../shared/documentCompletion.ts'
+import { findDocumentTarget, parseDocumentTargetId } from '../shared/documentTargetLocator.ts'
 import type { DocumentLanguagePair } from '../shared/documentLanguageDirection.ts'
 import type {
   DocumentAssetResult,
@@ -33,6 +34,7 @@ import type {
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
 } from '../shared/documentWorkspace.ts'
+import type { DocumentTranslationCacheEntry } from '../shared/documentTranslation.ts'
 import {
   applyDocumentWorkspaceTranslationUpdate,
   createDocumentExportProgress
@@ -45,6 +47,7 @@ import {
   DocumentWorkerTranslationRpcHost,
   type DocumentWorkerTranslationRpcRequest
 } from './documentWorkerTranslationRpc.ts'
+import { DocumentWorkerCacheRpcHost } from './documentWorkerCacheRpc.ts'
 import type { DocumentWorkerStartOptions } from './documentWorkerProductionEntry.ts'
 import { writeDocumentFileAtomically } from './documentAtomicFile.ts'
 
@@ -92,6 +95,26 @@ export interface DocumentWorkerSessionDependencies {
   getAssetBytes(assetId: string): Promise<Uint8Array | null>
   /** 读取当前任务的源文件字节。 */
   getSourceBytes(): Promise<DocumentSourceResult>
+  /** 读取当前任务代际的持久化翻译缓存。 */
+  readTranslationCache?(key: string): Promise<DocumentTranslationCacheEntry | null>
+  /** 写入当前任务代际的完整成功目标翻译缓存。 */
+  writeTranslationCache?(key: string, value: DocumentTranslationCacheEntry): Promise<void>
+  /**
+   * 保存完成或部分完成任务的完整历史快照；失败不得影响任务终态。
+   * @param snapshot 当前终态快照。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  saveHistory?(snapshot: DocumentWorkspaceSnapshot): Promise<void>
+  /**
+   * 更新历史记录的导出状态；失败不得把成功导出反向标记为失败。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @param status 导出状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  updateHistoryExportStatus?(jobId: string, generation: number, status: 'saved'): Promise<void>
 }
 
 /** Session 当前任务的最小状态。 */
@@ -108,6 +131,8 @@ interface SessionJob {
   exportRequest: PendingExport | null
   /** 本代际最近一次成功导出的文件路径。 */
   lastExportPath?: string
+  /** 本代际是否已尝试保存历史快照，保证每个代际最多尝试一次。 */
+  historySaved: boolean
 }
 
 /** 当前等待 worker 返回的导出请求。 */
@@ -140,6 +165,7 @@ export class DocumentWorkerSession {
   private readonly process: DocumentWorkerProcess
   private readonly client: DocumentWorkerClient
   private readonly translationHost: DocumentWorkerTranslationRpcHost
+  private readonly cacheHost: DocumentWorkerCacheRpcHost
   private active: SessionJob | null = null
   private readonly pendingAssets = new Map<string, PendingAsset>()
   private highestGeneration = 0
@@ -154,7 +180,7 @@ export class DocumentWorkerSession {
     const moduleDirectory = typeof __dirname === 'string'
       ? __dirname
       : fileURLToPath(new URL('.', import.meta.url))
-    this.process = dependencies.createProcess(join(moduleDirectory, 'documentWorker.js'))
+    this.process = dependencies.createProcess(join(moduleDirectory, '..', 'documentWorker.cjs'))
     this.client = new DocumentWorkerClient(this.process, {
       onMessage: (message) => this.handleResponse(message),
       onAssetResult: (message) => this.handleAssetResult(message)
@@ -162,6 +188,15 @@ export class DocumentWorkerSession {
     this.translationHost = new DocumentWorkerTranslationRpcHost(this.process, {
       isCurrent: (jobId, generation) => this.isCurrent(jobId, generation),
       translate: (request, signal, onDelta) => dependencies.translate(request, signal, onDelta)
+    })
+    this.cacheHost = new DocumentWorkerCacheRpcHost(this.process, {
+      isCurrent: (jobId, generation) => this.isCurrent(jobId, generation),
+      read: (request) => dependencies.readTranslationCache
+        ? dependencies.readTranslationCache(request.key)
+        : Promise.resolve(null),
+      write: (request) => dependencies.writeTranslationCache
+        ? dependencies.writeTranslationCache(request.key, request.value)
+        : Promise.resolve()
     })
     this.process.postMessage({
       type: 'worker-start',
@@ -172,10 +207,14 @@ export class DocumentWorkerSession {
   /**
    * 接受并启动一次文档任务。
    * @param request Renderer 请求。
+   * @param onAccepted 任务标识生成后的同步登记回调；必须先于任何进度事件执行。
    * @returns 接受结果与任务标识。
    * @author zhenghq
    */
-  async run(request: DocumentRunRequest): Promise<DocumentRunResult> {
+  async run(
+    request: DocumentRunRequest,
+    onAccepted?: (jobId: string) => void
+  ): Promise<DocumentRunResult> {
     if (this.disposed) return { accepted: false, code: 'service-disposed' }
     if (!this.isValidRunRequest(request)) return { accepted: false, code: 'invalid-request' }
     if (request.generation <= this.highestGeneration) {
@@ -185,7 +224,9 @@ export class DocumentWorkerSession {
         suggestedGeneration: this.highestGeneration + 1
       }
     }
+    const previous = this.captureJobState()
     this.rejectPendingAssets('asset-unavailable')
+    this.rejectPendingExport()
     const jobId = randomUUID()
     const snapshot = this.createSnapshot(jobId, request.generation, createDocumentTaskState(jobId, request.generation))
     this.active = {
@@ -193,9 +234,12 @@ export class DocumentWorkerSession {
       generation: request.generation,
       snapshot,
       settled: false,
-      exportRequest: null
+      exportRequest: null,
+      historySaved: false
     }
     this.highestGeneration = request.generation
+    // Renderer 必须先登记 jobId，才能处理随后携带资源声明的首条进度事件。
+    onAccepted?.(jobId)
     this.dependencies.sendProgress(snapshot)
     const sent = this.client.send({
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
@@ -205,7 +249,7 @@ export class DocumentWorkerSession {
       request
     })
     if (!sent) {
-      this.active = null
+      this.restoreJobState(previous)
       return { accepted: false, code: 'worker-unavailable' }
     }
     return { accepted: true, jobId }
@@ -241,7 +285,6 @@ export class DocumentWorkerSession {
     if (retryableTargetIds.length === 0) {
       return { accepted: false, code: 'no-retryable-failures' }
     }
-    this.rejectPendingAssets('asset-unavailable')
     const request: DocumentRunRequest = {
       path: job.snapshot.source.source.path,
       generation,
@@ -263,23 +306,197 @@ export class DocumentWorkerSession {
       languagePair: job.snapshot.languagePair,
       runMode: job.snapshot.runMode
     })
-    job.generation = generation
-    job.snapshot = snapshot
-    job.settled = false
-    job.exportRequest = null
-    job.lastExportPath = undefined
-    this.highestGeneration = generation
-    this.dependencies.sendProgress(snapshot)
-    const sent = this.client.send({
+    return this.advanceGeneration(job, generation, snapshot, {
       version: DOCUMENT_WORKER_PROTOCOL_VERSION,
       type: 'retry',
       jobId: job.jobId,
       generation,
       request
     })
-    return sent
-      ? { accepted: true, jobId: job.jobId }
-      : { accepted: false, code: 'worker-unavailable' }
+  }
+
+  /**
+   * 切换已结算任务的 OCR 原文/译文模式，并复用已解析和已识别的源模型。
+   * @param jobId 当前任务标识。
+   * @param generation 当前任务代际。
+   * @param nextGeneration 切换后的新代际。
+   * @param mode 目标运行模式。
+   * @returns 是否接受切换以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  switchMode(
+    jobId: string,
+    generation: number,
+    nextGeneration: number,
+    mode: DocumentRunRequest['mode']
+  ): DocumentRunResult {
+    if (this.disposed) return { accepted: false, code: 'service-disposed' }
+    const job = this.active
+    if (!job || !this.isCurrent(jobId, generation)) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if (mode !== 'translation' && mode !== 'ocr') {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    if (!Number.isSafeInteger(nextGeneration) || nextGeneration <= this.highestGeneration) {
+      return {
+        accepted: false,
+        code: 'generation-conflict',
+        suggestedGeneration: Math.max(job.generation, this.highestGeneration) + 1
+      }
+    }
+    if (!job.settled || !job.snapshot.source || !job.snapshot.languagePair) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if ((job.snapshot.runMode ?? 'translation') === mode) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    const snapshot = this.createSnapshot(job.jobId, nextGeneration,
+      createDocumentTaskState(job.jobId, nextGeneration), {
+        ...this.snapshotMetadata(job.snapshot),
+        runMode: mode
+      })
+    return this.advanceGeneration(job, nextGeneration, snapshot, {
+      version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+      type: 'switch-mode',
+      jobId: job.jobId,
+      generation,
+      nextGeneration,
+      mode
+    })
+  }
+
+  /**
+   * 仅重试当前完成报告中的一个可重试目标，不重新解析文档或执行 OCR。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 当前完成报告中的稳定目标标识。
+   * @returns 是否接受重试以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  retryFailedTarget(generation: number, targetId: string): DocumentRunResult {
+    const job = this.active
+    if (!this.isValidTargetId(targetId)) return { accepted: false, code: 'invalid-target' }
+    if (!job?.settled || !job.snapshot.translation || !job.snapshot.languagePair) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if ((job.snapshot.runMode ?? 'translation') === 'ocr') {
+      return { accepted: false, code: 'no-retryable-failures' }
+    }
+    const retryableTargetIds = collectRetryableDocumentTargetIds(job.snapshot.completionReport)
+    if (!retryableTargetIds.includes(targetId)) {
+      return { accepted: false, code: 'not-retryable-target' }
+    }
+    return this.startSingleTargetRetry(generation, targetId, {})
+  }
+
+  /**
+   * 强制重译当前文档中的任意成功目标，绕过缓存且失败时保留旧译文。
+   * @param generation Renderer 生成的新任务代际。
+   * @param targetId 当前文档中的稳定目标标识。
+   * @returns 是否接受重译以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  retranslateTarget(generation: number, targetId: string): DocumentRunResult {
+    const job = this.active
+    if (!this.isValidTargetId(targetId)) return { accepted: false, code: 'invalid-target' }
+    if (!job?.settled || !job.snapshot.source || !job.snapshot.translation) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    if ((job.snapshot.runMode ?? 'translation') === 'ocr') {
+      return { accepted: false, code: 'no-retryable-failures' }
+    }
+    if (!findDocumentTarget(job.snapshot.source, targetId)) {
+      return { accepted: false, code: 'invalid-target' }
+    }
+    return this.startSingleTargetRetry(generation, targetId, { bypassCache: true })
+  }
+
+  /**
+   * 校验新代际后，仅针对单个目标启动一次重试或强制重译。
+   * @param generation 新代际。
+   * @param targetId 稳定目标标识。
+   * @param options 是否强制绕过翻译缓存。
+   * @returns 是否接受以及稳定拒绝分类。
+   * @author zhenghq
+   */
+  private startSingleTargetRetry(
+    generation: number,
+    targetId: string,
+    options: { bypassCache?: boolean }
+  ): DocumentRunResult {
+    if (this.disposed) return { accepted: false, code: 'service-disposed' }
+    if (!Number.isInteger(generation) || generation < 1) {
+      return { accepted: false, code: 'invalid-request' }
+    }
+    if (generation <= this.highestGeneration) {
+      return {
+        accepted: false,
+        code: 'generation-conflict',
+        suggestedGeneration: this.highestGeneration + 1
+      }
+    }
+    const job = this.active
+    if (!job || !job.settled || !job.snapshot.source || !job.snapshot.translation ||
+      !job.snapshot.languagePair) {
+      return { accepted: false, code: 'not-ready' }
+    }
+    const task = {
+      ...createDocumentTaskState(job.jobId, generation),
+      phase: 'translate' as const,
+      status: 'translating' as const,
+      progress: { completed: 0, total: 1 }
+    }
+    const snapshot = this.createSnapshot(job.jobId, generation, task, {
+      source: job.snapshot.source,
+      translation: job.snapshot.translation,
+      sourcePreference: job.snapshot.sourcePreference,
+      targetPreference: job.snapshot.targetPreference,
+      languagePair: job.snapshot.languagePair,
+      runMode: job.snapshot.runMode
+    })
+    return this.advanceGeneration(job, generation, snapshot, {
+      version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+      type: options.bypassCache ? 'retranslate-target' : 'retry-failed-target',
+      jobId: job.jobId,
+      generation: job.generation,
+      nextGeneration: generation,
+      targetId
+    })
+  }
+
+  /**
+   * 推进到新代际：清空旧终态可复用状态、登记快照并发送请求。
+   * 发送失败时完整回滚活动任务与最高代际。
+   * @param job 当前活动任务。
+   * @param generation 新代际。
+   * @param snapshot 新代际快照。
+   * @param message worker 请求。
+   * @returns 接受结果。
+   * @author zhenghq
+   */
+  private advanceGeneration(
+    job: SessionJob,
+    generation: number,
+    snapshot: DocumentWorkspaceSnapshot,
+    message: unknown
+  ): DocumentRunResult {
+    const previous = this.captureJobState()
+    this.rejectPendingAssets('asset-unavailable')
+    this.rejectPendingExport()
+    job.generation = generation
+    job.snapshot = snapshot
+    job.settled = false
+    job.exportRequest = null
+    job.lastExportPath = undefined
+    job.historySaved = false
+    this.highestGeneration = generation
+    this.dependencies.sendProgress(snapshot)
+    const sent = this.client.send(message)
+    if (!sent) {
+      this.restoreJobState(previous)
+      return { accepted: false, code: 'worker-unavailable' }
+    }
+    return { accepted: true, jobId: job.jobId }
   }
 
   /**
@@ -340,7 +557,10 @@ export class DocumentWorkerSession {
         mode: request.mode,
         ...(request.textLayer !== undefined ? { textLayer: request.textLayer } : {}),
         completionReport: job.snapshot.completionReport,
-        ...(request.mode === 'partial' ? { confirmPartialExport: true } : {})
+        ...(request.mode === 'partial' ? { confirmPartialExport: true } : {}),
+        ...(request.manualTranslationEdits !== undefined
+          ? { manualTranslationEdits: request.manualTranslationEdits }
+          : {})
       }
     }
     if (!this.client.send(message)) {
@@ -377,6 +597,31 @@ export class DocumentWorkerSession {
     if (!job?.lastExportPath || !this.dependencies.openExportFolder) return false
     try {
       await this.dependencies.openExportFolder(job.lastExportPath)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 打开本任务指定成功导出文件所在目录；路径必须命中本代际导出白名单。
+   * @param jobId 任务标识。
+   * @param generation 任务代际。
+   * @param filePath 主进程曾成功导出的文件路径。
+   * @returns 路径属于当前任务本次代际且文件管理器调用成功时返回 true。
+   * @author zhenghq
+   */
+  async openExportFolderPath(
+    jobId: string,
+    generation: number,
+    filePath: string
+  ): Promise<boolean> {
+    if (this.disposed || !this.isCurrent(jobId, generation)) return false
+    const job = this.active
+    if (!job?.lastExportPath || job.lastExportPath !== filePath ||
+      !this.dependencies.openExportFolder) return false
+    try {
+      await this.dependencies.openExportFolder(filePath)
       return true
     } catch {
       return false
@@ -434,6 +679,11 @@ export class DocumentWorkerSession {
    */
   async getSource(): Promise<DocumentSourceResult> {
     if (this.disposed || !this.active) return { ok: false, code: 'source-not-found' }
+    // 只有当前活动任务声明的源文件仍然在窗口白名单内时才允许读取。
+    const path = this.active.snapshot.source?.source.path
+    if (!path || !this.dependencies.isApprovedPath(path)) {
+      return { ok: false, code: 'source-not-found' }
+    }
     try {
       return await this.dependencies.getSourceBytes()
     } catch {
@@ -442,7 +692,7 @@ export class DocumentWorkerSession {
   }
 
   /**
-   * 释放翻译宿主、worker 客户端与进程；重复调用无副作用。
+   * 释放翻译与缓存宿主、worker 客户端及进程；重复调用无副作用。
    * @returns 无返回值。
    * @author zhenghq
    */
@@ -451,6 +701,7 @@ export class DocumentWorkerSession {
     this.disposed = true
     this.rejectPendingAssets('asset-unavailable')
     this.rejectPendingExport()
+    this.cacheHost.dispose()
     this.translationHost.dispose()
     this.client.dispose()
     this.active = null
@@ -655,6 +906,7 @@ export class DocumentWorkerSession {
       const accepted = selectDocumentWorkspaceSnapshot(job.snapshot, snapshot)
       job.snapshot = accepted
       job.settled = true
+      this.saveHistory(job, accepted)
       this.dependencies.sendCompleted(accepted)
       return
     }
@@ -701,6 +953,8 @@ export class DocumentWorkerSession {
         unlink: (path) => this.dependencies.unlink(path)
       })
       job.lastExportPath = save.filePath
+      // PDF 已经成功落盘；历史状态更新失败不能反向把导出结果标记为失败。
+      this.notifyHistoryExportStatus(job)
       pending.resolve({
         status: 'saved',
         filePath: save.filePath,
@@ -830,6 +1084,40 @@ export class DocumentWorkerSession {
   }
 
   /**
+   * 捕获当前活动任务与最高代际，用于命令发送失败时完整回滚。
+   * @returns 活动任务浅拷贝与最高代际。
+   * @author zhenghq
+   */
+  private captureJobState(): { active: SessionJob | null; highestGeneration: number } {
+    return {
+      active: this.active ? { ...this.active } : null,
+      highestGeneration: this.highestGeneration
+    }
+  }
+
+  /**
+   * 恢复命令发送前的活动任务与最高代际；旧终态快照、导出路径与历史状态一并还原。
+   * @param state 命令发送前捕获的状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private restoreJobState(state: { active: SessionJob | null; highestGeneration: number }): void {
+    this.active = state.active
+    this.highestGeneration = state.highestGeneration
+  }
+
+  /**
+   * 校验单个稳定目标标识，不接受路径片段或控制字符。
+   * @param targetId 未信任目标标识。
+   * @returns 是否为可定位的目标标识。
+   * @author zhenghq
+   */
+  private isValidTargetId(targetId: string): boolean {
+    return typeof targetId === 'string' && targetId.trim().length > 0 && targetId.length <= 512 &&
+      !/[\u0000-\u001f\u007f]/u.test(targetId) && parseDocumentTargetId(targetId) !== null
+  }
+
+  /**
    * 校验运行请求。
    * @param request 未信任请求。
    * @returns 是否合法且路径已批准。
@@ -855,6 +1143,36 @@ export class DocumentWorkerSession {
     return typeof assetId === 'string' && assetId.length > 0 && assetId.length <= 128 &&
       !assetId.includes('/') && !assetId.includes('\\') && !assetId.includes('..') &&
       !assetId.includes('\u0000')
+  }
+
+  /**
+   * 保存完成或部分完成任务的完整历史快照。
+   * 每个代际最多尝试一次；保存失败不得影响任务终态。
+   * @param job 当前任务。
+   * @param snapshot 当前终态快照。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private saveHistory(job: SessionJob, snapshot: DocumentWorkspaceSnapshot): void {
+    if (job.historySaved || !this.dependencies.saveHistory ||
+      (snapshot.task.status !== 'completed' && snapshot.task.status !== 'partial') ||
+      !snapshot.source || !snapshot.translation || !snapshot.languagePair) {
+      return
+    }
+    job.historySaved = true
+    void Promise.resolve(this.dependencies.saveHistory(snapshot)).catch(() => undefined)
+  }
+
+  /**
+   * 异步更新历史记录的导出状态；失败不得把成功导出反向标记为失败。
+   * @param job 当前任务。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  private notifyHistoryExportStatus(job: SessionJob): void {
+    const update = this.dependencies.updateHistoryExportStatus
+    if (!update) return
+    void Promise.resolve(update(job.jobId, job.generation, 'saved')).catch(() => undefined)
   }
 
   /**

@@ -64,6 +64,33 @@ test('文档导出请求不得接受 Renderer 提供的路径、URL 或命令', 
   })
 })
 
+test('文档导出请求必须白名单规范化手动译文编辑', () => {
+  const edit = {
+    pageId: 'page-1',
+    blockId: 'block-1',
+    runId: 'run-1',
+    text: '人工译文\n第二行'
+  }
+  assert.deepEqual(normalizeDocumentExportRequest({
+    ...request(),
+    manualTranslationEdits: [edit],
+    filePath: '/tmp/escape.pdf'
+  }), {
+    jobId: 'job-1',
+    generation: 1,
+    mode: 'complete',
+    manualTranslationEdits: [edit]
+  })
+  assert.equal(normalizeDocumentExportRequest({
+    ...request(),
+    manualTranslationEdits: [{ ...edit, regionId: 'region-1' }]
+  }), null)
+  assert.equal(normalizeDocumentExportRequest({
+    ...request(),
+    manualTranslationEdits: [{ ...edit, text: 'bad\rtext' }]
+  }), null)
+})
+
 test('文档导出进度必须校验阶段、百分比和页面计数，并拒绝伪造任务代际', () => {
   const progress = createDocumentExportProgress('job-1', 2, {
     phase: 'composing',

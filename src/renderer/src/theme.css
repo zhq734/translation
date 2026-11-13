@@ -46,6 +46,12 @@
   /* 表格最终外边界需要比普通控件边框更醒目，避免空白单元格底边在纸张上消失。 */
   --document-table-boundary: #6b7280;
   --focus-ring: rgba(59, 130, 246, 0.16);
+  /* 译文手改态使用不透明纸色与主题强调色混合，避免底层扫描原文透出。@author zhenghq */
+  --document-manual-edit-hover-bg: color-mix(in srgb, var(--document-paper-bg) 94%, var(--button-bg) 6%);
+  --document-manual-edit-active-bg: color-mix(in srgb, var(--document-paper-bg) 88%, var(--button-bg) 12%);
+  /* 正文检索高亮：全部命中与当前命中使用不同强度的语义色，明暗主题共用。 */
+  --search-match-bg: rgba(250, 204, 21, 0.42);
+  --search-current-bg: rgba(249, 115, 22, 0.6);
   --button-secondary-bg: #f2f2f7;
   --button-secondary-hover: #e5e5ea;
   --popup-bg: rgba(255, 255, 255, 0.96);

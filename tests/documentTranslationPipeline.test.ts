@@ -2101,6 +2101,123 @@ test('表格行逐单元格回退仍失败且无成功译文时必须标记失�
   ), ['T(题号)', 'T(一、单选题)'])
 })
 
+test('表格单元格精确重译只请求并替换被点击的 run，保留同表其他译文', async () => {
+  const source = model([tableBlock('table-cell precise retry', [['4⻚', '1⻚']])])
+  let retrying = false
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      return translateMergedText(text, (part) =>
+        retrying && part === '4⻚' ? 'R(4⻚)' : `T(${part})`)
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-cell-precise-retry', 1),
+    new AbortController().signal,
+    deps
+  )
+  const initialTable = initial.translation.pages[0]!.blocks[0]
+  assert.equal(initialTable.kind, 'table')
+  if (initialTable.kind !== 'table') return
+  assert.deepEqual(initialTable.rows[0]!.cells.map((cell) =>
+    (cell.blocks[0] as DocumentTextBlock).runs[0]!.text
+  ), ['T(4⻚)', 'T(1⻚)'])
+
+  retrying = true
+  calls.length = 0
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    ['0:0.r0c0.0:text:table-cell precise retry-run-1-1'],
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!,
+    { preserveTranslationOnFailure: true }
+  )
+
+  assert.deepEqual(calls, ['4⻚'])
+  assert.equal(retried.task.status, 'completed')
+  const retriedTable = retried.translation.pages[0]!.blocks[0]
+  assert.equal(retriedTable.kind, 'table')
+  if (retriedTable.kind !== 'table') return
+  assert.deepEqual(retriedTable.rows[0]!.cells.map((cell) =>
+    (cell.blocks[0] as DocumentTextBlock).runs[0]!.text
+  ), ['R(4⻚)', 'T(1⻚)'])
+  assert.equal(retried.completionReport?.status, 'completed')
+  assert.deepEqual(retried.completionReport?.pendingTargetIds, [])
+})
+
+test('表格单元格精确重译必须拼接目标所在的完整连续 run 区间', async () => {
+  const source = model([tableBlock('table-split-run retry', [['4⻚', '1⻚']])])
+  const table = source.pages[0]!.blocks[0]
+  assert.equal(table.kind, 'table')
+  if (table.kind !== 'table') return
+  const firstCell = table.rows[0]!.cells[0]!.blocks[0]
+  const secondCell = table.rows[0]!.cells[1]!.blocks[0]
+  assert.equal(firstCell.kind, 'text')
+  assert.equal(secondCell.kind, 'text')
+  if (firstCell.kind !== 'text' || secondCell.kind !== 'text') return
+  firstCell.runs = [
+    { runId: 'split-run-4', text: '4', style: { fontSize: 12 } },
+    { runId: 'split-run-page', text: '⻚', style: { fontSize: 12 } }
+  ]
+  secondCell.runs = [
+    { runId: 'split-run-1', text: '1', style: { fontSize: 12 } },
+    { runId: 'split-run-page-2', text: '⻚', style: { fontSize: 12 } }
+  ]
+
+  let retrying = false
+  const calls: string[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (text) => {
+      calls.push(text)
+      return translateMergedText(text, (part) =>
+        retrying && part === '4⻚' ? 'R(4⻚)' : `T(${part})`)
+    },
+    onProgress: () => undefined,
+    concurrency: 1
+  }
+  const initial = await runDocumentTranslationPipeline(
+    { path: '/tmp/test.txt', fileName: 'test.txt', format: 'txt', bytes: new Uint8Array([1]) },
+    createDocumentTaskState('job-table-split-run-retry', 1),
+    new AbortController().signal,
+    deps
+  )
+
+  retrying = true
+  calls.length = 0
+  const retried = await retryFailedDocumentTranslationPipeline(
+    initial.source,
+    initial.translation,
+    ['0:0.r0c0.0:text:split-run-page'],
+    { ...initial.task, generation: 2 },
+    new AbortController().signal,
+    deps,
+    initial.languageResolution!,
+    { preserveTranslationOnFailure: true }
+  )
+
+  assert.deepEqual(calls, ['4⻚'])
+  const retriedTable = retried.translation.pages[0]!.blocks[0]
+  assert.equal(retriedTable.kind, 'table')
+  if (retriedTable.kind !== 'table') return
+  assert.deepEqual(retriedTable.rows[0]!.cells.map((cell) =>
+    (cell.blocks[0] as DocumentTextBlock).runs.map((run) => run.text).join('')
+  ), ['R(4⻚)', 'T(1⻚)'])
+  assert.equal(retried.completionReport?.status, 'completed')
+})
+
 test('合并请求丢失分段标记时必须逐段回退翻译', async () => {
   const source = model([
     textBlock('block-1', [{ runId: 'run-1', text: 'first' }]),
@@ -3714,4 +3831,43 @@ test('重试取消后不得写入成功缓存', async () => {
 
   assert.equal(retried.task.status, 'cancelled')
   assert.deepEqual(writes, [])
+})
+
+test('强制重译成功目标失败时必须保留旧译文且不得发布流式残片', async () => {
+  const source = model([textBlock('block-1', [{ runId: 'r1', text: 'first' }])])
+  const previous = model([textBlock('block-1', [{ runId: 'r1', text: '旧译文' }])])
+  const published: DocumentModel[] = []
+  const deps: DocumentPipelineDeps = {
+    parse: async () => source,
+    loadAssetBytes: async () => null,
+    recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+    translate: async (_text, _signal, _pair, onDelta) => {
+      onDelta?.('错误')
+      onDelta?.('残片')
+      throw new Error('provider failed')
+    },
+    onProgress: () => undefined,
+    publishTranslation: (translation) => published.push(translation),
+    bypassCache: true
+  }
+
+  const retried = await retryFailedDocumentTranslationPipeline(
+    source,
+    previous,
+    ['0:0:text:r1'],
+    createDocumentTaskState('job-retranslate-preserve', 2),
+    new AbortController().signal,
+    deps,
+    { sourcePreference: 'auto', targetPreference: 'ZH', languagePair: fixedLanguagePair() },
+    { preserveTranslationOnFailure: true }
+  )
+
+  assert.equal(retried.task.status, 'completed')
+  assert.equal(retried.translation.pages[0]!.blocks[0]!.kind, 'text')
+  assert.equal((retried.translation.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text, '旧译文')
+  assert.deepEqual(retried.failedTargetIds, [])
+  assert.deepEqual(retried.retryableTargetIds, [])
+  assert.equal(retried.translation.warnings.some((warning) => warning.code === 'translation-partial'), false)
+  assert.ok(published.every((model) =>
+    (model.pages[0]!.blocks[0] as DocumentTextBlock).runs[0]!.text === '旧译文'))
 })

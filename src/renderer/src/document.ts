@@ -30,6 +30,7 @@ import {
   resolveOcrRegionGapBefore,
   resolveOcrRegionLineHeight,
   resolveOcrRegionPadding,
+  shouldRenderDocumentOcrTranslationRegion,
   type DocumentOcrFlowRect
 } from '../../shared/documentOcrLayout'
 import type {
@@ -47,12 +48,19 @@ import { LANGUAGES, langLabel } from '../../shared/langs'
 import { TRANSLATION_WATERMARK_LOGO_PATH } from '../../shared/translationWatermark'
 import { canApplyDocumentTaskEvent } from '../../shared/documentTask'
 import { applyDocumentWorkspaceTranslationUpdate } from '../../shared/documentWorkspace'
-import { findDocumentTarget } from '../../shared/documentTargetLocator'
+import {
+  findDocumentTarget,
+  parseDocumentTargetId,
+  resolveDocumentElementTargetId,
+  serializeDocumentBlockPath,
+  type DocumentBlockPath
+} from '../../shared/documentTargetLocator'
 import {
   countVisibleDocumentWarnings,
   filterVisibleDocumentWarnings
 } from '../../shared/documentWarnings'
 import {
+  collectRetryableDocumentTargetIds,
   resolveDocumentRetryActionState
 } from '../../shared/documentCompletion'
 import * as pdfjsModule from 'pdfjs-dist/legacy/build/pdf.js'
@@ -62,6 +70,9 @@ import { startLocaleRuntime } from './locale'
 import { createDocumentHistoryController } from './documentHistoryController'
 import { createDocumentNavigationController } from './documentNavigationController'
 import { createDocumentExportController } from './documentExportController'
+import { createDocumentManualEditController } from './documentManualEditController'
+import { createDocumentSearchController } from './documentSearchController'
+import { preserveDocumentManualTranslationEdits } from '../../shared/documentManualTranslationEdits'
 import {
   occupiesDocumentTranslationFlow,
   resolveTranslationFlowBlockGap,
@@ -88,6 +99,7 @@ import {
   createRestoredDocumentWorkspaceSnapshot,
   DOCUMENT_VIEWER_STATE_STORAGE_KEY,
   DOCUMENT_VIEWER_STATE_VERSION,
+  migrateRestoredPdfDocumentWorkspaceSnapshot,
   parseDocumentViewerState,
   resolveDocumentBlockHighlight,
   resolveFitDocumentZoom,
@@ -111,12 +123,18 @@ import {
   documentFileTabsNextButton,
   documentFileTabsPreviousButton,
   documentPageInput,
+  documentSearchInput,
+  documentSearchNextButton,
+  documentSearchPreviousButton,
+  documentSearchStatus,
   documentSyncScrollButton,
   documentViewModeControl,
   documentWorkbenchReplaceButton,
   documentWorkspaceTabs,
   documentZoomValue,
   dropZone,
+  editRedoButton,
+  editUndoButton,
   exportButton,
   fileDetail,
   fileName,
@@ -191,8 +209,12 @@ let ocrDisplayMode: 'ocr-text' | 'translation' = 'translation'
 let documentStartInFlight = false
 /** 当前活动 Tab 是否等待启动请求结束后按最新语言重译。 */
 let pendingLanguageRetranslation = false
-/** 当前活动 Tab 是否等待启动请求结束后按最新 OCR 模式重启。 */
-let pendingOcrModeRestart = false
+/** 当前活动 Tab 等待切换到的 OCR 展示模式；null 表示无待切换请求。 */
+let pendingOcrModeTarget: 'ocr-text' | 'translation' | null = null
+/** 当前活动 Tab 是否已发出模式切换请求且尚未收到主进程响应。 */
+let ocrModeSwitchInFlight = false
+/** 已发出但尚未确认的模式切换新代际；用于缓存早到的任务事件。 */
+let pendingModeSwitchGeneration: number | null = null
 /** 当前文档预览方式；默认保留现有的原文与译文双面布局。 */
 let documentViewMode: DocumentViewMode = readDocumentViewMode()
 /** 双栏滚动同步是否由用户开启。 */
@@ -350,8 +372,292 @@ const documentExport = createDocumentExportController({
   localizeDocumentWarning,
   hasUsableExportResult,
   retryFailedDocumentTranslation,
-  getApi: () => window.api
+  getApi: () => window.api,
+  commitActiveManualEdit: () => documentManualEdit.commitActiveEdit()
 })
+
+const documentManualEdit = createDocumentManualEditController({
+  getActiveDocumentTab,
+  getTranslationContent: () => translationContent,
+  onCommit: (tab) => {
+    // 手改直接改写译文模型，必须让内容签名失配以触发下一次按需重绘，并恢复样式与检索高亮。
+    if (tab.id === activeDocumentTabId) renderedTranslationSignature = ''
+    documentManualEdit.refresh()
+    documentSearch.refresh()
+    if (tab.snapshot) renderTaskState(tab.snapshot, tab)
+    scheduleDocumentViewerStatePersist()
+  },
+  onHistoryChange: refreshDocumentEditHistoryButtons
+})
+
+/**
+ * 同步译文手改回退与前进按钮的可用状态。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function refreshDocumentEditHistoryButtons(): void {
+  editUndoButton.disabled = !documentManualEdit.canUndo()
+  editRedoButton.disabled = !documentManualEdit.canRedo()
+}
+
+const documentSearch = createDocumentSearchController({
+  t,
+  getInput: () => documentSearchInput,
+  getStatus: () => documentSearchStatus,
+  getPreviousButton: () => documentSearchPreviousButton,
+  getNextButton: () => documentSearchNextButton,
+  getSourceContent: () => sourceContent,
+  getTranslationContent: () => translationContent
+})
+
+/** 译文块级操作菜单目标。 */
+interface DocumentBlockActionTarget {
+  /** 触发操作的译文元素；手改必须使用可编辑叶子节点。 */
+  element: HTMLElement
+  /** 翻译流水线使用的稳定目标标识。 */
+  targetId: string
+  /** 是否允许就地手改当前元素。 */
+  editable: boolean
+}
+
+/** 块级操作菜单关闭延迟；留出从译文移动到浮层的鼠标路径。 */
+const DOCUMENT_BLOCK_ACTION_CLOSE_DELAY_MS = 180
+/** 悬停展开延迟；避免快速扫过正文时反复闪现菜单。 */
+const DOCUMENT_BLOCK_ACTION_HOVER_DELAY_MS = 320
+let documentBlockActionMenu: HTMLElement | null = null
+let documentBlockActionTarget: DocumentBlockActionTarget | null = null
+let documentBlockActionHoverTimer: number | null = null
+let documentBlockActionCloseTimer: number | null = null
+
+/**
+ * 清理块级操作菜单的延迟任务，避免过期悬停打开已切换页面的菜单。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function clearDocumentBlockActionTimers(): void {
+  if (documentBlockActionHoverTimer !== null) {
+    window.clearTimeout(documentBlockActionHoverTimer)
+    documentBlockActionHoverTimer = null
+  }
+  if (documentBlockActionCloseTimer !== null) {
+    window.clearTimeout(documentBlockActionCloseTimer)
+    documentBlockActionCloseTimer = null
+  }
+}
+
+/**
+ * 关闭并移除块级操作菜单。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function closeDocumentBlockActionMenu(): void {
+  clearDocumentBlockActionTimers()
+  documentBlockActionMenu?.remove()
+  documentBlockActionMenu = null
+  documentBlockActionTarget = null
+}
+
+/**
+ * 安排延迟关闭菜单，鼠标进入浮层后可取消关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function scheduleDocumentBlockActionClose(): void {
+  if (!documentBlockActionMenu) return
+  if (documentBlockActionCloseTimer !== null) window.clearTimeout(documentBlockActionCloseTimer)
+  documentBlockActionCloseTimer = window.setTimeout(() => {
+    documentBlockActionCloseTimer = null
+    closeDocumentBlockActionMenu()
+  }, DOCUMENT_BLOCK_ACTION_CLOSE_DELAY_MS)
+}
+
+/**
+ * 从译文事件目标解析块级操作对象。
+ * 文本优先使用实际 run；表格行使用 rowId；OCR 使用区域标识。未翻译块回退到区块本身。
+ * @param eventTarget 鼠标事件目标。
+ * @returns 可操作目标；事件不在译文栏或不属于可翻译结构时返回 null。
+ * @author zhenghq
+ */
+function resolveDocumentBlockActionTarget(eventTarget: EventTarget | null): DocumentBlockActionTarget | null {
+  if (!(eventTarget instanceof Element) || !translationContent.contains(eventTarget)) return null
+  const tab = getActiveDocumentTab()
+  const model = tab?.snapshot?.source ?? tab?.snapshot?.translation
+  if (!tab || !model) return null
+  const block = eventTarget.closest<HTMLElement>('[data-block-id]')
+  const page = eventTarget.closest<HTMLElement>('[data-page-id]')
+  if (!block?.dataset.blockId || !page?.dataset.pageId) return null
+  const row = eventTarget.closest<HTMLElement>('[data-row-id]')
+  const region = eventTarget.closest<HTMLElement>('.document-ocr-region[data-region-id]')
+  const run = eventTarget.closest<HTMLElement>('.document-text-run[data-run-id]')
+  // 空译文 OCR 槽位通常只会命中外层区域，必须回退到内部可编辑文字节点才能提供“手改译文”。
+  const editable = eventTarget.closest<HTMLElement>('[data-manually-editable="true"]') ??
+    region?.querySelector<HTMLElement>('.document-ocr-region-text[data-manually-editable="true"]') ??
+    null
+  const targetElement = editable ?? run ?? region ?? row ?? block
+  const targetId = resolveDocumentElementTargetId(model, {
+    pageId: page.dataset.pageId,
+    blockId: block.dataset.blockId,
+    ...(row?.dataset.rowId ? { rowId: row.dataset.rowId } : {}),
+    ...(region?.dataset.regionId ? { regionId: region.dataset.regionId } : {}),
+    ...(run?.dataset.runId ? { runId: run.dataset.runId } : {})
+  })
+  if (!targetId) return null
+  return {
+    element: targetElement,
+    targetId,
+    editable: Boolean(editable && editable.dataset.manuallyEditable === 'true')
+  }
+}
+
+/**
+ * 在指针附近创建块级操作菜单，并限制在视口内保持自适应。
+ * @param target 菜单操作目标。
+ * @param clientX 首选横坐标。
+ * @param clientY 首选纵坐标。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function openDocumentBlockActionMenu(
+  target: DocumentBlockActionTarget,
+  clientX: number,
+  clientY: number
+): void {
+  closeDocumentBlockActionMenu()
+  documentBlockActionTarget = target
+  const menu = document.createElement('div')
+  menu.className = 'document-block-action-menu'
+  menu.setAttribute('role', 'menu')
+  menu.dataset.documentBlockActionMenu = 'true'
+  if (target.editable) {
+    const edit = document.createElement('button')
+    edit.type = 'button'
+    edit.className = 'document-block-action'
+    edit.dataset.documentBlockAction = 'edit'
+    edit.setAttribute('role', 'menuitem')
+    edit.textContent = t('document.blockAction.edit')
+    edit.addEventListener('click', () => {
+      const current = documentBlockActionTarget
+      closeDocumentBlockActionMenu()
+      if (!current?.editable) return
+      documentManualEdit.commitActiveEdit()
+      documentManualEdit.startEdit(current.element)
+    })
+    menu.append(edit)
+  }
+  const retranslate = document.createElement('button')
+  retranslate.type = 'button'
+  retranslate.className = 'document-block-action'
+  retranslate.dataset.documentBlockAction = 'retranslate'
+  retranslate.setAttribute('role', 'menuitem')
+  retranslate.textContent = t('document.blockAction.retranslate')
+  retranslate.addEventListener('click', () => {
+    const current = documentBlockActionTarget
+    closeDocumentBlockActionMenu()
+    if (!current) return
+    // 用户主动点击“重新翻译此块”表示要求重新请求提供方，不能复用旧缓存。
+    // 失败、未完成与疑似未翻译目标也必须走强制重译，否则最容易命中历史缓存。
+    void retranslateDocumentTarget(current.targetId)
+  })
+  menu.append(retranslate)
+  menu.addEventListener('pointerenter', () => {
+    if (documentBlockActionCloseTimer !== null) {
+      window.clearTimeout(documentBlockActionCloseTimer)
+      documentBlockActionCloseTimer = null
+    }
+  })
+  menu.addEventListener('pointerleave', scheduleDocumentBlockActionClose)
+  document.body.append(menu)
+  const bounds = menu.getBoundingClientRect()
+  const margin = 8
+  const left = Math.max(margin, Math.min(clientX, window.innerWidth - bounds.width - margin))
+  const top = Math.max(margin, Math.min(clientY, window.innerHeight - bounds.height - margin))
+  menu.style.left = `${left}px`
+  menu.style.top = `${top}px`
+  documentBlockActionMenu = menu
+  // 手改中的悬停/右键菜单不能抢走 contenteditable 焦点，否则输入会中断且触发失焦提交。
+  if (!documentManualEdit.isEditing()) {
+    menu.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+  }
+}
+
+/**
+ * 绑定译文块悬停与右键操作菜单，并处理滚动、切页、Esc 与外部点击关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function bindDocumentBlockActionEvents(): void {
+  translationContent.addEventListener('pointerover', (event) => {
+    // 编辑期间鼠标经过其他译文不得启动悬停菜单；用户仍可显式右键打开菜单。
+    if (documentManualEdit.isEditing()) return
+    const target = resolveDocumentBlockActionTarget(event.target)
+    if (!target) {
+      scheduleDocumentBlockActionClose()
+      return
+    }
+    if (documentBlockActionTarget?.targetId === target.targetId &&
+      documentBlockActionMenu) {
+      if (documentBlockActionCloseTimer !== null) {
+        window.clearTimeout(documentBlockActionCloseTimer)
+        documentBlockActionCloseTimer = null
+      }
+      return
+    }
+    if (documentBlockActionHoverTimer !== null) window.clearTimeout(documentBlockActionHoverTimer)
+    documentBlockActionHoverTimer = window.setTimeout(() => {
+      documentBlockActionHoverTimer = null
+      const bounds = target.element.getBoundingClientRect()
+      openDocumentBlockActionMenu(target, bounds.left, bounds.bottom + 6)
+    }, DOCUMENT_BLOCK_ACTION_HOVER_DELAY_MS)
+  })
+  translationContent.addEventListener('pointerleave', scheduleDocumentBlockActionClose)
+  translationContent.addEventListener('contextmenu', (event) => {
+    const target = resolveDocumentBlockActionTarget(event.target)
+    if (!target) return
+    event.preventDefault()
+    clearDocumentBlockActionTimers()
+    openDocumentBlockActionMenu(target, event.clientX, event.clientY)
+  })
+  translationContent.addEventListener('scroll', closeDocumentBlockActionMenu, { passive: true })
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target
+    if (!(target instanceof Node) || documentBlockActionMenu?.contains(target)) return
+    closeDocumentBlockActionMenu()
+  })
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !documentBlockActionMenu) return
+    event.preventDefault()
+    event.stopPropagation()
+    closeDocumentBlockActionMenu()
+  })
+  window.addEventListener('resize', closeDocumentBlockActionMenu)
+}
+
+/**
+ * 绑定译文手改的回退与前进快捷键；编辑态和输入控件保留原生撤销行为。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function bindDocumentEditHistoryShortcuts(): void {
+  document.addEventListener('keydown', (event) => {
+    if (!event.metaKey && !event.ctrlKey) return
+    if (event.altKey) return
+    const key = event.key.toLowerCase()
+    const undoShortcut = key === 'z' && !event.shiftKey
+    const redoShortcut = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey)
+    if (!undoShortcut && !redoShortcut) return
+    // 编辑中的输入与表单控件内的撤销交给原生处理，避免与 contenteditable 抢键。
+    if (documentManualEdit.isEditing()) return
+    const target = event.target
+    if (target instanceof HTMLElement &&
+      (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]'))) {
+      return
+    }
+    const handled = undoShortcut ? documentManualEdit.undo() : documentManualEdit.redo()
+    if (!handled) return
+    event.preventDefault()
+    refreshDocumentEditHistoryButtons()
+  })
+}
 
 /**
  * 读取上次保存的文档预览方式。
@@ -561,7 +867,9 @@ async function restoreDocumentViewerState(): Promise<void> {
  * @author zhenghq
  */
 function createRestoredDocumentWorkspaceTab(savedTab: DocumentViewerTabState): DocumentWorkspaceTab {
-  const snapshot = createRestoredDocumentWorkspaceSnapshot(savedTab)
+  const snapshot = migrateRestoredPdfDocumentWorkspaceSnapshot(
+    createRestoredDocumentWorkspaceSnapshot(savedTab)
+  )
   const restoredModel = snapshot.source ?? snapshot.translation
   const restoredPageIndex = restoredModel && savedTab.activePageId
     ? restoredModel.pages.findIndex((page) => page.pageId === savedTab.activePageId)
@@ -593,7 +901,11 @@ function createRestoredDocumentWorkspaceTab(savedTab: DocumentViewerTabState): D
     ocrDisplayMode: savedTab.ocrDisplayMode,
     activeBlockId: savedTab.activeBlockId,
     pendingLanguageRetranslation: false,
-    pendingOcrModeRestart: false,
+    pendingOcrModeTarget: null,
+    ocrModeSwitchInFlight: false,
+    pendingModeSwitchGeneration: null,
+    pendingModeSwitchSnapshot: null,
+    pendingModeSwitchSnapshotTerminal: false,
     languageRevision: 0,
     sourceAuthorized: true
   }
@@ -659,7 +971,7 @@ function prepareDocumentTabForLanguageRetranslation(tab: DocumentWorkspaceTab): 
   tab.generation = nextGeneration()
   tab.status = 'idle'
   tab.pendingLanguageRetranslation = false
-  tab.pendingOcrModeRestart = false
+  resetDocumentModeSwitchState(tab)
   tab.languageRevision += 1
   return true
 }
@@ -987,7 +1299,9 @@ function syncActiveTabMirror(tab: DocumentWorkspaceTab | null): void {
   activeDocumentBlockId = tab?.activeBlockId ?? null
   documentStartInFlight = tab?.startInFlight ?? false
   pendingLanguageRetranslation = tab?.pendingLanguageRetranslation ?? false
-  pendingOcrModeRestart = tab?.pendingOcrModeRestart ?? false
+  pendingOcrModeTarget = tab?.pendingOcrModeTarget ?? null
+  ocrModeSwitchInFlight = tab?.ocrModeSwitchInFlight ?? false
+  pendingModeSwitchGeneration = tab?.pendingModeSwitchGeneration ?? null
   if (tab) {
     // 多个 Tab 共用会话级单调代际；切回旧 Tab 时不能把全局代际退回旧值。
     generation = Math.max(generation, tab.generation)
@@ -1014,7 +1328,9 @@ function refreshActiveTabMirror(tab: DocumentWorkspaceTab): void {
   activeDocumentBlockId = tab.activeBlockId
   documentStartInFlight = tab.startInFlight
   pendingLanguageRetranslation = tab.pendingLanguageRetranslation
-  pendingOcrModeRestart = tab.pendingOcrModeRestart
+  pendingOcrModeTarget = tab.pendingOcrModeTarget
+  ocrModeSwitchInFlight = tab.ocrModeSwitchInFlight
+  pendingModeSwitchGeneration = tab.pendingModeSwitchGeneration
   generation = Math.max(generation, tab.generation)
 }
 
@@ -1036,7 +1352,8 @@ function findDocumentTabByJob(jobId: string): DocumentWorkspaceTab | null {
  */
 function findDocumentTabForSnapshot(snapshot: DocumentWorkspaceSnapshot): DocumentWorkspaceTab | null {
   return documentTabs.find((tab) =>
-    tab.generation === snapshot.generation &&
+    (tab.generation === snapshot.generation ||
+      tab.pendingModeSwitchGeneration === snapshot.generation) &&
     (tab.activeJobId === snapshot.jobId || tab.expectedJobId === snapshot.jobId)
   ) ?? null
 }
@@ -1051,7 +1368,6 @@ function bindPendingDocumentTabSnapshot(snapshot: DocumentWorkspaceSnapshot): Do
   const candidates = documentTabs.filter((tab) =>
     tab.generation === snapshot.generation &&
     tab.startInFlight &&
-    !tab.pendingOcrModeRestart &&
     tab.activeJobId === null &&
     tab.expectedJobId === null
   )
@@ -1063,23 +1379,35 @@ function bindPendingDocumentTabSnapshot(snapshot: DocumentWorkspaceSnapshot): Do
 
 /**
  * 将任务快照保存到所属 Tab，并仅在活动 Tab 时刷新可见界面。
+ * 自动生成快照必须叠加此前的译文手改，否则流式增量或模式切换会覆盖用户修改。
  * @param tab 目标 Tab。
  * @param snapshot 最新任务快照。
- * @returns 无返回值。
+ * @returns 实际写入 Tab 并可用于渲染的合并快照。
  * @author zhenghq
  */
-function updateDocumentTabSnapshot(tab: DocumentWorkspaceTab, snapshot: DocumentWorkspaceSnapshot): void {
-  tab.snapshot = snapshot
+function updateDocumentTabSnapshot(
+  tab: DocumentWorkspaceTab,
+  snapshot: DocumentWorkspaceSnapshot
+): DocumentWorkspaceSnapshot {
+  const previousTranslation = tab.snapshot?.translation
+  const mergedSnapshot = previousTranslation
+    ? {
+        ...snapshot,
+        translation: preserveDocumentManualTranslationEdits(previousTranslation, snapshot.translation)
+      }
+    : snapshot
+  tab.snapshot = mergedSnapshot
   tab.activeJobId = snapshot.jobId
   tab.expectedJobId = snapshot.jobId
   tab.generation = Math.max(tab.generation, snapshot.generation)
   tab.status = resolveDocumentTabStatus(snapshot)
   if (tab.id !== activeDocumentTabId) {
     renderDocumentTabs()
-    return
+    return mergedSnapshot
   }
   refreshActiveTabMirror(tab)
   renderDocumentTabs()
+  return mergedSnapshot
 }
 
 /**
@@ -1096,7 +1424,6 @@ function canRenderDocumentTabSnapshot(
 ): boolean {
   return documentTabs.includes(tab) &&
     tab.id === activeDocumentTabId &&
-    !tab.pendingOcrModeRestart &&
     tab.generation === snapshot.generation &&
     (tab.activeJobId === snapshot.jobId || tab.expectedJobId === snapshot.jobId)
 }
@@ -1133,8 +1460,13 @@ function canApplyDocumentTabProgressSnapshot(
 function routeDocumentSnapshot(snapshot: DocumentWorkspaceSnapshot, terminal: boolean): boolean {
   const tab = findDocumentTabForSnapshot(snapshot) ?? bindPendingDocumentTabSnapshot(snapshot)
   if (!tab) return false
-  // OCR 模式切换期间旧任务的取消终态和迟到进度都必须丢弃，等待新模式重新建立任务身份。
-  if (tab.pendingOcrModeRestart) return false
+  // 模式切换响应返回前，新代际事件可能先于 IPC 到达；先按代际缓冲，确认后再消费。
+  if (tab.pendingModeSwitchGeneration !== null &&
+    snapshot.generation === tab.pendingModeSwitchGeneration) {
+    tab.pendingModeSwitchSnapshot = snapshot
+    tab.pendingModeSwitchSnapshotTerminal = terminal
+    return true
+  }
   if (!terminal && !canApplyDocumentTabProgressSnapshot(tab, snapshot)) return false
   // 在首次有效运行进度到达时固定 ETA 起点；后续进度必须基于同一时间计算，
   // 否则每次重算都会把已耗时清零，剩余时间会被严重低估。
@@ -1142,13 +1474,17 @@ function routeDocumentSnapshot(snapshot: DocumentWorkspaceSnapshot, terminal: bo
   if (!terminal && !documentTaskStartedAt.has(taskKey)) {
     documentTaskStartedAt.set(taskKey, Date.now())
   }
-  updateDocumentTabSnapshot(tab, snapshot)
+  const appliedSnapshot = updateDocumentTabSnapshot(tab, snapshot)
   if (tab.id !== activeDocumentTabId) return true
   refreshActiveTabMirror(tab)
-  if (terminal) flushSnapshotRenderForTab(tab, snapshot)
-  else scheduleSnapshotRenderForTab(tab, snapshot)
+  if (terminal) flushSnapshotRenderForTab(tab, appliedSnapshot)
+  else scheduleSnapshotRenderForTab(tab, appliedSnapshot)
   if (terminal) scheduleDocumentViewerStatePersist()
   startButton.disabled = false
+  // 旧任务进入终态后才能由主进程复用源模型切换；运行中只保留待切换目标继续等待。
+  if (terminal && tab.pendingOcrModeTarget && !tab.ocrModeSwitchInFlight) {
+    void maybeSwitchDocumentOcrMode(tab)
+  }
   return true
 }
 
@@ -1162,8 +1498,8 @@ function findDocumentTabByTranslationUpdate(
   update: DocumentWorkspaceTranslationUpdate
 ): DocumentWorkspaceTab | null {
   return documentTabs.find((tab) =>
-    !tab.pendingOcrModeRestart &&
-    tab.generation === update.generation &&
+    (tab.generation === update.generation ||
+      tab.pendingModeSwitchGeneration === update.generation) &&
     (tab.activeJobId === update.jobId || tab.expectedJobId === update.jobId)
   ) ?? null
 }
@@ -1449,6 +1785,9 @@ function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
     workbench.dataset.state = tab.status
   }
   restoreDocumentTabScroll(tab)
+  // 切换 Tab 后 DOM 属于新文件，必须按新快照重建手改标识与检索高亮。
+  documentManualEdit.refresh()
+  documentSearch.refresh()
 }
 
 /**
@@ -1459,6 +1798,7 @@ function renderActiveDocumentTab(tab: DocumentWorkspaceTab): void {
  */
 async function activateDocumentTab(tabId: string): Promise<void> {
   if (tabId === activeDocumentTabId) return
+  closeDocumentBlockActionMenu()
   const currentTab = getActiveDocumentTab()
   if (currentTab) {
     saveDocumentTabScroll(currentTab)
@@ -1521,7 +1861,7 @@ async function createDocumentTab(
       existing.scrollSyncEnabled = true
       existing.activeBlockId = null
       existing.pendingLanguageRetranslation = false
-      existing.pendingOcrModeRestart = false
+      resetDocumentModeSwitchState(existing)
       existing.languageRevision += 1
       if (existing.id === activeDocumentTabId) {
         clearActiveTabPreview()
@@ -1565,7 +1905,11 @@ async function createDocumentTab(
     ocrDisplayMode,
     activeBlockId: null,
     pendingLanguageRetranslation: false,
-    pendingOcrModeRestart: false,
+    pendingOcrModeTarget: null,
+    ocrModeSwitchInFlight: false,
+    pendingModeSwitchGeneration: null,
+    pendingModeSwitchSnapshot: null,
+    pendingModeSwitchSnapshotTerminal: false,
     languageRevision: 0,
     sourceAuthorized: true
   }
@@ -2597,7 +2941,8 @@ function hasPageGeometry(block: DocumentBlock): boolean {
  * @author zhenghq
  */
 function hasVisibleText(block: DocumentTextBlock): boolean {
-  return block.runs.some((run) => run.text.trim().length > 0)
+  // 用户清空整块译文后仍要保留占位 DOM，否则双击命中区域会消失且无法再次输入。
+  return block.runs.some((run) => run.text.trim().length > 0 || run.manuallyEdited === true)
 }
 
 /**
@@ -2687,6 +3032,8 @@ function renderTextBlock(
       .filter((run) => run.protected !== true)
       .map((run) => run.text)
       .join('')
+    // 只有译文侧的目录标题允许就地手改，原文侧保持只读。
+    if (side === 'translation') title.dataset.manuallyEditable = 'true'
     applyScalableTextStyle(title, titleRun ? effectiveTextStyle(block, titleRun) : block.style)
     const leader = document.createElement('span')
     leader.className = 'document-toc-leader'
@@ -2697,25 +3044,24 @@ function renderTextBlock(
     element.append(title, leader, pageNumber)
     return element
   }
+  if (side === 'translation' && block.runs.some((run) => run.protected !== true)) {
+    // 不含受保护片段的普通文本块作为整体编辑，避免用户只能逐 run 删除和输入。
+    // 混合块仍按 run 编辑，防止在一次整块提交中覆盖 URL、公式等受保护内容。
+    if (block.runs.every((run) => run.protected !== true)) element.dataset.manuallyEditable = 'true'
+  }
   for (const run of block.runs) {
     const span = document.createElement('span')
     span.className = 'document-text-run'
     span.dataset.runId = run.runId
     span.textContent = run.text
+    // 纯普通文本块由外层承载整块编辑；混合块才逐 run 编辑，受保护片段始终保持只读。
+    if (side === 'translation' && run.protected !== true && !element.dataset.manuallyEditable) {
+      span.dataset.manuallyEditable = 'true'
+    }
     applyScalableTextStyle(span, effectiveTextStyle(block, run))
     element.append(span)
   }
   return element
-}
-
-/**
- * 判断 OCR 区域是否会在译文侧生成可见覆盖层。
- * @param region OCR 区域。
- * @returns 是否存在可展示的译文。
- * @author zhenghq
- */
-function hasVisibleOcrTranslation(region: DocumentOcrRegion): boolean {
-  return Boolean(region.translatedText?.trim())
 }
 
 /**
@@ -2743,7 +3089,8 @@ function orderedOcrRegions(regions: readonly DocumentOcrRegion[]): DocumentOcrRe
  * @author zhenghq
  */
 function ocrTranslationLayerSignature(block: DocumentImageBlock): string {
-  const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasVisibleOcrTranslation)
+  const regions = orderedOcrRegions(block.ocrRegions ?? [])
+    .filter(shouldRenderDocumentOcrTranslationRegion)
   if (regions.length === 0) return ''
   return JSON.stringify(regions.map((region) => ({
     regionId: region.regionId,
@@ -2751,12 +3098,14 @@ function ocrTranslationLayerSignature(block: DocumentImageBlock): string {
     translatedText: region.translatedText,
     style: region.style,
     textAlign: region.textAlign,
-    status: region.status
+    status: region.status,
+    manuallyEdited: region.manuallyEdited
   })))
 }
 
 /**
- * 创建 OCR 译文覆盖层；源文侧不叠加识别文本，译文侧也只显示已成功翻译的内容。
+ * 创建 OCR 译文覆盖层；源文侧不叠加识别文本，译文侧为每个已识别区域保留交互槽位。
+ * 缺少译文时槽位保持透明，但仍可悬停、右键手改或触发单目标重译。
  * 覆盖层高度随译文实际换行增长，相邻区域由流式布局避让，避免文字被裁切或重叠。
  * @param imageBlock 图片区块。
  * @param region OCR 区域。
@@ -2771,12 +3120,13 @@ function renderOcrRegion(
   previousRegion: DocumentOcrRegion | undefined,
   side: DocumentRenderSide
 ): HTMLElement | null {
+  void side
   const translatedText = region.translatedText?.trim()
-  // 翻译失败或尚未完成时保留原图，避免把 OCR 原文误当作译文覆盖显示。
-  if (!translatedText) return null
+  if (!shouldRenderDocumentOcrTranslationRegion(region)) return null
   const element = document.createElement('div')
   element.className = 'document-ocr-region'
   element.dataset.status = region.status
+  element.dataset.translationState = translatedText ? 'translated' : 'untranslated'
   element.dataset.regionId = region.regionId
   // 纵向沿用 OCR 安全框；左对齐译文可扩展到同行右侧区域前，避免中文在窄框内逐字换行。
   const box = resolveDocumentOcrOverlayBox(region.bbox)
@@ -2817,19 +3167,22 @@ function renderOcrRegion(
   // 白底由译文文字本身绘制，换行后每一行只覆盖实际内容宽度，避免继续沿用原文识别框。
   const textElement = document.createElement('span')
   textElement.className = 'document-ocr-region-text'
-  textElement.textContent = translatedText
+  textElement.textContent = translatedText ?? ''
+  // OCR 译文覆盖层只在译文侧渲染，双击即可块级手改。
+  textElement.dataset.manuallyEditable = 'true'
   element.append(textElement)
   return element
 }
 
 /**
- * 创建图片的 OCR 译文覆盖层；没有可展示译文时返回 null。
+ * 创建图片的 OCR 译文覆盖层；只要存在已识别原文就返回可交互覆盖层。
  * @param block 图片区块。
  * @returns 可直接挂载到图片区块的 OCR 覆盖层。
  * @author zhenghq
  */
 function createOcrTranslationLayer(block: DocumentImageBlock): HTMLElement | null {
-  const regions = orderedOcrRegions(block.ocrRegions ?? []).filter(hasVisibleOcrTranslation)
+  const regions = orderedOcrRegions(block.ocrRegions ?? [])
+    .filter(shouldRenderDocumentOcrTranslationRegion)
   if (regions.length === 0) return null
   const layer = document.createElement('div')
   layer.className = 'document-ocr-translation-layer'
@@ -3768,16 +4121,21 @@ function renderHtmlSourcePreview(
 /**
  * 渲染文本 run，保持受保护片段原样并通过 textContent 安全写入。
  * @param block 文本区块。
+ * @param side 当前渲染侧；译文侧的非受保护 run 会标记为可手改。
  * @returns 包含全部 run 的文档片段。
  * @author zhenghq
  */
-function renderTextRuns(block: DocumentTextBlock): DocumentFragment {
+function renderTextRuns(block: DocumentTextBlock, side: DocumentRenderSide): DocumentFragment {
   const fragment = document.createDocumentFragment()
   for (const run of block.runs) {
     const span = document.createElement('span')
     span.className = 'document-text-run'
     span.dataset.runId = run.runId
     span.textContent = run.text
+    // Markdown 等语义块没有外层 document-text-block，run 必须继续独立承载手改入口。
+    if (side === 'translation' && run.protected !== true) {
+      span.dataset.manuallyEditable = 'true'
+    }
     applyScalableTextStyle(span, effectiveTextStyle(block, run))
     fragment.append(span)
   }
@@ -3806,7 +4164,7 @@ function renderMarkdownBlock(
       const pre = document.createElement('pre')
       pre.dataset.blockId = block.blockId
       const code = document.createElement('code')
-      code.append(renderTextRuns(block))
+      code.append(renderTextRuns(block, side))
       pre.append(code)
       return pre
     }
@@ -3814,20 +4172,20 @@ function renderMarkdownBlock(
       const level = Math.max(1, Math.min(6, 7 - Math.round(((block.style?.fontSize ?? 30) - 14) / 3)))
       const heading = document.createElement(`h${level}`)
       heading.dataset.blockId = block.blockId
-      heading.append(renderTextRuns(block))
+      heading.append(renderTextRuns(block, side))
       return heading
     }
     if (block.role === 'quote') {
       const quote = document.createElement('blockquote')
       quote.dataset.blockId = block.blockId
-      quote.append(renderTextRuns(block))
+      quote.append(renderTextRuns(block, side))
       return quote
     }
     if (block.role === 'list-item') {
       const list = document.createElement('ul')
       const item = document.createElement('li')
       item.dataset.blockId = block.blockId
-      item.append(renderTextRuns(block))
+      item.append(renderTextRuns(block, side))
       list.append(item)
       return list
     }
@@ -4341,6 +4699,8 @@ function patchTranslationTextBlock(
   contentArea?: DocumentContentArea
 ): boolean {
   if (side !== 'translation') return false
+  // 正在手改的区块不能被流式补丁覆盖，避免用户输入被自动译文覆盖或选中范围失效。
+  if (documentManualEdit.isEditingBlock(block.blockId)) return true
   if (block.toc) {
     const title = element.querySelector<HTMLElement>(':scope > .document-toc-title')
     const pageNumber = element.querySelector<HTMLElement>(':scope > .document-toc-page')
@@ -4366,6 +4726,8 @@ function patchTranslationTextBlock(
   for (let index = 0; index < block.runs.length; index += 1) {
     const run = block.runs[index]!
     const existingRun = existingRuns[index]!
+    // 正在编辑的 run 保留用户输入，不被自动译文覆盖。
+    if (documentManualEdit.isEditingRun(run.runId)) continue
     if (existingRun.dataset.runId !== run.runId) return false
     if (existingRun.textContent !== run.text) existingRun.textContent = run.text
     applyScalableTextStyle(existingRun, effectiveTextStyle(block, run))
@@ -4391,6 +4753,8 @@ function patchTranslationOcrLayer(
   tab: DocumentWorkspaceTab
 ): boolean {
   if (!element.classList.contains('document-image-block')) return false
+  // 图片区块内存在活动 OCR 手改时跳过覆盖层替换，保留用户正在编辑的节点。
+  if (documentManualEdit.hasActiveOcrEditInBlock(block.blockId)) return true
   const renderPending = element.dataset.pending === 'true'
   const nextRenderPending = resolveDocumentImageRenderPending(block, tab)
   const assetFailed = element.dataset.assetState === 'error'
@@ -4547,6 +4911,8 @@ function patchTranslationPreview(
   if (!previewHost) return false
   const kind = resolvePreviewKind(model, 'translation')
   if (kind !== renderedTranslationPreviewKind || previewHost.dataset.previewKind !== kind) return false
+  // 存在活动手改时暂缓原位补丁；直接返回成功可避免触发整页重绘破坏编辑节点。
+  if (documentManualEdit.isEditing()) return true
   beginTranslationLayoutUpdate()
   let layoutScheduled = false
   try {
@@ -4860,7 +5226,8 @@ function documentContentSignature(model: DocumentModel | undefined): string {
               runId: run.runId,
               text: run.text,
               style: run.style,
-              protected: run.protected
+              protected: run.protected,
+              manuallyEdited: run.manuallyEdited
             }))
           }
         }
@@ -4879,7 +5246,8 @@ function documentContentSignature(model: DocumentModel | undefined): string {
               style: region.style,
               textAlign: region.textAlign,
               status: region.status,
-              reason: region.reason
+              reason: region.reason,
+              manuallyEdited: region.manuallyEdited
             }))
           }
         }
@@ -4977,8 +5345,29 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorksp
   }
   if (translationChanged) {
     // OCR 原文模式展示源模型和透明文字层，不能走针对流式译文的原位补丁路径。
-    const patched = displayMode === 'translation' && hasRenderedTranslation &&
+    let patched = displayMode === 'translation' && hasRenderedTranslation &&
       patchTranslationPreview(translationContent, snapshot.translation, tab)
+    let effectiveTranslationSignature = translationSignature
+    let effectiveTranslationWarningSignature = translationWarningSignature
+    if (!patched && documentManualEdit.isEditing()) {
+      // 结构变化会整页替换译文 DOM；先提交正在编辑的文本，避免用户输入随节点一起丢失。
+      documentManualEdit.commitActiveEdit()
+      const committedTranslation = tab.snapshot?.translation
+      if (committedTranslation) {
+        renderDocumentModel(
+          translationContent,
+          committedTranslation,
+          'document.waitingTranslation',
+          'translation',
+          snapshot.jobId,
+          committedTranslation.warnings,
+          tab
+        )
+        effectiveTranslationSignature = documentContentSignature(committedTranslation)
+        effectiveTranslationWarningSignature = documentWarningSignature(committedTranslation.warnings)
+        patched = true
+      }
+    }
     if (!patched) {
       renderDocumentModel(
         translationContent,
@@ -4990,11 +5379,11 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorksp
         tab
       )
     }
-    renderedTranslationSignature = translationSignature
+    renderedTranslationSignature = effectiveTranslationSignature
     renderedTranslationTabId = tab.id
     renderedTranslationSha256 = tab.selection.sha256
     hasRenderedTranslation = true
-    renderedTranslationWarningSignature = translationWarningSignature
+    renderedTranslationWarningSignature = effectiveTranslationWarningSignature
   } else if (translationWarningsChanged) {
     renderDocumentWarnings(translationContent, translationPaneModel?.warnings)
     renderedTranslationWarningSignature = translationWarningSignature
@@ -5020,6 +5409,9 @@ function renderSnapshot(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorksp
   // DOM 重绘不能抹掉 Tab 的持久化区块锚点，必须在挂载新节点后按锚点恢复高亮。
   if (tab.activeBlockId) documentNavigation.highlightBlock(tab.activeBlockId)
   documentNavigation.schedulePageUpdate()
+  // 重绘会替换译文节点，必须重新绑定手改样式与正文检索高亮。
+  documentManualEdit.refresh()
+  documentSearch.refresh()
 }
 
 /**
@@ -5391,6 +5783,8 @@ function renderTaskState(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorks
     partialStatus.hidden = true
   }
   workbench.dataset.state = status
+  // 切 Tab 或提交手改后，回退/前进栈随 Tab 变化，需要同步按钮可用状态。
+  refreshDocumentEditHistoryButtons()
 }
 
 /**
@@ -5518,41 +5912,123 @@ async function cancelLateDocumentRunResult(
   await releaseDocumentJob(result.jobId)
 }
 
+/** 模式切换 not-ready 时已延迟重试过的 Tab；每个 Tab 最多自动重试一次。 */
+const documentModeSwitchRetriedTabs = new Set<string>()
+
 /**
- * 在 OCR 原文与译文模式切换时立即清空目标 Tab 的旧进度和右侧译文预览。
- * 不传参数时重置当前活动页；传入 Tab 时同时清理后台任务状态。
- * 保留 activeJobId 供调用方取消旧任务，避免启动请求尚未返回时丢失取消目标。
- * @param tabs 可选的待重置 Tab。
+ * 清空指定 Tab 的 OCR 模式切换状态。
+ * @param tab 目标 Tab。
  * @returns 无返回值。
  * @author zhenghq
  */
-function resetDocumentRunForModeSwitch(tab: DocumentWorkspaceTab | null = getActiveDocumentTab()): void {
-  if (!tab) return
-  tab.snapshot = null
-  tab.expectedJobId = null
-  tab.status = 'starting'
-  if (tab.id !== activeDocumentTabId) {
-    renderDocumentTabs()
+function resetDocumentModeSwitchState(tab: DocumentWorkspaceTab): void {
+  tab.pendingOcrModeTarget = null
+  tab.ocrModeSwitchInFlight = false
+  tab.pendingModeSwitchGeneration = null
+  tab.pendingModeSwitchSnapshot = null
+  tab.pendingModeSwitchSnapshotTerminal = false
+  documentModeSwitchRetriedTabs.delete(tab.id)
+}
+
+/**
+ * 判断任务快照是否已经进入终态；主进程仅允许在这种状态下复用源模型切换模式。
+ * @param snapshot 待检查的任务快照。
+ * @returns 是否已结算。
+ * @author zhenghq
+ */
+function isDocumentSnapshotSettled(snapshot: DocumentWorkspaceSnapshot | null): boolean {
+  if (!snapshot) return false
+  return snapshot.task.status === 'completed' ||
+    snapshot.task.status === 'partial' ||
+    snapshot.task.status === 'failed' ||
+    snapshot.task.status === 'cancelled'
+}
+
+/**
+ * 在旧任务终态后请求主进程复用已解析与已识别的源模型切换 OCR 模式。
+ * 运行中的任务不会被取消或清空；事件先到而响应未到时按新代际缓冲。
+ * @param tab 目标文件 Tab。
+ * @returns 切换请求处理完成后的 Promise。
+ * @author zhenghq
+ */
+async function maybeSwitchDocumentOcrMode(tab: DocumentWorkspaceTab): Promise<void> {
+  const target = tab.pendingOcrModeTarget
+  if (!target || tab.ocrModeSwitchInFlight || !documentTabs.includes(tab) ||
+    isReadOnlyDocumentTab(tab)) {
     return
   }
-  if (pendingRenderFrame !== null) {
-    cancelAnimationFrame(pendingRenderFrame)
-    pendingRenderFrame = null
+  const jobId = tab.activeJobId ?? tab.expectedJobId
+  if (!jobId || !isDocumentSnapshotSettled(tab.snapshot)) return
+  const targetMode = target === 'ocr-text' ? 'ocr' as const : 'translation' as const
+  // 主进程与新快照都已处于目标模式时无需再切换，只清理本地待切换标记。
+  if ((tab.snapshot?.runMode ?? 'translation') === targetMode) {
+    tab.pendingOcrModeTarget = null
+    if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+    return
   }
-  latestSnapshot = null
-  expectedJobId = null
-  refreshActiveTabMirror(tab)
-  // 重新启动会推进任务代际；只清理右侧，左侧同一源文档继续复用现有预览。
-  clearActiveTabTranslationPreview()
-  progressStage.textContent = t('document.progress.preparing')
-  progressCount.textContent = t('document.progress.pending')
-  progressbar.style.width = '0%'
-  progressbar.setAttribute('aria-valuenow', '0')
-  exportButton.disabled = true
-  retryButton.disabled = true
-  partialStatus.hidden = true
-  closePartialExportDialog(false)
-  syncOcrDisplayModeControls()
+  const settledGeneration = tab.generation
+  let nextModeGeneration = nextGeneration()
+  tab.ocrModeSwitchInFlight = true
+  tab.pendingModeSwitchGeneration = nextModeGeneration
+  tab.pendingModeSwitchSnapshot = null
+  tab.pendingModeSwitchSnapshotTerminal = false
+  if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+  const requestModeSwitch = (generationValue: number): Promise<DocumentRunResult> =>
+    window.api.switchDocumentMode({
+      jobId,
+      generation: settledGeneration,
+      nextGeneration: generationValue,
+      mode: targetMode
+    })
+  let response = await requestModeSwitch(nextModeGeneration)
+  if (!documentTabs.includes(tab)) return
+  // 本地存储可能落后于主进程；只在主进程给出更高代际时安全重试一次。
+  if (!response.accepted && response.code === 'generation-conflict' &&
+    adoptSuggestedGeneration(response.suggestedGeneration)) {
+    nextModeGeneration = generation
+    tab.pendingModeSwitchGeneration = nextModeGeneration
+    response = await requestModeSwitch(nextModeGeneration)
+  }
+  if (!documentTabs.includes(tab)) return
+  if (!response.accepted) {
+    tab.ocrModeSwitchInFlight = false
+    tab.pendingModeSwitchGeneration = null
+    tab.pendingModeSwitchSnapshot = null
+    tab.pendingModeSwitchSnapshotTerminal = false
+    if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+    // not-ready 表示主进程尚在结算；每个 Tab 延迟重试一次，其余拒绝留待后续终态事件。
+    if (response.code === 'not-ready' && !documentModeSwitchRetriedTabs.has(tab.id)) {
+      documentModeSwitchRetriedTabs.add(tab.id)
+      window.setTimeout(() => {
+        if (documentTabs.includes(tab)) void maybeSwitchDocumentOcrMode(tab)
+      }, 250)
+    }
+    return
+  }
+  const bufferedSnapshot = tab.pendingModeSwitchSnapshot
+  const bufferedTerminal = tab.pendingModeSwitchSnapshotTerminal
+  tab.generation = nextModeGeneration
+  tab.expectedJobId = response.jobId ?? jobId
+  tab.activeJobId = response.jobId ?? jobId
+  tab.ocrModeSwitchInFlight = false
+  tab.pendingModeSwitchGeneration = null
+  tab.pendingModeSwitchSnapshot = null
+  tab.pendingModeSwitchSnapshotTerminal = false
+  if (tab.pendingOcrModeTarget === target) tab.pendingOcrModeTarget = null
+  documentModeSwitchRetriedTabs.delete(tab.id)
+  if (bufferedSnapshot) {
+    // 主进程新代际事件可能早于 IPC 响应到达，确认后再按终态或流式方式消费。
+    const applied = updateDocumentTabSnapshot(tab, bufferedSnapshot)
+    if (tab.id === activeDocumentTabId) {
+      if (bufferedTerminal) flushSnapshotRenderForTab(tab, applied)
+      else scheduleSnapshotRenderForTab(tab, applied)
+    }
+  } else {
+    if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+    renderDocumentTabs()
+  }
+  // 请求在途期间用户可能又选择了其他目标，确认后必须继续处理最新选择。
+  if (tab.pendingOcrModeTarget) void maybeSwitchDocumentOcrMode(tab)
 }
 
 /**
@@ -5578,7 +6054,7 @@ async function startDocumentTabTranslation(
   if (!documentTabs.includes(tab)) return
 
   tab.pendingLanguageRetranslation = false
-  tab.pendingOcrModeRestart = false
+  resetDocumentModeSwitchState(tab)
   tab.startInFlight = true
   tab.status = 'starting'
   let jobGeneration = nextGeneration()
@@ -5685,14 +6161,7 @@ async function startDocumentTabTranslation(
         documentStartInFlight = false
         startButton.disabled = false
       }
-      if (tab.pendingOcrModeRestart) {
-        const restartJobId = tab.activeJobId ?? tab.expectedJobId
-        const restartGeneration = tab.generation
-        await cancelDocumentJob(restartJobId, restartGeneration)
-        tab.pendingOcrModeRestart = false
-        if (restartJobId) await releaseDocumentJob(restartJobId)
-        await startDocumentTabTranslation(tab)
-      } else if (tab.pendingLanguageRetranslation) {
+      if (tab.pendingLanguageRetranslation) {
         tab.pendingLanguageRetranslation = false
         await startDocumentTabTranslation(tab)
       }
@@ -5850,7 +6319,7 @@ async function retryFailedDocumentTarget(targetId: string): Promise<void> {
   const tab = getActiveDocumentTab()
   const snapshot = tab?.snapshot
   if (!tab || !snapshot?.translation) return
-  if (!snapshot.completionReport?.failedTargetIds.includes(targetId)) return
+  if (!collectRetryableDocumentTargetIds(snapshot.completionReport).includes(targetId)) return
   const previousGeneration = tab.generation
   const previousStatus = tab.status
   let jobGeneration = nextGeneration()
@@ -5900,6 +6369,71 @@ async function retryFailedDocumentTarget(targetId: string): Promise<void> {
     partialStatus.hidden = false
   } catch {
     restoreRetryUi()
+    partialStatus.textContent = t('document.run.failed')
+    partialStatus.hidden = false
+  }
+}
+
+/**
+ * 强制重新翻译当前文档中的指定译文目标，绕过缓存并在失败时保留旧译文。
+ * @param targetId 当前快照中的稳定目标标识。
+ * @returns 重译请求完成后的 Promise。
+ * @author zhenghq
+ */
+async function retranslateDocumentTarget(targetId: string): Promise<void> {
+  const tab = getActiveDocumentTab()
+  const snapshot = tab?.snapshot
+  if (!tab || !snapshot?.translation || !snapshot.source) return
+  if (isReadOnlyDocumentTab(tab)) return
+  if (!findDocumentTarget(snapshot.source, targetId)) return
+  const previousGeneration = tab.generation
+  const previousStatus = tab.status
+  let jobGeneration = nextGeneration()
+  tab.generation = jobGeneration
+  tab.status = 'running'
+  refreshActiveTabMirror(tab)
+  retryButton.disabled = true
+  rerunButton.disabled = true
+  exportButton.disabled = true
+  cancelButton.hidden = false
+  partialStatus.hidden = false
+  partialStatus.textContent = t('document.rerunStarted')
+  progressStage.textContent = t('document.progress.translating')
+  progressCount.textContent = t('document.progress.pending')
+  const restoreRetranslateUi = (): void => {
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
+    tab.generation = previousGeneration
+    tab.status = previousStatus
+    refreshActiveTabMirror(tab)
+    cancelButton.hidden = true
+    exportButton.disabled = !hasUsableExportResult(snapshot)
+    renderTaskState(snapshot, tab)
+    renderDocumentTabs()
+  }
+  try {
+    let result = await window.api.retranslateDocumentTarget(
+      snapshot.jobId,
+      jobGeneration,
+      targetId
+    )
+    if (!result.accepted && result.code === 'generation-conflict' &&
+      adoptSuggestedGeneration(result.suggestedGeneration)) {
+      jobGeneration = generation
+      tab.generation = jobGeneration
+      refreshActiveTabMirror(tab)
+      result = await window.api.retranslateDocumentTarget(
+        snapshot.jobId,
+        jobGeneration,
+        targetId
+      )
+    }
+    if (!documentTabs.includes(tab) || tab.generation !== jobGeneration) return
+    if (result.accepted) return
+    restoreRetranslateUi()
+    partialStatus.textContent = t('document.run.failedCode', { code: result.code ?? 'retranslate-failed' })
+    partialStatus.hidden = false
+  } catch {
+    restoreRetranslateUi()
     partialStatus.textContent = t('document.run.failed')
     partialStatus.hidden = false
   }
@@ -6021,6 +6555,7 @@ function stepDocumentZoom(delta: number): void {
  */
 function setDocumentViewMode(nextMode: DocumentViewMode): void {
   if (documentViewMode === nextMode) return
+  closeDocumentBlockActionMenu()
   const layoutTabId = activeDocumentTabId
   const tab = getActiveDocumentTab()
   if (tab) tab.viewMode = nextMode
@@ -6038,6 +6573,8 @@ function setDocumentViewMode(nextMode: DocumentViewMode): void {
     })
   }
   scheduleDocumentViewerStatePersist()
+  // 单面/双面切换不会重绘正文，但会隐藏或显示译文栏，检索高亮需要按新布局重算。
+  documentSearch.refresh()
 }
 
 /**
@@ -6109,6 +6646,40 @@ async function initializePlatformCapability(): Promise<void> {
 }
 
 /**
+ * 初始化顶部设置菜单，同一时间只展开一个菜单，并支持点击空白处或按 Esc 关闭。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function initializeDocumentToolbarMenus(): void {
+  const menus = Array.from(document.querySelectorAll<HTMLDetailsElement>('.document-toolbar-menu'))
+  if (menus.length === 0) return
+
+  for (const menu of menus) {
+    menu.addEventListener('toggle', () => {
+      if (!menu.open) return
+      for (const otherMenu of menus) {
+        if (otherMenu !== menu) otherMenu.open = false
+      }
+    })
+  }
+
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target
+    if (!(target instanceof Node)) return
+    if (menus.some((menu) => menu.contains(target))) return
+    for (const menu of menus) menu.open = false
+  })
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    const openMenu = menus.find((menu) => menu.open)
+    if (!openMenu) return
+    openMenu.open = false
+    openMenu.querySelector<HTMLElement>('summary')?.focus()
+  })
+}
+
+/**
  * 初始化上传交互、拖放、键盘操作与窗口控制。
  * @returns 无返回值。
  * @author zhenghq
@@ -6118,6 +6689,7 @@ async function initializeDocumentWorkspace(): Promise<void> {
   await initializeWindowTitlebar()
   await initializePlatformCapability()
   await initializeDocumentLanguages()
+  initializeDocumentToolbarMenus()
   await restoreDocumentViewerState()
   await documentHistory.loadTaskHistory()
   documentFileTabsPreviousButton.addEventListener('click', () => scrollDocumentTabs(-1))
@@ -6163,8 +6735,20 @@ async function initializeDocumentWorkspace(): Promise<void> {
   startButton.addEventListener('click', () => void startDocumentTranslation())
   cancelButton.addEventListener('click', () => void cancelDocumentTranslation())
   documentExport.bindEvents()
+  documentManualEdit.bindEvents()
+  bindDocumentEditHistoryShortcuts()
+  bindDocumentBlockActionEvents()
+  documentSearch.bindEvents()
   retryButton.addEventListener('click', () => void retryFailedDocumentTranslation())
   rerunButton.addEventListener('click', () => void rerunDocumentTranslation())
+  editUndoButton.addEventListener('click', () => {
+    documentManualEdit.undo()
+    refreshDocumentEditHistoryButtons()
+  })
+  editRedoButton.addEventListener('click', () => {
+    documentManualEdit.redo()
+    refreshDocumentEditHistoryButtons()
+  })
   partialExportRetryButton.addEventListener('click', () => {
     closePartialExportDialog(false)
     void retryFailedDocumentTranslation()
@@ -6197,27 +6781,18 @@ async function initializeDocumentWorkspace(): Promise<void> {
       tab.ocrDisplayMode = nextMode
       ocrDisplayMode = nextMode
       syncOcrDisplayModeControls()
-      // 展示方式改变即代表新的执行流程：先中断旧任务，再清空旧进度和预览。
-      if (tab.startInFlight || tab.pendingOcrModeRestart) {
-        // reset 会清空 expectedJobId；必须在重置前捕获旧任务，确保迟到任务仍可取消并释放。
-        const jobId = tab.activeJobId ?? tab.expectedJobId
-        const jobGeneration = tab.generation
-        tab.pendingOcrModeRestart = true
-        tab.pendingLanguageRetranslation = false
-        refreshActiveTabMirror(tab)
-        resetDocumentRunForModeSwitch(tab)
-        // 若启动请求已创建任务但尚未返回，这里先尝试取消；finally 会再次按最新 jobId 兜底。
-        void cancelDocumentJob(jobId, jobGeneration)
+      // 本地展示立即切换；主进程只在旧任务终态后复用已解析源模型，不再取消或整篇重跑。
+      tab.pendingOcrModeTarget = nextMode
+      if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+      renderDocumentTabs()
+      if (!(tab.activeJobId ?? tab.expectedJobId)) {
+        // 尚未创建任务的文件没有可复用源模型，按目标模式正常启动首次任务。
+        tab.pendingOcrModeTarget = null
+        if (tab.id === activeDocumentTabId) refreshActiveTabMirror(tab)
+        await startDocumentTabTranslation(tab)
         return
       }
-      // reset 会清空 expectedJobId；正常切换也必须先保存旧任务标识，避免资源泄漏。
-      const jobId = tab.activeJobId ?? tab.expectedJobId
-      const jobGeneration = tab.generation
-      await cancelDocumentJob(jobId, jobGeneration)
-      if (!documentTabs.includes(tab) || tab.ocrDisplayMode !== nextMode) return
-      if (jobId) await releaseDocumentJob(jobId)
-      resetDocumentRunForModeSwitch(tab)
-      await startDocumentTabTranslation(tab)
+      void maybeSwitchDocumentOcrMode(tab)
     })
   }
   syncOcrDisplayModeControls()
@@ -6247,14 +6822,23 @@ async function initializeDocumentWorkspace(): Promise<void> {
   })
   window.api.onDocumentBlockTranslated((update: DocumentWorkspaceTranslationUpdate) => {
     const tab = findDocumentTabByTranslationUpdate(update)
-    const snapshot = tab?.snapshot
-    if (!tab || !snapshot || snapshot.jobId !== update.jobId || snapshot.generation !== update.generation) return
+    if (!tab) return
+    if (tab.pendingModeSwitchGeneration === update.generation) {
+      // 模式切换确认前的新代际增量先并入缓冲快照，避免污染旧代际模型。
+      const buffered = tab.pendingModeSwitchSnapshot
+      if (!buffered || buffered.jobId !== update.jobId || buffered.generation !== update.generation) return
+      const nextBuffered = applyDocumentWorkspaceTranslationUpdate(buffered, update)
+      if (nextBuffered !== buffered) tab.pendingModeSwitchSnapshot = nextBuffered
+      return
+    }
+    const snapshot = tab.snapshot
+    if (!snapshot || snapshot.jobId !== update.jobId || snapshot.generation !== update.generation) return
     const next = applyDocumentWorkspaceTranslationUpdate(snapshot, update)
     if (next === snapshot) return
-    updateDocumentTabSnapshot(tab, next)
+    const applied = updateDocumentTabSnapshot(tab, next)
     if (tab.id !== activeDocumentTabId) return
     refreshActiveTabMirror(tab)
-    scheduleSnapshotRenderForTab(tab, next)
+    scheduleSnapshotRenderForTab(tab, applied)
     scheduleDocumentViewerStatePersist()
   })
   // 重试按钮会随增量重绘被替换，使用文档级事件委托保证始终响应最新按钮。

@@ -34,6 +34,7 @@ import type {
   DocumentHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
+  DocumentSwitchModeRequest,
   DocumentSourceResult,
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
@@ -67,6 +68,7 @@ export type {
   DocumentHistoryEntry,
   DocumentRunRequest,
   DocumentRunResult,
+  DocumentSwitchModeRequest,
   DocumentSourceResult,
   DocumentWorkspaceSnapshot,
   DocumentWorkspaceTranslationUpdate
@@ -1595,10 +1597,18 @@ export interface Api {
   getDocumentPlatformCapability(): Promise<DocumentPlatformCapability>
   /** 启动当前已批准文件的翻译任务。 */
   runDocument(request: DocumentRunRequest): Promise<DocumentRunResult>
+  /** 在不重新解析或 OCR 的前提下切换当前文档的运行模式。 */
+  switchDocumentMode(request: DocumentSwitchModeRequest): Promise<DocumentRunResult>
   /** 使用新代际重新翻译指定文档任务中的失败项。 */
   retryFailedDocument(jobId: string, generation: number): Promise<DocumentRunResult>
   /** 使用新代际仅重试指定文档任务中的一个可重试目标。 */
   retryFailedDocumentTarget(
+    jobId: string,
+    generation: number,
+    targetId: string
+  ): Promise<DocumentRunResult>
+  /** 强制重新翻译指定译文目标，绕过缓存并在失败时保留旧译文。 */
+  retranslateDocumentTarget(
     jobId: string,
     generation: number,
     targetId: string
