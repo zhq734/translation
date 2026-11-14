@@ -4,10 +4,10 @@ const LIST_LINE_PATTERN = /^(?:[-*+•]\s+|\d+[.)]\s+)/u
 const BLOCK_LINE_PATTERN = /^(?:#{1,6}\s+|>\s+|```|~~~|\|)/u
 const INDENTED_CODE_PATTERN = /^(?:\t| {4,})\S/u
 const CJK_CHARACTER_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff]/u
-const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—]$/u
+// 全角逗号、顿号、分号与冒号紧跟前字，视觉换行合并时其后不应补空格。
+const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—，、；：]$/u
 const NO_SPACE_BEFORE_PATTERN = /^[,.;:!?，。！？；：、)\]}”’]/u
 const SENTENCE_END_PATTERN = /[.!?。！？]["'”’）)\]}]*$/u
-const WINDOWS_LINE_BREAK_MARKER = '\uE000'
 /**
  * 强编程语言关键字：基本只出现在代码中，命中即认为当前行具备代码特征。
  * 刻意不包含 if/for/return/new/try 等英文常用词，避免普通散文被误判为代码。
@@ -157,9 +157,12 @@ function looksLikeLogSelection(lines: string[]): boolean {
 }
 
 /**
- * 规范化系统剪贴板捕获的选中文字，将浏览器或文档中的单个视觉硬换行合并，
+ * 规范化取词管线捕获的选中文字，将浏览器或文档中的视觉软换行合并，
  * 同时保留空行分隔的段落、列表和块级内容，避免完整句子被逐行翻译。
- * @param text 系统剪贴板返回的原始选中文字。
+ * Windows 剪贴板与部分原生直读返回的 CRLF 与 LF 同等对待：浏览器在 Windows
+ * 上同样用 CRLF 表示视觉换行，无法与编辑器换行区分，因此统一交给段落、
+ * 列表、代码、日志与句末标点启发式判断是否保留换行。
+ * @param text 取词管线返回的原始选中文字。
  * @returns 适合语言检测、翻译请求和原文展示的文本。
  * @author zhenghq
  */
@@ -167,20 +170,16 @@ export function normalizeSelectedText(text: string): string {
   const normalizedText = String(text ?? '')
     .replace(/\u00ad/gu, '')
     .replace(/\u00a0/gu, ' ')
+    .replace(/\r\n?|[\u2028\u2029]/gu, '\n')
     .trim()
-    // 先裁剪原始选区的首尾空白，再注入仅供内部判断的 Windows 换行标记。
-    // 否则末尾 CRLF 会先变成“标记 + 换行”，trim() 只会移除换行，导致标记泄漏到结果。
-    .replace(/\r\n/gu, `${WINDOWS_LINE_BREAK_MARKER}\n`)
-    .replace(/\r|[\u2028\u2029]/gu, '\n')
   if (!normalizedText.includes('\n')) return normalizedText
 
-  // 编辑器（如 IDEA）和终端通过原生直读返回的代码/日志选区使用 LF 换行，不能套用
-  // 浏览器视觉软换行合并规则，否则每一行会被压成一行。这里先移除仅用于 Windows
-  // 判断的私有区标记，再对整体选区做代码或日志特征识别，命中时保留换行与行首缩进。
-  const candidateText = normalizedText.split(WINDOWS_LINE_BREAK_MARKER).join('')
-  const candidateLines = candidateText.split('\n')
-  if (looksLikeCodeSelection(candidateLines) || looksLikeLogSelection(candidateLines)) {
-    return candidateText
+  // 编辑器（如 IDEA）和终端通过原生直读返回的代码/日志选区不能套用浏览器
+  // 视觉软换行合并规则，否则每一行会被压成一行。这里对整体选区做代码或日志
+  // 特征识别，命中时保留换行与行首缩进。
+  if (looksLikeCodeSelection(normalizedText.split('\n')) ||
+    looksLikeLogSelection(normalizedText.split('\n'))) {
+    return normalizedText
       .split('\n')
       .map((line) => line.replace(/[ \t]+$/u, ''))
       .join('\n')
@@ -189,15 +188,10 @@ export function normalizeSelectedText(text: string): string {
   const lines = normalizedText.split('\n')
   let result = ''
   let previousRawLine = ''
-  let previousLineEndsWithWindowsBreak = false
   let paragraphBreakPending = false
 
   for (const rawLine of lines) {
-    const lineEndsWithWindowsBreak = rawLine.endsWith(WINDOWS_LINE_BREAK_MARKER)
-    const contentRawLine = lineEndsWithWindowsBreak
-      ? rawLine.slice(0, -WINDOWS_LINE_BREAK_MARKER.length)
-      : rawLine
-    const line = contentRawLine.trim()
+    const line = rawLine.trim()
     if (!line) {
       if (result) paragraphBreakPending = true
       continue
@@ -209,9 +203,8 @@ export function normalizeSelectedText(text: string): string {
       result += `\n\n${line}`
     } else {
       const previousKind = classifySelectedLine(previousRawLine)
-      const currentKind = classifySelectedLine(contentRawLine)
-      const preserveLineBreak = previousLineEndsWithWindowsBreak
-        || currentKind !== 'prose'
+      const currentKind = classifySelectedLine(rawLine)
+      const preserveLineBreak = currentKind !== 'prose'
         || previousKind === 'block'
         || (previousKind === 'prose' && endsCompleteSentence(previousRawLine.trim()))
       result += preserveLineBreak
@@ -219,8 +212,7 @@ export function normalizeSelectedText(text: string): string {
         : `${resolveSoftLineSeparator(previousRawLine.trim(), line)}${line}`
     }
 
-    previousRawLine = contentRawLine
-    previousLineEndsWithWindowsBreak = lineEndsWithWindowsBreak
+    previousRawLine = rawLine
     paragraphBreakPending = false
   }
 

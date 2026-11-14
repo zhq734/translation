@@ -28,14 +28,29 @@ test('连续软换行应合并且不产生重复空格', () => {
 })
 
 /**
- * 校验 Windows 划词复制产生的 CRLF 会保留为逻辑换行，避免多行原文被压成一行。
+ * 校验 Windows 浏览器划词复制产生的 CRLF 视觉软换行会与 LF 一致地合并，
+ * 避免浏览器里视觉换行的完整句子被逐行拆开翻译。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows 多行选区的 CRLF 换行应保留', () => {
+test('Windows 浏览器整句的 CRLF 视觉换行应合并为空格', () => {
   assert.equal(
-    normalizeSelectedText('第一行内容\r\n第二行内容\r\nThird line'),
-    '第一行内容\n第二行内容\nThird line'
+    normalizeSelectedText(
+      'The quick brown fox jumps\r\nover the lazy dog near the\r\nriver bank every morning.'
+    ),
+    'The quick brown fox jumps over the lazy dog near the river bank every morning.'
+  )
+})
+
+/**
+ * 校验中文整句中的 CRLF 视觉换行合并时不会在汉字之间引入多余空格。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('中文整句中的 CRLF 视觉换行应直接连接', () => {
+  assert.equal(
+    normalizeSelectedText('这是一个完整的\r\n中文句子，\r\n不应被拆开翻译。'),
+    '这是一个完整的中文句子，不应被拆开翻译。'
   )
 })
 
@@ -62,12 +77,12 @@ test('Windows 选区末尾带空格或连续 CRLF 时不应出现私有区字符
 })
 
 /**
- * 校验 Windows 多行选区在去除行尾空格后仍保留逻辑换行。
+ * 校验 Windows 多行选区在去除行尾空格后仍按软换行合并，不产生重复空格。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Windows 多行选区的行尾空格不应污染下一行', () => {
-  assert.equal(normalizeSelectedText('hello \r\nworld  '), 'hello\nworld')
+test('Windows 多行选区的行尾空格不应污染合并结果', () => {
+  assert.equal(normalizeSelectedText('hello \r\nworld  '), 'hello world')
 })
 
 /**
