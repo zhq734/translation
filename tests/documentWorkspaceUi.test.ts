@@ -421,7 +421,7 @@ test('页面重新打开恢复活动 Tab 后必须重新应用持久化区块高
   const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
 
   assert.ok(restoreStart > -1)
-  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!\)[\s\S]*?requestAnimationFrame\(\(\) => documentNavigation\.highlightBlock\(activeBlockId\)\)/u,
+  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!, \{ deferTranslationUntilSourceReady: true \}\)[\s\S]*?requestAnimationFrame\(\(\) => documentNavigation\.highlightBlock\(activeBlockId\)\)/u,
     '恢复 DOM 后必须按持久化区块恢复高亮')
 })
 
@@ -541,7 +541,7 @@ test('多 Tab 原文预览身份必须同时绑定 Tab 与文件 SHA-256', () =>
   assert.match(source, /let renderedSourcePreviewSha256 = ''/u)
   assert.match(
     renderSource,
-    /function renderSnapshot\(snapshot: DocumentWorkspaceSnapshot, tab: DocumentWorkspaceTab\): void/u,
+    /function renderSnapshot\(\s*snapshot: DocumentWorkspaceSnapshot,\s*tab: DocumentWorkspaceTab,\s*options: DocumentSnapshotRenderOptions = \{\}\s*\): void/u,
     '快照渲染必须显式接收所属 Tab，不能从全局激活状态重新推断'
   )
   assert.match(
@@ -549,7 +549,11 @@ test('多 Tab 原文预览身份必须同时绑定 Tab 与文件 SHA-256', () =>
     /const canReuseRenderedSourcePreview =[\s\S]*?renderedSourcePreviewTabId === tab\.id[\s\S]*?renderedSourcePreviewSha256 === tab\.selection\.sha256/u,
     '只有同一 Tab 且文件指纹一致时才允许复用缺失 source 的已渲染原文'
   )
-  assert.match(renderSource, /: canReuseRenderedSourcePreview\s*\?\s*renderedSourcePreviewIdentity\s*:\s*''/u)
+  assert.match(
+    renderSource,
+    /: canReuseRenderedSourcePreview\s*\?\s*renderedSourcePreviewIdentity\s*:\s*tab\.selection\.format === 'pdf'[\s\S]*?`pdf-pending:/u,
+    '同文件等待源模型时应使用待解析身份，且不能重新挂载已存在的 PDF 预览'
+  )
   assert.match(renderSource, /renderedSourcePreviewTabId = tab\.id/u)
   assert.match(renderSource, /renderedSourcePreviewSha256 = tab\.selection\.sha256/u)
   assert.doesNotMatch(renderSource, /getActiveDocumentTab\(\)/u,
@@ -1148,19 +1152,24 @@ test('PDF 横竖混排译文必须在每页首次挂载时使用自己的宽度�
 })
 
 test('PDF 译文流式重排不得重复写入未变化的间距样式', () => {
-  const source = read('src/renderer/src/document.ts')
+  const source = read('src/renderer/src/documentImageStackLayout.ts')
   const helperStart = source.indexOf('function setCssPixelPropertyIfChanged(')
-  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const normalizeStart = source.indexOf('function normalizeImageStackLayout(')
   const helperSource = source.slice(helperStart, normalizeStart)
-  const normalizeSource = source.slice(normalizeStart, source.indexOf('/**', normalizeStart + 1))
+  const normalizeSource = read('src/renderer/src/document.ts')
+  const flowNormalizeStart = normalizeSource.indexOf('function normalizeTranslationFlowLayout(')
+  const flowNormalizeSource = normalizeSource.slice(
+    flowNormalizeStart,
+    normalizeSource.indexOf('/**', flowNormalizeStart + 1)
+  )
 
   assert.ok(helperStart > -1 && normalizeStart > helperStart)
   assert.match(helperSource, /getPropertyValue\(property\)/u)
   assert.match(helperSource, /Math\.abs\(currentValue - value\) < 0\.01/u,
     '间距值未变化时不能再次触发样式失效')
-  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-flow-gap-before'/u)
-  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-image-flow-gap-before'/u)
-  assert.match(normalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-shape-flow-offset'/u)
+  assert.match(flowNormalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-flow-gap-before'/u)
+  assert.match(flowNormalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-image-flow-gap-before'/u)
+  assert.match(flowNormalizeSource, /setCssPixelPropertyIfChanged\(child, '--document-shape-flow-offset'/u)
 })
 
 test('文件翻译译文滚动容器必须禁用浏览器滚动锚定', () => {
@@ -1406,6 +1415,7 @@ test('文档块级翻译增量必须通过受控 IPC 原位更新当前任务界
 
 test('译文块必须支持菜单手改与单目标重新翻译，并显示可定位状态', () => {
   const source = read('src/renderer/src/document.ts')
+  const interactionSource = read('src/renderer/src/documentBlockActionController.ts')
   const css = read('src/renderer/src/document.css')
   const types = read('src/shared/types.ts')
   const preload = read('src/preload/index.ts')
@@ -1435,20 +1445,20 @@ test('译文块必须支持菜单手改与单目标重新翻译，并显示可�
   assert.match(source, /window\.api\.retranslateDocumentTarget\(/u)
   assert.match(source, /findDocumentTarget\(/u)
   assert.match(source, /collectRetryableDocumentTargetIds/u)
-  assert.match(source, /data-document-block-action["']?,?\s*["']edit["']|documentBlockAction\s*=\s*["']edit["']/u)
-  assert.match(source, /data-document-block-action["']?,?\s*["']retranslate["']|documentBlockAction\s*=\s*["']retranslate["']/u)
+  assert.match(interactionSource, /data-document-block-action["']?,?\s*["']edit["']|documentBlockAction\s*=\s*["']edit["']/u)
+  assert.match(interactionSource, /data-document-block-action["']?,?\s*["']retranslate["']|documentBlockAction\s*=\s*["']retranslate["']/u)
   assert.match(
-    source,
+    interactionSource,
     /retranslate\.addEventListener\('click',[\s\S]*?void retranslateDocumentTarget\(current\.targetId\)/u,
     '单块重新翻译必须始终走绕过缓存的强制重译路径'
   )
   assert.doesNotMatch(
-    source,
+    interactionSource,
     /if \(retryable\) void retryFailedDocumentTarget\(current\.targetId\)/u,
     '单块菜单不能按目标状态分流到普通缓存重试'
   )
-  assert.match(source, /addEventListener\('contextmenu'/u)
-  assert.match(source, /addEventListener\('pointerover'/u)
+  assert.match(interactionSource, /addEventListener\('contextmenu'/u)
+  assert.match(interactionSource, /addEventListener\('pointerover'/u)
   assert.doesNotMatch(source, /document\.badge\.(ocr|formula|table|cache)/u)
   assert.match(css, /\.document-translation-failed\b/u)
   assert.match(css, /\.document-block-action-menu\b/u)
@@ -1852,6 +1862,7 @@ test('终态完成后迟到的进度快照不得覆盖最终译文', () => {
 
 test('PDF 预览必须使用 PDF.js 原生页面渲染而不是重建绝对定位文本', () => {
   const source = read('src/renderer/src/document.ts')
+  const textStyleSource = read('src/renderer/src/documentTextStyle.ts')
   const css = read('src/renderer/src/document.css')
   const html = read('src/renderer/document.html')
 
@@ -1873,8 +1884,8 @@ test('PDF 预览必须使用 PDF.js 原生页面渲染而不是重建绝对定�
   assert.match(source, /dataset\.sourceWidth/u)
   assert.match(css, /font-size:\s*calc\(\s*var\(--document-run-font-size-px[^;]*var\(--document-page-scale/su)
   // 自定义属性必须自带 px 单位，再与无单位缩放系数相乘；避免依赖隐式单位换算。
-  assert.match(source, /--document-run-font-size-px/u)
-  assert.match(source, /--document-run-line-height-px/u)
+  assert.match(textStyleSource, /--document-run-font-size-px/u)
+  assert.match(textStyleSource, /--document-run-line-height-px/u)
   assert.match(
     css,
     /line-height:\s*calc\(\s*var\(\s*--document-run-line-height-px,[\s\S]*?var\(--document-page-scale/su
@@ -1922,6 +1933,7 @@ test('PDF 译文流式布局应使用基线推进，避免行盒高度与坐标�
 
 test('PDF 原文与译文必须共用同一页面可用宽度计算', () => {
   const source = read('src/renderer/src/document.ts')
+  const textStyleSource = read('src/renderer/src/documentTextStyle.ts')
   assert.match(source, /function documentPageAvailableWidth\(/u)
   assert.match(source, /function documentPageContentWidth\(/u)
   assert.equal((source.match(/documentPageAvailableWidth\(container\)/gu) ?? []).length >= 1, true)
@@ -1933,16 +1945,17 @@ test('PDF 原文与译文必须共用同一页面可用宽度计算', () => {
   assert.match(source, /paddingRight/u)
   assert.match(source, /baselineAdvance\s*<=\s*currentSize \* 3(?:\.0)?/u)
   assert.match(source, /applyScalableTextStyle\(span, effectiveTextStyle\(block, run\)\)/u)
-  assert.match(source, /style\.lineHeight !== undefined/u)
-  assert.match(source, /--document-run-line-height-px/u)
+  assert.match(textStyleSource, /style\.lineHeight !== undefined/u)
+  assert.match(textStyleSource, /--document-run-line-height-px/u)
 })
 
 test('PDF 译文必须合并区块与 run 样式，保留原文字号、颜色、粗细、斜体、下划线和行高', () => {
   const source = read('src/renderer/src/document.ts')
+  const textStyleSource = read('src/renderer/src/documentTextStyle.ts')
   const css = read('src/renderer/src/document.css')
-  const helperStart = source.indexOf('function effectiveTextStyle(')
-  const helperEnd = source.indexOf('/**', helperStart + 1)
-  const helperSource = source.slice(helperStart, helperEnd)
+  const helperStart = textStyleSource.indexOf('export function effectiveTextStyle(')
+  const helperEnd = textStyleSource.indexOf('/**', helperStart + 1)
+  const helperSource = textStyleSource.slice(helperStart, helperEnd)
   const renderTextStart = source.indexOf('function renderTextBlock(')
   const renderTextEnd = source.indexOf('/**', renderTextStart + 1)
   const renderTextSource = source.slice(renderTextStart, renderTextEnd)
@@ -2002,6 +2015,9 @@ test('PDF 原文必须进入视口后再绘制 Canvas，并在替换预览时释
   assert.match(source, /pdfPreviewCleanups/u)
   assert.match(source, /pdfPreviewCleanups\.get\(container\)\?\.\(\)/u)
   assert.match(renderSource, /new IntersectionObserver/u)
+  assert.match(renderSource, /closest<HTMLElement>\('#document-source-content, #document-translation-content'\)/u,
+    'IntersectionObserver 的 root 必须是真正的滚动容器；以随内容增长的 previewHost 为 root 会让所有页面永远相交并全量并发绘制')
+  assert.match(renderSource, /root:\s*pdfScrollRoot/u)
   assert.match(renderSource, /rootMargin:\s*'[^']+'/u)
   assert.match(renderSource, /entry\.isIntersecting/u)
   assert.match(renderSource, /observer\.observe\(article\)/u)
@@ -2024,10 +2040,62 @@ test('PDF 初始挂载必须同步建立页面占位，不能逐页等待 getPag
   assert.ok(mountStart >= 0 && mountEnd > mountStart, '必须存在页面占位挂载循环')
   assert.doesNotMatch(mountSource, /getPage\(/u,
     '页面占位挂载循环不能逐页等待 PDF.js getPage')
-  assert.match(mountSource, /model\.pages\[pageNumber - 1\]/u,
-    '占位尺寸必须来自已解析模型')
+  assert.match(mountSource, /model\?\.pages\[pageNumber - 1\]/u,
+    '占位优先使用已解析模型尺寸')
+  assert.match(mountSource, /modelPage\?\.width \?\? 612/u,
+    '解析模型到达前必须提供同步兜底页面尺寸')
   assert.match(mountSource, /observer\.observe\(article\)/u,
     '挂载后的页面仍必须由可见性观察器按需渲染')
+})
+
+test('PDF 原文必须在解析模型到达前使用已授权原始字节渲染', () => {
+  const source = read('src/renderer/src/document.ts')
+  const renderStart = source.indexOf('async function renderPdfPages(')
+  const renderEnd = source.indexOf('/**', renderStart + 1)
+  const renderSource = source.slice(renderStart, renderEnd)
+  const snapshotStart = source.indexOf('function renderSnapshot(')
+  const snapshotEnd = source.indexOf('/**', snapshotStart + 1)
+  const snapshotSource = source.slice(snapshotStart, snapshotEnd)
+
+  assert.match(
+    renderSource,
+    /async function renderPdfPages\(\s*container: HTMLElement,\s*model: DocumentModel \| undefined,\s*jobId: string,\s*tab: DocumentWorkspaceTab,\s*onFirstPageReady\?: \(\) => void\s*\)/u,
+    'PDF 预览器必须允许在没有解析模型时启动'
+  )
+  assert.match(renderSource, /if \(modelPage\)\s*\{\s*const textLayer = createPdfOcrTextLayer\(modelPage\)/u,
+    '透明文字层只能在解析模型到达后叠加')
+  assert.match(source, /function renderPendingPdfSourcePreview\(/u)
+  assert.match(source, /void renderPdfPages\(previewHost, undefined, jobId, tab\)/u,
+    '首条进度到达后必须立即请求原始 PDF 字节')
+  assert.match(
+    snapshotSource,
+    /!snapshot\.source[\s\S]*?tab\.selection\.format === 'pdf'[\s\S]*?renderPendingPdfSourcePreview/u,
+    '无源模型的 PDF 快照不能只显示解析等待提示'
+  )
+  assert.match(snapshotSource, /canReuseRenderedSourcePreview/u,
+    '解析失败或终态缺少源模型时必须保留已加载的原文预览')
+})
+
+test('PDF 文件打开后必须立即渲染原文，不能等待任务接受或首条进度快照', () => {
+  const source = read('src/renderer/src/document.ts')
+  const sourceAccess = read('src/renderer/src/documentSourceAccess.ts')
+  const start = source.indexOf('async function startDocumentTabTranslation(')
+  const startSource = source.slice(start, source.indexOf('/**', start + 1))
+  const activeStart = source.indexOf('function renderActiveDocumentTab(')
+  const activeSource = source.slice(activeStart, source.indexOf('/**', activeStart + 1))
+  const renderStart = source.indexOf('async function renderPdfPages(')
+  const renderSource = source.slice(renderStart, source.indexOf('/**', renderStart + 1))
+
+  assert.match(startSource, /renderPendingPdfSourcePreview\(sourceContent, '', tab\)/u,
+    '启动任务前必须立即挂载 PDF.js 原文预览，不能依赖 document:run 成功或首条进度事件')
+  assert.match(activeSource, /tab\.selection\.format === 'pdf'[\s\S]*?renderPendingPdfSourcePreview/u,
+    '切换回尚未收到快照的 PDF Tab 时也必须重新显示原文')
+  assert.match(sourceAccess, /export function resolveAuthorizedDocumentSourceRequest\(/u,
+    '任务 Tab 必须能使用已授权文件指纹读取解析前原文')
+  assert.match(renderSource, /resolveAuthorizedDocumentSourceRequest\(\s*tab,/u,
+    'PDF.js 原文预览必须优先使用已授权路径，而不是等待活动 jobId')
+  assert.match(renderSource, /window\.api\.getApprovedDocumentSource\(approvedSource\)/u,
+    '任务接受前必须通过受控历史资源入口读取已授权原文')
 })
 
 test('PDF 只有原文复用 PDF.js Canvas，译文必须重建结构化流式 DOM', () => {
@@ -2038,10 +2106,10 @@ test('PDF 只有原文复用 PDF.js Canvas，译文必须重建结构化流式 D
 
   assert.match(
     source,
-    /async function renderPdfPages\(\s*container: HTMLElement,\s*model: DocumentModel,\s*jobId: string,\s*tab: DocumentWorkspaceTab\s*\)/u
+    /async function renderPdfPages\(\s*container: HTMLElement,\s*model: DocumentModel \| undefined,\s*jobId: string,\s*tab: DocumentWorkspaceTab,\s*onFirstPageReady\?: \(\) => void\s*\)/u
   )
   assert.match(renderSource, /model\.source\.format === 'pdf' && side === 'source'/u)
-  assert.match(renderSource, /void renderPdfPages\(previewHost, model, jobId, tab\)/u)
+  assert.match(renderSource, /void renderPdfPages\(previewHost, model, jobId, tab, options\.onSourcePreviewReady\)/u)
   assert.match(
     renderSource,
     /for \(const page of model\.pages\)[\s\S]*const pageScale = side === 'translation' && !isImageDocument/u
@@ -2193,23 +2261,25 @@ test('PDF 左对齐译文扩展宽度时必须保留原文左右页边距，不�
 
 test('PDF 译文必须为内部字体名追加可用的浏览器字体回退', () => {
   const source = read('src/renderer/src/document.ts')
+  const textStyleSource = read('src/renderer/src/documentTextStyle.ts')
 
-  assert.match(source, /function pdfPreviewFontFamily\(/u)
-  assert.match(source, /--document-run-font-family/u)
-  assert.match(source, /PingFang SC/u)
-  assert.match(source, /Microsoft YaHei/u)
-  assert.match(source, /Arial/u)
-  assert.match(source, /Times New Roman/u)
-  assert.match(source, /Songti SC/u)
-  assert.match(source, /Menlo/u)
-  assert.match(source, /Noto Serif CJK SC/u)
+  assert.match(source, /pdfPreviewFontFamily/u)
+  assert.match(textStyleSource, /export function pdfPreviewFontFamily\(/u)
+  assert.match(textStyleSource, /--document-run-font-family/u)
+  assert.match(textStyleSource, /PingFang SC/u)
+  assert.match(textStyleSource, /Microsoft YaHei/u)
+  assert.match(textStyleSource, /Arial/u)
+  assert.match(textStyleSource, /Times New Roman/u)
+  assert.match(textStyleSource, /Songti SC/u)
+  assert.match(textStyleSource, /Menlo/u)
+  assert.match(textStyleSource, /Noto Serif CJK SC/u)
 })
 
 test('PDF 译文必须按真实字体名区分宋体、黑体与等宽字体回退', () => {
-  const source = read('src/renderer/src/document.ts')
-  const familyStart = source.indexOf('function pdfPreviewFontFamily(')
-  const familyEnd = source.indexOf('/**', familyStart + 1)
-  const familySource = source.slice(familyStart, familyEnd)
+  const textStyleSource = read('src/renderer/src/documentTextStyle.ts')
+  const familyStart = textStyleSource.indexOf('export function pdfPreviewFontFamily(')
+  const familyEnd = textStyleSource.indexOf('/**', familyStart + 1)
+  const familySource = textStyleSource.slice(familyStart, familyEnd)
 
   assert.match(familySource, /song|simsun|serif|times/iu)
   assert.match(familySource, /mono|courier|consolas|menlo/iu)
@@ -2310,6 +2380,157 @@ test('PDF 译文图片必须锚定原文纵向坐标，并只避让横向相交�
   )
 })
 
+test('PDF 译文叠放图片必须聚合成单一流式占位并保留成员绝对覆盖关系', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderPageStart = source.indexOf('function renderPage(')
+  const renderPageEnd = source.indexOf('/**', renderPageStart + 1)
+  const renderPageSource = source.slice(renderPageStart, renderPageEnd)
+  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const normalizeEnd = source.indexOf('/**', normalizeStart + 1)
+  const normalizeSource = source.slice(normalizeStart, normalizeEnd)
+  const stackStart = source.indexOf('function renderImageStackBlock(')
+  const stackEnd = source.indexOf('/**', stackStart + 1)
+  const stackSource = source.slice(stackStart, stackEnd)
+
+  assert.match(source, /function renderImageStackBlock\(/u)
+  assert.match(renderPageSource, /stackGroupId/u)
+  assert.match(renderPageSource, /document-image-stack/u)
+  assert.match(
+    stackSource,
+    /resolveDocumentImageStackMemberOffset\(block\.bbox, bounds\)/u,
+    '叠放成员必须通过统一函数换算组内相对坐标，不能在渲染层重复使用原页面坐标'
+  )
+  assert.match(stackSource, /--document-image-stack-member-left/u)
+  assert.match(stackSource, /--document-image-stack-member-top/u)
+  assert.match(read('src/renderer/src/documentImageStackLayout.ts') + source, /data-image-stack-member/u)
+  assert.match(source, /stackOrder/u)
+  assert.match(normalizeSource, /document-image-stack/u)
+  assert.match(css, /\.document-page\[data-layout='translation-flow'\]\s+\.document-image-stack\s*\{/u)
+  assert.match(css, /\.document-image-stack\s*>\s+\.document-image-block\[data-image-stack-member='true'\]\s*\{[^}]*position:\s*absolute/su)
+  // 成员渲染时仍会写入原页面坐标，叠放组的相对 left/top 必须显式覆盖这些内联样式；
+  // 否则第二张及后续图片会在组容器内再次叠加原始 y 坐标，视觉上被逐张拆开。
+  assert.match(
+    css,
+    /\.document-image-stack\s*>\s+\.document-image-block\[data-image-stack-member='true'\]\s*\{[^}]*left:\s*calc\([^;]*!important/su
+  )
+  assert.match(
+    css,
+    /\.document-image-stack\s*>\s+\.document-image-block\[data-image-stack-member='true'\]\s*\{[^}]*top:\s*calc\([^;]*!important/su
+  )
+  assert.match(css, /\.document-image-stack\s*\{[^}]*height:\s*calc\([^;]*var\(--document-image-stack-height[^;]*var\(--document-page-scale/su)
+})
+
+test('PDF 图内原生文字必须和叠放图片渲染为同一覆盖组', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const renderPageStart = source.indexOf('function renderPage(')
+  const renderPageEnd = source.indexOf('/**', renderPageStart + 1)
+  const renderPageSource = source.slice(renderPageStart, renderPageEnd)
+  const overlayRule = /\.document-page\[data-layout='translation-flow'\] \.document-image-overlay\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const textRule = /\.document-image-overlay\s*>\s*\.document-text-block\[data-image-overlay-text='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const ocrMemberRule = /\.document-image-overlay\s*>\s*\.document-image-block\[data-image-overlay-member='true'\]\[data-ocr-translation='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const ocrRule = /\.document-image-overlay\s*>\s*\.document-image-block\[data-image-overlay-member='true'\]\s*>\s*\.document-ocr-translation-layer\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(source, /createDocumentImageOverlayGroup/u)
+  assert.match(source, /normalizeImageOverlayLayout\(page\)/u)
+  assert.match(renderPageSource, /overlayGroupId/u)
+  assert.match(overlayRule, /position:\s*relative/u)
+  // 覆盖组成员都是绝对定位，组容器必须自行保留并集高度；否则通用流式规则会把高度压成 0，
+  // 图片虽然仍可见，后续正文却会从覆盖组顶部开始排列并压到图片上。
+  assert.match(
+    overlayRule,
+    /height:\s*calc\([^;]*\)\s*!important/u,
+    '覆盖组高度必须显式覆盖通用流式 height: auto !important'
+  )
+  assert.match(
+    overlayRule,
+    /min-height:\s*calc\([^;]*\)\s*!important/u,
+    '覆盖组最小高度必须显式覆盖通用流式 min-height: 0 !important'
+  )
+  assert.match(textRule, /position:\s*absolute\s*!important/u)
+  assert.match(textRule, /z-index:\s*10001/u)
+  // 图内原生文字保持绝对覆盖，原始 bbox 只作为最小占位；译文行盒超出 bbox 时必须完整显示，
+  // 不能再用固定高度和 overflow: hidden 裁掉每行文字，但绝对定位仍不能撑高图片覆盖组。
+  assert.match(textRule, /height:\s*auto\s*!important/u)
+  assert.match(
+    textRule,
+    /min-height:\s*calc\([^;]*var\(--document-image-overlay-text-height[^;]*var\(--document-page-scale/su,
+    '覆盖文字最小高度必须使用原始 bbox 高度并按页面比例缩放'
+  )
+  // 图内文字是单行绝对覆盖层；若继承正文 1.45 行高，原 bbox 顶部到字形顶部会产生额外半行距，
+  // 使 HTML 译文比图片内原有文字明显偏下并形成双重文字。
+  assert.match(
+    textRule,
+    /line-height:\s*calc\([^;]*var\(--document-image-overlay-text-height[^;]*var\(--document-page-scale[^;]*!important/su,
+    '覆盖文字行高必须严格使用原始 bbox 高度，不能继承正文行高'
+  )
+  const textRunRule = /\.document-image-overlay\s*>\s*\.document-text-block\[data-image-overlay-text='true'\]\s+\.document-text-run\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  assert.match(
+    textRunRule,
+    /display:\s*inline-block/su,
+    '图内文字 run 必须成为可垂直对齐的行内块，否则行内盒仍会偏移'
+  )
+  assert.match(
+    textRunRule,
+    /vertical-align:\s*top/su,
+    '图内文字 run 必须顶对齐到原始 bbox，不能让字形盒从行盒顶部向下偏移'
+  )
+  assert.match(
+    textRunRule,
+    /line-height:\s*calc\([^;]*var\(--document-image-overlay-text-height[^;]*var\(--document-page-scale[^;]*!important/su,
+    '图内文字的 run 行盒也必须使用原始 bbox 高度，否则默认 1.45 倍行高仍会把字形向下推'
+  )
+  assert.match(textRule, /overflow:\s*visible/u)
+  assert.doesNotMatch(textRule, /max-height/u,
+    '覆盖文字不能限制最大高度，否则多行译文仍会被裁切')
+  assert.match(
+    css,
+    /\.document-image-overlay\s*>\s*\.document-text-block\[data-image-overlay-text='true'\]::before\s*\{[^}]*background:\s*var\(--document-image-overlay-text-mask/su,
+    '覆盖文字必须使用从底图局部采样的背景遮罩，盖住图片内已烘焙的原文'
+  )
+  const textMaskRule = /\.document-image-overlay\s*>\s*\.document-text-block\[data-image-overlay-text='true'\]::before\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  assert.match(
+    textMaskRule,
+    /--document-image-overlay-text-mask-padding:/su,
+    '覆盖文字遮罩必须扩展安全边，避免旧字从 bbox 边缘露出'
+  )
+  assert.match(
+    textMaskRule,
+    /top:\s*calc\(-1\s*\*\s*var\(--document-image-overlay-text-mask-padding/su,
+    '遮罩必须向上扩展安全边，完整覆盖原始字形'
+  )
+  assert.match(
+    textMaskRule,
+    /left:\s*calc\(-1\s*\*\s*var\(--document-image-overlay-text-mask-padding/su,
+    '遮罩必须向左扩展安全边，完整覆盖原始字形'
+  )
+  assert.match(
+    textMaskRule,
+    /height:\s*calc\([^;]*var\(--document-image-overlay-text-height[^;]*var\(--document-image-overlay-text-mask-padding/su,
+    '遮罩高度必须包含 bbox 高度和上下两侧安全边'
+  )
+  const normalizeSource = /export function normalizeImageOverlayLayout[\s\S]*?\n\}/u.exec(
+    read('src/renderer/src/documentImageOverlayLayout.ts')
+  )?.[0] ?? ''
+  assert.match(normalizeSource, /data-image-overlay-member/u)
+  assert.doesNotMatch(
+    normalizeSource,
+    /data-image-overlay-text/u,
+    '图内原生文字只能绝对覆盖，不能参与覆盖组普通流高度计算'
+  )
+  assert.match(
+    read('src/renderer/src/documentImageOverlayLayout.ts'),
+    /applyImageOverlayTextMasks/u,
+    '覆盖文字必须从实际底图采样局部背景并写入遮罩变量'
+  )
+  // OCR 译文可能高于底图，成员容器必须随内容增高，避免覆盖组仍按原图高度截断后续正文。
+  assert.match(ocrMemberRule, /height:\s*auto\s*!important/u)
+  assert.match(ocrMemberRule, /min-height:\s*calc\(/u)
+  // 覆盖组中底层图片的 OCR 译文也必须盖过全部底图，否则仍会被后续叠放图片遮住。
+  assert.match(ocrRule, /z-index:\s*10000/u)
+})
+
 test('PDF 译文图片横向避让必须区分左右错开与真实相交', () => {
   assert.equal(
     rangesOverlapHorizontally({ left: 0, right: 100 }, { left: 446, right: 529 }),
@@ -2360,6 +2581,65 @@ test('PDF 译文图片碰撞检测必须允许纵向重叠但横向错开的前�
 
   // 前序内容只占据左侧且与图片纵向重叠时，图片应回填到原文锚点（42 - 90）。
   assert.equal(gap, -48)
+})
+
+test('PDF 译文同一原文行的多个图片覆盖组必须对齐首个覆盖组实际顶部', () => {
+  const gap = resolveTranslationImageFlowGap({
+    anchoredTop: 46,
+    previousBottom: 165,
+    flowOrigin: 30,
+    imageRange: { left: 70, right: 336 },
+    imageHeight: 73,
+    alignedImageRow: { sourceTop: 46, actualTop: 54 },
+    obstacles: [
+      { left: 60, right: 540, top: 30, bottom: 54 },
+      { left: 70, right: 336, top: 54, bottom: 165 }
+    ]
+  })
+
+  // 首个覆盖组被页眉下推到 54；同行后续覆盖组必须回到同一实际顶部，而不是继续向下堆叠。
+  assert.equal(gap, -111)
+})
+
+test('PDF 译文同行较高覆盖组不能把后续覆盖组误判为碰撞', () => {
+  const gap = resolveTranslationImageFlowGap({
+    anchoredTop: 53.953,
+    previousBottom: 165.109,
+    baseTop: 133.906,
+    flowOrigin: 30.312,
+    imageRange: { left: 392.734, right: 538.766 },
+    imageHeight: 79.953,
+    alignedImageRow: { sourceTop: 53.953, actualTop: 53.953 },
+    obstacles: [
+      { left: 68.953, right: 336.109, top: 53.953, bottom: 165.109 },
+      { left: 299.141, right: 429.703, top: 53.953, bottom: 133.906 }
+    ]
+  })
+
+  // 第一组较高会形成整行高水位；第二组虽然与第一组同顶对齐，但底边不等于高水位，
+  // 第三组仍必须回到同一顶部，不能被第二组再次向下推。
+  assert.equal(gap, -79.953)
+})
+
+test('PDF 译文图片同行对齐必须记录与障碍物一致的视口绝对顶部', () => {
+  const source = read('src/renderer/src/document.ts')
+  const normalizeStart = source.indexOf('function normalizeTranslationFlowLayout(')
+  const normalizeSource = source.slice(
+    normalizeStart,
+    source.indexOf('/**', normalizeStart + 1)
+  )
+
+  assert.ok(normalizeStart > -1)
+  assert.match(
+    normalizeSource,
+    /alignedImageRow\s*=\s*\{\s*sourceTop:\s*anchoredTop,\s*actualTop:\s*imageContainer\.getBoundingClientRect\(\)\.top\s*\}/u,
+    '同行覆盖组的实际顶部必须使用视口绝对坐标，才能与 anchoredTop、previousBottom 和 obstacles 比较'
+  )
+  assert.doesNotMatch(
+    normalizeSource,
+    /actualTop:\s*imageContainer\.getBoundingClientRect\(\)\.top\s*-\s*pageRect\.top/u,
+    '不能把同行覆盖组实际顶部转换成页面相对坐标，否则前序覆盖组会被误判为碰撞并继续向下堆叠'
+  )
 })
 
 test('PDF 译文图片不能因前序内容未碰撞而回填到已排版图片内部', () => {
@@ -2460,7 +2740,7 @@ test('PDF 源预览必须按文件身份复用并把告警层与画布分离', (
   assert.match(source, /className = 'document-preview-host'/u)
   assert.match(source, /className = 'document-warning-list'/u)
   assert.match(source, /\.document-preview-host/u)
-  assert.match(source, /renderPdfPages\(previewHost, model, jobId, tab\)/u)
+  assert.match(source, /renderPdfPages\(previewHost, model, jobId, tab, options\.onSourcePreviewReady\)/u)
   assert.match(css, /\.document-preview-host/u)
 })
 
@@ -2556,17 +2836,17 @@ test('HTML 源文预览必须加载净化结果，并禁止远程导航、权限
 
 test('HTML 原文与译文必须使用独立预览类型，译文保持可滚动流式布局', () => {
   const source = read('src/renderer/src/document.ts')
+  const previewKindSource = read('src/renderer/src/documentPreviewKind.ts')
   const css = read('src/renderer/src/document.css')
 
   assert.match(
-    source,
+    read('src/renderer/src/documentUiModel.ts'),
     /type DocumentPreviewKind = 'paged' \| 'markdown' \| 'table' \| 'subtitle' \| 'flow' \| 'html-source'/u
   )
-  assert.match(source, /if \(side === 'source' && format === 'html'\) return 'html-source'/u)
+  assert.match(previewKindSource, /if \(side === 'source' && format === 'html'\) return 'html-source'/u)
   assert.match(source, /const kind = resolvePreviewKind\(model, side\)/u)
-  assert.match(source, /function resolvePreviewKind\(model: DocumentModel, side: DocumentRenderSide\)/u)
-  assert.match(source, /if \(side === 'source' && format === 'html'\) return 'html-source'/u)
-  assert.match(source, /if \(format === 'html'\) return 'flow'/u)
+  assert.match(previewKindSource, /export function resolvePreviewKind\(/u)
+  assert.match(previewKindSource, /if \(format === 'html'\) return 'flow'/u)
   assert.match(css, /\.document-preview-host\[data-preview-kind='html-source'\]/u)
   assert.doesNotMatch(css, /\.document-preview-host\[data-preview-kind='html'\]/u)
   assert.doesNotMatch(css, /\.document-page-scroll\[data-preview-kind='html'\]/u)
@@ -2745,12 +3025,13 @@ test('文档双栏预览的 OCR 遮罩必须贴合译文文字，并支持在源
 
 test('已识别但译文为空的 OCR 区域必须保留可悬停、右键和手改的交互槽位', () => {
   const source = read('src/renderer/src/document.ts')
+  const interactionSource = read('src/renderer/src/documentBlockActionController.ts')
   const css = read('src/renderer/src/document.css')
 
   assert.match(source, /shouldRenderDocumentOcrTranslationRegion/u)
   assert.match(source, /dataset\.translationState = translatedText \? 'translated' : 'untranslated'/u)
   assert.match(
-    source,
+    interactionSource,
     /const editable = eventTarget\.closest<HTMLElement>\('\[data-manually-editable="true"\]'\)[\s\S]*?region\?\.querySelector<HTMLElement>\('\.document-ocr-region-text\[data-manually-editable="true"\]'\)/u,
     '空 OCR 槽位的指针只会命中外层区域，菜单必须回退到内部可编辑文字节点'
   )
@@ -2817,15 +3098,16 @@ test('文档工作台顶栏必须支持双面与仅译文单面显示，并保�
 
 test('文档预览必须按文件格式分派并为 Markdown 使用语义渲染', () => {
   const source = read('src/renderer/src/document.ts')
+  const previewKindSource = read('src/renderer/src/documentPreviewKind.ts')
   const css = read('src/renderer/src/document.css')
 
-  assert.match(source, /type DocumentPreviewKind = 'paged' \| 'markdown' \| 'table' \| 'subtitle' \| 'flow'/u)
-  assert.match(source, /function resolvePreviewKind\(model: DocumentModel, side: DocumentRenderSide\): DocumentPreviewKind/u)
-  assert.match(source, /format === 'markdown'/u)
-  assert.match(source, /format === 'csv'/u)
+  assert.match(read('src/renderer/src/documentUiModel.ts'), /type DocumentPreviewKind = 'paged' \| 'markdown' \| 'table' \| 'subtitle' \| 'flow'/u)
+  assert.match(previewKindSource, /export function resolvePreviewKind\(/u)
+  assert.match(previewKindSource, /format === 'markdown'/u)
+  assert.match(previewKindSource, /format === 'csv'/u)
   // 图片文档与 PDF 一样按页等比缩放，避免整页图片在窄栏中被压变形。
-  assert.match(source, /format === 'image'/u)
-  assert.match(source, /format === 'srt' \|\| format === 'vtt'/u)
+  assert.match(previewKindSource, /format === 'image'/u)
+  assert.match(previewKindSource, /format === 'srt' \|\| format === 'vtt'/u)
   assert.match(source, /function renderMarkdownDocument\(/u)
   assert.match(source, /function renderMarkdownBlock\(/u)
   assert.match(source, /createElement\(`h\$\{/u)
@@ -2928,7 +3210,7 @@ test('PDF 译文表格必须沿用原列宽，单元格内容和内边距不能�
   const translationCellRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\[data-table-cell-content='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
   const translationRunRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-text-run\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
 
-  assert.match(source, /normalizeTableColumnWidths/u)
+  assert.match(source, /normalizeDocumentTableColumnWidths/u)
   assert.match(source, /tableLayout/u)
   assert.match(source, /renderTableCellBlock/u)
   assert.match(source, /dataset\.tableCellContent\s*=\s*'true'/u)
@@ -3013,6 +3295,67 @@ test('PDF 译文表格图片必须限制在单元格内，不能继承页面图�
   assert.match(universalCellImageRule, /max-width:\s*100%\s*!important/u)
   assert.match(universalCellRule, /overflow:\s*hidden/u,
     '单元格必须裁切超出列边界的图片和装饰')
+})
+
+test('PDF 表格单元格内重叠图片必须共享一次流式占位并按相对坐标叠放', () => {
+  const source = read('src/renderer/src/document.ts')
+  const css = read('src/renderer/src/document.css')
+  const tableStart = source.indexOf('function renderTableBlock(')
+  const tableEnd = source.indexOf('/**', tableStart + 1)
+  const tableSource = source.slice(tableStart, tableEnd)
+  const stackRule = /\.document-table-block\s+\.document-table-cell-image-stack\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const memberImageRule = /\.document-table-block\s+\.document-table-cell-image-stack\s+\.document-image-block\[data-image-stack-member='true'\]\s+\.document-page-image\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const scopedMemberRule = /\.document-page\[data-layout='translation-flow'\]\s+\.document-table-block\s+\.document-table-cell-image-stack\s*>\s*\.document-image-block\[data-table-cell-image='true'\]\[data-image-stack-member='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+
+  assert.match(source, /renderDocumentTableCellBlocks/u)
+  assert.match(tableSource, /renderDocumentTableCellBlocks\(/u)
+  assert.match(stackRule, /aspect-ratio:\s*var\(--document-table-cell-image-ratio/u)
+  assert.match(stackRule, /width:\s*100%\s*!important/u)
+  assert.match(scopedMemberRule, /position:\s*absolute\s*!important/u,
+    '叠放成员选择器必须覆盖表格图片归位规则的相对定位，否则真实浏览器仍会上下拆开')
+  assert.match(scopedMemberRule, /left:\s*var\(--document-table-cell-image-member-left/u)
+  assert.match(scopedMemberRule, /top:\s*var\(--document-table-cell-image-member-top/u)
+  assert.match(scopedMemberRule, /width:\s*var\(--document-table-cell-image-member-width/u)
+  assert.match(scopedMemberRule, /height:\s*var\(--document-table-cell-image-member-height/u)
+  assert.match(memberImageRule, /width:\s*100%\s*!important/u)
+  assert.match(memberImageRule, /height:\s*100%\s*!important/u)
+  assert.match(memberImageRule, /object-fit:\s*contain/u)
+
+  const stackTextRule = /\.document-table-cell-image-stack\s*>\s*\.document-text-block\[data-table-cell-image-text='true'\]\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  const stackTextRunRule = /\.document-table-cell-image-stack\s*>\s*\.document-text-block\[data-table-cell-image-text='true'\]\s+\.document-text-run\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  assert.match(stackTextRule, /position:\s*absolute\s*!important/u,
+    '图片叠放范围内的文本必须绝对覆盖在原图位置，不能作为普通流重复排在图片下方')
+  assert.match(stackTextRule, /left:\s*var\(--document-table-cell-image-text-left/u)
+  assert.match(stackTextRule, /top:\s*var\(--document-table-cell-image-text-top/u)
+  assert.match(stackTextRule, /width:\s*var\(--document-table-cell-image-text-width/u)
+  assert.match(stackTextRule, /min-height:\s*var\(--document-table-cell-image-text-height/u)
+  assert.match(stackTextRule, /overflow:\s*visible\s*!important/u,
+    '图内译文行盒高于原文字高度时必须完整显示，不能被绝对定位容器裁切')
+  assert.match(stackTextRule, /z-index:\s*10001/u)
+  assert.match(stackTextRunRule,
+    /line-height:\s*max\(1em,\s*var\(--document-table-cell-image-text-height/u,
+    '百分比高度只能作为最小参考，行高不能被解析成不足 1em 的数值')
+
+  const stackTextMaskRule = /\.document-table-cell-image-stack\s*>\s*\.document-text-block\[data-table-cell-image-text='true'\]::before\s*\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+  assert.match(stackTextMaskRule, /background:\s*var\(--document-table-cell-image-text-mask-color/u,
+    '表格图内译文必须先遮住图片中烘焙的原文，否则会出现原文与译文重影')
+  assert.match(stackTextMaskRule,
+    /--document-table-cell-image-text-mask-padding:/u,
+    '表格图内文字遮罩必须扩展安全边，完整覆盖原始字形')
+  assert.match(stackTextMaskRule,
+    /top:\s*calc\(-1\s*\*\s*var\(--document-table-cell-image-text-mask-padding/u,
+    '表格图内文字遮罩必须向上扩展安全边')
+  assert.match(stackTextMaskRule,
+    /left:\s*calc\(-1\s*\*\s*var\(--document-table-cell-image-text-mask-padding/u,
+    '表格图内文字遮罩必须向左扩展安全边')
+
+  const overlayLayoutSource = read('src/renderer/src/documentImageOverlayLayout.ts')
+  assert.match(overlayLayoutSource,
+    /\.document-image-overlay,\s*\.document-table-cell-image-stack/u,
+    '局部背景采样必须覆盖表格单元格内的图片叠放组')
+  assert.match(overlayLayoutSource,
+    /--document-table-cell-image-text-mask-color/u,
+    '表格图内文字必须写入独立的遮罩颜色变量')
 })
 
 test('PDF 译文代码框必须使用代码文本块自身的边框并保持原文横向范围', () => {
@@ -4013,6 +4356,7 @@ test('文档缓存配置变化必须复用存储实例并立即应用最新设�
 test('文档历史列表必须展示完整摘要并使用对话框确认删除和清空', () => {
   const html = read('src/renderer/document.html')
   const source = read('src/renderer/src/document.ts')
+  const sourceAccess = read('src/renderer/src/documentSourceAccess.ts')
   const css = read('src/renderer/src/document.css')
   const zh = read('src/shared/i18n/catalog.zh-CN.document.ts')
   const en = read('src/shared/i18n/catalog.en-US.document.ts')
@@ -4026,7 +4370,7 @@ test('文档历史列表必须展示完整摘要并使用对话框确认删除�
   assert.match(source, /window\.api\.deleteDocumentHistory\(jobId\)/u)
   assert.match(source, /window\.api\.clearDocumentCache\(\)/u)
   assert.match(source, /sourceKind:\s*'history'/u)
-  assert.match(source, /function isReadOnlyDocumentTab\(/u)
+  assert.match(sourceAccess, /export function isReadOnlyDocumentTab\(/u)
   assert.match(source, /if \(isReadOnlyDocumentTab\(tab\)\) return/u)
   assert.match(source, /revokeAssetUrls\(\)[\s\S]*releaseHtmlPreviewUrl\(\)/u)
   assert.match(css, /\.document-history-delete/u)
@@ -4166,6 +4510,8 @@ test('工作台状态恢复必须先重新授权文件，并以内容指纹拒�
   const restoreStart = source.indexOf('async function restoreDocumentViewerState(')
   const restoreEnd = source.indexOf('/**', restoreStart + 1)
   const restoreSource = source.slice(restoreStart, restoreEnd)
+  const backgroundStart = source.indexOf('async function restoreRemainingDocumentViewerTabs(')
+  const backgroundSource = source.slice(backgroundStart, source.indexOf('/**', backgroundStart + 1))
   const validationStart = main.indexOf('async function validateApprovedDocumentPath')
   const validationEnd = main.indexOf('/**', validationStart + 1)
   const validationSource = main.slice(validationStart, validationEnd)
@@ -4176,16 +4522,116 @@ test('工作台状态恢复必须先重新授权文件，并以内容指纹拒�
   assert.match(validationSource, /createReadStream\(\)/u)
   assert.match(validationSource, /sha256/u)
   assert.match(source, /readDocumentViewerState\(\)/u)
-  assert.match(restoreSource, /for \(const savedTab of state\.tabs\)/u,
-    '恢复时必须逐个重新授权持久化 Tab，不能只恢复首个文件')
-  assert.match(restoreSource, /window\.api\.approveDocumentFile\(savedTab\.selection\.path\)/u)
-  assert.match(restoreSource, /validateRestoredDocumentViewerFile\(savedTab\.selection, authorized\)/u)
-  assert.match(restoreSource, /createRestoredDocumentWorkspaceTab\(savedTab\)/u)
+  assert.match(backgroundSource, /for \(let index = 0; index < state\.tabs\.length; index \+= 1\)/u,
+    '后台恢复必须遍历全部持久化 Tab，不能只恢复活动文件')
+  assert.match(source, /window\.api\.approveDocumentFile\(savedTab\.selection\.path\)/u)
+  assert.match(source, /validateRestoredDocumentViewerFile\(savedTab\.selection, authorized\)/u)
+  assert.match(source, /createRestoredDocumentWorkspaceTab\(savedTab\)/u)
   assert.match(source, /function createRestoredDocumentWorkspaceTab\([\s\S]*?createRestoredDocumentWorkspaceSnapshot\(savedTab\)/u)
   assert.match(source, /restoreDocumentViewerState\(\)/u)
 })
 
-test('关闭页面后恢复首个历史 Tab 时，必须串行恢复并使用正常格式渲染原文', () => {
+test('工作台恢复必须优先渲染上次活动 Tab，剩余历史文件在后台按原顺序补入', () => {
+  const source = read('src/renderer/src/document.ts')
+  const restoreStart = source.indexOf('async function restoreDocumentViewerState(')
+  const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
+  const backgroundStart = source.indexOf('async function restoreRemainingDocumentViewerTabs(')
+  const backgroundSource = backgroundStart >= 0
+    ? source.slice(backgroundStart, source.indexOf('/**', backgroundStart + 1))
+    : ''
+  const persistStart = source.indexOf('function persistActiveDocumentViewerState(')
+  const persistSource = source.slice(persistStart, source.indexOf('/**', persistStart + 1))
+
+  assert.ok(restoreStart > -1)
+  assert.match(restoreSource, /state\.tabs\.findIndex\(\(savedTab\) => savedTab\.id === state\.activeTabId\)/u,
+    '必须先从持久化状态定位上次活动 Tab')
+  assert.match(restoreSource, /await restoreDocumentViewerTab\(activeSavedTab\)/u,
+    '首屏只等待活动 Tab 的重新授权和模型恢复')
+  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!, \{ deferTranslationUntilSourceReady: true \}\)[\s\S]*?void restoreRemainingDocumentViewerTabs\(/u,
+    '活动 Tab 渲染完成后才能启动其他历史文件的后台恢复')
+  assert.doesNotMatch(restoreSource, /for \(const savedTab of state\.tabs\)/u,
+    '首屏不得串行等待全部历史 Tab')
+  assert.match(backgroundSource, /await restoreDocumentViewerTab\(savedTab\)/u,
+    '后台恢复仍必须逐个重新授权并校验文件指纹')
+  assert.match(backgroundSource, /if \(findDocumentTabByPath\(savedTab\.selection\.path\)\)/u,
+    '后台恢复完成时不得为已经手动打开的文件重复创建 Tab')
+  assert.match(backgroundSource, /renderDocumentTabs\(\)/u,
+    '后台恢复完成一个 Tab 后应增量更新顶栏')
+  assert.doesNotMatch(backgroundSource, /activeDocumentTabId\s*=/u,
+    '后台恢复不得覆盖用户当前活动 Tab')
+  assert.doesNotMatch(backgroundSource, /renderActiveDocumentTab\(/u,
+    '后台恢复不得触发活动文档重绘')
+  assert.match(persistSource, /pendingRestoredDocumentViewerTabs/u,
+    '后台恢复期间持久化必须保留尚未恢复的 Tab，避免用户滚动或关闭窗口时丢失')
+})
+
+test('恢复态首屏必须等原文首帧完成后再同步构建完整译文 DOM', () => {
+  const source = read('src/renderer/src/document.ts')
+  const deferredRenderSource = read('src/renderer/src/documentDeferredTranslationRender.ts')
+  const exportAvailabilitySource = read('src/renderer/src/documentExportAvailability.ts')
+  const restoreStart = source.indexOf('async function restoreDocumentViewerState(')
+  const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
+  const activeStart = source.indexOf('function renderActiveDocumentTab(')
+  const activeSource = source.slice(activeStart, source.indexOf('/**', activeStart + 1))
+  const snapshotStart = source.indexOf('function renderSnapshot(')
+  const snapshotSource = source.slice(snapshotStart, source.indexOf('/**', snapshotStart + 1))
+  const modelStart = source.indexOf('function renderDocumentModel(')
+  const modelSource = source.slice(modelStart, source.indexOf('/**', modelStart + 1))
+  const pdfStart = source.indexOf('async function renderPdfPages(')
+  const pdfSource = source.slice(pdfStart, source.indexOf('/**', pdfStart + 1))
+
+  assert.ok(restoreStart > -1 && snapshotStart > -1 && pdfStart > -1)
+  assert.match(
+    restoreSource,
+    /renderActiveDocumentTab\(getActiveDocumentTab\(\)!, \{ deferTranslationUntilSourceReady: true \}\)/u,
+    '只有工作台自动恢复入口可以开启原文优先渲染'
+  )
+  assert.match(activeSource, /renderSnapshot\(tab\.snapshot, tab, options\)/u)
+  assert.match(snapshotSource, /options: DocumentSnapshotRenderOptions = \{\}/u)
+  assert.match(snapshotSource, /shouldDeferTranslation/u,
+    '恢复首屏必须先进入原文阶段，不能同步遍历译文页面')
+  assert.match(snapshotSource, /onSourcePreviewReady/u,
+    '译文阶段必须由原文预览就绪回调触发')
+  assert.match(modelSource, /onSourcePreviewReady/u)
+  assert.match(modelSource, /renderPdfPages\(previewHost, model, jobId, tab, options\.onSourcePreviewReady\)/u,
+    'PDF 原文必须把首帧回调传给 PDF.js 渲染器')
+  assert.match(pdfSource, /onFirstPageReady/u)
+  assert.match(pdfSource, /runAfterNextPaint/u,
+    '首张 PDF Canvas 绘制后仍需让浏览器完成一帧，再开始构建译文')
+  assert.match(deferredRenderSource, /createDocumentDeferredTranslationRenderController/u,
+    '恢复态延迟译文任务应由独立控制器管理，避免工作台入口继续膨胀')
+  assert.match(exportAvailabilitySource, /export function hasUsableExportResult/u,
+    '导出可用性判断应留在独立职责模块中')
+})
+
+test('Tab 切换必须复用缓存的 PDF 文档与译文 DOM，避免重复解析与整棵重建', () => {
+  const source = read('src/renderer/src/document.ts')
+  const pdfCacheSource = read('src/renderer/src/documentPdfDocumentCache.ts')
+  const domCacheSource = read('src/renderer/src/documentTranslationDomCache.ts')
+  const pdfStart = source.indexOf('async function renderPdfPages(')
+  const pdfSource = source.slice(pdfStart, source.indexOf('/**', pdfStart + 1))
+  const snapshotStart = source.indexOf('function renderSnapshot(')
+  const snapshotSource = source.slice(snapshotStart, source.indexOf('/**', snapshotStart + 1))
+  const revokeStart = source.indexOf('function revokeAssetUrls(')
+  const revokeSource = source.slice(revokeStart, source.indexOf('/**', revokeStart + 1))
+
+  assert.match(pdfSource, /documentPdfDocumentCache\.get\(/u,
+    'Tab 切换重渲染时必须优先复用已解析的 PDF 文档')
+  assert.match(pdfSource, /documentPdfDocumentCache\.set\(/u,
+    '新解析的 PDF 文档必须写入缓存供后续复用')
+  assert.match(pdfSource, /ownsPdfDocument/u,
+    '只有渲染器自建的 PDF 文档才允许在清理时销毁；缓存文档必须跨 Tab 保留')
+  assert.match(pdfCacheSource, /export function createDocumentPdfDocumentCache/u)
+  assert.match(snapshotSource, /translationDomCache\.take\(/u,
+    '译文签名未变化时 Tab 切换必须复用缓存的译文 DOM，不能整棵重建')
+  assert.match(snapshotSource, /translationDomCache\.remember\(/u,
+    '新构建的译文 DOM 必须写入缓存供后续 Tab 切换复用')
+  assert.match(domCacheSource, /export function createDocumentTranslationDomCache/u)
+  assert.match(revokeSource, /cachedTabIds\(\)/u,
+    '释放图片资源时必须保留仍被译文 DOM 缓存引用的 Blob URL')
+})
+
+test('关闭页面后恢复历史 Tab 时，必须优先恢复活动 Tab 并使用正常格式渲染原文', () => {
   const source = read('src/renderer/src/document.ts')
   const restoreStart = source.indexOf('async function restoreDocumentViewerState(')
   const restoreSource = source.slice(restoreStart, source.indexOf('/**', restoreStart + 1))
@@ -4202,11 +4648,11 @@ test('关闭页面后恢复首个历史 Tab 时，必须串行恢复并使用正
   assert.ok(restoreStart > -1)
   assert.ok(initStart > -1)
   assert.match(restoredTabSource, /sourceKind:\s*'restored'/u)
-  assert.match(restoreSource, /documentTabs = restoredTabs/u,
-    '恢复时必须按原顺序建立全部恢复 Tab，不能让历史列表提前成为活动 Tab')
-  assert.match(restoreSource, /activeDocumentTabId = restoredActiveTabId \?\? restoredTabs\[0\]!\.id/u,
+  assert.match(restoreSource, /documentTabs = \[activeTab\]/u,
+    '首屏只建立已完成校验的活动 Tab，剩余 Tab 由后台按原顺序补入')
+  assert.match(restoreSource, /activeDocumentTabId = activeTab\.id/u,
     '恢复时必须优先激活持久化的活动 Tab')
-  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!\)/u)
+  assert.match(restoreSource, /renderActiveDocumentTab\(getActiveDocumentTab\(\)!, \{ deferTranslationUntilSourceReady: true \}\)/u)
   assert.match(initSource, /await restoreDocumentViewerState\(\)\s*await documentHistory\.loadTaskHistory\(\)/u,
     '历史列表必须等待恢复流程完成后再加载，避免恢复前打开历史第一个 Tab')
   assert.match(renderSource, /renderDocumentModel\([\s\S]*?snapshot\.source[\s\S]*?tab\s*\)/u,
@@ -4221,6 +4667,7 @@ test('关闭页面后恢复首个历史 Tab 时，必须串行恢复并使用正
 
 test('恢复快照不得复用旧任务身份，且必须限制旧任务操作与资源预览', () => {
   const source = read('src/renderer/src/document.ts')
+  const sourceAccess = read('src/renderer/src/documentSourceAccess.ts')
   const renderStart = source.indexOf('function renderDocumentModel(')
   const renderEnd = source.indexOf('/**', renderStart + 1)
   const renderSource = source.slice(renderStart, renderEnd)
@@ -4234,8 +4681,8 @@ test('恢复快照不得复用旧任务身份，且必须限制旧任务操作�
   const retryEnd = source.indexOf('/**', retryStart + 1)
   const retrySource = source.slice(retryStart, retryEnd)
 
-  assert.match(source, /const RESTORED_DOCUMENT_JOB_ID = 'restored-viewer-state'/u)
-  assert.match(source, /function isRestoredDocumentTab\(/u)
+  assert.match(sourceAccess, /RESTORED_DOCUMENT_JOB_ID/u)
+  assert.match(sourceAccess, /export function isRestoredDocumentTab\(/u)
   const restoredTabStart = source.indexOf('function createRestoredDocumentWorkspaceTab(')
   const restoredTabSource = source.slice(restoredTabStart, source.indexOf('/**', restoredTabStart + 1))
   assert.match(restoredTabSource, /activeJobId: null/u)
@@ -4244,7 +4691,7 @@ test('恢复快照不得复用旧任务身份，且必须限制旧任务操作�
   assert.match(restoredTabSource, /startInFlight: false/u)
   assert.doesNotMatch(renderSource, /renderRestoredDocumentSourcePreview/u)
   assert.match(renderSource, /renderHtmlSourcePreview\(previewHost, model, jobId, tab\)/u)
-  assert.match(renderSource, /renderPdfPages\(previewHost, model, jobId, tab\)/u)
+  assert.match(renderSource, /renderPdfPages\(previewHost, model, jobId, tab, options\.onSourcePreviewReady\)/u)
   assert.match(taskSource, /isRestoredDocumentTab\(/u)
   assert.match(taskSource, /exportButton\.disabled\s*=\s*restored\s*\?/u)
   assert.match(taskSource, /approvedDocumentSourceRequest\(tab\)/u)

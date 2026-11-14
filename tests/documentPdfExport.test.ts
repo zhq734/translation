@@ -16,7 +16,9 @@ import {
   DocumentPdfExportError,
   exportDocumentToPdf
 } from '../src/main/documentPdfExport.ts'
+import { encodePng } from '../src/main/pngCodec.ts'
 import { DOCUMENT_OCR_UNIFORM_FONT_SIZE } from '../src/shared/documentOcrLayout.ts'
+import type { RgbaImage } from '../src/shared/imagePreprocess.ts'
 
 // PDF.js 以 CommonJS 发布；esbuild 打包测试时可能不生成 default，而 Node 原生加载会生成 default。
 const pdfjs = ('default' in pdfjsModule ? pdfjsModule.default : pdfjsModule) as typeof pdfjsModule
@@ -59,6 +61,29 @@ function documentWithText(text: string): DocumentModel {
     assets: [],
     warnings: []
   }
+}
+
+/**
+ * 生成纯色 PNG，用于验证 PDF 图内文字遮罩会从最上层图片采样背景色。
+ * @param width 图片宽度。
+ * @param height 图片高度。
+ * @param color 不透明 RGB 颜色。
+ * @returns PNG 字节。
+ * @author zhenghq
+ */
+function createSolidPng(
+  width: number,
+  height: number,
+  color: readonly [number, number, number]
+): Uint8Array {
+  const image: RgbaImage = { width, height, data: new Uint8Array(width * height * 4) }
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    image.data[offset] = color[0]
+    image.data[offset + 1] = color[1]
+    image.data[offset + 2] = color[2]
+    image.data[offset + 3] = 255
+  }
+  return new Uint8Array(encodePng(image))
 }
 
 /**
@@ -528,6 +553,289 @@ test('PDF 导出必须把表格内嵌图片限制在单元格内并让后续行�
     const afterTop = page.getViewport({ scale: 1 }).height - (after.transform[5] ?? 0)
     // 图片按右列可用宽度缩放后约为 50pt 高，第二行必须从图片底边之后开始。
     assert.ok(afterTop > 120, `next row must clear table image, got top=${afterTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 导出必须恢复历史表格单元格内未标记图片的几何叠放关系', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  const backId = 'legacy-table-stack-back'
+  const frontId = 'legacy-table-stack-front'
+  page.blocks = [{
+    kind: 'table',
+    blockId: 'legacy-table-stack',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 50, width: 400, height: 300 },
+    columnWidths: [400],
+    rows: [{
+      rowId: 'legacy-table-stack-row',
+      cells: [{
+        cellId: 'legacy-table-stack-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: backId,
+          readingOrder: 0,
+          translatable: false,
+          assetId: 'legacy-table-stack-asset',
+          bbox: { x: 60, y: 60, width: 300, height: 200 },
+          ocrRegions: [{
+            regionId: 'legacy-table-stack-back-region',
+            pageId: page.pageId,
+            blockId: backId,
+            assetId: 'legacy-table-stack-asset',
+            bbox: { x: 0.1, y: 0.1, width: 0.4, height: 0.15 },
+            text: 'LEGACY_TABLE_STACK_BACK_TEXT',
+            status: 'recognized'
+          }]
+        }, {
+          kind: 'image',
+          blockId: frontId,
+          readingOrder: 1,
+          translatable: false,
+          assetId: 'legacy-table-stack-asset',
+          bbox: { x: 90, y: 90, width: 240, height: 140 },
+          ocrRegions: [{
+            regionId: 'legacy-table-stack-front-region',
+            pageId: page.pageId,
+            blockId: frontId,
+            assetId: 'legacy-table-stack-asset',
+            bbox: { x: 0.1, y: 0.1, width: 0.4, height: 0.15 },
+            text: 'LEGACY_TABLE_STACK_FRONT_TEXT',
+            status: 'recognized'
+          }]
+        }]
+      }]
+    }]
+  }]
+  model.assets = [{
+    assetId: 'legacy-table-stack-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'legacy-table-stack-fixture',
+    byteLength: 9364
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  }, { includeOcrTextLayer: true })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const exportedPage = await exportedPdf.getPage(1)
+    const content = await exportedPage.getTextContent()
+    const pageHeight = exportedPage.getViewport({ scale: 1 }).height
+    const back = content.items.find((item) => (
+      'str' in item && 'transform' in item && item.str.includes('LEGACY_TABLE_STACK_BACK')
+    ))
+    const front = content.items.find((item) => (
+      'str' in item && 'transform' in item && item.str.includes('LEGACY_TABLE_STACK_FRONT')
+    ))
+    assert.ok(back && 'transform' in back, '导出必须包含底层表格图片 OCR 文字')
+    assert.ok(front && 'transform' in front, '导出必须包含上层表格图片 OCR 文字')
+    const backTop = pageHeight - (back.transform[5] ?? pageHeight)
+    const frontTop = pageHeight - (front.transform[5] ?? pageHeight)
+    assert.ok(frontTop - backTop < 80,
+      `表格叠图不能被纵向拆开，底层顶部=${backTop}，上层顶部=${frontTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格叠图范围内文本必须原位绘制且不能重复占用单元格流', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.blocks = [{
+    kind: 'table',
+    blockId: 'table-stack-contained-text',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 50, width: 400, height: 300 },
+    columnWidths: [400],
+    rows: [{
+      rowId: 'table-stack-contained-text-row',
+      cells: [{
+        cellId: 'table-stack-contained-text-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: 'table-stack-contained-text-back',
+          readingOrder: 0,
+          translatable: false,
+          assetId: 'table-stack-contained-text-asset',
+          bbox: { x: 60, y: 60, width: 300, height: 200 }
+        }, {
+          kind: 'image',
+          blockId: 'table-stack-contained-text-front',
+          readingOrder: 1,
+          translatable: false,
+          assetId: 'table-stack-contained-text-asset',
+          bbox: { x: 90, y: 90, width: 240, height: 140 }
+        }, {
+          kind: 'text',
+          blockId: 'table-stack-contained-text-inside',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 160, y: 160, width: 120, height: 12 },
+          runs: [{ runId: 'table-stack-contained-text-inside-run', text: 'TABLE_IMAGE_INNER_TEXT' }]
+        }, {
+          kind: 'text',
+          blockId: 'table-stack-contained-text-after',
+          readingOrder: 3,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 60, y: 280, width: 120, height: 12 },
+          runs: [{ runId: 'table-stack-contained-text-after-run', text: 'TABLE_IMAGE_AFTER_TEXT' }]
+        }]
+      }]
+    }]
+  }]
+  model.assets = [{
+    assetId: 'table-stack-contained-text-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'table-stack-contained-text-fixture',
+    byteLength: 9364
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const exportedPage = await exportedPdf.getPage(1)
+    const pageHeight = exportedPage.getViewport({ scale: 1 }).height
+    const content = await exportedPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const innerItems = items.filter((item) => item.str.includes('TABLE_IMAGE_INNER_TEXT'))
+    const after = items.find((item) => item.str.includes('TABLE_IMAGE_AFTER_TEXT'))
+
+    assert.equal(innerItems.length, 1, '图片叠放范围内的文本只能绘制一次')
+    assert.ok(after, '图片叠放组后的普通文本必须继续导出')
+    const innerTop = pageHeight - (innerItems[0]!.transform[5] ?? pageHeight)
+    const afterTop = pageHeight - (after.transform[5] ?? pageHeight)
+    // 单元格内容宽度为 390pt，叠图并集宽 300pt；图内文本应落在约 185pt 的原始缩放位置，
+    // 而不是被当作普通流排到约 315pt 的图片下方。
+    assert.ok(Math.abs(innerTop - 185) < 12,
+      `图内文本必须保持原始覆盖位置，实际顶部=${innerTop}`)
+    assert.ok(afterTop < 335,
+      `图内文本不能重复增加单元格流高度，后续文本实际顶部=${afterTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 表格图内文字必须先按最上层底图背景遮罩再绘制译文', async () => {
+  const model = documentWithText('')
+  model.pages[0]!.blocks = [{
+    kind: 'table',
+    blockId: 'table-stack-mask',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 50, width: 400, height: 300 },
+    columnWidths: [400],
+    rows: [{
+      rowId: 'table-stack-mask-row',
+      cells: [{
+        cellId: 'table-stack-mask-cell',
+        rowSpan: 1,
+        colSpan: 1,
+        blocks: [{
+          kind: 'image',
+          blockId: 'table-stack-mask-back',
+          readingOrder: 0,
+          translatable: false,
+          assetId: 'table-stack-mask-back-asset',
+          bbox: { x: 60, y: 60, width: 300, height: 200 }
+        }, {
+          kind: 'image',
+          blockId: 'table-stack-mask-front',
+          readingOrder: 1,
+          translatable: false,
+          assetId: 'table-stack-mask-front-asset',
+          bbox: { x: 90, y: 90, width: 240, height: 140 }
+        }, {
+          kind: 'text',
+          blockId: 'table-stack-mask-text',
+          readingOrder: 2,
+          translatable: true,
+          role: 'paragraph',
+          bbox: { x: 160, y: 160, width: 120, height: 12 },
+          runs: [{ runId: 'table-stack-mask-run', text: 'MASKED_TABLE_TRANSLATION' }]
+        }]
+      }]
+    }]
+  }]
+  model.assets = [{
+    assetId: 'table-stack-mask-back-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'table-stack-mask-back',
+    byteLength: 1
+  }, {
+    assetId: 'table-stack-mask-front-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'table-stack-mask-front',
+    byteLength: 1
+  }]
+  const backPng = createSolidPng(300, 200, [32, 64, 220])
+  const frontPng = createSolidPng(240, 140, [220, 48, 32])
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => null,
+    loadAssetBytes: async (assetId) => (
+      assetId === 'table-stack-mask-front-asset' ? frontPng : backPng
+    )
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const page = await exportedPdf.getPage(1)
+    const operatorList = await page.getOperatorList()
+    const imageIndices = operatorList.fnArray
+      .map((operation, index) => operation === pdfjs.OPS.paintImageXObject ? index : -1)
+      .filter((index) => index >= 0)
+    const textIndex = operatorList.fnArray.indexOf(pdfjs.OPS.showText)
+    assert.equal(imageIndices.length, 2, '叠放组必须绘制两层图片')
+    assert.ok(textIndex > imageIndices[1]!, '图内译文必须绘制在叠放图片之后')
+
+    const maskStart = imageIndices[1]! + 1
+    const maskOperations = operatorList.fnArray.slice(maskStart, textIndex)
+    const maskPathOffset = maskOperations.findIndex((operation) => operation === pdfjs.OPS.constructPath)
+    assert.ok(maskPathOffset >= 0, '图片与译文之间必须先绘制原文字背景遮罩')
+    const maskPathIndex = maskStart + maskPathOffset
+    const maskPath = operatorList.argsArray[maskPathIndex]?.[0]
+    assert.ok(Array.isArray(maskPath) && maskPath.includes(pdfjs.OPS.moveTo) &&
+      maskPath.filter((operation) => operation === pdfjs.OPS.lineTo).length === 3 &&
+      maskPath.includes(pdfjs.OPS.closePath),
+    '原文字遮罩必须绘制闭合矩形，不能依赖图片重绘')
+    const maskBounds = operatorList.argsArray[maskPathIndex]?.[2]
+    assert.ok(Array.isArray(maskBounds) && Number(maskBounds[3]) < 30,
+      '遮罩高度只能覆盖原文字 bbox 及安全边，不能遮住图片中的相邻行')
+
+    const fillColors = operatorList.fnArray
+      .slice(maskStart, maskPathIndex + 1)
+      .map((operation, offset) => ({ operation, index: maskStart + offset }))
+      .filter((entry) => entry.operation === pdfjs.OPS.setFillRGBColor)
+      .map((entry) => operatorList.argsArray[entry.index])
+    const redMask = fillColors.find((args) => {
+      const colorChannels = args as
+        | readonly number[]
+        | Readonly<Record<number, number>>
+        | undefined
+      return Math.abs(Number(colorChannels?.[0]) - 220) < 2 &&
+        Math.abs(Number(colorChannels?.[1]) - 48) < 2 &&
+        Math.abs(Number(colorChannels?.[2]) - 32) < 2
+    })
+    assert.ok(redMask, '遮罩必须取最上层图片文字 bbox 外侧的背景色，不能使用底层蓝色或固定白色')
   } finally {
     await exportedPdf.destroy()
   }
@@ -1042,6 +1350,310 @@ test('PDF 导出必须把 OCR 译文覆盖到图片对应区域并保留可检�
   } finally {
     await exportedPdf.destroy()
   }
+})
+
+test('PDF 译文叠放图片必须共用一次纵向排版并保留真实错位与各自 OCR 译文', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.blocks = [{
+    kind: 'image',
+    blockId: 'stack-image-back',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 100, width: 300, height: 240 },
+    assetId: 'stack-image-back-asset',
+    stackGroupId: 'stack-group-1',
+    stackOrder: 0,
+    ocrRegions: [{
+      regionId: 'stack-region-back',
+      bbox: { x: 0.1, y: 0.2, width: 0.5, height: 0.08 },
+      text: 'Back source',
+      translatedText: 'STACK_BACK_TRANSLATION',
+      status: 'recognized'
+    }]
+  }, {
+    kind: 'image',
+    blockId: 'stack-image-front',
+    readingOrder: 1,
+    translatable: false,
+    bbox: { x: 58, y: 124, width: 264, height: 192 },
+    assetId: 'stack-image-front-asset',
+    stackGroupId: 'stack-group-1',
+    stackOrder: 1,
+    ocrRegions: [{
+      regionId: 'stack-region-front',
+      bbox: { x: 0.1, y: 0.5, width: 0.5, height: 0.08 },
+      text: 'Front source',
+      translatedText: 'STACK_FRONT_TRANSLATION',
+      status: 'recognized'
+    }]
+  }, {
+    kind: 'text',
+    blockId: 'after-image-stack',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 360, width: 400, height: 20 },
+    runs: [{ runId: 'after-image-stack-run', text: 'AFTER_IMAGE_STACK', style: { fontSize: 12 } }]
+  }]
+  model.assets = [{
+    assetId: 'stack-image-back-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'back',
+    byteLength: 1
+  }, {
+    assetId: 'stack-image-front-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'front',
+    byteLength: 1
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const exportedPage = await exportedPdf.getPage(1)
+    const pageHeight = exportedPage.getViewport({ scale: 1 }).height
+    const content = await exportedPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const back = items.find((item) => item.str.includes('STACK_BACK_TRANSLATION'))
+    const front = items.find((item) => item.str.includes('STACK_FRONT_TRANSLATION'))
+    const after = items.find((item) => item.str.includes('AFTER_IMAGE_STACK'))
+    assert.ok(back, '底层图片 OCR 译文必须导出')
+    assert.ok(front, '上层图片 OCR 译文必须导出')
+    assert.ok(after, '叠放图片后的正文必须导出')
+    const backTop = pageHeight - (back.transform[5] ?? pageHeight)
+    const frontTop = pageHeight - (front.transform[5] ?? pageHeight)
+    const afterTop = pageHeight - (after.transform[5] ?? pageHeight)
+    // 上层图片比底层图片下移 24pt，OCR 区域又分别位于各自高度的 20% 与 50%。
+    // 两组位置叠加后应相差 72pt，不能为了叠放把它们强行移到同一顶部。
+    assert.ok(Math.abs((frontTop - backTop) - 72) < 2,
+      `叠放图片的 OCR 坐标必须保持原始相对位置，底层=${backTop}，上层=${frontTop}`)
+    assert.ok(afterTop >= 335 && afterTop < 420,
+      `后续正文必须从叠放组底边继续，不能把第二张图再次下推，实际顶部=${afterTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 图内原生文字必须覆盖在原图位置且后续正文从图片并集底边继续', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 600
+  page.height = 800
+  page.blocks = [{
+    kind: 'image',
+    blockId: 'overlay-image-back',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 100, width: 300, height: 240 },
+    assetId: 'overlay-image-back-asset',
+    stackGroupId: 'overlay-stack-1',
+    stackOrder: 0,
+    overlayGroupId: 'overlay-group-1'
+  }, {
+    kind: 'image',
+    blockId: 'overlay-image-front',
+    readingOrder: 1,
+    translatable: false,
+    bbox: { x: 58, y: 124, width: 264, height: 192 },
+    assetId: 'overlay-image-front-asset',
+    stackGroupId: 'overlay-stack-1',
+    stackOrder: 1,
+    overlayGroupId: 'overlay-group-1'
+  }, {
+    kind: 'text',
+    blockId: 'overlay-native-text',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 90, y: 286, width: 90, height: 16 },
+    overlayGroupId: 'overlay-group-1',
+    runs: [{
+      runId: 'overlay-native-run',
+      text: 'OVERLAY_NATIVE_TEXT_MUST_WRAP_INSIDE_IMAGE_AND_GROW_DOWNWARD',
+      style: { fontSize: 12 }
+    }]
+  }, {
+    kind: 'text',
+    blockId: 'after-overlay',
+    readingOrder: 3,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 380, width: 400, height: 20 },
+    runs: [{ runId: 'after-overlay-run', text: 'AFTER_OVERLAY_GROUP', style: { fontSize: 12 } }]
+  }]
+  model.assets = [{
+    assetId: 'overlay-image-back-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'back',
+    byteLength: 1
+  }, {
+    assetId: 'overlay-image-front-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'front',
+    byteLength: 1
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const exportedPage = await exportedPdf.getPage(1)
+    const pageHeight = exportedPage.getViewport({ scale: 1 }).height
+    const content = await exportedPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const after = items.find((item) => item.str.includes('AFTER_OVERLAY_GROUP'))
+    const overlayItems = items.filter((item) => {
+      // 后续正文也落在原图纵向范围内，必须从覆盖文字样本中排除，避免污染底边断言。
+      if (item === after) return false
+      const top = pageHeight - (item.transform[5] ?? pageHeight)
+      return top >= 280 && top < 400
+    })
+    // 自动换行会把同一段译文拆成多个 fragment；合并后必须只出现一次，防止覆盖组重复绘制。
+    const overlayText = overlayItems.map((item) => item.str).join('')
+    assert.equal(overlayText.match(/OVERLAY_NATIVE_TEXT/gu)?.length, 1,
+      '图内原生译文必须导出且只能绘制一次')
+    assert.ok(after, '覆盖组后的正文必须导出')
+    const overlayTop = Math.min(...overlayItems.map((item) => pageHeight - (item.transform[5] ?? pageHeight)))
+    const afterTop = pageHeight - (after.transform[5] ?? pageHeight)
+    // 文字 bbox 顶部为 286pt，必须仍落在图片内部，而不能被叠放图片底边 340pt 推到下方。
+    assert.ok(overlayTop >= 280 && overlayTop < 310,
+      `图内文字必须保留原覆盖位置，实际顶部=${overlayTop}`)
+    // 图片并集底边为 340pt；后续正文保留自身 380pt 原始顶部。PDF.js 的文本顶部
+    // 还包含基线/行盒偏移，因此允许约 12pt 的提取偏差，但不能落到覆盖文字底边之后。
+    assert.ok(afterTop >= 388 && afterTop < 394,
+      `后续正文必须保留原始位置，不能从长文字实际底边继续，实际顶部=${afterTop}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 同一原文行的多个图片覆盖组必须共用首个覆盖组实际顶部', async () => {
+  const model = documentWithText('')
+  const page = model.pages[0]!
+  page.width = 600
+  page.height = 800
+  page.blocks = [{
+    kind: 'text',
+    blockId: 'row-header',
+    readingOrder: 0,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 40, y: 40, width: 100, height: 10 },
+    runs: [{
+      runId: 'row-header-run',
+      text: 'HEADER FILLER TEXT '.repeat(8),
+      style: { fontSize: 12 }
+    }]
+  }, {
+    kind: 'image',
+    blockId: 'row-image-a',
+    readingOrder: 1,
+    translatable: false,
+    bbox: { x: 40, y: 100, width: 120, height: 80 },
+    assetId: 'row-image-a-asset',
+    overlayGroupId: 'row-group-a'
+  }, {
+    kind: 'text',
+    blockId: 'row-text-a',
+    readingOrder: 2,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 50, y: 110, width: 100, height: 12 },
+    overlayGroupId: 'row-group-a',
+    runs: [{ runId: 'row-text-a-run', text: 'ROW_ONE_CARD_A', style: { fontSize: 10 } }]
+  }, {
+    kind: 'image',
+    blockId: 'row-image-b',
+    readingOrder: 3,
+    translatable: false,
+    bbox: { x: 180, y: 100, width: 120, height: 40 },
+    assetId: 'row-image-b-asset',
+    overlayGroupId: 'row-group-b'
+  }, {
+    kind: 'text',
+    blockId: 'row-text-b',
+    readingOrder: 4,
+    translatable: true,
+    role: 'paragraph',
+    bbox: { x: 190, y: 110, width: 100, height: 12 },
+    overlayGroupId: 'row-group-b',
+    runs: [{ runId: 'row-text-b-run', text: 'ROW_TWO_CARD_B', style: { fontSize: 10 } }]
+  }]
+  model.assets = [{
+    assetId: 'row-image-a-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'row-a',
+    byteLength: 1
+  }, {
+    assetId: 'row-image-b-asset',
+    kind: 'image',
+    mimeType: 'image/png',
+    sha256: 'row-b',
+    byteLength: 1
+  }]
+
+  const { bytes } = await exportDocumentToPdf(model, {
+    loadFontBytes: async () => readFileSync('assets/fonts/NotoSansSC-Regular.ttf'),
+    loadAssetBytes: async () => readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  })
+  const exportedPdf = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, verbosity: 0 }).promise
+  try {
+    const exportedPage = await exportedPdf.getPage(1)
+    const pageHeight = exportedPage.getViewport({ scale: 1 }).height
+    const content = await exportedPage.getTextContent()
+    const items = content.items.filter((item): item is typeof item & { str: string; transform: number[] } =>
+      'str' in item && 'transform' in item && item.str.trim().length > 0)
+    const cardA = items.find((item) => item.str.includes('ROW_ONE_CARD_A'))
+    const cardB = items.find((item) => item.str.includes('ROW_TWO_CARD_B'))
+    assert.ok(cardA, '首个覆盖组文字必须导出')
+    assert.ok(cardB, '同行第二个覆盖组文字必须导出')
+    const topA = pageHeight - (cardA.transform[5] ?? pageHeight)
+    const topB = pageHeight - (cardB.transform[5] ?? pageHeight)
+    assert.ok(Math.abs(topA - topB) < 2,
+      `同一原文行的覆盖组必须共用实际顶部，首个=${topA}，第二个=${topB}`)
+  } finally {
+    await exportedPdf.destroy()
+  }
+})
+
+test('PDF 图片覆盖组必须先铺完全部底图再统一绘制 OCR 译文', () => {
+  const source = readFileSync('src/main/documentPdfExport.ts', 'utf8')
+  const start = source.indexOf('async function drawImageOverlayGroup(')
+  const end = source.indexOf('/**', start + 1)
+  const overlaySource = source.slice(start, end)
+  const firstPass = /for \(const entry of positionedImages\)[\s\S]*?drawImageBlock\([\s\S]*?false\s*\)/u
+  const secondPass = /for \(const entry of positionedImages\)[\s\S]*?drawOcrRegions\(/u
+
+  assert.match(overlaySource, /const positionedImages = orderedImages\.map/u)
+  assert.match(overlaySource, firstPass,
+    '覆盖组第一轮只能绘制底图，不能在下一张底图之前绘制当前图片的 OCR 译文')
+  assert.match(overlaySource, secondPass,
+    '覆盖组第二轮必须基于同一份换算坐标统一绘制 OCR 译文')
+  assert.match(overlaySource, /drawImageOverlayText\(/u,
+    '图内原生文字必须使用带 bbox 裁切的专用绘制流程')
+  assert.doesNotMatch(overlaySource, /textBottom/u,
+    '图内原生文字实际底边不能扩展覆盖组或后续正文起点')
+
+  const overlayTextStart = source.indexOf('function drawImageOverlayText(')
+  const overlayTextEnd = source.indexOf('/**', overlayTextStart + 1)
+  const overlayTextSource = source.slice(overlayTextStart, overlayTextEnd)
+  assert.doesNotMatch(overlayTextSource, /clip\(\)/u,
+    '图内原生文字不能被原始 bbox 裁切，否则多行译文每行都会被截断')
+  assert.match(overlayTextSource, /drawTextBlock\(/u,
+    '图内原生文字必须复用文字绘制流程')
 })
 
 test('OCR 原文双层 PDF 必须写入图片对应位置的透明可复制文字层', async () => {

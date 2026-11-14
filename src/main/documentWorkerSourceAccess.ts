@@ -27,10 +27,11 @@ export interface DocumentWorkerSourceAccess {
   rememberSnapshot(snapshot: DocumentWorkspaceSnapshot): void
   /**
    * 读取当前任务已授权源文件，并对 HTML 执行脱敏。
+   * @param path 可选的已授权源文件路径；准备阶段快照尚未携带源模型时可显式传入。
    * @returns 不暴露路径的源文件读取结果。
    * @author zhenghq
    */
-  getSourceBytes(): Promise<DocumentSourceReadResult>
+  getSourceBytes(path?: string): Promise<DocumentSourceReadResult>
 }
 
 /** 文档源文件读取结果；失败时不携带原始路径。 */
@@ -63,8 +64,8 @@ export function createDocumentWorkerSourceAccess(
       if (source?.path) currentSource = { path: source.path, format: source.format }
     },
 
-    async getSourceBytes(): Promise<DocumentSourceReadResult> {
-      const source = currentSource
+    async getSourceBytes(path?: string): Promise<DocumentSourceReadResult> {
+      const source = path ? { path, format: inferSourceFormat(path) } : currentSource
       if (!source || !dependencies.isApprovedPath(source.path)) {
         return { ok: false, code: 'source-not-found' }
       }
@@ -89,4 +90,15 @@ export function createDocumentWorkerSourceAccess(
       }
     }
   }
+}
+
+/**
+ * 从已授权路径推断可预览格式；仅 PDF 与 HTML 会返回原始字节。
+ * @param path 已获授权的源文件路径。
+ * @returns 小写扩展名。
+ * @author zhenghq
+ */
+function inferSourceFormat(path: string): string {
+  const match = /\.([^.\\/]+)$/u.exec(path)
+  return match?.[1]?.toLowerCase() ?? ''
 }

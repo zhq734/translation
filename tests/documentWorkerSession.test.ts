@@ -357,6 +357,30 @@ test('session 必须 fork 显式 CommonJS documentWorker.cjs 且只发送一次�
   session.dispose()
 })
 
+/**
+ * 校验 worker 原生崩溃时会输出稳定错误分类，避免界面仅显示处理失败而无诊断线索。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('session 必须在 worker 崩溃时输出稳定诊断分类', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const originalConsoleError = console.error
+  const errors: unknown[][] = []
+  console.error = (...args: unknown[]) => { errors.push(args) }
+  const session = new DocumentWorkerSession(fixture.dependencies)
+  try {
+    await session.run({ path: '/tmp/sample.txt', generation: 1 })
+    process.emitExit(1)
+
+    assert.deepEqual(errors, [['[document-worker]', 'worker-crashed']])
+    assert.equal(fixture.completed.at(-1)?.task.errorCode, 'worker-crashed')
+  } finally {
+    console.error = originalConsoleError
+    session.dispose()
+  }
+})
+
 test('构建必须把 utility process 入口输出为显式 CommonJS .cjs', async () => {
   const source = await readFile('electron.vite.config.ts', 'utf8')
 
@@ -371,6 +395,32 @@ test('session 构建为 chunks 子文件时必须从上一级解析 worker 入�
     source,
     /join\(moduleDirectory,\s*'\.\.',\s*'documentWorker\.cjs'\)/u
   )
+})
+
+test('session 必须在源模型到达前读取已授权原始文件', async () => {
+  const process = workerProcess()
+  const fixture = dependencies(process)
+  const sourceReads: string[] = []
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46])
+  const session = new DocumentWorkerSession({
+    ...fixture.dependencies,
+    getSourceBytes: async (path) => {
+      sourceReads.push(path)
+      return { ok: true, mimeType: 'application/pdf', bytes }
+    }
+  })
+
+  const accepted = await session.run({ path: '/tmp/sample.txt', generation: 1 })
+  assert.equal(accepted.accepted, true)
+  assert.equal(fixture.progress.at(-1)?.source, undefined)
+
+  assert.deepEqual(await session.getSource(), {
+    ok: true,
+    mimeType: 'application/pdf',
+    bytes
+  })
+  assert.deepEqual(sourceReads, ['/tmp/sample.txt'])
+  session.dispose()
 })
 
 test('session 必须转发 run、用冻结语言对执行 RPC，并转换进度与终态快照', async () => {

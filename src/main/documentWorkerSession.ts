@@ -94,7 +94,7 @@ export interface DocumentWorkerSessionDependencies {
   /** 读取主进程已缓存的资源字节。 */
   getAssetBytes(assetId: string): Promise<Uint8Array | null>
   /** 读取当前任务的源文件字节。 */
-  getSourceBytes(): Promise<DocumentSourceResult>
+  getSourceBytes(path?: string): Promise<DocumentSourceResult>
   /** 读取当前任务代际的持久化翻译缓存。 */
   readTranslationCache?(key: string): Promise<DocumentTranslationCacheEntry | null>
   /** 写入当前任务代际的完整成功目标翻译缓存。 */
@@ -125,6 +125,8 @@ interface SessionJob {
   generation: number
   /** 最近一次接受的快照。 */
   snapshot: DocumentWorkspaceSnapshot
+  /** 接受任务时已校验的源文件路径；用于解析完成前读取原始预览。 */
+  sourcePath: string
   /** 是否已收到终态。 */
   settled: boolean
   /** 导出请求等待器。 */
@@ -183,7 +185,8 @@ export class DocumentWorkerSession {
     this.process = dependencies.createProcess(join(moduleDirectory, '..', 'documentWorker.cjs'))
     this.client = new DocumentWorkerClient(this.process, {
       onMessage: (message) => this.handleResponse(message),
-      onAssetResult: (message) => this.handleAssetResult(message)
+      onAssetResult: (message) => this.handleAssetResult(message),
+      onError: (code) => console.error('[document-worker]', code)
     })
     this.translationHost = new DocumentWorkerTranslationRpcHost(this.process, {
       isCurrent: (jobId, generation) => this.isCurrent(jobId, generation),
@@ -233,6 +236,7 @@ export class DocumentWorkerSession {
       jobId,
       generation: request.generation,
       snapshot,
+      sourcePath: request.path,
       settled: false,
       exportRequest: null,
       historySaved: false
@@ -680,12 +684,12 @@ export class DocumentWorkerSession {
   async getSource(): Promise<DocumentSourceResult> {
     if (this.disposed || !this.active) return { ok: false, code: 'source-not-found' }
     // 只有当前活动任务声明的源文件仍然在窗口白名单内时才允许读取。
-    const path = this.active.snapshot.source?.source.path
+    const path = this.active.sourcePath
     if (!path || !this.dependencies.isApprovedPath(path)) {
       return { ok: false, code: 'source-not-found' }
     }
     try {
-      return await this.dependencies.getSourceBytes()
+      return await this.dependencies.getSourceBytes(path)
     } catch {
       return { ok: false, code: 'source-unavailable' }
     }

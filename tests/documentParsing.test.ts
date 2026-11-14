@@ -3011,6 +3011,53 @@ test('PDF 表格内嵌图片必须归属单元格并避免页面级重复输出'
     '表格内图片不能同时作为页面级区块重复输出')
 })
 
+test('PDF 表格单元格内相互重叠的图片必须保留为同一叠放组', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const clearPng = readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  const lowContrastPng = readFileSync('tests/fixtures/ocr-scaling/low-contrast.png')
+  const bottomImage = await document.embedPng(clearPng)
+  const topImage = await document.embedPng(lowContrastPng)
+  const drawY = (y: number): number => page.getHeight() - y
+  page.drawText('Source', { x: 82, y: drawY(105), size: 12, font })
+  page.drawText('Layered image', { x: 310, y: drawY(105), size: 12, font })
+  // 两张图片位于同一单元格且大幅重叠，必须按原始图层叠放，不能逐张进入普通流。
+  page.drawImage(bottomImage, { x: 330, y: drawY(245), width: 150, height: 120 })
+  page.drawImage(topImage, { x: 350, y: drawY(225), width: 110, height: 80 })
+  for (const y of [70, 130, 260]) {
+    page.drawLine({ start: { x: 72, y: drawY(y) }, end: { x: 528, y: drawY(y) }, thickness: 1 })
+  }
+  for (const x of [72, 300, 528]) {
+    page.drawLine({ start: { x, y: drawY(260) }, end: { x, y: drawY(70) }, thickness: 1 })
+  }
+
+  const model = await parsePdfDocument({
+    path: '/tmp/table-stacked-images.pdf',
+    fileName: 'table-stacked-images.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async (_page, _pageIndex, _objectId) => clearPng,
+    registerAssetBytes: () => undefined
+  })
+
+  const table = model.pages[0]!.blocks.find((block) => block.kind === 'table')
+  assert.equal(table?.kind, 'table')
+  if (table?.kind !== 'table') return
+  const cellImages = table.rows.flatMap((row) => row.cells.flatMap((cell) =>
+    cell.blocks.filter((block) => block.kind === 'image')))
+  assert.equal(cellImages.length, 2, '同一单元格内的两张图片都必须保留')
+  if (cellImages[0]?.kind !== 'image' || cellImages[1]?.kind !== 'image') return
+  assert.ok(cellImages[0].stackGroupId, '表格内重叠图片必须生成叠放组标识')
+  assert.equal(cellImages[0].stackGroupId, cellImages[1].stackGroupId)
+  assert.deepEqual(
+    [cellImages[0].stackOrder, cellImages[1].stackOrder].sort((left, right) => left! - right!),
+    [0, 1]
+  )
+})
+
 test('PDF 稀疏表头下图片独占无文本行时仍必须归属单元格', async () => {
   const document = await PDFDocument.create()
   const page = document.addPage([600, 800])
@@ -4808,6 +4855,136 @@ test('PDF 原生文本页应提取页内图片区域并登记 OCR 资源', async
   assert.equal(registered.has(imageBlocks[0]!.kind === 'image' ? imageBlocks[0].assetId : ''), true)
   assert.equal(model.assets.length, 1)
   assert.equal(model.warnings.some((warning) => warning.code === 'embedded-image-ocr-required'), true)
+})
+
+test('PDF 同位置叠放的多个图片对象必须保留为同一叠放组', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  page.drawText('Stacked images', { x: 50, y: 700, size: 20 })
+  const clearPng = readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  const lowContrastPng = readFileSync('tests/fixtures/ocr-scaling/low-contrast.png')
+  const bottomImage = await document.embedPng(clearPng)
+  const topImage = await document.embedPng(lowContrastPng)
+  // 两个不同图片对象绘制在完全相同的位置，模拟设计稿中分层导出的叠图。
+  page.drawImage(bottomImage, { x: 100, y: 200, width: 200, height: 100 })
+  page.drawImage(topImage, { x: 100, y: 200, width: 200, height: 100 })
+  let renderCount = 0
+
+  const model = await parsePdfDocument({
+    path: '/tmp/stacked-images.pdf',
+    fileName: 'stacked-images.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => {
+      renderCount += 1
+      return renderCount === 1 ? clearPng : lowContrastPng
+    },
+    registerAssetBytes: () => undefined
+  })
+
+  const imageBlocks = model.pages[0]!.blocks.filter((block) => block.kind === 'image')
+  assert.equal(renderCount, 2, '同一 bbox 的不同图片对象不能被误去重')
+  assert.equal(imageBlocks.length, 2)
+  assert.equal(imageBlocks[0]!.kind, 'image')
+  assert.equal(imageBlocks[1]!.kind, 'image')
+  if (imageBlocks[0]!.kind !== 'image' || imageBlocks[1]!.kind !== 'image') return
+  assert.equal(imageBlocks[0]!.stackGroupId, imageBlocks[1]!.stackGroupId)
+  assert.ok(imageBlocks[0]!.stackGroupId)
+  assert.deepEqual(
+    [imageBlocks[0]!.stackOrder, imageBlocks[1]!.stackOrder].sort((left, right) => left! - right!),
+    [0, 1]
+  )
+})
+
+test('PDF 不重叠的相邻图片不能被误识别为叠放组', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  page.drawText('Adjacent images', { x: 50, y: 700, size: 20 })
+  const png = readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  const firstImage = await document.embedPng(png)
+  const secondImage = await document.embedPng(readFileSync('tests/fixtures/ocr-scaling/low-contrast.png'))
+  page.drawImage(firstImage, { x: 40, y: 200, width: 200, height: 100 })
+  page.drawImage(secondImage, { x: 300, y: 200, width: 200, height: 100 })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/adjacent-images.pdf',
+    fileName: 'adjacent-images.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => png,
+    registerAssetBytes: () => undefined
+  })
+
+  const imageBlocks = model.pages[0]!.blocks.filter((block) => block.kind === 'image')
+  assert.equal(imageBlocks.length, 2)
+  for (const block of imageBlocks) {
+    assert.equal(block.kind === 'image' ? block.stackGroupId : 'unexpected', undefined)
+    assert.equal(block.kind === 'image' ? block.stackOrder : -1, undefined)
+  }
+})
+
+test('PDF 图片内部的原生文字必须与图片共享覆盖组', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  const image = await document.embedPng(png)
+  page.drawImage(image, { x: 100, y: 200, width: 300, height: 180 })
+  // PDF 坐标以左下角为原点；换算成页面视图后，这段文字完整落在图片区域内部。
+  page.drawText('Overlay native text', { x: 140, y: 290, size: 16, font })
+  page.drawText('Body below the image', { x: 100, y: 150, size: 12, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/image-overlay-text.pdf',
+    fileName: 'image-overlay-text.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => png,
+    registerAssetBytes: () => undefined
+  })
+
+  const blocks = model.pages[0]!.blocks
+  const imageBlock = blocks.find((block) => block.kind === 'image')
+  const overlayText = blocks.find((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text.includes('Overlay native text')))
+  const body = blocks.find((block) =>
+    block.kind === 'text' && block.runs.some((run) => run.text.includes('Body below the image')))
+  assert.ok(imageBlock?.overlayGroupId)
+  assert.equal(imageBlock.overlayGroupId, overlayText?.overlayGroupId)
+  assert.equal(overlayText?.flowGroupId, undefined)
+  assert.equal(body?.overlayGroupId, undefined)
+})
+
+test('PDF 图片外部文字与图注不能被误归入覆盖组', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([600, 800])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  const png = readFileSync('tests/fixtures/ocr-scaling/clear.png')
+  const image = await document.embedPng(png)
+  page.drawImage(image, { x: 100, y: 200, width: 300, height: 180 })
+  // 图注位于图片下方，即使语义上是图注也不能被当作图片内覆盖文字。
+  page.drawText('Figure 1: Caption outside image', { x: 100, y: 180, size: 12, font })
+  page.drawText('Unrelated body text', { x: 100, y: 120, size: 12, font })
+
+  const model = await parsePdfDocument({
+    path: '/tmp/image-overlay-negative.pdf',
+    fileName: 'image-overlay-negative.pdf',
+    format: 'pdf',
+    sha256: FINGERPRINT,
+    bytes: await document.save()
+  }, {
+    renderEmbeddedImageToImage: async () => png,
+    registerAssetBytes: () => undefined
+  })
+
+  const blocks = model.pages[0]!.blocks
+  assert.equal(blocks.every((block) => block.overlayGroupId === undefined), true)
 })
 
 test('PDF 页数超过限制时必须停止后续页面并保留可本地化告警', async () => {

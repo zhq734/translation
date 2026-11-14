@@ -1907,6 +1907,212 @@ body {
   overflow: visible;
 }
 
+.document-page[data-layout='translation-flow'] .document-image-stack {
+  /* 叠放组只作为一次普通流占位；成员仍按原 PDF 坐标覆盖，不能被逐张下推。 */
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: calc(
+    var(--document-image-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  height: calc(
+    var(--document-image-stack-height, var(--document-image-height, 0px)) *
+    var(--document-page-scale, 1)
+  );
+  min-height: calc(
+    var(--document-image-stack-height, var(--document-image-height, 0px)) *
+    var(--document-page-scale, 1)
+  );
+  margin-left: calc(
+    var(--document-image-left, 0px) * var(--document-page-scale, 1)
+  );
+  margin-top: calc(
+    var(--document-image-flow-gap-before, var(--document-flow-gap-before, 0px)) *
+    var(--document-page-scale, 1)
+  );
+  overflow: visible;
+}
+
+.document-page[data-layout='translation-flow'] .document-image-overlay {
+  /* 图片与图内原生文字共享一次普通流占位；只有底图和 OCR 译文实际底边可以扩展组高度。 */
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: calc(
+    var(--document-image-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  height: calc(
+    var(--document-image-overlay-height, var(--document-image-height, 0px)) *
+    var(--document-page-scale, 1)
+  ) !important;
+  min-height: calc(
+    var(--document-image-overlay-height, var(--document-image-height, 0px)) *
+    var(--document-page-scale, 1)
+  ) !important;
+  margin-left: calc(
+    var(--document-image-left, 0px) * var(--document-page-scale, 1)
+  );
+  margin-top: calc(
+    var(--document-image-flow-gap-before, var(--document-flow-gap-before, 0px)) *
+    var(--document-page-scale, 1)
+  );
+  overflow: visible;
+}
+
+.document-image-overlay > .document-image-block[data-image-overlay-member='true'] {
+  /* 图片按原页面坐标相对覆盖组定位，并保持原始 stackOrder 覆盖顺序。 */
+  position: absolute;
+  left: calc(
+    var(--document-image-overlay-member-left, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  top: calc(
+    var(--document-image-overlay-member-top, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  width: calc(
+    var(--document-image-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  height: calc(
+    var(--document-image-height, auto) * var(--document-page-scale, 1)
+  ) !important;
+  margin: 0 !important;
+  overflow: visible;
+}
+
+.document-image-overlay > .document-image-block[data-image-overlay-member='true']
+  > .document-page-image {
+  position: relative;
+  z-index: var(--document-image-overlay-layer, 1);
+}
+
+.document-image-overlay
+  > .document-image-block[data-image-overlay-member='true'][data-ocr-translation='true'] {
+  /* OCR 译文可以增高成员；覆盖组按成员实际底边扩展，后续正文不能压到译文上。 */
+  height: auto !important;
+  min-height: calc(
+    var(--document-image-height, 0px) * var(--document-page-scale, 1)
+  ) !important;
+}
+
+.document-image-overlay
+  > .document-image-block[data-image-overlay-member='true']
+  > .document-ocr-translation-layer {
+  /* 底层图片的 OCR 译文必须盖过全部叠放底图，不能被上层图片再次遮挡。 */
+  z-index: 10000;
+}
+
+.document-image-overlay > .document-text-block[data-image-overlay-text='true'] {
+  /* 图内原生译文必须覆盖全部底图，并保留相对图片并集的原始坐标。
+     原始 bbox 只作为最小占位；译文行盒更高时必须完整显示，不能被容器裁切。 */
+  position: absolute !important;
+  left: calc(
+    var(--document-image-overlay-text-left, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  top: calc(
+    var(--document-image-overlay-text-top, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  width: calc(
+    var(--document-image-overlay-text-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  max-width: none !important;
+  height: auto !important;
+  min-height: calc(
+    var(--document-image-overlay-text-height, auto) * var(--document-page-scale, 1)
+  ) !important;
+  /* 覆盖文字使用原 PDF 文字 bbox 作为行高；继承正文行高会把字形向下推半个行距，
+     与图片中已经烘焙的原文字错开，形成明显的双重文字。 */
+  line-height: calc(
+    var(--document-image-overlay-text-height, auto) * var(--document-page-scale, 1)
+  ) !important;
+  margin: 0 !important;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  z-index: 10001;
+}
+
+.document-image-overlay
+  > .document-text-block[data-image-overlay-text='true']
+  .document-text-run {
+  /* run 的默认 1.45 倍行高会覆盖外层行盒，使字形比原始 bbox 向下偏移约半个行距。
+     图内文字必须让每个 run 也使用 bbox 高度，才能与图片中烘焙的文字基线重合。 */
+  display: inline-block;
+  vertical-align: top;
+  line-height: calc(
+    var(--document-image-overlay-text-height, auto) * var(--document-page-scale, 1)
+  ) !important;
+}
+
+.document-image-overlay > .document-text-block[data-image-overlay-text='true']::before {
+  /* 底图通常已经烘焙原文字；用同一局部背景遮住旧字形后再绘制 HTML 译文。
+     伪元素留在文字堆叠上下文内部并置于内容后方；安全边只扩展约 15% 行高，
+     用于覆盖底图字形的上下抗锯齿，同时避免侵入相邻图元。 */
+  --document-image-overlay-text-mask-padding: max(
+    1px,
+    calc(
+      var(--document-image-overlay-text-height, 0px) *
+      var(--document-page-scale, 1) *
+      0.15
+    )
+  );
+  content: '';
+  position: absolute;
+  top: calc(-1 * var(--document-image-overlay-text-mask-padding));
+  left: calc(-1 * var(--document-image-overlay-text-mask-padding));
+  width: calc(
+    100% +
+    var(--document-image-overlay-text-mask-padding) +
+    var(--document-image-overlay-text-mask-padding)
+  );
+  height: calc(
+    var(--document-image-overlay-text-height, auto) * var(--document-page-scale, 1) +
+    var(--document-image-overlay-text-mask-padding) +
+    var(--document-image-overlay-text-mask-padding)
+  );
+  background: var(--document-image-overlay-text-mask-color);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.document-image-stack > .document-image-block[data-image-stack-member='true'] {
+  /* 成员使用相对叠放组并集的绝对坐标，保留原始覆盖顺序与错位关系。 */
+  position: absolute;
+  /* 图片渲染器会写入原页面 left/top 内联坐标，必须以 !important 改回组内相对坐标；
+     否则成员会在已经平移过的组容器内再次叠加原页面 y 坐标，视觉上被逐张拆开。 */
+  left: calc(
+    var(--document-image-stack-member-left, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  top: calc(
+    var(--document-image-stack-member-top, 0px) * var(--document-page-scale, 1)
+  ) !important;
+  width: calc(
+    var(--document-image-width, 100%) * var(--document-page-scale, 1)
+  ) !important;
+  height: calc(
+    var(--document-image-height, auto) * var(--document-page-scale, 1)
+  ) !important;
+  margin: 0 !important;
+  overflow: visible;
+}
+
+.document-image-stack > .document-image-block[data-image-stack-member='true']
+  > .document-page-image {
+  position: relative;
+  z-index: var(--document-image-stack-layer, 1);
+}
+
+.document-image-stack > .document-image-block[data-image-stack-member='true'][data-ocr-translation='true'] {
+  /* OCR 译文可以增高成员；组容器会按成员最大底边重新计算并集高度。 */
+  height: auto !important;
+  min-height: calc(
+    var(--document-image-height, 0px) * var(--document-page-scale, 1)
+  ) !important;
+}
+
+.document-image-stack > .document-image-block[data-image-stack-member='true']
+  > .document-ocr-translation-layer {
+  /* 所有 OCR 译文都必须位于全部底图之上，避免上层图片遮住底层图片的译文。 */
+  z-index: 10000;
+}
+
 .document-page[data-layout='translation-flow'] .document-image-block[data-ocr-translation='true'] > .document-page-image {
   /* OCR 覆盖层参与流式布局，底图绝对定位并固定为原图高度，不能被容器增长拉伸。 */
   pointer-events: none;
@@ -2578,6 +2784,104 @@ body {
   width: 100%;
   height: auto;
   object-fit: contain;
+}
+
+.document-table-block .document-table-cell-image-stack {
+  /* 叠放组只占一次单元格流式空间，宽高比取全部成员原始 bbox 的并集。 */
+  position: relative !important;
+  display: block;
+  box-sizing: border-box;
+  width: 100% !important;
+  height: auto !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  overflow: visible;
+  aspect-ratio: var(--document-table-cell-image-ratio, 1 / 1);
+  background: transparent;
+}
+
+.document-page[data-layout='translation-flow']
+.document-table-block
+.document-table-cell-image-stack
+> .document-image-block[data-table-cell-image='true'][data-image-stack-member='true'] {
+  /* 成员按并集边界换算为百分比坐标，随列宽缩放时仍保留原始覆盖位置。 */
+  position: absolute !important;
+  left: var(--document-table-cell-image-member-left, 0%) !important;
+  top: var(--document-table-cell-image-member-top, 0%) !important;
+  width: var(--document-table-cell-image-member-width, 100%) !important;
+  height: var(--document-table-cell-image-member-height, 100%) !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  overflow: hidden;
+  background: transparent;
+}
+
+.document-table-block
+.document-table-cell-image-stack
+.document-image-block[data-image-stack-member='true']
+.document-page-image {
+  /* 每层图片填满自身 bbox，并保持图片比例，不能被通用的 width:auto 规则拆开。 */
+  position: relative;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+}
+
+.document-page[data-layout='translation-flow']
+.document-table-block
+.document-table-cell-image-stack
+> .document-text-block[data-table-cell-image-text='true'] {
+  /* 图片像素中已经烘焙了原文时，对应文本必须覆盖在原位；继续参与普通流会重复出现。 */
+  position: absolute !important;
+  left: var(--document-table-cell-image-text-left, 0%) !important;
+  top: var(--document-table-cell-image-text-top, 0%) !important;
+  width: var(--document-table-cell-image-text-width, 100%) !important;
+  max-width: none !important;
+  height: auto !important;
+  min-height: var(--document-table-cell-image-text-height, auto) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-wrap: anywhere;
+  overflow: visible !important;
+  z-index: 10001 !important;
+}
+
+.document-table-cell-image-stack
+> .document-text-block[data-table-cell-image-text='true']
+.document-text-run {
+  /* 原文字 bbox 的高度通常小于完整行盒；至少保留 1em 行高，避免译文被上下裁切。 */
+  display: inline-block;
+  vertical-align: top;
+  line-height: max(1em, var(--document-table-cell-image-text-height, 1em)) !important;
+  white-space: pre-wrap;
+}
+
+.document-table-cell-image-stack
+> .document-text-block[data-table-cell-image-text='true']::before {
+  /* 表格图片通常已烘焙原文；先以同区域背景色遮住旧字形，再在其上绘制译文。
+     遮罩尺寸取原文字 bbox，而不是译文实际行盒，避免误盖图片中的相邻行内容。 */
+  --document-table-cell-image-text-mask-padding: max(
+    1px,
+    calc(var(--document-table-cell-image-text-height, 0%) * 0.15)
+  );
+  content: '';
+  position: absolute;
+  top: calc(-1 * var(--document-table-cell-image-text-mask-padding, 1px));
+  left: calc(-1 * var(--document-table-cell-image-text-mask-padding, 1px));
+  width: calc(
+    var(--document-table-cell-image-text-mask-width, 100%) +
+    var(--document-table-cell-image-text-mask-padding, 1px) +
+    var(--document-table-cell-image-text-mask-padding, 1px)
+  );
+  height: calc(
+    var(--document-table-cell-image-text-mask-height, 0px) +
+    var(--document-table-cell-image-text-mask-padding, 1px) +
+    var(--document-table-cell-image-text-mask-padding, 1px)
+  );
+  background: var(--document-table-cell-image-text-mask-color);
+  pointer-events: none;
+  z-index: -1;
 }
 
 .document-page[data-layout='translation-flow']

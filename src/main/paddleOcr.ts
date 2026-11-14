@@ -248,7 +248,15 @@ export interface PaddleOcrDeps {
    * @returns ocr-node 实例。
    */
   createOcrNode(options?: {
-    onnxOptions?: { executionProviders?: string[] }
+    /** ONNX Runtime 会话选项。 */
+    onnxOptions?: {
+      /** 推理执行提供方顺序。 */
+      executionProviders?: string[]
+      /** 是否启用 CPU 内存 Arena；大文档多尺寸推理时关闭以避免原生内存持续扩张。 */
+      enableCpuMemArena?: boolean
+      /** 是否启用内存复用模式；关闭后使用更保守的分配策略。 */
+      enableMemPattern?: boolean
+    }
     models?: PaddleOcrModelPaths
   }): Promise<OcrNodeInstance>
 }
@@ -265,14 +273,23 @@ export interface PaddleOcrEngineOptions extends Partial<PaddleOcrDeps> {
  * @author zhenghq
  */
 async function defaultCreateOcrNode(options?: {
-  onnxOptions?: { executionProviders?: string[] }
+  onnxOptions?: {
+    executionProviders?: string[]
+    enableCpuMemArena?: boolean
+    enableMemPattern?: boolean
+  }
   models?: PaddleOcrModelPaths
 }): Promise<OcrNodeInstance> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await import('@gutenye/ocr-node' as string) as any
   const Ocr = mod.default ?? mod
   return Ocr.create({
-    onnxOptions: { executionProviders: ['cpu'], ...(options?.onnxOptions ?? {}) },
+    onnxOptions: {
+      executionProviders: ['cpu'],
+      enableCpuMemArena: false,
+      enableMemPattern: false,
+      ...(options?.onnxOptions ?? {})
+    },
     ...(options?.models ? { models: options.models } : {})
   }) as Promise<OcrNodeInstance>
 }
@@ -377,7 +394,11 @@ export class PaddleOcrEngine implements OcrEngine {
     if (this.loading) return this.loading
     this.loading = this.deps
       .createOcrNode({
-        onnxOptions: { executionProviders: ['cpu'] },
+        onnxOptions: {
+          executionProviders: ['cpu'],
+          enableCpuMemArena: false,
+          enableMemPattern: false
+        },
         ...(this.models ? { models: this.models } : {})
       })
       .then((inst) => {

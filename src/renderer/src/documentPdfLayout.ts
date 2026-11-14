@@ -45,18 +45,30 @@ export interface DocumentFlowObstacle extends DocumentFlowHorizontalRange {
   bottom: number
 }
 
+/** 同一原文行中首个图片覆盖组的原始锚点与实际落位。 */
+export interface DocumentTranslationImageFlowRow {
+  /** 首个覆盖组按原文坐标换算后的目标顶部位置。 */
+  sourceTop: number
+  /** 首个覆盖组经过前序内容避让后的实际顶部位置，必须与锚点、前序底边和障碍物使用同一坐标系。 */
+  actualTop: number
+}
+
 /** 计算图片段前间距所需的二维排版信息。 */
 export interface DocumentTranslationImageFlowGapInput {
   /** 图片按原文坐标换算后的目标顶部位置。 */
   anchoredTop: number
   /** 当前普通流已到达的实际底部位置。 */
   previousBottom: number
+  /** 当前图片未应用自身段前距离时的自然顶部；省略时回退到 previousBottom。 */
+  baseTop?: number
   /** 页面内容盒的顶部位置。 */
   flowOrigin: number
   /** 图片相对页面内容盒的横向范围。 */
   imageRange: DocumentFlowHorizontalRange
   /** 图片相对页面内容盒的原始高度。 */
   imageHeight: number
+  /** 紧邻前序图片覆盖组的同行锚点；不属于同一原文行时省略。 */
+  alignedImageRow?: DocumentTranslationImageFlowRow
   /** 阅读顺序中此前已排版且占用普通流的区块范围。 */
   obstacles: readonly DocumentFlowObstacle[]
 }
@@ -128,6 +140,24 @@ export function resolveTranslationTableColumnWidths(
 }
 
 /**
+ * 归一化表格列宽，防止解析误差导致列宽总和超过表格边界。
+ * @param columnWidths 原始列宽。
+ * @param tableWidth 表格边界宽度；缺失时保留原始比例。
+ * @returns 归一化后的列宽。
+ * @author zhenghq
+ */
+export function normalizeDocumentTableColumnWidths(
+  columnWidths: readonly number[],
+  tableWidth: number | undefined
+): number[] {
+  const validWidths = columnWidths.map((value) => Number.isFinite(value) && value > 0 ? value : 0)
+  const total = validWidths.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) return Array.from({ length: columnWidths.length }, () => 1)
+  if (!tableWidth || !Number.isFinite(tableWidth) || tableWidth <= 0) return validWidths
+  return resolveTranslationTableColumnWidths(validWidths, tableWidth)
+}
+
+/**
  * 判断两个横向范围是否存在实际重叠。
  * 边界刚好相接视为不重叠，避免相邻列被误判为碰撞。
  * @param left 左侧范围。
@@ -153,28 +183,55 @@ export function rangesOverlapHorizontally(
 export function resolveTranslationImageFlowGap(
   input: DocumentTranslationImageFlowGapInput
 ): number {
-  const { anchoredTop, previousBottom, flowOrigin, imageRange, imageHeight, obstacles } = input
+  const {
+    anchoredTop,
+    previousBottom,
+    baseTop,
+    flowOrigin,
+    imageRange,
+    imageHeight,
+    alignedImageRow,
+    obstacles
+  } = input
   if (!Number.isFinite(anchoredTop) || !Number.isFinite(previousBottom)) return 0
   const safeFlowOrigin = Number.isFinite(flowOrigin) ? flowOrigin : anchoredTop
+  // previousBottom 是整行高水位，而 CSS 负边距必须相对当前元素的自然顶部计算；
+  // 同行前序覆盖组变矮后，两者会不同，混用会把后续覆盖组拉得过高或过低。
+  const safeBaseTop = Number.isFinite(baseTop) ? baseTop! : previousBottom
   const safeImageHeight = Number.isFinite(imageHeight) && imageHeight > 0 ? imageHeight : 0
   const safeRange = {
     left: Number.isFinite(imageRange.left) ? imageRange.left : 0,
     right: Number.isFinite(imageRange.right) ? imageRange.right : 0
   }
-  const imageBottom = anchoredTop + safeImageHeight
+  const alignsWithImageRow = alignedImageRow !== undefined &&
+    Number.isFinite(alignedImageRow.sourceTop) &&
+    Number.isFinite(alignedImageRow.actualTop) &&
+    Math.abs(anchoredTop - alignedImageRow.sourceTop) <= 0.5
+  // 同一原文行的覆盖组应回到首个组的实际顶部；首个组可能已为页眉等前序内容避让。
+  const desiredTop = alignsWithImageRow
+    ? Math.max(anchoredTop, alignedImageRow.actualTop)
+    : anchoredTop
+  const imageBottom = desiredTop + safeImageHeight
   const hasCollision = obstacles.some((obstacle) =>
     Number.isFinite(obstacle.top) &&
     Number.isFinite(obstacle.bottom) &&
-    obstacle.bottom > anchoredTop &&
+    // 同一原文行的覆盖组共享顶部锚点，不能再次把当前组向下推。
+    // previousBottom 是整行最高底边，较高覆盖组会让后续同顶组件的底边不再等于该高水位，
+    // 因此这里按顶部锚点识别整行成员，而不能要求障碍物底边与 previousBottom 相等。
+    !(alignsWithImageRow &&
+      Math.abs(obstacle.top - alignedImageRow.actualTop) <= 0.5) &&
+    obstacle.bottom > desiredTop &&
     obstacle.top < imageBottom &&
     // 图片与译文边界相接时也必须避让：字号行盒和抗锯齿可能越出测量边界，
     // 若按“严格横向相交”放行，窄图标会回填到前序增高内容内部并产生视觉重叠。
     obstacle.left <= safeRange.right &&
     obstacle.right >= safeRange.left
   )
-  const gap = anchoredTop - previousBottom
+  const gap = desiredTop - safeBaseTop
   // 横向错开时允许回填；但图片顶部仍不能越过页面内容起点。
-  return hasCollision ? Math.max(0, gap) : Math.max(safeFlowOrigin - previousBottom, gap)
+  return hasCollision
+    ? Math.max(0, Math.max(desiredTop, previousBottom) - safeBaseTop)
+    : Math.max(safeFlowOrigin - safeBaseTop, gap)
 }
 
 /**

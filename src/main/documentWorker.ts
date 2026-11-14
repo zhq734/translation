@@ -286,9 +286,18 @@ export class DocumentWorkerHost {
     }
     try {
       const resourceAwareEmit = (response: DocumentWorkerResponseMessage): void => {
-        if (response.type === 'result' && response.payload.source) {
-          for (const asset of response.payload.source.assets) active.assetIds.add(asset.assetId)
-          for (const asset of response.payload.translation?.assets ?? []) active.assetIds.add(asset.assetId)
+        // 译文快照在翻译阶段开始时就携带完整资源声明，必须在终态之前登记，
+        // 否则运行期渲染译文图片时宿主会以未声明资源为由拒绝读取。
+        const declareAssets = (model: DocumentModel | undefined): void => {
+          if (!model) return
+          for (const asset of model.assets) active.assetIds.add(asset.assetId)
+        }
+        if (response.type === 'result') {
+          declareAssets(response.payload.source)
+          declareAssets(response.payload.translation)
+        } else if (response.type === 'translation-snapshot') {
+          declareAssets(response.payload.source)
+          declareAssets(response.payload.translation)
         }
         emit(response)
       }
@@ -493,6 +502,16 @@ interface CachedWorkerJob {
   assetBytes: Map<string, Uint8Array>
 }
 
+/** worker 内正在执行任务的资源登记，使翻译阶段可提前读取已声明图片。 */
+interface RunningWorkerJob {
+  /** 当前运行代际。 */
+  generation: number
+  /** 解析完成后的源文档；解析完成前为 null。 */
+  source: DocumentModel | null
+  /** 运行期已登记的资源字节。 */
+  assetBytes: Map<string, Uint8Array>
+}
+
 /** 导出授权错误，携带稳定错误分类。 */
 class DocumentWorkerExportError extends Error {
   /**
@@ -576,6 +595,7 @@ export function createDocumentWorkerExecutor(
   dependencies: DocumentWorkerProductionDependencies
 ): DocumentWorkerExecutor {
   const jobs = new Map<string, CachedWorkerJob>()
+  const runningJobs = new Map<string, RunningWorkerJob>()
   const modelFingerprint = dependencies.getModelFingerprint?.() ?? 'document-translation-model'
 
   /**
@@ -722,6 +742,36 @@ export function createDocumentWorkerExecutor(
     // 流水线开始前先建立资源缓存，解析与 OCR 期间读取到的资源才能立即登记；
     // 后续创建任务快照时直接复用同一 Map，避免重试或导出再次读取文件。
     const assetBytes = new Map<string, Uint8Array>()
+    // 运行期即登记资源，使译文快照渲染阶段能读取已声明图片；任务结束后撤销。
+    const running: RunningWorkerJob = { generation: message.generation, source: null, assetBytes }
+    runningJobs.set(message.jobId, running)
+    try {
+      await runPipeline(message, signal, emit, input, assetBytes, running)
+    } finally {
+      // 仅清理本次登记，避免同名任务的并发重跑被误删。
+      if (runningJobs.get(message.jobId) === running) runningJobs.delete(message.jobId)
+    }
+  }
+
+  /**
+   * 执行翻译流水线并把结果写入任务缓存。
+   * @param message 已校验运行请求。
+   * @param signal 取消信号。
+   * @param emit 响应发送函数。
+   * @param input 解析输入。
+   * @param assetBytes 运行期资源字节缓存。
+   * @param running 运行期资源登记。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  const runPipeline = async (
+    message: Extract<DocumentWorkerRequestMessage, { type: 'run' }>,
+    signal: AbortSignal,
+    emit: (response: DocumentWorkerResponseMessage) => void,
+    input: DocumentParseInput,
+    assetBytes: Map<string, Uint8Array>,
+    running: RunningWorkerJob
+  ): Promise<void> => {
     const task = createDocumentTaskState(message.jobId, message.generation)
     let sourceSnapshot: DocumentModel | null = null
     let languageResolution: DocumentLanguageResolution | null = null
@@ -733,6 +783,7 @@ export function createDocumentWorkerExecutor(
         const parsed = await dependencies.parse(parseInput, signal, (assetId, bytes) => {
           assetBytes.set(assetId, bytes)
         })
+        running.source = parsed
         sourceSnapshot = parsed
         return parsed
       },
@@ -866,6 +917,13 @@ export function createDocumentWorkerExecutor(
       : generation <= job.generation) {
       throw new DocumentWorkerExportError('generation-conflict')
     }
+    // 重试会推进代际，需登记运行期资源，保证译文快照渲染阶段仍可读取图片。
+    const runningRetry: RunningWorkerJob = {
+      generation,
+      source: job.source,
+      assetBytes: job.assetBytes
+    }
+    runningJobs.set(message.jobId, runningRetry)
     const targetIds = isSingleTarget ? [message.targetId] : job.retryableTargetIds
     const bypassCache = message.type === 'retranslate-target'
       ? true
@@ -962,6 +1020,7 @@ export function createDocumentWorkerExecutor(
     }
     commitResult(job, result)
     emit(createDocumentWorkerResultMessage(message.jobId, generation, resultPayload(job)))
+    if (runningJobs.get(message.jobId) === runningRetry) runningJobs.delete(message.jobId)
   }
 
   /**
@@ -985,6 +1044,13 @@ export function createDocumentWorkerExecutor(
     if (message.nextGeneration <= job.generation) {
       throw new DocumentWorkerExportError('generation-conflict')
     }
+    // 模式切换会推进代际，需登记运行期资源，保证译文快照渲染阶段仍可读取图片。
+    const runningSwitch: RunningWorkerJob = {
+      generation: message.nextGeneration,
+      source: job.source,
+      assetBytes: job.assetBytes
+    }
+    runningJobs.set(message.jobId, runningSwitch)
     const task = createDocumentTaskState(message.jobId, message.nextGeneration)
     let previousTranslation: DocumentModel | null = null
     let translationCompleted = 0
@@ -1084,6 +1150,7 @@ export function createDocumentWorkerExecutor(
       message.nextGeneration,
       resultPayload(job)
     ))
+    if (runningJobs.get(message.jobId) === runningSwitch) runningJobs.delete(message.jobId)
   }
 
   /**
@@ -1195,19 +1262,29 @@ export function createDocumentWorkerExecutor(
     generation: number,
     assetId: string
   ): Promise<{ ok: true; mimeType?: string; bytes: Uint8Array } | { ok: false; code: string }> => {
+    const running = runningJobs.get(jobId)
     const job = jobs.get(jobId)
-    if (!job || job.generation !== generation) return { ok: false, code: 'asset-not-found' }
-    const asset = job.source.assets.find((candidate) => candidate.assetId === assetId) ??
-      job.translation.assets.find((candidate) => candidate.assetId === assetId)
+    let assets: DocumentModel['assets'] | undefined
+    let assetBytes: Map<string, Uint8Array> | undefined
+    if (running && running.generation === generation) {
+      // 运行期任务尚未写入终态缓存，改用解析阶段登记的资源声明与字节。
+      assets = running.source?.assets
+      assetBytes = running.assetBytes
+    } else if (job && job.generation === generation) {
+      assets = [...job.source.assets, ...job.translation.assets]
+      assetBytes = job.assetBytes
+    }
+    if (!assets || !assetBytes) return { ok: false, code: 'asset-not-found' }
+    const asset = assets.find((candidate) => candidate.assetId === assetId)
     if (!asset) return { ok: false, code: 'asset-not-found' }
     try {
-      const cached = job.assetBytes.get(assetId)
+      const cached = assetBytes.get(assetId)
       if (cached) {
         return { ok: true, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}), bytes: cached }
       }
       const bytes = await dependencies.loadAssetBytes(asset)
       if (!bytes) return { ok: false, code: 'asset-not-found' }
-      job.assetBytes.set(assetId, bytes)
+      assetBytes.set(assetId, bytes)
       return { ok: true, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}), bytes }
     } catch {
       return { ok: false, code: 'asset-unavailable' }

@@ -195,6 +195,37 @@ test('PaddleOcrEngine 应传入自定义 PP-OCRv6_tiny 模型路径', async () =
 })
 
 /**
+ * 校验 PaddleOCR 默认关闭 ONNX CPU 内存 Arena，避免大文档多次不同尺寸推理造成原生内存崩溃。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('PaddleOcrEngine 默认应关闭 ONNX CPU 内存 Arena', async () => {
+  let receivedOnnxOptions: Record<string, unknown> | undefined
+  const engine = new PaddleOcrEngine({
+    tmpDir: () => '/tmp',
+    writeFile: async () => undefined,
+    unlink: async () => undefined,
+    createOcrNode: async (options) => {
+      receivedOnnxOptions = options?.onnxOptions as unknown as Record<string, unknown> | undefined
+      return {
+        detect: async () => [
+          makeItem('你好', [[0,0],[30,0],[30,20],[0,20]], 0.99)
+        ]
+      }
+    }
+  })
+
+  await engine.recognize({
+    imageBytes: new Uint8Array([1, 2, 3]),
+    language: 'zh-Hans'
+  })
+
+  assert.equal(receivedOnnxOptions?.enableCpuMemArena, false)
+  assert.equal(receivedOnnxOptions?.enableMemPattern, false)
+  assert.deepEqual(receivedOnnxOptions?.executionProviders, ['cpu'])
+})
+
+/**
  * 校验 PaddleOCR runtime 初始化失败时应保留脱敏后的诊断原因。
  * @returns 无返回值。
  * @author zhenghq

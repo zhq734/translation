@@ -1345,7 +1345,7 @@ async function createDocumentWorkspaceTaskService(): Promise<DocumentWorkspaceTa
     },
     unlink,
     getAssetBytes: async () => null,
-    getSourceBytes: () => sourceAccess.getSourceBytes(),
+    getSourceBytes: (path) => sourceAccess.getSourceBytes(path),
     readTranslationCache: (key) => cacheStore.read(key),
     writeTranslationCache: (key, value) => cacheStore.write(key, value),
     saveHistory: (snapshot) => historyStore.save(snapshot),

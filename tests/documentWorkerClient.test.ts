@@ -352,13 +352,25 @@ test('worker 客户端取消应发送取消消息并允许之后的新代际任�
 
 test('worker 客户端进程退出应报告稳定错误并拒绝后续发送', () => {
   const process = fakeProcess()
+  const received: DocumentWorkerResponseMessage[] = []
   const errors: string[] = []
   const client = new DocumentWorkerClient(process, {
-    onMessage: () => undefined,
+    onMessage: (message) => received.push(message),
     onError: (code) => errors.push(code)
+  })
+  client.send({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'run',
+    jobId: 'job-1',
+    generation: 1,
+    request: { path: '/tmp/sample.pdf', generation: 1 }
   })
   process.emitExit(1)
   assert.deepEqual(errors, ['worker-crashed'])
+  assert.equal(received.length, 1)
+  assert.equal(received[0]?.type, 'failure')
+  if (received[0]?.type !== 'failure') throw new Error('expected worker failure message')
+  assert.equal(received[0].payload.code, 'worker-crashed')
   assert.equal(client.send({
     version: DOCUMENT_WORKER_PROTOCOL_VERSION,
     type: 'cancel',

@@ -102,7 +102,7 @@ export function expandScanlines(
           const diffUpLeft = Math.abs(predictor - upLeft)
           const paeth = diffLeft <= diffUp && diffLeft <= diffUpLeft
             ? left
-            : diffUp < diffUpLeft
+            : diffUp <= diffUpLeft
               ? up
               : upLeft
           reconstructed = value + paeth

@@ -85,17 +85,23 @@ function sampleBilinear(
  * 迁移自 Lumi-translate 的 resizeForOcr 策略。
  * @param image 源图像。
  * @param scale 放大倍率，默认 1（不放大）。
+ * @param maxPixels 像素预算，默认使用截图 OCR 的统一上限。
  * @returns 放大后的新图像；无需放大时原样返回。
  * @author zhenghq
  */
-export function resizeRgbaForOcr(image: RgbaImage, scale = 1): RgbaImage {
+export function resizeRgbaForOcr(
+  image: RgbaImage,
+  scale = 1,
+  maxPixels = MAX_OCR_PIXELS
+): RgbaImage {
   const safeScale = Math.min(3, Math.max(1, Number(scale) || 1))
+  const pixelBudget = Math.max(1, Math.floor(Number(maxPixels) || MAX_OCR_PIXELS))
   const sourcePixels = image.width * image.height
-  const budgetScale = sourcePixels > 0 ? Math.sqrt(MAX_OCR_PIXELS / sourcePixels) : 1
+  const budgetScale = sourcePixels > 0 ? Math.sqrt(pixelBudget / sourcePixels) : 1
   const targetScale = Math.min(safeScale, budgetScale)
   let width = Math.max(1, Math.round(image.width * targetScale))
   let height = Math.max(1, Math.round(image.height * targetScale))
-  while (width * height > MAX_OCR_PIXELS) {
+  while (width * height > pixelBudget) {
     if (width >= height) width -= 1
     else height -= 1
   }

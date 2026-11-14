@@ -1474,6 +1474,53 @@ test('OCR 未识别到文字时必须生成可展示告警并保留跳过状态'
   assert.equal(warning?.blockId, image.blockId)
 })
 
+/**
+ * 校验 OCR 阶段异常被转换为稳定任务错误时仍保留原始异常，便于定位原生或预处理故障。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('OCR 阶段异常必须保留原始错误原因', async () => {
+  const source = model([{
+    kind: 'image',
+    blockId: 'image-1',
+    readingOrder: 0,
+    translatable: false,
+    assetId: 'asset-1'
+  }])
+  source.assets.push({ assetId: 'asset-1', kind: 'image', mimeType: 'image/png', sha256: 'a', byteLength: 3 })
+  const cause = new Error('ocr progress sink failed')
+
+  await assert.rejects(
+    runDocumentTranslationPipeline(
+      { path: '/tmp/test.png', fileName: 'test.png', format: 'txt', bytes: new Uint8Array([1]) },
+      createDocumentTaskState('job-1', 1),
+      new AbortController().signal,
+      {
+        parse: async () => source,
+        loadAssetBytes: async () => new Uint8Array([1, 2, 3]),
+        recognizeImage: async () => ({ text: '', lines: [], engine: 'system' }),
+        translate: async (text) => `T(${text})`,
+        onProgress: (state) => {
+          if (state.phase === 'ocr' && state.progress.completed === 1 && state.status !== 'failed') {
+            throw cause
+          }
+        }
+      }
+    ),
+    (error: unknown) => {
+      assert.equal(error instanceof Error ? error.message : undefined, 'Document OCR failed')
+      assert.equal(error instanceof Error ? error.cause : undefined, cause)
+      assert.equal(
+        error && typeof error === 'object' && 'task' in error
+          ? (error.task as { errorCode?: string }).errorCode
+          : undefined,
+        'ocr-failed'
+      )
+      return true
+    }
+  )
+})
+
 test('OCR 识别异常时必须生成可展示告警并保留失败状态', async () => {
   const source = model([{
     kind: 'image',

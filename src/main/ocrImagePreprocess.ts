@@ -9,6 +9,8 @@ import { decodePng, encodePng } from './pngCodec'
 export const OCR_FALLBACK_TARGET_PIXELS = 1000000
 /** 放大候选相对原图必须达到的最小有效倍率。 */
 export const OCR_FALLBACK_MIN_EFFECTIVE_SCALE = 1.15
+/** 文档 OCR 输入像素上限：高于截图预算以保留扫描页小字号，同时避免全尺寸双轮推理触发原生崩溃。 */
+export const MAX_DOCUMENT_OCR_PIXELS = 4000000
 
 /** OCR 自适应备用图片使用的唯一处理策略。 */
 export type AdaptiveOcrFallbackStrategy = 'moderate-scale' | 'contrast-enhance'
@@ -106,16 +108,27 @@ export function preprocessOcrBaselineImageBytes(
 }
 
 /**
- * 从 PDF 扫描页原始 PNG 生成固定 1× 文档基线，不应用截图 OCR 的通用像素预算。
- * PDF 栅格化器已单独限制页面尺寸，二次降采样会显著破坏小字号 PaddleOCR 识别。
+ * 从 PDF 扫描页原始 PNG 生成固定 1× 文档基线。
+ * 使用高于截图 OCR 的文档像素预算，在尽量保留小字号的同时避免原生 OCR 崩溃。
  * @param imageBytes 原始 PNG 图片字节。
- * @returns 保持原始栅格尺寸的基线 PNG 字节。
+ * @returns 受文档像素预算约束的基线 PNG 字节。
  * @author zhenghq
  */
 export function preprocessDocumentOcrBaselineImageBytes(
   imageBytes: Uint8Array | Buffer
 ): Buffer {
-  return Buffer.from(imageBytes)
+  const dimensions = readPngDimensions(imageBytes)
+  if (dimensions && dimensions.width * dimensions.height <= MAX_DOCUMENT_OCR_PIXELS) {
+    return Buffer.from(imageBytes)
+  }
+  try {
+    const image = decodePng(imageBytes)
+    const resized = resizeRgbaForOcr(image, 1, MAX_DOCUMENT_OCR_PIXELS)
+    if (resized === image) return Buffer.from(imageBytes)
+    return encodePng(resized)
+  } catch {
+    return Buffer.from(imageBytes)
+  }
 }
 
 /**
@@ -141,7 +154,7 @@ export function createAdaptiveOcrFallbackImageBytes(
 
 /**
  * 从 PDF 扫描页原始 PNG 生成单一文档自适应备用图片。
- * 备用候选同样不应用截图 OCR 的通用像素预算，避免增强阶段再次缩小扫描页。
+ * 备用候选使用文档像素预算，避免增强阶段再次以超过安全上限的尺寸进入 OCR。
  * @param imageBytes 原始 PNG 图片字节。
  * @param maxScale 用户配置的最大尝试倍率。
  * @returns 备用 PNG 字节及实际采用的策略。
@@ -160,8 +173,8 @@ export function createDocumentAdaptiveOcrFallbackImageBytes(
     maxScale
   )
   const candidate = selection.strategy === 'moderate-scale'
-    ? resizeRgbaForOcr(image, selection.actualScale)
-    : enhanceRgbaForOcr(image)
+    ? resizeRgbaForOcr(image, selection.actualScale, MAX_DOCUMENT_OCR_PIXELS)
+    : enhanceRgbaForOcr(resizeRgbaForOcr(image, 1, MAX_DOCUMENT_OCR_PIXELS))
   return { ...selection, imageBytes: encodePng(candidate) }
 }
 

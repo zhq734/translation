@@ -7,6 +7,7 @@ import {
   DOCUMENT_WORKER_PROTOCOL_VERSION,
   createDocumentWorkerAssetRequestMessage,
   createDocumentWorkerAssetResultMessage,
+  createDocumentWorkerTranslationSnapshotMessage,
   type DocumentWorkerRequestMessage,
   type DocumentWorkerResponseMessage
 } from '../src/shared/documentWorkerProtocol.ts'
@@ -1223,4 +1224,261 @@ test('worker 宿主应忽略资源结果并拒绝非当前代际或未声明的�
   assert.ok(assetResults.every((message) => message.type === 'asset-result' && message.code === 'asset-not-found'))
   assert.equal(responses.some((message) => message.type === 'failure'), false)
   assert.equal(responses.filter((message) => message.type === 'result').length, 1)
+})
+
+test('worker 宿主应在译文快照发出后立即允许读取已声明资源', async () => {
+  const responses: DocumentWorkerResponseMessage[] = []
+  const source = workerModelWithAsset('doc-live-host-asset', 'hello')
+  let releaseExecute: () => void = () => {}
+  const executeGate = new Promise<void>((resolve) => {
+    releaseExecute = resolve
+  })
+  let readCalls = 0
+  const executor: DocumentWorkerExecutor = {
+    async execute(message, _signal, emit) {
+      emit(createDocumentWorkerTranslationSnapshotMessage(message.jobId, message.generation, {
+        source,
+        translation: source,
+        languageResolution: {
+          sourcePreference: 'auto',
+          targetPreference: 'auto',
+          languagePair: { sourceLang: 'auto', targetLang: 'ZH' }
+        },
+        completed: 0,
+        total: 1
+      }))
+      await executeGate
+      emit({
+        version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+        type: 'result',
+        jobId: message.jobId,
+        generation: message.generation,
+        payload: { status: 'completed', percent: 100, source, translation: source }
+      })
+    },
+    async readAsset(_jobId, _generation, assetId) {
+      readCalls += 1
+      assert.equal(assetId, 'doc-live-host-asset-asset')
+      return { ok: true, mimeType: 'image/png', bytes: new Uint8Array([4, 5, 6]) }
+    }
+  }
+  const host = new DocumentWorkerHost(executor, (message) => responses.push(message))
+  const running = host.handle(request('job-live-host-asset', 1, 'run', workerFixture('live-host-asset')))
+
+  await Promise.resolve()
+  assert.ok(responses.some((message) => message.type === 'translation-snapshot'))
+
+  await host.handle(createDocumentWorkerAssetRequestMessage(
+    'job-live-host-asset',
+    1,
+    'asset-request-live',
+    'doc-live-host-asset-asset'
+  ))
+  assert.equal(readCalls, 1)
+  const assetResult = responses.find((message) => message.type === 'asset-result')
+  assert.ok(assetResult && assetResult.type === 'asset-result')
+  if (assetResult && assetResult.type === 'asset-result') {
+    assert.equal(assetResult.code, undefined)
+    assert.deepEqual(assetResult.bytes, new Uint8Array([4, 5, 6]))
+  }
+
+  releaseExecute()
+  await running
+})
+
+test('生产执行器应在运行期允许读取解析阶段已登记的图片资源', async () => {
+  const source = workerModelWithAsset('doc-live-asset', 'hello')
+  let markTranslateStarted: () => void = () => {}
+  const translateStarted = new Promise<void>((resolve) => {
+    markTranslateStarted = resolve
+  })
+  let releaseTranslate: () => void = () => {}
+  const translateGate = new Promise<void>((resolve) => {
+    releaseTranslate = resolve
+  })
+  let firstTranslate = true
+  const dependencies = productionDependencies(source, async (text) => {
+    if (firstTranslate) {
+      firstTranslate = false
+      markTranslateStarted()
+      await translateGate
+    }
+    return `译:${text}`
+  })
+  dependencies.parse = async (_input, _signal, registerAssetBytes) => {
+    registerAssetBytes?.('doc-live-asset-asset', new Uint8Array([9, 8, 7]))
+    return source
+  }
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const running = executor.execute(
+    request('job-live-asset', 1, 'run', workerFixture('live-asset')),
+    new AbortController().signal,
+    (message) => responses.push(message)
+  )
+
+  await translateStarted
+  assert.ok(responses.some((message) => message.type === 'translation-snapshot'))
+  const asset = await executor.readAsset!('job-live-asset', 1, 'doc-live-asset-asset')
+  assert.equal(asset.ok, true)
+  if (asset.ok) assert.deepEqual(asset.bytes, new Uint8Array([9, 8, 7]))
+
+  releaseTranslate()
+  await running
+})
+
+test('生产执行器应在重试期间允许读取已声明的图片资源', async () => {
+  const source = workerModelWithAsset('doc-retry-asset', 'hello')
+  let markRetryStarted: () => void = () => {}
+  const retryStarted = new Promise<void>((resolve) => {
+    markRetryStarted = resolve
+  })
+  let releaseRetry: () => void = () => {}
+  const retryGate = new Promise<void>((resolve) => {
+    releaseRetry = resolve
+  })
+  let translateCalls = 0
+  const dependencies = productionDependencies(source, async (text) => {
+    translateCalls += 1
+    if (translateCalls === 1) throw new Error('provider failed')
+    if (translateCalls === 2) {
+      markRetryStarted()
+      await retryGate
+    }
+    return `译:${text}`
+  })
+  dependencies.parse = async (_input, _signal, registerAssetBytes) => {
+    registerAssetBytes?.('doc-retry-asset-asset', new Uint8Array([2, 2, 2]))
+    return source
+  }
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const emit = (message: DocumentWorkerResponseMessage): void => {
+    responses.push(message)
+  }
+
+  await executor.execute(
+    request('job-retry-asset', 1, 'run', workerFixture('retry-asset')),
+    new AbortController().signal,
+    emit
+  )
+  const retry = executor.execute(
+    request('job-retry-asset', 2, 'retry', workerFixture('retry-asset')),
+    new AbortController().signal,
+    emit
+  )
+
+  await retryStarted
+  assert.ok(responses.some((message) => message.type === 'translation-snapshot' && message.generation === 2))
+  const asset = await executor.readAsset!('job-retry-asset', 2, 'doc-retry-asset-asset')
+  assert.equal(asset.ok, true)
+  if (asset.ok) assert.deepEqual(asset.bytes, new Uint8Array([2, 2, 2]))
+
+  releaseRetry()
+  await retry
+})
+
+test('生产执行器应在模式切换期间允许读取已声明的图片资源', async () => {
+  const source = workerModelWithAsset('doc-switch-asset', 'hello')
+  let markSwitchStarted: () => void = () => {}
+  const switchStarted = new Promise<void>((resolve) => {
+    markSwitchStarted = resolve
+  })
+  let releaseSwitch: () => void = () => {}
+  const switchGate = new Promise<void>((resolve) => {
+    releaseSwitch = resolve
+  })
+  let switchRunning = false
+  let switchGated = false
+  const dependencies = productionDependencies(source, async (text) => {
+    if (switchRunning && !switchGated) {
+      switchGated = true
+      markSwitchStarted()
+      await switchGate
+    }
+    return `译:${text}`
+  })
+  dependencies.parse = async (_input, _signal, registerAssetBytes) => {
+    registerAssetBytes?.('doc-switch-asset-asset', new Uint8Array([3, 3, 3]))
+    return source
+  }
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const emit = (message: DocumentWorkerResponseMessage): void => {
+    responses.push(message)
+  }
+
+  await executor.execute({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'run',
+    jobId: 'job-switch-asset',
+    generation: 1,
+    request: { path: workerFixture('switch-asset'), generation: 1, mode: 'ocr' }
+  }, new AbortController().signal, emit)
+
+  switchRunning = true
+  const switching = executor.execute({
+    version: DOCUMENT_WORKER_PROTOCOL_VERSION,
+    type: 'switch-mode',
+    jobId: 'job-switch-asset',
+    generation: 1,
+    nextGeneration: 2,
+    mode: 'translation'
+  }, new AbortController().signal, emit)
+
+  await switchStarted
+  assert.ok(responses.some((message) => message.type === 'translation-snapshot' && message.generation === 2))
+  const asset = await executor.readAsset!('job-switch-asset', 2, 'doc-switch-asset-asset')
+  assert.equal(asset.ok, true)
+  if (asset.ok) assert.deepEqual(asset.bytes, new Uint8Array([3, 3, 3]))
+
+  releaseSwitch()
+  await switching
+})
+
+test('worker 宿主与生产执行器应在翻译运行期完整交付已声明图片资源', async () => {
+  const source = workerModelWithAsset('doc-e2e-asset', 'hello')
+  let markTranslateStarted: () => void = () => {}
+  const translateStarted = new Promise<void>((resolve) => {
+    markTranslateStarted = resolve
+  })
+  let releaseTranslate: () => void = () => {}
+  const translateGate = new Promise<void>((resolve) => {
+    releaseTranslate = resolve
+  })
+  let firstTranslate = true
+  const dependencies = productionDependencies(source, async (text) => {
+    if (firstTranslate) {
+      firstTranslate = false
+      markTranslateStarted()
+      await translateGate
+    }
+    return `译:${text}`
+  })
+  dependencies.parse = async (_input, _signal, registerAssetBytes) => {
+    registerAssetBytes?.('doc-e2e-asset-asset', new Uint8Array([5, 6, 7]))
+    return source
+  }
+  const executor = createDocumentWorkerExecutor(dependencies)
+  const responses: DocumentWorkerResponseMessage[] = []
+  const host = new DocumentWorkerHost(executor, (message) => responses.push(message))
+  const running = host.handle(request('job-e2e-asset', 1, 'run', workerFixture('e2e-asset')))
+
+  await translateStarted
+  assert.ok(responses.some((message) => message.type === 'translation-snapshot'))
+  await host.handle(createDocumentWorkerAssetRequestMessage(
+    'job-e2e-asset',
+    1,
+    'asset-request-e2e',
+    'doc-e2e-asset-asset'
+  ))
+  const assetResult = responses.find((message) => message.type === 'asset-result')
+  assert.ok(assetResult && assetResult.type === 'asset-result')
+  if (assetResult && assetResult.type === 'asset-result') {
+    assert.equal(assetResult.code, undefined)
+    assert.deepEqual(assetResult.bytes, new Uint8Array([5, 6, 7]))
+  }
+
+  releaseTranslate()
+  await running
 })

@@ -32,8 +32,18 @@ import {
 } from '../shared/documentOcrLayout.ts'
 import {
   resolveTranslationFlowDecorationTop,
-  resolveTranslationFlowGroupGeometry
+  resolveTranslationFlowGroupGeometry,
+  type DocumentTranslationImageFlowRow
 } from '../renderer/src/documentPdfLayout.ts'
+import {
+  resolveDocumentImageOverlayBounds
+} from '../renderer/src/documentImageOverlayLayout.ts'
+import { resolveDocumentImageStackBounds } from '../renderer/src/documentImageStackLayout.ts'
+import {
+  resolveDocumentImageStackContainedTexts,
+  resolveDocumentImageStackGroups
+} from '../shared/documentImageStacks.ts'
+import { decodePng } from './pngCodec.ts'
 
 /** PDF 导出稳定错误分类。 */
 export type DocumentPdfExportErrorCode =
@@ -135,8 +145,34 @@ interface DrawContext {
   boldItalic: PDFFont
   /** 已加载图片缓存。 */
   images: Map<string, PDFImage | null>
+  /** 已读取图片字节缓存，避免遮罩采样重复访问资源存储。 */
+  assetBytes: Map<string, Uint8Array | null>
+  /** 已解码图片像素缓存，仅用于图内文字局部背景采样。 */
+  maskImages: Map<string, PdfImageMaskImage | null>
   /** 导出期间收集的可降级告警。 */
   warnings: DocumentWarning[]
+}
+
+/** 图内文字遮罩采样使用的 RGBA 图片。 */
+interface PdfImageMaskImage {
+  /** 图片像素宽度。 */
+  width: number
+  /** 图片像素高度。 */
+  height: number
+  /** 按 RGBA 排列的像素数据。 */
+  data: Uint8Array | Uint8ClampedArray
+}
+
+/** 图内文字遮罩采样矩形。 */
+interface PdfImageMaskRect {
+  /** 左边界。 */
+  left: number
+  /** 上边界。 */
+  top: number
+  /** 右边界。 */
+  right: number
+  /** 下边界。 */
+  bottom: number
 }
 
 /** 文档页面排版器；负责按页底自动创建新页并维护纵向游标。 */
@@ -856,6 +892,121 @@ function detectImageFormat(bytes: Uint8Array): 'png' | 'jpg' | null {
 }
 
 /**
+ * 计算两个遮罩采样矩形的交集。
+ * @param rect 待裁剪矩形。
+ * @param bounds 图片实际绘制边界。
+ * @returns 有效交集；完全不相交时返回 undefined。
+ * @author zhenghq
+ */
+function intersectPdfImageMaskRect(
+  rect: PdfImageMaskRect,
+  bounds: PdfImageMaskRect
+): PdfImageMaskRect | undefined {
+  const intersection = {
+    left: Math.max(rect.left, bounds.left),
+    top: Math.max(rect.top, bounds.top),
+    right: Math.min(rect.right, bounds.right),
+    bottom: Math.min(rect.bottom, bounds.bottom)
+  }
+  return intersection.right > intersection.left && intersection.bottom > intersection.top
+    ? intersection
+    : undefined
+}
+
+/**
+ * 将图片原图像素矩形换算为页面坐标。
+ * @param rect 页面坐标矩形。
+ * @param image 已解码图片尺寸。
+ * @param imageBox 图片在页面中的实际绘制边界。
+ * @returns 有面积的像素矩形；越界时返回 undefined。
+ * @author zhenghq
+ */
+function resolvePdfImageMaskPixelRect(
+  rect: PdfImageMaskRect,
+  image: PdfImageMaskImage,
+  imageBox: PdfImageMaskRect
+): PdfImageMaskRect | undefined {
+  const clipped = intersectPdfImageMaskRect(rect, imageBox)
+  if (!clipped) return undefined
+  const scaleX = image.width / Math.max(1, imageBox.right - imageBox.left)
+  const scaleY = image.height / Math.max(1, imageBox.bottom - imageBox.top)
+  return {
+    left: Math.max(0, Math.floor((clipped.left - imageBox.left) * scaleX)),
+    top: Math.max(0, Math.floor((clipped.top - imageBox.top) * scaleY)),
+    right: Math.min(image.width, Math.ceil((clipped.right - imageBox.left) * scaleX)),
+    bottom: Math.min(image.height, Math.ceil((clipped.bottom - imageBox.top) * scaleY))
+  }
+}
+
+/**
+ * 从图片文字 bbox 上下外侧采样完全透明之外的平均背景色。
+ * 采样区刻意避开 bbox 内的原字形，避免把待遮盖文字混入遮罩颜色。
+ * @param image 已解码图片像素。
+ * @param textBox 原文字在页面中的实际边界。
+ * @param imageBox 图片在页面中的实际绘制边界。
+ * @returns 归一化 RGB 颜色；没有可采样的不透明像素时返回 undefined。
+ * @author zhenghq
+ */
+function samplePdfImageTextMaskColor(
+  image: PdfImageMaskImage,
+  textBox: DocumentBoundingBox,
+  imageBox: DocumentBoundingBox
+): readonly [number, number, number] | undefined {
+  if (image.width <= 0 || image.height <= 0) return undefined
+  const textRect: PdfImageMaskRect = {
+    left: textBox.x,
+    top: textBox.y,
+    right: textBox.x + textBox.width,
+    bottom: textBox.y + textBox.height
+  }
+  const imageRect: PdfImageMaskRect = {
+    left: imageBox.x,
+    top: imageBox.y,
+    right: imageBox.x + imageBox.width,
+    bottom: imageBox.y + imageBox.height
+  }
+  const clippedText = intersectPdfImageMaskRect(textRect, imageRect)
+  if (!clippedText) return undefined
+  const horizontalPadding = Math.max(1, clippedText.right - clippedText.left) * 0.08
+  const sampleLeft = clippedText.left + horizontalPadding
+  const sampleRight = clippedText.right - horizontalPadding
+  const textHeight = Math.max(1, clippedText.bottom - clippedText.top)
+  const bandGap = Math.max(0.75, Math.min(1.5, textHeight * 0.15))
+  const bandHeight = Math.max(1, Math.min(4, textHeight * 0.6))
+  const bands: PdfImageMaskRect[] = [{
+    left: sampleLeft,
+    top: clippedText.top - bandGap - bandHeight,
+    right: sampleRight,
+    bottom: clippedText.top - bandGap
+  }, {
+    left: sampleLeft,
+    top: clippedText.bottom + bandGap,
+    right: sampleRight,
+    bottom: clippedText.bottom + bandGap + bandHeight
+  }]
+  let red = 0
+  let green = 0
+  let blue = 0
+  let count = 0
+  for (const band of bands) {
+    const pixelRect = resolvePdfImageMaskPixelRect(band, image, imageRect)
+    if (!pixelRect) continue
+    for (let y = pixelRect.top; y < pixelRect.bottom; y += 1) {
+      for (let x = pixelRect.left; x < pixelRect.right; x += 1) {
+        const offset = (y * image.width + x) * 4
+        if (image.data[offset + 3] !== 255) continue
+        red += image.data[offset] ?? 0
+        green += image.data[offset + 1] ?? 0
+        blue += image.data[offset + 2] ?? 0
+        count += 1
+      }
+    }
+  }
+  if (count === 0) return undefined
+  return [red / count / 255, green / count / 255, blue / count / 255]
+}
+
+/**
  * 按页面阅读顺序排列 OCR 区域；同一行内从左到右，坐标相同时保持引擎返回顺序。
  * @param regions OCR 区域列表。
  * @returns 已排序的区域副本。
@@ -1418,15 +1569,34 @@ function tableCellRunStyle(block: DocumentTextBlock, run: DocumentTextRun): Docu
 }
 
 /**
- * 将单元格内相邻且具有相同原始 Y 坐标的文本子块分组；同一视觉行内的
- * 并排正文和页码共享顶部。图片或无坐标区块是顺序屏障，不能被排序到其他位置。
+ * 将单元格内容拆成可独立纵向排版的组；几何重叠或显式标记的图片合并为一组，
+ * 相邻且具有相同原始 Y 坐标的文本子块也合并为视觉行。其余区块保持原始顺序并作为屏障。
  * @param blocks 单元格内的子块。
  * @returns 保持原始内容顺序的视觉行组。
  * @author zhenghq
  */
-function groupTableCellTextBlocks(blocks: readonly DocumentBlock[]): DocumentBlock[][] {
+function groupTableCellBlocks(blocks: readonly DocumentBlock[]): DocumentBlock[][] {
+  const stackByBlock = new Map<DocumentImageBlock, readonly DocumentImageBlock[]>()
+  const textByStack = new Map<readonly DocumentImageBlock[], readonly DocumentTextBlock[]>()
+  const stackedTexts = new Set<DocumentTextBlock>()
+  for (const stack of resolveDocumentImageStackGroups(blocks)) {
+    for (const block of stack.blocks) stackByBlock.set(block, stack.blocks)
+    const texts = resolveDocumentImageStackContainedTexts(blocks, stack.blocks)
+      .filter((text) => !stackedTexts.has(text))
+    textByStack.set(stack.blocks, texts)
+    for (const text of texts) stackedTexts.add(text)
+  }
+  const renderedStacks = new Set<readonly DocumentImageBlock[]>()
   const groups: Array<{ top: number; blocks: DocumentBlock[] }> = []
   for (const block of blocks) {
+    if (block.kind === 'text' && stackedTexts.has(block)) continue
+    const stack = block.kind === 'image' ? stackByBlock.get(block) : undefined
+    if (stack) {
+      if (renderedStacks.has(stack)) continue
+      renderedStacks.add(stack)
+      groups.push({ top: Number.NaN, blocks: [...stack, ...textByStack.get(stack) ?? []] })
+      continue
+    }
     const sourceTop = block.kind === 'text' && block.bbox ? block.bbox.y : undefined
     const previous = groups[groups.length - 1]
     // 只合并紧邻的同排文本；图片、无坐标文本及其后的内容必须保留原始顺序。
@@ -1438,6 +1608,21 @@ function groupTableCellTextBlocks(blocks: readonly DocumentBlock[]): DocumentBlo
     }
   }
   return groups.map((group) => group.blocks)
+}
+
+/**
+ * 识别表格单元格中的图片叠放组，并拆出底图成员与图内原生文本。
+ * @param group 已按原始顺序组合的单元格区块组。
+ * @returns 至少包含两张图片的叠放内容；普通文本行单独处理时返回 undefined。
+ * @author zhenghq
+ */
+function resolveTableCellImageStackContents(
+  group: readonly DocumentBlock[]
+): { images: DocumentImageBlock[]; texts: DocumentTextBlock[] } | undefined {
+  const images = group.filter((block): block is DocumentImageBlock => block.kind === 'image')
+  const texts = group.filter((block): block is DocumentTextBlock => block.kind === 'text')
+  if (images.length < 2 || images.length + texts.length !== group.length) return undefined
+  return { images, texts }
 }
 
 /**
@@ -1763,7 +1948,12 @@ async function tableCellContentHeight(
 ): Promise<number> {
   let height = 0
   const availableWidth = Math.max(1, cellWidth - 10)
-  for (const group of groupTableCellTextBlocks(cell.blocks)) {
+  for (const group of groupTableCellBlocks(cell.blocks)) {
+    const stack = resolveTableCellImageStackContents(group)
+    if (stack) {
+      height += tableCellImageStackHeight(stack.images, availableWidth)
+      continue
+    }
     let groupHeight = 0
     for (const child of group) {
       if (child.kind === 'text') {
@@ -1779,6 +1969,21 @@ async function tableCellContentHeight(
     height += groupHeight
   }
   return height
+}
+
+/**
+ * 计算表格单元格图片叠放组在列宽缩放后的普通流高度。
+ * @param blocks 同一叠放组内的图片区块。
+ * @param availableWidth 单元格内容可用宽度。
+ * @returns 按组并集宽高比换算后的高度；缺少边界时使用单图高度兜底。
+ * @author zhenghq
+ */
+function tableCellImageStackHeight(blocks: readonly DocumentImageBlock[], availableWidth: number): number {
+  const bounds = resolveDocumentImageStackBounds(blocks)
+  if (bounds && bounds.width > 0 && bounds.height > 0) {
+    return Math.max(1, availableWidth * bounds.height / bounds.width)
+  }
+  return Math.max(1, ...blocks.map((block) => block.bbox?.height ?? availableWidth))
 }
 
 /**
@@ -1861,6 +2066,148 @@ async function drawTableCellImage(
     })
   }
   return drawHeight
+}
+
+/**
+ * 在表格单元格内按叠放组并集坐标缩放并绘制多张图片。
+ * 所有成员共享一次纵向排版高度，先按原始叠放顺序铺底图，再统一绘制 OCR 文字层。
+ * @param context 绘制上下文。
+ * @param blocks 同一叠放组内的图片区块。
+ * @param texts 完全位于叠放组并集内的原生文本区块。
+ * @param page 页面模型，用于记录资源缺失告警。
+ * @param x 单元格内容区左边界。
+ * @param top 叠放组顶部坐标。
+ * @param width 单元格内容区宽度。
+ * @param dependencies 导出依赖。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
+ * @returns 叠放组实际占用高度。
+ * @author zhenghq
+ */
+async function drawTableCellImageStack(
+  context: DrawContext,
+  blocks: readonly DocumentImageBlock[],
+  texts: readonly DocumentTextBlock[],
+  page: DocumentPage,
+  x: number,
+  top: number,
+  width: number,
+  dependencies: DocumentPdfExportDependencies,
+  includeOcrTextLayer = false
+): Promise<number> {
+  const bounds = resolveDocumentImageStackBounds(blocks)
+  if (!bounds) {
+    let bottom = top
+    for (const block of blocks) {
+      bottom += await drawTableCellImage(
+        context,
+        block,
+        page,
+        x,
+        bottom,
+        width,
+        dependencies,
+        includeOcrTextLayer
+      )
+    }
+    return bottom - top
+  }
+  const scale = width / bounds.width
+  const stackHeight = Math.max(1, bounds.height * scale)
+  const members: Array<{
+    block: DocumentImageBlock
+    imageBox: DocumentBoundingBox
+  }> = []
+  for (const block of blocks) {
+    const bbox = block.bbox ?? bounds
+    const memberBox = {
+      x: x + (bbox.x - bounds.x) * scale,
+      y: top + (bbox.y - bounds.y) * scale,
+      width: Math.max(1, bbox.width * scale),
+      height: Math.max(1, bbox.height * scale)
+    }
+    const image = await loadImage(context, block.assetId, dependencies)
+    if (!image) {
+      context.warnings.push({
+        code: 'image-asset-unavailable',
+        severity: 'warning',
+        message: 'A table image asset could not be embedded and was replaced with a placeholder.',
+        pageId: page.pageId,
+        blockId: block.blockId
+      })
+      context.page.drawRectangle({
+        x: memberBox.x,
+        y: pdfY(context.page.getHeight(), memberBox.y, memberBox.height),
+        width: memberBox.width,
+        height: memberBox.height,
+        borderColor: rgb(0.75, 0.78, 0.82),
+        borderWidth: 0.8
+      })
+      continue
+    }
+    const imageBox = fitImageWithinBox(image, memberBox)
+    members.push({ block, imageBox })
+    context.page.drawImage(image, {
+      x: imageBox.x,
+      y: pdfY(context.page.getHeight(), imageBox.y, imageBox.height),
+      width: imageBox.width,
+      height: imageBox.height
+    })
+    if (includeOcrTextLayer) drawOcrTextLayer(context, block, page, memberBox)
+  }
+  for (const text of texts) {
+    if (!text.bbox) continue
+    const textBox = {
+      x: x + (text.bbox.x - bounds.x) * scale,
+      y: top + (text.bbox.y - bounds.y) * scale,
+      width: Math.max(1, text.bbox.width * scale),
+      height: Math.max(1, text.bbox.height * scale)
+    }
+    let maskColor: readonly [number, number, number] | undefined
+    // 按原始叠放顺序从顶到底寻找首个可在文字 bbox 外侧采样的图片。
+    for (let index = members.length - 1; index >= 0; index -= 1) {
+      const member = members[index]!
+      const maskImage = await loadMaskImage(context, member.block.assetId, dependencies)
+      if (!maskImage) continue
+      maskColor = samplePdfImageTextMaskColor(maskImage, textBox, member.imageBox)
+      if (maskColor) break
+    }
+    const padding = Math.max(1, textBox.height * 0.15)
+    const resolvedMaskColor = maskColor ?? [1, 1, 1] as const
+    // 图片像素通常已烘焙原文；必须在译文前用局部背景色覆盖，否则导出 PDF 会重影。
+    context.page.drawRectangle({
+      x: textBox.x - padding,
+      y: pdfY(context.page.getHeight(), textBox.y - padding, textBox.height + padding * 2),
+      width: textBox.width + padding * 2,
+      height: textBox.height + padding * 2,
+      color: rgb(...resolvedMaskColor)
+    })
+    // 图内文本只覆盖在图片上方，不推进普通流，否则会把单元格后续内容再次向下推。
+    drawTableCellTextBlock(context, text, textBox.x, textBox.y, textBox.width)
+  }
+  return stackHeight
+}
+
+/**
+ * 按 contain 语义把图片等比放入目标边界。
+ * @param image 已加载的 PDF 图片。
+ * @param box 目标边界。
+ * @returns 居中后的图片绘制边界。
+ * @author zhenghq
+ */
+function fitImageWithinBox(
+  image: PDFImage,
+  box: DocumentBoundingBox
+): DocumentBoundingBox {
+  const sourceRatio = image.width / image.height
+  const boxRatio = box.width / box.height
+  const width = sourceRatio > boxRatio ? box.width : box.height * sourceRatio
+  const height = sourceRatio > boxRatio ? box.width / sourceRatio : box.height
+  return {
+    x: box.x + (box.width - width) / 2,
+    y: box.y + (box.height - height) / 2,
+    width,
+    height
+  }
 }
 
 /**
@@ -2117,6 +2464,30 @@ function adaptiveTableColumnWidths(
 }
 
 /**
+ * 读取并缓存图片原始字节，供 PDF 嵌入与文字遮罩采样共享。
+ * @param context 绘制上下文。
+ * @param assetId 资源标识。
+ * @param dependencies 导出依赖。
+ * @returns 图片字节；资源不存在或读取失败时返回 null。
+ * @author zhenghq
+ */
+async function loadAssetBytes(
+  context: DrawContext,
+  assetId: string,
+  dependencies: DocumentPdfExportDependencies
+): Promise<Uint8Array | null> {
+  if (context.assetBytes.has(assetId)) return context.assetBytes.get(assetId) ?? null
+  let bytes: Uint8Array | null = null
+  try {
+    bytes = await dependencies.loadAssetBytes(assetId)
+  } catch {
+    bytes = null
+  }
+  context.assetBytes.set(assetId, bytes)
+  return bytes
+}
+
+/**
  * 读取并缓存图片资源。
  * @param context 绘制上下文。
  * @param assetId 资源标识。
@@ -2132,7 +2503,7 @@ async function loadImage(
   if (context.images.has(assetId)) return context.images.get(assetId) ?? null
   let image: PDFImage | null = null
   try {
-    const bytes = await dependencies.loadAssetBytes(assetId)
+    const bytes = await loadAssetBytes(context, assetId, dependencies)
     if (bytes) {
       const format = detectImageFormat(bytes)
       if (format === 'png') image = await context.page.doc.embedPng(bytes)
@@ -2143,6 +2514,31 @@ async function loadImage(
   }
   context.images.set(assetId, image)
   return image
+}
+
+/**
+ * 解码 PNG 资源供图内文字遮罩局部采样；JPEG 等格式无法无依赖解码时保留白色兜底。
+ * @param context 绘制上下文。
+ * @param assetId 资源标识。
+ * @param dependencies 导出依赖。
+ * @returns 可采样的 RGBA 图片；资源缺失、格式不支持或解码失败时返回 null。
+ * @author zhenghq
+ */
+async function loadMaskImage(
+  context: DrawContext,
+  assetId: string,
+  dependencies: DocumentPdfExportDependencies
+): Promise<PdfImageMaskImage | null> {
+  if (context.maskImages.has(assetId)) return context.maskImages.get(assetId) ?? null
+  let maskImage: PdfImageMaskImage | null = null
+  try {
+    const bytes = await loadAssetBytes(context, assetId, dependencies)
+    if (bytes && detectImageFormat(bytes) === 'png') maskImage = decodePng(bytes)
+  } catch {
+    maskImage = null
+  }
+  context.maskImages.set(assetId, maskImage)
+  return maskImage
 }
 
 /**
@@ -2163,7 +2559,8 @@ async function drawImageBlock(
   dependencies: DocumentPdfExportDependencies,
   composer?: PageComposer,
   document?: PDFDocument,
-  includeOcrTextLayer = false
+  includeOcrTextLayer = false,
+  drawOcrTranslations = true
 ): Promise<number> {
   const bbox = block.bbox ?? { x: 24, y: 24, width: page.width - 48, height: 240 }
   const image = await loadImage(context, block.assetId, dependencies)
@@ -2203,7 +2600,9 @@ async function drawImageBlock(
       color: rgb(0.45, 0.48, 0.52)
     })
   }
-  return drawOcrRegions(context, block, page, composer, document)
+  return drawOcrTranslations
+    ? drawOcrRegions(context, block, page, composer, document)
+    : bbox.y + bbox.height
 }
 
 /**
@@ -2463,6 +2862,217 @@ async function drawFlowGroup(
 }
 
 /**
+ * 绘制同一 stackGroupId 下的叠放图片。
+ * 整组只进行一次纵向排版，全部底图先按 stackOrder 覆盖绘制，再统一绘制各成员 OCR 译文，
+ * 避免上层图片遮住底层 OCR，也避免第二张图片把后续正文再次下推。
+ * @param context 绘制上下文。
+ * @param blocks 同一叠放组内的图片区块。
+ * @param page 页面模型。
+ * @param dependencies 导出依赖。
+ * @param composer 页面排版器。
+ * @param document PDF 文档。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
+ * @returns 叠放组实际占用后的纵向底部坐标。
+ * @author zhenghq
+ */
+async function drawImageStack(
+  context: DrawContext,
+  blocks: readonly DocumentImageBlock[],
+  page: DocumentPage,
+  dependencies: DocumentPdfExportDependencies,
+  composer: PageComposer,
+  document: PDFDocument,
+  includeOcrTextLayer = false
+): Promise<number> {
+  const bounds = blocks
+    .map((block) => block.bbox)
+    .filter((bbox): bbox is NonNullable<DocumentImageBlock['bbox']> => bbox !== undefined)
+  if (bounds.length === 0) return composer.cursor
+  const left = Math.min(...bounds.map((bbox) => bbox.x))
+  const top = Math.min(...bounds.map((bbox) => bbox.y))
+  const stackBounds = {
+    x: left,
+    y: top,
+    width: Math.max(1, Math.max(...bounds.map((bbox) => bbox.x + bbox.width)) - left),
+    height: Math.max(1, Math.max(...bounds.map((bbox) => bbox.y + bbox.height)) - top)
+  }
+  if (stackBounds.y > composer.cursor) composer.cursor = stackBounds.y
+  const stackTop = ensureGeometryBlockSpace(
+    composer,
+    document,
+    context,
+    composer.cursor,
+    stackBounds.height,
+    stackBounds.y,
+    stackBounds.height
+  )
+  const orderedBlocks = [...blocks].sort((leftBlock, rightBlock) =>
+    (leftBlock.stackOrder ?? 0) - (rightBlock.stackOrder ?? 0))
+  const positionedBlocks = orderedBlocks.map((block) => ({
+    block,
+    drawBbox: block.bbox
+      ? {
+          ...block.bbox,
+          y: stackTop + Math.max(0, block.bbox.y - stackBounds.y)
+        }
+      : { ...stackBounds, y: stackTop }
+  }))
+  let stackBottom = stackTop + stackBounds.height
+  // 先铺完全部底图，再绘制 OCR，保证底层图片的译文不会被上层图片覆盖。
+  for (const entry of positionedBlocks) {
+    stackBottom = Math.max(stackBottom, await drawImageBlock(
+      context,
+      { ...entry.block, bbox: entry.drawBbox },
+      page,
+      dependencies,
+      composer,
+      document,
+      includeOcrTextLayer,
+      false
+    ))
+  }
+  for (const entry of positionedBlocks) {
+    stackBottom = Math.max(
+      stackBottom,
+      drawOcrRegions(
+        context,
+        { ...entry.block, bbox: entry.drawBbox },
+        page,
+        composer,
+        document
+      )
+    )
+  }
+  composer.cursor = stackBottom
+  composer.sourceBottom = Math.max(composer.sourceBottom, stackBounds.y + stackBounds.height)
+  recordPdfFlowAnchor(
+    composer,
+    { ...orderedBlocks[0]!, bbox: stackBounds },
+    stackTop,
+    stackBottom
+  )
+  return stackBottom
+}
+
+/**
+ * 在图片覆盖组的原始位置绘制图内原生文字。
+ * 文字从原顶部开始排版，原始 bbox 只作为起始位置；译文行盒更高时仍完整绘制，
+ * 且不传排版器以确保文字不会推进覆盖组普通流游标。
+ * @param context 绘制上下文。
+ * @param block 原生文字区块。
+ * @param page 页面模型。
+ * @param bbox 覆盖组内换算后的文字 bbox。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function drawImageOverlayText(
+  context: DrawContext,
+  block: DocumentTextBlock,
+  page: DocumentPage,
+  bbox: DocumentBoundingBox
+): void {
+  // 不传排版器：图内文字只覆盖在原位，不允许触发换页或改变覆盖组普通流高度。
+  // 不能按原 bbox 裁切，否则译文行盒比原始单行 bbox 高时，每行上下都会被截断。
+  drawTextBlock(context, { ...block, bbox }, page, bbox.y)
+}
+
+/**
+ * 绘制图片覆盖组：先按 stackOrder 铺完全部底图，再把图内原生译文绝对绘制到原始位置。
+ * 整组只占一次普通流高度；后续正文只从图片与 OCR 译文的实际底边继续。
+ * @param context 绘制上下文。
+ * @param images 覆盖组内的图片区块。
+ * @param texts 覆盖组内的原生文字区块。
+ * @param page 页面模型。
+ * @param dependencies 导出依赖。
+ * @param composer 页面排版器。
+ * @param document PDF 文档。
+ * @param includeOcrTextLayer 是否写入透明 OCR 原文文字层。
+ * @param alignedImageRow 同一原文行首个覆盖组的原始锚点与实际落位。
+ * @returns 覆盖组实际占用后的纵向底部坐标。
+ * @author zhenghq
+ */
+async function drawImageOverlayGroup(
+  context: DrawContext,
+  images: readonly DocumentImageBlock[],
+  texts: readonly DocumentTextBlock[],
+  page: DocumentPage,
+  dependencies: DocumentPdfExportDependencies,
+  composer: PageComposer,
+  document: PDFDocument,
+  includeOcrTextLayer = false,
+  alignedImageRow?: DocumentTranslationImageFlowRow
+): Promise<number> {
+  const bounds = resolveDocumentImageOverlayBounds(images, texts)
+  if (!bounds) return composer.cursor
+  if (bounds.y > composer.cursor) composer.cursor = bounds.y
+  const alignsWithImageRow = alignedImageRow !== undefined &&
+    Math.abs(bounds.y - alignedImageRow.sourceTop) <= 0.5
+  const desiredTop = alignsWithImageRow
+    ? Math.max(bounds.y, alignedImageRow.actualTop)
+    : composer.cursor
+  const overlayTop = ensureGeometryBlockSpace(
+    composer,
+    document,
+    context,
+    desiredTop,
+    bounds.height,
+    bounds.y,
+    bounds.height
+  )
+  const orderedImages = [...images].sort((left, right) =>
+    (left.stackOrder ?? 0) - (right.stackOrder ?? 0))
+  const positionedImages = orderedImages.map((block) => ({
+    block,
+    drawBbox: block.bbox
+      ? { ...block.bbox, y: overlayTop + Math.max(0, block.bbox.y - bounds.y) }
+      : { ...bounds, y: overlayTop }
+  }))
+  let overlayBottom = overlayTop + Math.max(0, bounds.height)
+  // 先铺完全部底图，再统一绘制 OCR，避免底层图片的译文被上层图片覆盖。
+  for (const entry of positionedImages) {
+    const imageBottom = await drawImageBlock(
+      context,
+      { ...entry.block, bbox: entry.drawBbox },
+      page,
+      dependencies,
+      composer,
+      document,
+      includeOcrTextLayer,
+      false
+    )
+    overlayBottom = Math.max(overlayBottom, imageBottom)
+  }
+  for (const entry of positionedImages) {
+    overlayBottom = Math.max(
+      overlayBottom,
+      drawOcrRegions(
+        context,
+        { ...entry.block, bbox: entry.drawBbox },
+        page,
+        composer,
+        document
+      )
+    )
+  }
+  for (const block of texts) {
+    if (!block.bbox) continue
+    drawImageOverlayText(context, block, page, {
+      ...block.bbox,
+      y: overlayTop + (block.bbox.y - bounds.y)
+    })
+  }
+  composer.cursor = overlayBottom
+  composer.sourceBottom = Math.max(composer.sourceBottom, bounds.y + bounds.height)
+  recordPdfFlowAnchor(
+    composer,
+    { ...(orderedImages[0] ?? texts[0]!), bbox: bounds },
+    overlayTop,
+    overlayBottom
+  )
+  return overlayBottom
+}
+
+/**
  * 绘制表格边框、列宽和单元格内容。
  * @param context 绘制上下文。
  * @param block 表格区块。
@@ -2648,9 +3258,25 @@ async function drawTableRowPlacements(
     })
     let contentTop = rowTop + 5
     let hasCellText = false
-    const textGroups = groupTableCellTextBlocks(placement.cell.blocks)
+    const textGroups = groupTableCellBlocks(placement.cell.blocks)
     for (const group of textGroups) {
       let groupHeight = 0
+      const stack = resolveTableCellImageStackContents(group)
+      if (stack) {
+        groupHeight = await drawTableCellImageStack(
+          context,
+          stack.images,
+          stack.texts,
+          page,
+          cellX + 5,
+          contentTop,
+          cellWidth - 10,
+          dependencies,
+          includeOcrTextLayer
+        )
+        contentTop += groupHeight
+        continue
+      }
       for (const child of group) {
         if (child.kind === 'text') {
           // 表格相邻单元格之间补空格，避免复制出的可检索文本丢失词语边界。
@@ -2783,8 +3409,76 @@ async function drawPageBlocks(
       }
     : pageModel
   const composer = createPageComposer(document, context, pageModelForDraw)
+  const imageStackBlocks = new Map<string, DocumentImageBlock[]>()
+  const imageOverlayImages = new Map<string, DocumentImageBlock[]>()
+  const imageOverlayTexts = new Map<string, DocumentTextBlock[]>()
+  for (const block of pageModelForDraw.blocks) {
+    if (block.kind === 'image') {
+      if (block.stackGroupId) {
+        const stackBlocks = imageStackBlocks.get(block.stackGroupId) ?? []
+        stackBlocks.push(block)
+        imageStackBlocks.set(block.stackGroupId, stackBlocks)
+      }
+      if (block.overlayGroupId) {
+        const overlayImages = imageOverlayImages.get(block.overlayGroupId) ?? []
+        overlayImages.push(block)
+        imageOverlayImages.set(block.overlayGroupId, overlayImages)
+      }
+      continue
+    }
+    if (block.kind === 'text' && block.overlayGroupId) {
+      const overlayTexts = imageOverlayTexts.get(block.overlayGroupId) ?? []
+      overlayTexts.push(block)
+      imageOverlayTexts.set(block.overlayGroupId, overlayTexts)
+    }
+  }
+  const drawnImageStackIds = new Set<string>()
+  const drawnImageOverlayIds = new Set<string>()
+  let alignedImageRow: DocumentTranslationImageFlowRow | undefined
   for (let blockIndex = 0; blockIndex < pageModel.blocks.length; blockIndex += 1) {
     const block = pageModelForDraw.blocks[blockIndex]!
+    const overlayGroupId = block.overlayGroupId
+    const overlayImages = overlayGroupId ? imageOverlayImages.get(overlayGroupId) ?? [] : []
+    const overlayTexts = overlayGroupId ? imageOverlayTexts.get(overlayGroupId) ?? [] : []
+    const hasOverlay = overlayGroupId !== undefined && overlayImages.length > 0
+    if (hasOverlay) {
+      // 覆盖组已按图片和组内原生文字整体绘制，后续成员必须跳过，避免文字被重复排到图片下方。
+      if (drawnImageOverlayIds.has(overlayGroupId)) continue
+      drawnImageOverlayIds.add(overlayGroupId)
+      composer.cursor = await drawImageOverlayGroup(
+        context,
+        overlayImages,
+        overlayTexts,
+        pageModelForDraw,
+        dependencies,
+        composer,
+        document,
+        includeOcrTextLayer,
+        alignedImageRow
+      )
+      const overlayBounds = resolveDocumentImageOverlayBounds(overlayImages, overlayTexts)
+      alignedImageRow = overlayBounds
+        ? { sourceTop: overlayBounds.y, actualTop: composer.flowActualTop }
+        : undefined
+      composer.previousBlock = overlayTexts[overlayTexts.length - 1] ?? overlayImages[overlayImages.length - 1] ?? block
+      continue
+    }
+    if (block.kind === 'image' && block.stackGroupId) {
+      if (drawnImageStackIds.has(block.stackGroupId)) continue
+      drawnImageStackIds.add(block.stackGroupId)
+      const stackBlocks = imageStackBlocks.get(block.stackGroupId) ?? [block]
+      composer.cursor = await drawImageStack(
+        context,
+        stackBlocks,
+        pageModelForDraw,
+        dependencies,
+        composer,
+        document,
+        includeOcrTextLayer
+      )
+      composer.previousBlock = stackBlocks[stackBlocks.length - 1] ?? block
+      continue
+    }
     if (block.flowGroupId) {
       const group: DocumentBlock[] = [block]
       let nextIndex = blockIndex + 1
@@ -3042,14 +3736,16 @@ export async function exportDocumentToPdf(
         if (options.signal?.aborted) throw createExportAbortError()
         const pageModel = pagesByIndex.get(pageIndex)
         if (!pageModel) continue
-        const page = document.getPage(pageIndex)
-        writtenOcrTextCount += appendSourcePdfOcrTextLayers(document, pageModel, {
+      const page = document.getPage(pageIndex)
+      writtenOcrTextCount += appendSourcePdfOcrTextLayers(document, pageModel, {
           page,
           regular: fonts.regular,
           bold: fonts.bold,
           italic: fonts.italic,
           boldItalic: fonts.boldItalic,
           images,
+          assetBytes: new Map(),
+          maskImages: new Map(),
           warnings
         })
       }
@@ -3077,6 +3773,8 @@ export async function exportDocumentToPdf(
         italic: fonts.italic,
         boldItalic: fonts.boldItalic,
         images,
+        assetBytes: new Map(),
+        maskImages: new Map(),
         warnings
       }
       await drawPageBlocks(context, pageModel, dependencies, document, options.includeOcrTextLayer)

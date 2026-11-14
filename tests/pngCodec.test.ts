@@ -91,6 +91,25 @@ test('Paeth 滤镜扫描线应正确还原像素', () => {
 })
 
 /**
+ * 校验 Paeth 预测器在 up 与 upLeft 误差相等时按规范优先选择 up。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Paeth 滤镜上方与左上误差相等时应选择上方像素', () => {
+  // 第二行第二像素：left=25、up=10、upLeft=20，预测值为 15，
+  // 三个候选距离为 left=10、up=5、upLeft=5；规范要求平局时选择 up。
+  const raw = new Uint8Array([
+    0, 20, 20, 20, 10, 10, 10,
+    4, 5, 5, 5, 20, 20, 20
+  ])
+  const pixels = expandScanlines(raw, 2, 2, 3)
+  assert.deepEqual(
+    Array.from(pixels),
+    [20, 20, 20, 10, 10, 10, 25, 25, 25, 30, 30, 30]
+  )
+})
+
+/**
  * 校验 PNG 编码再解码的往返一致性。
  * @returns 无返回值。
  * @author zhenghq

@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   createAdaptiveOcrFallbackImageBytes,
   createDocumentAdaptiveOcrFallbackImageBytes,
+  MAX_DOCUMENT_OCR_PIXELS,
   OCR_FALLBACK_MIN_EFFECTIVE_SCALE,
   OCR_FALLBACK_TARGET_PIXELS,
   preprocessDocumentOcrBaselineImageBytes,
@@ -17,6 +18,10 @@ import { MAX_OCR_PIXELS, type RgbaImage } from '../src/shared/imagePreprocess.ts
 const DOCUMENT_SCAN_WIDTH = 1600
 /** 文档扫描页测试使用的高度。 */
 const DOCUMENT_SCAN_HEIGHT = 1400
+/** 超过文档 OCR 像素预算的测试图片宽度。 */
+const DOCUMENT_OVERSIZED_WIDTH = 2200
+/** 超过文档 OCR 像素预算的测试图片高度。 */
+const DOCUMENT_OVERSIZED_HEIGHT = 2000
 
 /**
  * 构造测试用纯色 RGBA 图像。
@@ -162,6 +167,24 @@ test('文档 OCR 基线应保留超过通用预算的扫描页尺寸', () => {
   assert.ok(genericBaseline.width < original.width)
   assert.equal(documentBaseline.width, original.width)
   assert.equal(documentBaseline.height, original.height)
+})
+
+/**
+ * 校验超过文档安全预算的图片会降采样，避免同一图片触发两轮全尺寸原生推理。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('文档 OCR 基线与备用候选都应限制在文档像素预算内', () => {
+  const original = makeImage(DOCUMENT_OVERSIZED_WIDTH, DOCUMENT_OVERSIZED_HEIGHT)
+  const encoded = encodePng(original)
+  const baseline = decodePng(preprocessDocumentOcrBaselineImageBytes(encoded))
+  const fallback = createDocumentAdaptiveOcrFallbackImageBytes(encoded, 3)
+  const decodedFallback = decodePng(fallback.imageBytes)
+
+  assert.ok(original.width * original.height > MAX_DOCUMENT_OCR_PIXELS)
+  assert.ok(baseline.width * baseline.height <= MAX_DOCUMENT_OCR_PIXELS)
+  assert.ok(decodedFallback.width * decodedFallback.height <= MAX_DOCUMENT_OCR_PIXELS)
+  assert.equal(fallback.strategy, 'contrast-enhance')
 })
 
 /**

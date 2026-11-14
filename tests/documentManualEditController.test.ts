@@ -87,10 +87,10 @@ test('编辑失焦必须延迟提交，并把块操作菜单内的焦点切换�
 })
 
 test('编辑期间悬停不得启动块菜单，菜单打开也不得抢走编辑焦点', () => {
-  const source = readFileSync('src/renderer/src/document.ts', 'utf8')
+  const source = readFileSync('src/renderer/src/documentBlockActionController.ts', 'utf8')
 
-  assert.match(source, /translationContent\.addEventListener\('pointerover'[\s\S]*?documentManualEdit\.isEditing\(\)[\s\S]*?return/u)
-  assert.match(source, /if \(!documentManualEdit\.isEditing\(\)\)[\s\S]*?querySelector<HTMLButtonElement>\('button'\)\?\.focus/u)
+  assert.match(source, /translationContent\.addEventListener\('pointerover'[\s\S]*?if \(isEditing\(\)\) return/u)
+  assert.match(source, /if \(!isEditing\(\)\)[\s\S]*?querySelector<HTMLButtonElement>\('button'\)\?\.focus/u)
 })
 
 test('清空后的译文元素必须保留可点击的最小编辑区域', () => {
@@ -135,6 +135,7 @@ test('手改必须支持回退与前进，并按 Tab 隔离历史栈', () => {
 
 test('文档工作台必须为手改回退与前进提供按钮和快捷键', () => {
   const source = readFileSync('src/renderer/src/document.ts', 'utf8')
+  const interactionSource = readFileSync('src/renderer/src/documentBlockActionController.ts', 'utf8')
   const html = readFileSync('src/renderer/document.html', 'utf8')
   const zh = readFileSync('src/shared/i18n/catalog.zh-CN.document.ts', 'utf8')
   const en = readFileSync('src/shared/i18n/catalog.en-US.document.ts', 'utf8')
@@ -143,9 +144,9 @@ test('文档工作台必须为手改回退与前进提供按钮和快捷键', ()
   assert.match(html, /id="document-edit-redo-button"/u)
   assert.match(source, /documentManualEdit\.undo\(\)/u)
   assert.match(source, /documentManualEdit\.redo\(\)/u)
-  assert.match(source, /event\.metaKey[\s\S]*?event\.ctrlKey/u)
+  assert.match(interactionSource, /event\.metaKey[\s\S]*?event\.ctrlKey/u)
   // 编辑期间保留 contenteditable 原生撤销，不抢占输入框内的快捷键。
-  assert.match(source, /if \(documentManualEdit\.isEditing\(\)\) return/u)
+  assert.match(interactionSource, /if \(isEditing\(\)\) return/u)
   assert.match(source, /refreshDocumentEditHistoryButtons/u)
   assert.match(zh, /'document\.edit\.undo'/u)
   assert.match(zh, /'document\.edit\.redo'/u)

@@ -2659,7 +2659,7 @@ export async function runDocumentTranslationPipeline(
       }
       const failed = { ...ocrState, status: 'failed' as const, errorCode: 'ocr-failed' }
       emitProgress(failed, deps)
-      throw Object.assign(new Error('Document OCR failed'), { task: failed })
+      throw Object.assign(new Error('Document OCR failed', { cause: error }), { task: failed })
     }
 
     const ocrWarnings: DocumentWarning[] = []

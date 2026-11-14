@@ -55,6 +55,7 @@ interface ActiveWorkerTask {
 export class DocumentWorkerClient {
   private active: ActiveWorkerTask | null = null
   private disposed = false
+  private exited = false
   private readonly messageListener: (message: unknown) => void
   private readonly exitListener: (code: number) => void
 
@@ -81,7 +82,7 @@ export class DocumentWorkerClient {
    * @author zhenghq
    */
   send(message: unknown): boolean {
-    if (this.disposed) return false
+    if (this.disposed || this.exited) return false
     const request = parseDocumentWorkerRequest(message)
     if (!request) {
       this.reportError('invalid-request')
@@ -163,7 +164,7 @@ export class DocumentWorkerClient {
    * @author zhenghq
    */
   private handleMessage(value: unknown): void {
-    if (this.disposed) return
+    if (this.disposed || this.exited) return
     if (isDocumentWorkerTranslationRpcMessage(value)) return
     if (isDocumentWorkerCacheRpcMessage(value)) return
     const assetResult = parseDocumentWorkerAssetResult(value)
@@ -203,6 +204,8 @@ export class DocumentWorkerClient {
    */
   private handleExit(code: number): void {
     if (this.disposed) return
+    this.exited = true
+    const errorCode = code === 0 ? 'worker-exited' : 'worker-crashed'
     const active = this.active
     if (active && !active.settled) {
       active.settled = true
@@ -212,12 +215,12 @@ export class DocumentWorkerClient {
         jobId: active.jobId,
         generation: active.generation,
         payload: {
-          code: 'worker-exited',
+          code: errorCode,
           message: 'worker operation failed'
         }
       })
     }
-    this.reportError(code === 0 ? 'worker-exited' : 'worker-crashed')
+    this.reportError(errorCode)
   }
 
   /**

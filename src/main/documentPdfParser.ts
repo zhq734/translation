@@ -303,6 +303,14 @@ interface PdfEmbeddedImageRegion {
   objectId?: string
 }
 
+/** 图片叠放分组所需的页面级最小信息。 */
+interface PdfImageStackCandidate {
+  /** 顶层图片区块。 */
+  block: DocumentImageBlock
+  /** 图片在原始区块数组中的索引，用于恢复 PDF 绘制顺序。 */
+  sourceIndex: number
+}
+
 /** PDF 图表题注的语义类型。 */
 type PdfCaptionKind = 'figure' | 'table'
 
@@ -372,6 +380,12 @@ const PDF_MIN_IMAGE_SIZE = 8
 
 /** PDF 内嵌图片的最小可见面积，单位为平方页面点。 */
 const PDF_MIN_IMAGE_AREA = 64
+
+/** 两张图片中较小面积被另一张覆盖的最低比例，用于识别分层叠图。 */
+const PDF_IMAGE_STACK_MIN_OVERLAP_RATIO = 0.3
+
+/** 图内原生文字至少需要覆盖图片并集的比例，避免把图外正文误归入覆盖组。 */
+const PDF_IMAGE_OVERLAY_MIN_TEXT_OVERLAP_RATIO = 0.5
 
 /** 可参与表格识别的网格线最短长度，单位为页面点。 */
 const PDF_MIN_TABLE_LINE_LENGTH = 8
@@ -5561,13 +5575,16 @@ function extractPdfImageRegions(
   const imageMaskGroupOperation = runtime.OPS['paintImageMaskXObjectGroup']
   const imageMaskRepeatOperation = runtime.OPS['paintImageMaskXObjectRepeat']
 
-  const addRegion = (matrix: PdfMatrix, objectId?: string): void => {
+  const addRegion = (matrix: PdfMatrix, objectId?: string, operationIndex?: number): void => {
     const bbox = transformedImageBoundingBox(matrix, viewport.width, viewport.height)
     if (bbox.width < PDF_MIN_IMAGE_SIZE || bbox.height < PDF_MIN_IMAGE_SIZE ||
       bbox.width * bbox.height < PDF_MIN_IMAGE_AREA) return
+    // 同一个图片对象可以在同一位置重复绘制，不同对象也可能完全重合。
+    // 因此 bbox 只能用于过滤几何重复，不能作为图片对象身份的唯一依据。
     const key = [bbox.x, bbox.y, bbox.width, bbox.height]
       .map((value) => value.toFixed(2))
       .join(':')
+      .concat(`:${objectId ?? 'inline'}:${operationIndex ?? 'unknown'}`)
     if (seen.has(key)) return
     seen.add(key)
     regions.push({ bbox, ...(objectId ? { objectId } : {}) })
@@ -5595,7 +5612,7 @@ function extractPdfImageRegions(
       const objectId = operation === runtime.OPS['paintImageXObject'] && typeof args[0] === 'string'
         ? args[0]
         : undefined
-      addRegion(current, objectId)
+      addRegion(current, objectId, index)
     } else if (operation === repeatOperation) {
       const scaleX = typeof args[1] === 'number' ? args[1] : 1
       const scaleY = typeof args[2] === 'number' ? args[2] : 1
@@ -5605,23 +5622,23 @@ function extractPdfImageRegions(
         const x = positions[position]
         const y = positions[position + 1]
         if (typeof x !== 'number' || typeof y !== 'number') continue
-        addRegion(multiplyPdfMatrix(current, [scaleX, 0, 0, scaleY, x, y]), objectId)
+        addRegion(multiplyPdfMatrix(current, [scaleX, 0, 0, scaleY, x, y]), objectId, index)
       }
     } else if (operation === inlineGroupOperation && Array.isArray(args[1])) {
       for (const entry of args[1]) {
         if (!entry || typeof entry !== 'object' || !('transform' in entry)) continue
         const transform = asPdfMatrix((entry as { transform?: unknown }).transform)
-        if (transform) addRegion(multiplyPdfMatrix(current, transform))
+        if (transform) addRegion(multiplyPdfMatrix(current, transform), undefined, index)
       }
     } else if (operation === imageMaskOperation) {
       // ImageMask 与普通图片一样绘制在当前单位正方形中，只是像素表示透明度。
       // 不传 objectId，后续统一从整页渲染结果裁切，保留其真实填充色。
-      addRegion(current)
+      addRegion(current, undefined, index)
     } else if (operation === imageMaskGroupOperation && Array.isArray(args[0])) {
       for (const entry of args[0]) {
         if (!entry || typeof entry !== 'object' || !('transform' in entry)) continue
         const transform = asPdfMatrix((entry as { transform?: unknown }).transform)
-        if (transform) addRegion(multiplyPdfMatrix(current, transform))
+        if (transform) addRegion(multiplyPdfMatrix(current, transform), undefined, index)
       }
     } else if (operation === imageMaskRepeatOperation) {
       // mask repeat 的参数依次为图片、scaleX、skewX、skewY、scaleY、positions，
@@ -5635,7 +5652,7 @@ function extractPdfImageRegions(
         const x = positions[position]
         const y = positions[position + 1]
         if (typeof x !== 'number' || typeof y !== 'number') continue
-        addRegion(multiplyPdfMatrix(current, [scaleX, skewX, skewY, scaleY, x, y]))
+        addRegion(multiplyPdfMatrix(current, [scaleX, skewX, skewY, scaleY, x, y]), undefined, index)
       }
     }
   }
@@ -5716,6 +5733,194 @@ async function createEmbeddedImageBlock(
 }
 
 /**
+ * 计算两个页面边界框的交集面积。
+ * @param left 第一个边界框。
+ * @param right 第二个边界框。
+ * @returns 交集面积；没有交集时返回 0。
+ * @author zhenghq
+ */
+function pdfBoundingBoxIntersectionArea(
+  left: DocumentBoundingBox,
+  right: DocumentBoundingBox
+): number {
+  const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x))
+  const height = Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y))
+  return width * height
+}
+
+/**
+ * 为页面顶层图片生成稳定的叠放分组元数据。
+ * 只有显著重叠的图片才进入同一组，并允许通过传递重叠形成完整图层组。
+ * @param blocks 当前页的全部区块，数组顺序保持 PDF 原始绘制顺序。
+ * @param pageId 页面稳定标识。
+ * @param fingerprint 文档指纹。
+ * @returns 图片区块到叠放组标识与组内顺序的映射。
+ * @author zhenghq
+ */
+function resolvePdfImageStacks(
+  blocks: readonly DocumentBlock[],
+  pageId: string,
+  fingerprint: string
+): {
+  stacks: Map<DocumentImageBlock, { stackGroupId: string; stackOrder: number }>
+  components: DocumentImageBlock[][]
+} {
+  const candidates: PdfImageStackCandidate[] = []
+  blocks.forEach((block, sourceIndex) => {
+    if (block.kind === 'image' && block.bbox) candidates.push({ block, sourceIndex })
+  })
+  const parents = candidates.map((_, index) => index)
+  const findRoot = (index: number): number => {
+    let root = index
+    while (parents[root] !== root) root = parents[root]!
+    let current = index
+    while (parents[current] !== current) {
+      const next = parents[current]!
+      parents[current] = root
+      current = next
+    }
+    return root
+  }
+  const union = (left: number, right: number): void => {
+    const leftRoot = findRoot(left)
+    const rightRoot = findRoot(right)
+    if (leftRoot === rightRoot) return
+    // 固定保留较小根节点，保证相同输入生成相同的组标识。
+    parents[Math.max(leftRoot, rightRoot)] = Math.min(leftRoot, rightRoot)
+  }
+  for (let left = 0; left < candidates.length; left += 1) {
+    for (let right = left + 1; right < candidates.length; right += 1) {
+      const leftBox = candidates[left]!.block.bbox!
+      const rightBox = candidates[right]!.block.bbox!
+      const intersection = pdfBoundingBoxIntersectionArea(leftBox, rightBox)
+      const smallerArea = Math.min(leftBox.width * leftBox.height, rightBox.width * rightBox.height)
+      if (smallerArea <= 0 || intersection / smallerArea < PDF_IMAGE_STACK_MIN_OVERLAP_RATIO) continue
+      union(left, right)
+    }
+  }
+  const groups = new Map<number, PdfImageStackCandidate[]>()
+  candidates.forEach((candidate, index) => {
+    const root = findRoot(index)
+    const group = groups.get(root) ?? []
+    group.push(candidate)
+    groups.set(root, group)
+  })
+  const stacks = new Map<DocumentImageBlock, { stackGroupId: string; stackOrder: number }>()
+  const components: DocumentImageBlock[][] = []
+  for (const group of groups.values()) {
+    group.sort((left, right) => left.sourceIndex - right.sourceIndex)
+    components.push(group.map((candidate) => candidate.block))
+    if (group.length < 2) continue
+    const first = group[0]!
+    const stackGroupId = `stack-${createDocumentBlockId(
+      fingerprint,
+      pageId,
+      first.sourceIndex,
+      'image'
+    ).replace(/^block-/u, '')}`
+    group.forEach((candidate, stackOrder) => {
+      stacks.set(candidate.block, { stackGroupId, stackOrder })
+    })
+  }
+  return { stacks, components }
+}
+
+/**
+ * 计算图片集合的并集边界。
+ * @param blocks 图片区块集合。
+ * @returns 并集边界；没有有效坐标时返回 undefined。
+ * @author zhenghq
+ */
+function resolvePdfImageGroupBounds(
+  blocks: readonly DocumentImageBlock[]
+): DocumentBoundingBox | undefined {
+  const bounds = blocks
+    .map((block) => block.bbox)
+    .filter((bbox): bbox is DocumentBoundingBox => bbox !== undefined)
+  if (bounds.length === 0) return undefined
+  const left = Math.min(...bounds.map((bbox) => bbox.x))
+  const top = Math.min(...bounds.map((bbox) => bbox.y))
+  const right = Math.max(...bounds.map((bbox) => bbox.x + bbox.width))
+  const bottom = Math.max(...bounds.map((bbox) => bbox.y + bbox.height))
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top)
+  }
+}
+
+/**
+ * 将明显落在图片并集内部的 PDF 原生文字归入图片覆盖组。
+ * 使用文字中心与文字面积覆盖率双重约束，图注和图片外部正文仍保留普通流语义。
+ * @param blocks 已按阅读顺序排列的页面区块。
+ * @param imageComponents 图片叠放连通分量。
+ * @param pageId 页面稳定标识。
+ * @param fingerprint 文档指纹。
+ * @returns 文字和图片到各自覆盖组标识的映射。
+ * @author zhenghq
+ */
+function resolvePdfImageOverlayTextGroups(
+  blocks: readonly DocumentBlock[],
+  imageComponents: readonly DocumentImageBlock[][],
+  pageId: string,
+  fingerprint: string
+): {
+  textGroups: Map<DocumentTextBlock, string>
+  imageGroups: Map<DocumentImageBlock, string>
+} {
+  const textGroups = new Map<DocumentTextBlock, string>()
+  const imageGroups = new Map<DocumentImageBlock, string>()
+  const candidates = imageComponents
+    .map((images) => {
+      const bounds = resolvePdfImageGroupBounds(images)
+      const firstImage = images[0]
+      const sourceIndex = firstImage ? blocks.indexOf(firstImage) : -1
+      if (!bounds || !firstImage || sourceIndex < 0) return undefined
+      return {
+        images,
+        bounds,
+        sourceIndex,
+        overlayGroupId: `overlay-${createDocumentBlockId(
+          fingerprint,
+          pageId,
+          sourceIndex,
+          'image'
+        ).replace(/^block-/u, '')}`
+      }
+    })
+    .filter((entry): entry is {
+      images: DocumentImageBlock[]
+      bounds: DocumentBoundingBox
+      sourceIndex: number
+      overlayGroupId: string
+    } => entry !== undefined)
+  for (const block of blocks) {
+    if (block.kind !== 'text' || block.role === 'caption' || !block.bbox) continue
+    const textCenterX = block.bbox.x + block.bbox.width / 2
+    const textCenterY = block.bbox.y + block.bbox.height / 2
+    let best: (typeof candidates)[number] & { ratio: number } | undefined
+    for (const entry of candidates) {
+      if (textCenterX < entry.bounds.x || textCenterX > entry.bounds.x + entry.bounds.width ||
+        textCenterY < entry.bounds.y || textCenterY > entry.bounds.y + entry.bounds.height) continue
+      const intersection = pdfBoundingBoxIntersectionArea(block.bbox, entry.bounds)
+      const textArea = block.bbox.width * block.bbox.height
+      if (textArea <= 0) continue
+      const ratio = intersection / textArea
+      if (ratio < PDF_IMAGE_OVERLAY_MIN_TEXT_OVERLAP_RATIO) continue
+      if (!best || ratio > best.ratio ||
+        ratio === best.ratio && entry.sourceIndex < best.sourceIndex) {
+        best = { ...entry, ratio }
+      }
+    }
+    if (!best) continue
+    textGroups.set(block, best.overlayGroupId)
+    for (const image of best.images) imageGroups.set(image, best.overlayGroupId)
+  }
+  return { textGroups, imageGroups }
+}
+
+/**
  * 按页面坐标合并排序文本与图片区块，并同步重建阅读顺序相关标识。
  * @param blocks 当前页提取出的全部区块。
  * @param pageId 页面稳定标识。
@@ -5729,6 +5934,8 @@ function orderPdfPageBlocks(
   fingerprint: string,
   columnLayout?: PdfColumnLayout
 ): DocumentBlock[] {
+  const imageResolution = resolvePdfImageStacks(blocks, pageId, fingerprint)
+  const imageStacks = imageResolution.stacks
   const topBandBottom = blocks.reduce((bottom, block) => block.bbox
     ? Math.min(bottom, block.bbox.y + block.bbox.height)
     : bottom, Number.POSITIVE_INFINITY) + PDF_TABLE_LINE_TOLERANCE
@@ -5763,6 +5970,14 @@ function orderPdfPageBlocks(
       return left.sourceIndex - right.sourceIndex
     })
 
+  const imageOverlayGroups = resolvePdfImageOverlayTextGroups(
+    ordered.map((entry) => entry.block),
+    imageResolution.components,
+    pageId,
+    fingerprint
+  )
+  const overlayTextGroups = imageOverlayGroups.textGroups
+
   // 页面顶部小图片与紧邻文字共享一行；网页导出的同一视觉行文字被拆成多个
   // 独立块时也共享 flowGroupId，让译文预览横向排布而不是每项各占一行。
   let flowGroupIndex = 0
@@ -5770,6 +5985,11 @@ function orderPdfPageBlocks(
   for (let index = 0; index < ordered.length - 1; index += 1) {
     const current = ordered[index]!
     const next = ordered[index + 1]!
+    // 叠放图片和图内覆盖文字由独立图层容器统一布局，不能同时进入横向 flowGroup。
+    if (current.block.kind === 'image' && current.block.stackGroupId ||
+      next.block.kind === 'image' && next.block.stackGroupId ||
+      overlayTextGroups.has(current.block as DocumentTextBlock) ||
+      overlayTextGroups.has(next.block as DocumentTextBlock)) continue
     const sharesRow = pdfBlocksShareVisualRow(current.block, next.block) ||
       pdfBlocksShareVisualTextRow(current.block, next.block)
     if (!sharesRow) continue
@@ -5788,13 +6008,15 @@ function orderPdfPageBlocks(
 
   return ordered.map(({ block }, readingOrder) => {
     const flowGroupId = flowGroups.get(readingOrder)
+    const imageStack = block.kind === 'image' ? imageStacks.get(block) : undefined
+    const overlayGroupId = block.kind === 'text' ? overlayTextGroups.get(block) : undefined
     const blockId = createDocumentBlockId(fingerprint, pageId, readingOrder, block.kind)
     if (block.kind === 'text') {
       return {
         ...block,
         blockId,
         readingOrder,
-        ...(flowGroupId ? { flowGroupId } : {}),
+        ...(overlayGroupId ? { overlayGroupId } : flowGroupId ? { flowGroupId } : {}),
         runs: block.runs.map((run, index) => ({ ...run, runId: createTextRunId(blockId, index) }))
       }
     }
@@ -5809,13 +6031,21 @@ function orderPdfPageBlocks(
           rowId: createTableRowId(blockId, rowIndex),
           cells: row.cells.map((cell, cellIndex) => {
             const cellId = createTableCellId(fingerprint, pageId, blockId, rowIndex, cellIndex)
+            // 单元格内的图片使用单元格标识建立独立叠放组，避免不同单元格的组标识互相冲突。
+            const cellImageStacks = resolvePdfImageStacks(cell.blocks, cellId, fingerprint).stacks
             return {
               ...cell,
               cellId,
               blocks: cell.blocks.map((child, childIndex) => {
                 const childBlockId = createPdfTableCellBlockId(cellId, childIndex)
                 if (child.kind === 'image') {
-                  return { ...child, blockId: childBlockId, readingOrder: childIndex }
+                  const imageStack = cellImageStacks.get(child)
+                  return {
+                    ...child,
+                    blockId: childBlockId,
+                    readingOrder: childIndex,
+                    ...(imageStack ?? {})
+                  }
                 }
                 if (child.kind !== 'text') return child
                 return {
@@ -5832,7 +6062,18 @@ function orderPdfPageBlocks(
         }))
       }
     }
-    return { ...block, blockId, readingOrder, ...(flowGroupId ? { flowGroupId } : {}) }
+    const imageOverlayGroupId = block.kind === 'image'
+      ? imageOverlayGroups.imageGroups.get(block)
+      : undefined
+    return {
+      ...block,
+      blockId,
+      readingOrder,
+      ...(imageStack
+        ? { stackGroupId: imageStack.stackGroupId, stackOrder: imageStack.stackOrder }
+        : flowGroupId ? { flowGroupId } : {}),
+      ...(imageOverlayGroupId ? { overlayGroupId: imageOverlayGroupId } : {})
+    }
   })
 }
 

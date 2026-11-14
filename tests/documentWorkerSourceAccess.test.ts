@@ -46,6 +46,18 @@ test('应为已授权 PDF 返回当前快照记录的文件字节', async () => 
   assert.deepEqual(reads, ['/tmp/source.pdf'])
 })
 
+test('应在快照到达前按显式路径读取已授权 PDF 字节', async () => {
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46])
+  const { access, reads } = sourceAccess({ '/tmp/source.pdf': bytes })
+
+  assert.deepEqual(await access.getSourceBytes('/tmp/source.pdf'), {
+    ok: true,
+    mimeType: 'application/pdf',
+    bytes
+  })
+  assert.deepEqual(reads, ['/tmp/source.pdf'])
+})
+
 test('HTML 源文件应解码并返回脱敏后的 UTF-8 字节', async () => {
   const { access } = sourceAccess({
     '/tmp/source.html': new TextEncoder().encode(

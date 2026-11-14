@@ -114,6 +114,8 @@ export interface DocumentBlockBase {
   blockId: string
   /** PDF 视觉同行分组标识；同一组的图片与文字应在横向保持同一基线。 */
   flowGroupId?: string
+  /** PDF 图片覆盖组标识；同组图片与图内原生文字必须叠放，且只占一次普通流空间。 */
+  overlayGroupId?: string
   /** 文档阅读顺序，从零开始递增。 */
   readingOrder: number
   /** 是否允许把区块文本送入翻译服务。 */
@@ -210,6 +212,10 @@ export interface DocumentImageBlock extends DocumentBlockBase {
   assetId: string
   alt?: string
   ocrRegions?: DocumentOcrRegion[]
+  /** 绝对叠放图层组标识；同组图片必须在译文中保持原始覆盖关系。 */
+  stackGroupId?: string
+  /** 图片在叠放组内的原始绘制顺序；数值越大越靠前。 */
+  stackOrder?: number
   /** 扫描页尚未完成本机栅格化时为 true，OCR 阶段必须先补齐资源。 */
   renderPending?: boolean
 }
@@ -552,6 +558,12 @@ function assertDocumentBlock(value: unknown, field: string): void {
   if (value.flowGroupId !== undefined) {
     assertNonEmptyString(value.flowGroupId, `${field}.flowGroupId`)
   }
+  if (value.overlayGroupId !== undefined) {
+    assertNonEmptyString(value.overlayGroupId, `${field}.overlayGroupId`)
+    if (value.flowGroupId !== undefined) {
+      throw new Error(`document ${field}.overlayGroupId must not be combined with ${field}.flowGroupId`)
+    }
+  }
   assertFiniteNumber(value.readingOrder, `${field}.readingOrder`)
   if (typeof value.translatable !== 'boolean') {
     throw new Error(`document ${field}.translatable must be a boolean`)
@@ -600,6 +612,21 @@ function assertDocumentBlock(value: unknown, field: string): void {
   if (value.kind === 'image') {
     assertNonEmptyString(value.assetId, `${field}.assetId`)
     if (value.ocrRegions !== undefined) assertOcrRegions(value.ocrRegions, `${field}.ocrRegions`)
+    const hasStackGroupId = value.stackGroupId !== undefined
+    const hasStackOrder = value.stackOrder !== undefined
+    if (hasStackGroupId !== hasStackOrder) {
+      throw new Error(`document ${field}.stackGroupId and ${field}.stackOrder must be provided together`)
+    }
+    if (hasStackGroupId) {
+      assertNonEmptyString(value.stackGroupId, `${field}.stackGroupId`)
+      if (typeof value.stackOrder !== 'number' || !Number.isFinite(value.stackOrder) ||
+        !Number.isInteger(value.stackOrder) || value.stackOrder < 0) {
+        throw new Error(`document ${field}.stackOrder must be a non-negative finite integer`)
+      }
+      if (value.flowGroupId !== undefined) {
+        throw new Error(`document ${field}.stackGroupId must not be combined with ${field}.flowGroupId`)
+      }
+    }
   }
   if (value.kind === 'shape' && value.line !== undefined) {
     if (!isRecord(value.line)) throw new Error(`document ${field}.line must be an object`)

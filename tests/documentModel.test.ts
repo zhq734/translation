@@ -249,6 +249,128 @@ test('文档模型应校验并保留 PDF 同行布局分组标识', () => {
   )
 })
 
+test('文档模型应校验并保留绝对叠放图片分组', () => {
+  const model = createModel()
+  const image = {
+    kind: 'image' as const,
+    blockId: 'stack-image-1',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 60, width: 240, height: 160 },
+    assetId: 'stack-asset-1',
+    stackGroupId: 'page-stack-1',
+    stackOrder: 0
+  }
+  model.pages[0]!.blocks = [image]
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  const parsedImage = parsed.pages[0]!.blocks[0]!
+  assert.equal(parsedImage.kind, 'image')
+  assert.equal(parsedImage.kind === 'image' ? parsedImage.stackGroupId : undefined, 'page-stack-1')
+  assert.equal(parsedImage.kind === 'image' ? parsedImage.stackOrder : undefined, 0)
+
+  for (const stackOrder of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => parseDocumentModel({
+        ...model,
+        pages: [{
+          ...model.pages[0],
+          blocks: [{ ...image, stackOrder }]
+        }]
+      }),
+      /stackOrder/iu
+    )
+  }
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{ ...model.pages[0], blocks: [{ ...image, stackGroupId: '   ' }] }]
+    }),
+    /stackGroupId/iu
+  )
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...image, stackOrder: undefined }]
+      }]
+    }),
+    /stackGroupId/iu
+  )
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...image, stackGroupId: undefined }]
+      }]
+    }),
+    /stackOrder/iu
+  )
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...image, flowGroupId: 'flow-1' }]
+      }]
+    }),
+    /stackGroupId.*flowGroupId/iu
+  )
+})
+
+test('文档模型应校验并保留图片覆盖文字分组', () => {
+  const model = createModel()
+  const image = {
+    kind: 'image' as const,
+    blockId: 'overlay-image-1',
+    readingOrder: 0,
+    translatable: false,
+    bbox: { x: 40, y: 60, width: 240, height: 160 },
+    assetId: 'overlay-asset-1',
+    stackGroupId: 'overlay-stack-1',
+    stackOrder: 0,
+    overlayGroupId: 'overlay-group-1'
+  }
+  const text = {
+    kind: 'text' as const,
+    blockId: 'overlay-text-1',
+    readingOrder: 1,
+    translatable: true,
+    role: 'paragraph' as const,
+    bbox: { x: 60, y: 100, width: 180, height: 24 },
+    overlayGroupId: 'overlay-group-1',
+    runs: [{ runId: 'overlay-run-1', text: 'Image native text', style: { fontSize: 12 } }]
+  }
+  model.pages[0]!.blocks = [image, text]
+
+  const parsed = parseDocumentModel(JSON.parse(serializeDocumentModel(model)))
+  const parsedImage = parsed.pages[0]!.blocks[0]!
+  const parsedText = parsed.pages[0]!.blocks[1]!
+  assert.equal(parsedImage.overlayGroupId, 'overlay-group-1')
+  assert.equal(parsedImage.kind === 'image' ? parsedImage.stackGroupId : undefined, 'overlay-stack-1')
+  assert.equal(parsedText.overlayGroupId, 'overlay-group-1')
+
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{ ...model.pages[0], blocks: [{ ...text, overlayGroupId: '   ' }] }]
+    }),
+    /overlayGroupId/iu
+  )
+  assert.throws(
+    () => parseDocumentModel({
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        blocks: [{ ...text, flowGroupId: 'flow-conflict' }]
+      }]
+    }),
+    /overlayGroupId.*flowGroupId/iu
+  )
+})
+
 test('文档模型应校验并保留目录页码', () => {
   const model = createModel()
   const block = model.pages[0]!.blocks[0]!
