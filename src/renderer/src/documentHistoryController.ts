@@ -23,6 +23,7 @@ import {
   DOCUMENT_FILE_HISTORY_STORAGE_KEY,
   filterDocumentFileHistory,
   filterDocumentTaskHistory,
+  findExistingTaskHistoryTab,
   mergeDocumentHistoryEntries,
   normalizeDocumentFileHistory,
   recordDocumentFileHistory,
@@ -248,7 +249,7 @@ export function createDocumentHistoryController(
       const meta = document.createElement('span')
       item.className = 'document-history-row'
       const isCurrent = entry.kind === 'task'
-        ? tabs.some((tab) => tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId)
+        ? findExistingTaskHistoryTab(tabs, entry.jobId) !== null
         : dependencies.findDocumentTabByPath(entry.path) !== null
       item.dataset.selected = String(isCurrent)
       openButton.type = 'button'
@@ -406,9 +407,7 @@ export function createDocumentHistoryController(
    */
   const openTaskEntry = async (entry: DocumentHistoryEntry): Promise<void> => {
     if (switchInFlight) return
-    const existingTab = dependencies.getDocumentTabs().find((tab) =>
-      tab.sourceKind === 'history' && tab.snapshot?.jobId === entry.jobId
-    )
+    const existingTab = findExistingTaskHistoryTab(dependencies.getDocumentTabs(), entry.jobId)
     if (existingTab) {
       await dependencies.activateDocumentTab(existingTab.id)
       setOpen(false, true)
@@ -425,6 +424,13 @@ export function createDocumentHistoryController(
       }
       const snapshot = migrateRestoredPdfDocumentWorkspaceSnapshot(result.snapshot)
       const source = snapshot.source?.source
+      // 快照加载后再次按文件身份绑定实时 Tab；普通打开的同一文件不得再开只读回放 Tab。
+      const fileTab = findExistingTaskHistoryTab(dependencies.getDocumentTabs(), entry.jobId, source)
+      if (fileTab) {
+        await dependencies.activateDocumentTab(fileTab.id)
+        setOpen(false, true)
+        return
+      }
       let sourceAuthorized = false
       if (source?.path && source.sha256 && Number.isSafeInteger(source.size) && source.size > 0) {
         try {

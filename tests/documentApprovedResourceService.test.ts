@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile as defaultReadFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +19,11 @@ import {
   translate
 } from 'pdf-lib'
 import { DocumentApprovedResourceService } from '../src/main/documentApprovedResourceService.ts'
+import { parseApprovedPdfAssetContext } from '../src/main/documentApprovedAssetParse.ts'
+import {
+  createWorkerPdfAssetParseRunner,
+  type WorkerLike
+} from '../src/main/documentApprovedAssetParseWorkerRunner.ts'
 import { hashDocumentBytes } from '../src/main/documentParserShared.ts'
 import { parsePdfDocument } from '../src/main/documentPdfParser.ts'
 import { createProductionPdfRasterizer } from '../src/main/documentPdfRuntime.ts'
@@ -261,6 +266,106 @@ async function createImageMaskPdf(count = 1): Promise<Uint8Array> {
   }
   return new Uint8Array(await document.save())
 }
+
+test('读取 PDF 源预览时必须后台预热图片资源上下文', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'sample.pdf')
+  const sourceBytes = new TextEncoder().encode('%PDF-1.7\nfixture')
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 3, 4, 5, 6])
+  const bbox = { x: 4, y: 8, width: 32, height: 24 }
+  const imageSha = hashDocumentBytes(imageBytes)
+  const imageAssetId = `asset-${imageSha.slice(0, 16)}`
+  await writeFile(path, sourceBytes)
+  try {
+    let parseCount = 0
+    const service = createPdfService(
+      new Set([path]),
+      pdfImageModel(imageAssetId, imageBytes, bbox),
+      imageBytes,
+      () => { parseCount += 1 }
+    )
+    const source = sourceRequest(path, sourceBytes, 'pdf')
+
+    // 读取源预览就应触发后台预热，不能等到第一张图片请求才开始解析。
+    const preview = await service.getSource(source)
+    assert.equal(preview.ok, true)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(parseCount, 1)
+
+    const request = assetRequest(source, {
+      assetId: imageAssetId,
+      assetSha256: imageSha,
+      assetByteLength: imageBytes.byteLength,
+      mimeType: 'image/png',
+      pageIndex: 0,
+      bbox
+    })
+    const result = await service.getAsset(request)
+    assert.equal(result.ok, true)
+    assert.equal(parseCount, 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('同一源文件的受控资源读取必须复用源文件校验缓存', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'sample.pdf')
+  const sourceBytes = new TextEncoder().encode('%PDF-1.7\nfixture')
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 5, 6, 7, 8])
+  const bbox = { x: 8, y: 16, width: 64, height: 48 }
+  const imageSha = hashDocumentBytes(imageBytes)
+  const imageAssetId = `asset-${imageSha.slice(0, 16)}`
+  await writeFile(path, sourceBytes)
+  try {
+    let readCount = 0
+    const service = new DocumentApprovedResourceService({
+      isApprovedPath: (candidate) => candidate === path,
+      readFile: async (target) => {
+        readCount += 1
+        return defaultReadFile(target)
+      },
+      parsePdfDocument: async (_input, options) => {
+        options.registerAssetBytes?.(imageAssetId, imageBytes)
+        return pdfImageModel(imageAssetId, imageBytes, bbox)
+      },
+      createProductionPdfRasterizer: async () => ({
+        renderPageToImage: async () => null,
+        renderPageRegionToImage: async () => null,
+        renderEmbeddedImageToImage: async () => null
+      })
+    })
+    const source = sourceRequest(path, sourceBytes, 'pdf')
+    const request = assetRequest(source, {
+      assetId: imageAssetId,
+      assetSha256: imageSha,
+      assetByteLength: imageBytes.byteLength,
+      mimeType: 'image/png',
+      pageIndex: 0,
+      bbox
+    })
+
+    const first = await service.getAsset(request)
+    assert.equal(first.ok, true)
+    assert.equal(readCount, 1)
+
+    // 第二次读取同一源文件时必须命中校验缓存，避免逐图重复读盘与哈希。
+    const second = await service.getAsset(request)
+    assert.equal(second.ok, true)
+    assert.equal(readCount, 1)
+
+    // 源文件被替换后缓存必须失效，并重新执行读取与哈希校验。
+    await writeFile(path, new TextEncoder().encode('%PDF-1.7\nchanged-content'))
+    assert.deepEqual(await service.getAsset(request), { ok: false, code: 'source-changed' })
+
+    await writeFile(path, sourceBytes)
+    const restored = await service.getAsset(request)
+    assert.equal(restored.ok, true)
+    assert.equal(readCount, 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('受控资源服务必须拒绝未批准路径和源文件变更', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
@@ -679,4 +784,149 @@ test('历史 PDF 图片恢复必须拒绝缺少定位、越界位置与解析失
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('PDF 资源解析必须通过注入的解析运行器执行，避免阻塞主进程事件循环', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'approved-resource-'))
+  const path = join(directory, 'sample.pdf')
+  const sourceBytes = new TextEncoder().encode('%PDF-1.7\nfixture')
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 10, 11, 12])
+  const bbox = { x: 4, y: 8, width: 32, height: 24 }
+  const imageSha = hashDocumentBytes(imageBytes)
+  const imageAssetId = `asset-${imageSha.slice(0, 16)}`
+  await writeFile(path, sourceBytes)
+  try {
+    let runnerCount = 0
+    let inProcessCount = 0
+    const service = new DocumentApprovedResourceService({
+      isApprovedPath: (candidate) => candidate === path,
+      // 注入的解析运行器代表独立线程执行；主进程内的解析器不应再被调用。
+      parsePdfAsset: async (input) => {
+        runnerCount += 1
+        assert.equal(input.sha256, hashDocumentBytes(sourceBytes))
+        return {
+          model: pdfImageModel(imageAssetId, imageBytes, bbox),
+          assetBytes: new Map([[imageAssetId, imageBytes]]),
+          assetHashes: new Map([[imageAssetId, imageSha]])
+        }
+      },
+      parsePdfDocument: async () => {
+        inProcessCount += 1
+        throw new Error('主进程内解析不应被调用')
+      },
+      createProductionPdfRasterizer: async () => {
+        throw new Error('主进程内栅格化器不应被创建')
+      }
+    })
+    const source = sourceRequest(path, sourceBytes, 'pdf')
+    const preview = await service.getSource(source)
+    assert.equal(preview.ok, true)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const result = await service.getAsset(assetRequest(source, {
+      assetId: imageAssetId,
+      assetSha256: imageSha,
+      assetByteLength: imageBytes.byteLength,
+      mimeType: 'image/png',
+      pageIndex: 0,
+      bbox
+    }))
+    assert.equal(result.ok, true)
+    assert.equal(runnerCount, 1)
+    assert.equal(inProcessCount, 0)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Worker 解析运行器必须复制源字节并在完成后终止 worker', async () => {
+  const sourceBytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 14, 15, 16])
+  const imageSha = hashDocumentBytes(imageBytes)
+  const imageAssetId = `asset-${imageSha.slice(0, 16)}`
+  const model = pdfImageModel(imageAssetId, imageBytes, { x: 1, y: 2, width: 3, height: 4 })
+  let posted: Array<{ value: unknown; transferList?: unknown[] }> = []
+  class FakeWorker implements WorkerLike {
+    terminated = false
+    private readonly listeners = new Map<string, Array<(payload: unknown) => void>>()
+    on(event: string, listener: (payload: unknown) => void): void {
+      const list = this.listeners.get(event) ?? []
+      list.push(listener)
+      this.listeners.set(event, list)
+    }
+    postMessage(value: unknown, transferList?: unknown[]): void {
+      posted.push({ value, transferList })
+    }
+    terminate(): Promise<number> {
+      this.terminated = true
+      return Promise.resolve(0)
+    }
+    emit(event: string, payload: unknown): void {
+      for (const listener of this.listeners.get(event) ?? []) listener(payload)
+    }
+  }
+  const workers: FakeWorker[] = []
+  const runner = createWorkerPdfAssetParseRunner({
+    createWorker: (workerPath) => {
+      assert.ok(workerPath.endsWith('documentApprovedAssetParseWorker.cjs'))
+      const worker = new FakeWorker()
+      workers.push(worker)
+      return worker
+    }
+  })
+  const input = {
+    path: '/tmp/sample.pdf',
+    fileName: 'sample.pdf',
+    format: 'pdf' as const,
+    sha256: hashDocumentBytes(sourceBytes),
+    bytes: sourceBytes
+  }
+  const pending = runner(input)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(workers.length, 1)
+  assert.equal(posted.length, 1)
+  const message = posted[0].value as {
+    requestId: string
+    input: { sha256: string; bytes: Uint8Array }
+  }
+  assert.equal(message.input.sha256, input.sha256)
+  assert.deepEqual(Array.from(message.input.bytes), Array.from(sourceBytes))
+  // 源字节必须复制后传输，主进程持有的原字节不能被转移分离。
+  assert.notEqual((message.input.bytes as Uint8Array).buffer, sourceBytes.buffer)
+  workers[0].emit('message', {
+    requestId: message.requestId,
+    model,
+    assetBytes: [[imageAssetId, imageBytes]],
+    assetHashes: [[imageAssetId, imageSha]]
+  })
+  const result = await pending
+  assert.equal(result.model, model)
+  assert.deepEqual(result.assetBytes.get(imageAssetId), imageBytes)
+  assert.equal(result.assetHashes.get(imageAssetId), imageSha)
+  assert.equal(workers[0].terminated, true)
+})
+
+test('Worker 解析运行器在 worker 加载失败时必须回退到进程内解析', async () => {
+  const sourceBytes = new Uint8Array([9, 8, 7, 6])
+  const model = pdfImageModel('asset-fallback', sourceBytes, { x: 1, y: 2, width: 3, height: 4 })
+  let fallbackCount = 0
+  const runner = createWorkerPdfAssetParseRunner({
+    createWorker: () => {
+      throw new Error('worker bundle missing')
+    },
+    inProcessParse: async (input) => {
+      fallbackCount += 1
+      assert.equal(input.sha256, hashDocumentBytes(sourceBytes))
+      return { model, assetBytes: new Map(), assetHashes: new Map() }
+    }
+  })
+  const result = await runner({
+    path: '/tmp/sample.pdf',
+    fileName: 'sample.pdf',
+    format: 'pdf',
+    sha256: hashDocumentBytes(sourceBytes),
+    bytes: sourceBytes
+  })
+  assert.equal(result.model, model)
+  assert.equal(fallbackCount, 1)
 })

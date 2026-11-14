@@ -33,9 +33,16 @@ import {
   type ProductionPdfRasterizer
 } from './documentPdfRuntime.ts'
 import { sanitizeHtmlPreview } from './documentTextParser.ts'
+import {
+  parseApprovedPdfAssetContext,
+  type ApprovedPdfAssetParseResult
+} from './documentApprovedAssetParse.ts'
 
 /** PDF 图片恢复缓存最多保留的源文件数量。 */
 const PDF_ASSET_CACHE_SOURCE_LIMIT = 4
+
+/** 已批准源文件校验缓存最多保留的源文件数量。 */
+const APPROVED_SOURCE_CACHE_LIMIT = 2
 
 /** 旧版 `pdf-image:page:readingOrder` 占位内容的最大长度。 */
 const PDF_LEGACY_PLACEHOLDER_MAX_BYTES = 64
@@ -52,9 +59,36 @@ interface PdfAssetContext {
   model: DocumentModel
   /** 解析期登记的真实图片字节。 */
   assetBytes: Map<string, Uint8Array>
+  /** 解析期按资源字节一次性计算的哈希,避免逐请求重复哈希。 */
+  assetHashes: Map<string, string>
   /** 按页面惰性构建的旧占位资源哈希集合。 */
   legacyPlaceholderHashes: Map<number, Set<string>>
 }
+
+/** 已批准源文件的校验结果缓存条目。 */
+interface ApprovedSourceCacheEntry {
+  /** 校验通过时的文件状态签名(大小 + 毫秒修改时间)。 */
+  statSignature: string
+  /** 读取并校验源文件字节的去重 Promise。 */
+  promise: Promise<ApprovedSourceLoadResult>
+}
+
+/** 已批准源文件的校验结果。 */
+interface ApprovedSourceLoad {
+  /** 校验通过的源字节。 */
+  bytes: Uint8Array
+  /** 校验通过的源哈希。 */
+  sha256: string
+  /** 按内容识别的文档格式。 */
+  format: DocumentFormat
+  /** 供解析器复用的输入元数据。 */
+  input: DocumentParseInput
+}
+
+/** 源文件校验的去重结果;哈希不一致时返回稳定错误。 */
+type ApprovedSourceLoadResult =
+  | { ok: true; entry: ApprovedSourceLoad }
+  | { ok: false; code: 'source-changed' }
 
 /** PDF 图片在模型中的定位结果。 */
 interface PdfImageLocation {
@@ -68,10 +102,14 @@ interface PdfImageLocation {
 export interface DocumentApprovedResourceServiceDependencies {
   /** 判断绝对路径是否属于当前窗口的批准集合。 */
   isApprovedPath(path: string): boolean
+  /** 读取源文件字节;测试环境可注入计数桩。 */
+  readFile?: (path: string) => Promise<Buffer>
   /** 可注入的 PDF 解析函数；生产环境使用真实解析器。 */
   parsePdfDocument?: typeof parsePdfDocument
   /** 可注入的 PDF 栅格化器工厂；测试环境可避免加载原生 Canvas。 */
   createProductionPdfRasterizer?: typeof createProductionPdfRasterizer
+  /** 可注入的 PDF 资源解析运行器；生产环境使用独立线程避免阻塞主进程。 */
+  parsePdfAsset?: (input: DocumentParseInput) => Promise<ApprovedPdfAssetParseResult>
 }
 
 /**
@@ -87,6 +125,9 @@ export class DocumentApprovedResourceService {
   /** 按源 SHA 缓存最近解析的 PDF 资源上下文。 */
   private readonly pdfAssetContexts = new Map<string, Promise<PdfAssetContext>>()
 
+  /** 按路径缓存最近校验通过的源文件,避免逐资源重复读盘与哈希。 */
+  private readonly approvedSourceCache = new Map<string, ApprovedSourceCacheEntry>()
+
   /**
    * 创建受控资源服务。
    * @param dependencies 路径授权查询依赖。
@@ -96,6 +137,11 @@ export class DocumentApprovedResourceService {
     this.dependencies = {
       parsePdfDocument,
       createProductionPdfRasterizer,
+      readFile: (path) => readFile(path),
+      parsePdfAsset: (input) => parseApprovedPdfAssetContext(input, {
+        parsePdfDocument: this.dependencies.parsePdfDocument!,
+        createProductionPdfRasterizer: this.dependencies.createProductionPdfRasterizer!
+      }),
       ...dependencies
     }
   }
@@ -118,6 +164,8 @@ export class DocumentApprovedResourceService {
       }
     }
     if (loaded.format === 'pdf') {
+      // 恢复态第一张图片请求到达前就预热资源上下文，避免逐图请求等待全量重解析。
+      void this.loadPdfAssetContext(loaded.input).catch(() => {})
       return { ok: true, mimeType: 'application/pdf', bytes: loaded.bytes }
     }
     return { ok: false, code: 'source-not-found' }
@@ -226,7 +274,7 @@ export class DocumentApprovedResourceService {
     const parsedAsset = context.model.assets.find((asset) =>
       asset.assetId === location.block.assetId)
     if (!parsedAsset || parsedAsset.kind !== 'image' || parsedAsset.byteLength !== bytes.byteLength ||
-      parsedAsset.sha256.toLowerCase() !== hashDocumentBytes(bytes)) {
+      parsedAsset.sha256.toLowerCase() !== context.assetHashes.get(location.block.assetId)) {
       return { ok: false, code: 'asset-unavailable' }
     }
 
@@ -288,17 +336,8 @@ export class DocumentApprovedResourceService {
    * @author zhenghq
    */
   private async parsePdfAssetContext(input: DocumentParseInput): Promise<PdfAssetContext> {
-    const rasterizer = await this.dependencies.createProductionPdfRasterizer!()
-    const assetBytes = new Map<string, Uint8Array>()
-    const model = await this.dependencies.parsePdfDocument!(input, {
-      renderPageToImage: rasterizer.renderPageToImage,
-      renderPageRegionToImage: rasterizer.renderPageRegionToImage,
-      renderEmbeddedImageToImage: rasterizer.renderEmbeddedImageToImage,
-      registerAssetBytes: (assetId, bytes) => {
-        if (assetId && bytes.byteLength > 0) assetBytes.set(assetId, new Uint8Array(bytes))
-      }
-    })
-    return { model, assetBytes, legacyPlaceholderHashes: new Map() }
+    const parsed = await this.dependencies.parsePdfAsset!(input)
+    return { ...parsed, legacyPlaceholderHashes: new Map() }
   }
 
   /**
@@ -326,46 +365,95 @@ export class DocumentApprovedResourceService {
       if (!fileStat.isFile() || fileStat.size !== request.sourceSize) {
         return { ok: false, code: 'source-changed' }
       }
-      const bytes = new Uint8Array(await readFile(request.path))
-      const sha256 = hashDocumentBytes(bytes)
-      if (bytes.byteLength !== request.sourceSize || sha256 !== request.sourceSha256.toLowerCase()) {
-        return { ok: false, code: 'source-changed' }
+      const statSignature = `${fileStat.size}:${fileStat.mtimeMs}`
+      const cached = this.approvedSourceCache.get(request.path)
+      if (cached && cached.statSignature === statSignature) {
+        // 重新插入可让 Map 保持最近使用顺序。
+        this.approvedSourceCache.delete(request.path)
+        this.approvedSourceCache.set(request.path, cached)
+        const result = await cached.promise
+        return result.ok
+          ? { ok: true, bytes: result.entry.bytes, sha256: result.entry.sha256,
+            format: result.entry.format, input: result.entry.input }
+          : { ok: false, code: result.code }
       }
-      const tail = bytes.subarray(Math.max(0, bytes.byteLength - 1024 * 1024))
-      const detected = detectDocumentFormat(request.path, bytes.subarray(0, 8192), tail)
-      let format: DocumentFormat
-      if (detected.ok) {
-        format = detected.format
-      } else if ((request.format === 'docx' || request.format === 'epub') &&
-        bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
-        // 极简 OOXML/EPUB 夹具或部分生成器可能省略标准标记条目。此时只接受
-        // 能通过安全解包的 ZIP 容器，并沿用扩展名声明的包格式；其他格式仍按内容识别。
-        try {
-          await loadSafeDocumentPackage({
-            path: request.path,
-            fileName: request.path.split(/[\\/]/u).pop() ?? request.path,
-            format: request.format,
-            sha256,
-            bytes
-          })
-          format = request.format
-        } catch {
-          return { ok: false, code: 'source-changed' }
+      // 用 Promise 去重同一文件的并发读取，避免批量恢复图片时重复读盘与哈希。
+      const promise = this.readApprovedSource(request.path, request.format).then((entry) =>
+        entry.sha256 === request.sourceSha256.toLowerCase()
+          ? { ok: true as const, entry }
+          : { ok: false as const, code: 'source-changed' as const }
+      )
+      this.approvedSourceCache.set(request.path, { statSignature, promise })
+      while (this.approvedSourceCache.size > APPROVED_SOURCE_CACHE_LIMIT) {
+        const oldestKey = this.approvedSourceCache.keys().next().value as string | undefined
+        if (!oldestKey || oldestKey === request.path) break
+        this.approvedSourceCache.delete(oldestKey)
+      }
+      try {
+        const result = await promise
+        if (!result.ok) {
+          // 校验失败的结果不应缓存，避免同签名文件被后续请求永久拒绝。
+          this.approvedSourceCache.delete(request.path)
+          return { ok: false, code: result.code }
         }
-      } else {
-        return { ok: false, code: 'source-changed' }
+        const { bytes, sha256, format, input } = result.entry
+        return { ok: true, bytes, sha256, format, input }
+      } catch {
+        if (this.approvedSourceCache.get(request.path)?.promise === promise) {
+          this.approvedSourceCache.delete(request.path)
+        }
+        return { ok: false, code: 'source-not-found' }
       }
-      const input: DocumentParseInput = {
-        path: request.path,
-        fileName: request.path.split(/[\\/]/u).pop() ?? request.path,
-        format,
-        sha256,
-        bytes
-      }
-      return { ok: true, bytes, sha256, format, input }
     } catch {
       return { ok: false, code: 'source-not-found' }
     }
+  }
+
+  /**
+   * 读取已批准源文件并按实际内容识别格式;仅负责读盘与识别,不含与请求的哈希比对。
+   * @param path 已授权的源文件绝对路径。
+   * @param declaredFormat 请求声明的源文件格式。
+   * @returns 校验通过的源字节、哈希、格式与解析输入。
+   * @author zhenghq
+   */
+  private async readApprovedSource(
+    path: string,
+    declaredFormat: DocumentApprovedSourceRequest['format']
+  ): Promise<ApprovedSourceLoad> {
+    const bytes = new Uint8Array(await this.dependencies.readFile!(path))
+    const sha256 = hashDocumentBytes(bytes)
+    const tail = bytes.subarray(Math.max(0, bytes.byteLength - 1024 * 1024))
+    const detected = detectDocumentFormat(path, bytes.subarray(0, 8192), tail)
+    let format: DocumentFormat
+    if (detected.ok) {
+      format = detected.format
+    } else if ((declaredFormat === 'docx' || declaredFormat === 'epub') &&
+      bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+      // 极简 OOXML/EPUB 夹具或部分生成器可能省略标准标记条目。此时只接受
+      // 能通过安全解包的 ZIP 容器，并沿用扩展名声明的包格式；其他格式仍按内容识别。
+      try {
+        await loadSafeDocumentPackage({
+          path,
+          fileName: path.split(/[\\/]/u).pop() ?? path,
+          format: path.toLowerCase().endsWith('.docx') ? 'docx' : 'epub',
+          sha256,
+          bytes
+        })
+        format = declaredFormat
+      } catch {
+        throw new Error('source-changed')
+      }
+    } else {
+      throw new Error('source-changed')
+    }
+    const input: DocumentParseInput = {
+      path,
+      fileName: path.split(/[\\/]/u).pop() ?? path,
+      format,
+      sha256,
+      bytes
+    }
+    return { bytes, sha256, format, input }
   }
 }
 

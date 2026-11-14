@@ -429,6 +429,78 @@ test('图内原生文字的实际行盒不能撑高覆盖组普通流占位', ()
     '图内文字即使实际行盒超出图片，也不能把覆盖组和后续正文向下推')
 })
 
+test('图内文字译文换行超出原始 bbox 底边时必须扩展覆盖组普通流高度', () => {
+  const styleValues = new Map<string, string>([
+    ['--document-image-overlay-base-height', '443.04px'],
+    ['--document-image-overlay-height', '443.04px']
+  ])
+  const memberStyle = {
+    getPropertyValue: (property: string) => property === '--document-image-overlay-text-top'
+      ? '390.22px'
+      : property === '--document-image-overlay-text-height' ? '28px' : ''
+  }
+  const overlay = {
+    style: {
+      getPropertyValue: (property: string) => styleValues.get(property) ?? '',
+      setProperty: (property: string, value: string) => styleValues.set(property, value)
+    },
+    getBoundingClientRect: () => ({ top: 733.289, bottom: 733.289, height: 0 }),
+    querySelectorAll: (selector: string) => selector.includes('.document-text-block')
+      ? [{
+          style: memberStyle,
+          getBoundingClientRect: () => ({ top: 1158.63, bottom: 1256.49, height: 97.86 })
+        }]
+      : []
+  }
+  const page = {
+    isConnected: true,
+    style: { getPropertyValue: () => '1.09', setProperty: () => undefined },
+    querySelectorAll: () => [overlay]
+  }
+
+  normalizeImageOverlayLayout(page as unknown as HTMLElement)
+
+  const height = styleValues.get('--document-image-overlay-height') ?? ''
+  assert.match(height, /px$/u, '覆盖组高度变量必须带像素单位')
+  assert.ok(Math.abs(Number.parseFloat(height) - 480) < 0.02,
+    `译文换行超出原始 bbox 底边时必须扩展覆盖组高度，实际=${height}`)
+})
+
+test('图内文字行盒超出图片底边但仍在原始 bbox 预留空间内时不得扩展覆盖组高度', () => {
+  const styleValues = new Map<string, string>([
+    ['--document-image-overlay-base-height', '443.04px'],
+    ['--document-image-overlay-height', '443.04px']
+  ])
+  const memberStyle = {
+    getPropertyValue: (property: string) => property === '--document-image-overlay-text-top'
+      ? '400px'
+      : property === '--document-image-overlay-text-height' ? '47px' : ''
+  }
+  const overlay = {
+    style: {
+      getPropertyValue: (property: string) => styleValues.get(property) ?? '',
+      setProperty: (property: string, value: string) => styleValues.set(property, value)
+    },
+    getBoundingClientRect: () => ({ top: 733.289, bottom: 733.289, height: 0 }),
+    querySelectorAll: (selector: string) => selector.includes('.document-text-block')
+      ? [{
+          style: memberStyle,
+          getBoundingClientRect: () => ({ top: 1169.29, bottom: 1220.47, height: 51.18 })
+        }]
+      : []
+  }
+  const page = {
+    isConnected: true,
+    style: { getPropertyValue: () => '1.09', setProperty: () => undefined },
+    querySelectorAll: () => [overlay]
+  }
+
+  normalizeImageOverlayLayout(page as unknown as HTMLElement)
+
+  assert.equal(styleValues.get('--document-image-overlay-height'), '443.04px',
+    '原始 bbox 本身越出图片底边的预留部分是既有占位，不能再次向下推正文')
+})
+
 test('覆盖组实际测量高度为 0 时仍必须保留原始并集高度', () => {
   const styleValues = new Map<string, string>([
     ['--document-image-overlay-base-height', '84px'],

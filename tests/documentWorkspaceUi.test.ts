@@ -2514,10 +2514,10 @@ test('PDF 图内原生文字必须和叠放图片渲染为同一覆盖组', () =
     read('src/renderer/src/documentImageOverlayLayout.ts')
   )?.[0] ?? ''
   assert.match(normalizeSource, /data-image-overlay-member/u)
-  assert.doesNotMatch(
+  assert.match(
     normalizeSource,
     /data-image-overlay-text/u,
-    '图内原生文字只能绝对覆盖，不能参与覆盖组普通流高度计算'
+    '覆盖文字译文换行超出原始 bbox 底边时必须扩展覆盖组高度，避免压到后续正文'
   )
   assert.match(
     read('src/renderer/src/documentImageOverlayLayout.ts'),

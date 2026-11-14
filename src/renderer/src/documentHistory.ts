@@ -1,4 +1,5 @@
 import type { DocumentHistoryEntry } from '../../shared/documentWorkspace'
+import type { DocumentWorkspaceTab } from './documentUiModel'
 
 /** 文件翻译历史最多保留的条目数，避免本地存储无限增长。 */
 export const DOCUMENT_FILE_HISTORY_LIMIT = 20
@@ -121,6 +122,36 @@ export function filterDocumentFileHistory(
     entry.name.toLocaleLowerCase().includes(normalizedQuery) ||
     entry.path.toLocaleLowerCase().includes(normalizedQuery)
   )
+}
+
+/**
+ * 查找与历史任务对应的已打开 Tab，避免从历史重复打开同一文件时新开 Tab。
+ * 优先精确匹配任务标识（回放快照、运行中或待启动任务），再按文件路径与哈希匹配实时 Tab。
+ * @param tabs 当前所有已打开文档 Tab。
+ * @param jobId 历史任务标识。
+ * @param source 历史快照中的源文件信息；仅在提供路径时才参与文件身份匹配。
+ * @returns 匹配到的已打开 Tab；没有匹配时返回 null。
+ * @author zhenghq
+ */
+export function findExistingTaskHistoryTab(
+  tabs: readonly DocumentWorkspaceTab[],
+  jobId: string,
+  source?: { path?: string | null; sha256?: string | null }
+): DocumentWorkspaceTab | null {
+  const byJob = tabs.find((tab) =>
+    tab.snapshot?.jobId === jobId ||
+    tab.activeJobId === jobId ||
+    tab.expectedJobId === jobId
+  )
+  if (byJob) return byJob
+  if (!source?.path) return null
+  // 文件身份只用于复用实时翻译 Tab 与重启恢复的只读 Tab（其快照任务标识是占位符，只能按文件绑定）；
+  // 只读回放 Tab 已按任务标识匹配，不得跨任务复用。
+  return tabs.find((tab) =>
+    (tab.sourceKind === 'task' || tab.sourceKind === 'restored') &&
+    tab.selection.path === source.path &&
+    (!source.sha256 || !tab.selection.sha256 || tab.selection.sha256 === source.sha256)
+  ) ?? null
 }
 
 /**

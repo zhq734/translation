@@ -2397,6 +2397,8 @@ function transformedImageBoundingBox(
 
 /**
  * 从 PDF 操作符列表中提取图片绘制区域，并跟踪 save/restore 与 Form XObject 变换。
+ * 软掩膜组（beginGroup 携带 smask）内的图片绘制是亮度掩膜内容，不是可见图片，
+ * 必须排除，否则这些灰度掩膜会被当成不透明图片渲染成黑框。
  * @param operatorList PDF.js 操作符列表。
  * @param runtime PDF.js 运行时。
  * @param viewport 页面视口。
@@ -2411,6 +2413,8 @@ function extractPdfImageRegions(
   const initial = asPdfMatrix(viewport.transform) ?? [1, 0, 0, -1, 0, viewport.height]
   let current = initial
   const stack: PdfMatrix[] = []
+  // 软掩膜组嵌套栈：记录每层 beginGroup 是否携带 smask。
+  const smaskGroupStack: boolean[] = []
   const regions: PdfEmbeddedImageRegion[] = []
   const seen = new Set<string>()
   const saveOperation = runtime.OPS['save']
@@ -2418,6 +2422,8 @@ function extractPdfImageRegions(
   const transformOperation = runtime.OPS['transform']
   const formBeginOperation = runtime.OPS['paintFormXObjectBegin']
   const formEndOperation = runtime.OPS['paintFormXObjectEnd']
+  const beginGroupOperation = runtime.OPS['beginGroup']
+  const endGroupOperation = runtime.OPS['endGroup']
   const imageOperations = new Set([
     runtime.OPS['paintImageXObject'],
     runtime.OPS['paintInlineImageXObject']
@@ -2426,6 +2432,8 @@ function extractPdfImageRegions(
   const inlineGroupOperation = runtime.OPS['paintInlineImageXObjectGroup']
 
   const addRegion = (matrix: PdfMatrix, objectId?: string, operationIndex?: number): void => {
+    // 软掩膜组内的图片绘制只作为遮罩内容存在，不能生成可见图片区块。
+    if (smaskGroupStack.some(Boolean)) return
     const bbox = transformedImageBoundingBox(matrix, viewport.width, viewport.height)
     if (bbox.width < PDF_MIN_IMAGE_SIZE || bbox.height < PDF_MIN_IMAGE_SIZE ||
       bbox.width * bbox.height < PDF_MIN_IMAGE_AREA) return
@@ -2458,6 +2466,13 @@ function extractPdfImageRegions(
       if (transform) current = multiplyPdfMatrix(current, transform)
     } else if (operation === formEndOperation) {
       current = stack.pop() ?? initial
+    } else if (operation === beginGroupOperation) {
+      const groupOptions = args[0] as { smask?: unknown } | undefined
+      smaskGroupStack.push(
+        Boolean(groupOptions && typeof groupOptions === 'object' && groupOptions.smask)
+      )
+    } else if (operation === endGroupOperation) {
+      smaskGroupStack.pop()
     } else if (imageOperations.has(operation)) {
       const objectId = operation === runtime.OPS['paintImageXObject'] && typeof args[0] === 'string'
         ? args[0]

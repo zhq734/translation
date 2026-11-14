@@ -4,12 +4,14 @@ import {
   DOCUMENT_FILE_HISTORY_LIMIT,
   filterDocumentFileHistory,
   filterDocumentTaskHistory,
+  findExistingTaskHistoryTab,
   mergeDocumentHistoryEntries,
   normalizeDocumentFileHistory,
   recordDocumentFileHistory,
   type DocumentFileHistoryEntry
 } from '../src/renderer/src/documentHistory.ts'
 import type { DocumentHistoryEntry } from '../src/shared/documentWorkspace.ts'
+import type { DocumentWorkspaceTab } from '../src/renderer/src/documentUiModel.ts'
 
 /**
  * 构造一条文件翻译历史记录。
@@ -27,6 +29,99 @@ function historyEntry(name: string, lastUsedAt: number): DocumentFileHistoryEntr
     lastUsedAt
   }
 }
+
+/**
+ * 构造一个最小可用的已打开文档 Tab。
+ * @param overrides 需要覆盖的 Tab 字段。
+ * @returns 已打开文档 Tab。
+ * @author zhenghq
+ */
+function openTab(overrides: Partial<DocumentWorkspaceTab> & Pick<DocumentWorkspaceTab, 'id'>): DocumentWorkspaceTab {
+  return {
+    id: overrides.id,
+    sourceKind: 'task',
+    selection: { path: null, name: 'file.pdf', size: 1, format: 'pdf', sha256: '', error: null },
+    snapshot: null,
+    activeJobId: null,
+    expectedJobId: null,
+    generation: 0,
+    startInFlight: false,
+    status: 'running',
+    scrollPositions: { source: 0, translation: 0 },
+    zoom: 1,
+    viewMode: 'spread',
+    pageNumber: 1,
+    scrollSyncEnabled: true,
+    sourceLang: 'auto',
+    targetLang: 'zh',
+    ocrDisplayMode: 'translation',
+    activeBlockId: null,
+    pendingLanguageRetranslation: false,
+    pendingOcrModeTarget: null,
+    ocrModeSwitchInFlight: false,
+    pendingModeSwitchGeneration: null,
+    pendingModeSwitchSnapshot: null,
+    pendingModeSwitchSnapshotTerminal: false,
+    languageRevision: 0,
+    sourceAuthorized: true,
+    ...overrides
+  }
+}
+
+test('历史任务必须优先绑定同任务的已打开 Tab，包括正在翻译的实时 Tab', () => {
+  const tabs = [
+    openTab({ id: 'replay', sourceKind: 'history', snapshot: { jobId: 'other' } as DocumentWorkspaceTab['snapshot'] }),
+    openTab({ id: 'live', activeJobId: 'job-1' })
+  ]
+
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-1')?.id, 'live')
+  assert.equal(findExistingTaskHistoryTab([tabs[0]!], 'other')?.id, 'replay')
+})
+
+test('历史任务必须按文件路径与哈希绑定同一文件的实时 Tab', () => {
+  const source = { path: '/tmp/report.pdf', sha256: 'hash-1' }
+  const tabs = [
+    openTab({ id: 'live', selection: { path: source.path, name: 'report.pdf', size: 1, format: 'pdf', sha256: 'hash-1', error: null } }),
+    openTab({ id: 'changed', selection: { path: '/tmp/other.pdf', name: 'other.pdf', size: 1, format: 'pdf', sha256: 'hash-2', error: null } })
+  ]
+
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-9', source)?.id, 'live')
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-9', { ...source, sha256: 'hash-changed' }), null)
+  // 快照或实时 Tab 缺少哈希时按路径宽松匹配，兼容旧历史数据。
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-9', { path: source.path, sha256: '' })?.id, 'live')
+  assert.equal(findExistingTaskHistoryTab([
+    openTab({ id: 'no-hash', selection: { path: source.path, name: 'report.pdf', size: 1, format: 'pdf', sha256: '', error: null } })
+  ], 'job-9', source)?.id, 'no-hash')
+})
+
+test('历史回放 Tab 不得通过文件身份复用到其他任务条目', () => {
+  const tabs = [
+    openTab({
+      id: 'replay',
+      sourceKind: 'history',
+      selection: { path: '/tmp/report.pdf', name: 'report.pdf', size: 1, format: 'pdf', sha256: 'hash-1', error: null },
+      snapshot: { jobId: 'old-job' } as DocumentWorkspaceTab['snapshot']
+    })
+  ]
+
+  assert.equal(findExistingTaskHistoryTab(tabs, 'new-job', { path: '/tmp/report.pdf', sha256: 'hash-1' }), null)
+})
+
+test('重启恢复的只读 Tab 必须按文件身份绑定历史任务条目', () => {
+  const source = { path: '/tmp/report.pdf', sha256: 'hash-1' }
+  const tabs = [
+    openTab({
+      id: 'restored',
+      sourceKind: 'restored',
+      snapshot: { jobId: 'restored-viewer-state' } as DocumentWorkspaceTab['snapshot'],
+      selection: { path: source.path, name: 'report.pdf', size: 1, format: 'pdf', sha256: 'hash-1', error: null }
+    })
+  ]
+
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-1', source)?.id, 'restored')
+  // 文件内容已变化时不得复用旧阅读状态。
+  assert.equal(findExistingTaskHistoryTab(tabs, 'job-1', { ...source, sha256: 'hash-2' }), null)
+})
 
 test('文件翻译历史必须忽略损坏数据并过滤空路径', () => {
   assert.deepEqual(normalizeDocumentFileHistory(null), [])

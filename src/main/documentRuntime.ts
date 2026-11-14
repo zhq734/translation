@@ -86,6 +86,7 @@ export class DocumentRuntimeController {
         { loadDocumentPdfFontBytes },
         { DocumentWorkspaceTaskService },
         { DocumentApprovedResourceService },
+        { createWorkerPdfAssetParseRunner },
         { DocumentApprovedExportService },
         { DocumentTranslationCacheStore },
         { DocumentTaskHistoryStore }
@@ -96,12 +97,15 @@ export class DocumentRuntimeController {
         import('./documentPdfFont'),
         import('./documentWorkspaceTaskService'),
         import('./documentApprovedResourceService'),
+        import('./documentApprovedAssetParseWorkerRunner'),
         import('./documentApprovedExportService'),
         import('./documentTranslationCache'),
         import('./documentTaskHistory')
       ])
       const approvedResourceService = new DocumentApprovedResourceService({
-        isApprovedPath: (path) => this.dependencies.isApprovedPath(path)
+        isApprovedPath: (path) => this.dependencies.isApprovedPath(path),
+        // 受控资源的 PDF 全量重解析必须放在独立线程，否则 15s+ 的同步解析会冻结整个应用。
+        parsePdfAsset: createWorkerPdfAssetParseRunner()
       })
       const approvedExportService = new DocumentApprovedExportService({
         validateSource: (request) => approvedResourceService.validateSource(request),

@@ -32,7 +32,8 @@ const imageOverlayMaskCanvasCache = new WeakMap<HTMLImageElement, ImageOverlayMa
 
 /**
  * 计算图片覆盖组的普通流边界。
- * 普通流占位只由叠放底图的并集决定；图内原生文字只做绝对覆盖，不能撑高组高度。
+ * 普通流占位只由叠放底图的并集决定；图内原生文字只做绝对覆盖，原始 bbox 底边
+ * 以内的行盒不撑高组高度，译文换行超出 bbox 底边时由 normalizeImageOverlayLayout 扩展。
  * @param images 同一覆盖组内的图片区块。
  * @param _texts 同一覆盖组内的原生文字区块；保留参数用于兼容统一调用语义。
  * @returns 图片并集边界；没有有效图片坐标时返回 undefined。
@@ -354,8 +355,8 @@ export function createDocumentImageOverlayGroup(
       member.style.setProperty('--document-image-overlay-text-left', `${offset.left}px`)
       member.style.setProperty('--document-image-overlay-text-top', `${offset.top}px`)
       member.style.setProperty('--document-image-overlay-text-width', `${Math.max(1, block.bbox.width)}px`)
-      // 图内原生文字仍绝对覆盖在原位置，但只能显示在 PDF 原始 bbox 内；
-      // 译文实际行盒不得反向撑高覆盖组，也不能把后续正文推到图片下方。
+      // 图内原生文字仍绝对覆盖在原位置；原始 bbox 是最小占位，译文换行超出
+      // bbox 底边时由 normalizeImageOverlayLayout 按实际底边扩展组高度。
       member.style.setProperty(
         '--document-image-overlay-text-height',
         `${Math.max(1, block.bbox.height)}px`
@@ -368,7 +369,9 @@ export function createDocumentImageOverlayGroup(
 
 /**
  * 依据覆盖组中图片或 OCR 译文的实际 DOM 底边更新组容器高度。
- * 图内原生文字只做绝对覆盖，不参与普通流占位，避免文字行盒把整组向下撑开。
+ * 图内原生文字的原始 bbox（含本身越出图片底边的部分）是既有预留空间，不改变组高；
+ * 只有译文换行实际超出原始 bbox 底边时，才把新增高度计入普通流占位，
+ * 避免长译文直接压在覆盖组下方的正文上。
  * @param page 已挂载的译文页面。
  * @returns 无返回值。
  * @author zhenghq
@@ -392,6 +395,26 @@ export function normalizeImageOverlayLayout(page: HTMLElement): void {
       // 覆盖组塌陷时成员坐标仍以组顶部为基准；只有拿到有效成员底边才扩展流式占位。
       if (Number.isFinite(memberRect.bottom) && memberRect.bottom > overlayRect.top) {
         flowHeight = Math.max(flowHeight, memberRect.bottom - overlayRect.top)
+      }
+    }
+    for (const member of overlay.querySelectorAll<HTMLElement>(
+      ':scope > .document-text-block[data-image-overlay-text="true"]'
+    )) {
+      const memberRect = member.getBoundingClientRect()
+      // 覆盖组塌陷时成员坐标仍以组顶部为基准；拿不到有效底边时跳过。
+      if (!Number.isFinite(memberRect.bottom) || memberRect.bottom <= overlayRect.top) continue
+      const textTop = Number.parseFloat(
+        member.style?.getPropertyValue('--document-image-overlay-text-top') ?? ''
+      )
+      const textHeight = Number.parseFloat(
+        member.style?.getPropertyValue('--document-image-overlay-text-height') ?? ''
+      )
+      // 原始 bbox 变量缺失（旧快照或无坐标成员）时无法判断换行是否越界，保持旧行为不扩展。
+      if (!Number.isFinite(textTop) || !Number.isFinite(textHeight)) continue
+      const reservedBottom = (textTop + textHeight) * scale
+      const memberBottom = memberRect.bottom - overlayRect.top
+      if (memberBottom > reservedBottom) {
+        flowHeight = Math.max(flowHeight, memberBottom)
       }
     }
     // 自定义属性参与 calc 时必须带长度单位，否则浏览器会把整条高度声明判为无效。
