@@ -63,3 +63,15 @@ test('wl-paste 读取失败或为空时应回退 Electron selection 读取', () 
   const fnSource = source.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined)
   assert.match(fnSource, /readText\('selection'\)/u)
 })
+
+test('Linux 无复制兜底时原生直读必须使用带重试的读取入口', () => {
+  const source = readCaptureSource()
+  const captureStart = source.indexOf('export async function captureSelection(')
+  const captureEnd = source.indexOf('/**\n * 检测当前应用是否已获得 macOS', captureStart)
+  const captureSource = source.slice(captureStart, captureEnd > captureStart ? captureEnd : undefined)
+  assert.match(
+    captureSource,
+    /readSelectionByNativeWithRetry/u,
+    'Linux 没有复制兜底：直读失败即终局，必须复用选区建立期的短重试'
+  )
+})

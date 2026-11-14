@@ -113,6 +113,8 @@ const MODIFIER_RELEASE_SETTLE_MS = 24
 const NATIVE_DIRECT_READ_TIMEOUT_MS = 300
 /** Windows WM_COPY 向焦点控件发送复制消息的超时（毫秒）。 */
 const WM_COPY_TIMEOUT_MS = 500
+/** Windows WM_COPY PowerShell 脚本进程的最长执行时间；需覆盖 PowerShell 冷启动。 */
+const WM_COPY_SCRIPT_TIMEOUT_MS = 2000
 /** 哨兵回读校验不一致时的重试次数。 */
 const SENTINEL_VERIFY_RETRY_COUNT = 1
 
@@ -978,18 +980,22 @@ async function tryWmCopyPoll(
   try {
     // 通过 PowerShell 向焦点控件发送 WM_COPY。
     const psScript = [
+      // PowerShell 顺序执行：类型定义必须位于首次使用 [User32] 之前，
+      // 否则脚本必然报“找不到类型”，WM_COPY 中间层永远不生效。
+      'Add-Type -Namespace User32 -Name User32 -MemberDefinition "[DllImport(\"user32.dll\")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, ref IntPtr lpdwResult);"',
       'Add-Type -AssemblyName UIAutomationClient',
       '$element = [System.Windows.Automation.AutomationElement]::FocusedElement',
       "if ($null -eq $element) { exit 1 }",
       '$hwnd = [IntPtr]::Zero',
       'try { $hwnd = [IntPtr]::new($element.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::NativeWindowHandleProperty)) } catch {}',
       'if ($hwnd -eq [IntPtr]::Zero) { exit 1 }',
-      '[User32]::SendMessageTimeout($hwnd, 0x0301, [IntPtr]::Zero, [IntPtr]::Zero, 0x0001, 500, [ref]([IntPtr]::Zero)) | Out-Null',
-      'Add-Type -Namespace User32 -Name User32 -MemberDefinition "[DllImport(\"user32.dll\")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, ref IntPtr lpdwResult);"'
+      // SMTO_ABORTIFHUNG：目标窗口挂起时立即放弃并回退全局 Ctrl+C；SMTO_BLOCK 会被挂起窗口拖满超时。
+      '$copyResult = [IntPtr]::Zero',
+      '[User32]::SendMessageTimeout($hwnd, 0x0301, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 500, [ref]$copyResult) | Out-Null'
     ].join('\n')
     await execFileP('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psScript
-    ], { timeout: WM_COPY_TIMEOUT_MS, windowsHide: true, signal })
+    ], { timeout: WM_COPY_SCRIPT_TIMEOUT_MS, windowsHide: true, signal })
 
     // 轮询剪贴板，等待 WM_COPY 写入内容。
     const start = Date.now()
@@ -1553,16 +1559,23 @@ async function captureByCopy(
             `[capture] copy-fallback-retry retry=${copyRetries} ` +
             `timeoutMs=${plan.retryTimeoutMs} elapsedMs=${Date.now() - captureStartedAt}`
           )
-          if (!axCopyPerformed) {
-            // 盲重试前重写哨兵，确保上一轮残留内容不会让重试误判为已捕获。
-            // AX 已执行时不得重写，否则可能覆盖应用刚异步写入的复制结果。
-            clipboard.clear()
-            clipboard.writeText(sentinel)
-            const retrySentinelFailure = verifySentinelWrite()
-            if (retrySentinelFailure) return retrySentinelFailure
-            await injectCopyShortcut(context?.pid)
+          // 上一轮最后一次轮询读取与超时判定之间存在空窗，应用可能刚异步写入
+          // 复制结果。与 macOS AX 复制路径的约束一致：补读命中时不得重写哨兵、
+          // 不得重复注入，直接按已捕获放行，避免晚到内容被哨兵覆盖而取词超时。
+          text = clipboard.readText()
+          hasImage = !clipboard.readImage().isEmpty()
+          if (!hasClipboardCaptureCompleted(text, hasImage, sentinel)) {
+            if (!axCopyPerformed) {
+              // 盲重试前重写哨兵，确保上一轮残留内容不会让重试误判为已捕获。
+              // AX 已执行时不得重写，否则可能覆盖应用刚异步写入的复制结果。
+              clipboard.clear()
+              clipboard.writeText(sentinel)
+              const retrySentinelFailure = verifySentinelWrite()
+              if (retrySentinelFailure) return retrySentinelFailure
+              await injectCopyShortcut(context?.pid)
+            }
+            await pollForCapture(plan.retryTimeoutMs)
           }
-          await pollForCapture(plan.retryTimeoutMs)
         }
       }
     }
@@ -1773,7 +1786,11 @@ export async function captureSelection(
 
   // 第一级：平台原生直读，不触碰剪贴板。
   if (plan.supportsNativeRead) {
-    const native = await readSelectionByNative(signal, resolvedContext)
+    // Linux 没有复制兜底，直读失败即终局；选区刚建立时主选区可能尚未同步，
+    // 这里复用带短重试的读取入口。有复制兜底的平台保持单次读取，由兜底链路处理。
+    const native = plan.copyFallback
+      ? await readSelectionByNative(signal, resolvedContext)
+      : await readSelectionByNativeWithRetry(signal, resolvedContext)
     if (isTrustedNativeSelection(native, resolvedContext)) {
       return {
         text: native.text,
