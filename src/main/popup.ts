@@ -22,6 +22,7 @@ import { ALL_WORKSPACES_VISIBILITY_OPTIONS } from './windowWorkspaceVisibility'
 import { logCandidateProbe } from '../shared/activateDiagnostics'
 import { isWindows7CompatibilityRuntime } from './platformCompatibility'
 import { PopupLanguageInteractionGuard } from './popupLanguageInteractionGuard'
+import { getSettings } from './settings'
 
 const WINDOW_EDGE_GAP = 8
 const CURSOR_GAP = 16
@@ -478,6 +479,8 @@ export function showPopup(
   activate = true
 ): void {
   if (!win) return
+  // 关闭 AI 流式开关时标记一次性展示，Renderer 据此跳过逐字揭示动画。
+  payload.progressive = getSettings().aiStreamEnabled !== false
   // 新一轮显示必须让上一轮所有异步收尾失效。不能只重置 popupCloseInFlight：
   // 旧轮次已经启动的 handBackFrontmostThen/延迟复核仍可能晚到，若没有 token
   // 校验，它们会隐藏刚显示的新弹窗并释放新轮次的焦点租约。

@@ -71,9 +71,50 @@ test('手动翻译最终结果到达后应继续揭示剩余流式文本而不�
   const popup = readFileSync('src/renderer/src/popup.ts', 'utf8')
   const manualSuccess = popup.slice(popup.indexOf("payload.origin === 'manual'"), popup.indexOf("payload.origin === 'selection'"))
   assert.doesNotMatch(
-    manualSuccess.slice(manualSuccess.indexOf('} else {'), manualSuccess.indexOf('renderManualState()')),
+    manualSuccess.slice(
+      manualSuccess.indexOf('} else {'),
+      manualSuccess.indexOf('if (payload.progressive === false)')
+    ),
     /stopProgressiveReveal\(\)/u
   )
+})
+
+test('关闭 AI 流式开关时弹窗负载应标记为一次性展示', () => {
+  const types = readFileSync('src/shared/types.ts', 'utf8')
+  const payloadSection = types.slice(
+    types.indexOf('export interface TranslatePayload'),
+    types.indexOf('export interface TranslateDeltaPayload')
+  )
+  assert.match(payloadSection, /progressive\?:\s*boolean/u)
+
+  const popupMain = readFileSync('src/main/popup.ts', 'utf8')
+  assert.match(popupMain, /aiStreamEnabled !== false/u)
+})
+
+test('一次性展示时划词结果应跳过逐字动画直接完整显示', () => {
+  const popup = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const renderSelection = popup.slice(
+    popup.indexOf('function renderSelection('),
+    popup.indexOf('function startProgressiveReveal(')
+  )
+  const instantStart = renderSelection.indexOf('payload.progressive === false')
+  assert.ok(instantStart >= 0)
+  const instantBranch = renderSelection.slice(instantStart)
+  assert.match(instantBranch, /stopProgressiveReveal\(\)/u)
+  assert.match(instantBranch, /settleProgressiveText\(/u)
+  assert.match(instantBranch, /renderRevealText\('selection'\)/u)
+})
+
+test('一次性展示时手动翻译结果应跳过逐字动画直接完整显示', () => {
+  const popup = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const manualBranch = popup.slice(popup.indexOf("if (payload.origin === 'manual') {"))
+  const manualEnd = manualBranch.indexOf("if (payload.origin === 'selection'")
+  const manual = manualBranch.slice(0, manualEnd)
+  const instantStart = manual.indexOf('payload.progressive === false')
+  assert.ok(instantStart >= 0)
+  const instantBranch = manual.slice(instantStart)
+  assert.match(instantBranch, /stopProgressiveReveal\(\)/u)
+  assert.match(instantBranch, /settleProgressiveText\(/u)
 })
 
 test('失败时已收到的安全片段应保留并可立即完整揭示', () => {

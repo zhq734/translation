@@ -538,6 +538,44 @@ test('非 AI 通道应忽略文档上下文并保持普通翻译结果', async (
   assert.equal(result.translation, '工作区')
 })
 
+test('normalizeSettings 默认开启 AI 流式输出并保留显式关闭值', () => {
+  const defaults = normalizeSettings({ schemaVersion: 9 } as never)
+  assert.equal(defaults.aiStreamEnabled, true)
+  const disabled = normalizeSettings({ schemaVersion: 9, aiStreamEnabled: false } as never)
+  assert.equal(disabled.aiStreamEnabled, false)
+  // 非布尔值视为非法输入，回退默认开启。
+  const invalid = normalizeSettings({ schemaVersion: 9, aiStreamEnabled: 'no' } as never)
+  assert.equal(invalid.aiStreamEnabled, true)
+})
+
+test('设置关闭 AI 流式输出时应发送非流式请求且不回调增量', async () => {
+  const bodies: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (_url, init) => {
+      bodies.push(String(init?.body))
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '你好，世界' } }]
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+  })
+  const deltas: string[] = []
+  const result = await runtime.translateStream(
+    'hello',
+    aiSettings({ aiStreamEnabled: false }),
+    null,
+    'sk-ai',
+    { onDelta: (delta) => deltas.push(delta) }
+  )
+  assert.equal(result.translation, '你好，世界')
+  assert.deepEqual(deltas, [])
+  assert.equal(bodies.length, 1)
+  const body = JSON.parse(bodies[0]!) as { stream?: unknown }
+  assert.equal(body.stream, false)
+})
+
 test('全部降级通道失败时应保留首个限流错误的 Retry-After', async () => {
   const runtime = new TranslationRuntime({
     fetch: async (url) => {

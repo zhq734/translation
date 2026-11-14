@@ -1564,7 +1564,14 @@ function renderSelection(payload: TranslatePayload): void {
   const finalTranslation = payload.translation ?? ''
   lastTranslation = finalTranslation
   selectionSpeechLanguage = payload.targetLang ?? targetLangEl.value
-  startProgressiveReveal('selection', finalTranslation, payload.channel === t('translate.channel.cached'))
+  if (payload.progressive === false) {
+    // 关闭流式开关时结果一次性返回：跳过逐字揭示，直接完整展示译文。
+    stopProgressiveReveal()
+    selectionReveal = settleProgressiveText({ ...selectionReveal, fullText: finalTranslation })
+    renderRevealText('selection')
+  } else {
+    startProgressiveReveal('selection', finalTranslation, payload.channel === t('translate.channel.cached'))
+  }
   originalEl.textContent = payload.origin === 'ocr' ? '' : payload.original ?? ''
   if (payload.origin !== 'ocr' && payload.original !== undefined) {
     renderOriginalPronunciation(payload.original)
@@ -2598,6 +2605,14 @@ window.api.onResult((payload) => {
           : langLabel(payload.sourceLang ?? '', localeRuntime.locale)
       manualStatus = `${sourceName} → ${langLabel(payload.targetLang ?? '', localeRuntime.locale)}`
       if (manualVisible) statusEl.textContent = manualStatus
+      if (payload.progressive === false) {
+        // 关闭流式开关时结果一次性返回：跳过逐字揭示，直接完整展示译文。
+        stopProgressiveReveal()
+        manualReveal = settleProgressiveText({
+          ...manualReveal,
+          fullText: payload.translation ?? ''
+        })
+      }
     }
     renderManualState()
     return

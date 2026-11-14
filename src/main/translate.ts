@@ -314,10 +314,12 @@ export class TranslationRuntime {
       let visibleDeltaCount = 0
       try {
         const output = channel.id === 'ai'
-          ? await this.aiStreamChannel(text, settings, aiApiKey, (delta) => {
+          ? (settings.aiStreamEnabled === false
+            ? await this.aiChannel(text, settings, aiApiKey)
+            : await this.aiStreamChannel(text, settings, aiApiKey, (delta) => {
               visibleDeltaCount += 1
               options.onDelta(delta)
-            }, options.signal, options.context)
+            }, options.signal, options.context))
           : await channel.run()
         this.resetBreaker(channel.breakerKey)
         const successful: CachedTranslation = {

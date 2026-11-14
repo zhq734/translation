@@ -99,6 +99,18 @@ test('AI 配置保存后应自动加载模型列表', () => {
   assert.match(ts, /saveAiConfig[\s\S]*listAiModels/u)
 })
 
+test('AI Tab 应提供流式输出开关并随保存提交', () => {
+  // 开关为复选框，且带双语 i18n 文案。
+  const streamCheckbox = getOpeningTag(html, 'ai-stream')
+  assert.match(streamCheckbox, /type="checkbox"/u)
+  assert.ok(html.includes('data-i18n="settings.ai.stream"'))
+  assert.ok(html.includes('data-i18n="settings.ai.streamLabel"'))
+
+  // Renderer 逻辑读取设置并随保存提交。
+  assert.match(ts, /aiStream\.checked = settings\.aiStreamEnabled/u)
+  assert.match(ts, /stream: aiStream\.checked/u)
+})
+
 test('AI 配置保存应使用独立 IPC 且 API Key 留空保留原值', () => {
   assert.match(ts, /window\.api\.setAiConfig\(\{/u)
   assert.match(ts, /apiKey:\s*aiApiKey\.value/u)

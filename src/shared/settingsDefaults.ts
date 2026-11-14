@@ -219,6 +219,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aiProtocol: 'ollama',
   aiBaseUrl: DEFAULT_AI_BASE_URL,
   aiModel: '',
+  aiStreamEnabled: true,
   aiApiKeyConfigured: false,
   preferredTranslationProvider: 'auto',
   speechProvider: 'system',
@@ -673,6 +674,8 @@ export function normalizeSettings(rawSettings: LegacySettings = {}): Settings {
     aiProtocol: isAiProtocol(rawSettings.aiProtocol) ? rawSettings.aiProtocol : 'ollama',
     aiBaseUrl: normalizeAiBaseUrl(rawSettings.aiBaseUrl === undefined ? DEFAULT_AI_BASE_URL : String(merged.aiBaseUrl || "").trim()),
     aiModel: String(merged.aiModel || '').trim(),
+    // 流式输出默认开启；仅显式关闭才切换为一次性返回完整译文。
+    aiStreamEnabled: rawSettings.aiStreamEnabled !== false,
     aiApiKeyConfigured: rawSettings.aiApiKeyConfigured === true,
     speechProvider: isSpeechProvider(rawSettings.speechProvider)
       ? rawSettings.speechProvider

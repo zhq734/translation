@@ -330,6 +330,8 @@ export interface TranslatePayload {
   /** 实际完成本次翻译的 API，用于弹窗展示降级结果。 */
   provider?: TranslationProviderId
   channel?: string
+  /** 是否渐进揭示译文；关闭 AI 流式开关时为 false，弹窗一次性显示完整译文。 */
+  progressive?: boolean
   /** 实际产出 OCR 原文的引擎，仅 OCR 翻译结果携带。 */
   ocrEngine?: OcrEngineId
   /** 清洗后的 OCR 原文，仅 OCR 翻译结果携带。 */
@@ -1112,6 +1114,8 @@ export interface Settings {
   aiBaseUrl: string
   /** AI 模型名称，允许手动输入。 */
   aiModel: string
+  /** AI 翻译是否使用流式输出；关闭时一次性返回完整译文。 */
+  aiStreamEnabled: boolean
   /** 是否已安全保存 AI API Key。 */
   aiApiKeyConfigured: boolean
   /** 用户在弹窗底部选择的首选翻译 API。 */
@@ -1437,6 +1441,8 @@ export interface AiConfigPatch {
   baseUrl?: string
   /** AI 模型名称。 */
   model?: string
+  /** 是否使用流式输出。 */
+  stream?: boolean
   /** 新 API Key；空字符串表示保留旧值。 */
   apiKey?: string
 }

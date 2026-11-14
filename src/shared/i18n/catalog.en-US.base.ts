@@ -172,6 +172,8 @@ export const enUSBase = defineCatalog({
   'settings.ai.enabledLabel': 'Prefer AI translation',
   'settings.ai.expandModels': 'Expand model list',
   'settings.ai.hint': 'Use a local or cloud large language model for selection translation. Ollama, OpenAI-compatible, and Claude Code (Anthropic)-compatible HTTP protocols are supported. The API key is stored securely on this device only and is never shown again in the page.',
+  'settings.ai.stream': 'Streaming output',
+  'settings.ai.streamLabel': 'Show translation incrementally (turn off to return the full translation at once)',
   'settings.ai.model': 'Model',
   'settings.ai.modelPlaceholder': 'Select or type a model name',
   'settings.ai.modelsNotLoaded': 'Model list not loaded',

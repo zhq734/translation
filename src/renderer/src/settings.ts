@@ -160,6 +160,7 @@ const biliIndexCheck = document.getElementById('bili-index-check') as HTMLButton
 const biliIndexStatus = document.getElementById('bili-index-status') as HTMLElement
 // AI 翻译配置控件
 const aiEnabled = document.getElementById('ai-enabled') as HTMLInputElement
+const aiStream = document.getElementById('ai-stream') as HTMLInputElement
 const aiProtocol = document.getElementById('ai-protocol') as HTMLSelectElement
 const aiBaseUrl = document.getElementById('ai-base-url') as HTMLInputElement
 const aiApiKey = document.getElementById('ai-api-key') as HTMLInputElement
@@ -1128,6 +1129,7 @@ function renderSettings(settings: Settings): void {
   // Model 被覆盖，并清空刚填写的 API Key。
   if (!aiFormDirty) {
     aiEnabled.checked = settings.aiEnabled
+    aiStream.checked = settings.aiStreamEnabled
     aiProtocol.value = settings.aiProtocol
     aiBaseUrl.value = settings.aiBaseUrl
     aiModel.value = settings.aiModel
@@ -2347,6 +2349,7 @@ async function saveAiConfig(): Promise<void> {
   try {
     const settings = await window.api.setAiConfig({
       enabled: aiEnabled.checked,
+      stream: aiStream.checked,
       protocol: aiProtocol.value as AiProtocol,
       baseUrl: aiBaseUrl.value.trim(),
       model: aiModel.value.trim(),
@@ -2954,6 +2957,7 @@ aiCheck.addEventListener('click', () => void checkAi())
 aiClearKey.addEventListener('click', () => void clearAiApiKey())
 // 任一可编辑 AI 字段变化后都视为未保存草稿；在保存成功前，设置广播不得回填旧值。
 aiEnabled.addEventListener('change', markAiFormDirty)
+aiStream.addEventListener('change', markAiFormDirty)
 aiProtocol.addEventListener('change', markAiFormDirty)
 aiBaseUrl.addEventListener('input', markAiFormDirty)
 aiApiKey.addEventListener('input', markAiFormDirty)

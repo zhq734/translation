@@ -66,6 +66,7 @@ export class AiConfigurationService {
       aiProtocol: patch.protocol === undefined ? previousSettings.aiProtocol : patch.protocol,
       aiBaseUrl: patch.baseUrl === undefined ? previousSettings.aiBaseUrl : patch.baseUrl,
       aiModel: patch.model === undefined ? previousSettings.aiModel : patch.model,
+      aiStreamEnabled: patch.stream === undefined ? previousSettings.aiStreamEnabled : patch.stream,
       aiApiKeyConfigured: nextApiKey != null
     }
     const configurationChanged =

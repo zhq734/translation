@@ -85,6 +85,23 @@ test('空 apiKey 应保留旧凭证且不触发 reset', () => {
   assert.equal(h.resetCount(), resetBefore + 1) // 模型变更也 reset
 })
 
+test('applyPatch 应支持 stream 字段切换 AI 流式输出且不影响 Runtime', () => {
+  const h = createHarness(baseSettings())
+  const service = new AiConfigurationService(h.deps)
+  service.initialize()
+  const disabled = service.applyPatch({ stream: false })
+  assert.equal(disabled.aiStreamEnabled, false)
+  // 未携带 stream 字段时应保留上次的关闭状态。
+  const kept = service.applyPatch({ model: 'gpt-4o' })
+  assert.equal(kept.aiStreamEnabled, false)
+  // model 变更会触发一次 Runtime 重置，以此为基线。
+  const resetBefore = h.resetCount()
+  const reenabled = service.applyPatch({ stream: true })
+  assert.equal(reenabled.aiStreamEnabled, true)
+  // 仅切换流式输出不改变译文语义，不应触发 Runtime 重置。
+  assert.equal(h.resetCount(), resetBefore)
+})
+
 test('clearApiKey 应删除凭证并广播未配置状态', () => {
   const h = createHarness(baseSettings())
   const service = new AiConfigurationService(h.deps)

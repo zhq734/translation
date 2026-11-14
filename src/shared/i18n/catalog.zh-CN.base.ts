@@ -184,6 +184,8 @@ export const zhCNBase = defineCatalog({
   'settings.ai.enabledLabel': '优先使用 AI 翻译',
   'settings.ai.expandModels': '展开模型列表',
   'settings.ai.hint': '使用本地或云端大语言模型进行划词翻译，支持 Ollama、OpenAI 兼容和 Claude Code（Anthropic）兼容 HTTP 协议。API Key 仅在本机安全保存，页面不会回显。',
+  'settings.ai.stream': '流式输出',
+  'settings.ai.streamLabel': '逐段显示译文（关闭后一次性返回完整译文）',
   'settings.ai.model': '模型',
   'settings.ai.modelPlaceholder': '选择或手动输入模型名称',
   'settings.ai.modelsNotLoaded': '未加载模型列表',
