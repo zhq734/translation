@@ -161,6 +161,8 @@ export const documentEnUS = {
   'document.warning.pdf-rotated-text': 'Rotated text was detected and preserved in its existing orientation.',
   'document.warning.pdf-overlapping-text': 'Significantly overlapping text was detected, so the reading order may be inaccurate.',
   'document.warning.pdf-reading-order-uncertain': 'The PDF reading order could not be recovered reliably; some content may follow visual position.',
+  'document.warning.pdf-text-color-unavailable': 'Text colors on this page could not be matched reliably; readable defaults were used to avoid shifted colors.',
+  'document.warning.pdf-text-contrast-adjusted': 'Some light text was darkened for readability. Colored panels, gradients and other vector backgrounds may not be preserved; compare with the original.',
   'document.warning.formula-unrecognized': 'Some formulas could not be recognized reliably and were preserved as non-translatable source blocks.',
   'document.warning.invalid-json': 'The JSON content could not be parsed and was treated as plain text.',
   'document.warning.unclosed-code-fence': 'The Markdown code fence was not closed and was preserved as protected code.',

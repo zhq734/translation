@@ -7,7 +7,8 @@ const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
 const popupWindow = readFileSync('src/main/popup.ts', 'utf8')
 const styles = readFileSync('src/renderer/src/style.css', 'utf8')
 
-test('顶部应使用统一的手动、朗读和钉住图标按钮顺序', () => {
+/** 校验顶部模式入口及底栏朗读、钉住顺序；无参数、无返回值。@author zhenghq */
+test('顶部模式入口与底栏朗读、钉住应使用统一图标并保持可达', () => {
   const manualIndex = html.indexOf('id="manual-mode"')
   const speakIndex = html.indexOf('id="speak"')
   const pinIndex = html.indexOf('id="pin"')
@@ -15,7 +16,8 @@ test('顶部应使用统一的手动、朗读和钉住图标按钮顺序', () =>
   assert.ok(manualIndex >= 0)
   assert.ok(speakIndex > manualIndex)
   assert.ok(pinIndex > speakIndex)
-  assert.match(html, /id="manual-mode"[^>]*class="header-action-button"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon manual-icon"/u)
+  assert.match(html, /id="manual-mode"[^>]*class="header-action-button mode-action"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon manual-icon"/u)
+  assert.ok(html.indexOf('class="popup-footer"') < speakIndex)
   assert.match(html, /id="speak"[^>]*class="header-action-button"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon speak-icon"/u)
   assert.doesNotMatch(html, /id="manual-mode"[\s\S]*?>\s*手动\s*<\/button>/u)
 })
@@ -39,8 +41,9 @@ test('手动翻译与文档翻译图标应使用不同语义且保持统一图�
   assert.match(document, /<path[^>]+M15\.5 17H8\.5/u, '文档翻译应使用双向箭头表达翻译')
 })
 
+/** 校验朗读按钮沿用共享尺寸及主题状态；无参数、无返回值。@author zhenghq */
 test('语音按钮应复用统一图标尺寸和主题样式', () => {
-  assert.match(styles, /\.header-action-button\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*border-radius:\s*9px;/su)
+  assert.match(styles, /\.header-action-button\s*\{[^}]*width:\s*var\(--control-height\);[^}]*height:\s*var\(--control-height\);[^}]*border-radius:\s*9px;/su)
   assert.match(styles, /\.header-action-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*stroke:\s*currentColor;/su)
   assert.match(styles, /#speak\[disabled\]/u)
   assert.match(styles, /#speak\[aria-pressed=['"]true['"]\]/u)

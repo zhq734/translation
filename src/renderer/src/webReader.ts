@@ -162,7 +162,11 @@ function updateExportButtonState(): void {
  * @author zhenghq
  */
 function renderReaderState(state: WebReaderState): void {
-  if (currentState && currentState.url !== state.url) {
+  // 提取也会递增代次，但只有导航会关闭增量窗口并废弃原文快照。@author zhenghq
+  const navigated = currentState && (currentState.url !== state.url || (
+    currentState.pageRevision !== state.pageRevision && !state.translationWindowActive
+  ))
+  if (navigated) {
     translationGeneration += 1
     translating = false
     extractedRevision = -1
@@ -257,6 +261,8 @@ function renderProgress(progress: WebTranslationProgressPayload): void {
  * @author zhenghq
  */
 async function translatePage(extractFresh = true): Promise<void> {
+  // 未导航占位页和失败页没有可翻译的网页；手动与自动入口共用此保护。@author zhenghq
+  if (!currentState || !/^https?:\/\//iu.test(currentState.url) || currentState.error) return
   const generation = ++translationGeneration
   window.api.webTranslateCancel()
   translating = true
@@ -349,12 +355,11 @@ async function changeMode(): Promise<void> {
 }
 
 /**
- * 切换语言时取消旧任务，恢复原文并用新语言重译。
+ * 切换语言时复用当前原文快照重译；空页由统一翻译入口拦截。
  * @returns 无返回值。
  * @author zhenghq
  */
 function handleLanguageChange(): void {
-  if (!currentState?.url) return
   void translatePage(false)
 }
 

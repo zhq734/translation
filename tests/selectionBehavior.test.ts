@@ -903,7 +903,7 @@ test('翻译弹窗的图钉和设置操作应使用统一尺寸的线性 SVG 图
   assert.doesNotMatch(popupHtml, />\s*⚙\s*<\/button>/u)
   assert.match(
     popupStyles,
-    /\.header-action-button\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*border-radius:\s*9px;[^}]*transition:/su
+    /\.header-action-button\s*\{[^}]*width:\s*var\(--control-height\);[^}]*height:\s*var\(--control-height\);[^}]*border-radius:\s*9px;[^}]*transition:/su
   )
   assert.match(
     popupStyles,

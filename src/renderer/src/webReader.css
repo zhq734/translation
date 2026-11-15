@@ -1,28 +1,303 @@
-html, body { width: 100%; height: 100%; overflow: hidden; background: var(--page-bg); color: var(--text-primary); }
-.web-reader-shell { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; }
-.web-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--border-default); background: var(--panel-bg); }
-.web-navigation-actions { display: flex; gap: 6px; }
-.web-address-form { flex: 1 1 220px; min-width: 180px; }
-#web-address, .web-language-control select, .web-mode-control select { width: 100%; min-height: 36px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--control-bg); color: var(--text-primary); outline: none; }
-#web-address { padding: 7px 10px; }
-.web-language-control, .web-mode-control { display: flex; flex: 0 1 auto; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
-.web-language-control select, .web-mode-control select { min-width: 105px; padding: 6px 8px; font-size: 13px; }
-.language-arrow { color: var(--text-muted); }
-#web-address:focus, select:focus { border-color: var(--button-bg); box-shadow: 0 0 0 3px var(--focus-ring); }
-.icon-button, .primary-button, .secondary-button { min-height: 36px; border: 1px solid var(--border-control); border-radius: 8px; padding: 7px 11px; background: var(--button-secondary-bg); }
-.icon-button { min-width: 36px; padding: 7px; font-size: 18px; }
-.primary-button { border-color: var(--button-bg); background: var(--accent-gradient); color: var(--button-text); font-weight: 650; }
-.icon-button:hover:not(:disabled), .secondary-button:hover:not(:disabled) { background: var(--button-secondary-hover); }
-.primary-button:hover:not(:disabled) { background: var(--button-bg-hover); }
-button:disabled { cursor: not-allowed; opacity: 0.5; }
-.web-status { flex: 0 0 auto; min-height: 29px; padding: 6px 14px; border-bottom: 1px solid var(--border-default); background: var(--bg-secondary); color: var(--text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.web-status[data-state='error'] { color: var(--status-error); }
-.web-loading-progress { flex: 0 0 2px; width: 100%; height: 2px; min-height: 2px; background: var(--button-bg); transform-origin: left center; }
-.web-loading-progress:not([hidden]) { animation: web-loading-progress 1.3s var(--ease-standard) infinite; }
-.web-loading-progress[hidden] { display: none; }
-.web-view-slot { flex: 1; min-width: 0; min-height: 0; background: var(--control-bg); }
-@media (max-width: 920px) { .web-address-form { order: 2; flex-basis: calc(100% - 16px); } .web-language-control, .web-mode-control { flex: 1 1 130px; } }
+/* 静阅网页外壳仅负责本地导航和工具布局，不影响远程页面。@author zhenghq */
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--page-bg);
+  color: var(--text-primary);
+}
 
-@keyframes web-loading-progress { 0% { transform: scaleX(.08); opacity: .65; } 55% { transform: scaleX(.72); opacity: 1; } 100% { transform: scaleX(.96); opacity: .65; } }
+.web-reader-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
 
-@media (prefers-reduced-motion: reduce) { .web-loading-progress:not([hidden]) { animation: none; transform: scaleX(.55); } }
+.web-toolbar {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.web-navigation-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+}
+
+.web-navigation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.web-address-form {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+#web-address,
+.web-language-control select,
+.web-mode-control select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+#web-address {
+  padding: 5px 10px;
+}
+
+/* 工具区可局部滚动，低矮窗口也保留原生网页的可用高度。@author zhenghq */
+.web-translation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding-block: 6px;
+  min-height: 0;
+  max-height: 32vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+/* 配置组不填满剩余空间，让显示模式始终紧跟语言方向。@author zhenghq */
+.web-translation-settings {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.web-language-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.web-language-control,
+.web-mode-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.web-language-control > span,
+.web-mode-control > span {
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-language-control select,
+.web-mode-control select {
+  width: clamp(5.5rem, 10vw, 8rem);
+  padding: 4px 6px;
+}
+
+.web-mode-control select {
+  width: 8rem;
+}
+
+.language-arrow {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-height);
+  color: var(--text-muted);
+}
+
+.web-mode-control {
+  padding-left: 12px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.web-translation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.web-translation-actions button {
+  min-height: var(--control-height);
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+.icon-button,
+.primary-button,
+.secondary-button {
+  min-height: var(--control-height);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  padding: 5px 10px;
+  background: var(--button-secondary-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.icon-button {
+  min-width: var(--control-height);
+  padding: 4px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 18px;
+}
+
+.primary-button {
+  min-height: var(--control-height-primary);
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+
+.icon-button:hover:not(:disabled),
+.secondary-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--button-bg-hover);
+}
+
+/* :focus 为旧 Chromium 保留回退，:focus-visible 与共享基础层一致。@author zhenghq */
+button:focus,
+input:focus,
+select:focus {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.web-status {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-status[data-state='error'] {
+  color: var(--status-error);
+}
+
+.web-loading-progress {
+  flex: 0 0 2px;
+  width: 100%;
+  height: 2px;
+  min-height: 2px;
+  background: var(--button-bg);
+  transform-origin: left center;
+}
+
+.web-loading-progress:not([hidden]) {
+  animation: web-loading-progress 1.8s var(--ease-standard) infinite;
+}
+
+.web-reader-shell [hidden] {
+  display: none !important;
+}
+
+.web-view-slot {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--control-bg);
+}
+
+@media (max-width: 480px) {
+  .web-toolbar {
+    padding: 8px;
+  }
+
+  .web-translation-toolbar {
+    column-gap: 8px;
+  }
+
+  .web-language-pair {
+    flex: 1 1 100%;
+    gap: 4px;
+  }
+
+  .web-language-control {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+  }
+
+  .web-language-control select {
+    width: 100%;
+  }
+
+  .language-arrow {
+    align-self: end;
+  }
+
+  .web-mode-control {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+@keyframes web-loading-progress {
+  0% { transform: scaleX(.08); opacity: .65; }
+  55% { transform: scaleX(.72); opacity: 1; }
+  100% { transform: scaleX(.96); opacity: .65; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .web-loading-progress:not([hidden]) {
+    animation: none;
+    transform: scaleX(.55);
+  }
+
+  .web-reader-shell *,
+  .web-reader-shell *::before,
+  .web-reader-shell *::after {
+    transition: none;
+  }
+}

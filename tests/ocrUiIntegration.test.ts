@@ -208,8 +208,10 @@ test('OCR 翻译应在原文位置展示 OCR 内容并隐藏原文标题', () =>
 test('OCR 结果切换语言应使用 OCR 文本重新翻译', () => {
   assert.match(popupRenderer, /let currentSelectionOrigin:\s*TranslatePayload\['origin'\]\s*=\s*'selection'/u)
   assert.match(popupRenderer, /currentSelectionOrigin = payload\.origin \?\? 'selection'/u)
-  assert.match(popupRenderer, /window\.api\.retranslate\(sourceLangEl\.value,\s*targetLangEl\.value,\s*currentSelectionOrigin\)/u)
-  assert.match(popupRenderer, /const currentText = currentSelectionOrigin === 'ocr' \? lastOcrText : lastOriginal/u)
+  // zhenghq：异步重译沿用事件时的来源快照，不得在等待设置保存后串用其他模式。
+  assert.match(popupRenderer, /const origin = mode === 'manual' \? 'manual' : currentSelectionOrigin === 'ocr' \? 'ocr' : 'selection'/u)
+  assert.match(popupRenderer, /window\.api\.retranslate\(sourceLang,\s*targetLang,\s*intent\.origin\)/u)
+  assert.match(popupRenderer, /const text = intent\.origin === 'ocr' \? lastOcrText : lastOriginal/u)
   assert.match(preload, /ipcRenderer\.invoke\('popup:retranslate',\s*sourceLang,\s*targetLang,\s*origin\)/u)
   assert.match(types, /retranslate\(sourceLang: string,\s*targetLang: string,\s*origin\?: TranslationOrigin\): Promise<void>/u)
   assert.match(main, /let lastOcrText = ''/u)

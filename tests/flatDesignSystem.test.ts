@@ -96,10 +96,15 @@ test('组件样式不得硬编码主题颜色', () => {
   }
 })
 
-test('sky 应作为默认现代蓝色基线', () => {
+/**
+ * 校验默认 sky 仍为可读蓝色，保留渐变兼容接口；旧亮蓝色未达到白字 4.5:1。
+ * @returns 无返回值，通过断言报告结果。
+ * @author zhenghq
+ */
+test('sky 应作为默认 Quiet Studio 蓝色基线', () => {
   const themeSource = readFileSync('src/renderer/src/theme.ts', 'utf8')
   const css = readFileSync('src/renderer/src/theme.css', 'utf8')
   assert.match(themeSource, /DEFAULT_THEME(?:\s*:\s*ThemePreset)?\s*=\s*['"]sky['"]/u)
-  assert.match(css, /:root\s*\{[\s\S]*--button-bg:\s*#3b82f6/u)
+  assert.match(css, /:root,\s*:root\[data-theme-mode='light'\]\s*\{[^}]*--button-bg:\s*#315da8/u)
   assert.match(css, /--accent-gradient:\s*linear-gradient\(135deg,\s*var\(--accent-start\),\s*var\(--accent-end\)\)/u)
 })

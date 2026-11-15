@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
   <meta name="description" content="划词翻译使用文档：安装、首次授权、划词翻译、截图 OCR、网页全文翻译、文档翻译工作台、实时字幕、翻译通道配置与隐私说明。">
   <link rel="canonical" href="https://zhq734.github.io/translation/docs/">
@@ -49,12 +49,12 @@
       </nav>
       <div class="header-tools">
         <a class="icon-link" href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer" aria-label="GitHub 仓库"><svg class="i"><use href="#i-github"/></svg></a>
-        <a class="button button-primary button-small header-download" href="../#download"><svg class="i"><use href="#i-download"/></svg><span>下载</span></a>
+        <a class="button button-primary button-small header-download" href="../#download" aria-label="下载桌面版"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg><span>下载</span></a>
       </div>
     </div>
   </header>
 
-  <main class="docs-layout container" id="doc-content">
+  <main class="docs-layout container" id="doc-content" tabindex="-1">
     <aside class="docs-sidebar" aria-label="文档目录">
       <div class="docs-sidebar-inner">
         <p class="docs-label">使用文档</p>
@@ -105,7 +105,7 @@
 
         <h3>手动下载</h3>
         <p>打开 <a href="https://github.com/zhq734/translation/releases/latest" target="_blank" rel="noreferrer">GitHub Releases</a>，按系统下载对应文件：</p>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="安装与升级">
           <table>
             <thead><tr><th>平台</th><th>推荐文件</th><th>说明</th></tr></thead>
             <tbody>
@@ -157,7 +157,7 @@
       <section id="selection" class="doc-section">
         <h2>划词翻译</h2>
         <h3>三种触发方式</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="划词翻译">
           <table>
             <thead><tr><th>方式</th><th>行为</th><th>适合</th></tr></thead>
             <tbody>
@@ -229,7 +229,7 @@
         <h3>翻译与版式</h3>
         <p>文档存在原生文本层时优先使用；扫描版 PDF 会先栅格化再 OCR。公式作为不可翻译区块保留，表格、图片、分栏与样式会在源格式提供信息时尽量重建。复杂矢量、艺术字、跨页表格和竖排文本可能产生版式告警。</p>
         <h3>导出模式</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="文档翻译工作台">
           <table>
             <thead><tr><th>模式</th><th>结果</th></tr></thead>
             <tbody>
@@ -253,7 +253,7 @@
         <p>观看外语视频、参加在线会议、上网课时，字幕悬浮窗会跟随语音滚动显示原文与译文，不需要反复暂停、复制和粘贴。</p>
 
         <h3>语音识别渠道</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="实时字幕">
           <table>
             <thead><tr><th>渠道</th><th>说明</th></tr></thead>
             <tbody>
@@ -278,7 +278,7 @@
       <section id="channels" class="doc-section">
         <h2>翻译通道</h2>
         <p class="doc-lead">默认按优先级尝试可用通道。当前通道失败或熔断时，会自动切换到后续通道。</p>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="翻译通道">
           <table>
             <thead><tr><th>优先级</th><th>通道</th><th>启用条件</th></tr></thead>
             <tbody>
@@ -309,7 +309,7 @@
       <section id="settings" class="doc-section">
         <h2>设置与外观</h2>
         <h3>常用设置</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="设置与外观">
           <table>
             <thead><tr><th>设置项</th><th>默认值</th><th>说明</th></tr></thead>
             <tbody>

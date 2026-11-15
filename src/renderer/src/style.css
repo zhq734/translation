@@ -8,8 +8,8 @@ body {
   width: 100%;
   height: 100%;
   background: transparent;
-  border-radius: 12px;
-  clip-path: inset(0 round 12px);
+  border-radius: var(--radius-window);
+  clip-path: inset(0 round var(--radius-window));
 }
 
 body {
@@ -26,13 +26,19 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   padding: 4px 18px 12px;
   background: var(--popup-bg);
   border: 1px solid var(--popup-border);
-  border-radius: 12px;
+  border-radius: var(--radius-window);
   overflow: hidden;
-  clip-path: inset(0 round 12px);
+  clip-path: inset(0 round var(--radius-window));
   box-shadow: var(--shadow-overlay);
+}
+
+/* zhenghq：所有隐藏控件优先于 flex/grid；朗读停止图标保留既有 aria-pressed 切换。 */
+#popup [hidden]:not(.speak-stop-icon) {
+  display: none !important;
 }
 
 /* Win7 + Electron 22 的透明窗口合成不稳定，不透明平面外观可消除图标与弹窗黑边。 */
@@ -73,6 +79,8 @@ body {
 
 #popup.auto-size-measuring .selection-view,
 #popup.auto-size-measuring .manual-view,
+#popup.auto-size-measuring .manual-source-section,
+#popup.auto-size-measuring .manual-result-section,
 #popup.auto-size-measuring .result,
 #popup.auto-size-measuring .manual-result,
 #popup.auto-size-measuring .original,
@@ -81,6 +89,15 @@ body {
   min-height: 0;
   max-height: none;
   overflow: visible;
+}
+
+#popup.auto-size-measuring .manual-view {
+  grid-template-rows: auto;
+}
+
+/* zhenghq：测量时解除译文尺寸隔离，恢复自然高度供窗口测量。 */
+#popup.auto-size-measuring .manual-result {
+  contain: none;
 }
 
 .drag-handle::before {
@@ -93,9 +110,10 @@ body {
   pointer-events: none;
 }
 
-/* 顶部标题与右侧操作区：图标在翻译 API 左侧，关闭按钮独占最右端。 */
+/* zhenghq：高频模式入口常驻，低频操作用可键盘展开的菜单收敛。 */
 .header {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   margin-bottom: 8px;
 }
@@ -107,6 +125,7 @@ body {
   flex-wrap: nowrap;
   gap: 8px;
   min-width: 0;
+  min-height: var(--titlebar-height, 40px);
 }
 
 .popup-title {
@@ -125,20 +144,31 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  flex: 0 0 auto;
-  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
 }
 
-/* 翻译 API 位于图标组左侧，用右分隔线与其后的操作图标区隔。 */
+/* zhenghq：语言与引擎组成独立信息栏，保留原生 select 键盘能力。 */
+.translation-context {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
 .provider-bar {
   display: flex;
   align-items: center;
   flex: 0 1 auto;
   gap: 4px;
   min-width: 0;
-  margin-right: 4px;
-  padding-right: 8px;
-  border-right: 1px solid var(--divider);
+  margin-left: auto;
   color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
@@ -148,19 +178,18 @@ body {
   color: var(--text-muted);
 }
 
-/* 翻译来源以下拉框承载切换能力，外观弱化为内联文本。 */
+/* zhenghq：引擎下拉保持中性正文与原生箭头，不伪装成不可点击文本。 */
 #translation-provider {
   flex: 0 1 auto;
   max-width: 148px;
   min-width: 0;
-  height: 22px;
+  height: var(--control-height);
   min-height: 0;
-  padding: 0 2px;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  appearance: none;
-  color: var(--button-bg);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
@@ -202,13 +231,13 @@ body {
 .language-picker select {
   max-width: 116px;
   min-width: 0;
-  height: 24px;
+  height: var(--control-height);
   min-height: 0;
   padding: 0 4px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 12px;
   outline: none;
@@ -237,14 +266,79 @@ body {
 }
 
 .header-action-button {
-  width: 30px;
-  height: 30px;
+  width: var(--control-height);
+  height: var(--control-height);
+  flex: 0 0 auto;
   border-radius: 9px;
   transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
   min-height: var(--control-height);
 }
 
+.mode-action {
+  width: auto;
+  min-width: 0;
+  flex: 0 1 auto;
+  height: auto;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+/* zhenghq：英文标签可在窄窗换行，图标及菜单、关闭入口不参与压缩。 */
+.mode-action > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.popup-menu-anchor {
+  position: relative;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+
+.popup-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: calc(100vw - 72px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel, 12px);
+  background: var(--overlay-bg);
+  box-shadow: var(--shadow-overlay);
+}
+
+.popup-menu .header-action-button {
+  justify-content: flex-start;
+  width: 100%;
+  height: auto;
+  gap: 10px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.popup-menu .header-action-icon {
+  flex: 0 0 auto;
+}
+
+#popup-menu-toggle[aria-expanded='true'] {
+  background: var(--accent-soft);
+  color: var(--button-bg);
+}
+
 .header-action-icon {
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   fill: none;
@@ -257,6 +351,7 @@ body {
 }
 
 #close {
+  flex: 0 0 auto;
   width: var(--control-height);
   height: var(--control-height);
   min-height: var(--control-height);
@@ -272,6 +367,11 @@ body {
 }
 
 .header-action-button:focus-visible,
+#translation-provider:focus-visible,
+.language-picker select:focus-visible,
+#copy:focus-visible,
+.history-action:focus-visible,
+.history-clear-button:focus-visible,
 #close:focus-visible {
   outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
@@ -373,17 +473,18 @@ body {
 }
 
 #speak[aria-pressed='true'] .speak-stop-icon {
-  display: block;
+  display: block !important;
 }
 
 #speak:not([aria-pressed='true']) .speak-stop-icon {
   display: none;
 }
 
-/* 内容区：原文在上、译文在下，中间以分隔线区隔。 */
+/* zhenghq：双语阅读卡以次级原文和主要译文区分层级，不用强调色装饰标题。 */
 .selection-view {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   /* 原文与译文各自滚动；外层再滚动会在长内容时叠出第二条滚动条。 */
@@ -401,18 +502,24 @@ body {
 }
 
 .translation-section-source {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-panel, 12px);
+  background: var(--surface-subtle);
 }
 
 .translation-section-target {
   flex: 1 1 auto;
   min-height: 76px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--divider);
+  margin-top: 14px;
+  padding: 0 2px;
 }
 
 .section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 6px;
 }
 
@@ -424,16 +531,15 @@ body {
 
 .section-label-accent {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--focus-ring);
-  color: var(--button-bg);
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 .original {
+  min-height: 0;
   max-height: 96px;
   overflow-y: auto;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.55;
   user-select: text;
@@ -659,9 +765,9 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  color: var(--text-primary);
-  font-size: 17px;
-  line-height: 1.6;
+  color: var(--text-reading);
+  font-size: 16px;
+  line-height: var(--reading-line-height, 1.75);
   user-select: text;
   white-space: pre-wrap;
   word-break: break-word;
@@ -700,9 +806,9 @@ body {
   width: auto;
   height: auto;
   min-height: 34px;
-  padding: 0 12px;
+  padding: 0 10px;
   gap: 6px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   color: var(--text-muted);
 }
 
@@ -712,8 +818,8 @@ body {
 }
 
 #pin {
-  background: var(--focus-ring);
-  color: var(--button-bg);
+  background: transparent;
+  color: var(--text-secondary);
 }
 
 #pin:hover {
@@ -729,9 +835,9 @@ body {
   padding: 0 12px;
   border: none;
   min-height: var(--control-height);
-  border-radius: var(--radius-pill);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  border-radius: var(--radius-control);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
   cursor: pointer;
   font-size: 12px;
 }
@@ -742,8 +848,8 @@ body {
   border: none;
   min-height: var(--control-height);
   border-radius: var(--radius-control);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
   cursor: pointer;
   font-size: 13px;
   padding: 5px 14px;
@@ -771,13 +877,25 @@ body {
   display: none;
 }
 
-/* 手动翻译视图沿用同一套留白与输入控件。 */
+/* zhenghq：所有窗口固定原文在上、译文在下；矮窗滚动工作区，文本仍独立滚动。 */
 .manual-view {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: repeat(2, minmax(min-content, 1fr));
+  gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.manual-source-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  min-width: 0;
 }
 
 /* 统一历史面板：搜索固定在顶部，记录列表独立滚动，宽度随弹窗自适应。 */
@@ -803,7 +921,7 @@ body {
 
 .history-title {
   color: var(--text-primary);
-  font-size: 16px;
+  font-size: 22px;
   font-weight: 650;
   line-height: 1.3;
 }
@@ -856,8 +974,9 @@ body {
 }
 
 .history-search-wrap:focus-within {
-  border-color: var(--button-bg);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: var(--focus-outline);
+  outline: 2px solid var(--focus-outline);
+  outline-offset: -2px;
 }
 
 .history-search-icon {
@@ -885,7 +1004,12 @@ body {
   outline: none;
 }
 
-/* 关闭 Chromium 原生搜索控件装饰，焦点边框只由外层容器统一绘制。 */
+/* 复合字段仅由包含图标的外层绘制焦点，覆盖共享字段描边。@author zhenghq */
+#history-search:focus {
+  outline: none !important;
+}
+
+/* 关闭 Chromium 原生搜索控件装饰，焦点边框只由外层容器统一绘制。@author zhenghq */
 #history-search::-webkit-search-decoration,
 #history-search::-webkit-search-cancel-button,
 #history-search::-webkit-search-results-button,
@@ -902,7 +1026,7 @@ body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -912,12 +1036,17 @@ body {
 
 .history-item {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 10px;
-  padding: 9px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--bg-secondary);
+  gap: 4px 10px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+}
+
+.history-item:hover,
+.history-item:focus-within {
+  background: var(--surface-hover);
 }
 
 .history-item-heading {
@@ -932,10 +1061,7 @@ body {
 }
 
 .history-origin {
-  padding: 1px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--focus-ring);
-  color: var(--button-bg);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
@@ -958,6 +1084,7 @@ body {
 }
 
 .history-source {
+  grid-column: 1 / -1;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
@@ -965,9 +1092,9 @@ body {
 
 .history-translation {
   grid-column: 1 / -1;
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.5;
+  color: var(--text-reading);
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .history-actions {
@@ -980,7 +1107,9 @@ body {
 
 .history-action {
   min-height: 28px;
-  padding: 3px 9px;
+  padding: 3px 8px;
+  border-color: transparent;
+  background: transparent;
 }
 
 .history-favorite[aria-pressed='true'] {
@@ -1007,12 +1136,14 @@ body {
 /* 底部操作栏：左侧朗读、右侧固定，复制按钮在结果可用时出现。 */
 .footer {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 36px;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--divider);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .footer-spacer {
@@ -1024,6 +1155,8 @@ body {
 .manual-source-footer,
 .manual-result-header {
   display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
@@ -1054,18 +1187,19 @@ body {
 }
 
 #manual-source {
-  flex: 1 1 42%;
-  min-height: 72px;
+  flex: 1 1 auto;
+  min-height: 5em;
   width: 100%;
   resize: none;
   border: 1px solid var(--border-control);
   border-radius: 8px;
-  background: var(--control-bg);
+  background: var(--surface-subtle);
   color: var(--text-primary);
   font: inherit;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.75;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 9px 10px;
   user-select: text;
 }
@@ -1075,6 +1209,7 @@ body {
 }
 
 .manual-source-footer {
+  flex-wrap: wrap;
   justify-content: flex-end;
   color: var(--text-muted);
   font-size: 11px;
@@ -1085,27 +1220,31 @@ body {
 }
 
 .manual-result-section {
-  flex: 1 1 58%;
-  min-height: 72px;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--divider);
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel, 12px);
 }
 
 .manual-stale {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   text-align: right;
 }
 
 .manual-result {
   flex: 1;
-  min-height: 0;
+  /* zhenghq：轨道下限只计可读高度，长译文不撑开轨道，剩余高度仍由 flex 填充。 */
+  contain: size;
+  min-height: 3.5em;
   overflow-y: auto;
-  color: var(--text-primary);
-  font-size: 15px;
-  line-height: 1.55;
+  overscroll-behavior: contain;
+  color: var(--text-reading);
+  font-size: 16px;
+  line-height: var(--reading-line-height, 1.75);
   user-select: text;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1118,7 +1257,7 @@ body {
 }
 
 .manual-result.error {
-  color: var(--text-secondary);
+  color: var(--status-error);
 }
 
 /* OCR 原始识别内容占用原文区域，仅在 OCR 翻译时展示。 */
@@ -1181,7 +1320,8 @@ body {
   color: var(--text-muted);
   background: none;
   border: none;
-  padding: 0 2px;
+  min-height: 24px;
+  padding: 2px 6px;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -1190,27 +1330,103 @@ body {
   color: var(--text-primary);
 }
 
-@media (max-width: 420px) {
+@media (max-width: 520px) {
   #popup {
     padding: 4px 12px 10px;
   }
 
   .footer {
-    flex-wrap: wrap;
-    row-gap: 6px;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  /* zhenghq：底部英文操作文字换行而非整组换行，避免挤掉矮窗文本。 */
+  #speak,
+  #pin,
+  #manual-copy {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .toolbar-action-label {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
   }
 
   .language-picker {
     flex: 1 1 auto;
   }
 
-  .manual-source-footer {
-    flex-wrap: wrap;
+  .provider-bar {
+    margin-left: 0;
+  }
+
+  .mode-action {
+    gap: 4px;
+    padding: 0 5px;
+    height: auto;
+    max-width: 132px;
+    line-height: 1.3;
+  }
+
+  .history-header {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* zhenghq：主动减少动画时关闭图标过渡与流式光标闪烁，不影响文本增量。 */
+@media (prefers-reduced-motion: reduce) {
+  #popup *,
+  #popup *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }
 
 /* 最小窗口高度下收紧纵向留白，保证原文与译文都保留可见空间。 */
-@media (max-height: 300px) {
+@media (max-height: 400px) {
+  /* zhenghq：紧凑模式保留计数和全部操作，快捷键说明让位于至少一行输入文本。 */
+  #manual-hint {
+    display: none;
+  }
+
+  .manual-source-section,
+  .manual-result-section {
+    gap: 4px;
+  }
+
+  .manual-result-section {
+    padding: 6px;
+  }
+
+  #manual-source {
+    padding: 4px 6px;
+  }
+
+  .manual-source-footer {
+    gap: 4px;
+  }
+
+  #manual-submit {
+    padding-inline: 8px;
+  }
+
+  .manual-result-header {
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  .manual-stale {
+    flex: 1 1 100%;
+    font-size: 11px;
+    line-height: 1.3;
+    text-align: left;
+  }
+
   .drag-handle {
     flex-basis: 12px;
     min-height: 12px;
@@ -1228,7 +1444,40 @@ body {
   .translation-section-target {
     margin-top: 6px;
     padding-top: 6px;
-    min-height: 40px;
+    min-height: 56px;
+  }
+
+  .translation-context {
+    /* zhenghq：矮窗语言与引擎各自收缩，避免信息栏换成两行挤掉文本。 */
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 4px;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+  }
+
+  .translation-context .provider-bar {
+    margin-left: 0;
+  }
+
+  /* zhenghq：矮窗口让历史标题、搜索和记录整体滚动，避免列表被挤至零高度。 */
+  .history-view {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  .history-header,
+  .history-list {
+    flex: 0 0 auto;
+  }
+
+  .history-list {
+    overflow: visible;
+  }
+
+  .translation-section-source {
+    padding: 6px 8px;
   }
 
   .original {

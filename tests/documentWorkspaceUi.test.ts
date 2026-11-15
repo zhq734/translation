@@ -3777,6 +3777,7 @@ test('PDF 译文装饰线必须按最近前序流式锚点动态重定位并观�
   assert.match(verticalRule, /--document-shape-flow-offset/u)
 })
 
+/** 校验文档设置入口宽屏双列、720px 以下单列及说明缩进；无参数、无返回值。@author zhenghq */
 test('设置页文档翻译入口必须使用自适应双列布局并重置说明缩进', () => {
   const html = read('src/renderer/settings.html')
   const css = read('src/renderer/src/settings.css')
@@ -3788,7 +3789,7 @@ test('设置页文档翻译入口必须使用自适应双列布局并重置说�
   assert.match(css, /\.document-settings-copy\s*\{[^}]*min-width:\s*0/su)
   assert.match(css, /\.document-settings-row \.document-settings-description\s*\{[^}]*margin:\s*4px 0 0/su)
   assert.match(css, /\.document-settings-row \.document-settings-description\s*\{[^}]*max-width:\s*64ch/su)
-  assert.match(css, /@media \(max-width: 480px\)[\s\S]*?\.document-settings-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u)
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.document-settings-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u)
 })
 
 test('文档译文界面必须显示真实品牌 logo、中英文产品名组成的黑白斜向重复水印且不阻挡交互', () => {

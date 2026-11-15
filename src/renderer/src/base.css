@@ -1,4 +1,4 @@
-/* 五类 Renderer 共用的跨平台扁平化基础层。 */
+/* Quiet Studio 共享基础层：中性控件、键盘焦点与无动态降级。@author zhenghq */
 *,
 *::before,
 *::after {
@@ -11,7 +11,12 @@ body {
   padding: 0;
 }
 
-/* 首屏语言预应用期间隐藏静态英文兜底，待 locale runtime 完成翻译后移除标记。 */
+/* 显式隐藏优先于图标、浮层等布局规则，不改变各页面原有显示状态。@author zhenghq */
+[hidden] {
+  display: none !important;
+}
+
+/* 首屏语言预应用期间隐藏静态英文兜底，待 locale runtime 完成翻译后移除标记。@author zhenghq */
 :root[data-i18n-pending='true'] body {
   visibility: hidden;
 }
@@ -27,6 +32,7 @@ textarea {
 body {
   color: var(--text-primary);
   font-size: var(--font-size-body);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -40,6 +46,17 @@ textarea {
   border-radius: var(--radius-control);
   color: inherit;
   font: inherit;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+/* 低优先级的基础外观可由页面控件扩展，不强制透明浮窗使用页面背景。@author zhenghq */
+:where(button, select, input, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  background: var(--control-bg);
+  color: var(--text-primary);
 }
 
 button,
@@ -47,17 +64,62 @@ select {
   cursor: pointer;
 }
 
-button:disabled,
-input:disabled,
-select:disabled,
-textarea:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+:where(button, select):where(:not(:disabled):not([aria-disabled='true'])):hover {
+  background: var(--surface-hover);
 }
 
-:where(button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--focus-outline);
+:where(input, textarea):where(:not(:disabled):not([readonly])):hover {
+  border-color: var(--text-muted);
+}
+
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'] {
+  accent-color: var(--button-bg);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.primary-button,
+.btn.primary {
+  min-height: var(--control-height-primary);
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+
+.primary-button:hover:not(:disabled):not([aria-disabled='true']),
+.btn.primary:hover:not(:disabled):not([aria-disabled='true']) {
+  border-color: var(--button-bg-hover);
+  background: var(--button-bg-hover);
+}
+
+:where(a[href]) {
+  color: var(--button-bg);
+  text-underline-offset: 0.18em;
+}
+
+:where(a[href]):hover:not([aria-disabled='true']) {
+  text-decoration: underline;
+}
+
+:where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-outline) !important;
   outline-offset: 2px;
+}
+
+/* 字段焦点贴合原边界，不与边框或页面阴影叠成双圈；:focus 同时覆盖旧 Chromium。@author zhenghq */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']):not([type='hidden']):focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--focus-outline) !important;
+  outline-offset: -2px !important;
+  box-shadow: none !important;
 }
 
 hr,
@@ -93,7 +155,7 @@ hr,
   box-shadow: var(--shadow-overlay);
 }
 
-/* 设置页与网页阅读器共用的无边框窗口标题栏。 */
+/* 设置页与网页阅读器共用的无边框窗口标题栏；保持原有测量尺寸。@author zhenghq */
 .window-titlebar {
   display: flex;
   flex: 0 0 var(--titlebar-height);
@@ -124,8 +186,8 @@ hr,
   inline-size: 22px;
   block-size: 22px;
   border-radius: var(--radius-control);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
   font-size: var(--font-size-caption);
 }
 
@@ -155,12 +217,12 @@ hr,
   -webkit-app-region: no-drag;
 }
 
-.window-control-button:hover {
-  background: var(--button-secondary-hover);
+.window-control-button:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
-.window-control-button.window-control-close:hover {
+.window-control-button.window-control-close:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--status-error);
   color: var(--button-text);
 }
@@ -181,13 +243,48 @@ hr,
   stroke-linejoin: round;
 }
 
+/* 禁用态必须压过页面的主按钮和悬停色，aria-disabled 的事件行为仍由控制器负责。@author zhenghq */
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+button[aria-disabled='true'],
+a[aria-disabled='true'],
+[role='button'][aria-disabled='true'] {
+  cursor: not-allowed;
+  background: var(--control-disabled-bg) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-muted) !important;
+  opacity: 0.65;
+  box-shadow: none;
+}
+
+/* 旧 Chromium 不支持 focus-visible 时仍保留明确焦点，避免只剩鼠标可用。@author zhenghq */
+@supports not selector(:focus-visible) {
+  button:focus,
+  input:focus,
+  select:focus,
+  textarea:focus,
+  a[href]:focus,
+  [tabindex]:focus {
+    outline: 2px solid var(--focus-outline) !important;
+    outline-offset: 2px;
+  }
+
+  .window-control-button:focus {
+    outline-offset: -3px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
     animation-duration: 1ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
+    transition-delay: 0s !important;
   }
 }

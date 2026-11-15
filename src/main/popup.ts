@@ -172,6 +172,11 @@ export interface CreatePopupOptions {
  * @author zhenghq
  */
 export function createPopup(options: CreatePopupOptions): BrowserWindow {
+  // 重建实例前先取消旧实例的关闭与租约，不能让旧回调通过模块级 win 隐藏新窗口。
+  const cancelledCloseToken = activePopupCloseToken
+  popupLifecycleToken += 1
+  activePopupCloseToken = null
+  if (cancelledCloseToken !== null) onPopupCloseCancelledCallback?.(cancelledCloseToken)
   const { preloadPath } = options
   const win7Compatibility = isWindows7CompatibilityRuntime()
   popupCloseInFlight = false
@@ -535,7 +540,14 @@ export function showPopup(
  * @author zhenghq
  */
 export function showManualTranslationPopup(): void {
-  if (!win) return
+  if (!win || win.isDestroyed()) return
+  // 手动页面同样复用弹窗实例，显式打开必须取消旧划词关闭轮次，避免晚到的
+  // 交还结果隐藏用户刚打开的翻译页面；取消回调仅释放旧轮次的保护租约。
+  const cancelledCloseToken = activePopupCloseToken
+  popupLifecycleToken += 1
+  popupCloseInFlight = false
+  activePopupCloseToken = null
+  if (cancelledCloseToken !== null) onPopupCloseCancelledCallback?.(cancelledCloseToken)
   selectionCaptureLoading = false
   currentAutoHideMs = 0
   clearHide()
@@ -624,8 +636,22 @@ export function hidePopup(
   handBackFrontmost = true,
   reason: PopupHideReason = 'unknown'
 ): void {
+  // 显式内部切换具有更高优先级：即使旧弹窗已隐藏、还在等复核，也必须撤销
+  // 那次外部交还意图，否则迟到复核会抢走刚打开的设置页或文档页焦点。
+  if (!handBackFrontmost && activePopupCloseToken !== null) {
+    const cancelledCloseToken = activePopupCloseToken
+    popupLifecycleToken += 1
+    activePopupCloseToken = null
+    popupCloseInFlight = false
+    onPopupCloseCancelledCallback?.(cancelledCloseToken)
+  }
   if (popupCloseInFlight) {
     console.log(`[popup] ignore duplicate hide reason=${reason} while-closing`)
+    return
+  }
+  // 已隐藏或销毁时只使在途翻译结果失效，不重复关闭或触碰其它页面的租约。
+  if (!win || win.isDestroyed() || !win.isVisible()) {
+    closeVersion += 1
     return
   }
   popupCloseInFlight = true
@@ -645,24 +671,17 @@ export function hidePopup(
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
   win?.webContents.send('popup:pinned', false)
-  if (!win || win.isDestroyed()) {
-    try {
-      onPopupCloseEndBeforeHideRestoreCallback?.(closeToken)
-      onPopupCloseEndCallback?.(closeToken)
-    } finally {
-      if (closeToken === popupLifecycleToken) {
-        popupCloseInFlight = false
-        activePopupCloseToken = null
-      }
-    }
-    return
-  }
   // macOS 异步交还路径必须把设置页可聚焦性恢复延迟到隐藏后的前台复核；
   // 同步隐藏路径没有这个系统重新选 key window 的竞态，仍可立即恢复。
   const restoreFocusAfterFrontRecheck =
     process.platform === 'darwin' && handBackFrontmost
   // 收尾动作只负责隐藏窗口自身：真正的前台交还是异步的，隐藏必须等交还完成
   // 后再执行，否则系统会先把同应用下一个可见窗口提升为 key window 顶到最前。
+  /**
+   * 隐藏当前关闭轮次的弹窗并通知资源清理，不修改其它页面的显隐状态。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
   const run = (): void => {
     // 交还期间用户可能已经触发下一轮取词并重新显示弹窗。旧轮次只能静默退出，
     // 不得隐藏新窗口、清理新轮次状态或发送任何关闭副作用。
@@ -673,9 +692,12 @@ export function hidePopup(
     // 不经过 Renderer；统一广播隐藏事件，确保所有关闭路径都会停止语音。
     // 必须在 win.hide() 之前广播：隐藏后窗口不再渲染，IPC 消息可能无法及时
     // 送达 Renderer，导致系统语音或音频在后台继续播放。
-    win?.webContents.send('popup:hidden')
     try {
-      win?.hide()
+      // 异步交还期间窗口可能已销毁，仍须收尾租约，但不能再发送 IPC 或 hide。
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('popup:hidden')
+        win?.hide()
+      }
     } finally {
       try {
         onPopupCloseEndBeforeHideRestoreCallback?.(closeToken)
@@ -687,10 +709,7 @@ export function hidePopup(
         }
       }
     }
-    // 真实隐藏后先完成收尾；延迟交还路径的可聚焦恢复由前台复核回调执行。
-    if (!restoreFocusAfterFrontRecheck) {
-      onPopupCloseEndCallback?.(closeToken)
-    }
+    // 同步收尾已在 finally 执行一次；延迟路径由前台复核回调完成。
     onPopupHiddenCallback?.()
     // 隐藏 panel 后系统可能把同应用内下一个可见窗口提升为 key window，
     // 并派发一次应用级 activate；该 activate 同样属于内部流程，必须续期抑制。
@@ -717,7 +736,8 @@ export function hidePopup(
         } finally {
           if (closeToken === popupLifecycleToken) activePopupCloseToken = null
         }
-      }
+      },
+      () => closeToken === popupLifecycleToken
     )
     return
   }

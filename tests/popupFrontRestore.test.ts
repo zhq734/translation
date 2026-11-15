@@ -200,16 +200,21 @@ test('原生修复对话框显示期间不得丢弃待交还记录', () => {
   )
 })
 
-test('结果弹窗隐藏时即使焦点在自有可聚焦窗口也必须交还前台', () => {
+/**
+ * 校验内部页面焦点优先保留，同时保持非激活弹窗的外部源应用交还门禁。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('结果弹窗隐藏应保留可见内部页面焦点，其余非激活弹窗仍按应用状态交还', () => {
   const handBackThenSource = stripComments(
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
 
-  // 真机日志（2026-10-13）：hidePopup() 时 BrowserWindow.getFocusedWindow() 返回
-  // 设置页等自有可聚焦窗口（非 null、可聚焦、不等于弹窗），旧逻辑命中
-  // 「即将隐藏的窗口不是当前 key window」跳过分支；本应用继续占据最前，
-  // 下一次注入的 Command+C 打回自家窗口，剪贴板哨兵不变而报取词超时。
-  // 弹窗场景必须按应用激活状态决定是否交还，不能只按 key window 归属判定。
+  // 用户已切回可见内部页面时不能强行交还外部应用；这与外部划词期间的
+  // 无 key window 或后台残留焦点不同。行为矩阵由 popupWindowIsolation 执行。
+  // @author zhenghq
+  assert.match(handBackThenSource, /hasFocusedInternalPage\(\)[\s\S]*?internal-page-holds-key-window/u,
+    '可见内部页面接管焦点必须优先保留，不能按旧外部划词记录抢回焦点')
   assert.match(
     handBackThenSource,
     /const popupNeedsHandBack\s*=\s*keyWindowIsPopup\s*&&\s*isMacAppActiveByEvents\(\)/u,
@@ -280,12 +285,18 @@ test('前台交还链路必须输出可诊断日志', () => {
   assert.match(macForegroundSource, /\[macForeground\]/u, '日志必须带统一前缀，便于从主进程日志中筛选')
 })
 
+/**
+ * 校验应用失活分支仅在确实丢弃源记录时输出带目标标识的诊断。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
 test('应用已不在最前时只在真的丢弃了记录才输出日志', () => {
   const handBackSource = stripComments(
     extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
   )
 
-  const branchStart = handBackSource.indexOf('forgetFrontmostApp()')
+  // 内部显式页面接管也会丢弃旧记录；此处必须定位应用失活分支，而非首个调用。
+  const branchStart = handBackSource.indexOf('const discarded = pendingReturnApp')
   assert.ok(branchStart >= 0, '应存在丢弃过期记录的分支')
   const branchSource = handBackSource.slice(
     Math.max(0, branchStart - 300),

@@ -179,8 +179,8 @@
       </div>
       <textarea id="ocr-text-input" class="ocr-text-input" data-i18n-attr="aria-label:selection.annotationText" aria-label="Annotation text" maxlength="200" rows="1" hidden></textarea>
       <aside id="ocr-panel" class="ocr-panel" hidden data-i18n-attr="aria-label:selection.ocrResult" aria-label="OCR result">
-        <div id="ocr-panel-status" class="ocr-panel-status" role="status"></div>
-        <textarea id="ocr-panel-text" class="ocr-panel-text" readonly data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
+        <div id="ocr-panel-status" class="ocr-panel-status" role="status" aria-atomic="true"></div>
+        <textarea id="ocr-panel-text" class="ocr-panel-text" readonly aria-describedby="ocr-panel-status" data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
         <span id="ocr-panel-resize" class="ocr-panel-resize" role="separator" data-i18n-attr="aria-label:selection.resizeResult" aria-label="Resize OCR result area" aria-hidden="true"></span>
       </aside>
       <div id="ocr-tooltip" class="ocr-tooltip" role="tooltip" hidden></div>

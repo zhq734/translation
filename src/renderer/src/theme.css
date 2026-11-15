@@ -1,11 +1,11 @@
+/* Quiet Studio：共享尺度与兼容别名，不让主题强调色进入普通正文和边界。@author zhenghq */
 :root {
-  color-scheme: light dark;
-  /* 跨平台共享设计 Token：所有 Renderer 使用同一套视觉尺度。 */
   --font-family-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-size-caption: 12px;
   --font-size-body: 14px;
   --font-size-label: 13px;
-  --font-size-title: 20px;
+  --font-size-title: 22px;
+  --reading-line-height: 1.75;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -20,449 +20,270 @@
   --icon-size-lg: 24px;
   --radius-control: 8px;
   --radius-panel: 12px;
-  --radius-overlay: 12px;
+  --radius-window: 14px;
+  --radius-overlay: var(--radius-window);
   --radius-pill: 10px;
   --border-width: 1px;
-  --shadow-overlay: 0 12px 44px var(--popup-shadow);
+  --shadow-panel: none;
+  --shadow-overlay: 0 8px 28px var(--popup-shadow);
+  --content-max-width: 1120px;
   --z-titlebar: 100;
   --z-overlay: 1000;
   --duration-fast: 120ms;
   --duration-normal: 200ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --page-bg: #f5f5f7;
-  --panel-bg: #ffffff;
-  --panel-shadow: rgba(0, 0, 0, 0.04);
-  /* PDF 纸张在明暗主题中保持可读的原生白纸观感，左右栏共享同一语义颜色。 */
+
+  /* 原生纸张、黑白水印与检索语义不随明暗反色。@author zhenghq */
   --document-paper-bg: #ffffff;
   --document-paper-text: #111827;
-  /* 译文水印只使用黑白纸张语义色，避免主题预设把品牌水印染成彩色。 */
   --document-watermark-ink: rgba(17, 24, 39, 0.11);
   --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
-  --bg-secondary: #f2f2f7;
-  --control-bg: #ffffff;
-  --control-disabled-bg: #ededf2;
-  --border-default: #e5e5ea;
-  --border-control: #d1d1d6;
-  /* 表格最终外边界需要比普通控件边框更醒目，避免空白单元格底边在纸张上消失。 */
-  --document-table-boundary: #6b7280;
-  --focus-ring: rgba(59, 130, 246, 0.16);
-  /* 译文手改态使用不透明纸色与主题强调色混合，避免底层扫描原文透出。@author zhenghq */
-  --document-manual-edit-hover-bg: color-mix(in srgb, var(--document-paper-bg) 94%, var(--button-bg) 6%);
-  --document-manual-edit-active-bg: color-mix(in srgb, var(--document-paper-bg) 88%, var(--button-bg) 12%);
-  /* 正文检索高亮：全部命中与当前命中使用不同强度的语义色，明暗主题共用。 */
+  --document-table-boundary: #626874;
+  --subtitle-surface: #202329;
+  --subtitle-overlay-bg: rgba(24, 27, 33, 0.88);
+  --subtitle-divider: rgba(236, 238, 242, 0.16);
+  --subtitle-primary: #eceef2;
+  --subtitle-secondary: #b9c0cb;
+  --subtitle-outline: #111318;
+  --document-manual-edit-hover-bg: var(--document-paper-bg);
+  --document-manual-edit-active-bg: var(--document-paper-bg);
   --search-match-bg: rgba(250, 204, 21, 0.42);
   --search-current-bg: rgba(249, 115, 22, 0.6);
-  --button-secondary-bg: #f2f2f7;
-  --button-secondary-hover: #e5e5ea;
-  --popup-bg: rgba(255, 255, 255, 0.96);
-  --popup-border: rgba(0, 0, 0, 0.1);
-  --text-primary: #1c1c1e;
-  --text-secondary: #4b4b50;
-  --text-muted: #8e8e93;
-  --divider: rgba(0, 0, 0, 0.08);
-  --button-bg: #3b82f6;
-  --button-bg-hover: #2f6fd0;
+
+  --bg-primary: var(--page-bg);
+  --bg-elevated: var(--panel-bg);
+  --text-reading: var(--text-primary);
+  --surface-subtle: var(--bg-secondary);
+  --button-secondary-bg: var(--surface-subtle);
+  --button-secondary-hover: var(--surface-hover);
+  --text-on-accent: var(--button-text);
+  --text-danger: var(--status-error);
+  --overlay-bg: var(--popup-bg);
+  --toast-bg: var(--popup-bg);
+  --toast-text: var(--text-primary);
+  --toast-border: var(--popup-border);
+  --capture-accent: var(--button-bg);
+  --focus-outline: var(--button-bg);
+  /* 保留渐变接口，但普通动作使用同色端点，不再以渐变承载正文。@author zhenghq */
+  --accent-start: var(--button-bg);
+  --accent-end: var(--button-bg);
+  --accent-gradient: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+  --theme-sakura-gradient: linear-gradient(135deg, #a83265, #dba5ba);
+  --theme-emerald-gradient: linear-gradient(135deg, #23745a, #a4cdbc);
+  --theme-sky-gradient: linear-gradient(135deg, #315da8, #afc4e6);
+  --theme-navy-gradient: linear-gradient(135deg, #3e4d86, #b3bcde);
+  --theme-platinum-black-gradient: linear-gradient(135deg, #505967, #c3c8d1);
+}
+
+/* 无缓存的首帧与显式浅色共用完整调色板；显式模式不会泄漏系统深色状态色。@author zhenghq */
+:root,
+:root[data-theme-mode='light'] {
+  color-scheme: light;
+  --page-bg: #f6f7f9;
+  --panel-bg: #ffffff;
+  --panel-shadow: rgba(24, 27, 32, 0.04);
+  --bg-secondary: #f0f1f4;
+  --surface-hover: #e9ebef;
+  --control-bg: #ffffff;
+  --control-disabled-bg: #e9ebef;
+  --border-default: #d9dce2;
+  --border-control: #b8bec8;
+  --border-subtle: #e6e8ed;
+  --divider: #e6e8ed;
+  --text-primary: #20242c;
+  --text-secondary: #4e5460;
+  --text-muted: #626874;
+  --button-bg: #315da8;
+  --button-bg-hover: #264c8d;
   --button-text: #ffffff;
+  --accent-soft: #eaf0fa;
+  --focus-ring: rgba(49, 93, 168, 0.22);
+  --popup-bg: rgba(255, 255, 255, 0.98);
+  --popup-border: #d9dce2;
+  --popup-shadow: rgba(24, 27, 32, 0.16);
   --selection-button-bg: rgba(255, 255, 255, 0.98);
-  --selection-button-border: rgba(0, 0, 0, 0.12);
-  --selection-button-shadow: rgba(0, 0, 0, 0.24);
+  --selection-button-border: #b8bec8;
+  --selection-button-shadow: rgba(24, 27, 32, 0.18);
   --ocr-overlay-bg: rgba(15, 23, 42, 0.18);
   --ocr-selection-bg: rgba(255, 255, 255, 0.12);
   --ocr-selection-mask: rgba(0, 0, 0, 0.24);
   --overlay-backdrop: rgba(15, 23, 42, 0.28);
-  --popup-shadow: rgba(0, 0, 0, 0.26);
-  --toast-bg: var(--popup-bg);
-  --toast-text: var(--text-primary);
-  --toast-border: var(--popup-border);
-  /* 覆盖层提示胶囊：截图动作提示与 OCR 框选提示共用的微信风格反色胶囊。
-     浅色主题深底白字、深色主题浅底深字——提示浮在任意桌面内容之上，
-     因此不跟随弹出层底色，而是取与主题相反的高对比面。 */
   --hint-pill-bg: rgba(15, 23, 42, 0.9);
   --hint-pill-text: #ffffff;
   --hint-pill-icon-success: #34c759;
   --hint-pill-icon-warning: #ffd60a;
   --hint-pill-icon-error: #ff6961;
   --status-success: #248a3d;
-  --status-error: #d70015;
+  --status-error: #c22e3a;
   --status-warning: #9a6700;
-  /* 新组件只依赖语义别名，主题切换仍由现有基础变量驱动。 */
-  --bg-primary: var(--page-bg);
-  --bg-elevated: var(--panel-bg);
-  --text-danger: var(--status-error);
-  --overlay-bg: var(--popup-bg);
-  --capture-accent: var(--button-bg);
-  --focus-outline: var(--button-bg);
 }
 
+/* 旧 Chromium 也能在 bootstrap 前跟随系统；不用依赖 CSS 嵌套或 light-dark()。@author zhenghq */
 @media (prefers-color-scheme: dark) {
   :root {
-    --page-bg: #17171a;
-    --panel-bg: #232327;
-    --panel-shadow: rgba(0, 0, 0, 0.22);
-    --document-paper-bg: #ffffff;
-    --document-paper-text: #111827;
-    --document-watermark-ink: rgba(17, 24, 39, 0.11);
-    --document-watermark-ink-strong: rgba(17, 24, 39, 0.17);
-    --bg-secondary: #303035;
-    --control-bg: #29292e;
-    --control-disabled-bg: #202024;
-    --border-default: #3a3a40;
-    --border-control: #4a4a52;
-    --document-table-boundary: #9ca3af;
-    --focus-ring: rgba(59, 130, 246, 0.28);
-    --button-secondary-bg: #303036;
-    --button-secondary-hover: #3b3b42;
-    --popup-bg: rgba(30, 30, 34, 0.97);
-    --popup-border: rgba(255, 255, 255, 0.08);
-    --text-primary: #e8e8ea;
-    --text-secondary: #c6c6cc;
-    --text-muted: #9a9aa2;
-    --divider: rgba(255, 255, 255, 0.08);
-    --selection-button-bg: rgba(45, 45, 50, 0.98);
-    --selection-button-border: rgba(255, 255, 255, 0.14);
-    --selection-button-shadow: rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+    --page-bg: #17191d;
+    --panel-bg: #202329;
+    --panel-shadow: rgba(0, 0, 0, 0.16);
+    --bg-secondary: #292d34;
+    --surface-hover: #34383f;
+    --control-bg: #252930;
+    --control-disabled-bg: #292d34;
+    --border-default: #3b4049;
+    --border-control: #646b76;
+    --border-subtle: #30343c;
+    --divider: #30343c;
+    --text-primary: #eceef2;
+    --text-secondary: #c0c4cd;
+    --text-muted: #b0b6c1;
+    --button-bg: #98b9ee;
+    --button-bg-hover: #b5ccf3;
+    --button-text: #20242c;
+    --accent-soft: #273449;
+    --focus-ring: rgba(152, 185, 238, 0.28);
+    --popup-bg: rgba(32, 35, 41, 0.98);
+    --popup-border: #3b4049;
+    --popup-shadow: rgba(0, 0, 0, 0.32);
+    --selection-button-bg: rgba(32, 35, 41, 0.98);
+    --selection-button-border: #646b76;
+    --selection-button-shadow: rgba(0, 0, 0, 0.32);
     --ocr-overlay-bg: rgba(0, 0, 0, 0.22);
     --ocr-selection-bg: rgba(255, 255, 255, 0.10);
     --ocr-selection-mask: rgba(0, 0, 0, 0.34);
     --overlay-backdrop: rgba(0, 0, 0, 0.48);
-    --popup-shadow: rgba(0, 0, 0, 0.4);
     --hint-pill-bg: rgba(244, 244, 247, 0.94);
     --hint-pill-text: #17171a;
     --hint-pill-icon-success: #248a3d;
     --hint-pill-icon-warning: #9a6700;
     --hint-pill-icon-error: #d70015;
-    --status-success: #34c759;
-    --status-error: #ff6961;
-    --status-warning: #ffd60a;
+    --status-success: #83cba0;
+    --status-error: #f2999c;
+    --status-warning: #e2bd72;
   }
 }
 
-/* 用户显式选择的明暗模式必须压过系统外观，否则系统深色 + 应用浅色时胶囊会取错配色。
-   这两组的优先级高于上面的 :root 与 @media 块，但低于各主题预设块。 */
-:root[data-theme-mode='light'] {
-  --overlay-backdrop: rgba(15, 23, 42, 0.28);
-  --hint-pill-bg: rgba(15, 23, 42, 0.9);
-  --hint-pill-text: #ffffff;
-  --hint-pill-icon-success: #34c759;
-  --hint-pill-icon-warning: #ffd60a;
-  --hint-pill-icon-error: #ff6961;
-}
-
+/* 与系统深色兜底对称；必要的媒体回退重复由调色板一致性测试保护。@author zhenghq */
 :root[data-theme-mode='dark'] {
+  color-scheme: dark;
+  --page-bg: #17191d;
+  --panel-bg: #202329;
+  --panel-shadow: rgba(0, 0, 0, 0.16);
+  --bg-secondary: #292d34;
+  --surface-hover: #34383f;
+  --control-bg: #252930;
+  --control-disabled-bg: #292d34;
+  --border-default: #3b4049;
+  --border-control: #646b76;
+  --border-subtle: #30343c;
+  --divider: #30343c;
+  --text-primary: #eceef2;
+  --text-secondary: #c0c4cd;
+  --text-muted: #b0b6c1;
+  --button-bg: #98b9ee;
+  --button-bg-hover: #b5ccf3;
+  --button-text: #20242c;
+  --accent-soft: #273449;
+  --focus-ring: rgba(152, 185, 238, 0.28);
+  --popup-bg: rgba(32, 35, 41, 0.98);
+  --popup-border: #3b4049;
+  --popup-shadow: rgba(0, 0, 0, 0.32);
+  --selection-button-bg: rgba(32, 35, 41, 0.98);
+  --selection-button-border: #646b76;
+  --selection-button-shadow: rgba(0, 0, 0, 0.32);
+  --ocr-overlay-bg: rgba(0, 0, 0, 0.22);
+  --ocr-selection-bg: rgba(255, 255, 255, 0.10);
+  --ocr-selection-mask: rgba(0, 0, 0, 0.34);
   --overlay-backdrop: rgba(0, 0, 0, 0.48);
   --hint-pill-bg: rgba(244, 244, 247, 0.94);
   --hint-pill-text: #17171a;
   --hint-pill-icon-success: #248a3d;
   --hint-pill-icon-warning: #9a6700;
   --hint-pill-icon-error: #d70015;
+  --status-success: #83cba0;
+  --status-error: #f2999c;
+  --status-warning: #e2bd72;
 }
 
-/* 多彩主题：通过根节点属性覆盖共享语义变量；组件不得直接依赖主题色值。 */
-:root {
-  --accent-start: #38bdf8;
-  --accent-end: #6366f1;
-  --accent-gradient: linear-gradient(135deg, var(--accent-start), var(--accent-end));
-  --theme-sakura-gradient: linear-gradient(135deg, #f9a8d4, #fb7185);
-  --theme-emerald-gradient: linear-gradient(135deg, #10b981, #14b8a6);
-  --theme-sky-gradient: linear-gradient(135deg, #38bdf8, #6366f1);
-  --theme-navy-gradient: linear-gradient(135deg, #1e3a8a, #3730a3);
-  --theme-platinum-black-gradient: linear-gradient(135deg, #64748b, #cbd5e1);
-}
-
+/* 五套主题只调整交互色；桌面截图提示保留原有高对比反色胶囊。@author zhenghq */
 :root[data-theme='sakura'][data-theme-mode='light'] {
-  color-scheme: light;
-  --page-bg: #fff7fb;
-  --panel-bg: #ffffff;
-  --panel-shadow: rgba(190, 24, 93, 0.08);
-  --bg-secondary: #fff0f6;
-  --control-bg: #fffafd;
-  --control-disabled-bg: #fce7f3;
-  --border-default: #f5c2d9;
-  --border-control: #e9a4c2;
-  --document-table-boundary: #9d4f72;
-  --focus-ring: rgba(236, 72, 153, 0.22);
-  --button-secondary-bg: #fff0f6;
-  --button-secondary-hover: #fce7f3;
-  --popup-bg: rgba(255, 250, 253, 0.97);
-  --popup-border: rgba(190, 24, 93, 0.14);
-  --text-primary: #3f172e;
-  --text-secondary: #7a2856;
-  --text-muted: #ad6b8d;
-  --divider: rgba(190, 24, 93, 0.11);
-  --button-bg: #ec4899;
-  --button-bg-hover: #db2777;
-  --button-text: #ffffff;
-  --accent-start: #f9a8d4;
-  --accent-end: #fb7185;
-  --selection-button-bg: rgba(255, 250, 253, 0.98);
-  --selection-button-border: rgba(190, 24, 93, 0.16);
-  --selection-button-shadow: rgba(190, 24, 93, 0.24);
-  --popup-shadow: rgba(190, 24, 93, 0.22);
+  --button-bg: #a83265;
+  --button-bg-hover: #902653;
+  --accent-soft: #f9eaf0;
+  --focus-ring: rgba(168, 50, 101, 0.22);
   --hint-pill-bg: rgba(63, 23, 46, 0.92);
+  /* 保留纸张边界的显式兼容声明，使用与默认纸张一致的中性语义。@author zhenghq */
+  --document-table-boundary: #626874;
 }
 
 :root[data-theme='sakura'][data-theme-mode='dark'] {
-  color-scheme: dark;
-  --page-bg: #24131e;
-  --panel-bg: #35202d;
-  --panel-shadow: rgba(0, 0, 0, 0.3);
-  --bg-secondary: #48263a;
-  --control-bg: #3d2533;
-  --control-disabled-bg: #2d1d28;
-  --border-default: #63334d;
-  --border-control: #7c3f5e;
-  --document-table-boundary: #d18aaa;
-  --focus-ring: rgba(244, 114, 182, 0.3);
-  --button-secondary-bg: #48263a;
-  --button-secondary-hover: #5b2d47;
-  --popup-bg: rgba(45, 26, 39, 0.98);
-  --popup-border: rgba(253, 164, 175, 0.18);
-  --text-primary: #fff1f5;
-  --text-secondary: #fbcfe8;
-  --text-muted: #d18aaa;
-  --divider: rgba(253, 164, 175, 0.13);
-  --button-bg: #f472b6;
-  --button-bg-hover: #ec4899;
-  --button-text: #3f172e;
-  --accent-start: #f472b6;
-  --accent-end: #fda4af;
-  --selection-button-bg: rgba(61, 37, 51, 0.98);
-  --selection-button-border: rgba(253, 164, 175, 0.2);
-  --selection-button-shadow: rgba(0, 0, 0, 0.48);
-  --popup-shadow: rgba(0, 0, 0, 0.5);
+  --button-bg: #ee9cbd;
+  --button-bg-hover: #f4b5ce;
+  --accent-soft: #3b2932;
+  --focus-ring: rgba(238, 156, 189, 0.28);
   --hint-pill-bg: rgba(255, 241, 245, 0.95);
-  --hint-pill-text: #3f172e;
 }
 
 :root[data-theme='emerald'][data-theme-mode='light'] {
-  color-scheme: light;
-  --page-bg: #f2fffb;
-  --panel-bg: #ffffff;
-  --panel-shadow: rgba(5, 150, 105, 0.08);
-  --bg-secondary: #e8faf4;
-  --control-bg: #fbfffd;
-  --control-disabled-bg: #dff5ed;
-  --border-default: #b7e5d4;
-  --border-control: #8bd2ba;
-  --document-table-boundary: #25725f;
-  --focus-ring: rgba(5, 150, 105, 0.2);
-  --button-secondary-bg: #e8faf4;
-  --button-secondary-hover: #d1fae5;
-  --popup-bg: rgba(250, 255, 253, 0.97);
-  --popup-border: rgba(5, 150, 105, 0.14);
-  --text-primary: #102a25;
-  --text-secondary: #225c4d;
-  --text-muted: #609487;
-  --divider: rgba(5, 150, 105, 0.11);
-  --button-bg: #059669;
-  --button-bg-hover: #047857;
-  --button-text: #ffffff;
-  --accent-start: #10b981;
-  --accent-end: #14b8a6;
-  --selection-button-bg: rgba(250, 255, 253, 0.98);
-  --selection-button-border: rgba(5, 150, 105, 0.16);
-  --selection-button-shadow: rgba(5, 150, 105, 0.24);
-  --popup-shadow: rgba(5, 150, 105, 0.2);
+  --button-bg: #23745a;
+  --button-bg-hover: #1a5e49;
+  --accent-soft: #e9f3ef;
+  --focus-ring: rgba(35, 116, 90, 0.22);
   --hint-pill-bg: rgba(16, 43, 39, 0.92);
 }
 
 :root[data-theme='emerald'][data-theme-mode='dark'] {
-  color-scheme: dark;
-  --page-bg: #071c19;
-  --panel-bg: #102b27;
-  --panel-shadow: rgba(0, 0, 0, 0.3);
-  --bg-secondary: #173b34;
-  --control-bg: #15332e;
-  --control-disabled-bg: #0d2521;
-  --border-default: #28594e;
-  --border-control: #367466;
-  --document-table-boundary: #6ee7b7;
-  --focus-ring: rgba(52, 211, 153, 0.3);
-  --button-secondary-bg: #173b34;
-  --button-secondary-hover: #205047;
-  --popup-bg: rgba(16, 43, 39, 0.98);
-  --popup-border: rgba(110, 231, 183, 0.18);
-  --text-primary: #ecfdf5;
-  --text-secondary: #bbf7d0;
-  --text-muted: #8ac8b4;
-  --divider: rgba(110, 231, 183, 0.13);
-  --button-bg: #34d399;
-  --button-bg-hover: #10b981;
-  --button-text: #052e25;
-  --accent-start: #34d399;
-  --accent-end: #2dd4bf;
-  --selection-button-bg: rgba(21, 51, 46, 0.98);
-  --selection-button-border: rgba(110, 231, 183, 0.2);
-  --selection-button-shadow: rgba(0, 0, 0, 0.48);
-  --popup-shadow: rgba(0, 0, 0, 0.5);
+  --button-bg: #83cbb0;
+  --button-bg-hover: #a1dbc5;
+  --accent-soft: #21382f;
+  --focus-ring: rgba(131, 203, 176, 0.28);
   --hint-pill-bg: rgba(236, 253, 245, 0.95);
-  --hint-pill-text: #102a25;
 }
 
+/* sky 使用默认蓝色，无需重复覆盖普通表面或正文。@author zhenghq */
 :root[data-theme='sky'][data-theme-mode='light'] {
-  color-scheme: light;
-  --accent-start: #38bdf8;
-  --accent-end: #6366f1;
   --hint-pill-bg: rgba(15, 23, 42, 0.9);
 }
 
 :root[data-theme='sky'][data-theme-mode='dark'] {
-  color-scheme: dark;
-  --page-bg: #111b31;
-  --panel-bg: #1b2945;
-  --bg-secondary: #24385c;
-  --control-bg: #203250;
-  --control-disabled-bg: #17243c;
-  --border-default: #37547e;
-  --border-control: #4a6b9c;
-  --document-table-boundary: #93c5fd;
-  --focus-ring: rgba(96, 165, 250, 0.3);
-  --button-secondary-bg: #24385c;
-  --button-secondary-hover: #304a76;
-  --popup-bg: rgba(24, 39, 65, 0.98);
-  --popup-border: rgba(125, 211, 252, 0.18);
-  --text-primary: #eff6ff;
-  --text-secondary: #dbeafe;
-  --text-muted: #93afd4;
-  --divider: rgba(125, 211, 252, 0.14);
-  --button-bg: #60a5fa;
-  --button-bg-hover: #3b82f6;
-  --button-text: #102a43;
-  --accent-start: #7dd3fc;
-  --accent-end: #818cf8;
-  --selection-button-bg: rgba(32, 50, 80, 0.98);
-  --selection-button-border: rgba(125, 211, 252, 0.2);
-  --selection-button-shadow: rgba(0, 0, 0, 0.48);
-  --popup-shadow: rgba(0, 0, 0, 0.5);
-  --hint-pill-bg: rgba(239, 246, 255, 0.95);
-  --hint-pill-text: #111b31;
+  --hint-pill-bg: rgba(244, 244, 247, 0.94);
 }
 
 :root[data-theme='navy'][data-theme-mode='light'] {
-  color-scheme: light;
-  --page-bg: #f3f6ff;
-  --panel-bg: #ffffff;
-  --bg-secondary: #e9efff;
-  --control-bg: #fbfcff;
-  --control-disabled-bg: #e1e8fb;
-  --border-default: #c4d0ee;
-  --border-control: #9eafd8;
-  --document-table-boundary: #3a5a8c;
-  --focus-ring: rgba(30, 58, 138, 0.2);
-  --button-secondary-bg: #e9efff;
-  --button-secondary-hover: #dbe5ff;
-  --popup-bg: rgba(250, 252, 255, 0.98);
-  --popup-border: rgba(30, 58, 138, 0.14);
-  --text-primary: #172554;
-  --text-secondary: #30457c;
-  --text-muted: #7182ad;
-  --divider: rgba(30, 58, 138, 0.11);
-  --button-bg: #1e3a8a;
-  --button-bg-hover: #172554;
-  --button-text: #ffffff;
-  --accent-start: #1e3a8a;
-  --accent-end: #3730a3;
-  --selection-button-bg: rgba(250, 252, 255, 0.98);
-  --selection-button-border: rgba(30, 58, 138, 0.16);
-  --selection-button-shadow: rgba(30, 58, 138, 0.24);
+  --button-bg: #3e4d86;
+  --button-bg-hover: #303d70;
+  --accent-soft: #edeef7;
+  --focus-ring: rgba(62, 77, 134, 0.22);
   --hint-pill-bg: rgba(12, 20, 43, 0.92);
 }
 
 :root[data-theme='navy'][data-theme-mode='dark'] {
-  color-scheme: dark;
-  --page-bg: #0c142b;
-  --panel-bg: #162344;
-  --bg-secondary: #20345f;
-  --control-bg: #1c2d52;
-  --control-disabled-bg: #131f3b;
-  --border-default: #344e83;
-  --border-control: #4968a3;
-  --document-table-boundary: #93c5fd;
-  --focus-ring: rgba(96, 165, 250, 0.32);
-  --button-secondary-bg: #20345f;
-  --button-secondary-hover: #2b4477;
-  --popup-bg: rgba(17, 30, 59, 0.98);
-  --popup-border: rgba(147, 197, 253, 0.2);
-  --text-primary: #eff6ff;
-  --text-secondary: #dbeafe;
-  --text-muted: #9bb1dc;
-  --divider: rgba(147, 197, 253, 0.14);
-  --button-bg: #60a5fa;
-  --button-bg-hover: #3b82f6;
-  --button-text: #0f1d3d;
-  --accent-start: #3b82f6;
-  --accent-end: #6366f1;
-  --selection-button-bg: rgba(28, 45, 82, 0.98);
-  --selection-button-border: rgba(147, 197, 253, 0.2);
-  --selection-button-shadow: rgba(0, 0, 0, 0.5);
+  --button-bg: #aab4e8;
+  --button-bg-hover: #c2c9ef;
+  --accent-soft: #2d3147;
+  --focus-ring: rgba(170, 180, 232, 0.28);
   --hint-pill-bg: rgba(239, 246, 255, 0.95);
-  --hint-pill-text: #0c142b;
 }
 
 :root[data-theme='platinum-black'][data-theme-mode='light'] {
-  color-scheme: light;
-  --page-bg: #f4f5f7;
-  --panel-bg: #ffffff;
-  --bg-secondary: #e9ebef;
-  --control-bg: #fafbfc;
-  --control-disabled-bg: #e3e6eb;
-  --border-default: #c9ced7;
-  --border-control: #adb4c0;
-  --document-table-boundary: #525b68;
-  --focus-ring: rgba(71, 85, 105, 0.2);
-  --button-secondary-bg: #e9ebef;
-  --button-secondary-hover: #dfe3e9;
-  --popup-bg: rgba(250, 251, 252, 0.98);
-  --popup-border: rgba(15, 23, 42, 0.15);
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-muted: #6b7280;
-  --divider: rgba(15, 23, 42, 0.11);
-  --button-bg: #475569;
-  --button-bg-hover: #334155;
-  --button-text: #ffffff;
-  --accent-start: #64748b;
-  --accent-end: #cbd5e1;
-  --selection-button-bg: rgba(250, 251, 252, 0.98);
-  --selection-button-border: rgba(15, 23, 42, 0.16);
-  --selection-button-shadow: rgba(15, 23, 42, 0.24);
+  --button-bg: #505967;
+  --button-bg-hover: #3e4653;
+  --accent-soft: #eeeff2;
+  --focus-ring: rgba(80, 89, 103, 0.22);
   --hint-pill-bg: rgba(17, 24, 39, 0.92);
 }
 
 :root[data-theme='platinum-black'][data-theme-mode='dark'] {
-  color-scheme: dark;
-  --page-bg: #0f1115;
-  --panel-bg: #181b21;
-  --bg-secondary: #20242c;
-  --control-bg: #20242c;
-  --control-disabled-bg: #14171c;
-  --border-default: #343a46;
-  --border-control: #48515f;
-  --document-table-boundary: #cbd5e1;
-  --focus-ring: rgba(203, 213, 225, 0.3);
-  --button-secondary-bg: #20242c;
-  --button-secondary-hover: #2a303a;
-  --popup-bg: rgba(24, 27, 33, 0.98);
-  --popup-border: rgba(226, 232, 240, 0.18);
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --divider: rgba(226, 232, 240, 0.14);
-  --button-bg: #cbd5e1;
-  --button-bg-hover: #e2e8f0;
-  --button-text: #111827;
-  --accent-start: #e2e8f0;
-  --accent-end: #475569;
-  --selection-button-bg: rgba(32, 36, 44, 0.98);
-  --selection-button-border: rgba(226, 232, 240, 0.2);
-  --selection-button-shadow: rgba(0, 0, 0, 0.55);
+  --button-bg: #c3c8d1;
+  --button-bg-hover: #dce0e6;
+  --accent-soft: #34383f;
+  --focus-ring: rgba(195, 200, 209, 0.28);
   --hint-pill-bg: rgba(248, 250, 252, 0.95);
-  --hint-pill-text: #111827;
 }
 
-/* 主题强调控件统一使用渐变，状态色仍保持成功/错误语义。 */
-:root[data-theme] .primary-button,
-:root[data-theme] .btn.primary,
-:root[data-theme] .settings-tab[aria-selected='true'] {
-  background: var(--accent-gradient);
+/* Win7 使用上方白纸回退；支持混色时才启用手改高亮，始终不透明。@author zhenghq */
+@supports (background: color-mix(in srgb, white, black)) {
+  :root {
+    --document-manual-edit-hover-bg: color-mix(in srgb, var(--document-paper-bg) 94%, var(--button-bg) 6%);
+    --document-manual-edit-active-bg: color-mix(in srgb, var(--document-paper-bg) 88%, var(--button-bg) 12%);
+  }
 }

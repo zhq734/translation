@@ -15,24 +15,30 @@ body {
   display: flex;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   align-items: flex-end;
   justify-content: center;
   padding: var(--space-3);
+  padding-block-start: calc(var(--control-height-compact) + var(--space-4));
   background: transparent;
 }
 
 .subtitle-card {
   position: relative;
   display: flex;
-  width: min(100%, 1000px);
+  width: 100%;
+  max-width: 1000px;
+  max-height: 100%;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--popup-border);
-  border-radius: var(--radius-overlay);
-  background: var(--popup-bg);
-  color: var(--subtitle-text-color, var(--text-primary));
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-window);
+  background: var(--subtitle-surface);
+  color: var(--subtitle-primary);
 }
 
 .subtitle-history,
@@ -48,18 +54,27 @@ body {
 }
 
 .subtitle-history {
+  overflow: hidden;
   padding-block-end: var(--space-2);
-  border-block-end: var(--border-width) solid var(--border-subtle, var(--border-default));
-  opacity: 0.72;
+  border-block-end: var(--border-width) solid var(--subtitle-divider);
   pointer-events: none;
 }
 
 .subtitle-history .subtitle-line {
   font-size: calc(var(--subtitle-font-size, 20px) * 0.86);
-  font-weight: 560;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subtitle-history .subtitle-history-source {
+  color: var(--subtitle-secondary);
+  font-size: calc(var(--subtitle-font-size, 20px) * 0.75);
 }
 
 .subtitle-live {
+  /* 实时译文至少保留一行；历史先让出空间，不能把滚动视口挤成文字碎片。@author zhenghq */
+  min-height: calc(var(--subtitle-font-size, 20px) * 1.5);
   gap: var(--space-2);
   max-height: min(50vh, calc(var(--subtitle-font-size, 20px) * 7));
   overflow-y: auto;
@@ -69,12 +84,15 @@ body {
 
 .subtitle-toolbar {
   position: absolute;
-  inset-block-start: var(--space-2);
+  inset-block-start: calc(0px - var(--control-height-compact) - var(--space-2));
   inset-inline-end: var(--space-2);
   z-index: 2;
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
+  box-shadow: 0 0 0 var(--border-width) var(--border-default);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -82,32 +100,66 @@ body {
 }
 
 .subtitle-root[data-toolbar-visible='true'] .subtitle-toolbar,
+.subtitle-card:hover .subtitle-toolbar,
+.subtitle-card:focus-within .subtitle-toolbar,
 .subtitle-toolbar:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
 
+/* 穿透只影响交互：字幕共用紧凑半透明底板，避免逐行黑条和外围空框。@author zhenghq */
 .subtitle-root[data-click-through='true'] .subtitle-card {
-  background: transparent;
+  width: fit-content;
+  max-width: min(100%, 1000px);
+  border-color: transparent;
+  background: var(--subtitle-overlay-bg);
   box-shadow: none;
 }
 
+/* 长字幕仍自动滚至最新内容，穿透时不显示无法操作的滚动条。@author zhenghq */
+.subtitle-root[data-click-through='true'] .subtitle-live {
+  scrollbar-width: none;
+}
+
+.subtitle-root[data-click-through='true'] .subtitle-live::-webkit-scrollbar {
+  display: none;
+}
+
 .subtitle-line {
+  flex-shrink: 0;
   min-height: 0;
   margin: 0;
   overflow: hidden;
   font-size: var(--subtitle-font-size, 20px);
   font-weight: 650;
-  line-height: 1.35;
+  line-height: 1.5;
+  word-wrap: break-word;
   overflow-wrap: anywhere;
   text-align: center;
-  text-shadow: 0 1px 3px var(--popup-shadow);
   white-space: normal;
 }
 
 .subtitle-target {
-  color: var(--subtitle-text-color, var(--text-primary));
-  font-size: calc(var(--subtitle-font-size, 20px) * 0.95);
+  color: var(--subtitle-text-color, var(--subtitle-primary));
+  font-size: var(--subtitle-font-size, 20px);
+  font-weight: 650;
+}
+
+/* 保留用户字色，以深色细轮廓保护对比，避免白字在深色模式下形成发光粗边。@author zhenghq */
+.subtitle-target,
+.subtitle-history-target {
+  color: var(--subtitle-text-color, var(--subtitle-primary));
+  text-shadow:
+    -1px 0 var(--subtitle-outline),
+    1px 0 var(--subtitle-outline),
+    0 -1px var(--subtitle-outline),
+    0 1px var(--subtitle-outline);
+}
+
+.subtitle-source {
+  color: var(--subtitle-secondary);
+  font-size: calc(var(--subtitle-font-size, 20px) * 0.85);
+  font-weight: 400;
 }
 
 .subtitle-source:empty,
@@ -117,7 +169,6 @@ body {
 
 .subtitle-root[data-empty='true'] .subtitle-card {
   min-height: calc(var(--control-height-compact) + var(--space-3) + var(--space-3));
-  opacity: 0.72;
 }
 
 .subtitle-root[data-empty='true'] .subtitle-toolbar {
@@ -126,7 +177,7 @@ body {
 }
 
 .subtitle-status {
-  color: var(--text-secondary);
+  color: var(--subtitle-secondary);
   font-size: var(--font-size-caption);
   text-align: center;
 }
@@ -142,6 +193,10 @@ body {
   text-align: center;
 }
 
+.subtitle-error[hidden] {
+  display: none;
+}
+
 .subtitle-close,
 .subtitle-drag-handle {
   width: var(--control-height-compact);
@@ -149,8 +204,8 @@ body {
   min-height: var(--control-height-compact);
   padding: 0;
   border: 0;
-  border-radius: var(--radius-pill);
-  background: var(--button-secondary-bg);
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
   color: var(--text-secondary);
   font-size: var(--font-size-title);
   line-height: 1;
@@ -183,23 +238,52 @@ body {
 }
 
 .subtitle-target-lang {
+  width: 180px;
   width: min(32vw, 180px);
   min-width: 96px;
   height: var(--control-height-compact);
   padding-inline: var(--space-2);
   border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-pill);
-  background: var(--button-secondary-bg);
+  min-height: var(--control-height-compact);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
   color: var(--text-primary);
   font-size: var(--font-size-label);
   -webkit-app-region: no-drag;
 }
 
-.subtitle-close:hover {
-  background: var(--button-secondary-hover);
+.subtitle-close:hover,
+.subtitle-drag-handle:hover {
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
-:root[data-theme-mode='dark'] .subtitle-line {
-  text-shadow: 0 1px 4px var(--popup-shadow);
+.subtitle-close:focus-visible,
+.subtitle-drag-handle:focus-visible,
+.subtitle-target-lang:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
+:root[data-win7-compatibility='true'] .subtitle-card {
+  border-radius: 0;
+  background: var(--subtitle-surface);
+}
+
+/* 最小窗口仍需容纳顶部工具、译文整行和历史边界，优先压缩装饰留白。@author zhenghq */
+@media (max-height: 180px) {
+  .subtitle-card {
+    gap: var(--space-1);
+    padding-block: var(--space-1);
+  }
+
+  .subtitle-root[data-click-through='true'] .subtitle-history {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subtitle-toolbar {
+    transition: none;
+  }
 }

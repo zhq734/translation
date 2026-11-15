@@ -19,6 +19,7 @@ import type {
   DocumentWarning
 } from '../shared/documentTypes.ts'
 import { createDocumentBlockId, createDocumentPageId } from '../shared/documentTypes.ts'
+import { resolveDocumentImageStackContainedTexts, resolveDocumentImageStackGroups } from '../shared/documentImageStacks.ts'
 import {
   DOCUMENT_MAX_PAGES,
   DOCUMENT_MAX_IMAGES,
@@ -40,6 +41,8 @@ interface PdfTextItem {
   str: string
   /** 操作符列表中记录的实际填充色。 */
   color?: string
+  /** 同一个 PDF.js 文本项内的实际颜色分段，不改变原始文本几何。 */
+  colorRuns?: Array<{ text: string; color: string | undefined }>
   /** 文本方向。 */
   dir?: string
   /** 文本变换矩阵。 */
@@ -570,6 +573,17 @@ function pdfRgbColor(channels: readonly number[]): string {
 }
 
 /**
+ * 读取 PDF.js 已转换成字节的 RGB，避免把深色通道 1 当成归一化白色。
+ * @param channels PDF.js 的 RGB 字节通道。
+ * @returns CSS 十六进制颜色。
+ * @author zhenghq
+ */
+function pdfByteRgbColor(channels: readonly number[]): string {
+  return `#${channels.map(value => Math.max(0, Math.min(255, Math.round(value)))
+    .toString(16).padStart(2, '0')).join('')}`
+}
+
+/**
  * 从操作符参数中递归提取数字颜色通道，忽略颜色空间名称等非数值参数。
  * @param args 操作符参数。
  * @returns 按原始顺序排列的有限数字数组。
@@ -608,7 +622,7 @@ function pdfFillColorFromOperator(
     return pdfRgbColor([components[0]!, components[0]!, components[0]!])
   }
   if (operation === runtime.OPS['setFillRGBColor'] && components.length >= 3) {
-    return pdfRgbColor(components.slice(0, 3))
+    return pdfByteRgbColor(components.slice(0, 3))
   }
   if (operation === runtime.OPS['setFillCMYKColor'] && components.length >= 4) {
     const [cyan = 0, magenta = 0, yellow = 0, black = 0] = components
@@ -645,7 +659,7 @@ function pdfStrokeColorFromOperator(
     return pdfRgbColor([components[0]!, components[0]!, components[0]!])
   }
   if (operation === runtime.OPS['setStrokeRGBColor'] && components.length >= 3) {
-    return pdfRgbColor(components.slice(0, 3))
+    return pdfByteRgbColor(components.slice(0, 3))
   }
   if (operation === runtime.OPS['setStrokeCMYKColor'] && components.length >= 4) {
     const [cyan = 0, magenta = 0, yellow = 0, black = 0] = components
@@ -665,19 +679,20 @@ function pdfStrokeColorFromOperator(
 }
 
 /**
- * 按 PDF 绘制顺序提取每次文本显示操作对应的填充色。
+ * 按 PDF 字形的 Unicode 内容提取颜色，不能假设显示操作与文本项一一对应。
  * @param operatorList PDF.js 页面操作符列表。
  * @param runtime PDF.js 运行时。
- * @returns 与 showText 类操作一一对应的颜色数组。
+ * @returns 规范化后的字形文字与逐 UTF-16 单元颜色。
  * @author zhenghq
  */
 function extractPdfTextColors(
   operatorList: { fnArray: number[]; argsArray: unknown[][] },
   runtime: PdfJsRuntime
-): Array<string | undefined> {
+): { text: string; colors: Array<string | undefined> } {
+  const texts: string[] = []
   const colors: Array<string | undefined> = []
   const colorStack: Array<string | undefined> = []
-  let currentColor: string | undefined
+  let currentColor: string | undefined = '#000000'
   const saveOperation = runtime.OPS['save']
   const restoreOperation = runtime.OPS['restore']
   const showTextOperations = new Set([
@@ -690,11 +705,11 @@ function extractPdfTextColors(
   for (let index = 0; index < operatorList.fnArray.length; index += 1) {
     const operation = operatorList.fnArray[index]!
     const args = operatorList.argsArray[index] ?? []
-    if (operation === saveOperation) {
+    if (operation === saveOperation || operation === runtime.OPS['paintFormXObjectBegin']) {
       colorStack.push(currentColor)
       continue
     }
-    if (operation === restoreOperation) {
+    if (operation === restoreOperation || operation === runtime.OPS['paintFormXObjectEnd']) {
       currentColor = colorStack.pop()
       continue
     }
@@ -703,9 +718,20 @@ function extractPdfTextColors(
       currentColor = fillColor
       continue
     }
-    if (showTextOperations.has(operation)) colors.push(currentColor)
+    if (showTextOperations.has(operation)) {
+      // TJ 数组中的数字只是字距；真正字形可能按字符绘制，也可能含连字。
+      for (const arg of args) {
+        if (!Array.isArray(arg)) continue
+        for (const glyph of arg) {
+          if (!glyph || typeof glyph !== 'object' || typeof glyph.unicode !== 'string') continue
+          const text = normalizePdfPaintText(glyph.unicode)
+          texts.push(text)
+          for (let offset = 0; offset < text.length; offset += 1) colors.push(currentColor)
+        }
+      }
+    }
   }
-  return colors
+  return { text: texts.join(''), colors }
 }
 
 /**
@@ -3247,7 +3273,7 @@ function restorePdfCodeLineSpacing(line: PdfLine, contentLeft = line.bbox.x): Pd
       const indent = item === leadingItem && leadingIndent > Math.max(0.5, (item.height ?? 0) * 0.25)
         ? ' '.repeat(Math.max(1, Math.round(leadingIndent / Math.max(1, (item.height ?? 1) * 0.5))))
         : ''
-      result.push(indent ? { ...item, str: `${indent}${item.str}` } : item)
+      result.push(indent ? prependPdfItemText(item, indent) : item)
       continue
     }
     const previousRight = (previous.transform?.[4] ?? 0) + (previous.width ?? 0)
@@ -3256,7 +3282,7 @@ function restorePdfCodeLineSpacing(line: PdfLine, contentLeft = line.bbox.x): Pd
     const needsSpace = gap > Math.max(0.5, fontSize * 0.15) &&
       !/[\s([{]$/u.test(previous.str) &&
       !/^[\s,.;:)\]}]/u.test(item.str)
-    result.push(needsSpace ? { ...item, str: ` ${item.str}` } : item)
+    result.push(needsSpace ? prependPdfItemText(item, ' ') : item)
   }
   return result
 }
@@ -3337,20 +3363,114 @@ function isPdfPageFrameGrid(
 }
 
 /**
- * 过滤空文本项后，将绘制颜色按顺序绑定到实际可见的文本项。
- * @param items PDF.js 文本项。
- * @param colors 文本显示操作对应的颜色。
- * @returns 无返回值。
+ * 规范化颜色匹配文本，兼容连字、人工空格和 PDF.js 的方向控制符清理。
+ * @param text 字形或提取文本。
+ * @returns 仅用于对齐的字符串，不替换用户原文。
  * @author zhenghq
  */
-function applyPdfTextColors(items: PdfTextItem[], colors: readonly (string | undefined)[]): void {
-  let colorIndex = 0
+function normalizePdfPaintText(text: string): string {
+  return text.normalize('NFKC').replace(/[\s\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu, '')
+}
+
+/**
+ * 用真实字符流绑定颜色；对齐失败时放弃颜色而不是把错误继续传播到整页。
+ * @param items PDF.js 文本项。
+ * @param paint 绘制指令中的字形文字及颜色。
+ * @returns 是否完整且可靠地对齐。
+ * @author zhenghq
+ */
+function applyPdfTextColors(
+  items: PdfTextItem[],
+  paint: { text: string; colors: readonly (string | undefined)[] }
+): boolean {
+  if (items.map(item => normalizePdfPaintText(item.str)).join('') !== paint.text) return false
+  let offset = 0
   for (const item of items) {
-    if (!item.str || item.str.trim().length === 0) continue
-    const color = colors[colorIndex]
-    colorIndex += 1
-    if (color) item.color = color
+    const runs: NonNullable<PdfTextItem['colorRuns']> = []
+    for (const character of item.str) {
+      const normalized = normalizePdfPaintText(character)
+      const color = normalized ? paint.colors[offset] : runs.at(-1)?.color
+      offset += normalized.length
+      const previous = runs.at(-1)
+      if (previous && (!normalized || previous.color === color)) previous.text += character
+      else runs.push({ text: character, color })
+    }
+    const visible = runs.filter(run => run.text.trim())
+    item.color = visible.reduce<(typeof visible)[number] | undefined>((best, run) =>
+      !best || run.text.length > best.text.length ? run : best, undefined)?.color
+    if (visible.length > 1) item.colorRuns = runs
   }
+  return true
+}
+
+/**
+ * 为矢量背景未恢复的 PDF 重排正文修正低对比度颜色，预览与导出共用模型结果。
+ * @param blocks 页面或单元格区块。
+ * @returns 是否调整了任意文字颜色。
+ * @author zhenghq
+ */
+function ensurePdfTextContrast(blocks: DocumentBlock[]): boolean {
+  let adjusted = false
+  // 图片覆盖层确实保留了底图，不能按白纸对比度改色；表格叠图沿用现有分组规则。
+  const retainedImageTexts = new Set(resolveDocumentImageStackGroups(blocks)
+    .flatMap(group => resolveDocumentImageStackContainedTexts(blocks, group.blocks)))
+  for (const block of blocks) {
+    if (block.kind === 'table') {
+      for (const row of block.rows) {
+        for (const cell of row.cells) adjusted = ensurePdfTextContrast(cell.blocks) || adjusted
+      }
+    } else if (block.kind === 'text') {
+      if (block.overlayGroupId || retainedImageTexts.has(block)) continue
+      for (const run of block.runs) {
+        const color = run.style?.color
+        if (!color || !/^#[\da-f]{6}$/iu.test(color)) continue
+        const channels = [1, 3, 5].map(index => Number.parseInt(color.slice(index, index + 2), 16) / 255)
+          .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+        const luminance = channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+        if (1.05 / (luminance + 0.05) < 3) {
+          run.style = { ...run.style, color: '#1f2937' }
+          adjusted = true
+        }
+      }
+    }
+  }
+  return adjusted
+}
+
+/**
+ * 给文本项添加布局空白，同时同步颜色分段，避免换行合并时丢字或粘连。
+ * @param item 原始文本项。
+ * @param prefix 需要补齐的空格、缩进或换行。
+ * @returns 保留原几何信息的文本项副本。
+ * @author zhenghq
+ */
+function prependPdfItemText(item: PdfTextItem, prefix: string): PdfTextItem {
+  return {
+    ...item,
+    str: prefix + item.str,
+    ...(item.colorRuns ? {
+      colorRuns: item.colorRuns.map((run, index) => index === 0 ? { ...run, text: prefix + run.text } : run)
+    } : {})
+  }
+}
+
+/**
+ * 将 PDF 文本项的颜色分段转换成模型片段，同时保留整项的字号和几何排版。
+ * @param item 原始文本项。
+ * @param style 基础样式。
+ * @param blockId 所属区块。
+ * @param startIndex 片段起始序号。
+ * @returns 带稳定标识的文本片段。
+ * @author zhenghq
+ */
+function createPdfItemRuns(
+  item: PdfTextItem, style: DocumentTextStyle, blockId: string, startIndex: number
+): DocumentTextRun[] {
+  return (item.colorRuns ?? [{ text: item.str, color: item.color }]).map((run, index) => ({
+    runId: createTextRunId(blockId, startIndex + index),
+    text: sanitizeDocumentText(run.text),
+    style: { ...style, ...(run.color ? { color: run.color } : {}) }
+  }))
 }
 
 /**
@@ -4118,7 +4238,7 @@ function groupPdfParagraphs(
         ...line,
         items: line.items
       }, codeContentLeft)
-      current.items.push({ ...lineItems[0]!, str: `\n${lineItems[0]!.str}` })
+      current.items.push(prependPdfItemText(lineItems[0]!, '\n'))
       current.items.push(...lineItems.slice(1))
     } else {
       const previousText = current.items.map((item) => item.str).join('')
@@ -4126,7 +4246,7 @@ function groupPdfParagraphs(
       const separator = needsPdfLineSeparator(previousText, currentText) ? ' ' : ''
       line.items.forEach((item, index) => {
         current.items.push(index === 0 && separator
-          ? { ...item, str: `${separator}${item.str}` }
+          ? prependPdfItemText(item, separator)
           : item)
       })
     }
@@ -4764,18 +4884,16 @@ function createPdfTextBlock(
   codeFrame?: DocumentBoundingBox
 ): DocumentTextBlock {
   const blockId = createDocumentBlockId(fingerprint, pageId, readingOrder, 'text')
-  const itemRuns: DocumentTextRun[] = items.map((item, index) => {
+  const itemRuns: DocumentTextRun[] = []
+  for (const item of items) {
     const fontStyle = item.fontName ? styles[item.fontName] : undefined
     const style = pdfTextStyle(item, {
       ...fontStyle,
       ...(item.fontName ? { key: item.fontName } : {})
     })
-    return {
-      runId: createTextRunId(blockId, index),
-      text: sanitizeDocumentText(item.str),
-      style: lineHeight === undefined ? style : { ...style, lineHeight }
-    }
-  })
+    itemRuns.push(...createPdfItemRuns(item,
+      lineHeight === undefined ? style : { ...style, lineHeight }, blockId, itemRuns.length))
+  }
   const resolvedRole = role === 'paragraph' &&
     detectPdfFigureOrTableCaption(items.map((item) => item.str).join(''))
     ? 'caption'
@@ -5260,12 +5378,11 @@ function createPdfTableCellTextBlock(
       ...(item.fontName ? { key: item.fontName } : {})
     })
     const lineHeight = line ? lineHeights.get(line) : undefined
-    runs.push({
-      runId: createTextRunId(blockId, runs.length),
-      text: sanitizeDocumentText(item.str),
-      style: lineHeight === undefined ? style : { ...style, lineHeight },
+    runs.push(...createPdfItemRuns(item,
+      lineHeight === undefined ? style : { ...style, lineHeight }, blockId, runs.length).map(run => ({
+      ...run,
       ...(protectRuns ? { protected: true } : {})
-    })
+    })))
   }
   const bbox = {
     x: Math.max(cellLeft, Math.min(...entries.map((entry) => entry.bbox.x))),
@@ -6142,7 +6259,10 @@ export async function parsePdfDocument(
       let columnLayout: PdfColumnLayout | undefined
       const tableGridTargets: PdfTableGridTarget[] = []
       if (hasNativeText) {
-        applyPdfTextColors(textContent.items, extractPdfTextColors(operatorList, runtime))
+        if (!applyPdfTextColors(textContent.items, extractPdfTextColors(operatorList, runtime))) {
+          warnings.push(createDocumentWarning('pdf-text-color-unavailable',
+            'Text colors could not be aligned reliably; readable default colors were used.', { pageId }))
+        }
         const styles = enrichPdfFontStyles(page, textContent.items, textContent.styles ?? {})
         const lines = groupPdfTextItems(textContent.items, viewport.height)
         nativeLines = lines
@@ -6431,6 +6551,11 @@ export async function parsePdfDocument(
           warnings.push(createDocumentWarning('embedded-image-ocr-required', 'The PDF page contains images whose text will be recognized during OCR.', { pageId }))
         }
       }
+      const orderedBlocks = orderPdfPageBlocks(blocks, pageId, input.sha256, columnLayout)
+      if (ensurePdfTextContrast(orderedBlocks)) {
+        warnings.push(createDocumentWarning('pdf-text-contrast-adjusted',
+          'Low-contrast text was darkened for reflow; vector backgrounds may not be preserved.', { pageId }))
+      }
       pages.push({
         pageId,
         index: pageIndex,
@@ -6438,7 +6563,7 @@ export async function parsePdfDocument(
         height: viewport.height,
         ...(contentArea ? { contentArea } : {}),
         ...(isBlankPage ? { background: { kind: 'solid' as const, color: '#ffffff' } } : {}),
-        blocks: orderPdfPageBlocks(blocks, pageId, input.sha256, columnLayout)
+        blocks: orderedBlocks
       })
       if (options.signal?.aborted) throw createPdfAbortError()
     }

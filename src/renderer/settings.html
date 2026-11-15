@@ -182,6 +182,9 @@
           data-tab-panel="general"
           tabindex="0"
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.general">General</h2>
+          </header>
           <section class="appearance-section">
             <h2 data-i18n="settings.appearance.title">Appearance</h2>
             <div class="row">
@@ -204,23 +207,38 @@
             <p class="field-hint" data-i18n="settings.themeMode.hint">The theme is applied immediately to the popup, settings, screenshot tools, and web reader.</p>
             <div class="theme-preset-grid" role="group" data-i18n-attr="aria-label:settings.themePreset.group" aria-label="Theme colors">
               <button class="theme-preset-card" type="button" data-theme-preset="sakura" aria-pressed="false">
-                <span class="theme-preset-swatch theme-swatch-sakura" aria-hidden="true"></span>
+                <span class="theme-preset-preview" aria-hidden="true">
+                  <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                  <span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line"></span><span class="theme-preview-action"></span></span>
+                </span>
                 <strong data-i18n="settings.themePreset.sakura.name">Sakura Pink</strong><small data-i18n="settings.themePreset.sakura.desc">Soft and light</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="emerald" aria-pressed="false">
-                <span class="theme-preset-swatch theme-swatch-emerald" aria-hidden="true"></span>
+                <span class="theme-preset-preview" aria-hidden="true">
+                  <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                  <span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line"></span><span class="theme-preview-action"></span></span>
+                </span>
                 <strong data-i18n="settings.themePreset.emerald.name">Emerald</strong><small data-i18n="settings.themePreset.emerald.desc">Fresh and natural</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="sky" aria-pressed="false">
-                <span class="theme-preset-swatch theme-swatch-sky" aria-hidden="true"></span>
+                <span class="theme-preset-preview" aria-hidden="true">
+                  <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                  <span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line"></span><span class="theme-preview-action"></span></span>
+                </span>
                 <strong data-i18n="settings.themePreset.sky.name">Sky Blue</strong><small data-i18n="settings.themePreset.sky.desc">Clear and professional</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="navy" aria-pressed="false">
-                <span class="theme-preset-swatch theme-swatch-navy" aria-hidden="true"></span>
+                <span class="theme-preset-preview" aria-hidden="true">
+                  <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                  <span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line"></span><span class="theme-preview-action"></span></span>
+                </span>
                 <strong data-i18n="settings.themePreset.navy.name">Navy</strong><small data-i18n="settings.themePreset.navy.desc">Calm and understated</small>
               </button>
               <button class="theme-preset-card" type="button" data-theme-preset="platinum-black" aria-pressed="false">
-                <span class="theme-preset-swatch theme-swatch-platinum-black" aria-hidden="true"></span>
+                <span class="theme-preset-preview" aria-hidden="true">
+                  <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                  <span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line"></span><span class="theme-preview-action"></span></span>
+                </span>
                 <strong data-i18n="settings.themePreset.platinumBlack.name">Platinum Black</strong><small data-i18n="settings.themePreset.platinumBlack.desc">Premium and minimal</small>
               </button>
             </div>
@@ -484,73 +502,80 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.ai">AI Translation</h2>
+          </header>
           <section>
             <h2 data-i18n="settings.ai.title">AI Translation</h2>
             <p class="hint" data-i18n="settings.ai.hint">
               Use a local or cloud large language model for selection translation. Ollama, OpenAI-compatible, and Claude Code (Anthropic)-compatible HTTP protocols are supported. The API key is stored securely on this device only and is never shown again in the page.
             </p>
-            <div class="row">
-              <label for="ai-enabled" data-i18n="settings.ai.enabled">Enable channel</label>
-              <label class="checkbox-control" for="ai-enabled">
-                <input id="ai-enabled" type="checkbox" />
-                <span data-i18n="settings.ai.enabledLabel">Prefer AI translation</span>
-              </label>
+            <div class="settings-form-group">
+              <div class="row">
+                <label for="ai-enabled" data-i18n="settings.ai.enabled">Enable channel</label>
+                <label class="checkbox-control" for="ai-enabled">
+                  <input id="ai-enabled" type="checkbox" />
+                  <span data-i18n="settings.ai.enabledLabel">Prefer AI translation</span>
+                </label>
+              </div>
+              <div class="row">
+                <label for="ai-stream" data-i18n="settings.ai.stream">Streaming output</label>
+                <label class="checkbox-control" for="ai-stream">
+                  <input id="ai-stream" type="checkbox" />
+                  <span data-i18n="settings.ai.streamLabel">Stream translation output</span>
+                </label>
+              </div>
             </div>
-            <div class="row">
-              <label for="ai-stream" data-i18n="settings.ai.stream">Streaming output</label>
-              <label class="checkbox-control" for="ai-stream">
-                <input id="ai-stream" type="checkbox" />
-                <span data-i18n="settings.ai.streamLabel">Stream translation output</span>
-              </label>
-            </div>
-            <div class="row">
-              <label for="ai-protocol" data-i18n="settings.ai.protocol">Protocol</label>
-              <select id="ai-protocol" data-i18n-attr="aria-label:settings.ai.protocolAria" aria-label="AI protocol">
-                <option value="ollama">Ollama</option>
-                <option value="openai" data-i18n="settings.ai.protocolOpenai">OpenAI-compatible</option>
-                <option value="claude-code" data-i18n="settings.ai.protocolClaude">Claude Code-compatible</option>
-              </select>
-            </div>
-            <div class="row">
-              <label for="ai-base-url" data-i18n="settings.ai.baseUrl">Base URL</label>
-              <input id="ai-base-url" type="text" autocomplete="off" data-i18n-attr="placeholder:settings.ai.baseUrlPlaceholder" placeholder="e.g. http://127.0.0.1:11434" />
-            </div>
-            <div class="row">
-              <label for="ai-api-key" data-i18n="settings.ai.apiKey">API Key</label>
-              <input
-                id="ai-api-key"
-                type="password"
-                autocomplete="new-password"
-                data-i18n-attr="placeholder:settings.ai.apiKeyPlaceholder"
-                placeholder="Leave blank to keep the configured key"
-              />
-            </div>
-            <p id="ai-api-key-status" class="field-hint ai-api-key-status" data-i18n="settings.ai.apiKeyMissing">API key not configured</p>
-            <div class="row">
-              <label for="ai-model" data-i18n="settings.ai.model">Model</label>
-              <div class="model-combobox">
+            <div class="settings-form-group">
+              <div class="row">
+                <label for="ai-protocol" data-i18n="settings.ai.protocol">Protocol</label>
+                <select id="ai-protocol" data-i18n-attr="aria-label:settings.ai.protocolAria" aria-label="AI protocol">
+                  <option value="ollama">Ollama</option>
+                  <option value="openai" data-i18n="settings.ai.protocolOpenai">OpenAI-compatible</option>
+                  <option value="claude-code" data-i18n="settings.ai.protocolClaude">Claude Code-compatible</option>
+                </select>
+              </div>
+              <div class="row">
+                <label for="ai-base-url" data-i18n="settings.ai.baseUrl">Base URL</label>
+                <input id="ai-base-url" type="text" autocomplete="off" data-i18n-attr="placeholder:settings.ai.baseUrlPlaceholder" placeholder="e.g. http://127.0.0.1:11434" />
+              </div>
+              <div class="row">
+                <label for="ai-api-key" data-i18n="settings.ai.apiKey">API Key</label>
                 <input
-                  id="ai-model"
-                  type="text"
-                  autocomplete="off"
-                  data-i18n-attr="placeholder:settings.ai.modelPlaceholder"
-                  placeholder="Select or type a model name"
-                  role="combobox"
-                  aria-autocomplete="list"
-                  aria-expanded="false"
-                  aria-controls="ai-model-options"
+                  id="ai-api-key"
+                  type="password"
+                  autocomplete="new-password"
+                  data-i18n-attr="placeholder:settings.ai.apiKeyPlaceholder"
+                  placeholder="Leave blank to keep the configured key"
                 />
-                <button
-                  id="ai-model-toggle"
-                  class="model-combobox-toggle"
-                  type="button"
-                  tabindex="-1"
-                  aria-expanded="false"
-                  aria-controls="ai-model-options"
-                  data-i18n-attr="aria-label:settings.ai.expandModels"
-                  aria-label="Expand model list"
-                ></button>
-                <ul id="ai-model-options" class="model-combobox-options" role="listbox" data-i18n-attr="aria-label:settings.ai.availableModels" aria-label="Available models" hidden></ul>
+              </div>
+              <p id="ai-api-key-status" class="field-hint ai-api-key-status" data-i18n="settings.ai.apiKeyMissing">API key not configured</p>
+              <div class="row">
+                <label for="ai-model" data-i18n="settings.ai.model">Model</label>
+                <div class="model-combobox">
+                  <input
+                    id="ai-model"
+                    type="text"
+                    autocomplete="off"
+                    data-i18n-attr="placeholder:settings.ai.modelPlaceholder"
+                    placeholder="Select or type a model name"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded="false"
+                    aria-controls="ai-model-options"
+                  />
+                  <button
+                    id="ai-model-toggle"
+                    class="model-combobox-toggle"
+                    type="button"
+                    tabindex="-1"
+                    aria-expanded="false"
+                    aria-controls="ai-model-options"
+                    data-i18n-attr="aria-label:settings.ai.expandModels"
+                    aria-label="Expand model list"
+                  ></button>
+                  <ul id="ai-model-options" class="model-combobox-options" role="listbox" data-i18n-attr="aria-label:settings.ai.availableModels" aria-label="Available models" hidden></ul>
+                </div>
               </div>
             </div>
             <div class="ai-actions">
@@ -573,6 +598,9 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.ocr">OCR</h2>
+          </header>
           <section>
             <h2 data-i18n="settings.ocr.title">OCR Translation</h2>
             <div class="row">
@@ -650,7 +678,10 @@
           tabindex="0"
           hidden
         >
-          <section id="translation-service-bili-index" data-service-anchor="bili-index">
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.translationServices">Translation Services</h2>
+          </header>
+          <section id="translation-service-bili-index" class="service-section" data-service-anchor="bili-index">
             <h2 data-i18n="settings.biliIndex.title">Bilibili Index-Translate</h2>
             <p class="hint" data-i18n="settings.biliIndex.hint">
               Bilibili's open-source Index-Translate online models are enabled by default after AI Translation. No API key is required; the app explicitly uses a browser User-Agent and omits Origin to avoid the WAF.
@@ -678,7 +709,7 @@
             </div>
             <p id="bili-index-status" class="status bili-index-status" role="status" aria-live="polite" data-i18n="settings.biliIndex.notChecked">Not tested</p>
           </section>
-          <section id="translation-service-dingtalk" data-service-anchor="dingtalk">
+          <section id="translation-service-dingtalk" class="service-section" data-service-anchor="dingtalk">
             <h2 data-i18n="settings.dingTalk.title">DingTalk Translation</h2>
             <p class="hint" data-i18n="settings.dingTalk.hint">
               For accounts that have created an internal enterprise app with the AI text translation permission enabled. The ClientSecret is stored securely on this device only and is never shown again in the page.
@@ -716,7 +747,7 @@
             </div>
             <p id="dingtalk-status" class="status dingtalk-status" role="status" aria-live="polite" data-i18n="settings.dingTalk.notChecked">Not tested</p>
           </section>
-          <section id="translation-service-microsoft" data-service-anchor="microsoft">
+          <section id="translation-service-microsoft" class="service-section" data-service-anchor="microsoft">
             <h2 data-i18n="settings.microsoft.title">Microsoft Translator</h2>
             <p class="hint" data-i18n="settings.microsoft.hint">
               Uses Microsoft Bing online translation. No Azure account, subscription key, or region is required. Once enabled, it joins the automatic translation fallback chain.
@@ -736,7 +767,7 @@
             </div>
             <p id="microsoft-status" class="status microsoft-status" role="status" aria-live="polite" data-i18n="settings.microsoft.notChecked">Not tested</p>
           </section>
-          <section id="translation-service-deeplx" data-service-anchor="deeplx">
+          <section id="translation-service-deeplx" class="service-section" data-service-anchor="deeplx">
             <h2 data-i18n="settings.channels.title">Translation Channels</h2>
             <p class="hint" data-i18n="settings.channels.hint">Channels are tried in the following order by default; you can also choose a preferred API at the bottom of the popup. If the preferred API fails or its circuit breaker opens, the app automatically switches to the next one and keeps your preference for future translations.</p>
             <ol class="channels">
@@ -789,6 +820,9 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.subtitle">Live Subtitles</h2>
+          </header>
           <section>
             <h2 data-i18n="settings.realtimeSubtitle.title">Live subtitles for any video</h2>
             <p class="hint" data-i18n="settings.realtimeSubtitle.hint">
@@ -1074,6 +1108,9 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.advanced">Advanced</h2>
+          </header>
           <section>
             <h2 data-i18n="settings.proxy.title">Network Proxy</h2>
             <div class="row">
@@ -1124,6 +1161,9 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.logs">Logs</h2>
+          </header>
           <section class="logs-section">
             <div class="logs-toolbar">
               <div class="logs-filters" role="group" data-i18n-attr="aria-label:settings.logs.filterAria" aria-label="Log level filters">
@@ -1192,6 +1232,9 @@
           tabindex="0"
           hidden
         >
+          <header class="settings-panel-heading">
+            <h2 data-i18n="settings.tab.about">About</h2>
+          </header>
           <section class="update-card">
             <h2 data-i18n="settings.update.title">Version and Updates</h2>
             <div class="update-summary">

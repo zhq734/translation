@@ -1484,8 +1484,8 @@ test('弹窗精确激活失败时应先按源进程激活并确认失活', () =>
   // 必须先执行；即使仍未确认失活，弹窗也只能隐藏自身，不能再整应用显隐。
   assert.match(
     source,
-    /restoreFrontmostForPopup\(target\)/u,
-    '弹窗交还必须复用带进程级兜底的统一恢复入口'
+    /restoreFrontmostForPopup\(target, canRestorePopup\)/u,
+    '弹窗交还必须复用带进程级兜底与当前焦点门禁的统一恢复入口'
   )
   assert.match(
     source,
@@ -1844,8 +1844,8 @@ test('弹窗隐藏完成后必须复核并恢复被抢回的源窗口', () => {
   )
   assert.match(
     source,
-    /if \(keyWindowIsPopup\)\s*\{\s*setTimeout/u,
-    '延迟复核只能用于翻译弹窗，不能误抢 OCR 或阅读器场景的新焦点'
+    /if \(keyWindowIsPopup\)\s*\{\s*if \(!keyWindow \|\| keyWindow\.isDestroyed\(\)\)\s*\{\s*onFrontRecheckComplete\?\.\(true\)\s*return\s*\}\s*setTimeout\(\(\) => \{\s*if \(!isCurrent\(\)\) return/u,
+    '延迟复核仅用于翻译弹窗，窗口已销毁时直接释放保护，过期轮次不得抢回焦点'
   )
   assert.match(
     source,
@@ -1854,8 +1854,8 @@ test('弹窗隐藏完成后必须复核并恢复被抢回的源窗口', () => {
   )
   assert.match(
     source,
-    /restoreFrontmostForPopup\(target\)/u,
-    '被抢回时必须复用带进程级兜底的同一源应用恢复入口'
+    /restoreFrontmostForPopup\(target, isCurrent\)/u,
+    '被抢回时必须复用带进程级兜底及关闭轮次门禁的同一源应用恢复入口'
   )
   assert.doesNotMatch(
     restoreSource,
@@ -1880,15 +1880,17 @@ test('弹窗隐藏后复核必须复用带进程级兜底的恢复入口', () =>
   const restoreSource = stripComments(
     extractFunction(macForegroundSource, 'async function restoreFrontmostForPopup(')
   )
-  const restoreCalls = source.match(/restoreFrontmostForPopup\(target\)/gu) ?? []
-  const recheckStart = source.indexOf('if (keyWindowIsPopup) {\n        setTimeout')
+  const restoreCalls = source.match(/restoreFrontmostForPopup\(target, (?:canRestorePopup|isCurrent)\)/gu) ?? []
+  const recheckStart = source.search(/if \(keyWindowIsPopup\) \{\s*if \(!keyWindow \|\| keyWindow\.isDestroyed\(\)\)/u)
   const recheckEnd = source.indexOf('}, POST_HIDE_FRONT_RECHECK_DELAY_MS)', recheckStart)
   const recheckSource = recheckStart >= 0 && recheckEnd > recheckStart
     ? source.slice(recheckStart, recheckEnd)
     : ''
 
-  assert.ok(restoreCalls.length >= 2,
-    '首次交还与隐藏后复核都必须调用统一恢复入口')
+  assert.deepEqual(restoreCalls.sort(), [
+    'restoreFrontmostForPopup(target, canRestorePopup)',
+    'restoreFrontmostForPopup(target, isCurrent)'
+  ], '首次交还与隐藏后复核必须各自携带门禁调用统一恢复入口')
   assert.match(
     restoreSource,
     /activateMacosApplicationAndWaitForDeactivation\(/u,
@@ -1896,8 +1898,8 @@ test('弹窗隐藏后复核必须复用带进程级兜底的恢复入口', () =>
   )
   assert.match(
     recheckSource,
-    /restoreFrontmostForPopup\(target\)/u,
-    '延迟复核必须调用统一恢复入口'
+    /setTimeout\(\(\) => \{\s*if \(!isCurrent\(\)\) return[\s\S]*?restoreFrontmostForPopup\(target, isCurrent\)/u,
+    '延迟复核必须先检查关闭轮次，并将门禁传入统一恢复入口'
   )
   assert.doesNotMatch(
     recheckSource,
@@ -1907,11 +1909,11 @@ test('弹窗隐藏后复核必须复用带进程级兜底的恢复入口', () =>
 })
 
 /**
- * 校验弹窗隐藏后的前台复核必须先执行设置页焦点恢复回调。
+ * 校验弹窗隐藏后的当前轮次复核落定后才释放设置页焦点保护。
  *
  * 真机日志显示 `popup-front-restored` 与 `popup-hide` 之间设置页可能被提升；
  * 如果等到复核恢复源应用时仍保持不可聚焦，失败路径会让设置页永久无法聚焦，
- * 成功路径也可能错过保护窗口。回调必须位于前台判断和源应用恢复之前。
+ * 成功路径也可能错过保护窗口。回调必须在复核结束后执行，过期轮次不得释放新保护。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -1921,14 +1923,16 @@ test('弹窗隐藏后的前台复核完成时必须恢复设置页焦点候选�
   const finishStart = source.indexOf("const finish = (handedBack: boolean")
   const recheckEnd = source.indexOf('}, POST_HIDE_FRONT_RECHECK_DELAY_MS)', finishStart)
   const finishSource = source.slice(finishStart, recheckEnd)
-  const recheckStart = finishSource.indexOf('if (keyWindowIsPopup) {\n        setTimeout')
-  const initialHide = finishSource.slice(0, recheckStart)
+  const popupRecheckStart = finishSource.search(/if \(keyWindowIsPopup\) \{\s*if \(!keyWindow \|\| keyWindow\.isDestroyed\(\)\)/u)
+  const recheckStart = finishSource.indexOf('setTimeout(() => {', popupRecheckStart)
+  const initialHide = finishSource.slice(0, popupRecheckStart)
   const recheck = finishSource.slice(recheckStart)
   const runIndex = finishSource.indexOf('run()')
   const callbackIndex = recheck.indexOf('onFrontRecheckComplete?.(')
   const activeIndex = recheck.indexOf('isMacAppActiveByEvents()')
 
   assert.ok(runIndex >= 0, '成功交还后必须隐藏弹窗')
+  assert.ok(popupRecheckStart > runIndex, '复核分支必须仅用于已隐藏的翻译弹窗')
   assert.ok(recheckStart > runIndex, '延迟复核必须安排在真实隐藏之后')
   assert.ok(activeIndex >= 0, '延迟复核必须判断本应用是否重新置前')
   assert.doesNotMatch(
@@ -1943,8 +1947,8 @@ test('弹窗隐藏后的前台复核完成时必须恢复设置页焦点候选�
   )
   assert.match(
     recheck,
-    /restoreFrontmostForPopup\(target\)[\s\S]*?\.finally\([\s\S]*?onFrontRecheckComplete\?\.\(!isMacAppActiveByEvents\(\)\)/u,
-    '复核发现本应用重新置前时必须等再次交还落定后再恢复设置页焦点'
+    /restoreFrontmostForPopup\(target, isCurrent\)[\s\S]*?\.finally\(\(\) => \{\s*if \(isCurrent\(\)\) onFrontRecheckComplete\?\.\(!isMacAppActiveByEvents\(\)\)/u,
+    '复核必须等再次交还落定且关闭轮次仍有效时，才可恢复设置页焦点'
   )
   assert.ok(callbackIndex > activeIndex, '恢复回调必须在复核判断完成后执行')
   assert.match(popupSource, /handBackFrontmostThen\([\s\S]*?onFrontRecheckComplete/u,

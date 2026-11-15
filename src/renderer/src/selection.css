@@ -21,7 +21,7 @@ body {
   width: 32px;
   height: 32px;
   border: 1px solid var(--selection-button-border);
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: var(--selection-button-bg);
   color: var(--button-bg);
   cursor: pointer;
@@ -38,6 +38,11 @@ body {
 
 #translate:active {
   transform: scale(0.96);
+}
+
+#translate:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: -3px;
 }
 
 /* Win7 透明窗口可能在小图标四周合成黑边，兼容模式改用不透明平面外观。 */
@@ -205,14 +210,16 @@ body {
   position: relative;
   z-index: 3;
   margin-top: 64px;
-  max-width: min(100%, 560px);
+  max-width: calc(100% - 24px);
+  max-width: min(calc(100% - 24px), 560px);
   border-radius: var(--radius-pill);
   background: var(--hint-pill-bg);
   color: var(--hint-pill-text);
   font-family: var(--font-family-sans);
   font-size: var(--font-size-label);
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.5;
+  overflow-wrap: break-word;
   padding: var(--space-2) var(--space-3);
   text-align: center;
   pointer-events: none;
@@ -299,8 +306,8 @@ body {
   z-index: 7;
   padding: 6px;
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  background: var(--popup-bg);
+  border-radius: var(--radius-window);
+  background: var(--panel-bg);
   box-shadow: var(--shadow-overlay);
   max-width: calc(100vw - 16px);
 }
@@ -314,7 +321,7 @@ body {
 }
 
 .ocr-toolbar-group + .ocr-toolbar-group {
-  border-left: 1px solid var(--border-default);
+  border-left: 1px solid var(--border-subtle);
   padding-left: 6px;
 }
 
@@ -328,9 +335,9 @@ body {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
-  background: var(--control-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
   color: var(--text-primary);
   cursor: pointer;
   padding: 0;
@@ -338,7 +345,7 @@ body {
 }
 
 .ocr-toolbar button:hover {
-  background: var(--bg-secondary);
+  background: var(--surface-hover);
 }
 
 .ocr-toolbar button:active {
@@ -361,7 +368,7 @@ body {
 
 .ocr-toolbar button[aria-pressed='true'] {
   border-color: var(--button-bg);
-  background: var(--bg-secondary);
+  background: var(--accent-soft);
   color: var(--button-bg);
 }
 
@@ -386,8 +393,8 @@ body {
   gap: 5px;
   padding: 7px;
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  background: var(--popup-bg);
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -435,8 +442,13 @@ body {
 
 #ocr-recognize {
   border-color: var(--button-bg);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
+}
+
+#ocr-recognize:hover:not(:disabled) {
+  border-color: var(--button-bg-hover);
+  background: var(--button-bg-hover);
 }
 
 .ocr-text-input {
@@ -475,8 +487,8 @@ body {
   max-height: calc(100vh - 16px);
   padding: 8px;
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  background: var(--popup-bg);
+  border-radius: var(--radius-window);
+  background: var(--panel-bg);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -487,22 +499,24 @@ body {
 .ocr-panel-status {
   color: var(--text-secondary);
   font-family: var(--font-family-sans);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+  overflow-wrap: break-word;
 }
 
 .ocr-panel-text {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   resize: none;
   overflow: auto;
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
-  background: var(--control-bg);
-  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--text-reading);
   font-family: var(--font-family-sans);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: var(--font-size-body);
+  line-height: var(--reading-line-height);
   padding: 6px 8px;
   user-select: text;
   cursor: text;
@@ -535,9 +549,9 @@ body {
   position: fixed;
   z-index: 7;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--popup-bg);
-  box-shadow: 0 4px 12px var(--popup-shadow);
+  border-radius: var(--radius-control);
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-overlay);
   color: var(--text-primary);
   font-family: var(--font-family-sans);
   font-size: 12px;

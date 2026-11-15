@@ -20,46 +20,65 @@
         <div class="header-top">
           <span id="status" class="popup-title" role="status" aria-live="polite"></span>
           <div class="header-actions">
-            <div class="provider-bar">
-              <span class="provider-label" data-i18n="popup.translationApi">Translation API</span>
-              <select id="translation-provider" data-i18n-attr="aria-label:popup.translationApi;title:popup.chooseProvider" aria-label="Translation API" title="Choose preferred translation API"></select>
-            </div>
-            <button id="manual-mode" class="header-action-button" type="button" data-i18n-attr="title:popup.manualMode;aria-label:popup.manualMode" title="Toggle manual translation" aria-label="Toggle manual translation" aria-pressed="false">
+            <button id="manual-mode" class="header-action-button mode-action" type="button" data-i18n-attr="title:popup.manualMode;aria-label:popup.manualMode" title="Toggle manual translation" aria-label="Toggle manual translation" aria-pressed="false">
               <svg class="header-action-icon manual-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
                 <path d="M6 9h.01M9.5 9h.01M13 9h.01M16.5 9h.01M6 12.5h.01M9.5 12.5h.01M13 12.5h.01M16.5 12.5h.01M8 16h8" />
               </svg>
+              <span data-i18n="popup.manualTranslation">Manual translation</span>
             </button>
-            <button id="open-history" class="header-action-button" type="button" data-i18n-attr="title:popup.openHistory;aria-label:popup.openHistory" title="Translation history" aria-label="Translation history" aria-pressed="false">
+            <button id="open-history" class="header-action-button mode-action" type="button" data-i18n-attr="title:popup.openHistory;aria-label:popup.openHistory" title="Translation history" aria-label="Translation history" aria-pressed="false">
               <svg class="header-action-icon history-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7" />
                 <path d="M4 4v4.7h4.7M12 7.5V12l3 2" />
               </svg>
+              <span data-i18n="popup.openHistory">Translation history</span>
             </button>
-            <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
-              <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
-              </svg>
-            </button>
-            <button id="open-document-translation" class="header-action-button" type="button" data-i18n-attr="title:popup.openDocumentTranslation;aria-label:popup.openDocumentTranslation" title="Open document translation" aria-label="Open document translation">
-              <svg class="header-action-icon document-translation-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M6 2.5h7.5L18.5 7.5v14h-12.5Z" />
-                <path d="M13.5 2.5v5.5h5" />
-                <path d="M8.5 11.5h7M13.5 9.5l2 2-2 2" />
-                <path d="M15.5 17H8.5M10.5 15l-2 2 2 2" />
-              </svg>
-            </button>
-            <button id="open-settings" class="header-action-button" type="button" data-i18n-attr="title:popup.openSettings;aria-label:popup.openSettings" title="Open settings" aria-label="Open settings">
-              <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
-              </svg>
-            </button>
+            <div class="popup-menu-anchor">
+              <button id="popup-menu-toggle" class="header-action-button" type="button" aria-expanded="false" aria-controls="popup-menu" data-i18n-attr="title:popup.statusActions;aria-label:popup.statusActions" title="Translation status and actions" aria-label="Translation status and actions">
+                <svg class="header-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg>
+              </button>
+              <div id="popup-menu" class="popup-menu" role="group" aria-labelledby="popup-menu-toggle" hidden>
+                <button id="open-web-reader" class="header-action-button" type="button" data-i18n-attr="title:popup.openWebReader;aria-label:popup.openWebReader" title="Open web translation" aria-label="Open web translation">
+                  <svg class="header-action-icon web-reader-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+                  </svg>
+                  <span data-i18n="popup.openWebReader">Open web translation</span>
+                </button>
+                <button id="open-document-translation" class="header-action-button" type="button" data-i18n-attr="title:popup.openDocumentTranslation;aria-label:popup.openDocumentTranslation" title="Open document translation" aria-label="Open document translation">
+                  <svg class="header-action-icon document-translation-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M6 2.5h7.5L18.5 7.5v14h-12.5Z" />
+                    <path d="M13.5 2.5v5.5h5" />
+                    <path d="M8.5 11.5h7M13.5 9.5l2 2-2 2" />
+                    <path d="M15.5 17H8.5M10.5 15l-2 2 2 2" />
+                  </svg>
+                  <span data-i18n="popup.openDocumentTranslation">Open document translation</span>
+                </button>
+                <button id="open-settings" class="header-action-button" type="button" data-i18n-attr="title:popup.openSettings;aria-label:popup.openSettings" title="Open settings" aria-label="Open settings">
+                  <svg class="header-action-icon settings-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
+                  </svg>
+                  <span data-i18n="popup.openSettings">Open settings</span>
+                </button>
+              </div>
+            </div>
           </div>
           <button id="close" data-i18n-attr="title:common.close;aria-label:common.close" title="Close" aria-label="Close">×</button>
         </div>
       </header>
+      <div class="translation-context">
+        <div class="language-picker" data-i18n-attr="aria-label:popup.languageToolbar" aria-label="Translation language toolbar">
+          <select id="source-lang" data-i18n-attr="title:menu.sourceLanguage;aria-label:menu.sourceLanguage" title="Source Language" aria-label="Source Language"></select>
+          <span class="language-arrow" aria-hidden="true">→</span>
+          <select id="target-lang" data-i18n-attr="title:menu.targetLanguage;aria-label:menu.targetLanguage" title="Target Language" aria-label="Target Language"></select>
+        </div>
+        <div class="provider-bar">
+          <label class="provider-label" for="translation-provider" data-i18n="popup.translationApi">Translation API</label>
+          <select id="translation-provider" data-i18n-attr="aria-label:popup.translationApi;title:popup.chooseProvider" aria-label="Translation API" title="Choose preferred translation API"></select>
+        </div>
+      </div>
       <section id="selection-view" class="selection-view" data-i18n-attr="aria-label:popup.selectionResult" aria-label="Selection translation result">
         <div class="translation-section translation-section-source">
           <div id="source-section-head" class="section-head">
@@ -92,15 +111,17 @@
         </div>
       </section>
       <section id="manual-view" class="manual-view" data-i18n-attr="aria-label:popup.manualTranslation" aria-label="Manual translation" hidden>
-        <div class="manual-source-header">
-          <label for="manual-source" data-i18n="popup.translateOriginal">Source text</label>
-          <button id="manual-clear" class="text-action" type="button" data-i18n="popup.clear" data-i18n-attr="aria-label:popup.clearManualSource" aria-label="Clear manual source text">Clear</button>
-        </div>
-        <textarea id="manual-source" maxlength="5000" data-i18n-attr="placeholder:popup.manualPlaceholder" placeholder="Enter or paste text to translate" aria-describedby="manual-count manual-hint"></textarea>
-        <div class="manual-source-footer">
-          <span id="manual-hint" data-i18n="popup.manualHint">Enter / ⌘+Ctrl + Enter to translate</span>
-          <span id="manual-count" aria-live="polite">0 / 5000</span>
-          <button id="manual-submit" type="button" data-i18n="popup.translate">Translate</button>
+        <div class="manual-source-section">
+          <div class="manual-source-header">
+            <label for="manual-source" data-i18n="popup.translateOriginal">Source text</label>
+            <button id="manual-clear" class="text-action" type="button" data-i18n="popup.clear" data-i18n-attr="aria-label:popup.clearManualSource" aria-label="Clear manual source text">Clear</button>
+          </div>
+          <textarea id="manual-source" maxlength="5000" data-i18n-attr="placeholder:popup.manualPlaceholder" placeholder="Enter or paste text to translate" aria-describedby="manual-count manual-hint"></textarea>
+          <div class="manual-source-footer">
+            <span id="manual-hint" data-i18n="popup.manualHint">Enter / ⌘+Ctrl + Enter to translate</span>
+            <span id="manual-count" aria-live="polite">0 / 5000</span>
+            <button id="manual-submit" type="button" data-i18n="popup.translate">Translate</button>
+          </div>
         </div>
         <div class="manual-result-section">
           <div class="manual-result-header">
@@ -138,11 +159,6 @@
           </svg>
           <span class="toolbar-action-label" id="speak-label" data-i18n="popup.speechRead">Read translation aloud</span>
         </button>
-        <div class="language-picker" data-i18n-attr="aria-label:popup.languageToolbar" aria-label="Translation language toolbar">
-          <select id="source-lang" data-i18n-attr="title:menu.sourceLanguage" title="Source Language"></select>
-          <span class="language-arrow" aria-hidden="true">→</span>
-          <select id="target-lang" data-i18n-attr="title:menu.targetLanguage" title="Target Language"></select>
-        </div>
         <div class="footer-spacer"></div>
         <button id="copy" class="toolbar-action" type="button" data-i18n-attr="title:popup.copy;aria-label:popup.copy" title="Copy" aria-label="Copy" hidden>
           <svg class="header-action-icon copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

@@ -161,6 +161,8 @@ export const documentZhCN = {
   'document.warning.pdf-rotated-text': '检测到旋转文本，已按现有方向保留并继续解析。',
   'document.warning.pdf-overlapping-text': '检测到显著重叠的文本层，阅读顺序可能不准确。',
   'document.warning.pdf-reading-order-uncertain': '未能可靠恢复 PDF 的阅读顺序，部分内容可能按视觉位置排列。',
+  'document.warning.pdf-text-color-unavailable': '本页文字颜色无法可靠匹配，已使用可读的默认颜色，避免颜色错位。',
+  'document.warning.pdf-text-contrast-adjusted': '本页部分浅色文字已加深以保证可读；彩色底板、渐变等矢量背景可能未保留，请对照原文检查。',
   'document.warning.formula-unrecognized': '部分公式无法可靠识别，已保留原文并标记为不可翻译区块。',
   'document.warning.invalid-json': 'JSON 内容无法解析，已按纯文本处理。',
   'document.warning.unclosed-code-fence': 'Markdown 代码块未闭合，已按受保护代码处理。',

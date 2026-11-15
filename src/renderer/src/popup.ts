@@ -28,6 +28,7 @@ import type {
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
 import { filterTranslationHistory } from '../../shared/translationHistory'
 import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
+import { bindPopupMenu } from './popupMenu'
 import { createThrottledScheduler } from '../../shared/throttledScheduler'
 import {
   parsePronunciationWord,
@@ -141,6 +142,10 @@ const webReaderBtn = document.getElementById('open-web-reader') as HTMLButtonEle
 const documentTranslationBtn = document.getElementById('open-document-translation') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
 const closeBtn = document.getElementById('close') as HTMLButtonElement
+const popupMenu = bindPopupMenu(
+  document.getElementById('popup-menu-toggle') as HTMLButtonElement,
+  document.getElementById('popup-menu') as HTMLElement
+)
 
 let lastTranslation = ''
 let lastOriginal = ''
@@ -1312,6 +1317,7 @@ function togglePronunciationPlayback(
  * @author zhenghq
  */
 function syncLanguageSelectors(payload: TranslatePayload): void {
+  if (popupRetranslationRunning) return
   if (payload.sourcePreference) sourceLangEl.value = payload.sourcePreference
   if (payload.targetPreference) targetLangEl.value = payload.targetPreference
 }
@@ -1747,6 +1753,7 @@ function renderManualState(): void {
  * @author zhenghq
  */
 function renderMode(): void {
+  popupMenu.close()
   const manual = mode === 'manual'
   manualViewEl.hidden = historyOpen || !manual
   selectionViewEl.hidden = historyOpen || manual
@@ -2115,13 +2122,162 @@ function handleSelectionOpen(): void {
  * @author zhenghq
  */
 function handlePopupHidden(): void {
+  popupMenu.close()
   stopPronunciationPlayback()
   closePronunciation()
   stopSpeech()
 }
 
+/** 设置切换快照：来源在事件发生时固定，避免异步保存后串用另一模式。 */
+interface PopupRetranslation {
+  origin: 'manual' | 'selection' | 'ocr'
+  text: string
+  sourceLang: string
+  targetLang: string
+  preferredTranslationProvider: Settings['preferredTranslationProvider']
+}
+
+let pendingPopupRetranslation: PopupRetranslation | null = null
+let popupRetranslationTask: Promise<void> | null = null
+let popupRetranslationRunning = false
+let activeManualSubmission: Promise<void> | null = null
+let manualResultsInvalidated = false
+let selectionResultsInvalidated = false
+let latestManualResultRequestId = 0
+let manualAwaitingResponse = false
+let languageRetranslationDepth = 0
+let ignoredManualRequestThrough = 0
+let ignoredSelectionRequestThrough = 0
+/** 保存操作的广播回声；用于屏蔽早于或晚于保存响应的重复通知。 */
+const popupSettingsEchoes = new Map<string, number>()
+
 /**
- * 提交手动翻译请求，避免空文本和加载期间重复提交。
+ * 登记一次设置保存的广播回声，同一快照的多个 IPC 分别计数。
+ * @param key 翻译偏好标识。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function expectPopupSettingsEcho(key: string): void {
+  popupSettingsEchoes.set(key, (popupSettingsEchoes.get(key) ?? 0) + 1)
+}
+
+/**
+ * 消费一个已登记的本地设置广播，避免迟到回声覆盖更新的选择。
+ * @param key 翻译偏好标识。
+ * @returns 是否匹配本地保存。
+ * @author zhenghq
+ */
+function consumePopupSettingsEcho(key: string): boolean {
+  const count = popupSettingsEchoes.get(key) ?? 0
+  if (!count) return false
+  if (count === 1) popupSettingsEchoes.delete(key)
+  else popupSettingsEchoes.set(key, count - 1)
+  return true
+}
+
+/**
+ * 生成翻译偏好标识，不包含主题、语音等无关设置。
+ * @param settings 含语言与翻译渠道的设置快照。
+ * @returns 可用于广播去重的标识。
+ * @author zhenghq
+ */
+function popupTranslationSettingsKey(settings: Pick<Settings, 'sourceLang' | 'targetLang' | 'preferredTranslationProvider'>): string {
+  return JSON.stringify([settings.sourceLang, settings.targetLang, settings.preferredTranslationProvider])
+}
+
+/**
+ * 合并设置切换，立即废弃旧结果，并串行处理最新一次重译意图。
+ * @returns 保存设置及最新重译完成后的 Promise。
+ * @author zhenghq
+ */
+function queuePopupRetranslation(): Promise<void> {
+  const origin = mode === 'manual' ? 'manual' : currentSelectionOrigin === 'ocr' ? 'ocr' : 'selection'
+  pendingPopupRetranslation = {
+    origin,
+    text: origin === 'manual' ? manualState.draft : origin === 'ocr' ? lastOcrText : lastOriginal,
+    sourceLang: sourceLangEl.value,
+    targetLang: targetLangEl.value,
+    preferredTranslationProvider: translationProviderEl.value as Settings['preferredTranslationProvider']
+  }
+  stopSpeech()
+  stopProgressiveReveal()
+  if (origin === 'manual') {
+    manualResultsInvalidated = true
+    ignoredManualRequestThrough = Math.max(ignoredManualRequestThrough, latestManualResultRequestId)
+    manualState = { ...manualState, stale: true }
+    manualSpeechLanguage = ''
+    renderManualState()
+  } else {
+    selectionResultsInvalidated = true
+    ignoredSelectionRequestThrough = Math.max(ignoredSelectionRequestThrough, latestSelectionRequestId)
+    lastTranslation = ''
+    selectionSpeechLanguage = ''
+    copyBtn.hidden = true
+    syncSpeechButton()
+  }
+  if (!popupRetranslationTask) {
+    popupRetranslationRunning = true
+    popupRetranslationTask = drainPopupRetranslations().finally(() => {
+      // 没有发出新请求（空白、失败或模式变化）也必须允许后续显式提交与新来源结果。
+      if (manualResultsInvalidated) {
+        ignoredManualRequestThrough = Math.max(ignoredManualRequestThrough, latestManualResultRequestId)
+        manualResultsInvalidated = false
+      }
+      if (selectionResultsInvalidated) {
+        ignoredSelectionRequestThrough = Math.max(ignoredSelectionRequestThrough, latestSelectionRequestId)
+        selectionResultsInvalidated = false
+      }
+      popupRetranslationRunning = false
+      popupRetranslationTask = null
+    })
+  }
+  return popupRetranslationTask
+}
+
+/**
+ * 保存最新设置并等待旧手动请求结束；等待期间的新切换覆盖旧意图但不丢失。
+ * @returns 队列全部处理完成后的 Promise。
+ * @author zhenghq
+ */
+async function drainPopupRetranslations(): Promise<void> {
+  while (pendingPopupRetranslation) {
+    const intent = pendingPopupRetranslation
+    pendingPopupRetranslation = null
+    const { sourceLang, targetLang, preferredTranslationProvider } = intent
+    const patch = { sourceLang, targetLang, preferredTranslationProvider }
+    const key = popupTranslationSettingsKey(patch)
+    expectPopupSettingsEcho(key)
+    try {
+      currentSettings = await window.api.setSettings({
+        preferredTranslationProvider: preferredTranslationProvider,
+        sourceLang,
+        targetLang
+      })
+      if (intent.origin === 'manual' && activeManualSubmission) await activeManualSubmission.catch(() => {})
+      if (pendingPopupRetranslation) continue
+      const visibleOrigin = mode === 'manual' ? 'manual' : currentSelectionOrigin === 'ocr' ? 'ocr' : 'selection'
+      if (visibleOrigin !== intent.origin) continue
+      if (intent.origin === 'manual') {
+        if (validateManualTranslationText(manualState.draft, localeRuntime.translator)) continue
+        manualResultsInvalidated = false
+        await submitManualTranslation()
+      } else {
+        const text = intent.origin === 'ocr' ? lastOcrText : lastOriginal
+        if (!text.trim() || text !== intent.text) continue
+        selectionResultsInvalidated = false
+        // retranslate 自身也会广播语言设置，因此同一快照需再次登记回声。
+        expectPopupSettingsEcho(key)
+        await window.api.retranslate(sourceLang, targetLang, intent.origin)
+      }
+    } catch {
+      popupSettingsEchoes.delete(key)
+      flashStatus(t('popup.retranslationFailed'))
+    }
+  }
+}
+
+/**
+ * 提交手动翻译请求，避免空文本和加载期间重复提交；设置切换由队列等待后再提交。
  * @returns 翻译请求完成后的 Promise。
  * @author zhenghq
  */
@@ -2132,25 +2288,32 @@ async function submitManualTranslation(): Promise<void> {
     renderManualState()
     return
   }
-  if (!canSubmitManualTranslation(manualState, localeRuntime.translator)) return
+  if (activeManualSubmission || manualResultsInvalidated || !canSubmitManualTranslation(manualState, localeRuntime.translator)) return
   manualSpeechLanguage = ''
   // 新请求必须丢弃上一次的流式累积与打字机状态，避免旧译文被追加到新结果前。
   stopProgressiveReveal()
   manualReveal = createProgressiveRevealState()
   manualState = beginManualTranslation(manualState)
   renderManualState()
+  manualAwaitingResponse = true
   try {
-    await window.api.translateManual({
+    activeManualSubmission = window.api.translateManual({
       text: manualState.submittedText,
       sourceLang: sourceLangEl.value,
       targetLang: targetLangEl.value
     })
+    await activeManualSubmission
   } catch {
+    if (manualResultsInvalidated) return
     manualState = failManualTranslation(
       manualState,
       manualState.requestId,
       t('popup.translationRequestFailed')
     )
+    renderManualState()
+  } finally {
+    activeManualSubmission = null
+    manualState = { ...manualState, loading: false }
     renderManualState()
   }
 }
@@ -2179,7 +2342,7 @@ function endLanguageInteraction(): void {
  * @author zhenghq
  */
 function beginLanguageRetranslation(): void {
-  window.api.setPopupLanguageInteraction(true, 'retranslation')
+  if (languageRetranslationDepth++ === 0) window.api.setPopupLanguageInteraction(true, 'retranslation')
 }
 
 /**
@@ -2188,7 +2351,8 @@ function beginLanguageRetranslation(): void {
  * @author zhenghq
  */
 function endLanguageRetranslation(): void {
-  window.api.setPopupLanguageInteraction(false, 'retranslation')
+  languageRetranslationDepth = Math.max(0, languageRetranslationDepth - 1)
+  if (languageRetranslationDepth === 0) window.api.setPopupLanguageInteraction(false, 'retranslation')
 }
 
 /**
@@ -2220,110 +2384,61 @@ function handleProviderChange(): void {
 }
 
 /**
- * 保存语言变化；手动模式仅标记结果过期，划词模式继续自动重译。
- * @returns 语言设置保存或重译完成后的 Promise。
+ * 保存语言变化，并对当前来源的有效原文自动重译。
+ * @returns 最新语言设置保存及重译完成后的 Promise。
  * @author zhenghq
  */
 async function retranslateWithCurrentLanguages(): Promise<void> {
   beginLanguageRetranslation()
   try {
-    stopSpeech()
-    if (mode === 'manual') {
-      sourceLangEl.disabled = true
-      targetLangEl.disabled = true
-      try {
-        currentSettings = await window.api.setSettings({
-          sourceLang: sourceLangEl.value,
-          targetLang: targetLangEl.value
-        })
-        if (manualState.translation) manualState = { ...manualState, stale: true }
-        manualSpeechLanguage = ''
-        renderManualState()
-      } catch {
-        flashStatus(t('popup.languageSaveFailed'))
-      } finally {
-        sourceLangEl.disabled = false
-        targetLangEl.disabled = false
-      }
-      return
-    }
-    const currentText = currentSelectionOrigin === 'ocr' ? lastOcrText : lastOriginal
-    if (!currentText) return
-    sourceLangEl.disabled = true
-    targetLangEl.disabled = true
-    try {
-      await window.api.retranslate(sourceLangEl.value, targetLangEl.value, currentSelectionOrigin)
-    } catch {
-      flashStatus(t('popup.retranslationFailed'))
-    } finally {
-      sourceLangEl.disabled = false
-      targetLangEl.disabled = false
-    }
+    await queuePopupRetranslation()
   } finally {
     endLanguageRetranslation()
   }
 }
 
 /**
- * 保存翻译 API 变化；手动模式等待用户显式提交。
- * @returns 翻译 API 设置保存完成后的 Promise。
+ * 保存翻译 API 变化，复用语言切换队列避免广播及加载态丢失重译。
+ * @returns 最新翻译 API 保存及重译完成后的 Promise。
  * @author zhenghq
  */
 async function changeTranslationProvider(): Promise<void> {
-  stopSpeech()
-  const previousProvider = currentSettings?.preferredTranslationProvider ?? 'auto'
-  translationProviderEl.disabled = true
   beginLanguageRetranslation()
   try {
-    currentSettings = await window.api.setSettings({
-      preferredTranslationProvider: translationProviderEl.value as Settings['preferredTranslationProvider']
-    })
-    renderTranslationProviderOptions(currentSettings)
-    if (mode === 'manual') {
-      if (manualState.translation) manualState = { ...manualState, stale: true }
-      manualSpeechLanguage = ''
-      renderManualState()
-    } else if (lastOriginal) {
-      await retranslateWithCurrentLanguages()
-    } else {
-      flashStatus(t('popup.providerPreferredApplied', {
-        provider: translationProviderLabel(
-          currentSettings.preferredTranslationProvider,
-          localeRuntime.locale
-        )
-      }))
-    }
-  } catch {
-    translationProviderEl.value = previousProvider
-    flashStatus(t('popup.providerSwitchFailed'))
+    await queuePopupRetranslation()
   } finally {
-    translationProviderEl.disabled = false
     endLanguageRetranslation()
   }
 }
 
 /**
- * 同步主进程广播的设置变化，并在手动模式标记现有译文过期。
+ * 同步外部设置；本地保存的广播仅同步非翻译设置，避免重复请求或回滚新选择。
  * @param settings 主进程广播的最新设置。
  * @returns 无返回值。
  * @author zhenghq
  */
 function syncSettings(settings: Settings): void {
   const previousSettings = currentSettings
+  const ownEcho = consumePopupSettingsEcho(popupTranslationSettingsKey(settings))
   const speechProviderChanged = currentSettings?.speechProvider !== settings.speechProvider
   if (speechProviderChanged) stopSpeech()
+  if (ownEcho) {
+    currentSettings = {
+      ...settings,
+      sourceLang: sourceLangEl.value,
+      targetLang: targetLangEl.value,
+      preferredTranslationProvider: translationProviderEl.value as Settings['preferredTranslationProvider']
+    }
+    renderMode()
+    return
+  }
   currentSettings = settings
   sourceLangEl.value = settings.sourceLang
   targetLangEl.value = settings.targetLang
   renderTranslationProviderOptions(settings)
-  const translationSettingsChanged = !previousSettings
-    || previousSettings.sourceLang !== settings.sourceLang
-    || previousSettings.targetLang !== settings.targetLang
-    || previousSettings.preferredTranslationProvider !== settings.preferredTranslationProvider
-  if (translationSettingsChanged && mode === 'manual' && manualState.translation) {
-    manualState = { ...manualState, stale: true }
-    manualSpeechLanguage = ''
-  }
+  const translationSettingsChanged = previousSettings
+    && popupTranslationSettingsKey(previousSettings) !== popupTranslationSettingsKey(settings)
+  if (translationSettingsChanged) void retranslateWithCurrentLanguages()
   renderMode()
 }
 
@@ -2475,6 +2590,7 @@ async function initializeDocumentTranslationEntry(): Promise<void> {
  * @author zhenghq
  */
 function closePopup(): void {
+  popupMenu.close()
   stopPronunciationPlayback()
   closePronunciation()
   stopSpeech()
@@ -2567,8 +2683,20 @@ function handleKeydown(event: KeyboardEvent): void {
 
 window.api.onResult((payload) => {
   if (payload.origin === 'manual') {
+    if (manualResultsInvalidated) {
+      ignoredManualRequestThrough = Math.max(ignoredManualRequestThrough, payload.requestId ?? 0)
+      return
+    }
+    if (payload.requestId !== undefined && payload.requestId <= ignoredManualRequestThrough) return
+    if (payload.original !== undefined && payload.original !== manualState.submittedText) return
+    if (payload.requestId !== undefined) {
+      if (payload.loading || (!payload.ok && manualAwaitingResponse)) {
+        if (payload.requestId <= latestManualResultRequestId) return
+        latestManualResultRequestId = payload.requestId
+        manualAwaitingResponse = false
+      } else if (payload.requestId !== manualState.requestId) return
+    }
     const manualVisible = mode === 'manual'
-    if (payload.original !== undefined && payload.loading && payload.original !== manualState.submittedText) return
     if (payload.loading) {
       manualSpeechLanguage = ''
       manualState = {
@@ -2634,6 +2762,9 @@ window.api.onResult((payload) => {
     return
   }
   if (payload.origin === 'selection' || payload.origin === 'ocr' || payload.origin === undefined) {
+    if (selectionResultsInvalidated) return
+    if (payload.requestId !== undefined && payload.requestId <= ignoredSelectionRequestThrough) return
+    if (payload.requestId !== undefined && payload.requestId < latestSelectionRequestId) return
     renderSelection(payload)
   }
 })
@@ -2646,6 +2777,8 @@ window.api.onResult((payload) => {
  */
 function handleTranslateDelta(payload: TranslateDeltaPayload): void {
   if (payload.origin === 'manual') {
+    if (manualResultsInvalidated) return
+    if (payload.requestId <= ignoredManualRequestThrough) return
     if (payload.requestId !== manualState.requestId) return
     if (!manualState.loading) return
     if (manualReveal.fullText.length === 0) {
@@ -2660,6 +2793,8 @@ function handleTranslateDelta(payload: TranslateDeltaPayload): void {
     scheduleStreamingReveal('manual')
     return
   }
+  if (selectionResultsInvalidated) return
+  if (payload.requestId <= ignoredSelectionRequestThrough) return
   if (payload.requestId !== latestSelectionRequestId) return
   if (selectionReveal.fullText.length === 0) {
     stopProgressiveReveal()

@@ -15,6 +15,24 @@ body {
   color: var(--text-primary);
 }
 
+/* 控制器负责显隐，任何布局样式都不能覆盖 hidden。@author zhenghq */
+[hidden] {
+  display: none !important;
+}
+
+/* :focus 为旧版 Chromium 保留回退，独立规则避免不识别 :focus-visible 时整组失效。@author zhenghq */
+.document-shell :focus,
+.document-dialog :focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.document-shell :focus-visible,
+.document-dialog :focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .document-shell {
   display: flex;
   flex-direction: column;
@@ -28,11 +46,11 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   flex: 0 0 auto;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
   padding: var(--space-2) var(--space-4);
   border-bottom: var(--border-width) solid var(--border-default);
-  background: var(--bg-secondary);
+  background: var(--panel-bg);
 }
 
 .document-toolbar-main {
@@ -47,6 +65,8 @@ body {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  padding-top: var(--space-1);
+  border-top: var(--border-width) solid var(--border-subtle);
 }
 
 .document-toolbar-menu-bar {
@@ -165,7 +185,7 @@ body {
   padding: var(--space-3);
   overflow: visible;
   border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius-window);
   background: var(--popup-bg);
   box-shadow: var(--shadow-overlay);
 }
@@ -187,6 +207,15 @@ body {
   font-size: var(--font-size-caption);
   font-weight: 650;
   line-height: 1.35;
+}
+
+.document-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border-subtle);
 }
 
 .document-file-tabs,
@@ -227,10 +256,10 @@ body {
   width: var(--control-height);
   height: var(--control-height);
   padding: 0;
-  border: var(--border-width) solid var(--border-control);
+  border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
-  background: var(--button-secondary-bg);
-  color: var(--text-primary);
+  background: transparent;
+  color: var(--text-secondary);
 }
 
 .document-file-tab-scroll:hover:not(:disabled),
@@ -251,17 +280,22 @@ body {
   min-width: 0;
   min-height: var(--control-height);
   padding: 0 var(--space-1) 0 var(--space-3);
-  border: var(--border-width) solid var(--border-control);
+  border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
-  background: var(--button-secondary-bg);
-  color: var(--text-primary);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
   font: inherit;
 }
 
+.document-file-tab:hover {
+  background: var(--surface-hover);
+}
+
 .document-file-tab[aria-selected='true'] {
-  border-color: var(--button-bg);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  border-color: var(--border-default);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px var(--button-bg);
 }
 
 .document-file-tab-label {
@@ -319,7 +353,7 @@ body {
 
 .document-file-tab[aria-selected='true'] .document-file-tab-close:hover,
 .document-file-tab[aria-selected='true'] .document-file-tab-close:focus-visible {
-  background: color-mix(in srgb, var(--button-text) 16%, transparent);
+  background: var(--surface-hover);
 }
 
 .document-language-controls {
@@ -376,6 +410,8 @@ body {
   background: var(--button-secondary-bg);
   color: var(--text-primary);
   font: inherit;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .document-coming-soon {
@@ -410,10 +446,11 @@ body {
   width: min(360px, calc(100vw - 2 * var(--space-4)));
   max-height: min(440px, calc(100vh - 120px));
   min-width: 0;
-  padding: var(--space-2);
+  min-height: 0;
+  padding: var(--space-3);
   border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-panel);
-  background: var(--panel-bg);
+  border-radius: var(--radius-window);
+  background: var(--popup-bg);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -471,6 +508,42 @@ body {
 
 .document-history-list:empty {
   display: none;
+}
+
+.document-history-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--border-width) solid var(--border-subtle);
+}
+
+.document-history-clear {
+  color: var(--text-secondary);
+}
+
+.document-history-clear:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--status-error);
+}
+
+.document-history-danger-button {
+  min-height: var(--control-height-primary);
+  padding: 0 var(--space-4);
+  border: var(--border-width) solid var(--status-error);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--status-error);
+  font: inherit;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.document-history-danger-button:hover:not(:disabled) {
+  background: var(--surface-hover);
 }
 
 .document-history-item {
@@ -570,43 +643,55 @@ body {
   outline-offset: 2px;
 }
 
-.document-history-confirm-dialog {
-  width: min(480px, calc(100vw - 32px));
+.document-dialog {
   max-width: none;
-  max-height: min(80vh, 560px);
+  max-height: calc(100vh - var(--space-6));
   margin: auto;
   padding: 0;
   overflow: hidden;
   border: var(--border-width) solid var(--popup-border);
-  border-radius: var(--radius-overlay);
-  background: var(--overlay-bg);
+  border-radius: var(--radius-window);
+  background: var(--popup-bg);
   box-shadow: var(--shadow-overlay);
   color: var(--text-primary);
 }
 
-.document-history-confirm-dialog::backdrop {
+.document-dialog::backdrop {
   background: var(--ocr-overlay-bg);
 }
 
-.document-history-confirm-content {
+.document-dialog:not([open]) {
+  display: none;
+}
+
+.document-dialog-content {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   max-height: inherit;
-  gap: var(--space-3);
+  gap: var(--space-4);
   padding: var(--space-6);
   overflow: auto;
 }
 
-.document-history-confirm-header {
+.document-dialog-header {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-width: 0;
 }
 
-.document-history-confirm-header h2 {
+.document-dialog-header h2 {
   margin: 0;
   font-size: var(--font-size-title);
-  line-height: 1.25;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.document-history-confirm-dialog {
+  width: min(480px, calc(100vw - var(--space-6)));
 }
 
 .document-history-confirm-icon {
@@ -627,24 +712,27 @@ body {
   line-height: 1.65;
 }
 
-.document-history-confirm-actions {
+.document-dialog-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border-subtle);
 }
 
-.document-history-confirm-actions button {
+.document-dialog-actions button {
+  max-width: 100%;
   min-height: var(--control-height-primary);
 }
 
 .document-primary-button {
   min-height: var(--control-height-primary);
   border-color: var(--button-bg);
-  background: var(--accent-gradient);
-  color: var(--button-text);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
   font-weight: 650;
-  padding: 0 var(--space-6);
+  padding: 0 var(--space-4);
 }
 
 .document-primary-button:hover:not(:disabled) {
@@ -654,7 +742,7 @@ body {
 .document-upload-panel {
   display: flex;
   flex: 1 1 auto;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   min-width: 0;
   min-height: 0;
@@ -671,15 +759,17 @@ body {
 
 .document-upload-card {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
-  width: min(100%, 760px);
+  width: min(100%, 680px);
   min-width: 0;
-  padding: clamp(24px, 5vw, 56px);
+  margin: auto 0;
+  padding: clamp(20px, 4vw, 40px);
   border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-panel);
   background: var(--panel-bg);
-  box-shadow: 0 18px 50px var(--panel-shadow);
+  box-shadow: var(--shadow-panel);
 }
 
 .document-upload-heading {
@@ -692,8 +782,8 @@ body {
 
 .document-upload-heading h1 {
   margin: 0;
-  font-size: clamp(20px, 3vw, 28px);
-  line-height: 1.25;
+  font-size: var(--font-size-title);
+  line-height: 1.35;
 }
 
 .document-upload-heading p {
@@ -703,19 +793,6 @@ body {
   line-height: 1.6;
 }
 
-.document-upload-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  inline-size: 52px;
-  block-size: 52px;
-  margin-bottom: var(--space-2);
-  border-radius: var(--radius-panel);
-  background: var(--accent-gradient);
-  color: var(--button-text);
-  font-size: 28px;
-}
-
 .document-drop-zone {
   display: flex;
   flex-direction: column;
@@ -723,12 +800,12 @@ body {
   justify-content: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 250px;
+  min-height: 200px;
   margin-top: var(--space-6);
   padding: var(--space-6);
-  border: 2px dashed var(--border-control);
+  border: var(--border-width) dashed var(--border-control);
   border-radius: var(--radius-panel);
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
   color: var(--text-secondary);
   text-align: center;
   cursor: pointer;
@@ -740,7 +817,7 @@ body {
 .document-drop-zone:focus-visible,
 .document-drop-zone[data-dragging='true'] {
   border-color: var(--button-bg);
-  background: var(--control-bg);
+  background: var(--accent-soft);
 }
 
 .document-drop-zone:focus-visible {
@@ -754,31 +831,55 @@ body {
 }
 
 .document-drop-zone-icon {
-  color: var(--button-bg);
-  font-size: 34px;
-  line-height: 1;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-2);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--text-secondary);
 }
 
 .document-drop-zone strong {
   color: var(--text-primary);
-  font-size: var(--font-size-title);
+  font-size: var(--font-size-body);
 }
 
 .document-drop-zone-action {
-  color: var(--button-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-primary);
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--button-bg);
+  color: var(--text-on-accent);
   font-weight: 650;
+}
+
+.document-upload-support {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-3);
+  text-align: center;
 }
 
 .document-format-hint,
 .document-privacy-hint {
-  max-width: 560px;
-  color: var(--text-muted);
+  margin: 0;
+  color: var(--text-secondary);
   font-size: var(--font-size-caption);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .document-privacy-hint {
-  margin-top: var(--space-2);
+  color: var(--text-muted);
 }
 
 .document-file-input {
@@ -811,7 +912,7 @@ body {
   block-size: 36px;
   border-radius: var(--radius-control);
   background: var(--bg-secondary);
-  color: var(--button-bg);
+  color: var(--text-secondary);
 }
 
 .document-file-summary-copy {
@@ -868,8 +969,8 @@ body {
   flex: 0 0 auto;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
   border-bottom: var(--border-width) solid var(--border-default);
   background: var(--panel-bg);
 }
@@ -888,8 +989,14 @@ body {
   flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-2);
   min-width: 0;
+}
+
+.document-workbench-actions > button {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .document-view-mode {
@@ -905,6 +1012,7 @@ body {
 
 .document-view-mode button {
   appearance: none;
+  min-height: var(--control-height-compact);
   border: 0;
   border-radius: calc(var(--radius-control) - 2px);
   padding: 3px 10px;
@@ -1210,60 +1318,21 @@ body {
   flex: 1 1 320px;
   min-width: 0;
   margin-left: auto;
-  overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--font-size-caption);
   line-height: 1.4;
-  text-overflow: ellipsis;
   text-align: right;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .document-export-dialog {
   display: flex;
-  width: min(620px, calc(100vw - 32px));
-  max-width: none;
-  max-height: min(86vh, 720px);
-  margin: auto;
-  padding: 0;
-  overflow: hidden;
-  border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-panel);
-  background: var(--bg-primary);
-  box-shadow: var(--shadow-overlay);
-  color: var(--text-primary);
-}
-
-.document-export-dialog:not([open]) {
-  display: none;
-}
-
-.document-export-dialog::backdrop {
-  background: var(--ocr-overlay-bg);
-}
-
-.document-export-content {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-width: 0;
-  max-height: inherit;
-  gap: var(--space-4);
-  padding: var(--space-6);
-  overflow: auto;
+  width: min(620px, calc(100vw - var(--space-6)));
 }
 
 .document-export-header {
-  display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.document-export-header h2 {
-  margin: 0;
-  font-size: var(--font-size-title);
-  line-height: 1.25;
 }
 
 .document-export-description {
@@ -1304,13 +1373,13 @@ body {
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
   color: var(--text-secondary);
   line-height: 1.5;
 }
 
 .document-export-notice {
-  border: var(--border-width) solid var(--status-warning);
+  border-left: 3px solid var(--status-warning);
   color: var(--text-primary);
 }
 
@@ -1321,7 +1390,7 @@ body {
   padding: var(--space-3);
   border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-control);
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
 }
 
 .document-export-progress-copy {
@@ -1346,15 +1415,8 @@ body {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-gradient);
+  background: var(--button-bg);
   transition: width var(--duration-normal) var(--ease-standard);
-}
-
-.document-export-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
 }
 
 .document-export-dialog button:focus-visible {
@@ -1363,38 +1425,7 @@ body {
 }
 
 .document-partial-export-dialog {
-  width: min(560px, calc(100vw - 32px));
-  max-width: none;
-  max-height: min(80vh, 640px);
-  margin: auto;
-  padding: 0;
-  overflow: hidden;
-  color: var(--text-primary);
-}
-
-.document-partial-export-dialog::backdrop {
-  background: var(--ocr-overlay-bg);
-}
-
-.document-partial-export-content {
-  display: flex;
-  flex-direction: column;
-  max-height: inherit;
-  gap: var(--space-3);
-  padding: var(--space-6);
-  overflow: auto;
-}
-
-.document-partial-export-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.document-partial-export-header h2 {
-  margin: 0;
-  font-size: var(--font-size-title);
-  line-height: 1.25;
+  width: min(560px, calc(100vw - var(--space-6)));
 }
 
 .document-partial-export-icon {
@@ -1413,17 +1444,6 @@ body {
   margin: 0;
   color: var(--text-secondary);
   line-height: 1.65;
-}
-
-.document-partial-export-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.document-partial-export-actions button {
-  min-height: var(--control-height-primary);
 }
 
 .document-partial-export-notice {
@@ -1626,8 +1646,9 @@ body {
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  border-bottom: var(--border-width) solid var(--border-default);
-  background: var(--bg-secondary);
+  border-bottom: var(--border-width) solid var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
   font-size: var(--font-size-label);
   font-weight: 650;
 }
@@ -1655,6 +1676,7 @@ body {
 
 .document-ocr-display-mode button {
   appearance: none;
+  min-height: var(--control-height-compact);
   border: 0;
   border-radius: calc(var(--radius-control) - 2px);
   padding: 3px 10px;
@@ -3023,6 +3045,8 @@ body {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-4);
   border-top: var(--border-width) solid var(--border-default);
@@ -3033,9 +3057,15 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  min-width: 0;
+  min-height: 0;
+  max-height: 4.5em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   gap: var(--space-3);
   color: var(--text-secondary);
   font-size: var(--font-size-caption);
+  line-height: 1.5;
 }
 
 .document-progress-copy > #document-progress-stage,
@@ -3055,7 +3085,7 @@ body {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-gradient);
+  background: var(--button-bg);
   transition: width var(--duration-normal) var(--ease-standard);
 }
 
@@ -3106,12 +3136,11 @@ body {
 }
 
 @media (max-width: 620px) {
-  .document-export-dialog {
-    width: calc(100vw - var(--space-4));
-    max-height: calc(100vh - var(--space-4));
+  .document-dialog {
+    max-height: calc(100vh - var(--space-6));
   }
 
-  .document-export-content {
+  .document-dialog-content {
     gap: var(--space-3);
     padding: var(--space-4);
   }
@@ -3120,17 +3149,28 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .document-export-actions {
+  .document-dialog-actions {
     flex-direction: column-reverse;
   }
 
-  .document-export-actions button {
+  .document-dialog-actions button {
     width: 100%;
   }
 
   .document-toolbar-main {
     align-items: stretch;
-    flex-direction: column;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .document-file-tabs-shell {
+    flex: 0 1 auto;
+    width: 100%;
+  }
+
+  /* 纵向主轴不能沿用桌面的 260px 文件名基准，否则会吞掉纸张区。@author zhenghq */
+  .document-file-identity {
+    flex: 0 1 auto;
   }
 
   .document-toolbar-actions {
@@ -3158,13 +3198,14 @@ body {
 
   .document-toolbar-menu-panel {
     position: fixed;
-    top: 50%;
+    top: calc(var(--titlebar-height) + var(--space-2));
     right: var(--space-3);
     left: var(--space-3);
     width: auto;
     max-width: none;
     max-height: min(70vh, 520px);
-    transform: translateY(-50%);
+    overflow-y: auto;
+    transform: none;
   }
 
   .document-toolbar-menu[data-menu-align='end'] .document-toolbar-menu-panel {
@@ -3208,19 +3249,6 @@ body {
 
   .document-history-confirm-dialog {
     width: calc(100vw - var(--space-6));
-    max-height: min(80vh, 560px);
-  }
-
-  .document-history-confirm-content {
-    padding: var(--space-4);
-  }
-
-  .document-history-confirm-actions {
-    flex-direction: column-reverse;
-  }
-
-  .document-history-confirm-actions button {
-    width: 100%;
   }
 
   .document-upload-panel {
@@ -3241,7 +3269,8 @@ body {
   }
 
   .document-drop-zone {
-    min-height: 210px;
+    min-height: 170px;
+    margin-top: var(--space-4);
     padding: var(--space-4);
   }
 
@@ -3270,6 +3299,61 @@ body {
   .document-workbench-primary {
     align-items: stretch;
     flex-direction: column;
+    gap: var(--space-2);
+  }
+}
+
+/* 短窗口优先留出纸张高度；工具可滚动，展开层固定定位避免被工具区裁切。@author zhenghq */
+@media (max-height: 600px) {
+  .document-toolbar {
+    min-height: 0;
+    max-height: 25vh;
+    overflow-y: auto;
+  }
+
+  .document-workbench-header {
+    min-height: 0;
+    max-height: 25vh;
+    overflow-y: auto;
+  }
+
+  .document-columns[data-view-mode='spread'] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .document-column {
+    border-right: var(--border-width) solid var(--border-default);
+    border-bottom: 0;
+  }
+
+  .document-column:last-child {
+    border-right: 0;
+  }
+
+  .document-toolbar-menu-panel,
+  .document-toc-list,
+  .document-history-popover {
+    position: fixed;
+    top: 50%;
+    right: var(--space-3);
+    left: var(--space-3);
+    width: auto;
+    max-width: 440px;
+    max-height: 70vh;
+    overflow-y: auto;
+    transform: translateY(-50%);
+  }
+
+  /* 不建立 transform 包含块，使目录的 fixed 定位仍相对视口。@author zhenghq */
+  .document-toolbar-menu-panel {
+    top: calc(var(--titlebar-height) + var(--space-2));
+    transform: none;
+  }
+
+  .document-toolbar-menu[data-menu-align='end'] .document-toolbar-menu-panel {
+    right: var(--space-3);
+    left: var(--space-3);
   }
 }
 
@@ -3278,13 +3362,16 @@ body {
     transition: none;
   }
 
-  .document-export-progressbar {
-    transition: none;
-  }
-
+  .document-export-progressbar,
+  .document-drop-zone,
+  .document-toolbar-menu-trigger::after,
   .document-file-tab,
   .document-history-delete,
   .document-history-confirm-dialog {
     transition: none;
+  }
+
+  .document-page-scroll {
+    scroll-behavior: auto;
   }
 }

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
   <meta name="description" content="划词翻译是一款支持 macOS、Windows 与 Linux 的桌面翻译工具。选中文字即可翻译，支持截图 OCR、网页全文翻译、文档翻译工作台与实时字幕。">
   <link rel="canonical" href="https://zhq734.github.io/translation/">
@@ -24,7 +24,7 @@
   <script src="./app.js" defer></script>
   <title>划词翻译 — 选中，即懂。</title>
 </head>
-<body>
+<body class="home-page">
   <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14"/></symbol>
@@ -60,12 +60,12 @@
       </nav>
       <div class="header-tools">
         <a class="icon-link" href="https://github.com/zhq734/translation" target="_blank" rel="noreferrer" aria-label="GitHub 仓库"><svg class="i"><use href="#i-github"/></svg></a>
-        <a class="button button-primary button-small header-download" href="#download"><svg class="i"><use href="#i-download"/></svg><span>下载</span></a>
+        <a class="button button-primary button-small header-download" href="#download" aria-label="下载桌面版"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg><span>下载</span></a>
       </div>
     </div>
   </header>
 
-  <main id="main">
+  <main id="main" tabindex="-1">
     <section class="hero container" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="status-dot"></span> 桌面翻译工具 · V1.3.0</p>
@@ -106,9 +106,9 @@
           </div>
           <div class="floating-language"><span>自动检测</span><b>→</b><span>自动中英互译</span></div>
           <div class="floating-result">停留在心流里。<br>让注意力留在它该在的地方。</div>
-          <div class="floating-footer"><span><i></i> 中文 → 英语 · 微软翻译</span><span class="mini-copy"><svg class="i"><use href="#i-copy"/></svg>复制</span></div>
+          <div class="floating-footer"><span><i></i> 英语 → 中文 · 微软翻译</span><span class="mini-copy"><svg class="i"><use href="#i-copy"/></svg>复制</span></div>
         </div>
-        <div class="stage-caption"><span class="pulse"></span> 选中文字，点击「译」</div>
+        <div class="stage-caption"><span class="pulse"></span> 界面示意 · 选中文字，点击「译」</div>
       </div>
     </section>
 

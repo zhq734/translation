@@ -25,6 +25,9 @@ import {
   activateMacosWindowSnapshot,
   enumerateMacosWindows,
   isExactWindowActivationConfirmed,
+  raiseMacosWindow,
+  readFocusedMacosWindowNumber,
+  readFrontmostMacosWindowNumber,
   type MacosWindowActivationResult
 } from './macosWindowActivation'
 import { warmChromiumAccessibility } from './capture'
@@ -347,13 +350,15 @@ export function activateFrontmostApp(snapshot: FrontmostAppSnapshot | null): boo
  * 该辅助函数保持同步函数 `activateFrontmostApp` 的源码契约不变，同时让异步
  * 交还路径统一消费完整的窗口激活结果。
  * @param snapshot 源应用或源窗口快照。
+ * @param canRestore 可选的关闭轮次与焦点意图校验，必须在异步查询后的置前动作前复核。
  * @returns 是否发出激活、是否确认前台以及窗口定位结果。
  * @author zhenghq
  */
 async function activateFrontmostSnapshot(
-  snapshot: FrontmostAppSnapshot
+  snapshot: FrontmostAppSnapshot,
+  canRestore?: () => boolean
 ): Promise<MacosWindowActivationResult> {
-  if (!isProcessAlive(snapshot.pid)) {
+  if ((canRestore && !canRestore()) || !isProcessAlive(snapshot.pid)) {
     return { activated: false, confirmed: false, outcome: 'failed', windowMatched: false }
   }
   if (!hasWindowLocator(snapshot)) {
@@ -368,7 +373,26 @@ async function activateFrontmostSnapshot(
       windowMatched: false
     }
   }
-  return activateMacosWindowSnapshot(toFrontmostWindowSnapshot(snapshot))
+  const target = toFrontmostWindowSnapshot(snapshot)
+  if (!canRestore) return activateMacosWindowSnapshot(target)
+  // 不能只在整个激活算法前后检查：枚举与 AX 查询期间可能打开新弹窗或内部页面。
+  // 通过既有依赖接口守住真正有副作用的动作，不改变其它入口的激活算法。
+  return activateMacosWindowSnapshot(target, {
+    enumerateWindows: enumerateMacosWindows,
+    /** 查询全局最前窗口；无参数，返回窗口编号或空值。 @author zhenghq */
+    readFrontmostWindowNumber: () => readFrontmostMacosWindowNumber(process.pid),
+    readFocusedWindowNumber: readFocusedMacosWindowNumber,
+    /** 提升仍有效轮次的源窗口；参数为进程与窗口号，返回是否已发出请求。 @author zhenghq */
+    raiseWindow: (pid, windowNumber) => canRestore()
+      ? raiseMacosWindow(pid, windowNumber)
+      : Promise.resolve(false),
+    /** 激活仍有效轮次的源应用；参数为应用标识，返回是否已发出请求。 @author zhenghq */
+    openApplication: (bundleId) => canRestore() && activateFrontmostApp({ ...snapshot, bundleId }),
+    isProcessAlive,
+    now: Date.now,
+    /** 等待原生确认轮询；参数为毫秒数，返回等待完成信号。 @author zhenghq */
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  })
 }
 
 /**
@@ -379,11 +403,17 @@ async function activateFrontmostSnapshot(
  * Chrome 多窗口场景下，进程级激活不依赖 AX，可避免直接进入 app.hide()/app.show()
  * 后把后台设置页重新提升到最前。
  * @param target 弹窗出现前记录的源应用快照。
+ * @param canRestore 异步边界后是否仍允许本轮激活；新弹窗或内部页面接管时返回 false。
  * @returns 精确窗口已确认，或进程级激活并确认本应用失活时返回 true。
  * @author zhenghq
  */
-async function restoreFrontmostForPopup(target: FrontmostAppSnapshot): Promise<boolean> {
-  const activation = await activateFrontmostSnapshot(target)
+async function restoreFrontmostForPopup(
+  target: FrontmostAppSnapshot,
+  canRestore: () => boolean = () => true
+): Promise<boolean> {
+  if (!canRestore()) return false
+  const activation = await activateFrontmostSnapshot(target, canRestore)
+  if (!canRestore()) return false
   if (isExactWindowActivationConfirmed(activation)) return true
 
   logFrontDiagnostic(
@@ -572,9 +602,8 @@ export function forgetFrontmostApp(): void {
  *
  * 只有「即将隐藏的窗口正是本应用当前 key window」才交还：
  * 隐藏非 key window 不会触发系统提升，此时交还反而会抢走用户正在使用的窗口。
- * 弹窗是例外：结果弹窗可能以非激活方式显示，它自身不是 key window，但本应用
- * 仍可能因点击“译”处于最前；此时即使焦点落在设置页等自有窗口，也必须把
- * 应用级前台交还源应用，否则下一次取词的 Command+C 会打回自家窗口。
+ * 非激活弹窗且没有其它可见内部页面接管焦点时，仍须按应用级状态交还源应用。
+ * 若可见内部页面已经持有焦点，则保留用户当前页面，不把它误当成外部取词。
  * 兜底定时器保证激活未生效时也会继续收尾，不会让窗口一直留在屏上。
  * @param keyWindow 即将隐藏的窗口。
  * @param run 交还成功后的收尾动作（通常就是隐藏窗口）。
@@ -584,6 +613,7 @@ export function forgetFrontmostApp(): void {
  *   不能与原生对话框持有 key window 的场景混为一谈。
  * @param onFrontRecheckComplete 弹窗隐藏后的前台复核完成回调；参数表示复核触发的
  *   再次交还是否成功。无需再次交还时以 true 调用，异常或超时以 false 调用。
+ * @param isCurrent 弹窗关闭轮次是否仍有效；用于取消旧轮次的原生恢复及延迟复核。
  * @returns 无返回值。
  * @author zhenghq
  */
@@ -592,8 +622,10 @@ export function handBackFrontmostThen(
   run: () => void,
   onHandBackFailed?: () => void,
   keyWindowIsPopup = false,
-  onFrontRecheckComplete?: (restored: boolean) => void
+  onFrontRecheckComplete?: (restored: boolean) => void,
+  isCurrent: () => boolean = () => true
 ): void {
+  if (!isCurrent()) return
   const fallback = onHandBackFailed ?? run
   if (process.platform !== 'darwin') {
     run()
@@ -601,6 +633,7 @@ export function handBackFrontmostThen(
   }
   /**
    * 执行无需应用级交还的弹窗收尾，并释放关闭入口取得的焦点保护。
+   * @param reason 跳过应用级交还的诊断原因。
    * @param afterRun 收尾后需要执行的诊断动作。
    * @returns 无返回值。
    * @author zhenghq
@@ -609,6 +642,7 @@ export function handBackFrontmostThen(
     reason: string,
     afterRun?: () => void
   ): void => {
+    if (!isCurrent()) return
     logFrontDiagnostic(`popup-fallback-without-app-yield reason=${reason}`)
     // 焦点保护在弹窗关闭开始时就已挂起；无需交还的提前返回路径同样必须在
     // hide() 后释放，否则设置页会永久无法成为 key window。
@@ -618,6 +652,28 @@ export function handBackFrontmostThen(
     } finally {
       if (keyWindowIsPopup) onFrontRecheckComplete?.(false)
     }
+  }
+  /**
+   * 判断焦点是否已由其它可见内部页面接管，不把隐藏、最小化窗口当成切换目标。
+   * @returns 应保留当前内部页面焦点时返回 true。
+   * @author zhenghq
+   */
+  const hasFocusedInternalPage = (): boolean => {
+    const window = BrowserWindow.getFocusedWindow()
+    return Boolean(keyWindowIsPopup && isMacAppActiveByEvents() && window &&
+      window !== keyWindow && !window.isDestroyed() && window.isVisible() && !window.isMinimized())
+  }
+  /**
+   * 在每次原生恢复前复核关闭轮次与用户焦点意图。
+   * @returns 本轮仍可向外部源应用交还焦点时返回 true。
+   * @author zhenghq
+   */
+  const canRestorePopup = (): boolean => isCurrent() && !hasFocusedInternalPage()
+  if (hasFocusedInternalPage()) {
+    // 当前内部页面仍在使用；旧源记录不应被之后的关闭消费。
+    forgetFrontmostApp()
+    finishPopupWithoutAppYield('internal-page-holds-key-window')
+    return
   }
   const focused = BrowserWindow.getFocusedWindow()
   // 本应用已不在最前：隐藏窗口不会提升应用内其它窗口，记录也已失效。
@@ -669,10 +725,8 @@ export function handBackFrontmostThen(
     }
   }
   // 隐藏的不是当前 key window：不会触发提升，记录留给随后真正隐藏 key window 的调用消费。
-  // 弹窗是例外：它可能以非激活方式显示，focused 既可能为 null，也可能落在
-  // 设置页等自有可聚焦窗口。真机日志（2026-10-13）显示后一种情况会被旧跳过
-  // 分支拦下，本应用继续占据最前，下一次注入的 Command+C 打回自家窗口而超时。
-  // 因此弹窗场景只要应用激活事件表明本应用仍最前，就必须继续走交还 / 安全让出；
+  // 已排除可见内部页面接管焦点；非激活弹窗仍可能使应用保持最前，不能因为
+  // focused 为 null 就跳过交还，否则下一次复制会打回自家窗口。
   // 非弹窗场景仍保留 key window 归属判定，避免隐藏后台窗口时抢走用户焦点。
   const popupNeedsHandBack = keyWindowIsPopup && isMacAppActiveByEvents()
   if (!popupNeedsHandBack &&
@@ -700,9 +754,20 @@ export function handBackFrontmostThen(
   }
   let finished = false
   const startedAt = Date.now()
+  /**
+   * 根据原生交还结果结束当前关闭，并安排一次有界前台复核。
+   * @param handedBack 是否已确认交还。
+   * @param successKind 成功路径的诊断分类。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
   const finish = (handedBack: boolean, successKind = 'exact-window-handback'): void => {
-    if (finished) return
+    if (finished || !isCurrent()) return
     finished = true
+    if (hasFocusedInternalPage()) {
+      finishPopupWithoutAppYield('internal-page-took-key-window')
+      return
+    }
     if (handedBack) {
       logFrontDiagnostic(
         `${successKind}：bundleId=${target.bundleId} 耗时 ${Date.now() - startedAt}ms`
@@ -721,13 +786,20 @@ export function handBackFrontmostThen(
       // 只对翻译弹窗做该复核：OCR 覆盖层与阅读器的关闭可能发生在用户主动
       // 切换应用之后，延迟恢复会错误抢回新焦点。
       if (keyWindowIsPopup) {
+        if (!keyWindow || keyWindow.isDestroyed()) {
+          onFrontRecheckComplete?.(true)
+          return
+        }
         setTimeout(() => {
+          if (!isCurrent()) return
           if (!isMacAppActiveByEvents()) {
             onFrontRecheckComplete?.(true)
             return
           }
           logFrontDiagnostic(`隐藏后复核到本应用重新置前，再次精确恢复：bundleId=${target.bundleId}`)
-          void restoreFrontmostForPopup(target)
+          // hide 后系统可能自动选中后台页，不能把这种焦点变化当成显式页面切换。
+          // 新显示/内部显式切换由关闭轮次失效保护；当前轮次仍保留原有二次交还。
+          void restoreFrontmostForPopup(target, isCurrent)
             .then((restored) => {
               if (!restored) {
                 logFrontDiagnostic(`隐藏后再次恢复失败：bundleId=${target.bundleId}`)
@@ -741,7 +813,9 @@ export function handBackFrontmostThen(
             // 焦点保护必须覆盖第二次异步交还；失败或异常时同样释放，避免设置页
             // 永久不可聚焦。回调在 then/catch 之后执行，确保系统重新选 key window
             // 的竞态已经结束。
-            .finally(() => onFrontRecheckComplete?.(!isMacAppActiveByEvents()))
+            .finally(() => {
+              if (isCurrent()) onFrontRecheckComplete?.(!isMacAppActiveByEvents())
+            })
         }, POST_HIDE_FRONT_RECHECK_DELAY_MS)
       }
       return
@@ -782,7 +856,7 @@ export function handBackFrontmostThen(
   // 带窗口定位信息的快照必须精确激活，窗口定位失败时不能再猜测同进程窗口。
   if (keyWindowIsPopup) {
     // 弹窗路径必须复用带进程级激活兜底的恢复入口，不能只看 AX 是否发出请求。
-    void restoreFrontmostForPopup(target).then((restored) => {
+    void restoreFrontmostForPopup(target, canRestorePopup).then((restored) => {
       if (restored) {
         finish(true, 'popup-front-restored')
         return

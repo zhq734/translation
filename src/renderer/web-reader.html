@@ -29,7 +29,7 @@
           </button>
         </div>
       </header>
-      <header class="web-toolbar" data-i18n-attr="aria-label:webReader.navigationToolbar" aria-label="Web translation navigation toolbar">
+      <header class="web-toolbar web-navigation-toolbar" data-i18n-attr="aria-label:webReader.navigationToolbar" aria-label="Web translation navigation toolbar">
         <div class="web-navigation-actions">
           <button id="web-back" class="icon-button" type="button" data-i18n-attr="title:webReader.back;aria-label:webReader.back" title="Back" disabled aria-label="Back">←</button>
           <button id="web-forward" class="icon-button" type="button" data-i18n-attr="title:webReader.forward;aria-label:webReader.forward" title="Forward" disabled aria-label="Forward">→</button>
@@ -38,24 +38,32 @@
         <form id="web-address-form" class="web-address-form">
           <input id="web-address" type="text" inputmode="url" autocomplete="url" spellcheck="false" data-i18n-attr="aria-label:webReader.address;placeholder:webReader.addressPlaceholder" aria-label="Web address" placeholder="Enter a web address, for example example.com" />
         </form>
-        <label class="web-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
-          <select id="web-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
-        </label>
-        <span class="language-arrow" aria-hidden="true">→</span>
-        <label class="web-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
-          <select id="web-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
-        </label>
-        <button id="web-translate" class="primary-button" type="button" data-i18n="webReader.translatePage">Translate Page</button>
-        <button id="web-cancel" class="secondary-button" type="button" data-i18n="common.cancel" disabled>Cancel</button>
-        <button id="web-export-pdf" class="secondary-button" type="button" data-i18n="webReader.exportPdf" disabled>Export PDF</button>
-        <label class="web-mode-control"><span data-i18n="webReader.display">Display</span>
-          <select id="web-mode" data-i18n-attr="aria-label:webReader.displayMode" aria-label="Web page display mode">
-            <option value="target" data-i18n="webReader.mode.target">Translation</option>
-            <option value="source" data-i18n="webReader.mode.source">Original</option>
-            <option value="bilingual" data-i18n="webReader.mode.bilingual">Bilingual</option>
-          </select>
-        </label>
       </header>
+      <section class="web-toolbar web-translation-toolbar" data-i18n-attr="aria-label:webReader.translatePage" aria-label="Translate Page">
+        <div class="web-translation-settings">
+          <div class="web-language-pair">
+            <label class="web-language-control"><span data-i18n="menu.sourceLanguage">Source Language</span>
+              <select id="web-source-lang" data-i18n-attr="aria-label:menu.sourceLanguage" aria-label="Source Language"></select>
+            </label>
+            <span class="language-arrow" aria-hidden="true">→</span>
+            <label class="web-language-control"><span data-i18n="menu.targetLanguage">Target Language</span>
+              <select id="web-target-lang" data-i18n-attr="aria-label:menu.targetLanguage" aria-label="Target Language"></select>
+            </label>
+          </div>
+          <label class="web-mode-control"><span data-i18n="webReader.display">Display</span>
+            <select id="web-mode" data-i18n-attr="aria-label:webReader.displayMode" aria-label="Web page display mode">
+              <option value="target" data-i18n="webReader.mode.target">Translation</option>
+              <option value="source" data-i18n="webReader.mode.source">Original</option>
+              <option value="bilingual" data-i18n="webReader.mode.bilingual">Bilingual</option>
+            </select>
+          </label>
+        </div>
+        <div class="web-translation-actions">
+          <button id="web-translate" class="primary-button" type="button" data-i18n="webReader.translatePage">Translate Page</button>
+          <button id="web-cancel" class="secondary-button" type="button" data-i18n="common.cancel" disabled>Cancel</button>
+          <button id="web-export-pdf" class="secondary-button" type="button" data-i18n="webReader.exportPdf" disabled>Export PDF</button>
+        </div>
+      </section>
       <div id="web-loading-progress" class="web-loading-progress" role="progressbar" data-i18n-attr="aria-label:webReader.loadingProgress" aria-label="Web page loading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden></div>
       <div id="web-status" class="web-status" role="status" aria-live="polite" data-i18n="webReader.enterAddress">Enter a web address</div>
       <section id="web-view-slot" class="web-view-slot" data-i18n-attr="aria-label:webReader.contentArea" aria-label="Web page content area"></section>
