@@ -288,6 +288,11 @@ function handlePopupBlur(): void {
   // 选区取词加载期间翻译结果尚未返回，输入法切换等可能派发迟到失焦；
   // 若据此关闭，用户表现为弹窗一闪即关。真实外部点击由全局按下兜底关闭。
   if (selectionCaptureLoading) return
+  // 走到这里说明弹窗此前持有前台且失焦来自真实的外部焦点转移（用户切换到
+  // 其它应用或页面）。必须刷新待交还前台窗口记录，否则钉住弹窗后再关闭时
+  // 会把前台交还给划词阶段记录的旧源应用，把用户从当前应用拽回划词页面。
+  // Windows 专用：macOS 的 foregroundTracker 是空操作，交还语义由应用级链路处理。
+  if (!popupCloseInFlight) foregroundTracker.remember()
   // panel 下窗口切换不再激活应用，blur 只可能是用户真的点了弹窗外或弹窗内
   // 的其它控件；拖拽区域与固定状态仍由 shouldDismissPopupOnBlur 过滤。
   if (shouldDismissPopupOnBlur(pinned, false)) {

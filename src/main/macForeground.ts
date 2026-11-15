@@ -724,6 +724,22 @@ export function handBackFrontmostThen(
       return
     }
   }
+  // 弹窗可能因用户点击成为 key window，但 nonactivating panel 不会激活整个应用：
+  // 钉住弹窗后用户切换到其它应用，再点击弹窗关闭按钮时本应用仍处于未激活状态。
+  // 此时隐藏 key panel 不会把本应用其它窗口顶到最前，前台会自然回到用户当前正在
+  // 使用的应用；若仍按划词阶段记录的旧源应用交还，界面会被拽回划词时的源应用。
+  if (keyWindowIsPopup && !isMacAppActiveByEvents() && focused === keyWindow) {
+    const discarded = pendingReturnApp
+    forgetFrontmostApp()
+    finishPopupWithoutAppYield('popup-key-window-without-app-active', () => {
+      if (discarded) {
+        logFrontDiagnostic(
+          `跳过交还：应用已不在最前，丢弃过期记录 bundleId=${discarded.bundleId}`
+        )
+      }
+    })
+    return
+  }
   // 隐藏的不是当前 key window：不会触发提升，记录留给随后真正隐藏 key window 的调用消费。
   // 已排除可见内部页面接管焦点；非激活弹窗仍可能使应用保持最前，不能因为
   // focused 为 null 就跳过交还，否则下一次复制会打回自家窗口。

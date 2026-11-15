@@ -101,6 +101,24 @@ test('弹窗失焦处理应把归还焦点状态传入 shouldDismissPopupOnBlur'
 })
 
 /**
+ * 校验弹窗真实外部失焦（用户切换到其它应用）时刷新待交还前台窗口记录。
+ *
+ * 钉住弹窗后用户切换到其它应用再关闭弹窗时，交还焦点必须回到用户当前正在
+ * 使用的窗口；若仍恢复划词时记录的旧源应用窗口，界面会被拽回划词页面。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗真实外部失焦时应刷新待交还前台窗口记录', () => {
+  const start = popupSource.indexOf('function handlePopupBlur')
+  const end = popupSource.indexOf('\n}', start)
+  const src = popupSource.slice(start, end + 2)
+  const rememberIndex = src.indexOf('foregroundTracker.remember()')
+  const dismissIndex = src.indexOf('shouldDismissPopupOnBlur')
+  assert.ok(rememberIndex >= 0, '真实外部失焦必须刷新待交还前台窗口记录')
+  assert.ok(dismissIndex > rememberIndex, '刷新记录必须发生在失焦关闭判定之前')
+})
+
+/**
  * 校验取词前的读取弹窗会先在 Windows 上归还前台焦点，再显示读取状态。
  * @returns 无返回值。
  * @author zhenghq

@@ -2027,3 +2027,24 @@ test('弹窗关闭释放焦点后仍须尊重后续划词生命周期租约', ()
     '划词生命周期与关闭阶段必须共用同一焦点租约实现'
   )
 })
+
+/**
+ * 校验弹窗持有 key window 但应用未激活时不得交还旧源应用。
+ *
+ * 钉住弹窗后用户切换到其它应用，再点击弹窗关闭按钮：nonactivating panel
+ * 会成为 key window，但本应用整体仍处于未激活状态。此时必须只隐藏弹窗并
+ * 丢弃过期的源应用记录，让前台自然留在用户当前正在使用的应用；若仍按旧
+ * 记录交还，界面会被拽回划词时的源应用页面。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗持有 key window 但应用未激活时只隐藏弹窗不交还旧源应用', () => {
+  const source = stripComments(
+    extractFunction(macForegroundSource, 'export function handBackFrontmostThen(')
+  )
+  assert.match(
+    source,
+    /if \(keyWindowIsPopup && !isMacAppActiveByEvents\(\) && focused === keyWindow\) \{[\s\S]*?forgetFrontmostApp\(\)[\s\S]*?finishPopupWithoutAppYield\('popup-key-window-without-app-active'/u,
+    '应用未激活时关闭弹窗只能隐藏自身并丢弃过期记录，不得激活划词源应用'
+  )
+})
