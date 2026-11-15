@@ -635,3 +635,39 @@ test('全部降级通道失败时应保留首个限流错误的 Retry-After', as
     }
   )
 })
+
+test('AI 流式卡住超时且已有可见片段时应自动降级到后续通道继续翻译', async () => {
+  const calls: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (url, init) => {
+      const value = String(url)
+      calls.push(value)
+      if (value.includes('chat/completions')) {
+        const encoder = new TextEncoder()
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(openAiDelta('半')))
+            // 模拟上游卡住：不再产出数据也不关闭流，仅在超时中止时报错。
+            init?.signal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
+          }
+        }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      if (value.includes('api.deeplx.org')) {
+        return new Response(JSON.stringify({ code: 200, data: '降级译文' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+      throw new Error(`不应请求：${value}`)
+    },
+    aiTimeoutMs: 50
+  })
+  const deltas: string[] = []
+  const result = await runtime.translateStream('hello', aiSettings(), null, 'sk-ai', {
+    onDelta: (delta) => deltas.push(delta)
+  })
+  assert.equal(result.provider, 'deeplx-public')
+  assert.equal(result.translation, '降级译文')
+  assert.deepEqual(deltas, ['半'])
+  assert.ok(calls.some((url) => url.includes('api.deeplx.org')))
+})

@@ -27,7 +27,11 @@ import type {
 } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
 import { filterTranslationHistory } from '../../shared/translationHistory'
-import { POPUP_AUTO_SIZE_LIMITS, resolveNaturalHeightWithWorkspaceOverflow } from '../../shared/popupAutoSize'
+import {
+  POPUP_AUTO_SIZE_LIMITS,
+  isCompactPopupHeight,
+  resolveNaturalHeightWithWorkspaceOverflow
+} from '../../shared/popupAutoSize'
 import { bindPopupMenu } from './popupMenu'
 import { createThrottledScheduler } from '../../shared/throttledScheduler'
 import {
@@ -2045,6 +2049,9 @@ function measureAutoSize(): { width: number; height: number } {
     Number.parseFloat(bodyStyle.paddingTop || '0') +
     Number.parseFloat(bodyStyle.paddingBottom || '0')
   popupEl.style.width = `${Math.max(0, desiredWidth - hostHorizontalPadding)}px`
+  // 测量必须按普通布局进行：矮窗紧凑态的高度需求更小，若按它上报尺寸，
+  // 窗口实际越过阈值后紧凑样式失效，会再次出现溢出与滚动条。
+  popupEl.classList.remove('compact-height')
   popupEl.classList.add('auto-size-measuring')
   // scrollHeight 不含弹窗边框与透明宿主的上下内边距，需一并计入窗口高度。
   const verticalChrome = popupEl.offsetHeight - popupEl.clientHeight + hostVerticalPadding
@@ -2055,13 +2062,24 @@ function measureAutoSize(): { width: number; height: number } {
   // 避免长文粘贴后工作区滚动条与文本滚动条同时出现。
   const workspaceOverflow = measureWorkspaceOverflowAt(popupEl, naturalHeight, hostVerticalPadding)
   popupEl.style.width = previousWidth
-  return {
-    width: desiredWidth,
-    height: Math.max(
-      resolveNaturalHeightWithWorkspaceOverflow(naturalHeight, workspaceOverflow),
-      POPUP_AUTO_SIZE_LIMITS.minHeight
-    )
-  }
+  const height = Math.max(
+    resolveNaturalHeightWithWorkspaceOverflow(naturalHeight, workspaceOverflow),
+    POPUP_AUTO_SIZE_LIMITS.minHeight
+  )
+  syncCompactHeightClass(height)
+  return { width: desiredWidth, height }
+}
+
+/**
+ * 按窗口高度同步紧凑布局类。
+ * 紧凑样式由渲染进程类名驱动（原为视口媒体查询）：自适应测量期间必须先移除
+ * 该类按普通布局测量，得到最终窗口高度后再挂回，保证测量与落地布局一致。
+ * @param height 当前或目标窗口高度，单位逻辑像素。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function syncCompactHeightClass(height: number): void {
+  popupRootEl.classList.toggle('compact-height', isCompactPopupHeight(height))
 }
 
 /**
@@ -2080,15 +2098,26 @@ function measureWorkspaceOverflowAt(
   windowHeight: number,
   hostVerticalPadding: number
 ): number {
+  if (!Number.isFinite(windowHeight)) return 0
+  const previousHeight = popupEl.style.height
+  popupEl.style.height = `${Math.max(0, windowHeight - hostVerticalPadding)}px`
+  const overflow = readVisibleWorkspaceOverflow()
+  popupEl.style.height = previousHeight
+  return overflow
+}
+
+/**
+ * 读取当前可见工作区的滚动溢出量。
+ * 供测量落地补偿与窗口 resize 后的自愈检查共用同一选择器口径。
+ * @returns 工作区内容超出可视高度的像素数，未溢出时为 0。
+ * @author zhenghq
+ */
+function readVisibleWorkspaceOverflow(): number {
   const workspace = document.querySelector<HTMLElement>(
     '.manual-view:not([hidden]), .history-view:not([hidden])'
   )
-  if (!workspace || !Number.isFinite(windowHeight)) return 0
-  const previousHeight = popupEl.style.height
-  popupEl.style.height = `${Math.max(0, windowHeight - hostVerticalPadding)}px`
-  const overflow = Math.max(0, workspace.scrollHeight - workspace.clientHeight)
-  popupEl.style.height = previousHeight
-  return overflow
+  if (!workspace) return 0
+  return Math.max(0, workspace.scrollHeight - workspace.clientHeight)
 }
 
 /**
@@ -3000,6 +3029,13 @@ if ('speechSynthesis' in window) {
 }
 renderPinnedState(false)
 renderMode()
+syncCompactHeightClass(window.innerHeight)
+window.addEventListener('resize', () => {
+  syncCompactHeightClass(window.innerHeight)
+  // 窗口落地后工作区仍溢出（屏幕边缘裁剪、字体度量差异等真实环境因素）时，
+  // 再触发一次自适应测量自愈；测量收敛后尺寸不变即自然停止，不会循环放大。
+  if (readVisibleWorkspaceOverflow() > 0) requestAutoResize()
+})
 syncSpeechButton()
 void initializeSelectors()
 void initializeDocumentTranslationEntry()

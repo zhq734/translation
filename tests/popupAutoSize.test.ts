@@ -4,6 +4,8 @@ import test from 'node:test'
 import { readMainSource } from './helpers/mainSource.ts'
 import {
   POPUP_AUTO_SIZE_LIMITS,
+  POPUP_COMPACT_HEIGHT_THRESHOLD,
+  isCompactPopupHeight,
   isPopupAutoSizeRequest,
   resolveNaturalHeightWithWorkspaceOverflow,
   resolvePopupAutoSize,
@@ -169,4 +171,38 @@ test('手动翻译粘贴长文：测量需按落地高度补偿工作区溢出',
   assert.match(renderer, /resolveNaturalHeightWithWorkspaceOverflow\(/u)
   // 仅手动翻译与翻译历史是可滚动工作区，划词视图 overflow hidden 无需补偿。
   assert.match(renderer, /\.manual-view:not\(\[hidden\]\), \.history-view:not\(\[hidden\]\)/u)
+})
+
+/**
+ * 校验紧凑高度阈值判断与原 max-height: 400px 媒体查询语义一致。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗紧凑高度阈值应与原媒体查询语义一致', () => {
+  assert.equal(POPUP_COMPACT_HEIGHT_THRESHOLD, 400)
+  assert.equal(isCompactPopupHeight(400), true)
+  assert.equal(isCompactPopupHeight(320), true)
+  assert.equal(isCompactPopupHeight(400.5), false)
+  assert.equal(isCompactPopupHeight(Number.NaN), false)
+})
+
+/**
+ * 校验紧凑布局由渲染进程类名驱动，测量始终按普通布局进行并按最终高度同步类名。
+ * 否则矮窗下按紧凑布局测得的高度越过阈值后，紧凑样式失效会导致首次打开再次溢出。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗紧凑布局应改由类名驱动且测量不感知紧凑态', () => {
+  const css = readFileSync('src/renderer/src/style.css', 'utf8')
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+
+  assert.doesNotMatch(css, /@media \(max-height: 400px\)/u)
+  assert.match(css, /#popup\.compact-height #manual-hint\s*\{/u)
+  assert.match(css, /#popup\.compact-height \.header\s*\{/u)
+  assert.match(css, /#popup\.compact-height \.history-view\s*\{/u)
+
+  // 测量期间必须先移除紧凑类，按普通布局测量，结束后按最终窗口高度同步类名。
+  assert.match(renderer, /classList\.remove\('compact-height'\)/u)
+  assert.match(renderer, /function syncCompactHeightClass\(/u)
+  assert.match(renderer, /syncCompactHeightClass\(window\.innerHeight\)/u)
 })

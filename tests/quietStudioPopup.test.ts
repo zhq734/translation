@@ -90,7 +90,8 @@ test('静阅布局：手动始终上下排列，隐藏态不被布局覆盖且�
   assert.match(rule('.selection-view'), /overflow: hidden;/u)
   assert.match(rule('.translation-section-source'), /flex: 0 0 auto;/u)
   assert.match(rule('.original'), /min-height: 1.55em;/u)
-  assert.match(css, /@media \(max-height: 400px\)/u)
+  // zhenghq：紧凑布局已改由渲染进程类名驱动，测量不再感知矮窗媒体查询。
+  assert.match(css, /#popup\.compact-height \{/u)
   assert.match(rule('.history-list'), /overflow-y: auto;/u)
   assert.match(rule('.history-item'), /border-bottom: 1px solid var\(--border-subtle\);/u)
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/u)
@@ -109,10 +110,10 @@ test('静阅导航：手动、历史与划词模式始终使用同一组可见�
 
 /** 验证矮窗口改由整个历史工作区滚动，列表不再被标题挤扁；无参数、无返回值。@author zhenghq */
 test('静阅历史：矮窗口保留自然列表高度且只有一层滚动', () => {
-  const compact = css.slice(css.indexOf('@media (max-height: 400px)'))
-  assert.match(compact, /\.history-view\s*\{[^}]*overflow-y: auto;/u)
-  assert.match(compact, /\.history-header,\s*\.history-list\s*\{[^}]*flex: 0 0 auto;/u)
-  assert.match(compact, /\.history-list\s*\{[^}]*overflow: visible;/u)
+  const compact = css.slice(css.indexOf('#popup.compact-height {'))
+  assert.match(compact, /\.compact-height \.history-view\s*\{[^}]*overflow-y: auto;/u)
+  assert.match(compact, /\.compact-height \.history-header,\s*#popup\.compact-height \.history-list\s*\{[^}]*flex: 0 0 auto;/u)
+  assert.match(compact, /\.compact-height \.history-list\s*\{[^}]*overflow: visible;/u)
 })
 
 /**
@@ -561,4 +562,13 @@ test('渐进菜单：Tab 不困住焦点，窗口失焦及销毁后没有残留�
   assert.equal(panel.hidden, true)
   fire(toggle, 'click')
   assert.equal(panel.hidden, true)
+})
+
+/** 验证窗口落地后工作区仍溢出时再次触发自适应测量自愈；无参数、无返回值。@author zhenghq */
+test('静阅自适应：窗口 resize 落地后工作区仍溢出应再次触发自适应测量', () => {
+  assert.match(renderer, /function readVisibleWorkspaceOverflow\(\): number \{/u)
+  assert.match(
+    renderer,
+    /window\.addEventListener\('resize', \(\) => \{\s*syncCompactHeightClass\(window\.innerHeight\)[\s\S]{0,200}if \(readVisibleWorkspaceOverflow\(\) > 0\) requestAutoResize\(\)/u
+  )
 })

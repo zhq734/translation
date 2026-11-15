@@ -1384,66 +1384,68 @@ body {
 }
 
 /* 最小窗口高度下收紧纵向留白，保证原文与译文都保留可见空间。 */
-@media (max-height: 400px) {
+/* zhenghq：紧凑布局改由渲染进程类名驱动而非视口媒体查询：自适应测量必须按 */
+/* 普通布局进行，若沿用媒体查询，矮窗测得的高度越过阈值后样式失效会再次溢出。 */
+#popup.compact-height {
   /* zhenghq：紧凑模式保留计数和全部操作，快捷键说明让位于至少一行输入文本。 */
-  #manual-hint {
+  #popup.compact-height #manual-hint {
     display: none;
   }
 
-  .manual-source-section,
-  .manual-result-section {
+  #popup.compact-height .manual-source-section,
+  #popup.compact-height .manual-result-section {
     gap: 4px;
   }
 
-  .manual-result-section {
+  #popup.compact-height .manual-result-section {
     padding: 6px;
   }
 
-  #manual-source {
+  #popup.compact-height #manual-source {
     padding: 4px 6px;
   }
 
-  .manual-source-footer {
+  #popup.compact-height .manual-source-footer {
     gap: 4px;
   }
 
-  #manual-submit {
+  #popup.compact-height #manual-submit {
     padding-inline: 8px;
   }
 
-  .manual-result-header {
+  #popup.compact-height .manual-result-header {
     flex-wrap: wrap;
     gap: 2px;
   }
 
-  .manual-stale {
+  #popup.compact-height .manual-stale {
     flex: 1 1 100%;
     font-size: 11px;
     line-height: 1.3;
     text-align: left;
   }
 
-  .drag-handle {
+  #popup.compact-height .drag-handle {
     flex-basis: 12px;
     min-height: 12px;
   }
 
-  .header {
+  #popup.compact-height .header {
     gap: 4px;
     margin-bottom: 4px;
   }
 
-  .section-head {
+  #popup.compact-height .section-head {
     margin-bottom: 3px;
   }
 
-  .translation-section-target {
+  #popup.compact-height .translation-section-target {
     margin-top: 6px;
     padding-top: 6px;
     min-height: 56px;
   }
 
-  .translation-context {
+  #popup.compact-height .translation-context {
     /* zhenghq：矮窗语言与引擎各自收缩，避免信息栏换成两行挤掉文本。 */
     display: grid;
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -1452,42 +1454,42 @@ body {
     padding-bottom: 4px;
   }
 
-  .translation-context .provider-bar {
+  #popup.compact-height .translation-context .provider-bar {
     margin-left: 0;
   }
 
-  /* zhenghq：矮窗口让历史标题、搜索和记录整体滚动，避免列表被挤至零高度。 */
-  .history-view {
+    /* zhenghq：矮窗口让历史标题、搜索和记录整体滚动，避免列表被挤至零高度。 */
+  #popup.compact-height .history-view {
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
   }
 
-  .history-header,
-  .history-list {
+  #popup.compact-height .history-header,
+  #popup.compact-height .history-list {
     flex: 0 0 auto;
   }
 
-  .history-list {
+  #popup.compact-height .history-list {
     overflow: visible;
   }
 
-  .translation-section-source {
+  #popup.compact-height .translation-section-source {
     padding: 6px 8px;
   }
 
-  .original {
+  #popup.compact-height .original {
     max-height: 42px;
   }
 
-  .footer {
+  #popup.compact-height .footer {
     min-height: 32px;
     margin-top: 6px;
     padding-top: 6px;
   }
 
-  #speak,
-  #pin {
+  #popup.compact-height #speak,
+  #popup.compact-height #pin {
     min-height: 30px;
   }
 }

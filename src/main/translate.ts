@@ -14,7 +14,7 @@ import { toMicrosoftCheckStatus } from './microsoftErrors'
 import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
-import { AiError } from './aiErrors'
+import { AiError, isAiTimeoutError } from './aiErrors'
 import {
   BilibiliIndexTranslationClient,
   toBilibiliIndexCheckStatus
@@ -49,6 +49,8 @@ export interface TranslationRuntimeOptions {
   fetch: DingTalkFetch
   /** 可注入时钟，用于熔断和 Token 生命周期测试。 */
   now?: () => number
+  /** 可注入的 AI 请求超时毫秒数，省略时使用客户端默认值。 */
+  aiTimeoutMs?: number
 }
 
 interface DeepLxResponse {
@@ -195,7 +197,7 @@ export class TranslationRuntime {
       tokenManager
     })
     this.microsoftClient = new MicrosoftTranslationClient({ fetch: options.fetch, now: this.now })
-    this.aiClient = new AiTranslationClient({ fetch: options.fetch })
+    this.aiClient = new AiTranslationClient({ fetch: options.fetch, timeoutMs: options.aiTimeoutMs })
     this.bilibiliIndexClient = new BilibiliIndexTranslationClient({ fetch: options.fetch })
   }
 
@@ -359,7 +361,13 @@ export class TranslationRuntime {
           structuredError = details
         }
         this.trip(channel.breakerKey, channel.cooldownMs)
-        if (visibleDeltaCount > 0 && !isLanguageGuardRejection(error)) throw error
+        // 超时意味着通道卡住（上游无响应或流中断），即使已展示部分增量也应切换
+        // 后续通道继续翻译；其它错误保持“保留已展示内容、停止降级”的原有策略。
+        if (
+          visibleDeltaCount > 0
+          && !isLanguageGuardRejection(error)
+          && !isAiTimeoutError(error)
+        ) throw error
       }
     }
     throw createChannelAggregateError(lastError, structuredError)

@@ -100,3 +100,13 @@ export function normalizeAiNetworkError(error: unknown): AiError {
   }
   return new AiError('network', translateMain('ai.error.network'), { cause: error })
 }
+
+/**
+ * 判断错误是否为 AI 超时类错误。
+ * @param error 待分类错误。
+ * @returns 超时类错误时返回 true。
+ * @author zhenghq
+ */
+export function isAiTimeoutError(error: unknown): boolean {
+  return error instanceof AiError && error.kind === 'timeout'
+}

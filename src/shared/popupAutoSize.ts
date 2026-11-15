@@ -125,3 +125,16 @@ export function resolveNaturalHeightWithWorkspaceOverflow(
   const overflow = Number.isFinite(workspaceOverflow) ? Math.max(0, workspaceOverflow) : 0
   return base + overflow
 }
+
+/** 弹窗紧凑布局的高度阈值：窗口不高于该值（逻辑像素）时启用紧凑布局，等价于原 max-height: 400px 媒体查询。 */
+export const POPUP_COMPACT_HEIGHT_THRESHOLD = 400
+
+/**
+ * 判断指定窗口高度是否应启用紧凑布局。
+ * @param height 窗口高度（逻辑像素）。
+ * @returns 高度不大于阈值时返回 true；非法数值按普通布局处理。
+ * @author zhenghq
+ */
+export function isCompactPopupHeight(height: number): boolean {
+  return Number.isFinite(height) && height <= POPUP_COMPACT_HEIGHT_THRESHOLD
+}
