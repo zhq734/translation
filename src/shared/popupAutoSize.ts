@@ -106,3 +106,22 @@ export function resolvePopupResizeBounds(
     height
   }
 }
+
+/**
+ * 计算叠加工作区溢出补偿后的弹窗自然高度。
+ * 测量态的 auto 行高可能低于最终布局中网格行的 min-content 下限，
+ * 需要把工作区在落地高度下的滚动溢出量补回窗口高度，否则工作区滚动条
+ * 会与文本自身的滚动条同时出现，形成双层滚动条。
+ * @param naturalHeight 测量态读取的自然高度。
+ * @param workspaceOverflow 工作区在该高度下的 scrollHeight 与 clientHeight 之差，负值按 0 处理。
+ * @returns 补偿后的窗口高度，不小于自然高度；非法输入按 0 处理。
+ * @author zhenghq
+ */
+export function resolveNaturalHeightWithWorkspaceOverflow(
+  naturalHeight: number,
+  workspaceOverflow: number
+): number {
+  const base = Number.isFinite(naturalHeight) ? Math.max(0, naturalHeight) : 0
+  const overflow = Number.isFinite(workspaceOverflow) ? Math.max(0, workspaceOverflow) : 0
+  return base + overflow
+}

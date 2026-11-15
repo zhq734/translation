@@ -27,7 +27,7 @@ import type {
 } from '../../shared/types'
 import { MANUAL_TRANSLATION_MAX_CHARS } from '../../shared/types'
 import { filterTranslationHistory } from '../../shared/translationHistory'
-import { POPUP_AUTO_SIZE_LIMITS } from '../../shared/popupAutoSize'
+import { POPUP_AUTO_SIZE_LIMITS, resolveNaturalHeightWithWorkspaceOverflow } from '../../shared/popupAutoSize'
 import { bindPopupMenu } from './popupMenu'
 import { createThrottledScheduler } from '../../shared/throttledScheduler'
 import {
@@ -2041,20 +2041,54 @@ function measureAutoSize(): { width: number; height: number } {
   const hostHorizontalPadding =
     Number.parseFloat(bodyStyle.paddingLeft || '0') +
     Number.parseFloat(bodyStyle.paddingRight || '0')
+  const hostVerticalPadding =
+    Number.parseFloat(bodyStyle.paddingTop || '0') +
+    Number.parseFloat(bodyStyle.paddingBottom || '0')
   popupEl.style.width = `${Math.max(0, desiredWidth - hostHorizontalPadding)}px`
   popupEl.classList.add('auto-size-measuring')
   // scrollHeight 不含弹窗边框与透明宿主的上下内边距，需一并计入窗口高度。
-  const verticalChrome =
-    popupEl.offsetHeight - popupEl.clientHeight +
-    Number.parseFloat(bodyStyle.paddingTop || '0') +
-    Number.parseFloat(bodyStyle.paddingBottom || '0')
+  const verticalChrome = popupEl.offsetHeight - popupEl.clientHeight + hostVerticalPadding
   const naturalHeight = popupEl.scrollHeight + verticalChrome
   popupEl.classList.remove('auto-size-measuring')
+  // 测量态的 auto 行高可能低于最终布局网格行的 min-content 下限（例如底部操作
+  // 行换行后的最小高度），按自然高度模拟落地并补上工作区滚动溢出量，
+  // 避免长文粘贴后工作区滚动条与文本滚动条同时出现。
+  const workspaceOverflow = measureWorkspaceOverflowAt(popupEl, naturalHeight, hostVerticalPadding)
   popupEl.style.width = previousWidth
   return {
     width: desiredWidth,
-    height: Math.max(naturalHeight, POPUP_AUTO_SIZE_LIMITS.minHeight)
+    height: Math.max(
+      resolveNaturalHeightWithWorkspaceOverflow(naturalHeight, workspaceOverflow),
+      POPUP_AUTO_SIZE_LIMITS.minHeight
+    )
   }
+}
+
+/**
+ * 在指定窗口高度下测量当前可见工作区的滚动溢出量。
+ * 手动翻译与翻译历史视图是带独立滚动条的工作区，其网格 / 弹性行存在
+ * min-content 下限；测量态按内容测得的行高可能低于该下限，需要在落地
+ * 高度下读取溢出量并补回窗口高度。
+ * @param popupEl 弹窗根节点。
+ * @param windowHeight 模拟落地的窗口高度。
+ * @param hostVerticalPadding 透明宿主上下内边距之和。
+ * @returns 工作区内容超出可视高度的像素数，未溢出时为 0。
+ * @author zhenghq
+ */
+function measureWorkspaceOverflowAt(
+  popupEl: HTMLElement,
+  windowHeight: number,
+  hostVerticalPadding: number
+): number {
+  const workspace = document.querySelector<HTMLElement>(
+    '.manual-view:not([hidden]), .history-view:not([hidden])'
+  )
+  if (!workspace || !Number.isFinite(windowHeight)) return 0
+  const previousHeight = popupEl.style.height
+  popupEl.style.height = `${Math.max(0, windowHeight - hostVerticalPadding)}px`
+  const overflow = Math.max(0, workspace.scrollHeight - workspace.clientHeight)
+  popupEl.style.height = previousHeight
+  return overflow
 }
 
 /**

@@ -5,6 +5,7 @@ import { readMainSource } from './helpers/mainSource.ts'
 import {
   POPUP_AUTO_SIZE_LIMITS,
   isPopupAutoSizeRequest,
+  resolveNaturalHeightWithWorkspaceOverflow,
   resolvePopupAutoSize,
   resolvePopupResizeBounds
 } from '../src/shared/popupAutoSize.ts'
@@ -141,4 +142,31 @@ test('流式返回期间弹窗应周期性随内容增长自适应放大', () =>
   // 调度必须是节流而非去抖：连续请求不能重置计时器。
   assert.match(scheduler, /export function createThrottledScheduler/u)
   assert.doesNotMatch(renderer, /function requestAutoResize\(\): void \{\s*if \(autoResizeTimer\) clearTimeout/u)
+})
+
+/**
+ * 校验自然高度会叠加工作区溢出补偿，避免窗口小于最小布局需求出现双层滚动条。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('弹窗自然高度应叠加工作区滚动溢出补偿', () => {
+  assert.equal(resolveNaturalHeightWithWorkspaceOverflow(441, 25), 466)
+  assert.equal(resolveNaturalHeightWithWorkspaceOverflow(441, 0), 441)
+  assert.equal(resolveNaturalHeightWithWorkspaceOverflow(441, -3), 441)
+  assert.equal(resolveNaturalHeightWithWorkspaceOverflow(Number.NaN, 0), 0)
+  assert.equal(resolveNaturalHeightWithWorkspaceOverflow(Number.POSITIVE_INFINITY, 0), 0)
+})
+
+/**
+ * 校验渲染进程在落地高度下补偿可见工作区溢出，长文粘贴后不叠出第二条滚动条。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('手动翻译粘贴长文：测量需按落地高度补偿工作区溢出', () => {
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+
+  assert.match(renderer, /measureWorkspaceOverflowAt\(/u)
+  assert.match(renderer, /resolveNaturalHeightWithWorkspaceOverflow\(/u)
+  // 仅手动翻译与翻译历史是可滚动工作区，划词视图 overflow hidden 无需补偿。
+  assert.match(renderer, /\.manual-view:not\(\[hidden\]\), \.history-view:not\(\[hidden\]\)/u)
 })
