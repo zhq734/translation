@@ -68,6 +68,7 @@ import {
   type PronunciationCardContext,
   type PronunciationCardState
 } from './pronunciationCard'
+import { computePronunciationCardPlacement } from './pronunciationCardPosition'
 import {
   createPronunciationClickGate,
   createPronunciationInteractionDeduper,
@@ -110,9 +111,8 @@ const resultEl = document.getElementById('result') as HTMLElement
 const originalEl = document.getElementById('original') as HTMLElement
 const readOriginalBtn = document.getElementById('read-original') as HTMLButtonElement
 const pronunciationCardEl = document.getElementById('pronunciation-card') as HTMLElement
-const translationPronunciationCardEl = document.getElementById('translation-pronunciation-card') as HTMLElement
-/** 音标卡在原文插槽中的原始父元素，切换到译文后关闭时需要归还。 */
-const sourcePronunciationCardSlot = pronunciationCardEl.parentElement
+/** 音标卡浮层的定位基准：弹窗根节点。 */
+const popupRootEl = document.getElementById('popup') as HTMLElement
 const pronunciationWordEl = document.getElementById('pronunciation-word') as HTMLElement
 const pronunciationVariantsEl = document.getElementById('pronunciation-variants') as HTMLElement
 const pronunciationCloseBtn = document.getElementById('pronunciation-close') as HTMLButtonElement
@@ -188,6 +188,8 @@ let revealSequence = 0
 let selectionRevealRequestId = 0
 /** 音标卡当前状态。 */
 let pronunciationCard: PronunciationCardState = createPronunciationCardState()
+/** 音标卡浮层当前贴靠的触发词元素。 */
+let pronunciationAnchorEl: HTMLElement | null = null
 /** 当前音标查询序号；关闭或切换单词后旧结果会被丢弃。 */
 let pronunciationLookupSequence = 0
 /** 当前音标查询对应的主进程请求 ID。 */
@@ -610,13 +612,6 @@ function canUseSourcePronunciation(): boolean {
  * @author zhenghq
  */
 function renderPronunciationCard(): void {
-  const sourceSlot = sourcePronunciationCardSlot
-  const targetSlot = pronunciationCard.context === 'translation'
-    ? translationPronunciationCardEl
-    : sourceSlot
-  if (targetSlot && pronunciationCardEl.parentElement !== targetSlot) {
-    targetSlot.append(pronunciationCardEl)
-  }
   const visible = mode === 'selection'
     && currentSelectionOrigin !== 'ocr'
     && pronunciationCard.status !== 'hidden'
@@ -636,6 +631,7 @@ function renderPronunciationCard(): void {
     loading.textContent = t('popup.pronunciationLoading')
     pronunciationVariantsEl.append(loading)
     renderPronunciationDefinitions(definitions)
+    positionPronunciationCard()
     requestAutoResize()
     return
   }
@@ -649,6 +645,7 @@ function renderPronunciationCard(): void {
     emptyRow.append(empty, fallback)
     pronunciationVariantsEl.append(emptyRow)
     renderPronunciationDefinitions(definitions)
+    positionPronunciationCard()
     requestAutoResize()
     return
   }
@@ -688,6 +685,7 @@ function renderPronunciationCard(): void {
     pronunciationVariantsEl.append(item)
   }
   renderPronunciationDefinitions(definitions)
+  positionPronunciationCard()
   requestAutoResize()
 }
 
@@ -707,6 +705,37 @@ function createPronunciationWordPlayButton(): HTMLButtonElement {
     : t('popup.pronunciationPlayWord', { word: pronunciationCard.word }))
   button.textContent = playing ? '■' : '▶'
   return button
+}
+
+/**
+ * 将音标卡浮层定位到触发词附近：优先下方、空间不足时翻到上方并夹进弹窗可视区。
+ * 触发词元素已随重新渲染离开文档时，立即关闭卡片避免浮层残影。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function positionPronunciationCard(): void {
+  if (pronunciationCardEl.hidden) return
+  const anchorEl = pronunciationAnchorEl
+  if (!anchorEl || !anchorEl.isConnected) {
+    closePronunciation()
+    return
+  }
+  const popupRect = popupRootEl.getBoundingClientRect()
+  const anchorRect = anchorEl.getBoundingClientRect()
+  const cardRect = pronunciationCardEl.getBoundingClientRect()
+  // 绝对定位相对弹窗内边距盒，坐标换算需扣除边框厚度。
+  const placement = computePronunciationCardPlacement({
+    anchorRect: {
+      left: anchorRect.left - popupRect.left - popupRootEl.clientLeft,
+      top: anchorRect.top - popupRect.top - popupRootEl.clientTop,
+      right: anchorRect.right - popupRect.left - popupRootEl.clientLeft,
+      bottom: anchorRect.bottom - popupRect.top - popupRootEl.clientTop
+    },
+    cardSize: { width: cardRect.width, height: cardRect.height },
+    popupSize: { width: popupRootEl.clientWidth, height: popupRootEl.clientHeight }
+  })
+  pronunciationCardEl.style.left = `${placement.left}px`
+  pronunciationCardEl.style.top = `${placement.top}px`
 }
 
 /**
@@ -848,8 +877,9 @@ async function playPronunciationWordImmediately(word: string): Promise<void> {
  * @returns 无返回值。
  * @author zhenghq
  */
-function activatePronunciationWord(word: string, context: PronunciationCardContext): void {
+function activatePronunciationWord(word: string, context: PronunciationCardContext, anchor: HTMLElement | null): void {
   if (!pronunciationInteractionDeduper.claim(word, context)) return
+  pronunciationAnchorEl = anchor
   void lookupPronunciation(word, context)
   void playPronunciationWordImmediately(word)
 }
@@ -971,7 +1001,7 @@ function handleOriginalClick(event: MouseEvent): void {
     pointerTravel,
     clickCount: event.detail
   })) return
-  originalClickGate.click(() => activatePronunciationWord(word, 'source'))
+  originalClickGate.click(() => activatePronunciationWord(word, 'source', wordTarget))
 }
 
 /**
@@ -1022,7 +1052,7 @@ function handleTranslationClick(event: MouseEvent): void {
     pointerTravel,
     clickCount: event.detail
   })) return
-  translationClickGate.click(() => activatePronunciationWord(word, 'translation'))
+  translationClickGate.click(() => activatePronunciationWord(word, 'translation', translationPronunciationWordTarget))
 }
 
 /**
@@ -2038,9 +2068,12 @@ function measureAutoSize(): { width: number; height: number } {
  */
 const requestAutoResize = createThrottledScheduler((): void => {
   const size = measureAutoSize()
-  if (size.width === lastRequestedAutoSize.width && size.height === lastRequestedAutoSize.height) return
-  lastRequestedAutoSize = size
-  window.api.resizePopup(size)
+  if (size.width !== lastRequestedAutoSize.width || size.height !== lastRequestedAutoSize.height) {
+    lastRequestedAutoSize = size
+    window.api.resizePopup(size)
+  }
+  // 窗口尺寸或内容换行变化后，浮层音标卡需要重新贴靠触发词。
+  positionPronunciationCard()
 }, 60)
 
 /**

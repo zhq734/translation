@@ -47,7 +47,7 @@ test('静阅导航：文字入口常驻，次级菜单初始隐藏且沿用既�
     'selection-view', 'source-section-head', 'read-original', 'original',
     'pronunciation-card', 'pronunciation-word', 'pronunciation-close', 'pronunciation-variants',
     'ocr-source', 'ocr-source-label', 'ocr-engine-badge', 'ocr-copy', 'ocr-source-text',
-    'result', 'translation-pronunciation-card', 'manual-view', 'manual-clear', 'manual-source',
+    'result', 'manual-view', 'manual-clear', 'manual-source',
     'manual-hint', 'manual-count', 'manual-submit', 'manual-stale', 'manual-result',
     'history-view', 'history-clear-unfavorited', 'history-search', 'history-list', 'history-empty',
     'speak', 'speak-label', 'source-lang', 'target-lang', 'copy', 'manual-copy', 'pin', 'pin-label'
@@ -88,8 +88,8 @@ test('静阅布局：手动始终上下排列，隐藏态不被布局覆盖且�
   assert.match(css, /#speak\[aria-pressed='true'\] \.speak-stop-icon\s*\{\s*display: block !important;/u)
   assert.match(css, /#popup\.auto-size-measuring \.manual-source-section/u)
   assert.match(rule('.selection-view'), /overflow: hidden;/u)
-  assert.match(rule('.translation-section-source'), /flex: 0 1 auto;/u)
-  assert.match(rule('.original'), /min-height: 0;/u)
+  assert.match(rule('.translation-section-source'), /flex: 0 0 auto;/u)
+  assert.match(rule('.original'), /min-height: 1.55em;/u)
   assert.match(css, /@media \(max-height: 400px\)/u)
   assert.match(rule('.history-list'), /overflow-y: auto;/u)
   assert.match(rule('.history-item'), /border-bottom: 1px solid var\(--border-subtle\);/u)

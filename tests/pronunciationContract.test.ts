@@ -45,7 +45,7 @@ test('Renderer 应在单个单词与段落中统一渲染可点击词，并在�
   assert.match(renderer, /originalEl\.addEventListener\(['"]pointerdown['"]/u)
   assert.match(renderer, /originalEl\.addEventListener\(['"]pointerup['"]/u)
   assert.match(renderer, /originalEl\.addEventListener\(['"]click['"]/u)
-  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"]\)\)/u)
+  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"], wordTarget\)\)/u)
   assert.match(renderer, /pointerTravel/u)
   assert.match(renderer, /event\.detail/u)
   assert.match(renderer, /data-pronunciation-word/u)
@@ -61,8 +61,8 @@ test('点击原文或译文单词应并行查询释义并自动播放发音', ()
   assert.match(activatePronunciationWord, /void lookupPronunciation\(word, context\)/u)
   assert.match(activatePronunciationWord, /void playPronunciationWordImmediately\(word\)/u)
   assert.doesNotMatch(activatePronunciationWord, /await\s+lookupPronunciation/u)
-  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"]\)\)/u)
-  assert.match(renderer, /translationClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]translation['"]\)\)/u)
+  assert.match(renderer, /originalClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]source['"], wordTarget\)\)/u)
+  assert.match(renderer, /translationClickGate\.click\(\(\) => activatePronunciationWord\(word, ['"]translation['"], translationPronunciationWordTarget\)\)/u)
 
   assert.ok(playPronunciationWordImmediately, '应存在独立于释义查询的自动发音入口')
   assert.match(playPronunciationWordImmediately, /pronunciationPlayback\.toggle\(['"]word['"]\)/u)
@@ -99,11 +99,14 @@ test('音标卡样式应使用主题变量和可换行自适应布局', () => {
   assert.doesNotMatch(styles, /\.pronunciation-[^{]*\{[^}]*(?:#[0-9a-fA-F]{3,8}|rgb\()/su)
 })
 
-test('原文与译文区域应各有当前音标卡插槽', () => {
+test('音标卡应为弹窗根节点下的浮层并跟随点击词定位', () => {
   assert.match(html, /id="pronunciation-card"/u)
-  assert.match(html, /id="translation-pronunciation-card"/u)
-  assert.match(renderer, /pronunciationCardEl\.parentElement/u)
-  assert.match(renderer, /translationPronunciationCardEl/u)
+  assert.doesNotMatch(html, /id="translation-pronunciation-card"/u)
+  assert.match(renderer, /pronunciationAnchorEl/u)
+  assert.match(renderer, /computePronunciationCardPlacement/u)
+  assert.doesNotMatch(renderer, /translationPronunciationCardEl/u)
+  assert.match(renderer, /activatePronunciationWord\(word, 'source', wordTarget\)/u)
+  assert.match(renderer, /activatePronunciationWord\(word, 'translation', translationPronunciationWordTarget\)/u)
 })
 
 test('译文英文单词应可点击查询且中文译文不分词', () => {
@@ -152,7 +155,9 @@ test('雅思词汇应作为本地补充来源且运行时不下载整页词表',
   assert.match(main, /Iscorevoc|iscorevoc/u)
   assert.doesNotMatch(main, /iscorevoc\.pages\.dev/u)
   assert.match(styles, /\.pronunciation-definition/u)
-  assert.match(styles, /\.translation-pronunciation-card/u)
+  assert.match(styles, /\.pronunciation-card\s*\{[^}]*position:\s*absolute;/su)
+  assert.match(styles, /\.pronunciation-card\s*\{[^}]*box-shadow:\s*var\(--shadow-overlay\)/su)
+  assert.doesNotMatch(styles, /\.translation-pronunciation-card/u)
 })
 
 test('主进程外部隐藏弹窗时应通知 Renderer 清理全部发音资源', () => {

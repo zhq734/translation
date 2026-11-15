@@ -25,6 +25,8 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  /* zhenghq：音标卡浮层以弹窗根节点为定位基准。 */
+  position: relative;
   min-height: 0;
   min-width: 0;
   padding: 4px 18px 12px;
@@ -502,7 +504,8 @@ body {
 }
 
 .translation-section-source {
-  flex: 0 1 auto;
+  /* zhenghq：音标卡浮层化后原文区只承载自身内容，保持自然高度不被压缩。 */
+  flex: 0 0 auto;
   padding: 10px 12px;
   border-radius: var(--radius-panel, 12px);
   background: var(--surface-subtle);
@@ -536,7 +539,8 @@ body {
 }
 
 .original {
-  min-height: 0;
+  /* zhenghq：保底一行高度，译文再长原文也不会被挤压到消失。 */
+  min-height: 1.55em;
   max-height: 96px;
   overflow-y: auto;
   color: var(--text-secondary);
@@ -568,14 +572,17 @@ body {
   text-decoration-color: var(--button-bg);
 }
 
-/* 音标卡固定在原文下方，采用可换行布局适配窄窗口与长单词。 */
+/* 音标卡浮层挂在弹窗根节点，跟随触发词定位，不占据文档流高度。 */
 .pronunciation-card {
   display: flex;
+  position: absolute;
+  z-index: 30;
+  max-width: calc(100% - 24px);
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
   min-width: 0;
-  margin-top: 8px;
+  box-shadow: var(--shadow-overlay);
   padding: 8px 10px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
@@ -684,17 +691,6 @@ body {
 
 .pronunciation-definition-text {
   min-width: 0;
-}
-
-.translation-pronunciation-card {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.translation-pronunciation-card:empty {
-  display: none;
 }
 
 .pronunciation-variant {
