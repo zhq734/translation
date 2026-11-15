@@ -4,6 +4,13 @@ const LIST_LINE_PATTERN = /^(?:[-*+•]\s+|\d+[.)]\s+)/u
 const BLOCK_LINE_PATTERN = /^(?:#{1,6}\s+|>\s+|```|~~~|\|)/u
 const INDENTED_CODE_PATTERN = /^(?:\t| {4,})\S/u
 const CJK_CHARACTER_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff]/u
+/** 全角字符（含 CJK 标点与全角符号）：估算显示宽度时按 1 个全角位计。 */
+const FULLWIDTH_CHARACTER_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/u
+/**
+ * 软换行的视觉行除最后一行外都接近满宽，显著短于选区内最大行宽的行
+ * 更可能是列表项或小标题，其后应保留换行。
+ */
+const SHORT_LINE_WIDTH_RATIO = 0.75
 // 全角逗号、顿号、分号与冒号紧跟前字，视觉换行合并时其后不应补空格。
 const NO_SPACE_AFTER_PATTERN = /[(\[{“‘/\-‐‑–—，、；：]$/u
 const NO_SPACE_BEFORE_PATTERN = /^[,.;:!?，。！？；：、)\]}”’]/u
@@ -72,6 +79,31 @@ function resolveSoftLineSeparator(leftLine: string, rightLine: string): string {
     return ''
   }
   return ' '
+}
+
+/**
+ * 按全角/半角估算一行文本的显示宽度，用于比较选区内各行的相对宽度。
+ * @param line 已清理首尾空格的文本行。
+ * @returns 估算显示宽度，全角字符计 1，其余字符计 0.5。
+ * @author zhenghq
+ */
+function estimateDisplayWidth(line: string): number {
+  let width = 0
+  for (const character of line) width += FULLWIDTH_CHARACTER_PATTERN.test(character) ? 1 : 0.5
+  return width
+}
+
+/**
+ * 提取行首的平行结构词：连续两个 CJK 字符或至少五个拉丁字母。
+ * 多行共享同一行首词时更可能是并列的列表项，而非软换行续行。
+ * @param line 已清理首尾空格的文本行。
+ * @returns 行首词（拉丁字母统一小写），无法提取时返回空字符串。
+ * @author zhenghq
+ */
+function resolveLeadingToken(line: string): string {
+  const match = /^(?:([\u2e80-\u9fff]{2})|([A-Za-z]{5,}))/u.exec(line)
+  if (!match) return ''
+  return (match[1] ?? match[2]?.toLowerCase()) ?? ''
 }
 
 /**
@@ -186,6 +218,17 @@ export function normalizeSelectedText(text: string): string {
   }
 
   const lines = normalizedText.split('\n')
+  const trimmedLines = lines.map((line) => line.trim())
+  const meaningfulLines = trimmedLines.filter((line) => line.length > 0)
+  const maxLineWidth = Math.max(0, ...meaningfulLines.map((line) => estimateDisplayWidth(line)))
+  // 软换行的段落里除最后一行外都是满宽行；当选区中存在多行显著短于
+  // 最大行宽时，说明这些行是独立的列表项或小标题，短行后应保留换行。
+  const shortLineCount = meaningfulLines
+    .slice(0, -1)
+    .filter((line) => estimateDisplayWidth(line) < SHORT_LINE_WIDTH_RATIO * maxLineWidth)
+    .length
+  const preserveShortLineBreaks = shortLineCount >= 2
+
   let result = ''
   let previousRawLine = ''
   let paragraphBreakPending = false
@@ -204,9 +247,14 @@ export function normalizeSelectedText(text: string): string {
     } else {
       const previousKind = classifySelectedLine(previousRawLine)
       const currentKind = classifySelectedLine(rawLine)
+      const previousTrimmed = previousRawLine.trim()
       const preserveLineBreak = currentKind !== 'prose'
         || previousKind === 'block'
         || (previousKind === 'prose' && endsCompleteSentence(previousRawLine.trim()))
+        || resolveLeadingToken(previousTrimmed) !== ''
+          && resolveLeadingToken(previousTrimmed) === resolveLeadingToken(line)
+        || preserveShortLineBreaks
+          && estimateDisplayWidth(previousTrimmed) < SHORT_LINE_WIDTH_RATIO * maxLineWidth
       result += preserveLineBreak
         ? `\n${line}`
         : `${resolveSoftLineSeparator(previousRawLine.trim(), line)}${line}`

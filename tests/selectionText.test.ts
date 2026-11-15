@@ -95,6 +95,41 @@ test('中文整句中的单个硬换行应直接连接', () => {
 })
 
 /**
+ * 校验浏览器中不带列表符号的多个列表项选区不会被压成一行。
+ * 场景：网页列表项没有可选中的项目符号，每项独占一行且无句末标点。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('无符号浏览器列表项的换行应保留', () => {
+  const listText = [
+    '论文导入',
+    '支持软件内浏览 Cool Papers 网站并导入文献',
+    '支持魔搭网站导入文献',
+    '支持 RSS 订阅',
+    '支持根据已有文献库推荐arXiv今日文献',
+    '支持搜索论文名字导入',
+    '支持 Zotero 浏览器插件导入文献'
+  ].join('\n')
+
+  assert.equal(normalizeSelectedText(listText), listText)
+})
+
+/**
+ * 校验短小标题行与后续列表项之间不会被合并成一行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('小标题行与后续无符号列表项的换行应保留', () => {
+  const listText = [
+    '论文导入',
+    '支持搜索论文名字导入',
+    '支持页码导航、适应宽/整页、大纲、⌘F 查找、平滑划词、高亮、批注、提问与翻译'
+  ].join('\n')
+
+  assert.equal(normalizeSelectedText(listText), listText)
+})
+
+/**
  * 校验段落和列表等语义换行不会被错误压平成一行。
  * @returns 无返回值。
  * @author zhenghq
