@@ -2206,6 +2206,20 @@ function handleLanguageChange(): void {
 }
 
 /**
+ * 处理翻译渠道下拉变化：先结束原生控件保护，再进入独立的渠道变更流程。
+ *
+ * 原生 select 在渠道切换时同样可能让窗口短暂失焦；若不先结束 selector 域，
+ * 迟到的 focusout 会与渠道变更流程的保护互相干扰。两个域独立后，任何事件
+ * 顺序都不会提前关闭正在切换渠道的弹窗。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handleProviderChange(): void {
+  endLanguageInteraction()
+  void changeTranslationProvider()
+}
+
+/**
  * 保存语言变化；手动模式仅标记结果过期，划词模式继续自动重译。
  * @returns 语言设置保存或重译完成后的 Promise。
  * @author zhenghq
@@ -2259,6 +2273,7 @@ async function changeTranslationProvider(): Promise<void> {
   stopSpeech()
   const previousProvider = currentSettings?.preferredTranslationProvider ?? 'auto'
   translationProviderEl.disabled = true
+  beginLanguageRetranslation()
   try {
     currentSettings = await window.api.setSettings({
       preferredTranslationProvider: translationProviderEl.value as Settings['preferredTranslationProvider']
@@ -2283,6 +2298,7 @@ async function changeTranslationProvider(): Promise<void> {
     flashStatus(t('popup.providerSwitchFailed'))
   } finally {
     translationProviderEl.disabled = false
+    endLanguageRetranslation()
   }
 }
 
@@ -2694,7 +2710,10 @@ targetLangEl.addEventListener('pointerdown', beginLanguageInteraction)
 targetLangEl.addEventListener('focusin', beginLanguageInteraction)
 targetLangEl.addEventListener('focusout', endLanguageInteraction)
 targetLangEl.addEventListener('change', handleLanguageChange)
-translationProviderEl.addEventListener('change', () => void changeTranslationProvider())
+translationProviderEl.addEventListener('pointerdown', beginLanguageInteraction)
+translationProviderEl.addEventListener('focusin', beginLanguageInteraction)
+translationProviderEl.addEventListener('focusout', endLanguageInteraction)
+translationProviderEl.addEventListener('change', handleProviderChange)
 manualModeBtn.addEventListener('click', () => mode === 'manual' ? leaveManualMode() : enterManualMode())
 historyBtn.addEventListener('click', () => historyOpen ? closeHistory() : openHistory())
 historySearchEl.addEventListener('input', renderHistoryList)

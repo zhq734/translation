@@ -462,6 +462,39 @@ test('AI 首个片段后失败时不得静默降级替换，且保留已展示�
   assert.equal(calls.some((url) => url.includes('deeplx')), false)
 })
 
+test('AI 流式片段已展示但结束时被语言守卫整体否决时应降级到后续通道', async () => {
+  const source = 'The quick brown fox jumps over the lazy dog near the river bank today'
+  const calls: string[] = []
+  const runtime = new TranslationRuntime({
+    fetch: async (url) => {
+      const value = String(url)
+      calls.push(value)
+      if (value.includes('chat/completions')) {
+        return streamingResponse([
+          openAiDelta('你好。'),
+          openAiDelta(`${source}.`),
+          'data: [DONE]\n\n'
+        ])
+      }
+      if (value.includes('api.deeplx.org')) {
+        return new Response(JSON.stringify({ code: 200, data: '降级译文' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+      throw new Error(`不应请求：${value}`)
+    }
+  })
+  const deltas: string[] = []
+  const result = await runtime.translateStream(source, aiSettings(), null, 'sk-ai', {
+    onDelta: (delta) => deltas.push(delta)
+  })
+  assert.equal(result.provider, 'deeplx-public')
+  assert.equal(result.translation, '降级译文')
+  assert.deepEqual(deltas, ['你好。'])
+  assert.ok(calls.some((url) => url.includes('api.deeplx.org')))
+})
+
 test('相同正文使用不同文档术语上下文时不得复用普通翻译缓存', async () => {
   const requestBodies: string[] = []
   const runtime = new TranslationRuntime({

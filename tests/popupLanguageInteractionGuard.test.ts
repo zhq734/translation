@@ -151,3 +151,40 @@ test('语言选择器保护信号必须通过受信任的弹窗 IPC 送达主进
   assert.match(handlerSource, /setPopupLanguageInteraction\(active === true, normalizedScope\)/u,
     '主进程必须按保护域转换语言选择器交互状态')
 })
+
+test('翻译渠道下拉交互必须与语言下拉一样保护弹窗不被失焦误关', () => {
+  for (const event of ['pointerdown', 'focusin']) {
+    assert.match(
+      rendererSource,
+      new RegExp(`translationProviderEl\\.addEventListener\\('${event}', beginLanguageInteraction\\)`, 'u'),
+      `翻译渠道下拉 ${event} 时必须立即开启下拉交互保护`
+    )
+  }
+  assert.match(
+    rendererSource,
+    /translationProviderEl\.addEventListener\('focusout', endLanguageInteraction\)/u,
+    '翻译渠道下拉失焦后必须解除下拉交互保护'
+  )
+  assert.match(
+    rendererSource,
+    /translationProviderEl\.addEventListener\('change', handleProviderChange\)/u,
+    '翻译渠道切换必须经由独立的 change 处理器'
+  )
+
+  const providerChangeSource = stripComments(
+    extractFunction(rendererSource, 'function handleProviderChange()')
+  )
+  const endSelectorIndex = providerChangeSource.indexOf('endLanguageInteraction()')
+  const applyProviderIndex = providerChangeSource.indexOf('changeTranslationProvider()')
+  assert.ok(endSelectorIndex >= 0, '渠道切换后必须先结束下拉控件保护')
+  assert.ok(applyProviderIndex >= 0, '渠道切换后必须继续执行渠道变更流程')
+  assert.ok(endSelectorIndex < applyProviderIndex, '必须先结束下拉保护，再进入渠道变更')
+
+  const providerApplySource = stripComments(
+    extractFunction(rendererSource, 'async function changeTranslationProvider()')
+  )
+  assert.match(providerApplySource, /beginLanguageRetranslation\(\)/u,
+    '渠道变更开始时必须延长重译保护，覆盖设置保存的异步间隙')
+  assert.match(providerApplySource, /finally[\s\S]*?endLanguageRetranslation\(\)/u,
+    '渠道变更结束或失败后必须解除重译保护')
+})

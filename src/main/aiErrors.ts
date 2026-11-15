@@ -19,6 +19,8 @@ export interface AiErrorOptions {
   cause?: unknown
   /** 服务端建议的限流重试等待时间（毫秒）。 */
   retryAfterMs?: number
+  /** 流式输出结束时被语言守卫整体否决时置位，允许上层在已展示片段后继续降级。 */
+  languageGuardRejected?: boolean
 }
 
 /**
@@ -32,6 +34,8 @@ export interface AiErrorOptions {
 export class AiError extends Error {
   /** 服务端建议的限流重试等待时间（毫秒）。 */
   readonly retryAfterMs?: number
+  /** 是否为语言守卫对完整译文的整体否决；属于内容质量错误而非链路故障。 */
+  readonly languageGuardRejected?: boolean
 
   constructor(
     readonly kind: AiErrorKind,
@@ -41,6 +45,7 @@ export class AiError extends Error {
     super(message, options.cause === undefined ? undefined : { cause: options.cause })
     this.name = 'AiError'
     this.retryAfterMs = options.retryAfterMs
+    this.languageGuardRejected = options.languageGuardRejected
   }
 }
 

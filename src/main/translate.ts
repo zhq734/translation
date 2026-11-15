@@ -14,6 +14,7 @@ import { toMicrosoftCheckStatus } from './microsoftErrors'
 import { resolveMicrosoftLanguagePair } from './microsoftLanguage'
 import { MicrosoftTranslationClient } from './microsoftTranslation'
 import { AiTranslationClient } from './aiTranslationClient'
+import { AiError } from './aiErrors'
 import {
   BilibiliIndexTranslationClient,
   toBilibiliIndexCheckStatus
@@ -114,6 +115,16 @@ function structuredTranslationError(error: unknown): StructuredTranslationError 
     details.retryAfterMs = Math.floor(source.retryAfterMs)
   }
   return details.kind || details.retryAfterMs !== undefined ? details : null
+}
+
+/**
+ * 判断错误是否为语言守卫对 AI 完整译文的整体否决。
+ * @param error 翻译通道抛出的原始错误。
+ * @returns 守卫整体否决时返回 true，其余情况返回 false。
+ * @author zhenghq
+ */
+function isLanguageGuardRejection(error: unknown): boolean {
+  return error instanceof AiError && error.languageGuardRejected === true
 }
 
 /**
@@ -264,7 +275,8 @@ export class TranslationRuntime {
 
   /**
    * 按多通道顺序执行翻译，AI 通道使用真实流式回调；其它通道返回完整结果。
-   * 首个安全片段出现前允许继续降级，出现后失败则保留已展示内容并停止降级。
+   * 首个安全片段出现前允许继续降级，出现后失败则保留已展示内容并停止降级；
+   * 语言守卫在流式结束时对完整译文的整体否决属于内容质量错误，即使已展示片段也继续降级替换。
    * @param text 待翻译文本。
    * @param settings 当前公开设置快照。
    * @param dingTalkCredentials 主进程解密后的钉钉凭证快照。
@@ -347,7 +359,7 @@ export class TranslationRuntime {
           structuredError = details
         }
         this.trip(channel.breakerKey, channel.cooldownMs)
-        if (visibleDeltaCount > 0) throw error
+        if (visibleDeltaCount > 0 && !isLanguageGuardRejection(error)) throw error
       }
     }
     throw createChannelAggregateError(lastError, structuredError)

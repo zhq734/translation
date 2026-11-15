@@ -212,7 +212,9 @@ export class AiTranslationClient {
     }
 
     if (!finalTranslation) {
-      throw new AiError('service', translateMain('ai.error.emptyTranslation'))
+      throw new AiError('service', translateMain('ai.error.emptyTranslation'), {
+        languageGuardRejected: true
+      })
     }
     return finalTranslation
   }
