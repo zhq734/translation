@@ -1194,6 +1194,12 @@ const api: Api = {
   cancelEdgeSpeech: (requestId: string): void => ipcRenderer.send('speech:edge-cancel', requestId),
 
   /**
+   * 读取便携状态，无参数。
+   * @returns 本次进程的便携模式及数据目录，不包含凭证。
+   * @author zhenghq
+   */
+  getPortableInfo: () => ipcRenderer.invoke('app:get-portable-info'),
+  /**
    * 获取完整设置。
    * @returns 当前设置。
    * @author zhenghq

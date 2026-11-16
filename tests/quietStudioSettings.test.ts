@@ -55,9 +55,13 @@ test('Quiet Studio 八分类均有本地化面板标题与扁平分组，不删�
   }
   const ids = [...html.matchAll(/\bid="([^"]+)"/gu)].map((match) => match[1])
   assert.equal(new Set(ids).size, ids.length, '设置 ID 不可重复')
-  assert.equal(contractFingerprint(ids), '3ff478fb64150873538ef35a2d9dd90770ff17a97a89002b414ad8a78690d419', '保留改版前 225 个配置、状态和操作 ID')
+  const portableIds = ['portable-notice', 'portable-data-directory']
+  for (const id of portableIds) assert.ok(ids.includes(id), `便携新增 ID 必须存在：${id}`)
+  assert.equal(contractFingerprint(ids.filter((id) => !portableIds.includes(id))), '3ff478fb64150873538ef35a2d9dd90770ff17a97a89002b414ad8a78690d419', '保留改版前 225 个配置、状态和操作 ID')
   const bindings = [...html.matchAll(/data-i18n(?:-attr)?="([^"]+)"/gu)].map((match) => match[1])
-  assert.equal(contractFingerprint(bindings), '140d9ac75dbcc6c9e5ccbb79e3ec96ae1b732c080576bd209ef947916b4dfef5', '保留改版前 385 个本地化绑定，不引入未翻译文案')
+  const portableBindings = ['settings.portable.title', 'settings.portable.restrictions', 'settings.portable.dataDirectory']
+  for (const key of portableBindings) assert.ok(bindings.includes(key), `便携新增本地化绑定必须存在：${key}`)
+  assert.equal(contractFingerprint(bindings.filter((key) => !portableBindings.includes(key))), '140d9ac75dbcc6c9e5ccbb79e3ec96ae1b732c080576bd209ef947916b4dfef5', '保留改版前 385 个本地化绑定，不引入未翻译文案')
   for (const match of source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/gu)) {
     assert.ok(ids.includes(match[1]), `控制器引用的 #${match[1]} 必须保留`)
   }

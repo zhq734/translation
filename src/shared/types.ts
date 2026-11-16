@@ -1,3 +1,4 @@
+import type { PortableRuntimeInfo } from './portable'
 import type {
   ExtractedWebTextUnit,
   WebImageCandidate,
@@ -1840,6 +1841,12 @@ export interface Api {
   cancelEdgeSpeech(requestId: string): void
 
   // 设置
+  /**
+   * 读取本次进程便携状态，无参数。
+   * @returns 便携模式及数据目录，不包含凭证。
+   * @author zhenghq
+   */
+  getPortableInfo(): Promise<PortableRuntimeInfo>
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   onSettingsChanged(cb: (s: Settings) => void): () => void

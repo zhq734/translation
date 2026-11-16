@@ -230,13 +230,28 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - **macOS**：下载 `SelectionTranslator-<版本>-mac-<架构>.zip` 或 `.dmg`，安装到 `/Applications/划词翻译.app`；从 DMG、下载目录或其他位置运行时只能手动升级；
 - **Linux**：x64 下载 `SelectionTranslator-<版本>-x86_64.AppImage`，ARM64 下载 `SelectionTranslator-<版本>-arm64.AppImage`，添加执行权限后运行；
 - **Windows 10/11**：下载 `SelectionTranslator-<版本>-Setup-<架构>.exe`，运行安装向导。
+- **Windows 10/11 便携版（x64/arm64）**：下载 `SelectionTranslator-<版本>-Portable-<架构>.zip`，完整解压到可写目录后运行 `划词翻译.exe`，无需安装；详见下方便携说明。
 - **Windows 7 SP1 x64**：下载专用包 `SelectionTranslator-<版本>-Setup-win7-x64.exe`，运行安装向导。
 
 所有安装包应与同一 Release 中的 `SHA256SUMS` 一起发布。现代 Windows 支持 `x64` 与 `arm64`；Windows 7 仅支持 64 位，不提供 32 位安装包。Win7 包使用 Electron 22 兼容运行时，OCR 固定使用 Tesseract.js WebAssembly 引擎，不包含 PaddleOCR、系统 OCR 或其他 OCR 原生运行时；安装包已内置简体中文、繁体中文和英文语言模型，默认中英繁识别可离线完成，其他语言首次使用才可能需要联网下载模型。设置 `TESSERACT_LANG_PATH` 可覆盖内置模型来源，支持本地绝对目录或 HTTP(S) 镜像。应用内更新通过轻量 GitHub Release API 检查版本，不加载 `electron-updater`，也不会自动下载或安装；发现新版后会打开 Release 页面，由用户手动下载新版 `Setup-win7-x64.exe` 覆盖安装。Electron 22 已停止安全更新，建议仅在无法升级系统时使用。详见[开发、测试与打包](#开发测试与打包)。
 
 > Windows 7 需为 SP1 x64，并安装 SHA-2 代码签名支持更新、Universal C Runtime 与所需 Visual C++ 运行库。由于旧系统与 Electron 22 均已停止维护，Win7 兼容包无法获得现代 Windows 包同等的安全更新保障。
 
+### Windows ZIP 便携版（Windows 10/11）
+
+Intel/AMD 64 位电脑选择 `Portable-x64.zip`，Windows ARM 电脑选择 `Portable-arm64.zip`。先对照同一可信 Release 的 `SHA256SUMS` 校验 ZIP（`Get-FileHash .\SelectionTranslator-<版本>-Portable-x64.zip -Algorithm SHA256`），再完整解压到本地可写目录，运行与 `portable.json` 同级的 `划词翻译.exe`。不要在压缩包内直接运行、只复制 EXE、删除标识或放在 Program Files 等受保护目录。这是文件夹便携包，不是单 EXE；不支持 Windows 7 或 32 位 Windows。一键 PowerShell 安装脚本仍安装 NSIS 版，不会选择便携 ZIP。
+
+- **数据与搬迁**：应用管理的数据位于 EXE 同级的 `data/user-data`、`data/session`、`data/logs`、`data/temp`、`data/crash-dumps`。先彻底退出程序（包括托盘进程），再备份或搬迁整个解压目录；设置、历史随 `data` 保留，不自动导入安装版 AppData。标识损坏或目录不可写时提示错误并退出，不回退 AppData。
+- **跨机器/跨用户密钥**：API Key、Secret 继续由 Electron `safeStorage` 绑定 Windows 用户/机器加密。复制 `data` 不保证另一台电脑或另一 Windows 用户可解密；失败后需重新填写密钥，不提供明文降级。数据备份也应妥善保管。
+- **自启动与共存**：便携模式禁用开机自启动，不创建或删除安装版登录项；两种发行数据隔离，但同时运行仍可能出现全局快捷键冲突。
+- **仅手动升级**：在 **设置 → 关于** 检查到更高版本且存在当前架构 Portable ZIP 后，只打开可信 GitHub Release 页面，不下载或运行 NSIS、不自动覆盖当前目录。退出后先备份完整旧目录，将校验过的新版解压到**新目录**，首次启动前复制旧 `data`。保留**旧程序和升级前的旧 data 副本**用于回退，不承诺新版数据兼容旧程序。便携版当前仅比较递增 SemVer，不提示同版本重新构建。
+- **边界**：外部原始文档、导出文件、用户选择的下载位置及外部自定义模型路径不会自动搬迁；移动后需自行恢复文件或重新选择路径。Windows 最近文件记录、DNS/网络缓存、Defender/SmartScreen、系统崩溃报告等痕迹不由应用控制；便携不等于绝对无痕或安全沙箱。未签名包可能有系统警告，应核验来源，不要全局关闭安全防护。
+
+完整构建、搬迁回退和 Windows x64/arm64 冒烟清单见 [Windows 便携版验收说明](docs/windows-portable.md)。自动化 ZIP 夹具测试不代表已完成 Windows 实机启动验证。
+
 ### 应用内检查与升级
+
+以下下载和安装行为适用于安装发行版；Windows 便携版只按上述流程打开匹配 ZIP 的发布页并手动升级。
 
 - 正式安装包启动约 5 秒后会静默检查 GitHub Release，但不会未经确认自动下载安装；
 - 可在 **设置 → 关于** 查看当前版本、手动检查更新和观察下载进度；macOS 固定安装在 `/Applications/划词翻译.app` 时，下载与校验完成后会自动退出、替换并重新启动；
@@ -252,6 +267,8 @@ Linux 会安装 AppImage 到 `~/.local/bin/selection-translator` 并创建桌面
 - 无法从更新清单解析出对应 DMG 时会打开 GitHub Release 作为兜底。源码开发模式不会访问更新服务，检查或下载发生异常时设置页也会保留“打开发布页”入口。
 
 #### 同版本重新构建检测
+
+此安装发行版能力不适用于 Windows 便携版；便携版当前仅检测更高 SemVer 版本。
 
 流水线每次正式打包都会生成 `build-info.json` 构建元数据，字段固定为 `schemaVersion`、`version`、`buildId`、`sourceCommit`、`workflowRunId` 和 `workflowRunAttempt`。`buildId` 由 GitHub Actions 的运行 ID 与运行尝试组成（形如 `github-run-<run_id>-attempt-<attempt>`），因此同一提交被重新运行或重试时也会得到不同的构建标识。同一份元数据会同时写入三平台安装包的资源目录和 GitHub Release 资产。
 
@@ -890,6 +907,9 @@ npm run dist:linux
 # 构建 Windows x64/arm64 NSIS 安装程序
 npm run dist:win
 
+# 构建 Windows 10/11 x64/arm64 便携 ZIP（需在 Windows 运行）
+npm run dist:win:portable
+
 # 构建 Windows 7 SP1 x64 专用 NSIS 安装程序（Electron 22，Tesseract.js WASM OCR，仅手动更新）
 npm run dist:win:win7
 
@@ -903,11 +923,12 @@ npm run release:checksums
 - `npm run dist:mac`：生成 macOS x64/arm64 的 `dmg` 和 `zip` 产物；
 - `npm run dist:linux`：生成 Linux x64/arm64 的 AppImage，其中 x64 产物文件名使用 `x86_64`；打包前会准备并校验两个架构的 `sharp`/`libvips` OCR 运行时；
 - `npm run dist:win`：生成 Windows x64/arm64 NSIS 安装程序 `SelectionTranslator-<版本>-Setup-<架构>.exe`；打包前会准备并校验两个架构的 `sharp` OCR 运行时；
+- `npm run dist:win:portable`：复用现代 Windows 构建和 OCR/UIA 准备，生成 `dist-portable/SelectionTranslator-<版本>-Portable-x64.zip` 与 `SelectionTranslator-<版本>-Portable-arm64.zip`；构建后读取两份 ZIP，校验 EXE 同级标识及必要原生资源。独立配置禁用发布，不含 NSIS 目标；
 - `npm run dist:win:win7`：生成 Windows 7 SP1 x64 专用包 `dist-win7/SelectionTranslator-<版本>-Setup-win7-x64.exe`，固定 Electron `22.3.27`，保留 Tesseract.js WebAssembly OCR 运行时，排除 PaddleOCR、系统 OCR、Sharp、ONNX 等 OCR 原生依赖，不生成 `app-update.yml`、`latest*.yml` 或 `.blockmap`，并在打包前编译、校验 `windows-uia-reader.exe`；
-- 现代平台打包会生成 `latest*.yml` 更新清单；macOS/现代 Windows 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；Windows 7 兼容包按设计不生成这两类文件；
+- 现代安装发行版会生成 `latest*.yml` 更新清单；macOS/Windows NSIS 另外生成独立 `.blockmap`，Linux AppImage 将差分块信息嵌入文件本身；Windows 便携版和 Windows 7 按设计不生成这两类文件，便携版也禁止包含 `resources/app-update.yml`；
 - Windows 安装向导支持选择安装目录，并创建桌面和开始菜单快捷方式；
 - `npm run release:checksums`：为 `.AppImage`、`.dmg`、`.zip` 和 `.exe` 生成 `SHA256SUMS`；
-- 打包输出目录统一为 `dist/`；
+- 常规包输出到 `dist/`，Windows 便携版输出到 `dist-portable/`，Win7 输出到 `dist-win7/`；本地便携摘要使用 `npm run release:checksums -- --directory dist-portable`；
 - 各平台打包命令显式使用 `--publish never`，只生成本地安装包，避免标签构建时由 electron-builder 隐式发布；
 - 发布时必须把所有安装包与 `SHA256SUMS` 上传到同一个 GitHub Release，一键安装脚本才能完成下载与校验；
 - 建议在各目标平台完成安装验证；跨平台打包时需要联网下载目标平台 Electron、NSIS 或 AppImage 工具链。
@@ -919,8 +940,8 @@ npm run release:checksums
 工作流会先运行单元测试和类型检查，然后分别在 macOS、Windows 与 Linux 原生运行器上构建现代 x64/arm64 安装包，并在 Windows 运行器额外构建 Win7 x64 兼容包，最后把各平台产物上传到本次 Actions 运行记录中。macOS 会按架构拆分到 `macos-15-intel`（x64）和 `macos-15`（arm64）运行器，避免 PaddleOCR 依赖的 `sharp` native binding 被交叉打成错误架构。推送以 `v` 或 `V` 开头的版本标签时，还会自动完成以下发布步骤：
 
 1. 使用标签中的版本号同步安装包版本；
-2. 汇总三个平台的安装包；
-3. 生成 `SHA256SUMS`；
+2. 汇总三个平台的安装包及独立 Windows 矩阵任务上传的两份便携 ZIP（`packages-windows-portable`）；该任务只上传 ZIP，不上传安装版更新元数据；
+3. 对汇总后的全部安装包与两份 Windows Portable ZIP 生成 `SHA256SUMS`；
 4. 新 Release 先以草稿状态创建，上传所有安装包、`latest*.yml`、`.blockmap` 与校验和后再正式发布，避免客户端读取到不完整的更新资产。
 
 两个 macOS 架构任务会先分别生成 `latest-mac-x64.yml` 和 `latest-mac-arm64.yml`，发布阶段再合并为 electron-updater 使用的 `latest-mac.yml`。

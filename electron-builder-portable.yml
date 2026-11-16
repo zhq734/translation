@@ -1,0 +1,15 @@
+# 只继承现代 Windows 运行资源；不复用安装版发布目标与更新配置。
+extends: ./scripts/build-windows-portable.mjs
+directories:
+  output: dist-portable
+publish: null
+win:
+  target:
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  artifactName: SelectionTranslator-${version}-Portable-${arch}.${ext}
+  extraFiles:
+    - from: scripts/portable/portable.json
+      to: portable.json

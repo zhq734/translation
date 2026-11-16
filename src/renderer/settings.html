@@ -329,6 +329,11 @@
 
           <section>
             <h2 data-i18n="settings.launch.title">App Appearance and Startup</h2>
+            <div id="portable-notice" hidden>
+              <p class="field-hint"><strong data-i18n="settings.portable.title">Windows portable edition</strong></p>
+              <p class="field-hint" data-i18n="settings.portable.restrictions">Launch at login is disabled. API keys may need to be entered again on another computer or account. To update, quit the app, extract the new ZIP and copy your data folder; keep a backup.</p>
+              <p class="field-hint"><span data-i18n="settings.portable.dataDirectory">Data directory: </span><span id="portable-data-directory" style="overflow-wrap: anywhere"></span></p>
+            </div>
             <div class="row">
               <label for="show-dock-icon" data-i18n="settings.launch.dock">Dock</label>
               <label class="checkbox-control">
@@ -340,7 +345,7 @@
             <div class="row">
               <label for="auto-launch" data-i18n="settings.launch.autoLaunch">Launch at login</label>
               <label class="checkbox-control">
-                <input id="auto-launch" type="checkbox" />
+                <input id="auto-launch" type="checkbox" disabled />
                 <span data-i18n="settings.launch.autoLaunchLabel">Run Selection Translator automatically at login</span>
               </label>
             </div>

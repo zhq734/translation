@@ -2,6 +2,19 @@ import { defineCatalog } from './catalog.ts'
 
 /** 中文界面词条目录：基础领域。 */
 export const zhCNBase = defineCatalog({
+  "portable.startup.title": "划词翻译 · 便携版启动失败",
+  "portable.startup.pathType": "便携路径类型无效：{{path}}",
+  "portable.startup.shortWrite": "便携目录探写未完成：{{directory}}",
+  "portable.startup.marker": "portable.json 格式或版本不受支持",
+  "portable.startup.arch": "便携版仅支持 x64、arm64",
+  "portable.startup.failed": "便携版初始化失败（{{directory}}）：{{error}}。请完整解压到可写目录后重试。",
+  'settings.portable.title': 'Windows 便携版',
+  'settings.portable.restrictions': '便携模式禁用开机自启动。换电脑或系统用户后，API Key 可能需要重新填写。升级时请先退出程序，解压新版 ZIP，再复制原 data 文件夹；请保留旧版和数据备份。',
+  'settings.portable.dataDirectory': '数据目录：',
+  'portable.update.invalid': '便携更新响应、版本或架构无效。',
+  'portable.update.http': '便携更新检查失败：HTTP {{status}}。',
+  'portable.update.missingAsset': '当前发布没有匹配的便携包：{{asset}}。请勿使用 Setup 安装包替代。',
+  'portable.update.manualOnly': '便携版仅支持手动更新。请下载匹配的 ZIP，退出程序并将 data 复制到新版目录。',
   'app.name': '划词翻译',
   'app.startupFailed.message': '应用无法完成启动：{{message}}',
   'app.startupFailed.title': '划词翻译启动失败',

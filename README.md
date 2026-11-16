@@ -218,13 +218,28 @@ For manual installation, download the matching asset from GitHub [Releases](../.
 - **macOS**: `SelectionTranslator-<version>-mac-<arch>.zip` or `.dmg`; install it at `/Applications/划词翻译.app`. Running from a DMG, Downloads, or any other location falls back to manual upgrades;
 - **Linux**: use `SelectionTranslator-<version>-x86_64.AppImage` for x64 or `SelectionTranslator-<version>-arm64.AppImage` for ARM64;
 - **Windows 10/11**: `SelectionTranslator-<version>-Setup-<arch>.exe`.
+- **Windows 10/11 portable (x64/arm64)**: `SelectionTranslator-<version>-Portable-<arch>.zip`; fully extract it into a writable folder, then run `划词翻译.exe`. No installer is required; see the portable guide below.
 - **Windows 7 SP1 x64**: use the dedicated `SelectionTranslator-<version>-Setup-win7-x64.exe` installer.
 
 Publish `SHA256SUMS` alongside the installers in the same Release. Modern Windows builds support both `x64` and `arm64`; Windows 7 is supported only on 64-bit systems and has no 32-bit build. The Win7 package uses the Electron 22 compatibility runtime and Tesseract.js running in WebAssembly for OCR; it does not include PaddleOCR, system OCR, or native OCR runtimes. Simplified Chinese, Traditional Chinese, and English language models are bundled, so the default Chinese/English OCR works offline; only other languages may need to download language data on first use. Set `TESSERACT_LANG_PATH` to override the bundled model source with an absolute local directory or an HTTP(S) mirror. In-app update checks use a lightweight GitHub Release API request and does not load `electron-updater`; the package never downloads or installs updates automatically. When a newer version is found, the app opens the Release page so the user can manually download the new `Setup-win7-x64.exe` package. Electron 22 no longer receives security updates, so use this package only when the operating system cannot be upgraded. See [Development, Testing, and Packaging](#development-testing-and-packaging).
 
 > Windows 7 requires SP1 x64 plus SHA-2 code-signing support updates, the Universal C Runtime, and any required Visual C++ runtime. Because both Windows 7 and Electron 22 are end-of-life, the Win7 package cannot receive the same security-update guarantees as modern Windows builds.
 
+### Windows Portable ZIP (Windows 10/11)
+
+Choose `Portable-x64.zip` for Intel/AMD 64-bit PCs or `Portable-arm64.zip` for Windows on ARM. Verify the ZIP against `SHA256SUMS` from the same trusted Release (`Get-FileHash .\SelectionTranslator-<version>-Portable-x64.zip -Algorithm SHA256`), fully extract it into a writable local folder, and run `划词翻译.exe` next to `portable.json`. Do not run inside the ZIP, copy only the EXE, delete the marker, or use a protected folder such as Program Files. This is a folder-portable package, not a single-EXE application; Windows 7 and 32-bit Windows are not supported. The one-click PowerShell installer still installs NSIS, not the portable ZIP.
+
+- **Data and moving folders:** app-managed data lives beside the EXE in `data/user-data`, `data/session`, `data/logs`, `data/temp`, and `data/crash-dumps`. Quit the app completely, including its tray process, before backing up or moving the entire extracted folder. Settings and history move with `data`; installed-version AppData is not imported automatically. If the folder is not writable or the marker is invalid, startup fails with an error instead of falling back to AppData.
+- **Keys across computers/users:** API keys and secrets remain protected by Electron `safeStorage` and the Windows user/machine context. Copying `data` does not make those credentials portable across machines or Windows users. Re-enter keys if decryption fails; there is no plaintext fallback. Keep backups private.
+- **Startup and coexistence:** launch-at-login is disabled in portable mode; the app does not create or remove the installed version's login items. Installed and portable copies keep separate data; running both can still cause global-shortcut conflicts.
+- **Manual upgrades only:** **Settings → About** checks for a newer version with a matching-architecture Portable ZIP and opens the trusted GitHub Release page. It does not download/run NSIS or replace the running folder. Quit, back up the complete old folder, verify and extract the new ZIP into a **new** writable folder, then copy the old `data` into it before first launch. Keep the old program **and its pre-upgrade data backup** for rollback; do not use newer data with an older executable. Portable checks currently compare newer SemVer versions, not same-version rebuilds.
+- **Boundaries:** original external documents, exports, user-selected download locations, and custom external model paths are not relocated automatically; restore those files or update their paths after moving. Windows recent-file lists, DNS/network caches, Defender/SmartScreen, crash reporting and other OS traces are outside the app's control. “Portable” does not mean trace-free or a security sandbox. Unsigned packages may trigger security warnings; verify the source rather than disabling system protection globally.
+
+See [Windows portable build and smoke-test checklist](docs/windows-portable.md) for artifact checks, migration/rollback steps, and the Windows x64/arm64 acceptance matrix. Automated fixture tests are not evidence of a successful Windows launch.
+
 ### In-app update checks and upgrades
+
+The download/install behavior below applies to installed distributions; Windows Portable only opens a matching ZIP release for manual upgrading as described above.
 
 - Packaged builds silently check GitHub Releases about five seconds after startup, but never download or install an update without user confirmation;
 - Open **Settings → About** to view the current version, check manually, and monitor download progress. When macOS is installed at `/Applications/划词翻译.app`, the app quits, replaces itself, and relaunches automatically after download and verification;
@@ -240,6 +255,8 @@ Publish `SHA256SUMS` alongside the installers in the same Release. Modern Window
 - If a direct DMG cannot be resolved from the update metadata, the app opens GitHub Releases as a fallback. Source development mode does not access the update service, and the Release-page fallback remains available after check or download failures.
 
 #### Same-version rebuild detection
+
+This installed-distribution feature does not apply to Windows Portable, which currently detects newer SemVer releases only.
 
 Every official pipeline build generates `build-info.json` with a fixed shape: `schemaVersion`, `version`, `buildId`, `sourceCommit`, `workflowRunId`, and `workflowRunAttempt`. The `buildId` is derived from the GitHub Actions run ID and run attempt (`github-run-<run_id>-attempt-<attempt>`), so re-running or retrying the same commit still yields a different build identity. The same file is embedded in the resources directory of every platform installer and uploaded as a Release asset.
 
@@ -729,6 +746,9 @@ npm run dist:linux
 # Build Windows x64/arm64 NSIS installers
 npm run dist:win
 
+# Build Windows 10/11 x64/arm64 portable ZIPs (run on Windows)
+npm run dist:win:portable
+
 # Build the Windows 7 SP1 x64 installer (Electron 22, Tesseract.js WASM OCR, manual updates only)
 npm run dist:win:win7
 
@@ -742,10 +762,11 @@ npm run release:checksums
 - `npm run dist:mac` creates macOS x64/arm64 `dmg` and `zip` packages;
 - `npm run dist:linux` creates Linux x64/arm64 AppImage packages and prepares/validates the `sharp`/`libvips` OCR runtime for both architectures; the x64 artifact uses `x86_64` in its file name;
 - `npm run dist:win` creates `SelectionTranslator-<version>-Setup-<arch>.exe` NSIS installers and prepares/validates the `sharp` OCR runtime for both architectures;
+- `npm run dist:win:portable` reuses the modern Windows build and OCR/UIA preparation, creates `dist-portable/SelectionTranslator-<version>-Portable-x64.zip` and `SelectionTranslator-<version>-Portable-arm64.zip`, and validates both ZIPs for the EXE-adjacent marker and required native resources. Its independent configuration disables publishing and contains no NSIS target;
 - `npm run dist:win:win7` creates `dist-win7/SelectionTranslator-<version>-Setup-win7-x64.exe` for Windows 7 SP1 x64, pins Electron `22.3.27`, keeps the Tesseract.js WebAssembly OCR runtime, excludes PaddleOCR/system OCR/Sharp/ONNX native dependencies, emits no `app-update.yml`, `latest*.yml`, or `.blockmap`, and compiles/validates `windows-uia-reader.exe` before packaging;
-- Every modern platform package creates a `latest*.yml` update manifest. macOS and modern Windows also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data. The Windows 7 compatibility package intentionally creates neither;
+- Modern installed distributions create a `latest*.yml` update manifest. macOS and Windows NSIS also create standalone `.blockmap` files, while Linux AppImage embeds its differential block data. Windows Portable and Windows 7 intentionally create neither; Portable also forbids `resources/app-update.yml`;
 - `npm run release:checksums` creates `SHA256SUMS` for `.AppImage`, `.dmg`, `.zip`, and `.exe` files; upload it alongside all installers in the same Release;
-- All packaged files are written to `dist/`;
+- Standard packages are written to `dist/`; Windows Portable uses `dist-portable/`, and Win7 uses `dist-win7/`. Use `npm run release:checksums -- --directory dist-portable` for local portable checksums;
 - Platform packaging commands explicitly use `--publish never`, so electron-builder only creates local artifacts and cannot implicitly publish during a tag build;
 - Install-test each target package on a matching real device before release. Cross-building may download target Electron, NSIS, or AppImage toolchains.
 
@@ -756,8 +777,8 @@ The repository includes `.github/workflows/package.yml`. Run it manually from **
 The workflow runs unit tests and type checking first, then builds modern x64/arm64 installers on native macOS, Windows, and Linux runners, additionally builds the Win7 x64 compatibility package on Windows, and uploads the platform artifacts to the workflow run. macOS is split between the `macos-15-intel` (x64) and `macos-15` (arm64) runners so PaddleOCR's `sharp` native binding is never copied across architectures. Pushing a version tag beginning with `v` or `V` also performs the release flow automatically:
 
 1. Synchronize the package version from the tag;
-2. Collect installers from all three platforms;
-3. Generate `SHA256SUMS`;
+2. Collect installers from all three platforms and both Windows Portable ZIPs from the independent Windows matrix job (`packages-windows-portable`); that job uploads ZIPs only, never the installed version's update metadata;
+3. Generate `SHA256SUMS` over the merged release assets, including both Portable ZIPs;
 4. Create new Releases as drafts, upload installers, `latest*.yml`, `.blockmap`, and checksums, then publish only after every asset is available so clients never observe an incomplete update.
 
 The two macOS jobs first produce `latest-mac-x64.yml` and `latest-mac-arm64.yml`; the release job merges them into the `latest-mac.yml` consumed by electron-updater.

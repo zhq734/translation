@@ -1,3 +1,4 @@
+import { portableRuntimeInfo } from './portableBootstrap'
 import {
   app,
   Tray,
@@ -2070,6 +2071,8 @@ function activateExistingPageOrOpenSettings(): void {
 // 尽早初始化：包装 console 输出，按天滚动落盘并保留最近 1 天，供设置窗口实时查看。
 // 必须放在其余模块日志输出之前，确保启动期日志也被采集。
 // @author zhenghq
+/** 返回本次启动的便携状态；无参数，返回不含凭证的运行时信息。@author zhenghq */
+ipcMain.handle('app:get-portable-info', () => portableRuntimeInfo)
 const appLogger = createAppLogger({ logDir: app.getPath('logs') })
 const translationHistory = createTranslationHistoryController({
   getDirectory: () => app.getPath('userData'),
@@ -2235,7 +2238,7 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
 
 /**
  * 根据设置同步系统开机自启动状态。
- * macOS/Windows 写入系统登录项，Linux 写入 XDG 自启动桌面入口，开发模式与其他平台跳过。
+ * 安装版 macOS/Windows 写入系统登录项，Linux 写入桌面入口；便携及开发模式跳过，绝不删除安装版登录项。
  * @param enabled 是否开启开机自启动。
  * @returns 无返回值。
  * @author zhenghq
@@ -2243,7 +2246,8 @@ async function applyMacOSDockVisibility(showDockIcon: boolean): Promise<void> {
 function applyAutoLaunch(enabled: boolean): void {
   const strategy = resolveAutoLaunchStrategy({
     platform: process.platform,
-    packaged: app.isPackaged
+    packaged: app.isPackaged,
+    portable: portableRuntimeInfo.enabled
   })
   if (strategy === 'skipped' || strategy === 'unsupported') {
     console.log(`[autoLaunch] 当前环境不写入自启动配置: ${strategy}`)
@@ -2775,6 +2779,8 @@ async function initializeDeferredStartupServices(): Promise<void> {
         translate: t,
         showToast: (message, displayTimeMs, kind) => showScreenshotToast(message, displayTimeMs, kind)
       })
+      /** 广播更新状态；参数为状态，无返回值。@author zhenghq */
+      const onStatusChanged = (status: UpdateStatus): void => broadcast('updater:status', status)
       if (isWindows7CompatibilityRuntime()) {
         // Win7 包不加载 electron-updater，只用 GitHub Release API 检查是否有新版 Win7 安装包。
         const { UpdateManager } = await import('./updateManager')
@@ -2791,29 +2797,24 @@ async function initializeDeferredStartupServices(): Promise<void> {
           releaseUrl: 'https://github.com/zhq734/translation/releases/latest',
           isOnline: () => net.isOnline(),
           getTranslator: () => mainI18n?.translator ?? createTranslator('zh-CN'),
-          openExternal: async (url) => {
-            await shell.openExternal(url)
-          },
-          onStatusChanged: (status) => {
-            broadcast('updater:status', status)
-          }
+          openExternal: (url) => shell.openExternal(url),
+          onStatusChanged
         })
-        if (!updateManagerInitialization) createUpdateManagerGate()
-        resolveUpdateManagerInitialization?.()
+      } else if (portableRuntimeInfo.enabled) {
+        const { createPortableUpdateManager } = await import('./portableUpdater')
+        updateManager = await createPortableUpdateManager(onStatusChanged)
       } else {
         const { createApplicationUpdateManager } = await import('./updater')
         updateManager = await createApplicationUpdateManager(
-          (status) => {
-            broadcast('updater:status', status)
-          },
+          onStatusChanged,
           // electron-updater 的日志（含离线时的 ERR_INTERNET_DISCONNECTED）统一汇入
           // 主进程日志层，不再由 electron-updater 直接输出到 console 刷屏。
           // @author zhenghq
           { warn: (message) => appLogger.append('warn', [message], 'electron-updater') }
         )
-        if (!updateManagerInitialization) createUpdateManagerGate()
-        resolveUpdateManagerInitialization?.()
       }
+      if (!updateManagerInitialization) createUpdateManagerGate()
+      resolveUpdateManagerInitialization?.()
       console.log(
         '[main] 启动完成 autoTrigger =',
         getSettings().triggerMode === 'auto',

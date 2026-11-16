@@ -1,3 +1,4 @@
+import type { PortableRuntimeInfo } from '../../shared/portable'
 import { LANGUAGES } from '../../shared/langs'
 import { isCopyShortcut } from '../../shared/copyShortcutBehavior'
 import { formatKeyboardAccelerator } from '../../shared/keyboardAccelerator'
@@ -130,6 +131,9 @@ const shortcutRegistrationStatus = document.getElementById('shortcut-registratio
 const autohide = document.getElementById('autohide') as HTMLSelectElement
 const showDockIcon = document.getElementById('show-dock-icon') as HTMLInputElement
 const autoLaunch = document.getElementById('auto-launch') as HTMLInputElement
+const portableNotice = document.getElementById('portable-notice') as HTMLElement
+const portableDataDirectory = document.getElementById('portable-data-directory') as HTMLElement
+let portableInfo: PortableRuntimeInfo | null = null
 const speechProvider = document.getElementById('speech-provider') as HTMLSelectElement
 const speechProviderHint = document.getElementById('speech-provider-hint') as HTMLElement
 const webTranslationEnabled = document.getElementById('web-translation-enabled') as HTMLInputElement
@@ -1010,6 +1014,20 @@ function renderShortcutGuideHotkeys(settings: Settings): void {
 }
 
 /**
+ * 同步便携限制与目录提示；状态未知时禁止自启动，不等待其他设置请求。
+ * 无参数，使用当前便携状态及最近设置。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function renderPortableInfo(): void {
+  autoLaunch.disabled = portableInfo?.enabled !== false
+  if (autoLaunch.disabled) autoLaunch.checked = false
+  else if (latestSettings) autoLaunch.checked = latestSettings.autoLaunch
+  portableNotice.hidden = !portableInfo?.enabled
+  portableDataDirectory.textContent = portableInfo?.dataDirectory ?? ''
+}
+
+/**
  * 将完整设置同步到页面控件。
  * @param settings 当前完整设置。
  * @returns 无返回值。
@@ -1096,6 +1114,7 @@ function renderSettings(settings: Settings): void {
   realtimeSubtitleHotkey.value = settings.realtimeSubtitleHotkey
   showDockIcon.checked = settings.showDockIcon
   autoLaunch.checked = settings.autoLaunch
+  renderPortableInfo()
   speechProvider.value = settings.speechProvider
   webTranslationEnabled.checked = settings.webTranslationEnabled
   webTranslationScope.value = settings.webTranslationScope
@@ -1218,6 +1237,10 @@ function populateLanguageSelects(): void {
 async function initialize(): Promise<void> {
   populateLanguageSelects()
 
+  const portableInfoReady = window.api.getPortableInfo().then((runtimeInfo) => {
+    portableInfo = runtimeInfo
+    renderPortableInfo()
+  })
   const [
     settings,
     shortcutStates,
@@ -1229,7 +1252,8 @@ async function initialize(): Promise<void> {
     window.api.getShortcutRegistrationStates(),
     window.api.getOcrStatus(),
     window.api.getDockerCommand(1189),
-    window.api.getUpdateStatus()
+    window.api.getUpdateStatus(),
+    portableInfoReady
   ])
   renderSettings(settings)
   renderShortcutRegistrationStates(shortcutStates)
@@ -1959,6 +1983,7 @@ function saveDockIconVisibility(): void {
  * @author zhenghq
  */
 function saveAutoLaunch(): void {
+  if (portableInfo?.enabled !== false) return
   void save({ autoLaunch: autoLaunch.checked })
 }
 

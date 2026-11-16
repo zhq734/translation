@@ -9,6 +9,8 @@ export interface AutoLaunchEnvironment {
   platform: NodeJS.Platform | string
   /** 应用是否已打包，开发模式下不写入系统登录项。 */
   packaged: boolean
+  /** 便携模式禁止写入或删除系统登录项。 */
+  portable?: boolean
 }
 
 /** 构造系统登录项参数所需的输入。 */
@@ -41,12 +43,12 @@ export interface LinuxAutostartEntryInput {
 
 /**
  * 判断当前运行环境应使用的开机自启动落地方式。
- * @param environment 当前平台与打包状态。
- * @returns macOS/Windows 返回系统登录项，Linux 返回桌面入口，开发模式返回跳过，其他平台返回不支持。
+ * @param environment 当前平台、打包状态与便携状态。
+ * @returns 便携或开发模式返回跳过；安装版 macOS/Windows 返回系统登录项，Linux 返回桌面入口，其他平台返回不支持。
  * @author zhenghq
  */
 export function resolveAutoLaunchStrategy(environment: AutoLaunchEnvironment): AutoLaunchStrategy {
-  if (!environment.packaged) return 'skipped'
+  if (!environment.packaged || environment.portable) return 'skipped'
   if (environment.platform === 'darwin' || environment.platform === 'win32') return 'login-item'
   if (environment.platform === 'linux') return 'desktop-entry'
   return 'unsupported'

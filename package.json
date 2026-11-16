@@ -23,6 +23,7 @@
     "test": "node scripts/run-tests.mjs",
     "document:smoke": "node scripts/document-capability-smoke.mjs",
     "dist:win": "npm run build && node scripts/prepare-windows-ocr-runtime.mjs && electron-builder --win nsis --x64 --arm64 --publish never",
+    "dist:win:portable": "node scripts/build-windows-portable.mjs",
     "dist:win:win7": "node scripts/build-win7.mjs",
     "dist:linux": "npm run build && node scripts/prepare-linux-ocr-runtime.mjs && node scripts/prepare-linux-uiohook-runtime.mjs && electron-builder --linux AppImage --x64 --arm64 --publish never",
     "release:checksums": "node scripts/generate-checksums.mjs",

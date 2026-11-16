@@ -2,6 +2,19 @@ import { defineCatalog } from './catalog.ts'
 
 /** 英文界面词条目录：基础领域。 */
 export const enUSBase = defineCatalog({
+  "portable.startup.title": "Selection Translator · Portable startup failed",
+  "portable.startup.pathType": "Invalid portable path type: {{path}}",
+  "portable.startup.shortWrite": "Portable write probe did not complete: {{directory}}",
+  "portable.startup.marker": "Unsupported portable.json format or version",
+  "portable.startup.arch": "Portable edition supports only x64 and arm64",
+  "portable.startup.failed": "Portable initialization failed ({{directory}}): {{error}}. Extract the complete archive to a writable directory and try again.",
+  'settings.portable.title': 'Windows portable edition',
+  'settings.portable.restrictions': 'Launch at login is disabled. API keys may need to be entered again on another computer or account. To update, quit the app, extract the new ZIP and copy your data folder; keep a backup.',
+  'settings.portable.dataDirectory': 'Data directory: ',
+  'portable.update.invalid': 'Invalid portable update response, version or architecture.',
+  'portable.update.http': 'Portable update check failed: HTTP {{status}}.',
+  'portable.update.missingAsset': 'No matching portable archive in this release: {{asset}}. Do not use a Setup installer.',
+  'portable.update.manualOnly': 'Portable updates are manual. Download the matching ZIP, quit the app and copy your data folder to the new directory.',
   'app.name': 'Selection Translator',
   'app.startupFailed.message': 'The application could not finish starting: {{message}}',
   'app.startupFailed.title': 'Selection Translator failed to start',
