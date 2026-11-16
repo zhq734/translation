@@ -127,6 +127,34 @@ test('弹窗自适应尺寸应贯通渲染进程、preload 与主进程', () => 
 })
 
 /**
+ * 校验右下角可见可访问的缩放角标与独立手动尺寸消息，并禁止自动消息覆盖人工尺寸。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('翻译弹窗右下角拖拽后仅人工可改变尺寸', () => {
+  const html = readFileSync('src/renderer/index.html', 'utf8')
+  const css = readFileSync('src/renderer/src/style.css', 'utf8')
+  const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
+  const preload = readFileSync('src/preload/index.ts', 'utf8')
+  const ipc = readFileSync('src/main/ipc/popupIpc.ts', 'utf8')
+  const main = readFileSync('src/main/popup.ts', 'utf8')
+
+  assert.match(html, /id="popup-resize-handle"[^>]*aria-label/u)
+  assert.match(css, /#popup-resize-handle\s*\{[^}]*position:\s*absolute;[^}]*right:\s*\d+px;[^}]*bottom:\s*\d+px;/su)
+  assert.match(css, /cursor:\s*nwse-resize/u)
+  assert.match(renderer, /setPointerCapture\(event\.pointerId\)/u)
+  assert.match(renderer, /event\.screenX/u)
+  assert.match(renderer, /window\.api\.resizePopupManually\(/u)
+  assert.match(preload, /ipcRenderer\.send\('popup:resize-manual', size\)/u)
+  assert.match(ipc, /ipcMain\.on\('popup:resize-manual'/u)
+  assert.match(ipc, /dependencies\.isPopupWebContents\(event\.sender\)/u)
+  assert.match(main, /if \(source === 'auto' && manuallySized\) return/u)
+  assert.match(main, /webContents\.send\('popup:size-locked'\)/u)
+  assert.match(renderer, /window\.api\.onPopupSizeLocked\(/u)
+  assert.match(renderer, /if \(manuallySized\) \{\s*positionPronunciationCard\(\)\s*return/u)
+})
+
+/**
  * 校验流式返回过程中弹窗会周期性重新测量尺寸，而不是等全部返回结束才变化。
  * @returns 无返回值。
  * @author zhenghq

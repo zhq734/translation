@@ -34,6 +34,7 @@ function createHarness() {
     minimized = false
     destroyed = false
     focusable = true
+    bounds = { x: 0, y: 0, width: 520, height: 360 }
     name: string
     webContents = Object.assign(new EventEmitter(), {
       send: (channel: string) => {
@@ -76,9 +77,11 @@ function createHarness() {
     /** 关闭自身；无参数、无返回值。 @author zhenghq */
     close() { this.destroyed = true; this.visible = false; actions.push(`${this.name}:close`); this.emit('closed') }
     /** 返回模拟边界；无参数，返回矩形。 @author zhenghq */
-    getBounds() { return { x: 0, y: 0, width: 520, height: 360 } }
+    getBounds() { return { ...this.bounds } }
     /** 返回模拟尺寸；无参数，返回宽高。 @author zhenghq */
-    getSize() { return [520, 360] }
+    getSize() { return [this.bounds.width, this.bounds.height] }
+    /** 模拟窗口边界更新；参数为新矩形，无返回值。 @author zhenghq */
+    setBounds(bounds: { x: number; y: number; width: number; height: number }) { this.bounds = { ...bounds }; this.emit('resize') }
     /** 忽略位置写入；无参数、无返回值。 @author zhenghq */
     setPosition() {}
     /** 忽略层级写入；无参数、无返回值。 @author zhenghq */
@@ -96,6 +99,7 @@ function createHarness() {
   const electron = { app, BrowserWindow: MockWindow, screen: {
     getCursorScreenPoint: () => ({ x: 100, y: 100 }),
     getDisplayNearestPoint: () => display,
+    getDisplayMatching: () => display,
     getAllDisplays: () => [display]
   } }
   const cache = new Map<string, any>()
@@ -238,6 +242,57 @@ function createHarness() {
     async flush() { for (let index = 0; index < 12; index += 1) await Promise.resolve(); timers.splice(0).forEach((callback) => callback()); for (let index = 0; index < 12; index += 1) await Promise.resolve() }
   }
 }
+
+/**
+ * 人工拖动成功后记住完整宽高，固定、解除固定及重新划词均不能再触发内容自适应改写。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('人工调整翻译弹窗后重新划词不恢复内容尺寸', () => {
+  const h = createHarness()
+  h.popup.resizePopup({ width: 610, height: 440 })
+  assert.equal(h.popupWindow.getBounds().width, 610, '未手动拖动前仍允许内容自适应')
+  h.popup.setPopupPinned(true)
+  h.popup.resizePopup({ width: 860, height: 550 }, 'manual')
+  assert.deepEqual(h.popupWindow.getBounds(), { x: 0, y: 0, width: 860, height: 550 })
+  h.popup.resizePopup({ width: 520, height: 320 })
+  h.popup.setPopupPinned(false)
+  h.popup.resizePopup({ width: 630, height: 420 })
+  h.popupWindow.hide()
+  h.popup.showPopup({ origin: 'selection', loading: false } as any, 0)
+  h.popup.resizePopup({ width: 540, height: 340 })
+  assert.deepEqual(h.popupWindow.getBounds(), { x: 0, y: 0, width: 860, height: 550 })
+})
+
+/**
+ * 用户没有真正改变尺寸时不能锁住内容自适应；手动尺寸可超出自动阅读宽度，但不能越过屏幕。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('点击缩放角标不锁定尺寸，实际拖拽尺寸限制在工作区内', () => {
+  const h = createHarness()
+  h.popup.resizePopup({ width: 520, height: 360 }, 'manual')
+  h.popup.resizePopup({ width: 560, height: 400 })
+  assert.equal(h.popupWindow.getBounds().width, 560)
+  h.popup.resizePopup({ width: 5000, height: 5000 }, 'manual')
+  assert.deepEqual(h.popupWindow.getBounds(), { x: 0, y: 0, width: 1584, height: 984 })
+  h.popup.resizePopup({ width: 520, height: 320 })
+  assert.deepEqual(h.popupWindow.getBounds(), { x: 0, y: 0, width: 1584, height: 984 })
+})
+
+/**
+ * 原生窗口边框缩放同样属于人工操作，需与角标拖拽一样挡住后续内容自动改写。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('原生缩放窗口后也不允许新译文自动修改尺寸', () => {
+  const h = createHarness()
+  h.popup.resizePopup({ width: 610, height: 440 })
+  h.popupWindow.emit('will-resize')
+  h.popupWindow.setBounds({ x: 0, y: 0, width: 760, height: 510 })
+  h.popup.resizePopup({ width: 520, height: 320 })
+  assert.deepEqual(h.popupWindow.getBounds(), { x: 0, y: 0, width: 760, height: 510 })
+})
 
 for (const page of ['翻译页面', '设置页面', '文件翻译']) {
   for (const state of ['visible', 'hidden', 'minimized', 'destroyed']) {

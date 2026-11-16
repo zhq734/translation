@@ -1555,6 +1555,10 @@ export interface Api {
   setPopupLanguageInteraction(active: boolean, scope?: PopupLanguageInteractionScope): void
   /** 请求主进程按内容自然尺寸调整弹窗大小。 */
   resizePopup(size: PopupAutoSizeRequest): void
+  /** 用户拖动角标时调整尺寸，之后禁用内容自动缩放。 */
+  resizePopupManually(size: PopupAutoSizeRequest): void
+  /** 订阅人工尺寸锁定通知。 */
+  onPopupSizeLocked(cb: () => void): () => void
   /** 从翻译弹窗打开设置页面。 */
   openSettings(): void
   /** 通知主进程设置窗口收到了真实指针按下。 */

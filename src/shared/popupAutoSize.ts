@@ -83,6 +83,26 @@ export function resolvePopupAutoSize(
 }
 
 /**
+ * 将用户拖拽的弹窗尺寸限制在最小窗口尺寸和工作区内，不套用内容自适应的阅读宽度上限。
+ * @param size 用户拖拽请求的尺寸。
+ * @param workArea 当前显示器工作区。
+ * @param options 可选工作区边缘间隙。
+ * @returns 不超出工作区的手动宽高。
+ * @author zhenghq
+ */
+export function resolvePopupManualSize(
+  size: PopupAutoSizeRequest,
+  workArea: PopupRect,
+  options?: PopupAutoSizeOptions
+): PopupSize {
+  const edgeGap = options?.edgeGap ?? 0
+  return {
+    width: Math.round(clampToRange(size.width, POPUP_AUTO_SIZE_LIMITS.minWidth, Math.max(0, workArea.width - edgeGap * 2))),
+    height: Math.round(clampToRange(size.height, POPUP_AUTO_SIZE_LIMITS.minHeight, Math.max(0, workArea.height - edgeGap * 2)))
+  }
+}
+
+/**
  * 在保持左上锚点的前提下把新尺寸收拢进工作区。
  * @param bounds 弹窗当前矩形。
  * @param size 收敛后的目标尺寸。

@@ -43,6 +43,36 @@ body {
   display: none !important;
 }
 
+/* zhenghq：右下角角标是独立手动缩放热区，避免与窗口移动和底部操作冲突。 */
+#popup-resize-handle {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 22px;
+  height: 22px;
+  z-index: 4;
+  cursor: nwse-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+#popup-resize-handle::after {
+  content: '';
+  position: absolute;
+  /* zhenghq：避开圆角裁切，保证三角角标完整可见。 */
+  right: 8px;
+  bottom: 8px;
+  width: 11px;
+  height: 11px;
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--text-muted) 3px 4px);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+#popup-resize-handle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
 /* Win7 + Electron 22 的透明窗口合成不稳定，不透明平面外观可消除图标与弹窗黑边。 */
 :root[data-win7-compatibility='true'],
 :root[data-win7-compatibility='true'] html,

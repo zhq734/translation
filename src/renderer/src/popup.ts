@@ -117,6 +117,7 @@ const readOriginalBtn = document.getElementById('read-original') as HTMLButtonEl
 const pronunciationCardEl = document.getElementById('pronunciation-card') as HTMLElement
 /** 音标卡浮层的定位基准：弹窗根节点。 */
 const popupRootEl = document.getElementById('popup') as HTMLElement
+const popupResizeHandleEl = document.getElementById('popup-resize-handle') as HTMLElement
 const pronunciationWordEl = document.getElementById('pronunciation-word') as HTMLElement
 const pronunciationVariantsEl = document.getElementById('pronunciation-variants') as HTMLElement
 const pronunciationCloseBtn = document.getElementById('pronunciation-close') as HTMLButtonElement
@@ -181,6 +182,16 @@ let selectionSpeechLanguage = ''
 let manualSpeechLanguage = ''
 let speechOperationId = 0
 let lastRequestedAutoSize = { width: 0, height: 0 }
+/** 人工缩放之后禁用任何内容触发的自动尺寸测量。 */
+let manuallySized = false
+/** 用户拖动角标时的起始指针及窗口尺寸；置空表示不在拖拽。 */
+let popupResizeDrag: {
+  pointerId: number
+  screenX: number
+  screenY: number
+  width: number
+  height: number
+} | null = null
 /** 划词结果的渐进展示状态。 */
 let selectionReveal: ProgressiveRevealState = createProgressiveRevealState()
 /** 手动翻译结果的渐进展示状态。 */
@@ -2130,6 +2141,10 @@ function readVisibleWorkspaceOverflow(): number {
  * @author zhenghq
  */
 const requestAutoResize = createThrottledScheduler((): void => {
+  if (manuallySized) {
+    positionPronunciationCard()
+    return
+  }
   const size = measureAutoSize()
   if (size.width !== lastRequestedAutoSize.width || size.height !== lastRequestedAutoSize.height) {
     lastRequestedAutoSize = size
@@ -2138,6 +2153,79 @@ const requestAutoResize = createThrottledScheduler((): void => {
   // 窗口尺寸或内容换行变化后，浮层音标卡需要重新贴靠触发词。
   positionPronunciationCard()
 }, 60)
+
+/**
+ * 从角标开始人工缩放，以屏幕坐标计算位移，避免窗口放大后局部坐标跳变。
+ * @param event 角标上的指针按下事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function startPopupResize(event: PointerEvent): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  popupResizeDrag = {
+    pointerId: event.pointerId,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    width: window.innerWidth,
+    height: window.innerHeight
+  }
+  popupResizeHandleEl.setPointerCapture(event.pointerId)
+}
+
+/**
+ * 按角标拖拽的屏幕位移发送人工尺寸；无有效位移时不锁住内容自适应。
+ * @param event 当前指针事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function movePopupResize(event: PointerEvent): void {
+  const drag = popupResizeDrag
+  if (!drag || drag.pointerId !== event.pointerId) return
+  event.preventDefault()
+  const width = Math.round(drag.width + event.screenX - drag.screenX)
+  const height = Math.round(drag.height + event.screenY - drag.screenY)
+  if (width === drag.width && height === drag.height) return
+  window.api.resizePopupManually({ width, height })
+}
+
+/**
+ * 结束角标拖拽并释放指针捕获。
+ * @param event 指针抬起或取消事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function stopPopupResize(event: PointerEvent): void {
+  if (popupResizeDrag?.pointerId !== event.pointerId) return
+  popupResizeDrag = null
+  if (popupResizeHandleEl.hasPointerCapture(event.pointerId)) {
+    popupResizeHandleEl.releasePointerCapture(event.pointerId)
+  }
+}
+
+/**
+ * 支持键盘方向键微调可聚焦的缩放角标，只有实际改变尺寸时发送人工请求。
+ * @param event 角标上的按键事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function resizePopupWithKeyboard(event: KeyboardEvent): void {
+  const changes: Record<string, [number, number]> = {
+    ArrowRight: [20, 0], ArrowLeft: [-20, 0], ArrowDown: [0, 20], ArrowUp: [0, -20]
+  }
+  const change = changes[event.key]
+  if (!change) return
+  event.preventDefault()
+  window.api.resizePopupManually({ width: window.innerWidth + change[0], height: window.innerHeight + change[1] })
+}
+
+popupResizeHandleEl.addEventListener('pointerdown', startPopupResize)
+popupResizeHandleEl.addEventListener('pointermove', movePopupResize)
+popupResizeHandleEl.addEventListener('pointerup', stopPopupResize)
+popupResizeHandleEl.addEventListener('pointercancel', stopPopupResize)
+popupResizeHandleEl.addEventListener('keydown', resizePopupWithKeyboard)
+window.api.onPopupSizeLocked(() => { manuallySized = true })
 
 /**
  * 进入手动模式并请求主进程固定弹窗。

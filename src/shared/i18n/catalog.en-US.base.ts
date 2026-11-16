@@ -73,6 +73,7 @@ export const enUSBase = defineCatalog({
   'popup.copyTranslation': 'Copy translation',
   'popup.dragHandle.ariaLabel': 'Drag translation window',
   'popup.dragHandle.title': 'Drag window',
+  'popup.resizeHandle': 'Drag to resize translation window',
   'popup.languageToolbar': 'Translation language toolbar',
   'popup.manualHint': 'Enter / ⌘+Ctrl + Enter to translate',
   'popup.manualMode': 'Toggle manual translation',

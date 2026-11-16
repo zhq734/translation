@@ -73,6 +73,7 @@ export const zhCNBase = defineCatalog({
   'popup.copyTranslation': '复制译文',
   'popup.dragHandle.ariaLabel': '拖动翻译窗口',
   'popup.dragHandle.title': '拖动窗口',
+  'popup.resizeHandle': '拖动调整翻译窗口大小',
   'popup.languageToolbar': '翻译语言工具栏',
   'popup.manualHint': 'Enter / ⌘+Ctrl + Enter 翻译',
   'popup.manualMode': '切换手动翻译',

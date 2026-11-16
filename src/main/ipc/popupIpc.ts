@@ -1,5 +1,6 @@
 import { clipboard, ipcMain } from 'electron'
 import { isPopupAutoSizeRequest } from '../../shared/popupAutoSize'
+import type { PopupAutoSizeRequest } from '../../shared/types'
 import type { PronunciationService } from '../pronunciationService'
 import type { PronunciationRequestRegistry } from '../pronunciationRequests'
 
@@ -8,7 +9,7 @@ export interface PopupIpcDependencies {
   /** 隐藏弹窗。 */
   hidePopup(): void
   /** 调整弹窗尺寸。 */
-  resizePopup(size: { width: number; height: number }): void
+  resizePopup(size: PopupAutoSizeRequest, source?: 'auto' | 'manual'): void
   /** 设置弹窗固定状态。 */
   setPopupPinned(pinned: boolean): void
   /** 判断 WebContents 是否属于弹窗。 */
@@ -57,8 +58,13 @@ export function registerPopupIpc(dependencies: PopupIpcDependencies): void {
   })
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
   ipcMain.on('popup:hide', () => dependencies.hidePopup())
-  ipcMain.on('popup:resize', (_event, size: unknown) => {
+  ipcMain.on('popup:resize', (event, size: unknown) => {
+    if (!dependencies.isPopupWebContents(event.sender)) return
     if (isPopupAutoSizeRequest(size)) dependencies.resizePopup(size)
+  })
+  ipcMain.on('popup:resize-manual', (event, size: unknown) => {
+    if (!dependencies.isPopupWebContents(event.sender)) return
+    if (isPopupAutoSizeRequest(size)) dependencies.resizePopup(size, 'manual')
   })
   ipcMain.on('popup:set-pinned', (_event, pinned: unknown) => {
     dependencies.setPopupPinned(Boolean(pinned))

@@ -291,6 +291,15 @@ const api: Api = {
     ipcRenderer.send('popup:resize', size)
   },
   /**
+   * 用户拖动右下角时请求调整弹窗尺寸，不受内容自适应上限约束。
+   * @param size 用户目标尺寸。
+   * @returns 无返回值。
+   * @author zhenghq
+   */
+  resizePopupManually(size: PopupAutoSizeRequest) {
+    ipcRenderer.send('popup:resize-manual', size)
+  },
+  /**
    * 从翻译弹窗打开设置窗口。
    * @returns 无返回值。
    * @author zhenghq
@@ -834,6 +843,17 @@ const api: Api = {
     const listener = (_event: unknown, pinned: boolean): void => callback(pinned)
     ipcRenderer.on('popup:pinned', listener)
     return () => ipcRenderer.removeListener('popup:pinned', listener)
+  },
+  /**
+   * 订阅人工调整尺寸后的锁定通知，停止渲染进程内容自适应测量。
+   * @param callback 尺寸被人工锁定时的回调。
+   * @returns 取消订阅方法。
+   * @author zhenghq
+   */
+  onPopupSizeLocked(callback: () => void) {
+    const listener = (): void => callback()
+    ipcRenderer.on('popup:size-locked', listener)
+    return () => ipcRenderer.removeListener('popup:size-locked', listener)
   },
   /**
    * 订阅主进程完成弹窗隐藏的通知。

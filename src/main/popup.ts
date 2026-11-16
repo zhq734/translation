@@ -8,6 +8,7 @@ import type {
 } from '../shared/types'
 import {
   resolvePopupAutoSize,
+  resolvePopupManualSize,
   resolvePopupResizeBounds
 } from '../shared/popupAutoSize'
 import { shouldDismissPopupOnBlur } from '../shared/popupBehavior'
@@ -79,6 +80,8 @@ let activePopupCloseToken: number | null = null
  */
 let popupCloseInFlight = false
 let pinned = false
+/** 用户改变过尺寸后，内容自适应不得再覆盖；重新显示窗口也保留此状态。 */
+let manuallySized = false
 let currentAutoHideMs = 0
 /** 音标卡或原文发音交互期间是否暂停自动隐藏；不改变用户固定状态。 */
 let pronunciationInteractionActive = false
@@ -184,6 +187,7 @@ export function createPopup(options: CreatePopupOptions): BrowserWindow {
   settingsOpenGuardActive = false
   resetPopupLanguageInteraction()
   selectionCaptureLoading = false
+  manuallySized = false
   suppressExternalPointerDismissUntil = 0
   suppressExternalPointerDismissOrigin = null
   onInternalWindowShown = options.onWindowShown ?? null
@@ -236,6 +240,8 @@ export function createPopup(options: CreatePopupOptions): BrowserWindow {
   // 默认点击弹窗外部时关闭；顶部原生拖拽与钉住状态均忽略失焦事件。
   win.on('blur', handlePopupBlur)
   win.on('focus', handlePopupFocus)
+  // will-resize 只由原生人工拖拽触发；程序调用 setBounds 不得锁死内容自适应。
+  win.on('will-resize', handlePopupResize)
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   return win
 }
@@ -419,22 +425,38 @@ function positionNearAnchor(anchor?: { x: number; y: number }): void {
 }
 
 /**
- * 按 Renderer 上报的内容自然尺寸调整弹窗，并保证新窗口仍完整落在当前显示器工作区内。
- * @param size 渲染进程测量得到的目标尺寸。
+ * 按内容自适应或人工拖拽请求调整弹窗，人工调整后禁止内容再次覆盖尺寸。
+ * @param size 目标窗口尺寸。
+ * @param source 请求来源；auto 为内容自适应，manual 为用户调整。
  * @returns 无返回值。
  * @author zhenghq
  */
-export function resizePopup(size: PopupAutoSizeRequest): void {
+export function resizePopup(size: PopupAutoSizeRequest, source: 'auto' | 'manual' = 'auto'): void {
   if (!win || win.isDestroyed()) return
+  if (source === 'auto' && manuallySized) return
   const bounds = win.getBounds()
   const display = screen.getDisplayMatching(bounds)
-  const resolved = resolvePopupAutoSize(size, display.workArea, { edgeGap: WINDOW_EDGE_GAP })
+  const resolved = source === 'manual'
+    ? resolvePopupManualSize(size, display.workArea, { edgeGap: WINDOW_EDGE_GAP })
+    : resolvePopupAutoSize(size, display.workArea, { edgeGap: WINDOW_EDGE_GAP })
   const next = resolvePopupResizeBounds(bounds, resolved, display.workArea)
   if (next.width === bounds.width && next.height === bounds.height &&
       next.x === bounds.x && next.y === bounds.y) {
     return
   }
+  if (source === 'manual') manuallySized = true
   win.setBounds(next)
+  if (source === 'manual') win.webContents.send('popup:size-locked')
+}
+
+/**
+ * 原生人工拖拽缩放窗口时锁定尺寸；程序设置尺寸不会触发此事件。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+function handlePopupResize(): void {
+  manuallySized = true
+  win?.webContents.send('popup:size-locked')
 }
 
 /**
