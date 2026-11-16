@@ -27,7 +27,7 @@ async function portableModule() {
 }
 
 /**
- * 创建指定架构的最小 ZIP 文件内容，仅用于校验器测试，不冒充可运行 Windows 包。
+ * 按 Koffi 3 预编译包的实际目录创建指定架构的最小 ZIP，仅用于校验器测试。
  * @param arch 目标 CPU 架构。
  * @returns ZIP 条目名与测试字节内容。
  * @author zhenghq
@@ -54,7 +54,7 @@ function archiveEntries(arch: string): Record<string, string> {
     [`${unpacked}/node_modules/onnxruntime-node/bin/napi-v6/win32/${arch}/onnxruntime_binding.node`]: 'fixture-onnx',
     [`${unpacked}/node_modules/onnxruntime-node/bin/napi-v6/win32/${arch}/onnxruntime.dll`]: 'fixture-onnx-dll',
     [`${unpacked}/node_modules/uiohook-napi/prebuilds/win32-${arch}/node.napi.node`]: 'fixture-uiohook',
-    [`${unpacked}/node_modules/@koromix/koffi-win32-${arch}/koffi.node`]: 'fixture-koffi'
+    [`${unpacked}/node_modules/@koromix/koffi-win32-${arch}/win32_${arch}/koffi.node`]: 'fixture-koffi'
   }
 }
 
@@ -172,6 +172,65 @@ test('产物校验应读取两份 Portable ZIP 并拒绝缺包或更新清单污
     rmSync(join(directory, 'latest.yml'))
     rmSync(join(directory, 'SelectionTranslator-0.1.0-Portable-arm64.zip'))
     await assert.rejects(verifyPortablePackages(directory, '0.1.0'), /arm64/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 验证双架构 Koffi 源码构建路径仍可通过校验，不强制依赖预编译包。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('ZIP 校验应兼容 x64 与 arm64 的 Koffi 源码构建路径', async () => {
+  const { verifyPortableArchive } = await portableModule()
+  const directory = mkdtempSync(join(tmpdir(), 'portable-koffi-build-'))
+  const path = join(directory, 'fixture.zip')
+  const modules = 'resources/app.asar.unpacked/node_modules'
+  try {
+    for (const arch of ['x64', 'arm64']) {
+      const entries = archiveEntries(arch)
+      delete entries[`${modules}/@koromix/koffi-win32-${arch}/win32_${arch}/koffi.node`]
+      entries[`${modules}/koffi/build/koffi/win32_${arch}/koffi.node`] = 'fixture-koffi'
+      await writeArchive(path, entries)
+      await verifyPortableArchive(path, arch)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 仅替换 Koffi 条目，验证空库、错误目录或错架构库不能被其他齐全资源掩盖。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('ZIP 校验应拒绝双架构 Koffi 空文件、错误目录及架构不匹配', async () => {
+  const { verifyPortableArchive } = await portableModule()
+  const directory = mkdtempSync(join(tmpdir(), 'portable-koffi-invalid-'))
+  const path = join(directory, 'fixture.zip')
+  const modules = 'resources/app.asar.unpacked/node_modules'
+  try {
+    for (const arch of ['x64', 'arm64']) {
+      const otherArch = arch === 'x64' ? 'arm64' : 'x64'
+      const entries = archiveEntries(arch)
+      const packagePath = `${modules}/@koromix/koffi-win32-${arch}`
+      delete entries[`${packagePath}/win32_${arch}/koffi.node`]
+      const invalidEntries = [
+        {},
+        { [`${packagePath}/win32_${arch}/koffi.node`]: '' },
+        { [`${modules}/koffi/build/koffi/win32_${arch}/koffi.node`]: '' },
+        { [`${packagePath}/koffi.node`]: 'fixture-koffi' },
+        { [`${packagePath}/win32_${otherArch}/koffi.node`]: 'fixture-koffi' },
+        { [`${modules}/@koromix/koffi-win32-${otherArch}/win32_${arch}/koffi.node`]: 'fixture-koffi' },
+        { [`${modules}/@koromix/koffi-win32-${otherArch}/win32_${otherArch}/koffi.node`]: 'fixture-koffi' },
+        { [`${modules}/koffi/build/koffi/win32_${otherArch}/koffi.node`]: 'fixture-koffi' }
+      ]
+      for (const invalidEntry of invalidEntries) {
+        await writeArchive(path, { ...entries, ...invalidEntry })
+        await assert.rejects(verifyPortableArchive(path, arch), /缺少运行资源：.*koffi/u)
+      }
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -117,7 +117,7 @@ export async function verifyPortableArchive(archivePath, arch) {
       /^locales\/[^/]+\.pak$/u,
       /^resources\/assets\/fonts\/.+\.(?:ttf|otf)$/u,
       new RegExp(`^${unpacked}/node_modules/uiohook-napi/(?:prebuilds/win32-${arch}|bin/win32-${arch}[^/]*|build/Release)/[^/]+\\.node$`, 'u'),
-      new RegExp(`^${unpacked}/node_modules/(?:@koromix/koffi-win32-${arch}|koffi/build/koffi/win32_${arch})/koffi\\.node$`, 'u')
+      new RegExp(`^${unpacked}/node_modules/(?:@koromix/koffi-win32-${arch}/win32_${arch}|koffi/build/koffi/win32_${arch})/koffi\\.node$`, 'u')
     ]
     for (const pattern of groups) {
       if (!names.some((name) => pattern.test(name))) throw new Error(`${arch} ZIP 缺少运行资源：${pattern}`)
