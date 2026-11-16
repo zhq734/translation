@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -74,6 +74,71 @@ function extractPackedPackage(tarballPath, extractRoot, packageName) {
   const sourceRoot = join(extractRoot, 'package')
   if (!existsSync(sourceRoot)) throw new Error(`下载的 ${packageName} 缺少 package 目录`)
   return sourceRoot
+}
+
+/**
+ * 校验 Koffi 平台包的名称、版本、加载入口及目标架构非空原生库。
+ * @param {string} packageRoot 平台包目录。
+ * @param {string} packageName 预期平台包名。
+ * @param {string} version 与主包匹配的精确版本。
+ * @param {'x64' | 'arm64'} arch Windows 目标架构。
+ * @returns {boolean} 是否可直接复用该平台包。
+ * @author zhenghq
+ */
+function isWindowsKoffiReady(packageRoot, packageName, version, arch) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
+    return manifest.name === packageName && manifest.version === version &&
+      ['index.js', join(`win32_${arch}`, 'koffi.node')].every((file) => {
+        const stat = statSync(join(packageRoot, file))
+        return stat.isFile() && stat.size > 0
+      })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 按已安装 Koffi 主包的精确版本准备 Windows 双架构平台包，避免 npm ci 只安装宿主架构。
+ * 复用 npm pack 和 tar，不运行 npm install，防止裁剪已准备的另一架构可选依赖。
+ * @param {object} options 可注入项目根目录及 npm pack 执行器，默认使用当前项目与真实 npm。
+ * @returns {void} 两个架构均完整时返回，否则抛出下载、解包或校验错误。
+ * @author zhenghq
+ */
+export function prepareWindowsKoffi({ root = projectRoot, pack = runNpm } = {}) {
+  const manifest = JSON.parse(readFileSync(join(root, 'node_modules', 'koffi', 'package.json'), 'utf8'))
+  const { version } = manifest
+  for (const arch of ['x64', 'arm64']) {
+    const packageName = `@koromix/koffi-win32-${arch}`
+    if (!version || manifest.optionalDependencies?.[packageName] !== version) {
+      throw new Error(`Koffi ${version} 未声明匹配版本的 ${packageName}`)
+    }
+    const targetRoot = join(root, 'node_modules', '@koromix', `koffi-win32-${arch}`)
+    if (isWindowsKoffiReady(targetRoot, packageName, version, arch)) continue
+    const temporaryRoot = mkdtempSync(join(tmpdir(), `selection-translator-koffi-${arch}-`))
+    try {
+      const tarballName = readPackedTarballName(
+        pack(['pack', `${packageName}@${version}`, '--pack-destination', temporaryRoot, '--silent'], temporaryRoot),
+        packageName
+      )
+      const sourceRoot = extractPackedPackage(join(temporaryRoot, tarballName), join(temporaryRoot, 'extract'), packageName)
+      if (!isWindowsKoffiReady(sourceRoot, packageName, version, arch)) {
+        throw new Error(`Windows ${arch} Koffi 平台包内容不完整或版本不匹配: ${packageName}@${version}`)
+      }
+      rmSync(targetRoot, { recursive: true, force: true })
+      mkdirSync(dirname(targetRoot), { recursive: true })
+      cpSync(sourceRoot, targetRoot, { recursive: true, force: true })
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true })
+    }
+  }
+  for (const arch of ['x64', 'arm64']) {
+    const packageName = `@koromix/koffi-win32-${arch}`
+    if (!isWindowsKoffiReady(join(root, 'node_modules', packageName), packageName, version, arch)) {
+      throw new Error(`Windows ${arch} Koffi 运行时复核失败`)
+    }
+  }
+  console.log(`Windows Koffi runtime 已就绪: ${version} (x64, arm64)`)
 }
 
 /**
@@ -249,12 +314,13 @@ function verifyWindowsSharp(arch) {
 }
 
 /**
- * 为 Windows x64/arm64 安装并验证 PaddleOCR 使用的 sharp native runtime。
+ * 为 Windows x64/arm64 安装并验证 OCR 与 Koffi 原生运行库。
  * @returns 无返回值；任一架构准备失败时以非零退出码结束。
  * @author zhenghq
  */
 function main() {
   buildWindowsUiaReader()
+  prepareWindowsKoffi()
 
   const installedSharpVersion = readSharpVersion()
   if (installedSharpVersion !== expectedSharpVersion) {
@@ -279,10 +345,12 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error)
-  console.error(`Windows OCR runtime 准备失败: ${message}`)
-  process.exitCode = 1
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`Windows OCR runtime 准备失败: ${message}`)
+    process.exitCode = 1
+  }
 }

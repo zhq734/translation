@@ -1,11 +1,49 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { resolve } from 'node:path'
 import test from 'node:test'
 
 const workflowPath = '.github/workflows/package.yml'
 const gitignorePath = '.gitignore'
 const chineseReadmePath = 'README.zh-CN.md'
 const englishReadmePath = 'README.md'
+
+/**
+ * 校验工作流仅跳过 ONNX 的额外 GPU 库下载，不禁用 npm 生命周期或裁剪 CPU 运行库。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('CI 应跳过 ONNX GPU 下载并保留正常 npm ci 和 CPU 运行库', () => {
+  const require = createRequire(resolve('package.json'))
+  const { load } = require('js-yaml')
+  const workflow = load(readPackagingWorkflow())
+  for (const job of [workflow.jobs.verify, workflow.jobs.package]) {
+    const step = job.steps.find((item: { run?: string }) => item.run === 'npm ci')
+    assert.ok(step, '保留正常 npm ci，不使用 --ignore-scripts')
+    const env = { ...workflow.env, ...job.env, ...step.env }
+    assert.equal(env.ONNXRUNTIME_NODE_INSTALL, 'skip')
+    assert.notEqual(env.npm_config_ignore_scripts, 'true')
+  }
+  const result = spawnSync(process.execPath, ['-e', `
+    const https = require('node:https');
+    const os = require('node:os');
+    // 固定为触发 GPU 默认下载的 Linux x64，让 macOS 本地回归也覆盖 CI 分支；创建者：zhenghq。
+    os.platform = function () { return 'linux'; };
+    os.arch = function () { return 'x64'; };
+    // 禁止测试访问网络，若 skip 无效则立即失败；创建者：zhenghq。
+    https.get = function () { throw new Error('不应下载 GPU 库'); };
+    require('./node_modules/onnxruntime-node/script/install.js');
+  `], { env: { ...process.env, ONNXRUNTIME_NODE_INSTALL: workflow.env.ONNXRUNTIME_NODE_INSTALL }, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(readFileSync('src/main/paddleOcr.ts', 'utf8'), /executionProviders: \['cpu'\]/u)
+  for (const arch of ['x64', 'arm64']) {
+    for (const file of ['onnxruntime_binding.node', 'libonnxruntime.so.1']) {
+      assert.ok(statSync(`node_modules/onnxruntime-node/bin/napi-v6/linux/${arch}/${file}`).size > 0)
+    }
+  }
+})
 
 /**
  * 读取多平台打包工作流内容。

@@ -92,6 +92,7 @@
       "node_modules/onnxruntime-node/**/*",
       "node_modules/sharp/**/*",
       "node_modules/uiohook-napi/**/*",
+      "node_modules/@koromix/koffi-win32-*/**/*",
       "node_modules/koffi/**/*"
     ],
     "mac": {
@@ -163,6 +164,8 @@
         }
       ],
       "files": [
+        "node_modules/@koromix/koffi-win32-x64/**/*",
+        "node_modules/@koromix/koffi-win32-arm64/**/*",
         "node_modules/@napi-rs/**/*",
         "!node_modules/@napi-rs/canvas-linux-*/**/*",
         "!node_modules/@napi-rs/canvas-darwin-*/**/*",

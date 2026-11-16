@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # OCR 使用 CPU；仅跳过 ONNX 安装脚本额外下载的 CUDA/TensorRT，CPU 库已随 npm 包提供。
+  ONNXRUNTIME_NODE_INSTALL: 'skip'
+
 concurrency:
   group: package-${{ github.ref }}
   cancel-in-progress: false
