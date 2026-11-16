@@ -627,19 +627,31 @@ async function readSelectionViaMacosAxAddon(
 
 /**
  * Windows 常驻 helper 直读：通过 nativeReaderHost 向 UIA helper 发送取词请求。
- * @param signal 用于在请求失效后中止的取消信号（当前未直连子进程，仅占位）。
+ * @param signal 用于在请求失效后立即回收阻塞 helper 的取消信号。
  * @returns 直读结果；helper 不存在或不可用时返回 null 以触发降级。
  * @author zhenghq
  */
 async function readSelectionViaWindowsHelper(signal?: AbortSignal): Promise<NativeSelectionReadResult | null> {
-  void signal
   const host = getWindowsReaderHost()
   if (!host) return null
+  const startedAt = Date.now()
   try {
-    const result = await host.readSelection()
+    const result = await host.readSelection(signal, NATIVE_DIRECT_READ_TIMEOUT_MS)
+    console.log(
+      `[capture] windows-uia status=${result.status} elapsedMs=${Date.now() - startedAt} ` +
+      `fallback=${result.status !== 'present'}`
+    )
+    if (result.reason === 'helper-disabled') return null
     return convertHelperResult(result)
-  } catch {
-    return null
+  } catch (error) {
+    const reason = signal?.aborted ? 'helper-aborted'
+      : error instanceof Error && /timeout/iu.test(error.message) ? 'helper-timeout' : 'helper-error'
+    console.log(
+      `[capture] windows-uia status=unknown reason=${reason} ` +
+      `elapsedMs=${Date.now() - startedAt} fallback=true`
+    )
+    // 已执行过 UIA 的失败不能再次冷启动脚本查询同一 API，否则短预算形同虚设。
+    return { status: 'unknown', text: '', reason }
   }
 }
 
@@ -845,6 +857,8 @@ async function readSelectionByNativeWithRetry(
   let result = await readSelectionByNative(signal, context)
   for (let attempt = 1; attempt < NATIVE_SELECTION_RETRY_COUNT; attempt += 1) {
     if (signal?.aborted || (result.status === 'present' && result.text.trim())) return result
+    // 阻塞或失败的 UIA 不属于选区刚建立的同步延迟，不应在后台预取中立即重试。
+    if (process.platform === 'win32' && /^helper-(?:timeout|error|aborted)$/u.test(result.reason ?? '')) return result
     await sleep(NATIVE_SELECTION_RETRY_DELAY_MS)
     if (signal?.aborted) return result
     result = await readSelectionByNative(signal, context)
@@ -976,22 +990,38 @@ async function tryWmCopyPoll(
   timeoutMs: number,
   sentinel: string
 ): Promise<string | null> {
-  if (process.platform !== 'win32') return null
+  if (process.platform !== 'win32' || signal?.aborted) return null
+  const startedAt = Date.now()
   try {
-    // 通过 PowerShell 向焦点控件发送 WM_COPY。
+    // 直接查询前台线程焦点 HWND，不重复调用可能挂起的 UI Automation。
+    // PowerShell 的反斜杠不转义引号，C# 定义必须放在单引号字符串中。
     const psScript = [
-      // PowerShell 顺序执行：类型定义必须位于首次使用 [User32] 之前，
-      // 否则脚本必然报“找不到类型”，WM_COPY 中间层永远不生效。
-      'Add-Type -Namespace User32 -Name User32 -MemberDefinition "[DllImport(\"user32.dll\")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, ref IntPtr lpdwResult);"',
-      'Add-Type -AssemblyName UIAutomationClient',
-      '$element = [System.Windows.Automation.AutomationElement]::FocusedElement',
-      "if ($null -eq $element) { exit 1 }",
-      '$hwnd = [IntPtr]::Zero',
-      'try { $hwnd = [IntPtr]::new($element.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::NativeWindowHandleProperty)) } catch {}',
+      "$ErrorActionPreference = 'Stop'",
+      `Add-Type -Namespace User32 -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+      [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+      [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO {
+        public uint cbSize; public uint flags;
+        public IntPtr hwndActive; public IntPtr hwndFocus; public IntPtr hwndCapture;
+        public IntPtr hwndMenuOwner; public IntPtr hwndMoveSize; public IntPtr hwndCaret;
+        public int left; public int top; public int right; public int bottom;
+      }
+      [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+      public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
+      [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, ref IntPtr lpdwResult);'`,
+      '$foreground = [User32.User32]::GetForegroundWindow()',
+      'if ($foreground -eq [IntPtr]::Zero) { exit 1 }',
+      '[uint32]$targetPid = 0',
+      '$threadId = [User32.User32]::GetWindowThreadProcessId($foreground, [ref]$targetPid)',
+      'if ($threadId -eq 0) { exit 1 }',
+      '$guiInfo = New-Object User32.User32+GUITHREADINFO',
+      '$guiInfo.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($guiInfo)',
+      'if (-not [User32.User32]::GetGUIThreadInfo($threadId, [ref]$guiInfo)) { exit 1 }',
+      '$hwnd = $guiInfo.hwndFocus',
       'if ($hwnd -eq [IntPtr]::Zero) { exit 1 }',
       // SMTO_ABORTIFHUNG：目标窗口挂起时立即放弃并回退全局 Ctrl+C；SMTO_BLOCK 会被挂起窗口拖满超时。
       '$copyResult = [IntPtr]::Zero',
-      '[User32]::SendMessageTimeout($hwnd, 0x0301, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 500, [ref]$copyResult) | Out-Null'
+      '$sent = [User32.User32]::SendMessageTimeout($hwnd, 0x0301, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 500, [ref]$copyResult)',
+      'if ($sent -eq [IntPtr]::Zero) { exit 1 }'
     ].join('\n')
     await execFileP('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psScript
@@ -1004,8 +1034,13 @@ async function tryWmCopyPoll(
       if (current !== sentinel && current.trim()) return current
       await sleep(40)
     }
+    console.log(`[capture] windows-wm-copy status=no-text elapsedMs=${Date.now() - startedAt} fallback=true`)
   } catch {
     // WM_COPY 不可用或超时，返回 null 让调用方回退到全局 Ctrl+C。
+    console.log(
+      `[capture] windows-wm-copy status=${signal?.aborted ? 'aborted' : 'unavailable'} ` +
+      `elapsedMs=${Date.now() - startedAt} fallback=true`
+    )
   }
   return null
 }
@@ -1393,6 +1428,7 @@ async function captureByCopy(
    * @author zhenghq
    */
   const injectCopyShortcut = async (retryTargetPid?: number): Promise<void> => {
+    if (signal?.aborted) return
     /**
      * 实际注入一次复制快捷键并记录诊断日志。
      * @param observed 本次注入是否登记了内部模拟复制观测。
@@ -1451,6 +1487,7 @@ async function captureByCopy(
         text = wmCopyText
       }
     }
+    if (signal?.aborted) return { text: '' }
 
     if (!text) {
       /**

@@ -470,10 +470,9 @@ test('Windows UIA helper 必须兼容 .NET Framework 4.x 的 C# 5 编译器', ()
     source,
     /SendMessageTimeout\([\s\S]*?SMTO_BLOCK\s*,\s*\d+\s*,\s*out\s+IntPtr\s+[A-Za-z_]\w*\s*\);/u
   )
-  assert.match(source, /uint timeout, out IntPtr result\);/u)
-  assert.match(source, /IntPtr messageResult;\s*\n\s*SendMessageTimeout\([\s\S]*?out messageResult\);/u)
+  assert.doesNotMatch(source, /SendMessageTimeout\(|Clipboard\./u)
   assert.doesNotMatch(source, /return\s*\(\s*"present"\s*,\s*[^,]+\s*,\s*null\s*\)/u)
-  assert.match(source, /using System\.Windows\.Forms;/u)
+  assert.match(source, /using System\.Windows\.Automation;/u)
   assert.match(source, /\[STAThread\]/u)
   assert.match(source, /class ReadSelectionResult/u)
 })

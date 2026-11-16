@@ -190,3 +190,200 @@ test('空闲超时应退出 helper 并在下次请求时重启', async () => {
   assert.equal(children.length, 2, '空闲后应惰性重启新进程')
   host.dispose()
 })
+
+/**
+ * 模拟真实 kill 的异步退出：退出事件由测试稍后派发。
+ * @param child 待延迟退出的假进程。
+ * @returns 同一假进程。
+ * @author zhenghq
+ */
+function delayKillExit(child: FakeChild): FakeChild {
+  child.kill = () => { child.killed = true }
+  return child
+}
+
+/**
+ * 校验旧进程迟到的退出、错误和响应不会污染新进程请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('空闲回收后旧进程迟到事件不得拒绝或解析新进程请求', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const old = delayKillExit(createFakeChild({ 1: { status: 'present', text: 'old' } }))
+  const fresh = createFakeChild({})
+  let now = 0
+  let spawns = 0
+  const host = new NativeReaderHost({
+    spawn: () => (spawns++ === 0 ? old : fresh) as never,
+    now: () => now, idleTimeoutMs: 100, requestTimeoutMs: 200
+  })
+  await host.readSelection()
+  now = 1000
+  const pending = host.readSelection()
+  await Promise.resolve()
+  old.emit('exit', 0)
+  old.emit('error', new Error('late error'))
+  old.stdout.emit('data', Buffer.from('{"id":2,"status":"present","text":"stale"}\n'))
+  fresh.stdout.emit('data', Buffer.from('{"id":2,"status":"present","text":"fresh"}\n'))
+  assert.deepEqual(await pending, { status: 'present', text: 'fresh' })
+  host.dispose()
+})
+
+/**
+ * 校验回收时丢弃旧进程残留半行，避免新响应被拼成无效 JSON。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('helper 换代必须清除旧 stdout 半行', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const old = createFakeChild({ 1: { status: 'present', text: 'old' } })
+  const fresh = createFakeChild({ 2: { status: 'present', text: 'new' } })
+  let now = 0
+  let spawns = 0
+  const host = new NativeReaderHost({
+    spawn: () => (spawns++ === 0 ? old : fresh) as never,
+    now: () => now, idleTimeoutMs: 100, requestTimeoutMs: 30
+  })
+  await host.readSelection()
+  old.stdout.emit('data', Buffer.from('{"id":999'))
+  now = 1000
+  assert.deepEqual(await host.readSelection(), { status: 'present', text: 'new' })
+  host.dispose()
+})
+
+/**
+ * 校验 UTF-8 多字节文本跨数据块输出时不会损坏中文选区。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('helper stdout 应正确拼接跨数据块的中文字符', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const child = createFakeChild({})
+  const host = new NativeReaderHost({ spawn: () => child as never, requestTimeoutMs: 100 })
+  const pending = host.readSelection()
+  await Promise.resolve()
+  const line = Buffer.from('{"id":1,"status":"present","text":"中文"}\n')
+  const split = line.indexOf(Buffer.from('中')) + 1
+  child.stdout.emit('data', line.subarray(0, split))
+  child.stdout.emit('data', line.subarray(split))
+  assert.deepEqual(await pending, { status: 'present', text: '中文' })
+  host.dispose()
+})
+
+/**
+ * 校验点击按钮中止后台预取后立即回收阻塞进程，后续请求不等待旧 UIA。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('取消预取必须立即结束等待并回收阻塞 helper', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const old = delayKillExit(createFakeChild({}))
+  const fresh = createFakeChild({ 2: { status: 'present', text: 'button' } })
+  let spawns = 0
+  const host = new NativeReaderHost({
+    spawn: () => (spawns++ === 0 ? old : fresh) as never, requestTimeoutMs: 100
+  })
+  const controller = new AbortController()
+  const pending = host.readSelection(controller.signal)
+  const rejected = assert.rejects(pending, /abort/iu)
+  await Promise.resolve()
+  controller.abort()
+  await rejected
+  assert.equal(old.killed, true)
+  assert.deepEqual(await host.readSelection(), { status: 'present', text: 'button' })
+  host.dispose()
+})
+
+/**
+ * 校验已经取消的请求不启动进程、不发送取词命令。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('已取消的取词不得启动 helper', async () => {
+  const { NativeReaderHost } = await loadHost()
+  let spawns = 0
+  const host = new NativeReaderHost({ spawn: () => { spawns++; return createFakeChild({}) as never } })
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(host.readSelection(controller.signal), /abort/iu)
+  assert.equal(spawns, 0)
+  host.dispose()
+})
+
+/**
+ * 校验 300ms 等短预算实际传入宿主，首次超时即隔离阻塞进程。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('请求短超时必须生效且首次超时就回收 helper', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const old = createFakeChild({})
+  const fresh = createFakeChild({ 2: { status: 'present', text: 'recovered' } })
+  let spawns = 0
+  const host = new NativeReaderHost({
+    spawn: () => (spawns++ === 0 ? old : fresh) as never, requestTimeoutMs: 500
+  })
+  const pending = host.readSelection(undefined, 15)
+  const state = await Promise.race([
+    pending.then(() => 'response', () => 'timeout'),
+    new Promise<string>((resolve) => setTimeout(() => resolve('still-waiting'), 100))
+  ])
+  try {
+    assert.equal(state, 'timeout', '短预算不能退回默认 1500ms 等待')
+    assert.equal(old.killed, true)
+    assert.deepEqual(await host.readSelection(), { status: 'present', text: 'recovered' })
+  } finally { host.dispose() }
+})
+
+/**
+ * 校验旧进程主动回收不会留下全局抑制标记，使新进程崩溃后请求悬挂。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('新 helper 异步 error 必须立即拒绝待定请求', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const child = createFakeChild({})
+  const host = new NativeReaderHost({ spawn: () => child as never, requestTimeoutMs: 100 })
+  const pending = host.readSelection()
+  const rejected = assert.rejects(pending, /spawn failure/iu)
+  await Promise.resolve()
+  child.emit('error', new Error('spawn failure'))
+  await rejected
+  host.dispose()
+})
+
+/**
+ * 校验惰性启动与异步继续之间崩溃时不登记永远收不到响应的新请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('helper 启动后微任务崩溃必须立即结束而非等待请求超时', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const host = new NativeReaderHost({
+    spawn: () => deferExit(createFakeChild({})) as never, requestTimeoutMs: 500
+  })
+  const pending = host.readSelection()
+  const state = await Promise.race([
+    pending.then(() => 'response', () => 'failed'),
+    new Promise<string>((resolve) => setTimeout(() => resolve('waiting'), 100))
+  ])
+  try { assert.equal(state, 'failed') } finally { host.dispose() }
+})
+
+/**
+ * 校验释放发生在惰性启动 await 空窗时不再向已经结束的进程写请求。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('惰性启动空窗内释放宿主不得向旧 stdin 写请求', async () => {
+  const { NativeReaderHost } = await loadHost()
+  const child = createFakeChild({})
+  let writes = 0
+  child.stdin.write = () => { writes++ }
+  const host = new NativeReaderHost({ spawn: () => child as never, requestTimeoutMs: 20 })
+  const pending = host.readSelection()
+  const rejected = assert.rejects(pending)
+  host.dispose()
+  await rejected
+  assert.equal(writes, 0)
+})

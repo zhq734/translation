@@ -24,12 +24,12 @@ function sliceWmCopyFunction(): string {
 test('WM_COPY 脚本必须先定义 User32 类型再调用 SendMessageTimeout', () => {
   const fnSource = sliceWmCopyFunction()
   const addTypeIndex = fnSource.indexOf('Add-Type -Namespace User32')
-  const callIndex = fnSource.indexOf('[User32]::SendMessageTimeout')
+  const callIndex = fnSource.indexOf('[User32.User32]::SendMessageTimeout')
   assert.ok(addTypeIndex >= 0, '应存在 User32 类型定义')
   assert.ok(callIndex >= 0, '应存在 SendMessageTimeout 调用')
   assert.ok(
     addTypeIndex < callIndex,
-    'PowerShell 顺序执行：Add-Type 必须位于首次使用 [User32] 之前，否则脚本必然报找不到类型'
+    'PowerShell 顺序执行：Add-Type 必须位于首次使用完整限定类型之前，否则脚本必然报找不到类型'
   )
 })
 

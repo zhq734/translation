@@ -7,6 +7,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import {
   encodeNativeReaderRequest,
   parseNativeReaderResponseLine,
@@ -16,8 +17,8 @@ import {
 } from '../shared/nativeReaderProtocol'
 import { translateMain } from './messages'
 
-/** 连续超时达到该次数后重启 helper。 */
-export const NATIVE_READER_RESTART_AFTER_TIMEOUTS = 3
+/** 默认首次超时即回收 helper，避免阻塞的 UIA 请求继续占用后续取词。 */
+export const NATIVE_READER_RESTART_AFTER_TIMEOUTS = 1
 /** helper 空闲自动退出的时间（毫秒）：5 分钟。 */
 export const NATIVE_READER_IDLE_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -92,11 +93,10 @@ export function resolveMacosAxReaderPath(options?: MacosAxReaderPathOptions): st
  */
 export class NativeReaderHost {
   private child: NativeReaderChildProcess | null = null
-  /** 标记下一次 exit 为宿主主动终止（重启/空闲回收），不触发会话禁用。 */
-  private suppressNextExit = false
   private readonly matcher = new NativeReaderRequestMatcher()
   private nextRequestId = 1
   private stdoutBuffer = ''
+  private stdoutDecoder = new StringDecoder('utf8')
   private consecutiveTimeouts = 0
   /** 哨兵 -1 表示尚未发生过任何活动，避免与 now() 返回 0 冲突。 */
   private lastActivityAt = -1
@@ -124,22 +124,42 @@ export class NativeReaderHost {
 
   /**
    * 向 helper 发起一次选区直读。
+   * @param signal 请求取消信号；取消时回收正在执行 UIA 的进程。
+   * @param timeoutMs 单次请求预算，默认使用宿主配置。
    * @returns 直读结果；helper 不可用或被禁用时返回 unknown 并带降级原因。
    * @author zhenghq
    */
-  async readSelection(): Promise<NativeReaderResult> {
+  async readSelection(
+    signal?: AbortSignal,
+    timeoutMs = this.requestTimeoutMs
+  ): Promise<NativeReaderResult> {
+    if (signal?.aborted) throw new Error('native reader request aborted')
     if (this.disabled) {
       return { status: 'unknown', reason: 'helper-disabled' }
     }
 
     const child = await this.ensureChild()
+    if (signal?.aborted) throw new Error('native reader request aborted')
+    // spawn 后到 await 继续之间可能已 exit、dispose 或换代，不能向旧 stdin 发请求。
+    if (child && (this.disabled || this.child !== child)) {
+      throw new Error('native reader helper exited before request')
+    }
     if (!child) {
       return { status: 'unknown', reason: 'helper-disabled' }
     }
 
     const id = this.nextRequestId
     this.nextRequestId += 1
-    const pending = this.matcher.track(id, this.requestTimeoutMs)
+    const pending = this.matcher.track(id, timeoutMs)
+    /**
+     * 中止本代原生调用并释放全部等待者，防止过期 UIA 继续排队。
+     * @returns 无返回值。
+     * @author zhenghq
+     */
+    const handleAbort = (): void => {
+      if (this.child === child) this.killChild(new Error('native reader request aborted'))
+    }
+    signal?.addEventListener('abort', handleAbort, { once: true })
     try {
       child.stdin?.write(encodeNativeReaderRequest({ id, method: 'readSelection' }))
     } catch (error) {
@@ -148,18 +168,22 @@ export class NativeReaderHost {
 
     try {
       const result = await pending
-      this.consecutiveTimeouts = 0
-      this.lastActivityAt = this.now()
+      if (this.child === child) {
+        this.consecutiveTimeouts = 0
+        this.lastActivityAt = this.now()
+      }
       return result
     } catch (error) {
-      this.lastActivityAt = this.now()
-      if (error instanceof Error && /timeout/iu.test(error.message)) {
+      if (this.child === child) this.lastActivityAt = this.now()
+      if (this.child === child && error instanceof Error && /timeout/iu.test(error.message)) {
         this.consecutiveTimeouts += 1
         if (this.consecutiveTimeouts >= this.restartAfterTimeouts) {
           await this.restart()
         }
       }
       throw error
+    } finally {
+      signal?.removeEventListener('abort', handleAbort)
     }
   }
 
@@ -169,8 +193,7 @@ export class NativeReaderHost {
    * @author zhenghq
    */
   dispose(): void {
-    this.killChild()
-    this.matcher.rejectAll(new Error('native reader host disposed'))
+    this.killChild(new Error('native reader host disposed'))
     this.disabled = true
   }
 
@@ -182,7 +205,7 @@ export class NativeReaderHost {
   private async ensureChild(): Promise<NativeReaderChildProcess | null> {
     if (this.disabled) return null
 
-    if (this.child && this.idleTimeoutMs > 0 &&
+    if (this.child && this.matcher.pendingCount === 0 && this.idleTimeoutMs > 0 &&
         this.lastActivityAt >= 0 &&
         this.now() - this.lastActivityAt > this.idleTimeoutMs) {
       this.killChild()
@@ -206,32 +229,26 @@ export class NativeReaderHost {
       return null
     }
 
-    let crashed = false
-    child.on('error', () => {
-      crashed = true
+    this.child = child
+    this.stdoutBuffer = ''
+    this.stdoutDecoder = new StringDecoder('utf8')
+    child.on('error', (error) => {
+      if (this.child !== child) return
+      this.disabled = true
+      this.killChild(error instanceof Error ? error : new Error('native reader helper error'))
     })
     child.on('exit', () => {
-      crashed = true
-      if (this.child === child) {
-        this.child = null
-        // 进程在宿主主动 kill/dispose 之外退出，视为崩溃；若非用户主动处置则禁用会话。
-        if (!this.suppressNextExit) {
-          this.disabled = true
-        }
-        this.suppressNextExit = false
-      }
-      this.matcher.rejectAll(new Error('native reader helper exited'))
-    })
-    child.stdout?.on('data', (chunk) => this.handleStdout(chunk))
-    this.child = child
-    this.lastActivityAt = this.now()
-
-    // 启动即崩溃（下一微任务前 exit）视为重启失败。
-    if (crashed) {
+      // kill 的 exit 异步到达；只能处理当前代，不能拒绝新进程的请求。
+      if (this.child !== child) return
       this.child = null
       this.disabled = true
-      return null
-    }
+      this.stdoutBuffer = ''
+      this.matcher.rejectAll(new Error('native reader helper exited'))
+    })
+    child.stdout?.on('data', (chunk) => {
+      if (this.child === child) this.handleStdout(chunk)
+    })
+    this.lastActivityAt = this.now()
     return child
   }
 
@@ -242,7 +259,7 @@ export class NativeReaderHost {
    * @author zhenghq
    */
   private handleStdout(chunk: Buffer): void {
-    this.stdoutBuffer += chunk.toString('utf8')
+    this.stdoutBuffer += this.stdoutDecoder.write(chunk)
     const lines = this.stdoutBuffer.split(/\r?\n/u)
     this.stdoutBuffer = lines.pop() ?? ''
     for (const line of lines) {
@@ -272,14 +289,17 @@ export class NativeReaderHost {
 
   /**
    * 终止当前 helper 进程（若存在）。
+   * @param error 用于结束本代待定请求的错误。
    * @returns 无返回值。
    * @author zhenghq
    */
-  private killChild(): void {
+  private killChild(error = new Error('native reader helper recycled')): void {
     const child = this.child
     this.child = null
     if (!child) return
-    this.suppressNextExit = true
+    this.matcher.rejectAll(error)
+    this.stdoutBuffer = ''
+    this.stdoutDecoder = new StringDecoder('utf8')
     this.lastActivityAt = -1
     try {
       child.kill()

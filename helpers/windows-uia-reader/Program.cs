@@ -6,8 +6,8 @@
 //
 // 读取链：
 //   1. 焦点控件的 TextPattern.GetSelection 获取选区文本
-//   2. WM_COPY 向焦点控件发送复制消息
-//   3. 宿主层负责全局 Ctrl+C 兜底
+//   2. 无 TextPattern 时返回 unknown，不接触剪贴板
+//   3. 宿主复制事务负责 WM_COPY 与全局 Ctrl+C 兜底
 //
 // 编译目标为 .NET Framework 4.x 的 C# 5，确保 Windows 7 SP1 自带的旧版 csc.exe
 // 也能生成 helper。源码本身不依赖 System.Text.Json 或新语法。
@@ -15,13 +15,10 @@
 // @author zhenghq
 
 using System;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
-using System.Windows.Forms;
 
 namespace WindowsUiaReader
 {
@@ -124,7 +121,7 @@ namespace WindowsUiaReader
 
         /// <summary>
         /// 通过 UI Automation 读取当前焦点控件的选区文本。
-        /// 优先使用 TextPattern.GetSelection，失败时尝试 WM_COPY。
+        /// 仅使用 TextPattern.GetSelection；失败时返回 unknown 交给宿主复制事务。
         /// </summary>
         /// <returns>包含状态、文本与失败原因的读取结果。</returns>
         /// <author>zhenghq</author>
@@ -174,126 +171,11 @@ namespace WindowsUiaReader
             }
             catch
             {
-                // TextPattern 不可用，继续尝试 WM_COPY。
+                // TextPattern 不可用，返回 unknown；后台预取不得清空或恢复剪贴板。
             }
 
-            // 第二级：WM_COPY 向焦点控件发送复制消息。
-            string copyText = TryWmCopy(focusedElement);
-            if (copyText != null)
-            {
-                if (copyText.Length > 0)
-                {
-                    return ReadSelectionResult.Create("present", copyText, null);
-                }
-
-                return ReadSelectionResult.Create("empty", null, null);
-            }
-
-            // 两级均失败，返回 unknown 让宿主降级到全局 Ctrl+C。
+            // 纯只读 helper 不发送复制消息，避免过期预取覆盖宿主剪贴板哨兵。
             return ReadSelectionResult.Create("unknown", null, "no-text-pattern");
-        }
-
-        /// <summary>
-        /// 向焦点控件发送 WM_COPY 消息并从剪贴板读取结果。
-        /// </summary>
-        /// <param name="element">焦点控件。</param>
-        /// <returns>读取到的文本；不可用时返回 null。</returns>
-        /// <author>zhenghq</author>
-        private static string TryWmCopy(AutomationElement element)
-        {
-            try
-            {
-                IntPtr hwnd = GetHandleFromElement(element);
-                if (hwnd == IntPtr.Zero)
-                {
-                    return null;
-                }
-
-                string oldClipboard = null;
-                try
-                {
-                    if (Clipboard.ContainsText())
-                    {
-                        oldClipboard = Clipboard.GetText();
-                    }
-                }
-                catch
-                {
-                    // 剪贴板不可读时忽略旧内容。
-                }
-
-                Clipboard.Clear();
-
-                IntPtr messageResult;
-                SendMessageTimeout(hwnd, WM_COPY, IntPtr.Zero, IntPtr.Zero,
-                    SMTO_BLOCK, 500, out messageResult);
-
-                string text = null;
-                for (int i = 0; i < 20; i++)
-                {
-                    Thread.Sleep(10);
-                    try
-                    {
-                        if (Clipboard.ContainsText())
-                        {
-                            text = Clipboard.GetText();
-                            break;
-                        }
-                    }
-                    catch
-                    {
-                        // 剪贴板异常时继续轮询。
-                    }
-                }
-
-                try
-                {
-                    Clipboard.Clear();
-                    if (oldClipboard != null)
-                    {
-                        Clipboard.SetText(oldClipboard);
-                    }
-                }
-                catch
-                {
-                    // 恢复失败时忽略。
-                }
-
-                return text;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// 从 AutomationElement 获取原生窗口句柄。
-        /// </summary>
-        /// <param name="element">UI Automation 元素。</param>
-        /// <returns>窗口句柄；获取失败时返回 IntPtr.Zero。</returns>
-        /// <author>zhenghq</author>
-        private static IntPtr GetHandleFromElement(AutomationElement element)
-        {
-            try
-            {
-                object hwndValue = element.GetCurrentPropertyValue(AutomationElement.NativeWindowHandleProperty);
-                if (hwndValue is int)
-                {
-                    return new IntPtr((int)hwndValue);
-                }
-
-                if (hwndValue is long)
-                {
-                    return new IntPtr((long)hwndValue);
-                }
-            }
-            catch
-            {
-                // 获取句柄失败时返回零。
-            }
-
-            return IntPtr.Zero;
         }
 
         /// <summary>
@@ -360,14 +242,7 @@ namespace WindowsUiaReader
             return builder.ToString();
         }
 
-        private const uint WM_COPY = 0x0301;
-        private const uint SMTO_BLOCK = 0x0001;
 
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SendMessageTimeout(
-            IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam,
-            uint flags, uint timeout, out IntPtr result);
     }
 
     /// <summary>
