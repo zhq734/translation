@@ -39,7 +39,7 @@ test('静阅读卡：译文 16px/1.75，原文次级，窗口一致裁切且不�
   assert.doesNotMatch(css, /#[\da-f]{3,8}\b|rgba?\(/iu)
 })
 
-/** 验证所有原入口与国际化标签都可达；无参数、无返回值。@author zhenghq */
+/** 验证所有原入口与国际化标签都可达，图钉仅保留无障碍提示；无参数、无返回值。@author zhenghq */
 test('静阅导航：文字入口常驻，次级菜单初始隐藏且沿用既有动作 ID 和 i18n', () => {
   const originalIds = [
     'popup', 'status', 'translation-provider', 'manual-mode', 'open-history',
@@ -50,7 +50,7 @@ test('静阅导航：文字入口常驻，次级菜单初始隐藏且沿用既�
     'result', 'manual-view', 'manual-clear', 'manual-source',
     'manual-hint', 'manual-count', 'manual-submit', 'manual-stale', 'manual-result',
     'history-view', 'history-clear-unfavorited', 'history-search', 'history-list', 'history-empty',
-    'speak', 'speak-label', 'source-lang', 'target-lang', 'copy', 'manual-copy', 'pin', 'pin-label'
+    'speak', 'speak-label', 'source-lang', 'target-lang', 'copy', 'manual-copy', 'pin'
   ]
   const ids = Array.from(html.matchAll(/\bid="([^"]+)"/gu), (match) => match[1])
   assert.equal(new Set(ids).size, ids.length, '不得重复已有 ID')
@@ -238,7 +238,7 @@ test('静阅历史浏览器：520×320、360×320 可阅读和操作，普通窗
 })
 
 /**
- * 使用真实页面、词条与 Chrome 布局验证手动工作区和跨模式导航；不调用翻译业务或 Electron。
+ * 使用真实页面、词条与 Chrome 布局验证手动工作区、跨模式导航和左上角图钉；不调用翻译业务或 Electron。
  * 设置 QUIET_STUDIO_BROWSER=1 启用；无参数、无返回值。
  * @author zhenghq
  */
@@ -346,6 +346,7 @@ test('静阅手动浏览器：六组尺寸始终上下、文本独立滚动且�
         byId('translation-provider').innerHTML = '<option>OpenAI Compatible</option>';
         for (const [width, height] of [[360,320], [520,320], [520,480], [520,640], [800,320], [800,600]]) {
           frame.style.width = width + 'px'; frame.style.height = height + 'px';
+          popup.classList.toggle('compact-height', height <= 400);
           mode('manual');
           for (const stale of [false, true]) {
             byId('manual-stale').hidden = !stale;
@@ -376,15 +377,22 @@ test('静阅手动浏览器：六组尺寸始终上下、文本独立滚动且�
               internalScroll: win.getComputedStyle(source).overflowY === 'auto' && win.getComputedStyle(target).overflowY === 'auto'});
           }
         }
-        for (const width of [360, 520, 800]) for (const name of ['selection', 'manual', 'history']) {
-          frame.style.width = width + 'px'; frame.style.height = '320px';
+        for (const width of [360, 520, 800]) for (const height of [320, 640]) for (const name of ['selection', 'manual', 'history']) {
+          frame.style.width = width + 'px'; frame.style.height = height + 'px';
+          popup.classList.toggle('compact-height', height <= 400);
           mode(name);
-          const controls = ['manual-mode', 'open-history', 'popup-menu-toggle', 'close'].map(byId);
+          const controls = ['pin', 'manual-mode', 'open-history', 'popup-menu-toggle', 'close'].map(byId);
           const icons = [...doc.querySelectorAll('.header-actions .header-action-icon')].filter(icon => !icon.closest('#popup-menu'));
           const labels = [...doc.querySelectorAll('.mode-action > span')];
           const header = doc.querySelector('.header-top');
-          const common = {width, locale, theme, mode: name,
+          const pinBox = byId('pin').getBoundingClientRect(), popupBox = popup.getBoundingClientRect();
+          const titleBox = byId('status').getBoundingClientRect();
+          const common = {width, height, locale, theme, mode: name,
             controls: controls.every(reachable),
+            pinCorner: pinBox.left - popupBox.left <= 6 && pinBox.top - popupBox.top <= 4 &&
+              pinBox.width === 24 && pinBox.height === 24 &&
+              (pinBox.right <= titleBox.left || pinBox.bottom <= titleBox.top) &&
+              !byId('pin').querySelector('span'),
             icons: icons.length === 3 && icons.every(icon => inside(icon, icon.parentElement) && win.getComputedStyle(icon).display !== 'none' && icon.getBoundingClientRect().width >= 17),
             labels: labels.every(label => inside(label, label.parentElement) && noOverflow(label)),
             noOverflow: noOverflow(header) && noOverflow(doc.querySelector('.header-actions'))};
@@ -398,13 +406,16 @@ test('静阅手动浏览器：六组尺寸始终上下、文本独立滚动且�
         mode('manual'); byId('manual-stale').hidden = true;
         for (const [width, height] of [[520, 640], [800, 320]]) {
           frame.style.width = width + 'px'; frame.style.height = height + 'px';
+          popup.classList.toggle('compact-height', height <= 400);
           const before = byId('manual-view').clientHeight;
+          popup.classList.remove('compact-height');
           popup.classList.add('auto-size-measuring');
           const expanded = byId('manual-view').clientHeight;
           measuring.push({width, height, locale, theme, before, expanded,
             overflow: win.getComputedStyle(byId('manual-view')).overflowY,
             targetExpanded: target.clientHeight >= target.scrollHeight - 1});
           popup.classList.remove('auto-size-measuring');
+          popup.classList.toggle('compact-height', height <= 400);
         }
       }
       return {manual, navigation, measuring, themes, stateRetained: source.value === sourceText && target.textContent === targetText};
@@ -426,9 +437,9 @@ test('静阅手动浏览器：六组尺寸始终上下、文本独立滚动且�
       for (const key of ['sourceScroll', 'targetScroll', 'sourceIndependent', 'targetIndependent', 'textInside', 'controls', 'internalScroll', 'stacked', 'noHorizontalOverflow']) assert.equal(item[key], true, `${key}：${detail}`)
       if (item.height === 320) assert.equal(item.workspaceScroll, true, `矮窗通过工作区滚动保留可读文本：${detail}`)
     }
-    assert.equal(measurements.navigation.length, 36)
+    assert.equal(measurements.navigation.length, 72)
     for (const item of measurements.navigation) {
-      for (const key of ['controls', 'icons', 'labels', 'noOverflow', 'menu', 'hidden']) assert.equal(item[key], true, `${key}：${JSON.stringify(item)}`)
+      for (const key of ['controls', 'pinCorner', 'icons', 'labels', 'noOverflow', 'menu', 'hidden']) assert.equal(item[key], true, `${key}：${JSON.stringify(item)}`)
     }
     assert.equal(measurements.measuring.length, 8)
     for (const item of measurements.measuring) {

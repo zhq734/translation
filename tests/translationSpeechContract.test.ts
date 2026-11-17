@@ -7,15 +7,15 @@ const renderer = readFileSync('src/renderer/src/popup.ts', 'utf8')
 const popupWindow = readFileSync('src/main/popup.ts', 'utf8')
 const styles = readFileSync('src/renderer/src/style.css', 'utf8')
 
-/** 校验顶部模式入口及底栏朗读、钉住顺序；无参数、无返回值。@author zhenghq */
-test('顶部模式入口与底栏朗读、钉住应使用统一图标并保持可达', () => {
+/** 校验顶部钉住、模式入口及底栏朗读顺序；无参数、无返回值。@author zhenghq */
+test('顶部钉住、模式入口与底栏朗读应使用统一图标并保持可达', () => {
   const manualIndex = html.indexOf('id="manual-mode"')
   const speakIndex = html.indexOf('id="speak"')
   const pinIndex = html.indexOf('id="pin"')
 
   assert.ok(manualIndex >= 0)
   assert.ok(speakIndex > manualIndex)
-  assert.ok(pinIndex > speakIndex)
+  assert.ok(pinIndex >= 0 && pinIndex < manualIndex)
   assert.match(html, /id="manual-mode"[^>]*class="header-action-button mode-action"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon manual-icon"/u)
   assert.ok(html.indexOf('class="popup-footer"') < speakIndex)
   assert.match(html, /id="speak"[^>]*class="header-action-button"[^>]*>[\s\S]*?<svg[^>]+class="header-action-icon speak-icon"/u)

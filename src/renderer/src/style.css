@@ -827,8 +827,7 @@ body {
   white-space: nowrap;
 }
 
-#speak,
-#pin {
+#speak {
   width: auto;
   height: auto;
   min-height: 34px;
@@ -843,9 +842,23 @@ body {
   color: var(--text-secondary);
 }
 
+/* zhenghq：图钉作为左上角独立角标，避开圆角裁切、正文和中央拖动热区。 */
 #pin {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  z-index: 4;
+  padding: 0;
   background: transparent;
   color: var(--text-secondary);
+}
+
+/* zhenghq：角标焦点环向内绘制，避免被窗口圆角裁切。 */
+#pin:focus-visible {
+  outline-offset: -2px;
 }
 
 #pin:hover {
@@ -1159,7 +1172,7 @@ body {
   display: none;
 }
 
-/* 底部操作栏：左侧朗读、右侧固定，复制按钮在结果可用时出现。 */
+/* zhenghq：底部操作栏保留朗读与复制，钉住入口改为左上角角标。 */
 .footer {
   display: flex;
   flex: 0 0 auto;
@@ -1368,7 +1381,6 @@ body {
 
   /* zhenghq：底部英文操作文字换行而非整组换行，避免挤掉矮窗文本。 */
   #speak,
-  #pin,
   #manual-copy {
     flex: 0 1 auto;
     min-width: 0;
@@ -1465,6 +1477,11 @@ body {
     margin-bottom: 4px;
   }
 
+  /* zhenghq：矮窗顶部拖动区收紧后，为左上角图钉预留横向空间，避免覆盖标题。 */
+  #popup.compact-height .header-top {
+    padding-inline-start: 20px;
+  }
+
   #popup.compact-height .section-head {
     margin-bottom: 3px;
   }
@@ -1518,8 +1535,7 @@ body {
     padding-top: 6px;
   }
 
-  #popup.compact-height #speak,
-  #popup.compact-height #pin {
+  #popup.compact-height #speak {
     min-height: 30px;
   }
 }

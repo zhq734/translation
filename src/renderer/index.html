@@ -15,6 +15,13 @@
   </head>
   <body>
     <div id="popup">
+      <button id="pin" class="header-action-button" type="button" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window" aria-pressed="false">
+        <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 17v5" />
+          <path d="M5 17h14" />
+          <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
+        </svg>
+      </button>
       <div class="drag-handle" data-i18n-attr="title:popup.dragHandle.title;aria-label:popup.dragHandle.ariaLabel" title="Drag window" aria-label="Drag translation window"></div>
       <header class="header">
         <div class="header-top">
@@ -167,14 +174,6 @@
           <span class="toolbar-action-label" data-i18n="popup.copy">Copy</span>
         </button>
         <button id="manual-copy" class="toolbar-action toolbar-action-primary" type="button" data-i18n="popup.copyTranslation" hidden disabled>Copy translation</button>
-        <button id="pin" class="header-action-button" type="button" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window" aria-pressed="false">
-          <svg class="header-action-icon pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M12 17v5" />
-            <path d="M5 17h14" />
-            <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
-          </svg>
-          <span class="toolbar-action-label" id="pin-label" data-i18n="popup.pin">Pin window</span>
-        </button>
       </div>
       <div id="popup-resize-handle" role="button" tabindex="0" data-i18n-attr="title:popup.resizeHandle;aria-label:popup.resizeHandle" title="Resize translation window" aria-label="Resize translation window"></div>
     </div>

@@ -142,7 +142,6 @@ const ocrSourceTextEl = document.getElementById('ocr-source-text') as HTMLElemen
 const ocrEngineBadgeEl = document.getElementById('ocr-engine-badge') as HTMLElement
 const ocrCopyBtn = document.getElementById('ocr-copy') as HTMLButtonElement
 const pinBtn = document.getElementById('pin') as HTMLButtonElement
-const pinLabelEl = document.getElementById('pin-label') as HTMLElement
 const webReaderBtn = document.getElementById('open-web-reader') as HTMLButtonElement
 const documentTranslationBtn = document.getElementById('open-document-translation') as HTMLButtonElement
 const settingsBtn = document.getElementById('open-settings') as HTMLButtonElement
@@ -2686,7 +2685,7 @@ function copyTranslation(): void {
 }
 
 /**
- * 更新固定按钮的视觉和无障碍状态。
+ * 更新左上角图钉角标的视觉、悬停提示和无障碍状态。
  * @param value 当前固定状态。
  * @returns 无返回值。
  * @author zhenghq
@@ -2696,7 +2695,6 @@ function renderPinnedState(value: boolean): void {
   pinBtn.setAttribute('aria-pressed', String(value))
   pinBtn.title = value ? t('popup.unpinWindow') : t('popup.pin')
   pinBtn.setAttribute('aria-label', pinBtn.title)
-  pinLabelEl.textContent = pinBtn.title
 }
 
 /**
