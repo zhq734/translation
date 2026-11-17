@@ -72,11 +72,16 @@ test('Quiet Studio 八分类均有本地化面板标题与扁平分组，不删�
   assert.match(rule('.tab-panel > section + section'), /border-top:\s*1px solid var\(--border-subtle\)/u)
 })
 
-test('Quiet Studio 侧栏使用中性表面与轻强调选中态，窄屏不隐藏分类名称', () => {
+/**
+ * 校验侧栏保留中性表面、明显的主题选中态与窄屏分类名称。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Quiet Studio 侧栏使用中性表面与高对比选中态，窄屏不隐藏分类名称', () => {
   assert.match(rule('.settings-sidebar'), /background:\s*var\(--surface-subtle\)/u)
   assert.match(rule('.settings-sidebar'), /overflow-y:\s*auto/u)
-  assert.match(rule(".settings-tab[aria-selected='true']"), /background:\s*var\(--accent-soft\)/u)
-  assert.doesNotMatch(rule(".settings-tab[aria-selected='true']"), /border-color:\s*var\(--button-bg\)/u)
+  assert.match(rule(".settings-tab[aria-selected='true']"), /background:\s*var\(--button-bg\)/u)
+  assert.match(rule(".settings-tab[aria-selected='true']"), /border-color:\s*var\(--button-bg\)/u)
   assert.match(rule('.settings-tab-label'), /white-space:\s*normal/u)
   assert.match(rule('.settings-tab-label'), /overflow-wrap:\s*anywhere/u)
   assert.doesNotMatch(css, /\.settings-tab-label\s*\{[^}]*display:\s*none/u)

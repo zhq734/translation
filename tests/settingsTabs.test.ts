@@ -113,13 +113,26 @@ test('设置页应使用左侧导航、独立滚动内容和窄宽自适应布�
   assert.match(css, /\.row\s*\{[\s\S]*grid-template-columns/u)
 })
 
-test('设置页菜单文字应使用主题语义色并保证选中项对比度', () => {
+/**
+ * 校验菜单选中项采用主题实底和配套前景色，并在悬停时保持明显的选中反馈。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('设置页菜单选中项应使用高对比主题实底且悬停时保持选中反馈', () => {
   const css = readFileSync('src/renderer/src/settings.css', 'utf8')
+  const selected = css.match(/\.settings-tab\[aria-selected='true'\]\s*\{([^}]+)\}/u)?.[1]
+  const selectedHover = css.match(/\.settings-tab\[aria-selected='true'\]:hover\s*\{([^}]+)\}/u)?.[1]
+
   assert.match(css, /\.settings-tab\s*\{[^}]*color:\s*var\(--text-secondary\)/u)
-  assert.match(
-    css,
-    /\.settings-tab\[aria-selected='true'\]\s*\{[^}]*color:\s*var\(--button-text\)/u
-  )
+  assert.ok(selected, '缺少菜单选中样式')
+  assert.match(selected, /background:\s*var\(--button-bg\)/u)
+  assert.match(selected, /border-color:\s*var\(--button-bg\)/u)
+  assert.match(selected, /color:\s*var\(--button-text\)/u)
+  assert.match(selected, /font-weight:\s*700/u)
+  assert.doesNotMatch(selected, /--button-text\s*:/u, '不得覆盖主题提供的高对比前景色')
+  assert.ok(selectedHover, '缺少菜单选中项悬停样式')
+  assert.match(selectedHover, /background:\s*var\(--button-bg-hover\)/u)
+  assert.match(selectedHover, /border-color:\s*var\(--button-bg-hover\)/u)
 })
 
 test('设置页一级菜单应靠左对齐并在文字前展示对应图标', () => {

@@ -239,12 +239,17 @@ h1 {
 }
 
 .settings-tab[aria-selected='true'] {
-  /* 作者：zhenghq。保留旧菜单颜色接口，仅在柔和选中表面映射为可读正文色。 */
-  --button-text: var(--text-primary);
-  border-color: transparent;
-  background: var(--accent-soft);
+  /* 作者：zhenghq。选中项使用主题实底及配套前景色，图标继承文字颜色以兼容明暗主题。 */
+  border-color: var(--button-bg);
+  background: var(--button-bg);
   color: var(--button-text);
+  font-weight: 700;
   box-shadow: none;
+}
+
+.settings-tab[aria-selected='true']:hover {
+  border-color: var(--button-bg-hover);
+  background: var(--button-bg-hover);
 }
 
 .settings-tab:focus-visible {
