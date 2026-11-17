@@ -17,6 +17,18 @@
     <button id="translate" data-i18n-attr="title:selection.translateSelected;aria-label:selection.translateSelected" title="Translate selected text" aria-label="Translate selected text">译</button>
     <main id="ocr-overlay" class="ocr-overlay" data-i18n-attr="aria-label:selection.ocrCapture" aria-label="OCR screenshot capture" hidden>
       <canvas id="ocr-snapshot" class="ocr-snapshot" aria-hidden="true" hidden></canvas>
+      <div id="ocr-spotlight-mask" class="ocr-spotlight-mask" aria-hidden="true"></div>
+      <div id="ocr-window-candidate" class="ocr-window-candidate" aria-hidden="true" hidden></div>
+      <div id="ocr-window-label" class="ocr-window-label" aria-hidden="true" hidden></div>
+      <section id="ocr-reselect-confirmation" class="ocr-reselect-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="ocr-reselect-message" hidden>
+        <div class="ocr-reselect-card">
+          <p id="ocr-reselect-message" data-i18n="selection.reselectConfirm">Selecting again will discard annotations and OCR results. Continue?</p>
+          <div class="ocr-reselect-actions">
+            <button id="ocr-reselect-no" type="button" data-i18n="selection.reselectCancel">Keep selection</button>
+            <button id="ocr-reselect-yes" type="button" data-i18n="selection.reselect">Select again</button>
+          </div>
+        </div>
+      </section>
       <canvas id="ocr-annotation-canvas" class="ocr-annotation-canvas" aria-hidden="true"></canvas>
       <canvas id="ocr-annotation-preview" class="ocr-annotation-preview" aria-hidden="true"></canvas>
       <div id="ocr-annotation-selection" class="ocr-annotation-selection" hidden>
@@ -41,6 +53,9 @@
         <span class="ocr-resize-handle" data-handle="w" aria-hidden="true"></span>
       </div>
       <div id="ocr-toolbar" class="ocr-toolbar flat-overlay" hidden>
+        <button id="ocr-reselect" type="button" data-i18n-attr="title:selection.reselect;aria-label:selection.reselect" title="Select again" aria-label="Select again">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 7a6 6 0 1 1-1 5M2 3v5h5"></path></svg>
+        </button>
         <div class="ocr-toolbar-group" data-group="annotation-tools" role="group" data-i18n-attr="aria-label:selection.annotationTools" aria-label="Annotation tools">
           <button id="ocr-tool-rect" type="button" data-i18n-attr="title:selection.tool.rect;aria-label:selection.tool.rect" title="Rectangle" aria-label="Rectangle" aria-pressed="false" data-annotation-tool="rect">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">

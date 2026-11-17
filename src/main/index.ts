@@ -1,4 +1,5 @@
 import { portableRuntimeInfo } from './portableBootstrap'
+import { collectScreenshotWindowCandidates, screenshotWindowsOptions } from './screenshotWindowCandidates'
 import {
   app,
   Tray,
@@ -272,7 +273,8 @@ import {
 import type { OcrDispatcher, OcrEnginePreferenceState } from './ocrDispatcher'
 import {
   handleOcrSelectionWindowClosed,
-  handleOcrSelectionWindowHide
+  handleOcrSelectionWindowHide,
+  yieldToEventLoop
 } from './ocrSelectionWindowEvents'
 import { recognizeAdaptiveOcr } from './adaptiveOcr'
 import { createWebImageSource, type WebImageResponse, type WebImageSource } from './webImageSource'
@@ -457,19 +459,6 @@ async function waitForSelectionWindowSnapshot(
 ): Promise<boolean> {
   if (!task) return false
   return task.then(() => true, () => false)
-}
-
-/**
- * 让出一次事件循环。
- *
- * Windows 上 win.show() 只是向系统投递显示请求，窗口真正上屏与合成需要主进程
- * 消息循环继续运转。若紧接着同步执行整屏 toDataURL，消息循环被阻塞，
- * 窗口反而要等编码结束才可见；先让出一次事件循环可以让窗口完成上屏。
- * @returns 下一轮事件循环开始后完成的 Promise。
- * @author zhenghq
- */
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve))
 }
 
 let tray: Tray | null = null
@@ -4395,6 +4384,7 @@ async function openOcrSelection(): Promise<void> {
     sendToOcrSelectionWindow(win, 'ocr-selection:begin', {
       sessionId: ocrSessionId,
       bounds: display.bounds,
+      cursorPoint: { x: anchor.x - display.bounds.x, y: anchor.y - display.bounds.y },
       autoTranslate
     })
     // Windows GDI BitBlt 与 macOS screencapture 都会读取当前屏幕合成结果；覆盖窗口若先显示，
@@ -4428,11 +4418,18 @@ async function openOcrSelection(): Promise<void> {
         return
       }
     }
+    // 覆盖层尚未显示时冻结系统窗口；快捷 OCR 不枚举、不改变原自动提交语义。
+    const windowCandidatesPromise = autoTranslate ? Promise.resolve([]) : collectScreenshotWindowCandidates({
+      platform: process.platform,
+      bounds: display.bounds,
+      windowsOptions: screenshotWindowsOptions(screen, display, win.getNativeWindowHandle())
+    })
     const capturePromise = captureOcrPreviewSnapshot(display.bounds)
     const prepareMs = Date.now() - hotkeyAt
-    const [rendererReady, preview] = await Promise.all([
+    const [rendererReady, preview, windowCandidates] = await Promise.all([
       showBeforeCapture ? Promise.resolve(true) : rendererReadyPromise,
-      capturePromise
+      capturePromise,
+      windowCandidatesPromise
     ])
     const rendererReadyMs = Date.now() - hotkeyAt
     if (timeoutTimer) clearTimeout(timeoutTimer)
@@ -4467,6 +4464,7 @@ async function openOcrSelection(): Promise<void> {
     sendToOcrSelectionWindow(win, 'ocr-selection:snapshot', {
       sessionId: ocrSessionId,
       bounds: preview.snapshot.bounds,
+      windowCandidates,
       ...previewPayload
     })
     console.log('[ocr] 预览就绪', {

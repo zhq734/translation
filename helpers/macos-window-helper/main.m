@@ -3,6 +3,7 @@
  *
  * 子命令：
  *   list <pid>               输出该进程普通窗口与全局最前普通窗口的 JSON 对象
+ *   screenshot-windows       输出所有可见普通窗口的应用名、全局 DIP 边界与前后顺序
  *   raise <pid> <windowNumber> 通过 AXRaise 提升指定窗口（焦点确认由 Node 侧轮询）
  *   focused <pid>            输出该进程当前 focused window 编号
  *   activate <pid>           按进程激活源应用，不提升该应用的全部窗口
@@ -16,6 +17,8 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#include <math.h>
+#include <stdint.h>
 
 /**
  * 将对象序列化为单行 JSON 并写入 stdout。
@@ -115,6 +118,76 @@ static NSArray<NSDictionary *> *EnumerateWindows(
   }
 
   CFRelease(windowList);
+  return result;
+}
+
+/**
+ * 独立枚举截图吸附所需的全部可见普通窗口，不读取窗口标题或调用 AX。
+ * 使用有序窗口编号快照，再批量读取描述；过滤桌面、阴影、透明及非正常层。
+ * CG 屏幕边界以主屏左上角为原点，已经是全局 DIP，不乘除 Retina 缩放。
+ * @return 包含应用名、窗口编号、全局 DIP 边界及原始 zOrder 的数组；系统失败返回 nil。
+ * @author zhenghq
+ */
+static NSArray<NSDictionary *> *EnumerateScreenshotWindows(void) {
+  CFArrayRef windowIDs = CGWindowListCreate(
+    kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+    kCGNullWindowID
+  );
+  if (!windowIDs) return nil;
+  CFArrayRef windowList = CGWindowListCreateDescriptionFromArray(windowIDs);
+  if (!windowList) {
+    CFRelease(windowIDs);
+    return nil;
+  }
+  // 描述查询期间窗口可能消失，按编号关联以保留原始快照层级而非重新编号。
+  NSMutableDictionary<NSNumber *, NSDictionary *> *byID = [NSMutableDictionary dictionary];
+  for (CFIndex index = 0; index < CFArrayGetCount(windowList); index += 1) {
+    NSDictionary *window = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, index);
+    NSNumber *number = window[(NSString *)kCGWindowNumber];
+    if (number) byID[number] = window;
+  }
+  NSMutableDictionary<NSNumber *, NSString *> *appNames = [NSMutableDictionary dictionary];
+  NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+  for (CFIndex index = 0; index < CFArrayGetCount(windowIDs); index += 1) {
+    // CGWindowListCreate 的元素直接编码 CGWindowID，不是 CFNumber 对象。
+    CGWindowID windowID = (CGWindowID)(uintptr_t)CFArrayGetValueAtIndex(windowIDs, index);
+    NSDictionary *window = byID[@(windowID)];
+    NSNumber *ownerPid = window[(NSString *)kCGWindowOwnerPID];
+    NSNumber *layer = window[(NSString *)kCGWindowLayer];
+    NSNumber *onscreen = window[(NSString *)kCGWindowIsOnscreen];
+    NSNumber *alpha = window[(NSString *)kCGWindowAlpha];
+    NSDictionary *bounds = window[(NSString *)kCGWindowBounds];
+    if (!windowID || !ownerPid || ownerPid.intValue <= 0 || !layer || layer.intValue != 0 ||
+        !onscreen.boolValue || !alpha || !isfinite(alpha.doubleValue) || alpha.doubleValue <= 0 || !bounds) continue;
+    NSNumber *x = bounds[@"X"];
+    NSNumber *y = bounds[@"Y"];
+    NSNumber *width = bounds[@"Width"];
+    NSNumber *height = bounds[@"Height"];
+    if (!x || !y || !width || !height ||
+        !isfinite(x.doubleValue) || !isfinite(y.doubleValue) ||
+        !isfinite(width.doubleValue) || !isfinite(height.doubleValue) ||
+        width.doubleValue < 8 || height.doubleValue < 8) continue;
+    id ownerValue = window[(NSString *)kCGWindowOwnerName];
+    NSString *ownerName = [ownerValue isKindOfClass:[NSString class]] ? ownerValue : @"";
+    // Window Server 的阴影或 Dock 桌面辅助元素不是可吸附的普通应用窗口。
+    if ([ownerName isEqualToString:@"Window Server"] || [ownerName isEqualToString:@"WindowServer"] ||
+        [ownerName isEqualToString:@"Dock"]) continue;
+    NSString *appName = appNames[ownerPid];
+    if (!appName) {
+      NSRunningApplication *application =
+        [NSRunningApplication runningApplicationWithProcessIdentifier:ownerPid.intValue];
+      appName = application.localizedName.length > 0 ? application.localizedName : ownerName;
+      appNames[ownerPid] = appName;
+    }
+    [result addObject:@{
+      @"id": [@(windowID) stringValue],
+      @"appName": appName,
+      @"bounds": @{@"x": x, @"y": y, @"width": width, @"height": height},
+      @"zOrder": @(index)
+    }];
+  }
+  CFRelease(windowList);
+  CFRelease(windowIDs);
   return result;
 }
 
@@ -230,11 +303,21 @@ static void WriteFocusedWindow(pid_t pid) {
  */
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    // 独立截图命令不需要 PID，必须在旧命令参数校验之前分派。
+    NSString *command = argc >= 2 ? [NSString stringWithUTF8String:argv[1]] : nil;
+    if ([command isEqualToString:@"screenshot-windows"]) {
+      NSArray<NSDictionary *> *windows = EnumerateScreenshotWindows();
+      if (!windows) {
+        WriteJSON(@{@"ok": @NO, @"error": @"window-list-unavailable"});
+        return 1;
+      }
+      WriteJSON(@{@"ok": @YES, @"windows": windows});
+      return 0;
+    }
     if (argc < 3) {
       WriteJSON(@{@"ok": @NO});
       return 2;
     }
-    NSString *command = [NSString stringWithUTF8String:argv[1]];
     pid_t pid = (pid_t)atoi(argv[2]);
     if (pid <= 0) {
       WriteJSON(@{@"ok": @NO});

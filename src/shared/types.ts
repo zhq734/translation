@@ -1,4 +1,5 @@
 import type { PortableRuntimeInfo } from './portable'
+import type { ScreenshotWindowCandidate, ScreenshotWindowPoint } from './screenshotWindowSelection'
 import type {
   ExtractedWebTextUnit,
   WebImageCandidate,
@@ -510,6 +511,8 @@ export interface OcrSelectionBeginPayload {
   bounds: OcrSelectionBounds
   /** 是否在用户完成首次有效框选并松开鼠标后自动识别并翻译。 */
   autoTranslate: boolean
+  /** 当前鼠标的本屏局部 DIP 坐标；省略时等待鼠标移动，不影响旧调用。@author zhenghq */
+  cursorPoint?: ScreenshotWindowPoint
 }
 
 /** OCR 框选 Renderer 完成会话重置后的就绪确认负载。 */
@@ -538,6 +541,8 @@ export interface OcrSelectionSnapshotPayload {
   imageDataUrl?: string
   /** Windows GDI 原始 BGRA 像素；存在时渲染层直接上屏，不做解码与缩放。 */
   pixels?: OcrSelectionSnapshotPixels
+  /** 与本快照同会话的本屏局部 DIP 窗口候选；省略或为空时降级手动框选。@author zhenghq */
+  windowCandidates?: ScreenshotWindowCandidate[]
 }
 
 /** OCR 框选采集失败负载：覆盖窗口需立即退出框选模式。 */

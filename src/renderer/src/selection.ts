@@ -23,6 +23,12 @@ import { startThemeRuntime } from './theme'
 import { startLocaleRuntime } from './locale'
 import { applyWin7CompatibilityAttribute } from './runtimeCompatibility'
 import { resolveScreenshotOcrPanelAutoSize } from './screenshotOcrPanelSize'
+import {
+  createScreenshotWindowSelectionState,
+  reduceScreenshotWindowSelectionState,
+  type ScreenshotWindowSelectionState,
+  type ScreenshotWindowSelectionEvent
+} from '../../shared/screenshotWindowSelection'
 
 applyWin7CompatibilityAttribute()
 startThemeRuntime(window.api)
@@ -56,6 +62,13 @@ const ocrAnnotationResizeHandles = Array.from(
   document.querySelectorAll<HTMLElement>('[data-annotation-handle]')
 )
 const ocrSelectionBox = document.getElementById('ocr-selection-box') as HTMLElement
+const ocrSpotlightMask = document.getElementById('ocr-spotlight-mask') as HTMLElement
+const ocrWindowCandidate = document.getElementById('ocr-window-candidate') as HTMLElement
+const ocrWindowLabel = document.getElementById('ocr-window-label') as HTMLElement
+const ocrReselectButton = document.getElementById('ocr-reselect') as HTMLButtonElement
+const ocrReselectConfirmation = document.getElementById('ocr-reselect-confirmation') as HTMLElement
+const ocrReselectYes = document.getElementById('ocr-reselect-yes') as HTMLButtonElement
+const ocrReselectNo = document.getElementById('ocr-reselect-no') as HTMLButtonElement
 const ocrToolbar = document.getElementById('ocr-toolbar') as HTMLElement
 const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButtonElement
 const ocrTranslateButton = document.getElementById('ocr-translate') as HTMLButtonElement
@@ -117,6 +130,7 @@ type DragState = {
 let ocrMode = false
 let dragState: DragState | null = null
 let currentRect: OcrSelectionBounds | null = null
+let windowSelectionState: ScreenshotWindowSelectionState | null = null
 /** 当前快捷 OCR 会话是否应在首次有效框选松开后自动识别并翻译。 */
 let quickOcrAutoTranslate = false
 /** 快捷 OCR 已完成有效框选但仍在等待快照就绪的自动提交标记。 */
@@ -320,7 +334,7 @@ function renderOcrToolbar(): void {
     ocrToolbar.hidden = true
     return
   }
-  if (!currentRect || currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) {
+  if (windowSelectionState?.phase === 'drawing' || !currentRect || currentRect.width < MIN_SELECTION_SIZE || currentRect.height < MIN_SELECTION_SIZE) {
     ocrToolbar.hidden = true
     return
   }
@@ -1305,6 +1319,7 @@ function getPointerEventPoint(event: PointerEvent): { x: number; y: number } {
  * @author zhenghq
  */
 function handleAnnotationPointerDown(event: PointerEvent): void {
+  if (!ocrReselectConfirmation.hidden) return
   if (quickOcrAutoTranslate || !ocrMode || !annotationController.isAnnotating() || event.button !== 0) return
   if ((event.target as HTMLElement).closest('#ocr-text-input')) return
   // 点击其它控件或画布时先确认当前文字，避免失焦时丢失输入内容。
@@ -1754,12 +1769,14 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
     ocrSelectionBox.hidden = true
     ocrSelectionBox.style.pointerEvents = quickOcrAutoTranslate ? 'none' : 'auto'
     currentRect = null
+    renderWindowSpotlight()
     updateResizeHandlePositions()
     updateAnnotationSelectionBox()
     renderOcrToolbar()
     return
   }
   currentRect = rect
+  renderWindowSpotlight()
   ocrSelectionBox.hidden = false
   ocrSelectionBox.style.pointerEvents = quickOcrAutoTranslate ? 'none' : 'auto'
   ocrSelectionBox.style.left = `${rect.x}px`
@@ -1774,6 +1791,98 @@ function renderSelectionRect(rect: OcrSelectionBounds | null): void {
   syncAnnotationCanvas()
   redrawAnnotations()
   redrawAnnotationPreview()
+}
+
+/**
+ * 渲染系统窗口候选及单层暗幕，不写入正式选区、不触发识别或源窗口激活。
+ * @returns 无返回值；暗幕只在当前候选或正式选区处挖空。
+ * @author zhenghq
+ */
+function renderWindowSpotlight(): void {
+  const candidate = !quickOcrAutoTranslate && !currentRect ? windowSelectionState?.hoverCandidate : null
+  const rect = currentRect ?? candidate?.bounds
+  ocrWindowCandidate.hidden = !candidate
+  ocrWindowLabel.hidden = !candidate
+  if (candidate) {
+    const bounds = candidate.bounds
+    Object.assign(ocrWindowCandidate.style, {
+      left: `${bounds.x}px`, top: `${bounds.y}px`, width: `${bounds.width}px`, height: `${bounds.height}px`
+    })
+    ocrWindowLabel.textContent = t('selection.windowLabel', {
+      app: candidate.appName || t('selection.windowGeneric'), width: Math.round(bounds.width), height: Math.round(bounds.height)
+    })
+    const size = getOverlaySize()
+    const labelWidth = ocrWindowLabel.offsetWidth
+    const labelHeight = ocrWindowLabel.offsetHeight
+    const left = clamp(bounds.x + 8, 8, Math.max(8, size.width - labelWidth - 8))
+    const above = bounds.y - labelHeight - 8
+    const top = above >= 8 ? above : clamp(bounds.y + 8, 8, Math.max(8, size.height - labelHeight - 8))
+    ocrWindowLabel.style.left = `${left}px`
+    ocrWindowLabel.style.top = `${top}px`
+  }
+  if (!rect) {
+    ocrSpotlightMask.style.clipPath = ''
+    return
+  }
+  const { x, y, width, height } = rect
+  // evenodd 内环挖空；无需复制/重绘整屏画布，且不会把预览 UI 带入导出。
+  ocrSpotlightMask.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + width}px ${y}px, ${x + width}px ${y + height}px, ${x}px ${y + height}px, ${x}px ${y}px)`
+}
+
+/**
+ * 消费未锁定选区的鼠标事件，把候选预览与正式选区严格分离。
+ * @param event 本会话带局部 DIP 坐标的事件。
+ * @returns 无返回值；只有开始拖绘或确认时更新正式选区。
+ * @author zhenghq
+ */
+function updateWindowSelection(event: ScreenshotWindowSelectionEvent): void {
+  if (!windowSelectionState) return
+  const previous = windowSelectionState.phase
+  windowSelectionState = reduceScreenshotWindowSelectionState(windowSelectionState, event)
+  const next = windowSelectionState.phase
+  if ((next === 'drawing' || next === 'locked') && previous !== 'drawing' && previous !== 'locked') {
+    discardOcrPanelForNewSelection()
+    annotationController.resetForNewSelection(null)
+  }
+  if (next === 'drawing' || next === 'locked' || previous === 'drawing') {
+    renderSelectionRect(windowSelectionState.currentRect)
+  } else {
+    renderWindowSpotlight()
+  }
+  renderOcrTip()
+}
+
+/** 请求重新选区；无参数，有标注时显示窗口内确认而不是激活系统对话框；无返回值。@author zhenghq */
+function requestOcrReselect(): void {
+  if (!ocrMode || quickOcrAutoTranslate || !currentRect || screenshotActionPending || pendingScreenshotRequestId) return
+  if (annotationController.textEditorPoint) commitTextInput()
+  if (annotationController.annotations.length > 0) {
+    ocrReselectConfirmation.hidden = false
+    ocrReselectNo.focus()
+    return
+  }
+  confirmOcrReselect()
+}
+
+/** 取消重选确认；无参数，保留选区、标注和 OCR 结果并恢复按钮焦点；无返回值。@author zhenghq */
+function cancelOcrReselect(): void {
+  ocrReselectConfirmation.hidden = true
+  ocrReselectButton.focus()
+}
+
+/** 确认重选；无参数，清空当前编辑内容后回到本会话候选预览；无返回值。@author zhenghq */
+function confirmOcrReselect(): void {
+  if (!ocrMode || !windowSelectionState || screenshotActionPending || pendingScreenshotRequestId) return
+  ocrReselectConfirmation.hidden = true
+  dragState = null
+  discardOcrPanelForNewSelection()
+  resetAnnotationSession()
+  windowSelectionState = reduceScreenshotWindowSelectionState(windowSelectionState, {
+    type: 'reselect', sessionId: currentOcrSessionId
+  })
+  renderSelectionRect(null)
+  updateOcrImageActionAvailability()
+  renderOcrTip()
 }
 
 /**
@@ -1796,7 +1905,7 @@ function renderOcrTip(message?: string): void {
         ? t('selection.pinImageCreating')
         : null
   ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
-    ? t('selection.tip')
+    ? t(!currentRect && windowSelectionState?.candidates.length ? 'selection.windowSpotlightTip' : 'selection.tip')
     : t('selection.tipLoading'))
 }
 
@@ -1815,6 +1924,7 @@ function updateOcrImageActionAvailability(): void {
   ocrCopyImageButton.disabled = blocked || exportPending
   ocrSaveImageButton.disabled = blocked || exportPending
   ocrPinImageButton.disabled = blocked || exportPending
+  ocrReselectButton.disabled = exportPending
 }
 
 /**
@@ -1826,6 +1936,10 @@ function updateOcrImageActionAvailability(): void {
  */
 function applyOcrSnapshot(payload: OcrSelectionSnapshotPayload): void {
   if (!ocrMode || payload.sessionId !== currentOcrSessionId) return
+  if (windowSelectionState) {
+    windowSelectionState = reduceScreenshotWindowSelectionState(windowSelectionState, { type: 'snapshot', payload })
+    renderWindowSpotlight()
+  }
   const loadToken = ++ocrSnapshotLoadToken
   ocrSnapshotState = 'loading'
   ocrSnapshotAvailable = true
@@ -1934,6 +2048,7 @@ function enterOcrSelectionMode(payload: OcrSelectionBeginPayload): void {
   resetOcrSessionUi()
   currentOcrSessionId = payload.sessionId
   quickOcrAutoTranslate = payload.autoTranslate === true
+  windowSelectionState = createScreenshotWindowSelectionState(payload)
   ocrMode = true
   document.documentElement.setAttribute('data-ocr-mode', 'true')
   document.documentElement.setAttribute('data-ocr-quick-mode', String(quickOcrAutoTranslate))
@@ -1967,6 +2082,10 @@ function leaveOcrSelectionMode(): void {
  * @author zhenghq
  */
 function resetOcrSessionUi(): void {
+  windowSelectionState = null
+  ocrReselectConfirmation.hidden = true
+  ocrWindowCandidate.hidden = true
+  ocrWindowLabel.hidden = true
   document.documentElement.removeAttribute('data-ocr-quick-mode')
   if (screenshotAutoCloseTimer !== null) window.clearTimeout(screenshotAutoCloseTimer)
   screenshotAutoCloseTimer = null
@@ -2091,6 +2210,7 @@ function isNearSelectionEdge(point: { x: number; y: number }): boolean {
  */
 function handleOcrMouseDown(event: MouseEvent): void {
   if (!ocrMode || event.button !== 0) return
+  if (!ocrReselectConfirmation.hidden) return
   if (quickOcrAutoTranslate) {
     // 快捷模式始终从空白处开始新框选，不复用移动、缩放或标注交互。
     const point = getEventPoint(event)
@@ -2110,6 +2230,11 @@ function handleOcrMouseDown(event: MouseEvent): void {
   // 点击 OCR 结果侧栏时不得触发重新框选，
   // 否则用户选取/复制 OCR 原文会导致当前选区被清空。
   if (target.closest('#ocr-panel')) return
+  if (windowSelectionState && windowSelectionState.phase !== 'locked') {
+    updateWindowSelection({ type: 'pointer-down', sessionId: currentOcrSessionId, point: getEventPoint(event) })
+    event.preventDefault()
+    return
+  }
   const point = getEventPoint(event)
   if (annotationController.isAnnotating()) {
     if (isNearSelectionEdge(point)) {
@@ -2149,6 +2274,17 @@ function handleOcrMouseDown(event: MouseEvent): void {
  * @author zhenghq
  */
 function handleOcrMouseMove(event: MouseEvent): void {
+  if (!ocrReselectConfirmation.hidden) return
+  if (ocrMode && !quickOcrAutoTranslate && windowSelectionState) {
+    if (windowSelectionState.phase !== 'locked') {
+      updateWindowSelection({ type: 'pointer-move', sessionId: currentOcrSessionId, point: getEventPoint(event) })
+      return
+    }
+    // 只记录重选时的光标，不能把模型内锁定时的旧矩形写回已移动/缩放的选区。
+    windowSelectionState = reduceScreenshotWindowSelectionState(windowSelectionState, {
+      type: 'pointer-move', sessionId: currentOcrSessionId, point: getEventPoint(event)
+    })
+  }
   if (!ocrMode || !dragState) return
   const point = getEventPoint(event)
   if (dragState.type === 'draw') {
@@ -2178,7 +2314,13 @@ function handleOcrMouseMove(event: MouseEvent): void {
  * @returns 无返回值。
  * @author zhenghq
  */
-function handleOcrMouseUp(): void {
+function handleOcrMouseUp(event: MouseEvent): void {
+  if (!ocrReselectConfirmation.hidden || event.button !== 0) return
+  if (ocrMode && !quickOcrAutoTranslate && windowSelectionState && windowSelectionState.phase !== 'locked') {
+    updateWindowSelection({ type: 'pointer-up', sessionId: currentOcrSessionId, point: getEventPoint(event) })
+    renderOcrToolbar()
+    return
+  }
   if (!ocrMode || !dragState) return
   const shouldQuickSubmit = quickOcrAutoTranslate &&
     dragState.type === 'draw' &&
@@ -2211,6 +2353,14 @@ function flushPendingQuickOcrSelection(): void {
  * @author zhenghq
  */
 function handleKeyDown(event: KeyboardEvent): void {
+  if (!ocrReselectConfirmation.hidden) {
+    // 确认框按钮保留原生键盘激活；直接返回避免 Enter 落入截图提交逻辑。
+    if (event.key === 'Enter' || event.key === ' ') return
+    event.preventDefault()
+    if (event.key === 'Escape') cancelOcrReselect()
+    if (event.key === 'Tab') (document.activeElement === ocrReselectYes ? ocrReselectNo : ocrReselectYes).focus()
+    return
+  }
   // 文字编辑框必须保留浏览器对空格和回车的原生输入行为，不能触发截图提交快捷键。
   if (event.target === ocrTextInput) return
   if (quickOcrAutoTranslate) {
@@ -2294,6 +2444,9 @@ ocrCopyImageButton.addEventListener('click', copyCurrentOcrSelectionImage)
 ocrSaveImageButton.addEventListener('click', saveCurrentOcrSelectionImage)
 ocrPinImageButton.addEventListener('click', pinCurrentOcrSelectionImage)
 ocrCancelButton.addEventListener('click', cancelOcrSelection)
+ocrReselectButton.addEventListener('click', requestOcrReselect)
+ocrReselectYes.addEventListener('click', confirmOcrReselect)
+ocrReselectNo.addEventListener('click', cancelOcrReselect)
 for (const button of ocrAnnotationToolButtons) {
   button.addEventListener('click', handleAnnotationToolClick)
 }
@@ -2393,6 +2546,7 @@ window.addEventListener('resize', () => {
   if (currentRect) renderSelectionRect(clampRectToOverlay(currentRect))
   hideOcrTooltip()
   layoutOcrPanel()
+  renderWindowSpotlight()
 })
 window.api.onOcrSelectionBegin(enterOcrSelectionMode)
 window.api.onOcrSelectionSnapshot(applyOcrSnapshot)
@@ -2401,6 +2555,7 @@ window.api.onOcrRecognizeResult(handleOcrRecognizeResult)
 window.api.onOcrActionResult(handleOcrActionResult)
 localeRuntime.onLocaleChanged(() => {
   renderOcrTip()
+  renderWindowSpotlight()
   updateAnnotationUi()
   if (ocrPanelState === 'pending') {
     renderOcrPanel('pending', '', localizedOcrPanelStatus())

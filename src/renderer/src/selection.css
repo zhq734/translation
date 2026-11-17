@@ -229,10 +229,84 @@ body {
   position: fixed;
   border: 2px solid var(--button-bg);
   background: var(--ocr-selection-bg);
-  box-shadow: 0 0 0 9999px var(--ocr-selection-mask);
   cursor: move;
   pointer-events: auto;
   z-index: 2;
+}
+
+/* 单独暗幕在原快照上挖空，候选和正式选区内部不叠加任何着色。 */
+.ocr-spotlight-mask {
+  position: fixed;
+  inset: 0;
+  background: var(--ocr-selection-mask);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.ocr-window-candidate {
+  position: fixed;
+  outline: 2px solid var(--button-bg);
+  outline-offset: -2px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ocr-window-label {
+  position: fixed;
+  max-width: calc(100% - 16px);
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 7;
+}
+
+.ocr-reselect-confirmation {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--overlay-backdrop);
+  z-index: 20;
+  cursor: default;
+}
+
+.ocr-reselect-card {
+  max-width: min(100%, 380px);
+  padding: 20px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel);
+}
+
+.ocr-reselect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ocr-reselect-actions button {
+  padding: 8px 12px;
+  color: var(--text-primary);
+  background: var(--button-secondary-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.ocr-window-candidate[hidden],
+.ocr-window-label[hidden],
+.ocr-reselect-confirmation[hidden] {
+  display: none;
 }
 
 .ocr-selection-box[hidden] {

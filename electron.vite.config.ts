@@ -12,7 +12,8 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           documentWorker: resolve('src/main/documentWorkerRuntimeEntry.ts'),
-          documentApprovedAssetParseWorker: resolve('src/main/documentApprovedAssetParseWorkerEntry.ts')
+          documentApprovedAssetParseWorker: resolve('src/main/documentApprovedAssetParseWorkerEntry.ts'),
+          screenshotWindowWorker: resolve('src/main/screenshotWindowWorkerEntry.ts')
         },
         output: {
           /**
@@ -23,6 +24,7 @@ export default defineConfig({
            */
           entryFileNames: (chunkInfo) => (
             chunkInfo.name === 'documentWorker' ? 'documentWorker.cjs'
+              : chunkInfo.name === 'screenshotWindowWorker' ? 'screenshotWindowWorker.cjs'
               : chunkInfo.name === 'documentApprovedAssetParseWorker' ? 'documentApprovedAssetParseWorker.cjs'
               : '[name].js'
           )

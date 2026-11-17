@@ -104,8 +104,8 @@
   --selection-button-bg: rgba(255, 255, 255, 0.98);
   --selection-button-border: #b8bec8;
   --selection-button-shadow: rgba(24, 27, 32, 0.18);
-  --ocr-overlay-bg: rgba(15, 23, 42, 0.18);
-  --ocr-selection-bg: rgba(255, 255, 255, 0.12);
+  --ocr-overlay-bg: rgba(0, 0, 0, 0);
+  --ocr-selection-bg: rgba(0, 0, 0, 0);
   --ocr-selection-mask: rgba(0, 0, 0, 0.24);
   --overlay-backdrop: rgba(15, 23, 42, 0.28);
   --hint-pill-bg: rgba(15, 23, 42, 0.9);
@@ -147,8 +147,8 @@
     --selection-button-bg: rgba(32, 35, 41, 0.98);
     --selection-button-border: #646b76;
     --selection-button-shadow: rgba(0, 0, 0, 0.32);
-    --ocr-overlay-bg: rgba(0, 0, 0, 0.22);
-    --ocr-selection-bg: rgba(255, 255, 255, 0.10);
+    --ocr-overlay-bg: rgba(0, 0, 0, 0);
+    --ocr-selection-bg: rgba(0, 0, 0, 0);
     --ocr-selection-mask: rgba(0, 0, 0, 0.34);
     --overlay-backdrop: rgba(0, 0, 0, 0.48);
     --hint-pill-bg: rgba(244, 244, 247, 0.94);
@@ -190,8 +190,8 @@
   --selection-button-bg: rgba(32, 35, 41, 0.98);
   --selection-button-border: #646b76;
   --selection-button-shadow: rgba(0, 0, 0, 0.32);
-  --ocr-overlay-bg: rgba(0, 0, 0, 0.22);
-  --ocr-selection-bg: rgba(255, 255, 255, 0.10);
+  --ocr-overlay-bg: rgba(0, 0, 0, 0);
+  --ocr-selection-bg: rgba(0, 0, 0, 0);
   --ocr-selection-mask: rgba(0, 0, 0, 0.34);
   --overlay-backdrop: rgba(0, 0, 0, 0.48);
   --hint-pill-bg: rgba(244, 244, 247, 0.94);

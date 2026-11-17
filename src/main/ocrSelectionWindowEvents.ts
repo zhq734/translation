@@ -58,3 +58,12 @@ export function handleOcrSelectionWindowClosed(deps: OcrSelectionWindowClosedDep
   deps.releaseSnapshot()
   deps.restoreSelectionListener()
 }
+
+/**
+ * 让出一次事件循环，使覆盖窗口显示请求完成合成后再执行快照编码等同步工作。
+ * @returns 下一轮事件循环开始后完成的 Promise。
+ * @author zhenghq
+ */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}

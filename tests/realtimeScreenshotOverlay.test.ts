@@ -93,7 +93,7 @@ test('OCR 屏幕采集应与 Renderer 会话清理并行，只在显示前等待
   // 限定在 showBeforeCapture 分支内校验，避免把平台分支误判成热路径串行。
   assert.match(
     source,
-    /if \(showBeforeCapture\) \{[\s\S]*?await rendererReadyPromise[\s\S]*?\n    \}\n    const capturePromise = captureOcrPreviewSnapshot\(/u,
+    /if \(showBeforeCapture\) \{[\s\S]*?await rendererReadyPromise[\s\S]*?\n    \}\n[\s\S]*?const capturePromise = captureOcrPreviewSnapshot\(/u,
     '串行等待 ready 只允许出现在 Linux 先显示分支内'
   )
   assert.match(
