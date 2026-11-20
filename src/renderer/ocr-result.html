@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title data-i18n="selection.ocrResult">OCR result</title>
+    <script src="./localeBootstrap.js"></script>
+    <script src="./themeBootstrap.js"></script>
+    <link rel="stylesheet" href="./src/theme.css" />
+    <link rel="stylesheet" href="./src/base.css" />
+    <link rel="stylesheet" href="./src/selection.css" />
+    <link rel="stylesheet" href="./src/ocr-result.css" />
+  </head>
+  <body>
+      <aside id="ocr-panel" class="ocr-panel" data-i18n-attr="aria-label:selection.ocrResult" aria-label="OCR result">
+        <header class="ocr-panel-header">
+          <button id="ocr-panel-pin" class="ocr-panel-pin" type="button" aria-pressed="true" data-i18n-attr="title:popup.unpinWindow;aria-label:popup.unpinWindow" title="Pin window" aria-label="Pin window">
+            <svg class="ocr-panel-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 17v5" />
+              <path d="M5 17h14" />
+              <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
+            </svg>
+          </button>
+          <span id="ocr-panel-drag-handle" class="ocr-panel-title" data-i18n="selection.ocrResult">OCR result</span>
+          <div class="ocr-panel-actions">
+            <button id="ocr-panel-translate" type="button" data-i18n="selection.translate">Translate</button>
+            <button id="ocr-panel-copy" type="button" data-i18n="popup.copy" data-i18n-attr="title:popup.copyOcrContent;aria-label:popup.copyOcrContent" disabled>Copy</button>
+            <button id="ocr-panel-close" type="button" data-i18n-attr="title:common.close;aria-label:common.close">×</button>
+          </div>
+        </header>
+        <div id="ocr-panel-status" class="ocr-panel-status" role="status" aria-atomic="true"></div>
+        <div class="ocr-panel-columns">
+          <textarea id="ocr-panel-text" class="ocr-panel-text" readonly aria-describedby="ocr-panel-status" data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
+          <textarea id="ocr-panel-translation" class="ocr-panel-text" readonly data-i18n-attr="aria-label:selection.translate" aria-label="Translate" hidden></textarea>
+        </div>
+        <span id="ocr-panel-resize" class="ocr-panel-resize" role="separator" data-i18n-attr="aria-label:selection.resizeResult" aria-label="Resize OCR result area" aria-hidden="true"></span>
+      </aside>
+    <script type="module" src="./src/ocr-result.ts"></script>
+  </body>
+</html>

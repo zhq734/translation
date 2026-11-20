@@ -10,28 +10,37 @@ const URL_PUNCTUATION_MAP: Readonly<Record<string, string>> = {
 }
 
 /**
- * 判断文本中是否包含中日韩文字，用于决定 URL 行能否安全地移除全部空白。
- * @param text 待判断文本。
- * @returns 包含中日韩文字时返回 true。
+ * URL 片段仅接受链接字符及有明确标点连接的异常空白，不跨越普通词间空格。
+ * ASCII 句点和末尾斜线后的空格有说明文字边界歧义，保守保留，不猜测拼接。
  * @author zhenghq
  */
-function containsCjkText(text: string): boolean {
-  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(text)
-}
+const URL_LIKE_PATTERN = new RegExp(
+  '[A-Za-z][A-Za-z0-9+.-]*(?:[:：][A-Za-z][A-Za-z0-9+.-]*)*[:：][ \\t]*[/／][ \\t]*[/／]' +
+  '(?:' + [
+    // 全角 URL 标点及数字间点号是明确的识别错误，可修复两侧空白。
+    '[ \\t]*[／．？＆＝％＃＠][ \\t]*(?=[A-Za-z0-9_~%+\\[/-])',
+    '(?<=\\d)[ \\t]*[.。｡][ \\t]*(?=\\d)',
+    // 端口前的冒号只在后面是数字时允许连接空白。
+    '[ \\t]*[:：][ \\t]*(?=\\d)',
+    // 分隔符前有空格或查询参数符号后有空格时，限定为链接内的连续片段。
+    '[ \\t]+[/?#&=@][ \\t]*(?=[A-Za-z0-9_~%+\\[/-])',
+    '[?#&=@][ \\t]+(?=[A-Za-z0-9_~%+\\[/-])',
+    "[A-Za-z0-9_~!$'()*+,;%\\[\\]-]+",
+    '[./?:#&=@／．：？＆＝％＃＠]'
+  ].join('|') + ')+',
+  'gu'
+)
 
 /**
- * 归一化包含 `://` 的 URL/JDBC 行：恢复全角标点，并移除连接串标点周围的空格。
- * 仅处理含 `://` 的行，且行内没有中日韩文字时才移除剩余空白，避免误伤普通中英文句子。
- * @param line 单行 OCR 文本。
- * @returns 归一化后的文本行。
+ * 仅归一化匹配到的 URL/JDBC 片段，恢复全角标点并移除链接内部的异常空白。
+ * @param url 不含前后说明文字的 URL 片段。
+ * @returns 归一化后的链接，保留所有原有 ASCII 字母和数字。
  * @author zhenghq
  */
-function normalizeUrlLikeLine(line: string): string {
-  // OCR 可能把协议分隔符整体识别成全角形式，先统一再判断是否为 URL 行。
-  const protocolNormalized = line.replace(/：\s*[／/]\s*[／/]/gu, '://')
-  if (!protocolNormalized.includes('://')) return line
-
-  const normalized = protocolNormalized
+function normalizeUrlLikeFragment(url: string): string {
+  // OCR 可能把协议分隔符整体识别成全角形式，在链接片段内部统一恢复。
+  return url
+    .replace(/[:：]\s*[／/]\s*[／/]/gu, '://')
     .replace(/[／？＆＝％＃＠]/gu, (character) =>
       URL_PUNCTUATION_MAP[character] ?? character)
     // 冒号仅在紧邻 ASCII 标识符、数字或 `//` 时转换，避免改写中文说明中的全角冒号。
@@ -41,8 +50,7 @@ function normalizeUrlLikeLine(line: string): string {
     .replace(/\s*．\s*/gu, '.')
     .replace(/(\d)\s*[。｡]\s*(?=\d)/gu, '$1.')
     .replace(/\s*([.:/?#&=@])\s*/gu, '$1')
-
-  return containsCjkText(normalized) ? normalized : normalized.replace(/\s+/gu, '')
+    .replace(/\s+/gu, '')
 }
 
 /**
@@ -59,9 +67,9 @@ export function cleanOcrText(text: string): string {
     .replace(/[|｜]{2,}/g, '|')
     .replace(/[ \t]{2,}/g, ' ')
     .split('\n')
-    .map((line) => normalizeUrlLikeLine(
-      line.trim().replace(/\s+([,.!?;:，。！？、；：])/g, '$1')
-    ))
+    .map((line) => line.trim()
+      .replace(/\s+([,.!?;:，。！？、；：])/g, '$1')
+      .replace(URL_LIKE_PATTERN, normalizeUrlLikeFragment))
     .filter(Boolean)
     .join('\n')
     .trim()

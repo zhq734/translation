@@ -140,3 +140,64 @@ test('全角协议分隔符应恢复为半角 URL', () => {
     'jdbc:kingbase8://17.1.87.69:54321/admin-'
   )
 })
+
+/**
+ * 校验 Docker 日志中链接前的英文说明保留词间空格、冒号后的空格和换行。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('Docker 构建日志中的英文空格不应被 URL 清洗删除', () => {
+  const firstLine = 'View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/jhle04hq92ulopvw8f89vwehv'
+  const secondLine = 'The push refers to repository [hzent.amberdata.cn:8082/admin-backend]'
+  assert.equal(cleanOcrText(`${firstLine}\n  ${secondLine}`), `${firstLine}\n${secondLine}`)
+})
+
+/**
+ * 校验 URL 仅清洗自身的异常间距，不修改前后英文说明或说明中的标点间距。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('URL 前后英文说明应保留词间与标点后的空格', () => {
+  assert.equal(
+    cleanOcrText('Read the docs: https://example ． com : 8080 /guide for more details: follow the steps.'),
+    'Read the docs: https://example.com:8080/guide for more details: follow the steps.'
+  )
+})
+
+/**
+ * 校验同行多个 URL 独立处理，英文说明、句尾标点和普通标识符不被合并。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('多个链接之间和句尾的英文空格应保留', () => {
+  assert.equal(
+    cleanOcrText('Compare https://one.example/a and https://two.example/b. Next step: push / tag.'),
+    'Compare https://one.example/a and https://two.example/b. Next step: push / tag.'
+  )
+  assert.equal(cleanOcrText('Open https://example.com build 123'), 'Open https://example.com build 123')
+  assert.equal(cleanOcrText('See https://example.com/ for details'), 'See https://example.com/ for details')
+})
+
+/**
+ * 校验全角 URL 标点修复仅作用于链接，不能改写链接外的全角英文说明。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('全角协议链接应修复且保留英文说明', () => {
+  assert.equal(
+    cleanOcrText('Note： view build details: docker-desktop：／／dashboard／build then continue'),
+    'Note： view build details: docker-desktop://dashboard/build then continue'
+  )
+})
+
+/**
+ * 校验 URL 查询参数内部的异常空白可清除，同时保留尾部英文说明和重复清洗结果。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('URL 查询参数空白应修复且清洗保持幂等', () => {
+  const expected = 'Search here: https://example.com?q=hello%20world&lang=en then read the docs'
+  const cleaned = cleanOcrText('Search here: https://example.com ? q = hello%20world & lang = en then read the docs')
+  assert.equal(cleaned, expected)
+  assert.equal(cleanOcrText(cleaned), expected)
+})

@@ -52,6 +52,28 @@ test('translateOcrResult 应清洗 OCR 文本后调用翻译并返回结果', as
 })
 
 /**
+ * 校验带构建链接的英文日志在翻译输入、原文回调及返回结果中均保留正常空格。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('translateOcrResult 应保留带链接的英文日志空格', async () => {
+  const text = 'View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/jhle04hq92ulopvw8f89vwehv\nThe push refers to repository [hzent.amberdata.cn:8082/admin-backend]'
+  let recognizedText: string | undefined
+  let translatedText: string | undefined
+  const result = await translateOcrResult(makeOcrResult(text), makeSettings(), {
+    onRecognized: (recognized) => { recognizedText = recognized.ocrText },
+    translate: async (source) => {
+      translatedText = source
+      return { translation: '查看构建详情', provider: 'google' as never }
+    }
+  })
+  assert.equal(recognizedText, text)
+  assert.equal(translatedText, text)
+  assert.equal(result.ocrText, text)
+  assert.equal(result.ocrRawText, text)
+})
+
+/**
  * 校验 OCR 文本为噪声时不调用翻译，返回 ocrCode: noise。
  * @returns 无返回值。
  * @author zhenghq

@@ -75,11 +75,14 @@ test('贴图会话应使用初始适配倍率，避免大图首次缩放跳变',
   assert.match(manager, /scale:\s*initialView\.scale/u)
 })
 
-test('贴图初始尺寸应复用截图选区逻辑尺寸而非 PNG 物理像素', () => {
+/** 校验已移除截图贴图入口，但底层贴图仍按逻辑尺寸适配；无返回值。@author zhenghq */
+test('截图应移除贴图入口，底层贴图仍使用逻辑尺寸适配', () => {
   const manager = source('src/main/screenshotPinWindow.ts')
   const selection = source('src/renderer/src/selection.ts')
-  assert.match(selection, /displayWidth:\s*exportPayload\.bounds\.width/u)
-  assert.match(selection, /displayHeight:\s*exportPayload\.bounds\.height/u)
+  const html = source('src/renderer/selection.html')
+  assert.doesNotMatch(html, /id="ocr-pin-image"/u)
+  assert.doesNotMatch(selection, /pinCurrentOcrSelectionImage/u)
+  assert.match(manager, /width:\s*request\.displayWidth,\s*height:\s*request\.displayHeight/u)
   assert.match(manager, /computePinInitialView\(/u)
   assert.doesNotMatch(
     manager,

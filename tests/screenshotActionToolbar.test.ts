@@ -18,24 +18,23 @@ const toastHtml = readFileSync('src/renderer/toast.html', 'utf8')
 const toastRenderer = readFileSync('src/renderer/src/toast.ts', 'utf8')
 
 /**
- * 校验截图工具条提供六个图标按钮，并带有中文提示与无障碍名称。
+ * 校验截图工具条移除贴图后提供五个图标按钮，并带有本地化提示与无障碍名称。
  * @returns 无返回值。
  * @author zhenghq
  */
-test('截图工具条应提供识别、翻译、复制、保存、贴图和取消六个图标按钮', () => {
+test('截图工具条应提供识别、翻译、复制、保存和取消五个图标按钮', () => {
   const toolbarStart = selectionHtml.indexOf('id="ocr-toolbar"')
   assert.notEqual(toolbarStart, -1)
   const toolbarStart2 = selectionHtml.indexOf('data-group="screenshot-actions"', toolbarStart)
   const toolbarEnd = selectionHtml.indexOf('</div>', toolbarStart2)
   const toolbarSource = selectionHtml.slice(toolbarStart2, toolbarEnd)
 
-  // 六个按钮齐全，title 与 aria-label 均从 data-i18n-attr 读取并按当前兜底语言生成期望值。
+  // 五个按钮齐全，按当前兜底语言校验提示和无障碍名称。@author zhenghq
   for (const [id, key] of [
     ['ocr-recognize', 'selection.recognize'],
     ['ocr-translate', 'selection.translate'],
     ['ocr-copy-image', 'selection.copyImage'],
     ['ocr-save-image', 'selection.saveImage'],
-    ['ocr-pin-image', 'selection.pinImage'],
     ['ocr-cancel', 'common.cancel']
   ]) {
     const tag = findOpeningTagById(toolbarSource, id)
@@ -46,9 +45,10 @@ test('截图工具条应提供识别、翻译、复制、保存、贴图和取�
     assert.match(tag, new RegExp(`aria-label="${tForTest('en-US', key)}"`, 'u'))
   }
 
-  // 按钮使用内联 SVG 图标表达，不再依赖第三方图标库
+  // 按钮使用内联 SVG 图标表达，不依赖第三方图标库。@author zhenghq
   const svgCount = (toolbarSource.match(/<svg/gu) ?? []).length
-  assert.equal(svgCount, 6)
+  assert.equal(svgCount, 5)
+  assert.doesNotMatch(toolbarSource, /ocr-pin-image/u)
 })
 
 /**
@@ -219,12 +219,12 @@ test('截图翻译动作应复用现有 OCR 翻译流程', () => {
  * @returns 无返回值。
  * @author zhenghq
  */
-test('Renderer 应接入六个截图动作并防止识别重复提交', () => {
+test('Renderer 应接入五个截图动作并防止识别重复提交', () => {
   assert.match(selectionRenderer, /window\.api\.recognizeOcrSelection\(/u)
   assert.match(selectionRenderer, /window\.api\.translateOcrSelection\(/u)
   assert.match(selectionRenderer, /window\.api\.copyAnnotatedOcrSelectionImage\(/u)
   assert.match(selectionRenderer, /window\.api\.saveAnnotatedOcrSelectionImage\(/u)
-  assert.match(selectionRenderer, /window\.api\.createScreenshotPin\(/u)
+  assert.doesNotMatch(selectionRenderer, /window\.api\.createScreenshotPin\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrRecognizeResult\(/u)
   assert.match(selectionRenderer, /window\.api\.onOcrActionResult\(/u)
   assert.match(selectionRenderer, /window\.api\.cancelOcrSelection\(\)/u)
@@ -439,7 +439,7 @@ test('复制和保存点击应先显示处理中提示并立即建立重复提�
   assert.match(selectionRenderer, /const exportPending = screenshotActionPending !== null \|\| pendingScreenshotRequestId !== null/u)
   assert.match(selectionRenderer, /ocrCopyImageButton\.disabled = blocked \|\| exportPending/u)
   assert.match(selectionRenderer, /ocrSaveImageButton\.disabled = blocked \|\| exportPending/u)
-  assert.match(selectionRenderer, /ocrPinImageButton\.disabled = blocked \|\| exportPending/u)
+  assert.doesNotMatch(selectionRenderer, /ocrPinImageButton/u)
 })
 
 /**

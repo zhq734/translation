@@ -557,6 +557,7 @@ body {
   gap: 6px;
   z-index: 5;
   width: clamp(180px, 24vw, 320px);
+  min-width: min(290px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   padding: 8px;
@@ -568,6 +569,95 @@ body {
 
 .ocr-panel[hidden] {
   display: none;
+}
+
+.ocr-panel-header,
+.ocr-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ocr-panel-header {
+  justify-content: space-between;
+  min-height: 28px;
+  padding-left: 28px;
+}
+
+.ocr-panel-pin {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.ocr-panel-pin:hover,
+.ocr-panel-pin[aria-pressed='true'] {
+  background: var(--surface-hover);
+  color: var(--button-bg);
+}
+
+.ocr-panel-pin-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform: rotate(-16deg);
+  transform-origin: center;
+}
+
+.ocr-panel-pin[aria-pressed='true'] .ocr-panel-pin-icon {
+  transform: rotate(0deg);
+}
+
+.ocr-panel-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  font: 600 var(--font-size-caption) var(--font-family-sans);
+  cursor: move;
+}
+
+.ocr-panel-columns {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ocr-panel-actions button {
+  white-space: nowrap;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.ocr-panel-actions button:hover,
+.ocr-panel-actions button[aria-pressed='true'] {
+  background: var(--surface-hover);
+}
+
+.ocr-panel-actions button:disabled,
+.ocr-panel-pin:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .ocr-panel-status {
@@ -594,6 +684,10 @@ body {
   padding: 6px 8px;
   user-select: text;
   cursor: text;
+}
+
+.ocr-panel-text[hidden] {
+  display: none;
 }
 
 .ocr-panel-text:focus-visible {

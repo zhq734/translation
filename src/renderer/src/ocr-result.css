@@ -1,0 +1,28 @@
+.ocr-panel {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  max-width: none;
+  max-height: none;
+  box-shadow: none;
+}
+
+.ocr-panel-header {
+  -webkit-app-region: drag;
+}
+
+.ocr-panel-header button {
+  -webkit-app-region: no-drag;
+}
+
+.ocr-panel-resize {
+  -webkit-app-region: no-drag;
+}
+
+.ocr-panel-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

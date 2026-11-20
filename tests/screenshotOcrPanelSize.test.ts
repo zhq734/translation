@@ -5,6 +5,7 @@ import { resolveScreenshotOcrPanelAutoSize } from '../src/renderer/src/screensho
 
 const selectionRenderer = readFileSync('src/renderer/src/selection.ts', 'utf8')
 const selectionCss = readFileSync('src/renderer/src/selection.css', 'utf8')
+const selectionHtml = readFileSync('src/renderer/selection.html', 'utf8')
 
 /**
  * 校验 OCR 结果侧栏会按内容自然尺寸扩展，同时保留基础内边距。
@@ -103,4 +104,38 @@ test('OCR 结果文本区应随内容伸缩并支持面板高度变化', () => {
   assert.match(textSource, /min-height:\s*0/u)
   assert.doesNotMatch(textSource, /min-height:\s*96px/u)
   assert.doesNotMatch(textSource, /max-height:\s*320px/u)
+})
+
+/** 校验 OCR 结果栏提供可拖动标题、钉住及原文/译文切换控件；无返回值。@author zhenghq */
+test('OCR 结果面板应支持拖动、钉住和面板内翻译', () => {
+  assert.match(selectionHtml, /id="ocr-panel-drag-handle"/u)
+  assert.match(selectionHtml, /id="ocr-panel-pin"/u)
+  assert.match(selectionHtml, /id="ocr-panel-translate"/u)
+  assert.match(selectionHtml, /id="ocr-panel-translation"/u)
+  assert.match(selectionRenderer, /function handleOcrPanelDragStart\(/u)
+  assert.match(selectionRenderer, /function toggleOcrPanelPin\(/u)
+  assert.match(selectionRenderer, /function translateOcrPanelText\(/u)
+  assert.match(selectionCss, /\.ocr-panel-header/u)
+  assert.match(selectionRenderer, /window\.api\.translateOcrPanelText\(/u)
+})
+
+/** 校验截图工具栏拖动位置持久化，且调整尺寸时不重新锚定选区；无返回值。@author zhenghq */
+test('截图工具栏可拖动且调整 OCR 面板尺寸保留当前位置', () => {
+  assert.match(selectionRenderer, /function handleOcrToolbarDragStart\(/u)
+  assert.match(selectionRenderer, /function handleOcrToolbarDragMove\(/u)
+  assert.match(selectionRenderer, /ocrToolbarUserPosition/u)
+  const resizeStart = selectionRenderer.indexOf('function handleOcrPanelResizeMove')
+  const resizeEnd = selectionRenderer.indexOf('/**', resizeStart + 1)
+  const resizeSource = selectionRenderer.slice(resizeStart, resizeEnd)
+  assert.doesNotMatch(resizeSource, /layoutOcrPanel\(/u)
+  assert.match(resizeSource, /ocrPanel\.style\.width/u)
+  assert.match(resizeSource, /ocrPanel\.style\.height/u)
+})
+
+/** 校验 OCR 等待状态容纳完整操作栏，并提供左上角图钉；无返回值。@author zhenghq */
+test('OCR 等待状态应保持足够宽度且钉住控件位于面板左上角', () => {
+  assert.match(selectionCss, /\.ocr-panel\s*\{[\s\S]*?min-width:\s*min\(290px,/u)
+  assert.match(selectionHtml, /id="ocr-panel-pin"[^>]*>[\s\S]*?<svg/u)
+  assert.match(selectionCss, /\.ocr-panel-pin\s*\{[\s\S]*?position:\s*absolute/u)
+  assert.doesNotMatch(selectionHtml, /id="ocr-pin-image"/u)
 })

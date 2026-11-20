@@ -74,7 +74,6 @@ const ocrRecognizeButton = document.getElementById('ocr-recognize') as HTMLButto
 const ocrTranslateButton = document.getElementById('ocr-translate') as HTMLButtonElement
 const ocrCopyImageButton = document.getElementById('ocr-copy-image') as HTMLButtonElement
 const ocrSaveImageButton = document.getElementById('ocr-save-image') as HTMLButtonElement
-const ocrPinImageButton = document.getElementById('ocr-pin-image') as HTMLButtonElement
 const ocrCancelButton = document.getElementById('ocr-cancel') as HTMLButtonElement
 const ocrAnnotationToolButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>('[data-annotation-tool]')
@@ -101,6 +100,11 @@ const ocrTextInput = document.getElementById('ocr-text-input') as HTMLTextAreaEl
 const ocrPanel = document.getElementById('ocr-panel') as HTMLElement
 const ocrPanelStatus = document.getElementById('ocr-panel-status') as HTMLElement
 const ocrPanelText = document.getElementById('ocr-panel-text') as HTMLTextAreaElement
+const ocrPanelTranslation = document.getElementById('ocr-panel-translation') as HTMLTextAreaElement
+const ocrPanelDragHandle = document.getElementById('ocr-panel-drag-handle') as HTMLElement
+const ocrPanelPinButton = document.getElementById('ocr-panel-pin') as HTMLButtonElement
+const ocrPanelTranslateButton = document.getElementById('ocr-panel-translate') as HTMLButtonElement
+const ocrPanelCopyButton = document.getElementById('ocr-panel-copy') as HTMLButtonElement
 const ocrTip = document.getElementById('ocr-tip') as HTMLElement
 const ocrTooltip = document.getElementById('ocr-tooltip') as HTMLElement
 const ocrPanelResizeHandle = document.getElementById('ocr-panel-resize') as HTMLElement
@@ -150,7 +154,7 @@ let ocrSnapshotSourcePending = false
 /** 当前截图完成动画定时器及其所属会话。 */
 let screenshotAutoCloseTimer: number | null = null
 /** 当前图片动作的局部处理中状态，避免导出期间的普通提示覆盖即时反馈。 */
-let screenshotActionPending: 'copy-image' | 'save-image' | 'pin-image' | null = null
+let screenshotActionPending: 'copy-image' | 'save-image' | null = null
 // 截图“文字识别”进行中标记：防止同一识别请求重复提交。
 let screenshotRecognizePending = false
 // 当前截图动作请求 ID：仅响应当前请求的结果事件，丢弃旧回调。
@@ -171,11 +175,18 @@ let ocrSnapshotState: 'loading' | 'ready' | 'error' = 'loading'
 let ocrSnapshotAvailable = false
 // OCR 侧栏用户手动调整的尺寸；为 null 时按默认自适应尺寸布局。
 let ocrPanelUserSize: { width: number; height: number } | null = null
+let ocrPanelPinned = false
+let ocrPanelShowingTranslation = false
+let ocrPanelTranslationPending = false
+let ocrPanelDragState: { start: { x: number; y: number }; initial: { x: number; y: number } } | null = null
 // OCR 侧栏尺寸拖拽状态：记录起点与初始尺寸。
 let ocrPanelResizeState: {
   start: { x: number; y: number }
   initial: { width: number; height: number }
 } | null = null
+/** 工具栏手动拖动位置及当前拖动状态。 */
+let ocrToolbarUserPosition = false
+let ocrToolbarDragState: { start: { x: number; y: number }; initial: { x: number; y: number } } | null = null
 /** 工具栏内容尺寸观察器：样式控件显隐或换行后重新校正浮动位置。 */
 let ocrToolbarResizeObserver: ResizeObserver | null = null
 /** 截图标注控制器：管理工具、绘制草稿、样式与历史。 */
@@ -341,10 +352,14 @@ function renderOcrToolbar(): void {
   const size = getOverlaySize()
   const toolbarWidth = ocrToolbar.offsetWidth || 128
   const toolbarHeight = ocrToolbar.offsetHeight || 36
-  const x = clamp(currentRect.x + currentRect.width - toolbarWidth, 8, Math.max(8, size.width - toolbarWidth - 8))
+  const x = ocrToolbarUserPosition
+    ? Number.parseFloat(ocrToolbar.style.left) || 8
+    : clamp(currentRect.x + currentRect.width - toolbarWidth, 8, Math.max(8, size.width - toolbarWidth - 8))
   const belowY = currentRect.y + currentRect.height + 8
   const aboveY = currentRect.y - toolbarHeight - 8
-  const y = belowY + toolbarHeight <= size.height
+  const y = ocrToolbarUserPosition
+    ? Number.parseFloat(ocrToolbar.style.top) || 8
+    : belowY + toolbarHeight <= size.height
     ? belowY
     : clamp(aboveY, 8, Math.max(8, size.height - toolbarHeight - 8))
   ocrToolbar.style.left = `${Math.round(x)}px`
@@ -382,7 +397,7 @@ function syncOcrToolbarLayout(): void {
  * @author zhenghq
  */
 function avoidOcrToolbarPanelOverlap(): void {
-  if (quickOcrAutoTranslate || ocrToolbar.hidden || ocrPanel.hidden) return
+  if (quickOcrAutoTranslate || ocrToolbarUserPosition || ocrToolbar.hidden || ocrPanel.hidden) return
   const size = getOverlaySize()
   const toolbarRect = ocrToolbar.getBoundingClientRect()
   const panelRect = ocrPanel.getBoundingClientRect()
@@ -410,6 +425,28 @@ function avoidOcrToolbarPanelOverlap(): void {
   ocrToolbar.style.left = `${Math.round(clamp(candidate.x, 8, Math.max(8, size.width - toolbarWidth - 8)))}px`
   ocrToolbar.style.top = `${Math.round(clamp(candidate.y, 8, Math.max(8, size.height - toolbarHeight - 8)))}px`
 }
+
+/** 开始拖动截图标注工具栏，按钮本身仍保留点击行为。@param event 鼠标事件。@returns 无返回值。@author zhenghq */
+function handleOcrToolbarDragStart(event: MouseEvent): void {
+  if (!ocrMode || event.button !== 0 || (event.target as HTMLElement).closest('button, input, textarea')) return
+  const rect = ocrToolbar.getBoundingClientRect()
+  ocrToolbarDragState = { start: { x: event.clientX, y: event.clientY }, initial: { x: rect.left, y: rect.top } }
+  ocrToolbarUserPosition = true
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+/** 更新拖动中的截图工具栏位置。@param event 鼠标事件。@returns 无返回值。@author zhenghq */
+function handleOcrToolbarDragMove(event: MouseEvent): void {
+  if (!ocrToolbarDragState) return
+  const size = getOverlaySize()
+  const rect = ocrToolbar.getBoundingClientRect()
+  ocrToolbar.style.left = `${Math.round(clamp(ocrToolbarDragState.initial.x + event.clientX - ocrToolbarDragState.start.x, 8, Math.max(8, size.width - rect.width - 8)))}px`
+  ocrToolbar.style.top = `${Math.round(clamp(ocrToolbarDragState.initial.y + event.clientY - ocrToolbarDragState.start.y, 8, Math.max(8, size.height - rect.height - 8)))}px`
+}
+
+/** 结束截图工具栏拖动。@returns 无返回值。@author zhenghq */
+function handleOcrToolbarDragEnd(): void { ocrToolbarDragState = null }
 
 /**
  * 解析元素计算样式中的像素数值，无法解析时返回回退值。
@@ -532,6 +569,7 @@ function layoutOcrPanel(): void {
     ocrPanel.style.width = `${Math.round(panelWidth)}px`
     ocrPanel.style.height = `${Math.round(panelHeight)}px`
   }
+  if (ocrPanelPinned) return
   const margin = 8
   const rightSpace = size.width - (currentRect.x + currentRect.width) - OCR_PANEL_GAP - margin
   const leftSpace = currentRect.x - OCR_PANEL_GAP - margin
@@ -560,6 +598,88 @@ function layoutOcrPanel(): void {
   ocrPanel.style.left = `${Math.round(clamp(x, margin, Math.max(margin, size.width - panelWidth - margin)))}px`
   ocrPanel.style.top = `${Math.round(y)}px`
   avoidOcrToolbarPanelOverlap()
+}
+
+/** 开始拖动 OCR 结果面板。@param event 鼠标事件。@returns 无返回值。@author zhenghq */
+function handleOcrPanelDragStart(event: MouseEvent): void {
+  if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return
+  const rect = ocrPanel.getBoundingClientRect()
+  ocrPanelDragState = { start: { x: event.clientX, y: event.clientY }, initial: { x: rect.left, y: rect.top } }
+  event.preventDefault()
+}
+
+/** 更新拖动中的 OCR 结果面板位置。@param event 鼠标事件。@returns 无返回值。@author zhenghq */
+function handleOcrPanelDragMove(event: MouseEvent): void {
+  if (!ocrPanelDragState) return
+  const size = getOverlaySize()
+  const rect = ocrPanel.getBoundingClientRect()
+  ocrPanel.style.left = `${Math.round(clamp(ocrPanelDragState.initial.x + event.clientX - ocrPanelDragState.start.x, 8, Math.max(8, size.width - rect.width - 8)))}px`
+  ocrPanel.style.top = `${Math.round(clamp(ocrPanelDragState.initial.y + event.clientY - ocrPanelDragState.start.y, 8, Math.max(8, size.height - rect.height - 8)))}px`
+}
+
+/** 结束 OCR 结果面板拖动。@returns 无返回值。@author zhenghq */
+function handleOcrPanelDragEnd(): void { ocrPanelDragState = null }
+
+/** 将当前结果转为独立置顶窗口，关闭截图不影响结果；返回创建完成状态。@author zhenghq */
+async function toggleOcrPanelPin(): Promise<void> {
+  if (ocrPanelPinButton.disabled || !ocrPanelText.value.trim()) return
+  ocrPanelPinButton.disabled = true
+  const sessionId = currentOcrSessionId
+  const rect = ocrPanel.getBoundingClientRect()
+  try {
+    await window.api.pinOcrPanel({
+      sessionId, text: ocrPanelText.value, translation: ocrPanelTranslation.value,
+      status: ocrPanelStatus.textContent ?? '',
+      bounds: { x: window.screenX + rect.left, y: window.screenY + rect.top, width: rect.width, height: rect.height }
+    })
+    if (sessionId === currentOcrSessionId) renderOcrPanel('hidden')
+  } catch (error) {
+    if (sessionId === currentOcrSessionId) {
+      ocrPanelStatus.textContent = error instanceof Error ? error.message : t('selection.recognizeFailed')
+    }
+  } finally {
+    if (sessionId === currentOcrSessionId) ocrPanelPinButton.disabled = !ocrPanelText.value.trim()
+  }
+}
+
+/** 复制完整 OCR 原文，保留空格和换行；无参数及返回值。@author zhenghq */
+function copyOcrPanelText(): void {
+  if (!ocrPanelText.value.trim()) return
+  window.api.copy(ocrPanelText.value)
+  ocrPanelStatus.textContent = t('popup.copied')
+}
+
+/** 将 OCR 原文翻译后显示在面板中，再次点击切回原文。@returns 无返回值。@author zhenghq */
+async function translateOcrPanelText(): Promise<void> {
+  if (ocrPanelTranslationPending) return
+  if (ocrPanelShowingTranslation) {
+    ocrPanelShowingTranslation = false
+    ocrPanelText.hidden = false
+    ocrPanelTranslation.hidden = true
+    layoutOcrPanel()
+    return
+  }
+  const text = ocrPanelText.value.trim()
+  if (!text) return
+  ocrPanelTranslationPending = true
+  ocrPanelTranslateButton.disabled = true
+  ocrPanelPinButton.disabled = true
+  ocrPanelStatus.textContent = t('selection.loadingTranslating')
+  try {
+    const translation = await window.api.translateOcrPanelText(text, currentOcrSessionId)
+    ocrPanelTranslation.value = translation
+    ocrPanelShowingTranslation = true
+    ocrPanelText.hidden = false
+    ocrPanelTranslation.hidden = false
+    ocrPanelStatus.textContent = t('selection.translate')
+  } catch (error) {
+    ocrPanelStatus.textContent = error instanceof Error ? error.message : t('selection.recognizeFailed')
+  } finally {
+    ocrPanelTranslationPending = false
+    ocrPanelTranslateButton.disabled = false
+    ocrPanelPinButton.disabled = !ocrPanelText.value.trim()
+    layoutOcrPanel()
+  }
 }
 
 /**
@@ -599,7 +719,9 @@ function handleOcrPanelResizeMove(event: MouseEvent): void {
     Math.max(OCR_PANEL_MIN_HEIGHT, size.height - 16)
   )
   ocrPanelUserSize = { width, height }
-  layoutOcrPanel()
+  // 尺寸变化不应重新按选区锚点定位；直接更新尺寸并保持拖拽手柄按下时的位置。
+  ocrPanel.style.width = `${Math.round(width)}px`
+  ocrPanel.style.height = `${Math.round(height)}px`
   event.preventDefault()
 }
 
@@ -637,15 +759,29 @@ function discardOcrPanelForNewSelection(): void {
  */
 function renderOcrPanel(state: 'hidden' | 'pending' | 'ready', text = '', status = ''): void {
   ocrPanelState = state
+  const hasText = state === 'ready' && Boolean(text.trim())
+  ocrPanelCopyButton.disabled = !hasText
+  ocrPanelPinButton.disabled = !hasText || ocrPanelTranslationPending
+  ocrPanelTranslateButton.disabled = !hasText || ocrPanelTranslationPending
   if (state === 'hidden') {
     ocrPanel.hidden = true
     ocrPanelStatus.textContent = ''
     ocrPanelText.value = ''
+    ocrPanelTranslation.value = ''
+    ocrPanelShowingTranslation = false
+    ocrPanelTranslation.hidden = true
+    ocrPanelText.hidden = false
     return
   }
   ocrPanel.hidden = false
   ocrPanelStatus.textContent = status
   ocrPanelText.value = text
+  if (state === 'ready' && text !== ocrPanelTranslation.value) {
+    ocrPanelTranslation.value = ''
+    ocrPanelShowingTranslation = false
+    ocrPanelTranslation.hidden = true
+    ocrPanelText.hidden = false
+  }
   ocrPanelText.hidden = state === 'pending'
   layoutOcrPanel()
 }
@@ -1659,45 +1795,6 @@ function saveCurrentOcrSelectionImage(): void {
 }
 
 /**
- * 将当前带标注截图创建为屏幕贴图，成功后退出截图会话。
- * @returns 无返回值。
- * @author zhenghq
- */
-function pinCurrentOcrSelectionImage(): void {
-  if (pendingScreenshotRequestId || screenshotActionPending) return
-  screenshotActionPending = 'pin-image'
-  updateOcrImageActionAvailability()
-  renderOcrTip(t('selection.pinImageCreating'))
-  void (async () => {
-    try {
-      const exportPayload = await buildAnnotatedExportPayload('copy-image')
-      if (!exportPayload?.png) throw new Error(t('selection.screenshotNotReady'))
-
-      const result = await window.api.createScreenshotPin({
-        sessionId: exportPayload.sessionId,
-        requestId: exportPayload.requestId,
-        width: exportPayload.width,
-        height: exportPayload.height,
-        displayWidth: exportPayload.bounds.width,
-        displayHeight: exportPayload.bounds.height,
-        png: exportPayload.png
-      })
-      if (!result.ok) throw new Error(result.error || t('selection.pinImageFailed'))
-      leaveOcrSelectionMode()
-    } catch (error) {
-      screenshotActionPending = null
-      updateOcrImageActionAvailability()
-      renderOcrTip()
-      window.api.showScreenshotToast({
-        message: error instanceof Error ? error.message : t('selection.pinImageFailed'),
-        kind: 'error',
-        displayTimeMs: 3000
-      })
-    }
-  })()
-}
-
-/**
  * 处理主进程回传的图片复制/保存动作反馈：
  * 恢复按钮状态、给出非阻塞提示，并在成功后延迟退出截图。
  * @param result 动作反馈事件负载。
@@ -1901,9 +1998,7 @@ function renderOcrTip(message?: string): void {
     ? t('selection.copyingImage')
     : screenshotActionPending === 'save-image'
       ? t('selection.preparingSave')
-      : screenshotActionPending === 'pin-image'
-        ? t('selection.pinImageCreating')
-        : null
+      : null
   ocrTip.textContent = message ?? pendingMessage ?? (ocrSnapshotState === 'ready'
     ? t(!currentRect && windowSelectionState?.candidates.length ? 'selection.windowSpotlightTip' : 'selection.tip')
     : t('selection.tipLoading'))
@@ -1923,7 +2018,6 @@ function updateOcrImageActionAvailability(): void {
   const exportPending = screenshotActionPending !== null || pendingScreenshotRequestId !== null
   ocrCopyImageButton.disabled = blocked || exportPending
   ocrSaveImageButton.disabled = blocked || exportPending
-  ocrPinImageButton.disabled = blocked || exportPending
   ocrReselectButton.disabled = exportPending
 }
 
@@ -2116,6 +2210,13 @@ function resetOcrSessionUi(): void {
   ocrSnapshot.removeAttribute('data-load-token')
   ocrPanelUserSize = null
   ocrPanelResizeState = null
+  ocrPanelPinned = false
+  ocrPanelPinButton.setAttribute('aria-pressed', 'false')
+  ocrPanelPinButton.title = t('popup.pin')
+  ocrPanelPinButton.setAttribute('aria-label', ocrPanelPinButton.title)
+  ocrPanelDragState = null
+  ocrToolbarUserPosition = false
+  ocrToolbarDragState = null
   ocrPanel.style.width = ''
   ocrPanel.style.height = ''
   resetAnnotationSession()
@@ -2442,7 +2543,6 @@ ocrRecognizeButton.addEventListener('click', recognizeCurrentOcrSelection)
 ocrTranslateButton.addEventListener('click', translateCurrentOcrSelection)
 ocrCopyImageButton.addEventListener('click', copyCurrentOcrSelectionImage)
 ocrSaveImageButton.addEventListener('click', saveCurrentOcrSelectionImage)
-ocrPinImageButton.addEventListener('click', pinCurrentOcrSelectionImage)
 ocrCancelButton.addEventListener('click', cancelOcrSelection)
 ocrReselectButton.addEventListener('click', requestOcrReselect)
 ocrReselectYes.addEventListener('click', confirmOcrReselect)
@@ -2540,8 +2640,17 @@ ocrOverlay.addEventListener('mouseout', handleOcrTooltipLeave)
 ocrOverlay.addEventListener('focusout', hideOcrTooltip)
 ocrOverlay.addEventListener('mousedown', hideOcrTooltip)
 ocrPanelResizeHandle.addEventListener('mousedown', handleOcrPanelResizeStart)
+ocrToolbar.addEventListener('mousedown', handleOcrToolbarDragStart)
+ocrPanelDragHandle.addEventListener('mousedown', handleOcrPanelDragStart)
+ocrPanelPinButton.addEventListener('click', () => { void toggleOcrPanelPin() })
+ocrPanelCopyButton.addEventListener('click', copyOcrPanelText)
+ocrPanelTranslateButton.addEventListener('click', () => { void translateOcrPanelText() })
 window.addEventListener('mousemove', handleOcrPanelResizeMove)
 window.addEventListener('mouseup', handleOcrPanelResizeEnd)
+window.addEventListener('mousemove', handleOcrToolbarDragMove)
+window.addEventListener('mouseup', handleOcrToolbarDragEnd)
+window.addEventListener('mousemove', handleOcrPanelDragMove)
+window.addEventListener('mouseup', handleOcrPanelDragEnd)
 window.addEventListener('resize', () => {
   if (currentRect) renderSelectionRect(clampRectToOverlay(currentRect))
   hideOcrTooltip()

@@ -180,11 +180,6 @@
               <path d="M3.5 12.5v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"></path>
             </svg>
           </button>
-          <button id="ocr-pin-image" type="button" data-i18n-attr="title:selection.pinImage;aria-label:selection.pinImage" title="Pin to screen" aria-label="Pin to screen">
-            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M7 3h6l-1 5 2 2v1H6v-1l2-2-1-5zM10 11v6"></path>
-            </svg>
-          </button>
           <button id="ocr-cancel" type="button" data-i18n-attr="title:common.cancel;aria-label:common.cancel" title="Cancel" aria-label="Cancel">
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <path d="M5 5l10 10M15 5L5 15"></path>
@@ -194,8 +189,25 @@
       </div>
       <textarea id="ocr-text-input" class="ocr-text-input" data-i18n-attr="aria-label:selection.annotationText" aria-label="Annotation text" maxlength="200" rows="1" hidden></textarea>
       <aside id="ocr-panel" class="ocr-panel" hidden data-i18n-attr="aria-label:selection.ocrResult" aria-label="OCR result">
+        <header class="ocr-panel-header">
+          <button id="ocr-panel-pin" class="ocr-panel-pin" type="button" aria-pressed="false" data-i18n-attr="title:popup.pin;aria-label:popup.pin" title="Pin window" aria-label="Pin window">
+            <svg class="ocr-panel-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 17v5" />
+              <path d="M5 17h14" />
+              <path d="M17 17v-5l-2-2V4h1V2H8v2h1v6l-2 2v5" />
+            </svg>
+          </button>
+          <span id="ocr-panel-drag-handle" class="ocr-panel-title" data-i18n="selection.ocrResult">OCR result</span>
+          <div class="ocr-panel-actions">
+            <button id="ocr-panel-translate" type="button" data-i18n="selection.translate">Translate</button>
+            <button id="ocr-panel-copy" type="button" data-i18n="popup.copy" data-i18n-attr="title:popup.copyOcrContent;aria-label:popup.copyOcrContent" disabled>Copy</button>
+          </div>
+        </header>
         <div id="ocr-panel-status" class="ocr-panel-status" role="status" aria-atomic="true"></div>
-        <textarea id="ocr-panel-text" class="ocr-panel-text" readonly aria-describedby="ocr-panel-status" data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
+        <div class="ocr-panel-columns">
+          <textarea id="ocr-panel-text" class="ocr-panel-text" readonly aria-describedby="ocr-panel-status" data-i18n-attr="aria-label:selection.ocrSource" aria-label="OCR source text"></textarea>
+          <textarea id="ocr-panel-translation" class="ocr-panel-text" readonly data-i18n-attr="aria-label:selection.translate" aria-label="Translate" hidden></textarea>
+        </div>
         <span id="ocr-panel-resize" class="ocr-panel-resize" role="separator" data-i18n-attr="aria-label:selection.resizeResult" aria-label="Resize OCR result area" aria-hidden="true"></span>
       </aside>
       <div id="ocr-tooltip" class="ocr-tooltip" role="tooltip" hidden></div>

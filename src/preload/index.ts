@@ -28,6 +28,7 @@ import type {
   OcrSelectionBeginPayload,
   OcrSelectionReadyPayload,
   OcrSelectionBounds,
+  OcrPanelPinRequest,
   OcrSelectionFailedPayload,
   OcrSelectionSnapshotPayload,
   OcrStatus,
@@ -966,6 +967,38 @@ const api: Api = {
    */
   translateOcrSelection(request: ScreenshotOcrActionRequest) {
     ipcRenderer.send('ocr-selection:translate', request)
+  },
+  /** 将识别结果转为独立置顶窗口；参数为结果数据，返回创建完成状态。@author zhenghq */
+  pinOcrPanel(payload: OcrPanelPinRequest): Promise<void> {
+    return ipcRenderer.invoke('ocr-selection:panel-pin', payload)
+  },
+  /** 获取独立 OCR 窗口数据；返回当前窗口数据或空值。@author zhenghq */
+  getPinnedOcrPanel(): Promise<OcrPanelPinRequest | null> {
+    return ipcRenderer.invoke('ocr-result:init')
+  },
+  /** 通知独立 OCR 内容首帧已就绪；无参数和返回值。@author zhenghq */
+  notifyPinnedOcrPanelReady(): void {
+    ipcRenderer.send('ocr-result:ready')
+  },
+  /** 翻译独立窗口原文；参数为原文，返回译文。@author zhenghq */
+  translatePinnedOcrText(text: string): Promise<string> {
+    return ipcRenderer.invoke('ocr-result:translate', text)
+  },
+  /** 设置独立窗口置顶状态；参数为状态，无返回值。@author zhenghq */
+  setPinnedOcrPanel(pinned: boolean): void {
+    ipcRenderer.send('ocr-result:set-pinned', pinned)
+  },
+  /** 缩放独立 OCR 窗口并保留当前位置；参数为目标逻辑尺寸，无返回值。@author zhenghq */
+  resizePinnedOcrPanel(size: PopupAutoSizeRequest): void {
+    ipcRenderer.send('ocr-result:resize', size)
+  },
+  /** 关闭独立 OCR 窗口；无返回值。@author zhenghq */
+  closePinnedOcrPanel(): void {
+    ipcRenderer.send('ocr-result:close')
+  },
+  /** 在截图 OCR 结果面板中翻译文字。@param text OCR 原文。@param sessionId 当前截图会话。@returns 译文。@author zhenghq */
+  translateOcrPanelText(text: string, sessionId: number): Promise<string> {
+    return ipcRenderer.invoke('ocr-selection:panel-translate', { text, sessionId })
   },
   /**
    * 请求将当前截图选区图片复制到系统剪贴板。

@@ -491,7 +491,16 @@ export interface OcrTextLine {
   confidence?: number
 }
 
-/** OCR 框选截图区域（全局屏幕坐标）。 */
+/** 独立 OCR 结果窗口的数据与全局屏幕位置。@author zhenghq */
+export interface OcrPanelPinRequest {
+  text: string
+  translation: string
+  status: string
+  bounds: { x: number; y: number; width: number; height: number }
+  sessionId?: number
+}
+
+/** OCR 框选截图区域（全局屏幕坐标）。@author zhenghq */
 export interface OcrSelectionBounds {
   /** 左上角 x 坐标。 */
   x: number
@@ -1776,6 +1785,22 @@ export interface Api {
   recognizeOcrSelection(request: ScreenshotOcrActionRequest): void
   /** 请求将当前截图选区送入现有 OCR 翻译流程。 */
   translateOcrSelection(request: ScreenshotOcrActionRequest): void
+  /** 将识别结果转为独立置顶窗口；参数为原文、译文和全局位置，返回创建完成状态。@author zhenghq */
+  pinOcrPanel(payload: OcrPanelPinRequest): Promise<void>
+  /** 获取独立 OCR 窗口初始数据；返回结果或空值。@author zhenghq */
+  getPinnedOcrPanel(): Promise<OcrPanelPinRequest | null>
+  /** 通知独立 OCR 内容首帧已就绪；无参数和返回值。@author zhenghq */
+  notifyPinnedOcrPanelReady(): void
+  /** 翻译独立 OCR 窗口原文；参数为原文，返回译文。@author zhenghq */
+  translatePinnedOcrText(text: string): Promise<string>
+  /** 设置独立 OCR 窗口置顶；参数为置顶状态，无返回值。@author zhenghq */
+  setPinnedOcrPanel(pinned: boolean): void
+  /** 缩放独立 OCR 窗口并保留当前位置；参数为目标逻辑尺寸，无返回值。@author zhenghq */
+  resizePinnedOcrPanel(size: PopupAutoSizeRequest): void
+  /** 关闭当前独立 OCR 窗口；无返回值。@author zhenghq */
+  closePinnedOcrPanel(): void
+  /** 在截图 OCR 结果面板中翻译已识别原文并返回译文。 */
+  translateOcrPanelText(text: string, sessionId: number): Promise<string>
   /** 请求将当前截图选区图片复制到系统剪贴板。 */
   copyOcrSelectionImage(request: ScreenshotOcrActionRequest): void
   /** 请求将当前截图选区图片保存到本地磁盘。 */

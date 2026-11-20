@@ -1,4 +1,5 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
+import { createOcrResultWindowManager } from '../ocrResultWindow'
 import { validateAnnotatedExportPayload } from '../screenshotExportPayload'
 import type { ScreenshotPinWindowManager } from '../screenshotPinWindow'
 import type {
@@ -14,6 +15,10 @@ import type {
 
 /** OCR、截图贴图与截图提示 IPC 注册依赖。 */
 export interface OcrIpcDependencies {
+  /** 独立 OCR 窗口的预加载路径。@author zhenghq */
+  preloadPath: string
+  /** 加载独立 OCR 结果页；参数为窗口，无返回值。@author zhenghq */
+  loadOcrResultPage(win: BrowserWindow): void
   /** 打开 OCR 框选窗口。 */
   requestOcrSelection(autoTranslate: boolean): void
   /** 返回当前 OCR 会话序号。 */
@@ -32,6 +37,8 @@ export interface OcrIpcDependencies {
   recognizeOcrSelectionAction(value: unknown): Promise<void>
   /** 翻译当前截图选区。 */
   translateOcrSelectionAction(value: unknown): Promise<void>
+  /** 翻译 OCR 面板中已识别的原文。 */
+  translateOcrPanelText(text: string): Promise<string>
   /** 复制当前截图选区。 */
   copyOcrSelectionImageAction(value: unknown): Promise<void>
   /** 保存当前截图选区。 */
@@ -118,6 +125,44 @@ export function isCurrentScreenshotRequest(
  * @author zhenghq
  */
 export function registerOcrIpc(dependencies: OcrIpcDependencies): void {
+  const ocrResultWindows = createOcrResultWindowManager({
+    preloadPath: dependencies.preloadPath, loadPage: dependencies.loadOcrResultPage
+  })
+  app.once('before-quit', () => ocrResultWindows.dispose())
+  ipcMain.handle('ocr-selection:panel-pin', (event, value: unknown) => {
+    if (!dependencies.isOcrSelectionSender(event)) throw new Error('invalid-sender')
+    if ((value as { sessionId?: unknown } | null)?.sessionId !== dependencies.getOcrSelectionSessionId()) {
+      throw new Error('invalid-request')
+    }
+    return ocrResultWindows.create(value, BrowserWindow.fromWebContents(event.sender))
+  })
+  ipcMain.handle('ocr-result:init', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return win ? ocrResultWindows.getPayload(win) : null
+  })
+  ipcMain.on('ocr-result:ready', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) ocrResultWindows.rendererReady(win)
+  })
+  ipcMain.handle('ocr-result:translate', (event, text: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || !ocrResultWindows.ownsWindow(win)) throw new Error('invalid-sender')
+    if (typeof text !== 'string') throw new Error('invalid-request')
+    return dependencies.translateOcrPanelText(text)
+  })
+  ipcMain.on('ocr-result:set-pinned', (event, pinned: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && typeof pinned === 'boolean') ocrResultWindows.setPinned(win, pinned)
+  })
+  // 管理器仅接受已登记的独立结果窗口及合法尺寸，不信任其它渲染页面。@author zhenghq
+  ipcMain.on('ocr-result:resize', (event, size: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) ocrResultWindows.resize(win, size)
+  })
+  ipcMain.on('ocr-result:close', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) ocrResultWindows.close(win)
+  })
   /**
    * 校验贴图窗口 IPC 来源、贴图实例与请求结构。
    * @param event IPC 事件。
@@ -200,6 +245,14 @@ export function registerOcrIpc(dependencies: OcrIpcDependencies): void {
   })
   ipcMain.on('ocr-selection:translate', (_event, request: unknown) => {
     void dependencies.translateOcrSelectionAction(request)
+  })
+  ipcMain.handle('ocr-selection:panel-translate', (event, value: unknown) => {
+    if (!dependencies.isOcrSelectionSender(event)) throw new Error('invalid-sender')
+    const request = value as { text?: unknown; sessionId?: unknown } | null
+    if (request?.sessionId !== dependencies.getOcrSelectionSessionId() || typeof request.text !== 'string') {
+      throw new Error('invalid-request')
+    }
+    return dependencies.translateOcrPanelText(request.text)
   })
   ipcMain.on('ocr-selection:copy-image', (_event, request: unknown) => {
     const normalized = normalizeScreenshotActionRequest(request)

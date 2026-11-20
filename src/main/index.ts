@@ -132,6 +132,7 @@ import { registerUpdaterIpc } from './ipc/updaterIpc'
 import { registerPopupIpc } from './ipc/popupIpc'
 import { registerDocumentIpc } from './ipc/documentIpc'
 import { registerOcrIpc } from './ipc/ocrIpc'
+import { translateOcrPanelText } from './ocrPanelTranslation'
 import { registerTranslationIpc } from './ipc/translationIpc'
 import {
   isCurrentScreenshotRequest,
@@ -5753,7 +5754,6 @@ async function translateOcrSelectionAction(value: unknown): Promise<void> {
   activeScreenshotOcrRequests.clear()
   await submitOcrSelection(request.bounds)
 }
-
 /**
  * 处理截图“复制图片”动作：将当前选区 PNG 写入系统图片剪贴板，成功后退出截图。
  * @param value Renderer 提交的截图动作请求负载。
@@ -7606,6 +7606,8 @@ function registerIpc(): void {
   })
   ipcMain.on('settings:stop-service', () => stopApplicationService())
   registerOcrIpc({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    loadOcrResultPage: (win) => loadRendererHtml(win, 'ocr-result.html'),
     requestOcrSelection,
     getOcrSelectionSessionId: () => ocrSelectionSessionSeq,
     resolveOcrSelectionReady,
@@ -7617,6 +7619,7 @@ function registerIpc(): void {
     submitOcrSelection,
     recognizeOcrSelectionAction,
     translateOcrSelectionAction,
+    translateOcrPanelText: (text) => translateOcrPanelText(text, whenApplicationServicesReady, getSettings, getDingTalkConfiguration, getAiConfiguration),
     copyOcrSelectionImageAction,
     saveOcrSelectionImageAction,
     copyAnnotatedOcrSelectionImageAction,
