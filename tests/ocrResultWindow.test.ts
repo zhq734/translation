@@ -316,8 +316,11 @@ test('钉住窗口沿用原面板的透明圆角外观和右下角缩放三角�
   assert.equal(windows[0].options.hasShadow, false, '不叠加与原面板不同的原生阴影')
   const html = readFileSync('src/renderer/ocr-result.html', 'utf8')
   assert.match(html, /src\/selection\.css/u, '沿用截图面板的主题样式')
+  assert.match(html, /<body class="ocr-result-window">/u, '独立窗口应使用专属样式作用域')
   assert.match(html, /id="ocr-panel-resize"[^>]*class="ocr-panel-resize"/u)
   const css = readFileSync('src/renderer/src/ocr-result.css', 'utf8')
+  assert.match(css, /\.ocr-result-window \.ocr-panel\s*\{[^}]*position:\s*relative;[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*max-width:\s*none;[^}]*max-height:\s*none;/su,
+    '独立窗口规则的优先级必须高于选区页面的通用面板规则，避免打包后尺寸规则被覆盖')
   assert.match(css, /\.ocr-panel-resize\s*\{[^}]*-webkit-app-region:\s*no-drag/u)
   manager.close(windows[0])
 })
