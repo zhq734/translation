@@ -18,6 +18,16 @@
 }
 
 .ocr-panel-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 0 50%, var(--text-muted) 50% 58%, transparent 58% 64%, var(--text-muted) 64% 72%, transparent 72% 78%, var(--text-muted) 78% 86%, transparent 86%);
+  border-bottom-right-radius: 6px;
   -webkit-app-region: no-drag;
 }
 

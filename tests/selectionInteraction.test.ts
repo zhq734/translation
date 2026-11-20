@@ -79,6 +79,15 @@ test('取词、翻译与 OCR 交互期间都不得按 Dock 激活处理', () => 
   assert.equal(canTreatActivateAsDockLaunch({ ...base, interactionState: 'idle' }).allowed, true)
 })
 
+test('Dock 激活时没有可见窗口应视为显式打开，即使残留的划词状态尚未清理', () => {
+  const decision = canTreatActivateAsDockLaunch({
+    interactionState: 'button-visible', selectionButtonVisible: true, popupVisible: false,
+    hiServicesRepairRunning: false, ocrVisible: false, listenerPausedForOcr: false,
+    hasVisibleWindows: false, now: 1000
+  })
+  assert.equal(decision.allowed, true)
+})
+
 test('鼠标按下应区分消费、自有窗口忽略和外部应用跟踪', () => {
   assert.equal(classifySelectionPointerDown({
     ocrActive: true,

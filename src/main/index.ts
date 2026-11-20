@@ -1507,7 +1507,7 @@ function shouldTreatActivateAsDockLaunch(probe: ActivateSourceProbe): boolean {
     hiServicesRepairRunning,
     ocrVisible: isOcrSelectionVisible(),
     listenerPausedForOcr: selectionListenerController.isPausedForOcr(),
-    selectionActivationSuppressUntil
+    selectionActivationSuppressUntil, hasVisibleWindows: probe.hasVisibleWindows
   })
   // 来源取证必须先于判定日志输出：同步栈已经由调用方在事件回调入口采集，
   // 这里只做校验与序列化；任何诊断异常都不得中断 activate 原有流程。

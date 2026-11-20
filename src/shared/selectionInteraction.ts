@@ -31,6 +31,8 @@ export interface DockActivationContext {
   hiServicesRepairRunning: boolean
   ocrVisible: boolean
   listenerPausedForOcr: boolean
+  /** Dock 激活时是否已有可见窗口；无窗口的 Dock 点击是明确的重新打开请求。 */
+  hasVisibleWindows?: boolean
   /**
    * 最近一次划词内部动作的状态空档抑制截止时间戳。
    *
@@ -255,6 +257,17 @@ export function resetPointerTrackingForWindowBlur(
  * @author zhenghq
  */
 export function canTreatActivateAsDockLaunch(context: DockActivationContext): DockActivationDecision {
+  // macOS 在窗口都关闭后仍会向 activate 传 hasVisibleWindows=false。此时这是
+  // 用户从 Dock 明确要求恢复应用，不应被无窗口残留的 OCR/选词状态吞掉。
+  if (context.hasVisibleWindows === false) return { allowed: true, checks: {
+    selectionInteractionActive: context.interactionState !== 'idle',
+    selectionButtonVisible: context.selectionButtonVisible,
+    popupVisible: context.popupVisible,
+    hiServicesRepairRunning: context.hiServicesRepairRunning,
+    ocrVisible: context.ocrVisible,
+    listenerPausedForOcr: context.listenerPausedForOcr,
+    selectionActivationSuppressed: false
+  } }
   const now = context.now ?? Date.now()
   const checks: DockActivationChecks = {
     selectionInteractionActive: context.interactionState !== 'idle',

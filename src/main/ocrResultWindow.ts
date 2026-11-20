@@ -162,11 +162,16 @@ export function createOcrResultWindowManager(dependencies: OcrResultWindowDepend
           !Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 0 || size.height <= 0) return
       const bounds = win.getBounds()
       const area = screen.getDisplayMatching(bounds).workArea
-      const maxWidth = Math.min(area.width, Math.max(320, area.x + area.width - bounds.x))
-      const maxHeight = Math.min(area.height, Math.max(160, area.y + area.height - bounds.y))
+      const maxWidth = area.width
+      const maxHeight = area.height
       const width = Math.min(maxWidth, Math.max(320, Math.round(size.width)))
       const height = Math.min(maxHeight, Math.max(160, Math.round(size.height)))
-      if (bounds.width !== width || bounds.height !== height) win.setBounds({ ...bounds, width, height })
+      // 尺寸增长优先向左/向上扩展，避免右下角手柄只能把窗口推到工作区之外后被系统裁切。
+      const x = Math.max(area.x, Math.min(bounds.x, area.x + area.width - width))
+      const y = Math.max(area.y, Math.min(bounds.y, area.y + area.height - height))
+      if (bounds.x !== x || bounds.y !== y || bounds.width !== width || bounds.height !== height) {
+        win.setBounds({ x, y, width, height })
+      }
     },
     /** 关闭一个结果窗口；参数为窗口，无返回值。@author zhenghq */
     close(win: BrowserWindow): void { if (sessions.has(win) && !win.isDestroyed()) win.close() },

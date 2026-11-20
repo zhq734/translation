@@ -339,7 +339,7 @@ test('独立 OCR 手柄缩放始终保留当前屏幕位置并校验尺寸及窗
   manager.resize(win, { width: 1, height: 1 })
   assert.deepEqual(win.getBounds(), { x: -800, y: 200, width: 320, height: 160 })
   manager.resize(win, { width: 99999, height: 99999 })
-  assert.deepEqual(win.getBounds(), { x: -800, y: 200, width: 800, height: 700 }, '尺寸不得超出当前位置的显示器可用区域')
+  assert.deepEqual(win.getBounds(), { x: -1440, y: 0, width: 1440, height: 900 }, '尺寸受工作区限制，并在需要时向左上移动')
   manager.resize({ isDestroyed: () => false }, { width: 400, height: 240 })
   manager.close(win)
   manager.resize(win, { width: 400, height: 240 })
