@@ -21,11 +21,15 @@ pub mod pcm;
 /// 设备故障并交由主进程重建会话。
 const MAX_CONSECUTIVE_SINK_FULLS: u32 = 8;
 
+#[cfg(target_os = "linux")]
+mod linux_tap;
 #[cfg(target_os = "macos")]
 mod macos_tap;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod microphone;
 pub(crate) mod streaming_resampler;
+#[cfg(target_os = "windows")]
+mod windows_tap;
 
 /// 采集错误分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -203,9 +207,11 @@ impl AudioCapture {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod platform {
-    //! macOS 采集实现：系统声音走 Core Audio Tap，麦克风走 cpal。
+    //! 桌面平台采集实现：系统声音分别走 Core Audio Tap（macOS）、
+    //! WASAPI loopback（Windows）与 PulseAudio/PipeWire monitor（Linux），
+    //! 麦克风统一走 cpal。
 
     use super::*;
 
@@ -279,7 +285,10 @@ mod platform {
         })
     }
 
-    /// 预检 macOS 采集权限：系统声音需要屏幕录制权限。
+    /// 预检当前平台采集权限。
+    ///
+    /// macOS 系统声音需要屏幕录制权限；Windows/Linux 无系统级预检，
+    /// 仅校验系统声音采集通道可用。
     ///
     /// # 参数
     /// - `source`：音频来源。
@@ -288,10 +297,14 @@ mod platform {
     /// 权限齐备时返回 `Ok(())`，否则返回分类错误。
     pub fn check_permission(source: AudioSource) -> Result<(), CaptureError> {
         let needs_system = matches!(source, AudioSource::System | AudioSource::Both);
-        if needs_system {
-            if !super::macos_tap::is_available() {
-                return Err(CaptureError::Unsupported);
-            }
+        if !needs_system {
+            return Ok(());
+        }
+        if !system_tap_is_available() {
+            return Err(CaptureError::Unsupported);
+        }
+        #[cfg(target_os = "macos")]
+        {
             // 未授权时先触发一次系统授权请求；用户拒绝后只能到系统设置手动开启。
             if !super::macos_tap::has_system_audio_permission()
                 && !super::macos_tap::request_system_audio_permission()
@@ -300,6 +313,39 @@ mod platform {
             }
         }
         Ok(())
+    }
+
+    /// 判断当前平台系统声音采集通道是否可用。
+    ///
+    /// # 返回值
+    /// 系统声音采集通道可用时返回 `true`。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "macos")]
+    fn system_tap_is_available() -> bool {
+        super::macos_tap::is_available()
+    }
+
+    /// 判断当前平台系统声音采集通道是否可用。
+    ///
+    /// # 返回值
+    /// 系统声音采集通道可用时返回 `true`。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "windows")]
+    fn system_tap_is_available() -> bool {
+        super::windows_tap::is_available()
+    }
+
+    /// 判断当前平台系统声音采集通道是否可用。
+    ///
+    /// # 返回值
+    /// 系统声音采集通道可用时返回 `true`。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "linux")]
+    fn system_tap_is_available() -> bool {
+        super::linux_tap::is_available()
     }
 
     /// 启动系统声音采集线程。
@@ -317,10 +363,76 @@ mod platform {
         running: Arc<AtomicBool>,
         errors: mpsc::UnboundedSender<CaptureError>,
     ) -> Result<std::thread::JoinHandle<()>, CaptureError> {
-        if !super::macos_tap::is_available() {
+        if !system_tap_is_available() {
             return Err(CaptureError::Unsupported);
         }
+        system_tap_start(sink, paused, running, errors)
+    }
+
+    /// 启动 macOS 系统声音采集线程。
+    ///
+    /// # 参数
+    /// - `sink`：PCM 输出通道。
+    /// - `paused`：暂停标志。
+    /// - `running`：运行标志。
+    /// - `errors`：采集错误发送端。
+    ///
+    /// # 返回值
+    /// 采集线程句柄；启动失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "macos")]
+    fn system_tap_start(
+        sink: mpsc::Sender<Vec<i16>>,
+        paused: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
+        errors: mpsc::UnboundedSender<CaptureError>,
+    ) -> Result<std::thread::JoinHandle<()>, CaptureError> {
         super::macos_tap::start(sink, paused, running, errors)
+    }
+
+    /// 启动 Windows 系统声音（WASAPI loopback）采集线程。
+    ///
+    /// # 参数
+    /// - `sink`：PCM 输出通道。
+    /// - `paused`：暂停标志。
+    /// - `running`：运行标志。
+    /// - `errors`：采集错误发送端。
+    ///
+    /// # 返回值
+    /// 采集线程句柄；启动失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "windows")]
+    fn system_tap_start(
+        sink: mpsc::Sender<Vec<i16>>,
+        paused: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
+        errors: mpsc::UnboundedSender<CaptureError>,
+    ) -> Result<std::thread::JoinHandle<()>, CaptureError> {
+        super::windows_tap::start(sink, paused, running, errors)
+    }
+
+    /// 启动 Linux 系统声音（默认 sink monitor）采集线程。
+    ///
+    /// # 参数
+    /// - `sink`：PCM 输出通道。
+    /// - `paused`：暂停标志。
+    /// - `running`：运行标志。
+    /// - `errors`：采集错误发送端。
+    ///
+    /// # 返回值
+    /// 采集线程句柄；启动失败时返回分类错误。
+    ///
+    /// @author zhenghq
+    #[cfg(target_os = "linux")]
+    fn system_tap_start(
+        sink: mpsc::Sender<Vec<i16>>,
+        paused: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
+        errors: mpsc::UnboundedSender<CaptureError>,
+    ) -> Result<std::thread::JoinHandle<()>, CaptureError> {
+        super::linux_tap::start(sink, paused, running, errors)
     }
 
     /// 启动麦克风采集线程。
@@ -339,38 +451,6 @@ mod platform {
         errors: mpsc::UnboundedSender<CaptureError>,
     ) -> Result<std::thread::JoinHandle<()>, CaptureError> {
         super::microphone::start(sink, paused, running, errors)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod platform {
-    //! 非 macOS 平台占位：首版只交付 macOS。
-    use super::*;
-
-    /// 非 macOS 平台不支持采集。
-    ///
-    /// # 参数
-    /// - `_source`：音频来源。
-    /// - `_sink`：PCM 输出通道。
-    ///
-    /// # 返回值
-    /// 始终返回不支持错误。
-    pub async fn start(
-        _source: AudioSource,
-        _sink: mpsc::Sender<Vec<i16>>,
-    ) -> Result<CaptureHandle, CaptureError> {
-        Err(CaptureError::Unsupported)
-    }
-
-    /// 非 macOS 平台不支持任何采集权限。
-    ///
-    /// # 参数
-    /// - `_source`：音频来源。
-    ///
-    /// # 返回值
-    /// 始终返回不支持错误。
-    pub fn check_permission(_source: AudioSource) -> Result<(), CaptureError> {
-        Err(CaptureError::Unsupported)
     }
 }
 

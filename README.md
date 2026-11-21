@@ -388,7 +388,7 @@ Real-time subtitles overlay bilingual captions on any video or meeting. The app 
 - **ASR channels**: Deepgram, Whisper/OpenAI-compatible transcription services, generic WebSocket ASR, Alibaba Cloud DashScope ASR, custom DashScope ASR, and custom OpenAI Realtime ASR. API keys are encrypted in system secure storage; see `docs/realtime-subtitle-providers.md` for channel capabilities and conventions. Google Gemini Live configuration in Settings is reserved only; the audio sidecar does not yet implement its connection, so it is not an available channel yet.
 - **Display modes**: source-only, translation-only, or bilingual. Long sentences are split into multiple cues by pauses, punctuation, and semantics; translations appear in source order, and the original text is kept when translation fails.
 - **Window behavior**: the window can be dragged into position and is click-through by default so it never blocks video controls; font size, text color, and the auto-hide timeout are configurable.
-- **Platform support**: the first release requires macOS 14.2 or later.
+- **Platform support**: macOS 14.2+ (ScreenCaptureKit audio tap), Windows 10+ (WASAPI loopback), and Linux (default-output monitor capture via PulseAudio/PipeWire).
 
 ## Web Page Translation
 

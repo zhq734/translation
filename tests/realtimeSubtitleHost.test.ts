@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import {
   resolveMacosSubtitleAudioPath,
+  resolveSubtitleAudioSidecarPath,
   SubtitleSessionHost,
   type SubtitleSessionChildProcess,
   type SubtitleSidecarEvent
@@ -958,4 +959,39 @@ test('应优先解析打包 sidecar，再回退开发构建产物', () => {
     }),
     '/repo/build/macos-subtitle-audio'
   )
+})
+
+/**
+ * 校验 Windows 与 Linux 平台的 sidecar 文件名与路径解析。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('应按平台解析 Windows 与 Linux sidecar 路径', () => {
+  assert.equal(
+    resolveSubtitleAudioSidecarPath({
+      platform: 'win32',
+      resourcesPath: '/app/resources',
+      cwd: '/repo',
+      fileExists: (path) => path === '/app/resources/windows-subtitle-audio.exe'
+    }),
+    '/app/resources/windows-subtitle-audio.exe'
+  )
+  assert.equal(
+    resolveSubtitleAudioSidecarPath({
+      platform: 'win32',
+      resourcesPath: '/app/resources',
+      cwd: '/repo',
+      fileExists: (path) => path === '/repo/build/windows-subtitle-audio.exe'
+    }),
+    '/repo/build/windows-subtitle-audio.exe'
+  )
+  assert.equal(
+    resolveSubtitleAudioSidecarPath({
+      platform: 'linux',
+      cwd: '/repo',
+      fileExists: (path) => path === '/repo/build/linux-subtitle-audio'
+    }),
+    '/repo/build/linux-subtitle-audio'
+  )
+  assert.equal(resolveSubtitleAudioSidecarPath({ platform: 'sunos' }), null)
 })

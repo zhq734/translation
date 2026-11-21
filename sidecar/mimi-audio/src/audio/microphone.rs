@@ -16,6 +16,20 @@ use cpal::{Sample, SizedSample};
 use super::streaming_resampler::StreamingPcm16Resampler;
 use super::CaptureError;
 
+/// 非 macOS 平台没有系统级麦克风权限预检，直接允许启动。
+///
+/// # 参数
+/// - `_running`：运行标志，占位以对齐 macOS 签名。
+///
+/// # 返回值
+/// 始终返回 `Ok(())`。
+///
+/// @author zhenghq
+#[cfg(not(target_os = "macos"))]
+fn request_microphone_permission(_running: &Arc<AtomicBool>) -> Result<(), CaptureError> {
+    Ok(())
+}
+
 /// 目标采样率：Deepgram 实时识别使用 24 kHz PCM16。
 const TARGET_SAMPLE_RATE_HZ: u32 = 24_000;
 /// 工作线程轮询间隔。

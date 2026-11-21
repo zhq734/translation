@@ -93,6 +93,8 @@ win:
         - windows-uia-reader.exe
     - from: build/build-info.json
       to: build-info.json
+    - from: build/windows-subtitle-audio.exe
+      to: windows-subtitle-audio.exe
     - from: build/win7-tessdata
       to: tessdata
       filter:

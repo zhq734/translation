@@ -22,6 +22,11 @@
 
 以上渠道均以“原文识别 + 项目文字翻译”为主，不包含各服务商的原生同声传译能力。
 
+系统音频采集的平台覆盖：macOS 走 ScreenCaptureKit 音频 Tap（要求 macOS 14.2+），
+Windows 走 WASAPI loopback（要求 Windows 10+，采集默认渲染设备），Linux 走
+PulseAudio/PipeWire 的默认 sink monitor 源（纯 ALSA/JACK 环境暂不支持）。三个平台
+共用同一 Rust sidecar 与 ASR/协议层，麦克风采集统一走 cpal。
+
 ## 二、暂缓实施：Google Gemini Live 全链路
 
 目前仅完成 TypeScript 侧的配置、界面、IPC 和字幕事件骨架，Rust 音频 sidecar 尚未实现 Gemini 连接与事件处理，因此该渠道**暂不视为可用**。

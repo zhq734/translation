@@ -1,8 +1,10 @@
 /**
  * 实时字幕平台能力判断。
  *
- * 系统音频采集依赖 macOS 14.2+ 的 ScreenCaptureKit 音频能力，因此平台判断必须
- * 独立于 sidecar 是否已经构建，避免旧系统误启动子进程并触发无效权限请求。
+ * 系统音频采集依赖平台原生能力：macOS 需要 14.2+ 的 ScreenCaptureKit 音频
+ * 能力，Windows 需要 Windows 10 及以上的 WASAPI loopback，Linux 依赖
+ * PulseAudio/PipeWire 的 monitor 源。平台判断必须独立于 sidecar 是否已经构建，
+ * 避免旧系统误启动子进程并触发无效权限请求。
  *
  * @author zhenghq
  */
@@ -21,6 +23,18 @@ export interface RealtimeSubtitlePlatformInput {
   platform: NodeJS.Platform
   /** 操作系统版本字符串。 */
   release: string
+}
+
+/**
+ * 解析 Windows 主版本号。
+ * @param release 系统版本字符串，Windows 10/11 均以 10.0 开头。
+ * @returns 主版本号；无法解析时返回 null。
+ * @author zhenghq
+ */
+function parseWindowsMajorVersion(release: string): number | null {
+  const match = /^(\d+)/u.exec(String(release ?? '').trim())
+  if (!match?.[1]) return null
+  return Number(match[1])
 }
 
 /** 读取系统版本的 Electron 运行时扩展。 */
@@ -50,14 +64,26 @@ function parseMacOSVersion(release: string): readonly [number, number] | null {
 export function detectRealtimeSubtitlePlatformCapability(
   input: RealtimeSubtitlePlatformInput
 ): RealtimeSubtitlePlatformCapability {
-  if (input.platform !== 'darwin') {
-    return { supported: false, reason: 'unsupported-platform' }
+  if (input.platform === 'darwin') {
+    const version = parseMacOSVersion(input.release)
+    if (version === null || version[0] < 14 || (version[0] === 14 && version[1] < 2)) {
+      return { supported: false, reason: 'macos-version-unsupported' }
+    }
+    return { supported: true, reason: null }
   }
-  const version = parseMacOSVersion(input.release)
-  if (version === null || version[0] < 14 || (version[0] === 14 && version[1] < 2)) {
-    return { supported: false, reason: 'macos-version-unsupported' }
+  if (input.platform === 'win32') {
+    const major = parseWindowsMajorVersion(input.release)
+    // WASAPI loopback 需要 Windows 10 及以上；更旧版本直接判定为不支持。
+    if (major === null || major < 10) {
+      return { supported: false, reason: 'unsupported-platform' }
+    }
+    return { supported: true, reason: null }
   }
-  return { supported: true, reason: null }
+  if (input.platform === 'linux') {
+    // Linux 走 PulseAudio/PipeWire monitor 采集，运行时可用性由 sidecar 启动探测兜底。
+    return { supported: true, reason: null }
+  }
+  return { supported: false, reason: 'unsupported-platform' }
 }
 
 /**

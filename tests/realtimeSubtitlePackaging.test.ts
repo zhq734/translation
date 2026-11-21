@@ -57,6 +57,31 @@ test('package.json 应接入 sidecar 构建并声明 macOS 14.2 权限', () => {
 })
 
 /**
+ * 校验 package.json 在 Windows 与 Linux 打包配置中接入各自平台的 sidecar。
+ * @returns 无返回值。
+ * @author zhenghq
+ */
+test('package.json 应接入 Windows 与 Linux sidecar 构建与打包', () => {
+  const packageJson = JSON.parse(readText('package.json')) as {
+    scripts: Record<string, string>
+    build: {
+      win: { extraResources: Array<{ from: string; to: string }> }
+      linux: { extraResources: Array<{ from: string; to: string }> }
+    }
+  }
+  assert.match(packageJson.scripts.dev, /build-windows-subtitle-audio/u)
+  assert.match(packageJson.scripts.dev, /build-linux-subtitle-audio/u)
+  assert.match(packageJson.scripts.build, /build-windows-subtitle-audio/u)
+  assert.match(packageJson.scripts.build, /build-linux-subtitle-audio/u)
+  assert.ok(packageJson.build.win.extraResources.some((entry) =>
+    entry.from === 'build/windows-subtitle-audio.exe' && entry.to === 'windows-subtitle-audio.exe'
+  ))
+  assert.ok(packageJson.build.linux.extraResources.some((entry) =>
+    entry.from === 'build/linux-subtitle-audio' && entry.to === 'linux-subtitle-audio'
+  ))
+})
+
+/**
  * 校验打包路径优先解析 Resources 下的 sidecar 可执行文件。
  * @returns 无返回值。
  * @author zhenghq

@@ -474,7 +474,8 @@ OCR 引擎按“系统 OCR → PaddleOCR → Tesseract”的顺序在自动模�
 - **ASR 渠道**：支持 Deepgram、Whisper/OpenAI 兼容转写服务、通用 WebSocket ASR、阿里云百炼 DashScope ASR、自定义 DashScope ASR 和自定义 OpenAI Realtime ASR；API Key 通过系统安全存储加密，渠道能力与约定详见 `docs/realtime-subtitle-providers.md`。设置页中的 Google Gemini Live 配置目前只是预留，音频 sidecar 尚未实现该连接，暂不作为可用渠道。
 - **显示模式**：支持仅原文、仅译文和中英双语三种模式；长句会按停顿、标点和语义自动拆分为多条字幕，译文按原文顺序上屏，翻译失败时保留原文。
 - **窗口行为**：字幕窗可拖动定位，默认开启点击穿透，不遮挡视频操作；字号、文字颜色和“无新字幕自动隐藏”时长均可在设置中调整。
-- **平台要求**：实时字幕首版仅支持 macOS 14.2 及以上版本。
+- **平台要求**：macOS 14.2+（ScreenCaptureKit 音频 Tap）、Windows 10+（WASAPI loopback）、
+  Linux（PulseAudio/PipeWire 默认输出 monitor 采集）。
 
 ## 网页全文翻译
 

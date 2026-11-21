@@ -105,16 +105,55 @@ export interface SubtitleSessionStartOptions {
  * @returns 可执行文件路径；均不存在时返回 null。
  * @author zhenghq
  */
-export function resolveMacosSubtitleAudioPath(
-  options: MacosSubtitleAudioPathOptions = {}
+/** 实时字幕 sidecar 按平台的可执行文件名。 */
+const SUBTITLE_AUDIO_SIDECAR_NAMES: Record<string, string> = {
+  darwin: 'macos-subtitle-audio',
+  win32: 'windows-subtitle-audio.exe',
+  linux: 'linux-subtitle-audio'
+}
+
+/**
+ * 读取指定平台的实时字幕 sidecar 文件名。
+ * @param platform Node.js 平台标识。
+ * @returns sidecar 文件名；平台不受支持时返回 null。
+ * @author zhenghq
+ */
+export function resolveSubtitleAudioSidecarName(platform: NodeJS.Platform): string | null {
+  return SUBTITLE_AUDIO_SIDECAR_NAMES[platform] ?? null
+}
+
+/**
+ * 按平台解析实时字幕 sidecar 路径：打包目录优先，开发环境回退 build 目录。
+ * @param options 路径解析选项；platform 缺省时取当前运行时平台。
+ * @returns 可执行文件路径；平台不受支持或文件不存在时返回 null。
+ * @author zhenghq
+ */
+export function resolveSubtitleAudioSidecarPath(
+  options: MacosSubtitleAudioPathOptions & { platform?: NodeJS.Platform } = {}
 ): string | null {
+  const platform = options.platform ?? process.platform
+  const sidecarName = resolveSubtitleAudioSidecarName(platform)
+  if (!sidecarName) return null
   const fileExists = options.fileExists ?? existsSync
   const cwd = options.cwd ?? process.cwd()
   const candidates = [
-    options.resourcesPath ? join(options.resourcesPath, 'macos-subtitle-audio') : null,
-    join(cwd, 'build', 'macos-subtitle-audio')
+    options.resourcesPath ? join(options.resourcesPath, sidecarName) : null,
+    join(cwd, 'build', sidecarName)
   ].filter((candidate): candidate is string => Boolean(candidate))
   return candidates.find((candidate) => fileExists(candidate)) ?? null
+}
+
+/**
+ * 解析 macOS 实时字幕 sidecar 路径：打包目录优先，开发环境回退 build 目录。
+ * 兼容旧调用方；新代码请使用按平台解析的 resolveSubtitleAudioSidecarPath。
+ * @param options 路径解析选项。
+ * @returns 可执行文件路径；均不存在时返回 null。
+ * @author zhenghq
+ */
+export function resolveMacosSubtitleAudioPath(
+  options: MacosSubtitleAudioPathOptions = {}
+): string | null {
+  return resolveSubtitleAudioSidecarPath({ ...options, platform: 'darwin' })
 }
 
 /**
@@ -124,10 +163,13 @@ export function resolveMacosSubtitleAudioPath(
  * @author zhenghq
  */
 function defaultSpawnSubtitleAudio(environment: NodeJS.ProcessEnv): SubtitleSessionChildProcess {
-  const helperPath = resolveMacosSubtitleAudioPath({
+  const helperPath = resolveSubtitleAudioSidecarPath({
     resourcesPath: process.resourcesPath
   })
-  if (!helperPath) throw new Error('macos-subtitle-audio sidecar is missing')
+  if (!helperPath) {
+    const sidecarName = resolveSubtitleAudioSidecarName(process.platform) ?? 'subtitle-audio'
+    throw new Error(`${sidecarName} sidecar is missing`)
+  }
   const child: ChildProcess = spawn(helperPath, [], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: environment
