@@ -128,6 +128,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 安装 Linux 实时字幕音频系统依赖
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
       - name: 安装 macOS Rust 双架构 target
         if: matrix.platform == 'macos'
         shell: bash

@@ -355,18 +355,6 @@ fn request_microphone_permission(running: &Arc<AtomicBool>) -> Result<(), Captur
     }
 }
 
-/// 非 macOS 平台不提供麦克风采集。
-///
-/// # 参数
-/// - `_running`：运行标志。
-///
-/// # 返回值
-/// 始终返回不支持错误。
-#[cfg(not(target_os = "macos"))]
-fn request_microphone_permission(_running: &Arc<AtomicBool>) -> Result<(), CaptureError> {
-    Err(CaptureError::Unsupported)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
