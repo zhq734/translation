@@ -113,6 +113,34 @@ contextBridge.exposeInMainWorld(
   getSelectionTranslatorWin7Compatibility
 )
 
+let ocrPanelTranslationSequence = 0
+
+/**
+ * 发起 OCR 面板翻译，在调用前订阅请求专属增量，并在结束后释放监听。
+ * @param channel 截图面板或独立结果窗口的翻译通道。
+ * @param payload 原文和可选截图会话号。
+ * @param onDelta 接收当前请求的译文增量。
+ * @returns 完整译文，失败时透传错误。
+ * @author zhenghq
+ */
+async function invokeOcrPanelTranslation(
+  channel: 'ocr-selection:panel-translate' | 'ocr-result:translate',
+  payload: { text: string; sessionId?: number },
+  onDelta: (delta: string) => void
+): Promise<string> {
+  const requestId = `ocr-panel-${++ocrPanelTranslationSequence}`
+  /** 仅转发本请求的合法增量。@param _event IPC 事件。@param value 增量负载。@returns 无返回值。@author zhenghq */
+  const listener = (_event: unknown, value: { requestId: string; delta: string }): void => {
+    if (value?.requestId === requestId && typeof value.delta === 'string') onDelta(value.delta)
+  }
+  ipcRenderer.on('ocr-panel:translation-delta', listener)
+  try {
+    return await ipcRenderer.invoke(channel, { ...payload, requestId })
+  } finally {
+    ipcRenderer.removeListener('ocr-panel:translation-delta', listener)
+  }
+}
+
 const api: Api = {
   /**
    * 最小化当前受信任窗口。
@@ -980,9 +1008,9 @@ const api: Api = {
   notifyPinnedOcrPanelReady(): void {
     ipcRenderer.send('ocr-result:ready')
   },
-  /** 翻译独立窗口原文；参数为原文，返回译文。@author zhenghq */
-  translatePinnedOcrText(text: string): Promise<string> {
-    return ipcRenderer.invoke('ocr-result:translate', text)
+  /** 翻译独立窗口原文；参数为原文与增量回调，返回完整译文。@author zhenghq */
+  translatePinnedOcrText(text: string, onDelta: (delta: string) => void): Promise<string> {
+    return invokeOcrPanelTranslation('ocr-result:translate', { text }, onDelta)
   },
   /** 设置独立窗口置顶状态；参数为状态，无返回值。@author zhenghq */
   setPinnedOcrPanel(pinned: boolean): void {
@@ -996,9 +1024,9 @@ const api: Api = {
   closePinnedOcrPanel(): void {
     ipcRenderer.send('ocr-result:close')
   },
-  /** 在截图 OCR 结果面板中翻译文字。@param text OCR 原文。@param sessionId 当前截图会话。@returns 译文。@author zhenghq */
-  translateOcrPanelText(text: string, sessionId: number): Promise<string> {
-    return ipcRenderer.invoke('ocr-selection:panel-translate', { text, sessionId })
+  /** 在截图面板翻译文字。@param text OCR 原文。@param sessionId 当前会话。@param onDelta 增量回调。@returns 完整译文。@author zhenghq */
+  translateOcrPanelText(text: string, sessionId: number, onDelta: (delta: string) => void): Promise<string> {
+    return invokeOcrPanelTranslation('ocr-selection:panel-translate', { text, sessionId }, onDelta)
   },
   /**
    * 请求将当前截图选区图片复制到系统剪贴板。

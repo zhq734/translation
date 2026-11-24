@@ -12,6 +12,7 @@ import { translateStream } from './translate'
  * @param getSettings 读取当前设置。
  * @param getDingTalk 读取钉钉配置。
  * @param getAi 读取 AI 配置。
+ * @param onDelta 接收翻译增量，供结果面板实时展示。
  * @returns 译文。
  * @author zhenghq
  */
@@ -20,7 +21,8 @@ export async function translateOcrPanelText(
   whenReady: <T>(action: () => T | Promise<T>) => Promise<T>,
   getSettings: () => Settings,
   getDingTalk: () => DingTalkConfigurationService,
-  getAi: () => AiConfigurationService
+  getAi: () => AiConfigurationService,
+  onDelta: (delta: string) => void
 ): Promise<string> {
   const source = text.trim()
   if (!source || source.length > 5000) throw new Error(translateMain('error.noTranslatableText'))
@@ -29,6 +31,6 @@ export async function translateOcrPanelText(
     const pair = resolveLanguagePair(source, settings.sourceLang, settings.targetLang)
     const credentials = settings.dingTalkEnabled ? getDingTalk().getCredentialsSnapshot() : null
     const key = settings.aiEnabled ? getAi().getApiKey() : null
-    return (await translateStream(source, { ...settings, ...pair }, credentials, key, { onDelta: () => undefined })).translation
+    return (await translateStream(source, { ...settings, ...pair }, credentials, key, { onDelta })).translation
   })
 }

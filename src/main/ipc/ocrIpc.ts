@@ -37,8 +37,8 @@ export interface OcrIpcDependencies {
   recognizeOcrSelectionAction(value: unknown): Promise<void>
   /** 翻译当前截图选区。 */
   translateOcrSelectionAction(value: unknown): Promise<void>
-  /** 翻译 OCR 面板中已识别的原文。 */
-  translateOcrPanelText(text: string): Promise<string>
+  /** 翻译 OCR 原文；参数为原文与增量接收回调，返回完整译文。@author zhenghq */
+  translateOcrPanelText(text: string, onDelta: (delta: string) => void): Promise<string>
   /** 复制当前截图选区。 */
   copyOcrSelectionImageAction(value: unknown): Promise<void>
   /** 保存当前截图选区。 */
@@ -144,11 +144,17 @@ export function registerOcrIpc(dependencies: OcrIpcDependencies): void {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) ocrResultWindows.rendererReady(win)
   })
-  ipcMain.handle('ocr-result:translate', (event, text: unknown) => {
+  ipcMain.handle('ocr-result:translate', (event, value: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win || !ocrResultWindows.ownsWindow(win)) throw new Error('invalid-sender')
-    if (typeof text !== 'string') throw new Error('invalid-request')
-    return dependencies.translateOcrPanelText(text)
+    const request = value as { text?: unknown; requestId?: unknown } | null
+    if (typeof request?.text !== 'string' || typeof request.requestId !== 'string' || !request.requestId.trim()) {
+      throw new Error('invalid-request')
+    }
+    return dependencies.translateOcrPanelText(request.text, (delta) => {
+      if (event.sender.isDestroyed() || !ocrResultWindows.ownsWindow(win)) return
+      event.sender.send('ocr-panel:translation-delta', { requestId: request.requestId, delta })
+    })
   })
   ipcMain.on('ocr-result:set-pinned', (event, pinned: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -248,11 +254,15 @@ export function registerOcrIpc(dependencies: OcrIpcDependencies): void {
   })
   ipcMain.handle('ocr-selection:panel-translate', (event, value: unknown) => {
     if (!dependencies.isOcrSelectionSender(event)) throw new Error('invalid-sender')
-    const request = value as { text?: unknown; sessionId?: unknown } | null
-    if (request?.sessionId !== dependencies.getOcrSelectionSessionId() || typeof request.text !== 'string') {
+    const request = value as { text?: unknown; sessionId?: unknown; requestId?: unknown } | null
+    if (request?.sessionId !== dependencies.getOcrSelectionSessionId() || typeof request.text !== 'string' ||
+        typeof request.requestId !== 'string' || !request.requestId.trim()) {
       throw new Error('invalid-request')
     }
-    return dependencies.translateOcrPanelText(request.text)
+    return dependencies.translateOcrPanelText(request.text, (delta) => {
+      if (event.sender.isDestroyed() || request.sessionId !== dependencies.getOcrSelectionSessionId()) return
+      event.sender.send('ocr-panel:translation-delta', { requestId: request.requestId, delta })
+    })
   })
   ipcMain.on('ocr-selection:copy-image', (_event, request: unknown) => {
     const normalized = normalizeScreenshotActionRequest(request)

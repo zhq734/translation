@@ -7619,7 +7619,7 @@ function registerIpc(): void {
     submitOcrSelection,
     recognizeOcrSelectionAction,
     translateOcrSelectionAction,
-    translateOcrPanelText: (text) => translateOcrPanelText(text, whenApplicationServicesReady, getSettings, getDingTalkConfiguration, getAiConfiguration),
+    translateOcrPanelText: (text, onDelta) => translateOcrPanelText(text, whenApplicationServicesReady, getSettings, getDingTalkConfiguration, getAiConfiguration, onDelta),
     copyOcrSelectionImageAction,
     saveOcrSelectionImageAction,
     copyAnnotatedOcrSelectionImageAction,

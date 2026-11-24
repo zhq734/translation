@@ -179,7 +179,7 @@ test('钉住 IPC 校验截图会话，独立结果在关闭截图和开启新会
   assert.equal(windows[0].getBounds().width, 480)
   handlers.get('ocr-result:resize')!({ sender: overlaySender }, { width: 900, height: 700 })
   assert.equal(windows[0].getBounds().width, 480, '截图页不能缩放独立结果窗口')
-  assert.equal(await handlers.get('ocr-result:translate')!(event, '原文'), '译文：原文')
+  assert.equal(await handlers.get('ocr-result:translate')!(event, { text: '原文', requestId: 'pinned-1' }), '译文：原文')
   assert.throws(() => handlers.get('ocr-result:translate')!({ sender: overlaySender }, '原文'), /invalid-sender/u)
   quit()
   assert.equal(windows[0].destroyed, true)
@@ -196,7 +196,12 @@ test('OCR 面板翻译应等待服务就绪并沿用语言和凭证配置', asyn
     require: (id: string) => {
       if (id === './messages') return { translateMain: () => '无可翻译文本' }
       if (id === '../shared/selectionBehavior') return { resolveLanguagePair: () => ({ sourceLang: 'auto', targetLang: 'EN' }) }
-      if (id === './translate') return { translateStream: async (...args: any[]) => { calls.push(args); return { translation: 'Translation' } } }
+      if (id === './translate') return { translateStream: async (...args: any[]) => {
+        calls.push(args)
+        args[4].onDelta('Trans')
+        args[4].onDelta('lation')
+        return { translation: 'Translation' }
+      } }
       throw new Error(`未批准依赖：${id}`)
     }
   })
@@ -206,7 +211,9 @@ test('OCR 面板翻译应等待服务就绪并沿用语言和凭证配置', asyn
   const dingTalk = () => ({ getCredentialsSnapshot: () => ({ appKey: 'key' }) })
   const ai = () => ({ getApiKey: () => 'ai-key' })
   const translate = module.exports.translateOcrPanelText
-  assert.equal(await translate('  识别原文  ', whenReady, settings, dingTalk, ai), 'Translation')
+  const deltas: string[] = []
+  assert.equal(await translate('  识别原文  ', whenReady, settings, dingTalk, ai, (delta: string) => deltas.push(delta)), 'Translation')
+  assert.deepEqual(deltas, ['Trans', 'lation'], '翻译完成之前必须转发流式增量')
   assert.equal(calls[0][0], '识别原文')
   assert.equal(calls[0][1].targetLang, 'EN')
   assert.equal(calls[0][2].appKey, 'key')

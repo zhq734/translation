@@ -178,6 +178,8 @@ let ocrPanelUserSize: { width: number; height: number } | null = null
 let ocrPanelPinned = false
 let ocrPanelShowingTranslation = false
 let ocrPanelTranslationPending = false
+/** OCR 面板内容版本，用于隔离重选、关闭或新会话后的旧翻译回调。@author zhenghq */
+let ocrPanelTranslationVersion = 0
 let ocrPanelDragState: { start: { x: number; y: number }; initial: { x: number; y: number } } | null = null
 // OCR 侧栏尺寸拖拽状态：记录起点与初始尺寸。
 let ocrPanelResizeState: {
@@ -649,7 +651,7 @@ function copyOcrPanelText(): void {
   ocrPanelStatus.textContent = t('popup.copied')
 }
 
-/** 将 OCR 原文翻译后显示在面板中，再次点击切回原文。@returns 无返回值。@author zhenghq */
+/** 增量翻译 OCR 原文并显示译文，再次点击切回原文；无参数，返回完成状态。@author zhenghq */
 async function translateOcrPanelText(): Promise<void> {
   if (ocrPanelTranslationPending) return
   if (ocrPanelShowingTranslation) {
@@ -661,24 +663,39 @@ async function translateOcrPanelText(): Promise<void> {
   }
   const text = ocrPanelText.value.trim()
   if (!text) return
+  const version = ++ocrPanelTranslationVersion
   ocrPanelTranslationPending = true
+  ocrPanelTranslation.value = ''
   ocrPanelTranslateButton.disabled = true
   ocrPanelPinButton.disabled = true
   ocrPanelStatus.textContent = t('selection.loadingTranslating')
   try {
-    const translation = await window.api.translateOcrPanelText(text, currentOcrSessionId)
+    const translation = await window.api.translateOcrPanelText(text, currentOcrSessionId, (delta) => {
+      if (version !== ocrPanelTranslationVersion) return
+      ocrPanelTranslation.value += delta
+      ocrPanelShowingTranslation = true
+      ocrPanelTranslation.hidden = false
+      layoutOcrPanel()
+    })
+    if (version !== ocrPanelTranslationVersion) return
     ocrPanelTranslation.value = translation
     ocrPanelShowingTranslation = true
     ocrPanelText.hidden = false
     ocrPanelTranslation.hidden = false
     ocrPanelStatus.textContent = t('selection.translate')
   } catch (error) {
+    if (version !== ocrPanelTranslationVersion) return
+    ocrPanelTranslation.value = ''
+    ocrPanelTranslation.hidden = true
+    ocrPanelShowingTranslation = false
     ocrPanelStatus.textContent = error instanceof Error ? error.message : t('selection.recognizeFailed')
   } finally {
-    ocrPanelTranslationPending = false
-    ocrPanelTranslateButton.disabled = false
-    ocrPanelPinButton.disabled = !ocrPanelText.value.trim()
-    layoutOcrPanel()
+    if (version === ocrPanelTranslationVersion) {
+      ocrPanelTranslationPending = false
+      ocrPanelTranslateButton.disabled = false
+      ocrPanelPinButton.disabled = !ocrPanelText.value.trim()
+      layoutOcrPanel()
+    }
   }
 }
 
@@ -758,6 +775,8 @@ function discardOcrPanelForNewSelection(): void {
  * @author zhenghq
  */
 function renderOcrPanel(state: 'hidden' | 'pending' | 'ready', text = '', status = ''): void {
+  ocrPanelTranslationVersion += 1
+  ocrPanelTranslationPending = false
   ocrPanelState = state
   const hasText = state === 'ready' && Boolean(text.trim())
   ocrPanelCopyButton.disabled = !hasText

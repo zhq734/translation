@@ -67,7 +67,7 @@ function copyText(): void {
   status.textContent = localeRuntime.translator.t('popup.copied')
 }
 
-/** 在独立窗口内翻译或切换译文，与截图会话无关；返回处理完成状态。@author zhenghq */
+/** 在独立窗口内增量翻译或切换译文，与截图会话无关；无参数，返回完成状态。@author zhenghq */
 async function translateText(): Promise<void> {
   if (translationPending || !ocrPanelText.value.trim()) return
   if (!translationText.hidden) { translationText.hidden = true; return }
@@ -76,10 +76,15 @@ async function translateText(): Promise<void> {
   translateButton.disabled = true
   status.textContent = localeRuntime.translator.t('selection.loadingTranslating')
   try {
-    translationText.value = await window.api.translatePinnedOcrText(ocrPanelText.value)
+    translationText.value = await window.api.translatePinnedOcrText(ocrPanelText.value, (delta) => {
+      translationText.value += delta
+      translationText.hidden = false
+    })
     translationText.hidden = false
     status.textContent = localeRuntime.translator.t('selection.translate')
   } catch (error) {
+    translationText.value = ''
+    translationText.hidden = true
     status.textContent = error instanceof Error ? error.message : localeRuntime.translator.t('selection.recognizeFailed')
   } finally {
     translationPending = false

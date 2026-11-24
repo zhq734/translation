@@ -1791,16 +1791,16 @@ export interface Api {
   getPinnedOcrPanel(): Promise<OcrPanelPinRequest | null>
   /** 通知独立 OCR 内容首帧已就绪；无参数和返回值。@author zhenghq */
   notifyPinnedOcrPanelReady(): void
-  /** 翻译独立 OCR 窗口原文；参数为原文，返回译文。@author zhenghq */
-  translatePinnedOcrText(text: string): Promise<string>
+  /** 翻译独立 OCR 原文；参数为原文和增量回调，返回完整译文。@author zhenghq */
+  translatePinnedOcrText(text: string, onDelta: (delta: string) => void): Promise<string>
   /** 设置独立 OCR 窗口置顶；参数为置顶状态，无返回值。@author zhenghq */
   setPinnedOcrPanel(pinned: boolean): void
   /** 缩放独立 OCR 窗口并保留当前位置；参数为目标逻辑尺寸，无返回值。@author zhenghq */
   resizePinnedOcrPanel(size: PopupAutoSizeRequest): void
   /** 关闭当前独立 OCR 窗口；无返回值。@author zhenghq */
   closePinnedOcrPanel(): void
-  /** 在截图 OCR 结果面板中翻译已识别原文并返回译文。 */
-  translateOcrPanelText(text: string, sessionId: number): Promise<string>
+  /** 翻译截图 OCR 原文；参数为原文、会话号和增量回调，返回完整译文。@author zhenghq */
+  translateOcrPanelText(text: string, sessionId: number, onDelta: (delta: string) => void): Promise<string>
   /** 请求将当前截图选区图片复制到系统剪贴板。 */
   copyOcrSelectionImage(request: ScreenshotOcrActionRequest): void
   /** 请求将当前截图选区图片保存到本地磁盘。 */
